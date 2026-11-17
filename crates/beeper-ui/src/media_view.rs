@@ -1,10 +1,15 @@
 //! The Media window, the carousel of a chat, and the decode and the load of the media that they show.
 
+use crate::composer;
+use crate::forward;
 use crate::i18n::{tr, trn, trx};
+use crate::loads;
+use crate::message;
 use crate::style::{
     bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, med, scroll_style, semi, shadow_box,
     text_width, txt, Bare, CLEAR,
 };
+use crate::windows;
 use crate::{
     anim, closable_head, cubic_bezier, day_num, deletable, file_kind, format_short_ts, human_size, i18n, iso_millis,
     menu_item, menu_rule, relative_date, stored, tinted, today, video, vlist, voice, zoom, BeeperGuiApp, El, Frames,
@@ -260,7 +265,7 @@ impl BeeperGuiApp {
                     let decode = move || if looped { decode_loop(&bytes) } else { decode_media(bytes) };
                     tokio::task::spawn_blocking(decode).await.expect("media decode task")
                 },
-                move |r| UiMessage::MediaLoaded(url, r),
+                move |r| UiMessage::Loaded(loads::Msg::Media(url, r)),
             )
         }))
         .chain(audio)
@@ -333,7 +338,7 @@ impl BeeperGuiApp {
     pub(crate) fn carousel_key(&mut self, key: &Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
         let items = self.carousel_items(&self.store.read());
         let Some((items, at)) = items else {
-            return self.update(UiMessage::CloseCarousel);
+            return self.update(UiMessage::Media(Msg::CloseCarousel));
         };
         let c = self.carousel.clone().expect("the carousel is open");
         let video = self.carousel_video().and_then(|(src, _)| self.video.as_ref().filter(|v| v.url == src));
@@ -341,15 +346,19 @@ impl BeeperGuiApp {
         match key.as_ref() {
             Key::Named(Named::Escape) if full => self.video(video::Msg::Fullscreen),
             Key::Named(Named::Escape) if self.pane.emoji.is_some() => self.update(UiMessage::CloseModals),
-            Key::Named(Named::Escape) if c.menu.is_some() => self.update(UiMessage::CarouselMenu(false)),
-            Key::Named(Named::Escape) => self.update(UiMessage::CloseCarousel),
+            Key::Named(Named::Escape) if c.menu.is_some() => self.update(UiMessage::Media(Msg::CarouselMenu(false))),
+            Key::Named(Named::Escape) => self.update(UiMessage::Media(Msg::CloseCarousel)),
             Key::Character("f") if mods.is_empty() && video => self.video(video::Msg::Fullscreen),
-            Key::Named(Named::ArrowLeft) if mods.is_empty() && at > 0 => self.update(UiMessage::CarouselStep(false)),
-            Key::Named(Named::ArrowRight) if mods.is_empty() && at + 1 < items.len() => {
-                self.update(UiMessage::CarouselStep(true))
+            Key::Named(Named::ArrowLeft) if mods.is_empty() && at > 0 => {
+                self.update(UiMessage::Media(Msg::CarouselStep(false)))
             }
-            Key::Character("d") if mods.is_empty() => self.update(UiMessage::Download(c.mid, Some(c.ai))),
-            Key::Character("r") if mods.is_empty() => self.update(UiMessage::RotateCarousel),
+            Key::Named(Named::ArrowRight) if mods.is_empty() && at + 1 < items.len() => {
+                self.update(UiMessage::Media(Msg::CarouselStep(true)))
+            }
+            Key::Character("d") if mods.is_empty() => {
+                self.update(UiMessage::Message(message::Msg::Download(c.mid, Some(c.ai))))
+            }
+            Key::Character("r") if mods.is_empty() => self.update(UiMessage::Media(Msg::RotateCarousel)),
             _ => Task::none(),
         }
     }
@@ -359,10 +368,15 @@ impl BeeperGuiApp {
     /// the carousel.
     fn carousel_actions(&self, car: &Carousel, m: &Message, c: &Chat) -> (Option<UiMessage>, Option<UiMessage>) {
         let live = !car.in_media && m.is_deleted != Some(true);
-        let reply = (c.messages.reply && live)
-            .then(|| UiMessage::Commands(vec![UiMessage::CloseCarousel, UiMessage::StartReply(m.id.clone())]));
+        let reply = (c.messages.reply && live).then(|| {
+            UiMessage::Commands(vec![
+                UiMessage::Media(Msg::CloseCarousel),
+                UiMessage::Composer(composer::Msg::StartReply(m.id.clone())),
+            ])
+        });
         let right = self.pane.size.width - 8.0 - 28.0 * if reply.is_some() { 4.0 } else { 3.0 };
-        let react = (c.messages.react && live).then(|| UiMessage::ReactAt(m.id.clone(), Point::new(right, 39.0)));
+        let react = (c.messages.react && live)
+            .then(|| UiMessage::Message(message::Msg::ReactAt(m.id.clone(), Point::new(right, 39.0))));
         (react, reply)
     }
 
@@ -407,12 +421,12 @@ impl BeeperGuiApp {
                 &MEDIA_ICONS[3],
                 tr("Go to Message"),
                 vec![],
-                Some(UiMessage::GoToMessage(c.id.clone(), mid.into())),
+                Some(UiMessage::Message(message::Msg::GoTo(c.id.clone(), mid.into()))),
             )
         });
         // The Media window viewer has Delete when you can delete the message, like Desktop's `MediaViewer`.
         let delete = (car.in_media && deletable(&st, m)).then(|| {
-            control(&SYS_DELETE, tr("Delete"), vec![], Some(UiMessage::MediaAskDelete(vec![(mid.into(), ai)])))
+            control(&SYS_DELETE, tr("Delete"), vec![], Some(UiMessage::Media(Msg::AskDelete(vec![(mid.into(), ai)]))))
         });
         // Desktop shows Fullscreen in place of Rotate for a video.
         let turn_or_full = match &video {
@@ -421,12 +435,12 @@ impl BeeperGuiApp {
                     self.video.as_ref().filter(|v| v.url == *src).map(|_| UiMessage::Video(video::Msg::Fullscreen));
                 control(&video::GLYPHS[3], tr("Fullscreen"), vec!["F"], full)
             }
-            None => control(&SYS_ROTATE, action("Rotate"), vec!["R"], Some(UiMessage::RotateCarousel)),
+            None => control(&SYS_ROTATE, action("Rotate"), vec!["R"], Some(UiMessage::Media(Msg::RotateCarousel))),
         };
         let (react, reply) = self.carousel_actions(car, m, c);
         let react = react.map(|msg| control(&SYS_EMOJI, action("React"), vec![], Some(msg)));
         let reply = reply.map(|msg| control(&SYS_REPLY, action("Reply"), vec![], Some(msg)));
-        let download = Some(UiMessage::Download(mid.to_string(), Some(ai)));
+        let download = Some(UiMessage::Message(message::Msg::Download(mid.to_string(), Some(ai))));
         let controls = row![]
             .push(go)
             .push(delete)
@@ -434,7 +448,7 @@ impl BeeperGuiApp {
             .push(reply)
             .push(turn_or_full)
             .push(control(&SYS_DOWNLOAD, action("Download"), vec!["D"], download))
-            .push(control(&ROW_ACTIONS[6], action("Close"), vec!["Escape"], Some(UiMessage::CloseCarousel)))
+            .push(control(&ROW_ACTIONS[6], action("Close"), vec!["Escape"], Some(UiMessage::Media(Msg::CloseCarousel))))
             .spacing(8);
         let head =
             stack![container(title).center_x(Fill).center_y(34), container(controls).align_right(Fill).center_y(34)];
@@ -467,12 +481,16 @@ impl BeeperGuiApp {
                     }
                     None => Space::new().into(),
                 };
-                container(zoom::zoom(shown, vlist::key((mid, ai)), UiMessage::CloseCarousel)).padding(8).into()
+                container(zoom::zoom(shown, vlist::key((mid, ai)), UiMessage::Media(Msg::CloseCarousel)))
+                    .padding(8)
+                    .into()
             }
             _ => {
                 let name = txt(a.file_name.clone().expect("attachment file name"), 13.0).color(white);
                 let link = button(name).bare(white);
-                container(link.on_press(UiMessage::Download(mid.to_string(), Some(ai)))).center(Fill).into()
+                container(link.on_press(UiMessage::Message(message::Msg::Download(mid.to_string(), Some(ai)))))
+                    .center(Fill)
+                    .into()
             }
         };
         let step = |next: bool| -> El<'a> {
@@ -490,7 +508,7 @@ impl BeeperGuiApp {
                 true => (tr("Next Attachment"), "→", tooltip::Position::Top),
                 false => (tr("Previous Attachment"), "←", tooltip::Position::Bottom),
             };
-            let b = self.tip(b.on_press(UiMessage::CarouselStep(next)).into(), label, vec![key], at);
+            let b = self.tip(b.on_press(UiMessage::Media(Msg::CarouselStep(next))).into(), label, vec![key], at);
             let b = container(b).center_y(Fill).padding([0, 24]);
             if next {
                 b.align_right(Fill).into()
@@ -506,7 +524,7 @@ impl BeeperGuiApp {
                 let edge = if start + k == at { p.accent } else { CLEAR };
                 let face = container(self.thumb(a, 44.0, 6.0)).padding(2);
                 let face = face.style(bordered_box(white.scale_alpha(0.1), edge, 2.0, 8.0));
-                let open = UiMessage::OpenCarousel(mid.clone(), *ai, true);
+                let open = UiMessage::Media(Msg::OpenCarousel(mid.clone(), *ai, true));
                 button(face).padding(0).style(btn_style([CLEAR; 3], [white; 3], 8.0)).on_press(open).into()
             });
             let row = container(Row::with_children(thumbs).spacing(4)).padding([6, 10]).width(Fill);
@@ -515,7 +533,7 @@ impl BeeperGuiApp {
                     mouse::ScrollDelta::Lines { x, y } => -(x + y),
                     mouse::ScrollDelta::Pixels { x, y } => -(x + y) / 52.0,
                 };
-                UiMessage::ScrollFilmstrip(by)
+                UiMessage::Media(Msg::ScrollFilmstrip(by))
             };
             let row = mouse_area(row.style(fill_box(Color::BLACK.scale_alpha(0.45), 0.0))).on_scroll(scroll);
             container(row.on_press(UiMessage::Noop)).align_bottom(Fill)
@@ -534,7 +552,7 @@ impl BeeperGuiApp {
             let pills = mouse_area(self.reaction_pills(&st, c, &[m], &look)).on_press(UiMessage::Noop);
             container(pills).align_bottom(Fill).center_x(Fill).padding(Padding::new(24.0).top(0.0).bottom(16.0))
         });
-        let main = mouse_area(main).on_right_press(UiMessage::CarouselMenu(true));
+        let main = mouse_area(main).on_right_press(UiMessage::Media(Msg::CarouselMenu(true)));
         let body = column![container(head).padding(8).height(50), main];
         let layer = stack![body]
             .push((at > 0).then(|| step(false)))
@@ -545,7 +563,12 @@ impl BeeperGuiApp {
             .push(car.menu.map(|at| self.view_carousel_menu(&st, car, m, c, at)));
         let scrim = container(layer).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.85), 0.0));
         // The carousel hides the window under it from the cursor.
-        Some(mouse_area(scrim).interaction(mouse::Interaction::Idle).on_press(UiMessage::CloseCarousel).into())
+        Some(
+            mouse_area(scrim)
+                .interaction(mouse::Interaction::Idle)
+                .on_press(UiMessage::Media(Msg::CloseCarousel))
+                .into(),
+        )
     }
 
     /// Desktop's carousel menu: Download, Copy for an image, and the extra items. In a chat, the extra items are Reply…,
@@ -554,23 +577,26 @@ impl BeeperGuiApp {
     fn view_carousel_menu<'a>(&'a self, st: &BeeperStore, car: &Carousel, m: &Message, c: &Chat, at: Point) -> El<'a> {
         let p = &self.pal;
         let (mid, ai) = (car.mid.clone(), car.ai);
-        let close = |msg| UiMessage::Commands(vec![UiMessage::CloseCarousel, msg]);
+        let close = |msg| UiMessage::Commands(vec![UiMessage::Media(Msg::CloseCarousel), msg]);
         let action = |s| trx(s, "attachment carousel context menu action").to_string();
         let image = m.attachments[ai].attachment_type == "img";
-        let mut rows = vec![Some((action("Download"), UiMessage::Download(mid.clone(), Some(ai))))];
-        rows.extend(image.then(|| Some((action("Copy"), UiMessage::CopyImage(mid.clone(), ai)))));
+        let mut rows =
+            vec![Some((action("Download"), UiMessage::Message(message::Msg::Download(mid.clone(), Some(ai)))))];
+        rows.extend(
+            image.then(|| Some((action("Copy"), UiMessage::Message(message::Msg::CopyImage(mid.clone(), ai))))),
+        );
         let deletable = deletable(st, m);
         let (first, delete) = match car.in_media {
             true => (
-                vec![(tr("Go to Message").into(), UiMessage::GoToMessage(c.id.clone(), mid.clone()))],
-                deletable.then(|| (tr("Delete…").into(), UiMessage::MediaAskDelete(vec![(mid.clone(), ai)]))),
+                vec![(tr("Go to Message").into(), UiMessage::Message(message::Msg::GoTo(c.id.clone(), mid.clone())))],
+                deletable.then(|| (tr("Delete…").into(), UiMessage::Media(Msg::AskDelete(vec![(mid.clone(), ai)])))),
             ),
             false => {
                 let (react, reply) = self.carousel_actions(car, m, c);
-                let forward = close(UiMessage::Forward(vec![mid.clone()]));
+                let forward = close(UiMessage::Forward(forward::Msg::Open(vec![mid.clone()])));
                 let first = [(tr("Reply…"), reply), (tr("React…"), react), (tr("Forward…"), Some(forward))];
                 let first = first.into_iter().filter_map(|(label, msg)| msg.map(|msg| (label.to_string(), msg)));
-                let delete = close(UiMessage::AskDeleteMessage(vec![mid.clone()]));
+                let delete = close(UiMessage::Message(message::Msg::AskDelete(vec![mid.clone()])));
                 (first.collect(), deletable.then(|| (tr("Delete…").into(), delete)))
             }
         };
@@ -580,7 +606,7 @@ impl BeeperGuiApp {
         let h = 8.0 + rows.iter().map(|r| if r.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>();
         let rows = rows.into_iter().map(|r| match r {
             Some((label, msg)) => {
-                let msg = UiMessage::Commands(vec![UiMessage::CarouselMenu(false), msg]);
+                let msg = UiMessage::Commands(vec![UiMessage::Media(Msg::CarouselMenu(false)), msg]);
                 menu_item(p, None, label, "", Some(msg))
             }
             None => menu_rule(p),
@@ -593,8 +619,8 @@ impl BeeperGuiApp {
         };
         let at = Padding::ZERO.left(at.x.min(area.width - 188.0)).top(at.y.min(area.height - h - 8.0));
         mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
-            .on_press(UiMessage::CarouselMenu(false))
-            .on_right_press(UiMessage::CarouselMenu(false))
+            .on_press(UiMessage::Media(Msg::CarouselMenu(false)))
+            .on_right_press(UiMessage::Media(Msg::CarouselMenu(false)))
             .into()
     }
 
@@ -624,7 +650,7 @@ impl BeeperGuiApp {
                 .width(width)
                 .padding([2, 8])
                 .style(btn_style([CLEAR; 3], [p.strong; 3], 20.0))
-                .on_press(UiMessage::MediaTab(i))
+                .on_press(UiMessage::Media(Msg::Tab(i)))
                 .into()
         });
         // The highlight layer comes first, under the labels, so it sets the size of the stack.
@@ -637,16 +663,16 @@ impl BeeperGuiApp {
             let b = button(container(tinted(glyph, size, fg)).center(28)).padding(0);
             b.style(btn_style([bg, p.chip, p.chip], [fg; 3], 12.0)).on_press(msg).into()
         };
-        let search = UiMessage::MediaSearch(w.search.is_none().then(String::new));
+        let search = UiMessage::Media(Msg::Search(w.search.is_none().then(String::new)));
         let controls = row![
             self.tip(
-                control(done_icon, 18.0, w.select, UiMessage::MediaSelect(!w.select)),
+                control(done_icon, 18.0, w.select, UiMessage::Media(Msg::Select(!w.select))),
                 tr("Select"),
                 vec![],
                 tooltip::Position::Bottom
             ),
             self.tip(
-                control(tune_icon, 18.0, false, UiMessage::MediaMenu(true)),
+                control(tune_icon, 18.0, false, UiMessage::Media(Msg::Menu(true))),
                 tr("Filter"),
                 vec![],
                 tooltip::Position::Bottom
@@ -666,12 +692,12 @@ impl BeeperGuiApp {
         let search_row = w.search.as_deref().map(|q| {
             let input = text_input(tr("Search by caption"), q)
                 .id("media-search")
-                .on_input(|q| UiMessage::MediaSearch(Some(q)))
+                .on_input(|q| UiMessage::Media(Msg::Search(Some(q))))
                 .size(13)
                 .padding(0)
                 .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
             let close = self.tip(
-                control(&ROW_ACTIONS[6], 16.0, false, UiMessage::MediaSearch(None)),
+                control(&ROW_ACTIONS[6], 16.0, false, UiMessage::Media(Msg::Search(None))),
                 tr("Close"),
                 vec![],
                 tooltip::Position::Bottom,
@@ -742,12 +768,12 @@ impl BeeperGuiApp {
                         let face = stack![self.thumb(a, tile, 8.0)].push(badge).push(name).push(mark).push(ring);
                         let face = face.width(tile).height(tile);
                         let open = match picking {
-                            true => UiMessage::MediaPick(m.id.clone(), k),
-                            false => UiMessage::OpenCarousel(m.id.clone(), k, true),
+                            true => UiMessage::Media(Msg::Pick(m.id.clone(), k)),
+                            false => UiMessage::Media(Msg::OpenCarousel(m.id.clone(), k, true)),
                         };
                         let b = button(face).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 8.0));
                         mouse_area(b.on_press(open))
-                            .on_right_press(UiMessage::MediaItemMenu(Some((m.id.clone(), k))))
+                            .on_right_press(UiMessage::Media(Msg::ItemMenu(Some((m.id.clone(), k)))))
                             .into()
                     });
                     col.push(
@@ -789,7 +815,7 @@ impl BeeperGuiApp {
                                 icon(file_icon, 18.0),
                                 name,
                                 line.collect::<Vec<_>>().join(" · "),
-                                UiMessage::Download(m.id.clone(), Some(k)),
+                                UiMessage::Message(message::Msg::Download(m.id.clone(), Some(k))),
                             )
                         }
                     };
@@ -802,11 +828,11 @@ impl BeeperGuiApp {
                         .align_x(Right);
                     let on = picked(&m.id, k);
                     let line = row![thumb, text, meta].push(w.select.then(|| check(on))).spacing(8).align_y(Center);
-                    let press = if picking { UiMessage::MediaPick(m.id.clone(), k) } else { press };
+                    let press = if picking { UiMessage::Media(Msg::Pick(m.id.clone(), k)) } else { press };
                     let bg = if on { p.chip } else { CLEAR };
                     let b = button(line).padding([6, 10]).width(Fill);
                     let b = b.style(btn_style([bg, p.chip, p.chip], [p.strong; 3], 0.0)).on_press(press);
-                    col.push(mouse_area(b).on_right_press(UiMessage::MediaItemMenu(Some((m.id.clone(), k)))))
+                    col.push(mouse_area(b).on_right_press(UiMessage::Media(Msg::ItemMenu(Some((m.id.clone(), k))))))
                 }),
             }
         });
@@ -817,9 +843,13 @@ impl BeeperGuiApp {
                 .direction(bar())
                 .height(Fill)
                 .style(scroll_style(p.scroll))
-                .on_scroll(
-                    move |v| if more && v.relative_offset().y > 0.8 { UiMessage::MediaMore } else { UiMessage::Noop },
-                )
+                .on_scroll(move |v| {
+                    if more && v.relative_offset().y > 0.8 {
+                        UiMessage::Media(Msg::More)
+                    } else {
+                        UiMessage::Noop
+                    }
+                })
                 .into(),
         };
         let title = container(semi(tr("Media"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
@@ -842,10 +872,10 @@ impl BeeperGuiApp {
             let bar = row![
                 semi(count, 13.0).color(p.strong),
                 Space::new().width(Fill),
-                act(tr("Delete"), (n > 0).then(|| UiMessage::MediaAskDelete(picked))),
-                act(tr("Save"), (n > 0 && w.tab != 1).then_some(UiMessage::MediaSave)),
-                act(tr("Select all"), Some(UiMessage::MediaPickAll)),
-                act(tr("Cancel"), Some(UiMessage::MediaSelect(false))),
+                act(tr("Delete"), (n > 0).then(|| UiMessage::Media(Msg::AskDelete(picked)))),
+                act(tr("Save"), (n > 0 && w.tab != 1).then_some(UiMessage::Media(Msg::Save))),
+                act(tr("Select all"), Some(UiMessage::Media(Msg::PickAll))),
+                act(tr("Cancel"), Some(UiMessage::Media(Msg::Select(false)))),
             ]
             .spacing(4)
             .align_y(Center);
@@ -856,28 +886,33 @@ impl BeeperGuiApp {
         let base = container(column![title, pane]).padding(8).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
         let item_menu = w.item_menu.as_ref().map(|(mid, k, at)| {
             let m = &stored(&st, mid);
-            let act =
-                |label: &str, msg| menu_item(p, None, label.into(), "", Some(UiMessage::MediaItemAct(Box::new(msg))));
-            let go = act(tr("Go to Message"), UiMessage::GoToMessage(m.chat_id.clone(), mid.clone()));
+            let act = |label: &str, msg| {
+                menu_item(p, None, label.into(), "", Some(UiMessage::Media(Msg::ItemAct(Box::new(msg)))))
+            };
+            let go = act(tr("Go to Message"), UiMessage::Message(message::Msg::GoTo(m.chat_id.clone(), mid.clone())));
             let mut actions = match w.tab {
-                1 => vec![act(tr("Copy Link"), UiMessage::CopyLink(m.links[*k].url.clone()))],
-                _ => std::iter::once(act(tr("Download"), UiMessage::Download(mid.clone(), Some(*k))))
-                    .chain(
-                        (m.attachments[*k].attachment_type == "img")
-                            .then(|| act(tr("Copy Image"), UiMessage::CopyImage(mid.clone(), *k))),
-                    )
-                    .collect(),
+                1 => vec![act(tr("Copy Link"), UiMessage::Message(message::Msg::CopyLink(m.links[*k].url.clone())))],
+                _ => std::iter::once(act(
+                    tr("Download"),
+                    UiMessage::Message(message::Msg::Download(mid.clone(), Some(*k))),
+                ))
+                .chain(
+                    (m.attachments[*k].attachment_type == "img")
+                        .then(|| act(tr("Copy Image"), UiMessage::Message(message::Msg::CopyImage(mid.clone(), *k)))),
+                )
+                .collect(),
             };
             actions.extend(
-                deletable(&st, m).then(|| act(tr("Delete…"), UiMessage::MediaAskDelete(vec![(mid.clone(), *k)]))),
+                deletable(&st, m)
+                    .then(|| act(tr("Delete…"), UiMessage::Media(Msg::AskDelete(vec![(mid.clone(), *k)])))),
             );
             let h = 8.0 + MENU_ITEM * (1 + actions.len()) as f32 + 11.0;
             let col = Column::with_children([go, menu_rule(p)].into_iter().chain(actions));
             let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
             let at = Padding::ZERO.left(at.x.min(w.size.width - 180.0 - 8.0)).top(at.y.min(w.size.height - h - 8.0));
             mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
-                .on_press(UiMessage::MediaItemMenu(None))
-                .on_right_press(UiMessage::MediaItemMenu(None))
+                .on_press(UiMessage::Media(Msg::ItemMenu(None)))
+                .on_right_press(UiMessage::Media(Msg::ItemMenu(None)))
         });
         // Desktop's filter menu is a native menu at the cursor.
         let menu = w.menu.map(|at| {
@@ -888,18 +923,18 @@ impl BeeperGuiApp {
             };
             let col = column![
                 heading(tr("Sent By")),
-                radio(tr("All"), w.sent_by == 0, UiMessage::MediaSentBy(0)),
-                radio(tr("You"), w.sent_by == 1, UiMessage::MediaSentBy(1)),
-                radio(tr("Others"), w.sent_by == 2, UiMessage::MediaSentBy(2)),
+                radio(tr("All"), w.sent_by == 0, UiMessage::Media(Msg::SentBy(0))),
+                radio(tr("You"), w.sent_by == 1, UiMessage::Media(Msg::SentBy(1))),
+                radio(tr("Others"), w.sent_by == 2, UiMessage::Media(Msg::SentBy(2))),
                 menu_rule(p),
                 heading(tr("Sort by")),
-                radio(tr("Newest"), !w.oldest, UiMessage::MediaOldest(false)),
-                radio(tr("Oldest"), w.oldest, UiMessage::MediaOldest(true)),
+                radio(tr("Newest"), !w.oldest, UiMessage::Media(Msg::Oldest(false))),
+                radio(tr("Oldest"), w.oldest, UiMessage::Media(Msg::Oldest(true))),
             ];
             let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
             let at = Padding::ZERO.top(at.y).left(at.x.min(w.size.width - 8.0 - 180.0));
             mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
-                .on_press(UiMessage::MediaMenu(false))
+                .on_press(UiMessage::Media(Msg::Menu(false)))
         });
         drop(st);
         let carousel = self.carousel.as_ref().filter(|c| c.in_media).and_then(|c| self.view_carousel(c));
@@ -918,8 +953,8 @@ impl BeeperGuiApp {
             self.dialog(
                 title,
                 body,
-                vec![(tr("Delete"), UiMessage::MediaDelete(true))],
-                (tr("Cancel"), UiMessage::MediaDelete(false)),
+                vec![(tr("Delete"), UiMessage::Media(Msg::Delete(true)))],
+                (tr("Cancel"), UiMessage::Media(Msg::Delete(false))),
             )
         });
         // The menus and the delete dialog of the viewer show over it.
@@ -965,5 +1000,220 @@ impl BeeperGuiApp {
             true => st.me().full_name.as_deref().expect("self name"),
             false => m.sender_name.as_deref().expect("sender name"),
         }
+    }
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    /// Show an attachment of a message full screen, in the Media window with `true`.
+    OpenCarousel(String, usize, bool),
+    /// Show the previous (`false`) or next (`true`) image of the carousel.
+    CarouselStep(bool),
+    RotateCarousel,
+    CloseCarousel,
+    /// Open the carousel menu at the cursor, or close it.
+    CarouselMenu(bool),
+    /// Scroll the filmstrip of the Media window by a number of items.
+    ScrollFilmstrip(f32),
+    /// Open Desktop's Media window, or focus it.
+    Open,
+    /// Show the Media, Links or Docs tab of the Media window.
+    Tab(usize),
+    /// Load more items in the Media window.
+    More,
+    /// Show the Media window items that all, you or others sent.
+    SentBy(u8),
+    /// Show the oldest Media window items first.
+    Oldest(bool),
+    /// Search the Media window by caption, or close the search with `None`.
+    Search(Option<String>),
+    Menu(bool),
+    /// Open the context menu of a Media window item, or close it with `None`.
+    ItemMenu(Option<(String, usize)>),
+    /// Close the Media window item menu and run its action.
+    ItemAct(Box<UiMessage>),
+    Select(bool),
+    /// Select or unselect a Media window item, as (message, attachment or link index).
+    Pick(String, usize),
+    PickAll,
+    /// Download the selected Media window attachments.
+    Save,
+    /// Ask to delete Media window items.
+    AskDelete(Vec<(String, usize)>),
+    /// Delete the items that the Media window dialog asks about, or cancel with `false`.
+    Delete(bool),
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn media_view(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::OpenCarousel(mid, ai, in_media) => {
+                self.leave_carousel_video();
+                self.carousel =
+                    Some(Carousel { mid, ai, turns: 0, turned: None, in_media, resume: None, menu: None, strip: None });
+                self.fit_carousel_video();
+                return self.load_media();
+            }
+            Msg::CarouselStep(next) => {
+                // The second click of a double click on an arrow can step past the first or the last image.
+                let item = self.carousel_items(&self.store.read()).and_then(|(items, at)| {
+                    let to = if next { at + 1 } else { at.checked_sub(1)? };
+                    items.into_iter().nth(to)
+                });
+                let Some(item) = item else { return Task::none() };
+                self.leave_carousel_video();
+                let c = self.carousel.as_mut().expect("the carousel is open");
+                (c.mid, c.ai, c.resume, c.menu, c.strip) = (item.0, item.1, None, None, None);
+                self.fit_carousel_video();
+                return self.load_media();
+            }
+            Msg::ScrollFilmstrip(by) => return self.scroll_filmstrip(by),
+            Msg::CarouselMenu(open) => {
+                let at = self.cursor.get();
+                self.carousel.as_mut().expect("the carousel is open").menu = open.then_some(at);
+            }
+            Msg::RotateCarousel => {
+                let c = self.carousel.as_mut().expect("the carousel is open");
+                (c.turns, c.turned) = ((c.turns + 1) % 4, Some(std::time::Instant::now()));
+            }
+            Msg::CloseCarousel => {
+                let task = self.close_carousel_video();
+                self.carousel = None;
+                return task;
+            }
+            Msg::Open => {
+                if let Some(w) = &self.media_window {
+                    return window::gain_focus(w.id);
+                }
+                // Desktop's `media-viewer` window state.
+                let settings = self.saved_window_settings("media-viewer", Size::new(1000.0, 720.0));
+                let (size, (id, open)) = (settings.size, window::open(settings));
+                self.media_window = Some(MediaWindow {
+                    id,
+                    tab: 0,
+                    size,
+                    shown: MEDIA_PAGE,
+                    sent_by: 0,
+                    oldest: false,
+                    search: None,
+                    tab_at: None,
+                    menu: None,
+                    item_menu: None,
+                    select: false,
+                    picked: Vec::new(),
+                    deleting: None,
+                });
+                return Task::batch([open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0))), self.load_media()]);
+            }
+            Msg::Tab(tab) => {
+                let w = self.media_mut();
+                (w.tab_at, w.tab) = (Some((w.tab, std::time::Instant::now())), tab);
+                return self.media_reload();
+            }
+            Msg::SentBy(n) => {
+                let w = self.media_mut();
+                (w.sent_by, w.menu) = (n, None);
+                return self.media_reload();
+            }
+            Msg::Oldest(on) => {
+                let w = self.media_mut();
+                (w.oldest, w.menu) = (on, None);
+                return self.media_reload();
+            }
+            Msg::Search(q) => {
+                let w = self.media_mut();
+                let open = q.is_some() && w.search.is_none();
+                w.search = q;
+                let reload = self.media_reload();
+                return if open {
+                    Task::batch([reload, iced::widget::operation::focus("media-search")])
+                } else {
+                    reload
+                };
+            }
+            Msg::Menu(open) => {
+                let at = self.cursor.get();
+                self.media_mut().menu = open.then_some(at);
+            }
+            Msg::Select(on) => {
+                let w = self.media_mut();
+                w.select = on;
+                w.picked.clear();
+            }
+            Msg::Pick(mid, k) => {
+                let w = self.media_mut();
+                w.select = true;
+                match w.picked.iter().position(|(m, i)| *m == mid && *i == k) {
+                    Some(at) => _ = w.picked.remove(at),
+                    None => w.picked.push((mid, k)),
+                }
+            }
+            Msg::PickAll => {
+                let st = self.store.read();
+                let w = self.media_window.as_ref().expect("the Media window is open");
+                let media = self.media_messages(&st);
+                let all = media_items(&st, &media, w).into_iter().take(w.shown).map(|(i, k)| (media[i].id.clone(), k));
+                let all = all.collect();
+                drop(st);
+                self.media_mut().picked = all;
+            }
+            Msg::Save => {
+                let w = self.media_window.as_ref().expect("the Media window is open");
+                let files = if w.tab == 1 { Vec::new() } else { w.picked.clone() };
+                return Task::batch(
+                    files
+                        .into_iter()
+                        .map(|(mid, k)| self.update(UiMessage::Message(message::Msg::Download(mid, Some(k))))),
+                );
+            }
+            Msg::AskDelete(items) => {
+                let st = self.store.read();
+                let mut pairs: Vec<(String, String)> = Vec::new();
+                for (mid, _) in &items {
+                    let m = &stored(&st, mid);
+                    if deletable(&st, m) && !pairs.iter().any(|(_, x)| x == mid) {
+                        pairs.push((m.chat_id.clone(), mid.clone()));
+                    }
+                }
+                let skipped = items.iter().filter(|(mid, _)| !deletable(&st, &stored(&st, mid))).count();
+                drop(st);
+                match pairs.is_empty() {
+                    true => self.status_banner = tr("These messages can’t be deleted").into(),
+                    false => self.media_mut().deleting = Some((pairs, skipped)),
+                }
+            }
+            Msg::Delete(go) => {
+                let (pairs, skipped) = self.media_mut().deleting.take().expect("the delete dialog is open");
+                if go {
+                    let mut st = self.store.write();
+                    for (cid, mid) in &pairs {
+                        st.redact_message(cid, mid).expect("delete message");
+                    }
+                    drop(st);
+                    self.media_mut().picked.retain(|(m, _)| pairs.iter().all(|(_, x)| x != m));
+                    if skipped > 0 {
+                        self.status_banner = trn(
+                            "Skipped %d item that can’t be deleted",
+                            "Skipped %d items that can’t be deleted",
+                            skipped,
+                            &[&skipped],
+                        );
+                    }
+                }
+            }
+            Msg::ItemMenu(item) => {
+                let at = self.cursor.get();
+                self.media_mut().item_menu = item.map(|(mid, k)| (mid, k, at));
+            }
+            Msg::ItemAct(msg) => {
+                self.media_mut().item_menu = None;
+                return self.update(*msg);
+            }
+            Msg::More => {
+                self.media_mut().shown += MEDIA_PAGE;
+                return self.load_media();
+            }
+        }
+        self.settle()
     }
 }

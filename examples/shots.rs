@@ -38,18 +38,18 @@ fn main() {
     let store = StoreLock::shared(BeeperStore::from_config(cfg));
     let mut app = BeeperGuiApp::new(store);
     let (choice, theme) = if dark { (ThemeChoice::Dark, Theme::Dark) } else { (ThemeChoice::Light, Theme::Light) };
-    let _ = app.update(UiMessage::SelectTheme(choice));
+    let _ = app.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTheme(choice)));
     shot(&out, "main", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::FilterButton);
+    let _ = app.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::FilterButton));
     shot(&out, "main_unread", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::ToggleFilterMenu);
+    let _ = app.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleFilterMenu));
     shot(&out, "main_filter_menu", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::PickFilter(0));
-    let _ = app.update(UiMessage::ToggleCommandPalette);
+    let _ = app.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::PickFilter(0)));
+    let _ = app.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
     shot(&out, "main_search", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::NewChat(beeper_ui::new_chat::Msg::Open));
     shot(&out, "main_new_chat", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::DeleteNewChat(0));
+    let _ = app.update(UiMessage::NewChat(beeper_ui::new_chat::Msg::Delete(0)));
     let dm = {
         let mut st = app.store.write();
         let peer =
@@ -62,34 +62,35 @@ fn main() {
     app.select_chat(&dm);
     shot(&out, "main_typing", (1200.0, 800.0), &theme, app.view_main());
     let marks = "**bold** _italic_ ~~gone~~ `code` [link](https://beeper.com)\n> quote\n- item";
-    let _ = app.update(UiMessage::ComposerChanged(marks.into()));
+    let _ = app.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed(marks.into())));
     shot(&out, "main_composer_marks", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let _ = app.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed(String::new())));
     app.store.write().typing.clear();
     app.store.write().recent_emoji = vec![("👍".into(), 3), ("joy".into(), 2), ("❤️".into(), 1)];
     let _ = app.update(UiMessage::Emoji(beeper_ui::emoji::EmojiMsg::Pointer(0, true)));
     shot(&out, "main_emoji", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::CloseModals);
-    let _ = app.update(UiMessage::BeginSelecting(dm.clone()));
+    let _ = app.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::BeginSelecting(dm.clone())));
     shot(&out, "main_selecting", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::CloseModals);
     app.select_chat("!wa_eric:beeper.com");
     shot(&out, "main_voice", (1200.0, 800.0), &theme, app.view_main());
     app.select_chat("!sl_infra:beeper.com");
     shot(&out, "main_threads", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::ShowUnreadThreads);
+    let _ = app.update(UiMessage::Thread(beeper_ui::threads::Msg::ShowUnread));
     shot(&out, "main_unread_threads", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::OpenThread("!sl_infra:beeper.com".into(), "msg_1007".into()));
+    let _ =
+        app.update(UiMessage::Thread(beeper_ui::threads::Msg::Open("!sl_infra:beeper.com".into(), "msg_1007".into())));
     shot(&out, "main_unread_thread", (1200.0, 800.0), &theme, app.view_main());
     app.select_chat("!sl_infra:beeper.com");
-    let _ = app.update(UiMessage::ShowThread("msg_1007".into()));
+    let _ = app.update(UiMessage::Thread(beeper_ui::threads::Msg::Show("msg_1007".into())));
     shot(&out, "main_thread_pane", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::HideThread);
+    let _ = app.update(UiMessage::Thread(beeper_ui::threads::Msg::Hide));
     for tab in SettingsTab::ALL {
-        let _ = app.update(UiMessage::OpenSettings(tab));
+        let _ = app.update(UiMessage::Settings(beeper_ui::settings::Msg::Open(tab)));
         shot(&out, &format!("settings_{tab:?}").to_lowercase(), (800.0, 740.0), &theme, app.view_settings());
     }
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Devices));
+    let _ = app.update(UiMessage::Settings(beeper_ui::settings::Msg::Open(SettingsTab::Devices)));
     let _ = app.update(UiMessage::Ask(Some(0)));
     shot(&out, "settings_logout", (800.0, 740.0), &theme, app.view_settings());
     let _ = app.update(UiMessage::Ask(None));

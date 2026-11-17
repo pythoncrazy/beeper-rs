@@ -1,3 +1,6 @@
+use crate::composer;
+use crate::message;
+use crate::settings;
 use crate::style::{med, mix, txt, CLEAR};
 use crate::{BeeperGuiApp, El, UiMessage};
 use beeper_core::store::BeeperStore;
@@ -331,14 +334,20 @@ impl BeeperGuiApp {
             EmojiMsg::Pick(i) => {
                 let tone = self.store.read().skin_tone;
                 if let Some(slot) = self.pane.emoji.take_if(|pk| pk.pref.is_some()).and_then(|pk| pk.pref) {
-                    return self.update(UiMessage::SetQuickEmoji(slot, DATA.emojis[i].skinned(tone)));
+                    return self
+                        .update(UiMessage::Settings(settings::Msg::SetQuickEmoji(slot, DATA.emojis[i].skinned(tone))));
                 }
                 if let Some((mid, _)) = self.pane.emoji.take_if(|pk| pk.react.is_some()).and_then(|pk| pk.react) {
                     let cid = self.pane.selected_chat_id.clone().expect("an open chat");
-                    return self.update(UiMessage::ToggleReaction(cid, mid, DATA.emojis[i].skinned(tone)));
+                    return self.update(UiMessage::Message(message::Msg::ToggleReaction(
+                        cid,
+                        mid,
+                        DATA.emojis[i].skinned(tone),
+                    )));
                 }
                 let paste = iced::widget::text_editor::Edit::Paste(DATA.emojis[i].skinned(tone).into());
-                return self.update(UiMessage::ComposerEdit(iced::widget::text_editor::Action::Edit(paste)));
+                return self
+                    .update(UiMessage::Composer(composer::Msg::Edit(iced::widget::text_editor::Action::Edit(paste))));
             }
             EmojiMsg::Skin(t) => {
                 let client = {

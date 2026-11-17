@@ -1,13 +1,16 @@
 //! Desktop's threaded replies: the thread pane and window, the unread threads list, and the thread parts of the
 //! timeline.
 
+use crate::chat_list::preview_body;
+use crate::commands;
 use crate::i18n::{tr, trf, trn};
+use crate::message;
 use crate::style::{
     bordered_btn, brand_svg, btn_style, ell, fill_box, ic, icon, scroll_style, semi, shadow_box, txt, CLEAR,
 };
 use crate::{
-    activates, brand_key, composer_with, format_short_ts, membership, menu_item, menu_rule, preview_body, tinted,
-    BeeperGuiApp, El, Pane, UiMessage, BUBBLE_PAD_X, CHEVRON_FORWARD, MENU_ITEM, MIN_PANE_W,
+    activates, brand_key, composer_with, format_short_ts, membership, menu_item, menu_rule, tinted, BeeperGuiApp, El,
+    Pane, UiMessage, BUBBLE_PAD_X, CHEVRON_FORWARD, MENU_ITEM, MIN_PANE_W,
 };
 use beeper_core::models::*;
 use beeper_core::store::BeeperStore;
@@ -95,7 +98,7 @@ impl BeeperGuiApp {
     pub(crate) fn follow_item<'a>(&self, st: &BeeperStore, chat: &Chat, root: &str) -> El<'a> {
         let on = st.follows_thread(chat, root);
         let label = tr(if on { "Unfollow Thread" } else { "Follow Thread" }).to_string();
-        menu_item(&self.pal, None, label, "", Some(UiMessage::FollowThread(chat.id.clone(), root.into(), !on)))
+        menu_item(&self.pal, None, label, "", Some(UiMessage::Thread(Msg::Follow(chat.id.clone(), root.into(), !on))))
     }
 
     /// Desktop's `ThreadedRepliesBrowserWindow`: a window of 380 by 700 with the thread of `root` in `chat`.
@@ -186,8 +189,8 @@ impl BeeperGuiApp {
         let grip = mouse_area(
             container(row![Space::new().width(THREAD_GRIP - 2.0)].push(line)).width(THREAD_GRIP).height(Fill),
         )
-        .on_press(UiMessage::ThreadDrag(None))
-        .on_double_click(UiMessage::ResetThreadWidth)
+        .on_press(UiMessage::Thread(Msg::Drag(None)))
+        .on_double_click(UiMessage::Thread(Msg::ResetWidth))
         .interaction(mouse::Interaction::ResizingHorizontally);
         let chat = container(self.view_conversation()).padding(pad.right(0.0)).width(Fill);
         row![chat, grip, container(self.view_thread_pane()).width(w + 8.0).padding(Padding::new(8.0).left(0.0))].into()
@@ -208,13 +211,13 @@ impl BeeperGuiApp {
             self.tip(b.into(), tr(label), vec![], tooltip::Position::Bottom).into()
         };
         let title = container(semi(tr("Thread"), 14.0).color(p.text)).center_x(Fill);
-        let header = row![button(icon::MORE_HORIZ, "More Options", UiMessage::ThreadMenu), title]
-            .push(button(icon::CLOSE, "Close", UiMessage::HideThread))
+        let header = row![button(icon::MORE_HORIZ, "More Options", UiMessage::Thread(Msg::Menu)), title]
+            .push(button(icon::CLOSE, "Close", UiMessage::Thread(Msg::Hide)))
             .spacing(2)
             .padding([0, 4])
             .height(36)
             .align_y(Center);
-        let header = mouse_area(header).on_right_press(UiMessage::ThreadMenu);
+        let header = mouse_area(header).on_right_press(UiMessage::Thread(Msg::Menu));
         stack![view, header].into()
     }
 
@@ -230,17 +233,19 @@ impl BeeperGuiApp {
         drop(st);
         let view = UiMessage::Commands(vec![
             UiMessage::CloseModals,
-            UiMessage::JumpTo(cid.clone(), root.clone()),
-            UiMessage::SelectMessages(vec![root.clone()]),
+            UiMessage::CommandBar(commands::Msg::JumpTo(cid.clone(), root.clone())),
+            UiMessage::Message(message::Msg::Select(vec![root.clone()])),
         ]);
         let read = unread.then(|| {
             [
-                (menu_item(p, None, tr("Mark as Read").into(), "", Some(UiMessage::MarkThreadRead)), MENU_ITEM),
+                (menu_item(p, None, tr("Mark as Read").into(), "", Some(UiMessage::Thread(Msg::MarkRead))), MENU_ITEM),
                 (menu_rule(p), 11.0),
             ]
         });
-        let window =
-            UiMessage::Commands(vec![UiMessage::HideThread, UiMessage::OpenThreadWindow(cid.clone(), root.clone())]);
+        let window = UiMessage::Commands(vec![
+            UiMessage::Thread(Msg::Hide),
+            UiMessage::Thread(Msg::OpenWindow(cid.clone(), root.clone())),
+        ]);
         let rows: Vec<(El, f32)> = read
             .into_iter()
             .flatten()
@@ -273,8 +278,8 @@ impl BeeperGuiApp {
             .padding(Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 12.0 })
             .width(Fill)
             .style(bordered_btn([bg, p.hover, p.hover], [p.text; 3], edge, 1.0, 999.0))
-            .on_press(UiMessage::ShowUnreadThreads);
-        let pill = mouse_area(pill).on_right_press(UiMessage::UnreadThreadsMenu(true));
+            .on_press(UiMessage::Thread(Msg::ShowUnread));
+        let pill = mouse_area(pill).on_right_press(UiMessage::Thread(Msg::UnreadMenu(true)));
         container(pill).padding([4, 0]).into()
     }
 
@@ -284,7 +289,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let n = self.unread_threads(&st, true).len();
         let label = trn("Mark %d Thread as Read", "Mark %d Threads as Read", n, &[&n]);
-        let col = column![menu_item(p, None, label, "", Some(UiMessage::MarkAllThreadsRead))];
+        let col = column![menu_item(p, None, label, "", Some(UiMessage::Thread(Msg::MarkAllRead)))];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         (menu.into(), at.x, at.y.min(self.pane().size.height - 8.0 - MENU_ITEM - 8.0))
     }
@@ -383,7 +388,7 @@ impl BeeperGuiApp {
             .padding(8)
             .width(Fill)
             .style(btn_style([bg, p.hover, p.hover], [p.text; 3], 10.0))
-            .on_press(UiMessage::OpenThread(chat.id.clone(), root.into()))
+            .on_press(UiMessage::Thread(Msg::Open(chat.id.clone(), root.into())))
             .into()
     }
 
@@ -412,7 +417,7 @@ impl BeeperGuiApp {
         let b = button(line)
             .padding([6, 7])
             .style(bordered_btn([p.received, p.selected, p.selected], [p.text; 3], ring, 2.0, 14.0))
-            .on_press(UiMessage::ShowThread(root.into()));
+            .on_press(UiMessage::Thread(Msg::Show(root.into())));
         Some(b.into())
     }
 
@@ -430,7 +435,7 @@ impl BeeperGuiApp {
             .max_width(300)
             .clip(true)
             .padding(Padding::new(0.0).left(BUBBLE_PAD_X).right(BUBBLE_PAD_X).bottom(2.0));
-        let line = mouse_area(line).on_press(UiMessage::ShowThread(root.into()));
+        let line = mouse_area(line).on_press(UiMessage::Thread(Msg::Show(root.into())));
         container(line).width(Fill).align_x(if mine { Right } else { iced::Left }).into()
     }
 
@@ -449,4 +454,58 @@ fn thread_badge<'a>(accent: Color, unread: usize, at: usize) -> Option<El<'a>> {
     let count = semi(unread.to_string(), 10.0).color(Color::WHITE);
     let pill = row![].push(mark).push(count).spacing(2).align_y(Center);
     (unread > 0).then(|| container(pill).center_y(16).padding([0, 5]).style(fill_box(accent, 16.0)).into())
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    /// Desktop's `showThreadedReplies`: opens the thread pane of a message, or of the thread of a reply.
+    Show(String),
+    /// Desktop's `hideThreadedReplies`.
+    Hide,
+    /// Desktop's `setBroadcastOutsideThread`: "Also send to chat".
+    SetBroadcast(bool),
+    /// The thread pane edge follows the pointer from a press, to the point, until the release (`None`).
+    Drag(Option<Point>),
+    /// Desktop's double click on the thread pane edge: the default width.
+    ResetWidth,
+    /// Desktop's "More Options" of the thread pane.
+    Menu,
+    /// Desktop's `markReplyThreadReadThrough` of the thread pane.
+    MarkRead,
+    /// Desktop's `showUnreadThreads`: the Unread threads view in place of the chat.
+    ShowUnread,
+    /// Desktop's unread thread card: the thread pane of the root of the chat.
+    Open(String, String),
+    /// The menu of the "Unread threads" pill, or `None` to close it.
+    UnreadMenu(bool),
+    /// Desktop's `markAllUnreadThreadsAsRead`.
+    MarkAllRead,
+    /// Desktop's `setThreadFollowing` of the chat, the root and the follow.
+    Follow(String, String, bool),
+    /// Desktop's `setFollowAllThreads` of the chat.
+    FollowAll(String, bool),
+    /// Desktop's "Open in New Window" of a thread: the window "Thread in %s" of the chat and the root.
+    OpenWindow(String, String),
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn threads(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::Show(id) => self.show_thread(&id),
+            Msg::Hide => (self.pane.thread, self.pane.thread_menu) = (None, None),
+            Msg::SetBroadcast(on) => self.pane.broadcast = on,
+            Msg::Drag(at) => self.drag_thread(at),
+            Msg::ResetWidth => self.thread_fraction = THREAD_FRACTION,
+            Msg::Menu => self.pane.thread_menu = Some(self.cursor.get()),
+            Msg::MarkRead => self.mark_thread_read(),
+            Msg::ShowUnread => self.show_unread_threads(),
+            Msg::Open(chat, root) => self.open_thread(chat, root),
+            Msg::UnreadMenu(open) => self.unread_menu = open.then(|| self.cursor.get()),
+            Msg::MarkAllRead => self.mark_all_threads_read(),
+            Msg::Follow(chat, root, on) => self.follow_thread(&chat, &root, on),
+            Msg::FollowAll(chat, on) => self.follow_all_threads(&chat, on),
+            Msg::OpenWindow(chat, root) => return self.open_thread_window(chat, root),
+        }
+        self.settle()
+    }
 }

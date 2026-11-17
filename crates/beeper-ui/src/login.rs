@@ -1,3 +1,4 @@
+use crate::accounts;
 use crate::i18n::{tr, trf, trn, trx, trxf};
 use crate::style::{
     bold, bordered_box, brand_svg, btn_style, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi,
@@ -671,7 +672,7 @@ impl BeeperGuiApp {
         let (cloud, token) = (self.cloud.clone(), self.store.read().beeper_state.access_token.clone());
         Task::perform(
             async move { tokio::task::spawn_blocking(move || cloud.whoami(&token)).await.expect("whoami worker thread") },
-            |r| UiMessage::CloudAccounts(r.map_err(|e| e.message)),
+            |r| UiMessage::Accounts(accounts::Msg::Cloud(r.map_err(|e| e.message))),
         )
     }
 

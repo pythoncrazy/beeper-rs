@@ -1,19 +1,31 @@
 //! The confirmation dialogs, and the Label, Edit Labels, Edit Group, Blocked users and New Poll windows.
 
+use crate::accounts;
+use crate::blocking;
+use crate::blocking::blocked_chats;
+use crate::chat_list;
 use crate::i18n::{tr, trf, trn, trx};
+use crate::info;
+use crate::integrations;
+use crate::labels;
+use crate::labels::label_fill;
+use crate::members;
+use crate::rail;
+use crate::reminders;
+use crate::settings;
 use crate::style::{
     bar, bold, bordered_box, btn_style, ell, fill_box, fw, ic, icon, input_style, med, mix, scroll_style, semi,
     shadow_box, text_width, txt, Bare, CLEAR,
 };
 use crate::{
-    badge, blocked_chats, chat_search_subtitle, checkbox, checkbox_plus, delete_dialog, grouped_rows, human_size,
-    icon_btn, inbox_label, label_fill, label_icon, label_tile, login, member_name, menu_item, network_name, pill_btn,
-    portal, reconnect, round_avatar, spread, stored, tinted, toggle, voice, BeeperGuiApp, El, PendingMedia, Toast,
-    UiMessage, ACCOUNT_SUB_W, ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_BLOCK, ASK_BLOCK_OFFLINE,
-    ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE,
-    ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ,
-    ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REMOVE_MEMBER, ASK_REVOKE_CONNECTION, ASK_TRANSCRIBE, ASK_UNBLOCK,
-    ASK_UNBLOCK_OFFLINE, DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
+    badge, chat_search_subtitle, checkbox, checkbox_plus, delete_dialog, grouped_rows, human_size, icon_btn,
+    inbox_label, label_icon, label_tile, login, member_name, menu_item, network_name, pill_btn, portal, reconnect,
+    round_avatar, spread, stored, tinted, toggle, voice, BeeperGuiApp, El, PendingMedia, Toast, UiMessage,
+    ACCOUNT_SUB_W, ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_BLOCK, ASK_BLOCK_OFFLINE, ASK_CLEAR_CACHE,
+    ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE, ASK_DISMISS_REMINDERS,
+    ASK_LEAVE_CHAT, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ, ASK_REMOTE_ACCESS,
+    ASK_REMOVE_ACCOUNT, ASK_REMOVE_MEMBER, ASK_REVOKE_CONNECTION, ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE,
+    DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
@@ -307,19 +319,19 @@ impl BeeperGuiApp {
                 (
                     trf("Logout of %s?", &[&name.as_deref().unwrap_or(tr("this device"))]),
                     tr("This will disconnect all chat accounts on this device.").into(),
-                    vec![(tr("Logout"), UiMessage::LogoutDevice(id))],
+                    vec![(tr("Logout"), UiMessage::Settings(settings::Msg::LogoutDevice(id)))],
                 )
             }
             ASK_DISMISS_REMINDERS => (
                 tr("Dismiss All Reminders?").into(),
                 tr("This will remove Reminders from all of your chats.").into(),
-                vec![(tr("Yes"), UiMessage::DismissAllReminders)],
+                vec![(tr("Yes"), UiMessage::Reminders(reminders::Msg::DismissAll))],
             ),
             ASK_DELETE_CHAT => {
                 let st = self.store.read();
                 let id = self.delete_target.clone().expect("a chat to delete");
                 let c = &st.chats[st.resolve_chat_idx(&id).expect("the chat to delete exists")];
-                let delete = |label, everyone| (label, UiMessage::DeleteChat(id.clone(), everyone));
+                let delete = |label, everyone| (label, UiMessage::ChatList(chat_list::Msg::Delete(id.clone(), everyone)));
                 let (body, actions) = match c.delete_modes {
                     DELETE_FOR_ME => {
                         (tr("This action will permanently delete this chat."), vec![delete(tr("Delete Chat"), false)])
@@ -340,7 +352,7 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let title = &st.chats[st.resolve_chat_idx(&id).expect("the chat to leave exists")].title;
                 let body = trf("Are you sure you want to leave %s?", &[title]);
-                (tr("Leave chat").into(), body, vec![(tr("Leave"), UiMessage::LeaveRoom(id))])
+                (tr("Leave chat").into(), body, vec![(tr("Leave"), UiMessage::ChatList(chat_list::Msg::Leave(id)))])
             }
             ASK_MAKE_ADMIN | ASK_REMOVE_MEMBER => {
                 let target = self.delete_target.as_deref().expect("a member");
@@ -352,12 +364,12 @@ impl BeeperGuiApp {
                     ASK_MAKE_ADMIN => (
                         tr("Make Group Admin").into(),
                         trf("Are you sure you want to make %s an admin of this group?", &[&name]),
-                        vec![(trx("Confirm", "make group admin confirmation button"), UiMessage::SetAdmin(cid, uid, true))],
+                        vec![(trx("Confirm", "make group admin confirmation button"), UiMessage::Members(members::Msg::SetAdmin(cid, uid, true)))],
                     ),
                     _ => (
                         tr("Remove from Group").into(),
                         trf("Are you sure you want to remove %s from this group?", &[&name]),
-                        vec![(trx("Remove", "remove group participant confirmation button"), UiMessage::RemoveMember(cid, uid))],
+                        vec![(trx("Remove", "remove group participant confirmation button"), UiMessage::Members(members::Msg::Remove(cid, uid)))],
                     ),
                 }
             }
@@ -369,7 +381,7 @@ impl BeeperGuiApp {
                     "Are you sure you want to delete \"%s\"? This will remove the label from all chats.",
                     &[&name],
                 );
-                (tr("Delete Label").into(), body, vec![(tr("Delete"), UiMessage::DeleteLabel(id))])
+                (tr("Delete Label").into(), body, vec![(tr("Delete"), UiMessage::Labels(labels::Msg::Delete(id)))])
             }
             ASK_DELETE_MESSAGE => {
                 let st = self.store.read();
@@ -389,24 +401,24 @@ impl BeeperGuiApp {
                     n,
                     &[&n],
                 );
-                let archive = vec![(trx("Archive", "archive confirmation button"), UiMessage::ArchiveAll(read, 0))];
+                let archive = vec![(trx("Archive", "archive confirmation button"), UiMessage::ChatList(chat_list::Msg::ArchiveAll(read, 0)))];
                 (tr(if read { "Archive all read chats" } else { "Archive all chats" }).into(), body, archive)
             }
             ASK_ARCHIVE_WEEK => (
                 tr("Archive all chats older than a week").into(),
                 tr("This will also archive any other older chats from a week ago").into(),
-                vec![(trx("Archive", "archive confirmation button"), UiMessage::ArchiveAll(false, 7))],
+                vec![(trx("Archive", "archive confirmation button"), UiMessage::ChatList(chat_list::Msg::ArchiveAll(false, 7)))],
             ),
             ASK_MARK_ALL_READ => {
                 let n = self.visible_chats(&self.store.read()).iter().filter(|c| c.flags & CHAT_UNREAD != 0).count();
                 let title = trn("Mark %d thread as read", "Mark %d threads as read", n, &[&n]);
                 let body = tr("Are you sure you want to mark all chats as read?").into();
-                (title, body, vec![(tr("Mark as Read"), UiMessage::MarkAllRead)])
+                (title, body, vec![(tr("Mark as Read"), UiMessage::ChatList(chat_list::Msg::MarkAllRead))])
             }
             ASK_CLEAR_STORAGE | ASK_CLEAR_CACHE | ASK_CLEAR_CHAT => {
                 let which = dialog - ASK_CLEAR_STORAGE;
                 let size = human_size(self.storage_pick(which).iter().map(|e| e.bytes).sum());
-                let clear = |label| vec![(tr(label), UiMessage::ClearStorage(which))];
+                let clear = |label| vec![(tr(label), UiMessage::Settings(settings::Msg::ClearStorage(which)))];
                 match which {
                     0 => {
                         let days = STORAGE_DAYS[self.storage.ages[0]];
@@ -438,20 +450,20 @@ impl BeeperGuiApp {
             ASK_REVOKE_CONNECTION => (
                 tr("Are you sure you want to revoke this connection?").into(),
                 tr("Connected clients will lose access to Beeper Desktop API").into(),
-                vec![(tr("Revoke"), UiMessage::RevokeConfirmed)],
+                vec![(tr("Revoke"), UiMessage::Integrations(integrations::Msg::RevokeConfirmed))],
             ),
             ASK_REMOVE_ACCOUNT => {
                 let id = self.delete_target.clone().expect("an account to remove");
                 (
                     "Remove Account".into(),
                     "Disconnect and remove the data from this account on Beeper".into(),
-                    vec![("Remove from All Devices", UiMessage::RemoveAccount(id))],
+                    vec![("Remove from All Devices", UiMessage::Accounts(accounts::Msg::Remove(id)))],
                 )
             }
             ASK_REMOTE_ACCESS => (
                 tr("Enable Remote Access?").into(),
                 tr("This can expose the Beeper Desktop API to the public internet based on your firewall settings. Only enable if you know what you are doing.").into(),
-                vec![(tr("Allow Remote Access"), UiMessage::RemoteAccess(true))],
+                vec![(tr("Allow Remote Access"), UiMessage::Integrations(integrations::Msg::RemoteAccess(true)))],
             ),
             ASK_BLOCK..=ASK_UNBLOCK_OFFLINE => {
                 let id = self.delete_target.clone().expect("a DM to block");
@@ -467,7 +479,7 @@ impl BeeperGuiApp {
                                 &[&network, &network],
                             ),
                         };
-                        let block = UiMessage::BlockUser(id, true, self.report_spam && c.block & REPORT_SPAM != 0);
+                        let block = UiMessage::Blocking(blocking::Msg::Block(id, true, self.report_spam && c.block & REPORT_SPAM != 0));
                         let label = trx("Block", "action to block the other person in a DM");
                         (trf("Block %s?", &[&c.title]), body, vec![(label, block)])
                     }
@@ -476,7 +488,7 @@ impl BeeperGuiApp {
                         trf("They'll also be unblocked on %s.", &[&network]),
                         vec![(
                             trx("Unblock", "action to unblock the other person in a DM"),
-                            UiMessage::BlockUser(id, false, false),
+                            UiMessage::Blocking(blocking::Msg::Block(id, false, false)),
                         )],
                     ),
                     _ => {
@@ -485,7 +497,7 @@ impl BeeperGuiApp {
                             _ => "Reconnect %1$s to unblock %2$s.",
                         };
                         let again = reconnect(&st, &c.account_id);
-                        let again = again.unwrap_or_else(|| UiMessage::OpenAccountSettings(c.account_id.clone()));
+                        let again = again.unwrap_or_else(|| UiMessage::Accounts(accounts::Msg::OpenSettings(c.account_id.clone())));
                         let again = vec![(tr("Reconnect"), UiMessage::Commands(vec![UiMessage::Ask(None), again]))];
                         (trf("%s Is Disconnected", &[&network]), trf(body, &[&network, &c.title]), again)
                     }
@@ -513,7 +525,7 @@ impl BeeperGuiApp {
         (c.block & REPORT_SPAM != 0).then(|| {
             let label = txt(tr("Report spam"), 13.0).color(self.pal.text);
             let line = row![checkbox(&self.pal, self.report_spam), label].spacing(6).align_y(Center);
-            mouse_area(line).on_press(UiMessage::ReportSpam(!self.report_spam)).into()
+            mouse_area(line).on_press(UiMessage::Blocking(blocking::Msg::ReportSpam(!self.report_spam))).into()
         })
     }
 
@@ -624,16 +636,19 @@ impl BeeperGuiApp {
                         st.update_label(&label, &name, color, icon, chats);
                         drop(st);
                         let (what, text) = (format!("Update label \"{}\"", old.name), format!("Updated {name}"));
-                        self.act(what, UiMessage::RestoreLabel(Box::new(old)), Some((text, None)));
+                        self.act(what, UiMessage::Labels(labels::Msg::Restore(Box::new(old))), Some((text, None)));
                     }
                     return window::close(id);
                 }
                 let label = self.store.write().create_label(&name, color, icon, chats);
-                let open = UiMessage::SelectAccount(Some(format!("label:{label}")));
+                let open = UiMessage::Rail(rail::Msg::Select(Some(format!("label:{label}"))));
                 let _ = self.update(open.clone());
                 let (what, text) = (format!("Create label \"{name}\""), format!("Created {name}"));
-                self.act(what, UiMessage::DeleteLabel(label.clone()), Some((text, Some(open))));
-                return Task::batch([window::close(id), self.update(UiMessage::OpenLabelSettings(label))]);
+                self.act(what, UiMessage::Labels(labels::Msg::Delete(label.clone())), Some((text, Some(open))));
+                return Task::batch([
+                    window::close(id),
+                    self.update(UiMessage::Labels(labels::Msg::OpenSettings(label))),
+                ]);
             }
         }
         Task::none()
@@ -682,11 +697,13 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let id = st.sent.get(&w.label).unwrap_or(&w.label);
         let Some(l) = st.labels.iter().find(|l| l.id == *id) else { return Space::new().into() };
-        let pane = |e| UiMessage::LabelPane(w.id, e);
+        let pane = |e| UiMessage::Labels(labels::Msg::Pane(w.id, e));
         let link = btn_style([CLEAR; 3], [p.accent; 3], 0.0);
         let edit = trx("Edit", "edit a label name, icon and color");
-        let edit =
-            button(txt(edit, 13.0).color(p.accent)).padding(0).style(link).on_press(UiMessage::EditLabel(l.id.clone()));
+        let edit = button(txt(edit, 13.0).color(p.accent))
+            .padding(0)
+            .style(link)
+            .on_press(UiMessage::Labels(labels::Msg::Edit(l.id.clone())));
         let head = column![
             container(label_tile(l, 54.0, 28.0, 20.0, p.strong)).padding(Padding::ZERO.bottom(16.0)),
             semi(l.name.clone(), 18.0).line_height(Pixels(24.0)).color(p.strong).align_x(Center),
@@ -721,7 +738,7 @@ impl BeeperGuiApp {
             .padding(Padding::new(8.0).left(12.0))
             .width(Fill)
             .style(btn_style([p.chip; 3], [p.text; 3], 16.0))
-            .on_press(UiMessage::EditLabelChats(l.id.clone()));
+            .on_press(UiMessage::Labels(labels::Msg::EditChats(l.id.clone())));
         let now = l.inbox.unwrap_or("all");
         let inbox_name = |o: &str, label: &'static str| match o {
             "none" => trx(label, "label inbox visibility option"),
@@ -745,7 +762,7 @@ impl BeeperGuiApp {
         };
         let rule = container(container(Space::new()).width(Fill).height(0.5).style(fill_box(p.prefs_border, 0.0)))
             .padding(Padding::ZERO.left(40.0).right(8.0));
-        let mute = toggle(p, l.muted, Some(UiMessage::MuteLabel(l.id.clone(), !l.muted)));
+        let mute = toggle(p, l.muted, Some(UiMessage::Labels(labels::Msg::Mute(l.id.clone(), !l.muted))));
         let settings = column![
             setting(icon::INBOX, tr("Show in Inbox"), pill.into()),
             rule,
@@ -777,7 +794,7 @@ impl BeeperGuiApp {
                 let lead = container((o == now).then(|| ic(icon::CHECK, 14.0))).width(22).into();
                 let msg = UiMessage::Commands(vec![
                     pane(LabelPane::Menu(false)),
-                    UiMessage::SetLabelInbox(l.id.clone(), (o != "all").then_some(o)),
+                    UiMessage::Labels(labels::Msg::SetInbox(l.id.clone(), (o != "all").then_some(o))),
                 ]);
                 menu_item(p, Some(lead), inbox_name(o, label).into(), "", Some(msg))
             });
@@ -797,7 +814,7 @@ impl BeeperGuiApp {
     /// (`Cst`) and Edit Label (`Tst`) sheets of Label Settings.
     pub(crate) fn view_create_label<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
         let p = &self.pal;
-        let edit = UiMessage::Label;
+        let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
         let body = match d.step {
             LabelStep::Intro => self.view_label_intro(d),
             LabelStep::Pick => self.view_label_pick(d),
@@ -859,7 +876,7 @@ impl BeeperGuiApp {
     /// Desktop's `LabelDetailsFields` (`Ide`): the label tile, the name field and the icon and color grid.
     fn view_label_details<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
         let p = &self.pal;
-        let edit = UiMessage::Label;
+        let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
         let tile = Label { color: d.color, icon: d.icon.clone(), ..Label::default() };
         let name = text_input(tr("Label name"), &d.name)
             .id("label-title")
@@ -881,7 +898,7 @@ impl BeeperGuiApp {
     fn view_label_pick<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
-        let edit = UiMessage::Label;
+        let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
         let search = text_input(tr("Search name, @, number, or network"), &d.search)
             .id("label-search")
             .on_input(move |q| edit(LabelEdit::Search(q)))
@@ -943,7 +960,7 @@ impl BeeperGuiApp {
     /// Desktop's `IconColorGrid`: the label colors, then the label icons, in rows `width` wide.
     fn label_grid<'a>(&self, d: &LabelDraft, width: f32) -> El<'a> {
         let p = &self.pal;
-        let edit = UiMessage::Label;
+        let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
         let shade = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
         let colors = (0..LABEL_COLORS.len() as u8).map(|c| -> El<'a> {
             let on = d.color == Some(c);
@@ -998,13 +1015,13 @@ impl BeeperGuiApp {
         let new = button(row![glyph, txt(tr("New Label"), 13.0)].spacing(6).align_y(Center))
             .padding([6, 10])
             .style(btn_style([p.chip; 3], [p.strong; 3], 20.0))
-            .on_press(UiMessage::OpenCreateLabel(Vec::new()));
+            .on_press(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())));
         let mut labels: Vec<&Label> = st.labels.iter().collect();
         labels.sort_by_cached_key(|l| l.name.to_lowercase());
         let rows = labels.iter().map(|l| {
             let on = c.label_ids.contains(&l.id);
             let name = ell(&l.name, 183.0, 13.0, Weight::Normal).line_height(Pixels(16.0)).color(p.strong);
-            let msg = UiMessage::SwitchLabel(l.id.clone(), c.id.clone(), !on);
+            let msg = UiMessage::Labels(labels::Msg::Switch(l.id.clone(), c.id.clone(), !on));
             row![label_icon(l, 28.0, p.strong), container(name).width(Fill), toggle(p, on, Some(msg))]
                 .spacing(4)
                 .padding([10, 8])
@@ -1063,7 +1080,7 @@ impl BeeperGuiApp {
             Some(n) => trf("Renamed to %s for you", &[n]),
             None => tr("Removed your name for this chat").into(),
         };
-        self.act(what, UiMessage::SetPersonalName(chat, old), Some((text, None)));
+        self.act(what, UiMessage::Info(info::Msg::SetPersonalName(chat, old)), Some((text, None)));
     }
 
     pub(crate) fn group_edit(&mut self, edit: GroupEdit) -> Task<UiMessage> {
@@ -1108,7 +1125,7 @@ impl BeeperGuiApp {
                 if let Some(t) = title {
                     let name =
                         Some(t.trim().chars().take(PERSONAL_NAME_MAX).collect()).filter(|t: &String| !t.is_empty());
-                    let _ = self.update(UiMessage::SetPersonalName(chat.clone(), name));
+                    let _ = self.update(UiMessage::Info(info::Msg::SetPersonalName(chat.clone(), name)));
                 }
                 if let Some(photo) = photo {
                     let text = match photo {
@@ -1279,7 +1296,7 @@ impl BeeperGuiApp {
                         .padding(8)
                         .width(Fill)
                         .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                        .on_press(UiMessage::OpenBlockedUser(c.id.clone()));
+                        .on_press(UiMessage::Blocking(blocking::Msg::OpenUser(c.id.clone())));
                     let rule = container(Space::new()).width(Fill).height(1).style(fill_box(p.prefs_border, 0.0));
                     column![].push((i > 0).then_some(rule)).push(row).into()
                 });
@@ -1291,7 +1308,7 @@ impl BeeperGuiApp {
         let done = button(med(tr("Done"), 13.0).color(Color::WHITE))
             .padding([6, 14])
             .style(btn_style([p.accent; 3], [Color::WHITE; 3], 999.0))
-            .on_press(UiMessage::CloseBlockedUsers);
+            .on_press(UiMessage::Blocking(blocking::Msg::CloseList));
         let footer = container(done).align_right(Fill).padding(Padding::new(12.0).top(10.0));
         container(column![body, footer]).width(Fill).height(Fill).style(fill_box(p.elevated, 0.0)).into()
     }

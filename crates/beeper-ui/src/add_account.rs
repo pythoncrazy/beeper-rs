@@ -763,7 +763,7 @@ mod tests {
         settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
         assert!(shows(&app, id, "Invalid phone code"));
         let process = app.add_accounts[0].process.clone().expect("a running login");
-        settle(&mut app, UiMessage::WindowClosed(id)).await;
+        settle(&mut app, UiMessage::Window(crate::windows::Msg::Closed(id))).await;
         assert!(app.add_accounts.is_empty());
         let cancel = format!(
             "POST /_matrix/client/unstable/com.beeper.bridge/telegram/_matrix/provision/v3/login/cancel/{process}"
@@ -780,7 +780,7 @@ mod tests {
         let id = app.add_accounts[0].id;
         assert_eq!(app.store.read().bridge_accounts.len(), 1, "the QR flow logged in at once with the stub");
         assert_eq!(app.toast.as_ref().map(|t| t.text.as_str()), Some("Connected to WhatsApp"));
-        settle(&mut app, UiMessage::WindowClosed(id)).await;
+        settle(&mut app, UiMessage::Window(crate::windows::Msg::Closed(id))).await;
         let login = app.store.read().bridge_accounts[0].login_id.clone();
         let flows = one(send(&mut app, UiMessage::OpenAddAccount("whatsapp".into(), Some(login))).await);
         let id = app.add_accounts[0].id;
@@ -833,8 +833,8 @@ mod tests {
         assert!(sim.find("WhatsApp disconnected").is_ok());
         sim.click("Reconnect").expect("the Reconnect of the banner");
         assert!(sim.into_messages().any(again));
-        let _ = app.update(UiMessage::OpenSettings(crate::SettingsTab::Accounts));
-        let _ = app.update(UiMessage::OpenAccount(Some("whatsapp".into())));
+        let _ = app.update(UiMessage::Settings(crate::settings::Msg::Open(crate::SettingsTab::Accounts)));
+        let _ = app.update(UiMessage::Accounts(crate::accounts::Msg::Open(Some("whatsapp".into()))));
         let mut sim = iced_test::simulator(app.view_settings());
         assert!(sim.find("Account Disconnected").is_ok() && sim.find("Logged out").is_ok());
         sim.click("Reconnect").expect("the Reconnect of the account page");

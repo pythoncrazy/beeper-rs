@@ -1,8 +1,13 @@
+pub mod accounts;
 mod add_account;
 mod anim;
+mod blocking;
+pub mod chat_list;
 mod chat_theme;
-mod commands;
-mod composer;
+mod chat_theme_window;
+mod command_palette;
+pub mod commands;
+pub mod composer;
 mod cursor;
 mod dashed;
 mod deeplink;
@@ -10,24 +15,39 @@ mod dialogs;
 pub mod emoji;
 mod enter_key;
 mod format;
+mod forward;
 mod gallery;
+mod gifs;
+pub mod hotkeys;
 mod i18n;
 mod images;
+mod info;
+mod integrations;
+mod labels;
 mod lift;
 mod links;
+mod loads;
 pub mod login;
 mod media_view;
+mod members;
 mod menubar;
 mod message;
+pub mod new_chat;
 mod notify;
+mod pins;
 mod popover;
 mod portal;
 mod profile;
+pub mod rail;
 mod reauth;
 mod record;
-mod settings;
+pub mod reminders;
+mod scheduled;
+pub mod settings;
 mod sound;
 mod spell;
+mod timeline;
+pub mod toasts;
 #[cfg(target_os = "linux")]
 mod tray;
 #[cfg(not(target_os = "linux"))]
@@ -54,15 +74,17 @@ mod tray {
     }
 }
 pub mod style;
-mod threads;
+pub mod threads;
+mod user_card;
 mod verify;
 mod video;
 mod vlist;
 mod voice;
 mod wants;
-mod zoom;
+pub mod windows;
+pub mod zoom;
 
-use crate::composer::{composer_with, html_pills, load_draft, save_draft, Typo};
+use crate::composer::{composer_with, load_draft, save_draft, Typo};
 pub use crate::composer::{LinkState, Stash, Suggestion};
 pub use crate::dialogs::{
     GroupDraft, GroupEdit, LabelDraft, LabelEdit, LabelPane, LabelSettings, LabelStep, PollDraft, PollEdit,
@@ -70,15 +92,33 @@ pub use crate::dialogs::{
 use crate::dialogs::{DEFAULT_LABEL_ICON, GROUP_SIZE, LABEL_SETTINGS_SIZE};
 use crate::i18n::{tr, trf, trn, trs, trx};
 use crate::login::{Login, LoginMsg};
-use crate::media_view::{decode_media, media_items, run_ffmpeg, Carousel, MediaWindow, MEDIA_PAGE, TAB_SLIDE};
+use crate::media_view::{decode_media, run_ffmpeg, Carousel, MediaWindow, TAB_SLIDE};
 use crate::message::Rows;
 pub use crate::message::TopOfThread;
 use crate::settings::{
-    donut, hotkey_key, mcp_value, shown, storage_totals, AddToken, IntegrationsPage, StoragePage, COMMUNITY_ROOM,
-    EXPIRIES, HOTKEYS_RELAUNCH, SETTINGS_DIALOGS, STORAGE_DAYS,
+    hotkey_key, mcp_value, shown, AddToken, IntegrationsPage, StoragePage, EXPIRIES, HOTKEYS_RELAUNCH,
+    SETTINGS_DIALOGS, STORAGE_DAYS,
 };
 pub use crate::settings::{search_settings, Expiry, HotkeyRec, SettingsHit, SettingsTab, TabIcon};
 use crate::threads::{can_thread, Threads, THREAD_FRACTION};
+use blocking::block_action;
+use chat_list::{filter_hit, FILTERS, F_ARCHIVED, F_LOW_PRIORITY, F_REQUESTS};
+use forward::Forward;
+use info::info_menu;
+use integrations::TokenAsk;
+use labels::{label_fill, label_glyph, label_rows};
+use new_chat::{account_display_name, phone_digits, NewChat};
+use pins::{bubble_text, pin_bubble, PinDrag};
+use rail::{all_spaces, RailDrag, LABEL_NUDGE};
+use rail::{
+    in_rail_entry, network_space, rail_accounts, rail_label, rail_owner, rail_spaces, SpaceMenu, RAIL_MORE, RAIL_VIEWS,
+};
+use rail::{SpacesDraft, SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
+use reminders::{remind_label, reminder_day};
+use scheduled::next_send;
+use toasts::{Toast, TOASTS_SHOWN, TOAST_TICK};
+use user_card::UserHover;
+use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZE};
 
 use crate::style::{
     bar, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded, fill_box, fw,
@@ -95,7 +135,6 @@ use beeper_core::matrix::{DeviceInfo, Mention, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind};
 use beeper_core::prefs;
-use beeper_core::storage;
 use beeper_core::store::{BeeperStore, NetworkSpace, Query, SharedStore, NOTE_CHAT_ID};
 use iced::font::Weight;
 use iced::gradient::Linear;
@@ -169,16 +208,6 @@ impl InboxTab {
     }
 }
 
-const FILTERS: [(&str, char); 8] = [
-    ("Unread", icon::MARK_EMAIL_UNREAD),
-    ("Drafts", icon::SMS),
-    ("Unanswered", icon::MODE_COMMENT),
-    ("DMs", icon::PERSON),
-    ("Groups", icon::GROUP),
-    ("Archived", icon::ARCHIVE),
-    ("Requests", icon::EMAIL),
-    ("Low Priority", icon::LOW_PRIORITY_SPACE),
-];
 /// The hotkeys of the filters before Archived.
 const CYCLE: &str = "Cycle Chats (hold shift to reverse)";
 const FILTER_HOTKEYS: [&str; 5] =
@@ -197,9 +226,6 @@ const SIGN_IN_HOTKEYS: [&str; 10] = [
     "Zoom In",
     "Zoom Out",
 ];
-const F_ARCHIVED: usize = 5;
-const F_REQUESTS: usize = 6;
-const F_LOW_PRIORITY: usize = 7;
 
 /// Desktop's membership events, which the timeline groups.
 fn membership(m: &Message) -> bool {
@@ -220,38 +246,6 @@ fn unavailable(st: &BeeperStore, chat: &Chat) -> Option<String> {
     }
 }
 
-/// Desktop's `blockedUsersStore.threads`: the chats whose other person is blocked, by title.
-fn blocked_chats(st: &BeeperStore) -> Vec<&Chat> {
-    let mut chats: Vec<&Chat> = st.chats.iter().filter(|c| st.user_blocked(c)).collect();
-    chats.sort_by_cached_key(|c| c.title.to_lowercase());
-    chats
-}
-
-/// Desktop's Block (true) or Unblock action of a DM, when the bridge supports it.
-fn block_action(st: &BeeperStore, c: &Chat) -> Option<bool> {
-    match st.user_blocked(c) {
-        true => (c.block & NO_UNBLOCK == 0).then_some(false),
-        false => st.can_block(c).then_some(true),
-    }
-}
-
-fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
-    match i {
-        0 => c.flags & CHAT_UNREAD != 0,
-        1 => c.draft.is_some(),
-        2 => c
-            .preview
-            .as_ref()
-            .is_none_or(|m| m.is_sender != Some(true) && !m.reactions.iter().any(|r| r.participant_id == st.me().id)),
-        3 => c.chat_type != "group",
-        4 => c.chat_type == "group",
-        F_ARCHIVED => c.archived_in_list(),
-        F_REQUESTS => c.flags & CHAT_REQUEST != 0,
-        F_LOW_PRIORITY => c.flags & CHAT_LOW_PRIORITY != 0,
-        _ => unreachable!("filter index {i}"),
-    }
-}
-
 /// An item of the composer context menu.
 #[derive(Debug, Clone)]
 pub enum MenuEdit {
@@ -269,153 +263,49 @@ pub enum UiMessage {
     Relist,
     /// A view shows avatars or media that no task loads yet.
     LoadWanted,
-    DismissBanner,
-    SelectTab(InboxTab),
-    SelectAccount(Option<String>),
+    /// Desktop's toasts: the status banner and the older toasts above it, their timeout, and their buttons.
+    Toast(toasts::Msg),
+    /// Desktop's chat list (ThreadList): its tabs and filters, the chat menu and flags, archive and read, multi-select, and the chat actions.
+    ChatList(chat_list::Msg),
+    /// Desktop's space bar (rail): its spaces, their order and drags, the floating rail, and the width of the sidebar.
+    Rail(rail::Msg),
     SelectChat(String),
-    /// The Undo of an archive or Low Priority toast: sets the flag of the chats back, then selects them.
-    UndoFlag(ChatFlag, Vec<(String, bool)>, bool),
-    ClickChat(String),
-    ComposerChanged(String),
-    ComposerEdit(text_editor::Action),
-    /// Ctrl+Backspace and Ctrl+Delete: delete the selection, or the text from the caret to the motion.
-    DeleteTo(text_editor::Motion, bool),
-    /// Mod-z undoes the last composer edit group; Shift-Mod-z and Mod-y redo it.
-    Undo(bool),
-    /// Toggles a `format::LABELS` button on the composer selection.
-    Format(usize),
-    LinkDialog(Option<(String, String)>),
-    SaveLink,
-    SubmitComposer,
-    SendAndArchive,
-    CancelComposeMode,
-    StartReply(String),
-    StartEdit(String, String),
-    DeleteMessage(String, String),
-    /// Desktop's `removeFromBeeper` of the messages.
-    RemoveFromBeeper(Vec<String>),
-    ToggleReaction(String, String, String),
-    ToggleBookmark(String),
-    MarkUnreadFromHere(String, String),
-    /// Desktop's Mark as Read of the message menu.
-    MarkReadThrough(String, String),
-    /// The poll message and all the own answers.
-    VotePoll(String, Vec<String>),
-    ToggleAttachMenu,
-    TogglePicker(Picker),
-    /// Desktop's `undoSend` in the open chat.
-    UndoSend,
-    /// Desktop's `sendQueuedMessages`: the sends of a chat, or the sends that are due.
-    SendQueued(Option<String>),
+    /// Desktop's composer.
+    Composer(composer::Msg),
+    /// The timeline of a chat.
+    Message(message::Msg),
     Emoji(emoji::EmojiMsg),
     Upserted(Box<Message>),
     ChatUpserted(Box<Chat>),
     Typing(String),
-    NotifyTimer(String, u64),
-    /// A shown notification, with its chat and message.
-    Notified(Result<(u32, (String, String)), String>),
-    NotificationEvent(u32, Option<String>),
-    WindowFocused(bool),
+    /// Desktop notifications.
+    Notify(notify::Msg),
+    /// The windows: their open, close, focus, resize and maximize, the tray, the relaunch, and a second launch of the app.
+    Window(windows::Msg),
     /// Desktop's `toggleIncognitoMode` from a hotkey or the command bar, with its toast.
     ToggleIncognito,
-    /// The pointer enters or leaves the toast, which pauses its timeout like Desktop.
-    ToastHover(bool),
-    ToastTick,
-    DismissOlderToast(usize),
-    /// Desktop's toast button: the toast closes, newest or older, and its action runs.
-    ToastAction(Option<usize>, Box<UiMessage>),
-    GifQueryChanged(String),
-    /// Desktop's GIF search 500 ms after the last key, for the query of that time.
-    GifSearch(String),
-    /// The GIFs of a query.
-    /// A page of GIFs for a query: the first page (false) or the next one, and the position of the page after it.
-    GifsLoaded(String, bool, Result<(Vec<KlipyGif>, String), String>),
-    /// The GIF carousel scrolled: its offset, its content width and its width.
-    GifScrolled(f32, f32, f32),
-    PickGif(KlipyGif),
-    GifDownloaded(Result<PendingMedia, String>),
-    /// Desktop's `imagePackStore.loadStickerPacks` of the open chat.
-    StickerPacks(Result<Vec<StickerPack>, String>),
-    /// A tab of the sticker picker: Recent (`None`) or a pack.
-    StickerTab(Option<String>),
-    PickSticker(Sticker),
-    StickerLoaded(Result<PendingMedia, String>),
-    SetReminder(String, Option<i64>),
-    OpenSubMenu(commands::SubMenu),
-    CmdNoReply(bool),
-    /// Keeps the time phrase for Desktop's "Last Used".
-    LastTime(String),
-    RemindIf(String, i64, bool),
-    ChatSub(Option<u8>),
-    CheckReminders,
-    /// Desktop's `showWithSubMenu(SCHEDULE_MESSAGE)` for the composer.
-    OpenSendLater,
-    /// The composer's `sendLaterConfig`: the time and "If no reply".
-    SendLater(Option<(i64, bool)>),
-    /// The menu of scheduled messages at the cursor; true adds the message items.
-    ScheduledMenu(Vec<String>, bool),
-    SendNow(Vec<String>),
-    Reschedule(Vec<String>),
-    RescheduleTo(Vec<String>, i64, bool),
-    Unschedule(Vec<String>),
-    EditScheduled(String),
-    FoldScheduled(bool),
-    CheckScheduled,
+    /// Desktop's GIF and sticker picker: the GIF search, the sticker packs, and the picked media for the composer.
+    Gifs(gifs::Msg),
+    /// Desktop's chat reminders: Remind me, If no reply, the due reminders and the Reminders list.
+    Reminders(reminders::Msg),
+    /// Desktop's command bar.
+    CommandBar(commands::Msg),
+    /// Desktop's Send Later: the time of the composer, and the scheduled messages with their menu.
+    Scheduled(scheduled::Msg),
     /// Ends the typing notices 3 seconds after the last key.
     TypingTick,
     /// Desktop's throttled draft save, 5 seconds after a composer change.
     SaveDrafts,
-    /// Desktop's `showReplyThread`: shows the reply chain of the message over the timeline.
-    ShowReplies(String),
-    HideReplies,
     /// Desktop's `SwitchChatHoverCard` of the composer: shows the chats of the person on your other accounts.
     SwitchCard,
     /// Desktop's `composeSwitchTargets.onSelect`: the chat of the person on another account.
     SwitchChat(String),
-    /// Desktop's `showThreadedReplies`: opens the thread pane of a message, or of the thread of a reply.
-    ShowThread(String),
-    /// Desktop's `hideThreadedReplies`.
-    HideThread,
+    /// Desktop's threaded replies.
+    Thread(threads::Msg),
     /// A message of the thread pane, which the thread pane handles.
     InThread(Box<UiMessage>),
-    /// Desktop's `setBroadcastOutsideThread`: "Also send to chat".
-    SetBroadcast(bool),
-    /// The thread pane edge follows the pointer from a press, to the point, until the release (`None`).
-    ThreadDrag(Option<Point>),
-    /// Desktop's double click on the thread pane edge: the default width.
-    ResetThreadWidth,
-    /// Desktop's "More Options" of the thread pane.
-    ThreadMenu,
-    /// Desktop's `markReplyThreadReadThrough` of the thread pane.
-    MarkThreadRead,
-    /// Desktop's `showUnreadThreads`: the Unread threads view in place of the chat.
-    ShowUnreadThreads,
-    /// Desktop's unread thread card: the thread pane of the root of the chat.
-    OpenThread(String, String),
-    /// The menu of the "Unread threads" pill, or `None` to close it.
-    UnreadThreadsMenu(bool),
-    /// Desktop's `markAllUnreadThreadsAsRead`.
-    MarkAllThreadsRead,
-    /// Desktop's `setThreadFollowing` of the chat, the root and the follow.
-    FollowThread(String, String, bool),
-    /// Desktop's `setFollowAllThreads` of the chat.
-    FollowAllThreads(String, bool),
-    /// Desktop's "Open in New Window" of a thread: the window "Thread in %s" of the chat and the root.
-    OpenThreadWindow(String, String),
-    ToggleFlag(String, ChatFlag),
-    ToggleRead(String),
-    MarkRead(String),
-    /// Sets the wallpaper of the chat theme of a chat, or of the default theme.
-    ChatWallpaper(Option<String>, Wallpaper),
-    /// Sets the bubble color of the chat theme of a chat, or of the default theme; `None` clears it.
-    ChatBubble(Option<String>, Option<Bubble>),
-    /// Desktop's `Choose photo`: picks a photo wallpaper for a chat, or for the default theme.
-    PickWallpaper(Option<String>),
-    WallpaperPicked(Option<String>, Result<Vec<std::path::PathBuf>, String>),
-    /// Desktop's `clearChatTheme`: the chat uses the default chat theme again.
-    ClearChatTheme(String),
-    /// Desktop's `editChatTheme`: opens the chat theme window of a chat.
-    OpenChatTheme(String),
+    /// Desktop's chat themes: the wallpaper and bubble color of a chat or of the default theme.
+    ChatTheme(chat_theme::Msg),
     /// Desktop's `PollCreatorBrowserWindow` for a chat.
     OpenPollCreator(String),
     Poll(window::Id, PollEdit),
@@ -427,463 +317,82 @@ pub enum UiMessage {
     OpenEditGroup(String),
     /// Desktop's `editGroup(thread, "personal")`: the Edit Chat for Me window.
     OpenEditForMe(String),
-    /// Desktop's `setPersonalRoomName`, which Undo can revert.
-    SetPersonalName(String, Option<String>),
-    /// Starts editing the Chat Info group description, or edits it.
-    InfoDesc(Option<text_editor::Action>),
-    SaveInfoDesc,
-    InfoMore,
-    InfoAll,
-    InfoBookmarks,
-    /// Desktop's "Remove Bookmark" in Chat Info, for the event ID of a message that may not be loaded.
-    RemoveBookmark(String),
-    /// A bookmarked message that is not loaded, or None when the server does not give it.
-    BookmarkHydrated(String, Option<Box<Message>>),
-    InfoMedia(Option<usize>),
-    InfoQuery(String),
-    InfoNote(text_editor::Action),
-    /// Desktop's disappearing messages select: a chat and a timer in ms, or 0 for Off.
-    SetDisappearing(String, u64),
+    /// Desktop's Chat Info panel: the description, the note, the media and bookmarks lists, the personal name and disappearing messages.
+    Info(info::Msg),
     Group(GroupEdit),
     Profile(profile::Msg),
-    /// Opens the New label window with these chats picked.
-    OpenCreateLabel(Vec<String>),
-    /// Desktop's `toggleLabel` for the chats of a menu: the clicked chat, or the selected chats.
-    ToggleLabel(String, Vec<String>, bool),
-    /// Desktop's Edit Labels window of a chat.
-    OpenEditLabels(String),
-    /// A switch in the Edit Labels window: `toggleLabel` without the toast.
-    SwitchLabel(String, String, bool),
+    /// Desktop's labels: their windows, the Edit Labels switches, mute, Show in Inbox, and the undo of a change or a deletion.
+    Labels(labels::Msg),
     /// Desktop's `Txe`: undoes the last action, with an "Undo:" toast.
     UndoAction,
-    FloatRail(bool),
-    /// The pointer came onto (`Some`, "chat user") or left a trigger of Desktop's `BrandUserHoverCard`.
-    HoverUser(Option<String>),
-    /// The pointer came onto or left the shown user card.
-    HoverUserCard(bool),
-    /// The wait of this generation of the user card ran out.
-    HoverUserDue(u32),
-    SetSpacesOrder(Vec<SpaceOrder>),
-    /// Puts back the name, color, icon and chats of a label.
-    RestoreLabel(Box<Label>),
-    /// Desktop's `restoreLabel`: makes a deleted label again, in its old place in the sidebar.
-    RestoreDeletedLabel(Box<Label>, Vec<SpaceOrder>),
-    /// Desktop's Edit Label sheet (`Lst`) of Label Settings: the name, icon and color of a label.
-    EditLabel(String),
-    /// Desktop's Chats sheet (`Nst`) of Label Settings: the chats of a label.
-    EditLabelChats(String),
-    Label(LabelEdit),
-    DeleteLabel(String),
-    /// Desktop's `setLabelInboxVisibility`.
-    SetLabelInbox(String, Option<&'static str>),
-    /// Desktop's `toggleMuteLabel`.
-    MuteLabel(String, bool),
-    /// Desktop's `CO`: opens the Label Settings window of a label.
-    OpenLabelSettings(String),
-    LabelPane(window::Id, LabelPane),
-    /// Desktop's `PollVotesBrowserWindow` for a chat's poll message.
-    OpenPollVotes(String, String),
-    EndPoll(String, String),
-    CopyChatLink(String),
-    OpenChatMenu(String),
-    AcceptRequest(String),
-    /// Desktop's Select Chats: toggles chat selection mode.
-    ToggleSelectMode,
-    /// Closes the chat menu over the command bar, which stays open.
-    CloseChatMenu,
-    OpenMessageMenu(String),
-    /// Chromium's composer context menu, on a misspelled word or not.
-    EditMenu(Option<std::ops::Range<usize>>),
-    MenuEdit(MenuEdit),
-    /// Select the message, or unselect it when it is selected.
-    ClickMessage(String),
-    SelectMessages(Vec<String>),
-    /// Copy the text of the selected messages, with their timestamps or not.
-    CopySelected(bool),
-    /// Do the "On double-clicking a message" action.
-    DoubleClickMessage(String),
-    /// Select the message above (`false`) or below (`true`) the selected one, as with the arrow keys.
-    /// Select the next or the previous message, or with `extend`, add it to the selection.
-    StepMessage(bool, bool),
-    /// Open the emoji picker at the cursor to react to a message.
-    React(String),
-    /// Open the emoji picker at a point to react to a message.
-    ReactAt(String, Point),
-    /// An action picked in the message menu, which closes it.
-    MessageMenu(Box<UiMessage>),
-    CopyText(String),
-    /// Copy a link and say so, like Desktop's Media window.
-    CopyLink(String),
-    CopyImage(String, usize),
-    /// The width, the height and the RGBA pixels of an image to copy.
-    ImageFetched(Result<(usize, usize, Vec<u8>), String>),
-    /// Open the forward dialog for messages, in timeline order.
-    Forward(Vec<String>),
-    ForwardQuery(String),
-    /// Add the first chat that matches the query.
-    ForwardSubmit,
-    ForwardPick(String),
-    ForwardSend,
-    /// Show an attachment of a message full screen, in the Media window with `true`.
-    OpenCarousel(String, usize, bool),
-    /// Show the previous (`false`) or next (`true`) image of the carousel.
-    CarouselStep(bool),
-    RotateCarousel,
-    CloseCarousel,
-    /// Open the carousel menu at the cursor, or close it.
-    CarouselMenu(bool),
-    /// Scroll the filmstrip of the Media window by a number of items.
-    ScrollFilmstrip(f32),
-    /// Open Desktop's Media window, or focus it.
-    OpenMedia,
-    /// Show the Media, Links or Docs tab of the Media window.
-    MediaTab(usize),
-    /// Load more items in the Media window.
-    MediaMore,
-    /// Show the Media window items that all, you or others sent.
-    MediaSentBy(u8),
-    /// Show the oldest Media window items first.
-    MediaOldest(bool),
-    /// Search the Media window by caption, or close the search with `None`.
-    MediaSearch(Option<String>),
-    MediaMenu(bool),
-    /// Open the context menu of a Media window item, or close it with `None`.
-    MediaItemMenu(Option<(String, usize)>),
-    /// Close the Media window item menu and run its action.
-    MediaItemAct(Box<UiMessage>),
-    MediaSelect(bool),
-    /// Select or unselect a Media window item, as (message, attachment or link index).
-    MediaPick(String, usize),
-    MediaPickAll,
-    /// Download the selected Media window attachments.
-    MediaSave,
-    /// Ask to delete Media window items.
-    MediaAskDelete(Vec<(String, usize)>),
-    /// Delete the items that the Media window dialog asks about, or cancel with `false`.
-    MediaDelete(bool),
+    /// Desktop's BrandUserHoverCard: the card of a user that shows after the pointer rests on their name or avatar.
+    UserCard(user_card::Msg),
+    /// Desktop's forward dialog: the chats to forward the selected messages to.
+    Forward(forward::Msg),
+    /// Desktop's Media window and full-screen carousel: the tabs, filters, selection and menus of the media of a chat.
+    Media(media_view::Msg),
     Modifiers(keyboard::Modifiers),
-    /// Open a message in the main window.
-    GoToMessage(String, String),
     WindowKey(window::Id, Key, keyboard::Modifiers),
     /// Escape in a text input, which unfocuses it.
     InputEscape(window::Id),
-    /// Save the attachments of a message, or only one of them, to the downloads folder.
-    Download(String, Option<usize>),
-    Downloaded(Result<String, String>),
-    /// Desktop's "Delete message?" dialog of the messages.
-    AskDeleteMessage(Vec<String>),
-    ArchiveStale,
-    /// Archives the inbox chats, or only the read ones, with no activity in the days, after Desktop's confirmation.
-    ArchiveAll(bool, i64),
-    MarkAllRead,
-    /// Maximizes or restores a chat window, or the main window when `None`.
-    ToggleMaximize(Option<window::Id>),
     RunHotkey(&'static str),
     /// Runs the messages in order.
     Commands(Vec<UiMessage>),
-    CommandHighlight(usize),
-    ToggleFilterMenu,
-    FilterButton,
-    PickFilter(u8),
-    ToggleCommandPalette,
-    SearchRoom(String),
-    ToggleCommandMode,
-    ToggleSearchExpanded,
-    CommandQueryChanged(String),
-    ExecuteCommandChat(String),
-    JumpTo(String, String),
-    OpenSearchSelect(usize),
-    SearchSelect(Option<(usize, iced::Rectangle)>),
-    PickSearchFilter(SearchPick),
-    NewChat,
-    SelectNewChat(u32),
-    DeleteNewChat(u32),
-    /// A click on a contact in the New Chat view, by contact ID: Desktop shows the networks of the contact.
-    ToggleContact(String),
-    /// The user that `resolve_identifier` found for a slot of the networks of a contact or a typed identifier.
-    ContactNetwork(String, usize, Result<Option<serde_json::Value>, String>),
-    /// Desktop's lookup of a typed phone number, email or username, after the user stops typing.
-    LookupIdentifier(String),
-    /// The users of an account's `search_users` for a New Chat query.
-    SearchedUsers(String, String, Result<Vec<serde_json::Value>, String>),
-    ToggleNewChatResults,
-    /// A click on a network of the expanded contact: the account and its user.
-    PickUser(String, Box<User>),
-    /// Desktop's `createChatFromDraft` for the open draft.
-    StartChat,
-    /// The bridge made a direct chat for a New Chat draft or for Reply Privately with this quote.
-    DmCreated(Option<u32>, String, Option<String>, Result<String, String>),
-    /// The bridge made the group of a New Chat draft, by draft and account.
-    GroupCreated(u32, String, Result<String, String>),
-    /// Desktop's New Group row: the open draft becomes a group draft.
-    NewGroup,
-    /// The group name of the open draft.
-    GroupTitle(String),
-    /// Desktop's `replyPrivately`: the direct chat with the sender of a message, with the message quoted.
-    ReplyPrivately(String),
-    /// Desktop's member "Send Message": the direct chat with a member of a chat, as (chat, user).
-    MessageMember(String, String),
-    /// Opens a member confirmation, `ASK_MAKE_ADMIN` or `ASK_REMOVE_MEMBER`, for (chat, user).
-    AskMember(u8, String, String),
-    /// Desktop's `exportLoadedMessagesAsTextFile`: the loaded messages of the open chat in a text file on the desktop.
-    ExportChat,
-    /// Desktop's Add Members button of Chat Info: the Add members submenu with the members query.
-    AddMembers(String),
-    /// Desktop's `addParticipant`: invites the user to the chat.
-    AddMember(String, Box<User>),
-    /// Desktop's `searchCmdBarUsers` for the Add members query, after the user stops typing.
-    SearchMembers(String),
-    /// Makes a member of a chat an admin (true) or a regular member, as (chat, user, admin).
-    SetAdmin(String, String, bool),
-    RemoveMember(String, String),
-    AskDeleteChat(String),
-    AskLeaveChat(String),
-    LeaveRoom(String),
-    /// Desktop's `confirmBlockUser` (true) or `confirmUnblockUser` of a DM.
-    AskBlock(String, bool),
-    /// Desktop's `setUserBlockedOrAlert`, as (chat, block, report spam).
-    BlockUser(String, bool, bool),
-    /// The "Report spam" checkbox of the Block dialog.
-    ReportSpam(bool),
-    /// Desktop's `BlockedUsersBrowserWindow` from Settings, and its Done button.
-    OpenBlockedUsers,
-    CloseBlockedUsers,
-    /// A row of the Blocked users window: the chat with its Chat Info in the main window.
-    OpenBlockedUser(String),
-    BeginSelecting(String),
-    ToggleSelected(String),
-    SelectionSet(ChatFlag, bool),
-    SelectionRemind(Option<i64>),
-    SelectionMenu(u8, f32),
-    DeleteChat(String, bool),
-    NewChatQueryChanged(String),
-    ToggleNewChatExpanded,
-    ToggleNewChatChats,
-    ToggleJoinMatrix,
-    /// Join or Enter in the Join a Matrix room view.
-    JoinMatrixRoom,
-    /// The end of a join of the Join a Matrix room view of a draft, and whether the room had no routing servers.
-    MatrixRoomJoined(Option<u32>, Result<String, String>, bool),
-    ContactsLoaded(Vec<User>),
+    /// Desktop's New Chat: its drafts, the contact and user search, the networks of a contact, and the start of a chat or group.
+    NewChat(new_chat::Msg),
+    /// The members of a chat in Chat Info: Add members, admins, removal, and the direct chat with a member.
+    Members(members::Msg),
+    /// Desktop's block and unblock of a direct chat, with Report spam, and the Blocked users window.
+    Blocking(blocking::Msg),
     Capabilities(String, Result<serde_json::Value, String>),
-    /// The account filter of the New Chat view.
-    NewChatAccount(Option<String>),
-    ToggleNewChatAccounts,
-    OpenSettings(SettingsTab),
-    ToggleAddAccount,
-    ShowAppQr,
-    OpenAccount(Option<String>),
-    /// Desktop's `openManageAccountInNewWindow`.
-    OpenAccountSettings(String),
-    SetAccountProps(String, beeper_core::models::AccountProps),
-    /// "Show in Inbox": the `chat_list_rules` key and option.
-    SetInboxVisibility(String, &'static str),
-    SelectSettingsTab(SettingsTab),
-    SettingsQueryChanged(String),
-    SettingsFocus(usize),
-    /// Moves the focused search result down by the given count, wrapping around.
-    SettingsStep(usize),
-    PickSetting(SettingsHit),
+    /// Desktop's Settings window.
+    Settings(settings::Msg),
+    /// The chat accounts: Settings > Accounts, an account's settings and Show in Inbox, its removal, and its error banner.
+    Accounts(accounts::Msg),
     ToggleRightPanel,
-    ToggleMembers(String),
     ToggleDnd,
-    CycleTheme,
-    SelectTheme(ThemeChoice),
-    SystemTheme(iced::theme::Mode),
-    SetPref(&'static str, u8),
-    ToggleHotkey(&'static str),
-    /// Desktop's click on a `ShortcutRecorder`, which starts to record keys for the hotkey.
-    RecordHotkey(&'static str),
-    /// The Save (true) or Cancel (false) button of the recorder.
-    HotkeyRecorder(bool),
-    /// The Revert button of a hotkey with keys other than the default.
-    RevertHotkey(&'static str),
-    RevertHotkeys,
-    HotkeyQuery(String),
-    /// Opens Desktop's Keyboard Shortcuts list with the search text, or closes it.
-    HotkeysModal(Option<String>),
-    HotkeysScrolled(bool),
-    Zoom(i8),
-    /// The zoom slider moved to a level from -4 to 4, in steps of 10%.
-    ZoomDrag(f32),
-    ZoomRelease,
-    ToggleSetting(fn(&mut BeeperSettings)),
-    /// The Beeper account profile and the chat accounts from `whoami`.
-    CloudAccounts(Result<(Profile, Vec<BridgeAccountInfo>), String>),
-    AvatarLoaded(String, Result<image::Handle, String>),
-    MediaLoaded(String, Result<Frames, String>),
-    TileBaked(String, image::Handle),
-    /// A quoted message that the timeline did not have, or why it could not load.
-    QuoteLoaded(String, Result<Box<Message>, String>),
-    /// The dismiss button of the disconnected banner of an account.
-    DismissAccountError(String),
+    /// Settings > Hotkeys: the hotkey switches, the shortcut recorder, and the Keyboard Shortcuts list.
+    Hotkeys(hotkeys::Msg),
+    /// Desktop's zoom.
+    Zoom(zoom::Msg),
+    /// The avatars, media, quotes and media resolves that tasks load for the views.
+    Loaded(loads::Msg),
     Voice(voice::Msg),
     Record(record::Msg),
-    RetryMedia(String),
-    ResolveMedia(String, String, String),
-    MediaResolved(String, String, String, Result<(), String>),
     Video(video::Msg),
     Gallery(gallery::Msg),
-    /// Ctrl+V and "Paste": Desktop's `paste` handler reads the clipboard.
-    Paste,
-    Pasted(Result<Clip, String>),
-    DiscardAttachment(usize),
-    /// Desktop's `openAttachmentPicker`.
-    PickFiles,
-    FilesPicked(Result<Vec<std::path::PathBuf>, String>),
-    /// Desktop's "Change" of "Downloads location", and the picked folder.
-    PickDownloads,
-    DownloadsPicked(Result<Vec<std::path::PathBuf>, String>),
     /// Opens the emoji picker for a quick reaction (see [`emoji::Picker::pref`]), or closes it.
     QuickEmoji(Option<u8>),
-    SetQuickEmoji(u8, String),
-    /// The files to attach, or the toast text of each file that did not load.
-    FilesLoaded(Vec<Result<PendingMedia, String>>),
-    /// A file drag enters (true) or leaves a window.
-    FileHover(window::Id, bool),
-    FileDropped(window::Id, std::path::PathBuf),
-    LinkPreviewLoaded(String, Result<Option<beeper_core::cloud::PagePreview>, String>),
-    RemoveLinkPreview(String),
-    /// Picks a row of the composer autocomplete.
-    PickSuggestion(usize),
     AnimationTick,
     Pushed(Result<(), String>),
-    /// Desktop's `retryErroredMessage` and `removeErroredMessage` of a failed send.
-    RetrySend(String),
-    RemoveUnsent(String),
-    /// The timeline moved, and is above its bottom (true) or at it.
-    TimelineScrolled(bool),
-    ScrollToBottom,
-    /// The top of the timeline came on screen (true) or went off screen.
-    TopShown(bool),
-    LoadOlder,
-    /// A load of older messages ended.
-    LoadedOlder(Result<(), String>),
-    DevicesLoaded(Result<Vec<DeviceInfo>, String>),
-    MicsLoaded(Result<(String, Vec<String>), String>),
-    SetMicrophone(String),
-    /// Desktop's "Share Analytics" toggle.
-    ShareAnalytics,
-    /// The server saved `analyticsDisabled`, or failed and the toggle goes back to the first value.
-    AnalyticsSaved(bool, Result<(), String>),
+    /// The scroll of the timeline: the jump to its bottom, and the load of older messages at its top.
+    Timeline(timeline::Msg),
     Ask(Option<u8>),
-    /// "Logout" of another device in Settings > Devices, its confirmation, and the end of the logout.
-    AskLogoutDevice(String),
-    LogoutDevice(String),
-    DeviceLoggedOut(String, Result<(), String>),
     /// The close of Desktop's recovery key reminder (`dismissRecoveryCodeReminder`).
     DismissRecoveryReminder,
-    ReminderMenu,
-    OrderReminders(u8),
-    DismissAllReminders,
     Logout,
     LoggedOut(Result<(), String>),
-    StorageScanned(Vec<storage::Entry>),
-    /// The age choice of the clear for all chats (0) or for the open chat (1).
-    StorageAge(usize, usize),
-    /// Toggles a type, as its index in [`storage::Kind::ALL`], for all chats (0) or for the open chat (1).
-    StorageKind(usize, usize),
-    StorageChat(String),
-    /// Clears the chosen storage of all chats (0), the cache (1) or the open chat (2).
-    ClearStorage(u8),
-    StorageCleared(Result<(), String>),
-    /// The "Install to..." choice, as an index into [`MCP_TARGETS`].
-    McpTarget(usize),
-    /// Installs the Beeper MCP server in a client of [`MCP_CLIENTS`] or [`MCP_TARGETS`].
-    McpInstall(&'static str),
-    /// Copies a value of Settings > Integrations; its copy button shows a check for 2 s.
-    CopyField(u8, String),
-    CopyDone(u8),
-    JoinCommunity,
-    CommunityJoined(Result<(), String>),
-    /// A new token request of the Desktop API (no outcome), or the end of one.
-    TokenRequest(String, Option<beeper_core::connect::Outcome>),
-    TokenWrite,
-    TokenExpiry(Expiry),
-    /// Approve or Decline in the "Approve connection" dialog.
-    TokenAnswer(bool),
-    TokenClose,
-    /// Revoke in Approved connections, which asks first.
-    RevokeConnection(String),
-    /// The Remote Access toggle, which asks before it turns on.
-    RemoteAccess(bool),
-    RevokeConfirmed,
-    /// The "+" of Approved connections opens the token dialog, and Escape closes it.
-    AddToken(bool),
-    AddTokenName(String),
-    AddTokenExpiry(Expiry),
-    AddTokenWrite,
-    CreateToken,
-    CopyToken,
+    /// Settings > Integrations: the Desktop API tokens and connections, Remote Access, and the MCP install.
+    Integrations(integrations::Msg),
     OpenQuickLook(String, String),
     OpenUrl(String),
     /// The result of opening a URL in the browser.
     Opened(Result<(), String>),
     CloseModals,
-    ToggleEditHistory(String),
-    /// "Show more" or "Show less" of a message over 40 lines.
-    ToggleClamp(String),
-    HoverEnter(String),
-    ShowQuickReactions,
-    HoverChat(String, bool),
-    DeleteDraft(String),
-    HoverExit(String),
-    DragStart,
-    DragMoved(Point),
-    DragEnd,
-    /// A double click on the sidebar edge gives the sidebar its first width, like Desktop.
-    ResetSidebarWidth,
-    /// The cursor is over a rail space, at this point in it.
-    RailHover(String, Point),
-    RailLeave(String),
-    RailPress,
     /// The pointer came onto (true) or left the header card of the chat, or its member list.
     HeaderHover(bool),
     /// The 500 ms after the pointer left the header card of this generation ran out.
     HeaderHoverEnd(u32),
-    /// Desktop's menu bar: hidden (`None`), shown, or shown with a menu open.
-    MenuBar(Option<Option<usize>>),
-    /// The pointer came onto a menu title, which opens its menu while another menu is open.
-    MenuBarHover(usize),
-    /// An item of the menu bar: the menu bar hides, and the item runs.
-    MenuBarRun(Box<UiMessage>),
-    /// The Cut (true) and Copy items of the Edit menu, on the composer.
-    ComposerClip(bool),
-    /// The Minimize item of the Window menu.
-    MinimizeWindow(window::Id),
-    /// The pointer came onto (`Some`) or left a tile of the pinned grid.
-    PinHover(Option<String>),
-    /// Desktop's `Drop` of the pinned grid (`lY`): a press, a move and the release of a drag of a pin.
-    PinPress,
-    PinDragMoved(Point),
-    PinDragEnd,
-    RailDragMoved(Point),
-    RailDragEnd,
-    WindowOpened(window::Id),
-    /// A window drew a frame, after which its screenshot has content.
-    Drawn(window::Id),
+    /// Desktop's menu bar.
+    MenuBar(menubar::Msg),
+    /// Desktop's pinned chats grid: the hover of a tile, and the drag that orders the pins.
+    Pins(pins::Msg),
     /// A message from a chat window, handled with its pane.
     InWindow(window::Id, Box<UiMessage>),
-    Relaunch,
-    OpenChatWindow(String),
-    WindowClosed(window::Id),
-    CloseRequested(window::Id),
-    Tray(Result<tray::Event, String>),
-    TrayFailed(String),
-    WindowResized(window::Id, Size),
-    AskRemoveAccount(String),
-    RemoveAccount(String),
-    AccountRemoved(String, Result<(), String>),
-    ScreenshotCaptured(window::Id, window::Screenshot),
     KeyPressed(Key, Modifiers),
     /// Text that a key typed outside of a text field in a window.
     WindowText(window::Id, String),
-    /// Desktop's type-to-focus: the composer of the pane takes the text at its end.
-    TypeInComposer(String),
     StoreChanged,
-    FocusRequested(Option<String>),
-    /// Desktop's `second-instance` event with the arguments of the later launch.
-    SecondInstance(Vec<String>),
     /// A room that a `beeper://join-matrix-room` link joined.
     RoomJoined(Result<String, String>),
     /// The network became available or unavailable.
@@ -995,83 +504,6 @@ fn account_option(st: &BeeperStore, account_id: &str, listed: &[String]) -> Stri
         return n.into();
     }
     format!("{n} — {} (cloud)", account_display_name(st, account_id, listed))
-}
-
-/// Whether typed text looks like a phone number: 7 to 15 digits with phone punctuation.
-fn typed_phone(q: &str) -> bool {
-    let digits = q.chars().filter(char::is_ascii_digit).count();
-    (7..=15).contains(&digits) && q.chars().all(|c| c.is_ascii_digit() || " +-().".contains(c))
-}
-
-/// The user of a bridge `resolve_identifier` response, by its Matrix ID.
-fn resolved_user(v: &serde_json::Value) -> User {
-    let ids: Vec<&str> = v["identifiers"].as_array().into_iter().flatten().filter_map(|i| i.as_str()).collect();
-    let find = |scheme: &str| ids.iter().find_map(|i| i.strip_prefix(scheme)).map(str::to_string);
-    User {
-        id: v["mxid"].as_str().or(v["id"].as_str()).unwrap_or_default().into(),
-        full_name: v["name"].as_str().map(Into::into),
-        img_url: v["avatar_url"].as_str().map(Into::into),
-        phone_number: find("tel:"),
-        email: find("mailto:"),
-        ..Default::default()
-    }
-}
-
-/// Desktop's `SD`: a person once per bridge, by phone number, username, email or ID.
-fn person_key(account_id: &str, u: &User) -> String {
-    let id = u.phone_number.as_deref().map(phone_digits);
-    let id = id.or_else(|| u.username.clone()).or_else(|| u.email.clone()).unwrap_or_else(|| u.id.clone());
-    format!("{}:{id}", brand_key(account_id))
-}
-
-/// Desktop's `pb`: the name that sorts a person.
-fn person_name(u: &User) -> &str {
-    [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email]
-        .into_iter()
-        .find_map(|s| s.as_deref())
-        .unwrap_or(&u.id)
-}
-
-/// Desktop's `Chats` category of New Chat: the people of the chats of the accounts, once per bridge and
-/// identifier from their most recent chat, that match the query, by name.
-fn chat_people(st: &BeeperStore, accounts: &[String], only: Option<&str>, q: &str) -> Vec<(String, User)> {
-    let mut found: HashMap<String, (&Chat, &User)> = HashMap::new();
-    let chats = st.chats.iter().filter(|c| accounts.contains(&c.account_id) && only.is_none_or(|a| c.account_id == a));
-    for c in chats {
-        for u in c.participants.items.iter().filter(|u| u.is_self != Some(true)) {
-            let key = person_key(&c.account_id, u);
-            if found.get(&key).is_none_or(|(old, _)| c.last_activity > old.last_activity) {
-                found.insert(key, (c, u));
-            }
-        }
-    }
-    let fields =
-        |u: &User| [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email].map(Clone::clone);
-    let matches =
-        |u: &User| fields(u).into_iter().flatten().chain([u.id.clone()]).any(|f| f.to_lowercase().contains(q));
-    let mut people: Vec<(String, User)> =
-        found.into_values().filter(|(_, u)| matches(u)).map(|(c, u)| (c.account_id.clone(), u.clone())).collect();
-    let rank = |u: &User| {
-        let n = person_name(u).to_lowercase();
-        (n.is_empty(), !n.starts_with(|c: char| c.is_ascii_alphabetic()), n)
-    };
-    people.sort_by_cached_key(|(_, u)| rank(u));
-    people
-}
-
-/// Desktop's `accountDisplayName`: the network, after the user when another account has the same network.
-fn account_display_name(st: &BeeperStore, account_id: &str, accounts: &[String]) -> String {
-    let n = network_label(account_id);
-    let user = account_user(st, account_id);
-    match accounts.iter().filter(|a| network_label(a) == n).count() > 1 && !user.is_empty() {
-        true => format!("{user} · {n}"),
-        false => n.into(),
-    }
-}
-
-/// Desktop's `createThreadWithPhoneNumber` identifier: the digits and `+` of a phone number.
-fn phone_digits(phone: &str) -> String {
-    phone.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect()
 }
 
 /// The email address that linkifyjs finds in a word, without trailing punctuation.
@@ -1237,16 +669,6 @@ fn grouped(n: u64) -> String {
     digits.join(",")
 }
 
-/// Desktop's "Approve connection" dialog of a token request from the Desktop API.
-struct TokenAsk {
-    id: String,
-    /// The client name and version.
-    app: String,
-    write: bool,
-    expiry: Expiry,
-    timed_out: bool,
-}
-
 /// `dir/name`, or `dir/stem (n).ext` with the first free `n`.
 /// Desktop's `downloadsDirPath`: the chosen folder, or the downloads folder of the OS.
 fn downloads_dir(s: &BeeperSettings) -> std::path::PathBuf {
@@ -1337,12 +759,6 @@ const SETTINGS_SIZE: Size = Size::new(800.0, 740.0);
 const MESSAGE_MENU_W: f32 = 270.0;
 /// Desktop's `minSidebarWidth`, the least width of the thread pane and of the chat beside it.
 const MIN_PANE_W: f32 = 240.0;
-const REMINDER_ORDERS: [&str; 4] = [
-    "Order by Least Time Remaining",
-    "Order by Most Time Remaining",
-    "Order by Oldest Message",
-    "Order by Newest Message",
-];
 /// Desktop's `.menu-item` line: 13 px text at the 1.4 line height of `html`.
 const MENU_LINE: f32 = 13.0 * 1.4;
 /// The pitch of Desktop's `.menu-item`: the line, 3 px of padding on each side, and a collapsed 2 px margin.
@@ -1384,44 +800,6 @@ fn last_used_label(at: i64, h24: bool) -> String {
     let year = if y == civil_from_days(today()).0 { String::new() } else { format!(" {y}") };
     let wd = WEEKDAYS[(day_of(at) + 4).rem_euclid(7) as usize];
     format!("{} {d:02} {month}{year}, {:0>8}", &wd[..3], clock(at, h24))
-}
-
-fn remind_label(at: i64, h24: bool) -> String {
-    let wd = WEEKDAYS[(day_of(at) + 4).rem_euclid(7) as usize];
-    format!("{}, {:0>8}", &wd[..3], clock(at, h24))
-}
-
-/// The day of a reminder time, like Desktop's `Today` or `Tomorrow`.
-fn reminder_day(at: i64) -> String {
-    let (d, t) = (day_of(at), today());
-    match d - t {
-        -1 => tr("Yesterday").into(),
-        0 => tr("Today").into(),
-        1 => tr("Tomorrow").into(),
-        _ if (d + 3).div_euclid(7) == (t + 3).div_euclid(7) => tr(WEEKDAYS[(d + 4).rem_euclid(7) as usize]).into(),
-        _ => i18n::date(i18n::Date::Numeric, civil_from_days(d), (0, 0)),
-    }
-}
-
-/// Desktop's `nextScheduledMessageTime`.
-fn next_send(st: &BeeperStore, chat_id: &str) -> Option<i64> {
-    st.scheduled.iter().filter(|s| s.chat_id == chat_id).map(|s| s.send_on).min()
-}
-
-/// Desktop's `qN`: when a Send Later message sends.
-fn send_day(at: i64, h24: bool) -> String {
-    let (d, t, time) = (day_of(at), today(), clock(at, h24));
-    match d - t {
-        0 => trf("Today at %s", &[&time]),
-        1 => trf("Tomorrow at %s", &[&time]),
-        _ if (d + 3).div_euclid(7) == (t + 3).div_euclid(7) => {
-            trf("%1$s at %2$s", &[&tr(WEEKDAYS[(d + 4).rem_euclid(7) as usize]), &time])
-        }
-        _ => {
-            let (y, m, day) = civil_from_days(d);
-            trf("%1$s at %2$s", &[&format!("{m}/{day}/{y}"), &time])
-        }
-    }
 }
 
 /// A flag as the chat menus show it: "Mark as Read" is for every unread chat.
@@ -1550,17 +928,6 @@ static LABEL_ICONS: std::sync::LazyLock<Vec<(&str, svg::Handle)>> = std::sync::L
     };
     include_str!("../assets/label_icons.tsv").lines().map(icon).collect()
 });
-
-fn label_glyph(id: &str) -> Option<&'static svg::Handle> {
-    LABEL_ICONS.iter().find(|i| i.0 == id).map(|i| &i.1)
-}
-
-/// The gradient of a label color. Desktop ignores unknown colors.
-fn label_fill(color: Option<u8>) -> Option<Background> {
-    let (top, bottom) = LABEL_COLORS.get(usize::from(color?)).copied()?;
-    let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, hex(top)).add_stop(1.0, hex(bottom));
-    Some(Background::Gradient(Gradient::Linear(g)))
-}
 
 /// Desktop's `LabelSpaceIcon`: the label color with its icon, or the icon alone.
 fn label_icon<'a>(l: &Label, size: f32, fg: Color) -> El<'a> {
@@ -1776,132 +1143,6 @@ fn edit_open(m: &Message, rules: MessageRules) -> bool {
     m.is_deleted != Some(true) && MessageRules::young(rules.edit_max_age, &m.timestamp)
 }
 
-/// The text of a chat list preview, or a label for its links.
-fn preview_body(m: &Message) -> Option<String> {
-    match m.links.len() {
-        _ if m.poll.is_some() || m.call.is_some() => None,
-        _ if m.html.is_some() => m.html.as_deref().map(beeper_core::codec::html_text),
-        _ if m.text.as_ref().is_some_and(|t| !t.is_empty()) => m.text.clone(),
-        _ if !m.attachments.is_empty() => None,
-        0 => None,
-        1 => Some("🔗 [Link]".to_string()),
-        n => Some(format!("🔗 [{n} links]")),
-    }
-}
-
-/// The text of Desktop's bubble on an unread pinned chat. A new message shows it, and after a minute it hides
-/// when the chat has more unread messages than Desktop's limit for its size.
-fn bubble_text(c: &Chat, launched: i64, now: i64) -> Option<String> {
-    let unread = c.is_unread();
-    let at = c.last_activity.as_deref().map_or(0, |t| millis_from_rfc3339(t).expect("RFC 3339 timestamp"));
-    let limit = match c.participants.total {
-        0..=2 => 3,
-        3..=6 => 5,
-        _ => 10,
-    };
-    if !unread || c.unread_count == 0 || (now - at.max(launched) >= 60_000 && c.unread_count > limit) {
-        return None;
-    }
-    let m = c.preview.as_ref()?;
-    let tag = || message_tag(m).map(|(_, l, d)| d.map_or_else(|| l.to_string(), |(d, _)| format!("{l} {d}")));
-    let text = preview_body(m).or_else(tag)?;
-    let first = preview_sender(c, m).map(sender_first_name);
-    Some(first.map_or_else(|| text.clone(), |f| format!("{f}: {text}")))
-}
-
-/// Desktop's `PinnedThreadListItem` bubble: at most 8em wide, from 3px right of the avatar's top right corner,
-/// centered on the avatar when wider than it, with a half disc below.
-fn pin_bubble<'a>(text: &str, mention: bool, (bg, fg): (Color, Color), cell: f32, av: f32, compact: bool) -> El<'a> {
-    let max = 80f32.min(cell - 4.0);
-    let at_w = if mention { 14.0 } else { 0.0 };
-    let w = (crate::style::text_width(text, 10.0, Weight::Normal) + at_w + 8.0).clamp(22.0, max);
-    let right = (cell + av - 4.0) / 2.0;
-    let x = right + 3.0 + ((w - av - 6.0) / 2.0).max(0.0) - w;
-    let (y, h) = if compact { (10.0, 18.56) } else { (17.0, 20.0) };
-    let line = row![]
-        .push(mention.then(|| ic(icon::AT_SIGN, 10.0).color(fg)))
-        .push(ell(text, w - 8.0 - at_w, 10.0, Weight::Normal).color(fg).line_height(Pixels(h - 8.0)))
-        .spacing(4)
-        .align_y(Center);
-    let bubble = container(line).padding(4).width(w).height(h).center_x(w).style(fill_box(bg, 6.0));
-    let nub = container(Space::new()).width(6).height(3).style(move |_: &Theme| container::Style {
-        background: Some(bg.into()),
-        border: iced::Border { radius: iced::border::Radius::default().bottom(3.0), ..Default::default() },
-        ..Default::default()
-    });
-    stack![pin(bubble).x(x).y(y - h / 2.0), pin(nub).x(right - 9.0).y(y + if compact { 9.0 } else { 10.0 })].into()
-}
-
-/// The media badge of a chat list preview: whether it is a video, and its label.
-/// Desktop's chat list badge for a message's attachments: a `TAG_ICONS` index, the label, and the detail that
-/// shows when the message has no text, with whether that detail is italic.
-type MediaTag = (usize, &'static str, Option<(String, bool)>);
-
-/// The index of Desktop's Poll badge, which shows the `poll-options` icon of the composer.
-const POLL_TAG: usize = 10;
-/// The `TAG_ICONS` indices of the Video badge, whose `videocam` icon the video calls share, and of the call badge.
-const VIDEO_TAG: usize = 1;
-const CALL_TAG: usize = 9;
-
-/// Desktop's `_P`: the badge of a poll, then of a call, then of the attachments.
-fn message_tag(m: &Message) -> Option<MediaTag> {
-    if m.poll.is_some() {
-        return Some((POLL_TAG, trx("Poll", "chat list badge for a poll message"), None));
-    }
-    match &m.call {
-        Some(call) => Some((if call.is_video() { VIDEO_TAG } else { CALL_TAG }, call_label(call), None)),
-        None => media_tag(&m.attachments),
-    }
-}
-
-/// Desktop's `Yle`: the label of a call.
-fn call_label(call: &beeper_core::models::CallAction) -> &'static str {
-    match call.call_type.as_deref() {
-        Some("video") => tr("Video call"),
-        Some("voice") => tr("Voice call"),
-        _ => trx("Call", "generic call type label"),
-    }
-}
-
-fn tag_glyph(tag: usize) -> &'static svg::Handle {
-    if tag == POLL_TAG {
-        &COMPOSER_ICONS[8]
-    } else {
-        &TAG_ICONS[tag]
-    }
-}
-
-fn media_tag(attachments: &[Attachment]) -> Option<MediaTag> {
-    let [a] = attachments else {
-        return (attachments.len() > 1).then(|| (8, tr("Media"), None));
-    };
-    let file = a.file_name.as_deref().unwrap_or_default().to_lowercase();
-    let mime = a.mime_type.as_deref().unwrap_or_default().to_lowercase();
-    let name = a.file_name.clone().map(|f| (f, true));
-    let length = a.duration.map(|d| (voice::clock(d as f32), false));
-    let said = a.transcription.as_ref().map(|t| (format!("“{}”", t.transcription), false));
-    let image = a.attachment_type == "img" || mime.starts_with("image/");
-    Some(match a.attachment_type.as_str() {
-        _ if a.is_sticker == Some(true) => (0, tr("Sticker"), None),
-        _ if a.is_gif == Some(true) => (0, tr("GIF"), None),
-        _ if image => (0, tr("Image"), None),
-        "video" => (1, tr("Video"), length),
-        "audio" if a.is_voice_note == Some(true) => (2, tr("Voice Note"), said.or(length)),
-        "audio" => (3, tr("Audio File"), said.or(name)),
-        _ if file.ends_with(".vcf") || mime == "text/x-vcard" => {
-            let contact = contact_name(a.file_name.as_deref().unwrap_or_default());
-            (4, tr("Contact"), Some((contact, true)))
-        }
-        _ if mime == "text/csv" || file.ends_with(".csv") => (5, tr("CSV"), name),
-        _ if ["application/zip", "application/x-zip-compressed", "multipart/x-zip"].contains(&mime.as_str())
-            || file.ends_with(".zip") =>
-        {
-            (6, tr("ZIP"), name)
-        }
-        _ => (7, tr("Document"), name),
-    })
-}
-
 /// Desktop's contact name from a vCard file name, without a leading `123.ext.` and the `.vcf`.
 fn contact_name(f: &str) -> String {
     let rest = f.split_once('.').filter(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
@@ -1979,27 +1220,6 @@ fn contact_card<'a>(p: &Palette, c: &VCard) -> El<'a> {
     let details = row![avatar(&c.name, 32.0, 0.0, p), meta.push(phones).push(emails)].spacing(8);
     container(column![details, Space::new().width(180)]).padding([8, 10]).style(fill_box(p.received, 0.0)).into()
 }
-
-/// Desktop's chat list badge icons: image, videocam, volume_up, audio_file, account_circle, csv, folder_zip,
-/// draft and photo_library, at its `scale(1.2)` in a 12 px box.
-static TAG_ICONS: std::sync::LazyLock<[svg::Handle; 10]> = std::sync::LazyLock::new(|| {
-    [
-        "M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-80h560v-560H200v560Zm40-80h480L570-480 450-320l-90-120-120 160Zm-40 80v-560 560Z",
-        "M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h480q33 0 56.5 23.5T720-720v180l160-160v440L720-420v180q0 33-23.5 56.5T640-160H160Zm0-80h480v-480H160v480Zm0 0v-480 480Z",
-        "M560-131v-82q90-26 145-100t55-168q0-94-55-168T560-749v-82q124 28 202 125.5T840-481q0 127-78 224.5T560-131ZM120-360v-240h160l200-200v640L280-360H120Zm440 40v-322q47 22 73.5 66t26.5 96q0 51-26.5 94.5T560-320ZM400-606l-86 86H200v80h114l86 86v-252ZM300-480Z",
-        "M430-200q38 0 64-26t26-64v-150h120v-80H480v155q-11-8-23.5-11.5T430-380q-38 0-64 26t-26 64q0 38 26 64t64 26ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z",
-        "M234-276q51-39 114-61.5T480-360q69 0 132 22.5T726-276q35-41 54.5-93T800-480q0-133-93.5-226.5T480-800q-133 0-226.5 93.5T160-480q0 59 19.5 111t54.5 93Zm246-164q-59 0-99.5-40.5T340-580q0-59 40.5-99.5T480-720q59 0 99.5 40.5T620-580q0 59-40.5 99.5T480-440Zm0 360q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q53 0 100-15.5t86-44.5q-39-29-86-44.5T480-280q-53 0-100 15.5T294-220q39 29 86 44.5T480-160Zm0-360q26 0 43-17t17-43q0-26-17-43t-43-17q-26 0-43 17t-17 43q0 26 17 43t43 17Zm0-60Zm0 360Z",
-        "M230-360h120v-60H250v-120h100v-60H230q-17 0-28.5 11.5T190-560v160q0 17 11.5 28.5T230-360Zm156 0h120q17 0 28.5-11.5T546-400v-60q0-17-11.5-31.5T506-506h-60v-34h100v-60H426q-17 0-28.5 11.5T386-560v60q0 17 11.5 30.5T426-456h60v36H386v60Zm264 0h60l70-240h-60l-40 138-40-138h-60l70 240ZM160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h640q33 0 56.5 23.5T880-720v480q0 33-23.5 56.5T800-160H160Zm0-80h640v-480H160v480Zm0 0v-480 480Z",
-        "M640-480v-80h80v80h-80Zm0 80h-80v-80h80v80Zm0 80v-80h80v80h-80ZM447-640l-80-80H160v480h400v-80h80v80h160v-400H640v80h-80v-80H447ZM160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Zm0-80v-480 480Z",
-        "M240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z",
-        "M360-400h400L622-580l-92 120-62-80-108 140Zm-40 160q-33 0-56.5-23.5T240-320v-480q0-33 23.5-56.5T320-880h480q33 0 56.5 23.5T880-800v480q0 33-23.5 56.5T800-240H320Zm0-80h480v-480H320v480ZM160-80q-33 0-56.5-23.5T80-160v-560h80v560h560v80H160Zm160-720v480-480Z",
-        "M798-120q-125 0-247-54.5T329-329Q229-429 174.5-551T120-798q0-18 12-30t30-12h162q14 0 25 9.5t13 22.5l26 140q2 16-1 27t-11 19l-97 98q20 37 47.5 71.5T387-386q31 31 65 57.5t72 48.5l94-94q9-9 23.5-13.5T670-390l138 28q14 4 23 14.5t9 23.5v162q0 18-12 30t-30 12ZM241-600l66-66-17-94h-89q5 41 14 81t26 79Zm358 358q39 17 79.5 27t81.5 13v-88l-94-19-67 67ZM241-600Zm358 358Z",
-    ]
-    .map(|d| {
-        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="80 -880 800 800"><path d="{d}"/></svg>"#);
-        svg::Handle::from_memory(svg.into_bytes())
-    })
-});
 
 fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
     // Desktop's `getLastParticipantName` names no one on an action, like a member change.
@@ -2405,60 +1625,15 @@ fn fmt_phone(s: &str) -> String {
     }
 }
 
-/// Desktop's custom spaces by their space IDs, in the default order.
-const RAIL_VIEWS: [(&str, Option<InboxTab>); 7] = [
-    ("inbox", Some(InboxTab::AllChats)),
-    ("archive", Some(InboxTab::Archived)),
-    (LABEL_NUDGE, None),
-    ("reminders", Some(InboxTab::Reminders)),
-    ("scheduled", Some(InboxTab::SendLater)),
-    ("requests", Some(InboxTab::Requests)),
-    ("low_priority", Some(InboxTab::LowPriority)),
-];
-const LABEL_NUDGE: &str = "create-label-nudge";
-
-/// Desktop's `allSpaces` in the default order.
-fn all_spaces(st: &BeeperStore) -> Vec<String> {
-    let nudge = st.feature("labels-v2").show && st.labels.is_empty() && !st.settings.ever_labeled;
-    let views = RAIL_VIEWS.iter().filter(|v| nudge || v.0 != LABEL_NUDGE).map(|v| v.0.to_string());
-    views.chain(rail_accounts(st)).collect()
-}
-
-/// Desktop's `orderedSidebarSpaces`: the spaces of the `spaces_order` setting in its order, without the hidden
-/// ones, then the other spaces in the default order.
-fn rail_spaces(st: &BeeperStore) -> Vec<String> {
-    ordered_spaces(all_spaces(st), &st.settings.spaces_order)
-}
-
 /// The rail ID of Desktop's draft label, which shows while Create Label is open.
 /// Desktop's `Jee` sidebar width of 320px, less the 68px space bar.
 const SIDEBAR_WIDTH: f32 = 252.0;
 /// Desktop's `wxe`: the number of actions that Undo remembers.
 const UNDO_DEPTH: usize = 100;
-/// Desktop's default toast timeout, counted in ticks while the toast is not paused.
-const TOAST_TIMEOUT: Duration = Duration::from_secs(5);
-/// Desktop's `Txe` shows its "Undo:" toast for a second.
-const UNDO_NOTE_TIMEOUT: Duration = Duration::from_secs(1);
-const TOAST_TICK: Duration = Duration::from_millis(250);
 
 /// Desktop's `Oct`: a typing notice ends 3 seconds after the last key.
 const TYPING_STOP: Duration = Duration::from_secs(3);
-/// Desktop's `toasts-list` shows the last 10 toasts.
-const TOASTS_SHOWN: usize = 10;
 const LABEL_DRAFT: &str = "label:draft";
-
-/// Desktop's `setDraftLabel`: the draft label named `name` is a label space, and it takes the order slot of the nudge.
-fn draft_rail_spaces(st: &BeeperStore, name: &str) -> Vec<String> {
-    let mut all: Vec<String> = all_spaces(st).into_iter().filter(|s| s != LABEL_NUDGE).collect();
-    let key = name.to_lowercase();
-    let after = |s: &String| rail_label(st, s).is_some_and(|l| l.name.to_lowercase() > key);
-    all.insert(all.iter().position(after).unwrap_or(all.len()), LABEL_DRAFT.into());
-    let order = st.settings.spaces_order.iter().map(|o| match o.id == LABEL_NUDGE {
-        true => SpaceOrder { id: LABEL_DRAFT.into(), ..o.clone() },
-        false => o.clone(),
-    });
-    ordered_spaces(all, &order.collect::<Vec<_>>())
-}
 
 fn ordered_spaces(mut all: Vec<String>, order: &[SpaceOrder]) -> Vec<String> {
     let at = |id: &str| order.iter().position(|o| o.id == id);
@@ -2472,26 +1647,6 @@ fn hidden_spaces(st: &BeeperStore) -> Vec<String> {
     let all = all_spaces(st);
     let hidden = st.settings.spaces_order.iter().filter(|o| !o.visible && all.contains(&o.id));
     hidden.map(|o| o.id.clone()).collect()
-}
-
-/// The `chat_menu` key of the sidebar overflow menu.
-const RAIL_MORE: &str = "rail:more";
-
-/// Where `account_menu` shows: on a sidebar space, in the Edit Spaces gear menu, or on the sidebar header.
-#[derive(Clone, Copy, PartialEq)]
-enum SpaceMenu {
-    Rail,
-    Gear,
-    Header,
-    /// The rows of the Accounts settings, like Desktop's `PL` with `hideSettings` and `hideAddRemoveAccounts`.
-    Prefs,
-    /// The Space Options submenu of the space sheet (`sfe`), which keeps `chat_sub` at `Some(1)` while it is open.
-    Options,
-}
-
-/// The number of rows of Desktop's label items (`kS`): the name heading, Mute or Unmute, and Label Settings.
-fn label_rows(l: &Label) -> f32 {
-    2.0 + f32::from(u8::from(!l.name.is_empty()))
 }
 
 /// The `chat_menu` key of Desktop's space sheet (`zft`), which opens from the sidebar header title.
@@ -2578,93 +1733,6 @@ const CARD_H: f32 = 88.0 + 8.0 + 18.0 + 8.0;
 /// The Chat Info context menus: the identity header, the title, a member, a bookmark and a contact detail.
 const INFO_MENUS: [&str; 5] = ["info:", "copy:", "member:", "bookmark:", "contact:"];
 
-/// The Chat Info menus. The header menus of Desktop's `$fe`: `info:<chat>` has the edit actions and
-/// `copy:<chat>`, the menu of the clicked title, adds "Copy <title>" above them. `copy:<chat>\n<text>` copies the
-/// clicked line instead.
-fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) -> Vec<Option<(String, Option<UiMessage>)>> {
-    if let Some((cid, kind)) = key.strip_prefix("contact:").and_then(|k| k.split_once(' ')) {
-        let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
-        let u = c.participants.items.iter().find(|u| u.is_self != Some(true)).expect("the other member");
-        let item = |label: String, msg| Some((label, Some(msg)));
-        return match kind {
-            "phone" => {
-                let n = u.phone_number.as_deref().expect("a phone number");
-                let shown = fmt_phone(n);
-                vec![
-                    item(format!("Call {shown}"), UiMessage::OpenUrl(format!("tel:{n}"))),
-                    item(format!("Copy {shown}"), UiMessage::CopyText(shown)),
-                ]
-            }
-            "email" => {
-                let e = u.email.clone().expect("an email");
-                vec![
-                    item(format!("Email {e}"), UiMessage::OpenUrl(format!("mailto:{e}"))),
-                    item(format!("Copy {e}"), UiMessage::CopyText(e)),
-                ]
-            }
-            _ => vec![item(tr("Copy Username").into(), UiMessage::CopyText(handle(u).expect("a username")))],
-        };
-    }
-    if let Some((cid, mid)) = key.strip_prefix("bookmark:").and_then(|k| k.split_once(' ')) {
-        let jump = st.loaded(mid).is_some().then(|| UiMessage::JumpTo(cid.into(), mid.into()));
-        let remove = UiMessage::RemoveBookmark(mid.into());
-        return vec![
-            Some((tr("Jump to Message").into(), jump)),
-            None,
-            Some((tr("Remove Bookmark").into(), Some(remove))),
-        ];
-    }
-    if let Some((cid, uid)) = key.strip_prefix("member:").and_then(|k| k.split_once(' ')) {
-        let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
-        let u = c.participants.items.iter().find(|u| u.id == uid).expect("a member of the chat");
-        let copy = |label: &'static str, text: Option<String>| {
-            text.map(|t| Some((tr(label).to_string(), Some(UiMessage::CopyText(t)))))
-        };
-        let username = handle(u);
-        let call = u.phone_number.as_ref().map(|n| {
-            Some((
-                trx("Call", "button label to start a phone call").to_string(),
-                Some(UiMessage::OpenUrl(format!("tel:{n}"))),
-            ))
-        });
-        let send = dm(&c.account_id)
-            .then(|| Some((tr("Send Message").to_string(), Some(UiMessage::MessageMember(cid.into(), uid.into())))));
-        let ask = |label: &'static str, ask, on: bool| {
-            Some((tr(label).to_string(), on.then(|| UiMessage::AskMember(ask, cid.into(), uid.into()))))
-        };
-        return [
-            call,
-            send,
-            copy("Copy Phone Number", u.phone_number.as_deref().map(fmt_phone)),
-            copy("Copy Email", u.email.clone()),
-            copy("Copy Username", username),
-            copy("Copy Name", u.full_name.clone()),
-            Some(None),
-            Some(ask("Make Group Admin…", ASK_MAKE_ADMIN, u.is_admin != Some(true) && u.manage & MANAGE_ROLE != 0)),
-            Some(ask("Remove from Group…", ASK_REMOVE_MEMBER, u.manage & MANAGE_KICK != 0)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-    }
-    let (copy, cid) = match key.strip_prefix("copy:") {
-        Some(cid) => (true, cid),
-        None => (false, key.strip_prefix("info:").expect("an info menu key")),
-    };
-    let (cid, text) = cid.split_once('\n').map_or((cid, None), |(cid, text)| (cid, Some(text)));
-    let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
-    let group = can_edit_group(c).then(|| {
-        (tr("Edit Group").to_string(), (c.is_request != Some(true)).then(|| UiMessage::OpenEditGroup(c.id.clone())))
-    });
-    let personal =
-        can_edit_for_me(st, c).then(|| (tr("Edit for Me").to_string(), Some(UiMessage::OpenEditForMe(c.id.clone()))));
-    let theme = Some((tr("Chat Theme").to_string(), Some(UiMessage::OpenChatTheme(c.id.clone()))));
-    let text = text.unwrap_or(&c.title);
-    let title = copy.then(|| Some((trf("Copy %s", &[&text]), Some(UiMessage::CopyText(text.to_string())))));
-    let edits = [group, personal, theme].into_iter().flatten().map(Some);
-    title.into_iter().chain(copy.then_some(None)).chain(edits).collect()
-}
-
 /// Desktop's `setPersonalRoomName` gate: the feature is on or the chat has a personal name or photo, and the chat
 /// is a Matrix room that is not merged (`canSetPersonalOverrides`, `personalOverridesApply`).
 fn can_edit_for_me(st: &BeeperStore, c: &Chat) -> bool {
@@ -2689,19 +1757,22 @@ fn more_menu(st: &BeeperStore) -> Vec<Option<(String, UiMessage)>> {
         items.push(None);
     }
     if st.feature("labels-v2").show {
-        items.extend([Some((tr("New Label…").into(), UiMessage::OpenCreateLabel(Vec::new()))), None]);
+        items.extend([Some((tr("New Label…").into(), UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())))), None]);
     }
     items.push(Some((tr("Edit Spaces…").into(), UiMessage::OpenEditSpaces)));
-    items.push(Some((tr("Add/Remove Accounts…").into(), UiMessage::OpenSettings(SettingsTab::Accounts))));
+    items.push(Some((
+        tr("Add/Remove Accounts…").into(),
+        UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)),
+    )));
     items
 }
 
 /// Desktop's `selectSpace` for a menu row of the space `id`. The Create Label space opens Create Label.
 fn space_msg(id: &str) -> UiMessage {
     match RAIL_VIEWS.iter().find(|v| v.0 == id).map(|v| v.1) {
-        Some(Some(tab)) => UiMessage::SelectTab(tab),
-        Some(None) => UiMessage::OpenCreateLabel(Vec::new()),
-        None => UiMessage::SelectAccount(Some(id.into())),
+        Some(Some(tab)) => UiMessage::ChatList(chat_list::Msg::SelectTab(tab)),
+        Some(None) => UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())),
+        None => UiMessage::Rail(rail::Msg::Select(Some(id.into()))),
     }
 }
 
@@ -2709,11 +1780,6 @@ fn space_msg(id: &str) -> UiMessage {
 fn request_answers(c: &Chat) -> (bool, bool) {
     let request = c.is_request == Some(true);
     (request && c.can_accept_request, request && c.delete_modes & DELETE_FOR_ME != 0)
-}
-
-/// The account of an account or network space.
-fn rail_owner(st: &BeeperStore, id: &str) -> String {
-    network_space(st, id).map_or(id, |n| n.account_id.as_str()).to_string()
 }
 
 /// Desktop's `getSpaceName`.
@@ -2787,55 +1853,6 @@ fn space_subtitle(st: &BeeperStore, id: &str) -> Option<String> {
         LABEL_NUDGE => return None,
         _ => chats(count(&|c| in_rail_entry(st, id, c) && listed(c))),
     })
-}
-
-/// The account, network and label spaces in the default order.
-fn rail_accounts(st: &BeeperStore) -> Vec<String> {
-    let mut accounts: Vec<String> =
-        std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone())).collect();
-    accounts.sort_by_cached_key(|a| {
-        (a != "hungryserv", st.chats.iter().position(|c| &c.account_id == a).unwrap_or(usize::MAX))
-    });
-    let spaces = st.network_spaces.iter().filter(|n| accounts.contains(&n.account_id) && space_shown(st, n));
-    accounts.extend(spaces.map(|n| n.id.clone()).collect::<Vec<_>>());
-    if st.feature("labels-v2").on {
-        let mut labels: Vec<&Label> = st.labels.iter().collect();
-        labels.sort_by_cached_key(|l| l.name.to_lowercase());
-        accounts.extend(labels.into_iter().map(|l| format!("label:{}", l.id)));
-    }
-    accounts
-}
-
-/// Finds the label of a rail entry.
-fn rail_label<'a>(st: &'a BeeperStore, id: &str) -> Option<&'a Label> {
-    let id = id.strip_prefix("label:")?;
-    let id = st.sent.get(id).map_or(id, String::as_str);
-    st.labels.iter().find(|l| l.id == id)
-}
-
-/// Desktop's `allSpaces`: WhatsApp Communities and Telegram Topics are spaces only when their setting is on.
-fn space_shown(st: &BeeperStore, n: &NetworkSpace) -> bool {
-    match account_network(&n.account_id).kind {
-        NetworkKind::WhatsApp => st.settings.on("whatsappCommunities"),
-        NetworkKind::Telegram => st.settings.on("telegramTopics"),
-        _ => true,
-    }
-}
-
-/// Finds the network space of a rail entry. Other rail entries are accounts.
-fn network_space<'a>(st: &'a BeeperStore, id: &str) -> Option<&'a NetworkSpace> {
-    st.network_spaces.iter().find(|n| n.id == id && space_shown(st, n))
-}
-
-/// Desktop's space filter: an account shows the chats that are not in one of its shown network spaces.
-fn in_rail_entry(st: &BeeperStore, id: &str, c: &Chat) -> bool {
-    if let Some(l) = rail_label(st, id) {
-        return c.label_ids.contains(&l.id);
-    }
-    match network_space(st, id) {
-        Some(n) => c.account_id == n.account_id && c.network_id.as_ref() == Some(&n.id),
-        None => c.account_id == id && c.network_id.as_ref().is_none_or(|n| network_space(st, n).is_none()),
-    }
 }
 
 /// The stored message `id`, which can be in a chat that is not loaded.
@@ -3057,7 +2074,12 @@ fn send_rise(st: &BeeperStore, m: &Message) -> Option<f32> {
 
 /// Desktop's `FocusScope.activate`: a composer action or a message selection activates the scope of its pane.
 fn activates(msg: &UiMessage) -> bool {
-    matches!(msg, UiMessage::ComposerEdit(_) | UiMessage::ClickMessage(_) | UiMessage::SelectMessages(_))
+    matches!(
+        msg,
+        UiMessage::Composer(composer::Msg::Edit(_))
+            | UiMessage::Message(message::Msg::Click(_))
+            | UiMessage::Message(message::Msg::Select(_))
+    )
 }
 
 /// Finds the offset of a scrollable that shows a container: in the middle, or with the least scroll when `nearest`.
@@ -3114,13 +2136,6 @@ impl iced::advanced::widget::Operation<f32> for Locate {
     }
 }
 
-/// The forward dialog: the messages in timeline order, the picked chats, and the search text.
-struct Forward {
-    mids: Vec<String>,
-    picked: Vec<String>,
-    query: String,
-}
-
 /// If you can delete a message for everyone, like Desktop's Media window `G`: the chat fully supports deletion, you
 /// sent the message, and it is younger than the `delete_max_age` of the network.
 fn deletable(st: &BeeperStore, m: &Message) -> bool {
@@ -3150,13 +2165,17 @@ fn delete_dialog(st: &BeeperStore, ms: &[&Message]) -> Option<(String, Vec<(&'st
     };
     let modes: Vec<Option<&'static str>> = mine.iter().map(|m| mode(m)).collect();
     let label = modes.first().copied().flatten().filter(|&l| others.is_empty() && modes.iter().all(|&m| m == Some(l)));
-    let delete = mine.iter().map(|m| UiMessage::DeleteMessage(m.chat_id.clone(), m.id.clone())).collect();
+    let delete =
+        mine.iter().map(|m| UiMessage::Message(message::Msg::Delete(m.chat_id.clone(), m.id.clone()))).collect();
     let mut buttons: Vec<(&'static str, UiMessage)> =
         label.map(|l| (trx(l, "confirmation button"), UiMessage::Commands(delete))).into_iter().collect();
     let removable: Vec<&Message> = ms.iter().copied().filter(|m| !m.silent() && !pending(st, m)).collect();
     if !removable.is_empty() {
         let ids = removable.iter().map(|m| m.id.clone()).collect();
-        buttons.push((trx("Remove from Beeper", "confirmation button"), UiMessage::RemoveFromBeeper(ids)));
+        buttons.push((
+            trx("Remove from Beeper", "confirmation button"),
+            UiMessage::Message(message::Msg::RemoveFromBeeper(ids)),
+        ));
     }
     let n = mine.len();
     let body = match (removable.is_empty(), n) {
@@ -3270,23 +2289,6 @@ fn file_icon(a: &Attachment) -> &'static svg::Handle {
     &FILE_ICONS[k]
 }
 
-/// The chats the forward dialog offers: recent chats, or all chats that match the query.
-fn forward_chats<'s>(st: &'s BeeperStore, f: &Forward) -> Vec<&'s Chat> {
-    let q = f.query.trim().to_lowercase();
-    let mut v: Vec<&Chat> = match q.is_empty() && !st.recent_chat_ids.is_empty() {
-        true => st.recent_chat_ids.iter().filter_map(|id| st.find_chat(id)).collect(),
-        false => {
-            let hit =
-                |c: &&Chat| c.title.to_lowercase().contains(&q) || chat_search_subtitle(c).to_lowercase().contains(&q);
-            let mut v: Vec<&Chat> = st.chats.iter().filter(hit).collect();
-            v.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
-            v
-        }
-    };
-    v.retain(|c| c.flags & CHAT_HIDDEN == 0 && !f.picked.contains(&c.id));
-    v
-}
-
 /// CSS `filter: brightness(k)`.
 fn brightness(c: Color, k: f32) -> Color {
     Color { r: c.r * k, g: c.g * k, b: c.b * k, ..c }
@@ -3330,27 +2332,9 @@ pub fn short_title(c: &Chat) -> &str {
     }
 }
 
-/// Desktop's `Toasts-module__container`: no border, and the `--shadow-medium-15` shadow.
-fn toast_box(bg: Color, p: &Palette) -> impl Fn(&Theme) -> container::Style + Copy {
-    glow_box(bg, p.shadow, 10.0, 1.0, 10.0)
-}
-
 fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
     svg(h.clone()).width(size).height(size).opacity(color.a).style(move |_, _| svg::Style { color: Some(color) }).into()
 }
-
-/// Desktop's `Archive`, `Inbox` and `LowPriority` assets, which its archive and Low Priority toasts show, its `Undo`
-/// icon, and its `Lock` icon of the recovery key reminder.
-static TOAST_ICONS: std::sync::LazyLock<[svg::Handle; 5]> = std::sync::LazyLock::new(|| {
-    [
-        "M4.556 17a1.5 1.5 0 0 1-1.1-.457A1.5 1.5 0 0 1 3 15.444V5.722q0-.292.097-.525.098-.232.253-.447l1.089-1.322a1 1 0 0 1 .389-.321Q5.06 3 5.333 3h9.334q.272 0 .505.107a1 1 0 0 1 .39.32L16.65 4.75q.156.214.253.447t.097.525v9.722a1.5 1.5 0 0 1-.457 1.1 1.5 1.5 0 0 1-1.099.456zm.31-11.667h10.267l-.66-.777H5.527zm-.31 1.556v8.555h10.888V6.89zM10 14.667l3.111-3.111-1.089-1.09-1.244 1.245V8.444H9.222v3.267l-1.244-1.244-1.09 1.089z",
-        "M15.833 2.5H4.158c-.925 0-1.65.742-1.65 1.667L2.5 15.833A1.66 1.66 0 0 0 4.158 17.5h11.675c.917 0 1.667-.75 1.667-1.667V4.167c0-.925-.75-1.667-1.667-1.667m0 10H12.5c0 1.383-1.125 2.5-2.5 2.5a2.5 2.5 0 0 1-2.5-2.5H4.158V4.167h11.675z",
-        "M11.667 4.167h6.666v1.556h-6.666zm0 4.278h6.666V10h-6.666zm0 4.278h6.666v1.555h-6.666zm-10-3.5c0 2.784 2.433 5.055 5.416 5.055H7.5v1.556L10 13.5l-2.5-2.333v1.556h-.417c-2.066 0-3.75-1.572-3.75-3.5 0-1.93 1.684-3.5 3.75-3.5H10V4.167H7.083c-2.983 0-5.416 2.271-5.416 5.056",
-        "M5.833 15.833v-1.667h5.917q1.312 0 2.281-.833.969-.834.969-2.083t-.969-2.084q-.969-.833-2.281-.833H6.5L8.667 10.5 7.5 11.666 3.333 7.5 7.5 3.333 8.667 4.5 6.5 6.666h5.25q2.021 0 3.469 1.313t1.448 3.27-1.448 3.271-3.469 1.313z",
-        "M9.996 2.712a3.9 3.9 0 0 1 1.86.461q.865.462 1.392 1.377.535.909.535 2.264v1.745q.569.079.9.423.433.447.433 1.333v5.178q0 .9-.432 1.347t-1.26.448H6.576q-.827 0-1.26-.448-.432-.446-.432-1.347v-5.178q0-.886.432-1.333.333-.344.9-.423V6.814q0-1.355.528-2.264.535-.915 1.4-1.377a3.9 3.9 0 0 1 1.852-.46m0 1.296q-.651 0-1.208.308-.55.308-.879.901-.33.594-.33 1.457v1.86h4.849v-1.86q0-.864-.337-1.457a2.25 2.25 0 0 0-.886-.901 2.43 2.43 0 0 0-1.209-.308",
-    ]
-    .map(|d| svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="{d}"/></svg>"#).into_bytes()))
-});
 
 static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
     let light = THEME_WINDOW.replace("WIN", "#f5f5f7").replace("LINE", "#d9d9de");
@@ -3381,7 +2365,7 @@ fn theme_cards<'a>(p: &Palette, current: ThemeChoice) -> El<'a> {
         button(column![img, label].spacing(6).align_x(Center))
             .padding(Padding { top: 7.0, right: 13.0, bottom: 9.0, left: 13.0 })
             .style(btn_style([CLEAR, p.hover, CLEAR], [p.strong; 3], 8.0))
-            .on_press_maybe((!on).then_some(UiMessage::SelectTheme(t)))
+            .on_press_maybe((!on).then_some(UiMessage::Settings(settings::Msg::SelectTheme(t))))
             .into()
     });
     container(Row::with_children(cards).spacing(4)).center_x(Fill).padding([14, 0]).into()
@@ -3400,18 +2384,6 @@ fn duration(n: usize, unit: &str) -> String {
         "year" | "years" => trn("%d year", "%d years", n, &[&n]),
         _ => panic!("no unit {unit}"),
     }
-}
-
-/// The width of a GIF of the carousel, 215 px high like Desktop's `tinymp4` videos.
-fn gif_width(g: &KlipyGif) -> f32 {
-    let (w, h) = g.preview_size;
-    (215.0 * w as f32 / h.max(1) as f32).round().max(48.0)
-}
-
-/// Loads the page of GIFs at `pos` for the query `q`.
-fn gif_page(q: String, pos: String) -> Task<UiMessage> {
-    let more = !pos.is_empty();
-    Task::perform(beeper_core::cloud::klipy_gifs(q.clone(), pos), move |r| UiMessage::GifsLoaded(q.clone(), more, r))
 }
 
 fn pref_row<'a>(
@@ -4112,23 +3084,6 @@ impl BeeperGuiApp {
         std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1))
     }
 
-    /// The chats that the windows show stay loaded: the chats of the panes and their threads, of the poll vote
-    /// windows, and of the voice note that plays. A chat that a sync removed leaves the windows at `StoreChanged`.
-    fn keep_shown(&mut self) {
-        let panes = self.panes().flat_map(|p| std::iter::once(p).chain(p.thread.as_deref()));
-        let chats = panes.filter_map(|p| p.selected_chat_id.as_ref());
-        let chats = chats.chain(self.vote_windows.iter().map(|w| &w.1)).chain(self.track_chat());
-        let st = self.store.read();
-        let shown: Vec<String> = chats.filter_map(|c| st.resolve_canonical_chat_id(c)).collect();
-        if st.shown == shown {
-            return;
-        }
-        drop(st);
-        let mut st = self.store.write();
-        st.shown = shown.clone();
-        shown.iter().for_each(|c| st.load_chat(c));
-    }
-
     pub fn boot(store: SharedStore) -> (Self, Task<UiMessage>) {
         let mut app = Self::new(store);
         let signed_in = app.pane.selected_chat_id.is_some();
@@ -4145,8 +3100,11 @@ impl BeeperGuiApp {
         let link = app.store.write().config.link.take();
         let link = link.map(|l| app.open_link(&l));
         let onboard = (!signed_in && app.store.read().signed_in()).then(|| app.resume_onboarding());
-        let tasks =
-            [open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme), app.load_avatars()];
+        let tasks = [
+            open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0))),
+            iced::system::theme().map(|a0| UiMessage::Settings(settings::Msg::SystemTheme(a0))),
+            app.load_avatars(),
+        ];
         (app, Task::batch(tasks.into_iter().chain(cloud).chain(restore).chain(link).chain(onboard)))
     }
 
@@ -4164,7 +3122,7 @@ impl BeeperGuiApp {
                     let bytes = beeper_core::matrix::thumbnail(client, u).await?;
                     tokio::task::spawn_blocking(move || round_avatar(&bytes)).await.expect("avatar worker thread")
                 },
-                move |r| UiMessage::AvatarLoaded(url, r),
+                move |r| UiMessage::Loaded(loads::Msg::Avatar(url, r)),
             )
         }))
     }
@@ -4245,26 +3203,6 @@ impl BeeperGuiApp {
             Stack::with_children(layers).push(count).width(size).height(size).into()
         };
         container(face).style(fill_box(Color { a: 0.1, ..self.pal.strong }, size / 2.0)).into()
-    }
-
-    /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.
-    fn open_child(&self, size: Size) -> (window::Id, Task<UiMessage>) {
-        let (id, open) =
-            window::open(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
-        // The main window, or the sign-in window of the onboarding.
-        let (parent, around) = match self.main_window {
-            Some(main) => (main, self.pane.size),
-            None => (self.login_window.expect("the main or the sign-in window is open"), login::SIZE),
-        };
-        let offset = Vector::new((around.width - size.width) / 2.0, (around.height - size.height) / 2.0);
-        // Desktop keeps the left and the top edge of a modal on the screen.
-        let center = move |_| {
-            window::position(parent).then(move |at| match at {
-                Some(at) => window::move_to(id, Point::new((at.x + offset.x).max(0.0), (at.y + offset.y).max(0.0))),
-                None => Task::none(),
-            })
-        };
-        (id, open.then(center))
     }
 
     /// Desktop's `ga` (`mainWindowSetSize`): window `id` takes `size`, at most its screen, grows or shrinks around its
@@ -4350,27 +3288,6 @@ impl BeeperGuiApp {
         state.map(move |(max, size, at)| write_window_state(&path, key, max, size, at)).discard()
     }
 
-    fn window_settings(size: Size) -> window::Settings {
-        window::Settings {
-            size,
-            min_size: Some(Size::new(330.0, 400.0)),
-            exit_on_close_request: false,
-            icon: Some({
-                let img =
-                    ::image::load_from_memory(include_bytes!("../assets/icon.png")).expect("the app icon is a PNG");
-                let img = img.into_rgba8();
-                let (w, h) = img.dimensions();
-                window::icon::from_rgba(img.into_raw(), w, h).expect("the app icon is valid RGBA")
-            }),
-            #[cfg(target_os = "linux")]
-            platform_specific: window::settings::PlatformSpecific {
-                application_id: beeper_core::config::INSTALL_ID.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    }
-
     /// Desktop's `subwindow-state`: the chat and settings windows to open again at the next launch.
     fn save_subwindows(&self) {
         let chats = self.chat_windows.iter().filter(|w| w.1.thread_root.is_none());
@@ -4397,7 +3314,7 @@ impl BeeperGuiApp {
             "thread" => {
                 let id = w["threadId"].as_str().expect("a thread window has a chat").to_owned();
                 let known = self.store.read().resolve_chat_idx(&id).is_some();
-                known.then(|| self.update(UiMessage::OpenChatWindow(id)))
+                known.then(|| self.update(UiMessage::Window(windows::Msg::OpenChat(id))))
             }
             _ => Some(self.open_settings(self.active_settings_tab)),
         });
@@ -4665,7 +3582,9 @@ impl BeeperGuiApp {
         self.status_banner = tr("Composing chat...").into();
         self.sticky_banner = Some(self.status_banner.clone());
         let create = beeper_core::matrix::create_dm(self.provision(&account), phone.unwrap_or(user.id));
-        Task::perform(create, move |r| UiMessage::DmCreated(draft, account.clone(), quote.clone(), r))
+        Task::perform(create, move |r| {
+            UiMessage::NewChat(new_chat::Msg::DmCreated(draft, account.clone(), quote.clone(), r))
+        })
     }
 
     /// Selects a direct chat and puts a quote before its draft, like Desktop's `replyPrivately`.
@@ -4696,116 +3615,6 @@ impl BeeperGuiApp {
             self.status_banner = trf(toast, &[&net]);
         }
         ok
-    }
-
-    /// Desktop's `GifPicker` keys: Down selects the first GIF, Left and Right move the selection, Up goes back to the
-    /// search, Enter sends the selected GIF, and Escape closes the picker and focuses the composer.
-    fn gif_key(&mut self, key: &Key) -> Option<Task<UiMessage>> {
-        let n = self.gifs.len();
-        let select = |app: &mut Self, i: usize| {
-            app.gif_sel = Some(i);
-            // Desktop's `scrollIntoView` of the selected GIF, to the nearest edge.
-            let x = 14.0 + app.gifs[..i].iter().map(|g| gif_width(g) + 4.0).sum::<f32>();
-            let (at, width) = app.gif_view;
-            let to = match () {
-                _ if x < at => x,
-                _ if x + gif_width(&app.gifs[i]) > at + width => x + gif_width(&app.gifs[i]) - width,
-                _ => return Task::none(),
-            };
-            operation::scroll_to("gif-carousel", operation::AbsoluteOffset { x: to, y: 0.0 })
-        };
-        Some(match (key.as_ref(), self.gif_sel) {
-            (Key::Named(Named::ArrowUp), _) => {
-                self.gif_sel = None;
-                Task::batch([operation::focus("gif-search-input"), operation::move_cursor_to_end("gif-search-input")])
-            }
-            (Key::Named(Named::ArrowDown), None) if n > 0 => select(self, 0),
-            (Key::Named(Named::ArrowLeft), Some(i)) => select(self, i.saturating_sub(1).min(n - 1)),
-            (Key::Named(Named::ArrowRight), Some(i)) => select(self, (i + 1).min(n - 1)),
-            (Key::Named(Named::Enter), Some(i)) if i < n => self.update(UiMessage::PickGif(self.gifs[i].clone())),
-            (Key::Named(Named::Escape), _) => {
-                self.pane.picker = None;
-                operation::focus("composer-input")
-            }
-            _ => return None,
-        })
-    }
-
-    /// Desktop's `downloadGif`: downloads the format of the GIF that the open chat takes. An MP4 is measured like a
-    /// picked video.
-    fn download_gif(&self, g: KlipyGif) -> Task<UiMessage> {
-        let st = self.store.read();
-        let chat = &st.chats
-            [st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
-        let Some((url, size, mp4)) = portal::gif_format(&g, &chat.file) else { return Task::none() };
-        let (url, name) = (url.to_string(), format!("{}.{}", g.id, if mp4 { "mp4" } else { "gif" }));
-        let load = async move {
-            let bytes = beeper_core::cloud::http_bytes(&url).await?;
-            let load = move || match mp4 {
-                true => {
-                    let path = std::env::temp_dir().join(format!("beeper-rs-{}-{name}", std::process::id()));
-                    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-                    let (f, frames) = (portal::load_file(&path), portal::video_frames(&path, true));
-                    std::fs::remove_file(&path).expect("remove the downloaded GIF");
-                    Ok(PendingMedia { is_gif: true, size, frames: frames?, ..f? })
-                }
-                false => {
-                    let frames = decode_media(bytes.clone())?;
-                    let mime = "image/gif".into();
-                    Ok(PendingMedia { bytes, name, mime, is_gif: true, size, frames, duration: None, sticker: None })
-                }
-            };
-            tokio::task::spawn_blocking(load).await.expect("GIF load thread")
-        };
-        Task::perform(load, UiMessage::GifDownloaded)
-    }
-
-    /// Desktop's `loadStickerPacks` when the sticker picker opens: the packs of the open chat.
-    fn load_sticker_packs(&mut self) -> Task<UiMessage> {
-        (self.pane.stickers, self.pane.sticker_tab) = (None, None);
-        let room = self.pane.selected_chat_id.clone().expect("an open chat");
-        Task::perform(beeper_core::matrix::sticker_packs(self.store.clone(), room), UiMessage::StickerPacks)
-    }
-
-    /// Desktop's `onSelect` of the sticker picker: an animated sticker needs a chat that takes it, and the image
-    /// comes as an attachment named by its first shortcode.
-    fn pick_sticker(&mut self, s: Sticker) -> Task<UiMessage> {
-        use beeper_core::media::{animated, takes_sticker};
-        self.pane.picker = None;
-        let st = self.store.read();
-        let chat = &st.chats
-            [st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
-        let mime = s.info["mimetype"].as_str().map(str::to_string);
-        if mime.as_deref().is_some_and(|m| animated(m) && !takes_sticker(&chat.file, m)) {
-            drop(st);
-            self.status_banner = tr("This animated sticker can't be sent in this chat.").into();
-            return Task::none();
-        }
-        let fetch = beeper_core::matrix::media(st.matrix.clone(), s.url.clone());
-        drop(st);
-        let load = async move {
-            let bytes = fetch.await?;
-            let load = move || {
-                let reader = ::image::ImageReader::new(std::io::Cursor::new(&bytes));
-                let reader = reader.with_guessed_format().expect("in memory");
-                let sniffed = reader.format().map(|f| f.to_mime_type().to_string());
-                let dims = reader.into_dimensions().map_err(|e| e.to_string())?;
-                let mime = mime.or(sniffed).ok_or("The sticker has no image type")?;
-                let ext =
-                    mime.split_once('/').map(|(_, t)| t.replace("x-tgsticker", "tgs").replace("lottie+json", "json"));
-                let code = Some(s.shortcodes[0].as_str()).filter(|c| !c.is_empty()).unwrap_or("sticker");
-                let name = format!("{code}.{}", ext.unwrap_or_else(|| "webp".into()));
-                let size = match (s.info["w"].as_u64(), s.info["h"].as_u64()) {
-                    (Some(w), Some(h)) => (w as u32, h as u32),
-                    _ => dims,
-                };
-                let frames = decode_media(bytes.clone())?;
-                let is_gif = mime == "image/gif";
-                Ok(PendingMedia { bytes, name, mime, is_gif, size, frames, duration: None, sticker: Some(Box::new(s)) })
-            };
-            tokio::task::spawn_blocking(load).await.expect("sticker load thread")
-        };
-        Task::perform(load, UiMessage::StickerLoaded)
     }
 
     /// The selected message when only one message is selected.
@@ -4843,7 +3652,7 @@ impl BeeperGuiApp {
     fn quick_react(&self, mid: String) -> UiMessage {
         let chat = self.pane().selected_chat_id.clone().expect("an open chat");
         let st = self.store.read();
-        UiMessage::ToggleReaction(chat, mid, st.settings.quick_reaction.clone())
+        UiMessage::Message(message::Msg::ToggleReaction(chat, mid, st.settings.quick_reaction.clone()))
     }
 
     /// The width of the rail and the chat list. Desktop keeps it when the space bar hides.
@@ -4927,7 +3736,7 @@ impl BeeperGuiApp {
         drop(st);
         self.pane.top.loading = Some((std::time::Instant::now(), id.clone(), before));
         let load = beeper_core::matrix::load_older(self.store.clone(), id);
-        Task::perform(load, UiMessage::LoadedOlder)
+        Task::perform(load, |a0| UiMessage::Timeline(timeline::Msg::LoadedOlder(a0)))
     }
 
     /// Desktop's `TopOfThread` loads again when the chat gets older messages while its top is on screen, as when the
@@ -4963,24 +3772,7 @@ impl BeeperGuiApp {
         let top = &mut self.pane.top;
         (top.tries, top.waiting) = (if count == Some(before) { top.tries + 1 } else { 0 }, true);
         let wait = Duration::from_millis((100 * 2u64.pow(top.tries)).min(3000));
-        Task::perform(async move { tokio::time::sleep(wait).await }, |()| UiMessage::LoadOlder)
-    }
-
-    /// The hotkey with the modifiers and the key, or with the modifiers alone before the digit 1 to 9.
-    fn find_hotkey(&self, key: &Key, mods: keyboard::Modifiers) -> Option<(&'static str, usize)> {
-        let name = hotkey_key(key)?;
-        let digit = name.parse::<usize>().ok().filter(|d| (1..=9).contains(d));
-        let mods = [mods.control() || mods.command(), mods.shift(), mods.alt()];
-        let st = self.store.read();
-        // Show Replies shares Ctrl Down with the scroll, and takes it when messages have the focus.
-        let selecting = !self.pane().selected_msgs.is_empty();
-        let hit = |mods, key: &str| {
-            let hits = prefs::HOTKEYS.iter().filter(|h| prefs::hotkey_has(st.settings.hotkey_keys(h.0), mods, key));
-            hits.min_by_key(|h| selecting && h.0 == "Scroll to the bottom of a chat").map(|h| h.0)
-        };
-        let unshifted = || hit([mods[0], false, mods[2]], &name).filter(|h| *h == CYCLE && mods[1]);
-        let hit_digit = || Some((hit(mods, "")?, digit? - 1));
-        hit(mods, &name).or_else(unshifted).map(|h| (h, 0)).or_else(hit_digit)
+        Task::perform(async move { tokio::time::sleep(wait).await }, |()| UiMessage::Timeline(timeline::Msg::LoadOlder))
     }
 
     fn set_sidebar_hidden(&mut self, hidden: bool) {
@@ -5012,187 +3804,6 @@ impl BeeperGuiApp {
         let task = self.update(UiMessage::SelectChat(id));
         self.cycling = cycling;
         task
-    }
-
-    fn run_hotkey(&mut self, name: &str, digit: usize) -> Task<UiMessage> {
-        let chat = self.pane.selected_chat_id.clone();
-        let flag = |f: ChatFlag| chat.clone().map(|c| UiMessage::ToggleFlag(c, f));
-        let selected = self.single_msg().cloned().filter(|_| chat.is_some());
-        let msg = match name {
-            "Chat: Archive All Read" => Some(UiMessage::Ask(Some(ASK_ARCHIVE_READ))),
-            "Chat: Start New" => Some(UiMessage::NewChat),
-            "Chat: Toggle Archive" => flag(ChatFlag::Archived),
-            "Chat: Toggle Mark As Read" => chat.map(UiMessage::ToggleRead),
-            "Chat: Toggle Mute" => flag(ChatFlag::Muted),
-            "Chat: Toggle Pin" => flag(ChatFlag::Pinned),
-            CYCLE => {
-                let task = self.step_history(if self.mods.shift() { -1 } else { 1 });
-                self.cycling = true;
-                return task;
-            }
-            "History: Next Chat" => return self.step_history(-1),
-            "History: Previous Chat" => return self.step_history(1),
-            "Select Next Chat" | "Select Previous Chat" => {
-                self.step_chat(if name == "Select Next Chat" { 1 } else { -1 });
-                None
-            }
-            "Scroll to the bottom of a chat" => {
-                let text = self.pane.composer.text();
-                let end = format::offset(&text, self.pane.composer.cursor().position) == text.len();
-                return match chat.is_some() && end {
-                    true => operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y: 0.0 }),
-                    false => Task::none(),
-                };
-            }
-            "Select Next Unread Chat" => {
-                let st = self.store.read();
-                let next = self
-                    .visible_chats(&st)
-                    .into_iter()
-                    .find(|c| c.flags & CHAT_UNREAD != 0 && Some(&c.id) != chat.as_ref());
-                next.map(|c| UiMessage::SelectChat(c.id.clone()))
-            }
-            "Switch First 9 Chats Modifier" => {
-                let id = self.visible_chats(&self.store.read()).get(digit).map(|c| c.id.clone());
-                id.map(UiMessage::SelectChat)
-            }
-            "Toggle Chat Info" => Some(UiMessage::ToggleRightPanel),
-            "Command Bar" if self.show_command_palette => Some(UiMessage::ToggleCommandMode),
-            "Command Bar" => {
-                let open = self.update(UiMessage::ToggleCommandPalette);
-                self.cmd_bar_commands_mode = true;
-                return open;
-            }
-            "Filter By Account" => Some(UiMessage::OpenSubMenu(commands::SubMenu::FilterAccount)),
-            "Remind Later" => chat.map(|id| UiMessage::OpenSubMenu(commands::SubMenu::Remind(id))),
-            "Cycle Filters" => {
-                self.filters = match self.filters {
-                    f if f == 1 << 4 => 0,
-                    f if f.count_ones() == 1 && f < 1 << 4 => f << 1,
-                    _ => 1,
-                };
-                None
-            }
-            "Keyboard Shortcuts" => Some(UiMessage::HotkeysModal(self.hotkeys_modal.is_none().then(String::new))),
-            "Filter: All" => {
-                self.filters = 0;
-                None
-            }
-            f if FILTER_HOTKEYS.contains(&f) => {
-                self.filters ^= 1 << FILTER_HOTKEYS.iter().position(|h| *h == f).expect("a filter hotkey");
-                None
-            }
-            "Chat: Send File" => chat.map(|_| UiMessage::PickFiles),
-            "Open User Profile" => {
-                let st = self.store.read();
-                let c = chat.as_deref().and_then(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]);
-                c.and_then(profile_link).map(UiMessage::OpenUrl)
-            }
-            "Message: Send Message and Archive" => chat.map(|_| UiMessage::SendAndArchive),
-            "Message: Send Later" => chat.map(|_| UiMessage::OpenSendLater),
-            "Send Message" | "Insert New Line" => None,
-            "Minimize To Tray" => return self.set_hidden(true),
-            "Quit App" => return self.quit(),
-            "Reload App" => Some(UiMessage::Relaunch),
-            "Report a Problem" => Some(UiMessage::OpenUrl(ISSUES_URL.into())),
-            "Reset Zoom" => Some(UiMessage::Zoom(0)),
-            "Search" => Some(UiMessage::ToggleCommandPalette),
-            "Search: Room" => chat.map(UiMessage::SearchRoom),
-            "Select Next Account" | "Select Previous Account" => {
-                let rail = rail_accounts(&self.store.read());
-                let at = self.selected_account_filter.as_ref().and_then(|a| rail.iter().position(|r| r == a));
-                let to = match (name == "Select Next Account", at) {
-                    (true, None) => rail.first().cloned().map(Some),
-                    (true, Some(i)) => rail.get(i + 1).cloned().map(Some),
-                    (false, Some(i)) => Some(i.checked_sub(1).map(|i| rail[i].clone())),
-                    (false, None) => None,
-                };
-                to.map(UiMessage::SelectAccount)
-            }
-            "Send Feedback" => chat.map(|_| UiMessage::OpenQuickLook("Feedback".into(), FEEDBACK.into())),
-            "Settings" => Some(UiMessage::OpenSettings(self.active_settings_tab)),
-            "Switch First 9 Spaces Modifier" => {
-                let space = rail_spaces(&self.store.read()).into_iter().nth(digit);
-                space.and_then(|id| match RAIL_VIEWS.iter().find(|v| v.0 == id) {
-                    Some(view) => view.1.map(UiMessage::SelectTab),
-                    None => Some(UiMessage::SelectAccount(Some(id))),
-                })
-            }
-            "Toggle Incognito Mode" => {
-                let st = self.store.read();
-                st.feature("stealth-mode").on.then_some(UiMessage::ToggleIncognito)
-            }
-            "Toggle Sidebar" => {
-                self.set_sidebar_hidden(!self.sidebar_hidden);
-                None
-            }
-            "Toggle Space Bar" => {
-                let on = self.store.read().settings.on("showSidebar");
-                Some(UiMessage::SetPref("showSidebar", u8::from(!on)))
-            }
-            "Zoom In" => Some(UiMessage::Zoom(1)),
-            "Zoom Out" => Some(UiMessage::Zoom(-1)),
-            "Download Attachments" => selected
-                .filter(|_| self.selected_message().is_some_and(|m| !m.attachments.is_empty()))
-                .map(|m| UiMessage::Download(m, None)),
-            "Message: Edit" => {
-                let edit =
-                    self.selected_message().filter(|m| editable(m, self.rules(m)) && edit_open(m, self.rules(m)));
-                let m = chat.and_then(|_| edit.or_else(|| self.last_own_message()));
-                m.map(|m| {
-                    self.pane.selected_msgs = vec![m.id.clone()];
-                    UiMessage::StartEdit(m.id, m.text.unwrap_or_default())
-                })
-            }
-            "Message: Forward" => {
-                let st = self.store.read();
-                let msgs = chat.iter().flat_map(|_| self.timeline(&st).0);
-                let msgs: Vec<&Message> = msgs.filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
-                let mids = msgs.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
-                let ok = !mids.is_empty() && msgs.iter().all(|m| m.is_deleted != Some(true));
-                drop(st);
-                if !ok {
-                    self.status_banner = tr("Only works when messages are selected").into();
-                }
-                ok.then_some(UiMessage::Forward(mids))
-            }
-            "Message: Open First Link" => {
-                let text = self.selected_message().and_then(|m| m.text);
-                text.and_then(|t| {
-                    t.split_whitespace().find(|w| w.starts_with("http")).map(|u| UiMessage::OpenUrl(u.into()))
-                })
-            }
-            "Message: Quick React" => selected.map(|m| self.quick_react(m)),
-            "Message: Quote & Reply" => selected.map(UiMessage::StartReply),
-            "Message: Quote or Edit Selected Message" => {
-                let empty = self.pane.composer.text().is_empty();
-                self.selected_message().and_then(|m| match m.is_sender == Some(true) {
-                    true => (empty && editable(&m, self.rules(&m)) && edit_open(&m, self.rules(&m)))
-                        .then(|| UiMessage::StartEdit(m.id, m.text.unwrap_or_default())),
-                    false => Some(UiMessage::StartReply(m.id)),
-                })
-            }
-            "Message: Record Audio" => chat.map(|_| UiMessage::Record(record::Msg::Start)),
-            "Message: Talk to Type" => chat.map(|_| UiMessage::Record(record::Msg::Talk)),
-            "Message: Send GIF" => chat.map(|_| UiMessage::TogglePicker(Picker::Gif)),
-            "Message: Send Sticker" => chat.map(|_| UiMessage::TogglePicker(Picker::Sticker)),
-            "Show Replies" => chat.and_then(|_| {
-                let st = self.store.read();
-                let msgs = self.timeline(&st).0;
-                let chat = &st.chats[st
-                    .resolve_chat_idx(self.pane.selected_chat_id.as_ref().expect("an open chat"))
-                    .expect("a known chat")];
-                self.pane.selected_msgs.iter().find_map(|id| {
-                    let m = st.message(id);
-                    let replied = || msgs.iter().any(|r| r.id != m.id && reply_root(&st, r) == m.id);
-                    let thread = || can_thread(&st, chat, m).then(|| UiMessage::ShowThread(m.id.clone()));
-                    let chain = || replied().then(|| UiMessage::ShowReplies(m.id.clone()));
-                    m.linked_message_id.clone().map(UiMessage::ShowReplies).or_else(thread).or_else(chain)
-                })
-            }),
-            _ => unreachable!("{name} has no action"),
-        };
-        msg.map_or_else(Task::none, |m| self.update(m))
     }
 
     pub fn step_chat(&mut self, delta: isize) {
@@ -5273,40 +3884,6 @@ impl BeeperGuiApp {
         n as u32 + u32::from(!self.unread_threads(&st, false).is_empty())
     }
 
-    /// The windows besides the main window, Desktop's `subWindows`.
-    fn sub_windows(&self) -> Vec<window::Id> {
-        let drafts = [self.label_window.as_ref().map(|d| d.id), self.spaces_window.as_ref().map(|d| d.id)];
-        let singles = [self.settings_window, self.media_window.as_ref().map(|w| w.id)].into_iter().chain(drafts);
-        let lists = self.chat_windows.iter().map(|w| w.0).chain(self.theme_windows.iter().map(|w| w.0));
-        let lists = lists.chain(self.labels_windows.iter().map(|w| w.0)).chain(self.vote_windows.iter().map(|w| w.0));
-        let group = self.group_window.as_ref().map(|d| d.id);
-        let lists = lists.chain(self.poll_windows.iter().map(|w| w.id)).chain(self.add_accounts.iter().map(|a| a.id));
-        singles.chain([group, self.blocked_window]).flatten().chain(lists).collect()
-    }
-
-    /// Desktop's `hideToTray` (`Du`), which hides the sub-windows and then the main window, and `showWindow`, which
-    /// shows the main window.
-    /// Hides or shows the app: the main window, or the sign-in window while signed out (Desktop's single window).
-    fn set_hidden(&mut self, hidden: bool) -> Task<UiMessage> {
-        let Some(id) = self.main_window.or(self.login_window) else { return Task::none() };
-        self.hidden = hidden;
-        self.tray_sent.1 = true;
-        match hidden {
-            true => {
-                let subs = self.sub_windows().into_iter().map(|w| window::set_mode(w, window::Mode::Hidden));
-                let hide = Task::batch(subs).chain(window::set_mode(id, window::Mode::Hidden));
-                self.save_main_window().chain(hide)
-            }
-            false => window::set_mode(id, window::Mode::Windowed).chain(window::gain_focus(id)),
-        }
-    }
-
-    /// Desktop's `showAllWindows` (`hm`): the sub-windows, then the main window.
-    fn show_all(&mut self) -> Task<UiMessage> {
-        let subs = self.sub_windows().into_iter().map(|w| window::set_mode(w, window::Mode::Windowed));
-        Task::batch(subs).chain(self.set_hidden(false))
-    }
-
     fn handle(&mut self, msg: UiMessage) -> Task<UiMessage> {
         // Another key while Alt is down keeps the release of Alt from toggling the menu bar.
         if let UiMessage::WindowKey(_, key, _) = &msg {
@@ -5315,31 +3892,53 @@ impl BeeperGuiApp {
         // Desktop's `persistDraftRecord` after a change of the attachments, the quote, Send Later or the link previews.
         self.pane.draft_due |= matches!(
             msg,
-            UiMessage::FilesLoaded(_)
-                | UiMessage::Pasted(_)
-                | UiMessage::DiscardAttachment(_)
-                | UiMessage::GifDownloaded(..)
-                | UiMessage::StickerLoaded(..)
-                | UiMessage::StartReply(_)
-                | UiMessage::CancelComposeMode
-                | UiMessage::SendLater(_)
-                | UiMessage::RemoveLinkPreview(_)
+            UiMessage::Composer(composer::Msg::FilesLoaded(_))
+                | UiMessage::Composer(composer::Msg::Pasted(_))
+                | UiMessage::Composer(composer::Msg::DiscardAttachment(_))
+                | UiMessage::Gifs(gifs::Msg::Downloaded(..))
+                | UiMessage::Gifs(gifs::Msg::StickerLoaded(..))
+                | UiMessage::Composer(composer::Msg::StartReply(_))
+                | UiMessage::Composer(composer::Msg::CancelMode)
+                | UiMessage::Scheduled(scheduled::Msg::Set(_))
+                | UiMessage::Composer(composer::Msg::RemoveLinkPreview(_))
         );
         self.pane.thread_focus &= !activates(&msg);
         match msg {
-            UiMessage::SelectTab(tab) => {
-                self.chat_menu = None;
-                self.active_tab = tab;
-                self.selected_account_filter = None;
-                self.show_filter_menu = false;
-                self.creating_chat = None;
-            }
-            UiMessage::SelectAccount(acc) => {
-                self.chat_menu = None;
-                self.active_tab = InboxTab::AllChats;
-                self.selected_account_filter = acc;
-                self.creating_chat = None;
-            }
+            // Each domain handles its own messages in its module.
+            UiMessage::Accounts(msg) => return self.accounts(msg),
+            UiMessage::Blocking(msg) => return self.blocking(msg),
+            UiMessage::ChatList(msg) => return self.chat_list(msg),
+            UiMessage::ChatTheme(msg) => return self.chat_theme(msg),
+            UiMessage::CommandBar(msg) => return self.command_bar(msg),
+            UiMessage::Composer(msg) => return self.composer(msg),
+            UiMessage::Forward(msg) => return self.forward(msg),
+            UiMessage::Gallery(msg) => return self.gallery(msg),
+            UiMessage::Gifs(msg) => return self.gifs(msg),
+            UiMessage::Hotkeys(msg) => return self.hotkeys(msg),
+            UiMessage::Info(msg) => return self.info(msg),
+            UiMessage::Integrations(msg) => return self.integrations(msg),
+            UiMessage::Labels(msg) => return self.labels(msg),
+            UiMessage::Loaded(msg) => return self.loaded(msg),
+            UiMessage::Media(msg) => return self.media_view(msg),
+            UiMessage::Members(msg) => return self.members(msg),
+            UiMessage::MenuBar(msg) => return self.menu_bar(msg),
+            UiMessage::Message(msg) => return self.message(msg),
+            UiMessage::NewChat(msg) => return self.new_chat(msg),
+            UiMessage::Notify(msg) => return self.notify_event(msg),
+            UiMessage::Pins(msg) => return self.pins(msg),
+            UiMessage::Rail(msg) => return self.rail(msg),
+            UiMessage::Record(msg) => return self.record(msg),
+            UiMessage::Reminders(msg) => return self.reminders(msg),
+            UiMessage::Scheduled(msg) => return self.scheduled(msg),
+            UiMessage::Settings(msg) => return self.settings(msg),
+            UiMessage::Thread(msg) => return self.threads(msg),
+            UiMessage::Timeline(msg) => return self.timeline_scroll(msg),
+            UiMessage::Toast(msg) => return self.toasts(msg),
+            UiMessage::UserCard(msg) => return self.user_card(msg),
+            UiMessage::Video(msg) => return self.video(msg),
+            UiMessage::Voice(msg) => return self.voice(msg),
+            UiMessage::Window(msg) => return self.windows(msg),
+            UiMessage::Zoom(msg) => return self.set_zoom(msg),
             UiMessage::SelectChat(_) if self.recorder.is_some() => {
                 self.status_banner = tr("Stop recording to switch chats").into();
             }
@@ -5349,340 +3948,9 @@ impl BeeperGuiApp {
                 let previews = self.fetch_link_previews();
                 return Task::batch([previews, self.close_notifications(), operation::focus("composer-input")]);
             }
-            UiMessage::ClickChat(id) | UiMessage::ToggleSelected(id) if self.mods.shift() => self.select_range(&id),
-            UiMessage::ClickChat(id) if self.mods.control() => return self.update(UiMessage::ToggleSelected(id)),
-            UiMessage::ClickChat(id) => {
-                let last = self.last_click.take();
-                if last.is_none_or(|(c, at)| c != id || at.elapsed() > std::time::Duration::from_millis(500)) {
-                    self.last_click = Some((id.clone(), std::time::Instant::now()));
-                    return self.update(UiMessage::SelectChat(id));
-                }
-                let msg = match self.store.read().settings.pref("chatDoubleClick") {
-                    1 => UiMessage::ToggleFlag(id, ChatFlag::Archived),
-                    2 => UiMessage::ToggleRead(id),
-                    3 => UiMessage::ToggleFlag(id, ChatFlag::Muted),
-                    4 => UiMessage::ToggleFlag(id, ChatFlag::LowPriority),
-                    _ => UiMessage::OpenChatWindow(id),
-                };
-                return self.update(msg);
-            }
-            UiMessage::EditMenu(word) => {
-                let text = self.pane.composer.text();
-                if let Some(r) = &word {
-                    self.pane.composer = format::content(&text, r.clone());
-                }
-                let word = word.map(|r| (r.clone(), spell::suggest(&text[r])));
-                self.pane.edit_menu = Some((self.cursor.get(), word));
-            }
-            UiMessage::MenuEdit(edit) => {
-                let (_, word) = self.pane.edit_menu.take().expect("the edit menu is open");
-                let old = self.pane.composer.text();
-                let sel = format::selection(&self.pane.composer).map_or("", |r| &old[r]).to_owned();
-                let focus = operation::focus("composer-input");
-                return match edit {
-                    MenuEdit::Replace(fix) => {
-                        let (r, _) = word.expect("a suggestion has a word");
-                        let text = format!("{}{fix}{}", &old[..r.start], &old[r.end..]);
-                        self.pane.composer = format::content(&text, r.start + fix.len()..r.start + fix.len());
-                        Task::batch([self.composer_changed(old), focus])
-                    }
-                    MenuEdit::Learn => match spell::learn(&old[word.expect("Learn Spelling has a word").0]) {
-                        Ok(()) => focus,
-                        Err(e) => {
-                            self.status_banner = e.to_string();
-                            focus
-                        }
-                    },
-                    MenuEdit::Copy => Task::batch([iced::clipboard::write(sel), focus]),
-                    MenuEdit::Cut => {
-                        self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Delete));
-                        Task::batch([iced::clipboard::write(sel), self.composer_changed(old), focus])
-                    }
-                    MenuEdit::Paste => Task::batch([self.update(UiMessage::Paste), focus]),
-                };
-            }
-            UiMessage::ComposerEdit(action) if !action.is_edit() => {
-                self.pane.emoticon = None;
-                self.pane.composer.perform(action);
-            }
-            UiMessage::ComposerEdit(action) => {
-                use text_editor::{Action, Edit};
-                let old = self.pane.composer.text();
-                match (action, self.pane.emoticon.take().filter(|(after, ..)| *after == old)) {
-                    (Action::Edit(Edit::Backspace), Some((_, typed, at))) => {
-                        self.pane.composer = format::content(&typed, at..at);
-                    }
-                    (action, _) => {
-                        let typed = matches!(action, Action::Edit(Edit::Insert(_)));
-                        self.pane.composer.perform(action);
-                        let text = self.pane.composer.text();
-                        let at = format::offset(&text, self.pane.composer.cursor().position);
-                        let rules = typed && !self.store.read().settings.on("keepEmoticons");
-                        if let Some((new, caret)) = rules.then(|| emoji::replace_emoticon(&text, at)).flatten() {
-                            self.pane.composer = format::content(&new, caret..caret);
-                            self.pane.emoticon = Some((new, text, at));
-                        }
-                    }
-                }
-                return self.composer_changed(old);
-            }
-            UiMessage::DeleteTo(to, back) => {
-                if self.pane.composer.selection().is_none() {
-                    self.pane.composer.perform(text_editor::Action::Select(to));
-                }
-                let edit = if back { text_editor::Edit::Backspace } else { text_editor::Edit::Delete };
-                return self.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
-            }
-            UiMessage::Undo(false) if let Some(undo) = self.shown_undo() => {
-                return self.update(UiMessage::ToastAction(None, Box::new(undo)));
-            }
-            UiMessage::Undo(false) if self.queued_here() => return self.update(UiMessage::UndoSend),
-            UiMessage::Undo(true) if self.queued_here() => {
-                return self.update(UiMessage::SendQueued(self.pane.selected_chat_id.clone()));
-            }
-            UiMessage::Undo(redo) => {
-                let h = &mut self.pane.history;
-                let (from, to) = if redo { (&mut h.redo, &mut h.undo) } else { (&mut h.undo, &mut h.redo) };
-                let Some(text) = from.pop() else { return Task::none() };
-                let now = self.pane.composer.text();
-                let at = format::diff(&text, &now).1;
-                to.push(now);
-                h.last = None;
-                self.pane.emoticon = None;
-                self.pane.composer = format::content(&text, at..at);
-                return self.composer_effects();
-            }
-            UiMessage::ComposerChanged(v) => {
-                let old = self.pane.composer.text();
-                self.pane.composer = composer_with(&v);
-                return self.composer_changed(old);
-            }
-            UiMessage::Format(format::CODE) if format::selection(&self.pane.composer).is_none() => {
-                let insert = text_editor::Action::Edit(text_editor::Edit::Insert('`'));
-                return self.update(UiMessage::ComposerEdit(insert));
-            }
-            UiMessage::Format(i) => {
-                let old = self.pane.composer.text();
-                let caret = format::offset(&old, self.pane.composer.cursor().position);
-                let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
-                if i == format::LINK && !format::active(i, &old, &r) {
-                    self.pane.link_dialog = Some((String::new(), old[r].to_owned()));
-                    return operation::focus("link-url");
-                }
-                let (text, r) = format::toggle(i, &old, r);
-                self.pane.composer = format::content(&text, r);
-                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
-            }
-            UiMessage::LinkDialog(d) => {
-                let closed = d.is_none();
-                self.pane.link_dialog = d;
-                if closed {
-                    return operation::focus("composer-input");
-                }
-            }
-            UiMessage::SaveLink => {
-                let (url, label) = self.pane.link_dialog.take().expect("the link dialog is open");
-                let old = self.pane.composer.text();
-                let caret = format::offset(&old, self.pane.composer.cursor().position);
-                let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
-                let (text, r) = format::link(&old, r, url.trim(), label.trim());
-                self.pane.composer = format::content(&text, r);
-                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
-            }
-            UiMessage::SubmitComposer if self.suggestions(&self.store.read()).is_some() => {
-                return self.update(UiMessage::PickSuggestion(self.pane.suggest));
-            }
-            UiMessage::SubmitComposer if self.recorder.is_some() => return self.send_take(),
-            UiMessage::SubmitComposer if !self.can_compose() => {}
-            UiMessage::SubmitComposer => {
-                self.submit_composer(false);
-                return self.typing(false);
-            }
-            UiMessage::SendAndArchive => {
-                let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");
-                let st = self.store.read();
-                let at = self.list_ids(&st).iter().position(|c| *c == cid);
-                drop(st);
-                let draft = !self.pane.composer.text().trim().is_empty() || !self.pane.attachments.is_empty();
-                self.submit_composer(true);
-                let stop = self.typing(false);
-                let list = self.list_ids(&self.store.read());
-                if let Some(at) = at.filter(|_| draft && !list.contains(&cid)) {
-                    return stop.chain(self.after_action("afterArchive", &list, at, true));
-                }
-                return stop;
-            }
-            UiMessage::PickSuggestion(i) => {
-                // The second click of a double click hits the list that the first pick closed.
-                let Some((at, picks)) = self.suggestions(&self.store.read()) else { return Task::none() };
-                let mut text = self.pane.composer.text();
-                let caret = format::offset(&text, self.pane.composer.cursor().position);
-                let pick = match &picks[i.min(picks.len() - 1)] {
-                    Suggestion::Emoji(c, _) => format!("{c} "),
-                    Suggestion::Mention(label, id, _) => {
-                        self.pane.mentions.push((label.clone(), id.clone()));
-                        format!("@{label} ")
-                    }
-                };
-                text.replace_range(at..caret, &pick);
-                self.pane.composer = format::content(&text, at + pick.len()..at + pick.len());
-                return operation::focus("composer-input");
-            }
-            UiMessage::CancelComposeMode if self.pane.editing_message_id.is_some() => self.pane.end_edit(),
-            UiMessage::CancelComposeMode => self.pane.reply_to_message_id = None,
-            UiMessage::StartReply(mid) => {
-                if self.pane.editing_message_id.is_some() {
-                    self.pane.end_edit();
-                }
-                self.pane.reply_to_message_id = Some(mid);
-                return operation::focus("composer-input");
-            }
-            UiMessage::StartEdit(mid, old_txt) => {
-                // The mention pills of the message come back from its `matrix.to` links.
-                let st = self.store.read();
-                let html = st.loaded(&mid).and_then(|m| m.html.clone());
-                drop(st);
-                // Desktop scrolls the edited message into view (`scrollIntoView` of the editing target).
-                self.pane.timeline.reveal(vlist::key(&mid));
-                let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), false);
-                self.pane.start_edit(mid, &old_txt, html.map_or(Vec::new(), |h| html_pills(&h)));
-                return Task::batch([operation::focus("composer-input"), shown]);
-            }
-            UiMessage::DeleteMessage(cid, mid) => {
-                self.confirm = None;
-                let mut st = self.store.write();
-                st.redact_message(&cid, &mid).expect("delete message");
-            }
-            UiMessage::RemoveFromBeeper(ids) => self.remove_from_beeper(ids),
-            UiMessage::ToggleReaction(cid, mid, key) => {
-                let mut st = self.store.write();
-                let mine =
-                    stored(&st, &mid).reactions.iter().any(|r| r.reaction_key == key && st.is_me(&r.participant_id));
-                if mine {
-                    st.remove_reaction(&cid, &mid, &key).expect("remove reaction");
-                } else {
-                    st.add_reaction(&cid, &mid, &key, None).expect("add reaction");
-                    st.add_recent_emoji(&key);
-                    if let Some(c) = st.matrix.clone() {
-                        let content = serde_json::json!({ "recent_emoji": st.recent_emoji });
-                        let write = beeper_core::matrix::set_global(c, "io.element.recent_emoji", content);
-                        return Task::perform(write, UiMessage::Pushed);
-                    }
-                }
-            }
-            UiMessage::ToggleBookmark(mid) => {
-                self.chat_menu = None;
-                self.store.write().toggle_bookmark(&mid);
-            }
-            UiMessage::MarkUnreadFromHere(cid, mid) => {
-                self.store.write().mark_unread_from_message(&cid, &mid);
-                self.refresh_theme_and_tray();
-            }
-            UiMessage::MarkReadThrough(cid, mid) => {
-                self.store.write().mark_read_through(&cid, &mid);
-                self.refresh_theme_and_tray();
-            }
-            UiMessage::VotePoll(mid, answers) => {
-                let mut st = self.store.write();
-                let chat = stored(&st, &mid).chat_id;
-                st.vote_poll(&chat, &mid, answers);
-            }
-            UiMessage::SetReminder(cid, at) => self.set_reminder(&cid, at, None),
-            UiMessage::RemindIf(cid, at, no_reply) => self.set_reminder(&cid, Some(at), Some(no_reply)),
-            UiMessage::ChatSub(sub) => self.chat_sub = sub,
-            UiMessage::CheckReminders => {
-                let now = now_unix_millis();
-                let mut st = self.store.write();
-                for i in 0..st.chats.len() {
-                    let c = &st.chats[i];
-                    let Some(at) = c.reminder.as_ref().map(|r| r.remind_at_ms).filter(|&at| at <= now) else {
-                        continue;
-                    };
-                    if self.reminded.insert(c.id.clone(), at) == Some(at) {
-                        continue;
-                    }
-                    let flags = [ChatFlag::LowPriority, ChatFlag::Archived].map(|f| (f, c.flag(f)));
-                    let ts = rfc3339_from_millis(at);
-                    st.update_chat(i, |c| c.last_activity = c.last_activity.take().max(Some(ts)));
-                    for (flag, _) in flags.into_iter().filter(|f| f.1) {
-                        st.set_chat_flag(i, flag, Some(false));
-                    }
-                }
-                drop(st);
-                self.refresh_theme_and_tray();
-            }
-            UiMessage::OpenSendLater if !self.store.read().feature("scheduled-message").on => {}
-            UiMessage::OpenSendLater if self.pane.editing_message_id.is_some() => {
-                self.status_banner = tr("Send Later isn't available while editing a message").into();
-            }
-            UiMessage::OpenSendLater => {
-                if self.pane.selected_chat_id.is_some() {
-                    return self.update(UiMessage::OpenSubMenu(commands::SubMenu::Schedule(Vec::new())));
-                }
-            }
-            UiMessage::SendLater(config) => {
-                self.pane.send_later = config;
-                return operation::focus("composer-input");
-            }
-            UiMessage::ScheduledMenu(ids, items) => self.pane.sched_menu = Some((ids, items, self.cursor.get())),
-            UiMessage::SendNow(ids) => {
-                self.pane.sched_menu = None;
-                let mut st = self.store.write();
-                let due: Vec<Scheduled> =
-                    ids.iter().filter_map(|id| st.scheduled.iter().find(|s| s.id == *id)).cloned().collect();
-                ids.iter().for_each(|id| st.update_scheduled(id, |_| false));
-                drop(st);
-                self.send_scheduled(due);
-            }
-            UiMessage::Reschedule(ids) => {
-                self.pane.sched_menu = None;
-                return self.update(UiMessage::OpenSubMenu(commands::SubMenu::Schedule(ids)));
-            }
-            UiMessage::RescheduleTo(ids, at, no_reply) => {
-                let mut st = self.store.write();
-                let now = now_unix_millis();
-                for id in &ids {
-                    st.update_scheduled(id, |s| {
-                        (s.canceled, s.added_on, s.send_on, s.send_only_on_no_response) = (false, now, at, no_reply);
-                        true
-                    });
-                }
-            }
-            UiMessage::Unschedule(ids) => {
-                self.pane.sched_menu = None;
-                let mut st = self.store.write();
-                ids.iter().for_each(|id| st.update_scheduled(id, |_| false));
-            }
-            UiMessage::EditScheduled(id) => {
-                self.pane.sched_menu = None;
-                let st = self.store.read();
-                let text = st.scheduled.iter().find(|s| s.id == id).expect("a scheduled message").text.clone();
-                drop(st);
-                return self.update(UiMessage::StartEdit(id, text));
-            }
-            UiMessage::ShowReplies(id) => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), Some(id)),
-            UiMessage::ShowThread(id) => self.show_thread(&id),
             UiMessage::SwitchCard => self.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
             UiMessage::SwitchChat(id) => self.switch_chat(id),
-            UiMessage::HideThread => (self.pane.thread, self.pane.thread_menu) = (None, None),
             UiMessage::InThread(msg) => return self.in_thread(*msg),
-            UiMessage::SetBroadcast(on) => self.pane.broadcast = on,
-            UiMessage::ThreadDrag(at) => self.drag_thread(at),
-            UiMessage::ResetThreadWidth => self.thread_fraction = THREAD_FRACTION,
-            UiMessage::ThreadMenu => self.pane.thread_menu = Some(self.cursor.get()),
-            UiMessage::MarkThreadRead => self.mark_thread_read(),
-            UiMessage::ShowUnreadThreads => self.show_unread_threads(),
-            UiMessage::OpenThread(chat, root) => self.open_thread(chat, root),
-            UiMessage::UnreadThreadsMenu(open) => self.unread_menu = open.then(|| self.cursor.get()),
-            UiMessage::MarkAllThreadsRead => self.mark_all_threads_read(),
-            UiMessage::FollowThread(chat, root, on) => self.follow_thread(&chat, &root, on),
-            UiMessage::FollowAllThreads(chat, on) => self.follow_all_threads(&chat, on),
-            UiMessage::OpenThreadWindow(chat, root) => return self.open_thread_window(chat, root),
-            UiMessage::HideReplies => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), None),
-            UiMessage::FoldScheduled(collapsed) => {
-                self.pane.sched_fold.0 = collapsed;
-                return operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
-            }
             UiMessage::TypingTick => {
                 let client = self.store.read().matrix.clone();
                 let panes = std::iter::once(&mut self.pane).chain(self.chat_windows.iter_mut().map(|w| &mut w.1));
@@ -5695,137 +3963,6 @@ impl BeeperGuiApp {
                 return Task::batch(notices);
             }
             UiMessage::SaveDrafts => self.save_drafts(),
-            UiMessage::CheckScheduled => {
-                let now = now_unix_millis();
-                if let Some((_, no_reply)) = self.pane.send_later.filter(|c| c.0 <= now) {
-                    self.pane.send_later = Some((now + 60_000, no_reply));
-                }
-                let due = self.store.write().take_due_scheduled(now);
-                self.send_scheduled(due);
-            }
-            m @ (UiMessage::ArchiveStale | UiMessage::ArchiveAll(..)) => {
-                self.confirm = None;
-                {
-                    let mut st = self.store.write();
-                    let chats = match m {
-                        UiMessage::ArchiveAll(read, days) => {
-                            st.inbox_chats_before(read, now_unix_millis() - days * 86_400_000)
-                        }
-                        _ => st.stale_inbox_chats(),
-                    };
-                    for idx in chats {
-                        assert!(st.set_chat_flag(idx, ChatFlag::Archived, Some(true)));
-                    }
-                }
-                self.refresh_theme_and_tray();
-            }
-            UiMessage::UndoFlag(flag, chats, many) => {
-                {
-                    let mut st = self.store.write();
-                    for (id, on) in &chats {
-                        let idx = st.resolve_chat_idx(id).expect("an undone chat exists");
-                        match flag {
-                            ChatFlag::Archived => drop(self.set_archived(&mut st, idx, *on)),
-                            _ => drop(st.set_chat_flag(idx, flag, Some(*on))),
-                        }
-                    }
-                }
-                self.refresh_theme_and_tray();
-                let ids: Vec<String> = chats.into_iter().map(|c| c.0).collect();
-                if flag == ChatFlag::Muted {
-                    return Task::none();
-                }
-                match many {
-                    true => (self.selection, self.select_mode) = (ids, false),
-                    false => return self.update(UiMessage::SelectChat(ids[0].clone())),
-                }
-            }
-            UiMessage::ToggleFlag(cid, flag) => {
-                let at = self.list_ids(&self.store.read()).iter().position(|c| *c == cid);
-                let mut st = self.store.write();
-                let idx = st.resolve_chat_idx(&cid).expect("chat exists");
-                let was = has_flag(&st.chats[idx], flag);
-                let moved = match flag {
-                    ChatFlag::Archived => {
-                        let on = !has_flag(&st.chats[idx], flag);
-                        self.set_archived(&mut st, idx, on)
-                    }
-                    _ => st.set_chat_flag(idx, flag, None),
-                };
-                drop(st);
-                if !moved {
-                    self.status_banner = tr("Pinned chats can't be archived").into();
-                } else if matches!(flag, ChatFlag::Archived | ChatFlag::LowPriority) {
-                    self.flag_toast(flag, !was, vec![(cid.clone(), was)], false);
-                } else if flag == ChatFlag::Muted {
-                    let st = self.store.read();
-                    let title = st.chats[st.resolve_chat_idx(&cid).expect("a muted chat")].title.clone();
-                    drop(st);
-                    let what = format!("{} {title}", if was { "Unmute" } else { "Mute" });
-                    self.act(what, UiMessage::UndoFlag(flag, vec![(cid.clone(), was)], false), None);
-                }
-                self.chat_menu = None;
-                self.refresh_theme_and_tray();
-                let selected = self.pane.selected_chat_id.as_deref() == Some(cid.as_str());
-                if let Some(at) = at.filter(|_| flag == ChatFlag::Archived && moved && selected) {
-                    let list = self.list_ids(&self.store.read());
-                    return self.after_action("afterArchive", &list, at, true);
-                }
-            }
-            UiMessage::MarkAllRead => {
-                self.confirm = None;
-                let mut st = self.store.write();
-                let unread: Vec<String> = self
-                    .visible_chats(&st)
-                    .iter()
-                    .filter(|c| c.flags & CHAT_UNREAD != 0)
-                    .map(|c| c.id.clone())
-                    .collect();
-                for id in unread {
-                    let idx = st.resolve_chat_idx(&id).expect("a listed chat");
-                    self.mark_read(&mut st, idx);
-                }
-                drop(st);
-                self.refresh_theme_and_tray();
-            }
-            UiMessage::ChatWallpaper(chat, w) => {
-                self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.wallpaper = Some(w)));
-                self.prune_wallpapers();
-            }
-            UiMessage::ChatBubble(chat, b) => {
-                self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.bubble = b))
-            }
-            UiMessage::ClearChatTheme(chat) => {
-                self.patch_settings(|s| _ = s.chat_appearance.per_chat.remove(&chat));
-                self.prune_wallpapers();
-            }
-            UiMessage::PickWallpaper(chat) => {
-                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Image);
-                return Task::perform(pick, move |r| UiMessage::WallpaperPicked(chat.clone(), r));
-            }
-            UiMessage::WallpaperPicked(chat, r) => match r.map(|paths| paths.into_iter().next()) {
-                Ok(Some(path)) => {
-                    let dir = chat_theme::photo_dir(&self.store.read().config.data_dir);
-                    let ext =
-                        path.extension().map_or(String::new(), |e| format!(".{}", e.to_string_lossy().to_lowercase()));
-                    let file_name = format!("{}{ext}", beeper_core::connect::random_id());
-                    std::fs::create_dir_all(&dir).expect("create the chat wallpapers directory");
-                    match std::fs::copy(&path, dir.join(&file_name)) {
-                        Ok(_) => return self.update(UiMessage::ChatWallpaper(chat, Wallpaper::Photo { file_name })),
-                        Err(e) => self.fail(Toast::new(format!("Could not import {}: {e}", path.display()))),
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => self.status_banner = e,
-            },
-            UiMessage::OpenChatTheme(chat) => {
-                if let Some(&(id, _)) = self.theme_windows.iter().find(|w| w.1 == chat) {
-                    return window::gain_focus(id);
-                }
-                let (id, open) = self.open_child(Size::new(380.0, 620.0));
-                self.theme_windows.push((id, chat));
-                return open;
-            }
             UiMessage::OpenPollCreator(chat) => {
                 if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
                     return window::gain_focus(d.id);
@@ -5851,48 +3988,6 @@ impl BeeperGuiApp {
                 return open;
             }
             UiMessage::Spaces(e) => return self.spaces_edit(e),
-            UiMessage::InfoDesc(None) => {
-                let st = self.store.read();
-                let cid = self.pane.selected_chat_id.as_deref().expect("a chat is selected");
-                let c = &st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")];
-                self.info_desc = Some(composer_with(c.description.as_deref().unwrap_or_default()));
-                return operation::focus("info-desc");
-            }
-            UiMessage::InfoDesc(Some(action)) => self.info_desc.as_mut().expect("editing").perform(action),
-            UiMessage::SaveInfoDesc => {
-                let text = self.info_desc.take().expect("editing").text();
-                let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");
-                self.store.write().update_group(&cid, None, Some(text), None);
-                return self.update(UiMessage::StoreChanged);
-            }
-            UiMessage::SetDisappearing(cid, timer) => {
-                self.store.write().set_disappearing(&cid, timer);
-                return self.update(UiMessage::StoreChanged);
-            }
-            UiMessage::InfoMore => self.info_more ^= true,
-            UiMessage::InfoAll => self.info_all ^= true,
-            UiMessage::InfoBookmarks => self.info_bookmarks ^= true,
-            UiMessage::RemoveBookmark(target) => {
-                self.chat_menu = None;
-                self.store.write().remove_bookmark(&target);
-            }
-            UiMessage::BookmarkHydrated(target, m) => {
-                self.hydrating.remove(&target);
-                self.store.write().bookmarked.insert(target, m.map(|m| *m));
-            }
-            UiMessage::InfoMedia(tab) => self.info_media = tab,
-            UiMessage::InfoNote(action) => {
-                let edit = action.is_edit();
-                self.info_note.perform(action);
-                if edit {
-                    let note = Some(self.info_note.text()).filter(|n| !n.is_empty());
-                    let mut st = self.store.write();
-                    let cid = self.pane.selected_chat_id.as_deref().expect("a chat is selected");
-                    let idx = st.resolve_chat_idx(cid).expect("selected chat exists");
-                    st.update_chat(idx, |c| c.note = note);
-                }
-            }
-            UiMessage::InfoQuery(q) => (self.info_all, self.info_query) = (!q.trim().is_empty(), q),
             UiMessage::OpenEditGroup(chat) => {
                 self.chat_menu = None;
                 if let Some(d) = &self.group_window {
@@ -5909,20 +4004,8 @@ impl BeeperGuiApp {
                 return open;
             }
             UiMessage::OpenEditForMe(chat) => return self.open_edit_for_me(chat),
-            UiMessage::SetPersonalName(chat, name) => self.set_personal_name(chat, name),
             UiMessage::Group(e) => return self.group_edit(e),
             UiMessage::Profile(m) => return self.update_profile(m),
-            UiMessage::ToggleLabel(label, chat, add) => self.toggle_label(label, chat, add, true),
-            UiMessage::SwitchLabel(label, chat, add) => self.toggle_label(label, vec![chat], add, false),
-            UiMessage::OpenEditLabels(chat) => {
-                self.chat_menu = None;
-                if let Some(&(id, _)) = self.labels_windows.iter().find(|w| w.1 == chat) {
-                    return window::gain_focus(id);
-                }
-                let (id, open) = self.open_child(Size::new(303.0, 488.0));
-                self.labels_windows.push((id, chat));
-                return open;
-            }
             UiMessage::UndoAction => {
                 let Some((what, undo)) = self.undo_stack.pop() else { return Task::none() };
                 let depth = self.undo_stack.len();
@@ -5932,368 +4015,6 @@ impl BeeperGuiApp {
                 self.status_banner = format!("{} {what}", tr("Undo:"));
                 self.undo_note = Some(what);
                 return task;
-            }
-            UiMessage::SetSpacesOrder(order) => {
-                self.patch_settings(|s| s.spaces_order = order);
-                if let Some(d) = self.spaces_window.as_mut() {
-                    let st = self.store.read();
-                    d.order =
-                        rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st)).collect();
-                }
-            }
-            UiMessage::RestoreDeletedLabel(l, order) => {
-                let mut st = self.store.write();
-                let id = st.create_label(&l.name, l.color, l.icon.clone(), l.rooms.clone());
-                if l.inbox.is_some() {
-                    st.set_label_inbox(&id, l.inbox);
-                }
-                if l.muted {
-                    st.set_label_muted(&id, true);
-                }
-                drop(st);
-                let (old, new) = (format!("label:{}", l.id), format!("label:{id}"));
-                let order =
-                    order.into_iter().map(|o| if o.id == old { SpaceOrder { id: new.clone(), ..o } } else { o });
-                self.patch_settings(|s| s.spaces_order = order.collect());
-            }
-            UiMessage::RestoreLabel(l) => {
-                let id = self.label_id(l.id);
-                self.store.write().update_label(&id, &l.name, l.color, l.icon, l.rooms);
-            }
-            UiMessage::OpenCreateLabel(chats) => {
-                self.chat_menu = None;
-                if let Some(d) = &self.label_window {
-                    return window::gain_focus(d.id);
-                }
-                let intro = !self.store.read().settings.labels_intro_seen;
-                if intro {
-                    self.patch_settings(|s| s.labels_intro_seen = true);
-                }
-                let (id, open) = self.open_child(LABEL_SETTINGS_SIZE);
-                let step = if intro { LabelStep::Intro } else { LabelStep::Pick };
-                self.label_window = Some(LabelDraft { chats, step, ..LabelDraft::new(id) });
-                return if intro { open } else { open.chain(operation::focus("label-search")) };
-            }
-            UiMessage::EditLabel(label) => return self.open_label_sheet(label, LabelStep::Details),
-            UiMessage::EditLabelChats(label) => return self.open_label_sheet(label, LabelStep::Pick),
-            UiMessage::MuteLabel(id, muted) => {
-                self.chat_menu = None;
-                let id = self.label_id(id);
-                let mut st = self.store.write();
-                let name = st.labels.iter().find(|l| l.id == id).expect("a muted label").name.clone();
-                st.set_label_muted(&id, muted);
-                drop(st);
-                let what = format!("{} \"{name}\"", if muted { "Mute" } else { "Unmute" });
-                self.act(what, UiMessage::MuteLabel(id, !muted), None);
-            }
-            UiMessage::SetLabelInbox(id, inbox) => {
-                self.chat_menu = None;
-                let id = self.label_id(id);
-                let mut st = self.store.write();
-                let old = st.labels.iter().find(|l| l.id == id).expect("a label").clone();
-                st.set_label_inbox(&id, inbox);
-                drop(st);
-                let to = INBOX_OPTIONS.iter().find(|o| o.0 == inbox.unwrap_or("all")).expect("an inbox option").1;
-                let what = format!("Set \"{}\" inbox visibility to {to}", old.name);
-                self.act(what, UiMessage::SetLabelInbox(id, old.inbox), None);
-            }
-            UiMessage::OpenLabelSettings(label) => {
-                self.chat_menu = None;
-                let label = self.label_id(label);
-                if let Some(w) = self.label_settings.iter().find(|w| w.label == label) {
-                    return window::gain_focus(w.id);
-                }
-                let (id, open) = self.open_child(LABEL_SETTINGS_SIZE);
-                self.label_settings.push(LabelSettings { id, label, menu: false });
-                return open;
-            }
-            UiMessage::LabelPane(id, e) => {
-                let w = self.label_settings.iter_mut().find(|w| w.id == id).expect("an open Label Settings window");
-                match e {
-                    LabelPane::Menu(open) => w.menu = open,
-                    LabelPane::Delete => {
-                        (self.confirm, self.delete_target) = (Some(ASK_DELETE_LABEL), Some(w.label.clone()));
-                        self.delete_in = Some(id);
-                    }
-                    LabelPane::Done => return window::close(id),
-                }
-            }
-            UiMessage::DeleteLabel(id) => {
-                self.confirm = None;
-                let id = self.label_id(id);
-                let mut st = self.store.write();
-                let label = st.labels.iter().find(|l| l.id == id).expect("a deleted label").clone();
-                let order = st.settings.spaces_order.clone();
-                st.delete_label(&id);
-                drop(st);
-                let (what, text) = (format!("Delete label \"{}\"", label.name), format!("Deleted \"{}\"", label.name));
-                self.act(what, UiMessage::RestoreDeletedLabel(Box::new(label), order), Some((text, None)));
-                if let Some(d) = self.spaces_window.as_mut() {
-                    d.order.retain(|o| *o != format!("label:{id}"));
-                }
-                if self.selected_account_filter.as_deref() == Some(&format!("label:{id}")) {
-                    self.selected_account_filter = None;
-                }
-                let shown = self.label_settings.iter().filter(|w| w.label == id);
-                return Task::batch(shown.map(|w| window::close(w.id)).collect::<Vec<_>>());
-            }
-            UiMessage::Label(edit) => return self.label_edit(edit),
-            UiMessage::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
-            UiMessage::OpenPollVotes(chat, mid) => {
-                if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
-                    return window::gain_focus(w.0);
-                }
-                let (id, open) = self.open_child(Size::new(342.0, 563.0));
-                self.vote_windows.push((id, chat, mid));
-                return open;
-            }
-            UiMessage::MarkRead(cid) => {
-                let mut st = self.store.write();
-                let idx = st.resolve_chat_idx(&cid).expect("chat exists");
-                self.mark_read(&mut st, idx);
-                drop(st);
-                self.refresh_theme_and_tray();
-            }
-            UiMessage::ToggleRead(cid) => {
-                let list = self.list_ids(&self.store.read());
-                let mut st = self.store.write();
-                let idx = st.resolve_chat_idx(&cid).expect("chat exists");
-                let c = &st.chats[idx];
-                if c.is_unread() {
-                    self.mark_read(&mut st, idx);
-                } else {
-                    st.set_chat_flag(idx, ChatFlag::MarkedUnread, Some(true));
-                }
-                drop(st);
-                self.chat_menu = None;
-                self.refresh_theme_and_tray();
-                let at = list.iter().position(|c| *c == cid);
-                if let Some(at) = at.filter(|_| self.pane.selected_chat_id.as_deref() == Some(cid.as_str())) {
-                    return self.after_action("afterMarkRead", &list, at, false);
-                }
-            }
-            UiMessage::CopyChatLink(cid) => {
-                self.chat_menu = None;
-                let st = self.store.read();
-                let c = &st.chats[st.resolve_chat_idx(&cid).expect("chat exists")];
-                return iced::clipboard::write(deeplink::chat_link(&c.account_id, &c.id));
-            }
-            UiMessage::CloseChatMenu => self.chat_menu = None,
-            UiMessage::OpenChatMenu(cid) => {
-                self.chat_menu = Some((cid, self.cursor.get()));
-                self.chat_sub = None;
-            }
-            UiMessage::OpenMessageMenu(mid) => {
-                self.video.iter_mut().for_each(|v| v.sub = false);
-                (self.audio.sub, self.audio.lang) = (false, false);
-                self.pane.message_menu = Some((mid, self.cursor.get()));
-                self.pane.gallery_menu.clear();
-            }
-            UiMessage::SelectMessages(mids) => self.pane.selected_msgs = mids,
-            UiMessage::CopySelected(stamp) => {
-                let st = self.store.read();
-                let (msgs, _) = self.timeline(&st);
-                let picked: Vec<&Message> =
-                    msgs.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
-                let many = picked.len() > 1;
-                let text: Vec<String> = picked.iter().map(|m| copy_text(m, stamp, many)).collect();
-                drop(st);
-                return self.update(UiMessage::CopyText(text.join("\n")));
-            }
-            UiMessage::ClickMessage(mid)
-                if !self.mods.shift()
-                    && self.store.read().settings.on("undoOnPendingClick")
-                    && self.queued.iter().any(|q| q.sends.iter().any(|s| s.0 == mid)) =>
-            {
-                return self.update(UiMessage::UndoSend);
-            }
-            UiMessage::ClickMessage(mid) => {
-                let picked = self.pane.selected_msgs.contains(&mid);
-                if self.mods.shift() {
-                    let st = self.store.read();
-                    let (msgs, live) = self.timeline(&st);
-                    let at = |id: &str| msgs.iter().position(|m| m.id == id).expect("the message is in the open chat");
-                    let (a, b) = (at(self.pane.msg_anchor.as_deref().unwrap_or(&mid)), at(&mid));
-                    let range = (a.min(b)..=a.max(b)).filter(|&i| live[i]).map(|i| msgs[i].id.clone());
-                    let range: Vec<String> = range.filter(|id| !self.pane.selected_msgs.contains(id)).collect();
-                    drop(st);
-                    self.pane.selected_msgs.extend(range);
-                } else {
-                    match (self.mods.command(), picked) {
-                        (true, false) => self.pane.selected_msgs.push(mid.clone()),
-                        (false, false) => self.pane.selected_msgs = vec![mid.clone()],
-                        (_, true) => self.pane.selected_msgs.retain(|m| *m != mid),
-                    }
-                }
-                self.pane.msg_anchor = Some(mid);
-            }
-            UiMessage::DoubleClickMessage(mid) => {
-                let st = self.store.read();
-                let action = st.settings.pref("messageDoubleClick");
-                let reactable = st.loaded(&mid).is_some_and(Message::reactable);
-                drop(st);
-                return match action {
-                    1 | 5 if !reactable => Task::none(),
-                    0 => Task::none(),
-                    1 => self.update(UiMessage::React(mid)),
-                    3 => self.update(UiMessage::Forward(vec![mid])),
-                    2 => {
-                        self.pane.selected_msgs = vec![mid.clone()];
-                        self.update(UiMessage::StartReply(mid))
-                    }
-                    4 => self.update(UiMessage::OpenMessageMenu(mid)),
-                    5 => self.update(self.quick_react(mid)),
-                    n => unreachable!("messageDoubleClick option {n}"),
-                };
-            }
-            UiMessage::StepMessage(down, extend) => {
-                let st = self.store.read();
-                let (msgs, live) = self.timeline(&st);
-                let live = |i: &usize| live[*i];
-                let picked = |m: &&Message| self.pane.selected_msgs.contains(&m.id);
-                let (first, last) = (msgs.iter().position(picked), msgs.iter().rposition(picked));
-                let extend = extend && last.is_some();
-                let next = match (first.zip(last), down) {
-                    (None, false) => (0..msgs.len()).rev().find(live),
-                    (None, true) => None,
-                    (Some((_, l)), true) => (l + 1..msgs.len()).find(live),
-                    (Some((f, _)), false) if extend => (0..f).rev().find(live),
-                    (Some((_, l)), false) => (0..l).rev().find(live).or(Some(l).filter(live)),
-                };
-                let next = next.map(|i| msgs[i].id.clone());
-                drop(st);
-                match (extend, next) {
-                    (true, Some(mid)) => self.pane.selected_msgs.push(mid),
-                    (true, None) => return Task::none(),
-                    (false, next) => self.pane.selected_msgs = next.into_iter().collect(),
-                }
-                return match self.pane.selected_msgs.last() {
-                    Some(mid) => {
-                        self.pane.timeline.reveal(vlist::key(mid));
-                        locate(format!("msg-{mid}"), self.pane.scroll_id(), true)
-                    }
-                    None => operation::focus("composer-input"),
-                };
-            }
-            UiMessage::React(mid) => return self.open_emoji(Some((mid, self.cursor.get()))),
-            UiMessage::ReactAt(mid, at) => return self.open_emoji(Some((mid, at))),
-            UiMessage::MessageMenu(msg) => {
-                self.pane.message_menu = None;
-                return self.update(*msg);
-            }
-            UiMessage::CopyText(s) => return iced::clipboard::write(s),
-            UiMessage::CopyImage(mid, ai) => {
-                let st = self.store.read();
-                let a = &stored(&st, &mid).attachments[ai];
-                let url = a.src_url.clone().expect("an image has a source");
-                let fetch = beeper_core::matrix::media(st.matrix.clone(), url);
-                let decode = async move {
-                    let bytes = fetch.await?;
-                    let decode = move || {
-                        let px = ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8();
-                        Ok((px.width() as usize, px.height() as usize, px.into_raw()))
-                    };
-                    tokio::task::spawn_blocking(decode).await.expect("image decode task")
-                };
-                return Task::perform(decode, UiMessage::ImageFetched);
-            }
-            UiMessage::ImageFetched(r) => {
-                let copy = |(width, height, px): (usize, usize, Vec<u8>), c: &mut Option<arboard::Clipboard>| {
-                    let img = arboard::ImageData { width, height, bytes: px.into() };
-                    let c = match c {
-                        Some(c) => c,
-                        None => c.insert(arboard::Clipboard::new().map_err(|e| e.to_string())?),
-                    };
-                    c.set_image(img).map_err(|e| e.to_string())
-                };
-                if let Err(e) = r.and_then(|b| copy(b, &mut self.image_clipboard)) {
-                    eprintln!("copy image failed: {e}");
-                    self.status_banner = tr("Couldn't copy the image").into();
-                }
-            }
-            UiMessage::OpenCarousel(mid, ai, in_media) => {
-                self.leave_carousel_video();
-                self.carousel =
-                    Some(Carousel { mid, ai, turns: 0, turned: None, in_media, resume: None, menu: None, strip: None });
-                self.fit_carousel_video();
-                return self.load_media();
-            }
-            UiMessage::CarouselStep(next) => {
-                // The second click of a double click on an arrow can step past the first or the last image.
-                let item = self.carousel_items(&self.store.read()).and_then(|(items, at)| {
-                    let to = if next { at + 1 } else { at.checked_sub(1)? };
-                    items.into_iter().nth(to)
-                });
-                let Some(item) = item else { return Task::none() };
-                self.leave_carousel_video();
-                let c = self.carousel.as_mut().expect("the carousel is open");
-                (c.mid, c.ai, c.resume, c.menu, c.strip) = (item.0, item.1, None, None, None);
-                self.fit_carousel_video();
-                return self.load_media();
-            }
-            UiMessage::ScrollFilmstrip(by) => return self.scroll_filmstrip(by),
-            UiMessage::CarouselMenu(open) => {
-                let at = self.cursor.get();
-                self.carousel.as_mut().expect("the carousel is open").menu = open.then_some(at);
-            }
-            UiMessage::RotateCarousel => {
-                let c = self.carousel.as_mut().expect("the carousel is open");
-                (c.turns, c.turned) = ((c.turns + 1) % 4, Some(std::time::Instant::now()));
-            }
-            UiMessage::CloseCarousel => {
-                let task = self.close_carousel_video();
-                self.carousel = None;
-                return task;
-            }
-            UiMessage::OpenMedia => {
-                if let Some(w) = &self.media_window {
-                    return window::gain_focus(w.id);
-                }
-                // Desktop's `media-viewer` window state.
-                let settings = self.saved_window_settings("media-viewer", Size::new(1000.0, 720.0));
-                let (size, (id, open)) = (settings.size, window::open(settings));
-                self.media_window = Some(MediaWindow {
-                    id,
-                    tab: 0,
-                    size,
-                    shown: MEDIA_PAGE,
-                    sent_by: 0,
-                    oldest: false,
-                    search: None,
-                    tab_at: None,
-                    menu: None,
-                    item_menu: None,
-                    select: false,
-                    picked: Vec::new(),
-                    deleting: None,
-                });
-                return Task::batch([open.map(UiMessage::WindowOpened), self.load_media()]);
-            }
-            UiMessage::MediaTab(tab) => {
-                let w = self.media_mut();
-                (w.tab_at, w.tab) = (Some((w.tab, std::time::Instant::now())), tab);
-                return self.media_reload();
-            }
-            UiMessage::MediaSentBy(n) => {
-                let w = self.media_mut();
-                (w.sent_by, w.menu) = (n, None);
-                return self.media_reload();
-            }
-            UiMessage::MediaOldest(on) => {
-                let w = self.media_mut();
-                (w.oldest, w.menu) = (on, None);
-                return self.media_reload();
-            }
-            UiMessage::MediaSearch(q) => {
-                let w = self.media_mut();
-                let open = q.is_some() && w.search.is_none();
-                w.search = q;
-                let reload = self.media_reload();
-                return if open { Task::batch([reload, operation::focus("media-search")]) } else { reload };
-            }
-            UiMessage::MediaMenu(open) => {
-                let at = self.cursor.get();
-                self.media_mut().menu = open.then_some(at);
             }
             UiMessage::Modifiers(mods) => {
                 // Electron's `autoHideMenuBar`: Alt on its own shows the menu bar, and hides it again.
@@ -6314,129 +4035,29 @@ impl BeeperGuiApp {
                     }
                 }
             }
-            UiMessage::MediaSelect(on) => {
-                let w = self.media_mut();
-                w.select = on;
-                w.picked.clear();
-            }
-            UiMessage::MediaPick(mid, k) => {
-                let w = self.media_mut();
-                w.select = true;
-                match w.picked.iter().position(|(m, i)| *m == mid && *i == k) {
-                    Some(at) => _ = w.picked.remove(at),
-                    None => w.picked.push((mid, k)),
-                }
-            }
-            UiMessage::MediaPickAll => {
-                let st = self.store.read();
-                let w = self.media_window.as_ref().expect("the Media window is open");
-                let media = self.media_messages(&st);
-                let all = media_items(&st, &media, w).into_iter().take(w.shown).map(|(i, k)| (media[i].id.clone(), k));
-                let all = all.collect();
-                drop(st);
-                self.media_mut().picked = all;
-            }
-            UiMessage::MediaSave => {
-                let w = self.media_window.as_ref().expect("the Media window is open");
-                let files = if w.tab == 1 { Vec::new() } else { w.picked.clone() };
-                return Task::batch(files.into_iter().map(|(mid, k)| self.update(UiMessage::Download(mid, Some(k)))));
-            }
-            UiMessage::MediaAskDelete(items) => {
-                let st = self.store.read();
-                let mut pairs: Vec<(String, String)> = Vec::new();
-                for (mid, _) in &items {
-                    let m = &stored(&st, mid);
-                    if deletable(&st, m) && !pairs.iter().any(|(_, x)| x == mid) {
-                        pairs.push((m.chat_id.clone(), mid.clone()));
-                    }
-                }
-                let skipped = items.iter().filter(|(mid, _)| !deletable(&st, &stored(&st, mid))).count();
-                drop(st);
-                match pairs.is_empty() {
-                    true => self.status_banner = tr("These messages can’t be deleted").into(),
-                    false => self.media_mut().deleting = Some((pairs, skipped)),
-                }
-            }
-            UiMessage::MediaDelete(go) => {
-                let (pairs, skipped) = self.media_mut().deleting.take().expect("the delete dialog is open");
-                if go {
-                    let mut st = self.store.write();
-                    for (cid, mid) in &pairs {
-                        st.redact_message(cid, mid).expect("delete message");
-                    }
-                    drop(st);
-                    self.media_mut().picked.retain(|(m, _)| pairs.iter().all(|(_, x)| x != m));
-                    if skipped > 0 {
-                        self.status_banner = trn(
-                            "Skipped %d item that can’t be deleted",
-                            "Skipped %d items that can’t be deleted",
-                            skipped,
-                            &[&skipped],
-                        );
-                    }
-                }
-            }
-            UiMessage::MediaItemMenu(item) => {
-                let at = self.cursor.get();
-                self.media_mut().item_menu = item.map(|(mid, k)| (mid, k, at));
-            }
-            UiMessage::MediaItemAct(msg) => {
-                self.media_mut().item_menu = None;
-                return self.update(*msg);
-            }
-            UiMessage::CopyLink(url) => {
-                self.status_banner = tr("Copied to clipboard!").into();
-                return iced::clipboard::write(url);
-            }
-            UiMessage::MediaMore => {
-                self.media_mut().shown += MEDIA_PAGE;
-                return self.load_media();
-            }
-            UiMessage::GoToMessage(chat, mid) => {
-                let main = window::gain_focus(self.main_window.expect("the main window is open"));
-                return Task::batch([self.update(UiMessage::JumpTo(chat, mid)), main]);
-            }
             UiMessage::InputEscape(id) if Some(id) == self.settings_window && self.integrations.add.is_some() => {
                 self.integrations.add = None;
             }
             UiMessage::InputEscape(id) if Some(id) == self.settings_window => {
-                return self.update(UiMessage::SettingsQueryChanged(String::new()));
+                return self.update(UiMessage::Settings(settings::Msg::Query(String::new())));
             }
             UiMessage::InputEscape(id) => {
                 return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
             }
             UiMessage::WindowText(id, text) if self.chat_windows.iter().any(|w| w.0 == id) => {
-                return self.update(UiMessage::InWindow(id, Box::new(UiMessage::TypeInComposer(text))));
+                return self.update(UiMessage::InWindow(id, Box::new(UiMessage::Composer(composer::Msg::Type(text)))));
             }
             UiMessage::WindowText(id, text) if Some(id) == self.main_window => {
-                return self.update(UiMessage::TypeInComposer(text));
+                return self.update(UiMessage::Composer(composer::Msg::Type(text)));
             }
             UiMessage::WindowText(id, text) if Some(id) == self.login_window => return self.login_text(&text),
             UiMessage::WindowText(..) => {}
-            UiMessage::TypeInComposer(text) => {
-                let open = self.can_compose();
-                let quiet = self.confirm.is_none()
-                    && !self.show_command_palette
-                    && self.forward.is_none()
-                    && self.creating_chat.is_none()
-                    && self.carousel.is_none()
-                    && self.recorder.is_none();
-                if !(open && quiet) {
-                    return Task::none();
-                }
-                let old = self.pane.composer.text();
-                self.pane.composer.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
-                for c in text.chars() {
-                    self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Insert(c)));
-                }
-                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
-            }
             // Desktop's menu roles "close" and "minimize", whose accelerators work while the menu bar hides.
             UiMessage::WindowKey(id, Key::Character(c), mods)
                 if mods == Modifiers::COMMAND && matches!(c.to_lowercase().as_str(), "w" | "m") =>
             {
                 return match c.eq_ignore_ascii_case("w") {
-                    true => self.update(UiMessage::CloseRequested(id)),
+                    true => self.update(UiMessage::Window(windows::Msg::CloseRequested(id))),
                     false => window::minimize(id, true),
                 };
             }
@@ -6509,197 +4130,14 @@ impl BeeperGuiApp {
                     } else if w.deleting.is_some() {
                         w.deleting = None;
                     } else if let Some(q) = w.search.as_ref().map(|q| (!q.is_empty()).then(String::new)) {
-                        return self.update(UiMessage::MediaSearch(q));
+                        return self.update(UiMessage::Media(media_view::Msg::Search(q)));
                     } else if w.select {
                         (w.select, w.picked) = (false, Vec::new());
                     } else {
-                        return self.update(UiMessage::CloseRequested(id));
+                        return self.update(UiMessage::Window(windows::Msg::CloseRequested(id)));
                     }
                 }
             }
-            UiMessage::Forward(mids) => {
-                self.forward = Some(Forward { mids, picked: Vec::new(), query: String::new() });
-                return operation::focus("forward-input");
-            }
-            UiMessage::ForwardQuery(q) => self.forward.as_mut().expect("the forward dialog is open").query = q,
-            UiMessage::ForwardSubmit => {
-                let st = self.store.read();
-                let first = forward_chats(&st, self.forward.as_ref().expect("the forward dialog is open"));
-                let first = first.first().map(|c| c.id.clone());
-                drop(st);
-                return first.map_or_else(Task::none, |c| self.update(UiMessage::ForwardPick(c)));
-            }
-            UiMessage::ForwardPick(cid) => {
-                let f = self.forward.as_mut().expect("the forward dialog is open");
-                f.picked.push(cid);
-                f.query.clear();
-                return operation::focus("forward-input");
-            }
-            UiMessage::ForwardSend => {
-                // The second click of a double click on Send hits the dialog that the first click closed.
-                let Some(Forward { mids, picked, .. }) = self.forward.take() else { return Task::none() };
-                assert!(!picked.is_empty() && !mids.is_empty(), "forward needs a chat and a message");
-                let mut st = self.store.write();
-                for cid in &picked {
-                    for mid in &mids {
-                        let m = stored(&st, mid);
-                        let (_, txn, _) = st
-                            .send_message(cid, m.text.clone(), None, m.attachments.first().cloned())
-                            .expect("forward message");
-                        let (from, event, text, html) = (m.chat_id, m.id, m.text, m.html);
-                        st.queue(cid, Outgoing::Forward { txn, from, event, text, html });
-                    }
-                }
-                drop(st);
-                if let [one] = picked.as_slice() {
-                    self.select_chat(one);
-                }
-            }
-            UiMessage::Download(mid, only) => {
-                let st = self.store.read();
-                let m = &stored(&st, &mid);
-                let files: Vec<(String, String)> = m
-                    .attachments
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| only.is_none_or(|o| o == *i))
-                    .map(|(_, a)| {
-                        let name = a.file_name.clone().expect("an attachment has a file name");
-                        (a.src_url.clone().expect("an attachment has a source"), name)
-                    })
-                    .collect();
-                let client = st.matrix.clone();
-                self.status_banner = trf("Downloading %s", &[&files[0].1]);
-                self.sticky_banner = Some(self.status_banner.clone());
-                let (dir, ask) = (downloads_dir(&st.settings), st.settings.on("alwaysAskDownload"));
-                return Task::perform(
-                    async move {
-                        let mut last = String::new();
-                        for (url, name) in files {
-                            let name = safe_file_name(&name);
-                            if name.trim_matches('.').is_empty() {
-                                return Err(format!("bad file name {name:?}"));
-                            }
-                            // Desktop's `always_ask_download_location`: the save dialog picks each path.
-                            let path = match ask {
-                                true => {
-                                    let save = portal::Pick::Save(name.clone());
-                                    let picked = portal::open_files(portal::PORTAL.into(), tr("Save").into(), save);
-                                    match picked.await?.into_iter().next() {
-                                        Some(path) => path,
-                                        None => continue,
-                                    }
-                                }
-                                false => {
-                                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                                    unused_path(&dir, &name)
-                                }
-                            };
-                            let bytes = beeper_core::matrix::media(client.clone(), url).await?;
-                            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-                            last = path.file_name().expect("a file path").to_string_lossy().into_owned();
-                        }
-                        Ok(last)
-                    },
-                    UiMessage::Downloaded,
-                );
-            }
-            UiMessage::Downloaded(r) => {
-                self.status_banner = match r {
-                    Ok(name) => trf("Downloaded %s", &[&name]),
-                    Err(e) => trf("Download failed: %s", &[&e]),
-                }
-            }
-            UiMessage::AskDeleteMessage(mids) => {
-                (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mids.join(" ")))
-            }
-            UiMessage::ToggleCommandPalette => {
-                if !self.show_command_palette {
-                    self.search_filters = SearchFilters::default();
-                }
-                self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
-                (self.cmd_bar_commands_mode, self.cmd_index, self.cmd_submenu) = (false, 0, None);
-                self.search_expanded = false;
-                if self.show_command_palette {
-                    return operation::focus("cmd-palette-input");
-                }
-            }
-            UiMessage::SearchRoom(cid) => {
-                (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, false, None);
-                (self.search_room, self.chat_menu) = (Some(cid), None);
-                self.search_filters.accounts.clear();
-                return operation::focus("cmd-palette-input");
-            }
-            UiMessage::ToggleCommandMode => {
-                (self.cmd_bar_commands_mode, self.cmd_index) = (!self.cmd_bar_commands_mode, 0);
-                return operation::focus("cmd-palette-input");
-            }
-            UiMessage::CmdNoReply(on) => self.cmd_no_reply = on,
-            UiMessage::LastTime(phrase) => self.patch_settings(|s| s.last_time = phrase),
-            UiMessage::OpenSubMenu(menu) => {
-                let st = self.store.read();
-                self.cmd_no_reply = match &menu {
-                    commands::SubMenu::Schedule(ids) => {
-                        let initial = match ids.first() {
-                            Some(id) => st.scheduled.iter().find(|s| s.id == *id).map(|s| s.send_only_on_no_response),
-                            None => self.pane.send_later.map(|c| c.1),
-                        };
-                        initial.unwrap_or(st.settings.pref("sendLaterDefault") == 0)
-                    }
-                    _ => st.settings.pref("remindLaterDefault") == 0,
-                };
-                drop(st);
-                (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, true, Some(menu));
-                (self.search_room, self.chat_menu, self.cmd_index) = (None, None, 0);
-                self.command_palette_query.clear();
-                return operation::focus("cmd-palette-input");
-            }
-            UiMessage::ToggleSearchExpanded => self.search_expanded = !self.search_expanded,
-            UiMessage::CommandQueryChanged(q) => {
-                (self.command_palette_query, self.cmd_index) = (q.clone(), 0);
-                if self.cmd_submenu == Some(commands::SubMenu::AddMembers) {
-                    self.new_chat_search = None;
-                    let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
-                    return Task::perform(wait, move |()| UiMessage::SearchMembers(q.clone()));
-                }
-            }
-            UiMessage::SearchMembers(q) => {
-                let q = q.trim();
-                let open = self.cmd_submenu == Some(commands::SubMenu::AddMembers);
-                let chat = self.pane.selected_chat_id.clone().filter(|_| open && !q.is_empty());
-                let Some(chat) = chat.filter(|_| q == self.command_palette_query.trim()) else {
-                    return Task::none();
-                };
-                let st = self.store.read();
-                let account = st.resolve_chat_idx(&chat).map(|i| st.chats[i].account_id.clone());
-                drop(st);
-                return self.search_users(q, account);
-            }
-            UiMessage::AddMembers(q) => {
-                let open = self.update(UiMessage::OpenSubMenu(commands::SubMenu::AddMembers));
-                return Task::batch([open, self.update(UiMessage::CommandQueryChanged(q))]);
-            }
-            UiMessage::ExportChat => {
-                let st = self.store.read();
-                let Some(text) = self.export_text(&st) else { return Task::none() };
-                let title = st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().unwrap_or_default());
-                let title = safe_file_name(&st.chats[title.expect("an open chat")].title);
-                drop(st);
-                let home = beeper_core::platform::resolve_home_dir(&std::env::vars().collect());
-                let path = home.join(format!("Desktop/Beeper export {title} {}.txt", now_unix_millis()));
-                self.status_banner = match std::fs::write(&path, text) {
-                    Ok(()) => format!("Exported to {}", path.display()),
-                    Err(e) => format!("Export failed: {e}"),
-                };
-            }
-            UiMessage::AddMember(chat, user) => {
-                let mut st = self.store.write();
-                // The second click of a double click hits the row of the person that the first click added.
-                if st.chat(&chat).participants.items.iter().all(|u| u.id != user.id) {
-                    st.add_member(&chat, *user);
-                }
-            }
-            UiMessage::CommandHighlight(i) => self.cmd_index = i,
             UiMessage::Commands(msgs) => {
                 return Task::batch(msgs.into_iter().map(|m| self.update(m)).collect::<Vec<_>>())
             }
@@ -6707,368 +4145,7 @@ impl BeeperGuiApp {
                 self.chat_menu = None;
                 return self.run_hotkey(name, 0);
             }
-            UiMessage::ToggleMaximize(id) => {
-                return window::toggle_maximize(id.or(self.main_window).expect("the main window"));
-            }
-            UiMessage::JumpTo(cid, mid) => return self.jump_to(cid, mid),
-            UiMessage::ExecuteCommandChat(cid) => {
-                self.show_command_palette = false;
-                self.command_palette_query.clear();
-                self.select_chat(&cid);
-            }
-            UiMessage::NewChat => {
-                self.chat_menu = None;
-                let id = self.new_chats.iter().map(|d| d.id).max().map_or(0, |n| n + 1);
-                self.new_chats.insert(0, NewChat { id, users: Vec::new(), group: false, title: String::new() });
-                return self.update(UiMessage::SelectNewChat(id));
-            }
-            UiMessage::SelectNewChat(id) => {
-                self.creating_chat = Some(id);
-                self.show_command_palette = false;
-                self.new_chat_query.clear();
-                (self.new_chat_expanded, self.new_chat_chats_expanded) = (false, false);
-                (self.new_chat_account, self.new_chat_accounts_open) = (None, false);
-                (self.contact_networks, self.new_chat_lookup, self.new_chat_search) = (None, None, None);
-                self.new_chat_results_expanded = false;
-                self.join_matrix_mode = false;
-                return operation::focus("new-chat-input");
-            }
-            UiMessage::ToggleContact(id) => {
-                if self.contact_networks.take().is_some_and(|(c, _)| c == id) {
-                    return Task::none();
-                }
-                let st = self.store.read();
-                let c = st.contacts.iter().find(|u| u.id == id).expect("a listed contact").clone();
-                let accounts: Vec<String> =
-                    rail_accounts(&st).into_iter().filter(|a| self.can(a, "create_dm")).collect();
-                drop(st);
-                let (phone, email, username) = (c.phone_number.as_deref(), c.email.as_deref(), c.username.as_deref());
-                let (nets, tasks) = self.resolve_identifiers(&id, &accounts, phone, email, username);
-                self.contact_networks = Some((id, nets));
-                return tasks;
-            }
-            UiMessage::LookupIdentifier(q) => {
-                let q = q.trim();
-                if q != self.new_chat_query.trim() || q.is_empty() {
-                    return Task::none();
-                }
-                let only =
-                    self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).and_then(|d| d.users.first());
-                let only = only.map(|(a, _)| a.clone()).or_else(|| self.new_chat_account.clone());
-                let search = self.search_users(q, only);
-                let phone = typed_phone(q).then(|| fmt_phone(&phone_digits(q)));
-                let email = (q.contains('@') && !q.starts_with('@')).then_some(q);
-                let named = q.as_bytes().windows(2).any(|w| w[0] == b'@' && w[1].is_ascii_alphanumeric());
-                let username = named.then_some(q);
-                if phone.is_none() && email.is_none() && username.is_none() {
-                    return search;
-                }
-                let st = self.store.read();
-                let only =
-                    self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).and_then(|d| d.users.first());
-                let only = only.map(|(a, _)| a.clone()).or_else(|| self.new_chat_account.clone());
-                let listed = rail_accounts(&st).into_iter().filter(|a| self.can(a, "create_dm"));
-                let accounts: Vec<String> = listed.filter(|a| only.as_ref().is_none_or(|o| o == a)).collect();
-                drop(st);
-                let key = format!("lookup:{q}");
-                let (nets, tasks) = self.resolve_identifiers(&key, &accounts, phone.as_deref(), email, username);
-                self.new_chat_lookup = Some((key, nets));
-                return Task::batch([search, tasks]);
-            }
-            UiMessage::SearchedUsers(q, account, r) => {
-                let Some((_, pending, found)) = self.new_chat_search.as_mut().filter(|(s, ..)| *s == q) else {
-                    return Task::none();
-                };
-                *pending -= 1;
-                let users = r.inspect_err(|e| eprintln!("search users failed for {account}: {e}")).unwrap_or_default();
-                found.extend(users.iter().map(|v| (account.clone(), resolved_user(v))));
-            }
-            UiMessage::ToggleNewChatResults => self.new_chat_results_expanded = !self.new_chat_results_expanded,
-            UiMessage::ContactNetwork(id, slot, r) => {
-                let open = [&mut self.contact_networks, &mut self.new_chat_lookup].into_iter().flatten();
-                let Some((_, nets)) = open.into_iter().find(|(c, _)| *c == id) else {
-                    return Task::none();
-                };
-                let found = r.inspect_err(|e| eprintln!("resolve identifier failed: {e}")).ok().flatten();
-                nets[slot].1 = Some(found.map(|v| resolved_user(&v)));
-            }
-            UiMessage::PickUser(account, user) => {
-                let n = self.creating_chat.expect("an open draft");
-                let group = self.can_group(&account);
-                let draft = self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft");
-                if !group {
-                    draft.users = vec![(account, *user)];
-                } else if draft.users.iter().all(|(_, u)| u.id != user.id) {
-                    draft.users.push((account, *user));
-                } else {
-                    return Task::none();
-                }
-                draft.group |= draft.users.len() > 1;
-                self.new_chat_query.clear();
-                return operation::focus("new-chat-input");
-            }
-            UiMessage::NewGroup => {
-                let n = self.creating_chat.expect("an open draft");
-                self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").group = true;
-                return operation::focus("new-chat-input");
-            }
-            UiMessage::GroupTitle(t) => {
-                let n = self.creating_chat.expect("an open draft");
-                self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").title = t;
-            }
-            UiMessage::StartChat => {
-                let Some(n) = self.creating_chat else { return Task::none() };
-                let draft = self.new_chats.iter().find(|d| d.id == n).expect("the open draft");
-                let Some((account, user)) = draft.users.first().cloned() else { return Task::none() };
-                if draft.group {
-                    let users = draft.users.iter().map(|(_, u)| u.id.clone()).collect();
-                    let named = self.caps[&account]["group_creation"]["group"]["name"]["allowed"] == true;
-                    let title = if named { draft.title.clone() } else { String::new() };
-                    self.status_banner = tr("Creating group chat...").into();
-                    self.sticky_banner = Some(self.status_banner.clone());
-                    let create =
-                        beeper_core::matrix::create_group(self.provision(&account), "group".into(), title, users);
-                    return Task::perform(create, move |r| UiMessage::GroupCreated(n, account.clone(), r));
-                }
-                return self.open_dm(account, user, Some(n), None);
-            }
-            UiMessage::MessageMember(cid, uid) => {
-                self.chat_menu = None;
-                self.user_hover = UserHover { r#gen: self.user_hover.r#gen + 1, ..UserHover::default() };
-                let st = self.store.read();
-                let c = st.chat(&cid);
-                let user = c.participants.items.iter().find(|u| u.id == uid).cloned().expect("a member of the chat");
-                let account = c.account_id.clone();
-                drop(st);
-                return self.open_dm(account, user, None, None);
-            }
-            UiMessage::AskMember(ask, cid, uid) => {
-                (self.chat_menu, self.confirm, self.delete_target) = (None, Some(ask), Some(format!("{cid} {uid}")));
-            }
-            UiMessage::SetAdmin(cid, uid, admin) => {
-                self.confirm = None;
-                self.store.write().set_admin(&cid, &uid, admin);
-            }
-            UiMessage::RemoveMember(cid, uid) => {
-                self.confirm = None;
-                self.store.write().remove_member(&cid, &uid);
-            }
-            UiMessage::ReplyPrivately(mid) => {
-                let st = self.store.read();
-                let m = &stored(&st, &mid);
-                let c = st.chat(&m.chat_id);
-                let sender = c.participants.items.iter().find(|u| u.id == m.sender_id).cloned().expect("the sender");
-                let quote = copy_text(m, false, false).lines().map(|l| format!("> {l}\n")).collect();
-                let account = c.account_id.clone();
-                drop(st);
-                return self.open_dm(account, sender, None, Some(quote));
-            }
-            UiMessage::DmCreated(n, account, quote, r) => self.chat_created(n, &account, quote, r, "creating thread"),
-            UiMessage::GroupCreated(n, account, r) => {
-                self.chat_created(Some(n), &account, None, r, "creating group chat")
-            }
-            UiMessage::DeleteNewChat(id) => {
-                // The second click of a double click on the close button hits the draft that the first click removed.
-                let Some(i) = self.new_chats.iter().position(|d| d.id == id) else { return Task::none() };
-                self.new_chats.remove(i);
-                self.chat_menu = None;
-                if self.creating_chat != Some(id) {
-                    return Task::none();
-                }
-                self.creating_chat = None;
-                let st = self.store.read();
-                let rest = self.pins_and_rows(&st).1.into_iter().map(|c| UiMessage::SelectChat(c.id.clone()));
-                let items: Vec<_> = self.new_chats.iter().map(|d| UiMessage::SelectNewChat(d.id)).chain(rest).collect();
-                drop(st);
-                if let Some(next) = items.get(i).or(i.checked_sub(1).and_then(|j| items.get(j))) {
-                    return self.update(next.clone());
-                }
-            }
-            UiMessage::NewChatQueryChanged(q) => {
-                (self.new_chat_query, self.join_room.1) = (q.clone(), None);
-                (self.new_chat_lookup, self.new_chat_search) = (None, None);
-                let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
-                return Task::perform(wait, move |()| UiMessage::LookupIdentifier(q.clone()));
-            }
-            UiMessage::ToggleNewChatExpanded => self.new_chat_expanded = !self.new_chat_expanded,
-            UiMessage::ToggleNewChatChats => self.new_chat_chats_expanded = !self.new_chat_chats_expanded,
-            UiMessage::JoinMatrixRoom => return self.join_matrix_room(),
-            UiMessage::MatrixRoomJoined(draft, r, unrouted) => return self.matrix_room_joined(draft, r, unrouted),
-            UiMessage::ToggleJoinMatrix => {
-                self.join_matrix_mode = !self.join_matrix_mode;
-                self.new_chat_query.clear();
-                return operation::focus("new-chat-input");
-            }
-            UiMessage::SelectSettingsTab(SettingsTab::Help) | UiMessage::OpenSettings(SettingsTab::Help) => {
-                return Task::done(UiMessage::OpenUrl("https://help.beeper.com/?ref=desktop-app".into()));
-            }
-            UiMessage::SelectSettingsTab(t)
-                if self.active_settings_tab == SettingsTab::Profile
-                    && t != SettingsTab::Profile
-                    && self.profile.dirty(self.store.read().me()) =>
-            {
-                self.profile.leaving = Some(t);
-            }
-            UiMessage::SelectSettingsTab(t) => {
-                let top = operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
-                self.active_settings_tab = t;
-                (self.account_page, self.app_qr) = (None, false);
-                return Task::batch([top, self.load_devices()]);
-            }
-            UiMessage::DevicesLoaded(r) => (self.devices, self.devices_busy) = (Some(r), false),
-            UiMessage::AskLogoutDevice(id) => (self.confirm, self.delete_target) = (Some(ASK_LOGOUT_DEVICE), Some(id)),
-            UiMessage::LogoutDevice(id) => return self.logout_device(id),
-            UiMessage::DeviceLoggedOut(id, r) => return self.device_logged_out(id, r),
-            UiMessage::MicsLoaded(r) => {
-                if let Err(e) = &r {
-                    eprintln!("Unable to load audio input devices: {e}");
-                }
-                self.mics = Some(r);
-            }
-            UiMessage::SetMicrophone(name) => self.patch_settings(|s| s.microphone = name),
-            UiMessage::ShareAnalytics => {
-                let mut st = self.store.write();
-                let was = st.whoami.analytics_disabled;
-                st.whoami.analytics_disabled = !was;
-                let (cloud, token) = (self.cloud.clone(), st.beeper_state.access_token.clone());
-                if !st.config.demo {
-                    return Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || cloud.set_analytics_disabled(&token, !was))
-                                .await
-                                .expect("analytics worker thread")
-                        },
-                        move |r| UiMessage::AnalyticsSaved(was, r.map_err(|e| e.message)),
-                    );
-                }
-            }
-            UiMessage::AnalyticsSaved(_, Ok(())) => {}
-            UiMessage::AnalyticsSaved(was, Err(e)) => {
-                self.store.write().whoami.analytics_disabled = was;
-                self.fail(Toast::new(trf("Something went wrong: %s", &[&e])));
-            }
             UiMessage::Ask(dialog) => (self.confirm, self.reminder_menu) = (dialog, None),
-            UiMessage::AskDeleteChat(id) => {
-                (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_CHAT), None, Some(id));
-            }
-            UiMessage::BeginSelecting(id) => {
-                (self.selection, self.chat_menu, self.select_mode) = (vec![id.clone()], None, false);
-                self.select_chat(&id);
-            }
-            UiMessage::ToggleSelectMode => {
-                self.chat_menu = None;
-                if self.active_tab != InboxTab::Requests || self.selected_account_filter.is_some() {
-                    self.select_mode = !self.select_mode && self.selection.is_empty();
-                    self.selection.clear();
-                }
-            }
-            UiMessage::ToggleSelected(id) => {
-                self.select_mode = false;
-                match self.selection.iter().position(|c| *c == id) {
-                    Some(i) => drop(self.selection.remove(i)),
-                    None => self.selection.push(id.clone()),
-                }
-                self.select_chat(&id);
-            }
-            UiMessage::SelectionSet(flag, on) => {
-                (self.selection_menu, self.chat_menu) = (None, None);
-                let many = self.selection.len() > 1;
-                let what = match &self.selection[..] {
-                    [one] => {
-                        let st = self.store.read();
-                        st.chats[st.resolve_chat_idx(one).expect("a selected chat")].title.clone()
-                    }
-                    all => format!("{} chats", all.len()),
-                };
-                let mut undo = Vec::new();
-                {
-                    let mut st = self.store.write();
-                    for cid in std::mem::take(&mut self.selection) {
-                        let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
-                        let moved = has_flag(&st.chats[idx], flag) != on
-                            && match flag {
-                                ChatFlag::MarkedUnread if !on => {
-                                    self.mark_read(&mut st, idx);
-                                    true
-                                }
-                                ChatFlag::Archived => {
-                                    self.set_archived(&mut st, idx, on) || {
-                                        self.status_banner = tr("Pinned chats can't be archived").into();
-                                        false
-                                    }
-                                }
-                                _ => st.set_chat_flag(idx, flag, Some(on)),
-                            };
-                        if moved || many && flag == ChatFlag::Archived {
-                            undo.push((cid, !on));
-                        }
-                    }
-                }
-                if matches!(flag, ChatFlag::Archived | ChatFlag::LowPriority) {
-                    self.flag_toast(flag, on, undo, many);
-                } else if flag == ChatFlag::Muted && !undo.is_empty() {
-                    let what = format!("{} {what}", if on { "Mute" } else { "Unmute" });
-                    self.act(what, UiMessage::UndoFlag(flag, undo, false), None);
-                }
-                self.refresh_theme_and_tray();
-            }
-            UiMessage::SelectionRemind(at) => {
-                self.selection_menu = None;
-                {
-                    let mut st = self.store.write();
-                    for cid in std::mem::take(&mut self.selection) {
-                        let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
-                        if at.is_some() || st.chats[idx].reminder.is_some() {
-                            self.remind(&mut st, idx, at, None);
-                        }
-                    }
-                }
-                self.refresh_theme_and_tray();
-            }
-            UiMessage::SelectionMenu(menu, x) => self.selection_menu = Some((menu, x)),
-            UiMessage::AskLeaveChat(id) => (self.confirm, self.delete_target) = (Some(ASK_LEAVE_CHAT), Some(id)),
-            UiMessage::AskBlock(id, block) => self.ask_block(id, block),
-            UiMessage::BlockUser(id, block, spam) => return self.block_user(&id, block, spam),
-            UiMessage::ReportSpam(on) => self.report_spam = on,
-            UiMessage::OpenBlockedUsers => return self.open_blocked_users(),
-            UiMessage::CloseBlockedUsers => return window::close(self.blocked_window.expect("Blocked users is open")),
-            UiMessage::OpenBlockedUser(id) => return self.open_blocked_user(id),
-            UiMessage::LeaveRoom(id) => {
-                self.confirm = None;
-                self.store.write().leave_room(&id);
-                return self.update(UiMessage::StoreChanged);
-            }
-            UiMessage::AcceptRequest(id) => {
-                self.chat_menu = None;
-                self.store.write().accept_request(&id);
-                return self.update(UiMessage::StoreChanged);
-            }
-            UiMessage::DeleteChat(id, everyone) => {
-                self.chat_menu = None;
-                self.confirm = None;
-                self.store.write().delete_chat(&id, everyone);
-                return self.update(UiMessage::StoreChanged);
-            }
-            UiMessage::Voice(msg) => return self.voice(msg),
-            UiMessage::Record(msg) => return self.record(msg),
-            UiMessage::ReminderMenu => {
-                self.reminder_menu = Some(self.cursor.get());
-            }
-            UiMessage::OrderReminders(i) => {
-                self.reminder_menu = None;
-                self.patch_settings(|s| s.reminders_order = i);
-            }
-            UiMessage::DismissAllReminders => {
-                self.confirm = None;
-                let mut st = self.store.write();
-                for i in 0..st.chats.len() {
-                    if st.chats[i].reminder.is_some() {
-                        st.set_reminder(i, None);
-                    }
-                }
-                drop(st);
-                self.refresh_theme_and_tray();
-            }
             UiMessage::Logout => {
                 self.confirm = None;
                 return Task::perform(beeper_core::matrix::logout(self.store.clone()), UiMessage::LoggedOut);
@@ -7084,264 +4161,20 @@ impl BeeperGuiApp {
                 let closed = self.pane.thread.take().is_some();
                 self.show_right_panel = closed || !self.show_right_panel;
             }
-            UiMessage::ToggleMembers(id) => {
-                if !self.pane.open_members.remove(&id) {
-                    self.pane.open_members.insert(id);
-                }
-            }
             UiMessage::ToggleDnd => {
                 self.dnd_muted = !self.dnd_muted;
                 self.refresh_theme_and_tray();
-            }
-            UiMessage::CycleTheme => {
-                let cur = self.store.read().settings.theme;
-                let next = ThemeChoice::ALL[(ThemeChoice::ALL.iter().position(|t| *t == cur).expect("listed") + 1) % 3];
-                return self.update(UiMessage::SelectTheme(next));
-            }
-            UiMessage::SystemTheme(mode) => {
-                self.system_dark = mode == iced::theme::Mode::Dark;
-                self.refresh_theme_and_tray();
-            }
-            UiMessage::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
-            UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
-            UiMessage::CloudAccounts(Ok((profile, accounts))) => {
-                let (token, uid, demo) = {
-                    let mut st = self.store.write();
-                    let email = profile.email.clone();
-                    st.features.subscribed = profile.plan != Plan::Free;
-                    st.whoami = profile;
-                    let info = (st.beeper_state.access_token.clone(), st.beeper_state.user_id.clone(), st.config.demo);
-                    if st.me().email != email {
-                        let i = st.chat_idx(NOTE_CHAT_ID);
-                        st.update_chat(i, |c| c.participants.items[0].email = email);
-                    }
-                    st.set_cloud_accounts(accounts.clone());
-                    info
-                };
-                if !demo {
-                    let connected = accounts.iter().filter(|a| a.state == "CONNECTED");
-                    let caps: Vec<_> = connected
-                        .map(|a| {
-                            let id = a.account_id.clone();
-                            Task::perform(beeper_core::matrix::capabilities(self.provision(&id)), move |r| {
-                                UiMessage::Capabilities(id.clone(), r)
-                            })
-                        })
-                        .collect();
-                    let cloud = self.cloud.clone();
-                    let contacts = Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || cloud.contacts(&token, &uid, &accounts))
-                                .await
-                                .expect("contacts worker thread")
-                        },
-                        UiMessage::ContactsLoaded,
-                    );
-                    return Task::batch(caps).chain(contacts);
-                }
             }
             UiMessage::Capabilities(account, r) => match r {
                 Ok(v) => drop(self.caps.insert(account, v)),
                 Err(e) => eprintln!("provisioning capabilities failed: {e}"),
             },
-            UiMessage::NewChatAccount(account) => {
-                (self.new_chat_account, self.new_chat_accounts_open) = (account, false);
-            }
-            UiMessage::ToggleNewChatAccounts => self.new_chat_accounts_open = !self.new_chat_accounts_open,
-            UiMessage::ContactsLoaded(contacts) => {
-                if !contacts.is_empty() {
-                    self.store.write().set_contacts(contacts);
-                }
-            }
-            UiMessage::CloudAccounts(Err(e)) => {
-                self.fail(Toast::new(format!("Could not load your chat accounts: {e}")))
-            }
-            UiMessage::AvatarLoaded(url, Ok(h)) => {
-                self.avatars.insert(url, Some(h));
-            }
-            UiMessage::AvatarLoaded(_, Err(_)) => {}
-            UiMessage::MediaLoaded(url, r) => {
-                self.media.insert(url, Some(r));
-            }
-            UiMessage::TileBaked(key, h) => self.tiles.insert(key, Some(h)),
-            UiMessage::RetryMedia(url) => {
-                self.media.remove(&url);
-                return self.load_media();
-            }
-            UiMessage::ResolveMedia(account_id, event_id, raw) => {
-                if self.resolving_media.get(&event_id) == Some(&true) {
-                    return Task::none();
-                }
-                self.resolving_media.insert(event_id.clone(), true);
-                let p = self.provision(&account_id);
-                let (eid, again) = (event_id.clone(), (account_id, raw.clone()));
-                // Like Desktop, a resolve whose edit does not arrive in 30 s fails.
-                let resolve = async move {
-                    beeper_core::matrix::resolve_media(p, eid, raw).await?;
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                    Ok(())
-                };
-                return Task::perform(resolve, move |r| UiMessage::MediaResolved(again.0, event_id, again.1, r));
-            }
-            UiMessage::MediaResolved(account_id, event_id, raw, r) => {
-                self.resolving_media.insert(event_id.clone(), false);
-                if let Err(e) = r {
-                    eprintln!("resolve media failed: {e}");
-                    let again = UiMessage::ResolveMedia(account_id, event_id, raw);
-                    self.fail(Toast {
-                        buttons: vec![(tr("Try again"), again)],
-                        ..Toast::new(tr("Could not load this media.").into())
-                    });
-                }
-            }
-            UiMessage::Video(msg) => return self.video(msg),
-            UiMessage::Gallery(msg) => return self.gallery(msg),
-            UiMessage::Paste => return Task::perform(clipboard_paste(), UiMessage::Pasted),
-            // Desktop's `paste` handler: copied files go to the attachments, and a text goes into the composer.
-            UiMessage::Pasted(r) => match r {
-                Ok(Clip::Files(paths)) => return self.update(UiMessage::FilesPicked(Ok(paths))),
-                Ok(Clip::Image((png, size))) => self.attach_files(vec![Ok(PendingMedia {
-                    name: "image.png".into(),
-                    mime: "image/png".into(),
-                    is_gif: false,
-                    size,
-                    frames: vec![(image::Handle::from_bytes(png.clone()), 0)],
-                    bytes: png,
-                    duration: None,
-                    sticker: None,
-                })]),
-                Ok(Clip::Text) => {
-                    let id = if self.pane.thread_root.is_some() { "thread-composer-input" } else { "composer-input" };
-                    let paste = iced::clipboard::read().map(|t| match t {
-                        Some(t) => {
-                            UiMessage::ComposerEdit(text_editor::Action::Edit(text_editor::Edit::Paste(t.into())))
-                        }
-                        None => UiMessage::Noop,
-                    });
-                    return Task::batch([paste, operation::focus(id)]);
-                }
-                Err(e) => self.status_banner = e,
-            },
-            UiMessage::DiscardAttachment(i) => drop(self.pane.attachments.remove(i)),
-            UiMessage::PickFiles if self.pane.editing_message_id.is_some() => {
-                self.status_banner = tr("Attachments can't be added while editing a message").into();
-            }
-            UiMessage::PickFiles => {
-                let title = tr("Open").to_string();
-                return Task::perform(
-                    portal::open_files(portal::PORTAL.into(), title, portal::Pick::Files),
-                    UiMessage::FilesPicked,
-                );
-            }
             UiMessage::QuickEmoji(Some(slot)) => {
                 let open = self.open_emoji(None);
                 self.pane.emoji.as_mut().expect("the picker is open").pref = Some(slot);
                 return open;
             }
             UiMessage::QuickEmoji(None) => self.pane.emoji = None,
-            UiMessage::SetQuickEmoji(0, e) => {
-                self.patch_settings(|s| s.quick_reaction = e);
-                let mut st = self.store.write();
-                let client = st.matrix.clone();
-                if let Some(((kind, content), c)) = beeper_core::matrix::quick_reaction_write(&mut st).zip(client) {
-                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
-                }
-            }
-            UiMessage::SetQuickEmoji(slot, e) => {
-                self.patch_settings(|s| s.quick_reactions[usize::from(slot) - 1] = e);
-            }
-            UiMessage::PickDownloads => {
-                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Folder);
-                return Task::perform(pick, UiMessage::DownloadsPicked);
-            }
-            UiMessage::DownloadsPicked(Ok(dirs)) => {
-                if let Some(dir) = dirs.into_iter().next() {
-                    self.patch_settings(|s| s.downloads_dir = dir.display().to_string());
-                }
-            }
-            UiMessage::DownloadsPicked(Err(e)) => self.fail(Toast::new(e)),
-            UiMessage::FilesPicked(r) => match r {
-                Ok(paths) => {
-                    let st = self.store.read();
-                    let chat = &st.chats[st
-                        .resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat"))
-                        .expect("chat exists")];
-                    let (rules, resizes) = (chat.file.clone(), chat.room_features);
-                    drop(st);
-                    // Desktop's `attachFiles` logs the error of a file and shows "Couldn't attach %s". A file that
-                    // `TBe` takes goes through the codec check of `_Be` here, away from the window.
-                    let load = move || {
-                        let load = |p: &std::path::PathBuf| {
-                            let name = p.file_name().map_or(p.display().to_string(), |n| n.to_string_lossy().into());
-                            let f = portal::load_file(p).map_err(|e| {
-                                eprintln!("attachFiles: failed to attach {name}: {e}");
-                                format!("Couldn't attach {name}")
-                            })?;
-                            match portal::check(&f, &rules, resizes) {
-                                Ok(()) => portal::decodable(&f, p, &rules).map(|()| f),
-                                Err(_) => Ok(f),
-                            }
-                        };
-                        paths.iter().map(load).collect()
-                    };
-                    let load = async { tokio::task::spawn_blocking(load).await.expect("file load thread") };
-                    return Task::perform(load, UiMessage::FilesLoaded);
-                }
-                Err(e) => self.status_banner = e,
-            },
-            UiMessage::FilesLoaded(_) if self.pane.editing_message_id.is_some() => {
-                self.status_banner = tr("Attachments can't be added while editing a message").into();
-            }
-            UiMessage::FilesLoaded(files) => {
-                self.attach_files(files);
-                if self.drop_send {
-                    self.submit_composer(false);
-                }
-            }
-            UiMessage::FileHover(id, on) if Some(id) == self.main_window => {
-                self.dropping = on && self.pane.selected_chat_id.is_some();
-                self.drop_send &= !on;
-            }
-            UiMessage::FileDropped(id, path)
-                if Some(id) == self.main_window && self.pane.selected_chat_id.is_some() =>
-            {
-                self.dropping = false;
-                self.drop_send |= self.mods.shift();
-                return self.update(UiMessage::FilesPicked(Ok(vec![path])));
-            }
-            UiMessage::FileHover(..) | UiMessage::FileDropped(..) => {}
-            UiMessage::LinkPreviewLoaded(url, r) => {
-                let entry =
-                    self.pane.composer_links.iter_mut().find(|(u, s)| *u == url && matches!(s, LinkState::Loading));
-                if let Some((_, s)) = entry {
-                    *s = match r {
-                        Ok(Some((mut v, bytes))) => {
-                            let image = bytes.and_then(|b| {
-                                let format = ::image::guess_format(&b).ok()?;
-                                let reader = ::image::ImageReader::with_format(std::io::Cursor::new(&b), format);
-                                let (w, h) = reader.into_dimensions().ok()?;
-                                v["og:image:width"] = w.into();
-                                v["og:image:height"] = h.into();
-                                v["og:image:type"] = format.to_mime_type().into();
-                                Some((b.clone(), image::Handle::from_bytes(b)))
-                            });
-                            LinkState::Loaded(v, image)
-                        }
-                        Ok(None) => LinkState::Discarded,
-                        Err(e) => {
-                            eprintln!("link preview failed: {e}");
-                            LinkState::Discarded
-                        }
-                    };
-                }
-            }
-            UiMessage::RemoveLinkPreview(url) => {
-                self.pane
-                    .composer_links
-                    .iter_mut()
-                    .filter(|(u, _)| *u == url)
-                    .for_each(|(_, s)| *s = LinkState::Discarded);
-            }
             UiMessage::Emoji(m) => return self.update_emoji(m),
             UiMessage::Upserted(m) => {
                 let mut st = self.store.write();
@@ -7376,385 +4209,15 @@ impl BeeperGuiApp {
                 let note = self.notify_typing(chat);
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
-            UiMessage::NotifyTimer(chat, timer) => return self.notify_timer(chat, timer),
-            UiMessage::Notified(Ok((id, note))) => _ = self.notifications.insert(id, note),
-            // Like Desktop, a desktop without a notification server shows no notifications and no error.
-            UiMessage::Notified(Err(e)) => eprintln!("notification: {e}"),
-            UiMessage::NotificationEvent(id, action) => return self.notification_event(id, action),
-            m @ (UiMessage::ToastHover(_) | UiMessage::ToastTick) if self.toast_clock.0 != self.status_banner => {
-                self.toast_clock = (self.status_banner.clone(), self.toast_clock.1, Duration::ZERO);
-                return self.update(m);
-            }
-            UiMessage::ToastHover(on) => self.toast_clock.1 = on,
-            UiMessage::ToastTick => {
-                for t in &mut self.older_toasts {
-                    t.1 += TOAST_TICK;
-                }
-                self.older_toasts.retain(|t| t.1 < TOAST_TIMEOUT);
-                if !self.newest_toast_running() {
-                    return Task::none();
-                }
-                self.toast_clock.2 += TOAST_TICK;
-                if self.toast_clock.2 >= if self.shown_note() { UNDO_NOTE_TIMEOUT } else { TOAST_TIMEOUT } {
-                    return self.update(UiMessage::DismissBanner);
-                }
-            }
-            // The second click of a double click on a close button can come after the first click removed the toast.
-            UiMessage::DismissOlderToast(i) if i < self.older_toasts.len() => _ = self.older_toasts.remove(i),
-            UiMessage::DismissOlderToast(_) => {}
-            UiMessage::ToastAction(older, action) => {
-                let _ = match older {
-                    Some(i) => self.update(UiMessage::DismissOlderToast(i)),
-                    None => self.update(UiMessage::DismissBanner),
-                };
-                return self.update(*action);
-            }
-            UiMessage::WindowFocused(focused) => {
-                self.focused = focused;
-                self.read_open_chat();
-                let screen = self.login.screen;
-                let clipboard = matches!(screen, login::Screen::RecoveryKey | login::Screen::Code);
-                let key = (focused && clipboard && self.login_window.is_some())
-                    .then(|| iced::clipboard::read().map(|t| LoginMsg::KeyOnFocus(t).into()));
-                let modal = (focused && self.enter_key.window.is_some())
-                    .then(|| iced::clipboard::read().map(|t| enter_key::KeyMsg::OnFocus(t).into()));
-                return Task::batch([self.close_notifications()].into_iter().chain(key).chain(modal));
-            }
-            UiMessage::UndoSend => {
-                let open = self.pane.selected_chat_id.as_ref();
-                let Some(i) = self.queued.iter().position(|q| Some(&q.chat) == open) else { return Task::none() };
-                let q = self.queued.remove(i);
-                let mut st = self.store.write();
-                for (id, _) in &q.sends {
-                    st.remove_message(&q.chat, id).expect("a queued message is in its chat");
-                }
-                drop(st);
-                self.pane.composer = composer_with(&q.text);
-                (self.pane.reply_to_message_id, self.pane.attachments) = (q.reply_to, q.files);
-                return Task::batch([self.composer_effects(), operation::focus("composer-input")]);
-            }
-            UiMessage::SendQueued(chat) => {
-                let now = now_unix_millis();
-                let (send, keep) = std::mem::take(&mut self.queued)
-                    .into_iter()
-                    .partition(|q| chat.as_ref().map_or(q.due <= now, |c| q.chat == *c));
-                self.queued = keep;
-                let mut st = self.store.write();
-                for q in send.into_iter().flat_map(|q: Queued| q.sends.into_iter().map(move |s| (q.chat.clone(), s.1)))
-                {
-                    st.queue(&q.0, q.1);
-                }
-            }
-            UiMessage::TogglePicker(kind) => {
-                let open = self.pane.picker != Some(kind) && self.supports(kind);
-                self.pane.picker = open.then_some(kind);
-                if open && kind == Picker::Sticker {
-                    return self.load_sticker_packs();
-                }
-                if open && kind == Picker::Gif {
-                    self.pane.show_attach_menu = true;
-                    let focus = operation::focus("gif-search-input");
-                    if self.gifs.is_empty() && !self.gif_loading {
-                        self.gif_loading = true;
-                        self.gif_error = None;
-                        return Task::batch([focus, self.update(UiMessage::GifSearch(self.gif_query.clone()))]);
-                    }
-                    return focus;
-                }
-            }
-            UiMessage::GifQueryChanged(q) => {
-                (self.gif_query, self.gif_loading, self.gif_error) = (q.clone(), true, None);
-                self.gif_next.clear();
-                if q.trim().is_empty() {
-                    return self.update(UiMessage::GifSearch(q));
-                }
-                let wait = async { tokio::time::sleep(std::time::Duration::from_millis(500)).await };
-                return Task::perform(wait, move |()| UiMessage::GifSearch(q.clone()));
-            }
-            UiMessage::GifSearch(q) if q == self.gif_query => {
-                let reset = operation::scroll_to("gif-carousel", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
-                return Task::batch([reset, gif_page(q, String::new())]);
-            }
-            UiMessage::GifSearch(_) => {}
-            UiMessage::GifsLoaded(q, ..) if q != self.gif_query => {}
-            UiMessage::GifsLoaded(_, more, r) => {
-                self.gif_loading = false;
-                match r {
-                    // Desktop's `uniqBy(existingGifs.concat(page), "id")`.
-                    Ok((page, next)) => {
-                        if !more {
-                            self.gifs.clear();
-                        }
-                        for g in page {
-                            if self.gifs.iter().all(|x| x.id != g.id) {
-                                self.gifs.push(g);
-                            }
-                        }
-                        (self.gif_next, self.gif_error) = (next, None);
-                        return self.load_media();
-                    }
-                    Err(e) => {
-                        if !more {
-                            self.gifs.clear();
-                        }
-                        self.gif_error = Some(e);
-                    }
-                }
-            }
-            // Desktop loads the next page when the carousel scrolls to 100 px from its end.
-            UiMessage::GifScrolled(x, content, width) => {
-                self.gif_view = (x, width);
-                if x >= content - width - 100.0 && !self.gif_next.is_empty() && !self.gif_loading {
-                    self.gif_loading = true;
-                    return gif_page(self.gif_query.clone(), self.gif_next.clone());
-                }
-            }
-            UiMessage::PickGif(g) => {
-                self.pane.picker = None;
-                return self.download_gif(g);
-            }
-            UiMessage::StickerPacks(r) => self.pane.stickers = Some(r),
-            UiMessage::StickerTab(tab) => self.pane.sticker_tab = Some(tab),
-            UiMessage::PickSticker(s) => return self.pick_sticker(s),
-            UiMessage::StickerLoaded(r) => self.sticker_loaded(r),
-            UiMessage::GifDownloaded(Ok(_)) if self.pane.editing_message_id.is_some() => {
-                self.status_banner = tr("Attachments can't be added while editing a message").into();
-            }
-            UiMessage::GifDownloaded(r) => match r {
-                Ok(gif) => {
-                    if !self.store.read().settings.on("autoSendGifs") {
-                        self.pane.attachments.push(gif);
-                        return Task::none();
-                    }
-                    // Desktop's `onSendAttachment`: only the GIF goes now. The composer keeps the rest.
-                    let pane = &mut self.pane;
-                    let text = std::mem::replace(&mut pane.composer, composer_with(""));
-                    let files = std::mem::replace(&mut pane.attachments, vec![gif]);
-                    let links = std::mem::take(&mut pane.composer_links);
-                    let (later, reply) = (pane.send_later.take(), pane.reply_to_message_id.clone());
-                    self.submit_composer(false);
-                    let pane = &mut self.pane;
-                    (pane.composer, pane.attachments, pane.composer_links) = (text, files, links);
-                    (pane.send_later, pane.reply_to_message_id) = (later, reply);
-                }
-                Err(e) => {
-                    let text = trf("An error occurred while downloading the GIF: %s", &[&e]);
-                    self.fail(Toast::new(text));
-                }
-            },
             UiMessage::AnimationTick => {}
             UiMessage::Pushed(Ok(())) => {}
             UiMessage::DismissRecoveryReminder => {
                 let now = beeper_core::config::now_unix_millis();
                 self.patch_settings(|s| s.recovery_reminder_dismissed_at = now);
             }
-            UiMessage::DismissBanner => {
-                (self.status_banner, self.relaunch_toast) = (String::new(), None);
-                self.toast_dismissals += 1;
-            }
-            UiMessage::Relaunch => {
-                RELAUNCH.store(true, std::sync::atomic::Ordering::Relaxed);
-                return self.quit();
-            }
             UiMessage::Pushed(Err(e)) => self.fail(Toast::new(format!("Could not send to Matrix: {e}"))),
-            UiMessage::RetrySend(id) => self.store.write().retry_send(&id),
-            UiMessage::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
-            UiMessage::TimelineScrolled(up) => {
-                self.timeline_scrolled(up);
-                self.read_open_chat();
-            }
-            UiMessage::ScrollToBottom => {
-                return operation::scroll_to(self.pane.scroll_id(), operation::AbsoluteOffset { x: 0.0, y: 0.0 });
-            }
-            UiMessage::TopShown(shown) => {
-                self.pane.top.shown = shown;
-                return self.load_older();
-            }
-            UiMessage::LoadOlder => {
-                self.pane.top.waiting = false;
-                return self.load_older();
-            }
-            UiMessage::LoadedOlder(r) => return self.loaded_older(r),
-            UiMessage::StorageScanned(all) => {
-                self.storage.chart = Some(donut(&storage_totals(&all)));
-                self.storage.all = Some(all);
-            }
-            UiMessage::StorageAge(which, i) => self.storage.ages[which] = i,
-            UiMessage::StorageKind(which, i) => self.storage.kinds[which] ^= 1 << i,
-            UiMessage::StorageChat(id) => {
-                let s = &mut self.storage;
-                (s.chat, s.ages[1], s.kinds[1]) = ((s.chat.as_ref() != Some(&id)).then_some(id), 1, 0b11111);
-            }
-            UiMessage::ClearStorage(which) => {
-                let mut picked: Vec<storage::Entry> = self.storage_pick(which).into_iter().cloned().collect();
-                if which == 0 {
-                    picked.extend(self.storage_pick(1).into_iter().cloned());
-                }
-                (self.confirm, self.storage.clearing) = (None, Some(which));
-                return Task::perform(storage::clear(self.store.clone(), picked), UiMessage::StorageCleared);
-            }
-            UiMessage::StorageCleared(r) => {
-                self.storage.clearing = None;
-                if let Err(e) = r {
-                    eprintln!("Unable to clear storage: {e}");
-                    self.fail(Toast::new(tr("Failed to clear storage").into()));
-                }
-                return self.scan_storage();
-            }
-            UiMessage::McpTarget(i) => self.integrations.target = i,
-            UiMessage::McpInstall(client) => {
-                let value = mcp_value(client, &self.store.read().config.base_url());
-                let app = match client {
-                    "Claude Desktop" => return self.update(UiMessage::OpenUrl(value)),
-                    "Cursor" => "Cursor",
-                    "VS Code" => "Visual Studio Code",
-                    _ => {
-                        self.status_banner = tr("Command copied to clipboard! Run it in your terminal.").into();
-                        return iced::clipboard::write(value);
-                    }
-                };
-                self.status_banner = trf("Opening %s to install Beeper MCP...", &[&app]);
-                return self.update(UiMessage::OpenUrl(value));
-            }
-            UiMessage::CopyField(i, value) => {
-                self.integrations.copied = Some(i);
-                let wait = async { tokio::time::sleep(std::time::Duration::from_secs(2)).await };
-                let done = Task::perform(wait, move |()| UiMessage::CopyDone(i));
-                return Task::batch([iced::clipboard::write(value), done]);
-            }
-            UiMessage::CopyDone(i) => {
-                if self.integrations.copied == Some(i) {
-                    self.integrations.copied = None;
-                }
-            }
-            UiMessage::JoinCommunity => {
-                if self.store.read().resolve_chat_idx(COMMUNITY_ROOM).is_some() {
-                    let close = window::close(self.settings_window.expect("the settings window is open"));
-                    return Task::batch([self.update(UiMessage::SelectChat(COMMUNITY_ROOM.into())), close]);
-                }
-                if !self.integrations.joining {
-                    self.integrations.joining = true;
-                    return Task::perform(beeper_core::matrix::join(self.store.clone(), COMMUNITY_ROOM.into()), |r| {
-                        UiMessage::CommunityJoined(r.map(drop))
-                    });
-                }
-            }
-            UiMessage::TokenRequest(id, None) => {
-                let st = self.store.read();
-                if let Some(r) = st.connect.requests.iter().find(|r| r.id == id) {
-                    let name = r.client.name.clone().filter(|n| !n.is_empty());
-                    let name = name.unwrap_or_else(|| tr("Unknown Client").into());
-                    let version = r.client.version.as_ref().map(|v| format!("v{v}")).unwrap_or_default();
-                    let write = r.scopes.iter().any(|s| s == beeper_core::connect::WRITE);
-                    let app = format!("{name} {version}").trim_end().to_string();
-                    self.token_ask = Some(TokenAsk { id, app, write, expiry: Expiry(2_592_000), timed_out: false });
-                }
-            }
-            UiMessage::TokenRequest(id, Some(outcome)) => {
-                if let Some(a) = self.token_ask.as_mut().filter(|a| a.id == id) {
-                    a.timed_out = outcome == beeper_core::connect::Outcome::Timeout;
-                }
-            }
-            UiMessage::TokenWrite => self.token_ask.as_mut().expect("an open token request").write ^= true,
-            UiMessage::TokenExpiry(e) => self.token_ask.as_mut().expect("an open token request").expiry = e,
-            UiMessage::TokenAnswer(approve) => {
-                let a = self.token_ask.take().expect("an open token request");
-                let scopes = match a.write {
-                    true => vec![beeper_core::connect::READ.into(), beeper_core::connect::WRITE.into()],
-                    false => vec![beeper_core::connect::READ.into()],
-                };
-                self.store.write().answer_token_request(&a.id, approve.then_some((scopes, a.expiry.0)));
-            }
-            UiMessage::TokenClose => self.token_ask = None,
-            UiMessage::RevokeConnection(id) => {
-                (self.integrations.revoke, self.confirm) = (Some(id), Some(ASK_REVOKE_CONNECTION))
-            }
-            UiMessage::RemoteAccess(true) if self.confirm != Some(ASK_REMOTE_ACCESS) => {
-                self.confirm = Some(ASK_REMOTE_ACCESS);
-            }
-            UiMessage::RemoteAccess(on) => {
-                self.confirm = None;
-                self.patch_settings(|s| s.remote_access = on);
-                self.relaunch_toast = Some(match on {
-                    true => "Remote Access will be enabled after relaunch",
-                    false => "Remote Access will be disabled after relaunch",
-                });
-            }
-            UiMessage::RevokeConfirmed => {
-                self.confirm = None;
-                self.store.write().revoke_token(&self.integrations.revoke.take().expect("a connection to revoke"));
-            }
-            UiMessage::AddToken(open) => {
-                self.integrations.add = open.then(|| AddToken {
-                    name: String::new(),
-                    expiry: Expiry(2_592_000),
-                    write: false,
-                    token: None,
-                    copied: false,
-                });
-                return operation::focus("token-name");
-            }
-            UiMessage::AddTokenName(name) => self.integrations.add.as_mut().expect("the token dialog").name = name,
-            UiMessage::AddTokenExpiry(e) => self.integrations.add.as_mut().expect("the token dialog").expiry = e,
-            UiMessage::AddTokenWrite => self.integrations.add.as_mut().expect("the token dialog").write ^= true,
-            UiMessage::CreateToken => {
-                let a = self.integrations.add.as_mut().expect("the token dialog");
-                let mut scopes = vec![beeper_core::connect::READ.to_string()];
-                scopes.extend(a.write.then(|| beeper_core::connect::WRITE.to_string()));
-                let client = (!a.name.is_empty())
-                    .then(|| beeper_core::connect::ClientInfo { name: Some(a.name.clone()), ..Default::default() });
-                a.token = Some(self.store.write().create_token(scopes, a.expiry.0, client));
-            }
-            UiMessage::CopyToken => {
-                let a = self.integrations.add.as_mut().expect("the token dialog");
-                a.copied = true;
-                return iced::clipboard::write(a.token.clone().expect("a created token"));
-            }
-            UiMessage::CommunityJoined(r) => {
-                self.integrations.joining = false;
-                match r {
-                    Ok(()) => {
-                        let text = tr("Successfully joined the Beeper community room!").into();
-                        self.show(Toast { buttons: vec![(tr("Open"), UiMessage::JoinCommunity)], ..Toast::new(text) });
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to join community room: {e}");
-                        self.fail(Toast::new(
-                            tr("Something went wrong while joining the Beeper Developer Community chat. Please try again.")
-                                .into(),
-                        ));
-                    }
-                }
-            }
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
-            }
-            UiMessage::OpenSearchSelect(chip) => {
-                let find = Find(format!("search-chip-{chip}").into(), None);
-                return iced::advanced::widget::operate(find).map(move |r| UiMessage::SearchSelect(Some((chip, r))));
-            }
-            UiMessage::SearchSelect(open) => self.search_select = open,
-            UiMessage::PickSearchFilter(pick) => {
-                let f = &mut self.search_filters;
-                match pick {
-                    SearchPick::Account(a) => match f.accounts.iter().position(|x| *x == a) {
-                        Some(i) => drop(f.accounts.remove(i)),
-                        None => f.accounts.push(a),
-                    },
-                    SearchPick::Sent(v) => f.sent = (f.sent != Some(v)).then_some(v),
-                    SearchPick::Group(v) => f.group = (f.group != Some(v)).then_some(v),
-                    SearchPick::Media(v) => match f.media.iter().position(|&x| x == v) {
-                        Some(i) => drop(f.media.remove(i)),
-                        None => f.media.push(v),
-                    },
-                    SearchPick::Period(v) => {
-                        f.period = (f.period != Some(v)).then_some(v);
-                        self.search_select = None;
-                    }
-                }
-                if matches!(self.search_select, Some((1, _))) {
-                    self.search_select = None;
-                }
             }
             UiMessage::CloseModals if self.search_select.is_some() => self.search_select = None,
             UiMessage::CloseModals
@@ -7813,7 +4276,7 @@ impl BeeperGuiApp {
                 } else if self.pane.reply_to_message_id.is_some() {
                     self.pane.reply_to_message_id = None;
                 } else if self.pane.editing_message_id.is_some() {
-                    return self.update(UiMessage::CancelComposeMode);
+                    return self.update(UiMessage::Composer(composer::Msg::CancelMode));
                 } else if !self.pane.selected_msgs.is_empty() {
                     self.pane.selected_msgs.clear();
                 } else if self.pane.reply_thread.is_some() {
@@ -7832,20 +4295,9 @@ impl BeeperGuiApp {
                     self.status_banner.clear();
                 }
             }
-            UiMessage::ToggleClamp(mid) => {
-                if !self.pane.unclamped.remove(&mid) {
-                    self.pane.unclamped.insert(mid);
-                }
-            }
-            UiMessage::ToggleEditHistory(mid) => {
-                self.pane.expanded_history_msg_id =
-                    (self.pane.expanded_history_msg_id.as_ref() != Some(&mid)).then_some(mid);
-            }
             UiMessage::Noop => {}
             UiMessage::Relist => return Task::none(),
             UiMessage::LoadWanted => return Task::batch([self.load_avatars(), self.load_media(), self.load_quotes()]),
-            UiMessage::QuoteLoaded(id, r) => _ = self.quotes.insert(id, Some(r.map(|m| *m))),
-            UiMessage::DismissAccountError(id) => _ = self.dismissed_errors.insert(id),
             UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
                 self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
             }
@@ -7866,105 +4318,9 @@ impl BeeperGuiApp {
                     self.status_banner = e;
                 }
             }
-            UiMessage::ToggleAttachMenu => {
-                self.pane.show_attach_menu = !self.pane.show_attach_menu;
-                if !self.pane.show_attach_menu {
-                    self.pane.picker = None;
-                }
-            }
-            UiMessage::ToggleFilterMenu => self.show_filter_menu = !self.show_filter_menu,
-            UiMessage::FilterButton => self.filters = u8::from(self.filters == 0),
-            UiMessage::PickFilter(bit) => {
-                self.filters = if self.filters == bit { 0 } else { bit };
-                self.show_filter_menu = false;
-            }
-            UiMessage::OpenSettings(tab) => {
-                self.chat_menu = None;
-                return self.open_settings(tab);
-            }
-            UiMessage::ToggleAddAccount => self.adding_account ^= true,
-            UiMessage::ShowAppQr => self.app_qr = true,
-            UiMessage::OpenAccountSettings(id) => {
-                self.chat_menu = None;
-                let open = self.open_settings(SettingsTab::Accounts);
-                self.account_page = Some(id);
-                return open;
-            }
-            UiMessage::OpenAccount(id) => {
-                self.account_page = id;
-                return operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
-            }
-            UiMessage::AskRemoveAccount(id) => {
-                (self.chat_menu, self.delete_target, self.confirm) = (None, Some(id), Some(ASK_REMOVE_ACCOUNT));
-            }
-            UiMessage::RemoveAccount(id) => {
-                self.confirm = None;
-                let p = self.provision(&id);
-                let st = self.store.read();
-                let sole = st.bridge_accounts.iter().filter(|b| b.bridge_id == p.bridge_id).all(|b| b.account_id == id);
-                let removing = beeper_core::matrix::remove_account(p, st.config.api_url.clone(), sole);
-                return Task::perform(removing, move |r| UiMessage::AccountRemoved(id.clone(), r));
-            }
-            UiMessage::AccountRemoved(_, Ok(())) => return self.refresh_cloud_accounts(),
-            UiMessage::AccountRemoved(id, Err(e)) => {
-                let text = format!("There was an error disconnecting account {id}. {e}");
-                let report = UiMessage::OpenUrl(ISSUES_URL.into());
-                self.show(Toast { buttons: vec![("Report a problem", report)], ..Toast::new(text) });
-            }
-            UiMessage::SetAccountProps(id, props) => {
-                self.chat_menu = None;
-                self.patch_settings(|s| {
-                    s.accounts.insert(id, props);
-                })
-            }
-            UiMessage::SetInboxVisibility(key, option) => {
-                self.chat_menu = None;
-                let st = self.store.read();
-                let client = st.matrix.clone().expect("Show in Inbox needs a Matrix client");
-                let rules = beeper_core::matrix::with_inbox_visibility(st.inbox_rules.clone(), &key, option);
-                return Task::perform(
-                    beeper_core::matrix::set_global(client, beeper_core::matrix::RULES, rules),
-                    UiMessage::Pushed,
-                );
-            }
-            UiMessage::SettingsQueryChanged(q) => {
-                let st = self.store.read();
-                let n = search_settings(&st, &q).len();
-                if n != search_settings(&st, &self.settings_query).len() {
-                    self.settings_focus = 0;
-                    self.settings_pick = self.settings_pick.filter(|_| n > 0);
-                }
-                self.settings_query = q;
-            }
-            UiMessage::SettingsFocus(i) => self.settings_focus = i,
-            UiMessage::SettingsStep(step) => {
-                self.settings_focus =
-                    (self.settings_focus + step) % search_settings(&self.store.read(), &self.settings_query).len();
-                return locate(format!("hit-{}", self.settings_focus), "settings-nav", true);
-            }
-            UiMessage::PickSetting(hit) => {
-                self.settings_pick = Some(hit);
-                let tab = match hit {
-                    SettingsHit::Section(t, _) | SettingsHit::Pref(t, _) | SettingsHit::Custom(t, _) => t,
-                    SettingsHit::Network(_) => SettingsTab::Accounts,
-                };
-                let load =
-                    Task::batch([self.update(UiMessage::SelectSettingsTab(tab)), operation::focus("settings-search")]);
-                return match hit {
-                    SettingsHit::Pref(_, &prefs::Pref { key, .. }) | SettingsHit::Custom(_, key) => {
-                        self.pref_flash = Some((key, std::time::Instant::now()));
-                        Task::batch([load, locate(key, "settings-pane", false)])
-                    }
-                    SettingsHit::Network(_) => {
-                        self.adding_account = true;
-                        load
-                    }
-                    SettingsHit::Section(..) => load,
-                };
-            }
             UiMessage::ToggleIncognito => {
                 let on = !self.store.read().settings.on("incognito");
-                let task = self.update(UiMessage::SetPref("incognito", u8::from(on)));
+                let task = self.update(UiMessage::Settings(settings::Msg::SetPref("incognito", u8::from(on))));
                 let typing = self.store.read().settings.on("typingIndicators");
                 let (text, action) = match (on, typing) {
                     (true, true) => ("Incognito mode on. Also hide when you're typing from recipients?", "Hide typing"),
@@ -7976,187 +4332,13 @@ impl BeeperGuiApp {
                 };
                 let undo = (tr("Undo"), UiMessage::UndoAction);
                 let typing = UiMessage::Commands(vec![
-                    UiMessage::DismissBanner,
-                    UiMessage::SetPref("typingIndicators", u8::from(!typing)),
+                    UiMessage::Toast(toasts::Msg::DismissBanner),
+                    UiMessage::Settings(settings::Msg::SetPref("typingIndicators", u8::from(!typing))),
                 ]);
                 let (buttons, right) =
                     if action.is_empty() { (Vec::new(), Some(undo)) } else { (vec![(tr(action), typing), undo], None) };
                 self.show(Toast { buttons, right, ..Toast::new(tr(text).into()) });
                 return task;
-            }
-            UiMessage::SetPref(key, v) => {
-                if key == "incognito" {
-                    let was = u8::from(self.store.read().settings.on(key));
-                    let what = if v != 0 { tr("Enable Incognito Mode") } else { tr("Disable Incognito Mode") };
-                    self.act(what.into(), UiMessage::SetPref(key, was), None);
-                }
-                self.patch_settings(|s| s.set_pref(key, v));
-                self.relaunch_toast = match key {
-                    "spellcheck" | "quitOnClose" | "hwAcceleration" | "hiddenEvents" => Some("Preference changed"),
-                    "appLanguage" => Some("App language will change after relaunch"),
-                    _ => self.relaunch_toast,
-                };
-                let mut st = self.store.write();
-                let client = st.matrix.clone();
-                if let Some(((kind, content), c)) = beeper_core::matrix::pref_write(&mut st, key).zip(client) {
-                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
-                }
-            }
-            UiMessage::ToggleHotkey(name) => {
-                self.patch_settings(|s| {
-                    match s.hotkey_keys(name) {
-                        "disabled" if prefs::hotkey_default(name) == "disabled" => {
-                            s.keybindings.insert(name.into(), "".into())
-                        }
-                        "disabled" => s.keybindings.remove(name),
-                        _ => s.keybindings.insert(name.into(), "disabled".into()),
-                    };
-                });
-                (self.hotkey_rec, self.relaunch_toast) = (None, Some(HOTKEYS_RELAUNCH));
-            }
-            UiMessage::RecordHotkey(name) => {
-                if self.hotkey_rec.as_ref().is_none_or(|r| r.name != name) {
-                    self.hotkey_rec = Some(HotkeyRec { name, mods: [false; 3], key: None, buttons: false });
-                }
-            }
-            UiMessage::HotkeyRecorder(false) => self.hotkey_rec = None,
-            UiMessage::HotkeyRecorder(true) => self.save_hotkey(),
-            UiMessage::RevertHotkey(name) => {
-                self.patch_settings(|s| drop(s.keybindings.remove(name)));
-                (self.hotkey_rec, self.relaunch_toast) = (None, Some(HOTKEYS_RELAUNCH));
-            }
-            UiMessage::RevertHotkeys => {
-                self.patch_settings(|s| s.keybindings.clear());
-                return self.update(UiMessage::Relaunch);
-            }
-            UiMessage::HotkeyQuery(q) => self.hotkey_query = q,
-            UiMessage::HotkeysModal(q) => {
-                self.hotkeys_scrolled &= q.is_some();
-                let open = self.hotkeys_modal.is_none() && q.is_some();
-                self.hotkeys_modal = q;
-                if open {
-                    return operation::focus("hotkeys-search");
-                }
-            }
-            UiMessage::HotkeysScrolled(down) => self.hotkeys_scrolled = down,
-            UiMessage::Zoom(step) => self.patch_settings(|s| {
-                s.zoom_percent = if step == 0 {
-                    100
-                } else {
-                    s.zoom_percent.saturating_add_signed(10 * i16::from(step)).clamp(40, 300)
-                };
-            }),
-            UiMessage::ZoomDrag(level) => self.zoom_drag = Some(level),
-            UiMessage::ZoomRelease => {
-                let level = self.zoom_drag.take().expect("the zoom slider was dragged");
-                self.patch_settings(|s| s.zoom_percent = (100.0 + 10.0 * level) as u16);
-            }
-            UiMessage::HoverEnter(id) => {
-                self.quick_open &= self.pane.hovered_msg.as_ref() == Some(&id);
-                self.pane.hovered_msg = Some(id);
-            }
-            UiMessage::ShowQuickReactions => self.quick_open = true,
-            UiMessage::HoverChat(id, true) => self.hovered_chat = Some(id),
-            UiMessage::HoverChat(id, false) => {
-                if self.hovered_chat.as_ref() == Some(&id) {
-                    self.hovered_chat = None;
-                }
-            }
-            UiMessage::DeleteDraft(cid) => {
-                self.store.write().patch_chat(&cid, true, None, None).expect("chat exists");
-                if self.pane.selected_chat_id.as_ref() == Some(&cid) {
-                    self.pane.composer = composer_with("");
-                    self.pane.reply_to_message_id = None;
-                }
-            }
-            UiMessage::HoverExit(id) => {
-                if self.pane.hovered_msg.as_ref() == Some(&id) {
-                    self.pane.hovered_msg = None;
-                }
-            }
-            UiMessage::DragStart => self.dragging = true,
-            UiMessage::ResetSidebarWidth => self.sidebar_width = SIDEBAR_WIDTH,
-            UiMessage::FloatRail(on) => self.rail_float = on,
-            UiMessage::HoverUser(key) => {
-                let h = &mut self.user_hover;
-                match key {
-                    Some(k) if h.key != k => {
-                        *h = UserHover { key: k, trigger: true, r#gen: h.r#gen, ..UserHover::default() }
-                    }
-                    Some(_) => h.trigger = true,
-                    None => h.trigger = false,
-                }
-                return self.settle_user_hover();
-            }
-            UiMessage::HoverUserCard(on) => {
-                self.user_hover.card = on;
-                return self.settle_user_hover();
-            }
-            UiMessage::HoverUserDue(n) if n == self.user_hover.r#gen => {
-                let h = &mut self.user_hover;
-                h.shown = (h.trigger || h.card).then(|| h.shown.unwrap_or(self.cursor.get()));
-            }
-            UiMessage::HoverUserDue(_) => {}
-            UiMessage::DragMoved(pt) => {
-                let width = pt.x - 68.0 - 2.0;
-                if width >= 172.0 {
-                    self.sidebar_width = width.min(732.0);
-                }
-                self.set_sidebar_hidden(width < 172.0);
-            }
-            UiMessage::RailHover(id, at) => {
-                if let Some(order) = self.rail_drag.as_mut().filter(|d| d.id != id).and_then(|d| {
-                    let order = d.order.as_mut()?;
-                    let from = order.iter().position(|o| *o == d.id).expect("the dragged space");
-                    Some((order, from))
-                }) {
-                    let (order, from) = order;
-                    let to = order.iter().position(|o| *o == id).expect("a rail space");
-                    let item = order.remove(from);
-                    order.insert(to, item);
-                }
-                self.rail_hover = Some((id, at));
-            }
-            UiMessage::RailLeave(id) => {
-                if self.rail_hover.as_ref().is_some_and(|h| h.0 == id) {
-                    self.rail_hover = None;
-                }
-            }
-            UiMessage::PinHover(id) => {
-                // Desktop's sortable grid moves the dragged pin to the place of the pin under the pointer.
-                let over = id.as_ref().and_then(|over| {
-                    let d = self.pin_drag.as_mut().filter(|d| d.id != *over)?;
-                    Some((over, d.order.as_mut()?, &d.id))
-                });
-                if let Some((over, order, held)) = over {
-                    let from = order.iter().position(|o| o == held).expect("the dragged pin");
-                    let to = order.iter().position(|o| o == over).expect("a pin of the grid");
-                    let pin = order.remove(from);
-                    order.insert(to, pin);
-                }
-                self.pin_hover = id;
-            }
-            UiMessage::PinPress => {
-                let Some(id) = self.pin_hover.clone() else { return Task::none() };
-                self.pin_drag = Some(PinDrag { id, from: None, order: None });
-            }
-            UiMessage::PinDragMoved(at) => {
-                let Some(d) = self.pin_drag.as_mut() else { return Task::none() };
-                if d.order.is_none() && at.distance(*d.from.get_or_insert(at)) > 5.0 {
-                    let st = self.store.read();
-                    let order = self.pins_and_rows(&st).0.iter().map(|c| c.id.clone()).collect();
-                    drop(st);
-                    self.pin_drag.as_mut().expect("a pin drag").order = Some(order);
-                    self.chat_menu = None;
-                }
-            }
-            UiMessage::PinDragEnd => {
-                let Some(shown) = self.pin_drag.take().and_then(|d| d.order) else { return Task::none() };
-                let order = self.store.write().set_pin_order(&shown);
-                let Some(client) = self.store.read().matrix.clone() else { return Task::none() };
-                let content = serde_json::json!({ "Inbox": order });
-                let write = beeper_core::matrix::set_global(client, "com.beeper.favourites_order", content);
-                return Task::perform(write, UiMessage::Pushed);
             }
             UiMessage::HeaderHover(on) => {
                 let h = &mut self.header_hover;
@@ -8171,125 +4353,6 @@ impl BeeperGuiApp {
             }
             UiMessage::HeaderHoverEnd(n) if n == self.header_hover.1 => self.header_hover.0 = false,
             UiMessage::HeaderHoverEnd(_) => {}
-            UiMessage::MenuBar(state) => self.menu_bar = state,
-            UiMessage::MenuBarHover(i) => {
-                if let Some(Some(_)) = self.menu_bar {
-                    self.menu_bar = Some(Some(i));
-                }
-            }
-            UiMessage::MenuBarRun(msg) => {
-                self.menu_bar = None;
-                return self.update(*msg);
-            }
-            UiMessage::ComposerClip(cut) => {
-                let Some(text) = self.pane.composer.selection() else { return Task::none() };
-                let copy = iced::clipboard::write(text);
-                if !cut {
-                    return copy;
-                }
-                let delete = self.update(UiMessage::ComposerEdit(text_editor::Action::Edit(text_editor::Edit::Delete)));
-                return Task::batch([copy, delete]);
-            }
-            UiMessage::MinimizeWindow(id) => return window::minimize(id, true),
-            UiMessage::RailPress => {
-                let Some((id, grab)) = self.rail_hover.clone() else { return Task::none() };
-                self.rail_drag = Some(RailDrag { id, grab, from: None, at: Point::ORIGIN, order: None });
-            }
-            UiMessage::RailDragMoved(at) => {
-                let Some(d) = self.rail_drag.as_mut() else { return Task::none() };
-                d.at = at;
-                if d.order.is_none() && at.distance(*d.from.get_or_insert(at)) > 5.0 {
-                    let st = self.store.read();
-                    let draft = self.label_window.as_ref().filter(|w| w.label.is_none());
-                    d.order = Some(draft.map_or_else(|| rail_spaces(&st), |w| draft_rail_spaces(&st, &w.name)));
-                    self.chat_menu = None;
-                }
-            }
-            UiMessage::RailDragEnd => {
-                let Some(order) = self.rail_drag.take().and_then(|d| d.order) else { return Task::none() };
-                let old = self.store.read().settings.spaces_order.clone();
-                let order: Vec<String> =
-                    order.into_iter().map(|id| if id == LABEL_DRAFT { LABEL_NUDGE.into() } else { id }).collect();
-                let shown = order.iter().map(|id| SpaceOrder {
-                    id: id.clone(),
-                    visible: old.iter().find(|o| o.id == *id).is_none_or(|o| o.visible),
-                });
-                let rest = old.iter().filter(|o| !order.contains(&o.id)).cloned();
-                let order = shown.chain(rest).collect();
-                self.patch_settings(|s| s.spaces_order = order);
-            }
-            UiMessage::DragEnd => {
-                self.dragging = false;
-                let path = self.store.read().config.data_dir.join("sidebar-width");
-                std::fs::write(path, self.sidebar_width.to_string()).expect("write the sidebar width");
-            }
-            UiMessage::WindowOpened(id) => {
-                let key = if Some(id) == self.settings_window {
-                    "BEEPER_SCREENSHOT_SETTINGS"
-                } else {
-                    "BEEPER_SCREENSHOT_EXIT"
-                };
-                if std::env::var(key).is_ok() {
-                    self.shot = Some(id);
-                }
-            }
-            UiMessage::Drawn(id) if self.shot == Some(id) => {
-                self.shot = None;
-                return window::screenshot(id).map(move |s| UiMessage::ScreenshotCaptured(id, s));
-            }
-            UiMessage::Drawn(_) => {}
-            UiMessage::WindowResized(id, size) => {
-                if self.main_window == Some(id) {
-                    let narrow = |s: Size| s.width / self.zoom < 600.0;
-                    if narrow(self.pane.size) != narrow(size) {
-                        self.set_sidebar_hidden(narrow(size));
-                    }
-                    self.pane.size = size;
-                    if let Some(t) = self.pane.thread.as_mut() {
-                        t.size = size;
-                    }
-                }
-                if let Some(w) = self.chat_windows.iter_mut().find(|w| w.0 == id) {
-                    w.1.size = size;
-                }
-                if let Some(w) = self.media_window.as_mut().filter(|w| w.id == id) {
-                    w.size = size;
-                }
-                if self.settings_window == Some(id) {
-                    self.settings_size = size;
-                }
-            }
-            UiMessage::Tray(Ok(tray::Event::Up)) => self.tray_sent = (None, true),
-            // Electron cannot pop up the tray menu on Linux, so Desktop's click on a focused window does nothing.
-            UiMessage::Tray(Ok(tray::Event::Activate)) if !self.hidden && self.focused => {}
-            UiMessage::Tray(Ok(tray::Event::Activate)) => return self.show_all(),
-            UiMessage::Tray(Ok(tray::Event::Show)) => return self.set_hidden(false),
-            UiMessage::Tray(Ok(tray::Event::Hide)) => return self.set_hidden(true),
-            UiMessage::Tray(Ok(tray::Event::Quit)) => return self.quit(),
-            UiMessage::Tray(Err(e)) | UiMessage::TrayFailed(e) => {
-                eprintln!("tray icon failed: {e}");
-                return self.set_hidden(false);
-            }
-            UiMessage::CloseRequested(id) if self.poll_windows.iter().any(|w| w.id == id) => {
-                return self.poll_edit(id, PollEdit::Close);
-            }
-            // Desktop hides the main window on close, with or without the tray: a later launch shows it again.
-            UiMessage::CloseRequested(id) => {
-                let quit = self.store.read().settings.on("quitOnClose");
-                // Desktop's window `close`: it hides the app unless Quit on Close is on, also while signed out.
-                let primary = Some(id) == self.main_window || Some(id) == self.login_window;
-                return match (primary, quit) {
-                    (true, false) => self.set_hidden(true),
-                    (true, true) => self.save_main_window().chain(window::close(id)),
-                    _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
-                        self.save_window(id, "media-viewer").chain(window::close(id))
-                    }
-                    _ if self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none()) => {
-                        self.save_window(id, POP_OUT).chain(window::close(id))
-                    }
-                    (false, _) => window::close(id),
-                };
-            }
             UiMessage::InWindow(id, msg) => {
                 let Some(i) = self.chat_windows.iter().position(|w| w.0 == id) else { return self.handle(*msg) };
                 std::mem::swap(&mut self.pane, &mut self.chat_windows[i].1);
@@ -8301,69 +4364,6 @@ impl BeeperGuiApp {
                     Some(_) => task,
                     None => Task::batch([task, window::close(id)]),
                 };
-            }
-            UiMessage::OpenChatWindow(cid) => {
-                self.chat_menu = None;
-                let open = self.chat_windows.iter().find(|w| w.1.selected_chat_id.as_deref() == Some(&cid));
-                if let Some(&(id, _)) = open {
-                    return window::gain_focus(id);
-                }
-                // Desktop's `windowStateKeeper("pop-out-thread")` keeps the size of the last chat window.
-                let size = self.saved_window_settings(POP_OUT, Size::new(800.0, 600.0)).size;
-                let (id, open) = window::open(Self::window_settings(size));
-                self.chat_windows.push((id, Pane { size, ..Pane::default() }));
-                let near = self.cascade(id);
-                let select = self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(cid))));
-                self.save_subwindows();
-                return Task::batch([open.discard(), near, select]);
-            }
-            UiMessage::WindowClosed(id) if self.add_accounts.iter().any(|a| a.id == id) => {
-                return self.add_account_closed(id);
-            }
-            UiMessage::WindowClosed(id) => {
-                if let Some(w) = self.chat_windows.iter().find(|w| w.0 == id) {
-                    save_draft(&mut self.store.write(), &w.1);
-                }
-                self.chat_windows.retain(|w| w.0 != id);
-                self.theme_windows.retain(|w| w.0 != id);
-                self.labels_windows.retain(|w| w.0 != id);
-                self.poll_windows.retain(|w| w.id != id);
-                self.vote_windows.retain(|w| w.0 != id);
-                self.label_window = self.label_window.take().filter(|d| d.id != id);
-                if self.label_asking(id) {
-                    self.confirm = None;
-                }
-                self.label_settings.retain(|w| w.id != id);
-                self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
-                self.group_window = self.group_window.take().filter(|d| d.id != id);
-                self.blocked_window = self.blocked_window.filter(|w| *w != id);
-                self.verify.window = self.verify.window.filter(|w| *w != id);
-                // Desktop's `ReauthRequiredModal` closed without a code ends the logout of a device.
-                if self.reauth.window.take_if(|w| *w == id).is_some() {
-                    self.devices_busy = false;
-                }
-                self.enter_key.window = self.enter_key.window.filter(|w| *w != id);
-                if Some(id) == self.settings_window {
-                    self.settings_window = None;
-                } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
-                    self.media_window = None;
-                    self.carousel = self.carousel.take().filter(|c| !c.in_media);
-                } else if [self.main_window, self.login_window].contains(&Some(id)) {
-                    self.main_window = None;
-                    return self.quit();
-                }
-                self.save_subwindows();
-            }
-            UiMessage::ScreenshotCaptured(id, shot) => {
-                let is_settings = Some(id) == self.settings_window;
-                let path =
-                    std::env::var(if is_settings { "BEEPER_SCREENSHOT_SETTINGS" } else { "BEEPER_SCREENSHOT_EXIT" })
-                        .expect("screenshot path");
-                write_rgba_png(std::path::Path::new(&path), shot.size.width, shot.size.height, &shot.rgba);
-                if !is_settings && std::env::var("BEEPER_SCREENSHOT_SETTINGS").is_ok() {
-                    return self.open_settings(SettingsTab::General);
-                }
-                return iced::exit();
             }
             // A sign-in through the Desktop API goes on to the check of encrypted messaging, like a sign-in here.
             UiMessage::StoreChanged
@@ -8396,16 +4396,6 @@ impl BeeperGuiApp {
                 let older = self.load_older_everywhere();
                 return Task::batch([self.close_notifications(), self.verification_changed(), self.leave_app(), older]);
             }
-            UiMessage::FocusRequested(chat) => {
-                if let Some(id) = chat {
-                    self.select_chat(&id);
-                }
-                let shown = if self.hidden { self.set_hidden(false) } else { Task::none() };
-                let focus =
-                    shown.chain(window::gain_focus(self.main_window.or(self.login_window).expect("a window is open")));
-                return Task::batch([focus, self.load_avatars(), self.load_media(), self.close_notifications()]);
-            }
-            UiMessage::SecondInstance(args) => return self.second_instance(args),
             UiMessage::RoomJoined(r) => self.room_joined(r),
             UiMessage::Online(on) => self.online = on,
             UiMessage::PillHover(on) => self.pill_hover = on,
@@ -8438,7 +4428,7 @@ impl BeeperGuiApp {
                     return self.update(UiMessage::UndoAction);
                 }
                 if z && (self.queued_here() || self.shown_undo().is_some()) {
-                    return self.update(UiMessage::Undo(mods.shift()));
+                    return self.update(UiMessage::Composer(composer::Msg::Undo(mods.shift())));
                 }
                 if self.pane.picker == Some(Picker::Gif) && mods.is_empty() {
                     if let Some(task) = self.gif_key(&key) {
@@ -8454,7 +4444,9 @@ impl BeeperGuiApp {
                             self.pane.suggest = if down { (at + 1) % n } else { (at + n - 1) % n };
                             return Task::none();
                         }
-                        Key::Named(Named::Tab) => return self.update(UiMessage::PickSuggestion(at)),
+                        Key::Named(Named::Tab) => {
+                            return self.update(UiMessage::Composer(composer::Msg::PickSuggestion(at)))
+                        }
                         Key::Named(Named::Escape) => {
                             self.pane.suggest_hidden = Some(self.pane.composer.text());
                             return Task::none();
@@ -8498,16 +4490,21 @@ impl BeeperGuiApp {
                         let edit = !down
                             && self.pane.selected_msgs.is_empty()
                             && self.store.read().settings.pref("upArrow") == 1;
-                        let step = self.update(UiMessage::StepMessage(down, mods.shift()));
+                        let step = self.update(UiMessage::Message(message::Msg::Step(down, mods.shift())));
                         let Some(m) = edit.then(|| self.last_own_message()).flatten() else { return step };
                         self.pane.selected_msgs = vec![m.id.clone()];
-                        return step.chain(self.update(UiMessage::StartEdit(m.id, m.text.unwrap_or_default())));
+                        return step.chain(
+                            self.update(UiMessage::Composer(composer::Msg::StartEdit(
+                                m.id,
+                                m.text.unwrap_or_default(),
+                            ))),
+                        );
                     }
                     Key::Named(Named::Enter) if self.forward.is_some() => {
                         let picked = !self.forward.as_ref().expect("forward").picked.is_empty();
                         return match mods.control() {
-                            false => self.update(UiMessage::ForwardSubmit),
-                            true if picked => self.update(UiMessage::ForwardSend),
+                            false => self.update(UiMessage::Forward(forward::Msg::Submit)),
+                            true if picked => self.update(UiMessage::Forward(forward::Msg::Send)),
                             true => Task::none(),
                         };
                     }
@@ -8518,7 +4515,7 @@ impl BeeperGuiApp {
                     Key::Named(Named::Enter)
                         if mods.is_empty() && self.creating_chat.is_some() && !self.join_matrix_mode =>
                     {
-                        return self.update(UiMessage::StartChat);
+                        return self.update(UiMessage::NewChat(new_chat::Msg::Start));
                     }
                     Key::Named(Named::Backspace)
                         if self.creating_chat.is_some() && !self.join_matrix_mode && self.new_chat_query.is_empty() =>
@@ -8530,11 +4527,13 @@ impl BeeperGuiApp {
                     Key::Named(Named::ArrowRight)
                         if mods.is_empty() && self.single_msg().is_some() && self.can_select_messages() =>
                     {
-                        return self.update(UiMessage::React(self.single_msg().cloned().expect("a selected message")));
+                        return self.update(UiMessage::Message(message::Msg::React(
+                            self.single_msg().cloned().expect("a selected message"),
+                        )));
                     }
                     Key::Character("c") if mods.command() && !mods.shift() && !self.pane.selected_msgs.is_empty() => {
                         let stamp = self.store.read().settings.on("copyTimestamps");
-                        return self.update(UiMessage::CopySelected(stamp));
+                        return self.update(UiMessage::Message(message::Msg::CopySelected(stamp)));
                     }
                     Key::Character("a")
                         if mods.command() && !mods.shift() && !mods.alt() && self.can_select_messages() =>
@@ -8561,7 +4560,7 @@ impl BeeperGuiApp {
                         return Task::none();
                     }
                     Key::Character("v") if mods.command() && self.pane.selected_chat_id.is_some() => {
-                        return self.update(UiMessage::Paste);
+                        return self.update(UiMessage::Composer(composer::Msg::Paste));
                     }
                     _ => {}
                 }
@@ -8570,6 +4569,12 @@ impl BeeperGuiApp {
                 }
             }
         }
+        self.settle()
+    }
+
+    /// The end of a message that did not return its own task: shows a new Matrix error, and loads the avatars and
+    /// the media that the views want.
+    fn settle(&mut self) -> Task<UiMessage> {
         // A write lock empties the memo of the views, so take one only for a change.
         if self.store.read().matrix_error.is_some() {
             self.status_banner = self.store.write().matrix_error.take().expect("a Matrix error");
@@ -8598,7 +4603,7 @@ impl BeeperGuiApp {
         Task::batch(missing.into_iter().map(|t| {
             let fetch =
                 beeper_core::matrix::bookmarked_message(client.clone(), chat.clone(), t.clone(), account.clone());
-            Task::perform(fetch, move |m| UiMessage::BookmarkHydrated(t.clone(), m.map(Box::new)))
+            Task::perform(fetch, move |m| UiMessage::Info(info::Msg::BookmarkHydrated(t.clone(), m.map(Box::new))))
         }))
     }
 
@@ -8617,23 +4622,31 @@ impl BeeperGuiApp {
             })
         });
         let focus = Subscription::run_with(StoreFeed(self.store.clone(), 1), |f| {
-            feed(f.0.read().focus_tx.subscribe(), UiMessage::FocusRequested)
+            feed(f.0.read().focus_tx.subscribe(), |a0| UiMessage::Window(windows::Msg::FocusRequested(a0)))
         });
         let tokens = Subscription::run_with(StoreFeed(self.store.clone(), 2), |f| {
-            feed(f.0.read().connect_tx.subscribe(), |(id, outcome)| UiMessage::TokenRequest(id, outcome))
+            feed(f.0.read().connect_tx.subscribe(), |(id, outcome)| {
+                UiMessage::Integrations(integrations::Msg::Request(id, outcome))
+            })
         });
         let launches = Subscription::run_with(StoreFeed(self.store.clone(), 3), |f| {
-            feed(f.0.read().launch_tx.subscribe(), UiMessage::SecondInstance)
+            feed(f.0.read().launch_tx.subscribe(), |a0| UiMessage::Window(windows::Msg::SecondInstance(a0)))
         });
         let keys = iced::event::listen_with(|e, status, id| match e {
-            Event::Window(window::Event::Closed) => Some(UiMessage::WindowClosed(id)),
-            Event::Window(window::Event::CloseRequested) => Some(UiMessage::CloseRequested(id)),
-            Event::Window(window::Event::Resized(size)) => Some(UiMessage::WindowResized(id, size)),
-            Event::Window(window::Event::Focused) => Some(UiMessage::WindowFocused(true)),
-            Event::Window(window::Event::Unfocused) => Some(UiMessage::WindowFocused(false)),
-            Event::Window(window::Event::FileHovered(_)) => Some(UiMessage::FileHover(id, true)),
-            Event::Window(window::Event::FilesHoveredLeft) => Some(UiMessage::FileHover(id, false)),
-            Event::Window(window::Event::FileDropped(path)) => Some(UiMessage::FileDropped(id, path)),
+            Event::Window(window::Event::Closed) => Some(UiMessage::Window(windows::Msg::Closed(id))),
+            Event::Window(window::Event::CloseRequested) => Some(UiMessage::Window(windows::Msg::CloseRequested(id))),
+            Event::Window(window::Event::Resized(size)) => Some(UiMessage::Window(windows::Msg::Resized(id, size))),
+            Event::Window(window::Event::Focused) => Some(UiMessage::Window(windows::Msg::Focused(true))),
+            Event::Window(window::Event::Unfocused) => Some(UiMessage::Window(windows::Msg::Focused(false))),
+            Event::Window(window::Event::FileHovered(_)) => {
+                Some(UiMessage::Composer(composer::Msg::FileHover(id, true)))
+            }
+            Event::Window(window::Event::FilesHoveredLeft) => {
+                Some(UiMessage::Composer(composer::Msg::FileHover(id, false)))
+            }
+            Event::Window(window::Event::FileDropped(path)) => {
+                Some(UiMessage::Composer(composer::Msg::FileDropped(id, path)))
+            }
             Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => Some(UiMessage::Modifiers(m)),
             Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), modifiers, .. })
                 if status == iced::event::Status::Captured && modifiers.is_empty() =>
@@ -8673,7 +4686,7 @@ impl BeeperGuiApp {
             }
             _ => None,
         });
-        let system = iced::system::theme_changes().map(UiMessage::SystemTheme);
+        let system = iced::system::theme_changes().map(|a0| UiMessage::Settings(settings::Msg::SystemTheme(a0)));
         let carousel = self.carousel.is_some().then(|| {
             iced::event::listen_with(|e, _, id| match e {
                 Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(c), modifiers, .. })
@@ -8686,41 +4699,53 @@ impl BeeperGuiApp {
         });
         let drag = self.dragging.then(|| {
             iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::DragMoved(position)),
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::DragEnd),
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(UiMessage::Rail(rail::Msg::ResizeMoved(position)))
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Rail(rail::Msg::ResizeEnd)),
                 _ => None,
             })
         });
         let thread_drag = self.thread_drag.then(|| {
             iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::ThreadDrag(Some(position))),
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::ThreadDrag(None)),
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(UiMessage::Thread(threads::Msg::Drag(Some(position))))
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Thread(threads::Msg::Drag(None))),
                 _ => None,
             })
         });
         let rail_press = (self.rail_hover.is_some() && self.rail_drag.is_none()).then(|| {
             iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => Some(UiMessage::RailPress),
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    Some(UiMessage::Rail(rail::Msg::Press))
+                }
                 _ => None,
             })
         });
         let pin_press = (self.pin_hover.is_some() && self.pin_drag.is_none()).then(|| {
             iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => Some(UiMessage::PinPress),
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    Some(UiMessage::Pins(pins::Msg::Press))
+                }
                 _ => None,
             })
         });
         let pin_drag = self.pin_drag.is_some().then(|| {
             iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::PinDragMoved(position)),
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::PinDragEnd),
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(UiMessage::Pins(pins::Msg::DragMoved(position)))
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Pins(pins::Msg::DragEnd)),
                 _ => None,
             })
         });
         let rail_drag = self.rail_drag.is_some().then(|| {
             iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::RailDragMoved(position)),
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::RailDragEnd),
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(UiMessage::Rail(rail::Msg::DragMoved(position)))
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Rail(rail::Msg::DragEnd)),
                 _ => None,
             })
         });
@@ -8749,15 +4774,16 @@ impl BeeperGuiApp {
         };
         // "Sending..." turns into "Still sending..." at its time.
         let late = late.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::AnimationTick));
-        let remind = due.0.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckReminders));
-        let send = due.1.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckScheduled));
+        let remind = due.0.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Reminders(reminders::Msg::Check)));
+        let send = due.1.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Scheduled(scheduled::Msg::Check)));
         let typed = self.panes().filter_map(|p| p.typing.as_ref().map(|t| t.1)).min();
         let typing = typed.map(|t| {
             let left = TYPING_STOP.saturating_sub(t.elapsed()).max(Duration::from_millis(1));
             iced::time::every(left).map(|_| UiMessage::TypingTick)
         });
         let queued = self.queued.iter().map(|q| q.due).min();
-        let queued = queued.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::SendQueued(None)));
+        let queued =
+            queued.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Composer(composer::Msg::SendQueued(None))));
         // The loading of older messages and the fade of the scroll button, in each chat window too.
         let moving =
             |p: &Pane| p.top.loading.is_some() || p.scrolled_up.is_some_and(|s| s.1.elapsed().as_secs_f32() < 0.2);
@@ -8771,18 +4797,21 @@ impl BeeperGuiApp {
         let tab_at = self.media_window.as_ref().and_then(|w| w.tab_at);
         let animated = animated || tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE);
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
-            .then(|| Subscription::run(tray::events).map(UiMessage::Tray));
+            .then(|| Subscription::run(tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0))));
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
-        let notes = (!self.notifications.is_empty() || self.verify.note.is_some())
-            .then(|| Subscription::run(notify::events).map(|(id, action)| UiMessage::NotificationEvent(id, action)));
-        let toast = self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::ToastTick));
+        let notes = (!self.notifications.is_empty() || self.verify.note.is_some()).then(|| {
+            Subscription::run(notify::events).map(|(id, action)| UiMessage::Notify(notify::Msg::Event(id, action)))
+        });
+        let toast =
+            self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::Toast(toasts::Msg::Tick)));
         let tick =
             animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
         let due = self.panes().any(|p| p.draft_due);
         let drafts = due.then(|| iced::time::every(std::time::Duration::from_secs(5)).map(|_| UiMessage::SaveDrafts));
         let shot = self.shot.map(|_| {
             iced::event::listen_raw(|e, _, id| {
-                matches!(e, Event::Window(window::Event::RedrawRequested(_))).then_some(UiMessage::Drawn(id))
+                matches!(e, Event::Window(window::Event::RedrawRequested(_)))
+                    .then_some(UiMessage::Window(windows::Msg::Drawn(id)))
             })
         });
         Subscription::batch(
@@ -8876,8 +4905,8 @@ impl BeeperGuiApp {
     fn view_body(&self, open: bool) -> El<'_> {
         let p = &self.pal;
         let grip = mouse_area(container(Space::new()).width(5).height(Fill))
-            .on_press(UiMessage::DragStart)
-            .on_double_click(UiMessage::ResetSidebarWidth)
+            .on_press(UiMessage::Rail(rail::Msg::ResizeStart))
+            .on_double_click(UiMessage::Rail(rail::Msg::ResetWidth))
             .interaction(mouse::Interaction::ResizingHorizontally);
         let thread = open && self.creating_chat.is_none() && self.selection.is_empty() && self.pane().thread.is_some();
         let pane = match self.creating_chat {
@@ -8915,10 +4944,13 @@ impl BeeperGuiApp {
                         ..Default::default()
                     });
                     // Over the space bar, so its buttons do not hide the pointer from the area.
-                    let watch = mouse_area(Space::new().width(68).height(Fill)).on_exit(UiMessage::FloatRail(false));
+                    let watch = mouse_area(Space::new().width(68).height(Fill))
+                        .on_exit(UiMessage::Rail(rail::Msg::Float(false)));
                     stack![rail, watch].into()
                 }
-                false => mouse_area(Space::new().width(20).height(Fill)).on_enter(UiMessage::FloatRail(true)).into(),
+                false => mouse_area(Space::new().width(20).height(Fill))
+                    .on_enter(UiMessage::Rail(rail::Msg::Float(true)))
+                    .into(),
             }
         });
         stack![body].push(float).into()
@@ -8968,7 +5000,7 @@ impl BeeperGuiApp {
             let (menu, x) = self.view_menu_dropdown(i);
             let at = Padding::ZERO.left(x).top(menubar::BAR_H);
             mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
-                .on_press(UiMessage::MenuBar(None))
+                .on_press(UiMessage::MenuBar(menubar::Msg::Show(None)))
         });
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
@@ -8990,7 +5022,7 @@ impl BeeperGuiApp {
                     .width(Fill)
                     .height(Fill),
             )
-            .on_press(UiMessage::SearchSelect(None))
+            .on_press(UiMessage::CommandBar(commands::Msg::SearchSelect(None)))
         });
         let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 22.5, 26.0));
         let reminder_menu = self.reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
@@ -9110,7 +5142,7 @@ impl BeeperGuiApp {
         let main_menu = main_menu.or(self.pane_menu()).or(selection_menu.filter(|_| in_main));
         let (menu, palette_menu) =
             match (self.show_command_palette || self.forward.is_some()) && self.chat_menu.is_some() {
-                true => (None, main_menu.map(|m| layer(m, UiMessage::CloseChatMenu))),
+                true => (None, main_menu.map(|m| layer(m, UiMessage::ChatList(chat_list::Msg::CloseMenu)))),
                 false => (main_menu.map(|m| layer(m, UiMessage::CloseModals)), None),
             };
         // The menus of the thread pane, whose messages the thread pane handles.
@@ -9149,349 +5181,6 @@ impl BeeperGuiApp {
             .push(select);
         let token = self.token_ask.as_ref().map(|a| self.view_token_ask(a));
         layers.push(confirm).push(hotkeys).push(token).into()
-    }
-
-    /// Desktop's `BeeperConnectAccessTokenRequestModal`, over the main window.
-    fn view_token_ask<'a>(&'a self, a: &'a TokenAsk) -> El<'a> {
-        let p = &self.pal;
-        let sentence = tr("A third-party app <app/> wants to access your chats through Beeper Desktop API.");
-        let (before, after) = sentence.split_once("<app/>").expect("the sentence names the app");
-        let main =
-            rich_text![span::<(), _>(before), span(a.app.as_str()).font(fw(Weight::Bold)).color(p.strong), span(after)]
-                .size(15.0)
-                .line_height(Pixels(20.0))
-                .color(p.text)
-                .align_x(Center)
-                .width(Fill);
-        let button = |label: &'static str, primary: bool, msg: UiMessage| -> El<'a> {
-            let (bg, fg) = if primary { (p.accent, Color::WHITE) } else { (p.button, p.strong) };
-            let label = txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(Pixels(16.0)).color(fg);
-            button(container(label).center_y(Fill))
-                .height(32)
-                .padding([0, 12])
-                .style(bordered_btn([bg; 3], [fg; 3], if primary { bg } else { p.button_border }, 1.0, 6.0))
-                .on_press(msg)
-                .into()
-        };
-        let body: El<'a> = match a.timed_out {
-            true => {
-                let notice = column![
-                    semi(tr("The request has timed out."), 15.0).line_height(Pixels(20.0)).color(p.strong),
-                    txt(tr("To try again you will need to relaunch the third-party app or re-request login in its MCP settings."), 13.0)
-                        .color(p.text)
-                ]
-                .spacing(8);
-                let notice = container(notice).width(Fill).padding([8, 16]).style(fill_box(p.chip, 8.0));
-                column![notice, row![button("Close", false, UiMessage::TokenClose)]].spacing(16).into()
-            }
-            false => {
-                let label = |t: &'static str| txt(tr(t), 12.0).color(p.text);
-                let sensitive = column![
-                    row![label("Allow sensitive actions").width(Fill), toggle(p, a.write, Some(UiMessage::TokenWrite))]
-                        .align_y(Center)
-                        .height(38)
-                        .padding([0, 8]),
-                    container(txt(tr("Grant permission to send messages and modify your account"), 11.0).color(p.sub))
-                        .padding(Padding::new(8.0).top(0.0))
-                ];
-                let expiry = select(p, EXPIRIES, a.expiry, UiMessage::TokenExpiry);
-                let expiry = row![label("Expires in").width(Fill), expiry].align_y(Center).height(38).padding([0, 8]);
-                let rows = column![sensitive, divider(p.prefs_border, 0.0), expiry, divider(p.prefs_border, 0.0)];
-                let group =
-                    container(rows).width(Fill).padding(1).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
-                let buttons = row![
-                    button("Decline", false, UiMessage::TokenAnswer(false)),
-                    button("Approve", true, UiMessage::TokenAnswer(true))
-                ]
-                .spacing(8);
-                let fine = txt(tr("Only approve if you initiated this connection and trust the application."), 12.0)
-                    .color(p.sub)
-                    .align_x(Center)
-                    .width(Fill);
-                column![
-                    container(group).padding([8, 0]),
-                    container(buttons).padding(Padding::new(0.0).top(16.0).bottom(8.0)),
-                    fine
-                ]
-                .into()
-            }
-        };
-        let title = container(semi(tr("Approve connection"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
-        let content = column![container(main).padding(Padding::new(0.0).top(32.0).bottom(16.0)), body];
-        let pane = column![title, container(content).padding([0, 16])];
-        let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
-        mouse_area(container(pane).padding(8)).on_press(UiMessage::Noop).into()
-    }
-
-    /// The selected chats that still exist: the sync task can drop one before StoreChanged reaches update.
-    /// The chat menu rows that a selection of more chats adds: the count, and both Mark All items.
-    fn selection_rows(&self, st: &BeeperStore) -> f32 {
-        let picked = self.selected_chats(st);
-        let unread = picked.iter().filter(|c| has_flag(c, ChatFlag::MarkedUnread)).count();
-        match picked.len() {
-            0 | 1 => 0.0,
-            n if (1..n).contains(&unread) => 2.0 * MENU_ITEM,
-            _ => MENU_ITEM,
-        }
-    }
-
-    fn selected_chats<'s>(&self, st: &'s BeeperStore) -> Vec<&'s Chat> {
-        self.selection.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect()
-    }
-
-    fn view_selection_head(&self) -> El<'_> {
-        let p = &self.pal;
-        let st = self.store.read();
-        let chats = self.selected_chats(&st);
-        let n = chats.len();
-        let step = 28.0 / 3.0;
-        let avatars = chats.iter().enumerate().fold(Stack::new(), |s, (i, c)| {
-            s.push(pin(container(self.chat_avatar(c, 28.0, 0.0)).style(fill_box(p.card, 14.0))).x(i as f32 * step))
-        });
-        let avatars = container(avatars.width((n + 2) as f32 * step).height(28)).width(Fill).clip(true);
-        let title = semi(format!("{n} chat{} selected", if n == 1 { "" } else { "s" }), 15.0).color(p.strong);
-        let close = button(tinted(&ROW_ACTIONS[6], 20.0, p.strong))
-            .padding(6)
-            .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 16.0))
-            .on_press(UiMessage::CloseModals);
-        let row = row![avatars, container(title).width(140), container(close).width(Fill).align_right(Fill)];
-        container(row.align_y(Center).padding([0, 4])).height(36).width(Fill).style(fill_box(p.selected, 18.0)).into()
-    }
-
-    fn view_selection_bar(&self) -> El<'_> {
-        let p = &self.pal;
-        let st = self.store.read();
-        let chats = self.selected_chats(&st);
-        let all = |f: ChatFlag| chats.iter().all(|c| has_flag(c, f));
-        let x0 = self.left_width() + 8.0;
-        let cell = (self.pane().size.width - x0 - 16.0) / 6.0;
-        let toggles = [
-            (
-                ChatFlag::Archived,
-                [trx("Archive", "button label to archive selected chats"), tr("Unarchive")],
-                [trx("Archive", "button label to archive selected chats"), tr("Unarchive")],
-                [&SELECTION_ICONS[0], &SELECTION_ICONS[1]],
-                vec!["Ctrl", "E"],
-            ),
-            (
-                ChatFlag::MarkedUnread,
-                [tr("Mark Unread"), tr("Mark Read")],
-                [tr("Mark as Unread"), tr("Mark as Read")],
-                [&ROW_ACTIONS[3], &ROW_ACTIONS[2]],
-                vec!["Ctrl", "Shift", "U"],
-            ),
-            (
-                ChatFlag::Muted,
-                [trx("Mute", "thread context menu action"), trx("Unmute", "thread context menu action")],
-                [trx("Mute", "thread context menu action"), trx("Unmute", "thread context menu action")],
-                [&SELECTION_ICONS[2], &SELECTION_ICONS[3]],
-                vec!["Ctrl", "Shift", "M"],
-            ),
-            (
-                ChatFlag::LowPriority,
-                [tr("Low Priority"), tr("Move to Inbox")],
-                [tr("Move to Low Priority"), tr("Move to Inbox")],
-                [&SELECTION_ICONS[4], &SELECTION_ICONS[5]],
-                vec![],
-            ),
-        ]
-        .map(|(f, labels, tips, glyphs, keys)| {
-            let on = usize::from(all(f));
-            (labels[on], tips[on], glyphs[on], UiMessage::SelectionSet(f, on == 0), keys)
-        });
-        let menus = [(tr("Remind Me"), &SELECTION_ICONS[6]), (tr("More"), &SELECTION_ICONS[7])]
-            .into_iter()
-            .zip(0u8..)
-            .map(|((label, glyph), i)| {
-                let x = x0 + cell * (4.5 + f32::from(i));
-                (label, label, glyph, UiMessage::SelectionMenu(i, x), vec![])
-            });
-        let wide = cell * 6.0 >= 800.0;
-        let buttons = toggles.into_iter().chain(menus).map(|(label, tip, glyph, msg, keys)| {
-            let face = row![]
-                .push(wide.then(|| semi(label, 14.0).color(p.strong)))
-                .push(tinted(glyph, 24.0, p.strong))
-                .spacing(10)
-                .align_y(Center);
-            let btn = button(container(face).center_x(Fill)).padding([6, 0]).width(Fill).style(btn_style(
-                [CLEAR; 3],
-                [p.strong; 3],
-                0.0,
-            ));
-            let btn = btn.on_press(msg).into();
-            match self.selection_menu {
-                Some(_) => btn,
-                None => self.tip(btn, tip, keys, tooltip::Position::Top).into(),
-            }
-        });
-        let bar = container(Row::with_children(buttons).align_y(Center))
-            .center_y(36)
-            .width(Fill)
-            .style(fill_box(p.card, 18.0));
-        container(bar).padding(8).style(fill_box(p.selected, 26.0)).into()
-    }
-
-    /// The Remind Me or More menu of the selection bar, and its height.
-    fn view_selection_menu(&self, which: u8) -> (El<'_>, f32) {
-        let p = &self.pal;
-        let st = self.store.read();
-        let chats = self.selected_chats(&st);
-        let item = |label: String, at: String, msg| menu_item(p, None, label, at, msg);
-        let items: Vec<El> = if which == 0 {
-            let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
-            let last = last_used(&st, now).map(|at| {
-                item(tr("Last Used").into(), last_used_label(at, h24), Some(UiMessage::SelectionRemind(Some(at))))
-            });
-            let presets = remind_presets(now).map(|(label, at)| {
-                let msg =
-                    UiMessage::Commands(vec![UiMessage::LastTime(label.into()), UiMessage::SelectionRemind(Some(at))]);
-                item(tr(label).into(), remind_label(at, h24), Some(msg))
-            });
-            let presets = last.into_iter().chain(presets);
-            let set = chats.iter().filter(|c| c.reminder.is_some()).count();
-            let dismiss = match set {
-                0 => vec![],
-                1 => vec![
-                    menu_rule(p),
-                    item(tr("Dismiss Reminder").into(), String::new(), Some(UiMessage::SelectionRemind(None))),
-                ],
-                n => vec![
-                    menu_rule(p),
-                    item(format!("Dismiss {n} Reminders"), String::new(), Some(UiMessage::SelectionRemind(None))),
-                ],
-            };
-            presets.chain(dismiss).collect()
-        } else {
-            let n = chats.len();
-            let count = |f: ChatFlag| chats.iter().filter(|c| has_flag(c, f)).count();
-            let some = |f: ChatFlag| (1..n).contains(&count(f));
-            let entry = |label: &str, keys: &str, f: ChatFlag, on: bool| {
-                item(label.into(), keys.into(), Some(UiMessage::SelectionSet(f, on)))
-            };
-            let pinned = count(ChatFlag::Pinned);
-            [Some(item(trn("%d chat selected", "%d chats selected", n, &[&n]), String::new(), None))]
-                .into_iter()
-                .chain([
-                    some(ChatFlag::Archived).then(|| entry(tr("Unarchive"), "Ctrl E", ChatFlag::Archived, false)),
-                    some(ChatFlag::MarkedUnread)
-                        .then(|| entry(tr("Mark as Read"), "Ctrl Shift U", ChatFlag::MarkedUnread, false)),
-                    some(ChatFlag::Muted).then(|| {
-                        entry(trx("Unmute", "thread context menu action"), "Ctrl Shift M", ChatFlag::Muted, false)
-                    }),
-                    some(ChatFlag::LowPriority).then(|| entry(tr("Move to Inbox"), "", ChatFlag::LowPriority, false)),
-                    (pinned < n).then(|| entry(tr("Pin"), "Ctrl P", ChatFlag::Pinned, true)),
-                    (pinned > 0).then(|| entry(tr("Unpin"), "Ctrl P", ChatFlag::Pinned, false)),
-                ])
-                .flatten()
-                .collect()
-        };
-        let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { 11.0 - MENU_ITEM } else { 0.0 };
-        let h = 8.0 + items.len() as f32 * MENU_ITEM + rules;
-        let width = if which == 0 { SUB_MENU_W[1] } else { 233.0 };
-        let menu = container(Column::with_children(items).padding([4, 0])).width(width).style(shadow_box(
-            p.menu,
-            p.menu_border,
-            6.0,
-            16.0,
-        ));
-        (menu.into(), h)
-    }
-
-    fn view_filter_menu(&self) -> El<'_> {
-        let p = &self.pal;
-        let st = self.store.read();
-        let item = |checked: bool, glyph: char, label: String, hotkey: String, bit: u8| -> El<'_> {
-            let lead = row![
-                container(checked.then(|| ic(icon::CHECK, 14.0))).center_x(14),
-                container(ic(glyph, 14.0)).padding(Padding::ZERO.left(9.0).right(4.0)),
-            ];
-            menu_item(p, Some(lead.into()), label, hotkey, Some(UiMessage::PickFilter(bit)))
-        };
-        let counted = (0..F_ARCHIVED).map(|i| {
-            let n = self.chats_with(&st, 1 << i).len();
-            let hotkey = prefs::hotkey_label(st.settings.hotkey_keys(FILTER_HOTKEYS[i]));
-            item(self.filters & 1 << i != 0, FILTERS[i].1, format!("{} ({n})", tr(FILTERS[i].0)), hotkey, 1 << i)
-        });
-        let views: &[usize] = match self.active_tab {
-            InboxTab::Archived => &[F_LOW_PRIORITY],
-            InboxTab::LowPriority => &[F_ARCHIVED],
-            InboxTab::Requests => &[],
-            _ => &[F_ARCHIVED, F_REQUESTS, F_LOW_PRIORITY],
-        };
-        let rule = (!views.is_empty()).then(|| menu_rule(p));
-        let views = views
-            .iter()
-            .map(|&i| item(self.filters & 1 << i != 0, FILTERS[i].1, tr(FILTERS[i].0).into(), String::new(), 1 << i));
-        let col = Column::with_children(
-            std::iter::once(item(
-                self.filters == 0,
-                icon::INBOX,
-                tr("All").into(),
-                prefs::hotkey_label(st.settings.hotkey_keys("Filter: All")),
-                0,
-            ))
-            .chain(counted)
-            .chain(rule)
-            .chain(views),
-        );
-        container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
-    }
-
-    fn view_reminder_menu(&self) -> El<'_> {
-        let p = &self.pal;
-        let order = self.store.read().settings.reminders_order;
-        let lead = |on: bool| Some(container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into());
-        let orders = REMINDER_ORDERS
-            .iter()
-            .zip(0..)
-            .map(|(label, i)| menu_item(p, lead(order == i), tr(label).into(), "", Some(UiMessage::OrderReminders(i))));
-        let ask = Some(UiMessage::Ask(Some(ASK_DISMISS_REMINDERS)));
-        let col = Column::with_children(
-            orders.chain([menu_rule(p), menu_item(p, lead(false), tr("Dismiss All Reminders").into(), "", ask)]),
-        );
-        container(col.padding([4, 0])).width(291).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
-    }
-
-    /// Desktop's scheduled message menu: with `items`, Edit and Copy, then `Mhe`.
-    fn view_scheduled_menu(&self, ids: &[String], items: bool) -> (El<'_>, f32) {
-        let p = &self.pal;
-        let st = self.store.read();
-        let first = st.scheduled.iter().find(|s| s.id == ids[0]).expect("a scheduled message");
-        let (canceled, n, ids) = (first.canceled, ids.len(), ids.to_vec());
-        let item = |label: String, hotkey, msg: UiMessage| Some(menu_item(p, None, label, hotkey, Some(msg)));
-        let ctx = "scheduled message menu action";
-        let rows = [
-            items.then(|| item(trx("Edit...", ctx).into(), "Ctrl T", UiMessage::EditScheduled(ids[0].clone()))),
-            items.then(|| item(trx("Copy", ctx).into(), "Ctrl C", UiMessage::CopyText(first.text.clone()))),
-            items.then(|| Some(menu_rule(p))),
-            (!canceled).then(|| match n {
-                1 => item(tr("Send Message Now").into(), "", UiMessage::SendNow(ids.clone())),
-                _ => item(
-                    trn("Send %d Message Now", "Send %d Messages Now", n, &[&n]),
-                    "",
-                    UiMessage::SendNow(ids.clone()),
-                ),
-            }),
-            Some(item(tr("Reschedule").into(), "", UiMessage::Reschedule(ids.clone()))),
-            Some(item(
-                match (canceled, n) {
-                    (true, _) => trn("Remove Unsent Message", "Remove Unsent Messages", n, &[]),
-                    (false, 1) => tr("Delete Without Sending").into(),
-                    (false, _) => trn("Delete %d Message", "Delete %d Messages", n, &[&n]),
-                },
-                "",
-                UiMessage::Unschedule(ids),
-            )),
-        ];
-        let rows: Vec<El> = rows.into_iter().flatten().flatten().collect();
-        let h = 8.0 + (rows.len() - usize::from(items)) as f32 * MENU_ITEM + if items { 11.0 } else { 0.0 };
-        let menu = container(Column::with_children(rows).padding([4, 0])).width(MESSAGE_MENU_W).style(shadow_box(
-            p.menu,
-            p.menu_border,
-            6.0,
-            16.0,
-        ));
-        (menu.into(), h)
     }
 
     /// Desktop's `ScheduledMessages`: the canceled messages, the "Send Later" toggle, then the messages to send.
@@ -9595,7 +5284,8 @@ impl BeeperGuiApp {
                 (false, true) => Vec::new(),
                 (false, false) => vec![o.id.clone()],
             };
-            let vote = (!poll.ended && !(full && !voted)).then(|| UiMessage::VotePoll(m.id.clone(), answers));
+            let vote = (!poll.ended && !(full && !voted))
+                .then(|| UiMessage::Message(message::Msg::VotePoll(m.id.clone(), answers)));
             let body = container(line).padding([8.0, if spread { 8.0 } else { 4.0 }]);
             button(stack![body].push_under(bar))
                 .padding(0)
@@ -9608,7 +5298,7 @@ impl BeeperGuiApp {
         let foot: El<'a> = match shown {
             true if total > 0 => button(row![semi(votes, 13.0), tinted(&CHEVRON_RIGHT, 16.0, footer)].align_y(Center))
                 .bare(footer)
-                .on_press(UiMessage::OpenPollVotes(chat.id.clone(), m.id.clone()))
+                .on_press(UiMessage::Message(message::Msg::OpenPollVotes(chat.id.clone(), m.id.clone())))
                 .into(),
             true => Space::new().into(),
             false => column![]
@@ -9620,91 +5310,6 @@ impl BeeperGuiApp {
         let foot = (!shown || total > 0).then(|| container(foot).padding(Padding::ZERO.top(10.0)));
         let body = column![head, Space::new().height(10), options].push(foot);
         container(body).padding(Padding::new(14.0).bottom(12.0)).width(width).style(fill_box(bg, 17.0)).into()
-    }
-
-    fn view_scheduled<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
-        let p = &self.pal;
-        let mut all: Vec<&Scheduled> = st.scheduled.iter().filter(|s| s.chat_id == chat.id).collect();
-        if all.is_empty() {
-            return None;
-        }
-        all.sort_by_key(|s| s.send_on);
-        let (canceled, pending): (Vec<&Scheduled>, Vec<&Scheduled>) = all.into_iter().partition(|s| s.canceled);
-        let (collapsed, collapsible) = if pending.is_empty() { (false, false) } else { self.pane().sched_fold };
-        let h24 = st.settings.pref("timeFormat") == 1;
-        let fg = p.on_secondary;
-        let bg = if self.wallpaper_fg(st, chat, false).is_some() { p.card.scale_alpha(0.85) } else { p.card };
-        let minute = |s: &Scheduled| s.send_on.div_euclid(60_000);
-        let list = |v: &[&Scheduled]| -> Vec<El<'a>> {
-            let rows = v.iter().enumerate().map(|(i, s)| {
-                let first = i == 0 || (!s.canceled && minute(v[i - 1]) != minute(s));
-                let date = first.then(|| {
-                    let group = v.iter().filter(|o| s.canceled || minute(o) == minute(s));
-                    let ids = group.map(|o| o.id.clone()).collect();
-                    let (text, edit, weight) = match s.canceled {
-                        true => (tr("Send Later message canceled by reply.").into(), tr("Options"), Weight::Normal),
-                        false => (trf("Send %s", &[&send_day(s.send_on, h24)]), tr("Edit"), Weight::Semibold),
-                    };
-                    let edit = button(semi(edit, 11.0).color(p.accent))
-                        .bare(p.accent)
-                        .on_press(UiMessage::ScheduledMenu(ids, false));
-                    let line = row![]
-                        .push((!s.canceled).then(|| tinted(&COMPOSER_ICONS[6], 12.0, fg)))
-                        .push(txt(text, 11.0).font(fw(weight)).color(fg))
-                        .push(edit);
-                    container(line.spacing(4).align_y(Center)).center_x(Fill).padding(Padding {
-                        top: 4.0,
-                        right: 8.0,
-                        bottom: 8.0,
-                        left: 8.0,
-                    })
-                });
-                column![].push(date).push(self.view_scheduled_bubble(st, s, bg)).into()
-            });
-            rows.collect()
-        };
-        let toggle = (collapsed || collapsible).then(|| {
-            let n = pending.len();
-            let text = match collapsed && n > 1 {
-                true => trn("%d Message to Send Later", "%d Messages to Send Later", n, &[&n]),
-                false => tr("Send Later").into(),
-            };
-            let chevron = svg(CHEVRON_DOWN.clone())
-                .width(12)
-                .height(12)
-                .rotation(Radians(if collapsed { 0.0 } else { std::f32::consts::PI }))
-                .style(move |_, _| svg::Style { color: Some(fg) });
-            let label = row![tinted(&COMPOSER_ICONS[6], 12.0, fg), semi(text, 11.0).color(fg), chevron];
-            let toggle = button(label.spacing(4).align_y(Center))
-                .padding([4, 8])
-                .style(bordered_btn([p.card; 3], [fg; 3], p.chip, 1.0, 100.0))
-                .on_press(UiMessage::FoldScheduled(!collapsed));
-            container(toggle).center_x(Fill).padding(Padding::ZERO.bottom(4.0))
-        });
-        let shown = if collapsed { Vec::new() } else { list(&pending) };
-        let col = Column::with_children(list(&canceled)).push(toggle).extend(shown).spacing(2);
-        Some(col.padding(Padding::ZERO.top(6.0)).into())
-    }
-
-    /// A scheduled message like Desktop's `is-scheduled` bubble: `bg`, with a dashed border in the text color.
-    fn view_scheduled_bubble(&self, st: &BeeperStore, s: &Scheduled, bg: Color) -> El<'_> {
-        let p = &self.pal;
-        let fg = if s.canceled { hex(0x808080) } else { p.accent };
-        let line = |t: String| txt(t, 13.0).wrapping(iced::widget::text::Wrapping::WordOrGlyph);
-        // A file part shows its file name over its caption.
-        let file = s
-            .upload
-            .as_ref()
-            .and_then(|id| st.assets.get(id))
-            .map(|a| line(a.file_name.clone()).font(fw(Weight::Semibold)).color(fg));
-        let text = column![].push(file).push((!s.text.is_empty()).then(|| line(s.text.clone()).color(fg)));
-        let bubble = container(text)
-            .padding([9.0, BUBBLE_PAD_X])
-            .max_width(0.45 * self.pane().size.width)
-            .style(fill_box(bg, 17.0));
-        let bubble = mouse_area(stack![bubble, dashed::dashes(fg, 17.0)])
-            .on_right_press(UiMessage::ScheduledMenu(vec![s.id.clone()], true));
-        row![Space::new().width(Fill), bubble].into()
     }
 
     /// Desktop's "Remove from Beeper" button of the delete dialog.
@@ -9822,345 +5427,6 @@ impl BeeperGuiApp {
         words
     }
 
-    fn view_search_select(&self, chip: usize, at: iced::Rectangle) -> El<'_> {
-        let p = &self.pal;
-        let f = &self.search_filters;
-        let pick = |m: SearchPick| Some(UiMessage::PickSearchFilter(m));
-        let radio = |on: bool, label: &str, m: SearchPick| {
-            let lead = container(on.then(|| ic(icon::CHECK, 14.0))).center_x(14).padding(Padding::ZERO.right(6.0));
-            menu_item(p, Some(lead.into()), label.into(), "", pick(m))
-        };
-        let menu = |items: Vec<El<'static>>| -> El<'static> {
-            container(Column::with_children(items).padding([4, 0]))
-                .width(233)
-                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-                .into()
-        };
-        let brand = |options: Vec<(String, bool, SearchPick)>| -> El<'static> {
-            let any = options.iter().any(|o| o.1);
-            let widest = options.iter().map(|o| crate::style::text_width(&o.0, 11.0, Weight::Semibold));
-            let width = widest.fold(at.width, |w, t| w.max(t + 48.0));
-            let hover = Color { a: 0.1, ..p.text };
-            let options = options.into_iter().map(|(label, on, m)| {
-                let fg = if on || !any { p.text } else { p.sub };
-                let line = row![
-                    semi(label, 11.0).color(fg),
-                    Space::new().width(Fill),
-                    ic(icon::CHECK, 16.0).color(if on { fg } else { CLEAR })
-                ]
-                .spacing(8)
-                .align_y(Center);
-                let style = btn_style([CLEAR, hover, hover], [fg; 3], 4.0);
-                button(line).padding([6, 4]).width(Fill).style(style).on_press(UiMessage::PickSearchFilter(m)).into()
-            });
-            let head = row![
-                semi(f.label(chip).unwrap_or_else(|| tr(SEARCH_CHIPS[chip]).into()), 13.0).color(p.text),
-                Space::new().width(Fill),
-                ic(icon::EXPAND_MORE, 14.0).color(p.text)
-            ]
-            .spacing(4)
-            .padding([0, 12])
-            .align_y(Center);
-            let body = column![head, Column::with_children(options).spacing(4).padding([0, 8])].spacing(8);
-            container(body).width(width).padding([4, 0]).style(shadow_box(p.chip, CLEAR, 8.0, 4.0)).into()
-        };
-        match chip {
-            0 => {
-                let st = self.store.read();
-                let mut accounts: Vec<String> = std::iter::once("hungryserv".into())
-                    .chain(st.accounts.iter().map(|a| a.account_id.clone()))
-                    .collect();
-                accounts.sort_by_key(|a| network_label(a));
-                brand(
-                    accounts
-                        .into_iter()
-                        .map(|a| (network_label(&a).to_string(), f.accounts.contains(&a), SearchPick::Account(a)))
-                        .collect(),
-                )
-            }
-            1 => menu(vec![
-                radio(f.sent == Some(true), tr("Sent"), SearchPick::Sent(true)),
-                radio(f.sent == Some(false), tr("Received"), SearchPick::Sent(false)),
-                menu_rule(p),
-                radio(f.group == Some(true), trx("Group", "general search chat type filter"), SearchPick::Group(true)),
-                radio(f.group == Some(false), tr("Direct message"), SearchPick::Group(false)),
-            ]),
-            2 => menu(
-                PERIODS
-                    .iter()
-                    .enumerate()
-                    .map(|(i, l)| radio(f.period == Some(i), tr(l), SearchPick::Period(i)))
-                    .collect(),
-            ),
-            3 => brand(
-                MEDIA_KINDS
-                    .iter()
-                    .enumerate()
-                    .map(|(i, l)| (tr(l).to_string(), f.media.contains(&i), SearchPick::Media(i)))
-                    .collect(),
-            ),
-            _ => unreachable!("chip {chip} has no menu"),
-        }
-    }
-
-    /// Desktop's account context menu (`gYe`) of a sidebar account or network space.
-    fn view_account_menu(&self, entry: &str) -> El<'_> {
-        let (menu, sub) = self.account_menu(entry, SpaceMenu::Rail);
-        row![menu].push(sub).into()
-    }
-
-    /// Desktop's `kS`: the items of a label space menu, after an empty `lead` of that width.
-    fn label_items<'a>(&self, l: &Label, lead: f32) -> Vec<El<'a>> {
-        let p = &self.pal;
-        let blank = || Some(Space::new().width(lead).into());
-        let mute = trx(if l.muted { "Unmute" } else { "Mute" }, "label context menu action");
-        let heading = (!l.name.is_empty()).then(|| menu_heading(p, l.name.clone()));
-        let items = [
-            menu_item(p, blank(), mute.into(), "", Some(UiMessage::MuteLabel(l.id.clone(), !l.muted))),
-            menu_item(p, blank(), tr("Label Settings").into(), "", Some(UiMessage::OpenLabelSettings(l.id.clone()))),
-        ];
-        heading.into_iter().chain(items).collect()
-    }
-
-    /// Desktop's space sheet (`zft`): the shown spaces with a check on the selected one, then the hidden spaces. The
-    /// Space Options of an account space or the items of a label space follow, then the space actions. Returns the
-    /// sheet, its width and its height.
-    fn view_space_sheet(&self) -> (El<'_>, f32, f32) {
-        let p = &self.pal;
-        let st = self.store.read();
-        let requests = st.chats.iter().any(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0);
-        let blank = || Some(Space::new().width(22).into());
-        let space = |id: &String| -> El<'_> {
-            let view = RAIL_VIEWS.iter().find(|v| v.0 == id);
-            let label = rail_label(&st, id);
-            let owner = rail_owner(&st, id);
-            let on = match view {
-                Some(v) => self.selected_account_filter.is_none() && v.1 == Some(self.active_tab),
-                None => self.selected_account_filter.as_ref() == Some(id),
-            };
-            let glyph: El = match (view, label) {
-                (Some(v), _) => {
-                    let (g, size) = match v.0 {
-                        "inbox" => (icon::INBOX, 13.0),
-                        "archive" => (icon::ARCHIVE, 12.0),
-                        "reminders" => (icon::SCHEDULE, 12.0),
-                        "scheduled" => (icon::SCHEDULE_SEND, 12.0),
-                        "requests" => (icon::EMAIL, 12.0),
-                        "low_priority" => (icon::LOW_PRIORITY_SPACE, 12.0),
-                        _ => (icon::MAPS_UGC, 12.0),
-                    };
-                    let dot = (v.0 == "requests" && requests).then(|| {
-                        let dot = container(Space::new()).width(6).height(6);
-                        container(dot.style(bordered_box(p.accent, p.text, 1.0, 3.0))).align_right(16)
-                    });
-                    stack![container(ic(g, size)).center(14)].push(dot).into()
-                }
-                (None, Some(l)) => label_icon(l, 14.0, p.strong),
-                (None, None) => svg(brand_svg(brand_key(&owner))).width(14).height(14).into(),
-            };
-            let muted = match (view, label) {
-                (Some(_), _) => false,
-                (None, Some(l)) => l.muted,
-                (None, None) => !st.settings.account(&owner).notifications,
-            };
-            let status = space_error(&st, id);
-            let badge = status.map(|s| container(semi(tr(s), 10.0)).padding([2, 6]).style(fill_box(p.chip, 9.0)));
-            let line = row![
-                container(on.then(|| ic(icon::CHECK, 14.0))).width(22),
-                glyph,
-                Space::new().width(6),
-                txt(space_name(&st, id), 13.0).line_height(Pixels(MENU_LINE)),
-                Space::new().width(4)
-            ]
-            .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0)))
-            .push(Space::new().width(Fill))
-            .push(badge);
-            menu_line(p, line, Some(space_msg(id)))
-        };
-        let shown: Vec<El> = rail_spaces(&st).iter().map(space).collect();
-        let hidden: Vec<El> = hidden_spaces(&st).iter().map(space).collect();
-        let rules = 1 + usize::from(!shown.is_empty() && !hidden.is_empty());
-        let mut top: Vec<El> = shown;
-        if rules == 2 {
-            top.push(menu_rule(p));
-        }
-        top.extend(hidden);
-        top.push(menu_rule(p));
-        let mut h = (top.len() - rules) as f32 * MENU_ITEM + rules as f32 * 11.0;
-        let entry = self.selected_account_filter.as_deref();
-        let options = match entry.map(|e| (e, rail_label(&st, e))) {
-            Some((_, Some(l))) => {
-                let items = self.label_items(l, 22.0);
-                h += items.len() as f32 * MENU_ITEM + 11.0;
-                top.extend(items.into_iter().chain([menu_rule(p)]));
-                None
-            }
-            Some((e, None)) => Some(e),
-            None => None,
-        };
-        let open = UiMessage::ChatSub(Some(1));
-        let item = menu_item(p, blank(), tr("Space Options").into(), "›", Some(open.clone()));
-        let options_item = options.map(|_| mouse_area(item).on_enter(open));
-        let options_top = h;
-        let labels = st.feature("labels-v2").show;
-        let rest = column![menu_item(p, blank(), tr("Select Chats").into(), "", Some(UiMessage::ToggleSelectMode))]
-            .push(labels.then(|| {
-                menu_item(p, blank(), tr("New Label").into(), "", Some(UiMessage::OpenCreateLabel(Vec::new())))
-            }))
-            .push(menu_rule(p))
-            .push(menu_item(p, blank(), tr("Edit Spaces...").into(), "", Some(UiMessage::OpenEditSpaces)))
-            .push(menu_item(
-                p,
-                blank(),
-                tr("Add/Remove Accounts...").into(),
-                "",
-                Some(UiMessage::OpenSettings(SettingsTab::Accounts)),
-            ));
-        h += 8.0 + f32::from(u8::from(options.is_some()) + 3 + u8::from(labels)) * MENU_ITEM + 11.0;
-        let top = mouse_area(Column::with_children(top)).on_enter(UiMessage::ChatSub(None));
-        let rest = mouse_area(rest).on_enter(UiMessage::ChatSub(None));
-        let sheet = column![top].push(options_item).push(rest).padding([4, 0]);
-        let sheet = container(sheet).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-        drop(st);
-        let sub = options.filter(|_| self.chat_sub.is_some()).map(|e| {
-            let (menu, sub) = self.account_menu(e, SpaceMenu::Options);
-            column![Space::new().height(options_top), row![menu].push(sub)]
-        });
-        let w =
-            233.0 + sub.as_ref().map_or(0.0, |_| 233.0 + if self.chat_sub == Some(0) { ACCOUNT_SUB_W } else { 0.0 });
-        (row![sheet].push(sub).into(), w, h)
-    }
-
-    /// The menu of a sidebar space and its Show in Inbox submenu. The gear menu of the Edit Spaces window
-    /// (`mYe` and `gYe`) has fewer items, and the sidebar header menu (`Ede` with `Ide` or `Ade`) has Select Chats.
-    /// A label space has the label items (`kS`) instead.
-    fn account_menu(&self, entry: &str, kind: SpaceMenu) -> (El<'_>, Option<El<'_>>) {
-        let p = &self.pal;
-        let st = self.store.read();
-        let select = (kind == SpaceMenu::Header).then(|| {
-            let item = menu_item(p, None, tr("Select Chats").into(), "", Some(UiMessage::ToggleSelectMode));
-            mouse_area(item).on_enter(UiMessage::ChatSub(None))
-        });
-        if kind == SpaceMenu::Header && RAIL_VIEWS.iter().any(|v| v.0 == entry) {
-            let menu = container(column![select].padding([4, 0])).width(233);
-            return (menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into(), None);
-        }
-        if RAIL_VIEWS.iter().any(|v| v.0 == entry) {
-            let keys = |name| prefs::hotkey_label(st.settings.hotkey_keys(name));
-            let bar = if st.settings.on("showSidebar") { "Hide Space Bar" } else { "Show Space Bar" };
-            let col = column![
-                menu_item(
-                    p,
-                    None,
-                    tr("Add/Remove Accounts…").into(),
-                    keys("Settings"),
-                    Some(UiMessage::OpenSettings(SettingsTab::Accounts))
-                ),
-                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
-                menu_item(
-                    p,
-                    None,
-                    tr(bar).into(),
-                    keys("Toggle Space Bar"),
-                    Some(UiMessage::RunHotkey("Toggle Space Bar"))
-                ),
-                menu_item(
-                    p,
-                    None,
-                    tr("Settings").into(),
-                    keys("Settings"),
-                    Some(UiMessage::OpenSettings(SettingsTab::General))
-                ),
-            ];
-            let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-            return (menu.into(), None);
-        }
-        if let Some(l) = rail_label(&st, entry) {
-            let item = |label: &str, msg| menu_item(p, None, label.into(), "", Some(msg));
-            let tail = match kind {
-                SpaceMenu::Rail => vec![
-                    menu_rule(p),
-                    item(tr("Edit Spaces…"), UiMessage::OpenEditSpaces),
-                    item(tr("Add/Remove Accounts…"), UiMessage::OpenSettings(SettingsTab::Accounts)),
-                ],
-                SpaceMenu::Header => vec![menu_rule(p), select.expect("the header menu has Select Chats").into()],
-                SpaceMenu::Gear => vec![],
-                SpaceMenu::Prefs | SpaceMenu::Options => unreachable!("only account spaces have these menus"),
-            };
-            let col = Column::with_children(self.label_items(l, 0.0).into_iter().chain(tail));
-            let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-            return (menu.into(), None);
-        }
-        let space = network_space(&st, entry);
-        let account = space.map_or(entry, |n| n.account_id.as_str());
-        let bridge = match account {
-            "hungryserv" => "hungryserv",
-            _ => &st.bridge_accounts.iter().find(|b| b.account_id == account).expect("a rail account").bridge_id,
-        };
-        let (key, now) =
-            beeper_core::matrix::inbox_rule(&st.inbox_rules, account, bridge, space.map(|n| n.id.as_str()));
-        let props = st.settings.account(account);
-        let muted = !props.notifications;
-        let write = st.matrix.is_some();
-        let options = INBOX_OPTIONS.iter().filter(|o| space.is_none() || o.0 != "dmOnly");
-        let sub = (self.chat_sub == Some(0)).then(|| {
-            let items = options.map(|&(o, label)| {
-                let lead = container((o == now).then(|| ic(icon::CHECK, 14.0))).width(22).into();
-                let msg = write.then(|| UiMessage::SetInboxVisibility(key.clone(), o));
-                menu_item(p, Some(lead), inbox_label(label).into(), "", msg)
-            });
-            let body = container(Column::with_children(items).padding([4, 0])).width(ACCOUNT_SUB_W);
-            body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-        });
-        let inbox = menu_item(p, None, tr("Show in Inbox").into(), "›", Some(UiMessage::ChatSub(Some(0))));
-        let mute = beeper_core::models::AccountProps { notifications: muted, ..props };
-        let gear = kind == SpaceMenu::Gear;
-        let label = match (gear, muted) {
-            (true, _) => trx(if muted { "Unmute" } else { "Mute" }, "account context menu action"),
-            (false, true) => tr("Unmute Space"),
-            (false, false) => tr("Mute Space"),
-        };
-        let mute = menu_item(p, None, label.into(), "", Some(UiMessage::SetAccountProps(account.into(), mute)));
-        let accounts = UiMessage::OpenSettings(SettingsTab::Accounts);
-        let settings = UiMessage::OpenAccountSettings(account.into());
-        let rest = match kind {
-            SpaceMenu::Gear => column![mute],
-            SpaceMenu::Header | SpaceMenu::Options => {
-                column![mute, menu_rule(p), menu_item(p, None, tr("Account Settings...").into(), "", Some(settings))]
-            }
-            SpaceMenu::Prefs => {
-                let remove = match account {
-                    "hungryserv" => UiMessage::CloseChatMenu,
-                    _ => UiMessage::AskRemoveAccount(account.into()),
-                };
-                column![
-                    mute,
-                    menu_rule(p),
-                    menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
-                    menu_item(p, None, tr("Remove Account…").into(), "", Some(remove)),
-                ]
-            }
-            SpaceMenu::Rail => column![
-                mute,
-                menu_rule(p),
-                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
-                menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts)),
-                menu_rule(p),
-                menu_item(p, None, tr("Account Settings…").into(), "", Some(settings)),
-            ],
-        };
-        // Desktop's Reconnect item (`App:89486`) of an account whose bridge asks for a new login.
-        let again = reconnect(&st, account).filter(|_| kind != SpaceMenu::Gear);
-        let again = again.map(|m| column![menu_rule(p), menu_item(p, None, tr("Reconnect").into(), "", Some(m))]);
-        let col = column![
-            select,
-            mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0))),
-            mouse_area(rest.push(again)).on_enter(UiMessage::ChatSub((kind == SpaceMenu::Options).then_some(1)))
-        ];
-        let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-        (menu.into(), sub.map(Into::into))
-    }
-
     /// Desktop's `SwitchChatHoverCard`: "Switch Chat" and a row for each chat of the person, with the avatar, the
     /// network and the user of its account, and a check on the open chat. The card closes when the pointer leaves it.
     fn view_switch_card(&self) -> (El<'_>, f32) {
@@ -10205,7 +5471,7 @@ impl BeeperGuiApp {
         let h = 41.0 + targets.len() as f32 * 53.0;
         let card = column![header, line()].extend(rows).width(w.ceil());
         let card = container(card).style(shadow_box(p.menu, p.menu_border, 8.0, 16.0));
-        (mouse_area(card).on_exit(UiMessage::CloseChatMenu).into(), h)
+        (mouse_area(card).on_exit(UiMessage::ChatList(chat_list::Msg::CloseMenu)).into(), h)
     }
 
     /// Desktop's `composeSwitchTargets.onSelect`: opens the chat on the other account, and moves the draft there
@@ -10247,7 +5513,7 @@ impl BeeperGuiApp {
         };
         let n = h.r#gen;
         let wait = async move { tokio::time::sleep(std::time::Duration::from_millis(ms)).await };
-        Task::perform(wait, move |()| UiMessage::HoverUserDue(n))
+        Task::perform(wait, move |()| UiMessage::UserCard(user_card::Msg::Due(n)))
     }
 
     /// Where a user card `h` high shows for the pointer at `at`: centered on it, `gap` below it or above it near the
@@ -10257,37 +5523,6 @@ impl BeeperGuiApp {
         let x = (at.x - CARD_W / 2.0).clamp(8.0, size.width - CARD_W - 8.0);
         let below = at.y + gap + h <= size.height;
         (x, if below { at.y + gap } else { at.y - gap - h })
-    }
-
-    /// A trigger of Desktop's `BrandUserHoverCard`: the card of `uid`, a member of `chat`, shows while the pointer
-    /// rests on `el`.
-    pub(crate) fn user_trigger<'a>(&self, chat: &Chat, uid: &str, el: impl Into<El<'a>>) -> El<'a> {
-        if !chat.participants.items.iter().any(|u| u.id == uid) {
-            return el.into();
-        }
-        mouse_area(el)
-            .on_enter(UiMessage::HoverUser(Some(format!("{} {uid}", chat.id))))
-            .on_exit(UiMessage::HoverUser(None))
-            .into()
-    }
-
-    /// The user card of `user_hover` over the open chat, which keeps the pointer from the chat under it.
-    fn view_hover_card(&self) -> Option<El<'_>> {
-        let h = &self.user_hover;
-        let at = h.shown?;
-        let (cid, uid) = h.key.split_once(' ')?;
-        let st = self.store.read();
-        let c = &st.chats[st.resolve_chat_idx(cid)?];
-        let shown = self.pane().selected_chat_id.as_deref() == Some(c.id.as_str());
-        (shown && c.participants.items.iter().any(|u| u.id == uid)).then_some(())?;
-        drop(st);
-        let (card, high) = self.view_user_card(&h.key);
-        let (x, y) = self.card_spot(at, 12.0, high);
-        let card = mouse_area(card)
-            .on_enter(UiMessage::HoverUserCard(true))
-            .on_exit(UiMessage::HoverUserCard(false))
-            .interaction(mouse::Interaction::Idle);
-        Some(container(card).padding(Padding::ZERO.left(x).top(y)).into())
     }
 
     /// Desktop's `BrandUserHoverCard` of the member in "chat user": the avatar over the card, the name, the
@@ -10322,307 +5557,16 @@ impl BeeperGuiApp {
                 let open = UiMessage::Commands(vec![UiMessage::CloseModals, UiMessage::OpenUrl(format!("tel:{n}"))]);
                 button(tinted(&CALL, 20.0, p.strong)).padding(4).style(muted).on_press(open)
             });
-            row![send.on_press(UiMessage::MessageMember(cid.into(), uid.into()))].push(call).spacing(8).align_y(Center)
+            row![send.on_press(UiMessage::Members(members::Msg::Message(cid.into(), uid.into())))]
+                .push(call)
+                .spacing(8)
+                .align_y(Center)
         });
         let high = high + if actions.is_some() { 36.0 } else { 0.0 };
         let card = column![Space::new().height(CARD_FACE_IN), info].push(actions).spacing(8).padding([8, 11]);
         let card = container(card).width(CARD_W).style(lifted(17.0));
         let face = container(face).center_x(CARD_W);
         (stack![column![Space::new().height(88.0 - 8.0 - CARD_FACE_IN), card], face].into(), high)
-    }
-
-    /// The chat menu, with `room` pixels from its top to the bottom of the window.
-    fn view_chat_menu(&self, cid: &str, sub_left: bool, room: f32) -> El<'_> {
-        let p = &self.pal;
-        if cid == SIDEBAR_MENU {
-            let st = self.store.read();
-            let keys = |name| prefs::hotkey_label(st.settings.hotkey_keys(name));
-            let bar = if st.settings.on("showSidebar") { "Hide Space Bar" } else { "Show Space Bar" };
-            let col = column![
-                menu_item(p, None, tr("Start New Chat").into(), keys("Chat: Start New"), Some(UiMessage::NewChat)),
-                menu_item(
-                    p,
-                    None,
-                    tr("Add/Remove Accounts").into(),
-                    "",
-                    Some(UiMessage::OpenSettings(SettingsTab::Accounts))
-                ),
-                menu_item(
-                    p,
-                    None,
-                    tr(bar).into(),
-                    keys("Toggle Space Bar"),
-                    Some(UiMessage::RunHotkey("Toggle Space Bar"))
-                ),
-                menu_item(p, None, tr("Settings").into(), "", Some(UiMessage::OpenSettings(SettingsTab::General))),
-            ];
-            return container(col.padding([4, 0]))
-                .width(233)
-                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-                .into();
-        }
-        if cid == RAIL_MORE {
-            let items = more_menu(&self.store.read()).into_iter().map(|i| match i {
-                Some((label, msg)) => menu_item(p, None, label, "", Some(msg)),
-                None => menu_rule(p),
-            });
-            let col = Column::with_children(items).padding([4, 0]);
-            return container(col).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
-        }
-        if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
-            let items = info_menu(&self.store.read(), cid, |a| self.can(a, "create_dm")).into_iter().map(|i| match i {
-                Some((label, msg)) => menu_item(p, None, label, "", msg),
-                None => menu_rule(p),
-            });
-            let col = Column::with_children(items).padding([4, 0]);
-            return container(col).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
-        }
-        if let Some(entry) = cid.strip_prefix("account:") {
-            return self.view_account_menu(entry);
-        }
-        if let Some(entry) = cid.strip_prefix("head:") {
-            let (menu, sub) = self.account_menu(entry, SpaceMenu::Header);
-            return row![menu].push(sub).into();
-        }
-        if let Some(n) = cid.strip_prefix("draft:") {
-            let delete =
-                menu_item(p, None, tr("Delete Chat").into(), "", Some(UiMessage::DeleteNewChat(n.parse().unwrap())));
-            return container(column![delete].padding([4, 0]))
-                .width(124)
-                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-                .into();
-        }
-        let st = self.store.read();
-        let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
-        let flag = |f: ChatFlag| Some(UiMessage::ToggleFlag(c.id.clone(), f));
-        let archived = c.flag(ChatFlag::Archived);
-        let unread = c.is_unread();
-        let close_sub = |items: Column<'static, UiMessage>| mouse_area(items).on_enter(UiMessage::ChatSub(None));
-        let item = |label: &str, key: &'static str, msg| menu_item(p, None, label.into(), key, msg);
-        let open_sub = |i: u8, label: &str| {
-            mouse_area(menu_item(p, None, label.into(), "›", Some(UiMessage::ChatSub(Some(i)))))
-                .on_enter(UiMessage::ChatSub(Some(i)))
-        };
-        let pick = |on: bool, yes, no| if on { yes } else { no };
-        let selecting = self.selection.is_empty();
-        let labels = st.feature("labels-v2").on;
-        let reason = st.notifications_muted(c).then(|| muted_by(&st, c)).flatten();
-        let picked = self.selected_chats(&st);
-        let n = picked.len();
-        let reason = reason.filter(|_| n == 0);
-        let every = |f: ChatFlag| picked.iter().all(|c| has_flag(c, f));
-        let some = |f: ChatFlag| picked.iter().any(|c| has_flag(c, f));
-        let set = |f: ChatFlag, on: bool| Some(UiMessage::SelectionSet(f, on));
-        let can_archive = archived || !c.flag(ChatFlag::Pinned);
-        let archive = match n {
-            0 => item(
-                pick(
-                    archived,
-                    trx("Unarchive", "thread context menu action"),
-                    trx("Archive", "thread context menu action"),
-                ),
-                "Ctrl E",
-                flag(ChatFlag::Archived).filter(|_| can_archive),
-            ),
-            _ => item(
-                match every(ChatFlag::Archived) {
-                    true => trx("Unarchive", "button label to unarchive selected chats"),
-                    false => trx("Archive", "button label to archive selected chats"),
-                },
-                "Ctrl E",
-                set(ChatFlag::Archived, !every(ChatFlag::Archived)).filter(|_| can_archive),
-            ),
-        };
-        let mute = match (n, st.notifications_muted(c)) {
-            (0, false) => item(trx("Mute", "thread context menu action"), "Ctrl Shift M", flag(ChatFlag::Muted)),
-            (0, true) => item(
-                trx("Unmute", "thread context menu action"),
-                "Ctrl Shift M",
-                flag(ChatFlag::Muted).filter(|_| c.flag(ChatFlag::Muted) && reason.is_none()),
-            ),
-            _ => item(
-                pick(
-                    every(ChatFlag::Muted),
-                    trx("Unmute", "thread context menu action"),
-                    trx("Mute", "thread context menu action"),
-                ),
-                "Ctrl Shift M",
-                set(ChatFlag::Muted, !every(ChatFlag::Muted)),
-            ),
-        };
-        let read = |all: bool| match all {
-            true => item(tr("Mark as Read"), "Ctrl Shift U", set(ChatFlag::MarkedUnread, false)),
-            false => item(tr("Mark as Unread"), "Ctrl Shift U", set(ChatFlag::MarkedUnread, true)),
-        };
-        let reads: Vec<El> = match n {
-            0 => vec![item(
-                tr(pick(unread, "Mark as Read", "Mark as Unread")),
-                "Ctrl Shift U",
-                Some(UiMessage::ToggleRead(c.id.clone())),
-            )],
-            1 => vec![read(every(ChatFlag::MarkedUnread))],
-            _ => [
-                some(ChatFlag::MarkedUnread)
-                    .then(|| item(tr("Mark All as Read"), "", set(ChatFlag::MarkedUnread, false))),
-                picked
-                    .iter()
-                    .any(|c| !has_flag(c, ChatFlag::MarkedUnread))
-                    .then(|| item(tr("Mark All as Unread"), "", set(ChatFlag::MarkedUnread, true))),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
-        };
-        let pinned = if n == 0 { c.flag(ChatFlag::Pinned) } else { every(ChatFlag::Pinned) };
-        let pin = match n {
-            0 => flag(ChatFlag::Pinned),
-            _ => set(ChatFlag::Pinned, !pinned),
-        };
-        let low = if n == 0 { c.flag(ChatFlag::LowPriority) } else { every(ChatFlag::LowPriority) };
-        let low = item(
-            tr(pick(low, "Move to Inbox", "Move to Low Priority")),
-            "",
-            if n == 0 { flag(ChatFlag::LowPriority) } else { set(ChatFlag::LowPriority, !low) },
-        );
-        let heading = (n > 1).then(|| item(&trn("%d chat selected", "%d chats selected", n, &[&n]), "", None));
-        let (accept, decline) = request_answers(c);
-        let group = c.chat_type == "group";
-        let accept = accept.then(|| {
-            let label = tr(pick(group, "Accept group invitation", "Accept message request"));
-            item(label, "", Some(UiMessage::AcceptRequest(c.id.clone())))
-        });
-        let decline = decline.then(|| {
-            let label = tr(pick(group, "Decline group invitation", "Decline message request"));
-            item(label, "", Some(UiMessage::DeleteChat(c.id.clone(), false)))
-        });
-        let answered = (accept.is_some() || decline.is_some()).then(|| menu_rule(p));
-        let col = column![
-            close_sub(
-                column![]
-                    .push(accept)
-                    .push(decline)
-                    .push(answered)
-                    .push(heading)
-                    .push(archive)
-                    .push(mute)
-                    .push(reason.as_deref().map(|r| item(r, "", None)))
-                    .extend(reads)
-                    .push(item(
-                        pick(
-                            pinned,
-                            trx("Unpin", "thread context menu action"),
-                            trx("Pin", "thread context menu action")
-                        ),
-                        "Ctrl P",
-                        pin
-                    ))
-                    .push((n <= 1 && st.threaded(c)).then(|| {
-                        let on = c.follows.follows_all(c.participants.total);
-                        let label = tr(if on { "Stop Following All Threads" } else { "Follow All Threads" });
-                        item(label, "", Some(UiMessage::FollowAllThreads(c.id.clone(), !on)))
-                    }))
-                    .push(can_edit_group(c).then(|| {
-                        let open = UiMessage::OpenEditGroup(c.id.clone());
-                        item(tr("Edit Group..."), "", (c.is_request != Some(true)).then_some(open))
-                    }))
-            ),
-            open_sub(0, tr("Copy")),
-            close_sub(column![
-                menu_rule(p),
-                item(tr("Search…"), "Ctrl F", Some(UiMessage::SearchRoom(c.id.clone()))),
-                menu_rule(p),
-                low,
-            ]),
-            labels.then(|| open_sub(2, trx("Label", "thread context menu submenu label"))),
-            open_sub(1, tr("Remind Me")),
-            close_sub({
-                let delete = st.feature("delete-chats").on.then(|| {
-                    let ask = (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(c.id.clone()));
-                    item(tr("Delete Chat"), "", ask)
-                });
-                let block = block_action(&st, c).filter(|_| n == 0).map(|block| {
-                    let label = match block {
-                        true => trx("Block…", "action to block the other person in a DM"),
-                        false => trx("Unblock…", "action to unblock the other person in a DM"),
-                    };
-                    item(label, "", Some(UiMessage::AskBlock(c.id.clone(), block)))
-                });
-                // Like Electron's menus, a group without items has no separator.
-                column![]
-                    .push((delete.is_some() || block.is_some()).then(|| menu_rule(p)))
-                    .push(delete)
-                    .push(block)
-                    .push(selecting.then(|| menu_rule(p)))
-                    .push(
-                        selecting
-                            .then(|| item(tr("Open in New Window"), "", Some(UiMessage::OpenChatWindow(c.id.clone())))),
-                    )
-                    .push(
-                        selecting
-                            .then(|| item(tr("Begin Selecting"), "", Some(UiMessage::BeginSelecting(c.id.clone())))),
-                    )
-                    .push(menu_rule(p))
-                    .push(item(tr("Report a Problem"), "Ctrl Shift P", Some(UiMessage::OpenUrl(ISSUES_URL.into()))))
-            }),
-        ];
-        let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-        let sub = self.chat_sub.map(|i| {
-            let item = |label: &str, at: String, msg| menu_item(p, None, label.into(), at, msg);
-            let (items, rules): (Vec<El>, f32) = match i {
-                0 => (vec![item(tr("Chat Link"), String::new(), Some(UiMessage::CopyChatLink(c.id.clone())))], 0.0),
-                2 => {
-                    let targets: Vec<String> = match picked.is_empty() {
-                        true => vec![c.id.clone()],
-                        false => picked.iter().map(|c| c.id.clone()).collect(),
-                    };
-                    let mut sorted: Vec<&Label> = st.labels.iter().collect();
-                    sorted.sort_by_cached_key(|l| l.name.to_lowercase());
-                    let rows = sorted.into_iter().map(|l| {
-                        let on = c.label_ids.contains(&l.id);
-                        let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into();
-                        let msg = UiMessage::ToggleLabel(l.id.clone(), targets.clone(), !on);
-                        menu_item(p, Some(lead), l.name.clone(), "", Some(msg))
-                    });
-                    let new = item(tr("New Label…"), String::new(), Some(UiMessage::OpenCreateLabel(targets.clone())));
-                    (rows.chain([menu_rule(p), new]).collect(), 1.0)
-                }
-                _ => {
-                    let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
-                    // Desktop's `canSetReminderFor`: Beeper Plus, a free use, or a reminder to change.
-                    let can = st.feature("remind-later").on || c.reminder.is_some();
-                    let set = |at| can.then(|| UiMessage::SetReminder(c.id.clone(), Some(at)));
-                    let last = last_used(&st, now).map(|at| item(tr("Last Used"), last_used_label(at, h24), set(at)));
-                    let presets = remind_presets(now).map(|(label, at)| {
-                        let msg = set(at).map(|set| UiMessage::Commands(vec![UiMessage::LastTime(label.into()), set]));
-                        item(tr(label), remind_label(at, h24), msg)
-                    });
-                    let upgrade = (!can).then(|| {
-                        let open = UiMessage::OpenSettings(SettingsTab::BeeperPlus);
-                        [item(tr("Upgrade to Beeper Plus"), String::new(), Some(open)), menu_rule(p)]
-                    });
-                    let presets = upgrade.into_iter().flatten().chain(last).chain(presets);
-                    let dismiss = c.reminder.is_some().then(|| UiMessage::SetReminder(c.id.clone(), None));
-                    let custom = UiMessage::OpenSubMenu(commands::SubMenu::Remind(c.id.clone()));
-                    let custom = item(tr("Custom…"), String::new(), can.then_some(custom));
-                    let dismiss = item(tr("Dismiss Reminder"), String::new(), dismiss);
-                    let rules = if can { 2.0 } else { 3.0 };
-                    (presets.chain([menu_rule(p), custom, menu_rule(p), dismiss]).collect(), rules)
-                }
-            };
-            let h = 8.0 + items.len() as f32 * MENU_ITEM - rules * (MENU_ITEM - 11.0);
-            let top = match i {
-                0 => 4.0 * MENU_ITEM,
-                1 if labels => 8.0 * MENU_ITEM + 22.0,
-                _ => 7.0 * MENU_ITEM + 22.0,
-            } + if reason.is_some() { MENU_ITEM } else { 0.0 }
-                + if can_edit_group(c) { MENU_ITEM } else { 0.0 }
-                + self.selection_rows(&st);
-            let top = top.min(room - h).max(0.0);
-            let body = container(Column::with_children(items).padding([4, 0])).width(SUB_MENU_W[usize::from(i)]);
-            column![Space::new().height(top), body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))]
-        });
-        let (l, r) = if sub_left { (sub, None) } else { (None, sub) };
-        row![].push(l).push(menu).push(r).into()
     }
 
     /// Desktop's timeline effect (`markAsRead` as the newest message comes into view): the open chat is read while
@@ -10671,9 +5615,9 @@ impl BeeperGuiApp {
         };
         if n > 0 {
             self.status_banner = text.clone();
-            let undo = (tr("Undo"), UiMessage::UndoFlag(flag, chats, many));
+            let undo = (tr("Undo"), UiMessage::ChatList(chat_list::Msg::UndoFlag(flag, chats, many)));
             let (buttons, right) = if icon.is_some() { (Vec::new(), Some(undo)) } else { (vec![undo], None) };
-            let open = Some(UiMessage::SelectTab(open));
+            let open = Some(UiMessage::ChatList(chat_list::Msg::SelectTab(open)));
             self.toast = Some(Toast { icon, strong: icon.is_some(), buttons, right, open, ..Toast::new(text) });
         }
     }
@@ -10700,8 +5644,8 @@ impl BeeperGuiApp {
             true => (format!("Add to {name}"), format!("Added to {name}")),
             false => (format!("Remove from {name}"), format!("Removed from {name}")),
         };
-        let open = add.then(|| UiMessage::SelectAccount(Some(format!("label:{label}"))));
-        self.act(what, UiMessage::ToggleLabel(label, chats, !add), toast.then_some((text, open)));
+        let open = add.then(|| UiMessage::Rail(rail::Msg::Select(Some(format!("label:{label}")))));
+        self.act(what, UiMessage::Labels(labels::Msg::Toggle(label, chats, !add)), toast.then_some((text, open)));
     }
 
     fn act(&mut self, what: String, undo: UiMessage, toast: Option<(String, Option<UiMessage>)>) {
@@ -10751,7 +5695,10 @@ impl BeeperGuiApp {
                 let me = account_user(&st, account);
                 let text = trf("Something went wrong %1$s (%2$s)\n%3$s", &[&action, &me, &e]);
                 drop(st);
-                self.show(Toast { buttons: vec![(tr("Copy Error"), UiMessage::CopyText(e))], ..Toast::new(text) });
+                self.show(Toast {
+                    buttons: vec![(tr("Copy Error"), UiMessage::Message(message::Msg::CopyText(e)))],
+                    ..Toast::new(text)
+                });
             }
         }
     }
@@ -10774,7 +5721,7 @@ impl BeeperGuiApp {
         self.new_chat_search = Some((q.into(), accounts.len(), Vec::new()));
         Task::batch(accounts.into_iter().map(|a| {
             let (q, search) = (q.to_string(), beeper_core::matrix::search_users(self.provision(&a), q.into()));
-            Task::perform(search, move |r| UiMessage::SearchedUsers(q.clone(), a.clone(), r))
+            Task::perform(search, move |r| UiMessage::NewChat(new_chat::Msg::SearchedUsers(q.clone(), a.clone(), r)))
         }))
     }
 
@@ -10803,7 +5750,9 @@ impl BeeperGuiApp {
             for id in asks.into_iter().filter(|(c, _)| self.can(a, c)).filter_map(|(_, id)| id) {
                 let (key, slot) = (key.to_string(), nets.len());
                 let resolve = beeper_core::matrix::resolve_identifier(self.provision(a), id.into());
-                tasks.push(Task::perform(resolve, move |r| UiMessage::ContactNetwork(key.clone(), slot, r)));
+                tasks.push(Task::perform(resolve, move |r| {
+                    UiMessage::NewChat(new_chat::Msg::ContactNetwork(key.clone(), slot, r))
+                }));
                 nets.push((a.clone(), None));
             }
         }
@@ -10844,42 +5793,10 @@ impl BeeperGuiApp {
         self.show(Toast { error: true, ..t });
     }
 
-    /// The toast timeouts run while a window is focused and the pointer is not on the toasts.
-    fn toast_running(&self) -> bool {
-        let hovered = self.toast_clock.0 == self.status_banner && self.toast_clock.1;
-        let shown = self.newest_toast_running() || !self.older_toasts.is_empty();
-        self.relaunch_toast.is_none() && self.focused && !hovered && shown
-    }
-
-    fn newest_toast_running(&self) -> bool {
-        !self.status_banner.is_empty() && self.sticky_banner.as_ref() != Some(&self.status_banner)
-    }
-
-    /// The newest toast and the time it showed, which moves up in Desktop's `toasts-list` when a new toast comes.
-    /// Sticky toasts and "Undo:" notes are replaced instead.
-    fn stackable_toast(&self) -> Option<(Toast, Duration)> {
-        if !self.newest_toast_running() || self.relaunch_toast.is_some() || self.shown_note() {
-            return None;
-        }
-        let t = self.shown_toast().cloned().unwrap_or_else(|| Toast::new(self.status_banner.clone()));
-        let clock = &self.toast_clock;
-        Some((t, if clock.0 == self.status_banner { clock.2 } else { Duration::ZERO }))
-    }
-
-    /// The "Undo:" toast of `Txe` is on screen.
-    fn shown_note(&self) -> bool {
-        let shown = |w: &String| self.status_banner == format!("{} {w}", tr("Undo:"));
-        self.relaunch_toast.is_none() && self.undo_note.as_ref().is_some_and(shown)
-    }
-
     /// Desktop's `undoLastToast`: the Undo of the toast on screen.
     fn shown_undo(&self) -> Option<UiMessage> {
         let t = self.shown_toast()?;
         t.buttons.iter().chain(&t.right).find(|b| b.0 == tr("Undo")).map(|b| b.1.clone())
-    }
-
-    fn shown_toast(&self) -> Option<&Toast> {
-        self.toast.as_ref().filter(|t| self.relaunch_toast.is_none() && t.text == self.status_banner)
     }
 
     fn set_archived(&self, st: &mut BeeperStore, idx: usize, on: bool) -> bool {
@@ -10887,70 +5804,6 @@ impl BeeperGuiApp {
             self.mark_read(st, idx);
         }
         st.set_chat_flag(idx, ChatFlag::Archived, Some(on))
-    }
-
-    /// Desktop's `confirmBlockUser` (true) and `confirmUnblockUser`: the dialog, with "Report spam" off.
-    fn ask_block(&mut self, id: String, block: bool) {
-        self.chat_menu = None;
-        self.show_command_palette = false;
-        self.report_spam = false;
-        (self.confirm, self.delete_target) = (Some(if block { ASK_BLOCK } else { ASK_UNBLOCK }), Some(id));
-    }
-
-    /// Desktop's `setUserBlockedOrAlert` and `setUserBlocked`: a disconnected account asks to reconnect first. Then
-    /// the bridge blocks or unblocks, a toast tells it with Undo when it can be undone, and a blocked request closes.
-    fn block_user(&mut self, id: &str, block: bool, spam: bool) -> Task<UiMessage> {
-        let mut st = self.store.write();
-        let c = st.chat(id);
-        if st.bridge_accounts.iter().any(|b| b.account_id == c.account_id && b.state == "BAD_CREDENTIALS") {
-            (self.confirm, self.delete_target) =
-                (Some(if block { ASK_BLOCK_OFFLINE } else { ASK_UNBLOCK_OFFLINE }), Some(id.into()));
-            return Task::none();
-        }
-        let (title, request) = (c.title.clone(), block && c.is_request == Some(true));
-        let can_undo = !block || (!spam && c.block & NO_UNBLOCK == 0);
-        self.confirm = None;
-        st.set_user_blocked(id, block, spam);
-        drop(st);
-        // The Undo of a blocked request opens it again, so the chat that is open stays open.
-        let open = self.pane.selected_chat_id.as_deref() == Some(id);
-        let selected = request && open;
-        let mut undo = vec![UiMessage::BlockUser(id.into(), !block, false)];
-        undo.extend(open.then(|| UiMessage::SelectChat(id.into())));
-        let text = trf(if block { "%s blocked" } else { "%s unblocked" }, &[&title]);
-        match can_undo {
-            true => {
-                let what = trf(if block { "Block %s" } else { "Unblock %s" }, &[&title]);
-                self.act(what, UiMessage::Commands(undo), Some((text, None)));
-            }
-            false => self.show(Toast { strong: true, ..Toast::new(text) }),
-        }
-        if selected {
-            self.leave_chat(&mut self.store.write(), None);
-            self.pane.selected_chat_id = None;
-        }
-        self.update(UiMessage::StoreChanged)
-    }
-
-    fn set_reminder(&mut self, cid: &str, at: Option<i64>, no_reply: Option<bool>) {
-        {
-            let mut st = self.store.write();
-            let idx = st.resolve_chat_idx(cid).expect("chat exists");
-            self.remind(&mut st, idx, at, no_reply);
-        }
-        self.chat_menu = None;
-        self.refresh_theme_and_tray();
-    }
-
-    /// Desktop's `setThreadReminder`: the reminder ends on a reply unless `no_reply` or else "Default for remind later" is "Always",
-    /// and the chat is archived when "Archive after setting reminder on chat" is on.
-    fn remind(&self, st: &mut BeeperStore, idx: usize, at: Option<i64>, no_reply: Option<bool>) {
-        let dismiss_on_incoming_message = no_reply.unwrap_or(st.settings.pref("remindLaterDefault") == 0);
-        st.set_reminder(idx, at.map(|remind_at_ms| ChatReminder { remind_at_ms, dismiss_on_incoming_message }));
-        let c = &st.chats[idx];
-        if at.is_some() && st.settings.on("archiveOnReminder") && c.flags & (CHAT_PINNED | CHAT_REQUEST) == 0 {
-            self.set_archived(st, idx, true);
-        }
     }
 
     /// The chat IDs in list order: the pinned tiles, then the rows.
@@ -10983,19 +5836,6 @@ impl BeeperGuiApp {
         }
     }
 
-    /// Desktop's `hasExpiredReminder`: the reminder time came while the reminder was set.
-    /// Desktop's `selectThreadRange` (`yot`): selects the chats from the last selected chat, or the open chat, to `id`.
-    fn select_range(&mut self, id: &str) {
-        let list = self.list_ids(&self.store.read());
-        let from = self.selection.last().or(self.pane.selected_chat_id.as_ref()).map_or(id, String::as_str);
-        let at = |c: &str| list.iter().position(|l| l == c).unwrap_or(0);
-        let (a, b) = (at(from), at(id));
-        let range = &list[a.min(b)..=a.max(b)];
-        self.selection.retain(|c| !range.contains(c));
-        self.selection.extend_from_slice(range);
-        self.select_mode = false;
-    }
-
     fn expired(&self, c: &Chat) -> bool {
         c.reminder.as_ref().is_some_and(|r| self.reminded.get(&c.id) == Some(&r.remind_at_ms))
     }
@@ -11017,19 +5857,29 @@ impl BeeperGuiApp {
         let archived = c.flags & CHAT_ARCHIVED != 0;
         let (glyph, size, label, keys, msg) = match pref {
             _ if self.active_tab == InboxTab::Reminders => {
-                (6, 20.0, tr("Dismiss Reminder"), vec![], UiMessage::SetReminder(c.id.clone(), None))
+                (6, 20.0, tr("Dismiss Reminder"), vec![], UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), None)))
             }
-            _ if c.draft.is_some() => (5, 20.0, tr("Delete draft"), vec![], UiMessage::DeleteDraft(c.id.clone())),
+            _ if c.draft.is_some() => {
+                (5, 20.0, tr("Delete draft"), vec![], UiMessage::ChatList(chat_list::Msg::DeleteDraft(c.id.clone())))
+            }
             0 if archived || c.flags & CHAT_PINNED == 0 => {
-                let msg = UiMessage::ToggleFlag(c.id.clone(), ChatFlag::Archived);
+                let msg = UiMessage::ChatList(chat_list::Msg::ToggleFlag(c.id.clone(), ChatFlag::Archived));
                 let label = if archived { tr("Unarchive") } else { trx("Archive", "button label to archive chat") };
                 (usize::from(archived), 14.0, label, vec!["Ctrl", "E"], msg)
             }
             1 => {
                 let label = tr(if unread { "Mark Read" } else { "Mark Unread" });
-                (2 + usize::from(!unread), 20.0, label, vec!["Ctrl", "Shift", "U"], UiMessage::ToggleRead(c.id.clone()))
+                (
+                    2 + usize::from(!unread),
+                    20.0,
+                    label,
+                    vec!["Ctrl", "Shift", "U"],
+                    UiMessage::ChatList(chat_list::Msg::ToggleRead(c.id.clone())),
+                )
             }
-            2 => (4, 20.0, tr("Open Context Menu"), vec![], UiMessage::OpenChatMenu(c.id.clone())),
+            2 => {
+                (4, 20.0, tr("Open Context Menu"), vec![], UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone())))
+            }
             _ => return None,
         };
         Some(self.hover_btn(glyph, size, label, keys, msg))
@@ -11090,718 +5940,6 @@ impl BeeperGuiApp {
         tooltip(el, container(body).padding([8, 11]).style(glow_box(p.card, p.shadow, 17.0, 0.0, 20.0)), at)
     }
 
-    fn view_rail(&self) -> El<'_> {
-        let p = &self.pal;
-        let drag = self.rail_drag.as_ref().filter(|d| d.order.is_some());
-        let rail_btn = |glyph: El<'static>, on: bool, msg: UiMessage| {
-            button(container(glyph).center(36))
-                .padding(0)
-                .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.strong; 3], 14.0))
-                .on_press_maybe(drag.is_none().then_some(msg))
-        };
-        let quiet = self.chat_menu.is_some() || drag.is_some();
-        let tip = |btn, label, keys| self.tip(btn, label, keys, tooltip::Position::Right);
-        let hotkey = |n: usize| -> Vec<&'static str> {
-            ["1", "2", "3", "4", "5", "6", "7", "8", "9"].get(n).map_or(vec![], |d| vec!["Ctrl", "Alt", d])
-        };
-        let st = self.store.read();
-        let numbers = st.settings.on("showUnreadCount");
-        let badge = |btn: El<'static>, n: usize, number: bool| -> El<'static> {
-            let dot = match number && numbers {
-                true => container(semi(unread_label(n), 10.0).color(Color::WHITE))
-                    .padding([0, 4])
-                    .center_y(14)
-                    .width(Shrink)
-                    .style(fill_box(p.accent, 8.0)),
-                false => container(Space::new()).width(8).height(8).style(fill_box(p.accent, 4.0)),
-            };
-            let corner = (n > 0).then(|| container(dot).align_right(36).padding(Padding::ZERO.top(2.0).right(2.0)));
-            stack![btn].push(corner).into()
-        };
-        let countable = |c: &Chat| {
-            c.flags & CHAT_UNREAD != 0
-                && c.flags & (CHAT_ARCHIVED | CHAT_REQUEST) == 0
-                && c.merged_into_chat_id.is_none()
-                && (c.unread_mentions > 0 || !st.notifications_muted(c))
-        };
-        let tally = |key: &str, f: &dyn Fn(&Chat) -> bool| {
-            self.count(key, || st.chats.iter().filter(|c| countable(c) && f(c)).count())
-        };
-        let tab =
-            |id: &'static str, key: usize, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
-                let on = self.active_tab == t && self.selected_account_filter.is_none();
-                let btn = badge(rail_btn(glyph, on, UiMessage::SelectTab(t)).into(), n, number);
-                let view = RAIL_VIEWS.iter().find(|v| v.1 == Some(t)).expect("a sidebar view").0;
-                let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{view}"))).into();
-                let btn = if quiet { btn } else { tip(btn, t.label(), hotkey(key)).into() };
-                container(btn).id(id).into()
-            };
-        let requests = self.count("requests", || {
-            st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0).count()
-        });
-        let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
-        let ring_color = if self.dark { Color::WHITE } else { Color::BLACK };
-        let ring = svg(DASHED_RING.clone())
-            .width(32)
-            .height(32)
-            .opacity(0.15_f32)
-            .style(move |_, _| svg::Style { color: Some(ring_color) });
-        let add_space =
-            container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
-        let account = |i: usize, acc: String| -> El<'_> {
-            let on = self.selected_account_filter.as_ref() == Some(&acc);
-            let space = network_space(&st, &acc);
-            let owner = space.map_or(acc.as_str(), |n| &n.account_id);
-            let label = rail_label(&st, &acc);
-            let logo: El<'static> = match label {
-                Some(l) => label_icon(l, 28.0, p.strong),
-                None => svg(brand_svg(brand_key(owner))).width(28).height(28).into(),
-            };
-            let n = tally(&format!("rail:{acc}"), &|c| {
-                in_rail_entry(&st, &acc, c) && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0
-            });
-            let label = match (label, space) {
-                (Some(l), _) => l.name.clone(),
-                (None, Some(n)) => format!("{} ({})", n.name, network_label(owner)),
-                (None, None) => network_label(owner).to_string(),
-            };
-            let error = space_error(&st, &acc);
-            let label = match error {
-                Some(s) => format!("{label} ({s})"),
-                None => label,
-            };
-            let btn = rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into();
-            let btn = match error {
-                Some(_) => {
-                    let corner = container(svg(ERROR_CIRCLE.clone()).width(14).height(14));
-                    stack![btn, corner.align_right(36).padding(Padding::ZERO.top(2.0).right(2.0))].into()
-                }
-                None => badge(btn, n, true),
-            };
-            let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into();
-            if quiet {
-                btn
-            } else {
-                self.tip(btn, label, hotkey(i), tooltip::Position::Right).into()
-            }
-        };
-        let labels = st.feature("labels-v2");
-        let add_label = button(add_space)
-            .padding(0)
-            .style(ghost(p, 12.0))
-            .on_press_maybe(labels.on.then(|| UiMessage::OpenCreateLabel(Vec::new())));
-        let mut add_label = Some(add_label);
-        let draft = self.label_window.as_ref().filter(|d| d.label.is_none());
-        let draft_btn = |i: usize, d: &LabelDraft| -> El<'static> {
-            let (l, fg) =
-                (Label { name: d.name.clone(), color: d.color, icon: d.icon.clone(), ..Label::default() }, p.strong);
-            let ring = svg(DRAFT_RING.clone()).width(30).height(30).style(move |_, _| svg::Style { color: Some(fg) });
-            let logo = container(stack![ring, container(label_icon(&l, 28.0, fg)).center(30)]).into();
-            let btn: El = mouse_area(rail_btn(logo, false, UiMessage::OpenCreateLabel(Vec::new())))
-                .on_right_press(UiMessage::OpenCreateLabel(Vec::new()))
-                .into();
-            if quiet {
-                btn
-            } else {
-                self.tip(btn, l.name, hotkey(i), tooltip::Position::Right).into()
-            }
-        };
-        let ids = match drag.and_then(|d| d.order.clone()) {
-            Some(order) => order,
-            None => draft.map_or_else(|| rail_spaces(&st), |d| draft_rail_spaces(&st, &d.name)),
-        };
-        let mut lifted = None;
-        let spaces = ids.into_iter().enumerate().map(|(i, id)| {
-            let el = match id.as_str() {
-                "inbox" => tab(
-                    "rail-inbox",
-                    i,
-                    g(icon::INBOX),
-                    InboxTab::AllChats,
-                    tally("rail:inbox", &|c| c.flags & (CHAT_HIDDEN | CHAT_LOW_PRIORITY) == 0),
-                    true,
-                ),
-                "archive" => tab("rail-archive", i, g(icon::ARCHIVE), InboxTab::Archived, 0, false),
-                LABEL_NUDGE => tip(add_label.take().expect("one nudge").into(), tr("Create Label"), vec![]).into(),
-                LABEL_DRAFT => draft_btn(i, draft.expect("an open Create Label")),
-                "reminders" => tab("rail-reminders", i, g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
-                "scheduled" => tab("rail-send-later", i, g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
-                "requests" => tab("rail-requests", i, g(icon::EMAIL), InboxTab::Requests, requests, false),
-                "low_priority" => tab(
-                    "rail-low-priority",
-                    i,
-                    g(icon::LOW_PRIORITY_SPACE),
-                    InboxTab::LowPriority,
-                    tally("rail:low", &|c| c.flags & CHAT_LOW_PRIORITY != 0),
-                    true,
-                ),
-                _ => account(i, id.clone()),
-            };
-            let el = match drag {
-                Some(d) if d.id == id => {
-                    lifted = Some(el);
-                    Space::new().width(36).height(36).into()
-                }
-                _ => el,
-            };
-            let hover = id.clone();
-            mouse_area(el)
-                .on_move(move |at| UiMessage::RailHover(hover.clone(), at))
-                .on_exit(UiMessage::RailLeave(id))
-                .into()
-        });
-        let top: Vec<El> = spaces.collect();
-        let lifted = lifted.zip(drag).map(|(el, d)| {
-            let (x, y) = ((d.at.x - d.grab.x).clamp(0.0, 32.0), (d.at.y - d.grab.y).max(0.0));
-            container(el).padding(Padding::ZERO.left(x).top(y))
-        });
-        let top = Column::with_children(top)
-            .push(badge(
-                rail_btn(g(icon::MORE_HORIZ), false, UiMessage::OpenChatMenu(RAIL_MORE.into())).into(),
-                if hidden_spaces(&st).iter().any(|s| s == "requests") { requests } else { 0 },
-                false,
-            ))
-            .spacing(8)
-            .align_x(Center)
-            .width(68)
-            .padding(Padding::ZERO.top(14.0));
-        let me = st.me();
-        let media = UiMessage::OpenMedia;
-        let me_btn = button(self.face(me.img_url.as_deref(), me.full_name.as_deref().expect("self name"), 36.0, 0.0))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
-            .on_press(UiMessage::OpenSettings(SettingsTab::General));
-        let footer = column![
-            tip(rail_btn(g(icon::PHOTO_LIBRARY), false, media).into(), tr("Media"), vec![]),
-            tip(
-                rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::OpenSettings(SettingsTab::Accounts)).into(),
-                tr("Add an account"),
-                vec!["Ctrl", ","]
-            ),
-            tip(me_btn.into(), tr("Settings"), vec!["Ctrl", ","]),
-        ]
-        .spacing(8)
-        .align_x(Center)
-        .padding(Padding::ZERO.bottom(16.0));
-        let scroll = scrollable(top).direction(Direction::Vertical(Scrollbar::hidden())).height(Fill);
-        let rail = container(column![scroll, footer].align_x(Center)).width(68).height(Fill);
-        let rail = mouse_area(rail.style(fill_box(p.hover, 0.0)))
-            .on_right_press(UiMessage::OpenChatMenu("account:inbox".into()));
-        stack![rail].push(lifted).into()
-    }
-
-    fn view_sidebar(&self) -> El<'_> {
-        let p = &self.pal;
-        let st = self.store.read();
-        let w = self.list_width(&st);
-        let chats = self.visible_chats(&st);
-        let h24 = st.settings.pref("timeFormat") == 1;
-        let compact = st.settings.on("compactChatList");
-        let (av, lines, title_size, ts_size, pin_av) =
-            if compact { (28.0, 1, 13.0, 10.0, 40.0) } else { (46.0, 2, 14.0, 11.0, 52.0) };
-        let names: Vec<&str> =
-            (0..FILTERS.len()).filter(|i| self.filters & 1 << i != 0).map(|i| tr(FILTERS[i].0)).collect();
-        let heading = self
-            .selected_account_filter
-            .as_deref()
-            .map_or(self.active_tab.label().to_string(), |id| space_name(&st, id));
-        let heading = semi(heading, 13.0).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
-        // Desktop's space icon before the title when the space bar is hidden: a label with a color, a network space,
-        // or an account with another account on its network.
-        let shown = st.settings.on("showSidebar");
-        let space_icon = self.selected_account_filter.as_deref().filter(|_| !shown).and_then(|id| -> Option<El<'_>> {
-            if let Some(l) = rail_label(&st, id) {
-                return l.color.is_some().then(|| label_icon(l, 16.0, p.strong));
-            }
-            let owner = rail_owner(&st, id);
-            let twins = st.accounts.iter().filter(|a| brand_key(&a.account_id) == brand_key(&owner)).count() > 1;
-            let icon = svg(brand_svg(brand_key(&owner))).width(16).height(16);
-            (network_space(&st, id).is_some() || twins).then(|| icon.into())
-        });
-        let line = row![].push(space_icon.map(|i| container(i).padding(Padding::ZERO.right(4.0)))).push(heading);
-        let title = column![line.push(ic(icon::UNFOLD_MORE, 12.0).color(p.weak)).spacing(1.4).align_y(Center)]
-            .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))
-            .padding([0, 8]);
-        let entry = self.selected_account_filter.clone().unwrap_or_else(|| {
-            RAIL_VIEWS.iter().find(|v| v.1 == Some(self.active_tab)).expect("a sidebar view").0.to_string()
-        });
-        let title = mouse_area(title)
-            .on_press(UiMessage::OpenChatMenu(SPACE_SHEET.into()))
-            .on_right_press(UiMessage::OpenChatMenu(format!("head:{entry}")));
-        let title = container(title).width(Fill).clip(true);
-        let head_btn = |c: char, size: f32, [l, r]: [f32; 2], msg: UiMessage| {
-            button(container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
-                .on_press(msg)
-        };
-        let filter = self.active_tab.filterable().then(|| {
-            let active = self.filters != 0;
-            let fg = if active { p.accent } else { p.strong };
-            let trigger: El<'_> = match self.filters.count_ones() {
-                0 => Space::new().into(),
-                1 => ic(icon::EXPAND_MORE, 10.0).color(fg).into(),
-                n => txt(n.to_string(), 11.0).color(fg).into(),
-            };
-            let trigger = button(container(trigger).padding(Padding::ZERO.left(6.0)).center_y(20))
-                .padding(0)
-                .width(if active { 16 } else { 0 })
-                .style(btn_style([CLEAR; 3], [fg; 3], 0.0))
-                .on_press(UiMessage::ToggleFilterMenu);
-            let pill = row![trigger, container(ic(icon::FILTER_LIST, 16.8).color(fg)).center_x(27).center_y(20)];
-            let ring = if active { p.accent } else { CLEAR };
-            let face = bordered_btn([CLEAR, p.hover, p.hover], [fg; 3], ring, 1.0, 12.0);
-            let el = mouse_area(button(pill).padding(0).style(face).on_press(UiMessage::FilterButton))
-                .on_right_press(UiMessage::ToggleFilterMenu);
-            self.tip(el.into(), tr("Filter"), vec![], tooltip::Position::Bottom)
-        });
-        let below = |el: El<'static>, label, keys| self.tip(el, label, keys, tooltip::Position::Bottom);
-        let options = (self.active_tab == InboxTab::Reminders).then(|| {
-            let btn = button(container(tinted(&TUNE, 18.0, p.strong)).center_x(30).center_y(26))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
-                .on_press(UiMessage::ReminderMenu);
-            below(btn.into(), tr("Display Options"), vec![])
-        });
-        let header = row![title]
-            .push(filter)
-            .push(options)
-            .push(below(
-                head_btn(icon::SEARCH, 23.0, [7.5, 10.0], UiMessage::ToggleCommandPalette).into(),
-                tr("Search Chats"),
-                vec!["Ctrl", "K"],
-            ))
-            .push(below(
-                head_btn(icon::EDIT_SQUARE, 20.0, [0.0, 3.0], UiMessage::NewChat).into(),
-                tr("New Chat"),
-                vec!["Ctrl", "N"],
-            ))
-            .align_y(Center)
-            .height(52)
-            .padding(Padding::ZERO.right(8.0));
-        let selected = self.creating_chat.is_none().then_some(self.pane().selected_chat_id.as_deref()).flatten();
-        let (mut pinned, rest) = self.pins_and_rows(&st);
-        // The order of a pin drag, which moves the pins under the pointer.
-        let dragged = self.pin_drag.as_ref().filter(|d| d.order.is_some()).map(|d| d.id.as_str());
-        if let Some(order) = self.pin_drag.as_ref().and_then(|d| d.order.as_ref()) {
-            pinned.sort_by_key(|c| order.iter().position(|o| *o == c.id).unwrap_or(usize::MAX));
-        }
-        let counts = st.settings.on("showUnreadCount");
-        let network_icons = st.settings.on("showNetworkIcons")
-            && self.selected_account_filter.as_deref().is_none_or(|id| rail_label(&st, id).is_some());
-        let colorize = st.settings.on("colorizeNetworkIcons");
-        let hover_action = st.settings.pref("chatActionButton");
-        let selecting = self.select_mode || !self.selection.is_empty();
-        let picked = |c: &Chat| self.selection.contains(&c.id);
-        let pick = |c: &Chat| match selecting {
-            true => UiMessage::ToggleSelected(c.id.clone()),
-            false => UiMessage::ClickChat(c.id.clone()),
-        };
-        let bar_pad = if SOLID_BARS { 0.0 } else { 4.0 };
-        let inner = w - 8.0 - bar_pad - GUTTER;
-        let cols = pin_columns(inner, pinned.len());
-        let cell = inner / cols as f32;
-        let tile = cell.min(120.0);
-        let previews = st.settings.on("showMessagePreviews");
-        let now = now_unix_millis();
-        let launched = now - self.started.elapsed().as_millis() as i64;
-        let pin_row = |chunk: &[&Chat]| {
-            El::from(chunk.iter().fold(Row::new(), |r, c| {
-                let on = selected == Some(c.id.as_str());
-                let (muted, quiet) = (self.list_muted(&st, c), self.list_quiet(&st, c));
-                let unread = c.is_unread();
-                let (bg, fg) = if quiet { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
-                let dot =
-                    (!counts && unread).then(|| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0)));
-                let title_w = tile - if muted { 35.2 } else { 20.0 } - if dot.is_some() { 9.2 } else { 0.0 };
-                let title = ell(short_title(c), title_w, 12.0, Weight::Semibold);
-                let label = row![]
-                    .push(dot)
-                    .push(title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(15.0.into())))
-                    .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.strong)))
-                    .spacing(3.2)
-                    .align_y(Center);
-                let unread = match (st.typing.contains_key(&c.id), counts) {
-                    (true, _) => Some(self.typing_badge()),
-                    (false, true) => unread.then(|| count_badge(c, bg, fg, 14.0)),
-                    (false, false) => (c.unread_mentions > 0).then(|| {
-                        let at = ic(icon::AT_SIGN, 10.0).color(fg);
-                        container(at).padding([0, 4]).center_y(14).style(fill_box(bg, 7.0)).into()
-                    }),
-                };
-                let bubble = bubble_text(c, launched, now).filter(|_| previews && !on && !selecting);
-                let unread = unread.filter(|_| bubble.is_none());
-                let face = stack![container(self.chat_avatar(c, pin_av, 1.25)).center_x(pin_av + 4.0)]
-                    .push((!selecting).then(|| container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)))
-                    .push(selecting.then(|| pin(checkbox(p, picked(c))).x(pin_av - 11.0).y(-5.0)))
-                    .width(pin_av + 4.0)
-                    .height(pin_av);
-                let item =
-                    column![face, label].spacing(if compact { 4 } else { 8 }).align_x(Center).width(tile).padding(
-                        match compact {
-                            true => Padding::new(10.0).top(8.0).bottom(6.0),
-                            false => Padding::new(12.0).bottom(10.0),
-                        },
-                    );
-                let colors = if muted { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
-                let bubble = bubble.map(|t| pin_bubble(&t, c.unread_mentions > 0, colors, tile, pin_av, compact));
-                let item = stack![item].push(bubble);
-                // Desktop's `useDropPlaceholder`: the dragged pin marks the place it would drop at.
-                let held = dragged == Some(c.id.as_str());
-                let item = button(item)
-                    .padding(0)
-                    .style(btn_style([if on || held { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
-                    .on_press(pick(c));
-                let item = mouse_area(item)
-                    .on_right_press(UiMessage::OpenChatMenu(c.id.clone()))
-                    .on_enter(UiMessage::PinHover(Some(c.id.clone())))
-                    .on_exit(UiMessage::PinHover(None));
-                r.push(container(item).center_x(cell))
-            }))
-        };
-        let lead = match (selecting, counts) {
-            (true, _) => 16.0,
-            (false, true) => 0.0,
-            (false, false) => 12.0,
-        };
-        let text_w = inner - 16.0 - av - 10.0 - lead;
-        // Desktop's order: the regular-style pinned rows, then the new-chat drafts, then the other chats.
-        let lead = rest.iter().take_while(|c| c.flags & CHAT_PINNED != 0).count();
-        let drafts = self.new_chats.len();
-        // Desktop hides the divider of the selected row and of the row above it.
-        let draft = self.creating_chat.and_then(|n| self.new_chats.iter().position(|d| d.id == n)).map(|i| lead + i);
-        let chat =
-            || selected.and_then(|s| rest.iter().position(|c| c.id == s)).map(|i| i + drafts * usize::from(i >= lead));
-        let above = draft.or_else(chat).and_then(|i| i.checked_sub(1)).map(|i| match i.checked_sub(lead) {
-            Some(d) if d < drafts => std::borrow::Cow::Owned(format!("draft:{}", self.new_chats[d].id)),
-            Some(d) => std::borrow::Cow::Borrowed(rest[lead + d - drafts].id.as_str()),
-            None => std::borrow::Cow::Borrowed(rest[i].id.as_str()),
-        });
-        let frame =
-            |key: String, dot: Option<El<'static>>, face: El<'static>, lines: [El<'static>; 2], on: bool, select| {
-                let [top, preview] = lines;
-                let item = row![]
-                    .push(dot)
-                    .push(container(face).width(av + 10.0))
-                    .push(column![top, preview].width(Fill))
-                    .align_y(Center)
-                    .padding(Padding::new(8.0).top(9.0).bottom(11.0).left(if selecting { 0.0 } else { 8.0 }));
-                let action = (!selecting && self.hovered_chat.as_ref() == Some(&key)).then(|| {
-                    match key.strip_prefix("draft:") {
-                        Some(n) => Some(self.hover_btn(
-                            5,
-                            20.0,
-                            tr("Delete Chat"),
-                            vec![],
-                            UiMessage::DeleteNewChat(n.parse().unwrap()),
-                        )),
-                        None => {
-                            self.row_action(&st.chats[st.resolve_chat_idx(&key).expect("listed chat")], hover_action)
-                        }
-                    }
-                });
-                let rule = (!on && above.as_deref() != Some(key.as_str()))
-                    .then(|| container(divider(p.divider, av + 18.0)).align_bottom(Fill));
-                let row = mouse_area(
-                    button(stack![item].push(action.flatten()).push(rule))
-                        .padding(0)
-                        .width(Fill)
-                        .style(btn_style([if on { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
-                        .on_press(select),
-                )
-                .on_enter(UiMessage::HoverChat(key.clone(), true))
-                .on_exit(UiMessage::HoverChat(key.clone(), false));
-                let inbox = st.resolve_chat_idx(&key).is_some_and(|i| st.chats[i].flags & CHAT_ARCHIVED == 0);
-                match inbox {
-                    true => row.on_middle_press(UiMessage::ToggleFlag(key.clone(), ChatFlag::Archived)),
-                    false => row,
-                }
-                .on_right_press(UiMessage::OpenChatMenu(key))
-            };
-        let draft_row = |d: &NewChat| {
-            let n = d.id;
-            let dot = (!counts).then(|| container(Space::new()).width(12).into());
-            let names: Vec<&str> = d.users.iter().map(|(_, u)| u.full_name.as_deref().unwrap_or(&u.id)).collect();
-            let title = if names.is_empty() { tr("New Chat").into() } else { names.join(", ") };
-            let title = ell(&title, text_w, title_size, if counts { Weight::Medium } else { Weight::Semibold });
-            let rows =
-                [container(title.color(p.strong)).height(16).into(), Space::new().height(16 * lines as u32).into()];
-            let face = self.face(
-                d.users.first().and_then(|(_, u)| u.img_url.as_deref()),
-                names.first().unwrap_or(&""),
-                av,
-                1.25,
-            );
-            let (key, on) = (format!("draft:{n}"), self.creating_chat == Some(n));
-            let picked = self.new_chat_account.as_ref().filter(|_| on);
-            let face = match d.users.first().map(|(a, _)| a).or(picked).filter(|_| network_icons) {
-                Some(account) => {
-                    let ring = if on { crate::style::flat(p.window, p.selected) } else { p.window };
-                    badged(face, account, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p), ring)
-                }
-                None => face,
-            };
-            frame(key, dot, face, rows, on, UiMessage::SelectNewChat(n))
-        };
-        let chat_row = |c: &Chat| {
-            let on = selected == Some(c.id.as_str());
-            let unread = c.is_unread();
-            let muted = self.list_muted(&st, c);
-            let draft = c
-                .draft
-                .as_ref()
-                .and_then(|d| d.text.as_deref())
-                .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
-            let m = c.preview.as_ref().filter(|_| previews && draft.is_none());
-            let reaction = m.filter(|m| m.message_type.as_deref() == Some("REACTION"));
-            let next = next_send(&st, &c.id);
-            let ts = match (self.active_tab, &c.reminder, next) {
-                (InboxTab::Reminders, Some(r), _) => {
-                    format!("{} {}", reminder_day(r.remind_at_ms), clock(r.remind_at_ms, h24))
-                }
-                (InboxTab::SendLater, _, Some(at)) => format!("{} {}", reminder_day(at), clock(at, h24)),
-                _ if draft.is_some() => String::new(),
-                _ => c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default(),
-            };
-            let later = next.is_some()
-                && (draft.is_none() || matches!(self.active_tab, InboxTab::Reminders | InboxTab::SendLater));
-            let ts_w = crate::style::text_width(&ts, ts_size, Weight::Normal) + 8.0 + if later { 12.0 } else { 0.0 };
-            let expired = self.expired(c);
-            let reminded_last = c
-                .reminder
-                .as_ref()
-                .zip(c.last_activity.as_deref())
-                .is_some_and(|(r, t)| millis_from_rfc3339(t).expect("RFC 3339 timestamp") <= r.remind_at_ms);
-            let style = match expired && reminded_last {
-                true => iced::font::Style::Italic,
-                false => iced::font::Style::Normal,
-            };
-            let title = c.network_name.as_ref().map_or_else(|| c.title.clone(), |n| format!("{} • {n}", c.title));
-            let weight = if counts && !unread { Weight::Medium } else { Weight::Semibold };
-            let bell = if muted { 16.0 } else { 0.0 };
-            let pinned = c.flag(ChatFlag::Pinned);
-            let pin_icon = pinned.then(|| container(tinted(&PIN, 13.0, p.strong)).padding(Padding::ZERO.right(2.0)));
-            let pin_w = if pinned { 15.0 } else { 0.0 };
-            let top = row![]
-                .push(pin_icon)
-                .push(ell(&title, text_w - ts_w - bell - pin_w, title_size, weight).color(p.fg.scale_alpha(0.9)))
-                .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
-                .push(Space::new().width(Fill))
-                .push(later.then(|| tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))))
-                .push(
-                    txt(ts, ts_size).color(p.strong.scale_alpha(0.7)).font(iced::Font { style, ..fw(Weight::Normal) }),
-                )
-                .height(16)
-                .align_y(Center);
-            let mine = m.is_some_and(|m| m.is_sender == Some(true));
-            let receipt = mine && reaction.is_none();
-            let media_tag = m.and_then(message_tag);
-            let (body, italic) = match m.and_then(preview_body) {
-                Some(t) => (Some(t), false),
-                None => media_tag.as_ref().and_then(|t| t.2.clone()).map_or((None, false), |(d, i)| (Some(d), i)),
-            };
-            let show_sender = !mine
-                && reaction.is_none()
-                && !m.is_some_and(Message::silent)
-                && (media_tag.is_some() || body.is_some())
-                && (c.chat_type == "group" || m.is_some_and(|m| network_bot(c, &m.sender_id)));
-            let first =
-                m.filter(|_| show_sender).map(|m| match c.participants.items.iter().find(|u| u.id == m.sender_id) {
-                    Some(u) => sender_first_name(u),
-                    None => m.sender_name.as_deref().and_then(|n| n.split(' ').next()).unwrap_or(&m.sender_id).into(),
-                });
-            let body = body.map(|t| match (media_tag.is_none(), &first) {
-                (true, Some(s)) => format!("{s}: {t}"),
-                _ => t,
-            });
-            let body = match (c.is_request == Some(true), c.chat_type == "group") {
-                (false, _) => body,
-                (true, false) => body.or_else(|| Some(tr("Message Request").into())),
-                (true, true) => {
-                    let head = match c.inviter() {
-                        Some(u) => trs("Invited by %s", &[&member_name(u)]),
-                        None => tr("Group Invitation").into(),
-                    };
-                    Some(body.map_or(head.clone(), |b| format!("{head}\n{b}")))
-                }
-            };
-            let dot_bg = if self.list_quiet(&st, c) { Color { a: 0.3, ..p.strong } } else { p.accent };
-            let count = match counts {
-                true => unread.then(|| count_badge(c, dot_bg, Color::WHITE, 12.0)),
-                false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent).into()),
-            };
-            // Desktop's `indicators`: the unread dot, and a red dot while a send of the chat waits for Retry.
-            let dot = (!counts).then(|| {
-                let dot = |bg| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0));
-                let errored = st.has_errored(&c.id).then(|| dot(hex(0xf44336)));
-                container(column![].push(unread.then(|| dot(dot_bg))).push(errored).spacing(4)).width(12)
-            });
-            let count = count
-                .filter(|_| self.hovered_chat.as_ref() != Some(&c.id) || self.row_action(c, hover_action).is_none());
-            let sender = show_sender.then(|| preview_sender(c, m?)).flatten();
-            let digits =
-                if counts && c.unread_count > 0 { unread_label(c.unread_count as usize).len() as f32 } else { 0.0 };
-            let at = if c.unread_mentions > 0 { 12.0 } else { 0.0 };
-            let prefix = first.filter(|_| media_tag.is_some()).map(|s| format!("{s}:"));
-            let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal) + 4.0);
-            let base = 16.0 + if counts { 8.0 + 6.0 * digits + at } else { at }.max(18.0);
-            let indent = if receipt { 16.0 } else { 0.0 }
-                + if sender.is_some() { 16.0 } else { 0.0 }
-                + match &media_tag {
-                    Some((_, label, _)) if expired => crate::style::text_width(label, 13.0, Weight::Normal) + 4.0,
-                    Some((_, label, _)) => crate::style::text_width(label, 10.0, Weight::Medium) + 24.0,
-                    None => 0.0,
-                }
-                + if expired { crate::style::text_width(tr("Reminder"), 11.0, Weight::Semibold) + 10.0 } else { 0.0 }
-                + prefix_w;
-            let reserve = base + indent;
-            let flowed = lines > 1 && indent > 0.0;
-            let (body, second) = match body {
-                Some(b) if flowed => {
-                    let (first, rest) = crate::style::flow(&b, indent, text_w - base, lines, 13.0, Weight::Normal);
-                    (Some(first), Some(rest).filter(|r| !r.is_empty()))
-                }
-                b => (b, None),
-            };
-            let style = if italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
-            let body_font = iced::Font { style, ..fw(Weight::Normal) };
-            let fg = p.fg.scale_alpha(0.63);
-            let receipt = m.filter(|_| receipt).map(|m| {
-                let glyph = if pending(&st, m) { &PENDING } else { &SENT[usize::from(seen_by(&st, m) > 0)] };
-                let icon = tinted(glyph, 12.0, fg);
-                match receipt_tip(&st, c, m) {
-                    Some(tip) => self.tip(icon, tip, vec![], tooltip::Position::Top).into(),
-                    None => icon,
-                }
-            });
-            let face =
-                sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0, 0.5));
-            let badge = (expired && previews).then(|| {
-                let label = semi(tr("Reminder"), 11.0).color(Color::WHITE.scale_alpha(0.7));
-                container(label).padding([0, 3]).style(fill_box(ORANGE.scale_alpha(0.7), 4.0))
-            });
-            let preview = row![]
-                .push(badge)
-                .push(receipt)
-                .push(face)
-                .push(prefix.map(|s| txt(s, 13.0).color(fg)))
-                .push(media_tag.map(|(icon, label, _)| -> El<'_> {
-                    if expired {
-                        return txt(label, 13.0).color(fg).into();
-                    }
-                    let glyph = tinted(tag_glyph(icon), 12.0, fg);
-                    let label = med(label, 10.0).color(fg);
-                    container(row![glyph, container(label).padding([0, 2])].align_y(Center))
-                        .padding([1, 2])
-                        .style(fill_box(p.strong.scale_alpha(0.105), 4.0))
-                        .into()
-                }))
-                .push(body.map(|b| {
-                    clamp(&b, text_w - reserve, if flowed { 1 } else { lines }, 13.0, Weight::Normal)
-                        .width(text_w - reserve)
-                        .line_height(Pixels(16.0))
-                        .font(body_font)
-                        .color(fg)
-                }))
-                .push(draft.filter(|_| previews).map(|t| {
-                    let label = trx("Draft:", "thread list draft preview prefix");
-                    let s =
-                        crate::style::clamped(&format!("{label} {t}"), text_w - reserve, lines, 13.0, Weight::Normal);
-                    let rest = s.strip_prefix(label).expect("the draft label fits").to_string();
-                    rich_text![span::<(), _>(label).font(fw(Weight::Semibold)).color(p.accent), span(rest).color(fg)]
-                        .size(13)
-                        .line_height(Pixels(16.0))
-                        .width(text_w - reserve)
-                }))
-                .push(Space::new().width(Fill))
-                .push(count)
-                .spacing(4)
-                .align_y(if compact { Center } else { iced::Alignment::Start });
-            let second = second.map(|r| txt(r.to_string(), 13.0).font(body_font).color(fg));
-            let preview = column![preview].push(second);
-            let avatar = self.chat_avatar(c, av, 1.25);
-            let avatar = match network_icons {
-                true => {
-                    let ring = if on { crate::style::flat(p.window, p.selected) } else { p.window };
-                    badged(avatar, &c.account_id, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p), ring)
-                }
-                false => avatar,
-            };
-            let face = stack![avatar]
-                .push(st.typing.contains_key(&c.id).then(|| pin(self.typing_badge()).x(av - 14.0).y(-2.0)));
-            let dot = match selecting {
-                true => Some(container(checkbox(p, picked(c))).padding(Padding::ZERO.right(8.0)).into()),
-                false => dot.map(El::from),
-            };
-            frame(c.id.clone(), dot, face.into(), [top.into(), preview.height(16 * lines as u32).into()], on, pick(c))
-        };
-        let list: El<'_> = if chats.is_empty() && self.new_chats.is_empty() {
-            let tab = if self.selected_account_filter.is_some() { InboxTab::Requests } else { self.active_tab };
-            let (head, hint) = tab.empty();
-            let header = column![semi(head, 16.0).color(p.strong).align_x(Center).line_height(1.25)]
-                .push((!hint.is_empty()).then(|| txt(hint, 13.0).color(p.strong).align_x(Center)))
-                .spacing(12)
-                .align_x(Center);
-            let fallback = self.active_tab.fallback().map(|views| {
-                let words = "If you're looking for something, check the".split(' ').map(|w| txt(w, 13.0).into());
-                let pill = |t: InboxTab| -> El<'_> {
-                    button(semi(t.label(), 12.0))
-                        .padding([6, 8])
-                        .style(btn_style([p.selected; 3], [p.strong; 3], 999.0))
-                        .on_press(UiMessage::SelectTab(t))
-                        .into()
-                };
-                let line =
-                    Row::with_children(words.chain([pill(views[0]), txt(tr("or"), 13.0).into(), pill(views[1])]))
-                        .spacing(3.5)
-                        .align_y(Center)
-                        .wrap()
-                        .vertical_spacing(5.5)
-                        .align_x(Center);
-                container(line).center_x(Fill).padding([24, 0])
-            });
-            column![Space::new().height(Fill), header, Space::new().height(Fill)]
-                .push(fallback)
-                .padding([0, 22])
-                .width(Fill)
-                .into()
-        } else {
-            let tiles = pinned.len().div_ceil(cols);
-            let row_keys = self.row_keys(&rest);
-            // Desktop's "Unread threads" pill comes first.
-            let threads = self.unread_threads(&st, true);
-            let pre = usize::from(!threads.is_empty());
-            let keys: Vec<u64> = (0..pre)
-                .map(|_| vlist::key("unread-threads"))
-                .chain((0..tiles).map(|i| vlist::key(("pins", i))))
-                .chain(row_keys[..lead].iter().copied())
-                .chain(self.new_chats.iter().map(|d| vlist::key(("draft", d.id))))
-                .chain(row_keys[lead..].iter().copied())
-                .collect();
-            let estimate = if compact { 52.0 } else { 68.0 };
-            let rows = self.chat_list.view(&keys, false, estimate, UiMessage::Relist, |i| match i.checked_sub(pre) {
-                None => self.unread_threads_pill(&st, &threads),
-                Some(i) if i < tiles => pin_row(&pinned[i * cols..(i * cols + cols).min(pinned.len())]),
-                Some(i) if i < tiles + lead => chat_row(rest[i - tiles]).into(),
-                Some(i) if i < tiles + lead + drafts => draft_row(&self.new_chats[i - tiles - lead]).into(),
-                Some(i) => chat_row(rest[i - tiles - drafts]).into(),
-            });
-            scrollable(container(rows).padding(Padding::ZERO.right(bar_pad + GUTTER)))
-                .direction(stable_bar())
-                .height(Fill)
-                .style(scroll_style(p.scroll))
-                .into()
-        };
-        let pill = self.view_global_audio(&st, w - 18.0).map(|pill| {
-            let at = Padding::ZERO.left(8.0).right(10.0).bottom(self.audio.bottom);
-            container(pill).padding(at).height(Fill).align_bottom(Fill)
-        });
-        let status = self.view_network_status(&st);
-        let sidebar = stack![column![header].push(status).push(list).padding(Padding::ZERO.left(8.0))].push(pill);
-        let sidebar = container(sidebar).width(w).height(Fill);
-        mouse_area(sidebar).on_right_press(UiMessage::OpenChatMenu(SIDEBAR_MENU.into())).into()
-    }
-
     /// Desktop's `AppStatus` over the chat list: a `network-status` banner for each disconnected account of the
     /// selected space (`mpt`: the account of an account space, the accounts of a label's chats, or every account). A
     /// click logs it in again when its bridge asks for that, or else opens its settings. In its own space it offers
@@ -11831,13 +5969,13 @@ impl BeeperGuiApp {
                     false => Some(
                         button(ic(icon::CLOSE, 14.0).color(p.sub))
                             .bare(p.sub)
-                            .on_press(UiMessage::DismissAccountError(b.account_id.clone()))
+                            .on_press(UiMessage::Accounts(accounts::Msg::DismissError(b.account_id.clone())))
                             .into(),
                     ),
                 };
                 let icon = svg(brand_svg(brand_key(&b.account_id))).width(22).height(22);
                 let line = row![icon, text].push(end).spacing(8).align_y(Center);
-                let msg = again.unwrap_or(UiMessage::OpenAccountSettings(b.account_id.clone()));
+                let msg = again.unwrap_or(UiMessage::Accounts(accounts::Msg::OpenSettings(b.account_id.clone())));
                 let banner = button(line).padding([0, 8]).height(40).style(btn_style([p.hover; 3], [p.fg; 3], 12.0));
                 container(banner.on_press(msg)).padding(Padding::new(8.0).top(0.0).left(0.0)).into()
             })
@@ -11869,523 +6007,22 @@ impl BeeperGuiApp {
         let id = &chat.id;
         let block = (st.can_block(chat) && !st.user_blocked(chat)).then(|| {
             let label = trx("Block", "action to block the other person in a DM");
-            pill(label, hex(0xdc362e), UiMessage::AskBlock(id.clone(), true))
+            pill(label, hex(0xdc362e), UiMessage::Blocking(blocking::Msg::Ask(id.clone(), true)))
         });
-        let buttons = row![]
-            .push(block)
-            .push(decline.then(|| pill(tr("Decline"), hex(0xdc362e), UiMessage::DeleteChat(id.clone(), false))))
-            .push(accept.then(|| pill(tr("Accept"), p.strong, UiMessage::AcceptRequest(id.clone()))))
-            .spacing(8);
+        let buttons =
+            row![]
+                .push(block)
+                .push(decline.then(|| {
+                    pill(tr("Decline"), hex(0xdc362e), UiMessage::ChatList(chat_list::Msg::Delete(id.clone(), false)))
+                }))
+                .push(accept.then(|| {
+                    pill(tr("Accept"), p.strong, UiMessage::ChatList(chat_list::Msg::AcceptRequest(id.clone())))
+                }))
+                .spacing(8);
         let heading = txt(heading, 13.0).color(p.strong).width(Fill).align_x(Center);
         let body = column![heading, buttons].spacing(8).align_x(Center);
         let body = container(body).padding(12).width(Fill).max_width(388).style(fill_box(p.chip, 8.0));
         Some(container(body).padding([0, 8]).center_x(Fill).into())
-    }
-
-    /// Desktop's `StickerPicker`: the stickers of the selected tab in 4 columns, and the tabs of Recent and of each
-    /// pack. Without packs and recent stickers it shows "No sticker packs yet.".
-    fn view_sticker_picker<'a>(&'a self, st: &BeeperStore) -> El<'a> {
-        let p = &self.pal;
-        let recent = &st.settings.recent_stickers;
-        let packs = match &self.pane().stickers {
-            Some(Ok(packs)) => &packs[..],
-            _ => &[],
-        };
-        let failed = matches!(self.pane().stickers, Some(Err(_)));
-        let tab = self.pane().sticker_tab.clone().or_else(|| match recent.is_empty() {
-            false => Some(None),
-            true => packs.first().map(|x| Some(x.id.clone())),
-        });
-        let shown = match &tab {
-            Some(None) => &recent[..],
-            Some(Some(id)) => packs.iter().find(|x| &x.id == id).map_or(&[][..], |x| &x.stickers[..]),
-            None => &[],
-        };
-        let picture = |url: &str, w: Length, h: f32| -> El<'a> {
-            match self.media_at(url) {
-                Some(Ok(frames)) => anim::gif(frames, self.started, move |f| {
-                    image(f).width(w).height(h).content_fit(iced::ContentFit::Contain)
-                }),
-                _ => Space::new().width(w).height(h).into(),
-            }
-        };
-        // Desktop's grid: 4 columns in 393 px, less the padding of 6 and 8 px and the gaps of 8 px.
-        let cell = (393.0 - 12.0 - 16.0 - 24.0) / 4.0;
-        let body: El<'a> = match (self.pane().stickers.as_ref().is_some_and(|_| packs.is_empty()) || failed)
-            && recent.is_empty()
-        {
-            true => {
-                container(txt(tr("No sticker packs yet."), 13.0).color(p.muted)).padding([16, 12]).center_x(Fill).into()
-            }
-            false => {
-                let rows = shown.chunks(4).map(|row| {
-                    let cells = row.iter().map(|x| {
-                        button(picture(&x.url, Fill, cell))
-                            .padding(0)
-                            .width(Fill)
-                            .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
-                            .on_press(UiMessage::PickSticker(x.clone()))
-                            .into()
-                    });
-                    let rest = (row.len()..4).map(|_| Space::new().width(Fill).into());
-                    Row::with_children(cells.chain(rest)).spacing(8).into()
-                });
-                let n = shown.len().div_ceil(4) as f32;
-                let h = (n * cell + (n - 1.0).max(0.0) * 8.0 + 16.0).min(232.0);
-                let grid = Column::with_children(rows).spacing(8).padding(8);
-                scrollable(grid).height(h).width(Fill).style(scroll_style(p.scroll)).into()
-            }
-        };
-        let tab_btn = |icon: El<'a>, on: bool, msg: UiMessage| -> El<'a> {
-            let bg = if on { p.received } else { CLEAR };
-            button(container(icon).center(32))
-                .padding(2)
-                .style(btn_style([bg, p.hover, p.selected], [p.muted; 3], 18.0))
-                .on_press(msg)
-                .into()
-        };
-        let recent_tab = (!recent.is_empty())
-            .then(|| tab_btn(tinted(&TIMER, 20.0, p.muted), tab == Some(None), UiMessage::StickerTab(None)));
-        let pack_tabs = packs.iter().map(|x| {
-            let avatar = x.avatar.as_deref().unwrap_or(&x.stickers[0].url);
-            let on = tab.as_ref().is_some_and(|t| t.as_ref() == Some(&x.id));
-            tab_btn(picture(avatar, Length::Fixed(32.0), 32.0), on, UiMessage::StickerTab(Some(x.id.clone())))
-        });
-        let tabs = Row::new().push(recent_tab).extend(pack_tabs).spacing(4).padding([4, 6]);
-        let rule = container(Space::new().width(Fill).height(1)).style(fill_box(p.border_weak, 0.0));
-        let card = column![body, rule, tabs].width(393).padding(6);
-        container(container(card).style(shadow_box(p.menu, p.menu_border, 8.0, 16.0))).padding([0, 8]).into()
-    }
-
-    fn view_info(&self) -> El<'_> {
-        let p = &self.pal;
-        let st = self.store.read();
-        let cid = self.pane().selected_chat_id.clone().expect("a chat is selected");
-        let chat = &st.chats[st.resolve_chat_idx(&cid).expect("selected chat exists")];
-        let on = |v: Option<bool>| v == Some(true);
-        let flag = |f: ChatFlag| UiMessage::ToggleFlag(cid.clone(), f);
-        let pane_btn = |glyph: char, pressed: bool, label: &'static str, msg: Option<UiMessage>| -> El<'_> {
-            let (bg, fg) = if pressed { (p.accent, Color::WHITE) } else { (CLEAR, p.strong) };
-            let btn = button(container(ic(glyph, 16.0)).center(28))
-                .padding(0)
-                .style(btn_style([bg, if pressed { bg } else { p.chip }, bg], [fg; 3], 8.0))
-                .on_press_maybe(msg);
-            self.tip(btn.into(), label, vec![], tooltip::Position::Bottom).into()
-        };
-        let locked = on(chat.is_request);
-        let pane_head = row![
-            pane_btn(
-                icon::NOTIFICATIONS_OFF,
-                chat.flag(ChatFlag::Muted),
-                tr("Mute Chat"),
-                (!locked).then(|| flag(ChatFlag::Muted))
-            ),
-            pane_btn(icon::KEEP, chat.flag(ChatFlag::Pinned), tr("Pin Chat"), Some(flag(ChatFlag::Pinned))),
-            Space::new().width(Fill),
-            pane_btn(icon::CLOSE, false, tr("Close Chat Info"), Some(UiMessage::ToggleRightPanel)),
-        ]
-        .spacing(4)
-        .padding([0, 4])
-        .height(36)
-        .align_y(Center);
-        let edits = info_menu(&st, &format!("info:{cid}"), |a| self.can(a, "create_dm"));
-        let edit = match &edits[..] {
-            [Some((_, msg))] => msg.clone(),
-            _ => edits.iter().flatten().any(|i| i.1.is_some()).then(|| UiMessage::OpenChatMenu(format!("info:{cid}"))),
-        };
-        let edit = button(semi(trx("Edit", "chat info edit button"), 11.0).color(p.accent))
-            .bare(p.accent)
-            .on_press_maybe(edit);
-        let copy = UiMessage::OpenChatMenu(format!("copy:{cid}"));
-        let title = mouse_area(
-            button(semi(chat.title.clone(), 15.0).color(p.strong).center()).bare(p.strong).on_press(copy.clone()),
-        )
-        .on_right_press(copy);
-        let meta = |s: String| {
-            let copy = UiMessage::OpenChatMenu(format!("copy:{cid}\n{s}"));
-            mouse_area(txt(s, 11.0).color(Color { a: 0.6, ..p.strong })).on_right_press(copy)
-        };
-        let other =
-            chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| chat.chat_type == "single");
-        let contact = other.map(|u| {
-            row![]
-                .push(handle(u).map(meta))
-                .push(u.phone_number.as_deref().map(|n| meta(fmt_phone(n))))
-                .push(u.email.clone().map(meta))
-        });
-        let originally = chat
-            .personal
-            .as_ref()
-            .filter(|p| p.title.as_ref().is_some_and(|t| *t != p.room_title) && !p.room_title.is_empty())
-            .map(|p| meta(trf("Originally %s", &[&p.room_title])));
-        let details = column![self.chat_avatar(chat, 64.0, 1.25), title]
-            .push(originally)
-            .push(contact)
-            .push(meta(network_name(&chat.account_id).to_string()))
-            .spacing(4)
-            .align_x(Center)
-            .width(Fill);
-        let can_desc = chat.edits & 1 << 2 != 0;
-        let small =
-            |s: &'static str, w: Weight, c: Color| crate::style::t(s, 11.0, w).line_height(Pixels(14.0)).color(c);
-        let link = |label: &'static str, w: Weight, msg: UiMessage| {
-            button(small(label, w, p.accent)).bare(p.accent).on_press(msg)
-        };
-        let desc_head = |btn: Option<_>| {
-            row![small(tr("Group Description"), Weight::Normal, p.strong), Space::new().width(Fill)]
-                .push(btn)
-                .padding([0, 8])
-                .align_y(Center)
-        };
-        let desc: Option<El> = match (&self.info_desc, chat.description.as_deref()) {
-            _ if chat.chat_type != "group" => None,
-            (Some(content), _) => {
-                let done =
-                    link(trx("Done", "group description submit button"), Weight::Semibold, UiMessage::SaveInfoDesc);
-                let input = text_editor(content)
-                    .id("info-desc")
-                    .placeholder(tr("This description is public to the group"))
-                    .size(11)
-                    .line_height(Pixels(14.0))
-                    .padding(8)
-                    .style(move |_: &Theme, _| text_editor::Style {
-                        background: p.chip.into(),
-                        border: border::rounded(8),
-                        placeholder: p.sub,
-                        value: p.strong,
-                        selection: p.accent.scale_alpha(0.3),
-                    });
-                let input = if can_desc { input.on_action(|a| UiMessage::InfoDesc(Some(a))) } else { input };
-                Some(
-                    column![desc_head(can_desc.then_some(done)), input]
-                        .spacing(8)
-                        .padding(Padding::ZERO.top(8.0))
-                        .into(),
-                )
-            }
-            (None, None) if can_desc => Some(
-                container(link(tr("Add a description"), Weight::Semibold, UiMessage::InfoDesc(None)))
-                    .center_x(Fill)
-                    .padding(Padding::ZERO.bottom(8.0))
-                    .into(),
-            ),
-            (None, Some(d)) => {
-                let full = d.split_whitespace().collect::<Vec<_>>().join(" ");
-                let clamped = crate::style::clamped(&full, 268.0, 3, 11.0, Weight::Normal);
-                let more = *clamped != *full;
-                let shown = if self.info_more { full.clone() } else { clamped.to_string() };
-                let spans = shown.split_inclusive(' ').map(|w| match text_urls(w).first() {
-                    Some(&url) => span(w.to_string()).color(p.accent).link(url.to_string()),
-                    None => span(w.to_string()).color(p.strong),
-                });
-                let text = rich_text(spans.collect::<Vec<_>>())
-                    .size(11)
-                    .line_height(Pixels(14.0))
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                    .on_link_click(UiMessage::OpenUrl);
-                let edit =
-                    link(trx("Edit", "group description edit button"), Weight::Semibold, UiMessage::InfoDesc(None));
-                let more = more
-                    .then(|| link(trx("more", "expand group description button"), Weight::Normal, UiMessage::InfoMore));
-                let body =
-                    container(column![text].push(more).spacing(4)).padding(8).width(Fill).style(fill_box(p.chip, 8.0));
-                Some(
-                    column![desc_head(can_desc.then_some(edit)), body]
-                        .spacing(8)
-                        .padding(Padding::ZERO.top(8.0))
-                        .into(),
-                )
-            }
-            (None, None) => None,
-        };
-        let adding = can_desc && chat.chat_type == "group" && self.info_desc.is_none() && chat.description.is_none();
-        let header = mouse_area(stack![
-            container(details).padding(Padding::new(16.0).bottom(if adding { 0.0 } else { 8.0 })),
-            container(edit).align_right(Fill).padding(Padding::ZERO.top(12.0).right(8.0)),
-        ])
-        .on_right_press(UiMessage::OpenChatMenu(format!("info:{cid}")));
-        let archived = chat.flag(ChatFlag::Archived);
-        let pinned = !archived && chat.flag(ChatFlag::Pinned);
-        let tool = |glyph: char, fg: Color, label: &'static str, keys, msg: Option<UiMessage>| -> El<'_> {
-            let style = move |_: &Theme, s: button::Status| button::Style {
-                text_color: if matches!(s, button::Status::Disabled) { fg.scale_alpha(0.2) } else { fg },
-                ..Default::default()
-            };
-            let btn = button(container(ic(glyph, 20.0)).center_x(Fill)).padding(6).width(Fill).style(style);
-            let tip = self.tip(btn.on_press_maybe(msg).into(), label, keys, tooltip::Position::Top);
-            container(tip).center_x(Fill).into()
-        };
-        let toolbar = row![
-            tool(
-                if archived { icon::INBOX } else { icon::ARCHIVE },
-                p.strong,
-                match (pinned, archived) {
-                    (true, _) => tr("Pinned chats can't be archived"),
-                    (false, true) => trx("Unarchive", "button label to unarchive chat"),
-                    (false, false) => trx("Archive", "button label to archive chat"),
-                },
-                vec!["Ctrl", "E"],
-                (!pinned && !locked).then(|| flag(ChatFlag::Archived)),
-            ),
-            match chat.reminder.is_some() {
-                true => tool(
-                    icon::SCHEDULE,
-                    ORANGE,
-                    tr("Dismiss Reminder"),
-                    vec!["Ctrl", "L"],
-                    Some(UiMessage::SetReminder(cid.clone(), None)),
-                ),
-                false => tool(
-                    icon::SCHEDULE,
-                    p.strong,
-                    tr("Remind Me"),
-                    vec!["Ctrl", "L"],
-                    Some(UiMessage::OpenChatMenu(cid.clone())),
-                ),
-            },
-            tool(icon::SEARCH, p.strong, tr("Search"), vec!["Ctrl", "F"], Some(UiMessage::SearchRoom(cid.clone()))),
-            tool(icon::EXPAND_MORE, p.strong, tr("More Options"), vec![], Some(UiMessage::OpenChatMenu(cid.clone()))),
-        ]
-        .align_y(Center)
-        .padding([8, 12]);
-        let toolbar = column![
-            container(Space::new().width(Fill).height(2)).style(fill_box(Color { a: 0.1, ..p.strong }, 0.0)),
-            container(toolbar).center_y(46),
-        ];
-        let members = (chat.chat_type == "group").then(|| self.view_members(chat));
-        let media = self.view_info_media(&st, chat);
-        let bookmarks = self.view_bookmarks(&st, chat);
-        let feature = st.feature("labels-v2");
-        let labels = feature.show.then(|| {
-            let open = feature.on.then(|| UiMessage::OpenEditLabels(cid.clone()));
-            let mine: Vec<&Label> =
-                chat.label_ids.iter().filter_map(|id| st.labels.iter().find(|l| l.id == *id)).collect();
-            let edit = (!mine.is_empty()).then(|| {
-                button(semi(trx("Edit", "labels section button"), 11.0).color(p.accent))
-                    .bare(p.accent)
-                    .on_press_maybe(open.clone())
-            });
-            let head = row![txt(tr("Labels"), 11.0).color(p.strong), Space::new().width(Fill)]
-                .push(edit)
-                .align_y(iced::Bottom)
-                .padding(8);
-            let body: El = match mine.is_empty() {
-                true => button(
-                    container(row![ic(icon::PLUS, 16.0), txt(tr("Add to a Label"), 13.0)].spacing(4).align_y(Center))
-                        .center_x(Fill),
-                )
-                .padding(8)
-                .width(Fill)
-                .style(btn_style([p.chip; 3], [p.strong; 3], 26.0))
-                .on_press_maybe(open)
-                .into(),
-                false => grouped_rows(
-                    p,
-                    mine.iter()
-                        .map(|l| {
-                            let name = ell(&l.name, 240.0, 13.0, Weight::Normal).line_height(Pixels(16.0));
-                            row![label_icon(l, 20.0, p.strong), name.color(p.strong)]
-                                .spacing(8)
-                                .padding(8)
-                                .align_y(Center)
-                                .into()
-                        })
-                        .collect(),
-                ),
-            };
-            column![head, body]
-        });
-        let timers =
-            chat.timers.as_ref().filter(|_| st.feature("enable-disappearing-message-timer-config").on).map(|t| {
-                let can = t.can_set && !locked;
-                let options: Vec<String> = [0].iter().chain(&t.timers).map(|&ms| timer_label(ms)).collect();
-                let values: Vec<u64> = [0].into_iter().chain(t.timers.iter().copied()).collect();
-                let current = timer_label(chat.disappearing.unwrap_or(0));
-                let (id, fg) = (cid.clone(), if can { p.strong } else { p.sub });
-                let pick = pick_list(options.clone(), Some(current), move |l| {
-                    let i = options.iter().position(|o| *o == l).expect("a listed timer");
-                    UiMessage::SetDisappearing(id.clone(), values[i])
-                })
-                .text_size(13)
-                .text_line_height(Pixels(16.0))
-                .handle(pick_list::Handle::None)
-                .padding([8, 12])
-                .width(Fill)
-                .style(pick_style(p.chip, p.chip, fg, fg))
-                .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border));
-                let pick: El = match can {
-                    true => pick.into(),
-                    false => container(txt(timer_label(chat.disappearing.unwrap_or(0)), 13.0).color(fg))
-                        .padding([8, 12])
-                        .width(Fill)
-                        .style(fill_box(p.chip, 8.0))
-                        .into(),
-                };
-                let arrow =
-                    container(tinted(&SELECT_ARROW, 10.0, fg)).align_right(Fill).center_y(Fill).padding([0, 12]);
-                let pick = stack![pick, arrow];
-                let about =
-                    txt(tr("For added privacy, new messages disappear after the set time."), 10.0).color(p.strong);
-                let head = container(txt(tr("Disappearing messages"), 11.0).color(p.strong)).padding(8);
-                column![head, column![pick, container(about).padding([0, 8])].spacing(4)]
-            });
-        let note = text_editor(&self.info_note)
-            .placeholder("Notes")
-            .on_action(UiMessage::InfoNote)
-            .size(13)
-            .line_height(Pixels(16.0))
-            .padding([8, 11])
-            .min_height(128)
-            .max_height(self.pane().size.height / 2.0)
-            .style(move |_: &Theme, _| text_editor::Style {
-                background: p.chip.into(),
-                border: border::rounded(10),
-                placeholder: p.sub,
-                value: p.strong,
-                selection: p.accent.scale_alpha(0.3),
-            });
-        let body = column![header]
-            .push(desc)
-            .push(members)
-            .push(media)
-            .push(bookmarks)
-            .push(labels)
-            .push(other.and_then(|u| self.view_contact(&st, chat, u)))
-            .push(timers)
-            .push(container(note).padding(Padding::ZERO.top(8.0)))
-            .push(block_action(&st, chat).map(|block| {
-                // Desktop's `BrandChatInfoBlockUser` row.
-                let (label, fg) = match block {
-                    true => (trx("Block", "action to block the other person in a DM"), p.text_danger),
-                    false => (trx("Unblock", "action to unblock the other person in a DM"), p.accent),
-                };
-                let row = button(txt(label, 13.0).color(fg))
-                    .padding([8, 11])
-                    .width(Fill)
-                    .style(btn_style([p.chip; 3], [fg; 3], 10.0))
-                    .on_press(UiMessage::AskBlock(cid.clone(), block));
-                container(row).padding(Padding::ZERO.top(8.0))
-            }))
-            .push((chat.member_actions & MEMBER_LEAVE != 0).then(|| {
-                let leave = button(semi(tr("Leave Chat"), 14.0).line_height(Pixels(18.0)).color(p.strong))
-                    .padding([0, 8])
-                    .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                    .on_press(UiMessage::AskLeaveChat(cid.clone()));
-                container(leave).padding(Padding::ZERO.top(8.0))
-            }))
-            .padding(Padding::new(8.0).top(0.0));
-        let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
-        container(container(column![pane_head, scroll, toolbar]).width(300).height(Fill).style(fill_box(p.card, 10.0)))
-            .padding(Padding::new(8.0).left(0.0))
-            .into()
-    }
-
-    /// Desktop's `n0e` Media section: the newest image, video and link messages, and when expanded all of them
-    /// by type.
-    fn view_info_media<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
-        const TILE: f32 = 130.0;
-        let p = &self.pal;
-        let mut found: Vec<&Message> = st
-            .timeline(&chat.id)
-            .filter(|m| m.is_deleted != Some(true))
-            .filter(|m| {
-                !m.links.is_empty()
-                    || m.attachments.iter().any(|a| matches!(a.attachment_type.as_str(), "img" | "video"))
-            })
-            .collect();
-        if found.is_empty() {
-            return None;
-        }
-        found.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
-        let limit = if chat.chat_type == "single" { 4 } else { 6 };
-        let expandable = found.len() > limit;
-        let shown = if self.info_media.is_some() { &found[..] } else { &found[..found.len().min(limit)] };
-        let kinds: &[&str] = match self.info_media {
-            None => &["img", "video", "audio", "unknown"],
-            Some(0) => &["img"],
-            Some(1) => &["video"],
-            Some(2) => &["audio"],
-            Some(3) => &[],
-            Some(4) => &["unknown"],
-            Some(n) => unreachable!("media tab {n}"),
-        };
-        let links = matches!(self.info_media, None | Some(3));
-        let white = Color::WHITE;
-        let sender = |m: &Message| -> El<'a> {
-            let u = chat.participants.items.iter().find(|u| u.id == m.sender_id);
-            let name = u.map(member_name).or_else(|| m.sender_name.clone()).unwrap_or_else(|| m.sender_id.clone());
-            let face = container(self.face(u.and_then(|u| u.img_url.as_deref()), &name, 20.0, 0.0))
-                .padding(2)
-                .style(shadow_box(white, CLEAR, 12.0, 8.0));
-            container(face).padding(8).into()
-        };
-        let file = |title: String, sub: El<'a>| -> El<'a> {
-            let title = txt(crate::style::clamped(&title, TILE - 16.0, 3, 10.0, Weight::Normal).to_string(), 10.0)
-                .color(p.strong);
-            let bg = if self.dark { Color::BLACK } else { Color::WHITE };
-            container(column![title, sub]).padding(8).align_bottom(TILE).width(TILE).style(fill_box(bg, 8.0)).into()
-        };
-        let tiles: Vec<El> = shown
-            .iter()
-            .flat_map(|m| {
-                let atts = m.attachments.iter().filter(|a| kinds.contains(&a.attachment_type.as_str()));
-                let atts = atts.map(|a| match a.attachment_type.as_str() {
-                    "img" | "video" => self.thumb(a, TILE, 4.0),
-                    _ => {
-                        let kind = ell(file_kind(a.mime_type.as_deref()), TILE - 16.0, 10.0, Weight::Semibold);
-                        file(
-                            a.file_name.clone().unwrap_or_default(),
-                            kind.line_height(Pixels(12.0)).color(p.strong).into(),
-                        )
-                    }
-                });
-                let urls = m.links.iter().filter(|_| links).map(|l| {
-                    let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
-                    let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
-                    let url =
-                        ell(&l.url, TILE - 29.0, 10.0, Weight::Semibold).line_height(Pixels(12.0)).color(p.strong);
-                    file(title, row![tinted(&MEDIA_ICONS[2], 12.0, p.strong), url].align_y(Center).into())
-                });
-                atts.chain(urls).map(|tile| {
-                    let face = stack![tile, sender(m)].width(TILE).height(TILE);
-                    button(face)
-                        .padding(0)
-                        .style(btn_style([CLEAR; 3], [p.strong; 3], 4.0))
-                        .on_press(UiMessage::JumpTo(chat.id.clone(), m.id.clone()))
-                        .into()
-                })
-            })
-            .collect();
-        let grid: El = match tiles.is_empty() {
-            true => container(txt(tr("Nothing here"), 13.0).color(p.sub)).center_x(Fill).padding([10, 0]).into(),
-            false => {
-                let mut tiles = tiles.into_iter();
-                let mut rows = Column::new().spacing(8);
-                while let Some(a) = tiles.next() {
-                    rows = rows.push(row![a].push(tiles.next()).spacing(8));
-                }
-                rows.into()
-            }
-        };
-        let tabs = self.info_media.map(|at| {
-            let labels = MEDIA_KINDS.iter().map(|k| tr(k).to_string());
-            self.segments(labels, at, |i| UiMessage::InfoMedia(Some(i))).padding(Padding::new(8.0).top(0.0))
-        });
-        let toggle = if self.info_media.is_some() { None } else { Some(0) };
-        let link = expandable.then(|| {
-            let label = tr(if self.info_media.is_some() { "Show less" } else { "Show all" });
-            button(semi(label, 11.0).color(p.accent)).bare(p.accent).on_press(UiMessage::InfoMedia(toggle))
-        });
-        let head = row![txt(tr("Media"), 11.0).color(p.strong), Space::new().width(Fill)]
-            .push(link)
-            .align_y(Center)
-            .padding(8);
-        let head: El = match expandable {
-            true => mouse_area(head).on_press(UiMessage::InfoMedia(toggle)).into(),
-            false => head.into(),
-        };
-        let body = column![].push(tabs).push(grid).spacing(4).padding(8);
-        Some(column![head, container(body).width(Fill).style(fill_box(Color { a: 0.1, ..p.strong }, 10.0))].into())
     }
 
     /// Desktop's `oPt` Contact section of a single chat: the phone number, email and username of the other member.
@@ -12400,7 +6037,7 @@ impl BeeperGuiApp {
             .into_iter()
             .filter_map(|(title, value, kind)| {
                 let title = txt(tr(title), 13.0).color(p.sub);
-                let menu = UiMessage::OpenChatMenu(format!("contact:{} {kind}", chat.id));
+                let menu = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("contact:{} {kind}", chat.id)));
                 let value = button(txt(value?, 13.0).color(p.strong)).bare(p.strong).on_press(menu.clone());
                 let value = mouse_area(value).on_right_press(menu);
                 Some(column![container(title).padding([4, 0]), container(value).padding([4, 0])].into())
@@ -12428,602 +6065,6 @@ impl BeeperGuiApp {
             container(Column::with_children(items).spacing(4)).padding(8).width(Fill).style(fill_box(p.chip, 10.0));
         let head = container(txt(tr("Contact"), 11.0).color(p.strong)).padding(8);
         Some(column![head, content].into())
-    }
-
-    /// Desktop's `Kfe` Bookmarks section: the newest bookmarks of the chat first, 15 until "Show all".
-    fn view_bookmarks<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
-        const SHOWN: usize = 15;
-        let p = &self.pal;
-        let loaded = st.timeline(&chat.id);
-        let loaded = loaded.filter(|m| m.is_bookmarked == Some(true) && m.is_deleted != Some(true));
-        let others = st.bookmarks.iter().filter(|(t, b)| b.room_id == chat.id && st.loaded(t).is_none());
-        let others = others.filter_map(|(t, _)| match st.bookmarked.get(t) {
-            Some(Some(m)) if m.is_deleted == Some(true) => None,
-            Some(m) => Some((t.as_str(), m.as_ref())),
-            None => Some((t.as_str(), None)),
-        });
-        let mut marked: Vec<(&str, Option<&Message>)> =
-            loaded.map(|m| (m.id.as_str(), Some(m))).chain(others).collect();
-        marked.sort_by_cached_key(|(t, m)| {
-            std::cmp::Reverse((st.bookmarks.get(*t).map_or(i64::MAX, |b| b.order), m.map(|m| m.sort_key.clone())))
-        });
-        let expandable = marked.len() > SHOWN;
-        let shown = if self.info_bookmarks { marked.len() } else { marked.len().min(SHOWN) };
-        let (h24, dim) = (st.settings.pref("timeFormat") == 1, Color { a: 0.7, ..p.strong });
-        let rows: Vec<El> = marked[..shown]
-            .iter()
-            .map(|&(target, m)| {
-                let menu = UiMessage::OpenChatMenu(format!("bookmark:{} {target}", chat.id));
-                let blank = || Space::new().width(24).height(24);
-                let lines = |title: El<'a>, text: &str| {
-                    let preview = ell(text, 220.0, 11.0, Weight::Normal).line_height(Pixels(14.0)).color(dim);
-                    column![title, preview].spacing(2).width(Fill)
-                };
-                let (line, jump) = match m {
-                    Some(m) => {
-                        let u = chat.participants.items.iter().find(|u| u.id == m.sender_id);
-                        let name =
-                            u.map(member_name).or_else(|| m.sender_name.clone()).unwrap_or_else(|| m.sender_id.clone());
-                        let title = row![
-                            ell(&name, 160.0, 11.0, Weight::Semibold).line_height(Pixels(14.0)).color(p.strong),
-                            txt(list_ts(&m.timestamp, h24), 10.0).color(dim)
-                        ]
-                        .spacing(6)
-                        .align_y(iced::Bottom);
-                        let text = preview_body(m).unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
-                        let face = self.face(u.and_then(|u| u.img_url.as_deref()), &name, 24.0, 0.0);
-                        let jump =
-                            st.loaded(target).is_some().then(|| UiMessage::JumpTo(chat.id.clone(), m.id.clone()));
-                        (row![face, lines(title.into(), &text)], jump)
-                    }
-                    None if st.bookmarked.contains_key(target) => {
-                        let title = semi(tr("Message unavailable"), 11.0).color(p.strong);
-                        let remove = button(ic(icon::CLOSE, 16.0).color(p.sub))
-                            .padding(4)
-                            .style(btn_style([CLEAR; 3], [p.sub; 3], 8.0))
-                            .on_press(UiMessage::RemoveBookmark(target.into()));
-                        let text = tr("It was deleted or is no longer available.");
-                        (row![blank(), lines(title.into(), text), remove], None)
-                    }
-                    None => {
-                        let title = semi(tr("Loading…"), 11.0).color(p.strong.scale_alpha(0.5));
-                        (row![blank(), lines(title.into(), "")], None)
-                    }
-                };
-                let btn = button(line.spacing(8).align_y(Center))
-                    .padding(8)
-                    .width(Fill)
-                    .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                    .on_press_maybe(jump);
-                mouse_area(btn).on_right_press(menu).into()
-            })
-            .collect();
-        let body: El = match rows.is_empty() {
-            true => container(
-                column![
-                    semi(tr("No Bookmarks"), 11.0).color(p.strong),
-                    txt(tr("Bookmarked messages will appear here."), 10.0).color(p.sub)
-                ]
-                .spacing(4)
-                .align_x(Center),
-            )
-            .center_x(Fill)
-            .padding([12, 8])
-            .style(fill_box(p.chip, 8.0))
-            .into(),
-            false => grouped_rows(p, rows),
-        };
-        let toggle = expandable.then(|| {
-            button(semi(tr(if self.info_bookmarks { "Show less" } else { "Show all" }), 11.0).color(p.accent))
-                .bare(p.accent)
-                .on_press(UiMessage::InfoBookmarks)
-        });
-        let head = row![txt(tr("Bookmarks"), 11.0).color(p.strong), Space::new().width(Fill)]
-            .push(toggle)
-            .align_y(Center)
-            .padding(8);
-        column![head, body].into()
-    }
-
-    /// Desktop's `YNt` Members section of a group, with its first six members and a search above more than six.
-    fn view_members<'a>(&'a self, chat: &Chat) -> El<'a> {
-        let p = &self.pal;
-        let shade = Color { a: 0.1, ..p.strong };
-        let named = |u: &User| {
-            let full = u.full_name.as_deref();
-            u.custom_nickname.is_some()
-                || u.username.is_some()
-                || full.is_some_and(|f| {
-                    !u.phone_number.as_deref().is_some_and(|n| phone_digits(f) == phone_digits(n))
-                        && u.email.as_deref() != Some(f)
-                })
-        };
-        let mut all: Vec<&User> = chat.participants.items.iter().collect();
-        all.sort_by_cached_key(|u| {
-            (u.is_self != Some(true), u.is_admin != Some(true), !named(u), member_name(u).to_lowercase())
-        });
-        let q = self.info_query.trim().to_lowercase();
-        let hit = |u: &&User| {
-            let fields = [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email];
-            q.is_empty() || fields.iter().filter_map(|f| f.as_deref()).any(|f| f.to_lowercase().contains(&q))
-        };
-        let rows: Vec<&User> = all.iter().copied().filter(hit).collect();
-        let invite = chat.member_actions & MEMBER_INVITE != 0;
-        let expandable = rows.len() + usize::from(invite) > 6;
-        let searchable = all.len() > 6;
-        let shown = if self.info_all { rows.len() } else { rows.len().min(6 - usize::from(invite)) };
-        let add = invite.then(|| {
-            let face = row![tinted(&ADD_ACCOUNT, 28.0, p.strong), semi(tr("Add Members"), 13.0)];
-            button(face.spacing(8).align_y(Center))
-                .padding(4)
-                .width(Fill)
-                .style(btn_style([CLEAR, shade, shade], [p.strong; 3], 8.0))
-                .on_press(UiMessage::AddMembers(self.info_query.clone()))
-        });
-        let row = |u: &User| -> El<'a> {
-            let you = (u.is_self == Some(true))
-                .then(|| format!(" {}", trx("(You)", "tag shown next to the current user in participant list")));
-            // Desktop's tags: Exited, Invited and Admin, and an invited member's name at half opacity.
-            let tags: Vec<&str> = [
-                (u.has_exited == Some(true)).then(|| trx("Exited", "group participant status tag")),
-                (u.is_pending == Some(true)).then(|| trx("Invited", "group participant status tag")),
-                (u.is_admin == Some(true)).then(|| trx("Admin", "group participant status tag")),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-            let tag_w: f32 = tags.iter().map(|t| crate::style::text_width(t, 10.0, Weight::Semibold) + 14.0).sum();
-            let fade = if u.is_pending == Some(true) { 0.5 } else { 1.0 };
-            let you_w = you.as_deref().map_or(0.0, |y| crate::style::text_width(y, 13.0, Weight::Normal));
-            let name = member_name(u);
-            let strong = p.strong.scale_alpha(fade);
-            let label =
-                row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(strong)]
-                    .push(you.map(|y| txt(y, 13.0).color(strong)));
-            let tags = tags.into_iter().map(|t| -> El<'a> {
-                container(crate::style::t(t, 10.0, Weight::Semibold).line_height(Pixels(12.0)).color(p.strong))
-                    .padding([2, 4])
-                    .style(fill_box(p.card, 4.0))
-                    .into()
-            });
-            // iced draws no widget at half opacity, so only the name of an invited member fades.
-            let line = row![self.face(u.img_url.as_deref(), &name, 28.0, 0.0), label]
-                .push(Space::new().width(Fill))
-                .push(Row::with_children(tags).spacing(4))
-                .spacing(8)
-                .align_y(Center);
-            let menu = UiMessage::OpenChatMenu(format!("member:{} {}", chat.id, u.id));
-            let card = UiMessage::OpenChatMenu(format!("card:{} {}", chat.id, u.id));
-            let btn = button(line).padding(4).width(Fill).style(btn_style([CLEAR, shade, shade], [p.strong; 3], 8.0));
-            mouse_area(btn.on_press(card)).on_right_press(menu).into()
-        };
-        let search = searchable.then(|| {
-            let n = all.len();
-            let input =
-                text_input(&trn("Search %d group member", "Search %d group members", n, &[&n]), &self.info_query)
-                    .on_input(UiMessage::InfoQuery)
-                    .size(13)
-                    .line_height(Pixels(16.0))
-                    .padding([10, 12])
-                    .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
-            let clear = (!self.info_query.is_empty()).then(|| {
-                button(ic(icon::CLOSE, 20.0).color(p.sub)).bare(p.sub).on_press(UiMessage::InfoQuery(String::new()))
-            });
-            let bar = row![ic(icon::SEARCH, 20.0).color(p.sub), input].push(clear).align_y(Center).padding([0, 8]);
-            container(bar).padding(Padding::ZERO.top(8.0))
-        });
-        let toggle_label = if self.info_all { tr("Show less") } else { tr("Show all") };
-        let toggle = expandable.then(|| {
-            let chevron: El = match self.info_all {
-                true => tinted(&MAT_EXPAND_LESS, 20.0, p.strong),
-                false => ic(icon::EXPAND_MORE, 20.0).color(p.strong).into(),
-            };
-            let face = row![semi(toggle_label, 13.0), chevron].align_y(Center);
-            button(container(face).center_x(Fill))
-                .padding(2)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 9999.0))
-                .on_press(UiMessage::InfoAll)
-        });
-        let list = Column::new()
-            .push(search)
-            .push(add)
-            .extend(rows[..shown].iter().map(|u| row(u)))
-            .push(toggle)
-            .spacing(6)
-            .padding(if searchable { Padding::new(8.0).top(0.0) } else { Padding::new(8.0) });
-        let less = (expandable && self.info_all)
-            .then(|| button(semi(tr("Show less"), 11.0).color(p.accent)).bare(p.accent).on_press(UiMessage::InfoAll));
-        let head = row![txt(tr("Members"), 11.0).color(p.strong), Space::new().width(Fill)]
-            .push(less)
-            .align_y(Center)
-            .padding(8);
-        let head: El = match expandable {
-            true => mouse_area(head).on_press(UiMessage::InfoAll).into(),
-            false => head.into(),
-        };
-        column![head, container(list).style(fill_box(p.chip, 10.0))].into()
-    }
-
-    fn view_command_palette<'a>(&'a self) -> El<'a> {
-        let p = &self.pal;
-        let st = self.store.read();
-        let room = self.search_room.as_deref();
-        let placeholder = match (self.cmd_bar_commands_mode, room) {
-            _ if self.cmd_submenu.is_some() => self.cmd_submenu.as_ref().map(|m| m.placeholder()).unwrap_or_default(),
-            (true, _) => tr("Search commands").into(),
-            (false, Some(_)) => tr("Search this chat").into(),
-            (false, None) => tr("Search chats").into(),
-        };
-        let input = text_input(&placeholder, &self.command_palette_query)
-            .id("cmd-palette-input")
-            .on_input(UiMessage::CommandQueryChanged)
-            .size(13)
-            .padding([6, 0])
-            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-        let kbd = |label: &'static str| {
-            container(semi(label, 13.0).color(p.sub))
-                .center_x(Shrink)
-                .center_y(20)
-                .padding([0, 2])
-                .style(fill_box(Color { a: 0.1, ..p.strong }, 4.0))
-        };
-        let frame = |body: Column<'a, UiMessage>| -> El<'a> {
-            container(body)
-                .width(602)
-                .height(360)
-                .style(glow_box(p.card, Color { a: 0.18, ..p.strong }, 18.0, 4.0, 84.0))
-                .into()
-        };
-        let mode_btn = button(
-            row![
-                txt(if self.cmd_bar_commands_mode { tr("Chat") } else { tr("Commands") }, 13.0).color(p.sub),
-                kbd("Ctrl"),
-                kbd(if self.cmd_bar_commands_mode { "K" } else { "J" })
-            ]
-            .spacing(4)
-            .align_y(Center),
-        )
-        .padding([2, 6])
-        .style(ghost(p, 8.0))
-        .on_press(UiMessage::ToggleCommandMode);
-        let schedule = matches!(self.cmd_submenu, Some(commands::SubMenu::Schedule(_)));
-        let no_reply = [tr("If no reply"), if schedule { tr("Regardless") } else { tr("Always") }];
-        let inputs = match &self.cmd_submenu {
-            Some(commands::SubMenu::Remind(_) | commands::SubMenu::Schedule(_)) => {
-                let pick = move |c: &str| UiMessage::CmdNoReply(c == no_reply[0]);
-                let pad = Padding::new(4.0).left(6.0).right(22.0);
-                row![input, sized_select(p, no_reply, no_reply[usize::from(!self.cmd_no_reply)], pick, 13.0, pad)]
-            }
-            Some(_) => row![input],
-            None => row![ic(icon::SEARCH, 14.0).color(p.sub), input, mode_btn],
-        };
-        let inputs = inputs.spacing(8).align_y(Center).padding(Padding::new(6.0).left(13.0).right(8.0));
-        let q = self.command_palette_query.trim().to_lowercase();
-        if self.cmd_bar_commands_mode {
-            let cmds = self.commands(&st, self.command_palette_query.trim());
-            let header = self.cmd_submenu.as_ref().filter(|m| !m.heading().is_empty()).map(|m| {
-                let heading = txt(m.heading(), 13.0).color(p.strong);
-                let clock = match m {
-                    commands::SubMenu::AddMembers => Some(tinted(&ADD_ACCOUNT, 20.0, p.strong)),
-                    _ => schedule.then(|| tinted(&COMPOSER_ICONS[6], 20.0, p.strong)),
-                };
-                container(row![].push(clock).push(heading).spacing(4).align_y(Center))
-                    .width(Fill)
-                    .center_y(44)
-                    .padding([8, 13])
-                    .style(fill_box(p.chip, iced::border::top(18)))
-            });
-            let footer = (schedule || matches!(self.cmd_submenu, Some(commands::SubMenu::Remind(_)))).then(|| {
-                let note = match (schedule, self.cmd_no_reply) {
-                    (true, _) => trf(
-                        "Send Later messages can only send if %s app is running (and your computer is awake)",
-                        &[&"Beeper"],
-                    ),
-                    (_, true) => {
-                        tr("Remind Me marks this chat as new at the scheduled time, if there is no reply.").into()
-                    }
-                    (_, false) => tr("Remind Me marks this chat as new at the scheduled time").into(),
-                };
-                let line =
-                    container(Space::new()).width(Fill).height(2).style(fill_box(p.strong.scale_alpha(0.1), 0.0));
-                let note = container(txt(note, 13.0).color(p.sub)).center_y(44).padding([8, 13]);
-                column![line, container(note).width(Fill).style(fill_box(p.chip, iced::border::bottom(18)))]
-            });
-            let body = column![].push(header).push(inputs).push(self.view_commands(&st, &cmds));
-            return frame(body.push(footer));
-        }
-        let hint =
-            self.pane().selected_chat_id.as_deref().and_then(|cid| st.resolve_chat_idx(cid).map(|i| &st.chats[i])).map(
-                |c| {
-                    let prep = if c.chat_type == "group" { "in" } else { "with" };
-                    let label = match room {
-                        Some(_) => "Press Ctrl K to search all of your conversations".into(),
-                        None => format!("Press Ctrl F to search your conversation {prep} {}", c.title),
-                    };
-                    row![tinted(&DROP_ARROW, 20.0, p.sub), txt(label, 13.0).color(p.text)]
-                        .spacing(16)
-                        .align_y(Center)
-                        .padding([8, 24])
-                },
-            );
-        let f = &self.search_filters;
-        let chips = Row::with_children(SEARCH_CHIPS.iter().enumerate().map(|(i, &placeholder)| {
-            let disabled = room.is_some() && i == 0;
-            let fg = if disabled { p.text.scale_alpha(0.3) } else { p.text };
-            let label = f.label(i);
-            let style = match label {
-                Some(_) => bordered_box(CLEAR, p.text, 1.0, 20.0),
-                None => bordered_box(p.chip, CLEAR, 1.0, 20.0),
-            };
-            let body = row![
-                semi(label.unwrap_or_else(|| tr(placeholder).into()), 13.0).color(fg),
-                ic(icon::EXPAND_MORE, 14.0).color(fg)
-            ]
-            .spacing(4)
-            .align_y(Center);
-            let chip = button(body).padding([4, 13]).style(btn_style([CLEAR; 3], [fg; 3], 20.0));
-            container(chip.on_press_maybe((!disabled).then_some(UiMessage::OpenSearchSelect(i))))
-                .id(format!("search-chip-{i}"))
-                .style(style)
-                .into()
-        }))
-        .spacing(12)
-        .padding(Padding::new(6.0).left(13.0).right(13.0));
-        let filtered = *f != SearchFilters::default();
-        let mut chats: Vec<&Chat> = if room.is_some() || !f.media.is_empty() || (filtered && q.is_empty()) {
-            Vec::new()
-        } else if q.is_empty() && !st.recent_chat_ids.is_empty() {
-            st.recent_chat_ids.iter().filter_map(|id| st.find_chat(id)).filter(|c| c.flags & CHAT_HIDDEN == 0).collect()
-        } else {
-            // The view shows 12 chats at most, and one more tells that there are more.
-            let (order, words) = self.chat_words(&st);
-            let hit = |&&i: &&usize| {
-                let c = &st.chats[i];
-                c.flags & CHAT_HIDDEN == 0
-                    && (f.accounts.is_empty() || f.accounts.contains(&c.account_id))
-                    && words[i].contains(&q)
-            };
-            order.iter().filter(hit).take(13).map(|&i| &st.chats[i]).collect()
-        };
-        if q.is_empty() && chats.len() > 1 {
-            chats.retain(|c| self.pane().selected_chat_id.as_deref() != Some(c.id.as_str()));
-        }
-        let has_more = chats.len() > 5;
-        let limit = if self.search_expanded { 12 } else { 5 };
-        let cat = row![
-            txt(if q.is_empty() { tr("Recent chats") } else { tr("Chats") }, 12.0).color(p.sub),
-            Space::new().width(Fill)
-        ]
-        .push(has_more.then(|| {
-            button(semi(if self.search_expanded { tr("Show less") } else { tr("Show more") }, 11.0).color(p.accent))
-                .padding(0)
-                .style(ghost(p, 4.0))
-                .on_press(UiMessage::ToggleSearchExpanded)
-        }))
-        .align_y(Center)
-        .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0));
-        let hits = self.search_hits(&st, &q);
-        let found: Vec<&Message> = hits.0.iter().collect();
-        let media: Vec<&Message> = hits.1.iter().collect();
-        let none =
-            found.is_empty() && chats.is_empty() && media.is_empty() && (q.chars().count() > 1 || !f.media.is_empty());
-        let heading = |label: &'static str| {
-            container(txt(label, 12.0).color(p.sub)).padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
-        };
-        let h24 = st.settings.pref("timeFormat") == 1;
-        let needle = q.to_ascii_lowercase();
-        let messages =
-            found.iter().fold(Column::new().push((!found.is_empty()).then(|| heading(tr("Messages")))), |col, m| {
-                let c = st.chat(&m.chat_id);
-                let mine = m.is_sender == Some(true);
-                let label = match (c.chat_type == "group", mine) {
-                    (false, _) => c.title.clone(),
-                    (true, true) => format!("{} • {}", c.title, chat_network(c)),
-                    (true, false) => {
-                        format!("{} in {} • {}", sender_label(c, m), c.title, chat_network(c))
-                    }
-                };
-                let head = row![
-                    txt(label, 11.0).line_height(Pixels(7.0)).color(p.text),
-                    Space::new().width(Fill),
-                    txt(list_ts(&m.timestamp, h24), 11.0).line_height(Pixels(7.0)).color(p.text)
-                ];
-                let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.received, p.strong) };
-                let body = clamped(m.text.as_deref().expect("text message"), 554.0, 3, 13.0, Weight::Normal);
-                let lower = body.to_ascii_lowercase();
-                let (mut spans, mut at): (Vec<iced::widget::text::Span<()>>, _) = (Vec::new(), 0);
-                for (k, hit) in lower.match_indices(&needle) {
-                    spans.push(span(body[at..k].to_string()).size(13.0).color(fg));
-                    let mark = span(body[k..k + hit.len()].to_string()).size(13.0);
-                    spans.push(mark.color(hex(0x202124)).background(hex(0xf6ce46)));
-                    at = k + hit.len();
-                }
-                spans.push(span(body[at..].to_string()).size(13.0).color(fg));
-                let bubble = rich_text(spans)
-                    .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
-                let bubble = container(container(bubble).padding([8, 11]).style(fill_box(bg, 17.0)))
-                    .width(Fill)
-                    .align_x(if mine { Right } else { iced::Left });
-                col.push(
-                    button(column![head, bubble].spacing(6))
-                        .padding([4, 13])
-                        .width(Fill)
-                        .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
-                        .on_press(UiMessage::JumpTo(c.id.clone(), m.id.clone())),
-                )
-            });
-        let tiles = media.iter().map(|m| -> El<'_> {
-            let c = st.chat(&m.chat_id);
-            let card = |title: String, sub: El<'static>| -> El<'static> {
-                let body =
-                    column![clamp(&title, 94.0, 3, 10.0, Weight::Normal).line_height(Pixels(12.0)).color(p.text), sub];
-                container(body).align_bottom(Fill).width(Fill).padding(8).style(fill_box(p.window, 8.0)).into()
-            };
-            let thumb = m.attachments.iter().find(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
-            let body: El<'_> = match (thumb, m.links.first(), m.attachments.first()) {
-                (Some(a), _, _) => match a.poster_img.as_ref().or(a.src_url.as_ref()).and_then(|u| self.media_at(u)) {
-                    Some(Ok(frames)) => image(frames[0].0.clone())
-                        .width(Fill)
-                        .height(Fill)
-                        .content_fit(iced::ContentFit::Cover)
-                        .border_radius(8.0)
-                        .into(),
-                    _ => Space::new().into(),
-                },
-                (None, Some(l), _) => {
-                    let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
-                    let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
-                    let sub = row![
-                        ic(icon::LINK, 12.0).color(p.text),
-                        ell(&l.url, 77.0, 10.0, Weight::Semibold).color(p.text)
-                    ];
-                    card(title, sub.spacing(4).align_y(Center).into())
-                }
-                (None, None, Some(a)) => {
-                    let kind = file_kind(a.mime_type.as_deref());
-                    let name = a.file_name.clone().unwrap_or_else(|| tr("Attachment").into());
-                    card(name, semi(kind, 10.0).color(p.text).into())
-                }
-                (None, None, None) => {
-                    let text = m.text.clone().expect("a link message has text");
-                    card(text, Space::new().into())
-                }
-            };
-            let face = container(self.chat_avatar(c, 24.0, 0.0)).padding(2).style(bordered_box(
-                CLEAR,
-                Color::WHITE,
-                2.0,
-                14.0,
-            ));
-            let tile = stack![container(body).width(110).height(110).style(fill_box(p.chip, 8.0))]
-                .push(container(face).padding(6));
-            button(tile)
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
-                .on_press(UiMessage::JumpTo(c.id.clone(), m.id.clone()))
-                .into()
-        });
-        let mut grid = Column::new().spacing(6.5).padding(Padding::new(0.0).left(13.0).right(13.0).bottom(4.0));
-        let mut tiles = tiles.peekable();
-        while tiles.peek().is_some() {
-            grid = grid.push(Row::with_children(tiles.by_ref().take(5)).spacing(6.5));
-        }
-        let media_grid = (!media.is_empty()).then(|| column![heading(tr("Media")), grid]);
-        let empty = none.then(|| {
-            let desc = "Only messages loaded in Beeper can be searched.\nFor more results, scroll through older conversations.";
-            column![
-                container(semi(tr("No messages matching those terms"), 16.0).color(p.strong)).center(Fill),
-                txt(desc, 13.0).color(p.strong).align_x(Center).width(Fill),
-            ]
-            .padding(Padding::new(0.0).left(44.0).right(44.0).bottom(64.0))
-        });
-        let cat = (!chats.is_empty()).then_some(cat);
-        let hits = chats.into_iter().take(limit).enumerate().fold(Column::new().push(cat), |col, (i, c)| {
-            let sub = chat_search_subtitle(c);
-            let title = row![
-                ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
-                ell(&sub, 220.0, 13.0, Weight::Normal).color(p.sub),
-            ]
-            .spacing(4)
-            .align_y(Center);
-            let line = row![
-                self.chat_avatar(c, 28.0, 0.0),
-                title,
-                Space::new().width(Fill),
-                svg(brand_svg(brand_key(&c.account_id))).width(16).height(16)
-            ]
-            .spacing(8)
-            .align_y(Center);
-            let bg = if i == 0 { p.chip } else { CLEAR };
-            col.push(
-                container(
-                    mouse_area(
-                        button(line)
-                            .height(36)
-                            .padding([0, 6])
-                            .width(Fill)
-                            .style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0))
-                            .on_press(UiMessage::ExecuteCommandChat(c.id.clone())),
-                    )
-                    .on_right_press(UiMessage::OpenChatMenu(c.id.clone())),
-                )
-                .padding([0, 6]),
-            )
-        });
-        frame(column![inputs].push(hint).push(chips).push(empty).push((!none).then(|| {
-            scrollable(hits.push(media_grid).push(messages)).direction(bar()).height(Fill).style(scroll_style(p.scroll))
-        })))
-    }
-
-    /// The status toast at the bottom left of the `main` window or of the Media window.
-    fn view_toast(&self, main: bool) -> Option<El<'_>> {
-        let p = &self.pal;
-        let left = if main { 76.0 } else { 8.0 };
-        let banner = match self.relaunch_toast {
-            Some(t) => trs(t, &["Beeper"]),
-            None => self.status_banner.clone(),
-        };
-        let pill = |(kind, text): (Pill, String)| -> El<'_> {
-            let icon = (kind == Pill::Syncing).then(|| tinted(&MAT_SYNC, 12.0, p.strong));
-            let body = row![].push(icon).push(txt(text, 12.0).color(p.strong)).spacing(4).align_y(Center);
-            let style = move |_: &Theme| container::Style {
-                background: Some(p.card.into()),
-                border: border::rounded(17.0),
-                shadow: Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.15),
-                    offset: Vector::ZERO,
-                    blur_radius: 20.0,
-                },
-                ..container::Style::default()
-            };
-            let pill = mouse_area(container(body).padding([4, 8]).style(style));
-            match kind {
-                Pill::Connecting => {
-                    pill.on_enter(UiMessage::PillHover(true)).on_exit(UiMessage::PillHover(false)).into()
-                }
-                Pill::Offline | Pill::Syncing => pill.into(),
-            }
-        };
-        let pills = self.status_pills().into_iter().map(pill);
-        let older = self.older_toasts.iter().enumerate().map(|(i, t)| self.toast_card(&t.0, Some(i)));
-        let reminder = (main && self.recovery_reminder()).then(|| {
-            let toast = Toast {
-                icon: Some(4),
-                strong: true,
-                right: Some((trx("Verify", "recovery key reminder"), enter_key::KeyMsg::Open.into())),
-                dismiss: Some(UiMessage::DismissRecoveryReminder),
-                ..Toast::new(tr("Check if you still have access to a recovery key.").into())
-            };
-            self.toast_card(&toast, None)
-        });
-        let older = pills.chain(reminder).chain(older);
-        let newest = (!banner.is_empty()).then(|| -> El<'_> {
-            let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
-            if let Some(what) = self.undo_note.as_ref().filter(|_| self.shown_note()) {
-                let glyph = container(tinted(&TOAST_ICONS[3], 16.0, p.strong)).center_x(16).center_y(20);
-                let text = rich_text![span::<(), _>(tr("Undo:")).font(fw(Weight::Bold)), span(format!(" {what}"))]
-                    .size(13.0)
-                    .color(p.strong);
-                let card = row![glyph, text, close].spacing(8).align_y(Center);
-                return container(card).padding([6, 8]).style(toast_box(p.card, p)).into();
-            }
-            if let Some(t) = self.shown_toast() {
-                return self.toast_card(t, None);
-            }
-            let text = txt(banner.to_string(), 13.0).color(p.strong);
-            let relaunch = self.relaunch_toast.map(|_| pill_btn(p, tr("Relaunch app"), UiMessage::Relaunch));
-            let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(relaunch).push(close);
-            let card = card.spacing(8).align_y(Center);
-            container(card).padding(8).style(toast_box(p.card, p)).into()
-        });
-        let toasts: Vec<El> = older.chain(newest).collect();
-        (!toasts.is_empty()).then(|| {
-            let list = mouse_area(Column::with_children(toasts).spacing(8))
-                .on_enter(UiMessage::ToastHover(true))
-                .on_exit(UiMessage::ToastHover(false));
-            container(list).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
-        })
     }
 
     /// Desktop's `RecoveryCodeReminder`, which the flag `personal-room-overrides` or `drafts-sync` turns on: a verified
@@ -13065,453 +6106,6 @@ impl BeeperGuiApp {
         offline.into_iter().chain(syncing).chain(connecting.map(|c| (Pill::Connecting, c))).collect()
     }
 
-    /// Desktop's `Toast`: the newest toast, or the toast at an index of `older_toasts`.
-    fn toast_card<'a>(&'a self, t: &Toast, older: Option<usize>) -> El<'a> {
-        let p = &self.pal;
-        let (bg, fg) = match t.error {
-            true => (hex(0xdc362e), Color::WHITE),
-            false => (p.card, p.strong),
-        };
-        let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {
-            let label = semi(*label, 13.0).line_height(Pixels(18.0)).color(fg);
-            let action = match t.dismiss {
-                Some(_) => msg.clone(),
-                None => UiMessage::ToastAction(older, Box::new(msg.clone())),
-            };
-            button(label).bare(fg).on_press(action)
-        };
-        // Desktop's 20 px icon sits in a 2rem box with a -8 px margin, so the toast stays 2rem tall.
-        let glyph = t.icon.map(|i| container(tinted(&TOAST_ICONS[i], 20.0, fg)).center(20));
-        let text = match t.strong {
-            true => semi(t.text.clone(), 13.0),
-            false => txt(t.text.clone(), 13.0),
-        };
-        let below = (!t.buttons.is_empty()).then(|| {
-            let dot = || -> El { semi(" • ", 13.0).line_height(Pixels(18.0)).color(fg).into() };
-            let mut buttons = t.buttons.iter().map(|b| -> El { btn(b, fg).into() });
-            let first = buttons.next().expect("a button");
-            Row::with_children(std::iter::once(first).chain(buttons.flat_map(|b| [dot(), b])))
-        });
-        let body = column![text.color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(below).spacing(16);
-        let right = t.right.as_ref().map(|b| btn(b, p.accent));
-        let dismiss = match &t.dismiss {
-            Some(m) => m.clone(),
-            None => older.map_or(UiMessage::DismissBanner, UiMessage::DismissOlderToast),
-        };
-        let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, if t.error { fg } else { p.sub }, dismiss);
-        let pad = if glyph.is_some() { Padding::new(6.0).right(8.0) } else { Padding::new(8.0) };
-        let lead = row![].push(glyph).push(body).spacing(6);
-        let card = row![lead].push(right).push(close).spacing(8);
-        let card = card.align_y(if t.buttons.is_empty() { Center } else { iced::Alignment::Start });
-        let card = container(card).padding(pad).style(toast_box(bg, p));
-        match t.open.clone() {
-            Some(open) => mouse_area(card).on_press(open).into(),
-            None => card.into(),
-        }
-    }
-
-    fn view_forward<'a>(&'a self, f: &'a Forward) -> El<'a> {
-        let p = &self.pal;
-        let st = self.store.read();
-        let shade = Color { a: 0.1, ..p.strong };
-        let strip = |content: El<'a>, r| container(content).width(Fill).padding([8, 13]).style(fill_box(p.chip, r));
-        let head = row![tinted(&MAT_FORWARD, 16.0, p.strong), txt(tr("Forward message"), 14.0).color(p.strong)];
-        let head = strip(head.spacing(12).align_y(Center).into(), border::Radius::default().top(18)).center_y(44);
-        let pills = f.picked.iter().map(|cid| -> El<'a> {
-            let c = st.chat(cid);
-            let label = semi(c.title.clone(), 14.0).line_height(Pixels(16.0)).color(p.strong);
-            let pill = row![self.chat_avatar(c, 16.0, 0.0), label].spacing(4).align_y(Center);
-            container(pill).padding(Padding::new(2.0).right(8.0)).style(fill_box(shade, 20.0)).into()
-        });
-        let input = text_input(tr("Search name, @, or number"), &f.query)
-            .id("forward-input")
-            .on_input(UiMessage::ForwardQuery)
-            .size(14)
-            .padding(0)
-            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-        let inputs = Row::with_children(pills).push(input).spacing(4).align_y(Center).height(24);
-        let inputs = container(inputs).padding(Padding::new(18.0).left(13.0).right(20.0));
-        let chats = forward_chats(&st, f);
-        let cat = (f.query.trim().is_empty() && !chats.is_empty()).then(|| {
-            container(txt(tr("Recent chats"), 12.0).color(p.sub))
-                .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
-        });
-        let rows = chats.iter().enumerate().fold(Column::new().push(cat), |col, (i, c)| {
-            let sub = chat_search_subtitle(c);
-            let title = row![
-                ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
-                ell(&sub, 220.0, 13.0, Weight::Normal).color(p.sub),
-            ]
-            .spacing(4)
-            .align_y(Center);
-            let line = row![self.chat_avatar(c, 32.0, 0.0), title, Space::new().width(Fill)]
-                .push(svg(brand_svg(brand_key(&c.account_id))).width(16).height(16))
-                .spacing(8)
-                .align_y(Center);
-            let bg = if i == 0 { p.chip } else { CLEAR };
-            let pick = button(line).height(36).padding([0, 6]).width(Fill);
-            let pick = pick.style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0));
-            let pick = mouse_area(pick.on_press(UiMessage::ForwardPick(c.id.clone())));
-            col.push(container(pick.on_right_press(UiMessage::OpenChatMenu(c.id.clone()))).padding([0, 6]))
-        });
-        let ready = !f.picked.is_empty();
-        let label = row![semi(tr("Forward"), 12.0), txt("CTRL ENTER", 11.0).color(Color { a: 0.8, ..Color::WHITE })];
-        let send = button(label.spacing(4).align_y(Center))
-            .padding([6, 8])
-            .style(btn_style([if ready { p.accent } else { shade }; 3], [Color::WHITE; 3], 100.0))
-            .on_press_maybe(ready.then_some(UiMessage::ForwardSend));
-        let note = tr("Forwarding messages through Beeper will not include any attribution on the native apps.");
-        let foot = row![txt(note, 14.0).color(p.sub).width(Fill), send].spacing(12).align_y(Center);
-        let body = column![
-            head,
-            inputs,
-            scrollable(rows).direction(bar()).height(300).style(scroll_style(p.scroll)),
-            container(Space::new()).width(Fill).height(2).style(fill_box(shade, 0.0)),
-            strip(foot.into(), border::Radius::default().bottom(18)),
-        ];
-        container(body).width(602).style(glow_box(p.card, Color { a: 0.18, ..p.strong }, 18.0, 4.0, 84.0)).into()
-    }
-
-    fn view_new_chat<'a>(&'a self) -> El<'a> {
-        let p = &self.pal;
-        let st = self.store.read();
-        let footer = |label: &'static str, key: &'static str, press: Option<UiMessage>| {
-            let a = if press.is_some() { 1.0 } else { 0.4 };
-            let label = row![med(label, 13.0), txt(key, 10.0).color(Color { a: 0.8 * a, ..Color::WHITE })];
-            let pill = button(label.spacing(4).align_y(Center))
-                .padding([4, 8])
-                .style(btn_style([Color { a, ..p.accent }; 3], [Color { a, ..Color::WHITE }; 3], 20.0))
-                .on_press_maybe(press);
-            row![Space::new().width(Fill), pill].padding(Padding::new(8.0).left(13.0)).align_y(Center)
-        };
-        let draft = self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat);
-        let users = draft.map_or(&[][..], |d| &d.users);
-        let group = draft.is_some_and(|d| d.group);
-        let account = users.first().map(|(a, _)| a.as_str());
-        let field = |placeholder: &'static str| {
-            text_input(placeholder, &self.new_chat_query)
-                .id("new-chat-input")
-                .on_input(UiMessage::NewChatQueryChanged)
-                .size(13)
-                .padding([8, 0])
-                .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0))
-        };
-        if self.join_matrix_mode {
-            let back = button(
-                row![tinted(&SYS_ARROW_BACK, 18.0, p.strong), txt(tr("Back"), 12.0).color(p.strong)]
-                    .spacing(4)
-                    .align_y(Center),
-            )
-            .padding([4, 6])
-            .style(ghost(p, 6.0))
-            .on_press(UiMessage::ToggleJoinMatrix);
-            let head =
-                container(row![back, txt(tr("Join a Matrix room"), 13.0).color(p.strong)].spacing(12).align_y(Center))
-                    .width(Fill)
-                    .padding([8, 13])
-                    .style(fill_box(p.chip, 0.0));
-            let (joining, error) = (self.join_room.0, self.join_room.1.as_deref());
-            let input = field(tr("Room address or Matrix link"));
-            let input = if joining { input } else { input.on_submit(UiMessage::JoinMatrixRoom) };
-            let inputs = row![tinted(&MAT_LINK, 18.0, p.sub), input]
-                .spacing(8)
-                .align_y(Center)
-                .padding(Padding::new(6.0).left(13.0).right(8.0));
-            let error = error.map(|e| container(txt(e.to_string(), 12.0).color(p.text_danger)).padding([0, 13]));
-            let ready = !joining && !self.new_chat_query.trim().is_empty();
-            let label = if joining { tr("Joining...") } else { tr("Join") };
-            let join = footer(label, "ENTER", ready.then_some(UiMessage::JoinMatrixRoom));
-            let body = column![head, inputs].push(error).push(Space::new().height(Fill)).push(join);
-            return container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into();
-        }
-        let all = rail_accounts(&st);
-        let listed: Vec<String> = match group {
-            true => all.iter().filter(|a| self.can_group(a)).cloned().collect(),
-            false => all.iter().filter(|a| self.can(a, "create_dm")).cloned().collect(),
-        };
-        let logo = |a: &str| -> El<'_> { svg(crate::style::brand_svg(brand_key(a))).width(16).height(16).into() };
-        let picked = self.new_chat_account.as_deref();
-        let label = picked.map_or_else(|| tr("All accounts").into(), |a| account_option(&st, a, &listed));
-        let all_acc = button(
-            row![]
-                .push(picked.map(logo))
-                .push(txt(label, 12.0).color(p.strong))
-                .push(ic(icon::EXPAND_MORE, 16.0).color(p.strong))
-                .spacing(4)
-                .align_y(Center),
-        )
-        .height(24)
-        .padding(Padding { top: 2.0, right: 4.0, bottom: 2.0, left: 6.0 })
-        .style(btn_style([p.chip; 3], [p.strong; 3], 12.0))
-        .on_press(UiMessage::ToggleNewChatAccounts);
-        let options = std::iter::once(None).chain(listed.iter().map(|a| Some(a.as_str()))).map(|a| -> El<'_> {
-            let label = a.map_or_else(|| tr("All accounts").into(), |a| account_option(&st, a, &listed));
-            let check = (a == picked).then(|| ic(icon::CHECK, 16.0).color(p.strong));
-            let line = row![]
-                .push(a.map(logo))
-                .push(ell(&label, 160.0, 13.0, Weight::Normal).color(p.strong).width(Fill))
-                .push(check)
-                .spacing(8)
-                .align_y(Center);
-            button(line)
-                .width(Fill)
-                .height(22)
-                .padding([0, 8])
-                .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 4.0))
-                .on_press(UiMessage::NewChatAccount(a.map(str::to_string)))
-                .into()
-        });
-        let dropdown = self.new_chat_accounts_open.then(|| {
-            let menu = scrollable(Column::with_children(options.collect::<Vec<_>>())).height(Shrink);
-            let menu = container(menu).width(216).max_height(300).padding(5).style(shadow_box(
-                p.menu,
-                p.menu_border,
-                6.0,
-                22.0,
-            ));
-            stack![
-                mouse_area(Space::new().width(Fill).height(Fill)).on_press(UiMessage::ToggleNewChatAccounts),
-                container(menu).align_right(Fill).padding(Padding::new(8.0).top(38.0)),
-            ]
-        });
-        let shade = Color { a: 0.1, ..p.strong };
-        let pills = users.iter().map(|(_, u)| -> El<'_> {
-            let name = u.full_name.as_deref().unwrap_or(&u.id);
-            let pill =
-                row![self.face(u.img_url.as_deref(), name, 16.0, 0.0), semi(name.to_string(), 13.0).color(p.strong)];
-            container(pill.spacing(4).align_y(Center))
-                .padding(Padding::new(2.0).right(8.0))
-                .style(fill_box(shade, 20.0))
-                .into()
-        });
-        let placeholder = if users.is_empty() { tr("Search contacts") } else { "" };
-        let inputs = Row::with_children(pills).push(field(placeholder)).spacing(4).align_y(Center);
-        let inputs = row![ic(icon::SEARCH, 16.0).color(p.sub), inputs]
-            .push(users.is_empty().then_some(all_acc))
-            .spacing(8)
-            .align_y(Center)
-            .padding(Padding::new(6.0).top(10.0).left(13.0).right(8.0));
-        let q = self.new_chat_query.trim().to_lowercase();
-        let mut col = Column::new().padding(Padding::ZERO.top(3.0));
-        if q.is_empty() && !group {
-            let group_btn = button(
-                row![ic(icon::GROUP, 20.0).color(p.accent), semi(tr("New Group"), 13.0).color(p.strong)]
-                    .spacing(7)
-                    .align_y(Center),
-            )
-            .width(Fill)
-            .height(36)
-            .padding([0, 11])
-            .style(btn_style([p.chip, p.chip, p.selected], [p.strong; 3], 6.0))
-            .on_press(UiMessage::NewGroup);
-            let join_btn = button(
-                row![tinted(&MAT_LINK, 20.0, p.accent), semi(tr("Join a Matrix room"), 13.0).color(p.strong)]
-                    .spacing(7)
-                    .align_y(Center),
-            )
-            .width(Fill)
-            .height(36)
-            .padding([0, 11])
-            .style(btn_style([CLEAR, p.chip, p.selected], [p.strong; 3], 6.0))
-            .on_press(UiMessage::ToggleJoinMatrix);
-            let group_btn = listed.iter().any(|a| self.can_group(a)).then(|| container(group_btn).padding([0, 8]));
-            col = col.push(group_btn).push(container(join_btn).padding([0, 8]));
-        }
-        let heading = |label: &str| {
-            container(txt(label.to_string(), 12.0).color(p.sub))
-                .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
-        };
-        let item = |content: El<'a>, press: Option<UiMessage>| -> El<'a> {
-            let b = button(content).height(36).padding([0, 6]).width(Fill).style(ghost(p, 8.0));
-            container(b.on_press_maybe(press)).padding([0, 6]).into()
-        };
-        // Desktop's `CommandBarUser`.
-        let person = |a: &String, u: &User| -> El<'a> {
-            let small = |s: String| txt(s, 12.0).color(Color { a: 0.7, ..p.strong });
-            let bare = [&u.full_name, &u.username, &u.phone_number, &u.email].iter().all(|f| f.is_none());
-            let line = row![self.face(u.img_url.as_deref(), person_name(u), 28.0, 0.0)]
-                .push(u.full_name.clone().or_else(|| bare.then(|| u.id.clone())).map(|n| med(n, 13.0).color(p.strong)))
-                .push(u.username.as_ref().map(|n| small(format!("@{}", n.trim_start_matches('@')))))
-                .push(u.phone_number.as_deref().map(|n| small(fmt_phone(n))))
-                .push(u.email.clone().map(small))
-                .push(Space::new().width(Fill))
-                .push(svg(crate::style::brand_svg(brand_key(a))).width(16).height(16))
-                .spacing(6)
-                .align_y(Center);
-            item(line.into(), Some(UiMessage::PickUser(a.clone(), Box::new(u.clone()))))
-        };
-        let lookups: Vec<(&String, &User)> = self
-            .new_chat_lookup
-            .iter()
-            .filter(|(k, nets)| {
-                k.strip_prefix("lookup:") == Some(self.new_chat_query.trim()) && nets.iter().all(|n| n.1.is_some())
-            })
-            .flat_map(|(_, nets)| nets.iter().filter_map(|(a, n)| Some((a, n.as_ref()?.as_ref()?))))
-            .collect();
-        for (a, u) in &lookups {
-            col = col.push(person(a, u));
-        }
-        let people = if q.is_empty() { Vec::new() } else { chat_people(&st, &listed, account.or(picked), &q) };
-        if !people.is_empty() {
-            col = col.push(heading(tr("Chats")));
-            let limit = if self.new_chat_chats_expanded { people.len() } else { 10.min(people.len()) };
-            for (a, u) in people.iter().take(limit) {
-                col = col.push(person(a, u));
-            }
-            if people.len() > 10 {
-                let label = if self.new_chat_chats_expanded { tr("Show less chats") } else { tr("Show more chats") };
-                col = col.push(item(txt(label, 13.0).color(p.text).into(), Some(UiMessage::ToggleNewChatChats)));
-            }
-        }
-        let search = self.new_chat_search.as_ref().filter(|(s, ..)| !q.is_empty() && *s == self.new_chat_query.trim());
-        if let Some((_, pending, found)) = search {
-            col = col.push(heading(tr("Connections")));
-            let mut seen = HashSet::new();
-            let mut results: Vec<&(String, User)> =
-                found.iter().filter(|(a, u)| seen.insert(person_key(a, u))).collect();
-            results.sort_by_cached_key(|(_, u)| {
-                let n = person_name(u).to_lowercase();
-                (n.is_empty(), n)
-            });
-            let limit = if self.new_chat_results_expanded { results.len() } else { 10.min(results.len()) };
-            for (a, u) in results.iter().take(limit).filter(|_| *pending == 0) {
-                col = col.push(person(a, u));
-            }
-            if *pending > 0 {
-                col = col.push(item(txt(tr("Searching..."), 13.0).color(p.sub).into(), None));
-            } else if results.len() > 10 {
-                let label =
-                    if self.new_chat_results_expanded { tr("Show less results") } else { tr("Show more results") };
-                col = col.push(item(txt(label, 13.0).color(p.text).into(), Some(UiMessage::ToggleNewChatResults)));
-            }
-        }
-        let any = listed.iter().any(|a| self.can(a, "contact_list") || self.can(a, "any_phone"));
-        let contacts: Vec<&User> = st
-            .contacts
-            .iter()
-            .filter(|_| any)
-            .filter(|u| u.full_name.as_deref().unwrap_or_default().to_lowercase().contains(&q))
-            .collect();
-        if lookups.is_empty()
-            && people.is_empty()
-            && search.is_none_or(|(_, n, f)| *n == 0 && f.is_empty())
-            && contacts.is_empty()
-        {
-            let none = if group { tr("Start typing to search for people to add") } else { tr("No results found") };
-            col = col.push(heading(none));
-        }
-        if !contacts.is_empty() {
-            col = col.push(heading(tr("In your contacts")));
-            let limit = if self.new_chat_expanded || !q.is_empty() { contacts.len() } else { 10.min(contacts.len()) };
-            let mut last_cat = None;
-            for u in contacts.iter().take(limit) {
-                let name = u.full_name.as_deref().unwrap_or(&u.id);
-                let ch = name.chars().next().unwrap_or(' ').to_ascii_uppercase();
-                let cat = if ch.is_ascii_alphabetic() { ch.to_string() } else { tr("Others").to_string() };
-                if last_cat.as_deref() != Some(cat.as_str()) {
-                    col = col.push(heading(&cat));
-                    last_cat = Some(cat);
-                }
-                let nets = self.contact_networks.as_ref().filter(|(c, _)| *c == u.id).map(|(_, n)| n);
-                let line = row![
-                    self.face(u.img_url.as_deref(), name, 28.0, 0.0),
-                    semi(name.to_string(), 13.0).color(p.strong),
-                    Space::new().width(Fill),
-                    match nets {
-                        Some(_) => tinted(&MAT_EXPAND_LESS, 20.0, p.strong),
-                        None => ic(icon::EXPAND_MORE, 20.0).color(p.strong).into(),
-                    }
-                ]
-                .spacing(8)
-                .align_y(Center);
-                col = col.push(item(line.into(), Some(UiMessage::ToggleContact(u.id.clone()))));
-                let Some(nets) = nets else { continue };
-                if nets.iter().any(|(_, n)| n.is_none()) {
-                    let bone = |w: f32, r: f32| container(Space::new().width(w).height(if r > 8.0 { w } else { 16.0 }));
-                    let skeleton = row![
-                        bone(22.0, 11.0).style(fill_box(p.chip, 11.0)),
-                        bone(100.0, 5.0).style(fill_box(p.chip, 5.0))
-                    ];
-                    col = col.push(item(skeleton.spacing(8).align_y(Center).into(), None));
-                    continue;
-                }
-                let found: Vec<(&String, &User)> = nets
-                    .iter()
-                    .filter_map(|(a, n)| Some((a, n.as_ref()?.as_ref()?)))
-                    .filter(|(a, _)| account.or(picked).is_none_or(|b| *a == b))
-                    .collect();
-                if found.is_empty() {
-                    let none = semi(tr("No networks found"), 13.0).color(p.strong).width(Fill).align_x(Center);
-                    col = col.push(item(none.into(), None));
-                }
-                for (a, user) in found {
-                    let icon = container(svg(crate::style::brand_svg(brand_key(a))).width(20).height(20)).center(28);
-                    let line = row![icon, med(account_display_name(&st, a, &all), 13.0).color(p.strong)];
-                    let pick = UiMessage::PickUser(a.clone(), Box::new(user.clone()));
-                    col = col.push(item(line.spacing(8).align_y(Center).into(), Some(pick)));
-                }
-            }
-            if q.is_empty() && contacts.len() > 10 {
-                let label = if self.new_chat_expanded { tr("Show less contacts") } else { tr("Show more contacts") };
-                col = col.push(
-                    container(
-                        button(txt(label, 13.0).color(p.text))
-                            .height(36)
-                            .padding([0, 6])
-                            .width(Fill)
-                            .style(ghost(p, 8.0))
-                            .on_press(UiMessage::ToggleNewChatExpanded),
-                    )
-                    .padding([0, 6]),
-                );
-            }
-        }
-        let caps = account.map(|a| &self.caps[a]["group_creation"]["group"]);
-        let ready = match (group, caps) {
-            (false, _) => users.len() == 1,
-            (true, None) => false,
-            (true, Some(g)) => {
-                let fewest = g["participants"]["min_length"]
-                    .as_u64()
-                    .unwrap_or(u64::from(g["participants"]["required"] == true));
-                let named = g["name"]["required"] != true || draft.is_some_and(|d| !d.title.trim().is_empty());
-                users.len() as u64 >= fewest && named && g["avatar"]["required"] != true
-            }
-        };
-        let start = if group { tr("Start group chat") } else { tr("Start chat") };
-        let body = column![
-            inputs,
-            scrollable(col).direction(bar()).height(Fill).style(scroll_style(p.scroll)),
-            footer(start, "ENTER", ready.then_some(UiMessage::StartChat))
-        ];
-        let panel = container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0));
-        let named = caps.is_some_and(|g| g["name"]["allowed"] == true);
-        let title = draft.filter(|_| group && named).map(|d| {
-            let members: Vec<User> = d.users.iter().map(|(_, u)| u.clone()).collect();
-            let face = self.people_avatar(None, "", true, &members, 28.0, 0.0);
-            let name = text_input(tr("New Group Chat"), &d.title)
-                .on_input(UiMessage::GroupTitle)
-                .width(200)
-                .size(13)
-                .padding(0)
-                .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-            let bg = if self.dark { Color::BLACK } else { Color::WHITE };
-            container(row![face, name].spacing(8).align_y(Center)).center_x(Fill).center_y(38).style(move |_| {
-                container::Style {
-                    background: Some(bg.into()),
-                    border: iced::border::rounded(10),
-                    shadow: iced::Shadow {
-                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.12),
-                        blur_radius: 10.0,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }
-            })
-        });
-        stack![column![].push(title).push(panel).spacing(8)].push(dropdown).into()
-    }
-
     /// Desktop's `BrandSegmentControl`: the segments spread across the width, with the selected one highlighted.
     fn segments<'a>(
         &self,
@@ -13533,236 +6127,6 @@ impl BeeperGuiApp {
             .style(fill_box(bg, 20.0))
     }
 
-    /// Desktop's `--on-wallpaper-fg` of `chat` outside of a reply chain and of a thread pane, when its chat theme has
-    /// a wallpaper.
-    fn wallpaper_fg(&self, st: &BeeperStore, chat: &Chat, thread: bool) -> Option<Color> {
-        let wallpaper =
-            chat_theme::resolve(&st.settings.chat_appearance, Some(&chat.id), self.dark, &st.config.data_dir).0;
-        wallpaper.filter(|_| !thread && self.pane().thread_root.is_none()).map(|(_, fg)| fg)
-    }
-
-    /// The color, text color and metadata color of sent bubbles in `chat`, or in the default chat theme.
-    fn sent_colors(&self, st: &BeeperStore, chat: Option<&str>) -> (Color, Color, Color) {
-        let p = &self.pal;
-        match chat_theme::resolve(&st.settings.chat_appearance, chat, self.dark, &st.config.data_dir).1 {
-            Some((bg, fg)) => (bg, fg, fg.scale_alpha(p.sent_meta.a)),
-            None => (p.sent, p.sent_fg, p.sent_meta),
-        }
-    }
-
-    /// Desktop's `removeOrphanedWallpapers`: deletes the photos in `chat_wallpapers` that no chat theme uses.
-    fn prune_wallpapers(&self) {
-        let st = self.store.read();
-        let entries = match std::fs::read_dir(chat_theme::photo_dir(&st.config.data_dir)) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-            Err(e) => panic!("read the chat wallpapers: {e}"),
-        };
-        let used: HashSet<&str> = st.settings.chat_appearance.photos().collect();
-        for entry in entries {
-            let path = entry.expect("a chat wallpaper entry").path();
-            if path.file_name().and_then(|n| n.to_str()).is_none_or(|n| !used.contains(n)) {
-                std::fs::remove_file(&path).expect("remove an unused chat wallpaper");
-            }
-        }
-    }
-
-    fn spaces_edit(&mut self, e: SpacesEdit) -> Task<UiMessage> {
-        let d = self.spaces_window.as_mut().expect("the Edit Spaces window is open");
-        match e {
-            SpacesEdit::Search(q) => d.search = q,
-            SpacesEdit::Scrolled(down) => d.scrolled = down,
-            SpacesEdit::Drag(id) => d.drag = Some((id, d.order.clone())),
-            SpacesEdit::Over(to) => {
-                let Some((id, _)) = &d.drag else { return Task::none() };
-                let from = d.order.iter().position(|o| o == id).expect("a dragged space");
-                let to = d.order.iter().position(|o| *o == to).unwrap_or(d.order.len() - 1);
-                let item = d.order.remove(from);
-                d.order.insert(to, item);
-            }
-            SpacesEdit::Drop => {
-                let Some((_, before)) = d.drag.take() else { return Task::none() };
-                if d.order[0] == SPACES_DIVIDER && d.order.len() > 1 {
-                    let inbox = d.order.iter().position(|o| o == "inbox").unwrap_or(1);
-                    let first = d.order.remove(inbox);
-                    d.order.insert(0, first);
-                }
-                if d.order == before {
-                    return Task::none();
-                }
-                let split = d.order.iter().position(|o| o == SPACES_DIVIDER).expect("the divider");
-                let order = d.order.iter().enumerate().filter(|(i, _)| *i != split);
-                let order = order.map(|(i, id)| SpaceOrder { id: id.clone(), visible: i < split }).collect();
-                let old = self.store.read().settings.spaces_order.clone();
-                self.patch_settings(|s| s.spaces_order = order);
-                self.act(tr("Reorder sidebar").into(), UiMessage::SetSpacesOrder(old), None);
-            }
-            SpacesEdit::Menu(id) => (d.menu, self.chat_sub) = (id.map(|id| (id, self.cursor.get())), None),
-            SpacesEdit::Act(m) => {
-                if !matches!(*m, UiMessage::ChatSub(_)) {
-                    d.menu = None;
-                }
-                return self.update(*m);
-            }
-            SpacesEdit::NewLabel => {
-                let close = window::close(d.id);
-                return Task::batch([close, self.update(UiMessage::OpenCreateLabel(Vec::new()))]);
-            }
-        }
-        Task::none()
-    }
-
-    fn view_edit_spaces<'a>(&'a self, d: &'a SpacesDraft) -> El<'a> {
-        let p = &self.pal;
-        let st = self.store.read();
-        let edit = UiMessage::Spaces;
-        let search = text_input(tr("Search Spaces"), &d.search)
-            .on_input(move |q| edit(SpacesEdit::Search(q)))
-            .size(13)
-            .line_height(Pixels(16.0))
-            .padding([14, 0])
-            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-        let clear = (!d.search.trim().is_empty())
-            .then(|| icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, edit(SpacesEdit::Search(String::new()))));
-        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search]
-            .push(clear)
-            .spacing(10)
-            .align_y(Center)
-            .padding(Padding::ZERO.left(16.0).right(8.0));
-        let q = d.search.trim().to_lowercase();
-        let split = d.order.iter().position(|o| o == SPACES_DIVIDER).expect("the divider");
-        let found = |ids: &'a [String]| -> Vec<&'a String> {
-            ids.iter().filter(|id| q.is_empty() || space_name(&st, id).to_lowercase().contains(&q)).collect()
-        };
-        let line = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.15);
-        let dragged = d.drag.as_ref().map(|(id, _)| id.as_str());
-        let group = |ids: Vec<&'a String>| -> Vec<El<'a>> {
-            let last = ids.len().saturating_sub(1);
-            ids.into_iter()
-                .enumerate()
-                .map(|(i, id)| {
-                    let (top, bottom) = (if i == 0 { 12.0 } else { 0.0 }, if i == last { 12.0 } else { 0.0 });
-                    let muted = match rail_label(&st, id) {
-                        Some(l) => l.muted,
-                        None => {
-                            !RAIL_VIEWS.iter().any(|v| v.0 == id)
-                                && !st.settings.account(&rail_owner(&st, id)).notifications
-                        }
-                    };
-                    let gear = !RAIL_VIEWS.iter().any(|v| v.0 == id) && id != LABEL_NUDGE;
-                    let room = if gear { 190.0 } else { 216.0 };
-                    let name = row![ell(&space_name(&st, id), room, 13.0, Weight::Semibold).color(p.strong)]
-                        .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)))
-                        .spacing(2)
-                        .align_y(Center);
-                    let sub = space_subtitle(&st, id).map(|t| txt(t, 11.0).color(p.sub));
-                    let handle = mouse_area(container(tinted(&DRAG_HANDLE, 20.0, p.sub)).center(28))
-                        .interaction(iced::mouse::Interaction::Grab)
-                        .on_press(edit(SpacesEdit::Drag(id.clone())));
-                    let lift = dragged == Some(id.as_str());
-                    let body =
-                        row![container(self.space_icon(&st, id)).center(20), column![name].push(sub).width(Fill),]
-                            .push(gear.then(|| {
-                                mouse_area(container(ic(icon::MORE_HORIZ, 16.0).color(p.sub)).center_x(16))
-                                    .interaction(mouse::Interaction::Pointer)
-                                    .on_press(edit(SpacesEdit::Menu(Some(id.clone()))))
-                            }))
-                            .push(handle)
-                            .spacing(10)
-                            .align_y(Center)
-                            .padding([6, 12]);
-                    let fill = p.received;
-                    let body = container(body).style(move |_: &Theme| container::Style {
-                        background: Some(fill.into()),
-                        border: iced::Border {
-                            radius: border::Radius {
-                                top_left: top,
-                                top_right: top,
-                                bottom_right: bottom,
-                                bottom_left: bottom,
-                            },
-                            ..iced::Border::default()
-                        },
-                        shadow: if lift {
-                            Shadow {
-                                color: Color::BLACK.scale_alpha(0.15),
-                                offset: Vector::new(0.0, 4.0),
-                                blur_radius: 12.0,
-                            }
-                        } else {
-                            Shadow::default()
-                        },
-                        ..Default::default()
-                    });
-                    let rule =
-                        (i != last).then(|| container(Space::new()).width(Fill).height(1).style(fill_box(line, 0.0)));
-                    mouse_area(column![body].push(rule)).on_enter(edit(SpacesEdit::Over(id.clone()))).into()
-                })
-                .collect()
-        };
-        let header = |label: &'static str| container(txt(label, 12.0).color(p.sub)).padding([8, 0]);
-        let hidden = found(&d.order[split + 1..]);
-        let empty = hidden.is_empty().then(|| {
-            let fill = if dragged.is_some() { CLEAR } else { p.received };
-            let msg = container(txt(tr("No Hidden Spaces"), 13.0).color(p.sub)).center_x(Fill).center_y(56).style(
-                move |_: &Theme| container::Style {
-                    background: Some(fill.into()),
-                    border: iced::Border {
-                        color: p.received,
-                        width: if fill == CLEAR { 1.0 } else { 0.0 },
-                        radius: 12.0.into(),
-                    },
-                    ..Default::default()
-                },
-            );
-            mouse_area(msg).on_enter(edit(SpacesEdit::Over(String::new())))
-        });
-        let list = column![header(trx("Pinned", "edit spaces section header"))]
-            .extend(group(found(&d.order[..split])))
-            .push(mouse_area(header(tr("Hidden")).width(Fill)).on_enter(edit(SpacesEdit::Over(SPACES_DIVIDER.into()))))
-            .push(empty)
-            .extend(group(hidden))
-            .padding(Padding { top: 0.0, right: 13.0, bottom: 30.0, left: 13.0 });
-        let list = scrollable(list)
-            .direction(Direction::Vertical(Scrollbar::hidden()))
-            .height(Fill)
-            .on_scroll(move |v| edit(SpacesEdit::Scrolled(v.absolute_offset().y > 0.0)));
-        let shade = d
-            .scrolled
-            .then(|| container(Space::new()).width(Fill).height(2).style(fill_box(p.strong.scale_alpha(0.1), 0.0)));
-        let card =
-            container(column![search, stack![list].push(shade)]).height(Fill).clip(true).style(fill_box(p.card, 12.0));
-        let new = st.feature("labels-v2").show.then(|| {
-            let link = button(txt(tr("New Label"), 13.0).color(p.accent))
-                .padding([4, 8])
-                .style(btn_style([CLEAR; 3], [p.accent; 3], 8.0))
-                .on_press(edit(SpacesEdit::NewLabel));
-            container(link).center_x(Fill).padding(Padding { top: 8.0, right: 0.0, bottom: 4.0, left: 0.0 })
-        });
-        let head = container(semi(tr("Edit Spaces"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
-        let window = container(column![head, card].push(new)).padding(8).style(fill_box(p.window, 0.0));
-        let window = mouse_area(window).on_release(edit(SpacesEdit::Drop));
-        let Some((id, at)) = &d.menu else {
-            drop(st);
-            return window.into();
-        };
-        let h = 8.0 + MENU_ITEM * rail_label(&st, id).map_or(2.0, label_rows);
-        drop(st);
-        let (menu, sub) = self.account_menu(id, SpaceMenu::Gear);
-        let x = if at.x + 233.0 > SPACES_SIZE.width { at.x - 233.0 } else { at.x }.max(4.0);
-        let y = at.y.min(SPACES_SIZE.height - h - 8.0);
-        let sub_x = (x + 233.0).min(SPACES_SIZE.width - ACCOUNT_SUB_W - 4.0);
-        let act = |m| UiMessage::Spaces(SpacesEdit::Act(Box::new(m)));
-        let place = |m: El<'a>, x: f32| -> El<'a> {
-            let m = mouse_area(m.map(act)).on_press(UiMessage::Noop);
-            container(m).padding(Padding::ZERO.left(x).top(y)).into()
-        };
-        let close = mouse_area(container(Space::new()).width(Fill).height(Fill))
-            .on_press(edit(SpacesEdit::Menu(None)))
-            .on_right_press(edit(SpacesEdit::Menu(None)));
-        stack![window, close, place(menu, x)].push(sub.map(|s| place(s, sub_x))).into()
-    }
-
     /// Desktop's `getSpaceIcon`.
     fn space_icon(&self, st: &BeeperStore, id: &str) -> El<'static> {
         let p = &self.pal;
@@ -13781,144 +6145,11 @@ impl BeeperGuiApp {
             },
         }
     }
-
-    fn view_chat_theme(&self, chat: &str) -> El<'_> {
-        let p = &self.pal;
-        let st = self.store.read();
-        let title = container(semi(tr("Chat Theme"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
-        let card = scrollable(self.chat_theme_picker(&st, Some(chat))).direction(bar()).style(scroll_style(p.scroll));
-        let card = container(card).height(Fill).style(fill_box(p.card, 12.0));
-        container(column![title, card]).padding(8).style(fill_box(p.window, 0.0)).into()
-    }
-
-    /// Desktop's `ChatAppearancePicker`: the chat theme of `chat`, or the default chat theme.
-    fn chat_theme_picker(&self, st: &BeeperStore, chat: Option<&str>) -> El<'_> {
-        let p = &self.pal;
-        let a = &st.settings.chat_appearance;
-        let stored = a.theme(chat);
-        let wallpaper = chat_theme::resolve(a, chat, self.dark, &st.config.data_dir).0;
-        let (sent, sent_fg, _) = self.sent_colors(st, chat);
-        let id = chat.map(str::to_string);
-        let ring = |el: El<'static>, on: bool, radius: f32, msg: UiMessage| -> El<'static> {
-            let edge = if on { p.accent } else { CLEAR };
-            let el = container(el).padding(4).style(bordered_box(CLEAR, edge, 2.0, radius + 4.0));
-            mouse_area(el).on_press(msg).into()
-        };
-        let bubble = |text: &'static str, bg: Color, fg: Color| {
-            container(txt(tr(text), 13.0).color(fg)).padding([8, 12]).style(fill_box(bg, 17.0))
-        };
-        let lines = column![
-            bubble("Pick a wallpaper and bubble color", p.received, p.strong),
-            container(bubble("Only you see your chat theme", sent, sent_fg)).align_right(Fill),
-        ]
-        .spacing(8);
-        let preview: El<'_> = match wallpaper.clone() {
-            Some((paint, _)) => {
-                stack![chat_theme::fill(paint, Size::new(f32::INFINITY, 106.0), 12.0), container(lines).padding(16)]
-                    .into()
-            }
-            None => container(lines).padding(16).style(fill_box(p.card, 12.0)).into(),
-        };
-        let preview =
-            container(preview).height(106 + 2).padding(1).style(bordered_box(CLEAR, p.neutral_border, 1.0, 12.0));
-        let label = |text: &'static str| txt(tr(text), 12.0).font(fw(Weight::Medium)).color(p.sub);
-        let default = matches!(stored.bubble, None | Some(Bubble::Default));
-        let none = if chat.is_some() { Some(Bubble::Default) } else { None };
-        let sub = p.sub;
-        let cross =
-            svg(chat_theme::NO_BUBBLE.clone()).width(26).height(26).style(move |_, _| svg::Style { color: Some(sub) });
-        let mut swatches = vec![ring(
-            container(cross).padding(1).style(bordered_box(CLEAR, p.neutral_border, 1.0, 14.0)).into(),
-            default,
-            14.0,
-            UiMessage::ChatBubble(id.clone(), none),
-        )];
-        swatches.extend(chat_theme::BUBBLES.iter().map(|&(bid, c)| {
-            let on = stored.bubble == Some(Bubble::Swatch { id: bid.into() });
-            let dot = container(Space::new()).width(28).height(28).style(fill_box(hex(c), 14.0));
-            ring(dot.into(), on, 14.0, UiMessage::ChatBubble(id.clone(), Some(Bubble::Swatch { id: bid.into() })))
-        }));
-        let tile = |fill: El<'static>, w: Wallpaper| {
-            let on = stored.wallpaper.as_ref().unwrap_or(&Wallpaper::None) == &w;
-            let fill = container(fill).width(Fill).height(100).padding(1).style(bordered_box(
-                CLEAR,
-                p.neutral_border,
-                1.0,
-                10.0,
-            ));
-            ring(fill.into(), on, 10.0, UiMessage::ChatWallpaper(id.clone(), w))
-        };
-        let blank = |label: &'static str| -> El<'static> {
-            container(txt(tr(label), 11.0).color(p.sub)).center(Fill).style(fill_box(p.card, 10.0)).into()
-        };
-        let photo = matches!(stored.wallpaper, Some(Wallpaper::Photo { .. }));
-        let photo_fill = match wallpaper.filter(|_| photo) {
-            Some((paint, _)) => chat_theme::fill(paint, Size::new(60.0, 98.0), 9.0),
-            None => blank("Photo…"),
-        };
-        let mut tiles = vec![tile(blank("None"), Wallpaper::None)];
-        let photo_fill = container(photo_fill).width(Fill).height(100).padding(1);
-        let photo_fill = photo_fill.style(bordered_box(CLEAR, p.neutral_border, 1.0, 10.0));
-        tiles.push(ring(photo_fill.into(), photo, 10.0, UiMessage::PickWallpaper(id.clone())));
-        let papers = chat_theme::COLORS.iter().map(|c| Wallpaper::Color { id: c.0.into() });
-        for w in papers.chain(chat_theme::GRADIENTS.iter().map(|g| Wallpaper::Gradient { id: g.0.into() })) {
-            let (paint, _) = chat_theme::paint(&w, self.dark, &st.config.data_dir).expect("a known wallpaper");
-            tiles.push(tile(chat_theme::fill(paint, Size::new(60.0, 98.0), 9.0), w));
-        }
-        let footer = chat.map(|c| {
-            let reset = a
-                .per_chat
-                .contains_key(c)
-                .then(|| pill_btn(p, tr("Use app default"), UiMessage::ClearChatTheme(c.into())));
-            row![txt(tr("Only you see your chat themes."), 12.0).color(p.sub), Space::new().width(Fill)]
-                .push(reset)
-                .spacing(8)
-                .align_y(Center)
-        });
-        column![
-            preview,
-            label("Bubble color"),
-            Row::with_children(swatches).wrap(),
-            label("Wallpaper"),
-            Grid::with_children(tiles).fluid(74).spacing(2).height(grid::Sizing::EvenlyDistribute(Shrink)),
-        ]
-        .push(footer)
-        .spacing(12)
-        .padding(16)
-        .into()
-    }
 }
 
 pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) {
     let (rgba8, png) = (::image::ExtendedColorType::Rgba8, ::image::ImageFormat::Png);
     ::image::save_buffer_with_format(path, rgba, width, height, rgba8, png).expect("write png");
-}
-
-/// Desktop's default size of the main window (`Wg` and `jg`).
-const MAIN_SIZE: Size = Size::new(1200.0, 800.0);
-/// Desktop's `windowStateKeeper` key of the chat windows (`w2` of a window ID that starts with `thread-`).
-const POP_OUT: &str = "pop-out-thread";
-
-/// Desktop's `window.json`, or an empty state before the first save.
-fn read_window_state(path: &std::path::Path) -> serde_json::Value {
-    match std::fs::read_to_string(path) {
-        Ok(json) => serde_json::from_str(&json).expect("a valid window state"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
-        Err(e) => panic!("read {}: {e}", path.display()),
-    }
-}
-
-fn write_window_state(path: &std::path::Path, key: &str, maximized: bool, size: Size, at: Option<Point>) {
-    let mut state = read_window_state(path);
-    let main = &mut state["windowState"][key];
-    if !maximized {
-        *main = serde_json::json!({ "width": size.width, "height": size.height });
-        if let Some(at) = at {
-            (main["x"], main["y"]) = (at.x.into(), at.y.into());
-        }
-    }
-    main["isMaximized"] = maximized.into();
-    std::fs::write(path, state.to_string()).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
 }
 
 /// Desktop's `StatusPill` toasts.
@@ -13988,149 +6219,6 @@ pub type People = Vec<(String, User)>;
 
 /// The accounts of a New Chat contact in rail order, each with the user found on it, or `None` while it resolves.
 pub type Networks = Vec<(String, Option<Option<User>>)>;
-
-/// Desktop's draft chat: a chat in the sidebar that the New Chat view makes, with the people it picked.
-pub struct NewChat {
-    pub id: u32,
-    /// The picked people, each with the account to reach them on.
-    pub users: Vec<(String, User)>,
-    /// Desktop's draft `type: "group"`: from New Group, or more than one person.
-    pub group: bool,
-    /// The group name of Desktop's `GroupTitleBar`.
-    pub title: String,
-}
-
-/// Desktop's `Toast`, which shows while `status_banner` is its text.
-#[derive(Clone)]
-pub struct Toast {
-    pub text: String,
-    /// The index of the icon in `TOAST_ICONS`.
-    pub icon: Option<usize>,
-    /// Desktop's `textStyle: "strong"`.
-    pub strong: bool,
-    /// Desktop's `buttons`, in a row below the text.
-    pub buttons: Vec<(&'static str, UiMessage)>,
-    /// Desktop's `rightButton`.
-    pub right: Option<(&'static str, UiMessage)>,
-    /// Desktop's `onClick`.
-    pub open: Option<UiMessage>,
-    /// Desktop's `type: "error"`.
-    pub error: bool,
-    /// Desktop's `onDismiss` of a toast with `keepToastOpen` buttons: the close runs it, and the buttons do not close
-    /// the toast.
-    pub dismiss: Option<UiMessage>,
-}
-
-impl Toast {
-    pub fn new(text: String) -> Self {
-        Toast {
-            text,
-            icon: None,
-            strong: false,
-            buttons: Vec::new(),
-            right: None,
-            open: None,
-            error: false,
-            dismiss: None,
-        }
-    }
-}
-
-/// Desktop's `HoverCard` of a user (`hoverDelay: 300`): the card of "chat user" `key` shows where the pointer is 300 ms
-/// after it rests on a trigger, and stays while the pointer is on the trigger or the card.
-#[derive(Default)]
-pub struct UserHover {
-    pub key: String,
-    pub trigger: bool,
-    pub card: bool,
-    pub shown: Option<Point>,
-    /// Counts the changes, so that only the last wait acts.
-    pub r#gen: u32,
-}
-
-/// Desktop's `setAppBadgeCount` and `setTrayUnreadStatus`: the unread count and the window state on the tray icon and
-/// the launcher badge of Linux.
-#[cfg(target_os = "linux")]
-fn badge_sync(unread: u32, visible: bool) -> Task<UiMessage> {
-    Task::future(tray::update(unread, visible)).map(Result::err).and_then(|e| Task::done(UiMessage::TrayFailed(e)))
-}
-
-/// Desktop's `setAppBadgeCount`: the unread count on the Dock icon of macOS.
-#[cfg(target_os = "macos")]
-fn badge_sync(unread: u32, _visible: bool) -> Task<UiMessage> {
-    tray::dock_badge(unread);
-    Task::none()
-}
-
-/// Electron's `app.badgeCount` shows nothing on Windows.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn badge_sync(_unread: u32, _visible: bool) -> Task<UiMessage> {
-    Task::none()
-}
-
-/// Desktop's `ga`: the bounds of a window at `at` and `old` size that takes `size`, at most the `screen`, around its
-/// center and on the screen.
-fn grown(at: Point, old: Size, size: Size, screen: Size) -> (Point, Size) {
-    let fit = Size::new(size.width.min(screen.width), size.height.min(screen.height));
-    let place = |at: f32, old: f32, new: f32, room: f32| (at - (new - old) / 2.0).min(room - new).max(0.0).floor();
-    (
-        Point::new(place(at.x, old.width, fit.width, screen.width), place(at.y, old.height, fit.height, screen.height)),
-        fit,
-    )
-}
-
-/// A press on a pin of the pinned grid, which Desktop's `Drop` sorts after the cursor moves 5px: the pin, where the
-/// cursor first moved, and the order of the grid while the pin moves.
-pub struct PinDrag {
-    pub id: String,
-    pub from: Option<Point>,
-    pub order: Option<Vec<String>>,
-}
-
-/// A press on a rail space, which Desktop's `Drop` sorts after the cursor moves 5px.
-pub struct RailDrag {
-    pub id: String,
-    /// Where the press was in the space, where the cursor first moved in the window, and where it is.
-    pub grab: Point,
-    pub from: Option<Point>,
-    pub at: Point,
-    /// The rail order while the space moves, or none before the drag starts.
-    pub order: Option<Vec<String>>,
-}
-
-/// The Edit Spaces window: the shown spaces, then `SPACES_DIVIDER`, then the hidden spaces.
-pub struct SpacesDraft {
-    pub id: window::Id,
-    pub order: Vec<String>,
-    pub search: String,
-    /// The space that the drag handle moves, and the order before the drag.
-    pub drag: Option<(String, Vec<String>)>,
-    /// The space of the open gear menu, and where it opened.
-    pub menu: Option<(String, Point)>,
-    /// Whether the list scrolled down, so the search row casts a shadow.
-    pub scrolled: bool,
-}
-
-/// The size of Desktop's Edit Spaces window.
-const SPACES_SIZE: Size = Size::new(360.0, 560.0);
-
-/// Desktop's `HIDDEN_DIVIDER_ID`.
-const SPACES_DIVIDER: &str = "__hidden_divider__";
-
-#[derive(Debug, Clone)]
-pub enum SpacesEdit {
-    Search(String),
-    Drag(String),
-    /// The dragged space moves to this space, or to the end for an empty ID.
-    Over(String),
-    Drop,
-    NewLabel,
-    /// The gear menu of a space, or no menu.
-    Menu(Option<String>),
-    /// A gear menu item.
-    Act(Box<UiMessage>),
-    Scrolled(bool),
-}
 
 #[cfg(test)]
 mod fuzz;
@@ -14251,7 +6339,7 @@ mod tests {
             duration: Some(65.0),
             ..Attachment::default()
         };
-        let tag = |v: &[Attachment]| media_tag(v).map(|(i, l, d)| (i, l, d.map(|d| d.0)));
+        let tag = |v: &[Attachment]| crate::chat_list::media_tag(v).map(|(i, l, d)| (i, l, d.map(|d| d.0)));
         let voice = Attachment { is_voice_note: Some(true), ..a("audio", "v.ogg", "audio/ogg") };
         assert_eq!(tag(&[voice]), Some((2, "Voice Note", Some("01:05".into()))));
         assert_eq!(tag(&[a("video", "c.mp4", "video/mp4")]), Some((1, "Video", Some("01:05".into()))));
