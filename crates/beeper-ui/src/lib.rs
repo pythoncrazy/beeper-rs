@@ -2718,6 +2718,8 @@ pub struct BeeperGuiApp {
     pub status_banner: String,
     /// The text of Desktop's toast with a "Relaunch app" button, after a change that needs a relaunch.
     relaunch_toast: Option<&'static str>,
+    /// Desktop's backup banner of the recovery key was clicked in this session.
+    key_banner_closed: bool,
     /// The newest toast with its icon and buttons, shown only while the banner still is the text it was made for.
     toast: Option<Toast>,
     /// The earlier toasts of Desktop's `toasts-list` that still show above the newest, each with the time it showed.
@@ -2996,6 +2998,7 @@ impl BeeperGuiApp {
             typing_shown: HashMap::new(),
             status_banner: String::new(),
             relaunch_toast: None,
+            key_banner_closed: false,
             toast: None,
             older_toasts: Vec::new(),
             toast_dismissals: 0,

@@ -4305,6 +4305,39 @@ fn profile_page_like_desktop() {
     assert_eq!(hits.first(), Some(&SettingsHit::Section(SettingsTab::Profile, true)));
 }
 
+/// Desktop's backup banner and `ShowRecoveryKeyModal`: a key this device made over a day ago shows "If you lose your
+/// device..." over the chat list, and the key typed again after its copy marks it backed up.
+#[test]
+fn recovery_key_backup_like_desktop() {
+    use crate::profile::{KeyStep, Msg};
+    let mut app = demo_app("recovery-backup");
+    let key = "EsTc LW2K PGiF wKEo 9bCn nYwJ 3bR7 jAxZ hLoh 6Ycm Nkx5 YTqh";
+    {
+        let mut st = app.store.write();
+        st.features.flags["features"]["*"]["deferred-recovery-code-setup"] = true.into();
+        let s = &mut st.beeper_state;
+        (s.secrets.recovery_code, s.has_backed_up_code) = (key.into(), false);
+        s.recovery_code_generated_at = beeper_core::config::now_unix_millis() - 2 * 24 * 60 * 60 * 1000;
+    }
+    let banner = |app: &BeeperGuiApp| simulator(app.view_sidebar()).find("If you lose your device...").is_ok();
+    assert!(banner(&app), "an unsaved key a day old shows the banner");
+    let _ = app.update(UiMessage::Profile(Msg::SaveKeyNow));
+    assert!(!banner(&app) && app.settings_window.is_some(), "Save key now opens the key and closes the banner");
+    let shows = |app: &BeeperGuiApp, text: &str| simulator(app.view_settings()).find(text).is_ok();
+    assert!(shows(&app, "Copy to Clipboard"));
+    let _ = app.update(UiMessage::Profile(Msg::CopyRecoveryKey));
+    assert!(shows(&app, "Next"), "an unsaved key goes on to its check");
+    let _ = app.update(UiMessage::Profile(Msg::KeyNext));
+    assert!(shows(&app, "Verify recovery key"));
+    let wrong = key.replace("EsTc", "AAAA");
+    let _ = app.update(UiMessage::Profile(Msg::KeyPasted(Some(wrong))));
+    assert!(shows(&app, "Entered key does not match your recovery key"));
+    let _ = app.update(UiMessage::Profile(Msg::KeyPasted(Some(key.into()))));
+    assert!(matches!(app.profile.recovery_key, Some(KeyStep::Verify(_, true, None))), "the right key verifies");
+    let _ = app.update(UiMessage::Profile(Msg::KeyVerified(Ok(()))));
+    assert!(shows(&app, "Verified") && app.store.read().beeper_state.has_backed_up_code);
+}
+
 #[test]
 fn downloads_location_like_desktop() {
     let mut app = demo_app("downloads-location");
