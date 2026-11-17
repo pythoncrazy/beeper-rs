@@ -125,29 +125,43 @@ fn file_label(a: &Attachment) -> Option<String> {
     ext.map(|(_, e)| e.to_ascii_uppercase()).or_else(|| named().map(String::from))
 }
 
-/// Desktop's click on a reaction of a message or a gallery: it removes your reaction from all the messages that have
-/// it, or adds it to all the messages that have the reaction.
-fn toggle_reaction(st: &BeeperStore, chat: &str, ms: &[&Message], key: &str) -> UiMessage {
-    let has = |m: &&&Message, mine: bool| {
-        m.reactions.iter().any(|r| r.reaction_key == key && (!mine || st.is_me(&r.participant_id)))
-    };
-    let mine = ms.iter().any(|m| has(&m, true));
-    let mut toggles = ms
+/// Desktop's click on a reaction pill of a message or a gallery: it removes your reactions of the group from all the
+/// messages that have them, or adds the group's reaction to all the messages that have the group.
+fn toggle_reaction(st: &BeeperStore, chat: &str, ms: &[&Message], group: &str) -> UiMessage {
+    let in_group = |r: &&Reaction| reaction_group(&r.reaction_key) == group;
+    let own = |r: &&Reaction| in_group(r) && st.is_me(&r.participant_id);
+    let mine = ms.iter().any(|m| m.reactions.iter().any(|r| own(&r)));
+    let toggle =
+        |m: &Message, key: &str| UiMessage::Message(Msg::ToggleReaction(chat.into(), m.id.clone(), key.into()));
+    let toggles: Vec<UiMessage> = ms
         .iter()
-        .filter(|m| has(m, mine))
-        .map(|m| UiMessage::Message(Msg::ToggleReaction(chat.into(), m.id.clone(), key.into())));
-    match ms.len() {
-        1 => toggles.next().expect("the message has the reaction"),
-        _ => UiMessage::Commands(toggles.collect()),
+        .flat_map(|m| match mine {
+            true => m.reactions.iter().filter(own).map(|r| toggle(m, &r.reaction_key)).collect::<Vec<_>>(),
+            false => m.reactions.iter().find(in_group).map(|r| toggle(m, &r.reaction_key)).into_iter().collect(),
+        })
+        .collect();
+    match <[UiMessage; 1]>::try_from(toggles) {
+        Ok([one]) => one,
+        Err(many) => UiMessage::Commands(many),
     }
 }
 
-/// The reaction keys of messages `ms`, sorted and each once.
-fn reaction_keys<'a>(ms: &[&'a Message]) -> Vec<&'a str> {
-    let mut keys: Vec<&str> = ms.iter().flat_map(|m| &m.reactions).map(|r| r.reaction_key.as_str()).collect();
-    keys.sort_unstable();
-    keys.dedup();
-    keys
+/// Desktop's `ja`: a reaction key without skin tones or variation selectors, which makes the group of a pill.
+fn reaction_group(key: &str) -> String {
+    key.chars().filter(|c| !('\u{1f3fb}'..='\u{1f3ff}').contains(c) && !matches!(c, '\u{fe0e}' | '\u{fe0f}')).collect()
+}
+
+/// Desktop's `bL`: the reactions of messages `ms` by group, in the order each group first appears.
+fn reaction_groups<'a>(ms: &[&'a Message]) -> Vec<(String, Vec<&'a Reaction>)> {
+    let mut groups: Vec<(String, Vec<&Reaction>)> = Vec::new();
+    for r in ms.iter().flat_map(|m| &m.reactions).filter(|r| !r.reaction_key.is_empty()) {
+        let group = reaction_group(&r.reaction_key);
+        match groups.iter_mut().find(|(g, _)| *g == group) {
+            Some((_, rs)) => rs.push(r),
+            None => groups.push((group, vec![r])),
+        }
+    }
+    groups
 }
 
 fn gap_below(m: &Message, next: &Message) -> f32 {
@@ -1699,7 +1713,7 @@ impl BeeperGuiApp {
         let parts: El<'a> = if reactions.is_empty() {
             parts.into()
         } else {
-            let min_w = reaction_keys(ms).len() as f32 * 36.0 + 2.0 * BUBBLE_PAD_X;
+            let min_w = reaction_groups(ms).len() as f32 * 36.0 + 2.0 * BUBBLE_PAD_X;
             let list = self.reaction_list(chat, ms);
             let look = PillLook {
                 group,
@@ -2004,20 +2018,29 @@ impl BeeperGuiApp {
         container(line).padding(Padding::ZERO.bottom(6.0).left(GUTTER)).into()
     }
 
-    /// Desktop's reactions list of messages `ms`: each reaction with the face and the name of its sender, in key
-    /// order, and "and N more" after 19 when there are more than 20.
+    /// Desktop's reactions list of messages `ms`: each reaction with the face and the name of its sender, by group, and "and N more" after 19 when there are more than 20.
+    /// Desktop's `Tfe`: a custom emoji's image 16 high, or the emoji.
+    fn reaction_glyph<'a>(&self, x: &Reaction, size: f32, line: f32) -> El<'a> {
+        // A key that is itself an image, as stored before keys had their shortcode, shows the image too.
+        let url = x.img_url.as_deref().or(Some(x.reaction_key.as_str()).filter(|k| k.starts_with("mxc://")));
+        match url {
+            Some(url) => match self.media_at(url).and_then(|m| m.as_ref().ok()).and_then(|f| f.first()) {
+                Some(frame) => image(frame.0.clone()).height(16.0).into(),
+                None => Space::new().width(16.0).height(16.0).into(),
+            },
+            None => txt(x.reaction_key.clone(), size).line_height(Pixels(line)).font(EMOJI_FONT).into(),
+        }
+    }
+
     pub(crate) fn reaction_list<'a>(&self, chat: &Chat, ms: &[&Message]) -> El<'a> {
         let p = &self.pal;
-        let reactions: Vec<&Reaction> = ms.iter().flat_map(|m| &m.reactions).collect();
-        let keys = reaction_keys(ms);
-        let order = keys.iter().flat_map(|&k| reactions.iter().filter(move |x| x.reaction_key == k));
-        let all: Vec<_> = order.copied().collect();
+        let all: Vec<&Reaction> = reaction_groups(ms).into_iter().flat_map(|(_, rs)| rs).collect();
         let (shown, more) = if all.len() <= 20 { (&all[..], 0) } else { (&all[..19], all.len() - 19) };
         let list = shown.iter().fold(Column::new(), |col, x| {
             let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
             let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
             let line = row![
-                container(txt(x.reaction_key.clone(), 17.0).font(EMOJI_FONT)).padding(Padding::ZERO.right(10.0)),
+                container(self.reaction_glyph(x, 17.0, 17.0 * 1.3)).padding(Padding::ZERO.right(10.0)),
                 container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0, 0.5))
                     .padding(Padding::ZERO.right(8.0)),
                 med(name.to_string(), 13.0).color(p.text),
@@ -2038,12 +2061,20 @@ impl BeeperGuiApp {
         ms: &[&Message],
         look: &PillLook,
     ) -> Row<'a, UiMessage> {
-        reaction_keys(ms).into_iter().fold(Row::new().spacing(look.gap), |r, k| {
-            let reactors: Vec<_> = ms.iter().flat_map(|m| &m.reactions).filter(|x| x.reaction_key == k).collect();
+        reaction_groups(ms).into_iter().fold(Row::new().spacing(look.gap), |r, (group, mut reactors)| {
+            // Desktop's `Tfe` for each key of the group: a custom emoji's image, or the emoji.
+            let mut keys: Vec<&Reaction> = Vec::new();
+            for x in &reactors {
+                if keys.iter().all(|k| k.reaction_key != x.reaction_key) {
+                    keys.push(x);
+                }
+            }
+            let glyphs = keys.iter().map(|x| self.reaction_glyph(x, 16.0, 15.0));
+            // Your own reaction shows first among the faces.
+            reactors.sort_by_key(|x| !st.is_me(&x.participant_id));
             let n = reactors.len();
             let own = reactors.iter().any(|x| st.is_me(&x.participant_id));
-            let mut pill =
-                row![txt(k.to_string(), 16.0).line_height(Pixels(15.0)).font(EMOJI_FONT)].spacing(4).align_y(Center);
+            let mut pill = Row::with_children(glyphs.collect::<Vec<El<'a>>>()).spacing(4).align_y(Center);
             if look.group || n > 1 {
                 for x in reactors.iter().take(3) {
                     let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
@@ -2058,7 +2089,7 @@ impl BeeperGuiApp {
             let hover = look.hover.unwrap_or(fill);
             let style = bordered_btn([fill, hover, hover], [look.fg.0; 3], look.ring.0, look.ring.1, 14.0);
             let pill = button(pill).padding([4.0 + look.ring.1, 5.0 + look.ring.1]).style(style);
-            r.push(pill.on_press(toggle_reaction(st, &chat.id, ms, k)))
+            r.push(pill.on_press(toggle_reaction(st, &chat.id, ms, &group)))
         })
     }
 }
@@ -2138,7 +2169,13 @@ impl BeeperGuiApp {
                 if mine {
                     st.remove_reaction(&cid, &mid, &key).expect("remove reaction");
                 } else {
-                    st.add_reaction(&cid, &mid, &key, None).expect("add reaction");
+                    // A custom emoji reacts with its image again.
+                    let img = stored(&st, &mid)
+                        .reactions
+                        .iter()
+                        .find(|r| r.reaction_key == key)
+                        .and_then(|r| r.img_url.clone());
+                    st.add_reaction(&cid, &mid, &key, img, None).expect("add reaction");
                     st.add_recent_emoji(&key);
                     if let Some(c) = st.matrix.clone() {
                         let content = serde_json::json!({ "recent_emoji": st.recent_emoji });
@@ -2535,6 +2572,33 @@ impl BeeperGuiApp {
 mod tests {
     use super::*;
     use iced_test::simulator::simulator;
+
+    /// Desktop's reaction pills: one pill a group of skin tones, in the order the groups first appear, and a click
+    /// that adds the group's reaction or removes your own reactions of the group.
+    #[test]
+    fn reactions_group_like_desktop() {
+        let app = crate::fuzz::demo_app("reaction-groups");
+        let st = app.store.read();
+        let me = st.self_id("beeper");
+        let react = |who: &str, key: &str| Reaction {
+            id: format!("{who}{key}"),
+            participant_id: who.into(),
+            reaction_key: key.into(),
+            animated: None,
+            img_url: None,
+            sort_key: String::new(),
+        };
+        let mut m = st.messages[0].clone();
+        m.reactions = vec![react("@a:x", "😂"), react("@b:x", "👍🏽"), react(&me, "👍️"), react("@c:x", "🎉")];
+        let groups: Vec<(String, usize)> = reaction_groups(&[&m]).into_iter().map(|(g, rs)| (g, rs.len())).collect();
+        assert_eq!(groups, [("😂".into(), 1), ("👍".into(), 2), ("🎉".into(), 1)], "first seen, tones together");
+        let removes = |msg: UiMessage| match msg {
+            UiMessage::Message(Msg::ToggleReaction(_, _, key)) => key,
+            _ => panic!("one toggle"),
+        };
+        assert_eq!(removes(toggle_reaction(&st, "c", &[&m], "👍")), "👍️", "a click removes your own reaction");
+        assert_eq!(removes(toggle_reaction(&st, "c", &[&m], "😂")), "😂", "or adds the group's");
+    }
 
     /// Desktop's `Seen by` of a group: the newest reader first, by first name when no other member has it.
     #[test]

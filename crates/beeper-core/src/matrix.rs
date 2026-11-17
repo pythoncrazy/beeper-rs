@@ -672,12 +672,16 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
     let member = room.get_member_no_sync(&user).await.expect("read room member");
     // Desktop's `hs.order ?? 0` and `key || ""`: other clients and servers can leave them out.
     let order = e["unsigned"]["com.beeper.hs.order"].as_i64().unwrap_or(0);
+    // Desktop's reaction of a custom emoji: its shortcode as the key and its image.
+    let key = rel["key"].as_str().unwrap_or_default();
+    let img_url = key.starts_with("mxc://").then(|| key.to_string());
+    let shortcode = img_url.as_ref().and_then(|_| s(&c["com.beeper.reaction.shortcode"])).map(|s| s.replace(':', ""));
     let reaction = (message_type == "REACTION").then(|| Reaction {
         id: id.clone(),
         participant_id: sender.clone(),
-        reaction_key: rel["key"].as_str().unwrap_or_default().into(),
+        reaction_key: shortcode.unwrap_or_else(|| key.into()),
         animated: None,
-        img_url: None,
+        img_url,
         sort_key: sort_key(order),
     });
     let msg = Box::new(Message {
@@ -1552,6 +1556,9 @@ pub enum Outgoing {
         txn: String,
         target: String,
         key: String,
+        /// The image of a custom emoji, whose shortcode `key` is.
+        #[serde(default)]
+        img_url: Option<String>,
     },
     /// An MSC3381 poll start, like Desktop's `sendPoll`.
     Poll {
@@ -2263,7 +2270,16 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         Outgoing::Redact { target } => {
             room.redact(&event(target)?, None, None).await.map_err(|x| x.to_string())?;
         }
-        Outgoing::React { txn, target, key } => {
+        // Desktop's `sendReactionEvent`: a custom emoji reacts with its image and names its shortcode.
+        Outgoing::React { txn, target, key, img_url: Some(img) } => {
+            let content = serde_json::json!({
+                "m.relates_to": { "rel_type": "m.annotation", "event_id": event(target)?, "key": img },
+                "com.beeper.reaction.shortcode": format!(":{key}:"),
+            });
+            let id = room.send_raw("m.reaction", content).with_transaction_id(txn.as_str().into());
+            sent(txn, id.await.map_err(e)?.response.event_id);
+        }
+        Outgoing::React { txn, target, key, img_url: None } => {
             let content = ReactionEventContent::new(Annotation::new(event(target)?, key));
             sent(txn.clone(), room.send(content).with_transaction_id(txn.into()).await.map_err(e)?.response.event_id);
         }
