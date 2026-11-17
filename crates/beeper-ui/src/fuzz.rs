@@ -7499,3 +7499,27 @@ fn nameless_attachments_like_desktop() {
     let a = Attachment { attachment_type: "unknown".into(), ..Attachment::default() };
     assert_eq!(crate::message::attachment_name(&a), "Attachment");
 }
+
+/// Desktop's press on a trigger dismisses its tooltip: the "Filter" tooltip does not cover the filter menu.
+#[test]
+fn no_tooltip_over_an_open_menu_like_desktop() {
+    let mut app = demo_app("tooltip-menu");
+    // The simulator does not find the text of overlays, so the test reads a pixel of the tooltip left of the menu.
+    let tip_pixel = |app: &BeeperGuiApp, name: &str| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+        let at = Point::new(235.0, 26.0);
+        sim.point_at(at);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+        let dir = std::env::temp_dir().join(format!("beeper-rs-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("tip"));
+        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        let shot = ::image::open(&png).unwrap().into_rgba8();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let k = shot.width() / 1200;
+        shot.get_pixel(214 * k, 57 * k).0
+    };
+    assert_eq!(tip_pixel(&app, "tip-shown"), [255; 4], "the filter button has its tooltip");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
+    assert_ne!(tip_pixel(&app, "tip-hidden"), [255; 4], "not over the open filter menu");
+}

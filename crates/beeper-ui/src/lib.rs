@@ -4070,18 +4070,8 @@ impl BeeperGuiApp {
                 self.user_hover.shown = None;
                 if self.show_command_palette
                     || self.forward.is_some()
-                    || self.show_filter_menu
-                    || self.chat_menu.is_some()
-                    || self.pane.message_menu.is_some()
+                    || self.menu_open()
                     || self.pane.gallery_reactions.is_some()
-                    || self.pane.thread_menu.is_some()
-                    || self.unread_menu.is_some()
-                    || self.pane.edit_menu.is_some()
-                    || self.pane.sched_menu.is_some()
-                    || self.reminder_menu.is_some()
-                    || self.audio.menu.is_some()
-                    || self.selection_menu.is_some()
-                    || self.pane.show_attach_menu
                     || self.pane.picker.is_some()
                     || self.pane.emoji.is_some()
                     || self.quick_look_target.is_some()
@@ -5635,6 +5625,21 @@ impl BeeperGuiApp {
             .into()
     }
 
+    /// Whether one of the main window's menus is open.
+    fn menu_open(&self) -> bool {
+        self.show_filter_menu
+            || self.chat_menu.is_some()
+            || self.pane.message_menu.is_some()
+            || self.pane.thread_menu.is_some()
+            || self.unread_menu.is_some()
+            || self.pane.edit_menu.is_some()
+            || self.pane.sched_menu.is_some()
+            || self.reminder_menu.is_some()
+            || self.audio.menu.is_some()
+            || self.selection_menu.is_some()
+            || self.pane.show_attach_menu
+    }
+
     fn tip<'a>(
         &self,
         el: El<'a>,
@@ -5664,6 +5669,10 @@ impl BeeperGuiApp {
                 .into()
         };
         let keys = (!keys.is_empty()).then(|| Row::with_children(keys.into_iter().map(kbd)).spacing(4));
+        // Desktop's press on a trigger dismisses its tooltip, so none shows over the menu that the press opened.
+        if self.menu_open() {
+            return tooltip(el, Space::new(), at);
+        }
         let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
         tooltip(el, container(body).padding([8, 11]).style(glow_box(p.card, p.shadow, 17.0, 0.0, 20.0)), at)
     }
