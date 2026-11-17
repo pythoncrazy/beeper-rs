@@ -5,10 +5,11 @@ use crate::models::{
     ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older,
     PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers,
     Transcription, User, VerificationDevice, VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji,
-    ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM,
+    ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS,
     DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK,
-    MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMOVED_MESSAGE,
-    REMOVED_MESSAGES_ROOM, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR,
+    PERSONAL_NAME, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM,
+    USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -478,6 +479,11 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         follows: account_data(room, THREAD_FOLLOWS).await.and_then(|f| ThreadFollows::parse(&f)).unwrap_or_default(),
         thread_reads: BTreeMap::new(),
         personal: None,
+        // Desktop's `Up`: a sound it knows, else the Default sound.
+        notification_sound: account_data(room, NOTIFICATION_SOUND)
+            .await
+            .and_then(|d| s(&d["sound"]))
+            .filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
         flags: 0,
     };
     let name = account_data(room, PERSONAL_NAME).await.and_then(|n| s(&n["name"])).filter(|n| !n.is_empty());
