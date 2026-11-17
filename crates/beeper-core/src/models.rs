@@ -81,6 +81,11 @@ pub struct FileRule {
     /// In seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_duration: Option<f64>,
+    /// The `Xn` level of a caption on a file of this kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<i8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_caption_length: Option<u32>,
 }
 /// The file kinds that a chat accepts.
 pub type FileRules = std::collections::BTreeMap<String, FileRule>;

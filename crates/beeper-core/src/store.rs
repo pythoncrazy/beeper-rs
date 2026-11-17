@@ -417,6 +417,8 @@ pub struct Draft {
     /// The root of the thread of a thread reply, and Desktop's "Also send to chat".
     pub thread: Option<(String, bool)>,
     pub files: Vec<OutFile>,
+    /// Desktop's `links` of the composer: the text has links, whose previews the user may have left out.
+    pub links: bool,
 }
 
 /// A file to send, with what the sender knows of it. The store makes the attachment of the local echo and the media
@@ -2265,13 +2267,24 @@ impl BeeperStore {
     /// Writes the local echoes of a draft, and returns the chat ID of the send and the changes that send the echoes,
     /// in order. [`BeeperStore::send`] queues them at once.
     pub fn echo_draft(&mut self, chat_or_local_id: &str, draft: Draft) -> Result<(String, Vec<Outgoing>), Error> {
-        let Draft { text, mut reply_to, mentions, preview, thread, files } = draft;
+        let Draft { text, mut reply_to, mentions, preview, thread, files, links } = draft;
         assert!(text.is_some() || !files.is_empty(), "a draft has text or files");
-        let caption = text.clone().filter(|_| files.len() == 1);
+        let rules = self.resolve_chat_idx(chat_or_local_id).map(|i| self.chats[i].file.clone());
+        let captioned = |f: &OutFile| {
+            rules.as_ref().is_some_and(|r| crate::media::takes_caption(r, &f.mime, f.gif, f.voice.is_some()))
+        };
+        let caption = text.clone().filter(|_| matches!(&files[..], [f] if captioned(f)));
         let (mut chat_id, mut sends) = (String::new(), Vec::new());
         if let Some(text) = text.filter(|_| caption.is_none()) {
-            let send =
-                |txn, reply_to, thread| Outgoing::Send { txn, text: text.clone(), reply_to, preview, mentions, thread };
+            let send = |txn, reply_to, thread| Outgoing::Send {
+                txn,
+                text: text.clone(),
+                reply_to,
+                preview,
+                mentions,
+                thread,
+                links,
+            };
             let (cid, out) =
                 self.echo_part(chat_or_local_id, Some(text.clone()), reply_to.take(), None, &thread, send)?;
             if let Outgoing::Send { txn, preview: Some((v, _)), .. } = &out {
