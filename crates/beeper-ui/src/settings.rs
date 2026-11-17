@@ -831,7 +831,8 @@ impl BeeperGuiApp {
             self.chat_menu.as_ref().and_then(|(cid, at)| Some((cid.strip_prefix("prefs:")?, at))).map(|(id, at)| {
                 let (menu, sub) = self.account_menu(id, SpaceMenu::Prefs);
                 let size = self.settings_size;
-                let (w, h) = (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 4.0 * MENU_ITEM + 11.0);
+                let items = if crate::nickname::can_nickname(&self.store.read(), id) { 5.0 } else { 4.0 };
+                let (w, h) = (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + items * MENU_ITEM + 11.0);
                 let (x, y) = (at.x.min(size.width - w - 8.0), at.y.min(size.height - h - 8.0));
                 let menu = container(mouse_area(row![menu].push(sub)).on_press(UiMessage::Noop))
                     .padding(Padding::ZERO.left(x).top(y))
@@ -1051,7 +1052,10 @@ impl BeeperGuiApp {
                         photo,
                         b.network_name.clone(),
                         b.mode == BridgeMode::Cloud,
-                        b.display_text_with(crate::fmt_phone),
+                        // Desktop's `userDisplayText`: the nickname, or the user.
+                        st.custom_name(&b.account_id)
+                            .map(str::to_string)
+                            .or_else(|| b.display_text_with(crate::fmt_phone)),
                     )
                 }));
                 let rows = rows
