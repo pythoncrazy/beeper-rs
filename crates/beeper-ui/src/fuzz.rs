@@ -8108,3 +8108,33 @@ fn sidebar_slides_like_desktop() {
     assert!(!app.sidebar_hidden && app.sidebar_progress().is_some());
     drop(simulator(app.view_main()));
 }
+
+/// Desktop's `Wfe` contact card of a `.vcf` attachment in the timeline, with the Call and Copy menu of a number.
+#[test]
+fn contact_cards_in_the_timeline_like_desktop() {
+    let mut app = demo_app("vcard-timeline");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let url = "mxc://x/ada".to_string();
+    {
+        let mut st = app.store.write();
+        let i = *st.timeline_indices(NOTE_CHAT_ID).last().expect("a message");
+        let a = Attachment {
+            attachment_type: "unknown".into(),
+            file_name: Some("ada.vcf".into()),
+            src_url: Some(url.clone()),
+            ..Attachment::default()
+        };
+        (st.messages[i].text, st.messages[i].attachments) = (None, vec![a]);
+    }
+    let card = crate::vcard::parse_vcard("BEGIN:VCARD\nFN:Ada Lovelace\nORG:Engines\nTEL:+14155550199\nEND:VCARD\n");
+    app.vcards.insert(url, Some(Ok(card)));
+    {
+        let mut sim = simulator(app.view_conversation());
+        assert!(sim.find("Ada Lovelace").is_ok() && sim.find("Phone Number").is_ok() && sim.find("Engines").is_ok());
+    }
+    let items = info::info_menu(&app.store.read(), "vcard:phone +14155550199", |_| true);
+    let labels: Vec<&str> = items.iter().flatten().map(|i| i.0.as_str()).collect();
+    assert_eq!(labels, ["Call +1 415-555-0199", "Copy +1 415-555-0199"]);
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("vcard:phone +14155550199".into())));
+    assert!(simulator(app.view_main()).find("Call +1 415-555-0199").is_ok(), "a click on the number opens its menu");
+}

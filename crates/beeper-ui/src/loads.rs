@@ -6,6 +6,8 @@ use super::*;
 pub enum Msg {
     Avatar(String, Result<image::Handle, String>),
     Media(String, Result<Frames, String>),
+    /// A contact card of the timeline, read from its `.vcf` file.
+    VCard(String, Result<crate::vcard::VCard, String>),
     Tile(String, image::Handle),
     /// A quoted message that the timeline did not have, or why it could not load.
     Quote(String, Result<Box<Message>, String>),
@@ -23,6 +25,9 @@ impl BeeperGuiApp {
             Msg::Avatar(_, Err(_)) => {}
             Msg::Media(url, r) => {
                 self.media.insert(url, Some(r));
+            }
+            Msg::VCard(url, r) => {
+                self.vcards.insert(url, Some(r));
             }
             Msg::Tile(key, h) => self.tiles.insert(key, Some(h)),
             Msg::RetryMedia(url) => {

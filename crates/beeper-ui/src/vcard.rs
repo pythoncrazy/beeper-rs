@@ -12,8 +12,8 @@ pub(crate) fn contact_name(f: &str) -> String {
 }
 
 /// The parts of a vCard that Desktop's contact card shows.
-#[derive(Debug, Default, PartialEq)]
-pub(crate) struct VCard {
+#[derive(Debug, Default, PartialEq, Clone)]
+pub struct VCard {
     pub(crate) name: String,
     pub(crate) org: Option<String>,
     pub(crate) phones: Vec<String>,

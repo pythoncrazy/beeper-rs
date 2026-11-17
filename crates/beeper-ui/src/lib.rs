@@ -1047,9 +1047,17 @@ fn edit_open(m: &Message, rules: MessageRules) -> bool {
 
 /// Desktop's pending `ContactAttachment`: the avatar, the name or the organization, and the first phone number and
 /// email with the count of the others.
-fn contact_card<'a>(p: &Palette, c: &VCard) -> El<'a> {
-    let line = |s: String| txt(s, 12.0).line_height(Pixels(16.0)).color(p.text);
-    let medium = |s: String| txt(s, 14.0).font(fw(Weight::Medium)).color(p.text);
+/// Desktop's `Wfe` contact card of a vCard: the 32 px avatar, the name and the organization, then `limit` of its phone
+/// numbers and of its emails through `entry` (`true` for a phone number), with "+ %d more" after them.
+pub(crate) fn contact_card<'a>(
+    p: &Palette,
+    c: &VCard,
+    fg: Color,
+    limit: usize,
+    entry: &dyn Fn(bool, &str) -> El<'a>,
+) -> Column<'a, UiMessage> {
+    let line = |s: String| txt(s, 12.0).line_height(Pixels(16.0)).color(fg);
+    let medium = |s: String| txt(s, 14.0).font(fw(Weight::Medium)).color(fg);
     let mut meta = Column::new().push((!c.name.is_empty()).then(|| medium(c.name.clone())));
     if let Some(org) = &c.org {
         meta = meta.push(match c.name.is_empty() {
@@ -1057,18 +1065,19 @@ fn contact_card<'a>(p: &Palette, c: &VCard) -> El<'a> {
             false => container(line(org.clone())).padding(Padding::ZERO.top(4.0)).into(),
         });
     }
-    let list = |items: &[String], title: String, more: &'static str, fmt: fn(&str) -> String| {
-        let head = semi(title, 12.0).line_height(Pixels(16.0)).color(p.text);
-        let rest = items.len().saturating_sub(1);
+    let list = |items: &[String], title: String, more: &'static str, phone: bool| {
+        let head = semi(title, 12.0).line_height(Pixels(16.0)).color(fg);
+        let rest = items.len().saturating_sub(limit);
         let more = (rest > 0).then(|| line(trn(more, more, rest, &[&rest])));
         let col = column![container(head).padding(Padding::ZERO.top(6.0).bottom(4.0))];
-        (!items.is_empty()).then(|| col.push(line(fmt(&items[0]))).push(more))
+        let shown = items.iter().take(limit).map(|i| entry(phone, i));
+        (!items.is_empty()).then(|| col.extend(shown).push(more))
     };
     let n = c.phones.len();
-    let phones = list(&c.phones, trn("Phone Number", "Phone Numbers", n, &[]), "+ %d more", fmt_phone);
-    let emails = list(&c.emails, trn("Email", "Emails", c.emails.len(), &[]), " + %d more", str::to_string);
+    let phones = list(&c.phones, trn("Phone Number", "Phone Numbers", n, &[]), "+ %d more", true);
+    let emails = list(&c.emails, trn("Email", "Emails", c.emails.len(), &[]), " + %d more", false);
     let details = row![avatar(&c.name, 32.0, 0.0, p), meta.push(phones).push(emails)].spacing(8);
-    container(column![details, Space::new().width(180)]).padding([8, 10]).style(fill_box(p.received, 0.0)).into()
+    column![details, Space::new().width(180)]
 }
 
 fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
@@ -1573,7 +1582,7 @@ const CARD_FACE_IN: f32 = 88.0 / 3.0;
 /// The height of a user card with only its avatar and name.
 const CARD_H: f32 = 88.0 + 8.0 + 18.0 + 8.0;
 /// The Chat Info context menus: the identity header, the title, a member, a bookmark and a contact detail.
-const INFO_MENUS: [&str; 6] = ["info:", "copy:", "member:", "bookmark:", "contact:", "mention:"];
+const INFO_MENUS: [&str; 7] = ["info:", "copy:", "member:", "bookmark:", "contact:", "mention:", "vcard:"];
 
 /// Desktop's `setPersonalRoomName` gate: the feature is on or the chat has a personal name or photo, and the chat
 /// is a Matrix room that is not merged (`canSetPersonalOverrides`, `personalOverridesApply`).
@@ -2699,6 +2708,8 @@ pub struct BeeperGuiApp {
     pub avatars: images::Images<image::Handle>,
     wants: wants::Wants,
     pub media: images::Images<Result<Frames, String>>,
+    /// The contact cards of `.vcf` attachments by URL, `None` while they load.
+    pub(crate) vcards: HashMap<String, Option<Result<vcard::VCard, String>>>,
     /// The baked gallery tiles (`gallery.rs`).
     tiles: images::Images<image::Handle>,
     /// Desktop's account `messages` cache for quotes: a quoted message out of the timeline, `None` while it loads.
@@ -2932,6 +2943,7 @@ impl BeeperGuiApp {
             avatars: images::Images::new(64 << 20),
             wants: wants::Wants::default(),
             media: images::Images::new(512 << 20),
+            vcards: HashMap::new(),
             tiles: images::Images::new(64 << 20),
             quotes: HashMap::new(),
             dismissed_errors: HashSet::new(),
@@ -3446,7 +3458,13 @@ impl BeeperGuiApp {
 
     /// Desktop's `createThread`: selects the most recent direct chat with the user on the account, or asks the
     /// bridge to make one.
-    fn open_dm(&mut self, account: String, user: User, draft: Option<u32>, quote: Option<String>) -> Task<UiMessage> {
+    pub(crate) fn open_dm(
+        &mut self,
+        account: String,
+        user: User,
+        draft: Option<u32>,
+        quote: Option<String>,
+    ) -> Task<UiMessage> {
         if self.sticky_banner.is_some() {
             return Task::none();
         }
@@ -4906,6 +4924,7 @@ impl BeeperGuiApp {
                 || c == SPACE_SHEET
                 || c == SWITCH_CARD
                 || c.starts_with("draft:")
+                || c.starts_with("vcard:")
                 || c.starts_with("account:")
                 || c.starts_with("head:")
                 || st.resolve_chat_idx(chat).is_some()

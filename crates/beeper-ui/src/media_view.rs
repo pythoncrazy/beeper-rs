@@ -257,7 +257,7 @@ impl BeeperGuiApp {
         *self.wants.media.borrow_mut() = rest;
         let urls: Vec<String> = urls.into_iter().filter(|u| !self.media.contains_key(u)).collect();
         self.media.extend(urls.iter().map(|u| (u.clone(), None)));
-        let audio = Task::batch([self.load_audio(), self.auto_transcribe()]);
+        let audio = Task::batch([self.load_audio(), self.auto_transcribe(), self.load_vcards()]);
         let bookmarks = self.load_bookmarks();
         let tiles = self.bake_tiles();
         Task::batch(urls.into_iter().map(|url| {
@@ -276,6 +276,30 @@ impl BeeperGuiApp {
         .chain(audio)
         .chain(bookmarks)
         .chain(tiles)
+    }
+
+    /// The contact cards that the timeline asked for, read from their `.vcf` files, like Desktop's `Wfe` fetch.
+    fn load_vcards(&mut self) -> Task<UiMessage> {
+        let Some(client) = self.store.read().matrix.clone() else { return Task::none() };
+        let urls: Vec<String> = std::mem::take(&mut *self.wants.vcards.borrow_mut()).into_iter().collect();
+        let urls: Vec<String> = urls.into_iter().filter(|u| !self.vcards.contains_key(u)).collect();
+        self.vcards.extend(urls.iter().map(|u| (u.clone(), None)));
+        Task::batch(urls.into_iter().map(|url| {
+            let read = beeper_core::matrix::media(Some(client.clone()), url.clone());
+            let card = async move { read.await.map(|b| crate::vcard::parse_vcard(&String::from_utf8_lossy(&b))) };
+            Task::perform(card, move |r| UiMessage::Loaded(loads::Msg::VCard(url.clone(), r)))
+        }))
+    }
+
+    /// The contact card of a `.vcf` attachment once it is read, which the view asks for.
+    pub(crate) fn vcard_at(&self, url: &str) -> Option<&Result<crate::vcard::VCard, String>> {
+        match self.vcards.get(url) {
+            Some(c) => c.as_ref(),
+            None => {
+                self.wants.ask(&self.wants.vcards, url);
+                None
+            }
+        }
     }
 
     /// The stored messages with media for the Media window, newest first. The memo keeps them until the store changes.
