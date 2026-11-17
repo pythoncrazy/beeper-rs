@@ -126,7 +126,7 @@ where
             title_text: TitleText::new(theme.active.font_color),
             theme,
             buttons: Buttons::new(gtk::decoration_layout().or_else(get_button_layout_config)),
-            mouse: Default::default(),
+            mouse: MouseState::new(gtk::titlebar_actions().unwrap_or_default()),
             state: WindowState::empty(),
             wm_capabilities: WindowManagerCapabilities::all(),
             resizable: true,
@@ -483,7 +483,7 @@ where
             FrameClick::Normal => {
                 self.mouse.click(timestamp, pressed, self.resizable, &self.state, &self.wm_capabilities)
             }
-            FrameClick::Alternate => self.mouse.alternate_click(pressed, &self.wm_capabilities),
+            FrameClick::Alternate => self.mouse.alternate_click(pressed, &self.state, &self.wm_capabilities),
             _ => None,
         };
         self.dirty |= was_pressed != self.mouse.pressed;

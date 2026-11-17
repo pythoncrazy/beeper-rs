@@ -18,6 +18,7 @@ use std::sync::{mpsc, Mutex, OnceLock};
 use smithay_client_toolkit::reexports::csd_frame::WindowState;
 
 use crate::buttons::ButtonKind;
+use crate::pointer::{TitlebarAction, TitlebarActions};
 use crate::theme::Metrics;
 
 type Ptr = *mut c_void;
@@ -181,6 +182,7 @@ type Job = Box<dyn FnOnce(&mut Gtk) + Send>;
 struct Opened {
     metrics: Metrics,
     layout: Option<(String, String)>,
+    titlebar: TitlebarActions,
 }
 
 /// The thread that owns GTK. GTK is not thread safe, so every call happens there; frames hand
@@ -208,7 +210,11 @@ fn worker() -> &'static Worker {
             let Some(mut gtk) = Gtk::open() else {
                 return;
             };
-            let _ = opened.send(Opened { metrics: gtk.metrics(), layout: gtk.decoration_layout() });
+            let _ = opened.send(Opened {
+                metrics: gtk.metrics(),
+                layout: gtk.setting(c"gtk-decoration-layout").map(|layout| split_layout(&layout)),
+                titlebar: gtk.titlebar_actions(),
+            });
             for job in queue {
                 job(&mut gtk);
             }
@@ -248,6 +254,11 @@ pub(crate) fn metrics() -> Option<Metrics> {
 /// buttons left and right of the title, which Electron's frame shows.
 pub(crate) fn decoration_layout() -> Option<(String, String)> {
     worker().opened()?.layout.clone()
+}
+
+/// What clicks on the title bar do, by GTK's settings.
+pub(crate) fn titlebar_actions() -> Option<TitlebarActions> {
+    Some(worker().opened()?.titlebar)
 }
 
 /// Whether frames draw with GTK.
@@ -290,30 +301,33 @@ impl Gtk {
         Some(Self { api, contexts: HashMap::new(), icons: HashMap::new() })
     }
 
-    fn decoration_layout(&self) -> Option<(String, String)> {
+    /// A string setting of GTK's.
+    fn setting(&self, name: &std::ffi::CStr) -> Option<String> {
         let api = &self.api;
-        let mut layout: *mut c_char = null_mut();
+        let mut value: *mut c_char = null_mut();
         // SAFETY: a string property, copied out and freed.
-        let layout = unsafe {
+        unsafe {
             let settings = (api.gtk_settings_get_default)();
             if settings.is_null() {
                 return None;
             }
-            (api.g_object_get)(
-                settings,
-                c"gtk-decoration-layout".as_ptr(),
-                &mut layout as *mut *mut c_char,
-                null_mut::<c_void>(),
-            );
-            if layout.is_null() {
+            (api.g_object_get)(settings, name.as_ptr(), &mut value as *mut *mut c_char, null_mut::<c_void>());
+            if value.is_null() {
                 return None;
             }
-            let text = std::ffi::CStr::from_ptr(layout).to_string_lossy().into_owned();
-            (api.g_free)(layout.cast());
-            text
-        };
-        let (left, right) = layout.split_once(':').unwrap_or(("", &layout));
-        Some((left.to_owned(), right.to_owned()))
+            let text = std::ffi::CStr::from_ptr(value).to_string_lossy().into_owned();
+            (api.g_free)(value.cast());
+            Some(text)
+        }
+    }
+
+    fn titlebar_actions(&self) -> TitlebarActions {
+        let defaults = TitlebarActions::default();
+        let action = |name, default| self.setting(name).map_or(default, |value| TitlebarAction::parse(&value, default));
+        TitlebarActions {
+            double_click: action(c"gtk-titlebar-double-click", defaults.double_click),
+            right_click: action(c"gtk-titlebar-right-click", defaults.right_click),
+        }
     }
 
     /// Handles GDK's pending display events (theme and setting changes) without blocking.
@@ -592,6 +606,12 @@ impl Gtk {
         self.icons.insert((name, flags, scale), surface);
         surface
     }
+}
+
+/// `gtk-decoration-layout`'s buttons left and right of the title.
+fn split_layout(layout: &str) -> (String, String) {
+    let (left, right) = layout.split_once(':').unwrap_or(("", layout));
+    (left.to_owned(), right.to_owned())
 }
 
 /// The `window` node with GTK's classes for the window's state.

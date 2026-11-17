@@ -8,6 +8,8 @@ This directory is sctk-adwaita 0.10.1 from crates.io with these changes:
   systems without it.
 - The title bar's height and the buttons' sizes and places come from the theme (`theme::metrics`).
 - The buttons are GTK's `gtk-decoration-layout`, so GNOME's default shows only the close button.
+- A double or right click on the title bar does what GTK's `gtk-titlebar-double-click` and
+  `gtk-titlebar-right-click` say, as in Chromium's `GtkUi::GetWindowFrameAction`.
 - A button acts when released over the button it was pressed on, and shows its pressed state.
 - The buttons are placed again when the compositor's capabilities change, instead of at the left edge until the next
   resize.
