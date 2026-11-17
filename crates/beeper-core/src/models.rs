@@ -10,6 +10,9 @@ pub const CHAT_NOTIFY_ANYWAY: u16 = 1 << 6;
 pub const CHAT_MERGED_PARENT: u16 = 1 << 7;
 pub const CHAT_HIDDEN: u16 = 1 << 8;
 pub const CHAT_REQUEST: u16 = 1 << 9;
+/// A merged chat past the plan's `max-merge-chats` (Desktop's `isUnionActive` is false): it is hidden, and its member
+/// chats show on their own.
+pub const CHAT_INACTIVE_UNION: u16 = 1 << 10;
 pub const DELETE_FOR_ME: u8 = 1 << 0;
 pub const DELETE_FOR_EVERYONE: u8 = 1 << 1;
 /// The `Chat::block` bits: the `block_user`, `no_unblock` and `report_spam` room features, and Desktop's
@@ -1120,7 +1123,12 @@ impl Chat {
             (self.merge.is_some(), CHAT_MERGED_PARENT),
             (self.is_hidden_from_inbox == Some(true), CHAT_HIDDEN),
             (self.is_request == Some(true), CHAT_REQUEST),
-        ]) | (self.flags & CHAT_NOTIFY_ANYWAY);
+        ]) | (self.flags & (CHAT_NOTIFY_ANYWAY | CHAT_INACTIVE_UNION));
+    }
+
+    /// Whether the chat lists show the chat: it is no member chat of a merged chat, and no hidden merged chat.
+    pub fn listed(&self) -> bool {
+        self.merged_into_chat_id.is_none() && self.flags & CHAT_INACTIVE_UNION == 0
     }
 }
 

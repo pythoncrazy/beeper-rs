@@ -3841,6 +3841,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     let f = &st.features;
     if (&f.flags, &f.usage, &f.summary) != (&flags, &usage, &summary) {
         (st.features.flags, st.features.usage, st.features.summary) = (flags, usage, summary);
+        st.apply_union_limit();
         st.emit_ws("setup.updated", "", None, None, None);
     }
     // Desktop's `BRIDGE_STATES_UPDATED`: the homeserver updates the bridge states while the app runs.
@@ -4853,8 +4854,8 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                     Some(room) if room.state() == RoomState::Left => {
                         sync_left(store, &room, update.timeline.events).await
                     }
-                    // A forgotten room, like a deleted label, is gone from the client.
-                    _ => store.write().remove_chat(id.as_str()),
+                    // A forgotten room, like a deleted label, is gone from the client, and from its merged chats.
+                    _ => store.write().remove_deleted_chat(id.as_str()),
                 }
             }
             for (id, update) in resp.rooms.joined {

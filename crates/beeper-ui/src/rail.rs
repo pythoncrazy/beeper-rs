@@ -405,7 +405,7 @@ impl BeeperGuiApp {
         let countable = |c: &Chat| {
             c.flags & CHAT_UNREAD != 0
                 && c.flags & (CHAT_ARCHIVED | CHAT_REQUEST) == 0
-                && c.merged_into_chat_id.is_none()
+                && c.listed()
                 && (c.unread_mentions > 0 || !st.notifications_muted(c))
         };
         let tally = |key: &str, f: &dyn Fn(&Chat) -> bool| {

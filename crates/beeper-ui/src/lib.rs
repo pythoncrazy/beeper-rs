@@ -1762,7 +1762,7 @@ fn space_error(st: &BeeperStore, id: &str) -> Option<&'static str> {
 
 /// Desktop's `getSpaceSubtitle`: the chats, reminders, requests or scheduled messages of a space.
 fn space_subtitle(st: &BeeperStore, id: &str) -> Option<String> {
-    let count = |f: &dyn Fn(&Chat) -> bool| st.chats.iter().filter(|c| c.merged_into_chat_id.is_none() && f(c)).count();
+    let count = |f: &dyn Fn(&Chat) -> bool| st.chats.iter().filter(|c| c.listed() && f(c)).count();
     let listed = |c: &Chat| c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY) == 0;
     let chats = |n: usize| trn("%d Chat", "%d Chats", n, &[&n]);
     Some(match id {
@@ -3578,7 +3578,7 @@ impl BeeperGuiApp {
     fn listed(&self, st: &BeeperStore, filters: u8, c: &Chat) -> bool {
         let on = |i: usize| filters & 1 << i != 0;
         let shown = |i: usize| on(i) || !filter_hit(i, c, st);
-        c.merged_into_chat_id.is_none()
+        c.listed()
             && self.list().selected_account_filter.as_ref().is_none_or(|a| in_rail_entry(st, a, c))
             // Desktop's `inSpaceViewAccountFilter`: an account takes in the chats of its network spaces too.
             && self.list().space_view_account.as_ref().is_none_or(|a| match network_space(st, a) {

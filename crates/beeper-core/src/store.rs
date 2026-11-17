@@ -1147,6 +1147,7 @@ impl BeeperStore {
             self.ensure_note_chat(&Profile::default());
         }
         self.rebuild_accounts_from_bridges();
+        self.apply_union_limit();
         if self.config.demo {
             let seed: Seed = serde_json::from_str(SEED_JSON).expect("parse bundled seed.json");
             let label = |l: SeedLabel| {
@@ -2023,7 +2024,9 @@ impl BeeperStore {
     pub fn upsert_chat(&mut self, mut chat: Chat) {
         let Some(&idx) = self.chat_idx_by_id.get(&chat.id) else {
             chat.label_ids = self.labels.iter().filter(|l| l.rooms.contains(&chat.id)).map(|l| l.id.clone()).collect();
-            let in_union = |c: &&Chat| c.merge.as_ref().is_some_and(|m| m.chat_ids.contains(&chat.id));
+            let in_union = |c: &&Chat| {
+                c.flags & CHAT_INACTIVE_UNION == 0 && c.merge.as_ref().is_some_and(|m| m.chat_ids.contains(&chat.id))
+            };
             chat.merged_into_chat_id = self.chats.iter().find(in_union).map(|c| c.id.clone());
             let idx = self.push_chat(chat, true);
             let c = self.chats[idx].clone();
@@ -2076,7 +2079,8 @@ impl BeeperStore {
     pub fn remove_chat(&mut self, id: &str) {
         self.remove_label(id);
         let Some(&idx) = self.chat_idx_by_id.get(id) else { return };
-        if let Some(m) = self.chats[idx].merge.take() {
+        let union = self.chats[idx].merge.take();
+        if let Some(m) = &union {
             self.set_merged_into(&m.chat_ids, id, false);
         }
         let idx = self.chat_idx_by_id.remove(id).expect("the chat is here");
@@ -2102,6 +2106,10 @@ impl BeeperStore {
         if let Some(p) = chat.merged_into_chat_id.and_then(|p| self.resolve_chat_idx(&p)) {
             self.update_chat(p, |_| {});
         }
+        // A merged chat past the limit can take the place of this one.
+        if union.is_some() {
+            self.apply_union_limit();
+        }
     }
 
     /// Asks the bridge to delete the chat, and removes it here at once like Desktop.
@@ -2109,12 +2117,24 @@ impl BeeperStore {
         let modes = self.chats[self.chat_idx_by_id[id]].delete_modes;
         let mode = if for_everyone { DELETE_FOR_EVERYONE } else { DELETE_FOR_ME };
         assert!(modes & mode != 0, "{id} does not support delete mode {mode}");
-        let parent = self.chats[self.chat_idx_by_id[id]].merged_into_chat_id.clone();
+        let parents = self.union_parents(id);
         self.remove_chat(id);
         self.queue(id, Outgoing::DeleteChat { for_everyone });
-        if let Some(parent) = parent {
-            self.drop_from_union(&parent, id);
-        }
+        parents.iter().for_each(|p| self.drop_from_union(p, id));
+    }
+
+    /// Desktop's `room delete` of a room that went elsewhere: the chat goes, and so does its place in the merged chats
+    /// that list it.
+    pub fn remove_deleted_chat(&mut self, id: &str) {
+        let parents = self.union_parents(id);
+        self.remove_chat(id);
+        parents.iter().for_each(|p| self.drop_from_union(p, id));
+    }
+
+    /// Desktop's `getUnionParentsForChild`: the merged chats that list the room, past the limit too.
+    fn union_parents(&self, room: &str) -> Vec<String> {
+        let lists = |c: &&Chat| c.merge.as_ref().is_some_and(|m| m.chat_ids.iter().any(|r| r == room));
+        self.chats.iter().filter(lists).map(|c| c.id.clone()).collect()
     }
 
     /// Desktop's clean-up of the unions of a deleted room: an `m.space.child` without `via` takes it out of the merged
@@ -2367,6 +2387,26 @@ impl BeeperStore {
         self.set_merged_into(&gone, &id, false);
         self.set_merged_into(&new, &id, true);
         self.update_chat(idx, |_| {});
+        self.apply_union_limit();
+    }
+
+    /// Desktop's `activeUnionIds`: without a `max-merge-chats` limit, or within it, every merged chat is active, else
+    /// the oldest ones by creation. A merged chat past it is hidden, and its member chats show on their own.
+    pub fn apply_union_limit(&mut self) {
+        // Until the feature flags come, no merged chat hides.
+        let max = if self.features.flags.is_null() { -1 } else { self.features.max_merge_chats() };
+        let mut unions: Vec<usize> = (0..self.chats.len()).filter(|&i| self.chats[i].merge.is_some()).collect();
+        unions.sort_by_key(|&i| self.chats[i].created_at.unwrap_or(i64::MAX));
+        let active = if max < 0 { unions.len() } else { usize::try_from(max).expect("a limit from 0") };
+        for (n, i) in unions.into_iter().enumerate() {
+            let on = n < active;
+            let id = self.chats[i].id.clone();
+            let rooms = self.chats[i].merge.as_ref().map(|m| m.chat_ids.clone()).unwrap_or_default();
+            if (self.chats[i].flags & CHAT_INACTIVE_UNION == 0) != on {
+                self.update_chat(i, |c| c.flags ^= CHAT_INACTIVE_UNION);
+            }
+            self.set_merged_into(&rooms, &id, on);
+        }
     }
 
     /// Desktop's `handleUnionSync`: the member rooms of the merged chat `id`, from the `m.space.child` state of its
@@ -3430,7 +3470,7 @@ impl BeeperStore {
         (0..self.chats.len())
             .filter(|&i| {
                 let c = &self.chats[i];
-                c.merged_into_chat_id.is_none()
+                c.listed()
                     && c.flags & (CHAT_ARCHIVED | CHAT_PINNED) == 0
                     && !(only_read && c.flags & CHAT_UNREAD != 0)
                     && ms(c).is_some_and(|t| t < cutoff)
@@ -4004,6 +4044,39 @@ mod tests {
         st.upsert_chat(later);
         assert_eq!(st.chat("!later:x").merged_into_chat_id.as_deref(), Some(chat.id.as_str()));
         assert_eq!(st.members(idx).len(), 3);
+    }
+
+    /// Desktop's `activeUnionIds`: past `max-merge-chats` (1 by default), the newer merged chats hide and their member
+    /// chats show on their own, until the limit grows or an older merged chat goes.
+    #[test]
+    fn merged_chats_past_the_limit_hide_like_desktop() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("merged-limit"));
+        let pair = |a: &str, b: &str| vec![a.to_string(), b.to_string()];
+        let old = st.create_union("Old", pair("!ig_kai:beeper.com", "!sg_lena:beeper.com"), None, None);
+        let i = st.chat_idx(&old);
+        st.update_chat(i, |c| c.created_at = Some(1));
+        let new = st.create_union("New", pair("!wa_sam:beeper.com", "!im_jordan:beeper.com"), None, None);
+        let i = st.chat_idx(&new);
+        st.update_chat(i, |c| c.created_at = Some(2));
+        st.apply_union_limit();
+        let shown = |st: &super::BeeperStore, id: &str| st.chat(id).listed();
+        assert!(shown(&st, &old) && !shown(&st, &new), "the oldest merged chat is the one that the plan allows");
+        assert!(shown(&st, "!wa_sam:beeper.com") && !shown(&st, "!ig_kai:beeper.com"));
+        st.features.flags = serde_json::json!({ "features": { "*": { "max-merge-chats": "-1" } } });
+        st.apply_union_limit();
+        assert!(shown(&st, &new) && !shown(&st, "!wa_sam:beeper.com"), "no limit shows every merged chat");
+        st.features.flags = serde_json::json!({ "features": { "*": { "max-merge-chats": 1 } } });
+        st.apply_union_limit();
+        st.unmerge(&old);
+        assert!(shown(&st, &new) && !shown(&st, "!wa_sam:beeper.com"), "the next merged chat takes the free place");
+        // A member room that went elsewhere leaves its merged chat.
+        st.remove_deleted_chat("!wa_sam:beeper.com");
+        let rooms = st.chat(&new).merge.as_ref().map(|m| m.chat_ids.clone());
+        assert_eq!(rooms, Some(vec!["!im_jordan:beeper.com".to_string()]));
+        let out = st.outbox.last().map(|(_, c, o)| {
+            (c.clone(), matches!(o, super::Outgoing::LabelChild(r, false) if r == "!wa_sam:beeper.com"))
+        });
+        assert_eq!(out, Some((new.clone(), true)));
     }
 
     #[test]

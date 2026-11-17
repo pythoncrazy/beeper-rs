@@ -711,7 +711,7 @@ impl BeeperGuiApp {
     /// Desktop's `CreateLabel` list: the search results, or the selected, recent and other chats.
     fn label_rows<'s>(&self, st: &'s BeeperStore, d: &LabelDraft) -> Vec<LabelRow<'s>> {
         let picked = |c: &Chat| d.chats.contains(&c.id);
-        let shown = |c: &&Chat| c.merged_into_chat_id.is_none() && (c.flags & CHAT_LOW_PRIORITY == 0 || picked(c));
+        let shown = |c: &&Chat| c.listed() && (c.flags & CHAT_LOW_PRIORITY == 0 || picked(c));
         let mut all: Vec<&Chat> = st.chats.iter().filter(shown).collect();
         all.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
         let q = d.search.trim().to_lowercase();
