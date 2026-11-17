@@ -1607,11 +1607,12 @@ impl BeeperGuiApp {
                 let arrow = s.link.is_some().then(arrow);
                 [Some(s), arrow].into_iter().flatten()
             };
-            let plain = |w: &str| {
+            // A word of plain text, linked to its email address.
+            let word = |w: &str| {
                 let t = w.trim_end();
                 let (linked, url) = match email(t) {
                     Some(e) => (e, Some(format!("mailto:{e}"))),
-                    None => (t, t.starts_with("http").then(|| t.to_string())),
+                    None => (t, None),
                 };
                 let word = span(linked.to_string()).size(13.0).color(fg).underline(url.is_some());
                 let arrow = url.is_some().then(arrow);
@@ -1619,6 +1620,19 @@ impl BeeperGuiApp {
                 [Some(word.link_maybe(url)), arrow, (!rest.is_empty()).then(|| span(rest).size(13.0).color(fg))]
                     .into_iter()
                     .flatten()
+            };
+            // Plain text with Desktop's linkify links: each with its underline and arrow, the rest word by word.
+            let plain = |text: &str| {
+                let mut spans = Vec::new();
+                let mut at = 0;
+                for (range, href) in crate::linkify::links(text) {
+                    spans.extend(text[at..range.start].split_inclusive(' ').flat_map(word));
+                    spans.push(span(text[range.clone()].to_string()).size(13.0).color(fg).underline(true).link(href));
+                    spans.push(arrow());
+                    at = range.end;
+                }
+                spans.extend(text[at..].split_inclusive(' ').flat_map(word));
+                spans
             };
             // Each block: its list marker, spans, plain text, blockquote depth and heading level.
             let blocks: Vec<(Option<String>, Vec<_>, String, u8, u8)> = match m.html.as_deref() {
@@ -1631,7 +1645,7 @@ impl BeeperGuiApp {
                     })
                     .collect(),
                 None => {
-                    let spans = with_emoji_font(text.split_inclusive(' ').flat_map(plain).collect());
+                    let spans = with_emoji_font(plain(&text));
                     vec![(None, spans, text.clone(), 0, 0)]
                 }
             };

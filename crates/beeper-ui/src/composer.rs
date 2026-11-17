@@ -486,7 +486,7 @@ impl BeeperGuiApp {
             let restore = delay.map(|_| (text.clone(), reply_to.clone(), files.clone()));
             let urls = text_urls(&text);
             let preview = self.pane.composer_links.iter().find_map(|(u, s)| match s {
-                LinkState::Loaded(v, img) if urls.contains(&u.as_str()) => {
+                LinkState::Loaded(v, img) if urls.contains(u) => {
                     Some((v.clone(), img.as_ref().map(|(b, _)| b.clone())))
                 }
                 _ => None,
@@ -567,7 +567,7 @@ impl BeeperGuiApp {
     /// link previews" is on or the network cannot send previews.
     pub(crate) fn fetch_link_previews(&mut self) -> Task<UiMessage> {
         use beeper_core::models::NetworkKind::*;
-        let urls: Vec<String> = text_urls(&self.pane.composer.text()).into_iter().map(str::to_string).collect();
+        let urls = text_urls(&self.pane.composer.text());
         self.pane.composer_links.retain(|(u, _)| urls.contains(u));
         let st = self.store.read();
         let chat = self.pane.selected_chat_id.as_ref().and_then(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i]);
@@ -964,36 +964,35 @@ impl BeeperGuiApp {
         };
         let text = self.pane().composer.text();
         let urls = text_urls(&text);
-        let links =
-            self.pane().composer_links.iter().filter(|(u, _)| urls.contains(&u.as_str())).filter_map(|(u, s)| {
-                let card: El<'a> = match s {
-                    LinkState::Discarded => return None,
-                    LinkState::Loading => {
-                        let bar = |w: f32| container(Space::new()).width(w).height(12).style(fill_box(p.hover, 12.0));
-                        let bars = column![bar(111.0), bar(47.0)].spacing(8);
-                        container(bars).width(180).padding([8, 11]).style(fill_box(p.input, 17.0)).into()
-                    }
-                    LinkState::Loaded(v, img) => {
-                        let title = v["og:title"].as_str().expect("previews have a title");
-                        let host = u.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(u).to_string();
-                        let img = img
-                            .as_ref()
-                            .map(|(_, h)| image(h.clone()).width(180).height(101).content_fit(iced::ContentFit::Cover));
-                        let wide = if img.is_some() { 158.0 } else { 338.0 };
-                        let link = row![ic(icon::LINK, 12.0).color(p.weak), txt(host, 11.0).color(p.weak)];
-                        let text = column![
-                            clamp(title, wide, 3, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong),
-                            link.spacing(4).align_y(Center)
-                        ];
-                        let card = container(column![].push(img).push(text.spacing(8).padding([12, 11])));
-                        card.width(if wide < 300.0 { Length::Fixed(180.0) } else { Shrink })
-                            .clip(true)
-                            .style(fill_box(p.link_card, 17.0))
-                            .into()
-                    }
-                };
-                Some(removable(p, card, UiMessage::Composer(Msg::RemoveLinkPreview(u.clone()))))
-            });
+        let links = self.pane().composer_links.iter().filter(|(u, _)| urls.contains(u)).filter_map(|(u, s)| {
+            let card: El<'a> = match s {
+                LinkState::Discarded => return None,
+                LinkState::Loading => {
+                    let bar = |w: f32| container(Space::new()).width(w).height(12).style(fill_box(p.hover, 12.0));
+                    let bars = column![bar(111.0), bar(47.0)].spacing(8);
+                    container(bars).width(180).padding([8, 11]).style(fill_box(p.input, 17.0)).into()
+                }
+                LinkState::Loaded(v, img) => {
+                    let title = v["og:title"].as_str().expect("previews have a title");
+                    let host = u.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(u).to_string();
+                    let img = img
+                        .as_ref()
+                        .map(|(_, h)| image(h.clone()).width(180).height(101).content_fit(iced::ContentFit::Cover));
+                    let wide = if img.is_some() { 158.0 } else { 338.0 };
+                    let link = row![ic(icon::LINK, 12.0).color(p.weak), txt(host, 11.0).color(p.weak)];
+                    let text = column![
+                        clamp(title, wide, 3, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong),
+                        link.spacing(4).align_y(Center)
+                    ];
+                    let card = container(column![].push(img).push(text.spacing(8).padding([12, 11])));
+                    card.width(if wide < 300.0 { Length::Fixed(180.0) } else { Shrink })
+                        .clip(true)
+                        .style(fill_box(p.link_card, 17.0))
+                        .into()
+                }
+            };
+            Some(removable(p, card, UiMessage::Composer(Msg::RemoveLinkPreview(u.clone()))))
+        });
         let links: Vec<El<'a>> = links.collect();
         let links = (!links.is_empty()).then(|| Column::with_children(links).spacing(4));
         // Desktop's "Also send to chat" of the thread composer of Slack and Beeper chats, once it has a draft.
