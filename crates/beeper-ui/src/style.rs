@@ -460,7 +460,7 @@ macro_rules! brands {
     };
 }
 
-const BRANDS: [(&str, &str, &str); 20] = brands!(
+const BRANDS: [(&str, &str, &str); 25] = brands!(
     "whatsapp",
     "twitter",
     "telegram",
@@ -477,8 +477,13 @@ const BRANDS: [(&str, &str, &str); 20] = brands!(
     "tumblr",
     "viber",
     "snapchat",
+    "groupme",
     "wechat",
+    "reddit",
+    "chatgpt-dots",
     "imessage",
+    "grokbot",
+    "muse",
     "bluesky",
     "hungryserv"
 );

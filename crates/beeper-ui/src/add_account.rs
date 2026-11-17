@@ -817,8 +817,10 @@ mod tests {
 
     #[test]
     fn every_addable_network_has_a_cloud_bridge_but_bluesky() {
-        let none: Vec<_> =
-            crate::networks::addable().filter(|n| cloud_bridge(n).is_none()).map(|n| n.bridge_id).collect();
+        let none: Vec<_> = crate::networks::addable(&beeper_core::features::Flags::default())
+            .filter(|n| cloud_bridge(n).is_none())
+            .map(|n| n.bridge_id)
+            .collect();
         // macOS also adds iMessage, which runs on the Mac and not in Beeper Cloud.
         let local: &[&str] = if cfg!(target_os = "macos") { &["imessage", "bluesky"] } else { &["bluesky"] };
         assert_eq!(none, local);
