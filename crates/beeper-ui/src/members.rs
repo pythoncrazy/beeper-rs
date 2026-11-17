@@ -155,13 +155,15 @@ impl BeeperGuiApp {
             let n = all.len();
             let input =
                 text_input(&trn("Search %d group member", "Search %d group members", n, &[&n]), &self.info_query)
-                    .on_input(UiMessage::InfoQuery)
+                    .on_input(|a0| UiMessage::Info(info::Msg::Query(a0)))
                     .size(13)
                     .line_height(Pixels(16.0))
                     .padding([10, 12])
                     .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
             let clear = (!self.info_query.is_empty()).then(|| {
-                button(ic(icon::CLOSE, 20.0).color(p.sub)).bare(p.sub).on_press(UiMessage::InfoQuery(String::new()))
+                button(ic(icon::CLOSE, 20.0).color(p.sub))
+                    .bare(p.sub)
+                    .on_press(UiMessage::Info(info::Msg::Query(String::new())))
             });
             let bar = row![ic(icon::SEARCH, 20.0).color(p.sub), input].push(clear).align_y(Center).padding([0, 8]);
             container(bar).padding(Padding::ZERO.top(8.0))
@@ -176,7 +178,7 @@ impl BeeperGuiApp {
             button(container(face).center_x(Fill))
                 .padding(2)
                 .style(btn_style([CLEAR; 3], [p.strong; 3], 9999.0))
-                .on_press(UiMessage::InfoAll)
+                .on_press(UiMessage::Info(info::Msg::All))
         });
         let list = Column::new()
             .push(search)
@@ -185,14 +187,15 @@ impl BeeperGuiApp {
             .push(toggle)
             .spacing(6)
             .padding(if searchable { Padding::new(8.0).top(0.0) } else { Padding::new(8.0) });
-        let less = (expandable && self.info_all)
-            .then(|| button(semi(tr("Show less"), 11.0).color(p.accent)).bare(p.accent).on_press(UiMessage::InfoAll));
+        let less = (expandable && self.info_all).then(|| {
+            button(semi(tr("Show less"), 11.0).color(p.accent)).bare(p.accent).on_press(UiMessage::Info(info::Msg::All))
+        });
         let head = row![txt(tr("Members"), 11.0).color(p.strong), Space::new().width(Fill)]
             .push(less)
             .align_y(Center)
             .padding(8);
         let head: El = match expandable {
-            true => mouse_area(head).on_press(UiMessage::InfoAll).into(),
+            true => mouse_area(head).on_press(UiMessage::Info(info::Msg::All)).into(),
             false => head.into(),
         };
         column![head, container(list).style(fill_box(p.chip, 10.0))].into()

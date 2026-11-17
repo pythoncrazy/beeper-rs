@@ -3,6 +3,7 @@
 use crate::blocking;
 use crate::blocking::blocked_chats;
 use crate::i18n::{tr, trf, trn, trx};
+use crate::info;
 use crate::integrations;
 use crate::members;
 use crate::reminders;
@@ -1068,7 +1069,7 @@ impl BeeperGuiApp {
             Some(n) => trf("Renamed to %s for you", &[n]),
             None => tr("Removed your name for this chat").into(),
         };
-        self.act(what, UiMessage::SetPersonalName(chat, old), Some((text, None)));
+        self.act(what, UiMessage::Info(info::Msg::SetPersonalName(chat, old)), Some((text, None)));
     }
 
     pub(crate) fn group_edit(&mut self, edit: GroupEdit) -> Task<UiMessage> {
@@ -1113,7 +1114,7 @@ impl BeeperGuiApp {
                 if let Some(t) = title {
                     let name =
                         Some(t.trim().chars().take(PERSONAL_NAME_MAX).collect()).filter(|t: &String| !t.is_empty());
-                    let _ = self.update(UiMessage::SetPersonalName(chat.clone(), name));
+                    let _ = self.update(UiMessage::Info(info::Msg::SetPersonalName(chat.clone(), name)));
                 }
                 if let Some(photo) = photo {
                     let text = match photo {

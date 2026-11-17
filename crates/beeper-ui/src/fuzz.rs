@@ -4,6 +4,7 @@
 use super::*;
 use crate::composer::{composer_action, hidden_actions, mention_label};
 use crate::forward::forward_chats;
+use crate::info::info_menu;
 use crate::new_chat::{account_display_name, chat_people, typed_phone};
 use crate::reminders::reminder_day;
 use crate::scheduled::send_day;
@@ -5343,13 +5344,13 @@ fn chat_info_disappearing_messages_like_desktop() {
         sim.into_messages().collect()
     };
     assert!(msgs.is_empty());
-    let _ = app.update(UiMessage::SetDisappearing(id.clone(), 604_800_000));
+    let _ = app.update(UiMessage::Info(info::Msg::SetDisappearing(id.clone(), 604_800_000)));
     let disappearing = |app: &BeeperGuiApp| {
         let st = app.store.read();
         st.chat(&id).disappearing
     };
     assert_eq!(disappearing(&app), Some(604_800_000));
-    let _ = app.update(UiMessage::SetDisappearing(id.clone(), 0));
+    let _ = app.update(UiMessage::Info(info::Msg::SetDisappearing(id.clone(), 0)));
     assert_eq!(disappearing(&app), None);
     app.store.write().features.flags["features"]["*"]["enable-disappearing-message-timer-config"] = false.into();
     assert!(tall(app.view_info()).find("Disappearing messages").is_err(), "the flag hides the section");
@@ -5693,15 +5694,15 @@ fn chat_info_media_like_desktop() {
         let mut sim = tall(app.view_info());
         assert!(sim.find("Media").is_ok() && sim.find("Show all").is_err() && sim.find("Images").is_err());
     }
-    let _ = app.update(UiMessage::InfoMedia(Some(0)));
+    let _ = app.update(UiMessage::Info(info::Msg::Media(Some(0))));
     assert!(tall(app.view_info()).find("Nothing here").is_err());
     let msgs: Vec<UiMessage> = {
         let mut sim = tall(app.view_info());
         let _ = sim.click("Audio").expect("the Audio tab");
         sim.into_messages().collect()
     };
-    assert!(matches!(&msgs[..], [UiMessage::InfoMedia(Some(2))]));
-    let _ = app.update(UiMessage::InfoMedia(Some(2)));
+    assert!(matches!(&msgs[..], [UiMessage::Info(info::Msg::Media(Some(2)))]));
+    let _ = app.update(UiMessage::Info(info::Msg::Media(Some(2))));
     assert!(tall(app.view_info()).find("Nothing here").is_ok());
     let _ = app.update(UiMessage::SelectChat("!im_jordan:beeper.com".into()));
     assert!(app.info_media.is_none());
@@ -5729,7 +5730,7 @@ fn chat_info_bookmarks_of_messages_that_are_not_loaded() {
     }
     let menu = info_menu(&app.store.read(), &format!("bookmark:{id} $old"), |_| true);
     assert!(matches!(&menu[0], Some((_, None))), "Jump to Message needs the message in the timeline");
-    let _ = app.update(UiMessage::RemoveBookmark("$gone".into()));
+    let _ = app.update(UiMessage::Info(info::Msg::RemoveBookmark("$gone".into())));
     app.store.write().apply_bookmarks("!bookmarks", vec![("$gone".into(), None)]);
     assert!(tall(app.view_info()).find("Message unavailable").is_err());
 }
@@ -6518,12 +6519,12 @@ fn chat_info_description_like_desktop() {
     assert!(!has(&app, "Add a description") && !has(&app, "Group Description"));
     set(&mut app, 1 << 2, None);
     let _ = simulator(app.view_info()).click("Add a description").expect("an editor can add a description");
-    let _ = app.update(UiMessage::InfoDesc(None));
-    let _ = app.update(UiMessage::InfoDesc(Some(text_editor::Action::Edit(text_editor::Edit::Paste(
+    let _ = app.update(UiMessage::Info(info::Msg::Desc(None)));
+    let _ = app.update(UiMessage::Info(info::Msg::Desc(Some(text_editor::Action::Edit(text_editor::Edit::Paste(
         std::sync::Arc::new("We build https://example.com".into()),
-    )))));
+    ))))));
     let _ = simulator(app.view_info()).click("Done").expect("Done saves");
-    let _ = app.update(UiMessage::SaveInfoDesc);
+    let _ = app.update(UiMessage::Info(info::Msg::SaveDesc));
     assert!(app.info_desc.is_none());
     {
         let st = app.store.read();
@@ -6534,7 +6535,7 @@ fn chat_info_description_like_desktop() {
     let long = ["word"; 120].join(" ");
     set(&mut app, 0, Some(&long));
     assert!(has(&app, "more"), "a description of more than three lines can expand");
-    let _ = app.update(UiMessage::InfoMore);
+    let _ = app.update(UiMessage::Info(info::Msg::More));
     assert!(has(&app, "more"), "the toggle also collapses the description");
 }
 
@@ -6563,10 +6564,10 @@ fn chat_info_members_like_desktop() {
     }
     assert!(has(&app, "Search 8 group members") && has(&app, "Show all"));
     assert!(!has(&app, "Member 4"), "the section shows six members");
-    let _ = app.update(UiMessage::InfoAll);
+    let _ = app.update(UiMessage::Info(info::Msg::All));
     assert!(has(&app, "Member 4") && has(&app, "Show less"));
-    let _ = app.update(UiMessage::InfoAll);
-    let _ = app.update(UiMessage::InfoQuery("member 4".into()));
+    let _ = app.update(UiMessage::Info(info::Msg::All));
+    let _ = app.update(UiMessage::Info(info::Msg::Query("member 4".into())));
     assert!(has(&app, "Member 4") && !has(&app, "Member 3"), "the search filters the members");
     let _ = app.update(UiMessage::OpenChatMenu(format!("member:{id} @m0:beeper.local")));
     let mut sim = simulator(app.view_main());
@@ -6581,7 +6582,7 @@ fn chat_info_notes_are_local_per_chat() {
     let (a, b) = ("!tg_rust:beeper.com".to_string(), "!note_self:beeper.com".to_string());
     let _ = app.update(UiMessage::SelectChat(a.clone()));
     let paste = |s: &str| text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(s.into())));
-    let _ = app.update(UiMessage::InfoNote(paste("Ask about the release")));
+    let _ = app.update(UiMessage::Info(info::Msg::Note(paste("Ask about the release"))));
     let note = |app: &BeeperGuiApp, id: &str| {
         let st = app.store.read();
         st.chats[st.resolve_chat_idx(id).expect("chat")].note.clone()
