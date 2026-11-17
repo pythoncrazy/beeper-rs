@@ -1,15 +1,16 @@
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
-    timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatFlag,
-    ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageReminder,
-    MessageRules, MessageTimer, Older, PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack,
-    StickerSource, ThreadFollows, Timers, Transcription, User, VerificationDevice, VerificationError, VerificationQr,
-    VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER,
-    BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER,
-    EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER,
-    MSG_MENTION, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE,
-    REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    system_user, timer_distance, ActionButton, AppVerification, Attachment, AttachmentSize, Bookmark,
+    BridgeAccountInfo, Chat, ChatFlag, ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message,
+    MessageLink, MessageReminder, MessageRules, MessageTimer, Older, PollData, PollOption, PollRules, Reaction,
+    SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers, Transcription, User, VerificationDevice,
+    VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS,
+    BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS,
+    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE,
+    MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, MSG_MENTION, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR,
+    PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION,
+    TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -68,6 +69,8 @@ enum Op {
         unresolved_media: Option<String>,
         timestamp: Option<String>,
         timer: Option<MessageTimer>,
+        /// The buttons of an edit by the system user, which replace those of its own message.
+        buttons: Option<Vec<ActionButton>>,
     },
     /// The `com.beeper.disappearing_timer` of an edit without content.
     Timer(String, MessageTimer),
@@ -674,6 +677,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
                 unresolved_media: unresolved_media(new),
                 timestamp,
                 timer,
+                buttons: system_user(&sender).then(|| ActionButton::list(&new["com.beeper.buttons"])),
             });
         }
         "m.room.encrypted" => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
@@ -721,6 +725,8 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         k => content(k, c).or_else(hide)?,
     };
     let profile_name = s(&c["com.beeper.per_message_profile"]["displayname"]);
+    // Desktop's `actionButtonsFrom`: only the messages of the system user have buttons.
+    let buttons = if system_user(&sender) { ActionButton::list(&c["com.beeper.buttons"]) } else { Vec::new() };
     let user = matrix_sdk::ruma::UserId::parse(&sender).expect("sender is a user ID");
     let member = room.get_member_no_sync(&user).await.expect("read room member");
     // Desktop's `key || ""`, and its reaction of a custom emoji: its shortcode as the key and its image.
@@ -780,6 +786,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         views_left: None,
         view_expired: deleted && e["unsigned"]["redacted_because"]["content"]["com.beeper.view_limited"] == true,
         view_kind: None,
+        buttons,
         flags: match c["m.mentions"]["user_ids"].as_array() {
             Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
             _ => 0,
@@ -1579,6 +1586,7 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                     unresolved_media,
                     timestamp,
                     timer,
+                    buttons,
                 } => {
                     if let Some(i) = here(&st, &target) {
                         if let Some(timer) = timer {
@@ -1601,6 +1609,10 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                             m.unresolved_media = unresolved_media;
                             m.links = links;
                             m.html = html;
+                            // Desktop takes the buttons of an edit only from the sender of a system user message.
+                            if let Some(buttons) = buttons.filter(|_| system_user(&m.sender_id)) {
+                                m.buttons = buttons;
+                            }
                         });
                     }
                 }
@@ -2455,6 +2467,23 @@ async fn timer_for_messages(room: &Room) -> Option<Value> {
     (!(timer["timer"].is_null() && omit)).then_some(timer)
 }
 
+/// Desktop's `updateGroup` from the Edit Group window: the name, the topic and the avatar of a group sent now, so the
+/// window learns whether the homeserver took them.
+pub async fn update_group(
+    store: SharedStore,
+    chat: String,
+    title: Option<String>,
+    topic: Option<String>,
+    avatar: Option<Option<(Vec<u8>, String)>>,
+) -> Result<(), String> {
+    let name = title.map(|name| Outgoing::State("m.room.name".into(), serde_json::json!({ "name": name })));
+    let topic = topic.map(|topic| Outgoing::State("m.room.topic".into(), serde_json::json!({ "topic": topic })));
+    for out in name.into_iter().chain(topic).chain(avatar.map(Outgoing::Avatar)) {
+        push(&store, chat.clone(), out).await.map_err(|e| e.message)?;
+    }
+    Ok(())
+}
+
 async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), PushError> {
     let client = store.read().matrix.clone().expect("flush checks the Matrix client");
     if let Outgoing::CreateLabel(label) = out {
@@ -3087,6 +3116,78 @@ pub async fn create_group(p: Provision, kind: String, name: String, users: Vec<S
     let body = p.post(&format!("create_group/{}", crate::codec::url_encode(&kind)), body.to_string()).await?;
     let v: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     v["mxid"].as_str().map(str::to_string).ok_or_else(|| "the bridge sent no mxid".into())
+}
+
+/// The user of a bridge `resolve_identifier` or `search_users` result, by its Matrix ID.
+pub fn bridge_user(v: &Value) -> User {
+    let ids: Vec<&str> = v["identifiers"].as_array().into_iter().flatten().filter_map(|i| i.as_str()).collect();
+    let find = |scheme: &str| ids.iter().find_map(|i| i.strip_prefix(scheme)).map(str::to_string);
+    User {
+        id: v["mxid"].as_str().or(v["id"].as_str()).unwrap_or_default().into(),
+        full_name: v["name"].as_str().map(Into::into),
+        img_url: v["avatar_url"].as_str().map(Into::into),
+        phone_number: find("tel:"),
+        email: find("mailto:"),
+        ..Default::default()
+    }
+}
+
+/// The bridge that does the `PlatformAPI` work of a chat account: the SDK's `matrix` pseudo-bridge for the Matrix
+/// account (Desktop's `isMatrixChat`), whose work the Matrix client of the store does, or the cloud bridge of the
+/// account's login.
+#[derive(Clone)]
+pub enum ChatBridge {
+    Matrix(SharedStore),
+    Cloud(Provision),
+}
+
+impl ChatBridge {
+    pub fn of(store: &SharedStore, account_id: &str) -> Self {
+        match account_id {
+            "hungryserv" => ChatBridge::Matrix(store.clone()),
+            _ => ChatBridge::Cloud(store.read().provision(account_id)),
+        }
+    }
+
+    /// The provisioning capabilities: [`matrix_capabilities`] for the Matrix account.
+    pub async fn capabilities(self) -> Result<Value, String> {
+        match self {
+            ChatBridge::Matrix(_) => Ok(matrix_capabilities()),
+            ChatBridge::Cloud(p) => capabilities(p).await,
+        }
+    }
+
+    /// The users that match a name: the homeserver's user directory, or the bridge's `search_users`.
+    pub async fn search_users(self, query: String) -> Result<Vec<User>, String> {
+        match self {
+            ChatBridge::Matrix(store) => search_matrix_users(store, query).await,
+            ChatBridge::Cloud(p) => Ok(search_users(p, query).await?.iter().map(bridge_user).collect()),
+        }
+    }
+
+    /// The user of a phone number, email, username or user ID, as a bridge reply.
+    pub async fn resolve_identifier(self, identifier: String) -> Result<Option<Value>, String> {
+        match self {
+            ChatBridge::Matrix(store) => resolve_matrix_user(store, identifier).await,
+            ChatBridge::Cloud(p) => resolve_identifier(p, identifier).await,
+        }
+    }
+
+    /// The room of a direct chat with `identifier`.
+    pub async fn create_dm(self, identifier: String) -> Result<String, String> {
+        match self {
+            ChatBridge::Matrix(store) => create_matrix_dm(store, identifier).await,
+            ChatBridge::Cloud(p) => create_dm(p, identifier).await,
+        }
+    }
+
+    /// The room of a new group of `kind` with the users, named when `name` is not empty.
+    pub async fn create_group(self, kind: String, name: String, users: Vec<String>) -> Result<String, String> {
+        match self {
+            ChatBridge::Matrix(store) => create_matrix_group(store, kind, name, users).await,
+            ChatBridge::Cloud(p) => create_group(p, kind, name, users).await,
+        }
+    }
 }
 
 /// Desktop SDK's `GetProvisioningCapabilities` of its `matrix` pseudo-bridge, which Desktop's
@@ -3828,6 +3929,34 @@ fn matrix_error(status: reqwest::StatusCode, v: &Value) -> String {
     }
 }
 
+/// The outcome of Desktop's `pressActionButtonCallback`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pressed {
+    Ok,
+    /// The homeserver answered 429.
+    RateLimited,
+    Failed,
+}
+
+/// Desktop's `pressActionButtonCallback`: a POST without a body to the callback URL of an action button with the
+/// access token, which follows no redirect and gives up after 15 seconds.
+pub async fn press_button(url: reqwest::Url, token: String) -> Pressed {
+    if token.is_empty() {
+        return Pressed::Failed;
+    }
+    let req =
+        crate::cloud::no_redirect_client().post(url).bearer_auth(token).timeout(std::time::Duration::from_secs(15));
+    match req.send().await.map(|r| r.status()) {
+        Ok(s) if s.is_success() => Pressed::Ok,
+        Ok(reqwest::StatusCode::TOO_MANY_REQUESTS) => Pressed::RateLimited,
+        Ok(_) => Pressed::Failed,
+        Err(e) => {
+            eprintln!("[pressActionButtonCallback] request failed: {}", e.without_url());
+            Pressed::Failed
+        }
+    }
+}
+
 /// The status and the body of a request of the client-server API at `/_matrix/client/v3/{path}`.
 async fn client_request(
     client: &Client,
@@ -4109,6 +4238,14 @@ pub async fn new_recovery_key(store: &SharedStore) -> Result<String, String> {
     }
     refresh_e2ee(&client, store).await;
     Ok(key)
+}
+
+/// Desktop's `markRecoveryCodeBackedUp`: the user typed the recovery key of this device again, so it is saved.
+pub fn mark_recovery_key_backed_up(store: &SharedStore) {
+    let mut st = store.write();
+    st.beeper_state.has_backed_up_code = true;
+    st.persist_state_to_sqlite();
+    st.emit_ws("setup.updated", "", None, None, None);
 }
 
 /// Desktop's `confirmResetCrossSigning`: the user typed the new recovery key again, so it is saved.
@@ -5434,6 +5571,66 @@ mod tests {
         assert_eq!(*seen.lock().unwrap(), [("POST".into(), path.into(), json!({ "com.beeper.view_limited": limit }))]);
     }
 
+    /// Desktop's `actionButtonsFrom`: the `com.beeper.buttons` of the system user's messages only, and an edit takes
+    /// the buttons of its new content only from the system user.
+    #[tokio::test]
+    async fn system_user_buttons_like_desktop() {
+        let buttons = |id: &str| json!([{ "id": id, "label": id, "action": "link", "url": "https://beeper.com" }]);
+        let message = |id: &str, sender: &str| {
+            let content = json!({ "msgtype": "m.text", "body": "Hi", "com.beeper.buttons": buttons("first") });
+            let mut e = stub_event(id, "m.room.message", content);
+            e["sender"] = json!(sender);
+            e
+        };
+        let edit = |id: &str, sender: &str, target: &str| {
+            let new = json!({ "msgtype": "m.text", "body": "Hi again", "com.beeper.buttons": buttons("edited") });
+            let content = json!({ "msgtype": "m.text", "body": "* Hi again", "m.new_content": new,
+                "m.relates_to": { "rel_type": "m.replace", "event_id": target } });
+            let mut e = stub_event(id, "m.room.message", content);
+            e["sender"] = json!(sender);
+            e
+        };
+        let events = vec![
+            message("$system", "@:beeper.local"),
+            message("$vic", "@vic:x"),
+            message("$kept", "@:beeper.local"),
+            edit("$e1", "@:beeper.local", "$system"),
+            edit("$e2", "@vic:x", "$kept"),
+        ];
+        let store = stub_history("system-buttons", events, ("!other:x", Vec::new())).await;
+        sync_stub_room(&store, "!room:x").await;
+        let st = store.read();
+        let ids = |id: &str| st.message(id).buttons.iter().map(|b| b.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids("$system"), ["edited"], "the system user's edit replaces its buttons");
+        assert!(ids("$vic").is_empty(), "another sender has no buttons");
+        assert_eq!(ids("$kept"), ["first"], "another sender's edit leaves them");
+    }
+
+    /// Desktop's `pressActionButtonCallback`: a POST without a body, `ok` for a 2xx answer, `rate_limited` for a 429,
+    /// and `failed` for another answer or without an access token.
+    #[tokio::test]
+    async fn button_callbacks_like_desktop() {
+        use super::{press_button, Pressed};
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| {
+            s.lock().unwrap().push((method.to_string(), path.to_string(), body));
+            match path {
+                "/ok" => (200, json!({})),
+                "/busy" => (429, json!({ "errcode": "M_LIMIT_EXCEEDED" })),
+                _ => (302, json!({})),
+            }
+        })
+        .await;
+        let at = |path: &str| reqwest::Url::parse(&format!("{url}{path}")).expect("a stub URL");
+        assert_eq!(press_button(at("/ok"), "token".into()).await, Pressed::Ok);
+        assert_eq!(press_button(at("/busy"), "token".into()).await, Pressed::RateLimited);
+        assert_eq!(press_button(at("/moved"), "token".into()).await, Pressed::Failed);
+        assert_eq!(press_button(at("/ok"), String::new()).await, Pressed::Failed, "no request without a token");
+        let posts = ["/ok", "/busy", "/moved"].map(|p| ("POST".to_string(), p.to_string(), Value::Null));
+        assert_eq!(*seen.lock().unwrap(), posts);
+    }
+
     /// Desktop's threaded replies: the `m.thread` relations of a room with threads, the thread follows, the own
     /// thread receipt, and the thread replies and receipts that Desktop sends.
     #[tokio::test]
@@ -5726,6 +5923,42 @@ mod tests {
         let echo = store.read().stored_message(&txn).expect("the echo");
         let a = &echo.attachments[0];
         assert_eq!((a.file_name.as_deref(), a.mime_type.as_deref()), (Some("a.png"), Some("image/png")));
+    }
+
+    /// Desktop's `updateGroup` from the Edit Group window sends the name and the topic now, and a refusal comes back.
+    #[tokio::test]
+    async fn group_updates_report_refusals_like_desktop() {
+        use std::sync::{Arc, Mutex};
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let refuse = Arc::new(Mutex::new(false));
+        let refused = refuse.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, stub_sync()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if method == "PUT" && p.contains("/state/") => match *refused.lock().unwrap() {
+                    true => (403, json!({ "errcode": "M_FORBIDDEN", "error": "not allowed" })),
+                    false => {
+                        log.lock().unwrap().push((p.rsplit("/state/").next().unwrap().to_string(), body));
+                        (200, json!({ "event_id": "$state" }))
+                    }
+                },
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            })
+            .await;
+        let store = stub_store(&crate::testing::temp_dir("group-update"), &url).await;
+        let update = |name: &str| {
+            super::update_group(store.clone(), "!room:x".into(), Some(name.into()), Some("Topic".into()), None)
+        };
+        update("Core").await.expect("the homeserver takes the changes");
+        let sent = sent.lock().unwrap().clone();
+        let kinds: Vec<&str> = sent.iter().map(|(k, _)| k.trim_end_matches('/')).collect();
+        assert_eq!(kinds, ["m.room.name", "m.room.topic"]);
+        assert_eq!(sent[0].1, json!({ "name": "Core" }));
+        *refuse.lock().unwrap() = true;
+        assert!(update("Other").await.is_err(), "a refusal comes back to the window");
     }
 
     /// Desktop's `buildTitle`: the management room of a bridge, `com.beeper.is_bridge_bot_room` in its `m.bridge`, is

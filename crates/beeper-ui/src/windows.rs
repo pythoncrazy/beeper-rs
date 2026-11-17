@@ -14,6 +14,8 @@ pub enum Msg {
     Drawn(window::Id),
     Relaunch,
     OpenChat(String),
+    /// Desktop's `openSpaceInNewWindow` of a rail space.
+    OpenSpace(String),
     Closed(window::Id),
     CloseRequested(window::Id),
     Tray(Result<tray::Event, String>),
@@ -108,15 +110,20 @@ impl BeeperGuiApp {
                     _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
                         self.save_window(id, "media-viewer").chain(window::close(id))
                     }
-                    _ if self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none()) => {
+                    _ if self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none())
+                        && !self.is_space_window(id) =>
+                    {
                         self.save_window(id, POP_OUT).chain(window::close(id))
                     }
                     (false, _) => window::close(id),
                 };
             }
             Msg::OpenChat(cid) => {
-                self.chat_menu = None;
-                let open = self.chat_windows.iter().find(|w| w.1.selected_chat_id.as_deref() == Some(&cid));
+                self.list.chat_menu = None;
+                let open = self
+                    .chat_windows
+                    .iter()
+                    .find(|w| w.1.selected_chat_id.as_deref() == Some(&cid) && !self.is_space_window(w.0));
                 if let Some(&(id, _)) = open {
                     return window::gain_focus(id);
                 }
@@ -129,6 +136,31 @@ impl BeeperGuiApp {
                 self.save_subwindows();
                 return Task::batch([open.discard(), near, select]);
             }
+            Msg::OpenSpace(entry) => {
+                self.list.chat_menu = None;
+                if let Some(&(id, ..)) = self.space_windows.iter().find(|w| w.1 == entry) {
+                    return window::gain_focus(id);
+                }
+                // Desktop's space window is 1200 by 800 in the middle of the screen, and keeps no window state.
+                let settings =
+                    window::Settings { position: window::Position::Centered, ..Self::window_settings(MAIN_SIZE) };
+                let (id, open) = window::open(settings);
+                self.chat_windows.push((id, Pane { size: MAIN_SIZE, ..Pane::default() }));
+                let list = chat_list::ListState::space(&entry);
+                self.space_windows.push((id, entry, list));
+                // It opens on the chat of the window it came from when its space has the chat, else on its first chat.
+                let from = self.pane.selected_chat_id.clone();
+                self.swap_window(id);
+                let chat = {
+                    let st = self.store.read();
+                    let chats = self.visible_chats(&st);
+                    let first = chats.first().map(|c| c.id.clone());
+                    from.filter(|c| chats.iter().any(|v| v.id == *c)).or(first)
+                };
+                self.swap_window(id);
+                let select = chat.map(|c| self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(c)))));
+                return Task::batch([open.discard()].into_iter().chain(select));
+            }
             Msg::Closed(id) if self.add_accounts.iter().any(|a| a.id == id) => {
                 return self.add_account_closed(id);
             }
@@ -137,6 +169,7 @@ impl BeeperGuiApp {
                     save_draft(&mut self.store.write(), &w.1);
                 }
                 self.chat_windows.retain(|w| w.0 != id);
+                self.space_windows.retain(|w| w.0 != id);
                 // Desktop's `setPipState(null)`: the video stops with its Picture in Picture window.
                 if self.pip.take_if(|p| p.0 == id).is_some() {
                     (self.video, self.pip_manual, self.pip_menu) = (None, false, None);
@@ -303,6 +336,38 @@ impl BeeperGuiApp {
             },
             ..Default::default()
         }
+    }
+
+    /// Whether window `id` is a space window, whose pane is also among the chat windows.
+    pub(crate) fn is_space_window(&self, id: window::Id) -> bool {
+        self.space_windows.iter().any(|w| w.0 == id)
+    }
+
+    /// Swaps the pane, and the chat list of a space window, of window `id` with those of the main window, around the
+    /// handling of its messages.
+    pub(crate) fn swap_window(&mut self, id: window::Id) {
+        let pane = &mut self.chat_windows.iter_mut().find(|w| w.0 == id).expect("an open chat window").1;
+        std::mem::swap(&mut self.pane, pane);
+        if let Some(w) = self.space_windows.iter_mut().find(|w| w.0 == id) {
+            std::mem::swap(&mut self.list, &mut w.2);
+        }
+    }
+
+    /// Desktop's space window: the chat list of its space without the space bar, and the chat open in it.
+    pub(crate) fn view_space_window(&self, open: bool) -> El<'_> {
+        let pad = Padding::new(8.0).left(0.0);
+        let right: El<'_> = match open && self.pane().thread.is_some() {
+            true => iced::widget::responsive(move |size| self.view_split(size.width, pad)).into(),
+            false => container(match open {
+                true => self.view_conversation(),
+                false => container(Space::new()).width(Fill).height(Fill).style(fill_box(self.pal.card, 10.0)).into(),
+            })
+            .padding(pad)
+            .width(Fill)
+            .into(),
+        };
+        let body = row![self.view_sidebar(), right];
+        container(body).width(Fill).height(Fill).style(fill_box(self.pal.window, 0.0)).into()
     }
 
     /// The windows besides the main window, Desktop's `subWindows`.

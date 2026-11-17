@@ -49,7 +49,7 @@ pub(crate) fn block_action(st: &BeeperStore, c: &Chat) -> Option<bool> {
 impl BeeperGuiApp {
     /// Desktop's `confirmBlockUser` (true) and `confirmUnblockUser`: the dialog, with "Report spam" off.
     pub(crate) fn ask_block(&mut self, id: String, block: bool) {
-        self.chat_menu = None;
+        self.list.chat_menu = None;
         self.show_command_palette = false;
         self.report_spam = false;
         (self.confirm, self.delete_target) = (Some(if block { ASK_BLOCK } else { ASK_UNBLOCK }), Some(id));

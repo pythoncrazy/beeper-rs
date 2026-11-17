@@ -49,7 +49,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::Message(cid, uid) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 self.user_hover = UserHover { r#gen: self.user_hover.r#gen + 1, ..UserHover::default() };
                 let st = self.store.read();
                 let c = st.chat(&cid);
@@ -59,7 +59,8 @@ impl BeeperGuiApp {
                 return self.open_dm(account, user, None, None);
             }
             Msg::Ask(ask, cid, uid) => {
-                (self.chat_menu, self.confirm, self.delete_target) = (None, Some(ask), Some(format!("{cid} {uid}")));
+                (self.list.chat_menu, self.confirm, self.delete_target) =
+                    (None, Some(ask), Some(format!("{cid} {uid}")));
             }
             Msg::SetAdmin(cid, uid, admin) => {
                 self.confirm = None;

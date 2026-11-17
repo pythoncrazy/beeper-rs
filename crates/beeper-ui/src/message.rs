@@ -19,6 +19,7 @@ use crate::style::{
 use crate::threads;
 use crate::time::{clock, day_label, day_num, day_of, format_short_ts, locale_string, today};
 use crate::timeline;
+use crate::toasts::Toast;
 use crate::units::human_size;
 use crate::view_once;
 use crate::windows;
@@ -28,11 +29,11 @@ use crate::{
     locate, member_name, membership, menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link,
     reply_root, safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable,
     unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON,
-    BUBBLE_PAD_X, BUBBLE_PAD_Y, CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM,
-    MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TIMER, TRASH,
+    BUBBLE_PAD_X, BUBBLE_PAD_Y, CHEVRON_DOWN, CHEVRON_FORWARD, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE,
+    ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TIMER, TRASH,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
-use beeper_core::matrix::ROOM_MENTION;
+use beeper_core::matrix::{Pressed, ROOM_MENTION};
 use beeper_core::models::*;
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
@@ -52,6 +53,72 @@ use std::rc::Rc;
 /// The name of an attachment, or Desktop's "Attachment" for one that a bridge sent without a file name or body.
 pub(crate) fn attachment_name(a: &Attachment) -> String {
     a.file_name.clone().unwrap_or_else(|| tr("Attachment").into())
+}
+
+/// The `host` of a URL (`Xp`), with its port when it is not the default one. A URL without a host has none.
+fn url_host(url: &str) -> Option<String> {
+    let url = url::Url::parse(url).ok()?;
+    let host = url.host_str().filter(|h| !h.is_empty())?;
+    Some(url.port().map_or_else(|| host.to_string(), |port| format!("{host}:{port}")))
+}
+
+/// The links of a block's spans that show their host in a tooltip, like Desktop's `ExtLink` with `showHostOnHover`:
+/// all that linkify finds in plain text, and in HTML an anchor whose text is not a URL of its host. The first span
+/// of a link decides, as Desktop looks at the first text of the anchor. A `matrix.to` link has none.
+fn tipped_links(spans: &[iced::widget::text::Span<'_, String>], html: bool) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    (spans.iter())
+        .filter_map(|s| Some((s.link.as_ref()?, &s.text)))
+        .filter(|(link, _)| seen.insert(link.as_str()))
+        .filter(|(link, text)| {
+            let host = url_host(link);
+            host.is_some() && !link.starts_with("https://matrix.to/#/") && (!html || url_host(text) != host)
+        })
+        .map(|(link, _)| link.clone())
+        .collect()
+}
+
+/// Desktop's `filter: brightness(0.8)` of the attachments of a selected message (`.message-attachments-container`),
+/// as 20% black over their 17 px corners.
+fn dimmed<'a>(content: El<'a>, selected: bool) -> El<'a> {
+    let shade = selected
+        .then(|| container(Space::new()).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.2), 17.0)));
+    stack![content].push(shade).into()
+}
+
+/// Desktop's `EnhancedImg` button on an animation that does not autoplay: play, or pause while it plays, which shows
+/// only while the pointer is on the image (`.video-idle-play-button`, a 36 px `#efeff0` circle with a `#202124`
+/// icon in the middle).
+fn gif_toggle<'a>(gif: El<'a>, playing: bool, toggle: Msg) -> El<'a> {
+    let (bg, fg) = (hex(0xefeff0), hex(0x202124));
+    let glyph = tinted(&crate::voice::ICONS[usize::from(playing)], 20.0, fg);
+    let button = button(container(glyph).center(36))
+        .padding(0)
+        .style(btn_style([bg; 3], [fg; 3], 18.0))
+        .on_press(UiMessage::Message(toggle));
+    let layer = container(button).center(Fill);
+    match playing {
+        true => iced::widget::hover(gif, layer),
+        false => stack![gif, layer].into(),
+    }
+}
+
+/// Desktop's `AJ`, which joins the ID of a message and the index of an earlier version in an edit history row.
+const EDIT_HISTORY: &str = "::edit-history::";
+
+/// Desktop's `yg`: date-fns `formatDistanceStrict` with its units cut short, as "45s", "5m" or "2mo".
+fn short_distance(ms: u64) -> String {
+    let long = timer_distance(ms);
+    let (n, unit) = long.split_once(' ').expect("a count and a unit");
+    let unit = match unit.trim_end_matches('s') {
+        "second" => "s",
+        "minute" => "m",
+        "hour" => "h",
+        "day" => "d",
+        "month" => "mo",
+        _ => "y",
+    };
+    format!("{n}{unit}")
 }
 
 /// The HTML elements that keep Desktop from balancing the lines of a message (`MessageText`).
@@ -298,6 +365,77 @@ fn typing_tip(names: &[String]) -> String {
     }
 }
 
+/// Desktop's `ActionButtonIcon`: a Material icon drawn 16 px at its 1.2 scale in the 14 px icon box of a `Button`,
+/// which shows the middle 14/19.2 of it.
+static BUTTON_ICONS: std::sync::LazyLock<HashMap<&str, svg::Handle>> =
+    std::sync::LazyLock::new(|| crate::material_icons(14.0 / 19.2));
+
+/// The rays of Desktop's `Button-module__spinner` mask.
+const SPINNER_RAYS: &str = "M8.33333 17.5V14.1667C8.33333 13.7064 8.70643 13.3333 9.16667 13.3333C9.6269 13.3333 10 13.7064 10 14.1667V17.5C10 17.9602 9.6269 18.3333 9.16667 18.3333C8.70643 18.3333 8.33333 17.9602 8.33333 17.5ZM5.03581 12.1191C5.36124 11.7937 5.88876 11.7937 6.21419 12.1191C6.53963 12.4446 6.53963 12.9721 6.21419 13.2975L3.85742 15.6543C3.53198 15.9797 3.00447 15.9797 2.67904 15.6543C2.3536 15.3289 2.3536 14.8013 2.67904 14.4759L5.03581 12.1191ZM12.1191 12.1191C12.4242 11.814 12.9067 11.7952 13.234 12.0622L13.2975 12.1191L15.6543 14.4759L15.7121 14.5394C15.9789 14.8667 15.9594 15.3492 15.6543 15.6543C15.3492 15.9594 14.8667 15.9789 14.5394 15.7121L14.4759 15.6543L12.1191 13.2975L12.0622 13.234C11.7952 12.9067 11.814 12.4242 12.1191 12.1191ZM4.16667 8.33333C4.6269 8.33333 5 8.70643 5 9.16667C5 9.6269 4.6269 10 4.16667 10H0.833333C0.373096 10 0 9.6269 0 9.16667C0 8.70643 0.373096 8.33333 0.833333 8.33333H4.16667ZM17.5 8.33333C17.9602 8.33333 18.3333 8.70643 18.3333 9.16667C18.3333 9.6269 17.9602 10 17.5 10H14.1667C13.7064 10 13.3333 9.6269 13.3333 9.16667C13.3333 8.70643 13.7064 8.33333 14.1667 8.33333H17.5ZM2.67904 2.74414C2.98419 2.43909 3.46667 2.4201 3.79394 2.68717L3.85742 2.74414L6.21419 5.10091L6.27116 5.16439C6.53819 5.49166 6.51923 5.97416 6.21419 6.2793C5.90919 6.5843 5.42659 6.60378 5.09928 6.33708L5.03581 6.2793L2.67904 3.92253L2.62126 3.85905C2.35451 3.53174 2.37402 3.04916 2.67904 2.74414ZM14.4759 2.74414C14.8013 2.41874 15.3289 2.4188 15.6543 2.74414C15.9797 3.06958 15.9797 3.59709 15.6543 3.92253L13.2975 6.2793C12.9721 6.60473 12.4446 6.60473 12.1191 6.2793C11.7938 5.95385 11.7937 5.42631 12.1191 5.10091L14.4759 2.74414ZM8.33333 4.16667V0.833333C8.33333 0.373096 8.70643 0 9.16667 0C9.6269 0 10 0.373096 10 0.833333V4.16667C10 4.6269 9.6269 5 9.16667 5C8.70643 5 8.33333 4.6269 8.33333 4.16667Z";
+
+/// Desktop's `Button-module__spinner`: the rays under a conic gradient from 15% of the color at the top, clockwise to
+/// all of it. resvg has no conic gradient, so each 10° wedge of the rays takes the opacity of its middle.
+static BUTTON_SPINNER: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    let (c, tau) = (18.3333 / 2.0, std::f32::consts::TAU);
+    let at = |k: u8| {
+        let a = f32::from(k) * tau / 36.0;
+        format!("{} {}", c + 20.0 * a.sin(), c - 20.0 * a.cos())
+    };
+    let wedges: String = (0..36)
+        .map(|k| {
+            let alpha = 0.15 + 0.85 * (f32::from(k) + 0.5) / 36.0;
+            format!(
+                r##"<clipPath id="w{k}"><path d="M{c} {c}L{}L{}Z"/></clipPath><use xlink:href="#r" clip-path="url(#w{k})" fill-opacity="{alpha}"/>"##,
+                at(k),
+                at(k + 1)
+            )
+        })
+        .collect();
+    let doc = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 18.3333 18.3333"><defs><path id="r" d="{SPINNER_RAYS}"/></defs>{wedges}</svg>"##
+    );
+    svg::Handle::from_memory(doc.into_bytes())
+});
+
+/// Desktop's `Button-module__spinner`, `size` px, which turns a twelfth at a time, once in 0.8 s.
+fn button_spinner<'a>(size: f32, color: Color) -> El<'a> {
+    let step = (crate::login::EPOCH.elapsed().as_secs_f32() / 0.8 * 12.0).floor();
+    svg(BUTTON_SPINNER.clone())
+        .width(size)
+        .height(size)
+        .opacity(color.a)
+        .rotation(iced::Rotation::Solid(iced::Radians(step / 12.0 * std::f32::consts::TAU)))
+        .style(move |_, _| svg::Style { color: Some(color) })
+        .into()
+}
+
+/// Desktop's `ActionButtons` button: a rounded `secondary` `Button` of the `md` size, 32 px high, on
+/// `--semantic-colors-bg-secondary`, with its icon, its label in 13 px semibold and a chevron on a link, 6 px apart.
+/// Without `press` its callback runs: disabled at half opacity on the `bg-disabled` fill, with the spinner in place
+/// of its content.
+fn action_button<'a>(p: &crate::style::Palette, b: &ActionButton, press: Option<UiMessage>) -> El<'a> {
+    let loading = press.is_none();
+    let shown = |c: Color| if loading { CLEAR } else { c };
+    let icon = b.icon.as_deref().and_then(|n| BUTTON_ICONS.get(n)).map(|h| tinted(h, 14.0, shown(p.main_text)));
+    let label = semi(b.label.clone(), 13.0).line_height(1.0).color(shown(p.main_text));
+    // Desktop's `chevron-compact-right`, the Material `chevron_forward` of 14 px.
+    let chevron = (b.action == ButtonAction::Link).then(|| tinted(&CHEVRON_FORWARD, 14.0, shown(p.tertiary)));
+    let content = row![].push(icon).push(label).push(chevron).spacing(6).align_y(Center);
+    let (alpha, bg) = if loading { (0.5, p.main_muted) } else { (1.0, p.bg_secondary) };
+    let spinner = loading.then(|| container(button_spinner(14.0, p.main_text.scale_alpha(alpha))).center(Fill));
+    // The 1 px transparent border of `Button-module__button` adds to its 12 px padding.
+    button(stack![container(content).center_y(Fill)].push(spinner))
+        .height(32)
+        .padding([0, 13])
+        .style(move |_, _| button::Style {
+            background: Some(bg.scale_alpha(alpha).into()),
+            border: border::rounded(9999),
+            ..Default::default()
+        })
+        .on_press_maybe(press)
+        .into()
+}
+
 /// Desktop's `--color-on-error-container`, the same in the light and dark themes.
 const ON_ERROR_CONTAINER: Color = Color::from_rgb8(0xdc, 0x36, 0x2e);
 
@@ -474,6 +612,12 @@ fn room_parts(text: &str) -> Vec<(&str, bool)> {
     }
     parts.extend((!rest.is_empty()).then_some((rest, false)));
     parts
+}
+
+/// HTML's `dir="auto"`: whether the first strong character of `text` is of a right-to-left script.
+fn right_to_left(text: &str) -> bool {
+    let rtl = |c: char| matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF);
+    text.chars().find(|c| c.is_alphabetic()).is_some_and(rtl)
 }
 
 /// The container of the unread divider, which a chat scrolls to when it opens.
@@ -1357,7 +1501,7 @@ impl BeeperGuiApp {
     /// Desktop's `jumpToMessage` and `revealMessage`: shows message `mid` of chat `cid` in the timeline of the pane,
     /// and a reply only in a thread in the thread pane. The thread pane jumps in its own thread.
     pub(crate) fn jump_to(&mut self, cid: String, mid: String) -> Task<UiMessage> {
-        (self.show_command_palette, self.command_palette_query, self.chat_menu) = (false, String::new(), None);
+        (self.show_command_palette, self.command_palette_query, self.list.chat_menu) = (false, String::new(), None);
         if self.pane.thread_root.is_none() {
             self.select_chat(&cid);
             let st = self.store.read();
@@ -1827,6 +1971,10 @@ impl BeeperGuiApp {
         let on_wall = self.wallpaper_fg(st, chat, thread);
         let muted = on_wall.unwrap_or(p.muted);
         let mine = m.is_sender == Some(true);
+        // Desktop's `Ve`: an open edit history goes before the message, which follows its last version, so it does
+        // not name the sender again and shows its time.
+        let open = self.pane().expanded_history_msg_id.as_ref() == Some(&m.id) && !m.edit_history.is_empty();
+        let (named_first, hide_time) = (first && !open, hide_time && !open);
         let shows_time = st.settings.on("showTimestamps") && !hide_time;
         let italic = iced::Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) };
         // Desktop keeps the row of a deleted message, with its sender, its menu and its selection.
@@ -1855,6 +2003,12 @@ impl BeeperGuiApp {
             (true, None) => (dim(sent), dim(sent_fg)),
             (false, _) => (dim(p.received), dim(p.strong)),
         };
+        // Desktop's `is-edit-history` bubble: the sent color at half, or `--color-base-gray-40` at half.
+        let history = m.id.contains(EDIT_HISTORY);
+        let bg = match history {
+            true => (if mine { sent } else { p.link_card }).scale_alpha(0.5),
+            false => bg,
+        };
         let poll = m.poll.as_ref().filter(|_| st.feature("enable-polls").on && chat.polls.is_some());
         // Desktop's `isE2EE` message that the keys did not decrypt yet.
         let utd = m.text.as_deref() == Some(beeper_core::matrix::UTD_TEXT);
@@ -1865,7 +2019,7 @@ impl BeeperGuiApp {
         };
         let big = !utd && m.poll.is_none() && jumbo(&emoji_text(m));
         let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
-        let named = (group || network_bot(chat, &m.sender_id)) && !mine && first;
+        let named = (group || network_bot(chat, &m.sender_id)) && !mine && named_first;
         let sender = || {
             let name = sender_label(chat, m);
             self.user_trigger(chat, &m.sender_id, semi(name.clone(), 12.0).color(hex(*pick(&name, &p.names))))
@@ -1987,8 +2141,17 @@ impl BeeperGuiApp {
                     let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media_at(u)) {
                         Some(Ok(_)) if let Some(t) = cut => image(t.clone()).width(w).height(h).into(),
                         Some(Ok(frames)) => {
-                            let frames = anim::playing(frames, st.settings.on("autoplayGifs"));
-                            anim::gif(frames, self.started, move |f| image(f).width(w).height(h).border_radius(17.0))
+                            let autoplay = st.settings.on("autoplayGifs");
+                            let played = self.pane().played_gifs.get(&(m.id.clone(), ai)).filter(|_| !autoplay);
+                            let (shown, start) = match played {
+                                Some(&at) => (&frames[..], at),
+                                None => (anim::playing(frames, autoplay), self.started),
+                            };
+                            let gif = anim::gif(shown, start, move |f| image(f).width(w).height(h).border_radius(17.0));
+                            match !autoplay && frames.len() > 1 {
+                                true => gif_toggle(gif, played.is_some(), Msg::ToggleGif(m.id.clone(), ai)),
+                                false => gif,
+                            }
                         }
                         Some(Err(_)) if m.unresolved_media.is_none() => self.image_error(w, h, 17.0),
                         _ => container(ic(icon::IMAGE, 28.0).color(p.sub))
@@ -2013,7 +2176,8 @@ impl BeeperGuiApp {
                                 )),
                             )
                         } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
-                            parts = parts.push(self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai)));
+                            let video = self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai));
+                            parts = parts.push(dimmed(video, selected));
                             continue;
                         } else if is_video && a.is_gif != Some(true) {
                             (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
@@ -2043,7 +2207,7 @@ impl BeeperGuiApp {
                     self.view_file_row(m, ai, a, timer)
                 }
             };
-            parts = parts.push(content);
+            parts = parts.push(dimmed(content, selected));
         }
         if let Some(poll) = poll {
             parts = parts.push(self.view_poll(st, chat, m, poll, (bg, fg)));
@@ -2075,23 +2239,38 @@ impl BeeperGuiApp {
             let pill = container(line.spacing(8).align_y(Center)).padding([9, 13]);
             parts = parts.push(pill.style(bordered_box(CLEAR, p.chip, 2.0, 17.0)));
         } else if big {
+            // Desktop's `.is-selected.type-emoji .message-contents`: `brightness(0.8)`, which iced draws in images.
+            let emoji = |t: String| -> El<'a> {
+                match selected {
+                    true => {
+                        let (handle, size) = crate::style::dimmed_emoji(&t, 48.0, 48.0 * 1.3, 0.8);
+                        image(handle).width(size.width).height(size.height).into()
+                    }
+                    false => txt(t, 48.0).font(EMOJI_FONT).into(),
+                }
+            };
             // Custom emoji are 1em high images among the 48 px emoji.
             let custom = m.html.as_deref().filter(|h| h.contains("data-mx-emoticon"));
             let runs = custom.map(beeper_core::codec::html_blocks).unwrap_or_default().into_iter().flat_map(|b| b.runs);
             let glyphs: Vec<El<'a>> = runs
                 .map(|r| match r.emoticon.as_deref() {
                     Some(url) => match self.still(url) {
+                        Some(frame) if selected => image(crate::style::dimmed_image(&frame, 0.8)).height(48.0).into(),
                         Some(frame) => image(frame).height(48.0).into(),
                         None => Space::new().width(48.0).height(48.0).into(),
                     },
-                    None => txt(r.text, 48.0).font(EMOJI_FONT).into(),
+                    None => emoji(r.text),
                 })
                 .collect();
             let line: El<'a> = match glyphs.is_empty() {
-                true => txt(text.clone(), 48.0).font(EMOJI_FONT).into(),
+                true => emoji(text.clone()),
                 false => Row::with_children(glyphs).align_y(Bottom).into(),
             };
-            parts = parts.push(container(line).padding([0, 12]));
+            // Desktop's `title` of the `message-text` of an emoji message: its time.
+            let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
+            let line = self.tip(line, time, vec![], tooltip::Position::Top);
+            // `.bubble-mode .type-emoji .message-contents`: the bubble's padding, without the bottom one.
+            parts = parts.push(container(line).padding(Padding::from([BUBBLE_PAD_Y, BUBBLE_PAD_X]).bottom(0.0)));
         } else if utd {
             let line = txt(text.clone(), 13.0).line_height(Pixels(16.0)).font(italic).color(fg.scale_alpha(0.8));
             let time = shows_time.then(|| {
@@ -2252,8 +2431,17 @@ impl BeeperGuiApp {
                 spans
             };
             // Each block: its list marker, spans, plain text, blockquote depth, heading level and custom emoji.
-            type Block<'s> =
-                (Option<String>, Vec<iced::widget::text::Span<'s, String>>, String, u8, u8, Vec<Option<image::Handle>>);
+            // Each block: its list marker, spans, plain text, blockquote depth, heading level, custom emoji and whether it
+            // is a code block.
+            type Block<'s> = (
+                Option<String>,
+                Vec<iced::widget::text::Span<'s, String>>,
+                String,
+                u8,
+                u8,
+                Vec<Option<image::Handle>>,
+                bool,
+            );
             let blocks: Vec<Block> = match m.html.as_deref() {
                 Some(html) => beeper_core::codec::html_blocks(html)
                     .into_iter()
@@ -2268,13 +2456,19 @@ impl BeeperGuiApp {
                                 .collect(),
                             false => vec![(r, false)],
                         });
-                        let spans = with_emoji_font(runs.flat_map(rich).collect());
-                        (b.marker, heading(spans, b.heading), plain, b.quote, b.heading, images)
+                        let mut spans = with_emoji_font(runs.flat_map(rich).collect());
+                        // Desktop's `pre code` is one padded block, so its spans have no box of their own.
+                        if b.pre {
+                            for s in &mut spans {
+                                (s.highlight, s.padding) = (None, Padding::ZERO);
+                            }
+                        }
+                        (b.marker, heading(spans, b.heading), plain, b.quote, b.heading, images, b.pre)
                     })
                     .collect(),
                 None => {
                     let spans = with_emoji_font(plain(&text));
-                    vec![(None, spans, text.clone(), 0, 0, Vec::new())]
+                    vec![(None, spans, text.clone(), 0, 0, Vec::new(), false)]
                 }
             };
             let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
@@ -2282,10 +2476,20 @@ impl BeeperGuiApp {
             // fit show as they are, and the block that crosses the limit shows its first lines as plain text.
             let clamp = clamp_blocks(blocks.iter().map(|b| b.2.as_str()), max);
             let open = self.pane().unclamped.contains(&m.id);
+            // Desktop's `pre code` is a block as wide as its longest line, and the time floats under a last one.
+            let code_pad = 0.75 * 13.0 * 0.9;
+            let code_lines = blocks.iter().filter(|b| b.6).flat_map(|b| b.2.lines());
+            let code_w =
+                code_lines.map(|l| l.chars().count() as f32 * 0.6 * 13.0 * 0.9 + 2.0 * code_pad).fold(0.0, f32::max);
+            let text_w = blocks.iter().filter(|b| !b.6).flat_map(|b| b.2.lines());
+            let text_w = text_w.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
+            let last_pre = blocks.last().is_some_and(|b| b.6);
             let (room, time, footer_time) = match clamp {
                 Some(_) => (0.0, None, time),
+                None if last_pre => (0.0, None, time),
                 None => (room, time, None),
             };
+            let (footer_time, below) = if clamp.is_some() { (footer_time, None) } else { (None, footer_time) };
             let (blocks, cut) = match clamp {
                 Some((whole, left)) if !open => {
                     let cut = blocks.get(whole).map(|b| b.2.clone()).filter(|_| left > 0);
@@ -2304,16 +2508,23 @@ impl BeeperGuiApp {
             let blocks_html =
                 m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
             let width = match crate::style::wraps(&padded, max, 13.0) {
+                _ if code_w > 0.0 => Length::Fixed(code_w.max(text_w).min(max)),
                 false => Length::Shrink,
                 true if st.settings.on("balanceText") && !blocks_html => {
                     Length::Fixed(crate::style::balanced_width(&padded, max, 13.0))
                 }
                 true => Length::Fixed(max),
             };
+            // Desktop's `ol` indent: `max(1.8em, var(--ol-number-digits) * 1ch + 0.65em)`, with the digits of its
+            // longest number.
+            let digits =
+                blocks.iter().filter_map(|b| b.0.as_deref()?.strip_suffix('.')).map(str::len).max().unwrap_or(1);
+            let ol_indent =
+                (1.8 * 13.0f32).max(digits as f32 * crate::style::text_width("0", 13.0, Weight::Normal) + 0.65 * 13.0);
             let items: Vec<(u8, El<'_>)> = blocks
                 .into_iter()
                 .enumerate()
-                .map(|(i, (marker, mut spans, _, quote, level, images))| {
+                .map(|(i, (marker, mut spans, _, quote, level, images, pre))| {
                     // iced does not draw an empty last line.
                     if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
                         spans.push(span("\u{200b}").size(13.0));
@@ -2322,18 +2533,33 @@ impl BeeperGuiApp {
                         spans.push(span(pad.clone()).size(13.0));
                     }
                     let id = m.id.clone();
+                    let tipped = tipped_links(&spans, m.html.is_some());
+                    let tip = move |href: &String| -> Option<El<'a>> {
+                        let host = url_host(href).filter(|_| tipped.contains(href) && !self.menu_open())?;
+                        Some(self.tip_card(med(host, 13.0).color(p.strong)).into())
+                    };
                     let line = crate::selectable::selectable(spans)
                         .images(images)
                         .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                         .on_link_click(UiMessage::OpenUrl)
-                        .on_link_menu(move |href| UiMessage::Message(Msg::LinkMenu(id.clone(), href)));
+                        .on_link_menu(move |href| UiMessage::Message(Msg::LinkMenu(id.clone(), href)))
+                        .link_tip(tip);
                     let gap = match (prev_item.replace(marker.is_some()), marker.is_some()) {
                         (None, _) => 0.0,
                         (Some(true), true) => 6.0,
                         _ => 9.0,
                     } + if level > 0 { 9.0 } else { 0.0 };
-                    let indent = |m: &String| if m == "•" { 15.6 } else { 23.4 };
+                    let indent = |m: &String| if m == "•" { 15.6 } else { ol_indent };
+                    // Desktop's `pre code`: a block on the code background, 0.75em around the text.
+                    let line: El<'_> = match pre {
+                        true => container(line)
+                            .padding(0.75 * 13.0 * 0.9)
+                            .width(Fill)
+                            .style(fill_box(Color { a: 0.1, ..p.strong }, 4.0))
+                            .into(),
+                        false => line.into(),
+                    };
                     let marker = marker.map(|m| {
                         let w = indent(&m);
                         container(txt(m, 13.0).color(fg)).width(w).align_right(w).padding(Padding::ZERO.right(5.0))
@@ -2345,8 +2571,11 @@ impl BeeperGuiApp {
             let cut = cut.map(|(t, left)| {
                 txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             });
-            let body =
-                stack![column![body].push(cut)].push(time.map(|t| container(t).align_right(Fill).align_bottom(Fill)));
+            // Desktop's `dir="auto"`: the time of a right-to-left text floats to its left, where its room is.
+            let body = stack![column![body].push(cut)].push(time.map(|t| match right_to_left(&text) {
+                true => container(t).align_left(Fill).align_bottom(Fill),
+                false => container(t).align_right(Fill).align_bottom(Fill),
+            }));
             // Desktop's `read-more-button`: the primary color, white on a sent bubble, with the time at its end.
             let more = clamp.map(|_| {
                 let label = semi(if open { tr("Show less") } else { tr("Show more") }, 14.0);
@@ -2357,26 +2586,39 @@ impl BeeperGuiApp {
                 row![toggle].push(footer_time).spacing(8).align_y(Bottom)
             });
             parts = parts.push(
-                container(column![].push(inside).push(body).push(more))
-                    .padding([BUBBLE_PAD_Y, BUBBLE_PAD_X])
-                    .max_width(0.45 * self.pane().size.width)
-                    .style(fill_box(bg, 17.0)),
+                container(
+                    column![]
+                        .push(inside)
+                        .push(body)
+                        .push(below.map(|t| container(t).align_right(width).padding(Padding::ZERO.top(4.0))))
+                        .push(more),
+                )
+                .padding([BUBBLE_PAD_Y, BUBBLE_PAD_X])
+                .max_width(0.45 * self.pane().size.width)
+                .style(fill_box(bg, 17.0)),
             );
         }
-        let open = self.pane().expanded_history_msg_id.as_ref() == Some(&m.id);
         let label = |t: String| txt(t, 12.0).color(muted);
         // Desktop's `EditedLabel` shows on an edited message that is not deleted, failed or retrying.
         let edited = (m.edited() && m.is_deleted != Some(true) && m.send_error.is_none()).then(|| -> El<'a> {
             let small = |t: &str| txt(t.to_string(), 11.0);
-            if m.edit_history.is_empty() {
+            let Some(last) = m.edit_history.last() else {
                 return small(tr("Edited")).color(muted).into();
-            }
+            };
             let toggle = small(if open { tr("Hide Edits") } else { tr("Edited") }).font(fw(Weight::Semibold));
-            button(toggle.color(p.accent))
+            let toggle = button(toggle.color(p.accent))
                 .padding(0)
                 .style(|_, _| button::Style::default())
-                .on_press(UiMessage::Message(Msg::ToggleEditHistory(m.id.clone())))
-                .into()
+                .on_press(UiMessage::Message(Msg::ToggleEditHistory(m.id.clone())));
+            // Desktop's `u2t`: "Edited after" the time from the message to its last edit, unless that is under 1 s.
+            let after = millis_from_rfc3339(&last.timestamp).zip(millis_from_rfc3339(&m.timestamp));
+            let after = after.map(|(edit, sent)| short_distance(edit.abs_diff(sent))).filter(|d| d != "0s");
+            match after {
+                Some(after) => {
+                    self.tip(toggle.into(), trf("Edited after %s", &[&after]), vec![], tooltip::Position::Top).into()
+                }
+                None => toggle.into(),
+            }
         });
         let replies = (replies > 0).then(|| -> El<'a> {
             let n = trnx("%d Reply", "%d Replies", replies, "button label for replies to a message", &[&replies]);
@@ -2415,11 +2657,7 @@ impl BeeperGuiApp {
         let tail = if footer.is_some() { 15.0 } else { 0.0 }
             + if reactions.is_empty() { 0.0 } else { 21.0 }
             + if transcribe.is_some() { 16.0 } else { 0.0 };
-        let edits = open.then(|| {
-            m.edit_history.iter().fold(Column::new().spacing(2), |c, e| {
-                c.push(txt(format!("{} · {}", e.text, format_short_ts(&e.timestamp, false)), 11.0).color(p.muted))
-            })
-        });
+        let versions = open.then(|| self.edit_history(st, chat, m, first, thread));
         let parts: El<'a> = if reactions.is_empty() {
             parts.into()
         } else {
@@ -2481,7 +2719,7 @@ impl BeeperGuiApp {
             (threaded && !in_pane && !thread).then(|| self.thread_replies_button(st, chat, &m.id)).flatten();
         let thread_button = thread_button.map(|b| container(b).padding(Padding::ZERO.top(2.0)));
         let parts = column![parts]
-            .push(edits)
+            .push(self.action_buttons(st, m))
             .push(actions)
             .push(thread_button)
             .push(footer)
@@ -2641,6 +2879,10 @@ impl BeeperGuiApp {
             }
         });
         let line: El<'a> = column![].push(quote).push(line).into();
+        // Desktop's edit history rows take no hover, click or menu.
+        if history {
+            return column![head, line].into();
+        }
         let (menu, click) = match ms.len() {
             1 => (UiMessage::Message(Msg::OpenMenu(m.id.clone())), UiMessage::Message(Msg::Click(m.id.clone()))),
             _ => {
@@ -2654,7 +2896,72 @@ impl BeeperGuiApp {
             .on_exit(UiMessage::Message(Msg::HoverExit(m.id.clone())))
             .on_right_press(menu)
             .on_double_click(UiMessage::Message(Msg::DoubleClick(m.id.clone())));
-        column![head, line].into()
+        column![head].push(versions).push(line).into()
+    }
+
+    /// Desktop's `MessageEditHistory` (`x6t`) above an expanded edited message: its earlier versions oldest first,
+    /// each a message row at the time it was sent or edited, without attachments or reactions, and with the gap of
+    /// Desktop's `gapBelow` to the next one. The first version keeps the quote, and it names the sender in place of
+    /// the message.
+    fn edit_history<'a>(&'a self, st: &BeeperStore, chat: &Chat, m: &Message, first: bool, thread: bool) -> El<'a> {
+        let times = std::iter::once(&m.timestamp).chain(m.edit_history.iter().map(|e| &e.timestamp));
+        let versions: Vec<Message> = m
+            .edit_history
+            .iter()
+            .zip(times)
+            .enumerate()
+            .map(|(k, (e, at))| Message {
+                id: format!("{}{EDIT_HISTORY}{k}", m.id),
+                timestamp: at.clone(),
+                text: Some(e.text.clone()),
+                html: None,
+                linked_message_id: m.linked_message_id.clone().filter(|_| k == 0),
+                attachments: Vec::new(),
+                links: Vec::new(),
+                reactions: Vec::new(),
+                edit_history: Vec::new(),
+                seen: Default::default(),
+                is_edited: None,
+                is_bookmarked: None,
+                is_deleted: None,
+                poll: None,
+                call: None,
+                timer: None,
+                send_error: None,
+                disappearing: None,
+                unresolved_media: None,
+                view_limit: None,
+                broadcast: false,
+                ..m.clone()
+            })
+            .collect();
+        let nexts = versions.iter().skip(1).chain([m]);
+        let rows = versions.iter().zip(nexts).enumerate().map(|(k, (version, next))| {
+            let flags = (first && k == 0, false, Chain::default(), thread, false);
+            let row = self.view_message(st, chat, &[version], flags, (None, 0), Column::new());
+            column![row, Space::new().height(gap_below(version, next))].into()
+        });
+        Column::with_children(rows).into()
+    }
+
+    /// Desktop's `ActionButtons` (`W4t`) under a message of the system user that is not deleted: the buttons that
+    /// can open their link or post to their URL, in a wrapping row 4 px apart and 4 px below the message.
+    fn action_buttons<'a>(&self, st: &BeeperStore, m: &Message) -> Option<El<'a>> {
+        if m.is_deleted == Some(true) || !system_user(&m.sender_id) {
+            return None;
+        }
+        let home = &st.beeper_state.homeserver;
+        let buttons: Vec<El<'a>> = (m.buttons.iter().filter(|b| b.usable(home)))
+            .map(|b| {
+                let loading = self.pressing.iter().any(|(mid, id)| *mid == m.id && *id == b.id);
+                let press = UiMessage::Message(Msg::PressButton(m.id.clone(), b.id.clone()));
+                action_button(&self.pal, b, (!loading).then_some(press))
+            })
+            .collect();
+        (!buttons.is_empty()).then(|| {
+            let row = Row::with_children(buttons).spacing(4).wrap().vertical_spacing(4);
+            container(row).padding(Padding::ZERO.top(4.0)).into()
+        })
     }
 
     /// Desktop's `bfe` (`LinkedMessage`) of the quoted message `q`: a box of its media, the tags of its other
@@ -3056,8 +3363,14 @@ pub enum Msg {
     RetrySend(String),
     RemoveUnsent(String),
     ToggleEditHistory(String),
+    /// The play or pause button of a GIF of a message, by its attachment, while "Autoplay GIFs" is off.
+    ToggleGif(String, usize),
     /// "Show more" or "Show less" of a message over 40 lines.
     ToggleClamp(String),
+    /// A press of an action button, by its message and its ID.
+    PressButton(String, String),
+    /// The end of the callback of an action button.
+    Pressed(String, String, Pressed),
     HoverEnter(String),
     ShowQuickReactions,
     HoverExit(String),
@@ -3095,7 +3408,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::ToggleBookmark(mid) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 self.store.write().toggle_bookmark(&mid);
             }
             Msg::MarkUnreadFromHere(cid, mid) => {
@@ -3395,6 +3708,23 @@ impl BeeperGuiApp {
                     self.pane.unclamped.insert(mid);
                 }
             }
+            Msg::PressButton(mid, id) => return self.press_button(mid, id),
+            // Desktop's `z4t`: a toast when the homeserver answered 429, and an error toast when the callback failed.
+            Msg::Pressed(mid, id, r) => {
+                self.pressing.remove(&(mid, id));
+                match r {
+                    Pressed::Ok => {}
+                    Pressed::RateLimited => {
+                        self.show(Toast::new(tr("We're on it. If nothing arrives, try again in a few minutes.").into()))
+                    }
+                    Pressed::Failed => self.fail(Toast::new(tr("Couldn't reach Beeper. Try again.").into())),
+                }
+            }
+            Msg::ToggleGif(mid, ai) => {
+                if self.pane.played_gifs.remove(&(mid.clone(), ai)).is_none() {
+                    self.pane.played_gifs.insert((mid, ai), std::time::Instant::now());
+                }
+            }
             Msg::ToggleEditHistory(mid) => {
                 self.pane.expanded_history_msg_id =
                     (self.pane.expanded_history_msg_id.as_ref() != Some(&mid)).then_some(mid);
@@ -3418,6 +3748,34 @@ impl BeeperGuiApp {
             }
         }
         self.settle()
+    }
+
+    /// Desktop's `W4t` press: a link button opens its link, and a callback button posts once at a time, with its
+    /// spinner for 500 ms at least.
+    fn press_button(&mut self, mid: String, id: String) -> Task<UiMessage> {
+        let st = self.store.read();
+        let home = &st.beeper_state.homeserver;
+        let live = st.loaded(&mid).filter(|m| m.is_deleted != Some(true) && system_user(&m.sender_id));
+        let b = live.and_then(|m| m.buttons.iter().find(|b| b.id == id));
+        let link = b.filter(|b| b.action == ButtonAction::Link).and_then(ActionButton::link);
+        let url = b.filter(|b| b.action == ButtonAction::Callback).and_then(|b| b.callback_url(home));
+        let token = st.beeper_state.access_token.clone();
+        drop(st);
+        if let Some(link) = link {
+            return match link.starts_with(crate::deeplink::SCHEME) {
+                true => self.open_link(&link),
+                false => self.update(UiMessage::OpenUrl(link)),
+            };
+        }
+        let Some(url) = url else { return Task::none() };
+        if !self.pressing.insert((mid.clone(), id.clone())) {
+            return Task::none();
+        }
+        let press = async move {
+            let wait = tokio::time::sleep(std::time::Duration::from_millis(500));
+            tokio::join!(beeper_core::matrix::press_button(url, token), wait).0
+        };
+        Task::perform(press, move |r| UiMessage::Message(Msg::Pressed(mid, id, r)))
     }
 }
 
@@ -3661,6 +4019,81 @@ mod tests {
         assert!(!quick_shown(&app), "never on your own");
     }
 
+    /// Desktop's `ActionButtons` under a message of the system user: the buttons that can open their link or post to
+    /// the homeserver, a deep link that opens, and a callback that runs once at a time, then a toast for a 429 and an
+    /// error toast for a failure.
+    #[test]
+    fn system_user_buttons_like_desktop() {
+        let mut app = crate::fuzz::demo_app("action-buttons");
+        let path = "/_matrix/client/unstable/com.beeper.tips/download_links/email";
+        let button = |id: &str, action, url: String| ActionButton {
+            id: id.into(),
+            label: format!("Label {id}"),
+            action,
+            url,
+            icon: Some("mail".into()),
+        };
+        {
+            let mut st = app.store.write();
+            // Nothing answers there, so no callback leaves the machine.
+            st.beeper_state.homeserver = "https://127.0.0.1:9".into();
+            let m = st.messages[*st.timeline_indices(crate::NOTE_CHAT_ID).last().expect("a message")].clone();
+            let buttons = vec![
+                button("tips", ButtonAction::Link, "beeper://tips/add-account".into()),
+                button("email", ButtonAction::Callback, format!("https://127.0.0.1:9{path}")),
+                button("elsewhere", ButtonAction::Callback, format!("https://x.io{path}")),
+                button("plain", ButtonAction::Link, "http://x.io".into()),
+            ];
+            let system = "@:beeper.local".to_string();
+            let tip = Message { id: "$tip".into(), sender_id: system, is_sender: Some(false), buttons, ..m.clone() };
+            st.upsert_message(tip);
+            let fake = vec![button("fake", ButtonAction::Link, "https://x.io".into())];
+            st.upsert_message(Message { id: "$fake".into(), is_sender: Some(false), buttons: fake, ..m });
+        }
+        let _ = app.update(UiMessage::SelectChat(crate::NOTE_CHAT_ID.into()));
+        app.pane.size = Size::new(900.0, 700.0);
+        let shown = |app: &BeeperGuiApp, label: &str| simulator(app.view_conversation()).find(label).is_ok();
+        assert!(shown(&app, "Label tips") && shown(&app, "Label email"));
+        assert!(!shown(&app, "Label elsewhere") && !shown(&app, "Label plain"), "only the usable buttons");
+        assert!(!shown(&app, "Label fake"), "only the system user's messages have buttons");
+        let mut sim = simulator(app.view_conversation());
+        sim.click("Label tips").expect("the link button");
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        let press =
+            |m: &UiMessage| matches!(m, UiMessage::Message(Msg::PressButton(mid, id)) if mid == "$tip" && id == "tips");
+        assert!(msgs.iter().any(press), "a press of the button");
+        msgs.into_iter().for_each(|m| _ = app.update(m));
+        assert!(app.networks.window.is_some(), "the deep link of the tip opens the Add an Account window");
+        let email = || UiMessage::Message(Msg::PressButton("$tip".into(), "email".into()));
+        let _ = app.update(email());
+        let _ = app.update(email());
+        assert_eq!(app.pressing.len(), 1, "one callback at a time");
+        let mut sim = simulator(app.view_conversation());
+        let _ = sim.click("Label email");
+        assert!(!sim.into_messages().any(|m| matches!(m, UiMessage::Message(Msg::PressButton(..)))), "disabled");
+        let done = |r| UiMessage::Message(Msg::Pressed("$tip".into(), "email".into(), r));
+        let _ = app.update(done(Pressed::RateLimited));
+        assert!(app.pressing.is_empty());
+        assert_eq!(app.status_banner, "We're on it. If nothing arrives, try again in a few minutes.");
+        assert!(app.toast.as_ref().is_some_and(|t| !t.error));
+        let _ = app.update(done(Pressed::Failed));
+        assert_eq!(app.status_banner, "Couldn't reach Beeper. Try again.");
+        assert!(app.toast.as_ref().is_some_and(|t| t.error));
+        {
+            let mut st = app.store.write();
+            let i = st.loaded_idx("$tip").expect("the tip");
+            st.update_message(i, |m| m.is_deleted = Some(true));
+        }
+        assert!(!shown(&app, "Label tips"), "a deleted message has no buttons");
+    }
+
+    /// HTML's `dir="auto"` takes the direction of the first strong character.
+    #[test]
+    fn text_direction_like_html() {
+        assert!(super::right_to_left("مرحبا بالعالم") && super::right_to_left("12 שלום world"));
+        assert!(!super::right_to_left("hello שלום") && !super::right_to_left("123 !?"));
+    }
+
     /// Desktop's `DJ` splits the text around each "@room".
     #[test]
     fn room_parts_like_desktop() {
@@ -3870,6 +4303,196 @@ mod tests {
             st.update_chat(i, |c| c.chat_type = "single".into());
         }
         assert!(alone(&app, &reply).find("Z").is_err(), "a DM has no reply avatar");
+    }
+
+    /// A received message of a DM, as plain text.
+    fn plain_received(app: &BeeperGuiApp, text: &str) -> String {
+        let mid = {
+            let st = app.store.read();
+            let dm = st.chats.iter().find(|c| c.chat_type == "single" && !st.timeline_indices(&c.id).is_empty());
+            let last = *st.timeline_indices(&dm.expect("a DM").id).last().expect("a message");
+            st.messages[last].id.clone()
+        };
+        change(app, &mid, |m| {
+            (m.text, m.html, m.linked_message_id, m.message_type) = (Some(text.into()), None, None, None);
+            (m.attachments, m.links, m.poll, m.call, m.timer) = (vec![], vec![], None, None, None);
+            (m.is_sender, m.is_deleted, m.reactions, m.edit_history) = (Some(false), None, vec![], vec![]);
+            (m.is_edited, m.send_error, m.unresolved_media, m.view_limit) = (None, None, None, None);
+        });
+        mid
+    }
+
+    /// The box of the dark pixels on light ones, the text of a tooltip, that pointing at `at` adds to the message `mid`
+    /// alone, in logical pixels.
+    fn hover_change(app: &BeeperGuiApp, mid: &str, at: Point) -> Option<iced::Rectangle> {
+        let still = pixels(&mut alone(app, mid));
+        let mut sim = alone(app, mid);
+        sim.point_at(at);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+        let shot = pixels(&mut sim);
+        let changed: Vec<(u32, u32)> = (shot.enumerate_pixels())
+            .filter(|&(x, y, px)| {
+                still.get_pixel(x, y).0[..3].iter().all(|&c| c > 192) && px.0[..3].iter().all(|&c| c < 128)
+            })
+            .map(|(x, y, _)| (x, y))
+            .collect();
+        let (xs, ys) = (changed.iter().map(|c| c.0), changed.iter().map(|c| c.1));
+        let (x, y) = (xs.clone().min()? as f32 / 2.0, ys.clone().min()? as f32 / 2.0);
+        let (right, bottom) = ((xs.max()? + 1) as f32 / 2.0, (ys.max()? + 1) as f32 / 2.0);
+        Some(iced::Rectangle::new(Point::new(x, y), Size::new(right - x, bottom - y)))
+    }
+
+    /// Desktop's `ExtLink` tooltip with the host of a link: each link that linkify finds in plain text, and an HTML
+    /// anchor whose text is not a URL of its host. It is centered on the link, above it, or below it at the top.
+    #[test]
+    fn link_host_tooltips_like_desktop() {
+        let link = |text: &str, href: &str| span(text.to_string()).link(href.to_string());
+        let tipped = |spans: &[iced::widget::text::Span<'_, String>], html| {
+            let mut links: Vec<String> = tipped_links(spans, html).into_iter().collect();
+            links.sort();
+            links
+        };
+        assert_eq!(url_host("https://Example.com:8443/a").as_deref(), Some("example.com:8443"));
+        assert_eq!(url_host("https://example.com:443/a").as_deref(), Some("example.com"));
+        assert_eq!(url_host("mailto:a@b.test"), None);
+        let spans = [
+            link("https://a.test/x", "https://a.test/x"),
+            span(" ".to_string()),
+            link("the docs", "https://b.test/"),
+            link("https://a.test", "https://c.test/"),
+            link("a room", "https://matrix.to/#/#r:x"),
+            link("mail", "mailto:a@b.test"),
+        ];
+        assert_eq!(tipped(&spans, true), ["https://b.test/", "https://c.test/"]);
+        assert_eq!(tipped(&spans[..1], false), ["https://a.test/x"], "a linkify link always shows its host");
+        let anchor = [link("https://a.test", "https://a.test/"), link("more", "https://a.test/")];
+        assert!(tipped(&anchor, true).is_empty(), "the first text of an anchor decides");
+
+        let mut app = crate::fuzz::demo_app("link-tips");
+        app.pane.size = Size::new(900.0, 700.0);
+        let mid = plain_received(&app, "https://example.com/docs");
+        // The link is the first line, 8 px into the bubble, so its tooltip goes below it, 6 px apart.
+        let tip = hover_change(&app, &mid, Point::new(30.0, 17.0)).expect("a tooltip");
+        let width = text_width("example.com", 13.0, Weight::Medium);
+        assert!(tip.y >= 24.0 + 6.0 + 8.0 && (tip.width - width).abs() < 3.0, "{tip:?} is {width} wide below");
+        let link = text_width("https://example.com/docs", 13.0, Weight::Normal);
+        assert!((tip.center_x() - (11.0 + link / 2.0)).abs() < 3.0, "{tip:?} is centered on the link");
+        change(&app, &mid, |m| m.text = Some("one\ntwo\nthree\nhttps://example.com/docs".into()));
+        let tip = hover_change(&app, &mid, Point::new(30.0, 64.0)).expect("a tooltip");
+        assert!(tip.y + tip.height <= 56.0 - 6.0 - 8.0 && tip.y > 8.0, "{tip:?} is above the fourth line");
+        let anchor = |text: &str| {
+            change(&app, &mid, |m| {
+                m.html = Some(format!("<a href=\"https://example.com/docs\">{text}</a>"));
+                m.text = Some(text.into());
+            });
+            hover_change(&app, &mid, Point::new(20.0, 17.0))
+        };
+        assert!(anchor("https://example.com/docs").is_none(), "an anchor with its own URL has no tooltip");
+        assert!(anchor("the docs").is_some());
+    }
+
+    /// Desktop's `MessageEditHistory`: the earlier versions as message rows above the message, at their times, with
+    /// see-through bubbles. The "Edited" button tells how long after the message its last edit came.
+    #[test]
+    fn edit_history_like_desktop() {
+        let after = [400, 45_000, 300_000, 7_200_000, 259_200_000, 5_184_000_000, 34_560_000_000].map(short_distance);
+        assert_eq!(after, ["0s", "45s", "5m", "2h", "3d", "2mo", "1y"]);
+        let mut app = crate::fuzz::demo_app("edit-history");
+        app.pane.size = Size::new(900.0, 700.0);
+        let mid = plain_received(&app, "third");
+        let at = |minute: u32| format!("2030-01-01T10:{minute:02}:00Z");
+        change(&app, &mid, |m| {
+            m.timestamp = at(0);
+            let edit = |text: &str, minute| EditHistoryEntry { text: text.into(), timestamp: at(minute) };
+            m.edit_history = vec![edit("first", 1), edit("second", 3)];
+        });
+        let h24 = app.store.read().settings.pref("timeFormat") == 1;
+        let time = |minute| format_short_ts(&at(minute), h24);
+        let label = alone(&app, &mid).find("Edited").expect("the Edited button").bounds();
+        let tip = hover_change(&app, &mid, label.center()).expect("Edited after 3m");
+        assert!(tip.y + tip.height <= label.y, "{tip:?} is above the button");
+        assert!(alone(&app, &mid).find(time(1)).is_err());
+        let _ = app.update(UiMessage::Message(Msg::ToggleEditHistory(mid.clone())));
+        let mut sim = alone(&app, &mid);
+        assert!(sim.find("Hide Edits").is_ok());
+        assert!(sim.find(time(1)).is_ok(), "the second version shows the time of the first edit");
+        // Two 32 px rows of earlier versions 2 px apart, then the message in its received bubble.
+        let shot = pixels(&mut sim);
+        let close = |(x, y): (u32, u32), c: Color| {
+            let (px, c) = (shot.get_pixel(2 * x, 2 * y).0, c.into_rgba8());
+            (0..3).all(|i| px[i].abs_diff(c[i]) <= 2)
+        };
+        let see_through = mix(Color::WHITE, app.pal.link_card, 0.5);
+        assert!(close((6, 16), see_through) && close((6, 50), see_through), "Desktop's half gray-40 bubbles");
+        assert!(close((6, 84), app.pal.received));
+    }
+
+    /// Desktop's `EnhancedImg` with "Autoplay GIFs" off: a GIF shows its first frame with a play button, and once it
+    /// plays, a pause button while the pointer is on it. A selected message's media is at 80% brightness.
+    #[test]
+    fn gifs_and_selected_media_like_desktop() {
+        let mut app = crate::fuzz::demo_app("gif-button");
+        app.pane.size = Size::new(900.0, 700.0);
+        let mid = plain_received(&app, "");
+        let url = "mxc://x/gif".to_string();
+        change(&app, &mid, |m| {
+            m.text = None;
+            m.attachments = vec![Attachment {
+                attachment_type: "img".into(),
+                src_url: Some(url.clone()),
+                size: Some(AttachmentSize { width: Some(200), height: Some(100) }),
+                ..Default::default()
+            }];
+        });
+        let fill = |c: [u8; 4]| image::Handle::from_rgba(200, 100, c.repeat(200 * 100));
+        app.media.insert(url.clone(), Some(Ok(vec![(fill([255, 0, 0, 255]), 100), (fill([0, 0, 255, 255]), 100)])));
+        // The 36 px circle of the button in the middle of the 200 by 100 image, left of its icon.
+        let (circle, corner) = ((2 * (100 - 13), 2 * 50), (2 * 20, 2 * 20));
+        let button = |sim: &mut iced_test::Simulator<'_, UiMessage>| {
+            near(pixels(sim).get_pixel(circle.0, circle.1).0, hex(0xefeff0))
+        };
+        assert!(!button(&mut alone(&app, &mid)), "a GIF plays by itself");
+        app.store.write().settings.set_pref("autoplayGifs", 0);
+        let mut sim = alone(&app, &mid);
+        assert!(button(&mut sim), "the play button");
+        sim.point_at(Point::new(100.0, 50.0));
+        let _ = sim.simulate(iced_test::simulator::click());
+        let toggles: Vec<UiMessage> = sim.into_messages().collect();
+        assert!(matches!(&toggles[..], [UiMessage::Message(Msg::ToggleGif(m, 0))] if *m == mid), "not the carousel");
+        let _ = app.update(UiMessage::Message(Msg::ToggleGif(mid.clone(), 0)));
+        assert!(!button(&mut alone(&app, &mid)), "the pause button hides without the pointer");
+        {
+            let mut sim = alone(&app, &mid);
+            sim.point_at(Point::new(150.0, 50.0));
+            let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::new(150.0, 50.0) })]);
+            assert!(button(&mut sim), "the pause button");
+        }
+
+        app.media.insert(url, Some(Ok(vec![(fill([255; 4]), 0)])));
+        let white = |app: &BeeperGuiApp| pixels(&mut alone(app, &mid)).get_pixel(corner.0, corner.1).0[0];
+        assert_eq!(white(&app), 255);
+        app.pane.selected_msgs = vec![mid.clone()];
+        assert!(white(&app).abs_diff(204) <= 1, "brightness(0.8)");
+    }
+
+    /// Desktop's emoji message: the bubble's padding without its bottom, its time in a tooltip, and at 80% brightness
+    /// while selected.
+    #[test]
+    fn jumbo_emoji_like_desktop() {
+        let mut app = crate::fuzz::demo_app("jumbo-emoji");
+        app.pane.size = Size::new(900.0, 700.0);
+        let mid = plain_received(&app, "😀");
+        let glyph = alone(&app, &mid).find("😀").expect("the emoji").bounds();
+        assert_eq!((glyph.x, glyph.y), (11.0, 8.0));
+        assert!(hover_change(&app, &mid, glyph.center()).is_some(), "the time tooltip");
+        // The red of the yellow face, the brightest part of the emoji.
+        let red = |app: &BeeperGuiApp| {
+            let shot = pixels(&mut alone(app, &mid));
+            shot.pixels().filter(|px| px[2] < 150 && px[3] > 0).map(|px| px[0]).max().expect("the face")
+        };
+        assert!(red(&app) > 250);
+        app.pane.selected_msgs = vec![mid.clone()];
+        assert!(red(&app).abs_diff(204) <= 2, "brightness(0.8)");
     }
 
     /// Desktop's reaction pill (`.message-reaction-avatars`): up to 3 faces, each 6 px over the next one, and "+N" in

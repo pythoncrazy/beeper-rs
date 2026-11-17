@@ -353,6 +353,16 @@ pub(crate) fn wait_client() -> &'static reqwest::Client {
     shared(&HTTP, None)
 }
 
+/// The HTTP client that follows no redirect, for Desktop's `fetch` with `redirect: "error"`.
+pub(crate) fn no_redirect_client() -> &'static reqwest::Client {
+    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+    HTTP.get_or_init(|| {
+        install_tls();
+        let builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        builder.build().expect("build the HTTP client")
+    })
+}
+
 /// Desktop's OpenAI `baseURL` (`uke`): Beeper's proxy beside the homeserver, with "matrix." changed to "ai-services.".
 pub fn ai_services(homeserver: &str) -> String {
     let url = reqwest::Url::parse(homeserver).expect("a homeserver URL");

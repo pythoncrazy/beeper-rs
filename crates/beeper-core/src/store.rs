@@ -1279,6 +1279,27 @@ impl BeeperStore {
         name.filter(|n| !n.is_empty())
     }
 
+    /// The bridge login of a chat account, for the bridge provisioning API. An account without a bridge login is
+    /// `<bridge>.<login>`.
+    pub fn provision(&self, account_id: &str) -> crate::matrix::Provision {
+        let found = self.bridge_accounts.iter().find(|a| a.account_id == account_id);
+        let (bridge_id, login_id) = found.map_or_else(
+            || {
+                let (b, l) = account_id.split_once('.').unwrap_or((account_id, ""));
+                (b.to_string(), l.to_string())
+            },
+            |a| (a.bridge_id.clone(), a.login_id.clone()),
+        );
+        let s = &self.beeper_state;
+        crate::matrix::Provision {
+            homeserver: s.homeserver.clone(),
+            access_token: s.access_token.clone(),
+            user_id: s.user_id.clone(),
+            bridge_id,
+            login_id,
+        }
+    }
+
     pub fn set_contacts(&mut self, contacts: Vec<User>) {
         self.contacts = contacts;
         self.persist_state_to_sqlite();
@@ -1832,20 +1853,12 @@ impl BeeperStore {
         topic: Option<String>,
         avatar: Option<Option<(String, Vec<u8>, String)>>,
     ) {
-        let idx = self.chat_idx_by_id[id];
-        self.update_chat(idx, |c| {
-            if let Some(t) = &topic {
-                c.description = Some(t.clone()).filter(|t| !t.is_empty());
-            }
-            c.edit_room(|c| {
-                if let Some(t) = &title {
-                    c.title = t.clone();
-                }
-                if let Some(a) = &avatar {
-                    c.img_url = a.as_ref().map(|a| a.0.clone());
-                }
-            });
-        });
+        self.apply_group(
+            id,
+            title.as_deref(),
+            topic.as_deref(),
+            avatar.as_ref().map(|a| a.as_ref().map(|a| a.0.as_str())),
+        );
         if let Some(name) = title {
             self.queue(id, Outgoing::State("m.room.name".into(), serde_json::json!({ "name": name })));
         }
@@ -1969,6 +1982,24 @@ impl BeeperStore {
                     .max(chat.last_read_message_sort_key.clone()),
                 ..chat
             }
+        });
+    }
+
+    /// The new title, description and avatar URL of a group here, which the homeserver took.
+    pub fn apply_group(&mut self, id: &str, title: Option<&str>, topic: Option<&str>, avatar: Option<Option<&str>>) {
+        let idx = self.chat_idx_by_id[id];
+        self.update_chat(idx, |c| {
+            if let Some(t) = topic {
+                c.description = Some(t.to_string()).filter(|t| !t.is_empty());
+            }
+            c.edit_room(|c| {
+                if let Some(t) = title {
+                    c.title = t.to_string();
+                }
+                if let Some(a) = avatar {
+                    c.img_url = a.map(str::to_string);
+                }
+            });
         });
     }
 
@@ -2466,6 +2497,7 @@ impl BeeperStore {
             views_left: None,
             view_expired: false,
             view_kind: None,
+            buttons: Vec::new(),
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);
