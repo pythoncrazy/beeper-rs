@@ -4092,8 +4092,17 @@ impl BeeperGuiApp {
                 let (title, topic) =
                     (c.room_title().to_string(), composer_with(c.description.as_deref().unwrap_or_default()));
                 drop(st);
-                self.group_window =
-                    Some(GroupDraft { id, chat, title, topic, photo: None, hover: false, personal: false });
+                self.group_window = Some(GroupDraft {
+                    id,
+                    chat,
+                    title,
+                    topic,
+                    photo: None,
+                    hover: false,
+                    personal: false,
+                    saving: false,
+                    dropping: false,
+                });
                 return open;
             }
             UiMessage::OpenEditForMe(chat) => return self.open_edit_for_me(chat),
@@ -4946,6 +4955,7 @@ impl BeeperGuiApp {
             || self.enter_key.busy
             || self.nickname_windows.iter().any(|d| d.saving)
             || !self.fetching.is_empty()
+            || self.group_window.as_ref().is_some_and(|d| d.saving)
             || self.hover_fading()
             || self.sidebar_progress().is_some()
             || self

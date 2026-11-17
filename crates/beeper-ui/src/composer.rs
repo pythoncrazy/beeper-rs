@@ -1502,6 +1502,15 @@ impl BeeperGuiApp {
                 self.drop_send |= self.mods.shift();
                 return self.update(UiMessage::Composer(Msg::FilesPicked(Ok(vec![path]))));
             }
+            // Desktop's Edit Group window takes a dropped image for the avatar.
+            Msg::FileHover(id, on) if self.group_window.as_ref().is_some_and(|d| d.id == id) => {
+                let d = self.group_window.as_mut().expect("the Edit Group window is open");
+                d.dropping = on;
+            }
+            Msg::FileDropped(id, path) if self.group_window.as_ref().is_some_and(|d| d.id == id) => {
+                self.group_window.as_mut().expect("the Edit Group window is open").dropping = false;
+                return self.update(UiMessage::Group(crate::GroupEdit::Dropped(path)));
+            }
             Msg::FileHover(..) | Msg::FileDropped(..) => {}
             Msg::LinkPreviewLoaded(url, r) => {
                 let entry =

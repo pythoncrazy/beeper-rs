@@ -7607,6 +7607,36 @@ fn edit_group_like_desktop() {
     assert_eq!(st.chats[st.resolve_chat_idx(&id).expect("the group")].img_url, None, "Remove Photo clears the avatar");
 }
 
+/// Desktop's `EditGroupModal`: Save waits for the homeserver with "Saving" and Cancel off, applies the changes once it
+/// takes them, keeps the window with "Failed to update group" after an error, and a dragged file shows the drop zone.
+#[test]
+fn edit_group_saves_like_desktop() {
+    let mut app = demo_app("edit-group-save");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::OpenEditGroup(id.clone()));
+    let _ = app.update(UiMessage::Group(GroupEdit::Title("Core".into())));
+    app.group_window.as_mut().expect("open").saving = true;
+    let view = |app: &BeeperGuiApp| {
+        simulator(app.view_edit_group(app.group_window.as_ref().expect("open"))).find("Saving").is_ok()
+    };
+    assert!(view(&app), "the save waits");
+    let title = |app: &BeeperGuiApp| app.store.read().chat(&id).title.clone();
+    let _ = app.update(UiMessage::Group(GroupEdit::Saved(Err("forbidden".into()))));
+    assert!(app.group_window.is_some() && app.status_banner == "Failed to update group");
+    assert!(!view(&app) && title(&app) == "Beeper Rust Core Team", "nothing changed");
+    let _ = app.update(UiMessage::Group(GroupEdit::Saved(Ok(()))));
+    assert_eq!(title(&app), "Core", "the homeserver took the title");
+    let window = app.group_window.as_ref().expect("open").id;
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(window, true)));
+    let drop = |app: &BeeperGuiApp| {
+        let mut sim = simulator(app.view_edit_group(app.group_window.as_ref().expect("open")));
+        sim.find("Drop image here to upload").is_ok()
+    };
+    assert!(drop(&app), "a dragged file shows the drop zone");
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(window, false)));
+    assert!(!drop(&app));
+}
+
 #[test]
 fn edit_for_me_like_desktop() {
     let mut app = demo_app("edit-for-me");
