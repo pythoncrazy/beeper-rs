@@ -156,6 +156,7 @@ impl BeeperGuiApp {
                 if self.networks.window.take_if(|w| *w == id).is_some() {
                     self.networks.menu = None;
                 }
+                self.how_window = self.how_window.filter(|w| *w != id);
                 self.nickname_windows.retain(|d| d.id != id);
                 self.verify.window = self.verify.window.filter(|w| *w != id);
                 // Desktop's `ReauthRequiredModal` closed without a code ends the logout of a device.
@@ -313,7 +314,11 @@ impl BeeperGuiApp {
         let group = self.group_window.as_ref().map(|d| d.id);
         let lists = lists.chain(self.poll_windows.iter().map(|w| w.id)).chain(self.add_accounts.iter().map(|a| a.id));
         let lists = lists.chain(self.nickname_windows.iter().map(|d| d.id));
-        singles.chain([group, self.blocked_window, self.networks.window]).flatten().chain(lists).collect()
+        singles
+            .chain([group, self.blocked_window, self.how_window, self.networks.window])
+            .flatten()
+            .chain(lists)
+            .collect()
     }
 
     /// Desktop's `hideToTray` (`Du`), which hides the sub-windows and then the main window, and `showWindow`, which
