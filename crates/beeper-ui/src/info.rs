@@ -23,6 +23,8 @@ pub enum Msg {
     Note(text_editor::Action),
     /// Desktop's disappearing messages select: a chat and a timer in ms, or 0 for Off.
     SetDisappearing(String, u64),
+    /// Desktop's "Notification sound" select: a chat and a sound of `CHAT_SOUNDS`, or `None` for Default.
+    SetSound(String, Option<String>),
 }
 
 impl BeeperGuiApp {
@@ -42,6 +44,7 @@ impl BeeperGuiApp {
                 self.store.write().update_group(&cid, None, Some(text), None);
                 return self.update(UiMessage::StoreChanged);
             }
+            Msg::SetSound(chat, sound) => self.store.write().set_notification_sound(&chat, sound),
             Msg::SetDisappearing(cid, timer) => {
                 self.store.write().set_disappearing(&cid, timer);
                 return self.update(UiMessage::StoreChanged);
@@ -480,6 +483,30 @@ impl BeeperGuiApp {
                 let head = container(txt(tr("Disappearing messages"), 11.0).color(p.strong)).padding(8);
                 column![head, column![pick, container(about).padding([0, 8])].spacing(4)]
             });
+        // Desktop's `BrandChatInfoNotificationSound`: Default, Silent, and the sound the chat has if it is another one.
+        let sound = {
+            let current = chat.notification_sound.clone();
+            let mut sounds: Vec<Option<String>> = vec![None, Some("silent".into())];
+            sounds.extend(current.clone().filter(|s| s != "silent").map(Some));
+            let labels: Vec<&'static str> = sounds.iter().map(|s| sound_label(s.as_deref())).collect();
+            let id = cid.clone();
+            let pick = pick_list(labels.clone(), Some(sound_label(current.as_deref())), move |l| {
+                let i = labels.iter().position(|o| *o == l).expect("a listed sound");
+                UiMessage::Info(info::Msg::SetSound(id.clone(), sounds[i].clone()))
+            })
+            .text_size(13)
+            .text_line_height(Pixels(16.0))
+            .handle(pick_list::Handle::None)
+            .padding([8, 12])
+            .width(Fill)
+            .style(pick_style(p.chip, p.chip, p.strong, p.strong))
+            .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border));
+            let arrow =
+                container(tinted(&SELECT_ARROW, 10.0, p.strong)).align_right(Fill).center_y(Fill).padding([0, 12]);
+            let about = txt(tr("Silent chats still show notifications, just without a sound."), 10.0).color(p.strong);
+            let head = container(txt(tr("Notification sound"), 11.0).color(p.strong)).padding(8);
+            column![head, column![stack![pick, arrow], container(about).padding([0, 8])].spacing(4)]
+        };
         let note = text_editor(&self.info_note)
             .placeholder("Notes")
             .on_action(|a0| UiMessage::Info(info::Msg::Note(a0)))
@@ -503,6 +530,7 @@ impl BeeperGuiApp {
             .push(labels)
             .push(other.and_then(|u| self.view_contact(&st, chat, u)))
             .push(timers)
+            .push(sound)
             .push(container(note).padding(Padding::ZERO.top(8.0)))
             .push(block_action(&st, chat).map(|block| {
                 // Desktop's `BrandChatInfoBlockUser` row.
@@ -735,5 +763,20 @@ impl BeeperGuiApp {
             .align_y(Center)
             .padding(8);
         column![head, body].into()
+    }
+}
+
+/// Desktop's `aX`: the name of a chat sound, and Default for none.
+fn sound_label(sound: Option<&str>) -> &'static str {
+    match sound {
+        None => tr("Default"),
+        Some("silent") => tr("Silent"),
+        Some("double") => tr("Double"),
+        Some("dreams") => tr("Dreams"),
+        Some("not_marimba") => tr("Not Marimba"),
+        Some("rain_harp") => tr("Rain Harp"),
+        Some("record") => tr("Record"),
+        Some("spirit") => tr("Spirit"),
+        Some(other) => unreachable!("the chat keeps only known sounds, not {other}"),
     }
 }

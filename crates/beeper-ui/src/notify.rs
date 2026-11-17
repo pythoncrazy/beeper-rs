@@ -314,7 +314,11 @@ impl BeeperGuiApp {
         let account = prefs.account(&chat.account_id);
         let text = body(m) + if otp.is_some() { " (OTP auto copied to clipboard)" } else { "" };
         let sender = m.sender_name.as_deref().filter(|s| group && !text.starts_with(&format!("{s} ")));
-        let silent = account.silent || prefs.pref(if group { "groupSound" } else { "messageSound" }) == 1;
+        // Desktop's `notificationSound`: the sound of the chat, else of the account, else of the preference.
+        let silent = match chat.notification_sound.as_deref() {
+            Some(sound) => sound == "silent",
+            None => account.silent || prefs.pref(if group { "groupSound" } else { "messageSound" }) == 1,
+        };
         let body = match account.previews {
             true => sender.map_or(text.clone(), |s| format!("{s}: {text}")),
             false => "You have a new message".into(),
@@ -566,6 +570,16 @@ mod tests {
         m.flags |= MSG_MENTION;
         let mention = note(&mut app, AccountProps { notifications: false, ..on }, &mut m, "d");
         assert_eq!(mention, Some(("hi".into(), false)), "a mention notifies through the mute");
+        // Desktop's `notificationSound`: the sound of the chat comes before the account and the preference.
+        let sound = |app: &mut BeeperGuiApp, s: Option<&str>| {
+            let _ = app.update(UiMessage::Info(crate::info::Msg::SetSound(chat.id.clone(), s.map(String::from))));
+        };
+        sound(&mut app, Some("silent"));
+        assert_eq!(note(&mut app, on, &mut m, "e").map(|n| n.1), Some(true), "a silent chat has no sound");
+        sound(&mut app, Some("double"));
+        let loud = note(&mut app, AccountProps { silent: true, ..on }, &mut m, "f");
+        assert_eq!(loud.map(|n| n.1), Some(false), "a chat sound plays in a silent account");
+        sound(&mut app, None);
         let mid = {
             let st = app.store.read();
             st.messages[st.timeline_indices(&chat.id)[0]].id.clone()

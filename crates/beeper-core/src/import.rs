@@ -1,7 +1,7 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
     Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Older, Reaction, SpaceOrder, ThemeChoice,
-    ThreadFollows, Transcription, User, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS,
+    ThreadFollows, Transcription, User, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS, CHAT_SOUNDS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -509,6 +509,8 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 follows: ThreadFollows { follow_all, ..Default::default() },
                 thread_reads: Default::default(),
                 personal: None,
+                notification_sound: str_field(&t, "chatNotificationSound")
+                    .filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
                 flags: 0,
                 id,
             })

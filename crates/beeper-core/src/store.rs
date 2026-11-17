@@ -1349,6 +1349,7 @@ impl BeeperStore {
             follows: ThreadFollows::default(),
             thread_reads: BTreeMap::new(),
             personal: None,
+            notification_sound: None,
             flags: 0,
         };
         self.push_chat(chat, true);
@@ -1733,8 +1734,15 @@ impl BeeperStore {
         self.queue(id, Outgoing::EditLabel(label, changes));
     }
 
-    /// Desktop's `updateGroup` from the Edit Group window: the changed title and description of a group, and its new
-    /// avatar (a local URL of the image, the image and its MIME type) or `Some(None)` to remove the avatar.
+    /// Desktop's `updateThread("chatNotificationSound")`: a sound of [`CHAT_SOUNDS`], or `None` for the Default sound.
+    pub fn set_notification_sound(&mut self, id: &str, sound: Option<String>) {
+        assert!(sound.as_deref().is_none_or(|s| CHAT_SOUNDS.contains(&s)), "an unknown chat sound {sound:?}");
+        let idx = self.chat_idx_by_id[id];
+        self.update_chat(idx, |c| c.notification_sound = sound.clone());
+        let content = sound.map_or(serde_json::json!({}), |sound| serde_json::json!({ "sound": sound }));
+        self.queue(id, Outgoing::RoomData(NOTIFICATION_SOUND.into(), content));
+    }
+
     /// Desktop's `updateThread("disappearingTimer")`: a timer in ms, or 0 for Off.
     pub fn set_disappearing(&mut self, id: &str, timer: u64) {
         let idx = self.chat_idx_by_id[id];
@@ -1777,6 +1785,8 @@ impl BeeperStore {
         self.queue(id, Outgoing::Role(user.into(), admin));
     }
 
+    /// Desktop's `updateGroup` from the Edit Group window: the changed title and description of a group, and its new
+    /// avatar (a local URL of the image, the image and its MIME type) or `Some(None)` to remove the avatar.
     pub fn update_group(
         &mut self,
         id: &str,
@@ -2194,6 +2204,7 @@ impl BeeperStore {
             follows: ThreadFollows::default(),
             thread_reads: BTreeMap::new(),
             personal: None,
+            notification_sound: None,
             flags: 0,
         };
         let idx = self.push_chat(chat, true);
@@ -3468,6 +3479,21 @@ mod tests {
         assert!(matches!(&st.outbox[..], [(_, r, super::Outgoing::Transcription { room, target, transcription })]
             if r == super::TRANSCRIPTIONS_ROOM && room == "!tg_rust:beeper.com" && target == "msg_1003" && *transcription == t));
     }
+    /// Desktop's `updateThread("chatNotificationSound")`: the `com.beeper.notification_sound` room account data, empty
+    /// for the Default sound.
+    #[test]
+    fn chat_notification_sound_like_desktop() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("chat-sound"));
+        let id = "!tg_rust:beeper.com";
+        st.set_notification_sound(id, Some("silent".into()));
+        assert_eq!(st.chat(id).notification_sound.as_deref(), Some("silent"));
+        st.set_notification_sound(id, None);
+        assert_eq!(st.chat(id).notification_sound, None);
+        let sent: Vec<_> = st.outbox.iter().map(|(_, r, o)| (r.as_str(), o)).collect();
+        assert!(matches!(&sent[..], [(r, super::Outgoing::RoomData(k, on)), (_, super::Outgoing::RoomData(_, off))]
+            if *r == id && k == super::NOTIFICATION_SOUND && *on == serde_json::json!({ "sound": "silent" }) && *off == serde_json::json!({})));
+    }
+
     #[test]
     fn personal_name_and_photo_like_desktop() {
         let config = crate::testing::demo_config("personal");
