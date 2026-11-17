@@ -53,6 +53,9 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::NewChat(Msg::Select(id)));
             }
             Msg::Select(id) => {
+                if self.creating_chat != Some(id) {
+                    self.leave_draft();
+                }
                 self.creating_chat = Some(id);
                 self.show_command_palette = false;
                 self.new_chat_query.clear();
@@ -312,6 +315,17 @@ pub struct NewChat {
 }
 
 impl BeeperGuiApp {
+    /// Desktop's `setSelectedChatTarget` with `isDraftEmpty`: leaving a New Chat draft without people, a group name,
+    /// a room to join or composer text removes it.
+    pub(crate) fn leave_draft(&mut self) {
+        let Some(n) = self.creating_chat.take() else { return };
+        let joining = self.join_matrix_mode && !self.new_chat_query.trim().is_empty();
+        let typed = !self.pane.composer.text().trim().is_empty() || joining;
+        if !typed {
+            self.new_chats.retain(|d| d.id != n || !d.users.is_empty() || !d.title.trim().is_empty());
+        }
+    }
+
     pub(crate) fn view_new_chat<'a>(&'a self) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();

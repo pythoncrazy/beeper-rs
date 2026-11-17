@@ -54,7 +54,7 @@ impl BeeperGuiApp {
                 self.active_tab = tab;
                 self.selected_account_filter = None;
                 self.show_filter_menu = false;
-                self.creating_chat = None;
+                self.leave_draft();
             }
             Msg::Click(id) | Msg::ToggleSelected(id) if self.mods.shift() => self.select_range(&id),
             Msg::Click(id) if self.mods.control() => return self.update(UiMessage::ChatList(Msg::ToggleSelected(id))),
