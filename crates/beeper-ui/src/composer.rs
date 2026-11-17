@@ -1395,7 +1395,7 @@ impl BeeperGuiApp {
                     && !self.show_command_palette
                     && self.forward.is_none()
                     && self.creating_chat.is_none()
-                    && self.carousel.is_none()
+                    && self.pane.carousel.is_none()
                     && self.recorder.is_none();
                 if !(open && quiet) {
                     return Task::none();

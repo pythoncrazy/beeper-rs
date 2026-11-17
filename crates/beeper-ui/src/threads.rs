@@ -165,7 +165,10 @@ impl BeeperGuiApp {
         let Some(mut thread) = self.pane.thread.take() else { return Task::none() };
         let focus = activates(&msg);
         std::mem::swap(&mut self.pane, &mut thread);
+        // The carousel is that of the window, also for the messages of the thread pane.
+        std::mem::swap(&mut self.pane.carousel, &mut thread.carousel);
         let task = self.handle(msg);
+        std::mem::swap(&mut self.pane.carousel, &mut thread.carousel);
         std::mem::swap(&mut self.pane, &mut thread);
         (self.pane.thread, self.pane.thread_focus) = (Some(thread), self.pane.thread_focus || focus);
         task.map(|m| UiMessage::InThread(Box::new(m)))

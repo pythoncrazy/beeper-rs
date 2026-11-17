@@ -348,7 +348,7 @@ impl BeeperGuiApp {
             EmojiMsg::Close(_) => {}
             EmojiMsg::React(key) => {
                 if let Some((mid, _)) = self.pane.emoji.take().and_then(|pk| pk.react) {
-                    let cid = self.pane.selected_chat_id.clone().expect("an open chat");
+                    let cid = self.chat_of(&mid);
                     return self.update(UiMessage::Message(message::Msg::ToggleReaction(cid, mid, key)));
                 }
             }
@@ -359,7 +359,7 @@ impl BeeperGuiApp {
                         .update(UiMessage::Settings(settings::Msg::SetQuickEmoji(slot, DATA.emojis[i].skinned(tone))));
                 }
                 if let Some((mid, _)) = self.pane.emoji.take_if(|pk| pk.react.is_some()).and_then(|pk| pk.react) {
-                    let cid = self.pane.selected_chat_id.clone().expect("an open chat");
+                    let cid = self.chat_of(&mid);
                     return self.update(UiMessage::Message(message::Msg::ToggleReaction(
                         cid,
                         mid,
@@ -411,6 +411,11 @@ impl BeeperGuiApp {
             }
         }
         Task::none()
+    }
+
+    /// The chat of message `mid` that the picker reacts to, also in a "Media in %s" window, which has no chat open.
+    fn chat_of(&self, mid: &str) -> String {
+        self.store.read().loaded(mid).expect("the reacted message is loaded").chat_id.clone()
     }
 
     pub(crate) fn open_emoji(&mut self, react: Option<(String, iced::Point)>) -> Task<UiMessage> {
