@@ -27,7 +27,7 @@ use crate::{
     safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable, unused_path,
     video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X,
     CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE,
-    POLL_CHECK, POLL_ENDED, TRASH, VIEW_SIDEBAR,
+    POLL_CHECK, POLL_ENDED, TRASH,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::*;
@@ -1894,6 +1894,7 @@ impl BeeperGuiApp {
             .push(transcribe)
             .align_x(if mine { Right } else { iced::Left });
         let tools = (self.pane().hovered_msg.as_ref() == Some(&m.id)).then(|| {
+            // Desktop's flyover buttons: a 20 px Material icon, drawn at its 1.2 scale, in 6 px of padding.
             let b = |c: char, msg: UiMessage| -> El<'a> {
                 let style = move |_: &Theme, s| button::Style {
                     text_color: match s {
@@ -1902,26 +1903,17 @@ impl BeeperGuiApp {
                     },
                     ..Default::default()
                 };
-                button(container(ic(c, 20.0)).center(32)).padding(0).style(style).on_press(msg).into()
+                button(container(ic(c, 20.0 * 1.2)).center(32)).padding(0).style(style).on_press(msg).into()
             };
             let live = m.is_deleted != Some(true);
             let reply = (chat.messages.reply && live)
                 .then(|| b(icon::REPLY, UiMessage::Composer(composer::Msg::StartReply(m.id.clone()))));
             let in_thread = (!in_pane && can_thread(st, chat, m)).then(|| -> El<'a> {
-                let style = move |_: &Theme, s| button::Style {
-                    text_color: match s {
-                        button::Status::Hovered => brightness(muted, 0.8),
-                        _ => muted,
-                    },
-                    ..Default::default()
-                };
-                let glyph = container(tinted(&VIEW_SIDEBAR, 20.0, muted)).center(32);
-                let b =
-                    button(glyph).padding(0).style(style).on_press(UiMessage::Thread(threads::Msg::Show(m.id.clone())));
-                self.tip(b.into(), tr("Reply in thread"), vec![], tooltip::Position::Top).into()
+                let b = b(icon::VIEW_SIDEBAR, UiMessage::Thread(threads::Msg::Show(m.id.clone())));
+                self.tip(b, tr("Reply in thread"), vec![], tooltip::Position::Top).into()
             });
             let react = (chat.messages.react && m.reactable()).then(|| {
-                mouse_area(b(icon::SMILE, UiMessage::Message(Msg::React(m.id.clone()))))
+                mouse_area(b(icon::MOOD, UiMessage::Message(Msg::React(m.id.clone()))))
                     .on_enter(UiMessage::Message(Msg::ShowQuickReactions))
                     .into()
             });
