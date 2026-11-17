@@ -13,9 +13,9 @@ use crate::time::{day_num, format_short_ts, iso_millis, today};
 use crate::units::human_size;
 use crate::windows;
 use crate::{
-    anim, closable_head, cubic_bezier, deletable, file_kind, i18n, menu_item, menu_rule, relative_date, stored, tinted,
-    video, vlist, voice, zoom, BeeperGuiApp, El, Frames, PillLook, UiMessage, AVATAR_SLOTS, MEDIA_ICONS, MENU_ITEM,
-    ROW_ACTIONS, SYS_ARROW_BACK, SYS_DELETE, SYS_DOWNLOAD, SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
+    anim, closable_head, cubic_bezier, deletable, file_kind, i18n, menu_item, menu_rule, pdf, relative_date, stored,
+    tinted, video, vlist, voice, zoom, BeeperGuiApp, El, Frames, PillLook, UiMessage, AVATAR_SLOTS, MEDIA_ICONS,
+    MENU_ITEM, ROW_ACTIONS, SYS_ARROW_BACK, SYS_DELETE, SYS_DOWNLOAD, SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
 };
 use beeper_core::config::civil_from_days;
 use beeper_core::models::*;
@@ -116,8 +116,8 @@ pub(crate) fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
 }
 
 /// The attachment that a carousel shows, its quarter turns and when the last one started, if it shows the Media window items, the inline size of
-/// the video that opened it, which plays again when the carousel closes on it, where its menu is open, and the first
-/// item of the filmstrip after a scroll.
+/// the video that opened it, which plays again when the carousel closes on it, where its menu is open, the first
+/// item of the filmstrip after a scroll, and the page that a PDF shows, from 1.
 #[derive(Clone)]
 pub(crate) struct Carousel {
     pub(crate) mid: String,
@@ -128,6 +128,7 @@ pub(crate) struct Carousel {
     pub(crate) resume: Option<(u32, u32)>,
     pub(crate) menu: Option<Point>,
     pub(crate) strip: Option<usize>,
+    pub(crate) page: usize,
 }
 
 /// Desktop's Media window: its tab (Media, Links or Docs), its size, its filters (sent by all, you or others; oldest
@@ -440,6 +441,8 @@ impl BeeperGuiApp {
 
     /// Starts the loads of the media that a view asked for, when a client or HTTPS can load them.
     pub(crate) fn load_media(&mut self) -> Task<UiMessage> {
+        // The pages of PDFs are media that draw from their PDF.
+        let pdfs = self.load_pdfs();
         let client = self.store.read().matrix.clone();
         let loadable = |u: &String| client.is_some() || u.starts_with("https://") || u.starts_with("data:");
         let (urls, rest) = std::mem::take(&mut *self.wants.media.borrow_mut()).into_iter().partition(loadable);
@@ -462,6 +465,7 @@ impl BeeperGuiApp {
                 move |r| UiMessage::Loaded(loads::Msg::Media(url, r)),
             )
         }))
+        .chain(pdfs)
         .chain(audio)
         .chain(bookmarks)
         .chain(tiles)
@@ -522,6 +526,14 @@ impl BeeperGuiApp {
         Some((items, at))
     }
 
+    /// The size of the window of the open carousel.
+    fn carousel_area(&self) -> Size {
+        match self.carousel.as_ref().expect("the carousel is open").in_media {
+            true => self.media_window.as_ref().expect("the Media window is open").size,
+            false => self.pane.size,
+        }
+    }
+
     /// The source and the size of the video that the open carousel shows, if it shows a video that is not a GIF. Desktop
     /// shows the video at most at its own size, `100vw - 100px` wide and `90vh` high.
     pub(crate) fn carousel_video(&self) -> Option<(String, (u32, u32))> {
@@ -530,10 +542,7 @@ impl BeeperGuiApp {
         let m = st.stored_message(&c.mid)?;
         let a = m.attachments.get(c.ai)?;
         let src = a.src_url.clone().filter(|_| a.attachment_type == "video" && a.is_gif != Some(true))?;
-        let area = match c.in_media {
-            true => self.media_window.as_ref().expect("the Media window is open").size,
-            false => self.pane.size,
-        };
+        let area = self.carousel_area();
         let size = a.size.as_ref();
         let (w, h) = size.map_or((240.0, 160.0), |s| (s.width.unwrap_or(240) as f32, s.height.unwrap_or(160) as f32));
         let k = ((area.width - 100.0) / w).min(0.9 * area.height / h).min(1.0);
@@ -665,8 +674,9 @@ impl BeeperGuiApp {
             (quarter * before, quarter * (before + 1.0), at)
         });
         let frames = url.and_then(|u| self.media_at(u)).and_then(|f| f.as_ref().ok());
-        // Desktop's `renderAttachment`: a video plays with its controls and does not zoom, and a file is a link that
-        // downloads it.
+        // Desktop's `renderAttachment`: a video plays with its controls and does not zoom, a PDF shows a page with its
+        // page controls, and another file is a link that downloads it.
+        let mut pages = None;
         let main: El<'a> = match (a.attachment_type.as_str(), &video) {
             ("video", Some((src, (w, h)))) => {
                 let (w, h) = (*w as f32, *h as f32);
@@ -687,6 +697,13 @@ impl BeeperGuiApp {
                     None => Space::new().into(),
                 };
                 container(zoom::zoom(shown, vlist::key((mid, ai)), UiMessage::Media(Msg::CloseCarousel)))
+                    .padding(8)
+                    .into()
+            }
+            _ if let Some(url) = a.src_url.as_deref().filter(|_| pdf::is_pdf(a)) => {
+                let (page, controls) = self.view_pdf(url, car.page, turn, self.carousel_area());
+                pages = Some(controls);
+                container(zoom::zoom(page, vlist::key((mid, ai)), UiMessage::Media(Msg::CloseCarousel)))
                     .padding(8)
                     .into()
             }
@@ -763,6 +780,7 @@ impl BeeperGuiApp {
             .push((at > 0).then(|| step(false)))
             .push((at + 1 < items.len() || self.more_media(car)).then(|| step(true)))
             .push(video.and_then(|(src, _)| self.view_carousel_video_controls(&src)))
+            .push(pages)
             .push(reactions)
             .push(strip)
             .push(car.menu.map(|at| self.view_carousel_menu(&st, car, m, c, at)));
@@ -818,10 +836,7 @@ impl BeeperGuiApp {
         });
         let menu = container(Column::with_children(rows).padding([4, 0])).width(180);
         let menu = menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-        let area = match car.in_media {
-            true => self.media_window.as_ref().expect("the Media window is open").size,
-            false => self.pane.size,
-        };
+        let area = self.carousel_area();
         let at = Padding::ZERO.left(at.x.min(area.width - 188.0)).top(at.y.min(area.height - h - 8.0));
         mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
             .on_press(UiMessage::Media(Msg::CarouselMenu(false)))
@@ -1225,6 +1240,8 @@ pub enum Msg {
     OpenCarousel(String, usize, bool),
     /// Show the previous (`false`) or next (`true`) image of the carousel.
     CarouselStep(bool),
+    /// Show a page of the PDF of the carousel, from 1.
+    PdfPage(usize),
     RotateCarousel,
     CloseCarousel,
     /// Open the carousel menu at the cursor, or close it.
@@ -1266,12 +1283,23 @@ impl BeeperGuiApp {
     pub(crate) fn media_view(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
             Msg::OpenCarousel(mid, ai, in_media) => {
+                // Desktop's `AttachmentCarousel` closes Picture in Picture when it opens.
+                self.stop_pip();
                 self.leave_carousel_video();
                 if in_media {
                     self.media_mut().advance = false;
                 }
-                self.carousel =
-                    Some(Carousel { mid, ai, turns: 0, turned: None, in_media, resume: None, menu: None, strip: None });
+                self.carousel = Some(Carousel {
+                    mid,
+                    ai,
+                    turns: 0,
+                    turned: None,
+                    in_media,
+                    resume: None,
+                    menu: None,
+                    strip: None,
+                    page: 1,
+                });
                 self.fit_carousel_video();
                 return Task::batch([self.load_media(), self.media_viewer_more()]);
             }
@@ -1294,6 +1322,7 @@ impl BeeperGuiApp {
                 return self.carousel_to(item);
             }
             Msg::ScrollFilmstrip(by) => return self.scroll_filmstrip(by),
+            Msg::PdfPage(n) => self.carousel.as_mut().expect("the carousel is open").page = n,
             Msg::CarouselMenu(open) => {
                 let at = self.cursor.get();
                 self.carousel.as_mut().expect("the carousel is open").menu = open.then_some(at);
@@ -1302,11 +1331,13 @@ impl BeeperGuiApp {
                 let c = self.carousel.as_mut().expect("the carousel is open");
                 (c.turns, c.turned) = ((c.turns + 1) % 4, Some(std::time::Instant::now()));
             }
+            // Like the unmount of Desktop's carousel, the close lets go of its PDFs.
             Msg::CloseCarousel => {
                 let task = self.close_carousel_video();
                 if self.carousel.take().is_some_and(|c| c.in_media) {
                     self.media_mut().advance = false;
                 }
+                self.pdfs.clear();
                 return task;
             }
             Msg::Open => {
@@ -1464,7 +1495,7 @@ impl BeeperGuiApp {
     fn carousel_to(&mut self, (mid, ai): (String, usize)) -> Task<UiMessage> {
         self.leave_carousel_video();
         let c = self.carousel.as_mut().expect("the carousel is open");
-        (c.mid, c.ai, c.resume, c.menu, c.strip) = (mid, ai, None, None, None);
+        (c.mid, c.ai, c.resume, c.menu, c.strip, c.page) = (mid, ai, None, None, None, 1);
         self.fit_carousel_video();
         Task::batch([self.load_media(), self.media_viewer_more()])
     }

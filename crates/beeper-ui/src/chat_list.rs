@@ -48,6 +48,8 @@ pub enum Msg {
     SelectionRemind(Option<i64>),
     SelectionMenu(u8, f32),
     Delete(String, bool),
+    /// Deletes the chats of a confirmation, for everyone (true) or for you.
+    DeleteAll(Vec<String>, bool),
     Hover(String, bool),
     DeleteDraft(String),
 }
@@ -224,8 +226,23 @@ impl BeeperGuiApp {
                 drop(st);
                 return self.open_dm(account, sender, None, Some(quote));
             }
+            // Desktop's `confirmDeleteThread`: the selected chats, which must share a delete action.
             Msg::AskDelete(id) => {
-                (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_CHAT), None, Some(id));
+                self.chat_menu = None;
+                let chats = if self.selection.is_empty() { vec![id.clone()] } else { self.selection.clone() };
+                let st = self.store.read();
+                let modes = chats.iter().filter_map(|c| st.resolve_chat_idx(c)).map(|i| st.chats[i].delete_modes);
+                let common = modes.fold(DELETE_FOR_ME | DELETE_FOR_EVERYONE, |all, m| all & m);
+                drop(st);
+                if common == 0 {
+                    self.status_banner = match chats.len() > 1 {
+                        true => tr("Selected chats do not support the same delete action"),
+                        false => tr("Selected chat does not support this delete action"),
+                    }
+                    .into();
+                    return Task::none();
+                }
+                (self.confirm, self.delete_target, self.delete_chats) = (Some(ASK_DELETE_CHAT), Some(id), chats);
             }
             Msg::BeginSelecting(id) => {
                 (self.selection, self.chat_menu, self.select_mode) = (vec![id.clone()], None, false);
@@ -317,6 +334,18 @@ impl BeeperGuiApp {
                 self.chat_menu = None;
                 self.confirm = None;
                 self.store.write().delete_chat(&id, everyone);
+                return self.update(UiMessage::StoreChanged);
+            }
+            Msg::DeleteAll(ids, everyone) => {
+                self.confirm = None;
+                self.selection.retain(|c| !ids.contains(c));
+                let mut st = self.store.write();
+                for id in &ids {
+                    if st.resolve_chat_idx(id).is_some() {
+                        st.delete_chat(id, everyone);
+                    }
+                }
+                drop(st);
                 return self.update(UiMessage::StoreChanged);
             }
             Msg::ToggleFilterMenu => self.show_filter_menu = !self.show_filter_menu,

@@ -2310,7 +2310,7 @@ impl BeeperGuiApp {
             Msg::Step(step) => {
                 self.settings_focus =
                     (self.settings_focus + step) % search_settings(&self.store.read(), &self.settings_query).len();
-                return locate(format!("hit-{}", self.settings_focus), "settings-nav", true);
+                return locate(format!("hit-{}", self.settings_focus), "settings-nav", crate::Align::Nearest);
             }
             Msg::Pick(hit) => {
                 self.settings_pick = Some(hit);
@@ -2325,7 +2325,7 @@ impl BeeperGuiApp {
                 return match hit {
                     SettingsHit::Pref(_, &prefs::Pref { key, .. }) | SettingsHit::Custom(_, key) => {
                         self.pref_flash = Some((key, std::time::Instant::now()));
-                        Task::batch([load, locate(key, "settings-pane", false)])
+                        Task::batch([load, locate(key, "settings-pane", crate::Align::Center)])
                     }
                     // Desktop's network hit: the account on that network, or the Add Account window for it.
                     SettingsHit::Network(name) => {
