@@ -393,7 +393,12 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         };
     let names = |own: bool| items.iter().filter(move |u| u.is_self == Some(own)).filter_map(|u| u.full_name.clone());
     let others: Vec<String> = names(false).collect();
-    let title = room.name().filter(|n| !n.is_empty()).unwrap_or_else(|| {
+    // Desktop's `buildTitle`: a bridge bot room is titled by the user ID of the bot, before any name.
+    let bot_room = (bridge["com.beeper.is_bridge_bot_room"] == true).then(|| {
+        let name = s(&bridge["com.beeper.bridge_name"]).or_else(|| s(&bridge["protocol"]["id"]));
+        format!("@{}bot:beeper.local", name.as_deref().unwrap_or("unknown"))
+    });
+    let title = bot_room.or_else(|| room.name().filter(|n| !n.is_empty())).unwrap_or_else(|| {
         if others.is_empty() {
             // The own member of an invite has not joined, so an invite may have no joined member to name it by.
             names(true).next().unwrap_or_else(|| room.room_id().to_string())
@@ -5580,6 +5585,33 @@ mod tests {
         let echo = store.read().stored_message(&txn).expect("the echo");
         let a = &echo.attachments[0];
         assert_eq!((a.file_name.as_deref(), a.mime_type.as_deref()), (Some("a.png"), Some("image/png")));
+    }
+
+    /// Desktop's `buildTitle`: the management room of a bridge, `com.beeper.is_bridge_bot_room` in its `m.bridge`, is
+    /// titled by the user ID of its bot, before its name.
+    #[tokio::test]
+    async fn bridge_bot_rooms_take_the_bot_title_like_desktop() {
+        let mut sync = stub_sync();
+        let state = |kind: &str, content: Value| {
+            json!({ "type": kind, "state_key": "", "sender": "@me:x", "event_id": format!("${kind}"),
+                "origin_server_ts": 1, "content": content })
+        };
+        let bridge = json!({ "bridgebot": "@whatsappbot:beeper.local", "protocol": { "id": "whatsapp" },
+            "com.beeper.bridge_name": "whatsapp", "com.beeper.is_bridge_bot_room": true });
+        let events = sync["rooms"]["join"]["!room:x"]["state"]["events"].as_array_mut().unwrap();
+        events.extend([state("m.room.name", json!({ "name": "WhatsApp bridge bot" })), state("m.bridge", bridge)]);
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("bot-room"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        assert_eq!(store.read().chat("!room:x").title, "@whatsappbot:beeper.local");
     }
 
     /// Desktop's blocking: the `block_user`, `no_unblock` and `report_spam` room features, the
