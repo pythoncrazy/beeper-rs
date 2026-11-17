@@ -819,6 +819,7 @@
 "Remind in 8 Hours":["8時間後に再通知"],
 "Remind me later":["後で再通知"],
 "Reminder":["リマインダー"],
+"Reminder: %s":["リマインダー: %s"],
 "Reminders":["リマインダー"],
 "Remote Access":["リモートアクセス"],
 "Remote Access will be disabled after relaunch":["再起動後にリモートアクセスが無効になります"],

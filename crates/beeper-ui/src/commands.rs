@@ -122,6 +122,10 @@ pub enum SubMenu {
     FilterAccount,
     /// The times for a reminder on a chat.
     Remind(String),
+    /// Desktop's `remindLaterMessage`: the times for a reminder on a message.
+    RemindMessage(String),
+    /// Desktop's `snoozeThread`: the times to snooze the chats until.
+    Snooze(Vec<String>),
     /// The times for Send Later: the composer's, or the scheduled messages' to reschedule.
     Schedule(Vec<String>),
     /// The recently viewed chats.
@@ -146,7 +150,8 @@ impl SubMenu {
     pub(crate) fn heading(&self) -> &'static str {
         match self {
             SubMenu::FilterAccount => tr("Filter account"),
-            SubMenu::Remind(_) => tr("Remind Me"),
+            SubMenu::Remind(_) | SubMenu::RemindMessage(_) => tr("Remind Me"),
+            SubMenu::Snooze(_) => trx("Snooze", "command bar heading for snoozing chats"),
             SubMenu::Schedule(ids) if ids.is_empty() => tr("Send Later"),
             SubMenu::Schedule(_) => tr("Reschedule message"),
             SubMenu::History => tr("Recently viewed chats"),
@@ -165,9 +170,10 @@ impl SubMenu {
             SubMenu::FilterAccount | SubMenu::Folders | SubMenu::Filters | SubMenu::Links(_) => String::new(),
             SubMenu::History => tr("Search chats...").into(),
             SubMenu::Members(_) | SubMenu::AddMembers => tr("Search users...").into(),
-            SubMenu::Remind(_) => {
+            SubMenu::Remind(_) | SubMenu::RemindMessage(_) => {
                 tr("When? (try typing something like %s)").replacen("%s", "\"Monday morning at 9\"", 1)
             }
+            SubMenu::Snooze(_) => trf("Until when? (try typing something like %s)", &[&"\"tomorrow at 9\""]),
             SubMenu::Schedule(_) => tr("When? (try typing something like %s)").replacen("%s", "“Monday morning”", 1),
         }
     }
@@ -220,9 +226,9 @@ fn search(v: Vec<Command>, query: &str) -> Vec<Command> {
     }
 }
 
-/// Desktop's `yle`: "last used", then the `timeSuggestionOptions`, counted and typed times that are still ahead, each
-/// once.
-fn time_commands(st: &BeeperStore, query: &str, pick: impl Fn(i64) -> UiMessage) -> Vec<Command> {
+/// Desktop's `cy`: "last used", then the `timeSuggestionOptions`, counted and typed times that are still ahead, each
+/// once. A snooze (`yle`) has its own last used phrase.
+fn time_commands(st: &BeeperStore, query: &str, snooze: bool, pick: impl Fn(i64) -> UiMessage) -> Vec<Command> {
     let now = beeper_core::config::now_unix_millis();
     let count = query.parse::<u32>().ok().filter(|n| *n > 0);
     let counted = [("minute", 100_000_000), ("hour", 1_000_000), ("day", 100_000), ("week", 10_000)];
@@ -236,11 +242,16 @@ fn time_commands(st: &BeeperStore, query: &str, pick: impl Fn(i64) -> UiMessage)
         let (long, short) = locale_times(at);
         Command { render: Some((label.clone(), short)), ..cmd("", format!("{label} — {long}"), Some(msg)) }
     };
-    let last = crate::reminders::last_used(st, now).map(|at| row(tr("last used").into(), at, pick(at)));
+    let last = if snooze { &st.settings.snooze_last_time } else { &st.settings.last_time };
+    let last = crate::reminders::last_used_of(last, now).map(|at| row(tr("last used").into(), at, pick(at)));
     let times = phrases.filter_map(|phrase| {
         let at = beeper_core::config::parse_when_millis(&phrase, now).filter(|at| *at > now)?;
         let label = phrase.trim().to_lowercase();
-        Some(row(label, at, UiMessage::Commands(vec![UiMessage::CommandBar(Msg::LastTime(phrase)), pick(at)])))
+        let used = match snooze {
+            true => UiMessage::Reminders(reminders::Msg::SnoozeTime(phrase)),
+            false => UiMessage::CommandBar(Msg::LastTime(phrase)),
+        };
+        Some(row(label, at, UiMessage::Commands(vec![used, pick(at)])))
     });
     let mut seen = std::collections::HashSet::new();
     let mut v = search(last.into_iter().chain(times).collect(), query);
@@ -255,7 +266,7 @@ impl BeeperGuiApp {
         match menu {
             SubMenu::Remind(id) => {
                 let Some(c) = st.resolve_chat_idx(id).map(|i| &st.chats[i]) else { return Vec::new() };
-                let mut v = time_commands(st, query, |at| {
+                let mut v = time_commands(st, query, false, |at| {
                     UiMessage::Reminders(reminders::Msg::If(c.id.clone(), at, self.cmd_no_reply))
                 });
                 v.extend(c.reminder.as_ref().map(|r| {
@@ -268,7 +279,24 @@ impl BeeperGuiApp {
                 }));
                 v
             }
-            SubMenu::Schedule(ids) => time_commands(st, query, |at| match ids.is_empty() {
+            SubMenu::RemindMessage(mid) => time_commands(st, query, false, |at| {
+                UiMessage::Reminders(reminders::Msg::Message(mid.clone(), Some(at)))
+            }),
+            // Desktop's `Eit`: the times, and "dismiss snooze" with the end of the snooze of one chat.
+            SubMenu::Snooze(ids) => {
+                let chats: Vec<&Chat> =
+                    ids.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect();
+                let snooze = |at| UiMessage::Reminders(reminders::Msg::Snooze(ids.clone(), at));
+                let mut v = time_commands(st, query, true, |at| snooze(Some(at)));
+                v.extend(crate::reminders::can_dismiss_snooze(st, &chats).then(|| {
+                    let until =
+                        chats.first().filter(|_| chats.len() == 1).and_then(|c| crate::reminders::snoozed_until(st, c));
+                    let render = (tr("dismiss snooze").into(), until.map(|at| locale_times(at).1).unwrap_or_default());
+                    Command { render: Some(render), ..cmd("", tr("dismiss snooze"), Some(snooze(None))) }
+                }));
+                v
+            }
+            SubMenu::Schedule(ids) => time_commands(st, query, false, |at| match ids.is_empty() {
                 true => UiMessage::Scheduled(scheduled::Msg::Set(Some((at, self.cmd_no_reply)))),
                 false => UiMessage::Scheduled(scheduled::Msg::RescheduleTo(ids.clone(), at, self.cmd_no_reply)),
             }),

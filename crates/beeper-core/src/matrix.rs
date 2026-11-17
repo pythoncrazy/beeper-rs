@@ -2,14 +2,14 @@ use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
     timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatFlag,
-    ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older,
-    PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers,
-    Transcription, User, VerificationDevice, VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji,
-    ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS,
-    DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK,
-    MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR,
-    PERSONAL_NAME, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM,
-    USER_BLOCKED,
+    ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageReminder,
+    MessageRules, Older, PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack, StickerSource,
+    ThreadFollows, Timers, Transcription, User, VerificationDevice, VerificationError, VerificationQr, VerificationSas,
+    VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK,
+    BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS,
+    FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, MSG_MENTION,
+    NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE,
+    REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -456,6 +456,11 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
                 dismiss_on_incoming_message: r["dismiss_on_incoming_message"] == true,
             })
         }),
+        // Desktop's `com.beeper.chats.snoozed` handler keeps a snooze that ends in the future.
+        snoozed_until_ms: account_data(room, SNOOZED)
+            .await
+            .and_then(|s| s["snoozed_until_ms"].as_i64())
+            .filter(|&ms| ms > now_unix_millis()),
         chat_theme: None,
         note: None,
         notifiable: None,
@@ -1115,6 +1120,39 @@ fn bookmark_change(e: &Value, me: &str) -> Option<(String, Option<Bookmark>)> {
     }
 }
 
+/// Desktop's message reminder restoration (`restoreMessageReminders`): the whole reminders room once, then its new
+/// events (`handleMessageReminderRoomEvents`).
+async fn sync_message_reminders(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
+    let events = if store.read().reminders_room.is_none() { all_history(room).await } else { events };
+    let me = room.own_user_id().as_str();
+    let changes = events
+        .iter()
+        .filter_map(|e| {
+            message_reminder_change(&serde_json::from_str(e.raw().json().get()).expect("timeline event JSON"), me)
+        })
+        .collect();
+    store.write().apply_message_reminders(room.room_id().as_str(), changes);
+}
+
+/// Desktop's `applyMessageReminderEvent` and `applyMessageReminderRedaction`: the message and its new reminder with
+/// the reminder event, if any. A redacted reminder event changes nothing, and so do the malformed events and the
+/// reminders of another sender.
+fn message_reminder_change(e: &Value, me: &str) -> Option<(String, Option<(String, MessageReminder)>)> {
+    let rel = &e["content"]["com.beeper.relates_to"];
+    if rel["rel_type"] != MESSAGE_REMINDER {
+        return None;
+    }
+    let (target, room_id) = (s(&rel["event_id"])?, s(&rel["room_id"])?);
+    match e["type"].as_str()? {
+        MESSAGE_REMINDER if e["sender"] == me && e["unsigned"]["redacted_because"].is_null() => {
+            let remind_at_ms = e["content"]["remind_at_ms"].as_i64().filter(|&at| at > 0)?;
+            Some((target, Some((s(&e["event_id"])?, MessageReminder { room_id, remind_at_ms }))))
+        }
+        "m.room.redaction" => Some((target, None)),
+        _ => None,
+    }
+}
+
 /// Desktop's restoration of the removed messages: the whole removed-messages room once, then its new events.
 async fn sync_removals(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
     let events = if store.read().removals.is_none() { all_history(room).await } else { events };
@@ -1291,6 +1329,7 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
         TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
         REMOVED_MESSAGES_ROOM => return sync_removals(store, room, events).await,
+        REMINDERS_ROOM => return sync_message_reminders(store, room, events).await,
         id if MANAGED_ROOMS.contains(&id) => return,
         _ => {}
     }
@@ -1676,6 +1715,13 @@ pub enum Outgoing {
         room: String,
         target: String,
         on: bool,
+    },
+    /// Desktop's `sendMessageReminder` (`at`) or `redactMessageReminder` (None) of a message in a room. Its chat is
+    /// the reminders room.
+    MessageReminder {
+        room: String,
+        target: String,
+        at: Option<i64>,
     },
     /// Desktop's `removeMessageFromBeeper`: a removal of a message in a room. Its chat is the removed-messages room.
     RemoveFromBeeper {
@@ -2648,6 +2694,25 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                     store.write().bookmarks.remove(&target);
                 }
                 _ => {}
+            }
+        }
+        // Desktop sends a new reminder event for each time, and its dismissal redacts the latest one.
+        Outgoing::MessageReminder { room: chat, target, at } => {
+            let target = event(target)?.to_string();
+            let rel = serde_json::json!({ "event_id": target, "room_id": chat, "rel_type": MESSAGE_REMINDER });
+            match at {
+                Some(at) => {
+                    let content = serde_json::json!({ "com.beeper.relates_to": rel, "remind_at_ms": at });
+                    let id = room.send_raw(MESSAGE_REMINDER, content).await.map_err(e)?.response.event_id;
+                    store.write().reminder_events.insert(target, id.to_string());
+                }
+                None => {
+                    let known = store.read().reminder_events.get(&target).cloned();
+                    if let Some(id) = known {
+                        redact_with(&client, &room, &id, serde_json::json!({ "com.beeper.relates_to": rel })).await?;
+                        store.write().reminder_events.remove(&target);
+                    }
+                }
             }
         }
         // Desktop sends a pending removal again after a restart, but not when the room already has a removal.
@@ -5957,6 +6022,83 @@ mod tests {
         assert!(!st.chat_idx_by_id.contains_key(BOOKMARKS_ROOM), "the bookmarks room is not a chat");
     }
 
+    /// Desktop's message reminders: the own reminders of the reminders room, the latest event of a message winning
+    /// and a redaction ending it; a new reminder is a new `com.beeper.message_reminder` event there, and Mark as
+    /// Done redacts it with the relation in the redaction.
+    #[tokio::test]
+    async fn message_reminders_follow_the_reminders_room_like_desktop() {
+        use crate::models::REMINDERS_ROOM;
+        let rel = |id: &str| json!({ "event_id": id, "room_id": "!room:x", "rel_type": "com.beeper.message_reminder" });
+        let remind = |id: &str, target: &str, at: i64| {
+            stub_event(
+                id,
+                "com.beeper.message_reminder",
+                json!({ "com.beeper.relates_to": rel(target), "remind_at_ms": at }),
+            )
+        };
+        let mut foreign = remind("$r3", "$c", 9);
+        foreign["sender"] = "@other:x".into();
+        let redaction =
+            stub_event("$r5", "m.room.redaction", json!({ "redacts": "$r4", "com.beeper.relates_to": rel("$b") }));
+        let reminders =
+            vec![remind("$r1", "$a", 5), remind("$r2", "$a", 7), foreign, remind("$r4", "$b", 8), redaction];
+        let mut sync = stub_sync();
+        sync["rooms"]["join"][REMINDERS_ROOM] = sync["rooms"]["join"]["!room:x"].clone();
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| {
+            let path = crate::codec::url_decode(path.split('?').next().expect("a path")).expect("an encoded path");
+            match path.as_str() {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, sync.clone()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if p.ends_with("/messages") => {
+                    let page = if p.contains(REMINDERS_ROOM) { reminders.clone() } else { Vec::new() };
+                    (200, json!({ "start": "t", "chunk": page.into_iter().rev().collect::<Vec<_>>() }))
+                }
+                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+                p => {
+                    log.lock().unwrap().push((p.to_string(), body));
+                    (200, json!({ "event_id": "$sent" }))
+                }
+            }
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("message-reminders"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        sync_stub_room(&store, REMINDERS_ROOM).await;
+        {
+            let st = store.read();
+            assert_eq!(st.reminders_room.as_deref(), Some(REMINDERS_ROOM));
+            let active: Vec<(&str, i64)> =
+                st.message_reminders_of("!room:x").iter().map(|(id, r)| (*id, r.remind_at_ms)).collect();
+            assert_eq!(
+                active,
+                [("$a", 7)],
+                "the latest event wins, others' reminders are skipped, a redaction ends one"
+            );
+            assert!(!st.chat_idx_by_id.contains_key(REMINDERS_ROOM), "the reminders room is not a chat");
+        }
+        let at = super::now_unix_millis() + 60_000;
+        store.write().set_message_reminder("!room:x", "$m", Some(at));
+        super::flush(store.clone()).await.expect("the reminder is sent");
+        store.write().set_message_reminder("!room:x", "$m", None);
+        super::flush(store.clone()).await.expect("the reminder is redacted");
+        let room = format!("/_matrix/client/v3/rooms/{REMINDERS_ROOM}/");
+        let sent: Vec<(String, Value)> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(p, b)| Some((p.strip_prefix(&room)?.to_string(), b.clone())))
+            .collect();
+        assert!(sent[0].0.starts_with("send/com.beeper.message_reminder/"), "{}", sent[0].0);
+        assert_eq!(sent[0].1, json!({ "com.beeper.relates_to": rel("$m"), "remind_at_ms": at }));
+        assert!(sent[1].0.starts_with("redact/$sent/"), "{}", sent[1].0);
+        assert_eq!(sent[1].1, json!({ "com.beeper.relates_to": rel("$m") }));
+        assert!(store.read().message_reminders_of("!room:x").iter().all(|(id, _)| *id != "$m"));
+    }
+
     /// Desktop's "Remove from Beeper": the own removals of the removed-messages room delete their messages, a new
     /// removal goes to that room with one transaction ID and stays pending after a failure until the next launch, and
     /// a redaction of a removed message redacts its removal.
@@ -6157,6 +6299,28 @@ mod tests {
         assert_eq!(bookmark_change(&ev("m.room.redaction", "@me:x"), "@me:x"), Some(("$m".into(), None)));
         let bare = json!({ "type": "m.room.redaction", "sender": "@me:x", "redacts": "$b", "content": {} });
         assert!(bookmark_change(&bare, "@me:x").is_none(), "a redaction without a relation is unresolved");
+    }
+
+    /// Desktop's `applyMessageReminderEvent`: a redacted event and one without a positive `remind_at_ms` change
+    /// nothing.
+    #[test]
+    fn message_reminder_events_like_desktop() {
+        use super::message_reminder_change as change;
+        use crate::models::MessageReminder;
+        use serde_json::json;
+        let rel = json!({ "event_id": "$m", "room_id": "!r", "rel_type": "com.beeper.message_reminder" });
+        let ev = json!({ "type": "com.beeper.message_reminder", "sender": "@me:x", "event_id": "$e",
+            "content": { "com.beeper.relates_to": rel, "remind_at_ms": 9 } });
+        let r = MessageReminder { room_id: "!r".into(), remind_at_ms: 9 };
+        assert_eq!(change(&ev, "@me:x"), Some(("$m".into(), Some(("$e".into(), r)))));
+        let mut redacted = ev.clone();
+        redacted["unsigned"] = json!({ "redacted_because": {} });
+        assert_eq!(change(&redacted, "@me:x"), None);
+        for at in [json!(0), json!("9"), Value::Null] {
+            let mut bad = ev.clone();
+            bad["content"]["remind_at_ms"] = at;
+            assert_eq!(change(&bad, "@me:x"), None, "a malformed time");
+        }
     }
 
     /// Desktop's `parseTranscription`: the last plain text, and the engine "unknown" when the event has none.

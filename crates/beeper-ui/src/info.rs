@@ -424,15 +424,24 @@ impl BeeperGuiApp {
                 vec!["Ctrl", "E"],
                 (!pinned && !locked).then(|| flag(ChatFlag::Archived)),
             ),
-            match chat.reminder.is_some() {
-                true => tool(
+            // Desktop's `hasReminder` and `dismissThreadReminder`: the soonest of the message reminders and the chat
+            // reminder is dismissed.
+            match (self.soonest_message_reminder(&st, chat), chat.reminder.is_some()) {
+                (Some(mid), _) => tool(
+                    icon::SCHEDULE,
+                    ORANGE,
+                    tr("Dismiss Reminder"),
+                    vec!["Ctrl", "L"],
+                    Some(UiMessage::Reminders(reminders::Msg::Message(mid, None))),
+                ),
+                (None, true) => tool(
                     icon::SCHEDULE,
                     ORANGE,
                     tr("Dismiss Reminder"),
                     vec!["Ctrl", "L"],
                     Some(UiMessage::Reminders(reminders::Msg::Set(cid.clone(), None))),
                 ),
-                false => tool(
+                (None, false) => tool(
                     icon::SCHEDULE,
                     p.strong,
                     tr("Remind Me"),
@@ -440,6 +449,23 @@ impl BeeperGuiApp {
                     Some(UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.clone()))),
                 ),
             },
+            // Desktop's Snooze button shows when the chat can snooze, is snoozed or needs Beeper Plus to snooze; it
+            // is highlighted with the end of the snooze while the chat is snoozed.
+            reminders::shows_snooze(&st, &[chat]).then(|| {
+                let until = reminders::snoozed_until(&st, chat);
+                let label = match until {
+                    Some(at) => reminders::snoozed_label(at, st.settings.pref("timeFormat") == 1),
+                    None => trx("Snooze", "chat info toolbar button").into(),
+                };
+                let icon = tinted(&MOON_STARS, 20.0, if until.is_some() { p.accent } else { p.strong });
+                let open = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{SNOOZE_MENU}{cid}")));
+                let btn = button(container(icon).center_x(Fill)).padding(6).width(Fill).style(btn_style(
+                    [CLEAR; 3],
+                    [p.strong; 3],
+                    0.0,
+                ));
+                container(self.tip(btn.on_press(open).into(), label, vec![], tooltip::Position::Top)).center_x(Fill)
+            }),
             tool(
                 icon::SEARCH,
                 p.strong,
