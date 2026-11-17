@@ -1,6 +1,10 @@
 //! Desktop's `GalleryGrouper` and `GalleryAttachments`: the photos and videos that one sender sends in a short time
 //! show as one gallery of up to four tiles.
+use crate::forward;
 use crate::i18n::{tr, trx};
+use crate::loads;
+use crate::media_view;
+use crate::message;
 use crate::style::{bordered_box, fill_box, semi, shadow_box, Palette};
 use crate::{deletable, iso_millis, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, UiMessage};
 use crate::{MENU_ITEM, MESSAGE_MENU_W};
@@ -178,7 +182,9 @@ impl BeeperGuiApp {
             // selects only the gallery. Both unselect a selected gallery.
             Msg::Click(ids) => {
                 let task = match self.mods.shift() {
-                    true => self.update(UiMessage::ClickMessage(ids.last().expect("a gallery has messages").clone())),
+                    true => self.update(UiMessage::Message(message::Msg::Click(
+                        ids.last().expect("a gallery has messages").clone(),
+                    ))),
                     false => {
                         let sel = &mut self.pane.selected_msgs;
                         match (ids.iter().all(|i| sel.contains(i)), self.mods.command()) {
@@ -198,8 +204,8 @@ impl BeeperGuiApp {
             // Ctrl and Shift select tiles like messages, and a click opens the carousel.
             Msg::Tile(mid) => {
                 return match self.mods.command() || self.mods.shift() {
-                    true => self.update(UiMessage::ClickMessage(mid)),
-                    false => self.update(UiMessage::OpenCarousel(mid, 0, false)),
+                    true => self.update(UiMessage::Message(message::Msg::Click(mid))),
+                    false => self.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, 0, false))),
                 };
             }
             // A right click selects only the gallery, unless all of it is selected.
@@ -207,7 +213,7 @@ impl BeeperGuiApp {
                 if !ids.iter().all(|i| self.pane.selected_msgs.contains(i)) {
                     self.pane.selected_msgs = ids.clone();
                 }
-                let task = self.update(UiMessage::OpenMessageMenu(ids[0].clone()));
+                let task = self.update(UiMessage::Message(message::Msg::OpenMenu(ids[0].clone())));
                 self.pane.gallery_menu = ids;
                 return task;
             }
@@ -231,20 +237,22 @@ impl BeeperGuiApp {
         let ms: Vec<&Message> = ids.iter().map(|i| st.message(i)).collect();
         let at = self.pane().message_menu.as_ref().expect("the menu is open").1;
         let item = |label: String, hotkey, msg| {
-            (menu_item(p, None, label, hotkey, Some(UiMessage::MessageMenu(Box::new(msg)))), MENU_ITEM)
+            (menu_item(p, None, label, hotkey, Some(UiMessage::Message(message::Msg::Menu(Box::new(msg))))), MENU_ITEM)
         };
         let action = |s| trx(s, "gallery menu action").to_string();
-        let download = UiMessage::Commands(ids.iter().map(|i| UiMessage::Download(i.clone(), None)).collect());
+        let download = UiMessage::Commands(
+            ids.iter().map(|i| UiMessage::Message(message::Msg::Download(i.clone(), None))).collect(),
+        );
         let rows: Vec<(El, f32)> = [
             ms.iter()
                 .any(|m| !m.reactions.is_empty())
                 .then(|| vec![item(action("Reactions"), "", UiMessage::Gallery(Msg::Reactions(ids.clone(), at)))]),
             Some(vec![
                 item(action("Download All"), "Ctrl D", download),
-                item(action("Forward All…"), "Ctrl Shift F", UiMessage::Forward(ids.clone())),
+                item(action("Forward All…"), "Ctrl Shift F", UiMessage::Forward(forward::Msg::Open(ids.clone()))),
             ]),
             ms.iter().all(|m| deletable(&st, m)).then(|| {
-                let delete = UiMessage::AskDeleteMessage(ids.clone());
+                let delete = UiMessage::Message(message::Msg::AskDelete(ids.clone()));
                 vec![(menu_rule(p), 11.0), item(tr("Delete…").into(), "", delete)]
             }),
         ]
@@ -310,7 +318,11 @@ impl BeeperGuiApp {
             })
             .collect();
         self.tiles.extend(tasks.iter().map(|(k, _)| (k.clone(), None)));
-        Task::batch(tasks.into_iter().map(|(k, task)| Task::perform(task, move |h| UiMessage::TileBaked(k.clone(), h))))
+        Task::batch(
+            tasks
+                .into_iter()
+                .map(|(k, task)| Task::perform(task, move |h| UiMessage::Loaded(loads::Msg::Tile(k.clone(), h)))),
+        )
     }
 
     /// Desktop's `GalleryAttachments` of the messages of a gallery: each tile opens its item in the carousel, and a

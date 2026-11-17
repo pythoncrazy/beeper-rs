@@ -914,7 +914,7 @@ mod tests {
         let _ = app.verification_changed();
         let _ = app.update(VerifyMsg::Noted("flow".into(), Ok(7)).into());
         assert_eq!(app.verify.note, Some((7, "flow".into())));
-        let _ = app.update(UiMessage::NotificationEvent(7, Some("verificationAccept".into())));
+        let _ = app.update(UiMessage::Notify(crate::notify::Msg::Event(7, Some("verificationAccept".into()))));
         assert!(app.verify.note.is_none() && app.verify.window.is_some(), "Accept opens the modal");
         assert_ne!(app.status_banner, "Verification request from Pixel", "Accept removes the toast");
 

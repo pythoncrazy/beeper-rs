@@ -1,10 +1,13 @@
 //! Desktop's application menu (`menubar`), which Electron's `autoHideMenuBar` hides on Linux and Windows until Alt
 //! shows it: the Beeper, File, Edit, View, Window and Help menus over the main window.
+use crate::composer;
 use crate::i18n::{tr, trf, trx};
+use crate::settings;
 use crate::style::{fill_box, shadow_box, text_width, txt};
+use crate::windows;
 use crate::{menu_item, menu_rule, BeeperGuiApp, El, SettingsTab, UiMessage, ASK_LOGOUT};
 use iced::widget::{container, mouse_area, row, text_editor, Column};
-use iced::{font::Weight, Fill, Padding};
+use iced::{font::Weight, Fill, Padding, Task};
 
 /// The height of the menu bar.
 pub(crate) const BAR_H: f32 = 26.0;
@@ -26,11 +29,12 @@ impl BeeperGuiApp {
         let url = |label: String, url: &str| plain(label, UiMessage::OpenUrl(url.into()));
         let logout = || plain(trf("Logout of %s...", &[&"Beeper"]), UiMessage::Ask(Some(ASK_LOGOUT)));
         let signed_in = st.signed_in();
-        let mut beeper = vec![plain(trf("About %s", &[&"Beeper"]), UiMessage::OpenSettings(SettingsTab::About))];
+        let mut beeper =
+            vec![plain(trf("About %s", &[&"Beeper"]), UiMessage::Settings(settings::Msg::Open(SettingsTab::About)))];
         if signed_in {
             beeper.extend([
                 None,
-                plain(tr("Accounts…").into(), UiMessage::OpenSettings(SettingsTab::Accounts)),
+                plain(tr("Accounts…").into(), UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
                 hotkey(tr("Preferences"), "Settings"),
                 None,
                 hotkey(tr("Command Bar…"), "Command Bar"),
@@ -47,21 +51,21 @@ impl BeeperGuiApp {
             hotkey(tr("Open..."), "Chat: Send File"),
             hotkey(tr("New Chat"), "Chat: Start New"),
             None,
-            main.map(|id| (tr("Close Window").to_string(), "", UiMessage::CloseRequested(id))),
+            main.map(|id| (tr("Close Window").to_string(), "", UiMessage::Window(windows::Msg::CloseRequested(id)))),
             hotkey(tr("Open Chat in New Window"), "Open in New Window"),
         ];
         let edit = vec![
-            plain(tr("Cut").into(), UiMessage::ComposerClip(true)),
-            plain(tr("Copy").into(), UiMessage::ComposerClip(false)),
-            plain(tr("Paste").into(), UiMessage::Paste),
-            plain(tr("Select All").into(), UiMessage::ComposerEdit(text_editor::Action::SelectAll)),
+            plain(tr("Cut").into(), UiMessage::Composer(composer::Msg::Clip(true))),
+            plain(tr("Copy").into(), UiMessage::Composer(composer::Msg::Clip(false))),
+            plain(tr("Paste").into(), UiMessage::Composer(composer::Msg::Paste)),
+            plain(tr("Select All").into(), UiMessage::Composer(composer::Msg::Edit(text_editor::Action::SelectAll))),
         ];
         let bar = if st.settings.on("showSidebar") { tr("Hide Space Bar") } else { tr("Show Space Bar") };
         let sidebar = if self.sidebar_hidden { tr("Show Sidebar") } else { tr("Hide Sidebar") };
         let view = vec![hotkey(bar, "Toggle Space Bar"), hotkey(sidebar, "Toggle Sidebar")];
         let window = vec![
-            main.map(|id| (tr("Minimize").to_string(), "", UiMessage::MinimizeWindow(id))),
-            main.map(|id| (tr("Zoom").to_string(), "", UiMessage::ToggleMaximize(Some(id)))),
+            main.map(|id| (tr("Minimize").to_string(), "", UiMessage::Window(windows::Msg::Minimize(id)))),
+            main.map(|id| (tr("Zoom").to_string(), "", UiMessage::Window(windows::Msg::ToggleMaximize(Some(id))))),
         ];
         let mut help = vec![
             hotkey(tr("Report a Problem"), "Report a Problem"),
@@ -97,8 +101,8 @@ impl BeeperGuiApp {
             let label = container(txt(title, 13.0).color(p.strong)).padding([0.0, TITLE_PAD]).center_y(BAR_H);
             let label = container(label).style(fill_box(if on { p.selected } else { p.window }, 4.0));
             mouse_area(label)
-                .on_press(UiMessage::MenuBar(Some((!on).then_some(i))))
-                .on_enter(UiMessage::MenuBarHover(i))
+                .on_press(UiMessage::MenuBar(Msg::Show(Some((!on).then_some(i)))))
+                .on_enter(UiMessage::MenuBar(Msg::Hover(i)))
                 .into()
         });
         let bar = row(titles).padding(Padding::ZERO.left(BAR_PAD));
@@ -118,11 +122,39 @@ impl BeeperGuiApp {
                     "" => String::new(),
                     name => beeper_core::prefs::hotkey_label(st.settings.hotkey_keys(name)),
                 };
-                menu_item(p, None, label, keys, Some(UiMessage::MenuBarRun(Box::new(msg))))
+                menu_item(p, None, label, keys, Some(UiMessage::MenuBar(Msg::Run(Box::new(msg)))))
             }
             None => menu_rule(p),
         });
         let menu = container(Column::with_children(rows).padding([4, 0]));
         (menu.width(MENU_W).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into(), x)
+    }
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    /// Desktop's menu bar: hidden (`None`), shown, or shown with a menu open.
+    Show(Option<Option<usize>>),
+    /// The pointer came onto a menu title, which opens its menu while another menu is open.
+    Hover(usize),
+    /// An item of the menu bar: the menu bar hides, and the item runs.
+    Run(Box<UiMessage>),
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn menu_bar(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::Show(state) => self.menu_bar = state,
+            Msg::Hover(i) => {
+                if let Some(Some(_)) = self.menu_bar {
+                    self.menu_bar = Some(Some(i));
+                }
+            }
+            Msg::Run(msg) => {
+                self.menu_bar = None;
+                return self.update(*msg);
+            }
+        }
+        self.settle()
     }
 }

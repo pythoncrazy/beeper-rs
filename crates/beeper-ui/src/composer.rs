@@ -1,17 +1,23 @@
 //! The composer: its drafts, the autocomplete, the attachments and link previews, the composer buttons, and the send
 //! of a message.
 
+use crate::chat_list::{message_tag, preview_body};
+use crate::gifs;
+use crate::gifs::gif_width;
 use crate::i18n::{tr, trf};
+use crate::scheduled;
+use crate::scheduled::send_day;
 use crate::style::{
     bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, mix, scroll_style, semi,
     shadow_box, text_width, txt, Bare, CLEAR,
 };
+use crate::threads;
 use crate::{
-    account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, contact_card, dashed, emoji, format,
-    gif_width, has_flag, hotkey_key, human_size, icon_btn, images, menu_item, menu_rule, message_tag, network_name,
-    parse_vcard, portal, preview_body, record, removable, send_day, several_accounts, switch_targets, text_urls,
-    tinted, truncate, voice, BeeperGuiApp, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, Toast, UiMessage,
-    CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
+    account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, clipboard_paste, contact_card,
+    dashed, emoji, format, has_flag, hotkey_key, human_size, icon_btn, images, locate, menu_item, menu_rule,
+    network_name, parse_vcard, portal, record, removable, several_accounts, spell, switch_targets, text_urls, tinted,
+    toasts, truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued,
+    Toast, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
 };
 use beeper_core::config::{account_network, now_unix_millis};
 use beeper_core::matrix::{Mention, ROOM_MENTION};
@@ -20,12 +26,13 @@ use beeper_core::prefs;
 use beeper_core::store::{BeeperStore, Draft, OutFile};
 use iced::font::Weight;
 use iced::keyboard::{key::Named, Key};
+use iced::widget::operation;
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
     button, column, container, image, mouse_area, row, scrollable, stack, svg, text_editor, text_input, tooltip,
     Column, Row, Space,
 };
-use iced::{Bottom, Center, Color, Fill, Length, Padding, Pixels, Shrink, Task};
+use iced::{window, Bottom, Center, Color, Fill, Length, Padding, Pixels, Shrink, Task};
 use std::collections::HashSet;
 
 /// Composer content with `text` and the cursor at the end.
@@ -341,7 +348,7 @@ impl BeeperGuiApp {
             let (bg, fg) = if i == at { (p.accent, Color::WHITE) } else { (CLEAR, p.text) };
             let name = txt(label(s), 13.0).wrapping(iced::widget::text::Wrapping::None);
             let b = button(row![].push(face(s)).push(name).spacing(6).align_y(Center)).padding([4, 6]).width(width);
-            b.style(btn_style([bg; 3], [fg; 3], 4.0)).on_press(UiMessage::PickSuggestion(i)).into()
+            b.style(btn_style([bg; 3], [fg; 3], 4.0)).on_press(UiMessage::Composer(Msg::PickSuggestion(i))).into()
         });
         let list =
             container(Column::with_children(items).padding([4, 4])).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -570,7 +577,7 @@ impl BeeperGuiApp {
             if self.pane.composer_links.iter().all(|(u, _)| *u != url) {
                 self.pane.composer_links.push((url.clone(), LinkState::Loading));
                 let load = beeper_core::cloud::link_preview(url.clone());
-                tasks.push(Task::perform(load, move |r| UiMessage::LinkPreviewLoaded(url, r)));
+                tasks.push(Task::perform(load, move |r| UiMessage::Composer(Msg::LinkPreviewLoaded(url, r))));
             }
         }
         Task::batch(tasks)
@@ -583,7 +590,7 @@ impl BeeperGuiApp {
         let text = self.pane().composer.text();
         let sel = format::selection(&self.pane().composer).map(|r| text[r].trim().to_owned()).filter(|s| !s.is_empty());
         let item = |label: &str, msg: Option<UiMessage>| Some(menu_item(p, None, label.into(), "", msg));
-        let edit = |e: MenuEdit| Some(UiMessage::MenuEdit(e));
+        let edit = |e: MenuEdit| Some(UiMessage::Composer(Msg::MenuEdit(e)));
         let mut items: Vec<Option<El<'_>>> = Vec::new();
         if let Some((_, fixes)) = word {
             items.extend(fixes.iter().map(|f| item(f, edit(MenuEdit::Replace(f.clone())))));
@@ -604,8 +611,8 @@ impl BeeperGuiApp {
         }
         let has = sel.is_some();
         items.extend([
-            item("Cut", has.then(|| UiMessage::MenuEdit(MenuEdit::Cut))),
-            item("Copy", has.then(|| UiMessage::MenuEdit(MenuEdit::Copy))),
+            item("Cut", has.then(|| UiMessage::Composer(Msg::MenuEdit(MenuEdit::Cut)))),
+            item("Copy", has.then(|| UiMessage::Composer(Msg::MenuEdit(MenuEdit::Copy)))),
             item("Paste", edit(MenuEdit::Paste)),
         ]);
         let rules = word.map_or(0, |_| 2) + usize::from(has);
@@ -657,12 +664,12 @@ impl BeeperGuiApp {
                 false => (p.received, p.card),
             };
             let pill = container(body).max_width(self.pane().size.width / self.zoom / 2.0).padding(8);
-            removable(p, pill.style(bordered_box(fill, edge, 2.0, 17.0)), UiMessage::CancelComposeMode)
+            removable(p, pill.style(bordered_box(fill, edge, 2.0, 17.0)), UiMessage::Composer(Msg::CancelMode))
         });
         let gif_picker = (self.pane().picker == Some(Picker::Gif)).then(|| {
             let search = text_input(tr("Search KLIPY..."), &self.gif_query)
                 .id("gif-search-input")
-                .on_input(UiMessage::GifQueryChanged)
+                .on_input(|a0| UiMessage::Gifs(gifs::Msg::Query(a0)))
                 .size(13)
                 .padding([6, 12])
                 .style(input_style(p.input, p.strong, p.sub, p.accent, 8.0));
@@ -693,7 +700,7 @@ impl BeeperGuiApp {
                     button(stack![container(cell).clip(true).style(fill_box(CLEAR, 4.0))].push(ring))
                         .padding(0)
                         .style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 4.0))
-                        .on_press(UiMessage::PickGif(g.clone()))
+                        .on_press(UiMessage::Gifs(gifs::Msg::PickGif(g.clone())))
                         .into()
                 });
                 // Desktop's skeleton tiles while the next page loads.
@@ -707,7 +714,7 @@ impl BeeperGuiApp {
                     .id("gif-carousel")
                     .on_scroll(|v| {
                         let (x, content, width) = (v.absolute_offset().x, v.content_bounds().width, v.bounds().width);
-                        UiMessage::GifScrolled(x, content, width)
+                        UiMessage::Gifs(gifs::Msg::Scrolled(x, content, width))
                     })
                     .direction(dir)
                     .height(215)
@@ -722,13 +729,13 @@ impl BeeperGuiApp {
             let (label, hotkey, on) = composer_action(st, chat, id, editing);
             let msg = match id {
                 0 => Some(UiMessage::Emoji(emoji::EmojiMsg::Toggle)),
-                2 => Some(UiMessage::TogglePicker(Picker::Gif)),
-                3 => Some(UiMessage::PickFiles),
-                4 => Some(UiMessage::OpenSendLater),
+                2 => Some(UiMessage::Composer(Msg::TogglePicker(Picker::Gif))),
+                3 => Some(UiMessage::Composer(Msg::PickFiles)),
+                4 => Some(UiMessage::Scheduled(scheduled::Msg::Open)),
                 1 => Some(UiMessage::Record(record::Msg::Talk)),
                 5 => Some(UiMessage::Record(record::Msg::Start)),
                 6 => Some(UiMessage::OpenPollCreator(chat.id.clone())),
-                7 => Some(UiMessage::TogglePicker(Picker::Sticker)),
+                7 => Some(UiMessage::Composer(Msg::TogglePicker(Picker::Sticker))),
                 _ => None,
             }
             .filter(|_| on);
@@ -783,7 +790,7 @@ impl BeeperGuiApp {
         let input = text_editor(&self.pane().composer)
             .id(if self.pane().thread_root.is_some() { "thread-composer-input" } else { "composer-input" })
             .placeholder(placeholder)
-            .on_action(UiMessage::ComposerEdit)
+            .on_action(|a0| UiMessage::Composer(Msg::Edit(a0)))
             .key_binding(move |k| match k.key.as_ref() {
                 _ if !matches!(k.status, text_editor::Status::Focused { .. }) => None,
                 _ if undo.as_deref().zip(hotkey_key(&k.key)).is_some_and(|(keys, key)| {
@@ -791,19 +798,19 @@ impl BeeperGuiApp {
                     prefs::hotkey_has(keys, [m.control() || m.command(), m.shift(), m.alt()], &key)
                 }) =>
                 {
-                    Some(text_editor::Binding::Custom(UiMessage::UndoSend))
+                    Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::UndoSend)))
                 }
                 Key::Named(Named::Enter) => {
                     let m = k.modifiers;
                     let mods = [m.control() || m.command(), m.shift(), m.alt()];
                     match keys.iter().position(|keys| prefs::hotkey_has(keys, mods, "enter")) {
-                        Some(0) => Some(text_editor::Binding::Custom(UiMessage::SendAndArchive)),
-                        Some(1) => Some(text_editor::Binding::Custom(UiMessage::SubmitComposer)),
+                        Some(0) => Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::SendAndArchive))),
+                        Some(1) => Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Submit))),
                         _ => Some(text_editor::Binding::Enter),
                     }
                 }
                 Key::Character("`") if !k.modifiers.command() => {
-                    Some(text_editor::Binding::Custom(UiMessage::Format(format::CODE)))
+                    Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Format(format::CODE))))
                 }
                 Key::Named(key @ (Named::Backspace | Named::Delete))
                     if k.modifiers.jump() || k.modifiers.macos_command() =>
@@ -816,22 +823,28 @@ impl BeeperGuiApp {
                         (true, true) => Motion::Home,
                         (false, true) => Motion::End,
                     };
-                    Some(text_editor::Binding::Custom(UiMessage::DeleteTo(to, back)))
+                    Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::DeleteTo(to, back))))
                 }
                 Key::Named(Named::ArrowUp | Named::ArrowDown) if suggesting => None,
                 Key::Named(Named::Escape) => None,
                 Key::Character(_) if k.modifiers.command() => {
                     let i = match (k.key.to_latin(k.physical_key).map(|c| c.to_ascii_lowercase()), k.modifiers.shift())
                     {
-                        (Some('z'), redo) => return Some(text_editor::Binding::Custom(UiMessage::Undo(redo))),
-                        (Some('y'), false) => return Some(text_editor::Binding::Custom(UiMessage::Undo(true))),
-                        (Some('v'), false) => return Some(text_editor::Binding::Custom(UiMessage::Paste)),
+                        (Some('z'), redo) => {
+                            return Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Undo(redo))))
+                        }
+                        (Some('y'), false) => {
+                            return Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Undo(true))))
+                        }
+                        (Some('v'), false) => {
+                            return Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Paste)))
+                        }
                         (Some('b'), false) => 0,
                         (Some('i'), false) => 1,
                         (Some('x'), true) => 2,
                         _ => return text_editor::Binding::from_key_press(k),
                     };
-                    Some(text_editor::Binding::Custom(UiMessage::Format(i)))
+                    Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Format(i))))
                 }
                 _ => text_editor::Binding::from_key_press(k),
             })
@@ -878,7 +891,7 @@ impl BeeperGuiApp {
         let toggle = button(container(plus_icon).center(36))
             .padding(0)
             .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
-            .on_press(UiMessage::ToggleAttachMenu);
+            .on_press(UiMessage::Composer(Msg::ToggleAttachMenu));
         let unveiled = self.pane().show_attach_menu.then(|| {
             Row::with_children(hidden_actions(st).into_iter().map(&action_btn))
                 .spacing(2)
@@ -923,7 +936,7 @@ impl BeeperGuiApp {
                         false => img.into(),
                     }
                 };
-                removable(p, preview, UiMessage::DiscardAttachment(i))
+                removable(p, preview, UiMessage::Composer(Msg::DiscardAttachment(i)))
             });
             Row::with_children(items).spacing(8).align_y(iced::Bottom)
         });
@@ -933,14 +946,14 @@ impl BeeperGuiApp {
                 let edit = button(container(ic(icon::CHECK, 20.0).color(Color::WHITE)).center(36))
                     .padding(0)
                     .style(btn_style([p.accent; 3], [Color::WHITE; 3], 18.0))
-                    .on_press(UiMessage::SubmitComposer);
+                    .on_press(UiMessage::Composer(Msg::Submit));
                 let label = tr("Edit Message");
                 self.tip(edit.into(), label, vec!["⏎"], tooltip::Position::Top).into()
             }
             None => button(container(tinted(&SEND_ARROW, 20.0, Color::WHITE)).center(36))
                 .padding(0)
                 .style(btn_style([if ready { p.accent } else { p.rule }, p.accent, p.accent], [Color::WHITE; 3], 18.0))
-                .on_press(UiMessage::SubmitComposer)
+                .on_press(UiMessage::Composer(Msg::Submit))
                 .into(),
         };
         let text = self.pane().composer.text();
@@ -973,7 +986,7 @@ impl BeeperGuiApp {
                             .into()
                     }
                 };
-                Some(removable(p, card, UiMessage::RemoveLinkPreview(u.clone())))
+                Some(removable(p, card, UiMessage::Composer(Msg::RemoveLinkPreview(u.clone()))))
             });
         let links: Vec<El<'a>> = links.collect();
         let links = (!links.is_empty()).then(|| Column::with_children(links).spacing(4));
@@ -985,7 +998,7 @@ impl BeeperGuiApp {
             let label = txt(tr("Also send to chat"), 13.0).color(p.sub);
             let line = row![checkbox(p, pane.broadcast), label].spacing(4).align_y(Center);
             let toggle = mouse_area(container(line).padding(Padding::ZERO.left(1.0).bottom(6.0)));
-            toggle.on_press(UiMessage::SetBroadcast(!pane.broadcast)).into()
+            toggle.on_press(UiMessage::Thread(threads::Msg::SetBroadcast(!pane.broadcast))).into()
         });
         // Desktop's `messageInputExternal`: the quote, the attachments and the link previews inside the pill.
         let external: Vec<El<'a>> =
@@ -1004,9 +1017,11 @@ impl BeeperGuiApp {
                     semi(when, 11.0).color(p.accent),
                     tinted(&CHEVRON_DOWN, 14.0, p.accent)
                 ];
-                let details =
-                    button(details.spacing(4).align_y(Center)).bare(p.accent).on_press(UiMessage::OpenSendLater);
-                let close = icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::SendLater(None));
+                let details = button(details.spacing(4).align_y(Center))
+                    .bare(p.accent)
+                    .on_press(UiMessage::Scheduled(scheduled::Msg::Open));
+                let close =
+                    icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::Scheduled(scheduled::Msg::Set(None)));
                 let blue = if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) };
                 let banner = container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center))
                     .padding(2)
@@ -1026,5 +1041,438 @@ impl BeeperGuiApp {
             (None, None) => row![plus, pill, send],
         };
         column![extras, line.spacing(8).align_y(Center).padding(8)].into()
+    }
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    Changed(String),
+    Edit(text_editor::Action),
+    /// Ctrl+Backspace and Ctrl+Delete: delete the selection, or the text from the caret to the motion.
+    DeleteTo(text_editor::Motion, bool),
+    /// Mod-z undoes the last composer edit group; Shift-Mod-z and Mod-y redo it.
+    Undo(bool),
+    /// Toggles a `format::LABELS` button on the composer selection.
+    Format(usize),
+    LinkDialog(Option<(String, String)>),
+    SaveLink,
+    Submit,
+    SendAndArchive,
+    CancelMode,
+    StartReply(String),
+    StartEdit(String, String),
+    ToggleAttachMenu,
+    TogglePicker(Picker),
+    /// Desktop's `undoSend` in the open chat.
+    UndoSend,
+    /// Desktop's `sendQueuedMessages`: the sends of a chat, or the sends that are due.
+    SendQueued(Option<String>),
+    /// Chromium's composer context menu, on a misspelled word or not.
+    EditMenu(Option<std::ops::Range<usize>>),
+    MenuEdit(MenuEdit),
+    /// Ctrl+V and "Paste": Desktop's `paste` handler reads the clipboard.
+    Paste,
+    Pasted(Result<Clip, String>),
+    DiscardAttachment(usize),
+    /// Desktop's `openAttachmentPicker`.
+    PickFiles,
+    FilesPicked(Result<Vec<std::path::PathBuf>, String>),
+    /// The files to attach, or the toast text of each file that did not load.
+    FilesLoaded(Vec<Result<PendingMedia, String>>),
+    /// A file drag enters (true) or leaves a window.
+    FileHover(window::Id, bool),
+    FileDropped(window::Id, std::path::PathBuf),
+    LinkPreviewLoaded(String, Result<Option<beeper_core::cloud::PagePreview>, String>),
+    RemoveLinkPreview(String),
+    /// Picks a row of the composer autocomplete.
+    PickSuggestion(usize),
+    /// The Cut (true) and Copy items of the Edit menu, on the composer.
+    Clip(bool),
+    /// Desktop's type-to-focus: the composer of the pane takes the text at its end.
+    Type(String),
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn composer(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::EditMenu(word) => {
+                let text = self.pane.composer.text();
+                if let Some(r) = &word {
+                    self.pane.composer = format::content(&text, r.clone());
+                }
+                let word = word.map(|r| (r.clone(), spell::suggest(&text[r])));
+                self.pane.edit_menu = Some((self.cursor.get(), word));
+            }
+            Msg::MenuEdit(edit) => {
+                let (_, word) = self.pane.edit_menu.take().expect("the edit menu is open");
+                let old = self.pane.composer.text();
+                let sel = format::selection(&self.pane.composer).map_or("", |r| &old[r]).to_owned();
+                let focus = operation::focus("composer-input");
+                return match edit {
+                    MenuEdit::Replace(fix) => {
+                        let (r, _) = word.expect("a suggestion has a word");
+                        let text = format!("{}{fix}{}", &old[..r.start], &old[r.end..]);
+                        self.pane.composer = format::content(&text, r.start + fix.len()..r.start + fix.len());
+                        Task::batch([self.composer_changed(old), focus])
+                    }
+                    MenuEdit::Learn => match spell::learn(&old[word.expect("Learn Spelling has a word").0]) {
+                        Ok(()) => focus,
+                        Err(e) => {
+                            self.status_banner = e.to_string();
+                            focus
+                        }
+                    },
+                    MenuEdit::Copy => Task::batch([iced::clipboard::write(sel), focus]),
+                    MenuEdit::Cut => {
+                        self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Delete));
+                        Task::batch([iced::clipboard::write(sel), self.composer_changed(old), focus])
+                    }
+                    MenuEdit::Paste => Task::batch([self.update(UiMessage::Composer(Msg::Paste)), focus]),
+                };
+            }
+            Msg::Edit(action) if !action.is_edit() => {
+                self.pane.emoticon = None;
+                self.pane.composer.perform(action);
+            }
+            Msg::Edit(action) => {
+                use text_editor::{Action, Edit};
+                let old = self.pane.composer.text();
+                match (action, self.pane.emoticon.take().filter(|(after, ..)| *after == old)) {
+                    (Action::Edit(Edit::Backspace), Some((_, typed, at))) => {
+                        self.pane.composer = format::content(&typed, at..at);
+                    }
+                    (action, _) => {
+                        let typed = matches!(action, Action::Edit(Edit::Insert(_)));
+                        self.pane.composer.perform(action);
+                        let text = self.pane.composer.text();
+                        let at = format::offset(&text, self.pane.composer.cursor().position);
+                        let rules = typed && !self.store.read().settings.on("keepEmoticons");
+                        if let Some((new, caret)) = rules.then(|| emoji::replace_emoticon(&text, at)).flatten() {
+                            self.pane.composer = format::content(&new, caret..caret);
+                            self.pane.emoticon = Some((new, text, at));
+                        }
+                    }
+                }
+                return self.composer_changed(old);
+            }
+            Msg::DeleteTo(to, back) => {
+                if self.pane.composer.selection().is_none() {
+                    self.pane.composer.perform(text_editor::Action::Select(to));
+                }
+                let edit = if back { text_editor::Edit::Backspace } else { text_editor::Edit::Delete };
+                return self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(edit))));
+            }
+            Msg::Undo(false) if let Some(undo) = self.shown_undo() => {
+                return self.update(UiMessage::Toast(toasts::Msg::Action(None, Box::new(undo))));
+            }
+            Msg::Undo(false) if self.queued_here() => return self.update(UiMessage::Composer(Msg::UndoSend)),
+            Msg::Undo(true) if self.queued_here() => {
+                return self.update(UiMessage::Composer(Msg::SendQueued(self.pane.selected_chat_id.clone())));
+            }
+            Msg::Undo(redo) => {
+                let h = &mut self.pane.history;
+                let (from, to) = if redo { (&mut h.redo, &mut h.undo) } else { (&mut h.undo, &mut h.redo) };
+                let Some(text) = from.pop() else { return Task::none() };
+                let now = self.pane.composer.text();
+                let at = format::diff(&text, &now).1;
+                to.push(now);
+                h.last = None;
+                self.pane.emoticon = None;
+                self.pane.composer = format::content(&text, at..at);
+                return self.composer_effects();
+            }
+            Msg::Changed(v) => {
+                let old = self.pane.composer.text();
+                self.pane.composer = composer_with(&v);
+                return self.composer_changed(old);
+            }
+            Msg::Format(format::CODE) if format::selection(&self.pane.composer).is_none() => {
+                let insert = text_editor::Action::Edit(text_editor::Edit::Insert('`'));
+                return self.update(UiMessage::Composer(Msg::Edit(insert)));
+            }
+            Msg::Format(i) => {
+                let old = self.pane.composer.text();
+                let caret = format::offset(&old, self.pane.composer.cursor().position);
+                let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
+                if i == format::LINK && !format::active(i, &old, &r) {
+                    self.pane.link_dialog = Some((String::new(), old[r].to_owned()));
+                    return operation::focus("link-url");
+                }
+                let (text, r) = format::toggle(i, &old, r);
+                self.pane.composer = format::content(&text, r);
+                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
+            }
+            Msg::LinkDialog(d) => {
+                let closed = d.is_none();
+                self.pane.link_dialog = d;
+                if closed {
+                    return operation::focus("composer-input");
+                }
+            }
+            Msg::SaveLink => {
+                let (url, label) = self.pane.link_dialog.take().expect("the link dialog is open");
+                let old = self.pane.composer.text();
+                let caret = format::offset(&old, self.pane.composer.cursor().position);
+                let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
+                let (text, r) = format::link(&old, r, url.trim(), label.trim());
+                self.pane.composer = format::content(&text, r);
+                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
+            }
+            Msg::Submit if self.suggestions(&self.store.read()).is_some() => {
+                return self.update(UiMessage::Composer(Msg::PickSuggestion(self.pane.suggest)));
+            }
+            Msg::Submit if self.recorder.is_some() => return self.send_take(),
+            Msg::Submit if !self.can_compose() => {}
+            Msg::Submit => {
+                self.submit_composer(false);
+                return self.typing(false);
+            }
+            Msg::SendAndArchive => {
+                let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");
+                let st = self.store.read();
+                let at = self.list_ids(&st).iter().position(|c| *c == cid);
+                drop(st);
+                let draft = !self.pane.composer.text().trim().is_empty() || !self.pane.attachments.is_empty();
+                self.submit_composer(true);
+                let stop = self.typing(false);
+                let list = self.list_ids(&self.store.read());
+                if let Some(at) = at.filter(|_| draft && !list.contains(&cid)) {
+                    return stop.chain(self.after_action("afterArchive", &list, at, true));
+                }
+                return stop;
+            }
+            Msg::PickSuggestion(i) => {
+                // The second click of a double click hits the list that the first pick closed.
+                let Some((at, picks)) = self.suggestions(&self.store.read()) else { return Task::none() };
+                let mut text = self.pane.composer.text();
+                let caret = format::offset(&text, self.pane.composer.cursor().position);
+                let pick = match &picks[i.min(picks.len() - 1)] {
+                    Suggestion::Emoji(c, _) => format!("{c} "),
+                    Suggestion::Mention(label, id, _) => {
+                        self.pane.mentions.push((label.clone(), id.clone()));
+                        format!("@{label} ")
+                    }
+                };
+                text.replace_range(at..caret, &pick);
+                self.pane.composer = format::content(&text, at + pick.len()..at + pick.len());
+                return operation::focus("composer-input");
+            }
+            Msg::CancelMode if self.pane.editing_message_id.is_some() => self.pane.end_edit(),
+            Msg::CancelMode => self.pane.reply_to_message_id = None,
+            Msg::StartReply(mid) => {
+                if self.pane.editing_message_id.is_some() {
+                    self.pane.end_edit();
+                }
+                self.pane.reply_to_message_id = Some(mid);
+                return operation::focus("composer-input");
+            }
+            Msg::StartEdit(mid, old_txt) => {
+                // The mention pills of the message come back from its `matrix.to` links.
+                let st = self.store.read();
+                let html = st.loaded(&mid).and_then(|m| m.html.clone());
+                drop(st);
+                // Desktop scrolls the edited message into view (`scrollIntoView` of the editing target).
+                self.pane.timeline.reveal(vlist::key(&mid));
+                let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), false);
+                self.pane.start_edit(mid, &old_txt, html.map_or(Vec::new(), |h| html_pills(&h)));
+                return Task::batch([operation::focus("composer-input"), shown]);
+            }
+            Msg::Type(text) => {
+                let open = self.can_compose();
+                let quiet = self.confirm.is_none()
+                    && !self.show_command_palette
+                    && self.forward.is_none()
+                    && self.creating_chat.is_none()
+                    && self.carousel.is_none()
+                    && self.recorder.is_none();
+                if !(open && quiet) {
+                    return Task::none();
+                }
+                let old = self.pane.composer.text();
+                self.pane.composer.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+                for c in text.chars() {
+                    self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Insert(c)));
+                }
+                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
+            }
+            Msg::Paste => return Task::perform(clipboard_paste(), |r| UiMessage::Composer(Msg::Pasted(r))),
+            // Desktop's `paste` handler: copied files go to the attachments, and a text goes into the composer.
+            Msg::Pasted(r) => match r {
+                Ok(Clip::Files(paths)) => return self.update(UiMessage::Composer(Msg::FilesPicked(Ok(paths)))),
+                Ok(Clip::Image((png, size))) => self.attach_files(vec![Ok(PendingMedia {
+                    name: "image.png".into(),
+                    mime: "image/png".into(),
+                    is_gif: false,
+                    size,
+                    frames: vec![(image::Handle::from_bytes(png.clone()), 0)],
+                    bytes: png,
+                    duration: None,
+                    sticker: None,
+                })]),
+                Ok(Clip::Text) => {
+                    let id = if self.pane.thread_root.is_some() { "thread-composer-input" } else { "composer-input" };
+                    let paste = iced::clipboard::read().map(|t| match t {
+                        Some(t) => UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(
+                            t.into(),
+                        )))),
+                        None => UiMessage::Noop,
+                    });
+                    return Task::batch([paste, operation::focus(id)]);
+                }
+                Err(e) => self.status_banner = e,
+            },
+            Msg::DiscardAttachment(i) => drop(self.pane.attachments.remove(i)),
+            Msg::PickFiles if self.pane.editing_message_id.is_some() => {
+                self.status_banner = tr("Attachments can't be added while editing a message").into();
+            }
+            Msg::PickFiles => {
+                let title = tr("Open").to_string();
+                return Task::perform(portal::open_files(portal::PORTAL.into(), title, portal::Pick::Files), |a0| {
+                    UiMessage::Composer(Msg::FilesPicked(a0))
+                });
+            }
+            Msg::FilesPicked(r) => match r {
+                Ok(paths) => {
+                    let st = self.store.read();
+                    let chat = &st.chats[st
+                        .resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat"))
+                        .expect("chat exists")];
+                    let (rules, resizes) = (chat.file.clone(), chat.room_features);
+                    drop(st);
+                    // Desktop's `attachFiles` logs the error of a file and shows "Couldn't attach %s". A file that
+                    // `TBe` takes goes through the codec check of `_Be` here, away from the window.
+                    let load = move || {
+                        let load = |p: &std::path::PathBuf| {
+                            let name = p.file_name().map_or(p.display().to_string(), |n| n.to_string_lossy().into());
+                            let f = portal::load_file(p).map_err(|e| {
+                                eprintln!("attachFiles: failed to attach {name}: {e}");
+                                format!("Couldn't attach {name}")
+                            })?;
+                            match portal::check(&f, &rules, resizes) {
+                                Ok(()) => portal::decodable(&f, p, &rules).map(|()| f),
+                                Err(_) => Ok(f),
+                            }
+                        };
+                        paths.iter().map(load).collect()
+                    };
+                    let load = async { tokio::task::spawn_blocking(load).await.expect("file load thread") };
+                    return Task::perform(load, |a0| UiMessage::Composer(Msg::FilesLoaded(a0)));
+                }
+                Err(e) => self.status_banner = e,
+            },
+            Msg::FilesLoaded(_) if self.pane.editing_message_id.is_some() => {
+                self.status_banner = tr("Attachments can't be added while editing a message").into();
+            }
+            Msg::FilesLoaded(files) => {
+                self.attach_files(files);
+                if self.drop_send {
+                    self.submit_composer(false);
+                }
+            }
+            Msg::FileHover(id, on) if Some(id) == self.main_window => {
+                self.dropping = on && self.pane.selected_chat_id.is_some();
+                self.drop_send &= !on;
+            }
+            Msg::FileDropped(id, path) if Some(id) == self.main_window && self.pane.selected_chat_id.is_some() => {
+                self.dropping = false;
+                self.drop_send |= self.mods.shift();
+                return self.update(UiMessage::Composer(Msg::FilesPicked(Ok(vec![path]))));
+            }
+            Msg::FileHover(..) | Msg::FileDropped(..) => {}
+            Msg::LinkPreviewLoaded(url, r) => {
+                let entry =
+                    self.pane.composer_links.iter_mut().find(|(u, s)| *u == url && matches!(s, LinkState::Loading));
+                if let Some((_, s)) = entry {
+                    *s = match r {
+                        Ok(Some((mut v, bytes))) => {
+                            let image = bytes.and_then(|b| {
+                                let format = ::image::guess_format(&b).ok()?;
+                                let reader = ::image::ImageReader::with_format(std::io::Cursor::new(&b), format);
+                                let (w, h) = reader.into_dimensions().ok()?;
+                                v["og:image:width"] = w.into();
+                                v["og:image:height"] = h.into();
+                                v["og:image:type"] = format.to_mime_type().into();
+                                Some((b.clone(), image::Handle::from_bytes(b)))
+                            });
+                            LinkState::Loaded(v, image)
+                        }
+                        Ok(None) => LinkState::Discarded,
+                        Err(e) => {
+                            eprintln!("link preview failed: {e}");
+                            LinkState::Discarded
+                        }
+                    };
+                }
+            }
+            Msg::RemoveLinkPreview(url) => {
+                self.pane
+                    .composer_links
+                    .iter_mut()
+                    .filter(|(u, _)| *u == url)
+                    .for_each(|(_, s)| *s = LinkState::Discarded);
+            }
+            Msg::UndoSend => {
+                let open = self.pane.selected_chat_id.as_ref();
+                let Some(i) = self.queued.iter().position(|q| Some(&q.chat) == open) else { return Task::none() };
+                let q = self.queued.remove(i);
+                let mut st = self.store.write();
+                for (id, _) in &q.sends {
+                    st.remove_message(&q.chat, id).expect("a queued message is in its chat");
+                }
+                drop(st);
+                self.pane.composer = composer_with(&q.text);
+                (self.pane.reply_to_message_id, self.pane.attachments) = (q.reply_to, q.files);
+                return Task::batch([self.composer_effects(), operation::focus("composer-input")]);
+            }
+            Msg::SendQueued(chat) => {
+                let now = now_unix_millis();
+                let (send, keep) = std::mem::take(&mut self.queued)
+                    .into_iter()
+                    .partition(|q| chat.as_ref().map_or(q.due <= now, |c| q.chat == *c));
+                self.queued = keep;
+                let mut st = self.store.write();
+                for q in send.into_iter().flat_map(|q: Queued| q.sends.into_iter().map(move |s| (q.chat.clone(), s.1)))
+                {
+                    st.queue(&q.0, q.1);
+                }
+            }
+            Msg::TogglePicker(kind) => {
+                let open = self.pane.picker != Some(kind) && self.supports(kind);
+                self.pane.picker = open.then_some(kind);
+                if open && kind == Picker::Sticker {
+                    return self.load_sticker_packs();
+                }
+                if open && kind == Picker::Gif {
+                    self.pane.show_attach_menu = true;
+                    let focus = operation::focus("gif-search-input");
+                    if self.gifs.is_empty() && !self.gif_loading {
+                        self.gif_loading = true;
+                        self.gif_error = None;
+                        return Task::batch([
+                            focus,
+                            self.update(UiMessage::Gifs(gifs::Msg::Search(self.gif_query.clone()))),
+                        ]);
+                    }
+                    return focus;
+                }
+            }
+            Msg::ToggleAttachMenu => {
+                self.pane.show_attach_menu = !self.pane.show_attach_menu;
+                if !self.pane.show_attach_menu {
+                    self.pane.picker = None;
+                }
+            }
+            Msg::Clip(cut) => {
+                let Some(text) = self.pane.composer.selection() else { return Task::none() };
+                let copy = iced::clipboard::write(text);
+                if !cut {
+                    return copy;
+                }
+                let delete =
+                    self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Delete))));
+                return Task::batch([copy, delete]);
+            }
+        }
+        self.settle()
     }
 }

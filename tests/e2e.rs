@@ -468,14 +468,14 @@ async fn lifecycle() {
     let none = beeper_core::matrix::E2eeSetup { cross_signing: true, verified: true, devices: Vec::new() };
     let _ = gui.update(UiMessage::Login(LoginMsg::E2ee(Ok(none))));
     assert_eq!(gui.login.screen, Screen::Accounts, "an imported session shows the chat accounts");
-    let _ = gui.update(UiMessage::CloudAccounts(Err("offline".into())));
+    let _ = gui.update(UiMessage::Accounts(beeper_ui::accounts::Msg::Cloud(Err("offline".into()))));
     assert_eq!(gui.status_banner, "Could not load your chat accounts: offline");
     let bridges = json!({ "signal": { "bridgeState": { "bridgeType": "signal" }, "remoteState": { "s1": { "state_event": "CONNECTED",
         "remote_profile": { "username": "alex", "phone": "+1 415-555-0142", "avatar": "mxc://beeper.com/a" } } } } });
     let cloud = beeper_core::cloud::cloud_accounts(&bridges).expect("parse the cloud bridges");
     assert_eq!(cloud[0].display_text().as_deref(), Some("+1 415-555-0142"), "the phone comes before the username");
     let profile = Profile { email: Some("zola@example.com".into()), ..profile };
-    let _ = gui.update(UiMessage::CloudAccounts(Ok((profile, cloud))));
+    let _ = gui.update(UiMessage::Accounts(beeper_ui::accounts::Msg::Cloud(Ok((profile, cloud)))));
     assert_eq!(shared.read().accounts.iter().map(|a| a.account_id.as_str()).collect::<Vec<_>>(), ["signal"]);
     for bad in [
         json!([]),
@@ -1034,9 +1034,9 @@ async fn lifecycle() {
     );
     assert_eq!(login.pane.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
     assert!(simulator(login.view_main()).find("Note").is_ok());
-    let _ = login.update(UiMessage::ShareAnalytics);
+    let _ = login.update(UiMessage::Settings(beeper_ui::settings::Msg::ShareAnalytics));
     assert!(!login_store.read().whoami.analytics_disabled, "Share Analytics turns on at once");
-    let _ = login.update(UiMessage::AnalyticsSaved(true, Err("offline".into())));
+    let _ = login.update(UiMessage::Settings(beeper_ui::settings::Msg::AnalyticsSaved(true, Err("offline".into()))));
     assert!(login_store.read().whoami.analytics_disabled, "a failed save turns Share Analytics back off");
     assert_eq!(login.status_banner, "Something went wrong: offline");
     drop((login, login_store));
@@ -1229,20 +1229,33 @@ async fn lifecycle() {
         sim.simulate([enter(Modifiers::SHIFT), enter(Modifiers::empty())]);
         let keys: Vec<_> = sim
             .into_messages()
-            .filter(|m| matches!(m, UiMessage::ComposerEdit(Action::Edit(_)) | UiMessage::SubmitComposer))
+            .filter(|m| {
+                matches!(
+                    m,
+                    UiMessage::Composer(beeper_ui::composer::Msg::Edit(Action::Edit(_)))
+                        | UiMessage::Composer(beeper_ui::composer::Msg::Submit)
+                )
+            })
             .collect();
         assert!(
-            matches!(keys[..], [UiMessage::ComposerEdit(Action::Edit(Edit::Enter)), UiMessage::SubmitComposer]),
+            matches!(
+                keys[..],
+                [
+                    UiMessage::Composer(beeper_ui::composer::Msg::Edit(Action::Edit(Edit::Enter))),
+                    UiMessage::Composer(beeper_ui::composer::Msg::Submit)
+                ]
+            ),
             "Shift Enter adds a line and Enter sends"
         );
     }
-    let _ = gui.update(UiMessage::ComposerChanged("make it bold".into()));
-    let _ = gui.update(UiMessage::ComposerEdit(iced::widget::text_editor::Action::SelectAll));
-    let _ = gui.update(UiMessage::Format(0));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed("make it bold".into())));
+    let _ =
+        gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Edit(iced::widget::text_editor::Action::SelectAll)));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Format(0)));
     assert_eq!(gui.pane.composer.text(), "**make it bold**", "the formatting menu wraps the selection");
-    let _ = gui.update(UiMessage::Format(0));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Format(0)));
     assert_eq!(gui.pane.composer.text(), "make it bold", "pressing it again removes the marks");
-    let _ = gui.update(UiMessage::ComposerChanged(String::new()));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed(String::new())));
     {
         let mut sim = simulator(gui.view_main());
         sim.click(iced::widget::Id::new("rail-requests")).expect("requests rail button");
@@ -1252,25 +1265,25 @@ async fn lifecycle() {
         assert_eq!(gui.active_tab, InboxTab::Requests);
     }
 
-    let _ = gui.update(UiMessage::SelectTab(InboxTab::AllChats));
-    let _ = gui.update(UiMessage::FilterButton);
-    let _ = gui.update(UiMessage::ToggleFilterMenu);
+    let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::SelectTab(InboxTab::AllChats)));
+    let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::FilterButton));
+    let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleFilterMenu));
     {
         let mut sim = simulator(gui.view_main());
         for label in ["Unread", "Ctrl Shift Y", "Low Priority"] {
             assert!(sim.find(label).is_ok(), "filter menu shows {label}");
         }
     }
-    let _ = gui.update(UiMessage::PickFilter(1));
+    let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::PickFilter(1)));
     assert!(gui.filters == 0 && !gui.show_filter_menu, "picking the only active filter clears it");
-    let _ = gui.update(UiMessage::ToggleCommandPalette);
+    let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
     {
         let mut sim = simulator(gui.view_main());
         for label in ["Commands", "Accounts", "Message type", "Recent chats"] {
             assert!(sim.find(label).is_ok(), "search modal shows {label}");
         }
     }
-    let _ = gui.update(UiMessage::NewChat);
+    let _ = gui.update(UiMessage::NewChat(beeper_ui::new_chat::Msg::Open));
     {
         let mut sim = simulator(gui.view_main());
         for label in ["New Chat", "All accounts", "New Group", "Join a Matrix room", "In your contacts"] {
@@ -1278,17 +1291,19 @@ async fn lifecycle() {
         }
     }
     let prev = gui.pane.selected_chat_id.clone().expect("a chat is selected");
-    let _ = gui.update(UiMessage::NewChat);
+    let _ = gui.update(UiMessage::NewChat(beeper_ui::new_chat::Msg::Open));
     let ids: Vec<u32> = gui.new_chats.iter().map(|d| d.id).collect();
     assert_eq!((ids, gui.creating_chat), (vec![1, 0], Some(1)), "compose adds a new chat");
-    let _ = gui.update(UiMessage::DeleteNewChat(1));
+    let _ = gui.update(UiMessage::NewChat(beeper_ui::new_chat::Msg::Delete(1)));
     assert_eq!(gui.creating_chat, Some(0), "deleting a new chat selects the next row");
-    let _ = gui.update(UiMessage::DeleteNewChat(0));
+    let _ = gui.update(UiMessage::NewChat(beeper_ui::new_chat::Msg::Delete(0)));
     assert!(gui.new_chats.is_empty() && gui.creating_chat.is_none() && gui.pane.selected_chat_id.is_some());
     let _ = gui.update(UiMessage::SelectChat(prev));
-    let _ = gui.update(UiMessage::ComposerChanged("Hello from **Iced** Simulator E2E!".to_string()));
-    let _ = gui.update(UiMessage::SubmitComposer);
-    let _ = gui.update(UiMessage::OpenSettings(SettingsTab::Appearance));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed(
+        "Hello from **Iced** Simulator E2E!".to_string(),
+    )));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Submit));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::Open(SettingsTab::Appearance)));
     assert!(gui.settings_window.is_some());
     {
         let mut sim = simulator(gui.view_settings());
@@ -1299,27 +1314,27 @@ async fn lifecycle() {
         }
         assert!(["Light", "Dark", "System"].iter().all(|t| sim.find(*t).is_ok()), "the theme cards are shown");
     }
-    let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::Dark));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTheme(ThemeChoice::Dark)));
     assert!(gui.dark);
     {
         let st = store.read();
         assert!(st.settings.on("showMessagePreviews") && st.settings.pref("timeFormat") == 0);
     }
-    let _ = gui.update(UiMessage::SetPref("timeFormat", 1));
-    let _ = gui.update(UiMessage::SetPref("showMessagePreviews", 0));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("timeFormat", 1)));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("showMessagePreviews", 0)));
     for (step, zoom) in [(1, 1.1), (1, 1.2), (-1, 1.1), (0, 1.0), (-1, 0.9)] {
-        let _ = gui.update(UiMessage::Zoom(step));
+        let _ = gui.update(UiMessage::Zoom(beeper_ui::zoom::Msg::Step(step)));
         assert_eq!(gui.zoom, zoom);
     }
     for _ in 0..9 {
-        let _ = gui.update(UiMessage::Zoom(-1));
+        let _ = gui.update(UiMessage::Zoom(beeper_ui::zoom::Msg::Step(-1)));
     }
     assert_eq!(gui.zoom, 0.4, "Desktop zooms out to 40%");
-    let _ = gui.update(UiMessage::ZoomDrag(4.0));
+    let _ = gui.update(UiMessage::Zoom(beeper_ui::zoom::Msg::Drag(4.0)));
     assert_eq!(gui.zoom, 0.4, "the slider zooms on release");
-    let _ = gui.update(UiMessage::ZoomRelease);
+    let _ = gui.update(UiMessage::Zoom(beeper_ui::zoom::Msg::Release));
     assert_eq!(gui.zoom, 1.4);
-    let _ = gui.update(UiMessage::Zoom(0));
+    let _ = gui.update(UiMessage::Zoom(beeper_ui::zoom::Msg::Step(0)));
     {
         let st = store.read();
         assert!(!st.settings.on("showMessagePreviews") && st.settings.pref("timeFormat") == 1);
@@ -1332,7 +1347,7 @@ async fn lifecycle() {
         }
     }
     for page in [SettingsTab::General, SettingsTab::Notifications] {
-        let _ = gui.update(UiMessage::SelectSettingsTab(page));
+        let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTab(page)));
         let mut sim = simulator(gui.view_settings());
         for label in
             ["App language", "Time Format", "Share Analytics", "Delay notifications for", "Sound effect volume"]
@@ -1345,7 +1360,7 @@ async fn lifecycle() {
             assert_eq!(sim.find(label).is_ok(), tab == page, "{label} is on {tab:?}");
         }
     }
-    let _ = gui.update(UiMessage::SelectSettingsTab(SettingsTab::Accounts));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTab(SettingsTab::Accounts)));
     {
         let n = beeper_ui::login::FREE_ACCOUNTS - store.read().bridge_accounts.len();
         let mut sim = simulator(gui.view_settings());
@@ -1355,26 +1370,26 @@ async fn lifecycle() {
         }
         assert!(sim.find("Facebook").is_err(), "the network grid starts hidden");
         let _ = sim.click("Add an Account");
-        assert!(matches!(sim.into_messages().last(), Some(UiMessage::ToggleAddAccount)));
+        assert!(matches!(sim.into_messages().last(), Some(UiMessage::Accounts(beeper_ui::accounts::Msg::ToggleAdd))));
     }
-    let _ = gui.update(UiMessage::ToggleAddAccount);
+    let _ = gui.update(UiMessage::Accounts(beeper_ui::accounts::Msg::ToggleAdd));
     assert!(simulator(gui.view_settings()).find("Facebook").is_ok(), "Add an Account shows the network grid");
-    let _ = gui.update(UiMessage::SetPref("timeFormat", 0));
-    let _ = gui.update(UiMessage::SetPref("showMessagePreviews", 1));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("timeFormat", 0)));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("showMessagePreviews", 1)));
     let ctrl_k = || UiMessage::KeyPressed(iced::keyboard::Key::Character("k".into()), iced::keyboard::Modifiers::CTRL);
-    let _ = gui.update(UiMessage::ToggleHotkey("Search"));
+    let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::Toggle("Search")));
     let _ = gui.update(ctrl_k());
     assert!(!gui.show_command_palette, "a disabled hotkey does nothing");
-    let _ = gui.update(UiMessage::RevertHotkeys);
+    let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::RevertAll));
     let _ = gui.update(ctrl_k());
     assert!(gui.show_command_palette, "Revert all enables the hotkey again");
-    let _ = gui.update(UiMessage::ToggleCommandPalette);
-    let _ = gui.update(UiMessage::SelectSettingsTab(SettingsTab::Hotkeys));
+    let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTab(SettingsTab::Hotkeys)));
     assert!(simulator(gui.view_settings()).find("Ctrl Shift Alt R").is_ok(), "Reload App shows Desktop's keys");
     assert!(simulator(gui.view_settings()).find("Record Shortcut").is_err());
-    let _ = gui.update(UiMessage::ToggleHotkey("Filter: DMs"));
+    let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::Toggle("Filter: DMs")));
     assert!(simulator(gui.view_settings()).find("Record Shortcut").is_ok(), "an enabled hotkey without keys");
-    let _ = gui.update(UiMessage::RevertHotkeys);
+    let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::RevertAll));
     let mods = iced::keyboard::Modifiers::CTRL | iced::keyboard::Modifiers::ALT;
     let rail = |d: &str| UiMessage::KeyPressed(iced::keyboard::Key::Character(d.into()), mods);
     let _ = gui.update(rail("2"));
@@ -1414,17 +1429,17 @@ async fn lifecycle() {
         let _ = gui.update(UiMessage::KeyPressed(Key::Character("j".into()), Modifiers::CTRL));
         assert!(gui.show_command_palette && gui.cmd_bar_commands_mode, "Ctrl J opens the commands");
         for title in ["Archive all chats", "Toggle sidebar", "Media viewer", "Report a problem"] {
-            let _ = gui.update(UiMessage::CommandQueryChanged(title.to_lowercase()));
+            let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::Query(title.to_lowercase())));
             let mut sim = simulator(gui.view_main());
             assert!(sim.find(title).is_ok(), "the commands have {title}");
             assert!(title != "Media viewer" || sim.find("Window").is_ok(), "the commands have their category");
         }
-        let _ = gui.update(UiMessage::CommandQueryChanged("toggle sidebar".into()));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::Query("toggle sidebar".into())));
         let _ = gui.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
         assert!(gui.sidebar_hidden && !gui.show_command_palette, "Enter runs the best match and closes the bar");
         let _ = gui.update(UiMessage::RunHotkey("Toggle Sidebar"));
         let _ = gui.update(UiMessage::KeyPressed(Key::Character("j".into()), Modifiers::CTRL));
-        let _ = gui.update(UiMessage::CommandQueryChanged("magnify".into()));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::Query("magnify".into())));
         let _ = gui.update(UiMessage::KeyPressed(Key::Named(Named::ArrowDown), Modifiers::empty()));
         assert_eq!(gui.cmd_index, 1, "Down highlights the next command");
         let _ = gui.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
@@ -1432,10 +1447,10 @@ async fn lifecycle() {
         let _ = gui.update(UiMessage::RunHotkey("Reset Zoom"));
         let _ = gui.update(UiMessage::KeyPressed(Key::Character("/".into()), Modifiers::CTRL));
         assert!(simulator(gui.view_main()).find("Unselect Chat / Select First Chat").is_ok(), "Ctrl / lists the keys");
-        let _ = gui.update(UiMessage::HotkeysModal(Some("zoom".into())));
+        let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::Modal(Some("zoom".into()))));
         assert!(simulator(gui.view_main()).find("Reset Zoom").is_ok());
         assert!(simulator(gui.view_main()).find("Command Bar").is_err(), "the search filters the list");
-        let _ = gui.update(UiMessage::HotkeysModal(Some("qqq".into())));
+        let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::Modal(Some("qqq".into()))));
         assert!(simulator(gui.view_main()).find("No results").is_ok());
         let _ = gui.update(UiMessage::CloseModals);
         assert!(gui.hotkeys_modal.is_none(), "Escape closes the list");
@@ -1444,15 +1459,15 @@ async fn lifecycle() {
         let hidden = std::fs::read_to_string(store.read().config.data_dir.join("sidebar-hidden")).unwrap();
         assert_eq!(hidden, "true", "the hidden sidebar stays hidden after a restart");
         let width = gui.sidebar_width;
-        let _ = gui.update(UiMessage::DragMoved(iced::Point::new(200.0, 0.0)));
+        let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::ResizeMoved(iced::Point::new(200.0, 0.0))));
         assert!(gui.sidebar_hidden && gui.sidebar_width == width, "a drag below Desktop's minimum keeps it hidden");
-        let _ = gui.update(UiMessage::DragMoved(iced::Point::new(400.0, 0.0)));
+        let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::ResizeMoved(iced::Point::new(400.0, 0.0))));
         assert!(!gui.sidebar_hidden && gui.sidebar_width == 330.0, "a wider drag shows it again");
         let main = iced::window::Id::unique();
         gui.main_window = Some(main);
-        let _ = gui.update(UiMessage::WindowResized(main, iced::Size::new(500.0, 800.0)));
+        let _ = gui.update(UiMessage::Window(beeper_ui::windows::Msg::Resized(main, iced::Size::new(500.0, 800.0))));
         assert!(gui.sidebar_hidden, "a window narrower than 600 hides the sidebar");
-        let _ = gui.update(UiMessage::WindowResized(main, iced::Size::new(1264.0, 893.0)));
+        let _ = gui.update(UiMessage::Window(beeper_ui::windows::Msg::Resized(main, iced::Size::new(1264.0, 893.0))));
         assert!(!gui.sidebar_hidden, "a wider window shows it again");
         gui.main_window = None;
     }
@@ -1467,15 +1482,15 @@ async fn lifecycle() {
         let (signal, whatsapp) = (account("signal"), account("whatsapp"));
         st.network_spaces.extend([space("g1", signal, "Guild"), space("c1", whatsapp, "Community")]);
     }
-    let _ = gui.update(UiMessage::SelectAccount(Some("c1".into())));
+    let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::Select(Some("c1".into()))));
     assert!(simulator(gui.view_main()).find("Community").is_err(), "WhatsApp Communities are not spaces by default");
-    let _ = gui.update(UiMessage::SetPref("whatsappCommunities", 1));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("whatsappCommunities", 1)));
     assert!(
         simulator(gui.view_main()).find("Community (WhatsApp)").is_ok(),
         "the setting shows WhatsApp Communities as spaces"
     );
-    let _ = gui.update(UiMessage::SetPref("whatsappCommunities", 0));
-    let _ = gui.update(UiMessage::SelectAccount(Some("g1".into())));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("whatsappCommunities", 0)));
+    let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::Select(Some("g1".into()))));
     {
         let mut sim = simulator(gui.view_main());
         assert!(sim.find("Guild (Signal)").is_ok(), "the header shows the server name and its network");
@@ -1494,7 +1509,7 @@ async fn lifecycle() {
         let cid = store.read().chats[0].id.clone();
         let was = store.read().chats[0].is_muted == Some(true);
         take_outbox(&mut store.write());
-        let _ = gui.update(UiMessage::ToggleFlag(cid.clone(), ChatFlag::Muted));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleFlag(cid.clone(), ChatFlag::Muted)));
         let mut st = store.write();
         assert_eq!(st.chats[0].is_muted, Some(!was), "the mute toggle changes the chat");
         let queued = matches!(take_outbox(&mut st).as_slice(), [(c, Outgoing::Flag(ChatFlag::Muted, on))] if *c == cid && *on != was);
@@ -1504,19 +1519,19 @@ async fn lifecycle() {
         assert!(st.outbox.is_empty());
         let read = st.chats[0].unread_count == 0 && st.chats[0].is_marked_unread != Some(true);
         drop(st);
-        let _ = gui.update(UiMessage::OpenChatMenu(cid.clone()));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::OpenMenu(cid.clone())));
         assert!(gui.chat_menu.as_ref().is_some_and(|(c, _)| *c == cid), "right-click opens the chat menu");
-        let _ = gui.update(UiMessage::ToggleRead(cid.clone()));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleRead(cid.clone())));
         assert!(gui.chat_menu.is_none(), "a menu action closes the menu");
         let c = store.read().chats[0].clone();
         assert_eq!(c.unread_count == 0 && c.is_marked_unread != Some(true), !read, "the read toggle flips the chat");
-        let _ = gui.update(UiMessage::OpenChatMenu(cid.clone()));
-        let _ = gui.update(UiMessage::ChatSub(Some(1)));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::OpenMenu(cid.clone())));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::ChatSub(Some(1))));
         assert!(simulator(gui.view_main()).find("In an Hour").is_ok(), "Remind Me opens the presets");
         let at = beeper_core::config::now_unix_millis() + 3_600_000;
         take_outbox(&mut store.write());
-        let _ = gui.update(UiMessage::SetReminder(cid.clone(), Some(at)));
-        let _ = gui.update(UiMessage::SetReminder(cid.clone(), None));
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Set(cid.clone(), Some(at))));
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Set(cid.clone(), None)));
         {
             let mut st = store.write();
             let sent: Vec<_> = take_outbox(&mut st)
@@ -1532,67 +1547,67 @@ async fn lifecycle() {
                 st.set_reminder(i, Some(ChatReminder { remind_at_ms: at, dismiss_on_incoming_message: true }));
             }
         }
-        let _ = gui.update(UiMessage::SelectTab(InboxTab::Reminders));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::SelectTab(InboxTab::Reminders)));
         let order = |gui: &BeeperGuiApp| {
             let st = store.read();
             gui.visible_chats(&st).iter().map(|c| c.reminder.as_ref().unwrap().remind_at_ms).collect::<Vec<_>>()
         };
         assert_eq!(order(&gui), [1, 2], "reminders come by least time remaining");
-        let _ = gui.update(UiMessage::ReminderMenu);
-        let _ = gui.update(UiMessage::OrderReminders(1));
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Menu));
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Order(1)));
         assert_eq!(order(&gui), [2, 1], "the display options change the order");
         assert_eq!(store.read().settings.reminders_order, 1);
-        let _ = gui.update(UiMessage::OrderReminders(0));
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Order(0)));
         let _ = gui.update(UiMessage::Ask(Some(1)));
         assert!(simulator(gui.view_main()).find("Dismiss All Reminders?").is_ok());
-        let _ = gui.update(UiMessage::DismissAllReminders);
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::DismissAll));
         assert!(order(&gui).is_empty() && gui.confirm.is_none(), "dismiss all clears every reminder");
-        let _ = gui.update(UiMessage::SelectTab(InboxTab::AllChats));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::SelectTab(InboxTab::AllChats)));
         {
             let mut st = store.write();
             st.chats[1].is_pinned = Some(false);
             assert!(st.set_chat_flag(1, ChatFlag::Archived, Some(true)));
             st.set_reminder(1, Some(ChatReminder { remind_at_ms: 1, dismiss_on_incoming_message: true }));
         }
-        let _ = gui.update(UiMessage::CheckReminders);
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Check));
         let other = store.read().chats[1].id.clone();
         assert_eq!(store.read().chats[1].is_archived, Some(false), "a due reminder unarchives the chat");
         assert!(simulator(gui.view_main()).find("Reminder").is_ok(), "the chat list shows the Reminder badge");
         gui.select_chat(&other);
         gui.select_chat(&cid);
         assert!(store.read().chats[1].reminder.is_none(), "leaving a reminded chat dismisses the reminder");
-        let _ = gui.update(UiMessage::SearchRoom(cid.clone()));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::SearchRoom(cid.clone())));
         assert!(gui.show_command_palette && gui.search_room.as_deref() == Some(cid.as_str()));
-        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         assert!(gui.show_command_palette && gui.search_room.is_none(), "Ctrl K widens a chat search");
         let mid = store.read().messages.iter().find(|m| m.chat_id == cid).expect("chat has messages").id.clone();
-        let _ = gui.update(UiMessage::JumpTo(cid.clone(), mid.clone()));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::JumpTo(cid.clone(), mid.clone())));
         assert!(!gui.show_command_palette && gui.pane.selected_chat_id.as_deref() == Some(cid.as_str()));
         assert!(gui.flash.as_ref().is_some_and(|(id, _)| *id == mid), "a message hit flashes the message");
-        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         let picks = [SearchPick::Sent(true), SearchPick::Sent(false), SearchPick::Period(2), SearchPick::Period(2)];
         for pick in picks.into_iter().chain([SearchPick::Media(0), SearchPick::Media(3), SearchPick::Media(0)]) {
-            let _ = gui.update(UiMessage::PickSearchFilter(pick));
+            let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::PickSearchFilter(pick)));
         }
         assert_eq!((gui.search_filters.sent, gui.search_filters.period), (Some(false), None), "a second pick clears");
         assert_eq!(gui.search_filters.media, [3], "media kinds toggle one by one");
-        let _ = gui.update(UiMessage::ToggleCommandPalette);
-        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         assert_eq!(gui.search_filters, SearchFilters::default(), "a new search starts without filters");
-        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         let other = store.read().chats[1].id.clone();
-        let _ = gui.update(UiMessage::HoverChat(cid.clone(), true));
-        let _ = gui.update(UiMessage::HoverChat(other.clone(), false));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::Hover(cid.clone(), true)));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::Hover(other.clone(), false)));
         assert_eq!(gui.hovered_chat.as_deref(), Some(cid.as_str()), "leaving another row keeps the hover");
-        let _ = gui.update(UiMessage::HoverChat(cid.clone(), false));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::Hover(cid.clone(), false)));
         assert!(gui.hovered_chat.is_none());
         for _ in 0..2 {
-            let _ = gui.update(UiMessage::ComposerChanged("draft".into()));
+            let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed("draft".into())));
             let _ = gui.update(UiMessage::SelectChat(other.clone()));
             let _ = gui.update(UiMessage::SelectChat(cid.clone()));
             assert_eq!(gui.pane.composer.text(), "draft", "a chat keeps its draft");
         }
-        let _ = gui.update(UiMessage::DeleteDraft(cid.clone()));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::DeleteDraft(cid.clone())));
         let c = store.read().chats[0].clone();
         assert!(c.draft.is_none() && gui.pane.composer.is_empty(), "the hover action deletes the draft");
         let note = beeper_core::store::NOTE_CHAT_ID;
@@ -1617,47 +1632,47 @@ async fn lifecycle() {
             c.delete_modes = DELETE_FOR_ME | DELETE_FOR_EVERYONE;
             c.id.clone()
         };
-        let _ = gui.update(UiMessage::OpenChatMenu(doomed.clone()));
-        let _ = gui.update(UiMessage::AskDeleteChat(doomed.clone()));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::OpenMenu(doomed.clone())));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::AskDelete(doomed.clone())));
         assert!(gui.chat_menu.is_none() && simulator(gui.view_main()).find("Delete for Everyone").is_ok());
         take_outbox(&mut store.write());
-        let _ = gui.update(UiMessage::DeleteChat(doomed.clone(), true));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::Delete(doomed.clone(), true)));
         let mut st = store.write();
         let sent = matches!(take_outbox(&mut st).as_slice(), [(c, Outgoing::DeleteChat { for_everyone: true })] if *c == doomed);
         assert!(sent && st.resolve_chat_idx(&doomed).is_none(), "Delete Chat asks the bridge and drops the chat");
         let picks: Vec<String> =
             st.chats.iter().filter(|c| c.is_muted != Some(true)).take(2).map(|c| c.id.clone()).collect();
         drop(st);
-        let _ = gui.update(UiMessage::BeginSelecting(picks[0].clone()));
-        let _ = gui.update(UiMessage::ToggleSelected(picks[1].clone()));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::BeginSelecting(picks[0].clone())));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleSelected(picks[1].clone())));
         assert!(simulator(gui.view_main()).find("2 chats selected").is_ok(), "Begin Selecting shows the selection bar");
-        let _ = gui.update(UiMessage::SelectionSet(ChatFlag::Muted, true));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::SelectionSet(ChatFlag::Muted, true)));
         let st = store.read();
         let muted = picks.iter().all(|id| st.chats[st.resolve_chat_idx(id).unwrap()].is_muted == Some(true));
         assert!(muted && gui.selection.is_empty(), "a selection action applies to every chat and ends the selection");
         drop(st);
         for id in &picks {
-            let _ = gui.update(UiMessage::ToggleFlag(id.clone(), ChatFlag::Muted));
+            let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleFlag(id.clone(), ChatFlag::Muted)));
         }
         take_outbox(&mut store.write());
     }
     let _ = gui.update(rail("1"));
-    let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTheme(ThemeChoice::System)));
     for (mode, dark) in [(iced::theme::Mode::Dark, true), (iced::theme::Mode::Light, false)] {
-        let _ = gui.update(UiMessage::SystemTheme(mode));
+        let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SystemTheme(mode)));
         assert_eq!(gui.dark, dark);
     }
-    let _ = gui.update(UiMessage::SettingsQueryChanged("tray".to_string()));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::Query("tray".to_string())));
     let _ = simulator(gui.view_settings());
     let hit = search_settings(&store.read(), "tray")[1];
-    let _ = gui.update(UiMessage::PickSetting(hit));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::Pick(hit)));
     assert_eq!(gui.active_settings_tab, SettingsTab::Appearance);
     assert!(simulator(gui.view_settings()).find("Show tray icon").is_ok());
-    let _ = gui.update(UiMessage::SetPref("appLanguage", 2));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("appLanguage", 2)));
     assert!(simulator(gui.view_main()).find("Inbox").is_ok(), "the language changes after a relaunch");
     assert!(simulator(gui.view_main()).find("App language will change after relaunch").is_ok());
-    let _ = gui.update(UiMessage::SetPref("appLanguage", 1));
-    let _ = gui.update(UiMessage::DismissBanner);
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("appLanguage", 1)));
+    let _ = gui.update(UiMessage::Toast(beeper_ui::toasts::Msg::DismissBanner));
     let _ = gui.update(UiMessage::CloseModals);
 
     let final_wa_msgs = client.list_messages("!wa_eric:beeper.com").await;
@@ -1673,7 +1688,7 @@ async fn lifecycle() {
         let app_prog = iced::daemon(
             move || {
                 let (mut app, open) = BeeperGuiApp::boot(emu_store.clone());
-                let _ = app.update(UiMessage::SelectTheme(ThemeChoice::Dark));
+                let _ = app.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTheme(ThemeChoice::Dark)));
                 (app, open)
             },
             BeeperGuiApp::update,

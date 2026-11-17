@@ -1,10 +1,12 @@
 //! Desktop's carousel zoom (`react-zoom-pan-pinch` in `AttachmentCarousel.tsx`): scale 1 to 8, Ctrl + wheel (the
 //! touchpad pinch of Chromium) zooms at the cursor, a double click zooms in or out, `+`, `=` and `-` zoom at the
 //! middle, and a drag pans inside the bounds of the zoomed area. A click outside the content publishes `outside`.
+use crate::{BeeperGuiApp, UiMessage};
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{tree, Tree, Widget};
 use iced::advanced::{mouse, renderer, Clipboard, Shell};
 use iced::keyboard::{self, Key};
+use iced::Task;
 use iced::{window, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Transformation, Vector};
 use std::time::Instant;
 
@@ -265,5 +267,33 @@ mod tests {
         assert_eq!(zoom_at((2.0, at), 0.5, Point::ORIGIN, size), (MIN, Vector::ZERO), "scale 1 fills the bounds");
         assert_eq!(limit(2.0, Vector::new(30.0, -300.0), size), Vector::new(0.0, -100.0), "a pan stops at the edges");
         assert_eq!(zoom_at((1.0, Vector::ZERO), (CLICK_STEP).exp(), Point::ORIGIN, size).0, 2.014);
+    }
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    Step(i8),
+    /// The zoom slider moved to a level from -4 to 4, in steps of 10%.
+    Drag(f32),
+    Release,
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn set_zoom(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::Step(step) => self.patch_settings(|s| {
+                s.zoom_percent = if step == 0 {
+                    100
+                } else {
+                    s.zoom_percent.saturating_add_signed(10 * i16::from(step)).clamp(40, 300)
+                };
+            }),
+            Msg::Drag(level) => self.zoom_drag = Some(level),
+            Msg::Release => {
+                let level = self.zoom_drag.take().expect("the zoom slider was dragged");
+                self.patch_settings(|s| s.zoom_percent = (100.0 + 10.0 * level) as u16);
+            }
+        }
+        self.settle()
     }
 }

@@ -1,0 +1,64 @@
+//! The avatars, media, quotes and media resolves that tasks load for the views.
+
+use super::*;
+
+#[derive(Clone)]
+pub enum Msg {
+    Avatar(String, Result<image::Handle, String>),
+    Media(String, Result<Frames, String>),
+    Tile(String, image::Handle),
+    /// A quoted message that the timeline did not have, or why it could not load.
+    Quote(String, Result<Box<Message>, String>),
+    RetryMedia(String),
+    ResolveMedia(String, String, String),
+    MediaResolved(String, String, String, Result<(), String>),
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn loaded(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::Avatar(url, Ok(h)) => {
+                self.avatars.insert(url, Some(h));
+            }
+            Msg::Avatar(_, Err(_)) => {}
+            Msg::Media(url, r) => {
+                self.media.insert(url, Some(r));
+            }
+            Msg::Tile(key, h) => self.tiles.insert(key, Some(h)),
+            Msg::RetryMedia(url) => {
+                self.media.remove(&url);
+                return self.load_media();
+            }
+            Msg::ResolveMedia(account_id, event_id, raw) => {
+                if self.resolving_media.get(&event_id) == Some(&true) {
+                    return Task::none();
+                }
+                self.resolving_media.insert(event_id.clone(), true);
+                let p = self.provision(&account_id);
+                let (eid, again) = (event_id.clone(), (account_id, raw.clone()));
+                // Like Desktop, a resolve whose edit does not arrive in 30 s fails.
+                let resolve = async move {
+                    beeper_core::matrix::resolve_media(p, eid, raw).await?;
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    Ok(())
+                };
+                return Task::perform(resolve, move |r| {
+                    UiMessage::Loaded(Msg::MediaResolved(again.0, event_id, again.1, r))
+                });
+            }
+            Msg::MediaResolved(account_id, event_id, raw, r) => {
+                self.resolving_media.insert(event_id.clone(), false);
+                if let Err(e) = r {
+                    eprintln!("resolve media failed: {e}");
+                    let again = UiMessage::Loaded(Msg::ResolveMedia(account_id, event_id, raw));
+                    self.fail(Toast {
+                        buttons: vec![(tr("Try again"), again)],
+                        ..Toast::new(tr("Could not load this media.").into())
+                    });
+                }
+            }
+            Msg::Quote(id, r) => _ = self.quotes.insert(id, Some(r.map(|m| *m))),
+        }
+        self.settle()
+    }
+}

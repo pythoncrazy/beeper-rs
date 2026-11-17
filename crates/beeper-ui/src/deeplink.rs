@@ -1,6 +1,10 @@
 //! Desktop's `beeper://` links (`deep-link-CFIhWY4D.js` `Ld`): from the launch arguments, and from a later launch.
+use crate::chat_list;
+use crate::commands;
+use crate::composer;
 use crate::i18n::tr;
 use crate::login::LoginMsg;
+use crate::new_chat;
 use crate::{composer_with, encode_uri_component, BeeperGuiApp, InboxTab, SettingsTab, Toast, UiMessage, User};
 use beeper_core::codec::url_decode;
 use beeper_core::config::{account_network, find_network, NETWORK_SPECS};
@@ -147,7 +151,7 @@ impl BeeperGuiApp {
         let unrouted = room.starts_with('!') && vias.is_empty();
         self.join_room = (true, None);
         let join = beeper_core::matrix::join_via(self.store.clone(), room, vias);
-        Task::perform(join, move |r| UiMessage::MatrixRoomJoined(draft, r, unrouted))
+        Task::perform(join, move |r| UiMessage::NewChat(new_chat::Msg::MatrixRoomJoined(draft, r, unrouted)))
     }
 
     /// The end of a join of the Join a Matrix room view of the `draft`: Desktop opens the room and drops the draft,
@@ -299,20 +303,22 @@ impl BeeperGuiApp {
             "select-thread" => {
                 let Some((cid, request)) = thread else { return toast(self, missing) };
                 if request {
-                    let _ = self.update(UiMessage::SelectTab(InboxTab::Requests));
+                    let _ = self.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Requests)));
                 }
                 self.select_chat(&cid);
                 if let Some(t) = text {
                     self.pane.composer = composer_with(&t);
                 }
-                let jump = sorted.map_or_else(Task::none, |mid| self.update(UiMessage::JumpTo(cid, mid)));
-                let files = attachment.map(|p| self.update(UiMessage::FilesPicked(Ok(vec![p.into()]))));
+                let jump = sorted
+                    .map_or_else(Task::none, |mid| self.update(UiMessage::CommandBar(commands::Msg::JumpTo(cid, mid))));
+                let files = attachment
+                    .map(|p| self.update(UiMessage::Composer(composer::Msg::FilesPicked(Ok(vec![p.into()])))));
                 Task::batch([jump].into_iter().chain(files))
             }
             "highlight-message" => {
                 let Some((cid, _)) = thread else { return toast(self, missing) };
                 let mid = part(3).unwrap_or_default().to_string();
-                self.update(UiMessage::JumpTo(cid, mid))
+                self.update(UiMessage::CommandBar(commands::Msg::JumpTo(cid, mid)))
             }
             _ => toast(self, format!("Unrecognized deep link: {link}")),
         }

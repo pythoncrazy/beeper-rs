@@ -1225,10 +1225,11 @@ impl BeeperStore {
         self.bridge_accounts.iter().any(|a| !matches!(a.bridge_id.as_str(), "hungryserv" | "ai"))
     }
 
-    /// Desktop's `applyAppLocale`: a signed-in account without an app language uses English.
+    /// Desktop's `applyAppLocale`: without an app language, a signed-in app takes English, and a signed-out app the
+    /// system language, which it keeps after the sign-in.
     fn pin_app_locale(&mut self) {
-        if self.signed_in() && !self.settings.prefs.contains_key("appLanguage") {
-            self.settings.set_pref("appLanguage", 1);
+        if !self.settings.prefs.contains_key("appLanguage") {
+            self.settings.set_pref("appLanguage", u8::from(self.signed_in()));
         }
     }
 
@@ -3027,6 +3028,29 @@ impl BeeperStore {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+
+    /// Desktop's `applyAppLocale` at launch: a signed-out app keeps the system language after the sign-in, and a
+    /// signed-in app without a language takes English.
+    #[test]
+    fn app_language_like_desktop() {
+        let dir = crate::testing::temp_dir("app-language");
+        let config = crate::config::CentralConfig::new(dir, "127.0.0.1".into(), 23392, None);
+        let session = || crate::models::MatrixSession {
+            user_id: "@me:beeper.com".into(),
+            access_token: "t".into(),
+            device_id: "D".into(),
+            jwt: None,
+        };
+        let mut st = super::BeeperStore::from_config(config.clone());
+        assert_eq!(st.settings.pref("appLanguage"), 0, "a signed-out app takes the system language");
+        st.sign_in(session(), "http://127.0.0.1:1".into(), &Default::default(), Vec::new());
+        assert_eq!(st.settings.pref("appLanguage"), 0, "and keeps it after the sign-in");
+        st.settings.prefs.remove("appLanguage");
+        st.persist_state_to_sqlite();
+        drop(st);
+        let st = super::BeeperStore::from_config(config);
+        assert_eq!(st.settings.pref("appLanguage"), 1, "a signed-in app without a language takes English");
+    }
 
     /// The IDs of the stored messages that a message search finds.
     fn found(st: &super::BeeperStore, q: &str) -> HashSet<String> {

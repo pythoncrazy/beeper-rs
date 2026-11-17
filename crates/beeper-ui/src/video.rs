@@ -1,6 +1,8 @@
 //! Desktop's inline video player (`Video/index.tsx`): frames streamed from ffmpeg, the sound track, and the hover
 //! controls.
 use crate::i18n::tr;
+use crate::media_view;
+use crate::message;
 use crate::style::{btn_style, fill_box, shadow_box, Bare, CLEAR};
 use crate::{ic, icon, menu_item, menu_rule, sound, tinted, BeeperGuiApp, El, UiMessage, MENU_ITEM};
 use iced::gradient::Linear;
@@ -297,7 +299,7 @@ impl BeeperGuiApp {
             // Desktop pauses the inline video and opens the carousel, where the video goes on at the same time, play
             // state and speed.
             Msg::Open(mid, ai, w, h) => {
-                let task = self.update(UiMessage::OpenCarousel(mid, ai, false));
+                let task = self.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, ai, false)));
                 self.carousel.as_mut().expect("the carousel is open").resume = Some((w, h));
                 return task;
             }
@@ -449,7 +451,7 @@ impl BeeperGuiApp {
             let download = button(crate::semi(crate::i18n::trx("Download", "video error action"), 13.0).color(p.text))
                 .padding([4, 10])
                 .style(crate::style::bordered_btn([CLEAR; 3], [p.text; 3], edge, 1.0, 99.0))
-                .on_press(UiMessage::Download(mid.into(), None));
+                .on_press(UiMessage::Message(message::Msg::Download(mid.into(), None)));
             let text = crate::semi(tr("Something went wrong displaying video"), 13.0).color(p.text);
             let (text, download) = (
                 container(text).padding(Padding::ZERO.top(13.0)),
@@ -471,11 +473,11 @@ impl BeeperGuiApp {
         if place == Place::Carousel {
             return surface.into();
         }
-        let surface = mouse_area(surface).on_right_press(UiMessage::OpenMessageMenu(mid.into()));
+        let surface = mouse_area(surface).on_right_press(UiMessage::Message(message::Msg::OpenMenu(mid.into())));
         let on = |glyph: &svg::Handle, msg: UiMessage| -> El<'a> { self.video_button(v, glyph, msg) };
         let skips = self.video_skips(v);
         let corners = row![
-            on(&GLYPHS[2], UiMessage::OpenMessageMenu(mid.into())),
+            on(&GLYPHS[2], UiMessage::Message(message::Msg::OpenMenu(mid.into()))),
             Space::new().width(Fill),
             on(&GLYPHS[3], UiMessage::Video(Msg::Fullscreen))
         ];
@@ -552,7 +554,7 @@ impl BeeperGuiApp {
             .on_enter(UiMessage::Video(Msg::Sub));
         Some(vec![
             item("Fullscreen", "", UiMessage::Video(Msg::Fullscreen)),
-            item("Download", "", UiMessage::Download(mid.into(), None)),
+            item("Download", "", UiMessage::Message(message::Msg::Download(mid.into(), None))),
             item(if v.muted { "Unmute" } else { "Mute" }, "", UiMessage::Video(Msg::Mute)),
             (speed.into(), MENU_ITEM),
             (menu_rule(p), 11.0),

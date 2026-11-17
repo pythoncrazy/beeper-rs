@@ -1,16 +1,25 @@
 //! The Settings window: its sections, the settings search, the hotkey recorder, and the Storage, Integrations,
 //! Devices and Accounts pages.
 
+use crate::accounts;
+use crate::blocking;
+use crate::blocking::blocked_chats;
+use crate::chat_list;
+use crate::hotkeys;
 use crate::i18n::{tr, trf, trn, trnx, trs, trx};
+use crate::integrations;
+use crate::rail::SpaceMenu;
 use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, ell, fill_box, fw, glow_box, gutter_style, hex, ic,
     icon, input_style, med, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
 };
+use crate::windows;
+use crate::zoom;
 use crate::{
-    ago, avatar, badge, blocked_chats, brand_key, checkbox, compact, distance, divider, downloads_dir, duration,
-    ease_out, feedback_btn, first_groups, fmt_phone, group, grouped, human_size, icon_btn, inbox_label, login,
-    outline_input, pill_btn, pill_style, plan_pill, pref_row, reconnect, record, select, slider_style, status_text,
-    style, svg_size, theme_cards, tinted, toggle, toggle_faded, BeeperGuiApp, El, SpaceMenu, Toast, UiMessage,
+    ago, avatar, badge, brand_key, checkbox, compact, distance, divider, downloads_dir, duration, ease_out,
+    feedback_btn, first_groups, fmt_phone, group, grouped, human_size, icon_btn, inbox_label, locate, login,
+    outline_input, pill_btn, pill_style, plan_pill, portal, pref_row, reconnect, record, select, slider_style,
+    status_text, style, svg_size, theme_cards, tinted, toggle, toggle_faded, BeeperGuiApp, El, Toast, UiMessage,
     ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE,
     ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO,
     COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM,
@@ -309,7 +318,7 @@ pub(crate) struct StoragePage {
     /// Bits of [`storage::Kind::ALL`].
     pub(crate) kinds: [u8; 2],
     pub(crate) chat: Option<String>,
-    /// The [`UiMessage::ClearStorage`] that runs.
+    /// The [`|a0| UiMessage::Settings(Msg::ClearStorage(a0))`] that runs.
     pub(crate) clearing: Option<u8>,
 }
 
@@ -442,7 +451,7 @@ pub(crate) const STORAGE_DAYS: [i64; 4] = [0, 30, 90, 120];
 
 impl BeeperGuiApp {
     pub(crate) fn open_settings(&mut self, tab: SettingsTab) -> Task<UiMessage> {
-        let load = self.update(UiMessage::SelectSettingsTab(tab));
+        let load = self.update(UiMessage::Settings(Msg::SelectTab(tab)));
         if let Some(id) = self.settings_window {
             return Task::batch([load, window::gain_focus(id)]);
         }
@@ -452,7 +461,7 @@ impl BeeperGuiApp {
         let (id, open) = window::open(centered);
         self.settings_window = Some(id);
         self.save_subwindows();
-        Task::batch([load, open.map(UiMessage::WindowOpened)])
+        Task::batch([load, open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0)))])
     }
 
     /// Desktop's keys of the settings window: Ctrl F focuses the search, ↑ and ↓ move through the results, and Enter is
@@ -479,7 +488,7 @@ impl BeeperGuiApp {
                 let step = if k == Named::ArrowDown { 1 } else { n - 1 };
                 return operation::is_focused("settings-search").then(move |on| {
                     if on {
-                        Task::done(UiMessage::SettingsStep(step))
+                        Task::done(UiMessage::Settings(Msg::Step(step)))
                     } else {
                         Task::none()
                     }
@@ -560,10 +569,10 @@ impl BeeperGuiApp {
         let store = self.store.clone();
         let scan =
             async { tokio::task::spawn_blocking(move || storage::scan(&store)).await.expect("storage scan thread") };
-        Task::perform(scan, UiMessage::StorageScanned)
+        Task::perform(scan, |a0| UiMessage::Settings(Msg::StorageScanned(a0)))
     }
 
-    /// The entries that [`UiMessage::ClearStorage`] deletes, without the cache of the clear for all chats.
+    /// The entries that [`|a0| UiMessage::Settings(Msg::ClearStorage(a0))`] deletes, without the cache of the clear for all chats.
     pub(crate) fn storage_pick(&self, which: u8) -> Vec<&storage::Entry> {
         let s = &self.storage;
         let w = usize::from(which == 2);
@@ -584,7 +593,7 @@ impl BeeperGuiApp {
     pub(crate) fn load_devices(&mut self) -> Task<UiMessage> {
         if self.active_settings_tab == SettingsTab::General {
             let list = async { tokio::task::spawn_blocking(record::inputs).await.expect("input list worker thread") };
-            return Task::perform(list, UiMessage::MicsLoaded);
+            return Task::perform(list, |a0| UiMessage::Settings(Msg::MicsLoaded(a0)));
         }
         if self.active_settings_tab == SettingsTab::Storage {
             return self.scan_storage();
@@ -594,7 +603,9 @@ impl BeeperGuiApp {
         }
         let st = self.store.read();
         match (st.matrix.clone(), st.config.demo) {
-            (Some(client), _) => Task::perform(beeper_core::matrix::devices(client), UiMessage::DevicesLoaded),
+            (Some(client), _) => {
+                Task::perform(beeper_core::matrix::devices(client), |a0| UiMessage::Settings(Msg::DevicesLoaded(a0)))
+            }
             (None, true) => {
                 let name = format!("beeper-rs {:?}", self.os);
                 let verified = st.beeper_state.verified;
@@ -617,13 +628,15 @@ impl BeeperGuiApp {
     pub(crate) fn logout_device(&mut self, id: String) -> Task<UiMessage> {
         (self.confirm, self.devices_busy) = (None, true);
         let logout = beeper_core::matrix::delete_device(self.store.clone(), id.clone());
-        Task::perform(logout, move |r| UiMessage::DeviceLoggedOut(id.clone(), r))
+        Task::perform(logout, move |r| UiMessage::Settings(Msg::DeviceLoggedOut(id.clone(), r)))
     }
 
     pub(crate) fn device_logged_out(&mut self, id: String, r: Result<(), String>) -> Task<UiMessage> {
         match r {
             Ok(()) => return self.load_devices(),
-            Err(e) if e == beeper_core::matrix::REAUTH => return self.open_reauth(UiMessage::LogoutDevice(id)),
+            Err(e) if e == beeper_core::matrix::REAUTH => {
+                return self.open_reauth(UiMessage::Settings(Msg::LogoutDevice(id)))
+            }
             Err(_) => {
                 self.devices_busy = false;
                 let text = "Couldn't delete device. Please report a problem if this keeps happening.";
@@ -641,8 +654,8 @@ impl BeeperGuiApp {
         let hits = search_settings(&st, &self.settings_query);
         let search_input = text_input(tr("Search Settings"), &self.settings_query)
             .id("settings-search")
-            .on_input(UiMessage::SettingsQueryChanged)
-            .on_submit_maybe(hits.get(self.settings_focus).map(|&h| UiMessage::PickSetting(h)))
+            .on_input(|a0| UiMessage::Settings(Msg::Query(a0)))
+            .on_submit_maybe(hits.get(self.settings_focus).map(|&h| UiMessage::Settings(Msg::Pick(h))))
             .size(13)
             .line_height(Pixels(16.0))
             .padding(0)
@@ -650,7 +663,7 @@ impl BeeperGuiApp {
         let clear = (!self.settings_query.is_empty()).then(|| {
             button(ic(icon::CLOSE, 12.0).color(p.strong))
                 .bare(p.strong)
-                .on_press(UiMessage::SettingsQueryChanged(String::new()))
+                .on_press(UiMessage::Settings(Msg::Query(String::new())))
         });
         // Desktop's 16 px Material icon is scaled by 1.2 without a change to its 16 px box.
         let search = container(
@@ -703,7 +716,11 @@ impl BeeperGuiApp {
             let style = btn_style([if on { p.hover } else { CLEAR }, p.hover, p.hover], [p.text; 3], 8.0);
             if tab == SettingsTab::Profile {
                 return c.push(
-                    button(profile()).padding(0).width(Fill).style(style).on_press(UiMessage::SelectSettingsTab(tab)),
+                    button(profile())
+                        .padding(0)
+                        .width(Fill)
+                        .style(style)
+                        .on_press(UiMessage::Settings(Msg::SelectTab(tab))),
                 );
             }
             // Desktop's `allProperAccounts`: the Beeper account and the chat accounts.
@@ -720,13 +737,12 @@ impl BeeperGuiApp {
                 .padding([0, 8]);
             // Desktop's `.pref-option:has(+ .selected)` and `:last-child` have no divider.
             let next_on = tabs.get(i + 1).is_none_or(|n| *n == self.active_settings_tab);
-            c.push(button(line).padding(0).width(Fill).style(style).on_press(UiMessage::SelectSettingsTab(tab))).push(
-                (!on).then(|| {
+            c.push(button(line).padding(0).width(Fill).style(style).on_press(UiMessage::Settings(Msg::SelectTab(tab))))
+                .push((!on).then(|| {
                     let rule = if next_on { CLEAR } else { p.divider };
                     container(container(Space::new()).width(Fill).height(1).style(fill_box(rule, 0.0)))
                         .padding(Padding::ZERO.left(36.0))
-                }),
-            )
+                }))
         });
         // Desktop's search results: the query in each label is at full color, and the rest at half.
         let q = self.settings_query.to_lowercase();
@@ -771,7 +787,11 @@ impl BeeperGuiApp {
                 (false, false) => CLEAR,
             };
             let line = container(line).width(Fill).id(format!("hit-{i}")).style(fill_box(bg.scale_alpha(alpha), 6.0));
-            c.push(mouse_area(line).on_enter(UiMessage::SettingsFocus(i)).on_release(UiMessage::PickSetting(hit)))
+            c.push(
+                mouse_area(line)
+                    .on_enter(UiMessage::Settings(Msg::Focus(i)))
+                    .on_release(UiMessage::Settings(Msg::Pick(hit))),
+            )
         });
         let list: El = match self.settings_query.trim().is_empty() {
             true => nav.into(),
@@ -814,7 +834,9 @@ impl BeeperGuiApp {
                     .padding(Padding::ZERO.left(x).top(y))
                     .width(Fill)
                     .height(Fill);
-                mouse_area(menu).on_press(UiMessage::CloseChatMenu).on_right_press(UiMessage::CloseChatMenu)
+                mouse_area(menu)
+                    .on_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
+                    .on_right_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
             });
         let profile = self.profile_overlay();
         let picker = self.pane.emoji.as_ref().filter(|pk| pk.pref.is_some()).map(|_| {
@@ -833,8 +855,8 @@ impl BeeperGuiApp {
             None => {
                 let name = text_input("Cursor", &a.name)
                     .id("token-name")
-                    .on_input(UiMessage::AddTokenName)
-                    .on_submit(UiMessage::CreateToken)
+                    .on_input(|a0| UiMessage::Integrations(integrations::Msg::AddName(a0)))
+                    .on_submit(UiMessage::Integrations(integrations::Msg::Create))
                     .size(12)
                     .width(200)
                     .padding([4, 6])
@@ -842,21 +864,22 @@ impl BeeperGuiApp {
                 let line = |t, control: El<'a>| -> El<'a> {
                     row![label(t).width(Fill), control].align_y(Center).height(38).padding([0, 8]).into()
                 };
-                let expiry = select(
-                    p,
-                    [EXPIRIES[4], EXPIRIES[0], EXPIRIES[1], EXPIRIES[2], EXPIRIES[3]],
-                    a.expiry,
-                    UiMessage::AddTokenExpiry,
-                );
+                let expiry =
+                    select(p, [EXPIRIES[4], EXPIRIES[0], EXPIRIES[1], EXPIRIES[2], EXPIRIES[3]], a.expiry, |a0| {
+                        UiMessage::Integrations(integrations::Msg::AddExpiry(a0))
+                    });
                 let sensitive = column![
-                    line("Allow sensitive actions", toggle(p, a.write, Some(UiMessage::AddTokenWrite))),
+                    line(
+                        "Allow sensitive actions",
+                        toggle(p, a.write, Some(UiMessage::Integrations(integrations::Msg::AddWrite)))
+                    ),
                     container(txt(tr("Grant permission to send messages and modify your account"), 11.0).color(p.sub))
                         .padding(Padding::new(8.0).top(0.0))
                 ];
                 let create = button(semi(tr("Create Access Token"), 12.0).color(p.accent))
                     .padding([4, 8])
                     .style(btn_style([p.accent.scale_alpha(0.1); 3], [p.accent; 3], 20.0))
-                    .on_press(UiMessage::CreateToken);
+                    .on_press(UiMessage::Integrations(integrations::Msg::Create));
                 let rows = vec![
                     line("Name (optional)", name.into()),
                     divider(p.prefs_border, 0.0),
@@ -888,7 +911,8 @@ impl BeeperGuiApp {
                 .spacing(4)
                 .align_y(Center)
                 .width(72);
-                let shown = mouse_area(row![shown, copy].spacing(8).align_y(Center)).on_press(UiMessage::CopyToken);
+                let shown = mouse_area(row![shown, copy].spacing(8).align_y(Center))
+                    .on_press(UiMessage::Integrations(integrations::Msg::CopyToken));
                 column![note, shown].spacing(8).align_x(Center).width(Fill).into()
             }
         };
@@ -915,7 +939,7 @@ impl BeeperGuiApp {
             )
             .padding([4, 8])
             .style(btn_style([p.accent; 3], [Color::WHITE; 3], 20.0))
-            .on_press(UiMessage::ShowAppQr)
+            .on_press(UiMessage::Accounts(accounts::Msg::ShowAppQr))
             .into(),
         };
         let heading = semi(tr("Take Beeper with you"), 16.0).color(p.strong);
@@ -944,7 +968,7 @@ impl BeeperGuiApp {
             // Desktop's `DeviceRow`: each device has "Logout", which is disabled while the list loads.
             let ask = match d.current {
                 true => UiMessage::Ask(Some(ASK_LOGOUT)),
-                false => UiMessage::AskLogoutDevice(d.id.clone()),
+                false => UiMessage::Settings(Msg::AskLogoutDevice(d.id.clone())),
             };
             let logout = button(semi(tr("Logout"), 12.0).color(p.strong))
                 .padding([4, 8])
@@ -990,8 +1014,12 @@ impl BeeperGuiApp {
                     .spacing(8)
                     .align_y(Center)
                     .padding(Padding::new(4.0).left(8.0).right(16.0));
-                    let row = button(line).bare(p.strong).on_press(UiMessage::OpenAccount(Some(logo.into())));
-                    mouse_area(row).on_right_press(UiMessage::OpenChatMenu(format!("prefs:{logo}"))).into()
+                    let row = button(line)
+                        .bare(p.strong)
+                        .on_press(UiMessage::Accounts(accounts::Msg::Open(Some(logo.into()))));
+                    mouse_area(row)
+                        .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("prefs:{logo}"))))
+                        .into()
                 };
                 let me = st.me();
                 let rows = std::iter::once(account(
@@ -1019,7 +1047,7 @@ impl BeeperGuiApp {
                 let head = row![
                     med(tr("Accounts"), 12.0).color(p.weak),
                     Space::new().width(Fill),
-                    icon_btn(p, icon::CIRCLE_PLUS, 16.0, 22.0, p.accent, UiMessage::ToggleAddAccount)
+                    icon_btn(p, icon::CIRCLE_PLUS, 16.0, 22.0, p.accent, UiMessage::Accounts(accounts::Msg::ToggleAdd))
                 ]
                 .height(26)
                 .align_y(Center)
@@ -1028,7 +1056,7 @@ impl BeeperGuiApp {
                 let foot = column![
                     button(med(tr("Add an Account"), 13.0).color(p.accent))
                         .bare(p.accent)
-                        .on_press(UiMessage::ToggleAddAccount),
+                        .on_press(UiMessage::Accounts(accounts::Msg::ToggleAdd)),
                     txt(trn("%d Free Account Remaining", "%d Free Accounts Remaining", remaining, &[&remaining]), 12.0)
                         .color(p.sub)
                 ]
@@ -1138,7 +1166,7 @@ impl BeeperGuiApp {
             button(tinted(icon, 16.0, p.text))
                 .padding(4)
                 .style(btn_style([CLEAR; 3], [p.text; 3], 4.0))
-                .on_press(UiMessage::CopyField(i, value))
+                .on_press(UiMessage::Integrations(integrations::Msg::CopyField(i, value)))
         };
         let community = match (st.resolve_chat_idx(COMMUNITY_ROOM).is_some(), s.joining) {
             (true, _) => "Open Developer Community chat",
@@ -1151,12 +1179,12 @@ impl BeeperGuiApp {
                 tr("Allow connections"),
                 Some(tr("Allow third-party apps you approve like Claude Desktop or Raycast to integrate with Beeper Desktop.")),
                 None,
-                toggle(p, st.settings.enable_pas_api, Some(UiMessage::ToggleSetting(|x| x.enable_pas_api ^= true))),
+                toggle(p, st.settings.enable_pas_api, Some(UiMessage::Settings(Msg::ToggleSetting(|x| x.enable_pas_api ^= true)))),
             ),
             divider(p.prefs_border, 0.0),
             actions(vec![
                 pill_btn(p, tr("Learn more"), UiMessage::OpenUrl("https://developers.beeper.com/desktop-api/".into())),
-                pill_btn(p, tr(community), UiMessage::JoinCommunity),
+                pill_btn(p, tr(community), UiMessage::Settings(Msg::JoinCommunity)),
             ]),
         ];
         let mut mcp: Vec<El<'a>> = Vec::new();
@@ -1165,7 +1193,7 @@ impl BeeperGuiApp {
                 button(txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(Pixels(16.0)).color(p.accent))
                     .padding([4, 8])
                     .style(btn_style([CLEAR; 3], [p.accent; 3], 20.0))
-                    .on_press(UiMessage::McpInstall(name));
+                    .on_press(UiMessage::Integrations(integrations::Msg::McpInstall(name)));
             let line = row![svg(logo.clone()).width(18).height(18), semi(name, 14.0).color(p.text)].spacing(8);
             let line = row![line.width(Fill).align_y(Center), connect]
                 .align_y(Center)
@@ -1175,7 +1203,9 @@ impl BeeperGuiApp {
         let target = MCP_TARGETS[s.target];
         let value = mcp_value(target, &base);
         let pick = select(p, MCP_TARGETS, target, |t| {
-            UiMessage::McpTarget(MCP_TARGETS.iter().position(|x| *x == t).expect("a listed client"))
+            UiMessage::Integrations(integrations::Msg::McpTarget(
+                MCP_TARGETS.iter().position(|x| *x == t).expect("a listed client"),
+            ))
         });
         mcp.push(
             row![container(body(tr("Install to..."), p.text)).width(Fill), pick].align_y(Center).padding(13).into(),
@@ -1187,7 +1217,7 @@ impl BeeperGuiApp {
                 button(label)
                     .padding([4, 8])
                     .style(btn_style([blue; 3], [Color::WHITE; 3], 4.0))
-                    .on_press(UiMessage::McpInstall(target)),
+                    .on_press(UiMessage::Integrations(integrations::Msg::McpInstall(target))),
             )
             .padding(Padding::ZERO.bottom(8.0))
         });
@@ -1251,8 +1281,12 @@ impl BeeperGuiApp {
                         row![body(&name, p.text)].push(tag).spacing(6).align_y(Center),
                         body(&when, p.text.scale_alpha(0.7))
                     ];
-                    let revoke = container(pill_btn(p, tr("Revoke"), UiMessage::RevokeConnection(t.id.clone())))
-                        .padding(Padding::ZERO.right(8.0));
+                    let revoke = container(pill_btn(
+                        p,
+                        tr("Revoke"),
+                        UiMessage::Integrations(integrations::Msg::Revoke(t.id.clone())),
+                    ))
+                    .padding(Padding::ZERO.right(8.0));
                     let line =
                         row![text.width(Fill), revoke].align_y(Center).padding(Padding::new(8.0).left(13.0).right(4.0));
                     [divider(p.prefs_border, 0.0), line.into()]
@@ -1263,7 +1297,7 @@ impl BeeperGuiApp {
         let plus = button(tinted(&ADD_ICON, 20.0, p.accent))
             .padding(0)
             .style(btn_style([CLEAR; 3], [p.accent; 3], 10.0))
-            .on_press(UiMessage::AddToken(true));
+            .on_press(UiMessage::Integrations(integrations::Msg::Add(true)));
         let approved = column![
             row![container(body(tr("Approved connections"), p.muted)).width(Fill), plus]
                 .align_y(Center)
@@ -1278,7 +1312,7 @@ impl BeeperGuiApp {
             tr("Remote Access"),
             Some(tr("When enabled, the Desktop API & MCP will be available on the public internet. Changes take effect after relaunch.")),
             None,
-            toggle(p, on, (!fixed).then_some(UiMessage::RemoteAccess(!on))),
+            toggle(p, on, (!fixed).then_some(UiMessage::Integrations(integrations::Msg::RemoteAccess(!on)))),
         );
         let remote: El<'a> = match fixed {
             true => {
@@ -1404,7 +1438,7 @@ impl BeeperGuiApp {
                     .spacing(12)
                     .align_y(Center)
                     .padding([12, 16]);
-                let line = button(line).bare(p.text).on_press(UiMessage::StorageChat(id.into()));
+                let line = button(line).bare(p.text).on_press(UiMessage::Settings(Msg::StorageChat(id.into())));
                 let panel = open.then(|| {
                     let busy = s.clearing == Some(2);
                     let panel = column![
@@ -1443,7 +1477,7 @@ impl BeeperGuiApp {
     fn storage_ages<'a>(&self, which: usize) -> El<'a> {
         let days = STORAGE_DAYS.iter().map(|&d| trn("%d day", "%d days", d as usize, &[&d]));
         let control = self
-            .segments(days, self.storage.ages[which], |i| UiMessage::StorageAge(which, i))
+            .segments(days, self.storage.ages[which], |i| UiMessage::Settings(Msg::StorageAge(which, i)))
             .padding(if which == 0 { 8 } else { 4 });
         if which == 0 {
             control.into()
@@ -1460,7 +1494,7 @@ impl BeeperGuiApp {
             let label = txt(tr(kind_meta(k).0), 13.0).color(p.text);
             button(row![checkbox(p, on), label].spacing(6).align_y(Center))
                 .bare(p.text)
-                .on_press_maybe((!busy).then_some(UiMessage::StorageKind(which, i)))
+                .on_press_maybe((!busy).then_some(UiMessage::Settings(Msg::StorageKind(which, i))))
                 .into()
         });
         Row::with_children(kinds).spacing(16).wrap().vertical_spacing(16).align_x(Center).into()
@@ -1471,7 +1505,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let edge = p.neutral_border;
         let search = text_input(tr("Search hotkeys..."), &self.hotkey_query)
-            .on_input(UiMessage::HotkeyQuery)
+            .on_input(|a0| UiMessage::Hotkeys(hotkeys::Msg::Query(a0)))
             .size(13)
             .line_height(Pixels(15.0))
             .padding([4, 7])
@@ -1481,7 +1515,7 @@ impl BeeperGuiApp {
             .width(100)
             .padding([4, 6])
             .style(pill_style(p))
-            .on_press(UiMessage::RevertHotkeys);
+            .on_press(UiMessage::Hotkeys(hotkeys::Msg::RevertAll));
         let icon_btn = |glyph: El<'static>, msg| button(glyph).bare(p.muted).on_press(msg);
         let hotkey = |name: &'static str| -> El<'_> {
             let keys = s.hotkey_keys(name);
@@ -1501,28 +1535,33 @@ impl BeeperGuiApp {
                 let buttons = match rec {
                     Some(_) => row![]
                         .push(conflict.is_none().then(|| {
-                            icon_btn(ic(icon::CHECK, 12.0).color(p.muted).into(), UiMessage::HotkeyRecorder(true))
+                            icon_btn(
+                                ic(icon::CHECK, 12.0).color(p.muted).into(),
+                                UiMessage::Hotkeys(hotkeys::Msg::Recorder(true)),
+                            )
                         }))
-                        .push(icon_btn(ic(icon::CLOSE, 12.0).color(p.muted).into(), UiMessage::HotkeyRecorder(false))),
-                    None => row![].push(
-                        (keys != prefs::hotkey_default(name))
-                            .then(|| icon_btn(tinted(&REVERT, 12.0, p.muted), UiMessage::RevertHotkey(name))),
-                    ),
+                        .push(icon_btn(
+                            ic(icon::CLOSE, 12.0).color(p.muted).into(),
+                            UiMessage::Hotkeys(hotkeys::Msg::Recorder(false)),
+                        )),
+                    None => row![].push((keys != prefs::hotkey_default(name)).then(|| {
+                        icon_btn(tinted(&REVERT, 12.0, p.muted), UiMessage::Hotkeys(hotkeys::Msg::Revert(name)))
+                    })),
                 };
                 let border = match (conflict, rec) {
                     (Some(_), _) => p.danger,
                     (None, Some(_)) => p.accent,
                     (None, None) => edge,
                 };
-                let label =
-                    mouse_area(container(label).center_x(160).center_y(20)).on_press(UiMessage::RecordHotkey(name));
+                let label = mouse_area(container(label).center_x(160).center_y(20))
+                    .on_press(UiMessage::Hotkeys(hotkeys::Msg::Record(name)));
                 let buttons =
                     container(buttons.spacing(6).align_y(Center)).align_right(160).center_y(20).padding([0, 2]);
                 container(stack![label, buttons]).style(bordered_box(CLEAR, border, 1.0, 4.0))
             });
             let line = row![ell(tr(name), 226.0, 13.0, Weight::Normal).color(p.text).width(Fill)]
                 .push(recorder)
-                .push(toggle(p, keys != "disabled", Some(UiMessage::ToggleHotkey(name))))
+                .push(toggle(p, keys != "disabled", Some(UiMessage::Hotkeys(hotkeys::Msg::Toggle(name)))))
                 .spacing(6)
                 .align_y(Center);
             let warning = conflict.map(|other| {
@@ -1599,10 +1638,10 @@ impl BeeperGuiApp {
             .direction(bar())
             .style(scroll_style(p.scroll))
             .height(height)
-            .on_scroll(|v| UiMessage::HotkeysScrolled(v.absolute_offset().y > 20.0));
+            .on_scroll(|v| UiMessage::Hotkeys(hotkeys::Msg::Scrolled(v.absolute_offset().y > 20.0)));
         let search = text_input(tr("Search..."), query)
             .id("hotkeys-search")
-            .on_input(|q| UiMessage::HotkeysModal(Some(q)))
+            .on_input(|q| UiMessage::Hotkeys(hotkeys::Msg::Modal(Some(q))))
             .size(13)
             .line_height(Pixels(18.2))
             .padding([3, 6])
@@ -1619,7 +1658,7 @@ impl BeeperGuiApp {
         let card = mouse_area(container(card).style(fill_box(p.elevated, 0.0))).on_press(UiMessage::Noop);
         let shade = container(card).align_right(Fill).center_y(Fill).padding(Padding::ZERO.right(13.0));
         mouse_area(shade.style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.4), 0.0)))
-            .on_press(UiMessage::HotkeysModal(None))
+            .on_press(UiMessage::Hotkeys(hotkeys::Msg::Modal(None)))
             .into()
     }
 
@@ -1638,7 +1677,9 @@ impl BeeperGuiApp {
                 (b.network_name.clone(), [r.name, r.username, r.phone, r.email])
             }
         };
-        let back = button(tinted(&CHEVRON_LEFT, 16.0, p.strong)).bare(p.strong).on_press(UiMessage::OpenAccount(None));
+        let back = button(tinted(&CHEVRON_LEFT, 16.0, p.strong))
+            .bare(p.strong)
+            .on_press(UiMessage::Accounts(accounts::Msg::Open(None)));
         let title = row![svg(brand_svg(brand_key(id))).width(28).height(28), semi(network, 14.0).color(p.strong)]
             .spacing(4)
             .align_y(Center);
@@ -1655,16 +1696,16 @@ impl BeeperGuiApp {
         let set = |f: fn(&mut beeper_core::models::AccountProps)| {
             let mut q = props;
             f(&mut q);
-            UiMessage::SetAccountProps(id.into(), q)
+            UiMessage::Accounts(accounts::Msg::SetProps(id.into(), q))
         };
         let toggle = |label, on, msg| pref_row(p, tr(label), None, None, toggle_faded(p, on, Some(msg), 1.0));
         let sounds = [tr("Default").to_string(), tr("None").to_string()];
         let (account, picked) = (id.to_string(), sounds[usize::from(props.silent)].clone());
         let sound = select(p, sounds.clone(), picked, move |o| {
-            UiMessage::SetAccountProps(
+            UiMessage::Accounts(accounts::Msg::SetProps(
                 account.clone(),
                 beeper_core::models::AccountProps { silent: o == sounds[1], ..props },
-            )
+            ))
         });
         let inbox = st.matrix.as_ref().and(bridge).map(|b| {
             let labels: Vec<String> = INBOX_OPTIONS.iter().map(|&(_, l)| inbox_label(l).to_string()).collect();
@@ -1673,7 +1714,7 @@ impl BeeperGuiApp {
             let picked = labels[at].clone();
             let pick = select(p, labels.clone(), picked, move |l| {
                 let i = labels.iter().position(|x| *x == l).expect("a listed option");
-                UiMessage::SetInboxVisibility(key.clone(), INBOX_OPTIONS[i].0)
+                UiMessage::Accounts(accounts::Msg::SetInboxVisibility(key.clone(), INBOX_OPTIONS[i].0))
             });
             pref_row(p, tr("Show in Inbox"), None, None, pick)
         });
@@ -1709,7 +1750,7 @@ impl BeeperGuiApp {
                 .padding([5, 0])
                 .width(Fill)
                 .style(btn_style([CLEAR; 3], [p.danger; 3], 0.0))
-                .on_press(UiMessage::AskRemoveAccount(id.into()))
+                .on_press(UiMessage::Accounts(accounts::Msg::AskRemove(id.into())))
                 .into()
         });
         let settings = group(p, Some(tr("Settings")), rows.collect());
@@ -1799,8 +1840,10 @@ impl BeeperGuiApp {
         let at = (level + 4.0) as u16;
         let knob =
             row![Space::new().width(Length::FillPortion(at)), knob, Space::new().width(Length::FillPortion(8 - at))];
-        let input = slider(-4.0..=4.0, level, UiMessage::ZoomDrag).on_release(UiMessage::ZoomRelease).height(20).style(
-            |_, _| slider::Style {
+        let input = slider(-4.0..=4.0, level, |a0| UiMessage::Zoom(zoom::Msg::Drag(a0)))
+            .on_release(UiMessage::Zoom(zoom::Msg::Release))
+            .height(20)
+            .style(|_, _| slider::Style {
                 rail: slider::Rail {
                     backgrounds: (CLEAR.into(), CLEAR.into()),
                     width: 0.0,
@@ -1812,8 +1855,7 @@ impl BeeperGuiApp {
                     border_width: 0.0,
                     border_color: CLEAR,
                 },
-            },
-        );
+            });
         let track = stack![container(rail).center_y(20), container(ticks).center_y(20), knob, input]
             .width(Length::FillPortion(34));
         let icon = |size, pad: Padding| {
@@ -1845,7 +1887,7 @@ impl BeeperGuiApp {
             .collect();
         let picked = shown[s.pref(key) as usize].clone();
         select(&self.pal, shown.clone(), picked, move |o| {
-            UiMessage::SetPref(key, shown.iter().position(|x| *x == o).expect("listed option") as u8)
+            UiMessage::Settings(Msg::SetPref(key, shown.iter().position(|x| *x == o).expect("listed option") as u8))
         })
     }
 
@@ -1854,7 +1896,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let locked = r.feature.is_some_and(|f| st.feature(f).locked());
         // Desktop's `onFeatureInteraction` of a locked row opens the Beeper Plus subscription prompt.
-        let upsell = UiMessage::SelectSettingsTab(SettingsTab::BeeperPlus);
+        let upsell = UiMessage::Settings(Msg::SelectTab(SettingsTab::BeeperPlus));
         let mut press = None;
         let control = match r.control {
             prefs::Control::Toggle(_) => {
@@ -1862,7 +1904,7 @@ impl BeeperGuiApp {
                 let off = r.requires.is_some_and(|k| !s.on(k)) || locked;
                 press = match locked {
                     true => Some(upsell.clone()),
-                    false => (!off).then_some(UiMessage::SetPref(r.key, 1 - v)),
+                    false => (!off).then_some(UiMessage::Settings(Msg::SetPref(r.key, 1 - v))),
                 };
                 toggle_faded(p, v == 1 && !locked, press.clone(), if off { 0.5 } else { 1.0 })
             }
@@ -1886,7 +1928,7 @@ impl BeeperGuiApp {
                     let label = txt(label, 13.0).color(p.text);
                     button(row![dot, label].spacing(8).align_y(Center))
                         .bare(p.text)
-                        .on_press(UiMessage::SetPref(customized.key, value))
+                        .on_press(UiMessage::Settings(Msg::SetPref(customized.key, value)))
                 };
                 let emojis = s.quick_reactions.iter().zip(1..).map(|(e, slot)| emoji_button(p, e, slot));
                 let own = row![choice(trx("Custom", "quick reactions option"), custom, 1)].extend(emojis);
@@ -1899,17 +1941,17 @@ impl BeeperGuiApp {
                 let change = button(med(tr("Change"), 12.0).color(p.text))
                     .padding([4, 10])
                     .style(pill_style(p))
-                    .on_press(UiMessage::PickDownloads);
+                    .on_press(UiMessage::Settings(Msg::PickDownloads));
                 let dir = downloads_dir(s).display().to_string();
                 return pref_row(p, tr(r.label), Some(&dir), None, change.into());
             }
             prefs::Control::BlockedUsers => {
-                press = Some(UiMessage::OpenBlockedUsers);
+                press = Some(UiMessage::Blocking(blocking::Msg::OpenList));
                 let n = txt(blocked_chats(st).len().to_string(), 13.0).color(p.muted);
                 row![n, ic(icon::CHEVRON_RIGHT, 16.0).color(p.muted)].spacing(2).align_y(Center).into()
             }
             prefs::Control::Analytics => {
-                press = Some(UiMessage::ShareAnalytics);
+                press = Some(UiMessage::Settings(Msg::ShareAnalytics));
                 toggle_faded(p, !st.whoami.analytics_disabled, press.clone(), 1.0)
             }
             prefs::Control::Select(..) if locked => {
@@ -1943,7 +1985,7 @@ impl BeeperGuiApp {
                 };
                 let options: Vec<String> = std::iter::once(same.clone()).chain(names.iter().cloned()).collect();
                 let pick = select(p, options, shown, move |o| {
-                    UiMessage::SetMicrophone(if o == same { String::new() } else { o })
+                    UiMessage::Settings(Msg::SetMicrophone(if o == same { String::new() } else { o }))
                 });
                 let desc = matches!(self.mics, Some(Err(_))).then_some(tr("Unable to load microphones."));
                 return pref_row(p, tr(r.label), desc, None, pick);
@@ -1952,7 +1994,7 @@ impl BeeperGuiApp {
                 assert!(r.desc.is_none() && r.badge.is_none(), "{} is a plain slider", r.key);
                 let key = r.key;
                 // Desktop's range input from 0 to 1 in steps of 0.1.
-                let bar = slider(0..=100u8, s.pref(key), move |x| UiMessage::SetPref(key, x))
+                let bar = slider(0..=100u8, s.pref(key), move |x| UiMessage::Settings(Msg::SetPref(key, x)))
                     .step(10u8)
                     .height(16)
                     .style(slider_style(p));
@@ -1994,7 +2036,7 @@ impl BeeperGuiApp {
                             0 => tr("Archive chats").into(),
                             n => trnx("Archive %d chat", "Archive %d chats", n, "auto-archive catch-up button", &[&n]),
                         },
-                        UiMessage::ArchiveStale
+                        UiMessage::ChatList(chat_list::Msg::ArchiveStale)
                     )
                 ]
                 .spacing(8)
@@ -2012,5 +2054,253 @@ impl BeeperGuiApp {
             Some(m) => mouse_area(row).on_press(m).into(),
             None => row,
         }
+    }
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    Open(SettingsTab),
+    SelectTab(SettingsTab),
+    Query(String),
+    Focus(usize),
+    /// Moves the focused search result down by the given count, wrapping around.
+    Step(usize),
+    Pick(SettingsHit),
+    CycleTheme,
+    SelectTheme(ThemeChoice),
+    SystemTheme(iced::theme::Mode),
+    SetPref(&'static str, u8),
+    ToggleSetting(fn(&mut BeeperSettings)),
+    /// Desktop's "Change" of "Downloads location", and the picked folder.
+    PickDownloads,
+    DownloadsPicked(Result<Vec<std::path::PathBuf>, String>),
+    SetQuickEmoji(u8, String),
+    DevicesLoaded(Result<Vec<DeviceInfo>, String>),
+    MicsLoaded(Result<(String, Vec<String>), String>),
+    SetMicrophone(String),
+    /// Desktop's "Share Analytics" toggle.
+    ShareAnalytics,
+    /// The server saved `analyticsDisabled`, or failed and the toggle goes back to the first value.
+    AnalyticsSaved(bool, Result<(), String>),
+    /// "Logout" of another device in Settings > Devices, its confirmation, and the end of the logout.
+    AskLogoutDevice(String),
+    LogoutDevice(String),
+    DeviceLoggedOut(String, Result<(), String>),
+    StorageScanned(Vec<storage::Entry>),
+    /// The age choice of the clear for all chats (0) or for the open chat (1).
+    StorageAge(usize, usize),
+    /// Toggles a type, as its index in [`storage::Kind::ALL`], for all chats (0) or for the open chat (1).
+    StorageKind(usize, usize),
+    StorageChat(String),
+    /// Clears the chosen storage of all chats (0), the cache (1) or the open chat (2).
+    ClearStorage(u8),
+    StorageCleared(Result<(), String>),
+    JoinCommunity,
+    CommunityJoined(Result<(), String>),
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn settings(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::SelectTab(SettingsTab::Help) | Msg::Open(SettingsTab::Help) => {
+                return Task::done(UiMessage::OpenUrl("https://help.beeper.com/?ref=desktop-app".into()));
+            }
+            Msg::SelectTab(t)
+                if self.active_settings_tab == SettingsTab::Profile
+                    && t != SettingsTab::Profile
+                    && self.profile.dirty(self.store.read().me()) =>
+            {
+                self.profile.leaving = Some(t);
+            }
+            Msg::SelectTab(t) => {
+                let top = operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
+                self.active_settings_tab = t;
+                (self.account_page, self.app_qr) = (None, false);
+                return Task::batch([top, self.load_devices()]);
+            }
+            Msg::DevicesLoaded(r) => (self.devices, self.devices_busy) = (Some(r), false),
+            Msg::AskLogoutDevice(id) => (self.confirm, self.delete_target) = (Some(ASK_LOGOUT_DEVICE), Some(id)),
+            Msg::LogoutDevice(id) => return self.logout_device(id),
+            Msg::DeviceLoggedOut(id, r) => return self.device_logged_out(id, r),
+            Msg::MicsLoaded(r) => {
+                if let Err(e) = &r {
+                    eprintln!("Unable to load audio input devices: {e}");
+                }
+                self.mics = Some(r);
+            }
+            Msg::SetMicrophone(name) => self.patch_settings(|s| s.microphone = name),
+            Msg::ShareAnalytics => {
+                let mut st = self.store.write();
+                let was = st.whoami.analytics_disabled;
+                st.whoami.analytics_disabled = !was;
+                let (cloud, token) = (self.cloud.clone(), st.beeper_state.access_token.clone());
+                if !st.config.demo {
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || cloud.set_analytics_disabled(&token, !was))
+                                .await
+                                .expect("analytics worker thread")
+                        },
+                        move |r| UiMessage::Settings(Msg::AnalyticsSaved(was, r.map_err(|e| e.message))),
+                    );
+                }
+            }
+            Msg::AnalyticsSaved(_, Ok(())) => {}
+            Msg::AnalyticsSaved(was, Err(e)) => {
+                self.store.write().whoami.analytics_disabled = was;
+                self.fail(Toast::new(trf("Something went wrong: %s", &[&e])));
+            }
+            Msg::CycleTheme => {
+                let cur = self.store.read().settings.theme;
+                let next = ThemeChoice::ALL[(ThemeChoice::ALL.iter().position(|t| *t == cur).expect("listed") + 1) % 3];
+                return self.update(UiMessage::Settings(Msg::SelectTheme(next)));
+            }
+            Msg::SystemTheme(mode) => {
+                self.system_dark = mode == iced::theme::Mode::Dark;
+                self.refresh_theme_and_tray();
+            }
+            Msg::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
+            Msg::ToggleSetting(flip) => self.patch_settings(flip),
+            Msg::SetQuickEmoji(0, e) => {
+                self.patch_settings(|s| s.quick_reaction = e);
+                let mut st = self.store.write();
+                let client = st.matrix.clone();
+                if let Some(((kind, content), c)) = beeper_core::matrix::quick_reaction_write(&mut st).zip(client) {
+                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
+                }
+            }
+            Msg::SetQuickEmoji(slot, e) => {
+                self.patch_settings(|s| s.quick_reactions[usize::from(slot) - 1] = e);
+            }
+            Msg::PickDownloads => {
+                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Folder);
+                return Task::perform(pick, |a0| UiMessage::Settings(Msg::DownloadsPicked(a0)));
+            }
+            Msg::DownloadsPicked(Ok(dirs)) => {
+                if let Some(dir) = dirs.into_iter().next() {
+                    self.patch_settings(|s| s.downloads_dir = dir.display().to_string());
+                }
+            }
+            Msg::DownloadsPicked(Err(e)) => self.fail(Toast::new(e)),
+            Msg::StorageScanned(all) => {
+                self.storage.chart = Some(donut(&storage_totals(&all)));
+                self.storage.all = Some(all);
+            }
+            Msg::StorageAge(which, i) => self.storage.ages[which] = i,
+            Msg::StorageKind(which, i) => self.storage.kinds[which] ^= 1 << i,
+            Msg::StorageChat(id) => {
+                let s = &mut self.storage;
+                (s.chat, s.ages[1], s.kinds[1]) = ((s.chat.as_ref() != Some(&id)).then_some(id), 1, 0b11111);
+            }
+            Msg::ClearStorage(which) => {
+                let mut picked: Vec<storage::Entry> = self.storage_pick(which).into_iter().cloned().collect();
+                if which == 0 {
+                    picked.extend(self.storage_pick(1).into_iter().cloned());
+                }
+                (self.confirm, self.storage.clearing) = (None, Some(which));
+                return Task::perform(storage::clear(self.store.clone(), picked), |a0| {
+                    UiMessage::Settings(Msg::StorageCleared(a0))
+                });
+            }
+            Msg::StorageCleared(r) => {
+                self.storage.clearing = None;
+                if let Err(e) = r {
+                    eprintln!("Unable to clear storage: {e}");
+                    self.fail(Toast::new(tr("Failed to clear storage").into()));
+                }
+                return self.scan_storage();
+            }
+            Msg::JoinCommunity => {
+                if self.store.read().resolve_chat_idx(COMMUNITY_ROOM).is_some() {
+                    let close = window::close(self.settings_window.expect("the settings window is open"));
+                    return Task::batch([self.update(UiMessage::SelectChat(COMMUNITY_ROOM.into())), close]);
+                }
+                if !self.integrations.joining {
+                    self.integrations.joining = true;
+                    return Task::perform(beeper_core::matrix::join(self.store.clone(), COMMUNITY_ROOM.into()), |r| {
+                        UiMessage::Settings(Msg::CommunityJoined(r.map(drop)))
+                    });
+                }
+            }
+            Msg::CommunityJoined(r) => {
+                self.integrations.joining = false;
+                match r {
+                    Ok(()) => {
+                        let text = tr("Successfully joined the Beeper community room!").into();
+                        self.show(Toast {
+                            buttons: vec![(tr("Open"), UiMessage::Settings(Msg::JoinCommunity))],
+                            ..Toast::new(text)
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to join community room: {e}");
+                        self.fail(Toast::new(
+                            tr("Something went wrong while joining the Beeper Developer Community chat. Please try again.")
+                                .into(),
+                        ));
+                    }
+                }
+            }
+            Msg::Open(tab) => {
+                self.chat_menu = None;
+                return self.open_settings(tab);
+            }
+            Msg::Query(q) => {
+                let st = self.store.read();
+                let n = search_settings(&st, &q).len();
+                if n != search_settings(&st, &self.settings_query).len() {
+                    self.settings_focus = 0;
+                    self.settings_pick = self.settings_pick.filter(|_| n > 0);
+                }
+                self.settings_query = q;
+            }
+            Msg::Focus(i) => self.settings_focus = i,
+            Msg::Step(step) => {
+                self.settings_focus =
+                    (self.settings_focus + step) % search_settings(&self.store.read(), &self.settings_query).len();
+                return locate(format!("hit-{}", self.settings_focus), "settings-nav", true);
+            }
+            Msg::Pick(hit) => {
+                self.settings_pick = Some(hit);
+                let tab = match hit {
+                    SettingsHit::Section(t, _) | SettingsHit::Pref(t, _) | SettingsHit::Custom(t, _) => t,
+                    SettingsHit::Network(_) => SettingsTab::Accounts,
+                };
+                let load = Task::batch([
+                    self.update(UiMessage::Settings(Msg::SelectTab(tab))),
+                    operation::focus("settings-search"),
+                ]);
+                return match hit {
+                    SettingsHit::Pref(_, &prefs::Pref { key, .. }) | SettingsHit::Custom(_, key) => {
+                        self.pref_flash = Some((key, std::time::Instant::now()));
+                        Task::batch([load, locate(key, "settings-pane", false)])
+                    }
+                    SettingsHit::Network(_) => {
+                        self.adding_account = true;
+                        load
+                    }
+                    SettingsHit::Section(..) => load,
+                };
+            }
+            Msg::SetPref(key, v) => {
+                if key == "incognito" {
+                    let was = u8::from(self.store.read().settings.on(key));
+                    let what = if v != 0 { tr("Enable Incognito Mode") } else { tr("Disable Incognito Mode") };
+                    self.act(what.into(), UiMessage::Settings(Msg::SetPref(key, was)), None);
+                }
+                self.patch_settings(|s| s.set_pref(key, v));
+                self.relaunch_toast = match key {
+                    "spellcheck" | "quitOnClose" | "hwAcceleration" | "hiddenEvents" => Some("Preference changed"),
+                    "appLanguage" => Some("App language will change after relaunch"),
+                    _ => self.relaunch_toast,
+                };
+                let mut st = self.store.write();
+                let client = st.matrix.clone();
+                if let Some(((kind, content), c)) = beeper_core::matrix::pref_write(&mut st, key).zip(client) {
+                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
+                }
+            }
+        }
+        self.settle()
     }
 }
