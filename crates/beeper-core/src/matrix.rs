@@ -1134,6 +1134,38 @@ async fn union_rooms(room: &Room) -> Vec<String> {
     children.iter().filter_map(|v| s(&v["state_key"])).collect()
 }
 
+/// Desktop's `createUnion` and `setUnionAvatarMxc`: a private `com.beeper.union` room with the name and the member
+/// rooms as `m.space.child` state, then its photo.
+async fn create_union(
+    store: &SharedStore,
+    client: &Client,
+    draft: &str,
+    title: Option<String>,
+    rooms: Vec<String>,
+    avatar: Option<String>,
+) -> Result<(), String> {
+    use matrix_sdk::ruma::api::client::room::create_room::v3::{Request, RoomPreset};
+    fn raw<T>(v: Value) -> Raw<T> {
+        Raw::from_json(serde_json::value::to_raw_value(&v).expect("union JSON"))
+    }
+    let event = |kind: &str, key: &str, content: Value| {
+        raw(serde_json::json!({ "type": kind, "state_key": key, "content": content }))
+    };
+    let mut request = Request::new();
+    request.creation_content = Some(raw(serde_json::json!({ "type": UNION, "com.beeper.union": true })));
+    let name = title.map(|name| event("m.room.name", "", serde_json::json!({ "name": name })));
+    let children = rooms.iter().map(|r| event("m.space.child", r, serde_json::json!({ "via": ["beeper.com"] })));
+    request.initial_state = name.into_iter().chain(children).collect();
+    request.preset = Some(RoomPreset::PrivateChat);
+    let room = client.create_room(request).await.map_err(|e| e.to_string())?;
+    store.write().created_union(draft, room.room_id().as_str());
+    if let Some(url) = avatar {
+        let content = serde_json::json!({ "url": url });
+        room.send_state_event_raw("m.room.avatar", "", content).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Desktop's `createLabel` and `addRoomToLabel`.
 async fn create_label(store: &SharedStore, client: &Client, label: Label) -> Result<(), String> {
     use matrix_sdk::ruma::api::client::room::create_room::v3::{Request, RoomPreset};
@@ -1842,6 +1874,13 @@ pub enum Outgoing {
     CreateLabel(Label),
     /// The name, color and icon of a label, with the chats to add (true) or remove (false), like Desktop's `updateLabel`.
     EditLabel(Label, Vec<(String, bool)>),
+    /// Desktop's `createUnion`: a `com.beeper.union` room with the name, the rooms as children and the photo. Its chat
+    /// is the ID of the merged chat here.
+    CreateUnion {
+        title: Option<String>,
+        rooms: Vec<String>,
+        avatar: Option<String>,
+    },
     /// Leaves the room, and forgets it for Desktop's `deleteLabel`.
     Leave(bool),
     /// A state event with an empty state key.
@@ -2522,6 +2561,9 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
     if let Outgoing::CreateLabel(label) = out {
         return Ok(create_label(store, &client, label).await?);
     }
+    if let Outgoing::CreateUnion { title, rooms, avatar } = out {
+        return Ok(create_union(store, &client, &chat, title, rooms, avatar).await?);
+    }
     let chat = store.read().sent.get(&chat).cloned().unwrap_or(chat);
     let room = chat_room(&client, &chat).await?;
     let event = |id: String| {
@@ -2826,6 +2868,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             sent(txn, id.await.map_err(e)?.response.event_id);
         }
         Outgoing::CreateLabel(_) => unreachable!("a label has no room before it is created"),
+        Outgoing::CreateUnion { .. } => unreachable!("a merged chat has no room before it is created"),
         Outgoing::EditLabel(label, changes) => {
             let state = |kind: &'static str, content: Value| room.send_state_event_raw(kind, "", content);
             state("m.room.name", serde_json::json!({ "name": label.name })).await.map_err(e)?;

@@ -121,6 +121,18 @@ impl Flags {
         })
     }
 
+    /// Desktop's `maxMergeChats`: the `max-merge-chats` flag, a whole number from -1 for no limit, else 1.
+    pub fn max_merge_chats(&self) -> i64 {
+        let all = &self.flags["features"];
+        let v = all["appType:desktop"].get("max-merge-chats").or_else(|| all["*"].get("max-merge-chats"));
+        let n = match v {
+            Some(Value::Number(n)) => n.as_f64(),
+            Some(Value::String(s)) if !s.trim().is_empty() => s.trim().parse().ok(),
+            _ => None,
+        };
+        n.filter(|n| n.fract() == 0.0 && *n >= -1.0).map_or(1, |n| n as i64)
+    }
+
     /// Desktop's `freebieStore.deriveState`: whether a free use or a trial is open, and the free uses left.
     /// A bad trial end or a missing limit gives Desktop's `NaN`, which is not open.
     fn free(&self, name: &str) -> Option<(bool, i64)> {
