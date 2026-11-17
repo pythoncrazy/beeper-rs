@@ -22,12 +22,12 @@ use crate::units::human_size;
 use crate::windows;
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, commands, copy_text, delete_dialog, downloads_dir, ease_out,
-    edit_open, editable, email, enter_key, feedback_btn, file_icon, fmt_phone, gallery, handle, has_older, lift,
-    locate, member_name, membership, menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link,
-    reply_root, safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable,
-    unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON,
-    BUBBLE_PAD_X, CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W,
-    ORANGE, POLL_CHECK, POLL_ENDED, TRASH, VIEW_SIDEBAR,
+    edit_open, editable, enter_key, feedback_btn, file_icon, fmt_phone, gallery, handle, has_older, lift, locate,
+    member_name, membership, menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link, reply_root,
+    safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable, unused_path,
+    video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X,
+    CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE,
+    POLL_CHECK, POLL_ENDED, TRASH, VIEW_SIDEBAR,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::*;
@@ -511,8 +511,10 @@ impl BeeperGuiApp {
         let m = st.message(mid);
         let (cid, mid, mine) = (m.chat_id.clone(), m.id.clone(), m.is_sender == Some(true));
         let text = m.text.clone().unwrap_or_default();
-        let link = m.links.first().map(|l| l.url.clone());
-        let address = text.split_whitespace().find_map(email).map(str::to_string);
+        // Desktop's items of the clicked link: its address for a `mailto:` one, else its URL.
+        let clicked = self.pane().menu_link.as_deref();
+        let address = clicked.and_then(|h| h.strip_prefix("mailto:")).map(str::to_string);
+        let link = clicked.filter(|h| h.starts_with("https://")).map(str::to_string);
         let entire = link.is_some();
         let rule = || (menu_rule(p), 11.0);
         let item = |label: String, hotkey, msg: Option<UiMessage>| {
@@ -1436,7 +1438,7 @@ impl BeeperGuiApp {
         });
         // Desktop's `pM`: a link with a title, an image or a summary has a preview.
         for link in m.links.iter().filter(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some()) {
-            parts = parts.push(self.view_link(link, 0.45 * self.pane().size.width, dim));
+            parts = parts.push(self.view_link(&m.id, link, 0.45 * self.pane().size.width, dim));
         }
         if ms.len() > 1 {
             parts = parts.push(self.view_gallery(ms));
@@ -1662,31 +1664,18 @@ impl BeeperGuiApp {
                 let arrow = s.link.is_some().then(arrow);
                 [Some(s), arrow].into_iter().flatten()
             };
-            // A word of plain text, linked to its email address.
-            let word = |w: &str| {
-                let t = w.trim_end();
-                let (linked, url) = match email(t) {
-                    Some(e) => (e, Some(format!("mailto:{e}"))),
-                    None => (t, None),
-                };
-                let word = span(linked.to_string()).size(13.0).color(fg).underline(url.is_some());
-                let arrow = url.is_some().then(arrow);
-                let rest = w[linked.len()..].to_string();
-                [Some(word.link_maybe(url)), arrow, (!rest.is_empty()).then(|| span(rest).size(13.0).color(fg))]
-                    .into_iter()
-                    .flatten()
-            };
+            let word = |w: &str| span(w.to_string()).size(13.0).color(fg);
             // Plain text with Desktop's linkify links: each with its underline and arrow, the rest word by word.
             let plain = |text: &str| {
                 let mut spans = Vec::new();
                 let mut at = 0;
                 for (range, href) in crate::linkify::links(text) {
-                    spans.extend(text[at..range.start].split_inclusive(' ').flat_map(word));
+                    spans.extend(text[at..range.start].split_inclusive(' ').map(word));
                     spans.push(span(text[range.clone()].to_string()).size(13.0).color(fg).underline(true).link(href));
                     spans.push(arrow());
                     at = range.end;
                 }
-                spans.extend(text[at..].split_inclusive(' ').flat_map(word));
+                spans.extend(text[at..].split_inclusive(' ').map(word));
                 spans
             };
             // Each block: its list marker, spans, plain text, blockquote depth and heading level.
@@ -1748,10 +1737,12 @@ impl BeeperGuiApp {
                     if i == last && room > 0.0 {
                         spans.push(span(pad.clone()).size(13.0));
                     }
+                    let id = m.id.clone();
                     let line = crate::selectable::selectable(spans)
                         .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                        .on_link_click(UiMessage::OpenUrl);
+                        .on_link_click(UiMessage::OpenUrl)
+                        .on_link_menu(move |href| UiMessage::Message(Msg::LinkMenu(id.clone(), href)));
                     let gap = match (prev_item.replace(marker.is_some()), marker.is_some()) {
                         (None, _) => 0.0,
                         (Some(true), true) => 6.0,
@@ -2238,6 +2229,8 @@ pub enum Msg {
     OpenPollVotes(String, String),
     EndPoll(String, String),
     OpenMenu(String),
+    /// A right click on a link of a message, by its `href`.
+    LinkMenu(String, String),
     /// Select the message, or unselect it when it is selected.
     Click(String),
     Select(Vec<String>),
@@ -2339,7 +2332,23 @@ impl BeeperGuiApp {
                 self.vote_windows.push((id, chat, mid));
                 return open;
             }
+            Msg::LinkMenu(mid, href) if href.starts_with("https://") || href.starts_with("mailto:") => {
+                // Desktop's menu of a link leaves the selection, and has the link's own items.
+                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
+                self.pane.menu_selection = None;
+                if !self.pane.selected_msgs.contains(&mid) {
+                    self.pane.selected_msgs = vec![mid];
+                }
+                self.pane.menu_link = Some(href);
+                return open;
+            }
+            Msg::LinkMenu(mid, href) if href.starts_with(crate::MENTION) => {
+                return self.update(UiMessage::Message(Msg::OpenMenu(mid)));
+            }
+            // Desktop leaves the right click on another link to Electron, which has no menu for it.
+            Msg::LinkMenu(..) => {}
             Msg::OpenMenu(mid) => {
+                self.pane.menu_link = None;
                 // With text selected, Desktop leaves the menu to Electron's, which offers the selection.
                 self.pane.menu_selection = crate::selectable::has_selection().then(crate::selectable::text);
                 // Desktop's `selectOnly`: a right click on a message outside the selection selects it alone.
@@ -2746,6 +2755,31 @@ mod tests {
         app.pane.selected_msgs = ids[..2].to_vec();
         let _ = app.update(UiMessage::Message(Msg::QuoteSelected));
         assert!(app.pane.composer.text().starts_with("> "), "the selection is quoted in the composer");
+    }
+
+    /// Desktop's link items: "Copy Link" and "Copy Entire Message" only for a right click on an `https://` link, the
+    /// address items only for a `mailto:` one, and no menu for another link.
+    #[test]
+    fn menu_of_a_clicked_link_like_desktop() {
+        let mut app = crate::fuzz::demo_app("link-menu");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = {
+            let st = app.store.read();
+            app.timeline(&st).0.iter().find(|m| !m.links.is_empty()).expect("a message with a preview").id.clone()
+        };
+        let finds = |app: &BeeperGuiApp, label: &str| simulator(app.view_message_menu(&mid).0).find(label).is_ok();
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
+        assert!(!finds(&app, "Copy Link") && finds(&app, "Copy") && !finds(&app, "Copy Entire Message"));
+        let _ = app.update(UiMessage::Message(Msg::LinkMenu(mid.clone(), "https://a.io/x".into())));
+        assert!(finds(&app, "Copy Link") && finds(&app, "Copy Entire Message"), "the link's items");
+        assert_eq!(app.pane.selected_msgs, std::slice::from_ref(&mid));
+        let _ = app.update(UiMessage::Message(Msg::LinkMenu(mid.clone(), "mailto:me@x.com".into())));
+        assert!(finds(&app, "Copy me@x.com") && finds(&app, "Email me@x.com…") && !finds(&app, "Copy Link"));
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
+        assert!(!finds(&app, "Email me@x.com…"), "another right click drops the link");
+        app.pane.message_menu = None;
+        let _ = app.update(UiMessage::Message(Msg::LinkMenu(mid.clone(), "http://a.io".into())));
+        assert!(app.pane.message_menu.is_none(), "Desktop has no menu for another link");
     }
 
     /// Desktop's reaction pills: one pill a group of skin tones, in the order the groups first appear, and a click

@@ -521,15 +521,6 @@ fn account_option(st: &BeeperStore, account_id: &str, listed: &[String]) -> Stri
     format!("{n} — {} (cloud)", account_display_name(st, account_id, listed))
 }
 
-/// The email address that linkifyjs finds in a word, without trailing punctuation.
-fn email(word: &str) -> Option<&str> {
-    let w = word.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '"', '\'']);
-    let (local, domain) = w.split_once('@')?;
-    let ok = |s: &str, more: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || more.contains(c));
-    let (host, tld) = domain.rsplit_once('.')?;
-    (ok(local, "._%+-") && ok(host, ".-") && tld.len() > 1 && tld.chars().all(char::is_alphabetic)).then_some(w)
-}
-
 /// Desktop's `userProfileLink`: the web profile of the other person of a chat, on the networks that have one.
 fn profile_link(c: &Chat) -> Option<String> {
     let u = c.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| c.chat_type == "single")?;
@@ -2287,6 +2278,8 @@ pub struct Pane {
     pub message_menu: Option<(String, Point)>,
     /// The text selected when the message menu opened, which turns it into the menu for the selection.
     pub menu_selection: Option<String>,
+    /// The `href` of the link whose right click opened the message menu: an `https://` or `mailto:` one.
+    pub menu_link: Option<String>,
     /// The messages of the gallery whose menu is open.
     pub gallery_menu: Vec<String>,
     /// The reactions list of the messages of a gallery, at a point, from the gallery menu.
