@@ -468,11 +468,11 @@ fn attachments_send_like_desktop() {
 fn pastes_attach_files_like_desktop() {
     let mut app = demo_app("paste");
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
-    // Ctrl+V in the composer reads the files of the clipboard first, and the window does not paste a second time.
+    // Ctrl+V (Cmd+V on macOS) in the composer reads the files of the clipboard first, and the window does not paste a second time.
     let id = app.main_window.expect("a main window");
     let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id));
     sim.click(iced::widget::Id::new("composer-input")).expect("a composer");
-    let _ = sim.simulate([key(Key::Character("v".into()), Modifiers::CTRL)]);
+    let _ = sim.simulate([key(Key::Character("v".into()), Modifiers::COMMAND)]);
     let msgs: Vec<UiMessage> = sim.into_messages().collect();
     assert!(matches!(msgs[..], [UiMessage::ComposerEdit(_), UiMessage::Paste]), "{msgs:?}");
     let files = app.update(UiMessage::Pasted(Ok(Clip::Files(vec!["/tmp/a.pdf".into()]))));
@@ -1727,9 +1727,12 @@ fn galleries_select_and_have_a_menu_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(chat));
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Click(ids.clone())));
     assert_eq!(app.pane.selected_msgs, ids, "a click selects the gallery");
-    app.mods = Modifiers::CTRL;
+    app.mods = Modifiers::COMMAND;
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
-    assert!(!app.pane.selected_msgs.contains(&ids[1]) && app.carousel.is_none(), "Ctrl and a tile unselect a photo");
+    assert!(
+        !app.pane.selected_msgs.contains(&ids[1]) && app.carousel.is_none(),
+        "Ctrl/Cmd and a tile unselect a photo"
+    );
     app.mods = Modifiers::empty();
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
     assert!(app.carousel.is_some(), "a tile opens the carousel");
@@ -3252,6 +3255,85 @@ fn quote_details_like_desktop() {
     assert!(shows(&app, "Message Deleted") && !shows(&app, "secret"), "a deleted quote shows as deleted");
 }
 
+/// Desktop's sortable pinned grid (`lY`): a pin dragged over another pin takes its place, and the drop keeps the
+/// order in `favourites_order`.
+#[test]
+fn pins_drag_into_order_like_desktop() {
+    let mut app = demo_app("pin-drag");
+    let pins = |app: &BeeperGuiApp| -> Vec<String> {
+        let st = app.store.read();
+        app.pins_and_rows(&st).0.iter().map(|c| c.id.clone()).collect()
+    };
+    let before = pins(&app);
+    assert!(before.len() >= 2, "the demo has pins: {before:?}");
+    let (first, last) = (before[0].clone(), before[before.len() - 1].clone());
+    let _ = app.update(UiMessage::PinHover(Some(first.clone())));
+    let _ = app.update(UiMessage::PinPress);
+    let _ = app.update(UiMessage::PinDragMoved(Point::new(10.0, 10.0)));
+    let _ = app.update(UiMessage::PinDragMoved(Point::new(12.0, 12.0)));
+    assert_eq!(pins(&app), before, "a move under 5 px is a click");
+    let _ = app.update(UiMessage::PinDragMoved(Point::new(40.0, 10.0)));
+    let _ = app.update(UiMessage::PinHover(Some(last.clone())));
+    let _ = app.update(UiMessage::PinDragEnd);
+    let after = pins(&app);
+    let want: Vec<String> = before[1..].iter().cloned().chain([first.clone()]).collect();
+    assert_eq!(after, want, "the first pin goes to the place of the last");
+    let st = app.store.read();
+    assert!(st.pin_rank[&first] > st.pin_rank[&last], "the order stays in the pin ranks");
+}
+
+/// Desktop's header card (`Amt`): the pointer on it shows the members of the chat, which stay 500 ms after it leaves.
+#[test]
+fn the_header_shows_the_members_on_hover_like_desktop() {
+    let mut app = demo_app("header-members");
+    let _ = app.update(UiMessage::SelectChat("!wa_family:beeper.com".into()));
+    let chat = app.store.read().chat("!wa_family:beeper.com").clone();
+    assert!(app.header_members(&chat).is_some(), "a group has members to list");
+    assert!(!app.header_hover.0, "no list before the pointer comes");
+    let _ = app.update(UiMessage::HeaderHover(true));
+    assert!(app.header_hover.0, "the members show");
+    let _ = app.update(UiMessage::HeaderHover(false));
+    let left = app.header_hover.1;
+    assert!(app.header_hover.0, "and stay while the pointer may come back");
+    let _ = app.update(UiMessage::HeaderHover(true));
+    let _ = app.update(UiMessage::HeaderHoverEnd(left));
+    assert!(app.header_hover.0, "coming back keeps them");
+    let _ = app.update(UiMessage::HeaderHover(false));
+    let _ = app.update(UiMessage::HeaderHoverEnd(app.header_hover.1));
+    assert!(!app.header_hover.0, "then they go");
+}
+
+/// Electron's `autoHideMenuBar` of Desktop's menu bar: Alt on its own shows it and hides it, a key with Alt does not,
+/// a menu runs its item and hides, and the pointer moves between the open menus.
+#[test]
+fn the_menu_bar_shows_with_alt_like_desktop() {
+    let mut app = demo_app("menu-bar");
+    app.focused = true;
+    let id = app.main_window.expect("a main window");
+    let alt = |app: &mut BeeperGuiApp, keys: &[Option<Key>]| {
+        let _ = app.update(UiMessage::Modifiers(Modifiers::ALT));
+        for k in keys.iter().flatten() {
+            let _ = app.update(UiMessage::WindowKey(id, k.clone(), Modifiers::ALT));
+        }
+        let _ = app.update(UiMessage::Modifiers(Modifiers::empty()));
+    };
+    alt(&mut app, &[]);
+    assert_eq!(app.menu_bar, Some(None), "Alt shows the menu bar");
+    let titles: Vec<String> = app.menus().into_iter().map(|m| m.0).collect();
+    assert_eq!(titles, ["Beeper", "File", "Edit", "View", "Window", "Help"]);
+    alt(&mut app, &[]);
+    assert_eq!(app.menu_bar, None, "and Alt hides it");
+    alt(&mut app, &[Some(Key::Character("f".into()))]);
+    assert_eq!(app.menu_bar, None, "Alt with another key is no toggle");
+    let _ = app.update(UiMessage::MenuBar(Some(Some(0))));
+    let _ = app.update(UiMessage::MenuBarHover(3));
+    assert_eq!(app.menu_bar, Some(Some(3)), "an open menu follows the pointer");
+    assert!(simulator(app.view(id)).find("Hide Sidebar").is_ok(), "the View menu shows its items");
+    let hidden = app.sidebar_hidden;
+    let _ = app.update(UiMessage::MenuBarRun(Box::new(UiMessage::RunHotkey("Toggle Sidebar"))));
+    assert_eq!((app.menu_bar, app.sidebar_hidden), (None, !hidden), "the item runs and the menu bar hides");
+}
+
 /// Desktop's `activityTimestamp` and `isArchivedInList`: a draft moves its chat to the top, and out of the archive.
 #[test]
 fn drafts_move_chats_like_desktop() {
@@ -4510,7 +4592,7 @@ fn background_menus_like_desktop() {
 
     let chat = app.store.read().chats[0].id.clone();
     let _ = app.update(UiMessage::ClickChat(chat.clone()));
-    let at = Point::new(68.0 + SIDEBAR_WIDTH + 40.0, 60.0);
+    let at = Point::new(68.0 + SIDEBAR_WIDTH + 40.0, 20.0);
     assert_eq!(right_click(&mut app, at), Some(chat.clone()), "the chat header has the chat menu");
     let _ = app.update(UiMessage::CloseModals);
     let _ = app.update(UiMessage::ToggleCommandPalette);
@@ -6642,6 +6724,22 @@ fn a_later_launch_shows_the_window_like_desktop() {
     assert!(!app.hidden, "Desktop's second-instance event shows the main window");
 }
 
+/// Desktop's `ga` (`mainWindowSetSize`): the onboarding window grows into the main window around its center and on
+/// the screen, and shrinks back the same way.
+#[test]
+fn the_window_grows_around_its_center_like_desktop() {
+    let screen = Size::new(1440.0, 900.0);
+    let (at, size) = crate::grown(Point::new(555.0, 140.0), Size::new(330.0, 620.0), Size::new(1200.0, 800.0), screen);
+    assert_eq!((at, size), (Point::new(120.0, 50.0), Size::new(1200.0, 800.0)), "centered where the onboarding was");
+    let corner = crate::grown(Point::new(1100.0, 280.0), Size::new(330.0, 620.0), Size::new(1200.0, 800.0), screen);
+    assert_eq!(corner.0, Point::new(240.0, 100.0), "kept on the screen");
+    let small =
+        crate::grown(Point::ORIGIN, Size::new(330.0, 620.0), Size::new(1200.0, 800.0), Size::new(1024.0, 700.0));
+    assert_eq!(small, (Point::ORIGIN, Size::new(1024.0, 700.0)), "no bigger than the screen");
+    let back = crate::grown(Point::new(120.0, 50.0), Size::new(1200.0, 800.0), Size::new(330.0, 620.0), screen);
+    assert_eq!(back.0, Point::new(555.0, 140.0), "and back around the same center");
+}
+
 #[test]
 fn main_window_keeps_its_state_like_desktop() {
     let mut app = demo_app("windowstate");
@@ -6659,6 +6757,10 @@ fn main_window_keeps_its_state_like_desktop() {
     let _ = app.update(UiMessage::OpenMedia);
     assert_eq!(app.media_window.as_ref().unwrap().size, Size::new(800.0, 600.0), "the Media window opens at its size");
     assert_eq!(app.main_window_settings().size, Size::new(900.0, 700.0), "the main window keeps its state");
+    // Desktop's chat windows keep the size of the last one under `pop-out-thread`.
+    write_window_state(&path, "pop-out-thread", false, Size::new(640.0, 520.0), Some(Point::new(5.0, 5.0)));
+    let _ = app.update(UiMessage::OpenChatWindow(beeper_core::store::NOTE_CHAT_ID.into()));
+    assert_eq!(app.chat_windows.last().map(|w| w.1.size), Some(Size::new(640.0, 520.0)), "a chat window opens at it");
     let main = app.main_window.expect("a main window");
     let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
     let title = app.store.read().chats.iter().find(|c| c.id == beeper_core::store::NOTE_CHAT_ID).unwrap().title.clone();

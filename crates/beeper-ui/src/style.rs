@@ -112,7 +112,7 @@ pub fn ensure_fonts_loaded() {
         *fs.raw() = cosmic_text::FontSystem::new_with_locale_and_db_and_fallback(locale, db, TwemojiFirst);
         // The font database reads the TrueType files in the binary, and each WOFF file unpacked once.
         let db = fs.raw().db_mut();
-        for ttf in [font!("icons.ttf"), FONT_EMOJI] {
+        for ttf in [font!("icons.ttf"), font!("Sniglet-ExtraBold.ttf"), FONT_EMOJI] {
             db.load_font_source(Source::Binary(Arc::new(ttf)));
         }
         let knicknack = desktop_asars().find_map(|p| knicknack_woff(&p));
@@ -124,14 +124,15 @@ pub fn ensure_fonts_loaded() {
 }
 
 /// Desktop draws avatar initials in Knicknack Bold. Its license does not let us ship it, so it loads from an
-/// installed Beeper Desktop, and the initials use Inter when there is none.
+/// installed Beeper Desktop, and the initials use Sniglet ExtraBold, a free font of the same round shapes, when there
+/// is none.
 static KNICKNACK: AtomicBool = AtomicBool::new(false);
 
 pub fn initials_font() -> Font {
     ensure_fonts_loaded();
     match KNICKNACK.load(Ordering::Relaxed) {
         true => Font { family: Family::Name("Knicknack"), weight: Weight::Medium, ..Font::DEFAULT },
-        false => fw(Weight::Medium),
+        false => Font { family: Family::Name("Sniglet"), weight: Weight::ExtraBold, ..Font::DEFAULT },
     }
 }
 
@@ -807,6 +808,10 @@ palette! {
     divider: Color = hexa(0x202124, 0.2), hexa(0xf6f6f6, 0.2);
     /// `--color-background-elevated`.
     elevated: Color = hex(0xffffff), hex(0x232323);
+    /// `--color-background-elevated-hover`.
+    elevated_hover: Color = hex(0xededed), hex(0x2e2e2e);
+    /// `--color-border-neutrals`.
+    border_neutrals: Color = hex(0xe2e2e2), hex(0x343434);
     /// `--color-primary-container`.
     primary_container: Color = hex(0xffffff), hex(0x1c1c1d);
     /// `--color-tertiary-container`: the composer.

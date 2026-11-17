@@ -17,6 +17,7 @@ mod lift;
 mod links;
 pub mod login;
 mod media_view;
+mod menubar;
 mod message;
 mod notify;
 mod popover;
@@ -42,8 +43,14 @@ mod tray {
     pub fn events() -> iced::futures::stream::Empty<Result<Event, String>> {
         unreachable!("only the Linux build shows a tray icon")
     }
-    pub async fn update(_unread: u32, _visible: bool) -> Result<(), String> {
-        Ok(())
+
+    /// Electron's `app.badgeCount` on macOS, which Desktop's `setAppBadgeCount` sets: the count on the Dock icon, and
+    /// none at 0. AppKit takes it on the main thread only, where the app updates.
+    #[cfg(target_os = "macos")]
+    pub fn dock_badge(count: u32) {
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+        let label = (count > 0).then(|| objc2_foundation::NSString::from_str(&count.to_string()));
+        objc2_app_kit::NSApplication::sharedApplication(mtm).dockTile().setBadgeLabel(label.as_deref());
     }
 }
 pub mod style;
@@ -830,6 +837,26 @@ pub enum UiMessage {
     RailHover(String, Point),
     RailLeave(String),
     RailPress,
+    /// The pointer came onto (true) or left the header card of the chat, or its member list.
+    HeaderHover(bool),
+    /// The 500 ms after the pointer left the header card of this generation ran out.
+    HeaderHoverEnd(u32),
+    /// Desktop's menu bar: hidden (`None`), shown, or shown with a menu open.
+    MenuBar(Option<Option<usize>>),
+    /// The pointer came onto a menu title, which opens its menu while another menu is open.
+    MenuBarHover(usize),
+    /// An item of the menu bar: the menu bar hides, and the item runs.
+    MenuBarRun(Box<UiMessage>),
+    /// The Cut (true) and Copy items of the Edit menu, on the composer.
+    ComposerClip(bool),
+    /// The Minimize item of the Window menu.
+    MinimizeWindow(window::Id),
+    /// The pointer came onto (`Some`) or left a tile of the pinned grid.
+    PinHover(Option<String>),
+    /// Desktop's `Drop` of the pinned grid (`lY`): a press, a move and the release of a drag of a pin.
+    PinPress,
+    PinDragMoved(Point),
+    PinDragEnd,
     RailDragMoved(Point),
     RailDragEnd,
     WindowOpened(window::Id),
@@ -2469,6 +2496,17 @@ fn sender_label(chat: &Chat, m: &Message) -> String {
     member.map_or_else(|| m.sender_name.clone().expect("sender name"), member_name)
 }
 
+/// Desktop's `mD`: a participant has a name of its own, not only a phone number or an email.
+fn real_name(u: &User) -> bool {
+    let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
+    let full = u.full_name.as_deref().filter(|f| !f.is_empty());
+    u.custom_nickname.is_some()
+        || u.username.is_some()
+        || full.is_some_and(|f| {
+            !u.phone_number.as_deref().is_some_and(|ph| digits(ph) == digits(f)) && u.email.as_deref() != Some(f)
+        })
+}
+
 /// Desktop's `Fr`: the name of a participant.
 fn member_name(u: &User) -> String {
     [&u.custom_nickname, &u.full_name, &u.username, &u.email]
@@ -3755,6 +3793,14 @@ pub struct BeeperGuiApp {
     pub rail_hover: Option<(String, Point)>,
     pub user_hover: UserHover,
     pub rail_drag: Option<RailDrag>,
+    /// Desktop's header hover (`f` of `Amt`): the member list shows, and the generation of its 500 ms leave delay.
+    pub header_hover: (bool, u32),
+    /// Desktop's menu bar, which Alt shows: hidden (`None`), shown, or shown with the menu of an index open.
+    pub menu_bar: Option<Option<usize>>,
+    /// Alt went down with no other key, so that its release toggles the menu bar.
+    alt_alone: bool,
+    pub pin_hover: Option<String>,
+    pub pin_drag: Option<PinDrag>,
     pub main_window: Option<window::Id>,
     pub settings_window: Option<window::Id>,
     settings_size: Size,
@@ -3978,6 +4024,11 @@ impl BeeperGuiApp {
             sidebar_hidden,
             dragging: false,
             rail_hover: None,
+            header_hover: (false, 0),
+            menu_bar: None,
+            alt_alone: false,
+            pin_hover: None,
+            pin_drag: None,
             user_hover: UserHover::default(),
             rail_drag: None,
             main_window: None,
@@ -4062,6 +4113,7 @@ impl BeeperGuiApp {
         settings.visible = !app.hidden;
         let (id, open) = window::open(settings);
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
+        let open = open.then(move |id| Task::done(id).chain(Self::keep_on_screen(id)));
         let cloud = (signed_in && !app.store.read().config.demo).then(|| app.refresh_cloud_accounts());
         let restore = (signed_in && !app.hidden).then(|| app.restore_subwindows());
         let link = app.store.write().config.link.take();
@@ -4187,6 +4239,53 @@ impl BeeperGuiApp {
             })
         };
         (id, open.then(center))
+    }
+
+    /// Desktop's `ga` (`mainWindowSetSize`): window `id` takes `size`, at most its screen, grows or shrinks around its
+    /// center, and stays on the screen. Without a position (Wayland), it only takes the size.
+    pub(crate) fn resize_around(id: window::Id, size: Size) -> Task<UiMessage> {
+        let state = window::position(id).then(move |at| window::size(id).map(move |old| (at, old)));
+        let state = state.then(move |(at, old)| window::monitor_size(id).map(move |screen| (at, old, screen)));
+        state.then(move |(at, old, screen)| {
+            let screen = screen.unwrap_or(Size::new(f32::INFINITY, f32::INFINITY));
+            let (to, fit) = grown(at.unwrap_or(Point::ORIGIN), old, size, screen);
+            let resize = window::resize(id, fit);
+            match at {
+                Some(_) => Task::batch([resize, window::move_to(id, to)]),
+                None => resize,
+            }
+        })
+    }
+
+    /// Desktop's default place of a window that it opens (`openInNewWindow`, `ao.windowFeatures`): 20 px right of and
+    /// below the main window.
+    pub(crate) fn cascade<T: Send + 'static>(&self, id: window::Id) -> Task<T> {
+        let Some(main) = self.main_window else { return Task::none() };
+        window::position(main).then(move |at| match at {
+            Some(at) => window::move_to(id, at + Vector::new(20.0, 20.0)),
+            None => Task::none(),
+        })
+    }
+
+    /// Desktop's `windowStateKeeper` check of saved bounds (`Yy`, `Ma`): a window more than 50 px off its screen, like
+    /// one saved on a screen that is gone, moves onto the screen and shrinks to fit it.
+    fn keep_on_screen<T: Send + 'static>(id: window::Id) -> Task<T> {
+        const SLACK: f32 = 50.0;
+        let state = window::position(id).then(move |at| window::size(id).map(move |size| (at, size)));
+        let state = state.then(move |(at, size)| window::monitor_size(id).map(move |screen| (at, size, screen)));
+        state.then(move |(at, size, screen)| {
+            let (Some(at), Some(screen)) = (at, screen) else { return Task::none() };
+            let off = at.x < -SLACK
+                || at.y < -SLACK
+                || at.x + size.width > screen.width + SLACK
+                || at.y + size.height > screen.height + SLACK;
+            if !off {
+                return Task::none();
+            }
+            let fit = Size::new(size.width.min(screen.width), size.height.min(screen.height));
+            let to = Point::new(at.x.clamp(0.0, screen.width - fit.width), at.y.clamp(0.0, screen.height - fit.height));
+            Task::batch([window::resize(id, fit), window::move_to(id, to)])
+        })
     }
 
     /// Desktop's `windowStateKeeper("main")`: the main window opens with the bounds and the maximized state of
@@ -5108,17 +5207,14 @@ impl BeeperGuiApp {
         if self.status_banner.is_empty() && self.older_toasts.is_empty() {
             self.toast_clock.1 = false;
         }
-        if !std::mem::take(&mut self.tray_sent.1) || !cfg!(target_os = "linux") {
+        if !std::mem::take(&mut self.tray_sent.1) {
             return task;
         }
         let now = (self.badge_count(), !self.hidden);
         if self.tray_sent.0.replace(now) == Some(now) {
             return task;
         }
-        let sync = Task::future(tray::update(now.0, now.1))
-            .map(Result::err)
-            .and_then(|e| Task::done(UiMessage::TrayFailed(e)));
-        Task::batch([task, sync])
+        Task::batch([task, badge_sync(now.0, now.1)])
     }
 
     /// Desktop's `updateAppBadgeCount`: the unread chats in all chats or in the chat list, by "Badge count".
@@ -5186,6 +5282,10 @@ impl BeeperGuiApp {
     }
 
     fn handle(&mut self, msg: UiMessage) -> Task<UiMessage> {
+        // Another key while Alt is down keeps the release of Alt from toggling the menu bar.
+        if let UiMessage::WindowKey(_, key, _) = &msg {
+            self.alt_alone &= *key == Key::Named(Named::Alt);
+        }
         // Desktop's `persistDraftRecord` after a change of the attachments, the quote, Send Later or the link previews.
         self.pane.draft_due |= matches!(
             msg,
@@ -6166,7 +6266,17 @@ impl BeeperGuiApp {
                 self.media_mut().menu = open.then_some(at);
             }
             UiMessage::Modifiers(mods) => {
-                self.mods = mods;
+                // Electron's `autoHideMenuBar`: Alt on its own shows the menu bar, and hides it again.
+                let was = std::mem::replace(&mut self.mods, mods);
+                match (was == Modifiers::ALT, mods == Modifiers::ALT) {
+                    (false, true) if was.is_empty() => self.alt_alone = true,
+                    (true, false) if mods.is_empty() && std::mem::take(&mut self.alt_alone) => {
+                        if self.main_window.is_some() {
+                            self.menu_bar = if self.menu_bar.is_some() { None } else { Some(None) };
+                        }
+                    }
+                    _ => self.alt_alone = false,
+                }
                 if self.cycling && !mods.control() {
                     self.cycling = false;
                     if let Some(c) = self.pane.selected_chat_id.clone() {
@@ -6303,6 +6413,7 @@ impl BeeperGuiApp {
             UiMessage::WindowKey(id, key, mods) if Some(id) == self.login_window || !self.store.read().signed_in() => {
                 return self.login_key(key, mods);
             }
+            UiMessage::WindowKey(_, Key::Named(Named::Escape), _) if self.menu_bar.is_some() => self.menu_bar = None,
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
@@ -7981,6 +8092,75 @@ impl BeeperGuiApp {
                     self.rail_hover = None;
                 }
             }
+            UiMessage::PinHover(id) => {
+                // Desktop's sortable grid moves the dragged pin to the place of the pin under the pointer.
+                let over = id.as_ref().and_then(|over| {
+                    let d = self.pin_drag.as_mut().filter(|d| d.id != *over)?;
+                    Some((over, d.order.as_mut()?, &d.id))
+                });
+                if let Some((over, order, held)) = over {
+                    let from = order.iter().position(|o| o == held).expect("the dragged pin");
+                    let to = order.iter().position(|o| o == over).expect("a pin of the grid");
+                    let pin = order.remove(from);
+                    order.insert(to, pin);
+                }
+                self.pin_hover = id;
+            }
+            UiMessage::PinPress => {
+                let Some(id) = self.pin_hover.clone() else { return Task::none() };
+                self.pin_drag = Some(PinDrag { id, from: None, order: None });
+            }
+            UiMessage::PinDragMoved(at) => {
+                let Some(d) = self.pin_drag.as_mut() else { return Task::none() };
+                if d.order.is_none() && at.distance(*d.from.get_or_insert(at)) > 5.0 {
+                    let st = self.store.read();
+                    let order = self.pins_and_rows(&st).0.iter().map(|c| c.id.clone()).collect();
+                    drop(st);
+                    self.pin_drag.as_mut().expect("a pin drag").order = Some(order);
+                    self.chat_menu = None;
+                }
+            }
+            UiMessage::PinDragEnd => {
+                let Some(shown) = self.pin_drag.take().and_then(|d| d.order) else { return Task::none() };
+                let order = self.store.write().set_pin_order(&shown);
+                let Some(client) = self.store.read().matrix.clone() else { return Task::none() };
+                let content = serde_json::json!({ "Inbox": order });
+                let write = beeper_core::matrix::set_global(client, "com.beeper.favourites_order", content);
+                return Task::perform(write, UiMessage::Pushed);
+            }
+            UiMessage::HeaderHover(on) => {
+                let h = &mut self.header_hover;
+                h.1 += 1;
+                if on {
+                    h.0 = true;
+                } else {
+                    let n = h.1;
+                    let wait = async { tokio::time::sleep(std::time::Duration::from_millis(500)).await };
+                    return Task::perform(wait, move |()| UiMessage::HeaderHoverEnd(n));
+                }
+            }
+            UiMessage::HeaderHoverEnd(n) if n == self.header_hover.1 => self.header_hover.0 = false,
+            UiMessage::HeaderHoverEnd(_) => {}
+            UiMessage::MenuBar(state) => self.menu_bar = state,
+            UiMessage::MenuBarHover(i) => {
+                if let Some(Some(_)) = self.menu_bar {
+                    self.menu_bar = Some(Some(i));
+                }
+            }
+            UiMessage::MenuBarRun(msg) => {
+                self.menu_bar = None;
+                return self.update(*msg);
+            }
+            UiMessage::ComposerClip(cut) => {
+                let Some(text) = self.pane.composer.selection() else { return Task::none() };
+                let copy = iced::clipboard::write(text);
+                if !cut {
+                    return copy;
+                }
+                let delete = self.update(UiMessage::ComposerEdit(text_editor::Action::Edit(text_editor::Edit::Delete)));
+                return Task::batch([copy, delete]);
+            }
+            UiMessage::MinimizeWindow(id) => return window::minimize(id, true),
             UiMessage::RailPress => {
                 let Some((id, grab)) = self.rail_hover.clone() else { return Task::none() };
                 self.rail_drag = Some(RailDrag { id, grab, from: None, at: Point::ORIGIN, order: None });
@@ -8074,6 +8254,9 @@ impl BeeperGuiApp {
                     _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
                         self.save_window(id, "media-viewer").chain(window::close(id))
                     }
+                    _ if self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none()) => {
+                        self.save_window(id, POP_OUT).chain(window::close(id))
+                    }
                     (false, _) => window::close(id),
                 };
             }
@@ -8095,14 +8278,11 @@ impl BeeperGuiApp {
                 if let Some(&(id, _)) = open {
                     return window::gain_focus(id);
                 }
-                let size = Size::new(800.0, 600.0);
+                // Desktop's `windowStateKeeper("pop-out-thread")` keeps the size of the last chat window.
+                let size = self.saved_window_settings(POP_OUT, Size::new(800.0, 600.0)).size;
                 let (id, open) = window::open(Self::window_settings(size));
                 self.chat_windows.push((id, Pane { size, ..Pane::default() }));
-                let main = self.main_window.expect("the chat list is in the main window");
-                let near = window::position(main).then(move |at| match at {
-                    Some(at) => window::move_to(id, at + Vector::new(20.0, 20.0)),
-                    None => Task::none(),
-                });
+                let near = self.cascade(id);
                 let select = self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(cid))));
                 self.save_subwindows();
                 return Task::batch([open.discard(), near, select]);
@@ -8494,6 +8674,19 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
+        let pin_press = (self.pin_hover.is_some() && self.pin_drag.is_none()).then(|| {
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => Some(UiMessage::PinPress),
+                _ => None,
+            })
+        });
+        let pin_drag = self.pin_drag.is_some().then(|| {
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::PinDragMoved(position)),
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::PinDragEnd),
+                _ => None,
+            })
+        });
         let rail_drag = self.rail_drag.is_some().then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::RailDragMoved(position)),
@@ -8569,6 +8762,8 @@ impl BeeperGuiApp {
                 .chain(thread_drag)
                 .chain(rail_press)
                 .chain(rail_drag)
+                .chain(pin_press)
+                .chain(pin_drag)
                 .chain(poll_drag)
                 .chain(carousel)
                 .chain(tick)
@@ -8734,6 +8929,17 @@ impl BeeperGuiApp {
             .style(fill_box(self.pal.window, 0.0))
             .into(),
         };
+        // Desktop's menu bar, which Alt shows over the content of the main window.
+        let base = match self.menu_bar.filter(|_| in_main) {
+            Some(open) => column![self.view_menu_bar(open), base].into(),
+            None => base,
+        };
+        let menu_drop = self.menu_bar.flatten().filter(|_| in_main).map(|i| {
+            let (menu, x) = self.view_menu_dropdown(i);
+            let at = Padding::ZERO.left(x).top(menubar::BAR_H);
+            mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+                .on_press(UiMessage::MenuBar(None))
+        });
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
             (None, true) => Some(self.view_command_palette()),
@@ -8902,8 +9108,15 @@ impl BeeperGuiApp {
         let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
         // The menus and the emoji picker of the carousel show over it.
         let hover = self.view_hover_card().filter(|_| in_main);
-        let layers =
-            stack![base].push(toast).push(carousel).push(hover).push(menu).push(scrim).push(palette_menu).push(select);
+        let layers = stack![base]
+            .push(toast)
+            .push(carousel)
+            .push(hover)
+            .push(menu_drop)
+            .push(menu)
+            .push(scrim)
+            .push(palette_menu)
+            .push(select);
         let token = self.token_ask.as_ref().map(|a| self.view_token_ask(a));
         layers.push(confirm).push(hotkeys).push(token).into()
     }
@@ -11137,7 +11350,12 @@ impl BeeperGuiApp {
             .height(52)
             .padding(Padding::ZERO.right(8.0));
         let selected = self.creating_chat.is_none().then_some(self.pane().selected_chat_id.as_deref()).flatten();
-        let (pinned, rest) = self.pins_and_rows(&st);
+        let (mut pinned, rest) = self.pins_and_rows(&st);
+        // The order of a pin drag, which moves the pins under the pointer.
+        let dragged = self.pin_drag.as_ref().filter(|d| d.order.is_some()).map(|d| d.id.as_str());
+        if let Some(order) = self.pin_drag.as_ref().and_then(|d| d.order.as_ref()) {
+            pinned.sort_by_key(|c| order.iter().position(|o| *o == c.id).unwrap_or(usize::MAX));
+        }
         let counts = st.settings.on("showUnreadCount");
         let network_icons = st.settings.on("showNetworkIcons")
             && self.selected_account_filter.as_deref().is_none_or(|id| rail_label(&st, id).is_some());
@@ -11198,11 +11416,17 @@ impl BeeperGuiApp {
                 let colors = if muted { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
                 let bubble = bubble.map(|t| pin_bubble(&t, c.unread_mentions > 0, colors, tile, pin_av, compact));
                 let item = stack![item].push(bubble);
+                // Desktop's `useDropPlaceholder`: the dragged pin marks the place it would drop at.
+                let held = dragged == Some(c.id.as_str());
                 let item = button(item)
                     .padding(0)
-                    .style(btn_style([if on { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
+                    .style(btn_style([if on || held { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
                     .on_press(pick(c));
-                r.push(container(mouse_area(item).on_right_press(UiMessage::OpenChatMenu(c.id.clone()))).center_x(cell))
+                let item = mouse_area(item)
+                    .on_right_press(UiMessage::OpenChatMenu(c.id.clone()))
+                    .on_enter(UiMessage::PinHover(Some(c.id.clone())))
+                    .on_exit(UiMessage::PinHover(None));
+                r.push(container(item).center_x(cell))
             }))
         };
         let lead = match (selecting, counts) {
@@ -13642,6 +13866,8 @@ pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u
 
 /// Desktop's default size of the main window (`Wg` and `jg`).
 const MAIN_SIZE: Size = Size::new(1200.0, 800.0);
+/// Desktop's `windowStateKeeper` key of the chat windows (`w2` of a window ID that starts with `thread-`).
+const POP_OUT: &str = "pop-out-thread";
 
 /// Desktop's `window.json`, or an empty state before the first save.
 fn read_window_state(path: &std::path::Path) -> serde_json::Value {
@@ -13792,6 +14018,45 @@ pub struct UserHover {
     pub r#gen: u32,
 }
 
+/// Desktop's `setAppBadgeCount` and `setTrayUnreadStatus`: the unread count and the window state on the tray icon and
+/// the launcher badge of Linux.
+#[cfg(target_os = "linux")]
+fn badge_sync(unread: u32, visible: bool) -> Task<UiMessage> {
+    Task::future(tray::update(unread, visible)).map(Result::err).and_then(|e| Task::done(UiMessage::TrayFailed(e)))
+}
+
+/// Desktop's `setAppBadgeCount`: the unread count on the Dock icon of macOS.
+#[cfg(target_os = "macos")]
+fn badge_sync(unread: u32, _visible: bool) -> Task<UiMessage> {
+    tray::dock_badge(unread);
+    Task::none()
+}
+
+/// Electron's `app.badgeCount` shows nothing on Windows.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn badge_sync(_unread: u32, _visible: bool) -> Task<UiMessage> {
+    Task::none()
+}
+
+/// Desktop's `ga`: the bounds of a window at `at` and `old` size that takes `size`, at most the `screen`, around its
+/// center and on the screen.
+fn grown(at: Point, old: Size, size: Size, screen: Size) -> (Point, Size) {
+    let fit = Size::new(size.width.min(screen.width), size.height.min(screen.height));
+    let place = |at: f32, old: f32, new: f32, room: f32| (at - (new - old) / 2.0).min(room - new).max(0.0).floor();
+    (
+        Point::new(place(at.x, old.width, fit.width, screen.width), place(at.y, old.height, fit.height, screen.height)),
+        fit,
+    )
+}
+
+/// A press on a pin of the pinned grid, which Desktop's `Drop` sorts after the cursor moves 5px: the pin, where the
+/// cursor first moved, and the order of the grid while the pin moves.
+pub struct PinDrag {
+    pub id: String,
+    pub from: Option<Point>,
+    pub order: Option<Vec<String>>,
+}
+
 /// A press on a rail space, which Desktop's `Drop` sorts after the cursor moves 5px.
 pub struct RailDrag {
     pub id: String,
@@ -13894,6 +14159,18 @@ mod tests {
         let still = decode_media(png.into_inner()).unwrap();
         assert!(matches!(still[..], [(image::Handle::Rgba { width: 3, height: 2, .. }, 0)]), "a still is decoded");
         assert!(decode_media(b"\x89PNG".to_vec()).is_err(), "a broken still fails to load");
+    }
+
+    /// A video that plays as a GIF decodes to at most 15 frames a second, at most 320 px on its long side.
+    #[test]
+    fn video_gifs_decode_to_frames() {
+        let path = beeper_core::testing::temp_dir("video-gif").join("clip.mp4");
+        let lavfi = ["-f", "lavfi", "-i", "testsrc=size=640x360:rate=30", "-t", "1", "-pix_fmt", "yuv420p", "-y"];
+        assert!(std::process::Command::new("ffmpeg").args(lavfi).arg(&path).output().unwrap().status.success());
+        let frames = crate::media_view::decode_loop(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(frames.len(), 15, "15 frames for one second");
+        assert!(matches!(frames[0], (image::Handle::Rgba { width: 320, height: 180, .. }, 66)));
+        assert!(crate::media_view::decode_loop(b"not a video").is_err());
     }
 
     #[test]

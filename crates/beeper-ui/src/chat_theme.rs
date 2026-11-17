@@ -163,18 +163,14 @@ fn glow(c: Color, size: Size, radius: f32) -> image::Handle {
     })
 }
 
-/// The alpha of the 84px fade at the top of the timeline at `y`.
+/// The cover of the fade at the top of the timeline at `y`: Desktop's `fadeout-top` mask shows the messages from
+/// nothing at the top to all at `FADE`.
 fn fade_at(y: f32) -> f32 {
-    let t = y / FADE;
-    if t < 0.75 {
-        1.0 - 0.15 * t / 0.75
-    } else {
-        0.85 * (1.0 - (t - 0.75) / 0.25)
-    }
+    1.0 - (y / FADE).min(1.0)
 }
 
-/// The height of the fade at the top of the timeline.
-pub const FADE: f32 = 84.0;
+/// Desktop's `5.75rem` of `fadeout-top`.
+pub const FADE: f32 = 92.0;
 
 /// The fade at the top of the timeline over a `size` wallpaper. Desktop masks the messages instead.
 pub fn fade<'a, M: 'a>(paint: Paint, size: Size) -> Element<'a, M> {
@@ -182,10 +178,7 @@ pub fn fade<'a, M: 'a>(paint: Paint, size: Size) -> Element<'a, M> {
         Paint::Gradient(colors) => colors,
         Paint::Photo(..) => return Space::new().into(),
         Paint::Flat(c) => {
-            let fade = Linear::new(Radians(std::f32::consts::PI))
-                .add_stop(0.0, c)
-                .add_stop(0.75, c.scale_alpha(0.85))
-                .add_stop(1.0, c.scale_alpha(0.0));
+            let fade = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, c).add_stop(1.0, c.scale_alpha(0.0));
             let style = move |_: &Theme| container::Style {
                 background: Some(Background::Gradient(Gradient::Linear(fade))),
                 ..Default::default()

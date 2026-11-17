@@ -2174,7 +2174,9 @@ impl<'a> WsFrame<'a> {
 
 /// Desktop's `handleClientMessage`: applies a `subscriptions.set` command, and returns its `subscriptions.updated`
 /// acknowledgement or an `error` frame. The chat IDs are sorted and unique, and `*` stands for all chats.
-fn subscribe(subs: &RwLock<Vec<String>>, payload: &[u8]) -> Value {
+/// Handles a `subscriptions.set` command: sets the chats of `subs` and the `app.state` subscription of `app`, and returns
+/// the reply.
+fn subscribe(subs: &RwLock<Vec<String>>, app_on: &std::sync::atomic::AtomicBool, payload: &[u8]) -> Value {
     let error = |code: &str, message: &str, request: Option<&Value>| {
         let mut e = json!({ "type": "error", "code": code, "message": message });
         if let Some(r) = request {
@@ -2220,6 +2222,7 @@ fn subscribe(subs: &RwLock<Vec<String>>, payload: &[u8]) -> Value {
         ack["requestID"] = r.clone();
     }
     *subs.write().unwrap() = ids;
+    app_on.store(app, std::sync::atomic::Ordering::Relaxed);
     ack
 }
 
@@ -2238,10 +2241,12 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
     let mut events = store.read().ws_tx.subscribe();
     let (reader, mut writer) = stream.into_split();
     let subs = Arc::new(RwLock::new(Vec::<String>::new()));
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let app_on = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // The frames to send, and `None` for Desktop's `sendAppStateSnapshot` when the `app.state` subscription starts.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Option<Vec<u8>>>();
     let frame = |v: &Value| serde_json::to_vec(v).expect("serialize a WebSocket frame");
-    out_tx.send(frame(&json!({ "type": "ready", "version": 1, "chatIDs": [] }))).expect("the writer runs");
-    let reader_subs = subs.clone();
+    out_tx.send(Some(frame(&json!({ "type": "ready", "version": 1, "chatIDs": [] })))).expect("the writer runs");
+    let (reader_subs, reader_app) = (subs.clone(), app_on.clone());
     let mut reader_task = tokio::spawn(async move {
         let mut reader = std::io::Cursor::new(leftover).chain(reader);
         loop {
@@ -2251,8 +2256,12 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
             };
             match opcode {
                 0x1 => {
-                    let reply = subscribe(&reader_subs, &payload);
-                    out_tx.send(frame(&reply)).ok();
+                    let before = reader_app.load(std::sync::atomic::Ordering::Relaxed);
+                    let reply = subscribe(&reader_subs, &reader_app, &payload);
+                    out_tx.send(Some(frame(&reply))).ok();
+                    if !before && reader_app.load(std::sync::atomic::Ordering::Relaxed) {
+                        out_tx.send(None).ok();
+                    }
                 }
                 0x9 | 0xA => {}
                 _ => return (None, reader),
@@ -2263,11 +2272,30 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
     // The close code and reason when the server ends the connection.
     let send_events = async {
         let (mut seq, mut recent) = (0, HashMap::<String, tokio::time::Instant>::new());
+        // Desktop's `lastAppStateFingerprint`, and the verification of the last snapshot.
+        let mut last: Option<(String, Option<Value>)> = None;
         let mut keepalive = tokio::time::interval_at(tokio::time::Instant::now() + WS_KEEPALIVE, WS_KEEPALIVE);
         loop {
             let (opcode, bytes) = tokio::select! {
                 ev = events.recv() => {
                     let Ok(ev) = ev else { return None };
+                    // Desktop's `processAppStateEvent`: a changed setup state goes to the `app.state` subscribers, with
+                    // its verification when the verification changed.
+                    if ev.event_type == "setup.updated" {
+                        if !app_on.load(std::sync::atomic::Ordering::Relaxed) {
+                            continue;
+                        }
+                        let frames = app_state_frames(&store, &mut last, &mut seq, false);
+                        if frames.is_empty() {
+                            continue;
+                        }
+                        for f in &frames[..frames.len() - 1] {
+                            if write_ws_frame(&mut writer, 0x1, f, false).await.is_err() {
+                                return None;
+                            }
+                        }
+                        (0x1, frames.last().expect("a frame").clone())
+                    } else {
                     let chat = ev.chat_id.as_deref().expect("store events have a chat");
                     let wanted = {
                         let s = subs.read().unwrap();
@@ -2285,8 +2313,15 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
                     }
                     seq += 1;
                     (0x1, serde_json::to_vec(&WsFrame::new(&ev, seq)).expect("serialize a WebSocket event"))
+                    }
                 }
-                Some(bytes) = out_rx.recv() => (0x1, bytes),
+                Some(out) = out_rx.recv() => match out {
+                    Some(bytes) => (0x1, bytes),
+                    None => {
+                        let frames = app_state_frames(&store, &mut last, &mut seq, true);
+                        (0x1, frames.into_iter().next().expect("a snapshot"))
+                    }
+                },
                 // Desktop pings each client every 30 s, and closes the clients whose token it revoked.
                 _ = keepalive.tick() => {
                     let (st, token) = (store.clone(), token.clone());
@@ -2317,6 +2352,45 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
             None => drop(writer.shutdown().await),
         }
     }
+}
+
+/// Desktop's `app.state.updated` frame of the setup state when it changed since `last` (always with `snapshot`, its
+/// `sendAppStateSnapshot`), then its `verification.updated` or `verification.removed` frame when the verification
+/// changed.
+fn app_state_frames(
+    store: &SharedStore,
+    last: &mut Option<(String, Option<Value>)>,
+    seq: &mut u64,
+    snapshot: bool,
+) -> Vec<Vec<u8>> {
+    let state = store.read().app_state();
+    let state = serde_json::to_value(&state).expect("serialize the app state");
+    let fingerprint = state.to_string();
+    let verification = state.get("verification").cloned();
+    let before = last.replace((fingerprint.clone(), verification.clone()));
+    if !snapshot && before.as_ref().is_some_and(|b| b.0 == fingerprint) {
+        return Vec::new();
+    }
+    let ts = now_rfc3339_millis();
+    // Desktop's frames start with their type, `seq` and `ts`.
+    let mut frame = |kind: &str, body: Option<(&str, Value)>| {
+        *seq += 1;
+        let mut v = json!({ "type": kind, "seq": *seq, "ts": ts });
+        if let Some((key, value)) = body {
+            v[key] = value;
+        }
+        serde_json::to_vec(&v).expect("serialize a WebSocket frame")
+    };
+    let mut frames = vec![frame("app.state.updated", Some(("appState", state)))];
+    let had = before.and_then(|b| b.1);
+    match (verification, snapshot) {
+        (Some(v), false) if had.as_ref() != Some(&v) => {
+            frames.push(frame("verification.updated", Some(("verification", v))));
+        }
+        (None, false) if had.is_some() => frames.push(frame("verification.removed", None)),
+        _ => {}
+    }
+    frames
 }
 
 /// The ping interval of Desktop's WebSocket server.

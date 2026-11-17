@@ -20,15 +20,11 @@ use beeper_core::models::*;
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
-use iced::gradient::Linear;
 use iced::widget::{
     button, column, container, image, mouse_area, pin, rich_text, row, scrollable, span, stack, svg, tooltip, Column,
     Row, Space, Stack,
 };
-use iced::{
-    border, mouse, Background, Bottom, Center, Color, Fill, Gradient, Length, Padding, Pixels, Radians, Right, Shadow,
-    Task, Theme, Vector,
-};
+use iced::{border, mouse, Bottom, Center, Color, Fill, Length, Padding, Pixels, Right, Shadow, Task, Theme, Vector};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -60,6 +56,29 @@ fn contact_name(file: &str) -> String {
         _ => None,
     };
     prefixed.unwrap_or(file).replacen(".vcf", "", 1)
+}
+
+/// A surface of Desktop's header card: its fill, its radius, an outline, and a black shadow `(y, blur, alpha byte)`.
+fn raised(
+    bg: Color,
+    radius: f32,
+    outline: Option<Color>,
+    (y, blur, a): (f32, f32, u8),
+) -> impl Fn(&Theme) -> container::Style + Copy {
+    move |_| container::Style {
+        background: Some(bg.into()),
+        border: iced::Border {
+            color: outline.unwrap_or(CLEAR),
+            width: if outline.is_some() { 1.0 } else { 0.0 },
+            radius: radius.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba8(0, 0, 0, f32::from(a) / 255.0),
+            offset: iced::Vector::new(0.0, y),
+            blur_radius: blur,
+        },
+        ..Default::default()
+    }
 }
 
 /// Desktop's file type label: the extension in capitals, or a name for some MIME types.
@@ -228,6 +247,8 @@ pub(crate) struct Rows {
     gallery: Vec<usize>,
     /// The virtual list key of each message.
     keys: Vec<u64>,
+    /// The messages that start a day, which show its date.
+    days: Vec<usize>,
 }
 
 impl Rows {
@@ -270,6 +291,9 @@ impl Rows {
             gallery: gallery::starts(st, msgs, &counts),
             counts,
             keys: msgs.iter().map(|m| vlist::key(&m.id)).collect(),
+            days: (0..n)
+                .filter(|&i| i == 0 || day_num(&msgs[i - 1].timestamp) != day_num(&msgs[i].timestamp))
+                .collect(),
         }
     }
 }
@@ -599,43 +623,40 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::HideReplies);
             container(close).align_right(Fill).padding(16).into()
         });
+        // Desktop's `thread-header-card`: the avatar on its disc over the name pill, 4 px into it. The card shows no
+        // hover; the pointer on it shows the members (`kmt`) instead.
         let name_row = row![
-            semi(short_title(chat).to_string(), 13.0).color(p.fg),
-            ic(icon::CHEVRON_RIGHT, 16.0).color(p.tertiary)
+            semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.fg),
+            ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary)
         ]
         .spacing(2)
         .align_y(Center);
         // Desktop's `thread-header-status`: the activity of the other person of a 1:1 chat under the name.
         let typing = st.typing.get(cid).filter(|ids| chat.chat_type == "single" && ids.len() == 1);
         let status = typing.map(|_| txt("typing", 10.0).color(p.sub));
-        let pill = button(column![name_row].push(status).align_x(Center))
-            .padding(Padding::new(6.0).left(10.5).right(2.5))
-            .style(btn_style([p.window, p.selected, p.selected], [p.text; 3], 14.0))
-            .on_press(UiMessage::ToggleRightPanel);
-        let ring = container(self.chat_avatar(chat, 40.0, 0.0)).padding(1).style(fill_box(p.card, 21.0));
-        let header = stack![
-            container(pill).center_x(Fill).padding(Padding::ZERO.top(44.0)),
-            container(ring).center_x(Fill).padding(Padding::ZERO.top(7.0))
-        ];
+        let info = container(column![name_row].push(status).spacing(2).align_x(Center))
+            .padding(Padding { top: 6.0, right: 6.0, bottom: 6.0, left: 10.0 })
+            .style(raised(p.elevated, 14.0, Some(p.strong.scale_alpha(0.025)), (4.0, 10.0, 0x16)));
+        let avatar = container(self.chat_avatar(chat, 40.0, 0.0)).style(raised(p.card, 20.0, None, (1.0, 4.0, 0x1a)));
+        // The pill sets the width of the card, and the avatar sits over its middle.
+        let card = stack![column![Space::new().height(36.0), info].align_x(Center), container(avatar).center_x(Fill)];
+        let card = mouse_area(card)
+            .interaction(mouse::Interaction::Pointer)
+            .on_press(UiMessage::ToggleRightPanel)
+            .on_right_press(UiMessage::OpenChatMenu(cid.into()))
+            .on_enter(UiMessage::HeaderHover(true))
+            .on_exit(UiMessage::HeaderHover(false));
+        let header = container(card).center_x(Fill).padding(Padding::ZERO.top(8.0));
         let feedback = feedback_btn(p);
-        let fade = Linear::new(Radians(std::f32::consts::PI))
-            .add_stop(0.0, p.card)
-            .add_stop(0.75, p.card.scale_alpha(0.85))
-            .add_stop(1.0, p.card.scale_alpha(0.0));
-        let fade = container(Space::new()).width(Fill).height(chat_theme::FADE).style(move |_: &Theme| {
-            container::Style { background: Some(Background::Gradient(Gradient::Linear(fade))), ..Default::default() }
-        });
         let wallpaper = chat_theme::resolve(&st.settings.chat_appearance, Some(cid), self.dark, &st.config.data_dir)
             .0
             .map(|(paint, _)| paint)
             .filter(|_| in_chat);
-        let fade: El<'_> = match wallpaper.clone() {
-            Some(paint) => iced::widget::responsive(move |size| {
-                container(chat_theme::fade(paint.clone(), size)).height(chat_theme::FADE).into()
-            })
-            .into(),
-            None => fade.into(),
-        };
+        let paint = wallpaper.clone().unwrap_or(chat_theme::Paint::Flat(p.card));
+        let fade: El<'_> = iced::widget::responsive(move |size| {
+            container(chat_theme::fade(paint.clone(), size)).height(chat_theme::FADE).into()
+        })
+        .into();
         let reminder = chat.reminder.as_ref().filter(|_| !self.expired(chat)).map(|r| {
             let (day, time) =
                 (reminder_day(r.remind_at_ms), clock(r.remind_at_ms, st.settings.pref("timeFormat") == 1));
@@ -660,11 +681,24 @@ impl BeeperGuiApp {
             .settings
             .on("feedbackWidget")
             .then(|| container(feedback).align_right(Fill).padding(Padding::ZERO.top(6.0).right(5.0)));
-        // The see-through header hides the timeline under it from the cursor, like Desktop's opaque header element.
-        let header = mouse_area(container(header).width(Fill))
+        // Desktop's `thread-header` bar takes the pointer for its 36 px, and below it only the card does.
+        let bar = mouse_area(container(Space::new()).width(Fill).height(36.0))
             .interaction(mouse::Interaction::Idle)
             .on_double_click(UiMessage::ToggleMaximize(self.drawing.get()))
             .on_right_press(UiMessage::OpenChatMenu(cid.into()));
+        // An iced `Stack` takes the size of its first layer, so a spacer as tall as the card goes first.
+        let header = stack![Space::new().width(Fill).height(84.0), bar, header];
+        let members = self.header_hover.0.then(|| self.header_members(chat)).flatten();
+        let members = members.filter(|_| in_chat).map(|m| container(m).center_x(Fill).padding(Padding::ZERO.top(84.0)));
+        // Desktop's `sticky-date-container`: while the timeline scrolls, the date of the day at its top floats under the
+        // header.
+        let sticky = self
+            .pane()
+            .timeline
+            .sticky()
+            .filter(|_| in_chat)
+            .and_then(|i| msgs.get(i))
+            .map(|m| self.day_pill(&m.timestamp).padding(Padding::ZERO.top(80.0).left(GUTTER)));
         let overlay = match in_chat {
             true => stack![fade, header].push(feedback).push(reminder),
             false => stack![fade],
@@ -705,9 +739,16 @@ impl BeeperGuiApp {
             None => unavailable(&st, chat).is_none().then(|| self.view_composer(&st, chat)),
         };
         let jump = self.view_scroll_to_bottom(&st, chat);
-        let pane = column![stack![list, overlay].push(jump).push(replies).push(close).width(Fill).height(Fill)]
-            .push(verify)
-            .push(composer);
+        let pane = column![stack![list, overlay]
+            .push(sticky)
+            .push(members)
+            .push(jump)
+            .push(replies)
+            .push(close)
+            .width(Fill)
+            .height(Fill)]
+        .push(verify)
+        .push(composer);
         let secondary = st.settings.pref("secondaryComposerButton") != 6;
         let picker = self
             .view_emoji_picker(&st)
@@ -879,7 +920,8 @@ impl BeeperGuiApp {
         thread: bool,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
-        let Rows { run_start, last_live, any_pending, last_seen, unread, chained, counts, gallery, keys, .. } = rows;
+        let Rows { run_start, last_live, any_pending, last_seen, unread, chained, counts, gallery, keys, days, .. } =
+            rows;
         let last_received = msgs.iter().rposition(|m| m.is_sender != Some(true));
         // Desktop's `ThreadedRepliesView` lists the root and the replies of a thread under its header, and loads older
         // messages of the chat only until the root loads.
@@ -909,9 +951,7 @@ impl BeeperGuiApp {
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             let mut head = Column::new().push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
-                let label = semi(day_label(&m.timestamp), 11.0).color(p.on_secondary);
-                let pill = container(label).padding([5, 9]).style(bordered_box(p.card, p.chip, 1.0, 12.0));
-                head = head.push(container(pill).center_x(Fill).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
+                head = head.push(self.day_pill(&m.timestamp).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
             if first_unread.is_some_and(|u| (i..end).contains(&u)) {
                 head = head.push(self.unread_divider(st));
@@ -1035,7 +1075,65 @@ impl BeeperGuiApp {
             }
         };
         let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
+        list.sections(days.clone());
         col.push(list.view(keys, true, 48.0, UiMessage::Relist, item))
+    }
+
+    /// Desktop's `kmt`, which shows while the pointer is on the header card: the other members who have not left, the
+    /// named ones first by name, each with a 20 px avatar, the name and the handles. A click starts a chat with one.
+    pub(crate) fn header_members<'a>(&'a self, chat: &Chat) -> Option<El<'a>> {
+        let p = &self.pal;
+        let others: Vec<&User> =
+            chat.participants.items.iter().filter(|u| u.is_self != Some(true) && u.has_exited != Some(true)).collect();
+        let mut shown = if others.is_empty() { chat.participants.items.iter().collect() } else { others };
+        shown.retain(|u| u.has_exited != Some(true));
+        if shown.is_empty() {
+            return None;
+        }
+        // Desktop's `Cr(t, [f => !mD(f), "fullName"])`: the members with a real name first, then by name.
+        shown.sort_by_key(|u| (!crate::real_name(u), u.full_name.clone().unwrap_or_default()));
+        let rows = shown.into_iter().map(|u| -> El<'a> {
+            let full = u.full_name.clone().unwrap_or_default();
+            let phone = u.phone_number.as_deref();
+            let mut ids: Vec<String> = Vec::new();
+            ids.extend(u.username.as_ref().filter(|n| Some(n.as_str()) != phone).map(|n| match n.starts_with('@') {
+                true => n.clone(),
+                false => format!("@{n}"),
+            }));
+            ids.extend(phone.filter(|ph| *ph != full).map(crate::fmt_phone));
+            ids.extend(u.email.clone().filter(|_| phone != Some(full.as_str())));
+            let line = row![self.face(u.img_url.as_deref(), &crate::member_name(u), 20.0, 0.5)]
+                .push(container(med(full, 13.0).color(p.text)).padding(Padding::ZERO.right(13.0)))
+                .push(row(ids.into_iter().map(|i| -> El<'a> { txt(i, 13.0).color(p.weak).into() })).spacing(8))
+                .spacing(4)
+                .align_y(Center);
+            let item = button(line)
+                .padding(4)
+                .style(btn_style([CLEAR, p.elevated_hover, p.elevated_hover], [p.text; 3], 4.0))
+                .on_press(UiMessage::MessageMember(chat.id.clone(), u.id.clone()));
+            container(item).padding([2, 0]).into()
+        });
+        let list = scrollable(Column::with_children(rows)).direction(stable_bar()).style(scroll_style(p.scroll));
+        let list = container(list).max_height(0.9 * self.pane().size.height).padding([2, 4]).style(move |_: &Theme| {
+            container::Style {
+                background: Some(p.elevated.into()),
+                border: iced::Border { color: p.border_neutrals, width: 1.0, radius: 6.0.into() },
+                shadow: iced::Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.11),
+                    offset: iced::Vector::new(0.0, 13.0),
+                    blur_radius: 20.0,
+                },
+                ..Default::default()
+            }
+        });
+        Some(mouse_area(list).on_enter(UiMessage::HeaderHover(true)).on_exit(UiMessage::HeaderHover(false)).into())
+    }
+
+    /// Desktop's `MessageDate` pill of the day of `timestamp`, in the middle of its row.
+    fn day_pill<'a>(&self, timestamp: &str) -> iced::widget::Container<'a, UiMessage> {
+        let p = &self.pal;
+        let label = semi(day_label(timestamp), 11.0).color(p.on_secondary);
+        container(container(label).padding([5, 9]).style(bordered_box(p.card, p.chip, 1.0, 12.0))).center_x(Fill)
     }
 
     /// A message, or the gallery of the messages `ms`.
@@ -1153,7 +1251,12 @@ impl BeeperGuiApp {
                     let size = a.size.as_ref().and_then(|s| Some((s.width? as f32, s.height? as f32)));
                     let share = if self.sidebar_hidden { 0.85 } else { 0.45 };
                     let (w, h, cover) = media_box(self.pane().size.width, size, share);
-                    let thumb_url = a.poster_img.clone().or_else(|| a.src_url.clone());
+                    // Desktop plays a video with `isGif` inline like a GIF, without sound, again and again.
+                    let looped = is_video && a.is_gif == Some(true) && m.unresolved_media.is_none();
+                    let thumb_url = match looped {
+                        true => a.src_url.as_ref().map(|u| format!("{u}{}", crate::media_view::LOOP)),
+                        false => a.poster_img.clone().or_else(|| a.src_url.clone()),
+                    };
                     let pill = |label: &'a str, alpha: f32| -> El<'a> {
                         container(
                             container(txt(label, 14.0).line_height(1.0).color(Color::WHITE))
@@ -1168,7 +1271,7 @@ impl BeeperGuiApp {
                     };
                     // A cropped still shows from a baked cut (the renderer draws `Cover` and crops past their box).
                     let cut = |u: &String| self.cover_tile(u, (w.round() as u32, h.round() as u32));
-                    let cut = thumb_url.as_ref().filter(|_| cover).and_then(cut);
+                    let cut = thumb_url.as_ref().filter(|_| cover && !looped).and_then(cut);
                     let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media_at(u)) {
                         Some(Ok(_)) if let Some(t) = cut => image(t.clone()).width(w).height(h).into(),
                         Some(Ok(frames)) => {
