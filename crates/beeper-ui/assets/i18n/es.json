@@ -638,6 +638,7 @@
 "Message: Send Sticker":["Mensaje: Enviar pegatina"],
 "Message: Talk to Type":["Mensaje: Voz a texto"],
 "Messages":["Mensajes"],
+"Messages disappear after %s":["Los mensajes desaparecen después de %s"],
 "Messaging isn't available in this chat":["Los mensajes no están disponibles en este chat"],
 "Microphone":["Micrófono"],
 "Minimize to %s":["Minimizar en %s"],

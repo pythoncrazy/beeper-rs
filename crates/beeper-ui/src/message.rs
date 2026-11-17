@@ -991,12 +991,19 @@ impl BeeperGuiApp {
         });
         // Desktop's `thread-header-card`: the avatar on its disc over the name pill, 4 px into it. The card shows no
         // hover; the pointer on it shows the members (`kmt`) instead.
-        let name_row = row![
-            semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.fg),
-            ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary)
-        ]
-        .spacing(2)
-        .align_y(Center);
+        // Desktop's `thread-header-disappearing-timer`: the 12 px timer of a chat whose messages disappear, 4 px after
+        // the name, with "Messages disappear after %s".
+        let timer = chat.disappearing.filter(|&t| t > 0).map(|t| {
+            let tertiary = p.tertiary;
+            let icon = svg(TIMER.clone()).width(12).height(12).style(move |_, _| svg::Style { color: Some(tertiary) });
+            let tip = trf("Messages disappear after %s", &[&beeper_core::models::timer_distance(t)]);
+            container(self.tip(icon.into(), tip, vec![], tooltip::Position::Bottom)).padding(Padding::ZERO.left(2))
+        });
+        let name_row = row![semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.fg)]
+            .push(timer)
+            .push(ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary))
+            .spacing(2)
+            .align_y(Center);
         // Desktop's `thread-header-status`: the activity of the other person of a 1:1 chat under the name.
         let typing = st.typing.get(cid).filter(|ids| chat.chat_type == "single" && ids.len() == 1);
         let status = typing.map(|_| txt("typing", 10.0).color(p.sub));

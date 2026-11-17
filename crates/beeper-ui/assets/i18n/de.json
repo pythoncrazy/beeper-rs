@@ -634,6 +634,7 @@
 "Message: Send Sticker":["Nachricht: Sticker senden"],
 "Message: Talk to Type":["Nachricht: Diktieren"],
 "Messages":["Nachrichten"],
+"Messages disappear after %s":["Nachrichten verschwinden nach %s"],
 "Messaging isn't available in this chat":["Nachrichten sind in diesem Chat nicht verfügbar"],
 "Microphone":["Mikrofon"],
 "Minimize to %s":["Minimieren auf %s"],

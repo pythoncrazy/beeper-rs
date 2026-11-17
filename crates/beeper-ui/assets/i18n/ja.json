@@ -626,6 +626,7 @@
 "Message: Send Sticker":["メッセージ: ステッカーを送信"],
 "Message: Talk to Type":["メッセージ: 音声入力"],
 "Messages":["メッセージ"],
+"Messages disappear after %s":["メッセージは%s後に消えます"],
 "Messaging isn't available in this chat":["このチャットではメッセージ機能はご利用いただけません"],
 "Microphone":["マイク"],
 "Minimize to %s":["%sに最小化"],

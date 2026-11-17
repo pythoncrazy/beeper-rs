@@ -638,6 +638,7 @@
 "Message: Send Sticker":["Message : envoyer un autocollant"],
 "Message: Talk to Type":["Message : reconnaissance vocale"],
 "Messages":["Messages"],
+"Messages disappear after %s":["Les messages disparaissent après %s"],
 "Messaging isn't available in this chat":["La messagerie n’est pas disponible dans ce chat"],
 "Microphone":["Microphone"],
 "Minimize to %s":["Réduire sur %s"],

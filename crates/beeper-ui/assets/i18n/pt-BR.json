@@ -637,6 +637,7 @@
 "Message: Send Sticker":["Mensagem: Enviar adesivo"],
 "Message: Talk to Type":["Mensagem: Fale para digitar"],
 "Messages":["Mensagens"],
+"Messages disappear after %s":["As mensagens desaparecem após %s"],
 "Messaging isn't available in this chat":["As mensagens não estão disponíveis neste chat"],
 "Microphone":["Microfone"],
 "Minimize to %s":["Minimizar na %s"],
