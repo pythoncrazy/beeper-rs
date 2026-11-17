@@ -638,6 +638,19 @@ impl BeeperGuiApp {
         if pane.thread_root.is_some() {
             return tr("Reply in thread…").into();
         }
+        // Desktop's `bridgeProtocolDisplayName`: the user of the account, when you have more accounts of its bridge.
+        let protocol = |c: &Chat| {
+            let several = several_accounts(st, &c.account_id);
+            let user = Some(account_user(st, &c.account_id)).filter(|u| several && !u.is_empty());
+            let net = network_name(&c.account_id);
+            user.map_or(net.to_string(), |u| format!("{net} ({u})"))
+        };
+        // A merged chat names the member chat that it sends to.
+        let idx = st.chat_idx(&chat.id);
+        if !st.members(idx).is_empty() {
+            let target = &st.chats[st.send_target(idx)];
+            return format!("Message {} on {}", target.title, protocol(target));
+        }
         let to = match (pane.send_later, pane.reply_thread.is_some() || pane.reply_to_message_id.is_some()) {
             (Some(_), _) => "Send Later".into(),
             (None, reply) => {
@@ -649,12 +662,7 @@ impl BeeperGuiApp {
             (true, true) => " to join the group",
             (true, false) => " to accept the request",
         };
-        // Desktop's `bridgeProtocolDisplayName`: the user of the account, when you have more accounts of its bridge.
-        let several = several_accounts(st, &chat.account_id);
-        let user = Some(account_user(st, &chat.account_id)).filter(|u| several && !u.is_empty());
-        let net = network_name(&chat.account_id);
-        let net = user.map_or(net.to_string(), |u| format!("{net} ({u})"));
-        format!("{to} on {net}{request}")
+        format!("{to} on {}{request}", protocol(chat))
     }
 
     pub(crate) fn view_composer<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {

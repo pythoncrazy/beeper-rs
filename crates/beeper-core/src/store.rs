@@ -1,7 +1,7 @@
 use crate::config::{
-    assert_not_original_beeper_dir, millis_from_rfc3339, now_rfc3339_millis, now_unix_secs, rfc3339_from_millis,
-    CentralConfig, DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID,
-    SEED_JSON, WS_CHANNEL_CAPACITY,
+    assert_not_original_beeper_dir, millis_from_rfc3339, now_rfc3339_millis, now_unix_millis, now_unix_secs,
+    rfc3339_from_millis, CentralConfig, DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN,
+    DEFAULT_USER_ID, SEED_JSON, WS_CHANNEL_CAPACITY,
 };
 use crate::matrix::{MediaInfo, Mention, Outgoing, ThreadSend};
 use crate::models::*;
@@ -279,6 +279,20 @@ pub fn activity_key(c: &Chat) -> (i64, String) {
     let ms = c.last_activity.as_deref().map(|t| millis_from_rfc3339(t).expect("RFC 3339 activity"));
     let draft = c.draft.as_ref().and_then(|d| d.ts);
     (ms.unwrap_or(0).max(draft.unwrap_or(0)), c.id.clone())
+}
+
+/// What a merged chat shows of its member chats.
+struct UnionRow {
+    preview: Option<Message>,
+    activity: Option<String>,
+    unread: u32,
+    mentions: u32,
+    archived: bool,
+}
+
+/// Desktop's `G2`, the order of the merged messages of a merged chat: by time, then chat, then sort key.
+fn merged_order(m: &Message) -> (i64, &str, &str) {
+    (millis_from_rfc3339(&m.timestamp).expect("message timestamp"), &m.chat_id, &m.sort_key)
 }
 
 /// Desktop's `markRemovedFromBeeper` and `deleteRemovedMessageData`: a deleted message without its content.
@@ -885,27 +899,36 @@ impl BeeperStore {
     /// Loads the messages of the chat `id`, unless they are loaded, and unloads old chats. It can move the indices of
     /// `messages`, so call it before taking them.
     pub fn load_chat(&mut self, id: &str) {
-        self.loaded.retain(|c| c != id);
-        self.loaded.push(id.into());
-        if !self.chat_msg_indices.contains_key(id) {
-            assert!(self.chat_idx_by_id.contains_key(id), "load the messages of the unknown chat {id}");
-            self.chat_msg_indices.insert(id.into(), Vec::new());
-            for m in self.stored("chat_id = ?1 ORDER BY sort_key", [id]) {
-                self.insert_message(m);
+        // Desktop's `loadUnloadedMembers`: a merged chat shows the messages of its member chats.
+        let members = self.chat_idx_by_id.get(id).map(|&i| self.members(i)).unwrap_or_default();
+        let members: Vec<String> = members.into_iter().map(|i| self.chats[i].id.clone()).collect();
+        for c in members.iter().map(String::as_str).chain([id]) {
+            self.loaded.retain(|l| l != c);
+            self.loaded.push(c.into());
+            if !self.chat_msg_indices.contains_key(c) {
+                assert!(self.chat_idx_by_id.contains_key(c), "load the messages of the unknown chat {c}");
+                self.chat_msg_indices.insert(c.into(), Vec::new());
+                for m in self.stored("chat_id = ?1 ORDER BY sort_key", [c]) {
+                    self.insert_message(m);
+                }
             }
         }
         self.unload_old();
     }
 
     /// With more than `LOADED_MESSAGES` loaded messages, unloads the chats that were used least recently down to half
-    /// of them, except the chat that was used last and the shown chats. So one unload frees the room for many loads.
+    /// of them, except the chat that was used last and the shown chats with their member chats. So one unload frees
+    /// the room for many loads.
     fn unload_old(&mut self) {
         let mut live = self.msg_idx_by_id.len();
         if live <= LOADED_MESSAGES {
             return;
         }
+        let shown = self.shown.iter().filter_map(|c| self.chat_idx_by_id.get(c));
+        let shown: HashSet<&str> =
+            shown.flat_map(|&i| self.members(i).into_iter().chain([i])).map(|i| self.chats[i].id.as_str()).collect();
         let old = self.loaded[..self.loaded.len() - 1].iter().filter(|c| {
-            let drop = live > LOADED_MESSAGES / 2 && !self.shown.contains(c);
+            let drop = live > LOADED_MESSAGES / 2 && !shown.contains(c.as_str());
             live -= if drop { self.chat_msg_indices[*c].len() } else { 0 };
             drop
         });
@@ -945,6 +968,40 @@ impl BeeperStore {
     /// The loaded messages of the chat, in timeline order.
     pub fn timeline(&self, chat: &str) -> impl DoubleEndedIterator<Item = &Message> + ExactSizeIterator + Clone {
         self.timeline_indices(chat).iter().map(|&i| &self.messages[i])
+    }
+
+    /// The loaded messages that the chat shows, in timeline order: its own, or Desktop's `syncMergedMessages` of a
+    /// merged chat, the messages of its member chats in `G2` order from the newest of the oldest loaded times of the
+    /// members with older history (`clampVisibleMessages`), so that no member leaves a hole.
+    pub fn chat_timeline(&self, chat: &str) -> Vec<&Message> {
+        let members = self.chat_idx_by_id.get(chat).map(|&i| self.members(i)).unwrap_or_default();
+        if members.is_empty() {
+            return self.timeline(chat).collect();
+        }
+        let ids = members.iter().map(|&i| self.chats[i].id.as_str());
+        let mut all: Vec<&Message> = ids.flat_map(|c| self.timeline(c)).collect();
+        all.sort_by_cached_key(|m| merged_order(m));
+        let older = members.iter().filter(|&&i| self.matrix.is_some() && self.chats[i].older != Older::Start);
+        let oldest = |i: &usize| self.timeline(&self.chats[*i].id).next().map(|m| merged_order(m).0);
+        match older.filter_map(oldest).max() {
+            Some(boundary) => all.into_iter().filter(|m| merged_order(m).0 >= boundary).collect(),
+            None => all,
+        }
+    }
+
+    /// Desktop's `boundaryHolders` of a merged chat: the member chats with older history whose oldest loaded message
+    /// is the newest, which load older messages first. A chat that is not merged holds its own boundary.
+    pub fn boundary_holders(&self, chat: &str) -> Vec<String> {
+        let idx = self.chat_idx(chat);
+        let members = self.members(idx);
+        if members.is_empty() {
+            return vec![chat.into()];
+        }
+        let older = members.into_iter().filter(|&i| self.chats[i].older != Older::Start);
+        let oldest = |i: usize| self.timeline(&self.chats[i].id).next().map_or(i64::MAX, |m| merged_order(m).0);
+        let timed: Vec<(i64, usize)> = older.map(|i| (oldest(i), i)).collect();
+        let boundary = timed.iter().map(|t| t.0).max();
+        timed.into_iter().filter(|t| Some(t.0) == boundary).map(|(_, i)| self.chats[i].id.clone()).collect()
     }
 
     /// Loads the chat of the stored message `id`, and returns the index of the message.
@@ -1573,6 +1630,14 @@ impl BeeperStore {
         if flag == ChatFlag::Archived && value && c.flag(ChatFlag::Pinned) {
             return false;
         }
+        // Desktop's `archiveRooms` of a merged chat archives its member chats, and it is archived when they all are.
+        let members = self.members(idx);
+        if flag == ChatFlag::Archived && !members.is_empty() {
+            for m in members {
+                self.set_chat_flag(m, flag, Some(value));
+            }
+            return true;
+        }
         self.update_chat(idx, |c| *c.flag_mut(flag) = Some(value));
         let id = self.chats[idx].id.clone();
         if flag == ChatFlag::Pinned {
@@ -1727,6 +1792,7 @@ impl BeeperStore {
         if persist {
             self.persist_chat(c_idx);
             self.persist_message(idx);
+            self.sync_parent(c_idx);
         }
         idx
     }
@@ -1957,9 +2023,12 @@ impl BeeperStore {
     pub fn upsert_chat(&mut self, mut chat: Chat) {
         let Some(&idx) = self.chat_idx_by_id.get(&chat.id) else {
             chat.label_ids = self.labels.iter().filter(|l| l.rooms.contains(&chat.id)).map(|l| l.id.clone()).collect();
+            let in_union = |c: &&Chat| c.merge.as_ref().is_some_and(|m| m.chat_ids.contains(&chat.id));
+            chat.merged_into_chat_id = self.chats.iter().find(in_union).map(|c| c.id.clone());
             let idx = self.push_chat(chat, true);
             let c = self.chats[idx].clone();
-            return self.emit_ws("chat.upserted", &c.id, None, Some(c.clone()), None);
+            self.emit_ws("chat.upserted", &c.id, None, Some(c.clone()), None);
+            return self.sync_parent(idx);
         };
         self.update_chat(idx, |c| {
             *c = Chat {
@@ -2006,7 +2075,11 @@ impl BeeperStore {
     /// Drops a chat that the user left, with its messages.
     pub fn remove_chat(&mut self, id: &str) {
         self.remove_label(id);
-        let Some(idx) = self.chat_idx_by_id.remove(id) else { return };
+        let Some(&idx) = self.chat_idx_by_id.get(id) else { return };
+        if let Some(m) = self.chats[idx].merge.take() {
+            self.set_merged_into(&m.chat_ids, None);
+        }
+        let idx = self.chat_idx_by_id.remove(id).expect("the chat is here");
         let chat = self.chats.remove(idx);
         assert!(self.chat_order.remove(&activity_key(&chat)), "chat {id} is in the chat order");
         if let Some(local) = chat.local_chat_id {
@@ -2026,6 +2099,9 @@ impl BeeperStore {
         self.outbox.retain(|(_, c, _)| c != id);
         self.exec("DELETE FROM outbox WHERE chat_id = ?1", params![id]);
         self.emit_ws("chat.deleted", id, None, None, None);
+        if let Some(p) = chat.merged_into_chat_id.and_then(|p| self.resolve_chat_idx(&p)) {
+            self.update_chat(p, |_| {});
+        }
     }
 
     /// Asks the bridge to delete the chat, and removes it here at once like Desktop.
@@ -2081,6 +2157,12 @@ impl BeeperStore {
     pub fn update_chat(&mut self, idx: usize, f: impl FnOnce(&mut Chat)) -> Chat {
         let old_key = activity_key(&self.chats[idx]);
         f(&mut self.chats[idx]);
+        if let Some(row) = self.union_row(idx) {
+            let c = &mut self.chats[idx];
+            (c.preview, c.unread_count, c.unread_mentions) = (row.preview, row.unread, row.mentions);
+            c.last_activity = row.activity.or(c.last_activity.take());
+            c.is_archived = Some(row.archived);
+        }
         assert!(self.chat_order.remove(&old_key), "chat {} is in the chat order", old_key.1);
         self.chat_order.insert(activity_key(&self.chats[idx]));
         self.chats[idx].sync_flags();
@@ -2089,7 +2171,36 @@ impl BeeperStore {
         self.persist_chat(idx);
         let chat = self.chats[idx].clone();
         self.emit_ws("chat.upserted", &chat.id, None, Some(chat.clone()), None);
+        self.sync_parent(idx);
         chat
+    }
+
+    /// Desktop's `UnionThreadStore` row of the merged chat `idx`: the newest preview and activity of its member chats
+    /// (`lastNonSilentMessage`, `sortTimestamp`), the sums of their unread counts, and archived when all of them are
+    /// (`isRoomDone`). `None` for another chat, or a merged chat without member chats here.
+    fn union_row(&self, idx: usize) -> Option<UnionRow> {
+        let members = self.members(idx);
+        let ms = |m: &Message| millis_from_rfc3339(&m.timestamp);
+        let newest = members.iter().filter_map(|&i| self.chats[i].preview.as_ref()).max_by_key(|m| ms(m));
+        let activity = members
+            .iter()
+            .filter_map(|&i| self.chats[i].last_activity.as_ref())
+            .max_by_key(|t| millis_from_rfc3339(t).expect("RFC 3339 activity"));
+        (!members.is_empty()).then(|| UnionRow {
+            preview: newest.cloned(),
+            activity: activity.cloned(),
+            unread: members.iter().map(|&i| self.chats[i].unread_count).sum(),
+            mentions: members.iter().map(|&i| self.chats[i].unread_mentions).sum(),
+            archived: members.iter().all(|&i| self.chats[i].flag(ChatFlag::Archived)),
+        })
+    }
+
+    /// Updates the merged chat of the chat `idx` after a change of the chat.
+    fn sync_parent(&mut self, idx: usize) {
+        let parent = self.chats[idx].merged_into_chat_id.as_deref().and_then(|p| self.resolve_chat_idx(p));
+        if let Some(p) = parent {
+            self.update_chat(p, |_| {});
+        }
     }
 
     pub fn update_message(&mut self, idx: usize, f: impl FnOnce(&mut Message)) -> Message {
@@ -2104,6 +2215,7 @@ impl BeeperStore {
                 false => self.chats[c_idx].preview = self.last_shown(&msg.chat_id),
             }
             self.persist_chat(c_idx);
+            self.sync_parent(c_idx);
         }
         self.emit_ws("message.upserted", &msg.chat_id, Some(&msg.id), None, Some(msg.clone()));
         msg
@@ -2151,17 +2263,34 @@ impl BeeperStore {
         self.resolve_chat_idx(chat_or_local_id).map(|idx| self.chats[idx].id.clone())
     }
 
-    fn send_target(&self, idx: usize) -> usize {
-        let Some(merge) = &self.chats[idx].merge else { return idx };
-        let member = |id: &str| self.resolve_chat_idx(id).expect("merged member chat exists");
-        merge.default_chat_id.as_deref().map(member).unwrap_or_else(|| {
-            merge
-                .chat_ids
-                .iter()
-                .map(|id| member(id))
-                .max_by(|&a, &b| self.chats[a].last_activity.cmp(&self.chats[b].last_activity))
-                .expect("merged chat has member chatIDs")
-        })
+    /// The indices of the member chats of the merged chat `idx` that are here, in its order (Desktop's
+    /// `memberThreads`); none for another chat.
+    pub fn members(&self, idx: usize) -> Vec<usize> {
+        let ids = self.chats[idx].merge.iter().flat_map(|m| &m.chat_ids);
+        ids.filter_map(|id| self.resolve_chat_idx(id)).collect()
+    }
+
+    /// Desktop's `defaultMemberChat`: the default member chat of a merged chat, else its first one.
+    pub fn default_member(&self, idx: usize) -> Option<usize> {
+        let members = self.members(idx);
+        let default = self.chats[idx].merge.as_ref().and_then(|m| m.default_chat_id.as_deref());
+        default.and_then(|d| members.iter().copied().find(|&i| self.chats[i].id == d)).or(members.first().copied())
+    }
+
+    /// Desktop's `seedComposeTarget` of a merged chat: the member chat with the newest message, unless it is your own
+    /// and older than 30 minutes, which goes to the default member chat. Another chat sends to itself.
+    pub fn send_target(&self, idx: usize) -> usize {
+        let members = self.members(idx);
+        let ms = |i: &usize| self.chats[*i].preview.as_ref().and_then(|m| millis_from_rfc3339(&m.timestamp));
+        let latest = members.iter().filter(|i| ms(i).is_some()).max_by_key(|i| ms(i));
+        let stale = |&i: &usize| {
+            let m = self.chats[i].preview.as_ref().expect("a member with a message");
+            m.is_sender == Some(true) && ms(&i).expect("a message time") + 30 * 60_000 <= now_unix_millis()
+        };
+        match latest {
+            Some(&i) if !stale(&i) => i,
+            _ => self.default_member(idx).unwrap_or(idx),
+        }
     }
 
     pub fn emit_ws(
@@ -2184,11 +2313,44 @@ impl BeeperStore {
             .ok();
     }
 
+    /// Merges the member chats here into `parent`, or takes them out of their merged chat with `None`. A member room
+    /// that is not here joins when it comes (`upsert_chat`).
     fn set_merged_into(&mut self, ids: &[String], parent: Option<&str>) {
-        for id in ids {
-            let idx = self.resolve_chat_idx(id).expect("merged member chat exists");
-            self.update_chat(idx, |c| c.merged_into_chat_id = parent.map(str::to_string));
+        let here: Vec<usize> = ids.iter().filter_map(|id| self.resolve_chat_idx(id)).collect();
+        for idx in here {
+            if self.chats[idx].merged_into_chat_id.as_deref() != parent {
+                self.update_chat(idx, |c| c.merged_into_chat_id = parent.map(str::to_string));
+            }
         }
+    }
+
+    /// Sets the member chats of the chat `idx`, or makes it no merged chat with `None`.
+    fn set_merge(&mut self, idx: usize, merge: Option<ChatMergeInfo>) {
+        let id = self.chats[idx].id.clone();
+        let new = merge.as_ref().map_or(&[][..], |m| &m.chat_ids[..]);
+        let old = self.chats[idx].merge.iter().flat_map(|m| &m.chat_ids);
+        let gone: Vec<String> = old.filter(|c| !new.contains(c)).cloned().collect();
+        let new = new.to_vec();
+        self.chats[idx].merge = merge;
+        self.set_merged_into(&gone, None);
+        self.set_merged_into(&new, Some(&id));
+        self.update_chat(idx, |_| {});
+    }
+
+    /// Desktop's `handleUnionSync`: the member rooms of the merged chat `id`, from the `m.space.child` state of its
+    /// `com.beeper.union` room.
+    pub fn set_union(&mut self, id: &str, rooms: Vec<String>) {
+        let idx = self.chat_idx(id);
+        let default_chat_id = self.chats[idx].merge.as_ref().and_then(|m| m.default_chat_id.clone());
+        if self.chats[idx].merge.as_ref().is_none_or(|m| m.chat_ids != rooms) {
+            self.set_merge(idx, Some(ChatMergeInfo { chat_ids: rooms, default_chat_id }));
+        }
+    }
+
+    /// Desktop's `removeUnion`: the merged chat goes here at once, and the user leaves and forgets its room.
+    pub fn unmerge(&mut self, id: &str) {
+        self.remove_chat(id);
+        self.queue(id, Outgoing::Leave(true));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2316,14 +2478,7 @@ impl BeeperStore {
             None => self.chats[idx].draft.clone(),
         };
         if let Some(merge) = new_merge {
-            let parent = self.chats[idx].id.clone();
-            if let Some(old) = self.chats[idx].merge.take() {
-                self.set_merged_into(&old.chat_ids, None);
-            }
-            if let Some(m) = &merge {
-                self.set_merged_into(&m.chat_ids, Some(&parent));
-            }
-            self.chats[idx].merge = merge;
+            self.set_merge(idx, merge);
         }
         Ok(self.update_chat(idx, |c| c.draft = draft))
     }
@@ -2342,7 +2497,7 @@ impl BeeperStore {
     pub fn echo_draft(&mut self, chat_or_local_id: &str, draft: Draft) -> Result<(String, Vec<Outgoing>), Error> {
         let Draft { text, mut reply_to, mentions, preview, thread, files, links } = draft;
         assert!(text.is_some() || !files.is_empty(), "a draft has text or files");
-        let rules = self.resolve_chat_idx(chat_or_local_id).map(|i| self.chats[i].file.clone());
+        let rules = self.resolve_chat_idx(chat_or_local_id).map(|i| self.chats[self.send_target(i)].file.clone());
         let captioned = |f: &OutFile| {
             rules.as_ref().is_some_and(|r| crate::media::takes_caption(r, &f.mime, f.gif, f.voice.is_some()))
         };
@@ -2444,7 +2599,13 @@ impl BeeperStore {
         attachment: Option<Attachment>,
         thread: Option<&ThreadSend>,
     ) -> Result<(String, String, Message), Error> {
-        let c_idx = self.send_target(self.resolve_chat_idx(chat_or_local_id).ok_or(Error::ChatNotFound)?);
+        let idx = self.resolve_chat_idx(chat_or_local_id).ok_or(Error::ChatNotFound)?;
+        // Desktop's `targetComposerAtMessage`: a reply in a merged chat goes to the chat of the message.
+        let replied = reply_to_message_id.as_deref().and_then(|r| self.loaded(r)).map(|m| m.chat_id.as_str());
+        let c_idx = match replied.filter(|&c| c != self.chats[idx].id && self.in_chat(idx, c)) {
+            Some(c) => self.chat_idx(c),
+            None => self.send_target(idx),
+        };
         let (chat_id, account_id) = (self.chats[c_idx].id.clone(), self.chats[c_idx].account_id.clone());
         self.load_chat(&chat_id);
         let msg_id = self.next_id("msg");
@@ -2625,6 +2786,7 @@ impl BeeperStore {
         if self.chats[c_idx].preview.as_ref().is_some_and(|p| p.id == message_id) {
             self.chats[c_idx].preview = self.last_shown(&chat_id);
             self.persist_chat(c_idx);
+            self.sync_parent(c_idx);
         }
         self.emit_ws("message.deleted", &chat_id, Some(message_id), None, None);
         Ok(chat_id)
@@ -3091,9 +3253,28 @@ impl BeeperStore {
         }
     }
 
+    /// Desktop's `markAsRead` through a message of the merged chat `idx`: each unread member chat is read through its
+    /// newest message from the time of that message or before (`oIe`).
+    pub fn mark_union_read_through(&mut self, idx: usize, message_id: &str) {
+        let at = merged_order(self.message(message_id)).0;
+        for i in self.members(idx) {
+            let c = &self.chats[i];
+            let read = c.last_read_message_sort_key.as_ref();
+            let target = self.timeline(&c.id).rfind(|m| merged_order(m).0 <= at);
+            let target = target.filter(|m| c.is_unread() && read.is_none_or(|r| m.sort_key > *r));
+            if let Some((chat, id)) = target.map(|m| (m.chat_id.clone(), m.id.clone())) {
+                self.mark_read_through(&chat, &id);
+            }
+        }
+    }
+
     /// Desktop's `markAsRead`: reads the chat here, and queues the read receipt of its newest event when it had unread
     /// messages. `clear_messages` also takes the unread mark off each message.
     pub fn mark_read(&mut self, idx: usize, clear_messages: bool) {
+        // Desktop's `markAsRead` of a merged chat reads each member chat, and its own unread mark.
+        for m in self.members(idx) {
+            self.mark_read(m, clear_messages);
+        }
         let id = self.chats[idx].id.clone();
         if let Some(event) = self.mark_chat_read(&id, clear_messages) {
             self.queue(&id, Outgoing::Read(event));
@@ -3683,6 +3864,43 @@ mod tests {
             if *a == id && *b == id && k == "com.beeper.chats.snoozed"
                 && *on == serde_json::json!({ "snoozed_until_ms": 1_900_000_000_000_i64 })
                 && *off == serde_json::json!({})));
+    }
+
+    /// Desktop's `UnionThreadStore`: a merged chat reads and archives its member chats, is archived when they all are,
+    /// answers a reply in the chat of the message, and a member room that comes later joins it.
+    #[test]
+    fn merged_chats_act_on_their_member_chats_like_desktop() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("merged-members"));
+        let (kai, lena) = ("!ig_kai:beeper.com", "!sg_lena:beeper.com");
+        let members = Some(vec![kai.to_string(), lena.to_string(), "!later:x".to_string()]);
+        let (chat, _) =
+            st.create_or_start_chat("hungryserv", "single", Some("Friends".into()), vec![], None, members, None);
+        let idx = st.chat_idx(&chat.id);
+        assert_eq!(st.members(idx).len(), 2, "a member room that is not here yet is left out");
+        for id in [kai, lena] {
+            let i = st.chat_idx(id);
+            st.update_chat(i, |c| c.unread_count = 1);
+        }
+        assert_eq!(st.chats[idx].unread_count, 2);
+        st.mark_read(idx, false);
+        assert_eq!((st.chat(kai).unread_count, st.chat(lena).unread_count, st.chats[idx].unread_count), (0, 0, 0));
+        assert!(st.set_chat_flag(idx, super::ChatFlag::Archived, Some(true)));
+        assert!(st.chat(kai).flag(super::ChatFlag::Archived) && st.chats[idx].flag(super::ChatFlag::Archived));
+        let kai_idx = st.chat_idx(kai);
+        st.set_chat_flag(kai_idx, super::ChatFlag::Archived, Some(false));
+        assert!(!st.chats[idx].flag(super::ChatFlag::Archived), "archived only while all member chats are");
+        st.load_chat(&chat.id);
+        let (to, _, _) = st.send_message(&chat.id, Some("hi".into()), Some("msg_x4".into()), None).unwrap();
+        assert_eq!(to, kai, "a reply goes to the chat of its message");
+        let later = super::Chat {
+            id: "!later:x".into(),
+            local_chat_id: None,
+            merged_into_chat_id: None,
+            ..st.chat(lena).clone()
+        };
+        st.upsert_chat(later);
+        assert_eq!(st.chat("!later:x").merged_into_chat_id.as_deref(), Some(chat.id.as_str()));
+        assert_eq!(st.members(idx).len(), 3);
     }
 
     #[test]
