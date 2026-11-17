@@ -1450,9 +1450,9 @@ async fn lifecycle() {
         assert!(!gui.sidebar_hidden && gui.sidebar_width == 330.0, "a wider drag shows it again");
         let main = iced::window::Id::unique();
         gui.main_window = Some(main);
-        let _ = gui.update(UiMessage::WindowResized(main, iced::Size::new(500.0, 800.0)));
+        let _ = gui.update(UiMessage::Window(beeper_ui::windows::Msg::Resized(main, iced::Size::new(500.0, 800.0))));
         assert!(gui.sidebar_hidden, "a window narrower than 600 hides the sidebar");
-        let _ = gui.update(UiMessage::WindowResized(main, iced::Size::new(1264.0, 893.0)));
+        let _ = gui.update(UiMessage::Window(beeper_ui::windows::Msg::Resized(main, iced::Size::new(1264.0, 893.0))));
         assert!(!gui.sidebar_hidden, "a wider window shows it again");
         gui.main_window = None;
     }

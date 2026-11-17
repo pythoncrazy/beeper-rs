@@ -3,6 +3,7 @@
 use crate::i18n::{tr, trf, trx};
 use crate::settings;
 use crate::style::{fill_box, shadow_box, text_width, txt};
+use crate::windows;
 use crate::{menu_item, menu_rule, BeeperGuiApp, El, SettingsTab, UiMessage, ASK_LOGOUT};
 use iced::widget::{container, mouse_area, row, text_editor, Column};
 use iced::{font::Weight, Fill, Padding};
@@ -49,7 +50,7 @@ impl BeeperGuiApp {
             hotkey(tr("Open..."), "Chat: Send File"),
             hotkey(tr("New Chat"), "Chat: Start New"),
             None,
-            main.map(|id| (tr("Close Window").to_string(), "", UiMessage::CloseRequested(id))),
+            main.map(|id| (tr("Close Window").to_string(), "", UiMessage::Window(windows::Msg::CloseRequested(id)))),
             hotkey(tr("Open Chat in New Window"), "Open in New Window"),
         ];
         let edit = vec![
@@ -62,8 +63,8 @@ impl BeeperGuiApp {
         let sidebar = if self.sidebar_hidden { tr("Show Sidebar") } else { tr("Hide Sidebar") };
         let view = vec![hotkey(bar, "Toggle Space Bar"), hotkey(sidebar, "Toggle Sidebar")];
         let window = vec![
-            main.map(|id| (tr("Minimize").to_string(), "", UiMessage::MinimizeWindow(id))),
-            main.map(|id| (tr("Zoom").to_string(), "", UiMessage::ToggleMaximize(Some(id)))),
+            main.map(|id| (tr("Minimize").to_string(), "", UiMessage::Window(windows::Msg::Minimize(id)))),
+            main.map(|id| (tr("Zoom").to_string(), "", UiMessage::Window(windows::Msg::ToggleMaximize(Some(id))))),
         ];
         let mut help = vec![
             hotkey(tr("Report a Problem"), "Report a Problem"),

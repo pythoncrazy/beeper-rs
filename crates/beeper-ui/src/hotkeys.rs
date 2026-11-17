@@ -46,7 +46,7 @@ impl BeeperGuiApp {
             }
             Msg::RevertAll => {
                 self.patch_settings(|s| s.keybindings.clear());
-                return self.update(UiMessage::Relaunch);
+                return self.update(UiMessage::Window(windows::Msg::Relaunch));
             }
             Msg::Query(q) => self.hotkey_query = q,
             Msg::Modal(q) => {

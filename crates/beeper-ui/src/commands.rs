@@ -11,6 +11,7 @@ use crate::scheduled;
 use crate::settings;
 use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
 use crate::threads;
+use crate::windows;
 use crate::{
     has_flag, network_name, shown, BeeperGuiApp, El, InboxTab, SettingsHit, SettingsTab, UiMessage, ASK_LOGOUT,
 };
@@ -496,7 +497,7 @@ impl BeeperGuiApp {
                     false => cmd(e, trx("Unblock", "chat command"), msg),
                 }
             }));
-            v.push(cmd(e, tr("Open in new window"), Some(UiMessage::OpenChatWindow(id()))));
+            v.push(cmd(e, tr("Open in new window"), Some(UiMessage::Window(windows::Msg::OpenChat(id())))));
         }
         v.push(
             cmd(CHATS, tr("Search chats"), Some(UiMessage::ToggleCommandPalette)).keys(&["search", "find", "filter"]),
@@ -676,7 +677,7 @@ impl BeeperGuiApp {
         v.push(space.keys(&["hide", "show"]).hotkey("Toggle Space Bar"));
         let media = &["media", "gallery", "photos", "images", "videos", "files", "links", "docs"];
         v.push(cmd("Window", tr("Media viewer"), Some(UiMessage::Media(media_view::Msg::Open))).keys(media));
-        v.push(cmd("Window", tr("Maximize/unmaximize"), Some(UiMessage::ToggleMaximize(None))));
+        v.push(cmd("Window", tr("Maximize/unmaximize"), Some(UiMessage::Window(windows::Msg::ToggleMaximize(None)))));
         v.push(cmd("View", tr("Zoom in"), hot("Zoom In")).keys(&["magnify"]).hotkey("Zoom In"));
         v.push(cmd("View", tr("Zoom out"), hot("Zoom Out")).keys(&["magnify"]).hotkey("Zoom Out"));
         let reset = hot("Reset Zoom").filter(|_| st.settings.zoom_percent != 100);
@@ -723,7 +724,7 @@ impl BeeperGuiApp {
             v.push(cmd("Developer", "Copy current chat ID", Some(UiMessage::CopyText(c.id.clone()))));
         }
         v.push(cmd("Developer", "Reload app", hot("Reload App")).hotkey("Reload App"));
-        v.push(cmd("Developer", "Relaunch app", Some(UiMessage::Relaunch)));
+        v.push(cmd("Developer", "Relaunch app", Some(UiMessage::Window(windows::Msg::Relaunch))));
         if !query.is_empty() {
             v = prefs::match_sort_keys(v, query, |c| {
                 let mut keys = vec![c.title.clone()];

@@ -11,6 +11,7 @@ use crate::rail::{draft_rail_spaces, rail_accounts, rail_owner, rail_spaces, RAI
 use crate::reminders::reminder_day;
 use crate::scheduled::send_day;
 use crate::toasts::{TOAST_TIMEOUT, UNDO_NOTE_TIMEOUT};
+use crate::windows::write_window_state;
 use beeper_core::config::CentralConfig;
 use beeper_core::matrix::ROOM_MENTION;
 use beeper_core::store::StoreLock;
@@ -80,7 +81,7 @@ fn local(m: &UiMessage) -> bool {
     match m {
         UiMessage::OpenUrl(_)
         | UiMessage::OpenAddAccount(..)
-        | UiMessage::Relaunch
+        | UiMessage::Window(windows::Msg::Relaunch)
         | UiMessage::NotifyTimer(..)
         | UiMessage::Record(_)
         | UiMessage::Voice(_)
@@ -249,8 +250,8 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         41 => UiMessage::Media(media_view::Msg::Open),
         42 => UiMessage::CloseModals,
         43 => UiMessage::ToggleAttachMenu,
-        44 => UiMessage::OpenChatWindow(chat),
-        45 => UiMessage::CloseRequested(*rng.pick(&windows(app))),
+        44 => UiMessage::Window(windows::Msg::OpenChat(chat)),
+        45 => UiMessage::Window(windows::Msg::CloseRequested(*rng.pick(&windows(app)))),
         46..=48 => UiMessage::KeyPressed(key, mods),
         49 if !deletable.is_empty() => UiMessage::AskDeleteChat(rng.pick(&deletable).clone()),
         50 => UiMessage::Reminders(reminders::Msg::Menu),
@@ -260,7 +261,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         54 if app.forward.is_some() => UiMessage::Forward(forward::Msg::Pick(chat)),
         55 => UiMessage::Rail(rail::Msg::Select(rng.coin().then(|| rng.pick(&accounts).clone()))),
         56 if !hits.is_empty() => UiMessage::Settings(settings::Msg::Pick(*rng.pick(&hits))),
-        57 => UiMessage::WindowFocused(rng.coin()),
+        57 => UiMessage::Window(windows::Msg::Focused(rng.coin())),
         58 => UiMessage::Hotkeys(hotkeys::Msg::Query(text)),
         59 => UiMessage::Accounts(accounts::Msg::Open(rng.coin().then(|| rng.pick(&accounts).clone()))),
         60 => UiMessage::Accounts(accounts::Msg::SetProps(
@@ -708,14 +709,14 @@ fn closing_the_main_window_hides_it_like_desktop() {
     let mut app = demo_app("closehide");
     let main = app.main_window.expect("a main window");
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("showTrayIcon", 0)));
-    let _ = app.update(UiMessage::CloseRequested(main));
+    let _ = app.update(UiMessage::Window(windows::Msg::CloseRequested(main)));
     assert!(app.hidden, "the main window hides without a tray icon too");
     let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
     assert_eq!(app.sub_windows(), [app.settings_window.expect("the settings window")]);
-    let _ = app.update(UiMessage::Tray(Ok(tray::Event::Activate)));
+    let _ = app.update(UiMessage::Window(windows::Msg::Tray(Ok(tray::Event::Activate))));
     assert!(!app.hidden, "a click on the tray icon shows the windows");
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("quitOnClose", 1)));
-    let _ = app.update(UiMessage::CloseRequested(main));
+    let _ = app.update(UiMessage::Window(windows::Msg::CloseRequested(main)));
     assert!(!app.hidden, "with Quit on close, the window closes");
 }
 
@@ -725,9 +726,9 @@ fn closing_the_sign_in_window_hides_it_like_desktop() {
     let mut app = demo_app("closelogin");
     let login = iced::window::Id::unique();
     (app.main_window, app.login_window) = (None, Some(login));
-    let _ = app.update(UiMessage::CloseRequested(login));
+    let _ = app.update(UiMessage::Window(windows::Msg::CloseRequested(login)));
     assert!(app.hidden && app.login_window == Some(login), "the sign-in window hides instead of quitting");
-    let _ = app.update(UiMessage::FocusRequested(None));
+    let _ = app.update(UiMessage::Window(windows::Msg::FocusRequested(None)));
     assert!(!app.hidden, "opening the app again shows it");
 }
 
@@ -1528,7 +1529,7 @@ fn media_window_menu_and_rows_like_desktop() {
     let mut app = demo_app("media-rows");
     let _ = app.update(UiMessage::Media(media_view::Msg::Open));
     let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
-    let _ = app.update(UiMessage::WindowResized(id, Size::new(1000.0, 720.0)));
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(id, Size::new(1000.0, 720.0))));
     app.cursor.set(Point::new(900.0, 40.0));
     let _ = app.update(UiMessage::Media(media_view::Msg::Menu(true)));
     assert_eq!(app.media_window.as_ref().unwrap().menu, Some(Point::new(900.0, 40.0)), "the menu opens at the cursor");
@@ -1580,7 +1581,7 @@ fn media_viewer_deletes_like_desktop() {
         (st.chats[c].messages.delete, st.chats[c].messages.delete_max_age) = (true, None);
         (st.messages[i].id.clone(), ai, c)
     };
-    let _ = app.update(UiMessage::WindowResized(id, Size::new(1000.0, 720.0)));
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(id, Size::new(1000.0, 720.0))));
     let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, true)));
     let click = |app: &BeeperGuiApp| -> Vec<UiMessage> {
         let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view(id));
@@ -1612,7 +1613,7 @@ fn media_filmstrip_scrolls_like_desktop() {
     let _ = app.update(UiMessage::Media(media_view::Msg::Open));
     let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
     let size = Size::new(300.0, 720.0);
-    let _ = app.update(UiMessage::WindowResized(id, size));
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(id, size)));
     let (mid, ai) = {
         let st = app.store.read();
         let media = app.media_messages(&st);
@@ -2073,7 +2074,7 @@ fn chat_windows_that_left_their_chat_draw_nothing() {
     let mut app = demo_app("chat-window-left");
     let ids: Vec<String> = app.visible_chats(&app.store.read()).iter().take(2).map(|c| c.id.clone()).collect();
     let _ = app.update(UiMessage::SelectChat(ids[0].clone()));
-    let _ = app.update(UiMessage::OpenChatWindow(ids[1].clone()));
+    let _ = app.update(UiMessage::Window(windows::Msg::OpenChat(ids[1].clone())));
     let _ = app.update(UiMessage::ToggleCommandPalette);
     app.cmd_bar_commands_mode = true;
     let id = app.chat_windows[0].0;
@@ -2681,7 +2682,7 @@ fn devices_offer_the_app_like_desktop() {
     let refused = Err(beeper_core::matrix::REAUTH.into());
     let _ = app.update(UiMessage::Settings(settings::Msg::DeviceLoggedOut("Beeper Desktop".into(), refused)));
     let modal = app.reauth.window.expect("a refused JWT asks for a sign-in code");
-    let _ = app.update(UiMessage::WindowClosed(modal));
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(modal)));
     assert!(!app.devices_busy, "a closed modal ends the logout");
     let _ = app.update(UiMessage::Settings(settings::Msg::LogoutDevice("Beeper Desktop".into())));
     let _ = app
@@ -3069,7 +3070,7 @@ fn the_open_chat_reads_new_messages_like_desktop() {
     let unread = |app: &BeeperGuiApp| app.store.read().chat(&id).unread_count;
     arrive(&mut app);
     assert_eq!(unread(&app), 1, "an unfocused window keeps the chat unread");
-    let _ = app.update(UiMessage::WindowFocused(true));
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(true)));
     assert_eq!(unread(&app), 0, "focusing the window reads it");
     arrive(&mut app);
     assert_eq!(unread(&app), 0, "a new message in view is read");
@@ -3848,7 +3849,7 @@ fn polls_like_desktop() {
         let mut sim = simulator(app.view_poll_votes(chat, mid));
         assert!(sim.find("Which default dark theme do you prefer?").is_ok() && sim.find("Dark Purple").is_ok());
     }
-    let _ = app.update(UiMessage::WindowClosed(id));
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
     assert!(app.vote_windows.is_empty());
     for m in click(&app, "Nocturne") {
         let _ = app.update(m);
@@ -3944,13 +3945,13 @@ fn poll_creator_like_desktop() {
     let id = app.poll_windows[0].id;
     let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Poll(id, e)));
     edit(&mut app, PollEdit::Question("Lunch?".into()));
-    let _ = app.update(UiMessage::CloseRequested(id));
+    let _ = app.update(UiMessage::Window(windows::Msg::CloseRequested(id)));
     assert!(app.poll_windows[0].discarding && found(&app, "Discard poll?") && found(&app, "Keep editing"));
     edit(&mut app, PollEdit::Discard(false));
     edit(&mut app, PollEdit::Question(String::new()));
     edit(&mut app, PollEdit::Close);
     assert!(!app.poll_windows[0].discarding, "an empty draft closes without a question");
-    let _ = app.update(UiMessage::WindowClosed(id));
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
     assert!(app.poll_windows.is_empty());
 }
 
@@ -6123,12 +6124,18 @@ fn double_clicks_like_desktop() {
     let main = app.main_window.expect("a main window");
     assert!(app.pane.selected_chat_id.is_some());
     let header = interact(&app, main, Size::new(1440.0, 900.0), Point::new(500.0, 20.0), twice.clone());
-    assert!(matches!(&header[..], [UiMessage::ToggleMaximize(None)]), "the chat header maximizes: {header:?}");
+    assert!(
+        matches!(&header[..], [UiMessage::Window(windows::Msg::ToggleMaximize(None))]),
+        "the chat header maximizes: {header:?}"
+    );
     // The chat header hides the link card under it from the cursor, and the card opens its link below the header.
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
     let (size, card) = (Size::new(1000.0, 700.0), Point::new(900.0, 40.0));
     let over = interact(&app, main, size, card, twice.clone());
-    assert!(matches!(&over[..], [UiMessage::ToggleMaximize(None)]), "the header over a card maximizes");
+    assert!(
+        matches!(&over[..], [UiMessage::Window(windows::Msg::ToggleMaximize(None))]),
+        "the header over a card maximizes"
+    );
     let below = interact(&app, main, size, Point::new(900.0, 90.0), twice[..2].to_vec());
     assert!(matches!(&below[..], [UiMessage::HoverEnter(_), UiMessage::OpenUrl(_)]), "the card opens its link");
     let edge = interact(&app, main, Size::new(1440.0, 900.0), Point::new(68.0 + SIDEBAR_WIDTH + 1.0, 400.0), twice);
@@ -6705,7 +6712,7 @@ fn edit_group_like_desktop() {
         let c = &st.chats[st.resolve_chat_idx(&id).expect("the group")];
         assert_eq!((c.title.as_str(), c.description.as_deref()), ("Core", Some("Our team")));
     }
-    let _ = app.update(UiMessage::WindowClosed(app.group_window.as_ref().expect("open").id));
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(app.group_window.as_ref().expect("open").id)));
     assert!(app.group_window.is_none());
     {
         let mut st = app.store.write();
@@ -6777,7 +6784,7 @@ fn edit_for_me_like_desktop() {
     let _ = app.update(UiMessage::UndoAction);
     assert!(chat(&app).title == room && chat(&app).personal.is_none(), "Undo removes the name");
     app.store.write().set_personal(&id, None, Some(Some(("mxc://x/me".into(), Vec::new(), "image/png".into()))));
-    let _ = app.update(UiMessage::WindowClosed(app.group_window.as_ref().expect("open").id));
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(app.group_window.as_ref().expect("open").id)));
     let _ = app.update(UiMessage::OpenEditForMe(id.clone()));
     let _ = simulator(app.view_edit_group(app.group_window.as_ref().expect("open")))
         .click("Remove Photo")
@@ -6793,7 +6800,7 @@ fn a_later_launch_shows_the_window_like_desktop() {
     let mut app = demo_app("secondinstance");
     let _ = app.update(UiMessage::RunHotkey("Minimize To Tray"));
     assert!(app.hidden);
-    let _ = app.update(UiMessage::SecondInstance(vec!["--demo".into()]));
+    let _ = app.update(UiMessage::Window(windows::Msg::SecondInstance(vec!["--demo".into()])));
     assert!(!app.hidden, "Desktop's second-instance event shows the main window");
 }
 
@@ -6832,7 +6839,7 @@ fn main_window_keeps_its_state_like_desktop() {
     assert_eq!(app.main_window_settings().size, Size::new(900.0, 700.0), "the main window keeps its state");
     // Desktop's chat windows keep the size of the last one under `pop-out-thread`.
     write_window_state(&path, "pop-out-thread", false, Size::new(640.0, 520.0), Some(Point::new(5.0, 5.0)));
-    let _ = app.update(UiMessage::OpenChatWindow(beeper_core::store::NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::Window(windows::Msg::OpenChat(beeper_core::store::NOTE_CHAT_ID.into())));
     assert_eq!(app.chat_windows.last().map(|w| w.1.size), Some(Size::new(640.0, 520.0)), "a chat window opens at it");
     let main = app.main_window.expect("a main window");
     let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
@@ -7073,7 +7080,7 @@ fn hotkeys_on_the_sign_in_window_like_desktop() {
             }
         }
         for e in [tray::Event::Up, tray::Event::Activate, tray::Event::Hide, tray::Event::Show] {
-            let _ = app.update(UiMessage::Tray(Ok(e)));
+            let _ = app.update(UiMessage::Window(windows::Msg::Tray(Ok(e))));
         }
     }
     let about = SettingsTab::About.name();

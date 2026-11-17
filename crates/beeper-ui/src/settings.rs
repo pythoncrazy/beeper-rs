@@ -12,6 +12,7 @@ use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, ell, fill_box, fw, glow_box, gutter_style, hex, ic,
     icon, input_style, med, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
 };
+use crate::windows;
 use crate::{
     ago, avatar, badge, brand_key, checkbox, compact, distance, divider, downloads_dir, duration, ease_out,
     feedback_btn, first_groups, fmt_phone, group, grouped, human_size, icon_btn, inbox_label, locate, login,
@@ -458,7 +459,7 @@ impl BeeperGuiApp {
         let (id, open) = window::open(centered);
         self.settings_window = Some(id);
         self.save_subwindows();
-        Task::batch([load, open.map(UiMessage::WindowOpened)])
+        Task::batch([load, open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0)))])
     }
 
     /// Desktop's keys of the settings window: Ctrl F focuses the search, ↑ and ↓ move through the results, and Enter is

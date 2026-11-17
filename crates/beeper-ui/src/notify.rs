@@ -1,5 +1,6 @@
 //! Desktop's message notifications (`maybeSendNotification` and `sendNotification`).
 use crate::reminders;
+use crate::windows;
 use crate::{BeeperGuiApp, UiMessage};
 use beeper_core::config::{account_network, millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::NetworkKind::*;
@@ -355,7 +356,7 @@ impl BeeperGuiApp {
                 Task::none()
             }
             Some("default") => {
-                let focus = self.update(UiMessage::FocusRequested(Some(chat.clone())));
+                let focus = self.update(UiMessage::Window(windows::Msg::FocusRequested(Some(chat.clone()))));
                 let jump = (!msg.is_empty()).then(|| self.update(UiMessage::JumpTo(chat, msg)));
                 Task::batch([focus, self.set_hidden(false)].into_iter().chain(jump))
             }

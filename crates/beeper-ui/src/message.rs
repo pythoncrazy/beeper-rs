@@ -12,6 +12,7 @@ use crate::style::{
     scroll_style, semi, shadow_box, stable_bar, txt, Bare, CLEAR, GUTTER,
 };
 use crate::threads;
+use crate::windows;
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, clock, commands, copy_text, day_label, day_num, day_of,
     delete_dialog, ease_out, edit_open, editable, email, enter_key, feedback_btn, file_icon, fmt_phone,
@@ -694,7 +695,7 @@ impl BeeperGuiApp {
         // Desktop's `thread-header` bar takes the pointer for its 36 px, and below it only the card does.
         let bar = mouse_area(container(Space::new()).width(Fill).height(36.0))
             .interaction(mouse::Interaction::Idle)
-            .on_double_click(UiMessage::ToggleMaximize(self.drawing.get()))
+            .on_double_click(UiMessage::Window(windows::Msg::ToggleMaximize(self.drawing.get())))
             .on_right_press(UiMessage::OpenChatMenu(cid.into()));
         // An iced `Stack` takes the size of its first layer, so a spacer as tall as the card goes first.
         let header = stack![Space::new().width(Fill).height(84.0), bar, header];

@@ -225,7 +225,8 @@ impl BeeperGuiApp {
                 return self.toast_card(t, None);
             }
             let text = txt(banner.to_string(), 13.0).color(p.strong);
-            let relaunch = self.relaunch_toast.map(|_| pill_btn(p, tr("Relaunch app"), UiMessage::Relaunch));
+            let relaunch =
+                self.relaunch_toast.map(|_| pill_btn(p, tr("Relaunch app"), UiMessage::Window(windows::Msg::Relaunch)));
             let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(relaunch).push(close);
             let card = card.spacing(8).align_y(Center);
             container(card).padding(8).style(toast_box(p.card, p)).into()

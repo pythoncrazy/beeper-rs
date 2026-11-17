@@ -6,6 +6,7 @@ use crate::style::{
     bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, med, scroll_style, semi, shadow_box,
     text_width, txt, Bare, CLEAR,
 };
+use crate::windows;
 use crate::{
     anim, closable_head, cubic_bezier, day_num, deletable, file_kind, format_short_ts, human_size, i18n, iso_millis,
     menu_item, menu_rule, relative_date, stored, tinted, today, video, vlist, voice, zoom, BeeperGuiApp, El, Frames,
@@ -1085,7 +1086,7 @@ impl BeeperGuiApp {
                     picked: Vec::new(),
                     deleting: None,
                 });
-                return Task::batch([open.map(UiMessage::WindowOpened), self.load_media()]);
+                return Task::batch([open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0))), self.load_media()]);
             }
             Msg::Tab(tab) => {
                 let w = self.media_mut();
