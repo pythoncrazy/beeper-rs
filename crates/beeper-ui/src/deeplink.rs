@@ -1,4 +1,5 @@
 //! Desktop's `beeper://` links (`deep-link-CFIhWY4D.js` `Ld`): from the launch arguments, and from a later launch.
+use crate::composer;
 use crate::i18n::tr;
 use crate::login::LoginMsg;
 use crate::new_chat;
@@ -307,7 +308,8 @@ impl BeeperGuiApp {
                     self.pane.composer = composer_with(&t);
                 }
                 let jump = sorted.map_or_else(Task::none, |mid| self.update(UiMessage::JumpTo(cid, mid)));
-                let files = attachment.map(|p| self.update(UiMessage::FilesPicked(Ok(vec![p.into()]))));
+                let files = attachment
+                    .map(|p| self.update(UiMessage::Composer(composer::Msg::FilesPicked(Ok(vec![p.into()])))));
                 Task::batch([jump].into_iter().chain(files))
             }
             "highlight-message" => {

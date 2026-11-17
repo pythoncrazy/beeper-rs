@@ -214,14 +214,14 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         7 => UiMessage::OpenMessageMenu(msg),
         8 => UiMessage::ClickMessage(msg),
         9 => UiMessage::DoubleClickMessage(msg),
-        10 => UiMessage::StartReply(msg),
-        11 => UiMessage::StartEdit(msg, text),
+        10 => UiMessage::Composer(composer::Msg::StartReply(msg)),
+        11 => UiMessage::Composer(composer::Msg::StartEdit(msg, text)),
         12 => UiMessage::AskDeleteMessage(vec![msg]),
         13 => UiMessage::ToggleReaction(mchat, msg, "👍".into()),
         14 => UiMessage::ToggleBookmark(msg),
-        15 => UiMessage::ComposerChanged(text),
-        16 => UiMessage::SubmitComposer,
-        17 => UiMessage::CancelComposeMode,
+        15 => UiMessage::Composer(composer::Msg::Changed(text)),
+        16 => UiMessage::Composer(composer::Msg::Submit),
+        17 => UiMessage::Composer(composer::Msg::CancelMode),
         18 => UiMessage::StepMessage(rng.coin(), rng.coin()),
         19 => UiMessage::Settings(settings::Msg::Open(*rng.pick(&SettingsTab::ALL))),
         20 => UiMessage::Settings(settings::Msg::SelectTab(*rng.pick(&SettingsTab::ALL))),
@@ -249,7 +249,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         40 => UiMessage::SearchRoom(text),
         41 => UiMessage::Media(media_view::Msg::Open),
         42 => UiMessage::CloseModals,
-        43 => UiMessage::ToggleAttachMenu,
+        43 => UiMessage::Composer(composer::Msg::ToggleAttachMenu),
         44 => UiMessage::Window(windows::Msg::OpenChat(chat)),
         45 => UiMessage::Window(windows::Msg::CloseRequested(*rng.pick(&windows(app)))),
         46..=48 => UiMessage::KeyPressed(key, mods),
@@ -343,7 +343,7 @@ fn composer_keys_edit_like_desktop() {
     use iced_test::simulator::typewrite;
     let mut app = demo_app("composer");
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
-    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(String::new())));
     let text = |app: &BeeperGuiApp| app.pane.composer.text();
     press(&mut app, true, typewrite("hello big world").chain([key(Named::Backspace, WORD)]));
     assert_eq!(text(&app), "hello big ");
@@ -352,8 +352,9 @@ fn composer_keys_edit_like_desktop() {
     press(&mut app, true, [key(Named::Home, Modifiers::empty()), key(Named::Delete, WORD)]);
     assert_eq!(text(&app), " ");
     press(&mut app, true, typewrite("a bc"));
-    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Select(text_editor::Motion::Left)));
-    let _ = app.update(UiMessage::DeleteTo(text_editor::Motion::WordLeft, true));
+    let _ =
+        app.update(UiMessage::Composer(composer::Msg::Edit(text_editor::Action::Select(text_editor::Motion::Left))));
+    let _ = app.update(UiMessage::Composer(composer::Msg::DeleteTo(text_editor::Motion::WordLeft, true)));
     assert_eq!(text(&app), " a b", "Ctrl+Backspace deletes only the selection");
     press(&mut app, false, [key(Named::Enter, Modifiers::empty()), key(Named::Backspace, WORD)]);
     assert_eq!(text(&app), " a b", "an unfocused composer ignores keys");
@@ -365,7 +366,7 @@ fn composer_enter_follows_the_hotkeys() {
     let note = "!note_self:beeper.com";
     let mut app = demo_app("enter");
     let _ = app.update(UiMessage::SelectChat(note.into()));
-    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(String::new())));
     let text = |app: &BeeperGuiApp| app.pane.composer.text();
     let archived = |app: &BeeperGuiApp| {
         let st = app.store.read();
@@ -377,13 +378,13 @@ fn composer_enter_follows_the_hotkeys() {
         typewrite("a").chain([key(Named::Enter, Modifiers::SHIFT), key(Named::Enter, Modifiers::ALT)]),
     );
     assert_eq!(text(&app), "a\n\n", "Shift and Alt Enter insert new lines");
-    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(String::new())));
     let tick = || key(Key::Character("`".into()), Modifiers::empty());
     press(&mut app, true, typewrite("b").chain([key(Named::Home, Modifiers::SHIFT), tick()]));
     assert_eq!(text(&app), "`b`", "a backtick formats the selection as code");
     press(&mut app, true, [tick()]);
     assert_eq!(text(&app), "`b``", "a backtick without a selection is a backtick");
-    let _ = app.update(UiMessage::ComposerChanged("b".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("b".into())));
     let _ = app.update(UiMessage::ToggleFlag(note.into(), ChatFlag::Pinned));
     press(&mut app, true, [key(Named::Enter, Modifiers::CTRL)]);
     assert!(text(&app).is_empty() && archived(&app), "Ctrl Enter sends and archives");
@@ -414,15 +415,15 @@ fn attachments_send_like_desktop() {
         PendingMedia { name: name.into(), ..f }
     };
     let files = [file("a.png", &png), file("b.pdf", b"%PDF")];
-    let _ = app.update(UiMessage::FilesLoaded(files.iter().cloned().map(Ok).collect()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files.iter().cloned().map(Ok).collect())));
     assert!(simulator(app.view_main()).find("PDF ・ 4 B").is_ok(), "a file shows its type and size");
     let card = file("c.vcf", b"BEGIN:VCARD\nFN:Jo Doe\nTEL:+1\nTEL:+2\nEND:VCARD\n");
-    let _ = app.update(UiMessage::FilesLoaded(vec![Ok(card)]));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(vec![Ok(card)])));
     let shown = |t: &str| simulator(app.view_main()).find(t).is_ok();
     assert!(["Jo Doe", "Phone Numbers", "+1", "+ 1 more"].into_iter().all(shown), "a contact card");
-    let _ = app.update(UiMessage::DiscardAttachment(2));
-    let _ = app.update(UiMessage::ComposerChanged("hi".into()));
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::DiscardAttachment(2)));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     let last = |app: &BeeperGuiApp, n: usize| {
         let st = app.store.read();
         let ids = &st.timeline_indices(note);
@@ -433,28 +434,28 @@ fn attachments_send_like_desktop() {
     let want = [(Some("hi".into()), vec![]), (None, vec!["img".into()]), (None, vec!["unknown".into()])];
     assert_eq!(sent, want, "the text first, then each attachment");
     assert!(app.pane.attachments.is_empty() && app.pane.composer.text().is_empty());
-    let _ = app.update(UiMessage::FilesLoaded(files[1..].iter().cloned().map(Ok).collect()));
-    let _ = app.update(UiMessage::ComposerChanged("cap".into()));
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files[1..].iter().cloned().map(Ok).collect())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("cap".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     assert_eq!(last(&app, 1), [(Some("cap".into()), vec!["unknown".into()])], "one attachment has the text as caption");
-    let _ = app.update(UiMessage::FilesLoaded(files.iter().cloned().map(Ok).collect()));
-    let _ = app.update(UiMessage::DiscardAttachment(0));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files.iter().cloned().map(Ok).collect())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::DiscardAttachment(0)));
     assert_eq!(app.pane.attachments.len(), 1);
-    let _ = app.update(UiMessage::DiscardAttachment(0));
+    let _ = app.update(UiMessage::Composer(composer::Msg::DiscardAttachment(0)));
     let id = app.main_window.expect("a main window");
-    let _ = app.update(UiMessage::FileHover(id, true));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(id, true)));
     assert!(simulator(app.view_main()).find("Drop files here to attach").is_ok(), "a drag shows the drop zone");
     let _ = app.update(UiMessage::Modifiers(Modifiers::SHIFT));
-    let _ = app.update(UiMessage::FileDropped(id, "/none".into()));
-    let _ = app.update(UiMessage::FilesLoaded(files[1..].iter().cloned().map(Ok).collect()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileDropped(id, "/none".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files[1..].iter().cloned().map(Ok).collect())));
     assert!(!app.dropping && app.pane.attachments.is_empty(), "a drop with Shift sends");
     assert_eq!(last(&app, 1), [(None, vec!["unknown".into()])]);
     let _ = app.update(UiMessage::Modifiers(Modifiers::empty()));
-    let _ = app.update(UiMessage::FileHover(id, true));
-    let _ = app.update(UiMessage::FileDropped(id, "/none".into()));
-    let _ = app.update(UiMessage::FilesLoaded(files[1..].iter().cloned().map(Ok).collect()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(id, true)));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileDropped(id, "/none".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files[1..].iter().cloned().map(Ok).collect())));
     assert_eq!(app.pane.attachments.len(), 1, "a drop attaches");
-    let _ = app.update(UiMessage::DiscardAttachment(0));
+    let _ = app.update(UiMessage::Composer(composer::Msg::DiscardAttachment(0)));
     // Desktop's `processAttachment`: a video goes as a video with its measured size and length.
     let path = std::env::temp_dir().join(format!("beeper-rs-{}-c.mp4", std::process::id()));
     let lavfi = ["-f", "lavfi", "-i", "testsrc=size=64x48:rate=10", "-t", "1.5", "-pix_fmt", "yuv420p", "-y"];
@@ -462,8 +463,8 @@ fn attachments_send_like_desktop() {
     let clip = portal::load_file(&path).unwrap();
     std::fs::remove_file(path).unwrap();
     assert_eq!((clip.mime.as_str(), clip.size, clip.duration), ("video/mp4", (64, 48), Some(1.5)));
-    let _ = app.update(UiMessage::FilesLoaded(vec![Ok(clip)]));
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(vec![Ok(clip)])));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     let st = app.store.read();
     let a = &st.messages[*st.timeline_indices(note).last().unwrap()].attachments[0];
     let size = a.size.as_ref().map(|s| (s.width, s.height));
@@ -472,10 +473,10 @@ fn attachments_send_like_desktop() {
     // The room features limit the files, and a file that does not load shows "Couldn't attach %s".
     let i = app.store.read().resolve_chat_idx(note).unwrap();
     app.store.write().chats[i].file.get_mut("m.file").unwrap().max_size = Some(3);
-    let _ = app.update(UiMessage::FilesLoaded(files.iter().cloned().map(Ok).collect()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files.iter().cloned().map(Ok).collect())));
     assert_eq!(app.pane.attachments.len(), 1, "the image attaches");
     assert_eq!(app.status_banner, "File size (4 B) exceeds the maximum allowed size (3 B)");
-    let _ = app.update(UiMessage::FilesLoaded(vec![Err("Couldn't attach c.mp4".into())]));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(vec![Err("Couldn't attach c.mp4".into())])));
     assert_eq!(app.status_banner, "Couldn't attach c.mp4");
 }
 
@@ -489,12 +490,19 @@ fn pastes_attach_files_like_desktop() {
     sim.click(iced::widget::Id::new("composer-input")).expect("a composer");
     let _ = sim.simulate([key(Key::Character("v".into()), Modifiers::COMMAND)]);
     let msgs: Vec<UiMessage> = sim.into_messages().collect();
-    assert!(matches!(msgs[..], [UiMessage::ComposerEdit(_), UiMessage::Paste]), "{msgs:?}");
-    let files = app.update(UiMessage::Pasted(Ok(Clip::Files(vec!["/tmp/a.pdf".into()]))));
+    assert!(
+        matches!(msgs[..], [UiMessage::Composer(composer::Msg::Edit(_)), UiMessage::Composer(composer::Msg::Paste)]),
+        "{msgs:?}"
+    );
+    let files = app.update(UiMessage::Composer(composer::Msg::Pasted(Ok(Clip::Files(vec!["/tmp/a.pdf".into()])))));
     assert_eq!(files.units(), 1, "copied files load like picked files");
-    let _ = app.update(UiMessage::Pasted(Ok(Clip::Image((vec![1], (3, 2))))));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Pasted(Ok(Clip::Image((vec![1], (3, 2)))))));
     assert_eq!(app.pane.attachments[0].size, (3, 2), "a copied image attaches");
-    assert_eq!(app.update(UiMessage::Pasted(Ok(Clip::Text))).units(), 2, "a text goes into the composer");
+    assert_eq!(
+        app.update(UiMessage::Composer(composer::Msg::Pasted(Ok(Clip::Text)))).units(),
+        2,
+        "a text goes into the composer"
+    );
 }
 
 #[test]
@@ -503,7 +511,7 @@ fn auto_sent_gifs_keep_the_composer_like_desktop() {
     let mut app = demo_app("gifsend");
     let _ = app.update(UiMessage::SelectChat(note.into()));
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("autoSendGifs", 1)));
-    let _ = app.update(UiMessage::ComposerChanged("keep".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("keep".into())));
     let mut gif = Vec::new();
     ::image::RgbaImage::new(2, 2).write_to(&mut std::io::Cursor::new(&mut gif), ::image::ImageFormat::Gif).unwrap();
     let frames = decode_media(gif.clone()).unwrap();
@@ -648,7 +656,7 @@ fn incognito_toggle_like_desktop() {
     let _ = app.update(UiMessage::Toast(toasts::Msg::DismissBanner));
     let _ = app.update(UiMessage::RunHotkey("Toggle Incognito Mode"));
     assert_eq!(app.status_banner, "Incognito mode on.");
-    let _ = app.update(UiMessage::Undo(false));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     assert!(!on(&app, "incognito") && app.status_banner == "Undo: Enable Incognito Mode");
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("typingIndicators", 1)));
     let _ = app.update(UiMessage::Toast(toasts::Msg::DismissBanner));
@@ -738,25 +746,25 @@ fn an_edit_keeps_the_draft_like_desktop() {
     let mut app = demo_app("editdraft");
     let _ = app.update(UiMessage::SelectChat(note.into()));
     let (_, own, _) = app.store.write().send_message(note, Some("old".into()), None, None).unwrap();
-    let _ = app.update(UiMessage::ComposerChanged("my draft".into()));
-    let _ = app.update(UiMessage::StartReply(own.clone()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("my draft".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::StartReply(own.clone())));
     let state = |app: &BeeperGuiApp| (app.pane.composer.text(), app.pane.reply_to_message_id.clone());
     let draft = ("my draft".to_string(), Some(own.clone()));
-    let _ = app.update(UiMessage::StartEdit(own.clone(), "old".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::StartEdit(own.clone(), "old".into())));
     assert_eq!(state(&app), ("old".into(), None), "the edit puts the draft aside");
-    let _ = app.update(UiMessage::CancelComposeMode);
+    let _ = app.update(UiMessage::Composer(composer::Msg::CancelMode));
     assert_eq!(state(&app), draft, "a canceled edit gives the draft back");
-    let _ = app.update(UiMessage::StartEdit(own.clone(), "old".into()));
-    let _ = app.update(UiMessage::ComposerChanged("new".into()));
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::StartEdit(own.clone(), "old".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("new".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     assert_eq!(state(&app), draft, "a sent edit gives the draft back");
     let st = app.store.read();
     assert_eq!(st.message(&own).text.as_deref(), Some("new"));
     drop(st);
-    let _ = app.update(UiMessage::CancelComposeMode);
+    let _ = app.update(UiMessage::Composer(composer::Msg::CancelMode));
     assert_eq!(state(&app), (draft.0.clone(), None), "the close button removes only the quoted message");
-    let _ = app.update(UiMessage::StartReply(own.clone()));
-    let _ = app.update(UiMessage::StartEdit(own.clone(), "new".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::StartReply(own.clone())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::StartEdit(own.clone(), "new".into())));
     let other = app.visible_chats(&app.store.read()).into_iter().find(|c| c.id != note).unwrap().id.clone();
     let _ = app.update(UiMessage::SelectChat(other));
     let st = app.store.read();
@@ -859,7 +867,7 @@ fn send_later_like_desktop() {
     let id = app.visible_chats(&app.store.read())[0].id.clone();
     let _ = app.update(UiMessage::SelectChat(id.clone()));
     let edit = text_editor::Edit::Paste(Arc::new("see you then".into()));
-    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Edit(text_editor::Action::Edit(edit))));
     let _ = app.update(UiMessage::KeyPressed(Key::Character("l".into()), Modifiers::CTRL | Modifiers::SHIFT));
     assert_eq!(app.cmd_submenu, Some(commands::SubMenu::Schedule(Vec::new())), "Ctrl Shift L opens Send Later");
     assert!(app.cmd_no_reply, "the choice starts at If no reply");
@@ -872,7 +880,7 @@ fn send_later_like_desktop() {
     let when = send_day(at, false);
     assert!(simulator(app.view_main()).find(format!("{when} if no reply")).is_ok(), "the composer banner");
     let sent = app.store.read().messages.len();
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     let st = app.store.read();
     assert_eq!((st.messages.len(), app.pane.send_later), (sent, None), "nothing sends now");
     let s = st.scheduled[0].clone();
@@ -912,10 +920,10 @@ fn send_later_like_desktop() {
     let file = portal::load_file(&path).unwrap();
     std::fs::remove_file(path).unwrap();
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(Some((at, false)))));
-    let _ = app.update(UiMessage::FilesLoaded(vec![Ok(file.clone()), Ok(file)]));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(vec![Ok(file.clone()), Ok(file)])));
     assert_eq!(app.pane.send_later, Some((at, false)));
-    let _ = app.update(UiMessage::ComposerChanged("two files".into()));
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("two files".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     let parts = |app: &BeeperGuiApp| {
         let st = app.store.read();
         st.scheduled
@@ -946,13 +954,13 @@ fn drafts_keep_the_composer_like_desktop() {
     std::fs::write(&path, b"%PDF").unwrap();
     let file = PendingMedia { name: "b.pdf".into(), ..portal::load_file(&path).unwrap() };
     std::fs::remove_file(path).unwrap();
-    let _ = app.update(UiMessage::FilesLoaded(vec![Ok(file)]));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(vec![Ok(file)])));
     let text = " see https://example.com ";
-    let _ = app.update(UiMessage::ComposerChanged(text.into()));
-    let _ = app.update(UiMessage::StartReply(own.clone()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(text.into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::StartReply(own.clone())));
     let later = (now_unix_millis() + 3_600_000, true);
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(Some(later))));
-    let _ = app.update(UiMessage::RemoveLinkPreview("https://example.com".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::RemoveLinkPreview("https://example.com".into())));
     assert!(app.pane.draft_due, "a change starts the save timer");
     let saved = |app: &BeeperGuiApp| {
         let st = app.store.read();
@@ -965,7 +973,7 @@ fn drafts_keep_the_composer_like_desktop() {
     assert_eq!((draft.reply_to_message_id.as_ref(), draft.send_later), (Some(&own), Some(later)));
     assert_eq!(draft.discarded_links, ["https://example.com"]);
     assert_eq!(draft.attachments.len(), 1);
-    let _ = app.update(UiMessage::ComposerChanged(format!("{text}!")));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(format!("{text}!"))));
     let _ = app.update(UiMessage::SaveDrafts);
     assert_eq!(saved(&app).attachments, draft.attachments, "a saved attachment is not stored again");
     let other = app.visible_chats(&app.store.read()).into_iter().find(|c| c.id != note).unwrap().id.clone();
@@ -980,7 +988,7 @@ fn drafts_keep_the_composer_like_desktop() {
     // Desktop's `deletePendingMessage`: a sent draft takes its file with it.
     let upload = saved(&app).attachments[0].upload_id.clone();
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(None)));
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     let _ = app.update(UiMessage::SaveDrafts);
     assert!(!app.store.read().assets.contains_key(&upload), "the upload of the sent draft goes away");
 }
@@ -1012,8 +1020,8 @@ fn show_replies_like_desktop() {
     let place = format!("Reply to {} on {}", chat.title, network_name(&chat.account_id));
     assert_eq!(app.composer_placeholder(&app.store.read(), &chat), place, "the composer replies in the chain");
     let edit = text_editor::Edit::Paste(Arc::new("third answer".into()));
-    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Edit(text_editor::Action::Edit(edit))));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     let st = app.store.read();
     assert_eq!(st.messages.last().unwrap().linked_message_id.as_ref(), Some(&one), "a send replies to the message");
     drop(st);
@@ -1054,10 +1062,10 @@ fn threads_like_desktop() {
     let in_thread = |m: UiMessage| UiMessage::InThread(Box::new(m));
     assert!(simulator(app.view_main()).find("Also send to chat").is_err(), "an empty composer hides the toggle");
     let edit = text_editor::Edit::Paste(Arc::new("done".into()));
-    let _ = app.update(in_thread(UiMessage::ComposerEdit(text_editor::Action::Edit(edit))));
+    let _ = app.update(in_thread(UiMessage::Composer(composer::Msg::Edit(text_editor::Action::Edit(edit)))));
     assert!(simulator(app.view_main()).find("Also send to chat").is_ok(), "a draft shows the toggle in Slack");
     let _ = app.update(in_thread(UiMessage::Thread(threads::Msg::SetBroadcast(true))));
-    let _ = app.update(in_thread(UiMessage::SubmitComposer));
+    let _ = app.update(in_thread(UiMessage::Composer(composer::Msg::Submit)));
     {
         let st = app.store.read();
         let m = st.messages.last().unwrap();
@@ -1123,7 +1131,9 @@ fn thread_pane_keys_like_desktop() {
     let _ = app.update(up.clone());
     assert_eq!(app.pane.selected_msgs, ["msg_1007"], "a click in the chat takes the keys back");
     assert_eq!(thread(&app), ["msg_1011"]);
-    let _ = app.update(UiMessage::InThread(Box::new(UiMessage::ComposerEdit(text_editor::Action::SelectAll))));
+    let _ = app.update(UiMessage::InThread(Box::new(UiMessage::Composer(composer::Msg::Edit(
+        text_editor::Action::SelectAll,
+    )))));
     let _ = app.update(up);
     assert_eq!(thread(&app), ["msg_1010"], "a composer action in the pane takes the keys");
     let draft = app.pane.composer.text();
@@ -1204,8 +1214,10 @@ fn thread_follows_like_desktop() {
     drop(st);
     let _ = app.update(UiMessage::Thread(threads::Msg::Show(root.into())));
     let edit = text_editor::Edit::Paste(Arc::new("back".into()));
-    let _ = app.update(UiMessage::InThread(Box::new(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)))));
-    let _ = app.update(UiMessage::InThread(Box::new(UiMessage::SubmitComposer)));
+    let _ = app.update(UiMessage::InThread(Box::new(UiMessage::Composer(composer::Msg::Edit(
+        text_editor::Action::Edit(edit),
+    )))));
+    let _ = app.update(UiMessage::InThread(Box::new(UiMessage::Composer(composer::Msg::Submit))));
     assert!(follows(&app).unfollowed.is_empty(), "a reply ends the unfollow like Desktop's refollowThread");
     let _ = app.update(UiMessage::OpenChatMenu(chat.into()));
     let mut sim = simulator(app.view_main());
@@ -1232,7 +1244,7 @@ fn sticker_picker_like_desktop() {
     app.store.write().chats[0].file.insert(FILE_STICKER.into(), webp);
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("stickerPacks", 1)));
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
-    let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
+    let _ = app.update(UiMessage::Composer(composer::Msg::TogglePicker(Picker::Sticker)));
     let _ = app.update(UiMessage::Gifs(gifs::Msg::StickerPacks(Err("Matrix is not connected yet".into()))));
     assert!(simulator(app.view_main()).find("No sticker packs yet.").is_ok(), "a failed load and no recent stickers");
     let source = StickerSource { room_id: "!r:x".into(), state_key: "a".into(), shortcode: "cat".into() };
@@ -1274,7 +1286,7 @@ fn sticker_picker_like_desktop() {
     assert_eq!(app.store.read().settings.recent_stickers, std::slice::from_ref(&cat), "the pick is a recent sticker");
     online(&app);
     app.store.write().features.flags["features"]["*"]["undo-send"] = false.into();
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     let st = app.store.read();
     let sent = st.outbox.iter().find_map(|(_, _, o)| match o {
         Outgoing::Media { sticker, name, .. } => Some((sticker.clone(), name.clone())),
@@ -1294,26 +1306,26 @@ fn pickers_check_the_network_like_desktop() {
     assert!(!st.chats[1].takes(FILE_STICKER), "the generic room features have no stickers");
     drop(st);
     let _ = app.update(UiMessage::SelectChat(wa));
-    let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
+    let _ = app.update(UiMessage::Composer(composer::Msg::TogglePicker(Picker::Sticker)));
     assert_eq!((app.pane.picker, app.status_banner.as_str()), (None, ""), "the picker needs Use sticker packs");
     assert!(!hidden_actions(&app.store.read()).contains(&7));
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("stickerPacks", 1)));
     assert_eq!(hidden_actions(&app.store.read())[0], 7, "Add a sticker follows the emoji button");
     let cmds = app.commands(&app.store.read(), "");
     assert_eq!(cmds.iter().find(|c| c.title == "Send Sticker").and_then(|c| c.hotkey), Some("Message: Send Sticker"));
-    let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
+    let _ = app.update(UiMessage::Composer(composer::Msg::TogglePicker(Picker::Sticker)));
     assert_eq!(app.pane.picker, Some(Picker::Sticker));
-    let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
+    let _ = app.update(UiMessage::Composer(composer::Msg::TogglePicker(Picker::Sticker)));
     assert_eq!(app.pane.picker, None, "the hotkey closes the open picker");
     let _ = app.update(UiMessage::SelectChat(other.clone()));
-    let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
+    let _ = app.update(UiMessage::Composer(composer::Msg::TogglePicker(Picker::Sticker)));
     assert_eq!(app.pane.picker, None);
     assert!(app.status_banner.starts_with("Stickers aren't supported on "), "{}", app.status_banner);
     let mut st = app.store.write();
     let i = st.resolve_chat_idx(&other).unwrap();
     st.chats[i].file.clear();
     drop(st);
-    let _ = app.update(UiMessage::TogglePicker(Picker::Gif));
+    let _ = app.update(UiMessage::Composer(composer::Msg::TogglePicker(Picker::Gif)));
     assert_eq!(app.pane.picker, None);
     assert!(app.status_banner.starts_with("GIFs aren't supported on "), "{}", app.status_banner);
     let _ = app.update(UiMessage::Record(record::Msg::Start));
@@ -1369,7 +1381,7 @@ fn mentions_like_desktop() {
         (chat.id.clone(), chat.participants.items.iter().find(|u| u.is_self != Some(true)).unwrap().clone());
     let label = mention_label(&ann);
     let _ = app.update(UiMessage::SelectChat(id.clone()));
-    let _ = app.update(UiMessage::ComposerChanged("hi @".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi @".into())));
     let rows = |app: &BeeperGuiApp| {
         let st = app.store.read();
         let rows = app.suggestions(&st).map_or_else(Vec::new, |(_, rows)| rows);
@@ -1382,13 +1394,13 @@ fn mentions_like_desktop() {
     };
     assert_eq!(rows(&app).len(), chat.participants.items.len().min(8), "an empty query lists the members");
     assert!(simulator(app.view_main()).find(format!("@{label}")).is_ok(), "the list shows the members");
-    let _ = app.update(UiMessage::ComposerChanged(format!("hi @{}", &label[..2])));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(format!("hi @{}", &label[..2]))));
     assert!(rows(&app).iter().all(|(_, id)| *id != ROOM_MENTION), "the chat cannot mention the room");
     let at = rows(&app).iter().position(|(_, id)| *id == ann.id).unwrap();
-    let _ = app.update(UiMessage::PickSuggestion(at));
+    let _ = app.update(UiMessage::Composer(composer::Msg::PickSuggestion(at)));
     assert_eq!(app.pane.composer.text(), format!("hi @{label} "));
     assert_eq!(app.pane.mentions, [(label.clone(), ann.id.clone())]);
-    let _ = app.update(UiMessage::ComposerChanged(format!("hi @{label} @ro")));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(format!("hi @{label} @ro"))));
     assert!(rows(&app).iter().all(|(_, id)| *id != ROOM_MENTION), "the chat cannot mention the room");
     {
         let mut st = app.store.write();
@@ -1396,9 +1408,9 @@ fn mentions_like_desktop() {
         st.update_chat(i, |c| c.can_mention_room = true);
     }
     assert_eq!(rows(&app)[0], ("room".to_string(), ROOM_MENTION.to_string()), "\"@room\" comes first");
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     assert_eq!(app.pane.composer.text(), format!("hi @{label} @room "), "Enter picks the row");
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     let st = app.store.read();
     let sent = st.outbox.iter().find_map(|(_, _, o)| match o {
         Outgoing::Send { text, mentions, .. } => Some((text.clone(), mentions.clone())),
@@ -1423,15 +1435,15 @@ fn mentions_like_desktop() {
     drop(st);
     let zed = vec![("Zed".to_string(), "@z:x".to_string())];
     app.pane.mentions = zed.clone();
-    let _ = app.update(UiMessage::StartEdit(own, format!("@{label} hi")));
+    let _ = app.update(UiMessage::Composer(composer::Msg::StartEdit(own, format!("@{label} hi"))));
     assert_eq!(app.pane.mentions, pill, "the edit has the pills of the message");
-    let _ = app.update(UiMessage::CancelComposeMode);
+    let _ = app.update(UiMessage::Composer(composer::Msg::CancelMode));
     assert_eq!((app.pane.mentions.clone(), app.pane.composer.text()), (zed, format!("yo @{label}")));
-    let _ = app.update(UiMessage::ComposerChanged("a :smile".into()));
-    let _ = app.update(UiMessage::PickSuggestion(0));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("a :smile".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::PickSuggestion(0)));
     let text = app.pane.composer.text();
     assert!(text.starts_with("a ") && !text.contains(':') && text.ends_with(' '), "an emoji replaces its query");
-    let _ = app.update(UiMessage::PickSuggestion(0));
+    let _ = app.update(UiMessage::Composer(composer::Msg::PickSuggestion(0)));
     assert_eq!(app.pane.composer.text(), text, "the second click of a double click picks nothing");
 }
 
@@ -1515,10 +1527,10 @@ fn the_composer_pill_quotes_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(note.into()));
     let long = "word ".repeat(40);
     let (_, own, _) = app.store.write().send_message(note, Some(long.clone()), None, None).unwrap();
-    let _ = app.update(UiMessage::StartReply(own.clone()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::StartReply(own.clone())));
     let quoted = long.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(125).collect::<String>() + "...";
     assert!(simulator(app.view_main()).find(quoted).is_ok(), "the quote shows 128 characters");
-    let _ = app.update(UiMessage::StartEdit(own, "old".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::StartEdit(own, "old".into())));
     assert!(simulator(app.view_main()).find("Editing message").is_err(), "Desktop has no edit banner");
 }
 
@@ -2027,7 +2039,7 @@ fn carousel_react_and_reply_like_desktop() {
     );
     let reply = click(&app, Point::new(898.0, 25.0));
     assert!(
-        matches!(&reply[..], [UiMessage::Commands(c)] if matches!(&c[..], [UiMessage::Media(media_view::Msg::CloseCarousel), UiMessage::StartReply(m)] if *m == mid)),
+        matches!(&reply[..], [UiMessage::Commands(c)] if matches!(&c[..], [UiMessage::Media(media_view::Msg::CloseCarousel), UiMessage::Composer(composer::Msg::StartReply(m))] if *m == mid)),
         "Reply closes the carousel and starts a reply"
     );
     let toggle = {
@@ -2087,8 +2099,10 @@ fn typing_focuses_the_composer_like_desktop() {
     let mut app = demo_app("typefocus");
     let main = app.main_window.expect("a main window");
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
-    let _ = app.update(UiMessage::ComposerChanged("ab".into()));
-    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Move(text_editor::Motion::DocumentStart)));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("ab".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Edit(text_editor::Action::Move(
+        text_editor::Motion::DocumentStart,
+    ))));
     let _ = app.update(UiMessage::WindowText(main, "c".into()));
     assert_eq!(app.pane.composer.text(), "abc", "a key outside a text field types at the end of the composer");
     app.show_command_palette = true;
@@ -2153,7 +2167,7 @@ fn account_switcher_like_desktop() {
     let both = Some(vec![chat.id.clone(), "!alt:x".to_string()]);
     assert_eq!(switch_targets(&app.store.read(), &chat), both);
     let _ = app.update(UiMessage::SelectChat(chat.id.clone()));
-    let _ = app.update(UiMessage::ComposerChanged("hi".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi".into())));
     let _ = app.update(UiMessage::SwitchCard);
     assert!(simulator(app.view_main()).find("Switch Chat").is_ok());
     let _ = app.update(UiMessage::SwitchChat("!alt:x".into()));
@@ -2195,11 +2209,11 @@ fn emoticons_follow_the_setting() {
     use iced_test::simulator::typewrite;
     let mut app = demo_app("emoticons");
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
-    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(String::new())));
     let text = |app: &BeeperGuiApp| app.pane.composer.text();
     press(&mut app, true, typewrite("hi :) "));
     assert_eq!(text(&app), "hi 🙂 ");
-    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(String::new())));
     press(&mut app, true, typewrite("hi :) ").chain([key(Named::Backspace, Modifiers::empty())]));
     assert_eq!(text(&app), "hi :) ", "Backspace undoes the replacement");
     press(&mut app, true, [key(Named::Backspace, Modifiers::empty())]);
@@ -2208,11 +2222,11 @@ fn emoticons_follow_the_setting() {
     assert_eq!(text(&app), "😉 hi :)", "the replacement is at the caret");
     press(&mut app, true, typewrite("x").chain([key(Named::Backspace, Modifiers::empty())]));
     assert_eq!(text(&app), "😉 hi :)", "an other edit ends the undo");
-    let _ = app.update(UiMessage::ComposerChanged("`a".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("`a".into())));
     press(&mut app, true, typewrite(" :) "));
     assert_eq!(text(&app), "`a :) ", "no replacement in code");
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("keepEmoticons", 1)));
-    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(String::new())));
     press(&mut app, true, typewrite(":D "));
     assert_eq!(text(&app), ":D ", "the setting keeps emoticons");
 }
@@ -2223,15 +2237,15 @@ fn typing_notices_like_desktop() {
     let mut app = demo_app("typing");
     let _ = app.update(UiMessage::SelectChat(note.into()));
     let typing = |app: &BeeperGuiApp| app.pane.typing.as_ref().map(|t| t.0.clone());
-    let _ = app.update(UiMessage::ComposerChanged("a".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("a".into())));
     assert_eq!(typing(&app), Some(note.to_string()), "a key starts the notice");
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     assert_eq!(typing(&app), None, "a send ends the notice");
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(Some((now_unix_millis() + 3_600_000, false)))));
-    let _ = app.update(UiMessage::ComposerChanged("later".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("later".into())));
     assert_eq!(typing(&app), None, "a Send Later message has no notice");
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(None)));
-    let _ = app.update(UiMessage::ComposerChanged("b".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("b".into())));
     let _ = app.update(UiMessage::TypingTick);
     assert_eq!(typing(&app), Some(note.to_string()), "the notice stays for 3 seconds");
     app.pane.typing.as_mut().unwrap().1 -= TYPING_STOP;
@@ -2243,11 +2257,11 @@ fn typing_notices_like_desktop() {
 fn composer_undo_groups_like_prosemirror() {
     let mut app = demo_app("undo");
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
-    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(String::new())));
     let text = |app: &BeeperGuiApp| app.pane.composer.text();
     let paste = |app: &mut BeeperGuiApp, s: &str| {
         let edit = text_editor::Edit::Paste(Arc::new(s.into()));
-        let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
+        let _ = app.update(UiMessage::Composer(composer::Msg::Edit(text_editor::Action::Edit(edit))));
     };
     let z = |shift: bool| {
         key(Key::Character("z".into()), if shift { Modifiers::COMMAND | Modifiers::SHIFT } else { Modifiers::COMMAND })
@@ -2270,7 +2284,9 @@ fn composer_undo_groups_like_prosemirror() {
     press(&mut app, true, [z(true)]);
     assert_eq!(text(&app), "hello!", "an edit clears the redo history");
     paste(&mut app, "?");
-    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Move(text_editor::Motion::DocumentStart)));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Edit(text_editor::Action::Move(
+        text_editor::Motion::DocumentStart,
+    ))));
     paste(&mut app, "> ");
     press(&mut app, true, [z(false)]);
     assert_eq!(text(&app), "hello!?", "an edit at an other place starts a group");
@@ -2880,10 +2896,10 @@ fn a_sent_link_keeps_its_preview() {
     let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
     let url = "https://example.com/";
     let edit = text_editor::Edit::Paste(Arc::new(format!("see {url}")));
-    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Edit(text_editor::Action::Edit(edit))));
     let page = serde_json::json!({ "matched_url": url, "og:title": "Example" });
     app.pane.composer_links = vec![(url.into(), LinkState::Loaded(page, None))];
-    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     let st = app.store.read();
     let links = &st.messages.last().unwrap().links;
     assert_eq!(links.iter().map(|l| l.title.as_str()).collect::<Vec<_>>(), ["Example"]);
@@ -2898,8 +2914,8 @@ fn undo_send_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
     let send = |app: &mut BeeperGuiApp, text: &str| {
         let edit = text_editor::Edit::Paste(Arc::new(text.into()));
-        let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
-        let _ = app.update(UiMessage::SubmitComposer);
+        let _ = app.update(UiMessage::Composer(composer::Msg::Edit(text_editor::Action::Edit(edit))));
+        let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
         app.store.read().messages.last().unwrap().id.clone()
     };
     let count = |app: &BeeperGuiApp| app.store.read().timeline_indices(NOTE_CHAT_ID).len();
@@ -2918,7 +2934,7 @@ fn undo_send_like_desktop() {
     assert!(app.queued.is_empty() && count(&app) == before + 1, "Ctrl Shift Z sends now");
     send(&mut app, "later");
     app.queued[0].due = 0;
-    let _ = app.update(UiMessage::SendQueued(None));
+    let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(None)));
     assert!(app.queued.is_empty(), "the delay sends");
     app.store.write().features.flags["features"]["*"]["undo-send"] = false.into();
     send(&mut app, "now");
@@ -2940,9 +2956,9 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     let mut app = demo_app("failed-send");
     let _ = app.update(UiMessage::SelectChat(note.into()));
     online(&app);
-    let _ = app.update(UiMessage::ComposerChanged("hi".into()));
-    let _ = app.update(UiMessage::SubmitComposer);
-    let _ = app.update(UiMessage::SendQueued(Some(note.into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
     let id = {
         let mut st = app.store.write();
         let (row, _, out) = st.outbox.remove(0);
@@ -2968,8 +2984,8 @@ fn own_messages_show_their_send_status_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(note.into()));
     online(&app);
     let send = |app: &mut BeeperGuiApp, text: &str| {
-        let _ = app.update(UiMessage::ComposerChanged(text.into()));
-        let _ = app.update(UiMessage::SubmitComposer);
+        let _ = app.update(UiMessage::Composer(composer::Msg::Changed(text.into())));
+        let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
     };
     let status = |app: &BeeperGuiApp| {
         let mut sim = simulator(app.view_main());
@@ -2978,7 +2994,7 @@ fn own_messages_show_their_send_status_like_desktop() {
     send(&mut app, "one");
     if !app.queued.is_empty() {
         assert_eq!(status(&app), [true, false, false, false, false], "undo send queues the message");
-        let _ = app.update(UiMessage::SendQueued(Some(note.into())));
+        let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
     }
     let id = app.store.read().outbox[0].2.message().expect("a local echo").to_string();
     // The views of a debug build are slow, so the test sets the age of the message.
@@ -3141,7 +3157,7 @@ fn a_chat_the_user_left_like_desktop() {
         });
     }
     assert!(simulator(app.view_conversation()).find(composer()).is_err(), "no composer after");
-    let _ = app.update(UiMessage::TypeInComposer("typed anyway".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Type("typed anyway".into())));
     assert!(app.pane.composer.text().is_empty(), "typing goes nowhere without a composer");
     assert!(simulator(app.view_sidebar()).find("Ann left").is_ok(), "no sender name");
 }
@@ -3383,7 +3399,7 @@ fn drafts_move_chats_like_desktop() {
     assert!(!unpinned(&app).contains(&id), "archived");
     let _ = app.update(UiMessage::SelectTab(InboxTab::Archived));
     let _ = app.update(UiMessage::SelectChat(id.clone()));
-    let _ = app.update(UiMessage::TypeInComposer("not done yet".into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Type("not done yet".into())));
     let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
     assert!(!unpinned(&app).contains(&id), "a chat with a draft leaves the archive list");
     let _ = app.update(UiMessage::SelectTab(InboxTab::AllChats));
@@ -4124,7 +4140,7 @@ fn create_label_like_desktop() {
     assert_eq!(app.selected_account_filter, Some(format!("label:{}", label.id)), "the new label opens");
     assert_eq!(app.status_banner, "Created Friends");
     drop(st);
-    let _ = app.update(UiMessage::Undo(false));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     assert!(app.store.read().labels.iter().all(|l| l.name != "Friends") && app.selected_account_filter.is_none());
 }
 
@@ -4150,7 +4166,7 @@ fn edit_and_delete_labels_like_desktop() {
         work.rooms.clone()
     };
     assert_eq!(app.status_banner, "Updated Work Team");
-    let _ = app.update(UiMessage::Undo(false));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.name == "Work" && l.rooms == rooms));
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("label:lbl_work".into()))));
     let _ = app.update(UiMessage::Labels(labels::Msg::OpenSettings("lbl_work".into())));
@@ -4166,7 +4182,7 @@ fn edit_and_delete_labels_like_desktop() {
     }
     assert_eq!(app.selected_account_filter, None, "the inbox opens when its label is deleted");
     assert_eq!(app.status_banner, "Deleted \"Work\"");
-    let _ = app.update(UiMessage::Undo(false));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     let st = app.store.read();
     let back = st.labels.iter().find(|l| l.name == "Work").expect("Undo makes the label again");
     assert!(back.muted && back.rooms == rooms);
@@ -4335,7 +4351,7 @@ fn archive_and_low_priority_toasts_undo_like_desktop() {
     assert_eq!(app.selection, ids, "Undo selects the chats again");
     let _ = app.update(UiMessage::SelectionSet(ChatFlag::Archived, true));
     assert!(app.status_banner == "Archived 2 chats" && app.toast.as_ref().unwrap().icon.is_none());
-    let _ = app.update(UiMessage::Undo(false));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     assert!(ids.iter().all(|id| !flag(&app, id, ChatFlag::Archived)) && app.selection == ids, "Mod-z runs the Undo");
     assert!(app.shown_undo().is_none());
 }
@@ -4367,7 +4383,7 @@ fn toasts_stack_like_desktop() {
     assert!(!archived(&app) && app.older_toasts.is_empty(), "the Undo of an older toast closes it");
     assert!(!app.status_banner.is_empty(), "the newest toast stays");
     let _ = app.update(UiMessage::ToggleFlag(ids[0].clone(), ChatFlag::Archived));
-    let _ = app.update(UiMessage::Undo(false));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     assert!(!archived(&app) && app.older_toasts.len() == 1, "Mod-z closes the newest toast and keeps the others");
     let _ = app.update(UiMessage::Toast(toasts::Msg::Hover(true)));
     assert!(!app.toast_running(), "the toasts wait while the pointer is on them");
@@ -4998,7 +5014,7 @@ fn label_menu_labels_the_selection_like_desktop() {
         ids.iter().filter(|id| st.chat(id).label_ids.iter().any(|l| l == "lbl_work")).count()
     };
     assert_eq!(labeled(&app), 2, "the label goes on every selected chat");
-    let _ = app.update(UiMessage::Undo(false));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     assert_eq!(labeled(&app), 0);
 }
 
@@ -5318,7 +5334,7 @@ fn label_chats_from_the_chat_menu_like_desktop() {
     assert_eq!(app.status_banner, "Added to Work");
     let _ = app.update(app.toast.as_ref().and_then(|t| t.open.clone()).expect("the toast opens the label"));
     assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
-    let _ = app.update(UiMessage::Undo(false));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     assert!(labels(&app).is_empty());
     assert_eq!(app.status_banner, "Undo: Add to Work");
     assert!(app.toast.is_none() && app.undo_stack.is_empty(), "the undo is not an action");

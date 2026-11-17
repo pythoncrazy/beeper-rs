@@ -1,5 +1,6 @@
 //! The Media window, the carousel of a chat, and the decode and the load of the media that they show.
 
+use crate::composer;
 use crate::forward;
 use crate::i18n::{tr, trn, trx};
 use crate::style::{
@@ -364,7 +365,10 @@ impl BeeperGuiApp {
     fn carousel_actions(&self, car: &Carousel, m: &Message, c: &Chat) -> (Option<UiMessage>, Option<UiMessage>) {
         let live = !car.in_media && m.is_deleted != Some(true);
         let reply = (c.messages.reply && live).then(|| {
-            UiMessage::Commands(vec![UiMessage::Media(Msg::CloseCarousel), UiMessage::StartReply(m.id.clone())])
+            UiMessage::Commands(vec![
+                UiMessage::Media(Msg::CloseCarousel),
+                UiMessage::Composer(composer::Msg::StartReply(m.id.clone())),
+            ])
         });
         let right = self.pane.size.width - 8.0 - 28.0 * if reply.is_some() { 4.0 } else { 3.0 };
         let react = (c.messages.react && live).then(|| UiMessage::ReactAt(m.id.clone(), Point::new(right, 39.0)));

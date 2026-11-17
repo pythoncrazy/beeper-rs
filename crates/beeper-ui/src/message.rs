@@ -2,6 +2,7 @@
 //! menu, and the dividers and the scroll button of the timeline.
 
 use crate::blocking;
+use crate::composer;
 use crate::forward;
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
 use crate::media_view;
@@ -410,11 +411,17 @@ impl BeeperGuiApp {
                 vec![item(label.into(), "", (state != Some(&true)).then_some(load)), rule()]
             }),
             (editable(m, rules) && !text.is_empty()).then(|| {
-                let edit = edit_open(m, rules).then(|| UiMessage::StartEdit(mid.clone(), text));
+                let edit =
+                    edit_open(m, rules).then(|| UiMessage::Composer(composer::Msg::StartEdit(mid.clone(), text)));
                 vec![item(tr("Edit…").into(), "Ctrl T", edit)]
             }),
-            (rules.reply && live)
-                .then(|| vec![item(tr("Reply…").into(), "Ctrl R", Some(UiMessage::StartReply(mid.clone())))]),
+            (rules.reply && live).then(|| {
+                vec![item(
+                    tr("Reply…").into(),
+                    "Ctrl R",
+                    Some(UiMessage::Composer(composer::Msg::StartReply(mid.clone()))),
+                )]
+            }),
             (self.pane().thread_root.is_none() && can_thread(&st, chat, m)).then(|| {
                 let label = tr("Reply in thread…").into();
                 vec![item(label, "Ctrl ↓", Some(UiMessage::Thread(threads::Msg::Show(mid.clone()))))]
@@ -1673,7 +1680,8 @@ impl BeeperGuiApp {
                 button(container(ic(c, 20.0)).center(32)).padding(0).style(style).on_press(msg).into()
             };
             let live = m.is_deleted != Some(true);
-            let reply = (chat.messages.reply && live).then(|| b(icon::REPLY, UiMessage::StartReply(m.id.clone())));
+            let reply = (chat.messages.reply && live)
+                .then(|| b(icon::REPLY, UiMessage::Composer(composer::Msg::StartReply(m.id.clone()))));
             let in_thread = (!in_pane && can_thread(st, chat, m)).then(|| -> El<'a> {
                 let style = move |_: &Theme, s| button::Style {
                     text_color: match s {

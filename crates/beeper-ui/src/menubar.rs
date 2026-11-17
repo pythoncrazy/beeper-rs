@@ -1,5 +1,6 @@
 //! Desktop's application menu (`menubar`), which Electron's `autoHideMenuBar` hides on Linux and Windows until Alt
 //! shows it: the Beeper, File, Edit, View, Window and Help menus over the main window.
+use crate::composer;
 use crate::i18n::{tr, trf, trx};
 use crate::settings;
 use crate::style::{fill_box, shadow_box, text_width, txt};
@@ -54,10 +55,10 @@ impl BeeperGuiApp {
             hotkey(tr("Open Chat in New Window"), "Open in New Window"),
         ];
         let edit = vec![
-            plain(tr("Cut").into(), UiMessage::ComposerClip(true)),
-            plain(tr("Copy").into(), UiMessage::ComposerClip(false)),
-            plain(tr("Paste").into(), UiMessage::Paste),
-            plain(tr("Select All").into(), UiMessage::ComposerEdit(text_editor::Action::SelectAll)),
+            plain(tr("Cut").into(), UiMessage::Composer(composer::Msg::Clip(true))),
+            plain(tr("Copy").into(), UiMessage::Composer(composer::Msg::Clip(false))),
+            plain(tr("Paste").into(), UiMessage::Composer(composer::Msg::Paste)),
+            plain(tr("Select All").into(), UiMessage::Composer(composer::Msg::Edit(text_editor::Action::SelectAll))),
         ];
         let bar = if st.settings.on("showSidebar") { tr("Hide Space Bar") } else { tr("Show Space Bar") };
         let sidebar = if self.sidebar_hidden { tr("Show Sidebar") } else { tr("Hide Sidebar") };

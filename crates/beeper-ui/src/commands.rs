@@ -1,6 +1,7 @@
 //! Desktop's command bar commands (`Efe`): the categories, the titles, the search keywords and the hotkeys.
 use crate::accounts;
 use crate::blocking;
+use crate::composer;
 use crate::i18n::{tr, trf, trx};
 use crate::media_view;
 use crate::members;
@@ -453,7 +454,11 @@ impl BeeperGuiApp {
             v.extend(open.map(|open| cmd(e, tr("Open link"), Some(open))));
             v.push(cmd(e, tr("Unselect"), Some(UiMessage::SelectMessages(Vec::new()))));
             if let ([m], true) = (&picked[..], rules.reply && live) {
-                let reply = cmd(e, trx("Reply", "message command"), Some(UiMessage::StartReply(m.id.clone())));
+                let reply = cmd(
+                    e,
+                    trx("Reply", "message command"),
+                    Some(UiMessage::Composer(composer::Msg::StartReply(m.id.clone()))),
+                );
                 v.push(reply.hotkey("Message: Quote & Reply"));
             }
             if let [m] = picked[..] {
@@ -575,14 +580,18 @@ impl BeeperGuiApp {
             }
             let info = if self.show_right_panel { tr("Hide chat info") } else { tr("Show chat info") };
             v.push(cmd(e, info, Some(UiMessage::ToggleRightPanel)).hotkey("Toggle Chat Info"));
-            let file = self.pane.editing_message_id.is_none().then_some(UiMessage::PickFiles);
+            let file = self.pane.editing_message_id.is_none().then_some(UiMessage::Composer(composer::Msg::PickFiles));
             let file_keys = &["attachment", "image", "gif", "video", "document", "pdf"];
             v.push(cmd(e, tr("Send file"), file).keys(file_keys).hotkey("Chat: Send File"));
-            let gif = (self.pane.editing_message_id.is_none()).then_some(UiMessage::TogglePicker(crate::Picker::Gif));
+            let gif = (self.pane.editing_message_id.is_none())
+                .then_some(UiMessage::Composer(composer::Msg::TogglePicker(crate::Picker::Gif)));
             v.push(cmd(e, tr("Send GIF"), gif).keys(&["attachment", "image", "video"]).hotkey("Message: Send GIF"));
             if st.settings.on("stickerPacks") {
-                let sticker =
-                    self.pane.editing_message_id.is_none().then_some(UiMessage::TogglePicker(crate::Picker::Sticker));
+                let sticker = self
+                    .pane
+                    .editing_message_id
+                    .is_none()
+                    .then_some(UiMessage::Composer(composer::Msg::TogglePicker(crate::Picker::Sticker)));
                 let keys = &["attachment", "image", "video"];
                 v.push(cmd(e, tr("Send Sticker"), sticker).keys(keys).hotkey("Message: Send Sticker"));
             }

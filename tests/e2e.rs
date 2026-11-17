@@ -1229,20 +1229,33 @@ async fn lifecycle() {
         sim.simulate([enter(Modifiers::SHIFT), enter(Modifiers::empty())]);
         let keys: Vec<_> = sim
             .into_messages()
-            .filter(|m| matches!(m, UiMessage::ComposerEdit(Action::Edit(_)) | UiMessage::SubmitComposer))
+            .filter(|m| {
+                matches!(
+                    m,
+                    UiMessage::Composer(beeper_ui::composer::Msg::Edit(Action::Edit(_)))
+                        | UiMessage::Composer(beeper_ui::composer::Msg::Submit)
+                )
+            })
             .collect();
         assert!(
-            matches!(keys[..], [UiMessage::ComposerEdit(Action::Edit(Edit::Enter)), UiMessage::SubmitComposer]),
+            matches!(
+                keys[..],
+                [
+                    UiMessage::Composer(beeper_ui::composer::Msg::Edit(Action::Edit(Edit::Enter))),
+                    UiMessage::Composer(beeper_ui::composer::Msg::Submit)
+                ]
+            ),
             "Shift Enter adds a line and Enter sends"
         );
     }
-    let _ = gui.update(UiMessage::ComposerChanged("make it bold".into()));
-    let _ = gui.update(UiMessage::ComposerEdit(iced::widget::text_editor::Action::SelectAll));
-    let _ = gui.update(UiMessage::Format(0));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed("make it bold".into())));
+    let _ =
+        gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Edit(iced::widget::text_editor::Action::SelectAll)));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Format(0)));
     assert_eq!(gui.pane.composer.text(), "**make it bold**", "the formatting menu wraps the selection");
-    let _ = gui.update(UiMessage::Format(0));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Format(0)));
     assert_eq!(gui.pane.composer.text(), "make it bold", "pressing it again removes the marks");
-    let _ = gui.update(UiMessage::ComposerChanged(String::new()));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed(String::new())));
     {
         let mut sim = simulator(gui.view_main());
         sim.click(iced::widget::Id::new("rail-requests")).expect("requests rail button");
@@ -1286,8 +1299,10 @@ async fn lifecycle() {
     let _ = gui.update(UiMessage::NewChat(beeper_ui::new_chat::Msg::Delete(0)));
     assert!(gui.new_chats.is_empty() && gui.creating_chat.is_none() && gui.pane.selected_chat_id.is_some());
     let _ = gui.update(UiMessage::SelectChat(prev));
-    let _ = gui.update(UiMessage::ComposerChanged("Hello from **Iced** Simulator E2E!".to_string()));
-    let _ = gui.update(UiMessage::SubmitComposer);
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed(
+        "Hello from **Iced** Simulator E2E!".to_string(),
+    )));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Submit));
     let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::Open(SettingsTab::Appearance)));
     assert!(gui.settings_window.is_some());
     {
@@ -1587,7 +1602,7 @@ async fn lifecycle() {
         let _ = gui.update(UiMessage::HoverChat(cid.clone(), false));
         assert!(gui.hovered_chat.is_none());
         for _ in 0..2 {
-            let _ = gui.update(UiMessage::ComposerChanged("draft".into()));
+            let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed("draft".into())));
             let _ = gui.update(UiMessage::SelectChat(other.clone()));
             let _ = gui.update(UiMessage::SelectChat(cid.clone()));
             assert_eq!(gui.pane.composer.text(), "draft", "a chat keeps its draft");

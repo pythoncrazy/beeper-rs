@@ -1,4 +1,5 @@
 //! Desktop's composer formatting menu (`BubbleMenu`): Markdown marks on the selection, sent as Matrix HTML.
+use crate::composer;
 use crate::i18n::tr;
 use crate::popover::above;
 use crate::style::{bordered_box, btn_style, carets, fill_box, fw, semi, shadow_box, txt, CLEAR};
@@ -174,7 +175,9 @@ impl BeeperGuiApp {
         .squiggles(move |size| words(size).into_iter().map(|(_, at, width)| (at, width)).collect())
         .on_right(move |size, p| {
             let over = |at: &Point, w: f32| (at.x..at.x + w).contains(&p.x) && (at.y - 16.9..at.y + 3.0).contains(&p.y);
-            UiMessage::EditMenu(hits(size).into_iter().find(|(_, at, w)| over(at, *w)).map(|w| w.0))
+            UiMessage::Composer(composer::Msg::EditMenu(
+                hits(size).into_iter().find(|(_, at, w)| over(at, *w)).map(|w| w.0),
+            ))
         })
         .into()
     }
@@ -191,7 +194,10 @@ impl BeeperGuiApp {
             let label = tr(if i == LINK && on { "Remove Link" } else { LABELS[i] });
             let (bg, fg) = if on { (p.accent, Color::WHITE) } else { (CLEAR, p.strong) };
             let icon = svg(ICONS[i].clone()).width(16).height(16).style(move |_, _| svg::Style { color: Some(fg) });
-            let b = button(icon).padding(4).style(btn_style([bg; 3], [fg; 3], 8.0)).on_press(UiMessage::Format(i));
+            let b = button(icon)
+                .padding(4)
+                .style(btn_style([bg; 3], [fg; 3], 8.0))
+                .on_press(UiMessage::Composer(composer::Msg::Format(i)));
             items =
                 items.push(self.tip(b.into(), label, HOTKEYS[i].to_vec(), tooltip::Position::Top).padding(0).gap(6));
         }
@@ -200,7 +206,7 @@ impl BeeperGuiApp {
 
     fn view_link_dialog(&self, url: &str, label: &str) -> El<'_> {
         let p = &self.pal;
-        let save = (!url.trim().is_empty()).then_some(UiMessage::SaveLink);
+        let save = (!url.trim().is_empty()).then_some(UiMessage::Composer(composer::Msg::SaveLink));
         let input = |id: &'static str, hint: &'static str, value: &str| {
             text_input(hint, value)
                 .id(id)
@@ -220,15 +226,15 @@ impl BeeperGuiApp {
         let field = |name: &'static str, input| column![txt(tr(name), 11.0).color(p.sub), input].spacing(2);
         let (u, l) = (url.to_owned(), label.to_owned());
         let url_in = input("link-url", "https://example.com", url)
-            .on_input(move |u| UiMessage::LinkDialog(Some((u, l.clone()))));
+            .on_input(move |u| UiMessage::Composer(composer::Msg::LinkDialog(Some((u, l.clone())))));
         let text_in = input("link-text", tr("Link text (optional)"), label)
-            .on_input(move |l| UiMessage::LinkDialog(Some((u.clone(), l))));
+            .on_input(move |l| UiMessage::Composer(composer::Msg::LinkDialog(Some((u.clone(), l)))));
         let btn = |name: &'static str, bg: Color, fg: Color, msg: Option<UiMessage>| {
             button(semi(tr(name), 10.0)).padding([4, 10]).style(btn_style([bg; 3], [fg; 3], 8.0)).on_press_maybe(msg)
         };
         let buttons = row![
             Space::new().width(Fill),
-            btn("Cancel", CLEAR, p.strong, Some(UiMessage::LinkDialog(None))),
+            btn("Cancel", CLEAR, p.strong, Some(UiMessage::Composer(composer::Msg::LinkDialog(None)))),
             btn("Save", p.accent, Color::WHITE, save.clone())
         ];
         let body =

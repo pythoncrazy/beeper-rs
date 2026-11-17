@@ -70,7 +70,7 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let text = st.scheduled.iter().find(|s| s.id == id).expect("a scheduled message").text.clone();
                 drop(st);
-                return self.update(UiMessage::StartEdit(id, text));
+                return self.update(UiMessage::Composer(composer::Msg::StartEdit(id, text)));
             }
             Msg::Fold(collapsed) => {
                 self.pane.sched_fold.0 = collapsed;

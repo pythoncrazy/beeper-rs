@@ -1,4 +1,5 @@
 //! Desktop's `AudioBar`: record a voice note from the microphone, pause to play it back, and send it as Ogg Opus.
+use crate::composer;
 use crate::settings;
 use crate::style::{bordered_box, btn_style, fill_box, hex, hidden_slider, txt, Bare, CLEAR};
 use crate::voice::{self, Clip, HZ, ICONS};
@@ -249,7 +250,7 @@ impl BeeperGuiApp {
                 self.talk = None;
                 let end = text_editor::Action::Move(text_editor::Motion::DocumentEnd);
                 let paste = text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text)));
-                let edits = [end, paste].map(|a| self.handle(UiMessage::ComposerEdit(a)));
+                let edits = [end, paste].map(|a| self.handle(UiMessage::Composer(composer::Msg::Edit(a))));
                 return Task::batch(edits.into_iter().chain([iced::widget::operation::focus("composer-input")]));
             }
             Msg::Typed(Err(e)) => {

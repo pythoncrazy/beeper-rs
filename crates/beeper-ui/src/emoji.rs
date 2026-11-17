@@ -1,3 +1,4 @@
+use crate::composer;
 use crate::settings;
 use crate::style::{med, mix, txt, CLEAR};
 use crate::{BeeperGuiApp, El, UiMessage};
@@ -340,7 +341,8 @@ impl BeeperGuiApp {
                     return self.update(UiMessage::ToggleReaction(cid, mid, DATA.emojis[i].skinned(tone)));
                 }
                 let paste = iced::widget::text_editor::Edit::Paste(DATA.emojis[i].skinned(tone).into());
-                return self.update(UiMessage::ComposerEdit(iced::widget::text_editor::Action::Edit(paste)));
+                return self
+                    .update(UiMessage::Composer(composer::Msg::Edit(iced::widget::text_editor::Action::Edit(paste))));
             }
             EmojiMsg::Skin(t) => {
                 let client = {
