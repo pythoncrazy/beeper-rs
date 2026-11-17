@@ -10,6 +10,7 @@ use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
 use crate::loads;
 use crate::media_view;
 use crate::members;
+use crate::merged;
 use crate::reminders::reminder_day;
 use crate::reply_line::{reply_line, Segment, Shape};
 use crate::style::{
@@ -273,9 +274,12 @@ fn reaction_groups<'a>(ms: &[&'a Message]) -> Vec<(String, Vec<&'a Reaction>)> {
     groups
 }
 
-fn gap_below(m: &Message, next: &Message) -> f32 {
+/// Desktop's `gapBelow` (`S4t`) of a message: 12 px before a message of another member chat of a merged chat
+/// (`isNextDifferentThread`), else by the time to the next message.
+pub(crate) fn gap_below(m: &Message, next: &Message) -> f32 {
     let ms = |m: &Message| millis_from_rfc3339(&m.timestamp).expect("message timestamp");
     match (ms(next) - ms(m)).abs() / 60_000 {
+        _ if m.chat_id != next.chat_id => 12.0,
         _ if day_num(&m.timestamp) != day_num(&next.timestamp) => 0.0,
         241.. => 26.0,
         6.. => 13.0,
@@ -626,7 +630,17 @@ const UNREAD_DIVIDER: &str = "unread-divider";
 /// Desktop's `updateUnreadDividerMessageSortKey` and `firstUnreadMessageIDIn` when a chat opens: the message after its
 /// read position, below one at or before it, when a message is after it. The unread marks of the messages place it
 /// when the loaded messages do not reach the read position.
-pub(crate) fn divider_at(chat: &Chat, msgs: &[&Message]) -> Option<String> {
+pub(crate) fn divider_at(st: &BeeperStore, chat: &Chat, msgs: &[&Message]) -> Option<String> {
+    // Desktop's `firstUnreadMessageIDIn` of a merged chat: the first message of others after the read position of its
+    // unread member chat.
+    if chat.merge.is_some() {
+        let unread = |m: &&&Message| {
+            let c = st.chat(&m.chat_id);
+            let read = c.last_read_message_sort_key.as_ref();
+            c.is_unread() && m.is_sender != Some(true) && read.is_some_and(|r| m.sort_key > *r)
+        };
+        return msgs.iter().find(unread).map(|m| m.id.clone());
+    }
     let last = msgs.last().map(|m| &m.sort_key);
     let read = chat.last_read_message_sort_key.as_ref().filter(|k| Some(*k) < last);
     let after = read.and_then(|r| msgs.windows(2).position(|w| w[0].sort_key <= *r && w[1].sort_key > *r));
@@ -1166,7 +1180,7 @@ impl BeeperGuiApp {
         let username = other
             .and_then(|u| handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone()));
         let mono = (!st.settings.on("colorizeNetworkIcons")).then_some(p);
-        let avatar = badged(self.chat_avatar(chat, 46.0, 0.0), &chat.account_id, 46.0, 16.0, mono, p.card);
+        let avatar = badged(self.chat_avatar(chat, 46.0, 0.0), merged::chat_brand(chat), 46.0, 16.0, mono, p.card);
         let title = semi(chat.title.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong);
         let username = username.map(|u| txt(u, 12.0).color(p.sub));
         let about = chat.description.clone().filter(|d| !d.is_empty());
@@ -1741,6 +1755,10 @@ impl BeeperGuiApp {
                     }
                 };
                 head = Column::new().push(stack![head].push_under(reply_line(segment, ink, top, bottom)));
+            }
+            // Desktop's `TimelineNote` of a merged chat: the chat of the message, where the chat of the messages changes.
+            if prev.is_none_or(|q| q.chat_id != m.chat_id) && chat.merge.is_some() {
+                head = head.push(merged::source_label(st, chat, &m.chat_id).map(|l| self.timeline_note(l)));
             }
             if first_unread.is_some_and(|u| (i..end).contains(&u)) {
                 head = head.push(container(self.unread_divider(st)).id(UNREAD_DIVIDER));

@@ -596,25 +596,39 @@ impl BeeperGuiApp {
             let files = files.into_iter().map(|f| out_file(&mut self.media, &mut st, f)).collect();
             let text = Some(text).filter(|t| !t.is_empty());
             let links = !self.pane.composer_links.is_empty();
+            // A merged chat sends to its `composeTarget`, and a reply to the chat of its message.
+            let to = match reply_to {
+                None => st.chats[st.compose_target(idx)].id.clone(),
+                Some(_) => chat_id.clone(),
+            };
             let draft = Draft { text, reply_to, mentions, preview, thread: self.pane.send_thread(), files, links };
-            let (_, sends) = st.echo_draft(&chat_id, draft).expect("send a message");
+            let (to, sends) = st.echo_draft(&to, draft).expect("send a message");
             // Desktop's `queuePendingMessages` sends the earlier queue of the chat first.
             if let Some(i) = self.queued.iter().position(|q| q.chat == chat_id) {
-                for (_, out) in self.queued.remove(i).sends {
-                    st.queue(&chat_id, out);
+                let q = self.queued.remove(i);
+                for (_, out) in q.sends {
+                    st.queue(&q.to, out);
                 }
             }
             match (delay, restore) {
                 (Some(ms), Some((text, reply_to, files))) => {
                     let due = now_unix_millis() + ms;
                     let sends = sends.into_iter().map(|o| (o.message().expect("an echo").to_string(), o)).collect();
-                    self.queued.push(Queued { chat: chat_id.clone(), due, sends, text, reply_to, files });
+                    self.queued.push(Queued {
+                        chat: chat_id.clone(),
+                        to: to.clone(),
+                        due,
+                        sends,
+                        text,
+                        reply_to,
+                        files,
+                    });
                 }
-                _ => sends.into_iter().for_each(|out| st.queue(&chat_id, out)),
+                _ => sends.into_iter().for_each(|out| st.queue(&to, out)),
             }
             // A reply in the thread pane reads the thread, not the chat.
             if self.pane.thread_root.is_none() {
-                st.mark_chat_read(&chat_id, true);
+                st.mark_chat_read(&to, true);
             }
         }
         if edit {
@@ -724,6 +738,19 @@ impl BeeperGuiApp {
         if pane.thread_root.is_some() {
             return tr("Reply in thread…").into();
         }
+        // Desktop's `bridgeProtocolDisplayName`: the user of the account, when you have more accounts of its bridge.
+        let protocol = |c: &Chat| {
+            let several = several_accounts(st, &c.account_id);
+            let user = Some(account_user(st, &c.account_id)).filter(|u| several && !u.is_empty());
+            let net = network_name(&c.account_id);
+            user.map_or(net.to_string(), |u| format!("{net} ({u})"))
+        };
+        // A merged chat names the member chat that it sends to.
+        let idx = st.chat_idx(&chat.id);
+        if !st.members(idx).is_empty() {
+            let target = &st.chats[st.compose_target(idx)];
+            return format!("Message {} on {}", target.title, protocol(target));
+        }
         let to = match (pane.send_later, pane.reply_thread.is_some() || pane.reply_to_message_id.is_some()) {
             (Some(_), _) => "Send Later".into(),
             (None, reply) => {
@@ -735,12 +762,7 @@ impl BeeperGuiApp {
             (true, true) => " to join the group",
             (true, false) => " to accept the request",
         };
-        // Desktop's `bridgeProtocolDisplayName`: the user of the account, when you have more accounts of its bridge.
-        let several = several_accounts(st, &chat.account_id);
-        let user = Some(account_user(st, &chat.account_id)).filter(|u| several && !u.is_empty());
-        let net = network_name(&chat.account_id);
-        let net = user.map_or(net.to_string(), |u| format!("{net} ({u})"));
-        format!("{to} on {net}{request}")
+        format!("{to} on {}{request}", protocol(chat))
     }
 
     pub(crate) fn view_composer<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
@@ -1648,8 +1670,7 @@ impl BeeperGuiApp {
                     .partition(|q| chat.as_ref().map_or(q.due <= now, |c| q.chat == *c));
                 self.queued = keep;
                 let mut st = self.store.write();
-                for q in send.into_iter().flat_map(|q: Queued| q.sends.into_iter().map(move |s| (q.chat.clone(), s.1)))
-                {
+                for q in send.into_iter().flat_map(|q: Queued| q.sends.into_iter().map(move |s| (q.to.clone(), s.1))) {
                     st.queue(&q.0, q.1);
                 }
             }

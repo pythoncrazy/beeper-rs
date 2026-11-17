@@ -1086,11 +1086,19 @@ impl BeeperGuiApp {
             open_sub(1, tr("Remind Me")),
             snooze.then(|| open_sub(3, trx("Snooze", "thread context menu submenu label"))),
             close_sub({
-                let delete = st.feature("delete-chats").on.then(|| {
-                    let ask =
-                        (c.delete_modes != 0).then(|| UiMessage::ChatList(chat_list::Msg::AskDelete(c.id.clone())));
-                    item(tr("Delete Chat"), "", ask)
-                });
+                // Desktop's Unmerge of one merged chat, in the place of Delete Chat.
+                let delete = match n <= 1 && c.merge.is_some() {
+                    true => Some(item(
+                        trx("Unmerge", "thread context menu action to split a merged chat"),
+                        "",
+                        Some(UiMessage::Merged(merged::Msg::Ask(c.id.clone()))),
+                    )),
+                    false => st.feature("delete-chats").on.then(|| {
+                        let ask =
+                            (c.delete_modes != 0).then(|| UiMessage::ChatList(chat_list::Msg::AskDelete(c.id.clone())));
+                        item(tr("Delete Chat"), "", ask)
+                    }),
+                };
                 let block = block_action(&st, c).filter(|_| n == 0).map(|block| {
                     let label = match block {
                         true => trx("Block…", "action to block the other person in a DM"),
@@ -1474,7 +1482,14 @@ impl BeeperGuiApp {
             let face = match d.users.first().map(|(a, _)| a).or(picked).filter(|_| network_icons) {
                 Some(account) => {
                     let ring = if on { crate::style::flat(p.window, p.selected) } else { p.window };
-                    badged(face, account, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p), ring)
+                    badged(
+                        face,
+                        brand_key(account),
+                        av,
+                        if compact { 12.0 } else { 16.0 },
+                        (!colorize).then_some(p),
+                        ring,
+                    )
                 }
                 None => face,
             };
@@ -1693,7 +1708,14 @@ impl BeeperGuiApp {
             let avatar = match network_icons {
                 true => {
                     let ring = if on { crate::style::flat(p.window, p.selected) } else { p.window };
-                    badged(avatar, &c.account_id, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p), ring)
+                    badged(
+                        avatar,
+                        merged::chat_brand(c),
+                        av,
+                        if compact { 12.0 } else { 16.0 },
+                        (!colorize).then_some(p),
+                        ring,
+                    )
                 }
                 false => avatar,
             };

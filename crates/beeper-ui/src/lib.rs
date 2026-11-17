@@ -35,6 +35,7 @@ pub mod login;
 mod media_view;
 mod members;
 mod menubar;
+mod merged;
 mod message;
 pub mod networks;
 pub mod new_chat;
@@ -370,6 +371,8 @@ pub enum UiMessage {
     Members(members::Msg),
     /// Desktop's block and unblock of a direct chat, with Report spam, and the Blocked users window.
     Blocking(blocking::Msg),
+    /// Desktop's merged chats: Unmerge.
+    Merged(merged::Msg),
     /// Desktop's account nicknames and the Account Nickname window.
     Nickname(nickname::Msg),
     /// The keyboard focus of the controls of a window: Tab, and the mouse press that ends it.
@@ -700,6 +703,8 @@ const ASK_TRANSCRIBE: u8 = 22;
 const ASK_LOGOUT_DEVICE: u8 = 23;
 /// Desktop's "Room encryption" step of New Chat before it creates a Matrix group of more than one person.
 const ASK_ROOM_ENCRYPTION: u8 = 24;
+/// Desktop's `confirmUnmergeUnion` of a merged chat.
+const ASK_UNMERGE: u8 = 25;
 /// Desktop opens its `prefs` window at 800 x 740, in the middle of the screen.
 const SETTINGS_SIZE: Size = Size::new(800.0, 740.0);
 /// Desktop's default "Quick reaction emoji".
@@ -942,6 +947,8 @@ type Png = (Vec<u8>, (u32, u32));
 /// restore on undo.
 struct Queued {
     chat: String,
+    /// The chat of the sends: the member chat that a merged chat sends to.
+    to: String,
     due: i64,
     sends: Vec<(String, Outgoing)>,
     text: String,
@@ -1152,12 +1159,12 @@ static BADGE_RINGS: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock:
 });
 
 /// `ring` is the row color, which Desktop shows in a cutout of the avatar around the badge.
-fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32, mono: Option<&Palette>, ring: Color) -> El<'a> {
+fn badged<'a>(inner: El<'a>, brand: &str, size: f32, badge: f32, mono: Option<&Palette>, ring: Color) -> El<'a> {
     let icon: El<'a> = match mono {
-        None => svg(crate::style::brand_round(brand_key(account_id))).width(badge).height(badge).into(),
+        None => svg(crate::style::brand_round(brand)).width(badge).height(badge).into(),
         Some(p) => {
             let fg = p.strong;
-            let glyph = svg(crate::style::brand_badge(brand_key(account_id)))
+            let glyph = svg(crate::style::brand_badge(brand))
                 .style(move |_, _| svg::Style { color: Some(fg) })
                 .width(badge)
                 .height(badge);
@@ -1811,7 +1818,7 @@ fn network_label(account_id: &str) -> &'static str {
 }
 
 fn chat_network(c: &Chat) -> String {
-    let plat = network_label(&c.account_id);
+    let plat = if c.merge.is_some() { merged::chat_platform(c) } else { network_label(&c.account_id) };
     c.network_name.as_deref().map_or_else(|| plat.to_string(), |n| format!("{n} • {plat}"))
 }
 
@@ -2230,9 +2237,12 @@ svg_static!(MOON_STARS, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 // Desktop's `BeeperIcon` of the networks icons.
 svg_static!(BEEPER_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 15"><path fill-rule="evenodd" clip-rule="evenodd" d="M0.350037 5.29941C0.350037 2.76021 2.33427 0.649414 4.84524 0.649414H8.75483C11.2658 0.649414 13.25 2.76021 13.25 5.29941C13.25 6.61227 12.7229 7.80414 11.8693 8.65264L7.23829 13.8348C6.60047 14.5486 5.42971 13.9544 5.62929 13.0182L6.2835 9.94942H4.84524C2.33427 9.94942 0.350037 7.83862 0.350037 5.29941ZM4.84524 2.14941C3.21937 2.14941 1.85004 3.5308 1.85004 5.29941C1.85004 7.06803 3.21937 8.44941 4.84524 8.44941H8.13699L7.54101 11.245L10.7824 7.61781L10.7997 7.60083C11.382 7.02833 11.75 6.2123 11.75 5.29941C11.75 3.5308 10.3807 2.14941 8.75483 2.14941H4.84524Z"/></svg>"##);
 
-/// Desktop's `hasOlderMessages`: the chat has events before its first loaded page.
+/// Desktop's `hasOlderMessages`: the chat has events before its first loaded page, or a member chat of a merged chat
+/// does.
 fn has_older(st: &BeeperStore, chat: &Chat) -> bool {
-    st.matrix.is_some() && chat.older != Older::Start
+    let members = st.members(st.chat_idx(&chat.id));
+    let older = |c: &Chat| c.older != Older::Start;
+    st.matrix.is_some() && if members.is_empty() { older(chat) } else { members.iter().any(|&i| older(&st.chats[i])) }
 }
 // Desktop's QR code of `https://www.beeper.com/download`.
 svg_static!(APP_QR, include_bytes!("../assets/app_qr.svg"));
@@ -3197,6 +3207,10 @@ impl BeeperGuiApp {
     }
 
     fn chat_avatar<'a>(&self, chat: &Chat, size: f32, ls: f32) -> El<'a> {
+        // Desktop's `ThreadAvatar` of a merged chat without a photo: the letter of its title.
+        if chat.merge.is_some() {
+            return self.face(chat.img_url.as_deref(), &chat.title, size, ls);
+        }
         let group = chat.chat_type == "group";
         self.people_avatar(chat.img_url.as_deref(), &chat.title, group, &chat.participants.items, size, ls)
     }
@@ -3612,7 +3626,7 @@ impl BeeperGuiApp {
         self.pane.selected_chat_id = Some(chat_id.to_string());
         let id = st.chats[idx].id.clone();
         st.load_chat(&id);
-        self.pane.unread_divider = message::divider_at(&st.chats[idx], &self.pane_msgs(&st));
+        self.pane.unread_divider = message::divider_at(&st, &st.chats[idx], &self.pane_msgs(&st));
         // Desktop reads a chat with an unread divider from there, through the last message in view (`onRangeChange`).
         if !st.incognito() && self.pane.unread_divider.is_none() {
             st.mark_read(idx, false);
@@ -3753,9 +3767,10 @@ impl BeeperGuiApp {
             let root_msg = st.loaded(root);
             return root_msg.into_iter().chain(st.thread_replies(root)).collect();
         }
-        let threaded = st.threaded(&st.chats[st.resolve_chat_idx(cid).expect("an open chat")]);
-        let all = st.timeline(cid);
-        all.filter(|m| !m.thread_only(threaded)).collect()
+        let cid = &st.chats[st.resolve_chat_idx(cid).expect("an open chat")].id;
+        // A merged chat shows the replies of a member chat as that chat does.
+        let all = st.chat_timeline(cid).into_iter();
+        all.filter(|m| !m.thread_only(st.threaded(st.chat(&m.chat_id)))).collect()
     }
 
     /// The arrow keys select messages when no panel is open and the composer is empty.
@@ -3852,7 +3867,7 @@ impl BeeperGuiApp {
         if !has_older(&st, chat) {
             return Task::none();
         }
-        let (id, before) = (chat.id.clone(), st.timeline_indices(&chat.id).len());
+        let (id, before) = (chat.id.clone(), st.chat_timeline(&chat.id).len());
         drop(st);
         self.pane.top.loading = Some((std::time::Instant::now(), id.clone(), before));
         let load = beeper_core::matrix::load_older(self.store.clone(), id);
@@ -3878,7 +3893,7 @@ impl BeeperGuiApp {
         let (_, chat, before) = self.pane.top.loading.take().expect("a load ran");
         let st = self.store.read();
         let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_canonical_chat_id(c));
-        let count = open.as_ref().map(|c| st.timeline_indices(c).len());
+        let count = open.as_ref().map(|c| st.chat_timeline(c).len());
         drop(st);
         if open != Some(chat) {
             return self.load_older();
@@ -4046,6 +4061,7 @@ impl BeeperGuiApp {
             UiMessage::Accounts(msg) => return self.accounts(msg),
             UiMessage::Networks(msg) => return self.networks(msg),
             UiMessage::Blocking(msg) => return self.blocking(msg),
+            UiMessage::Merged(msg) => return self.merged(msg),
             UiMessage::Nickname(msg) => return self.nickname(msg),
             UiMessage::Focus(msg) => return self.key_focus(msg),
             UiMessage::ChatList(msg) => return self.chat_list(msg),
@@ -4993,8 +5009,8 @@ impl BeeperGuiApp {
         });
         let (rising, due) = {
             let st = self.store.read();
-            let last = self.pane().selected_chat_id.as_ref().and_then(|c| st.timeline_indices(c).last());
-            let rising = last.is_some_and(|&i| send_rise(&st, &st.messages[i]).is_some());
+            let last = self.pane().selected_chat_id.as_ref().and_then(|c| st.chat_timeline(c).last().copied());
+            let rising = last.is_some_and(|m| send_rise(&st, m).is_some());
             let pending = st.chats.iter().filter(|c| !self.expired(c));
             let send = st.scheduled.iter().filter(|s| !s.canceled).map(|s| s.send_on);
             let send = send.chain(self.pane.send_later.map(|c| c.0)).min();
@@ -5010,8 +5026,8 @@ impl BeeperGuiApp {
         let wait = |at: i64| std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
         let late = {
             let st = self.store.read();
-            let open = self.panes().filter_map(|p| p.selected_chat_id.as_ref()).map(|c| st.timeline_indices(c));
-            let echoes = open.flatten().map(|&i| &st.messages[i]);
+            let open = self.panes().filter_map(|p| p.selected_chat_id.as_ref()).map(|c| st.chat_timeline(c));
+            let echoes = open.flatten();
             let echoes = echoes.filter(|m| m.send_error.is_none() && pending(&st, m));
             echoes.map(still_sending_at).filter(|&at| at > now_unix_millis()).min()
         };
@@ -5021,8 +5037,8 @@ impl BeeperGuiApp {
         // an hour at most.
         let expiry = {
             let (st, now) = (self.store.read(), now_unix_millis());
-            let open = self.panes().filter_map(|p| p.selected_chat_id.as_ref()).map(|c| st.timeline_indices(c));
-            let left = open.flatten().filter_map(|&i| match st.messages[i].expiry(now) {
+            let open = self.panes().filter_map(|p| p.selected_chat_id.as_ref()).map(|c| st.chat_timeline(c));
+            let left = open.flatten().filter_map(|m| match m.expiry(now) {
                 Some(Countdown::Left(left)) if left > 0 => Some(left),
                 _ => None,
             });
@@ -5837,19 +5853,20 @@ impl BeeperGuiApp {
         let Some(seen) = self.pane.timeline.last_seen() else { return };
         let through = {
             let st = self.store.read();
-            let chat = st.resolve_chat_idx(&id).map(|i| &st.chats[i]).filter(|c| c.is_unread());
-            chat.and_then(|c| {
+            let chat = st.resolve_chat_idx(&id).filter(|&i| st.chats[i].is_unread());
+            chat.and_then(|i| {
+                let (c, merged) = (&st.chats[i], !st.members(i).is_empty());
                 let read = c.last_read_message_sort_key.as_ref();
-                st.timeline_indices(&c.id)
-                    .iter()
-                    .map(|&i| &st.messages[i])
-                    .find(|m| vlist::key(&m.id) == seen)
-                    .filter(|m| read.is_none_or(|r| m.sort_key > *r))
-                    .map(|m| (m.chat_id.clone(), m.id.clone()))
+                let m = st.chat_timeline(&c.id).into_iter().find(|m| vlist::key(&m.id) == seen);
+                let m = m.filter(|m| merged || read.is_none_or(|r| m.sort_key > *r));
+                m.map(|m| (i, merged, m.chat_id.clone(), m.id.clone()))
             })
         };
-        if let Some((chat, mid)) = through {
-            self.store.write().mark_read_through(&chat, &mid);
+        let mut st = self.store.write();
+        match through {
+            Some((i, true, _, mid)) => st.mark_union_read_through(i, &mid),
+            Some((_, false, chat, mid)) => st.mark_read_through(&chat, &mid),
+            None => {}
         }
     }
 

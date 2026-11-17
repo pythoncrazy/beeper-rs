@@ -10,6 +10,7 @@ use crate::integrations;
 use crate::labels;
 use crate::labels::label_fill;
 use crate::members;
+use crate::merged;
 use crate::rail;
 use crate::reminders;
 use crate::settings;
@@ -26,7 +27,7 @@ use crate::{
     ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE, ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT,
     ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT,
     ASK_REMOVE_MEMBER, ASK_REVOKE_CONNECTION, ASK_ROOM_ENCRYPTION, ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE,
-    DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
+    ASK_UNMERGE, DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
@@ -552,6 +553,16 @@ impl BeeperGuiApp {
                 let start = vec![(tr("Start group chat"), UiMessage::NewChat(crate::new_chat::Msg::Start))];
                 let cancel = (trx("Cancel", "button label"), UiMessage::Ask(None));
                 return self.dialog_with(tr("Room encryption").into(), String::new(), Some(extra.into()), start, cancel);
+            }
+            ASK_UNMERGE => {
+                let id = self.delete_target.clone().expect("a merged chat to unmerge");
+                let unmerge = vec![(
+                    trx("Unmerge", "merged chat unmerge confirm button"),
+                    UiMessage::Merged(merged::Msg::Unmerge(id)),
+                )];
+                let body = tr("This will split this merged chat back into individual chats.").into();
+                let keep = (tr("Keep chats merged"), UiMessage::Ask(None));
+                return self.dialog_with(tr("Unmerge Chat?").into(), body, None, unmerge, keep);
             }
             _ => unreachable!("dialog {dialog}"),
         };
