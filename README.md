@@ -34,7 +34,7 @@
 - **Rust-native protocols and primitives**: Implements HTTP/1.1, RFC 6455 WebSockets, SHA-256, SHA-1, Base64, URL percent-encoding, RFC 3339 timestamps, CLI argument parsing, and 32x32 RGBA system tray icon rendering directly in Rust.
 - **SQLite WAL and inverted search index**: Persists state in `beeper-rs/beeper-rs.db` using SQLite Write-Ahead Logging (WAL) and indexes chats, messages, and settings in an in-memory inverted index.
 - **System colour scheme**: Settings > Appearance > Theme has the Light, Dark, and System choices. System is the default and follows the light or dark mode of the device live (the XDG desktop portal on Linux, the native setting on macOS and Windows).
-- **Window frame**: The windows use the native title bar and border. Like Desktop's Electron, beeper-rs runs on Wayland whenever there is a Wayland compositor, and draws its own title bar where the compositor draws none (for example GNOME). On a compositor without the cursor-shape protocol (GNOME before 48), it takes the cursor theme and size from the desktop settings.
+- **Window frame**: The windows use the native title bar and border. Like Desktop's Electron, beeper-rs runs on Wayland whenever there is a Wayland compositor, and draws its own title bar where the compositor draws none (for example GNOME). On a compositor without the cursor-shape protocol (GNOME before 48), it takes the cursor theme and size from the desktop settings. Like Chromium, `--ozone-platform=x11` keeps it on X11 (XWayland on a Wayland desktop, with the frame of the window manager), and the app ignores other Chromium and Electron switches.
 
 ## Local Testing Guide
 

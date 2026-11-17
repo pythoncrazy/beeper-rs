@@ -40,6 +40,10 @@ struct Args {
     demo: bool,
     /// A `beeper://` link to open, in the running instance if there is one.
     link: Option<String>,
+    /// Chromium's `--ozone-platform` or `--ozone-platform-hint` of Desktop: `x11`, `wayland` or `auto`.
+    ozone: Option<String>,
+    /// The first switch that no flag knows. Chromium ignores it for the app, and oclif rejects it for a command.
+    unknown: Option<String>,
 }
 
 const COMMANDS: [(&str, Command, &str); 3] = [
@@ -100,7 +104,16 @@ fn parse(argv: impl IntoIterator<Item = String>) -> Result<Args, (String, i32)> 
             continue;
         }
         let (name, inline) = arg.split_once('=').map_or((arg.as_str(), None), |(n, v)| (n, Some(v.to_string())));
-        let &(_, takes_value, _, set) = flag(name).ok_or((format!("Nonexistent flag: {arg}"), 2))?;
+        let Some(&(_, takes_value, _, set)) = flag(name) else {
+            if matches!(name, "--ozone-platform" | "--ozone-platform-hint") {
+                args.ozone = inline.clone();
+            }
+            match name.starts_with("--") && args.command == Command::Gui {
+                true => args.unknown = args.unknown.or(Some(arg)),
+                false => return Err((format!("Nonexistent flag: {arg}"), 2)),
+            }
+            continue;
+        };
         let value = match (takes_value, inline) {
             (false, None) => String::new(),
             (false, Some(_)) => return Err((format!("Nonexistent flag: {arg}"), 2)),
@@ -111,7 +124,10 @@ fn parse(argv: impl IntoIterator<Item = String>) -> Result<Args, (String, i32)> 
         };
         set(&mut args, &value).map_err(|e| (e, 2))?;
     }
-    Ok(args)
+    match (&args.unknown, args.command) {
+        (Some(arg), command) if command != Command::Gui => Err((format!("Nonexistent flag: {arg}"), 2)),
+        _ => Ok(args),
+    }
 }
 
 /// The help in oclif's layout, with the client commands and topics.
@@ -175,11 +191,16 @@ mod display {
     /// when the compositor does not (GNOME): under XWayland the scale and the cursor follow X resources that GNOME
     /// sets late or not at all, so the cursor turns small. It uses tiny-skia when the display cannot show GPU
     /// frames, because wgpu then loads every Vulkan driver and renders on the CPU with lavapipe.
-    pub fn setup() {
+    pub fn setup(ozone: Option<&str>) {
         let wayland = C::connect_to_env().ok().and_then(|c| {
             let (globals, _) = wayland_client::globals::registry_queue_init::<Probe>(&c).ok()?;
             Some(globals.contents().with_list(|l| l.iter().map(|g| g.interface.clone()).collect::<Vec<_>>()))
         });
+        // Chromium's `--ozone-platform=x11` keeps the app on X11, under XWayland on a Wayland desktop.
+        let wayland = wayland.filter(|_| ozone != Some("x11") || std::env::var_os("DISPLAY").is_none());
+        if wayland.is_none() && ozone == Some("x11") {
+            unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+        }
         let has = |interface: &str| wayland.iter().flatten().any(|g| g == interface);
         if wayland.is_some() && !has("wp_cursor_shape_manager_v1") {
             cursor_theme();
@@ -234,7 +255,7 @@ fn main() {
     }
     let env = |key: &str, flag: &str| std::env::var(key).ok().map(|v| format!("{flag}={v}"));
     let argv = [env("BEEPER_PAS_HOST", "--host"), env("BEEPER_PAS_PORT", "--port")].into_iter().flatten();
-    let Args { command, host: launch_host, port, profile, data_dir, domain, demo, link } =
+    let Args { command, host: launch_host, port, profile, data_dir, domain, demo, link, ozone, .. } =
         parse(argv.chain(std::env::args().skip(1))).unwrap_or_else(|(error, code)| {
             match code {
                 127 => drop(cli::not_a_command(&error, None)),
@@ -249,7 +270,7 @@ fn main() {
     }
     #[cfg(target_os = "linux")]
     if let Command::Gui = command {
-        display::setup();
+        display::setup(ozone.as_deref());
     }
     let host = launch_host.clone().unwrap_or_else(|| DEFAULT_PAS_HOST.to_string());
     let ports = port.map_or(DEFAULT_PAS_PORT..=DEFAULT_PAS_PORT + 50, |p| p..=p);
@@ -397,11 +418,24 @@ mod tests {
         assert_eq!(run(&["--port=1", "--port", "2"]).map(|a| a.port), Ok(Some(2)), "the last value wins");
     }
 
+    /// Desktop is Electron: Chromium ignores the switches that it does not know, and `--ozone-platform` picks X11 or
+    /// Wayland.
+    #[test]
+    fn the_app_ignores_switches_like_chromium() {
+        let app = run(&["--enable-features=UseOzonePlatform", "--ozone-platform=x11", "--no-tls-verify", "--demo"]);
+        assert_eq!(
+            app.as_ref().map(|a| (a.command, a.demo, a.ozone.as_deref())),
+            Ok((Command::Gui, true, Some("x11")))
+        );
+        assert_eq!(run(&["--ozone-platform-hint=wayland"]).map(|a| a.ozone), Ok(Some("wayland".into())));
+    }
+
     #[test]
     fn parse_rejects_bad_command_lines() {
         let port = |v: &str| format!("Parsing --port: Expected an integer from 1 to 65535 but received: {v}");
         let cases = [
-            (&["--bogus"][..], "Nonexistent flag: --bogus".into(), 2),
+            (&["serve", "--bogus"][..], "Nonexistent flag: --bogus".into(), 2),
+            (&["--bogus", "serve"], "Nonexistent flag: --bogus".into(), 2),
             (&["-v"], "Nonexistent flag: -v".into(), 2),
             (&["--demo=1"], "Nonexistent flag: --demo=1".into(), 2),
             (&["chatz"], "chatz".into(), 127),
