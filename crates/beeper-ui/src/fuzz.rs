@@ -2619,12 +2619,134 @@ fn command_bar_searches_once_for_each_query() {
     let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("rust".into())));
     let first = hits(&app);
-    assert!(first.0.len() > 1, "the demo has messages with the word");
+    assert!(first.messages.len() > 1, "the demo has messages with the word");
     let _ = app.update(UiMessage::Relist);
     assert!(Rc::ptr_eq(&first, &hits(&app)), "a frame keeps the finds");
     let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("rus".into())));
     assert!(!Rc::ptr_eq(&first, &hits(&app)), "a key searches again");
-    assert!(first.0.windows(2).all(|w| w[0].sort_key > w[1].sort_key), "newest first");
+    assert!(first.messages.windows(2).all(|w| w[0].sort_key > w[1].sort_key), "newest first");
+}
+
+/// The command bar's search view, tall enough to lay out all of its results.
+fn search_view(app: &BeeperGuiApp) -> Simulator<'_, UiMessage> {
+    Simulator::with_size(Default::default(), Size::new(1440.0, 2000.0), app.view_command_palette())
+}
+
+/// Whether the search view shows each of `texts`, each below the one before.
+fn in_order(app: &BeeperGuiApp, texts: &[&str]) -> bool {
+    let mut sim = search_view(app);
+    let ys: Vec<f32> = texts.iter().map(|t| sim.find(*t).unwrap_or_else(|_| panic!("{t} shows")).bounds().y).collect();
+    ys.windows(2).all(|w| w[0] < w[1])
+}
+
+/// Desktop's `Jqt` sections of a search in order, with the `J5` limits: the chats by title, the chats by member, the
+/// bookmarks, three until "Show more", the media, the 10 newest images and videos without a media filter, and the
+/// messages.
+#[test]
+fn search_sections_like_desktop() {
+    let mut app = demo_app("search-sections");
+    {
+        let mut st = app.store.write();
+        let i = st.find_message("msg_1000a").expect("a message of Eric");
+        let base = st.messages[i].clone();
+        for i in 0..12 {
+            let img =
+                Attachment { attachment_type: "img".into(), file_name: Some("a.png".into()), ..Default::default() };
+            let (id, sort_key) = (format!("$zebra{i}"), format!("{:016}", 9_000_000 + i));
+            let text = Some(format!("zebra snapshot {i}"));
+            st.upsert_message(Message { id, sort_key, text, attachments: vec![img], ..base.clone() });
+        }
+        for id in ["msg_1000a", "msg_1002", "msg_1006"] {
+            assert!(st.toggle_bookmark(id), "the demo bookmarks msg_1001 only");
+        }
+    }
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    let hits = |app: &BeeperGuiApp, q: &str| app.search_hits(&app.store.read(), q);
+    let title = |app: &BeeperGuiApp, i: usize| app.store.read().chats[i].title.clone();
+    let eric = hits(&app, "eric");
+    let groups: Vec<String> = eric.in_groups.iter().map(|&i| title(&app, i)).collect();
+    assert_eq!(eric.chats.iter().map(|&i| title(&app, i)).collect::<Vec<_>>(), ["Eric Migicovsky"]);
+    assert!(groups.contains(&"#desktop-release".to_string()), "a group with Eric: {groups:?}");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("eric".into())));
+    assert!(in_order(&app, &["Chats", "In Groups", "#desktop-release"]));
+    let beeper = hits(&app, "beeper");
+    assert_eq!(beeper.bookmarks.len(), 4);
+    assert!(beeper.bookmarks.iter().all(|m| m.is_bookmarked == Some(true)));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("beeper".into())));
+    assert!(in_order(&app, &["Bookmarks", "Messages"]));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = search_view(&app);
+        let _ = sim.click("Show more").expect("four bookmarks show three");
+        sim.into_messages().collect()
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert!(search_view(&app).find("Show less").is_ok(), "Show more shows all bookmarks");
+    let zebra = hits(&app, "zebra");
+    assert_eq!(zebra.media.len(), 10, "Desktop shows 10 media without a media filter");
+    assert!(zebra.media.windows(2).all(|w| w[0].sort_key > w[1].sort_key), "newest first");
+    assert!(zebra.messages.len() == 12 && zebra.bookmarks.is_empty());
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::PickSearchFilter(SearchPick::Media(0))));
+    assert_eq!(hits(&app, "zebra").media.len(), 12, "a media filter shows all of its media");
+    assert!(hits(&app, "zebra").messages.is_empty(), "and no text messages");
+    assert!(hits(&app, "z").media.len() > 12, "a one-letter query does not search the text");
+    assert!(hits(&app, "eric").chats.is_empty(), "a media filter shows no chats");
+}
+
+/// Desktop's `Hct` operators in the query and in the filters, and its partial matches toggle.
+#[test]
+fn search_operators_and_partial_matches_like_desktop() {
+    let mut app = demo_app("search-operators");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    let ids = |app: &BeeperGuiApp, q: &str| -> HashSet<String> {
+        app.search_hits(&app.store.read(), q).messages.iter().map(|m| m.id.clone()).collect()
+    };
+    let set = |ids: &[&str]| -> HashSet<String> { ids.iter().map(|s| s.to_string()).collect() };
+    assert!(ids(&app, "beeper").len() > 2);
+    assert_eq!(ids(&app, "beeper from:me"), set(&["msg_1000b", "msg_note_4"]));
+    assert_eq!(ids(&app, "voice has:audio"), set(&["msg_1000c", "msg_1003"]));
+    assert_eq!(ids(&app, "voice has:file"), set(&["msg_1003"]));
+    assert_eq!(ids(&app, "voice in:dm"), set(&["msg_1000c"]));
+    assert_eq!(ids(&app, "voice network:acc_telegram"), set(&["msg_1003"]));
+    assert_eq!(ids(&app, "from:me").len(), 7, "only operators lists the messages that match them");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::PickSearchFilter(SearchPick::Sent(true))));
+    assert_eq!(ids(&app, "beeper"), set(&["msg_1000b", "msg_note_4"]), "a filter searches like its operator");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::PickSearchFilter(SearchPick::Sent(true))));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("rus".into())));
+    assert!(!ids(&app, "rus").is_empty(), "a partial match");
+    assert!(search_view(&app).find("Hide partial matches").is_ok());
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePartialMatches));
+    assert!(ids(&app, "rus").is_empty() && !ids(&app, "rust").is_empty(), "whole words only");
+    assert!(search_view(&app).find("Show partial matches").is_ok(), "the heading stays with the chats it found");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("zzqq".into())));
+    assert!(in_order(&app, &["No messages matching those terms", "Show partial matches"]));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    assert!(app.search_partial, "a new search shows partial matches");
+}
+
+/// Desktop's empty search: the recent chats and the chat that was archived last, and no recent searches, which
+/// Desktop 4.3 keeps but `Jqt` leaves out of the general search.
+#[test]
+fn an_empty_search_shows_the_last_archived_chat_like_desktop() {
+    let mut app = demo_app("search-archived");
+    let old = {
+        let st = app.store.read();
+        st.chats.iter().filter(|c| c.flags & CHAT_HIDDEN == 0).min_by_key(|c| c.last_activity.clone()).unwrap().clone()
+    };
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(old.id.clone(), ChatFlag::Archived)));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    assert!(in_order(&app, &["Recent chats", "Last archived", &old.title]));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("rust".into())));
+    assert!(search_view(&app).find("Last archived").is_err(), "a query hides it");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::PickSearchFilter(SearchPick::Sent(true))));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query(String::new())));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    assert!(search_view(&app).find("Recent searches").is_err());
+    let _ = app.update(UiMessage::SelectChat(old.id.clone()));
+    assert!(search_view(&app).find("Last archived").is_err(), "the open chat is not a result");
 }
 
 /// The work of an event does not grow with the account: a hover over a list of 2,000 chats builds as many widgets

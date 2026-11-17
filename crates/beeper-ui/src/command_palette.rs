@@ -224,90 +224,105 @@ impl BeeperGuiApp {
         }))
         .spacing(12)
         .padding(Padding::new(6.0).left(13.0).right(13.0));
+        let raw = self.command_palette_query.trim();
         let filtered = *f != SearchFilters::default();
-        let mut chats: Vec<&Chat> = if room.is_some() || !f.media.is_empty() || (filtered && q.is_empty()) {
-            Vec::new()
-        } else if q.is_empty() && !st.recent_chat_ids.is_empty() {
-            st.recent_chat_ids.iter().filter_map(|id| st.find_chat(id)).filter(|c| c.flags & CHAT_HIDDEN == 0).collect()
-        } else {
-            // The view shows 12 chats at most, and one more tells that there are more.
-            let (order, words) = self.chat_words(&st);
-            let hit = |&&i: &&usize| {
-                let c = &st.chats[i];
-                c.flags & CHAT_HIDDEN == 0
-                    && (f.accounts.is_empty() || f.accounts.contains(&c.account_id))
-                    && words[i].contains(&q)
-            };
-            order.iter().filter(hit).take(13).map(|&i| &st.chats[i]).collect()
+        let selected = self.pane().selected_chat_id.as_deref();
+        let blank = room.is_none() && q.is_empty() && !filtered;
+        // Desktop's `results` without a query or filters: the recent chats but the open one.
+        let recent: Vec<&Chat> = match (blank, st.recent_chat_ids.is_empty()) {
+            (false, _) => Vec::new(),
+            (true, false) => st.recent_chat_ids.iter().filter_map(|id| st.find_chat(id)).collect(),
+            (true, true) => self.chat_words(&st).0.iter().map(|&i| &st.chats[i]).collect(),
         };
-        if q.is_empty() && chats.len() > 1 {
-            chats.retain(|c| self.pane().selected_chat_id.as_deref() != Some(c.id.as_str()));
+        let mut recent: Vec<&Chat> = recent.into_iter().filter(|c| c.flags & CHAT_HIDDEN == 0).collect();
+        if recent.len() > 1 {
+            recent.retain(|c| selected != Some(c.id.as_str()));
         }
-        let has_more = chats.len() > 5;
-        let limit = if self.search_expanded { 12 } else { 5 };
-        let cat = row![
-            txt(if q.is_empty() { tr("Recent chats") } else { tr("Chats") }, 12.0).color(p.sub),
-            Space::new().width(Fill)
-        ]
-        .push(has_more.then(|| {
-            button(semi(if self.search_expanded { tr("Show less") } else { tr("Show more") }, 11.0).color(p.accent))
-                .padding(0)
-                .style(ghost(p, 4.0))
-                .on_press(UiMessage::CommandBar(commands::Msg::ToggleSearchExpanded))
-        }))
-        .align_y(Center)
-        .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0));
-        let hits = self.search_hits(&st, &q);
-        let found: Vec<&Message> = hits.0.iter().collect();
-        let media: Vec<&Message> = hits.1.iter().collect();
-        let none =
-            found.is_empty() && chats.is_empty() && media.is_empty() && (q.chars().count() > 1 || !f.media.is_empty());
-        let heading = |label: &'static str| {
-            container(txt(label, 12.0).color(p.sub)).padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
+        let expanded = |s: &str| self.search_expanded.contains(s);
+        // Desktop's `X5` with the `J5` limits: the rows that a section shows, and whether it has more.
+        let rows = |s: &str, n: usize| {
+            let (collapsed, open) = if s == "Bookmarks" { (3, 100) } else { (5, 12) };
+            (if expanded(s) { open } else { collapsed }, n > collapsed)
+        };
+        let last = self.last_archived.borrow().clone().filter(|_| blank);
+        let archived: Vec<&Chat> = last
+            .and_then(|id| st.find_chat(&id))
+            .filter(|c| {
+                let recents = recent.iter().take(rows("Recent chats", recent.len()).0);
+                c.flags & CHAT_HIDDEN == 0
+                    && selected != Some(c.id.as_str())
+                    && !recents.into_iter().any(|r| r.id == c.id)
+            })
+            .into_iter()
+            .collect();
+        let hits = self.search_hits(&st, raw);
+        let chats: Vec<&Chat> = hits.chats.iter().map(|&i| &st.chats[i]).collect();
+        let in_groups: Vec<&Chat> = hits.in_groups.iter().map(|&i| &st.chats[i]).collect();
+        let (bookmarks, media, found) = (&hits.bookmarks, &hits.media, &hits.messages);
+        let any = [&recent, &archived, &chats, &in_groups].iter().any(|l| !l.is_empty())
+            || !(bookmarks.is_empty() && media.is_empty() && found.is_empty());
+        let none = !any && (raw.chars().count() > 1 || !f.media.is_empty());
+        let heading = |label: &'static str, action: Option<(&'static str, commands::Msg)>| {
+            let title = match label {
+                "Chats" | "Messages" | "Media" => trx(label, "command bar category"),
+                _ => tr(label),
+            };
+            row![txt(title, 12.0).color(p.sub), Space::new().width(Fill)]
+                .push(action.map(|(text, msg)| {
+                    button(semi(text, 11.0).color(p.accent))
+                        .padding(0)
+                        .style(ghost(p, 4.0))
+                        .on_press(UiMessage::CommandBar(msg))
+                }))
+                .align_y(Center)
+                .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
+        };
+        let more = |s: &'static str, more: bool| {
+            let label = if expanded(s) { tr("Show less") } else { tr("Show more") };
+            more.then_some((label, commands::Msg::ToggleSearchExpanded(s)))
         };
         let h24 = st.settings.pref("timeFormat") == 1;
         let needle = q.to_ascii_lowercase();
-        let messages =
-            found.iter().fold(Column::new().push((!found.is_empty()).then(|| heading(tr("Messages")))), |col, m| {
-                let c = st.chat(&m.chat_id);
-                let mine = m.is_sender == Some(true);
-                let label = match (c.chat_type == "group", mine) {
-                    (false, _) => c.title.clone(),
-                    (true, true) => format!("{} • {}", c.title, chat_network(c)),
-                    (true, false) => {
-                        format!("{} in {} • {}", sender_label(c, m), c.title, chat_network(c))
-                    }
-                };
-                let head = row![
-                    txt(label, 11.0).line_height(Pixels(7.0)).color(p.text),
-                    Space::new().width(Fill),
-                    txt(list_ts(&m.timestamp, h24), 11.0).line_height(Pixels(7.0)).color(p.text)
-                ];
-                let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.received, p.strong) };
-                let body = clamped(m.text.as_deref().expect("text message"), 554.0, 3, 13.0, Weight::Normal);
-                let lower = body.to_ascii_lowercase();
-                let (mut spans, mut at): (Vec<iced::widget::text::Span<()>>, _) = (Vec::new(), 0);
-                for (k, hit) in lower.match_indices(&needle) {
-                    spans.push(span(body[at..k].to_string()).size(13.0).color(fg));
-                    let mark = span(body[k..k + hit.len()].to_string()).size(13.0);
-                    spans.push(mark.color(hex(0x202124)).background(hex(0xf6ce46)));
-                    at = k + hit.len();
+        // Desktop's `SelectMessageCommand`.
+        let message = |m: &Message| -> El<'_> {
+            let c = st.chat(&m.chat_id);
+            let mine = m.is_sender == Some(true);
+            let label = match (c.chat_type == "group", mine) {
+                (false, _) => c.title.clone(),
+                (true, true) => format!("{} • {}", c.title, chat_network(c)),
+                (true, false) => {
+                    format!("{} in {} • {}", sender_label(c, m), c.title, chat_network(c))
                 }
-                spans.push(span(body[at..].to_string()).size(13.0).color(fg));
-                let bubble = rich_text(spans)
-                    .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
-                let bubble = container(container(bubble).padding([8, 11]).style(fill_box(bg, 17.0)))
-                    .width(Fill)
-                    .align_x(if mine { Right } else { iced::Left });
-                col.push(
-                    button(column![head, bubble].spacing(6))
-                        .padding([4, 13])
-                        .width(Fill)
-                        .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
-                        .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone()))),
-                )
-            });
+            };
+            let head = row![
+                txt(label, 11.0).line_height(Pixels(7.0)).color(p.text),
+                Space::new().width(Fill),
+                txt(list_ts(&m.timestamp, h24), 11.0).line_height(Pixels(7.0)).color(p.text)
+            ];
+            let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.received, p.strong) };
+            let body = clamped(m.text.as_deref().expect("text message"), 554.0, 3, 13.0, Weight::Normal);
+            let lower = body.to_ascii_lowercase();
+            let (mut spans, mut at): (Vec<iced::widget::text::Span<()>>, _) = (Vec::new(), 0);
+            for (k, hit) in lower.match_indices(&needle) {
+                spans.push(span(body[at..k].to_string()).size(13.0).color(fg));
+                let mark = span(body[k..k + hit.len()].to_string()).size(13.0);
+                spans.push(mark.color(hex(0x202124)).background(hex(0xf6ce46)));
+                at = k + hit.len();
+            }
+            spans.push(span(body[at..].to_string()).size(13.0).color(fg));
+            let bubble = rich_text(spans)
+                .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
+            let bubble = container(container(bubble).padding([8, 11]).style(fill_box(bg, 17.0)))
+                .width(Fill)
+                .align_x(if mine { Right } else { iced::Left });
+            button(column![head, bubble].spacing(6))
+                .padding([4, 13])
+                .width(Fill)
+                .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
+                .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone())))
+                .into()
+        };
         let tiles = media.iter().map(|m| -> El<'_> {
             let c = st.chat(&m.chat_id);
             let card = |title: String, sub: El<'static>| -> El<'static> {
@@ -364,17 +379,44 @@ impl BeeperGuiApp {
         while tiles.peek().is_some() {
             grid = grid.push(Row::with_children(tiles.by_ref().take(5)).spacing(6.5));
         }
-        let media_grid = (!media.is_empty()).then(|| column![heading(tr("Media")), grid]);
+        let media_grid = (!media.is_empty()).then(|| column![heading("Media", None), grid]);
+        let partial = || {
+            let label = if self.search_partial { tr("Hide partial matches") } else { tr("Show partial matches") };
+            Some((label, commands::Msg::TogglePartialMatches))
+        };
+        // Desktop's `Eqt`, with "Show partial matches" while they are hidden.
         let empty = none.then(|| {
-            let desc = "Only messages loaded in Beeper can be searched.\nFor more results, scroll through older conversations.";
+            let desc = format!(
+                "{}\n{}",
+                tr("Only messages loaded in Beeper can be searched."),
+                tr("For more results, scroll through older conversations.")
+            );
+            let show = (!self.search_partial).then(|| {
+                button(semi(tr("Show partial matches"), 13.0).color(p.accent))
+                    .padding(0)
+                    .style(ghost(p, 4.0))
+                    .on_press(UiMessage::CommandBar(commands::Msg::TogglePartialMatches))
+            });
             column![
                 container(semi(tr("No messages matching those terms"), 16.0).color(p.strong)).center(Fill),
                 txt(desc, 13.0).color(p.strong).align_x(Center).width(Fill),
             ]
+            .push(show.map(|b| container(b).center_x(Fill)))
             .padding(Padding::new(0.0).left(44.0).right(44.0).bottom(64.0))
         });
-        let cat = (!chats.is_empty()).then_some(cat);
-        let hits = chats.into_iter().take(limit).enumerate().fold(Column::new().push(cat), |col, (i, c)| {
+        // Desktop's `Jqt`: the Messages heading stays without messages while partial matches are hidden.
+        let messages = (!found.is_empty() || (!raw.is_empty() && any && !self.search_partial))
+            .then(|| column![heading("Messages", partial())].extend(found.iter().map(&message)));
+        let (marked, more_marked) = rows("Bookmarks", bookmarks.len());
+        let bookmarks = (!bookmarks.is_empty()).then(|| {
+            let rows = bookmarks.iter().take(marked).map(&message);
+            column![heading("Bookmarks", more("Bookmarks", more_marked))].extend(rows)
+        });
+        // Desktop's `Jqt` order of the chat sections, before the bookmarks, the media and the messages.
+        let sections =
+            [("Recent chats", &recent), ("Last archived", &archived), ("Chats", &chats), ("In Groups", &in_groups)];
+        let lead = sections.iter().find(|s| !s.1.is_empty()).map(|s| s.0);
+        let chat = |label: &'static str, i: usize, c: &Chat| -> El<'_> {
             let sub = chat_search_subtitle(c);
             let title = row![
                 ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
@@ -390,24 +432,37 @@ impl BeeperGuiApp {
             ]
             .spacing(8)
             .align_y(Center);
-            let bg = if i == 0 { p.chip } else { CLEAR };
-            col.push(
-                container(
-                    mouse_area(
-                        button(line)
-                            .height(36)
-                            .padding([0, 6])
-                            .width(Fill)
-                            .style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0))
-                            .on_press(UiMessage::CommandBar(commands::Msg::ExecuteChat(c.id.clone()))),
-                    )
-                    .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone()))),
+            // Desktop highlights the first result.
+            let bg = if lead == Some(label) && i == 0 { p.chip } else { CLEAR };
+            container(
+                mouse_area(
+                    button(line)
+                        .height(36)
+                        .padding([0, 6])
+                        .width(Fill)
+                        .style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0))
+                        .on_press(UiMessage::CommandBar(commands::Msg::ExecuteChat(c.id.clone()))),
                 )
-                .padding([0, 6]),
+                .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone()))),
             )
+            .padding([0, 6])
+            .into()
+        };
+        let results = sections.into_iter().filter(|s| !s.1.is_empty()).fold(Column::new(), |col, (label, list)| {
+            let (n, has_more) = match label {
+                "Last archived" => (1, false),
+                _ => rows(label, list.len()),
+            };
+            let col = col.push(heading(label, more(label, has_more)));
+            col.extend(list.iter().take(n).enumerate().map(|(i, c)| chat(label, i, c)))
         });
-        frame(column![inputs].push(hint).push(chips).push(empty).push((!none).then(|| {
-            scrollable(hits.push(media_grid).push(messages)).direction(bar()).height(Fill).style(scroll_style(p.scroll))
-        })))
+        let results = results.push(bookmarks).push(media_grid).push(messages);
+        frame(
+            column![inputs]
+                .push(hint)
+                .push(chips)
+                .push(empty)
+                .push((!none).then(|| scrollable(results).direction(bar()).height(Fill).style(scroll_style(p.scroll)))),
+        )
     }
 }

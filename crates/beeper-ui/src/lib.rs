@@ -144,6 +144,7 @@ use beeper_core::matrix::{DeviceInfo, Mention, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind};
 use beeper_core::prefs;
+use beeper_core::search::{self, Search};
 use beeper_core::store::{BeeperStore, NetworkSpace, Query, SharedStore, NOTE_CHAT_ID};
 use iced::font::Weight;
 use iced::gradient::Linear;
@@ -1783,48 +1784,22 @@ impl SearchFilters {
         }
     }
 
-    fn keeps(&self, st: &BeeperStore, room: Option<&str>, m: &Message) -> bool {
-        let group = || st.chat(&m.chat_id).chat_type == "group";
-        let at = || millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp");
-        m.is_deleted != Some(true)
-            && room.is_none_or(|r| m.chat_id == r)
-            && (self.accounts.is_empty() || self.accounts.contains(&m.account_id))
-            && self.sent.is_none_or(|s| (m.is_sender == Some(true)) == s)
-            && self.group.is_none_or(|g| group() == g)
-            && self.period.is_none_or(|_| {
-                let (after, before) = self.window();
-                (after..before).contains(&at())
-            })
-            && (self.media.is_empty() || self.media.iter().any(|&k| has_media(m, k)))
-    }
-
-    /// The `[after, before)` window of message times in Unix milliseconds.
-    fn window(&self) -> (i64, i64) {
-        const DAY: i64 = 86_400_000;
-        let now = now_unix_millis();
-        let today = now - local_millis(now).rem_euclid(DAY);
-        match self.period {
-            None => (i64::MIN, i64::MAX),
-            Some(0) => (now - 3_600_000, i64::MAX),
-            Some(1) => (today, i64::MAX),
-            Some(2) => (today - DAY, today),
-            Some(3) => (now - 7 * DAY, i64::MAX),
-            Some(4) => (now - 30 * DAY, i64::MAX),
-            Some(5) => (now - 365 * DAY, i64::MAX),
-            Some(i) => unreachable!("time period {i}"),
+    /// Desktop's `UY` without the text: the search operators of the filters and of the searched chat `room`.
+    fn operators(&self, room: Option<&str>) -> String {
+        let mut ops: Vec<String> = match self.media.len() {
+            5 => vec!["has:attachment".into()],
+            _ => (0..5).filter(|k| self.media.contains(k)).map(|k| format!("has:{}", search::HAS[k].0)).collect(),
+        };
+        ops.extend(self.sent.map(|me| if me { "from:me" } else { "from:others" }.to_string()));
+        ops.extend(self.group.map(|g| if g { "in:group" } else { "in:dm" }.to_string()));
+        ops.extend(room.map(|r| format!("in:{r}")));
+        ops.extend(self.accounts.iter().map(|a| format!("network:{a}")));
+        match self.period.map(|i| search::DATES[i]) {
+            Some("yesterday") => ops.extend(["before:today".into(), "after:yesterday".into()]),
+            Some(key) => ops.push(format!("after:{key}")),
+            None => {}
         }
-    }
-}
-
-fn has_media(m: &Message, kind: usize) -> bool {
-    let typed = |t: &str| m.attachments.iter().any(|a| a.attachment_type == t);
-    match kind {
-        0 => typed("img"),
-        1 => typed("video"),
-        2 => typed("audio"),
-        3 => !m.links.is_empty() || m.text.as_deref().is_some_and(|t| t.contains("http://") || t.contains("https://")),
-        4 => typed("unknown"),
-        _ => unreachable!("media kind {kind}"),
+        ops.join(" ")
     }
 }
 
@@ -2424,11 +2399,21 @@ struct Memo {
     threads: std::cell::RefCell<Option<Threads>>,
 }
 
-/// The query, the filters and the room of a command bar search.
-type HitsKey = (String, SearchFilters, Option<String>);
+/// The query, the filters, the room and the partial matches of a command bar search.
+type HitsKey = (String, SearchFilters, Option<String>, bool);
 
-/// The text and the media messages that a command bar search finds.
-type Hits = Rc<(Vec<Message>, Vec<Message>)>;
+/// What a command bar search finds in Desktop's sections: the chats by title and by member as indices of `chats`,
+/// and the bookmarks, the media and the text messages, newest first.
+#[derive(Default)]
+struct Found {
+    chats: Vec<usize>,
+    in_groups: Vec<usize>,
+    bookmarks: Vec<Message>,
+    media: Vec<Message>,
+    messages: Vec<Message>,
+}
+
+type Hits = Rc<Found>;
 
 /// All chats newest first, as indices of `chats`, and the lowercase title and search subtitle of each chat.
 type Words = (Rc<[usize]>, Rc<[String]>);
@@ -2525,7 +2510,12 @@ pub struct BeeperGuiApp {
     pub cmd_no_reply: bool,
     /// The highlighted command.
     pub cmd_index: usize,
-    pub search_expanded: bool,
+    /// Desktop's `expandedCategories`: the search sections that show more.
+    pub search_expanded: HashSet<&'static str>,
+    /// Desktop's `partialMatchesEnabled` of the message search.
+    pub search_partial: bool,
+    /// Desktop's `lastArchivedThread`: the chat that was archived or unarchived last.
+    last_archived: std::cell::RefCell<Option<String>>,
     pub creating_chat: Option<u32>,
     pub new_chats: Vec<NewChat>,
     chat_list: vlist::VList,
@@ -2789,7 +2779,9 @@ impl BeeperGuiApp {
             cmd_submenu: None,
             cmd_no_reply: true,
             cmd_index: 0,
-            search_expanded: false,
+            search_expanded: HashSet::new(),
+            search_partial: true,
+            last_archived: Default::default(),
             creating_chat: None,
             new_chats: Vec::new(),
             chat_list: vlist::VList::default(),
@@ -5078,46 +5070,83 @@ impl BeeperGuiApp {
         message_menu.or(edit_menu).or(react).or(gallery)
     }
 
-    /// The command bar finds: the 20 newest text messages, and the 50 newest messages for the media grid. The memo
-    /// keeps them for the query, the filters and the room until the store changes, so that only a key or a change of
-    /// the store searches again.
-    fn search_hits(&self, st: &BeeperStore, q: &str) -> Hits {
+    /// Desktop's `searchStore.results` for the trimmed query `raw`: the chats by title and the chats by member, 13 at
+    /// most to tell that there are more than 12; the 100 newest bookmarks and the 20 newest text messages; and the
+    /// media, the 50 newest of the media filter or else the 10 newest images and videos. The query and the filters
+    /// search with Desktop's operators. The memo keeps the finds for the query, the filters, the room and the
+    /// partial matches until the store changes, so that only a key or a change of the store searches again.
+    fn search_hits(&self, st: &BeeperStore, raw: &str) -> Hits {
         let (f, room) = (&self.search_filters, self.search_room.as_deref());
-        let key = (q.to_string(), f.clone(), self.search_room.clone());
+        let key = (raw.to_string(), f.clone(), self.search_room.clone(), self.search_partial);
         // A period filter moves with the clock, so its finds stay only for one view.
         let memo = self.memo().filter(|_| f.period.is_none());
         if let Some((_, hits)) = memo.and_then(|m| m.hits.borrow().clone()).filter(|(k, _)| *k == key) {
             return hits;
         }
-        let words = q.chars().count() > 1 && !q.trim().is_empty();
+        let q = raw.to_lowercase();
+        let (order, words) = self.chat_words(st);
+        let low = |i: usize| st.chats[i].flags & CHAT_LOW_PRIORITY != 0;
+        let shown = |i: &usize| {
+            let c = &st.chats[*i];
+            c.flags & CHAT_HIDDEN == 0 && (f.accounts.is_empty() || f.accounts.contains(&c.account_id))
+        };
+        // Desktop's `sortResults`: a chat that matches by its network only comes last, then a low priority chat.
+        let mut titled: Vec<usize> = match q.is_empty() {
+            true => Vec::new(),
+            false => order.iter().copied().filter(shown).filter(|&i| words[i].contains(&q)).collect(),
+        };
+        titled.sort_by_key(|&i| (!words[i].split('\0').next().is_some_and(|t| t.contains(&q)), low(i)));
+        let chats_shown = !q.is_empty() && room.is_none() && f.media.is_empty();
+        let people = |i: &usize| chats_shown && shown(i) && search::participants_match(&st.chats[*i], raw);
+        let mut in_groups: Vec<usize> = order.iter().copied().filter(people).collect();
+        in_groups.sort_by_key(|&i| low(i));
+        // Desktop's `hasTextSearchQuery`.
+        let text_query = raw.chars().count() > 1;
+        let now = now_unix_millis();
+        let ops = format!("{} {}", if text_query { raw } else { "" }, f.operators(room));
+        let (opts, typed) = Search::parse(&ops, now);
+        let query = |s: &Search, text: &str| match text.trim().is_empty() {
+            true => s.query(st),
+            false => s.query(st).phrase(text, self.search_partial),
+        };
         let newest = |query: Query, n: usize, keep: &dyn Fn(&Message) -> bool| {
             let mut found = Vec::new();
             st.scan(&query, |m| {
-                if keep(&m) && f.keeps(st, room, &m) {
+                if m.is_deleted != Some(true) && keep(&m) {
                     found.push(m);
                 }
                 found.len() < n
             });
             found
         };
-        let found = match words && f.media.is_empty() {
-            true => newest(Query::default().text(q), 20, &|m| m.text.as_deref().is_some_and(|t| !t.is_empty())),
-            false => Vec::new(),
+        let text = |m: &Message| m.text.as_deref().is_some_and(|t| !t.is_empty());
+        let (bookmarks, messages) = match text_query && f.media.is_empty() {
+            true => (newest(query(&opts, &typed).bookmarked(), 100, &text), newest(query(&opts, &typed), 20, &text)),
+            false => Default::default(),
         };
-        let media = match f.media.is_empty() {
-            true => Vec::new(),
-            false => {
-                let text: Option<HashSet<String>> = words.then(|| {
-                    let all = newest(Query::default().media().text(q), usize::MAX, &|_| true);
-                    all.into_iter().map(|m| m.id).collect()
-                });
-                let titled: Vec<bool> = st.chats.iter().map(|c| c.title.to_lowercase().contains(q)).collect();
-                let hit =
-                    |m: &Message| text.as_ref().is_none_or(|t| t.contains(&m.id) || titled[st.chat_idx(&m.chat_id)]);
-                newest(Query::default().media(), 50, &hit)
+        let media = match (f.media.is_empty(), text_query) {
+            (true, false) => Vec::new(),
+            (true, true) => {
+                let (s, typed) = Search::parse(&format!("has:image has:video {ops}"), now);
+                newest(query(&s, &typed), 10, &|_| true)
+            }
+            (false, _) => {
+                let mut all = newest(query(&opts, &typed), 50, &|_| true);
+                // Desktop's `matchedMediaRoomIDs`: the media of up to 20 chats whose titles match too.
+                if text_query && room.is_none() && (1..=20).contains(&titled.len()) {
+                    let mut s = Search::parse(&f.operators(None), now).0;
+                    s.chats = titled.iter().map(|&i| st.chats[i].id.clone()).collect();
+                    let ids: HashSet<String> = all.iter().map(|m| m.id.clone()).collect();
+                    all.extend(newest(s.query(st), 50, &|m| !ids.contains(&m.id)));
+                    all.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
+                    all.truncate(50);
+                }
+                all
             }
         };
-        let hits = Rc::new((found, media));
+        let chats = if chats_shown { titled.into_iter().take(13).collect() } else { Vec::new() };
+        in_groups.truncate(13);
+        let hits = Rc::new(Found { chats, in_groups, bookmarks, media, messages });
         if let Some(m) = memo {
             *m.hits.borrow_mut() = Some((key, hits.clone()));
         }
@@ -5521,7 +5550,11 @@ impl BeeperGuiApp {
         if on && (!st.feature("archive-as-unread").on || st.settings.on("markReadOnArchive")) {
             self.mark_read(st, idx);
         }
-        st.set_chat_flag(idx, ChatFlag::Archived, Some(on))
+        let moved = st.set_chat_flag(idx, ChatFlag::Archived, Some(on));
+        if moved {
+            self.last_archived.replace(Some(st.chats[idx].id.clone()));
+        }
+        moved
     }
 
     /// The chat IDs in list order: the pinned tiles, then the rows.
