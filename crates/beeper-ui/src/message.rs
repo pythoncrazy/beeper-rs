@@ -420,7 +420,7 @@ impl BeeperGuiApp {
             privately
                 .then(|| vec![item(tr("Reply Privately…").into(), "", Some(UiMessage::ReplyPrivately(mid.clone())))]),
             Some(vec![
-                item(tr("React…").into(), "", (rules.react && live).then(|| UiMessage::React(mid.clone()))),
+                item(tr("React…").into(), "", (rules.react && m.reactable()).then(|| UiMessage::React(mid.clone()))),
                 item(bookmark.into(), "", Some(UiMessage::ToggleBookmark(mid.clone()))),
             ]),
             (m.is_unread == Some(true)).then(|| {
@@ -1194,7 +1194,10 @@ impl BeeperGuiApp {
         // Desktop's `hasAttachedMedia`: a message with media names its sender above the bubble, a text bubble inside.
         let media = !m.attachments.is_empty()
             || m.links.iter().any(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some());
+        // Desktop's `CallActionMessage` takes the place of the text of a call.
+        let call = m.call.as_ref().filter(|_| m.is_deleted != Some(true));
         let text_bubble = m.is_deleted != Some(true)
+            && call.is_none()
             && m.message_type.as_deref() != Some("HIDDEN")
             && !jumbo(&text)
             && (utd || (!text.is_empty() && poll.is_none() && m.message_type.as_deref() != Some("VOICE")));
@@ -1345,6 +1348,13 @@ impl BeeperGuiApp {
                 row![self.tip(head.into(), why, vec![], tooltip::Position::Top), body].spacing(5.2).align_y(Center);
             let section = container(row.padding(Padding::ZERO.right(6.5))).clip(true);
             parts = parts.push(section.style(bordered_box(CLEAR, p.chip, 2.0, 4.0)));
+        } else if let Some(call) = call {
+            // A 2 px `secondary-container` outline with a 17 px radius, `8px 11px` inside it, and an 8 px gap.
+            let tag = if call.is_video() { crate::VIDEO_TAG } else { crate::CALL_TAG };
+            let line =
+                row![tinted(crate::tag_glyph(tag), 16.0, p.strong), txt(crate::call_label(call), 13.0).color(p.strong)];
+            let pill = container(line.spacing(8).align_y(Center)).padding([9, 13]);
+            parts = parts.push(pill.style(bordered_box(CLEAR, p.chip, 2.0, 17.0)));
         } else if jumbo(&text) {
             parts = parts.push(container(txt(text.clone(), 48.0)).padding([0, 12]));
         } else if utd {
@@ -1665,7 +1675,7 @@ impl BeeperGuiApp {
                 let b = button(glyph).padding(0).style(style).on_press(UiMessage::ShowThread(m.id.clone()));
                 self.tip(b.into(), tr("Reply in thread"), vec![], tooltip::Position::Top).into()
             });
-            let react = (chat.messages.react && live).then(|| {
+            let react = (chat.messages.react && m.reactable()).then(|| {
                 mouse_area(b(icon::SMILE, UiMessage::React(m.id.clone())))
                     .on_enter(UiMessage::ShowQuickReactions)
                     .into()

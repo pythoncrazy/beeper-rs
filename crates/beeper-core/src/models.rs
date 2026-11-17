@@ -1269,8 +1269,40 @@ pub struct Message {
     /// Desktop's `sendStatus`: the last `com.beeper.message_send_status` of the bridge for the message.
     #[serde(rename = "sendStatus", default, skip_serializing_if = "Option::is_none")]
     pub send_status: Option<SendStatus>,
+    /// Desktop's `extra.callAction`: a call that the bridge reported, which shows as a call pill instead of its text.
+    #[serde(rename = "callAction", default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<CallAction>,
     #[serde(skip)]
     pub flags: u16,
+}
+
+/// The `com.beeper.action_message` of a call, as Desktop's `callAction` keeps it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallAction {
+    /// `voice` or `video`, when the network tells it.
+    #[serde(rename = "callType", default, skip_serializing_if = "Option::is_none")]
+    pub call_type: Option<String>,
+}
+
+impl CallAction {
+    /// Desktop's `com.beeper.action_message` rule: a call action of the content of an event.
+    pub fn of(content: &serde_json::Value) -> Option<Self> {
+        let action = &content["com.beeper.action_message"];
+        (action["type"] == "call").then(|| Self { call_type: action["call_type"].as_str().map(String::from) })
+    }
+
+    /// Desktop's `Yle`: the label of the call.
+    pub fn label(&self) -> &'static str {
+        match self.call_type.as_deref() {
+            Some("video") => "Video call",
+            Some("voice") => "Voice call",
+            _ => "Call",
+        }
+    }
+
+    pub fn is_video(&self) -> bool {
+        self.call_type.as_deref() == Some("video")
+    }
 }
 
 /// A `com.beeper.message_send_status` as Desktop's `handleMessageSendStatus` keeps it.
@@ -1336,6 +1368,11 @@ impl Message {
 
     pub fn edited(&self) -> bool {
         self.is_edited == Some(true) || !self.edit_history.is_empty()
+    }
+
+    /// Desktop's reaction gates: nobody reacts to a deleted message or to a call.
+    pub fn reactable(&self) -> bool {
+        self.is_deleted != Some(true) && self.call.is_none()
     }
 
     /// Desktop's `isThreadOnly` with `threads` on: a thread reply that only its thread shows.
