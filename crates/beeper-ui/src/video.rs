@@ -65,6 +65,8 @@ pub enum Place {
     Inline(usize),
     Carousel,
     Full,
+    /// Desktop's Picture in Picture window.
+    Pip,
 }
 
 /// Desktop's `video-progress-bar`: a 3 px white bar over a dim one, and a hidden slider that seeks.
@@ -115,8 +117,9 @@ pub struct Video {
     frame: Option<image::Handle>,
     pub rate: f32,
     pub muted: bool,
-    /// The frame size before the video filled the screen.
+    /// The frame size before the video filled the screen, and before it went to Picture in Picture.
     full: Option<(u32, u32)>,
+    inline: Option<(u32, u32)>,
     /// The "Playback Speed" submenu is open.
     pub sub: bool,
     /// The video could not load.
@@ -201,6 +204,30 @@ impl Video {
         self.at + self.since.map_or(0.0, |s| s.elapsed().as_secs_f32() * self.rate)
     }
 
+    /// Desktop's `openPipWindow`: the size of the Picture in Picture window, 400 px on the longer side.
+    pub(crate) fn pip_size(&self) -> (u32, u32) {
+        let k = self.size.0.max(1) as f32 / self.size.1.max(1) as f32;
+        match k >= 1.0 {
+            true => (400, (400.0 / k).round() as u32),
+            false => ((400.0 * k).round() as u32, 400),
+        }
+    }
+
+    /// Decode the frames for the Picture in Picture window, or back at the inline size.
+    pub(crate) fn set_pip(&mut self, on: bool) {
+        match on {
+            true => {
+                self.inline = Some(self.size);
+                self.resize(self.pip_size());
+            }
+            false => {
+                if let Some(size) = self.inline.take() {
+                    self.resize(size);
+                }
+            }
+        }
+    }
+
     /// Pause at the current position.
     pub fn pause(&mut self) {
         if self.since.is_some() {
@@ -272,6 +299,7 @@ impl BeeperGuiApp {
                     rate: 1.0,
                     muted: false,
                     full: None,
+                    inline: None,
                     sub: false,
                     failed: false,
                 });
@@ -476,11 +504,9 @@ impl BeeperGuiApp {
         let surface = mouse_area(surface).on_right_press(UiMessage::Message(message::Msg::OpenMenu(mid.into())));
         let on = |glyph: &svg::Handle, msg: UiMessage| -> El<'a> { self.video_button(v, glyph, msg) };
         let skips = self.video_skips(v);
-        let corners = row![
-            on(&GLYPHS[2], UiMessage::Message(message::Msg::OpenMenu(mid.into()))),
-            Space::new().width(Fill),
-            on(&GLYPHS[3], UiMessage::Video(Msg::Fullscreen))
-        ];
+        let corners =
+            row![on(&GLYPHS[2], UiMessage::Message(message::Msg::OpenMenu(mid.into()))), Space::new().width(Fill)]
+                .push((place != Place::Pip).then(|| on(&GLYPHS[3], UiMessage::Video(Msg::Fullscreen))));
         let progress = video_progress(v);
         let shade = Linear::new(iced::Radians(std::f32::consts::PI))
             .add_stop(0.0, Color::TRANSPARENT)
@@ -494,6 +520,14 @@ impl BeeperGuiApp {
                 ..Default::default()
             });
         hover(surface, column![container(corners).padding(8), Space::new().height(Fill), controls].width(w).height(h))
+    }
+
+    /// Desktop's `PictureInPictureBrowserWindow`: the video that went on when its chat closed, filling the window.
+    pub(crate) fn view_pip(&self) -> El<'_> {
+        let Some(v) = self.video.as_ref() else { return Space::new().into() };
+        let (w, h) = v.pip_size();
+        let video = self.view_video(&v.mid, &v.url, Space::new().into(), (w as f32, h as f32), Place::Pip);
+        container(video).center(Fill).style(fill_box(Color::BLACK, 0.0)).into()
     }
 
     /// The video that fills the screen, like Desktop's `screenfull` toggle on the `<video>`, if it is the video of the
@@ -575,5 +609,41 @@ impl BeeperGuiApp {
             column![Space::new().height(3.0 * MENU_ITEM), list.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))]
                 .into(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::windows;
+
+    /// Desktop's Picture in Picture: a playing video goes on in a window of 400 px on its longer side when its chat
+    /// closes, comes back inline when the chat opens again, and stops when the window closes.
+    #[test]
+    fn a_playing_video_goes_on_in_picture_in_picture_like_desktop() {
+        let mut app = crate::fuzz::demo_app("pip");
+        let chats: Vec<String> = app.visible_chats(&app.store.read()).iter().take(2).map(|c| c.id.clone()).collect();
+        let _ = app.update(UiMessage::SelectChat(chats[0].clone()));
+        let mid = {
+            let st = app.store.read();
+            st.timeline_indices(&chats[0]).last().map(|&i| st.messages[i].id.clone())
+        };
+        let (mid, url) = (mid.expect("a message"), "mxc://x/video".to_string());
+        let _ = app.update(UiMessage::Video(Msg::Play(mid.clone(), url.clone(), 320, 180)));
+        let path = std::env::temp_dir().join(format!("beeper-rs-pip-{}", std::process::id()));
+        let media = Arc::new(Media { path, secs: 10.0, sound: None });
+        let _ = app.update(UiMessage::Video(Msg::Loaded(url, Ok(media))));
+        assert_eq!(app.video.as_ref().map(Video::pip_size), Some((400, 225)));
+        let _ = app.update(UiMessage::SelectChat(chats[1].clone()));
+        let pip = app.pip.clone().expect("a Picture in Picture window");
+        assert!(app.video.as_ref().is_some_and(|v| v.playing() && v.size == (400, 225)), "the video goes on there");
+        let _ = app.update(UiMessage::SelectChat(chats[0].clone()));
+        assert!(app.pip.is_none(), "the window closes when the chat opens again");
+        assert!(app.video.as_ref().is_some_and(|v| v.size == (320, 180)), "and the video goes on inline");
+        let _ = app.update(UiMessage::SelectChat(chats[1].clone()));
+        let id = app.pip.clone().expect("Picture in Picture again").0;
+        assert_ne!(id, pip.0);
+        let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
+        assert!(app.pip.is_none() && app.video.is_none(), "closing the window stops the video");
     }
 }
