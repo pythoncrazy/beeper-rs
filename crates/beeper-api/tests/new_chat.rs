@@ -87,6 +87,7 @@ async fn server(name: &str, log: Arc<Mutex<Vec<String>>>) -> (u16, tokio::task::
         remote_name: None,
         remote_profile: None,
         remote_error: None,
+        remote_error_code: None,
     };
     store.write().bridge_accounts.push(whatsapp);
     store.write().rebuild_accounts_from_bridges();
