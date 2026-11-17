@@ -271,8 +271,8 @@ pub(crate) fn shown(st: &BeeperStore, r: &prefs::Pref) -> bool {
 }
 
 /// Desktop's `EmojiPickerButton` of a quick reaction in Settings, which opens the emoji picker for `slot`.
-fn emoji_button<'a>(p: &Palette, emoji: &str, slot: u8) -> El<'a> {
-    button(txt(emoji.to_string(), 16.0))
+fn emoji_button<'a>(p: &Palette, glyph: El<'a>, slot: u8) -> El<'a> {
+    button(glyph)
         .padding([4, 5])
         .style(bordered_btn([CLEAR; 3], [p.text; 3], p.chip, 1.0, 100.0))
         .on_press(UiMessage::QuickEmoji(Some(slot)))
@@ -2052,7 +2052,7 @@ impl BeeperGuiApp {
                 self.target(
                     self.settings_window,
                     "reaction-emoji",
-                    emoji_button(p, &s.quick_reaction, 0),
+                    emoji_button(p, self.quick_glyph(&s.quick_reaction), 0),
                     keys,
                     Look::Hidden,
                 )
@@ -2075,7 +2075,8 @@ impl BeeperGuiApp {
                         .bare(p.text)
                         .on_press(UiMessage::Settings(Msg::SetPref(customized.key, value)))
                 };
-                let emojis = s.quick_reactions.iter().zip(1..).map(|(e, slot)| emoji_button(p, e, slot));
+                let emojis =
+                    s.quick_reactions.iter().zip(1..).map(|(e, slot)| emoji_button(p, self.quick_glyph(e), slot));
                 let own = row![choice(trx("Custom", "quick reactions option"), custom, 1)].extend(emojis);
                 return column![choice(tr("Use my most frequent emoji"), !custom, 0), own.spacing(8).align_y(Center)]
                     .spacing(8)
