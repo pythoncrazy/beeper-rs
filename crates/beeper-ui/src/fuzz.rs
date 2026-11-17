@@ -5845,6 +5845,19 @@ fn deleting_selected_chats_like_desktop() {
     assert!(!gone(&app, &ids[2]) && !gone(&app, &ids[3]));
 }
 
+/// Desktop's thread header (`ij`) returns nothing in `threadSelectionMode`, which selecting chats turns on.
+#[test]
+fn selecting_chats_hides_the_thread_header_like_desktop() {
+    let mut app = demo_app("selection-header");
+    let ids: Vec<String> = app.visible_chats(&app.store.read()).iter().take(2).map(|c| c.id.clone()).collect();
+    let _ = app.update(UiMessage::SelectChat(ids[0].clone()));
+    let header = |app: &BeeperGuiApp| simulator(app.view_conversation()).find("Feedback?").is_ok();
+    assert!(header(&app), "the header of the open chat");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::BeginSelecting(ids[0].clone())));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleSelected(ids[1].clone())));
+    assert!(!header(&app), "no header while chats are selected");
+}
+
 #[test]
 fn blocked_users_like_desktop() {
     let mut app = demo_app("blocked-users");
