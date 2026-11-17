@@ -25,10 +25,10 @@ impl BeeperGuiApp {
     pub(crate) fn rail(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
             Msg::Select(acc) => {
-                self.chat_menu = None;
-                self.active_tab = InboxTab::AllChats;
-                self.selected_account_filter = acc;
-                self.space_view_account = None;
+                self.list.chat_menu = None;
+                self.list.active_tab = InboxTab::AllChats;
+                self.list.selected_account_filter = acc;
+                self.list.space_view_account = None;
                 self.leave_draft();
             }
             Msg::SetOrder(order) => {
@@ -69,7 +69,15 @@ impl BeeperGuiApp {
             }
             Msg::Press => {
                 let Some((id, grab)) = self.rail_hover.clone() else { return Task::none() };
-                self.rail_drag = Some(RailDrag { id, grab, from: None, at: Point::ORIGIN, order: None });
+                let last = self.rail_press.replace((id.clone(), std::time::Instant::now()));
+                let double =
+                    last.is_some_and(|(s, at)| s == id && at.elapsed() < std::time::Duration::from_millis(500));
+                self.rail_drag = Some(RailDrag { id: id.clone(), grab, from: None, at: Point::ORIGIN, order: None });
+                // Desktop's `onDoubleClick` of a rail space, besides Create Label and a label being made.
+                if double && ![LABEL_NUDGE, LABEL_DRAFT].contains(&id.as_str()) {
+                    self.rail_press = None;
+                    return self.update(UiMessage::Window(windows::Msg::OpenSpace(id)));
+                }
             }
             Msg::DragMoved(at) => {
                 let Some(d) = self.rail_drag.as_mut() else { return Task::none() };
@@ -78,7 +86,7 @@ impl BeeperGuiApp {
                     let st = self.store.read();
                     let draft = self.label_window.as_ref().filter(|w| w.label.is_none());
                     d.order = Some(draft.map_or_else(|| rail_spaces(&st), |w| draft_rail_spaces(&st, &w.name)));
-                    self.chat_menu = None;
+                    self.list.chat_menu = None;
                 }
             }
             Msg::DragEnd => {
@@ -137,6 +145,9 @@ pub(crate) fn draft_rail_spaces(st: &BeeperStore, name: &str) -> Vec<String> {
 
 /// The `chat_menu` key of the sidebar overflow menu.
 pub(crate) const RAIL_MORE: &str = "rail:more";
+
+/// The `chat_menu` key of Desktop's space bar background menu (`rfe` without a space).
+pub(crate) const RAIL_MENU: &str = "rail:menu";
 
 /// Where `account_menu` shows: on a sidebar space, in the Edit Spaces gear menu, or on the sidebar header.
 #[derive(Clone, Copy, PartialEq)]
@@ -243,8 +254,8 @@ impl BeeperGuiApp {
             let label = rail_label(&st, id);
             let owner = rail_owner(&st, id);
             let on = match view {
-                Some(v) => self.selected_account_filter.is_none() && v.1 == Some(self.active_tab),
-                None => self.selected_account_filter.as_ref() == Some(id),
+                Some(v) => self.list().selected_account_filter.is_none() && v.1 == Some(self.list().active_tab),
+                None => self.list().selected_account_filter.as_ref() == Some(id),
             };
             let glyph: El = match (view, label) {
                 (Some(v), _) if v.0 == "snoozed" => container(tinted(&MOON_STARS, 12.0, p.strong)).center(14).into(),
@@ -305,7 +316,7 @@ impl BeeperGuiApp {
         top.extend(hidden);
         top.push(menu_rule(p));
         let mut h = (top.len() - rules) as f32 * MENU_ITEM + rules as f32 * 11.0;
-        let entry = self.selected_account_filter.as_deref();
+        let entry = self.list().selected_account_filter.as_deref();
         let options = match entry.map(|e| (e, rail_label(&st, e))) {
             Some((_, Some(l))) => {
                 let items = self.label_items(l, 22.0);
@@ -370,7 +381,7 @@ impl BeeperGuiApp {
                 .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.strong; 3], 14.0))
                 .on_press_maybe(drag.is_none().then_some(msg))
         };
-        let quiet = self.chat_menu.is_some() || drag.is_some();
+        let quiet = self.list().chat_menu.is_some() || drag.is_some();
         let tip = |btn, label, keys| self.tip(btn, label, keys, tooltip::Position::Right);
         let hotkey = |n: usize| -> Vec<&'static str> {
             ["1", "2", "3", "4", "5", "6", "7", "8", "9"].get(n).map_or(vec![], |d| vec!["Ctrl", "Alt", d])
@@ -400,7 +411,7 @@ impl BeeperGuiApp {
         };
         let tab =
             |id: &'static str, key: usize, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
-                let on = self.active_tab == t && self.selected_account_filter.is_none();
+                let on = self.list().active_tab == t && self.list().selected_account_filter.is_none();
                 let btn =
                     badge(rail_btn(glyph, on, UiMessage::ChatList(chat_list::Msg::SelectTab(t))).into(), n, number);
                 let view = RAIL_VIEWS.iter().find(|v| v.1 == Some(t)).expect("a sidebar view").0;
@@ -421,7 +432,7 @@ impl BeeperGuiApp {
         let add_space =
             container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
         let account = |i: usize, acc: String| -> El<'_> {
-            let on = self.selected_account_filter.as_ref() == Some(&acc);
+            let on = self.list().selected_account_filter.as_ref() == Some(&acc);
             let space = network_space(&st, &acc);
             let owner = space.map_or(acc.as_str(), |n| &n.account_id);
             let label = rail_label(&st, &acc);
@@ -551,11 +562,11 @@ impl BeeperGuiApp {
             .on_press(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
         let footer = column![
             tip(rail_btn(g(icon::PHOTO_LIBRARY), false, media).into(), tr("Media"), vec![]),
+            // Desktop's "Add an account" opens the Add an Account window (`showAddAccountModal`).
             tip(
-                rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)))
-                    .into(),
+                rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::Networks(crate::networks::Msg::Open)).into(),
                 tr("Add an account"),
-                vec!["Ctrl", ","]
+                vec![]
             ),
             tip(me_btn.into(), tr("Settings"), vec!["Ctrl", ","]),
         ]
@@ -565,7 +576,7 @@ impl BeeperGuiApp {
         let scroll = scrollable(top).direction(Direction::Vertical(Scrollbar::hidden())).height(Fill);
         let rail = container(column![scroll, footer].align_x(Center)).width(68).height(Fill);
         let rail = mouse_area(rail.style(fill_box(p.hover, 0.0)))
-            .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu("account:inbox".into())));
+            .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(RAIL_MENU.into())));
         stack![rail].push(lifted).into()
     }
 }
@@ -627,6 +638,28 @@ pub enum SpacesEdit {
 }
 
 impl BeeperGuiApp {
+    /// Desktop's `rfe`: the menu of a custom space of the space bar, whose `open` item opens the space in a window,
+    /// and of the space bar itself, which has none.
+    pub(crate) fn rail_menu<'a>(&self, st: &BeeperStore, open: Option<El<'a>>) -> El<'a> {
+        let p = &self.pal;
+        let keys = |name| prefs::hotkey_label(st.settings.hotkey_keys(name));
+        let bar = if st.settings.on("showSidebar") { "Hide Space Bar" } else { "Show Space Bar" };
+        let accounts = UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts));
+        let general = UiMessage::Settings(settings::Msg::Open(SettingsTab::General));
+        let col = column![open]
+            .push(menu_item(p, None, tr("Add/Remove Accounts…").into(), keys("Settings"), Some(accounts)))
+            .push(menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)))
+            .push(menu_item(
+                p,
+                None,
+                tr(bar).into(),
+                keys("Toggle Space Bar"),
+                Some(UiMessage::RunHotkey("Toggle Space Bar")),
+            ))
+            .push(menu_item(p, None, tr("Settings").into(), keys("Settings"), Some(general)));
+        container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
+    }
+
     /// The menu of a sidebar space and its Show in Inbox submenu. The gear menu of the Edit Spaces window
     /// (`mYe` and `gYe`) has fewer items, and the sidebar header menu (`Ede` with `Ide` or `Ade`) has Select Chats.
     /// A label space has the label items (`kS`) instead.
@@ -647,41 +680,20 @@ impl BeeperGuiApp {
             let menu = container(column![select].padding([4, 0])).width(233);
             return (menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into(), None);
         }
+        // Desktop's `nj`: the space menus of the space bar open the space in a window.
+        let open = (kind == SpaceMenu::Rail).then(|| {
+            let msg = UiMessage::Window(windows::Msg::OpenSpace(entry.into()));
+            menu_item(p, None, tr("Open in New Window").into(), "", Some(msg))
+        });
         if RAIL_VIEWS.iter().any(|v| v.0 == entry) {
-            let keys = |name| prefs::hotkey_label(st.settings.hotkey_keys(name));
-            let bar = if st.settings.on("showSidebar") { "Hide Space Bar" } else { "Show Space Bar" };
-            let col = column![
-                menu_item(
-                    p,
-                    None,
-                    tr("Add/Remove Accounts…").into(),
-                    keys("Settings"),
-                    Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)))
-                ),
-                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
-                menu_item(
-                    p,
-                    None,
-                    tr(bar).into(),
-                    keys("Toggle Space Bar"),
-                    Some(UiMessage::RunHotkey("Toggle Space Bar"))
-                ),
-                menu_item(
-                    p,
-                    None,
-                    tr("Settings").into(),
-                    keys("Settings"),
-                    Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)))
-                ),
-            ];
-            let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-            return (menu.into(), None);
+            return (self.rail_menu(&st, open), None);
         }
         if let Some(l) = rail_label(&st, entry) {
             let item = |label: &str, msg| menu_item(p, None, label.into(), "", Some(msg));
             let tail = match kind {
                 SpaceMenu::Rail => vec![
                     menu_rule(p),
+                    open.expect("a space bar menu"),
                     item(tr("Edit Spaces…"), UiMessage::OpenEditSpaces),
                     item(tr("Add/Remove Accounts…"), UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
                 ],
@@ -760,15 +772,14 @@ impl BeeperGuiApp {
                 .push(nickname)
                 .push(menu_item(p, None, tr("Remove Account…").into(), "", Some(remove)))
             }
-            SpaceMenu::Rail => column![
-                mute,
-                menu_rule(p),
-                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
-            ]
-            .push(nickname)
-            .push(menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts)))
-            .push(menu_rule(p))
-            .push(menu_item(p, None, tr("Account Settings…").into(), "", Some(settings))),
+            SpaceMenu::Rail => column![mute]
+                .push(open)
+                .push(menu_rule(p))
+                .push(menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)))
+                .push(nickname)
+                .push(menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts)))
+                .push(menu_rule(p))
+                .push(menu_item(p, None, tr("Account Settings…").into(), "", Some(settings))),
         };
         // Desktop's Reconnect item (`App:89486`) of an account whose bridge asks for a new login.
         let again = reconnect(&st, account).filter(|_| kind != SpaceMenu::Gear);

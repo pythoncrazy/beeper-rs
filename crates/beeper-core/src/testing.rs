@@ -87,6 +87,16 @@ pub async fn stub_room_store(dir: &std::path::Path, url: &str) -> SharedStore {
     store
 }
 
+/// One sync of the store's Matrix client with the stub homeserver, which puts the joined rooms into the store like
+/// the sync loop.
+pub async fn sync_stub_rooms(store: &SharedStore) {
+    let client = store.read().matrix.clone().expect("a Matrix client");
+    client.sync_once(matrix_sdk::config::SyncSettings::default()).await.expect("sync with the stub homeserver");
+    for room in client.joined_rooms() {
+        crate::matrix::sync_room(store, &room, Vec::new()).await;
+    }
+}
+
 /// The stub homeserver of `stub_room_store`, whose room has the 70 messages of `stub_page`.
 pub async fn stub_homeserver() -> String {
     crate::bridge_stub::serve(|_, path, _| {

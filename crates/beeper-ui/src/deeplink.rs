@@ -251,15 +251,20 @@ impl BeeperGuiApp {
                 let window = match id {
                     "main" => None,
                     "prefs" => self.settings_window,
-                    _ => self.chat_windows.iter().find(|w| w.1.selected_chat_id.as_deref() == thread).map(|w| w.0),
+                    _ if let Some(space) = id.strip_prefix("space-") => {
+                        self.space_windows.iter().find(|w| w.1 == space).map(|w| w.0)
+                    }
+                    _ => self
+                        .chat_windows
+                        .iter()
+                        .find(|w| w.1.selected_chat_id.as_deref() == thread && !self.is_space_window(w.0))
+                        .map(|w| w.0),
                 };
                 return window.map_or_else(Task::none, window::gain_focus);
             }
             "connect" => return self.open_settings(SettingsTab::Integrations),
             "tips" if part(1) == Some("add-account") && parts.len() == 2 => {
-                let open = self.open_settings(SettingsTab::Accounts);
-                self.adding_account = true;
-                return open;
+                return self.update(UiMessage::Networks(crate::networks::Msg::Open));
             }
             _ => {}
         }
@@ -403,6 +408,6 @@ mod tests {
         assert_eq!(open(&mut app, "beeper://connect"), "");
         assert_eq!(app.active_settings_tab, SettingsTab::Integrations);
         let _ = open(&mut app, "beeper://tips/add-account");
-        assert!(app.active_settings_tab == SettingsTab::Accounts && app.adding_account);
+        assert!(app.networks.window.is_some(), "the link opens the Add an Account window");
     }
 }

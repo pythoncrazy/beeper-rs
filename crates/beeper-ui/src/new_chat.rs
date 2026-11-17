@@ -63,7 +63,7 @@ impl BeeperGuiApp {
     pub(crate) fn new_chat(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
             Msg::Open => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 let id = self.new_chats.iter().map(|d| d.id).max().map_or(0, |n| n + 1);
                 let draft = NewChat { id, users: Vec::new(), group: false, title: String::new(), photo: None };
                 self.new_chats.insert(0, draft);
@@ -151,7 +151,7 @@ impl BeeperGuiApp {
                     return Task::none();
                 };
                 let found = r.inspect_err(|e| eprintln!("resolve identifier failed: {e}")).ok().flatten();
-                nets[slot].1 = Some(found.map(|v| resolved_user(&v)));
+                nets[slot].1 = Some(found.map(|v| beeper_core::matrix::bridge_user(&v)));
             }
             Msg::PickUser(account, user) => {
                 let n = self.creating_chat.expect("an open draft");
@@ -196,8 +196,9 @@ impl BeeperGuiApp {
                 let Some((account, user)) = draft.users.first().cloned() else { return Task::none() };
                 if draft.group {
                     let asked = self.confirm.take_if(|d| *d == ASK_ROOM_ENCRYPTION).is_some();
-                    let matrix = self.matrix_bridge(&account);
-                    if matrix.is_some() && draft.users.len() > 1 && !asked {
+                    let bridge = self.bridge(&account);
+                    let matrix = matches!(bridge, beeper_core::matrix::ChatBridge::Matrix(_));
+                    if matrix && draft.users.len() > 1 && !asked {
                         self.confirm = Some(ASK_ROOM_ENCRYPTION);
                         return Task::none();
                     }
@@ -209,17 +210,12 @@ impl BeeperGuiApp {
                         draft.photo.as_ref().filter(|_| named).map(|(bytes, mime, _)| (bytes.clone(), mime.clone()));
                     self.status_banner = tr("Creating group chat...").into();
                     self.sticky_banner = Some(self.status_banner.clone());
-                    let (store, provision) = (self.store.clone(), self.provision(&account));
+                    let store = self.store.clone();
                     // Desktop's `createGroupThread`: an `unencrypted_group` when the Matrix step turned encryption
                     // off, then `setRoomAvatar`.
                     let kind = if asked && !self.group_encrypted { "unencrypted_group" } else { "group" };
                     let create = async move {
-                        let room = match matrix {
-                            Some(matrix) => {
-                                beeper_core::matrix::create_matrix_group(matrix, kind.into(), title, users).await?
-                            }
-                            None => beeper_core::matrix::create_group(provision, kind.into(), title, users).await?,
-                        };
+                        let room = bridge.create_group(kind.into(), title, users).await?;
                         if let Some((bytes, mime)) = photo {
                             beeper_core::matrix::set_room_avatar(store, room.clone(), bytes, mime).await?;
                         }
@@ -259,7 +255,7 @@ impl BeeperGuiApp {
                 // The second click of a double click on the close button hits the draft that the first click removed.
                 let Some(i) = self.new_chats.iter().position(|d| d.id == id) else { return Task::none() };
                 self.new_chats.remove(i);
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 if self.creating_chat != Some(id) {
                     return Task::none();
                 }
@@ -306,20 +302,6 @@ impl BeeperGuiApp {
 pub(crate) fn typed_phone(q: &str) -> bool {
     let digits = q.chars().filter(char::is_ascii_digit).count();
     (7..=15).contains(&digits) && q.chars().all(|c| c.is_ascii_digit() || " +-().".contains(c))
-}
-
-/// The user of a bridge `resolve_identifier` response, by its Matrix ID.
-pub(crate) fn resolved_user(v: &serde_json::Value) -> User {
-    let ids: Vec<&str> = v["identifiers"].as_array().into_iter().flatten().filter_map(|i| i.as_str()).collect();
-    let find = |scheme: &str| ids.iter().find_map(|i| i.strip_prefix(scheme)).map(str::to_string);
-    User {
-        id: v["mxid"].as_str().or(v["id"].as_str()).unwrap_or_default().into(),
-        full_name: v["name"].as_str().map(Into::into),
-        img_url: v["avatar_url"].as_str().map(Into::into),
-        phone_number: find("tel:"),
-        email: find("mailto:"),
-        ..Default::default()
-    }
 }
 
 /// Desktop's `SD`: a person once per bridge, by phone number, username, email or ID.

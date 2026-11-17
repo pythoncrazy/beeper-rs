@@ -194,7 +194,8 @@ impl BeeperGuiApp {
         let fg = p.on_secondary;
         let bg = if self.wallpaper_fg(st, chat, false).is_some() { p.card.scale_alpha(0.85) } else { p.card };
         let minute = |s: &Scheduled| s.send_on.div_euclid(60_000);
-        let list = |v: &[&Scheduled]| -> Vec<El<'a>> {
+        // Desktop's `gapBelow` of a scheduled message is 8 px.
+        let list = |v: &[&Scheduled]| -> El<'a> {
             let rows = v.iter().enumerate().map(|(i, s)| {
                 let first = i == 0 || (!s.canceled && minute(v[i - 1]) != minute(s));
                 let date = first.then(|| {
@@ -220,7 +221,7 @@ impl BeeperGuiApp {
                 });
                 column![].push(date).push(self.view_scheduled_bubble(st, s, bg)).into()
             });
-            rows.collect()
+            Column::with_children(rows).spacing(8).into()
         };
         let toggle = (collapsed || collapsible).then(|| {
             let n = pending.len();
@@ -240,8 +241,9 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::Scheduled(scheduled::Msg::Fold(!collapsed)));
             container(toggle).center_x(Fill).padding(Padding::ZERO.bottom(4.0))
         });
-        let shown = if collapsed { Vec::new() } else { list(&pending) };
-        let col = Column::with_children(list(&canceled)).push(toggle).extend(shown).spacing(2);
+        let shown = (!collapsed).then(|| list(&pending));
+        let canceled = (!canceled.is_empty()).then(|| list(&canceled));
+        let col = column![].push(canceled).push(toggle).push(shown).spacing(2);
         Some(col.padding(Padding::ZERO.top(6.0)).into())
     }
 

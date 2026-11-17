@@ -35,6 +35,7 @@ mod media_view;
 mod members;
 mod menubar;
 mod message;
+pub mod networks;
 pub mod new_chat;
 mod nickname;
 mod notify;
@@ -122,7 +123,7 @@ use integrations::TokenAsk;
 use labels::{label_fill, label_glyph, label_rows};
 use new_chat::{account_display_name, phone_digits, NewChat};
 use pins::{bubble_text, pin_bubble, PinDrag};
-use rail::{all_spaces, RailDrag, LABEL_NUDGE};
+use rail::{all_spaces, RailDrag, LABEL_NUDGE, RAIL_MENU};
 use rail::{
     in_rail_entry, network_space, rail_accounts, rail_label, rail_owner, rail_spaces, SpaceMenu, RAIL_MORE, RAIL_VIEWS,
 };
@@ -137,9 +138,9 @@ use vcard::VCard;
 use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZE};
 
 use crate::style::{
-    bar, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded, fill_box, fw,
-    glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style, pick_style, scroll_style, semi,
-    shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER, SOLID_BARS,
+    bar, bordered_box, bordered_btn, brand_gray, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded,
+    fill_box, fw, glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style, pick_style, scroll_style,
+    semi, shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER, SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -175,8 +176,9 @@ static AVATAR_SLOTS: Semaphore = Semaphore::const_new(8);
 
 pub type El<'a> = Element<'a, UiMessage>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum InboxTab {
+    #[default]
     AllChats,
     LowPriority,
     Archived,
@@ -374,6 +376,8 @@ pub enum UiMessage {
     Settings(settings::Msg),
     /// The chat accounts: Settings > Accounts, an account's settings and Show in Inbox, its removal, and its error banner.
     Accounts(accounts::Msg),
+    /// The networks of the Add an Account window and of the onboarding, and their accounts menu.
+    Networks(networks::Msg),
     ToggleRightPanel,
     ToggleDnd,
     /// Settings > Hotkeys: the hotkey switches, the shortcut recorder, and the Keyboard Shortcuts list.
@@ -716,6 +720,8 @@ fn inbox_label(label: &'static str) -> &'static str {
 }
 /// Desktop's `--chat-view-bubble-padding-x`, which also insets the message footer.
 const BUBBLE_PAD_X: f32 = 11.0;
+/// Desktop's `--chat-view-bubble-padding-y`.
+const BUBBLE_PAD_Y: f32 = 8.0;
 /// The widths of the Copy, Remind Me, Label and Snooze submenus of the chat menu.
 const SUB_MENU_W: [f32; 4] = [124.0, 257.0, 180.0, 257.0];
 
@@ -1499,6 +1505,8 @@ static FILE_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock::
     })
 });
 
+// Desktop's `download` icon, the Material `download`.
+svg_static!(MAT_DOWNLOAD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"/></svg>"##);
 svg_static!(MAT_FORWARD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"/></svg>"##);
 
 svg_static!(ZOOM_LEVEL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 15" fill="#000"><path d="M20.64 14.343C21.01 14.343 21.303 14.237 21.52 14.026C21.736 13.816 21.845 13.534 21.845 13.183C21.845 12.937 21.798 12.679 21.705 12.409L17.995 2.346C17.837 1.877 17.603 1.53 17.292 1.304C16.982 1.079 16.583 0.966 16.097 0.966C15.177 0.966 14.562 1.423 14.251 2.336L10.498 12.488C10.4122 12.7219 10.3675 12.9689 10.366 13.218C10.366 13.563 10.469 13.838 10.674 14.04C10.879 14.242 11.16 14.343 11.518 14.343C11.863 14.343 12.134 14.261 12.331 14.097C12.527 13.933 12.675 13.666 12.774 13.297L13.636 10.915H18.531L19.393 13.297C19.493 13.666 19.64 13.933 19.836 14.097C20.033 14.261 20.301 14.343 20.641 14.343H20.64ZM17.995 8.999H14.198L16.07 3.479H16.123L17.995 9V8.999ZM7.87 14.325C8.175 14.325 8.42 14.233 8.608 14.048C8.7018 13.9545 8.77527 13.8427 8.8238 13.7195C8.87232 13.5962 8.89486 13.4643 8.89 13.332C8.89 13.209 8.878 13.09 8.854 12.976C8.8266 12.8487 8.78846 12.7239 8.74 12.603L6.14 5.606C5.987 5.19 5.782 4.883 5.524 4.684C5.267 4.484 4.939 4.384 4.54 4.384C4.165 4.384 3.85 4.484 3.595 4.684C3.34 4.883 3.137 5.19 2.985 5.606L0.381 12.603C0.292023 12.8359 0.244637 13.0827 0.241 13.332C0.241 13.642 0.332 13.886 0.517 14.062C0.702 14.237 0.952 14.325 1.269 14.325C1.532 14.325 1.746 14.25 1.91 14.101C2.074 13.951 2.203 13.707 2.297 13.367L2.851 11.741H6.261L6.814 13.385C6.902 13.725 7.031 13.966 7.201 14.11C7.371 14.253 7.594 14.325 7.869 14.325H7.87ZM5.787 10.16H3.31L4.45 6.494H4.626L5.786 10.159L5.787 10.16Z"/></svg>"##);
@@ -2531,6 +2539,9 @@ pub struct BeeperGuiApp {
     pub pane: Pane,
     /// The chat windows and their panes.
     chat_windows: Vec<(window::Id, Pane)>,
+    /// The space windows by the rail space they show, with their chat lists. Each also has a pane in
+    /// `chat_windows`.
+    space_windows: Vec<(window::Id, String, chat_list::ListState)>,
     /// The chat window that `view` is drawing, so `pane` gives its pane.
     drawing: std::cell::Cell<Option<window::Id>>,
     /// `view` draws the thread pane of the drawn pane.
@@ -2559,11 +2570,8 @@ pub struct BeeperGuiApp {
     pub zoom: f32,
     zoom_drag: Option<f32>,
     pub pal: Palette,
-    pub active_tab: InboxTab,
-    pub selected_account_filter: Option<String>,
-    /// Desktop's `spaceViewAccountFilter`: the account or network space that the Archive, Low Priority or Requests
-    /// view shows the chats of, from its filter menu.
-    pub space_view_account: Option<String>,
+    /// The chat list of the main window, or of the space window whose messages `update` handles.
+    pub list: chat_list::ListState,
     /// The requests that the Requests view last marked as seen.
     seen_requests: Vec<String>,
     /// The Picture in Picture window and the message of its video, and a video that should go there.
@@ -2582,9 +2590,6 @@ pub struct BeeperGuiApp {
     dropping: bool,
     drop_send: bool,
     hotkeys_scrolled: bool,
-    pub show_filter_menu: bool,
-    /// The chat whose context menu is open, and where it opens in the window.
-    pub chat_menu: Option<(String, Point)>,
     /// Chats picked by Begin Selecting; selection mode is on while this is not empty.
     pub selection: Vec<String>,
     /// Desktop's chat selection mode from Select Chats, before the first chat is picked.
@@ -2605,7 +2610,6 @@ pub struct BeeperGuiApp {
     media_window: Option<MediaWindow>,
     /// On X11 the copied image stays available only while its clipboard lives.
     image_clipboard: Option<arboard::Clipboard>,
-    pub filters: u8,
     emoji_gen: u32,
     emoji_hovered: [bool; 2],
     booted: String,
@@ -2638,7 +2642,6 @@ pub struct BeeperGuiApp {
     last_archived: std::cell::RefCell<Option<String>>,
     pub creating_chat: Option<u32>,
     pub new_chats: Vec<NewChat>,
-    chat_list: vlist::VList,
     command_list: vlist::VList,
     memo: Memo,
     /// The room of a direct chat that the bridge made, to select when it syncs, and the quote for its composer.
@@ -2672,7 +2675,6 @@ pub struct BeeperGuiApp {
     /// The "Report spam" checkbox of the Block dialog.
     report_spam: bool,
     mods: keyboard::Modifiers,
-    reminder_menu: Option<Point>,
     /// Desktop's `TimeSuggestionsPreference`: the add input and the drag of its list.
     time_edit: time_suggestions::TimeEdit,
     audio: voice::Player,
@@ -2691,7 +2693,7 @@ pub struct BeeperGuiApp {
     settings_pick: Option<SettingsHit>,
     /// The pref that a search result opened, which flashes for 2 s.
     pref_flash: Option<(&'static str, std::time::Instant)>,
-    pub adding_account: bool,
+    pub networks: networks::Networks,
     /// "Get the app" in Settings > Devices shows the QR code.
     app_qr: bool,
     storage: StoragePage,
@@ -2747,6 +2749,8 @@ pub struct BeeperGuiApp {
     pub rail_hover: Option<(String, Point)>,
     pub user_hover: UserHover,
     pub rail_drag: Option<RailDrag>,
+    /// The rail space of the last press and when, for Desktop's double click that opens a space window.
+    rail_press: Option<(String, std::time::Instant)>,
     /// Desktop's header hover (`f` of `Amt`): the member list shows, and the generation of its 500 ms leave delay.
     pub header_hover: (bool, u32),
     /// Desktop's menu bar, which Alt shows: hidden (`None`), shown, or shown with the menu of an index open.
@@ -2817,6 +2821,10 @@ pub struct BeeperGuiApp {
     /// Desktop's `dismissError`: the accounts whose disconnected banner was dismissed this session.
     dismissed_errors: HashSet<String>,
     pub resolving_media: HashMap<String, bool>,
+    /// Desktop's `mediaDownloadStore`: the media URLs that a bridge loads only when the user asks (`needsDownload`),
+    /// and those whose interactive download runs (`fetching`).
+    pub(crate) needs_download: HashSet<String>,
+    pub(crate) fetching: HashSet<String>,
     video: Option<video::Video>,
     view_once: view_once::ViewOnce,
     started: std::time::Instant,
@@ -2866,6 +2874,7 @@ impl BeeperGuiApp {
         let mut app = Self {
             pane: Pane { size: MAIN_SIZE, ..Pane::default() },
             chat_windows: Vec::new(),
+            space_windows: Vec::new(),
             drawing: Default::default(),
             drawing_thread: Default::default(),
             thread_fraction: THREAD_FRACTION,
@@ -2884,9 +2893,7 @@ impl BeeperGuiApp {
             dark: theme,
             zoom: 1.0,
             zoom_drag: None,
-            active_tab: InboxTab::AllChats,
-            selected_account_filter: None,
-            space_view_account: None,
+            list: chat_list::ListState::default(),
             seen_requests: Vec::new(),
             pip: None,
             pip_wanted: false,
@@ -2899,8 +2906,6 @@ impl BeeperGuiApp {
             dropping: false,
             drop_send: false,
             hotkeys_scrolled: false,
-            show_filter_menu: false,
-            chat_menu: None,
             chat_sub: None,
             reminded: HashMap::new(),
             snooze_clock: now_unix_millis(),
@@ -2913,7 +2918,6 @@ impl BeeperGuiApp {
             carousel: None,
             media_window: None,
             mods: keyboard::Modifiers::empty(),
-            filters: 0,
             emoji_gen: 0,
             emoji_hovered: [false; 2],
             booted: beeper_core::config::now_rfc3339_millis(),
@@ -2938,7 +2942,6 @@ impl BeeperGuiApp {
             last_archived: Default::default(),
             creating_chat: None,
             new_chats: Vec::new(),
-            chat_list: vlist::VList::default(),
             command_list: vlist::VList::default(),
             memo: Memo::default(),
             pending_dm: None,
@@ -2962,7 +2965,6 @@ impl BeeperGuiApp {
             delete_chats: Vec::new(),
             devices_busy: false,
             report_spam: false,
-            reminder_menu: None,
             time_edit: Default::default(),
             audio,
             recorder: None,
@@ -2978,7 +2980,7 @@ impl BeeperGuiApp {
             settings_focus: 0,
             settings_pick: None,
             pref_flash: None,
-            adding_account: false,
+            networks: Default::default(),
             app_qr: false,
             storage: StoragePage { ages: [1; 2], kinds: [0b1111, 0b11111], ..Default::default() },
             integrations: IntegrationsPage::default(),
@@ -3017,6 +3019,7 @@ impl BeeperGuiApp {
             pin_drag: None,
             user_hover: UserHover::default(),
             rail_drag: None,
+            rail_press: None,
             main_window: None,
             settings_window: None,
             settings_size: SETTINGS_SIZE,
@@ -3059,6 +3062,8 @@ impl BeeperGuiApp {
             quotes: HashMap::new(),
             dismissed_errors: HashSet::new(),
             resolving_media: HashMap::new(),
+            needs_download: HashSet::new(),
+            fetching: HashSet::new(),
             video: None,
             view_once: Default::default(),
             started: std::time::Instant::now(),
@@ -3290,7 +3295,8 @@ impl BeeperGuiApp {
 
     /// Desktop's `subwindow-state`: the chat and settings windows to open again at the next launch.
     fn save_subwindows(&self) {
-        let chats = self.chat_windows.iter().filter(|w| w.1.thread_root.is_none());
+        // Desktop's `zv` keeps no `space-` windows.
+        let chats = self.chat_windows.iter().filter(|w| w.1.thread_root.is_none() && !self.is_space_window(w.0));
         let threads = chats.filter_map(|w| w.1.selected_chat_id.as_deref());
         let threads =
             threads.map(|t| serde_json::json!({"windowId": format!("thread-{t}"), "type": "thread", "threadId": t}));
@@ -3337,6 +3343,8 @@ impl BeeperGuiApp {
             },
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
             _ if Some(id) == self.blocked_window => tr("Blocked users"),
+            // Desktop's `AddAccountsBrowserWindow` title, which it does not translate.
+            _ if Some(id) == self.networks.window => "Add an Account",
             _ if Some(id) == self.how_window => tr("How It Works"),
             _ if self.nickname_windows.iter().any(|d| d.id == id) => tr("Account Nickname"),
             _ if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) => {
@@ -3352,6 +3360,10 @@ impl BeeperGuiApp {
                 return trn("%d vote", "%d votes", total, &[&total]);
             }
             _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => tr("Media"),
+            _ if let Some((.., list)) = self.space_windows.iter().find(|w| w.0 == id) => {
+                let title = list.title(&self.store.read());
+                return if title.is_empty() { "Beeper".into() } else { title };
+            }
             _ => match self.chat_windows.iter().find(|w| w.0 == id) {
                 Some((_, pane)) => {
                     let st = self.store.read();
@@ -3398,7 +3410,9 @@ impl BeeperGuiApp {
             .into_iter()
             // Desktop's `threadsForThreadList`: Reminders, Send Later and Snoozed have no pinned grid.
             .partition(|c| {
-                self.active_tab.filterable() && self.active_tab != InboxTab::Snoozed && c.flags & CHAT_PINNED != 0
+                self.list().active_tab.filterable()
+                    && self.list().active_tab != InboxTab::Snoozed
+                    && c.flags & CHAT_PINNED != 0
             });
         pinned.sort_by_key(|c| (st.pin_rank.get(&c.id).copied().unwrap_or(usize::MAX), c.last_activity.clone()));
         match st.settings.on("regularPinned") {
@@ -3408,11 +3422,16 @@ impl BeeperGuiApp {
     }
 
     pub fn visible_chats<'a>(&self, st: &'a BeeperStore) -> Vec<&'a Chat> {
-        self.chats_with(st, self.filters)
+        self.chats_with(st, self.list().filters)
     }
 
     fn list_key(&self, filters: u8) -> ListKey {
-        (self.active_tab, filters, self.selected_account_filter.clone(), self.space_view_account.clone())
+        (
+            self.list().active_tab,
+            filters,
+            self.list().selected_account_filter.clone(),
+            self.list().space_view_account.clone(),
+        )
     }
 
     /// The chats of the list with `filters`, computed once for each store generation.
@@ -3436,7 +3455,7 @@ impl BeeperGuiApp {
     fn row_keys(&self, rest: &[&Chat]) -> Rc<[u64]> {
         let make = || rest.iter().map(|c| vlist::key(&c.id)).collect();
         let Some(memo) = self.memo() else { return make() };
-        let key = self.list_key(self.filters);
+        let key = self.list_key(self.list().filters);
         let keys = memo.keys.borrow_mut().entry(key).or_insert_with(make).clone();
         assert_eq!(keys.len(), rest.len(), "the memo has the keys of the same rows");
         keys
@@ -3486,7 +3505,7 @@ impl BeeperGuiApp {
         let snoozed = |i: usize| st.chats[i].snoozed_until_ms.unwrap_or(i64::MAX);
         // Desktop's `activityTimestamp`: the newer of the activity and the draft.
         let activity = |i: usize| beeper_core::store::activity_key(&st.chats[i]).0;
-        match (self.active_tab, st.settings.reminders_order) {
+        match (self.list().active_tab, st.settings.reminders_order) {
             (InboxTab::Reminders, 0) => list.sort_by_key(|&i| (remind_at(i), i)),
             (InboxTab::Reminders, 1) => list.sort_by_key(|&i| (std::cmp::Reverse(remind_at(i)), i)),
             (InboxTab::Reminders, 2) => list.sort_by_key(|&i| (activity(i), i)),
@@ -3502,18 +3521,18 @@ impl BeeperGuiApp {
         let on = |i: usize| filters & 1 << i != 0;
         let shown = |i: usize| on(i) || !filter_hit(i, c, st);
         c.merged_into_chat_id.is_none()
-            && self.selected_account_filter.as_ref().is_none_or(|a| in_rail_entry(st, a, c))
+            && self.list().selected_account_filter.as_ref().is_none_or(|a| in_rail_entry(st, a, c))
             // Desktop's `inSpaceViewAccountFilter`: an account takes in the chats of its network spaces too.
-            && self.space_view_account.as_ref().is_none_or(|a| match network_space(st, a) {
+            && self.list().space_view_account.as_ref().is_none_or(|a| match network_space(st, a) {
                 Some(_) => in_rail_entry(st, a, c),
                 None => &c.account_id == a,
             })
-            && match self.active_tab {
+            && match self.list().active_tab {
                 InboxTab::AllChats => {
-                    let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
+                    let hidden = if self.list().selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
                     // Desktop's `shouldShowInAllChats`: a snoozed chat leaves the inbox until a message reminder is
                     // due.
-                    let snoozed = self.selected_account_filter.is_none()
+                    let snoozed = self.list().selected_account_filter.is_none()
                         && reminders::snoozed_until(st, c).is_some()
                         && !self.due_message_reminder(st, c);
                     c.flags & hidden == 0
@@ -3535,7 +3554,7 @@ impl BeeperGuiApp {
                         && shown(F_REQUESTS)
                 }
             }
-            && (!self.active_tab.filterable()
+            && (!self.list().active_tab.filterable()
                 || filters == 0
                 || (0..FILTERS.len()).any(|i| on(i) && filter_hit(i, c, st)))
     }
@@ -3634,12 +3653,13 @@ impl BeeperGuiApp {
         }
         self.status_banner = tr("Composing chat...").into();
         self.sticky_banner = Some(self.status_banner.clone());
-        let (matrix, provision) = (self.matrix_bridge(&account), self.provision(&account));
+        let bridge = self.bridge(&account);
+        let id = match bridge {
+            beeper_core::matrix::ChatBridge::Matrix(_) => user.id,
+            beeper_core::matrix::ChatBridge::Cloud(_) => phone.unwrap_or(user.id),
+        };
         let done = move |r| UiMessage::NewChat(new_chat::Msg::DmCreated(draft, account.clone(), quote.clone(), r));
-        match matrix {
-            Some(store) => Task::perform(beeper_core::matrix::create_matrix_dm(store, user.id), done),
-            None => Task::perform(beeper_core::matrix::create_dm(provision, phone.unwrap_or(user.id)), done),
-        }
+        Task::perform(bridge.create_dm(id), done)
     }
 
     /// Selects a direct chat and puts a quote before its draft, like Desktop's `replyPrivately`.
@@ -3716,7 +3736,7 @@ impl BeeperGuiApp {
 
     /// The width of the rail and the chat list. Desktop keeps it when the space bar hides.
     fn left_width(&self) -> f32 {
-        if self.sidebar_hidden {
+        if !self.sidebar_shown() {
             0.0
         } else {
             68.0 + self.sidebar_width
@@ -3725,7 +3745,12 @@ impl BeeperGuiApp {
 
     /// The width of the chat list: Desktop's `threads` width, which takes the space of a hidden space bar.
     fn list_width(&self, st: &BeeperStore) -> f32 {
-        self.sidebar_width + if st.settings.on("showSidebar") { 0.0 } else { 68.0 }
+        self.sidebar_width + if st.settings.on("showSidebar") && !self.list().locked { 0.0 } else { 68.0 }
+    }
+
+    /// The chat list shows in the drawn window: Desktop opens a space window with its sidebar shown.
+    fn sidebar_shown(&self) -> bool {
+        !self.sidebar_hidden || self.list().locked
     }
 
     /// Desktop's `canStartEditMessage` and `canEditMessage` of `m`.
@@ -3803,11 +3828,10 @@ impl BeeperGuiApp {
     /// first sync of a joined room brings a page: in the main pane and in each chat window.
     fn load_older_everywhere(&mut self) -> Task<UiMessage> {
         let mut tasks = vec![self.load_older()];
-        for i in 0..self.chat_windows.len() {
-            let id = self.chat_windows[i].0;
-            std::mem::swap(&mut self.pane, &mut self.chat_windows[i].1);
+        for id in self.chat_windows.iter().map(|w| w.0).collect::<Vec<_>>() {
+            self.swap_window(id);
             let task = self.load_older();
-            std::mem::swap(&mut self.pane, &mut self.chat_windows[i].1);
+            self.swap_window(id);
             tasks.push(task.map(move |m| UiMessage::InWindow(id, Box::new(m))));
         }
         Task::batch(tasks)
@@ -3884,6 +3908,13 @@ impl BeeperGuiApp {
             chats[(cur.unwrap_or(0) as isize + delta).rem_euclid(chats.len() as isize) as usize].id.clone()
         };
         self.select_chat(&next);
+    }
+
+    /// The chat list of the space window that `view` draws, else that of the main window; in `update`, the list of
+    /// the window that sent the message.
+    fn list(&self) -> &chat_list::ListState {
+        let drawn = self.drawing.get().and_then(|id| self.space_windows.iter().find(|w| w.0 == id));
+        drawn.map_or(&self.list, |w| &w.2)
     }
 
     /// The pane of the window that `view` draws; in `update`, the pane of the window that sent the message.
@@ -3974,6 +4005,7 @@ impl BeeperGuiApp {
         match msg {
             // Each domain handles its own messages in its module.
             UiMessage::Accounts(msg) => return self.accounts(msg),
+            UiMessage::Networks(msg) => return self.networks(msg),
             UiMessage::Blocking(msg) => return self.blocking(msg),
             UiMessage::Nickname(msg) => return self.nickname(msg),
             UiMessage::ChatList(msg) => return self.chat_list(msg),
@@ -4026,7 +4058,7 @@ impl BeeperGuiApp {
                     unread,
                 ]);
             }
-            UiMessage::SwitchCard => self.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
+            UiMessage::SwitchCard => self.list.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
             UiMessage::SwitchChat(id) => self.switch_chat(id),
             UiMessage::InThread(msg) => return self.in_thread(*msg),
             UiMessage::TypingTick => {
@@ -4052,7 +4084,7 @@ impl BeeperGuiApp {
             }
             UiMessage::Poll(id, edit) => return self.poll_edit(id, edit),
             UiMessage::OpenEditSpaces => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 if let Some(d) = &self.spaces_window {
                     return window::gain_focus(d.id);
                 }
@@ -4067,7 +4099,7 @@ impl BeeperGuiApp {
             }
             UiMessage::Spaces(e) => return self.spaces_edit(e),
             UiMessage::OpenEditGroup(chat) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 if let Some(d) = &self.group_window {
                     return window::gain_focus(d.id);
                 }
@@ -4077,8 +4109,17 @@ impl BeeperGuiApp {
                 let (title, topic) =
                     (c.room_title().to_string(), composer_with(c.description.as_deref().unwrap_or_default()));
                 drop(st);
-                self.group_window =
-                    Some(GroupDraft { id, chat, title, topic, photo: None, hover: false, personal: false });
+                self.group_window = Some(GroupDraft {
+                    id,
+                    chat,
+                    title,
+                    topic,
+                    photo: None,
+                    hover: false,
+                    personal: false,
+                    saving: false,
+                    dropping: false,
+                });
                 return open;
             }
             UiMessage::OpenEditForMe(chat) => return self.open_edit_for_me(chat),
@@ -4175,6 +4216,13 @@ impl BeeperGuiApp {
                 {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
                 }
+                // Desktop's `onEscapePressed` closes the Add an Account window, after the menu of a network.
+                if self.networks.window == Some(id) {
+                    if key == Key::Named(Named::Escape) && self.networks.menu.take().is_none() {
+                        return window::close(id);
+                    }
+                    return Task::none();
+                }
                 if self.reauth.window == Some(id) {
                     return self.reauth_key(key);
                 }
@@ -4227,10 +4275,10 @@ impl BeeperGuiApp {
                 return Task::batch(msgs.into_iter().map(|m| self.update(m)).collect::<Vec<_>>())
             }
             UiMessage::RunHotkey(name) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 return self.run_hotkey(name, 0);
             }
-            UiMessage::Ask(dialog) => (self.confirm, self.reminder_menu) = (dialog, None),
+            UiMessage::Ask(dialog) => (self.confirm, self.list.reminder_menu) = (dialog, None),
             UiMessage::Logout => {
                 self.confirm = None;
                 return Task::perform(beeper_core::matrix::logout(self.store.clone()), UiMessage::LoggedOut);
@@ -4324,8 +4372,8 @@ impl BeeperGuiApp {
                     self.hotkeys_modal = None;
                     self.show_command_palette = false;
                     self.forward = None;
-                    self.show_filter_menu = false;
-                    self.chat_menu = None;
+                    self.list.show_filter_menu = false;
+                    self.list.chat_menu = None;
                     // Desktop unselects the gallery when its menu closes without an action.
                     if self.pane.message_menu.take().is_some() && !self.pane.gallery_menu.is_empty() {
                         self.pane.selected_msgs.clear();
@@ -4335,7 +4383,7 @@ impl BeeperGuiApp {
                     self.unread_menu = None;
                     self.pane.edit_menu = None;
                     self.pane.sched_menu = None;
-                    self.reminder_menu = None;
+                    self.list.reminder_menu = None;
                     self.audio.menu = None;
                     self.selection_menu = None;
                     self.pane.show_attach_menu = false;
@@ -4367,9 +4415,9 @@ impl BeeperGuiApp {
                     self.pane.selected_chat_id = None;
                     self.pane.composer = composer_with("");
                     self.refresh_theme_and_tray();
-                } else if self.active_tab != InboxTab::AllChats {
-                    self.active_tab = InboxTab::AllChats;
-                    self.space_view_account = None;
+                } else if self.list().active_tab != InboxTab::AllChats {
+                    self.list.active_tab = InboxTab::AllChats;
+                    self.list.space_view_account = None;
                 } else {
                     self.status_banner.clear();
                 }
@@ -4388,7 +4436,7 @@ impl BeeperGuiApp {
             }
             // Desktop's `b2t`: a click on a mention opens its menu.
             UiMessage::OpenUrl(url) if url.starts_with(MENTION) => {
-                self.chat_menu = Some((format!("mention:{}", &url[MENTION.len()..]), self.cursor.get()));
+                self.list.chat_menu = Some((format!("mention:{}", &url[MENTION.len()..]), self.cursor.get()));
             }
             UiMessage::OpenUrl(url) => {
                 let (cmd, args) = open_url_or_path_command(self.os, &url);
@@ -4443,15 +4491,18 @@ impl BeeperGuiApp {
             UiMessage::HeaderHoverEnd(n) if n == self.header_hover.1 => self.header_hover.0 = false,
             UiMessage::HeaderHoverEnd(_) => {}
             UiMessage::InWindow(id, msg) => {
-                let Some(i) = self.chat_windows.iter().position(|w| w.0 == id) else { return self.handle(*msg) };
-                std::mem::swap(&mut self.pane, &mut self.chat_windows[i].1);
+                if self.chat_windows.iter().all(|w| w.0 != id) {
+                    return self.handle(*msg);
+                }
+                self.swap_window(id);
                 let task = self.handle(*msg);
-                let i = self.chat_windows.iter().position(|w| w.0 == id).expect("handling keeps the window");
-                std::mem::swap(&mut self.pane, &mut self.chat_windows[i].1);
+                self.swap_window(id);
                 let task = task.map(move |m| UiMessage::InWindow(id, Box::new(m)));
-                return match self.chat_windows[i].1.selected_chat_id {
-                    Some(_) => task,
-                    None => Task::batch([task, window::close(id)]),
+                // A chat window closes when it leaves its chat; a space window stays on its space.
+                let left = self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none());
+                return match left && !self.is_space_window(id) {
+                    false => task,
+                    true => Task::batch([task, window::close(id)]),
                 };
             }
             // A sign-in through the Desktop API goes on to the check of encrypted messaging, like a sign-in here.
@@ -4479,7 +4530,7 @@ impl BeeperGuiApp {
                     self.carousel = None;
                 }
                 if left {
-                    (self.pane.selected_chat_id, self.chat_menu) = (None, None);
+                    (self.pane.selected_chat_id, self.list.chat_menu) = (None, None);
                     self.select_chat(NOTE_CHAT_ID);
                 }
                 self.refresh_theme_and_tray();
@@ -4651,7 +4702,7 @@ impl BeeperGuiApp {
                             && !mods.alt()
                             && self.pane.selected_chat_id.is_none()
                             && !self.show_command_palette
-                            && self.active_tab != InboxTab::Requests =>
+                            && self.list().active_tab != InboxTab::Requests =>
                     {
                         (self.selection, self.select_mode) = (self.list_ids(&self.store.read()), false);
                         if let Some(first) = self.selection.first().cloned() {
@@ -4923,6 +4974,8 @@ impl BeeperGuiApp {
             || self.reauth.busy
             || self.enter_key.busy
             || self.nickname_windows.iter().any(|d| d.saving)
+            || !self.fetching.is_empty()
+            || self.group_window.as_ref().is_some_and(|d| d.saving)
             || self.hover_fading()
             || self.sidebar_progress().is_some()
             || self
@@ -5017,6 +5070,8 @@ impl BeeperGuiApp {
             self.view_enter_key()
         } else if let Some(a) = self.add_accounts.iter().find(|a| a.id == id) {
             self.view_add_account(a)
+        } else if Some(id) == self.networks.window {
+            self.view_add_accounts()
         } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {
             self.view_chat_theme(chat)
         } else if let Some((_, chat)) = self.labels_windows.iter().find(|w| w.0 == id) {
@@ -5039,7 +5094,9 @@ impl BeeperGuiApp {
             self.view_how_it_works()
         } else if let Some((_, chat, mid)) = self.vote_windows.iter().find(|w| w.0 == id) {
             self.view_poll_votes(chat, mid)
-        } else if self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none()) {
+        } else if self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none())
+            && !self.is_space_window(id)
+        {
             // A chat window that left its chat closes, and draws nothing until it is closed.
             Space::new().into()
         } else {
@@ -5123,6 +5180,7 @@ impl BeeperGuiApp {
                 ["member:", "bookmark:", "contact:", "card:", "mention:"].iter().find_map(|k| chat.strip_prefix(k));
             let chat = pair.map_or(chat, |k| k.split_once(' ').map_or(k, |k| k.0));
             c == RAIL_MORE
+                || c == RAIL_MENU
                 || c == SIDEBAR_MENU
                 || c == SPACE_SHEET
                 || c == SWITCH_CARD
@@ -5134,12 +5192,15 @@ impl BeeperGuiApp {
         };
         let shown = self.pane().selected_chat_id.as_deref().is_some_and(known);
         let open = self.creating_chat.is_none() && shown;
-        let menu_open = self.chat_menu.as_ref().is_some_and(|(c, _)| known(c));
+        let menu_open = self.list().chat_menu.as_ref().is_some_and(|(c, _)| known(c));
         drop(st);
         let in_main = self.drawing.get().is_none();
-        let base = match in_main {
-            true => self.view_full_video(false).unwrap_or_else(|| self.view_body(open)),
-            false => container(match shown {
+        // The menus of a chat list show in its window: the main window or a space window.
+        let in_list = in_main || self.list().locked;
+        let base = match (in_main, self.list().locked) {
+            (true, _) => self.view_full_video(false).unwrap_or_else(|| self.view_body(open)),
+            (false, true) => self.view_space_window(shown),
+            (false, false) => container(match shown {
                 true if self.pane().thread_root.is_some() => self.view_thread_window(),
                 true => self.view_conversation(),
                 false => Space::new().into(),
@@ -5183,8 +5244,9 @@ impl BeeperGuiApp {
             )
             .on_press(UiMessage::CommandBar(commands::Msg::SearchSelect(None)))
         });
-        let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 22.5, 26.0));
-        let reminder_menu = self.reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
+        let filter_menu =
+            self.list().show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 22.5, 26.0));
+        let reminder_menu = self.list().reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
         let rate_menu = self.audio.menu.map(|at| match self.audio.pill {
             true => {
                 let size = self.pane().size;
@@ -5195,7 +5257,7 @@ impl BeeperGuiApp {
             }
             false => (self.view_rate_menu(), at.x, at.y),
         });
-        let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
+        let chat_menu = self.list().chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
             if let Some(key) = cid.strip_prefix("card:") {
                 let (card, h) = self.view_user_card(key);
                 let (x, y) = self.card_spot(*at, 30.0, h);
@@ -5224,8 +5286,10 @@ impl BeeperGuiApp {
             } else if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
                 let items = info_menu(&self.store.read(), cid, |a| self.can(a, "create_dm"));
                 (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
-            } else if cid == SIDEBAR_MENU || RAIL_VIEWS.iter().any(|v| cid.strip_prefix("account:") == Some(v.0)) {
+            } else if cid == SIDEBAR_MENU || cid == RAIL_MENU {
                 (233.0, 8.0 + 4.0 * MENU_ITEM)
+            } else if RAIL_VIEWS.iter().any(|v| cid.strip_prefix("account:") == Some(v.0)) {
+                (233.0, 8.0 + 5.0 * MENU_ITEM)
             } else if let Some(entry) = cid.strip_prefix("head:") {
                 let st = self.store.read();
                 let items = match (RAIL_VIEWS.iter().any(|v| v.0 == entry), rail_label(&st, entry)) {
@@ -5238,11 +5302,11 @@ impl BeeperGuiApp {
             } else if let Some(n) =
                 cid.strip_prefix("account:").and_then(|e| rail_label(&self.store.read(), e).map(label_rows))
             {
-                (233.0, 8.0 + (n + 2.0) * MENU_ITEM + 11.0)
+                (233.0, 8.0 + (n + 3.0) * MENU_ITEM + 11.0)
             } else if let Some(entry) = cid.strip_prefix("account:") {
                 let st = self.store.read();
                 let nick = if nickname::can_nickname(&st, &rail_owner(&st, entry)) { MENU_ITEM } else { 0.0 };
-                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 6.0 * MENU_ITEM + 22.0 + nick)
+                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 7.0 * MENU_ITEM + 22.0 + nick)
             } else {
                 let st = self.store.read();
                 (
@@ -5305,7 +5369,8 @@ impl BeeperGuiApp {
             let w = if i == 0 { SUB_MENU_W[1] } else { 233.0 };
             (menu, x.min(self.pane().size.width - w - 8.0), self.pane().size.height - 60.0 - h)
         });
-        let main_menu = filter_menu.or(reminder_menu).or(rate_menu).or(chat_menu).filter(|_| in_main);
+        let main_menu = filter_menu.or(reminder_menu).filter(|_| in_list).or(rate_menu.filter(|_| in_main));
+        let main_menu = main_menu.or(chat_menu.filter(|_| in_list));
         let layer = |(m, x, y): (El<'a>, f32, f32), close: UiMessage| -> El<'a> {
             mouse_area(
                 container(mouse_area(m).on_press(UiMessage::Noop))
@@ -5319,7 +5384,7 @@ impl BeeperGuiApp {
         };
         let main_menu = main_menu.or(self.pane_menu()).or(selection_menu.filter(|_| in_main));
         let (menu, palette_menu) =
-            match (self.show_command_palette || self.forward.is_some()) && self.chat_menu.is_some() {
+            match (self.show_command_palette || self.forward.is_some()) && self.list().chat_menu.is_some() {
                 true => (None, main_menu.map(|m| layer(m, UiMessage::ChatList(chat_list::Msg::CloseMenu)))),
                 false => (main_menu.map(|m| layer(m, UiMessage::CloseModals)), None),
             };
@@ -5579,7 +5644,7 @@ impl BeeperGuiApp {
     /// Desktop's `composeSwitchTargets.onSelect`: opens the chat on the other account, and moves the draft there
     /// when that chat has none.
     fn switch_chat(&mut self, id: String) {
-        self.chat_menu = None;
+        self.list.chat_menu = None;
         if self.pane.selected_chat_id.as_deref() == Some(id.as_str()) {
             return;
         }
@@ -5758,7 +5823,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `runAction`: keeps the undo of an action, and shows its `successToast` with Undo.
     fn toggle_label(&mut self, label: String, chats: Vec<String>, add: bool, toast: bool) {
-        self.chat_menu = None;
+        self.list.chat_menu = None;
         let label = self.label_id(label);
         let mut st = self.store.write();
         let has =
@@ -5854,14 +5919,8 @@ impl BeeperGuiApp {
         }
         self.new_chat_search = Some((q.into(), accounts.len(), Vec::new()));
         Task::batch(accounts.into_iter().map(|a| {
-            let found = match self.matrix_bridge(&a) {
-                Some(store) => Task::perform(beeper_core::matrix::search_matrix_users(store, q.into()), |r| r),
-                None => Task::perform(beeper_core::matrix::search_users(self.provision(&a), q.into()), |r| {
-                    r.map(|users| users.iter().map(new_chat::resolved_user).collect())
-                }),
-            };
-            let q = q.to_string();
-            found.map(move |r| UiMessage::NewChat(new_chat::Msg::SearchedUsers(q.clone(), a.clone(), r)))
+            let (found, q) = (self.bridge(&a).search_users(q.into()), q.to_string());
+            Task::perform(found, move |r| UiMessage::NewChat(new_chat::Msg::SearchedUsers(q.clone(), a.clone(), r)))
         }))
     }
 
@@ -5895,20 +5954,16 @@ impl BeeperGuiApp {
             for id in asks.into_iter().filter(|(c, _)| self.can(a, c)).filter_map(|(_, id)| id) {
                 let (key, slot) = (key.to_string(), nets.len());
                 let done = move |r| UiMessage::NewChat(new_chat::Msg::ContactNetwork(key.clone(), slot, r));
-                tasks.push(match self.matrix_bridge(a) {
-                    Some(store) => Task::perform(beeper_core::matrix::resolve_matrix_user(store, id.into()), done),
-                    None => Task::perform(beeper_core::matrix::resolve_identifier(self.provision(a), id.into()), done),
-                });
+                tasks.push(Task::perform(self.bridge(a).resolve_identifier(id.into()), done));
                 nets.push((a.clone(), None));
             }
         }
         (nets, Task::batch(tasks))
     }
 
-    /// Desktop's `isMatrixChat`: for the Matrix account, the store whose Matrix client does the work of the SDK's
-    /// `matrix` pseudo-bridge.
-    fn matrix_bridge(&self, account_id: &str) -> Option<SharedStore> {
-        (account_id == "hungryserv").then(|| self.store.clone())
+    /// The bridge that does the `PlatformAPI` work of a chat account.
+    fn bridge(&self, account_id: &str) -> beeper_core::matrix::ChatBridge {
+        beeper_core::matrix::ChatBridge::of(&self.store, account_id)
     }
 
     /// Whether the bridge of a chat account has a `resolve_identifier` provisioning capability.
@@ -5923,22 +5978,7 @@ impl BeeperGuiApp {
 
     /// The bridge login of a chat account, for the bridge provisioning API.
     fn provision(&self, account_id: &str) -> beeper_core::matrix::Provision {
-        let st = self.store.read();
-        let found = st.bridge_accounts.iter().find(|a| a.account_id == account_id);
-        let (bridge_id, login_id) = found.map_or_else(
-            || {
-                let (b, l) = account_id.split_once('.').unwrap_or((account_id, ""));
-                (b.to_string(), l.to_string())
-            },
-            |a| (a.bridge_id.clone(), a.login_id.clone()),
-        );
-        beeper_core::matrix::Provision {
-            homeserver: st.beeper_state.homeserver.clone(),
-            access_token: st.beeper_state.access_token.clone(),
-            user_id: st.beeper_state.user_id.clone(),
-            bridge_id,
-            login_id,
-        }
+        self.store.read().provision(account_id)
     }
 
     fn fail(&mut self, t: Toast) {
@@ -6043,7 +6083,7 @@ impl BeeperGuiApp {
         let unread = c.is_unread();
         let archived = c.flags & CHAT_ARCHIVED != 0;
         let (glyph, size, label, keys, msg) = match pref {
-            _ if self.active_tab == InboxTab::Reminders => {
+            _ if self.list().active_tab == InboxTab::Reminders => {
                 (6, 20.0, tr("Dismiss Reminder"), vec![], UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), None)))
             }
             _ if c.draft.is_some() => {
@@ -6128,7 +6168,7 @@ impl BeeperGuiApp {
     /// Desktop's `updateLastViewedRequestsAt` when the Requests view shows, and when its requests change while it
     /// shows: it sets `com.beeper.message_requests.last_viewed_at`, which clears the dot of new requests.
     fn view_requests(&mut self) -> Task<UiMessage> {
-        if self.active_tab != InboxTab::Requests || self.selected_account_filter.is_some() {
+        if self.list().active_tab != InboxTab::Requests || self.list().selected_account_filter.is_some() {
             self.seen_requests.clear();
             return Task::none();
         }
@@ -6152,14 +6192,14 @@ impl BeeperGuiApp {
 
     /// Whether one of the main window's menus is open.
     fn menu_open(&self) -> bool {
-        self.show_filter_menu
-            || self.chat_menu.is_some()
+        self.list().show_filter_menu
+            || self.list().chat_menu.is_some()
             || self.pane.message_menu.is_some()
             || self.pane.thread_menu.is_some()
             || self.unread_menu.is_some()
             || self.pane.edit_menu.is_some()
             || self.pane.sched_menu.is_some()
-            || self.reminder_menu.is_some()
+            || self.list().reminder_menu.is_some()
             || self.audio.menu.is_some()
             || self.selection_menu.is_some()
             || self.pane.show_attach_menu
@@ -6216,7 +6256,7 @@ impl BeeperGuiApp {
         if !self.online {
             return None;
         }
-        let space = self.selected_account_filter.as_deref();
+        let space = self.list().selected_account_filter.as_deref();
         let own = space.filter(|id| rail_label(st, id).is_none()).map(|id| rail_owner(st, id));
         let label = space.and_then(|id| rail_label(st, id));
         let shown = |account: &str| match (&own, label) {
@@ -6361,10 +6401,10 @@ impl BeeperGuiApp {
     /// with each sync icon. "Connecting..." names the accounts in a transient disconnect while it has the pointer.
     fn status_pills(&self) -> Vec<(Pill, String)> {
         let st = self.store.read();
-        let shown = |account: &str| match &self.selected_account_filter {
+        let shown = |account: &str| match &self.list().selected_account_filter {
             Some(f) => rail_owner(&st, f) == account,
             None => {
-                self.active_tab == InboxTab::AllChats
+                self.list().active_tab == InboxTab::AllChats
                     && st.chats.iter().any(|c| c.account_id == account && c.is_hidden_from_inbox != Some(true))
             }
         };

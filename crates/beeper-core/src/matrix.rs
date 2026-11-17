@@ -2455,6 +2455,23 @@ async fn timer_for_messages(room: &Room) -> Option<Value> {
     (!(timer["timer"].is_null() && omit)).then_some(timer)
 }
 
+/// Desktop's `updateGroup` from the Edit Group window: the name, the topic and the avatar of a group sent now, so the
+/// window learns whether the homeserver took them.
+pub async fn update_group(
+    store: SharedStore,
+    chat: String,
+    title: Option<String>,
+    topic: Option<String>,
+    avatar: Option<Option<(Vec<u8>, String)>>,
+) -> Result<(), String> {
+    let name = title.map(|name| Outgoing::State("m.room.name".into(), serde_json::json!({ "name": name })));
+    let topic = topic.map(|topic| Outgoing::State("m.room.topic".into(), serde_json::json!({ "topic": topic })));
+    for out in name.into_iter().chain(topic).chain(avatar.map(Outgoing::Avatar)) {
+        push(&store, chat.clone(), out).await.map_err(|e| e.message)?;
+    }
+    Ok(())
+}
+
 async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), PushError> {
     let client = store.read().matrix.clone().expect("flush checks the Matrix client");
     if let Outgoing::CreateLabel(label) = out {
@@ -2894,7 +2911,8 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
 
 const ENCRYPTED_FILE: &str = "encryptedFileInfoJSON";
 
-/// The bytes of a Matrix (`mxc://`) or web (`https://`) media URL.
+/// The bytes of a Matrix (`mxc://`) or web (`https://`) media URL. A bridge that needs the user to ask for the media
+/// fails the load with [`MEDIA_RELOAD_NEEDED`].
 pub async fn media(client: Option<Client>, src: String) -> Result<Vec<u8>, String> {
     if src.starts_with("https://") {
         return crate::cloud::http_bytes(&src).await;
@@ -2904,7 +2922,62 @@ pub async fn media(client: Option<Client>, src: String) -> Result<Vec<u8>, Strin
         return vodozemac::base64_decode(b64).map_err(|e| e.to_string());
     }
     let client = client.ok_or("Not connected to Matrix")?;
-    let source = match src.split_once(&format!("?{ENCRYPTED_FILE}=")) {
+    let request = MediaRequestParameters { source: media_source(src)?, format: MediaFormat::File };
+    client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
+}
+
+/// The error code of a download that a bridge only answers when the user asks for it, like media that only the phone
+/// still has. Desktop's media manager then emits `MEDIA_RELOAD_NEEDED`.
+pub const MEDIA_RELOAD_NEEDED: &str = "COM.BEEPER.MEDIA_RELOAD_NEEDED";
+
+/// Desktop's `fw`: whether a failed download needs the user to ask for it.
+pub fn reload_needed(error: &str) -> bool {
+    error.contains(MEDIA_RELOAD_NEEDED)
+}
+
+/// Desktop's `downloadMediaInteractive`: downloads the media with `com.beeper.interactive_download_request`, which
+/// lets the bridge fetch it from the phone, and caches it for the next [`media`] load.
+pub async fn media_interactive(client: Option<Client>, src: String) -> Result<(), String> {
+    let client = client.ok_or("Not connected to Matrix")?;
+    let source = media_source(src)?;
+    let uri = match &source {
+        MediaSource::Plain(uri) => uri,
+        MediaSource::Encrypted(file) => &file.url,
+    };
+    let (server, id) = uri.parts().map_err(|e| e.to_string())?;
+    let mut url = client.homeserver();
+    let path = ["_matrix", "client", "v1", "media", "download", server.as_str(), id];
+    url.path_segments_mut().expect("a base URL").pop_if_empty().extend(path);
+    url.query_pairs_mut().append_pair("com.beeper.interactive_download_request", "true");
+    let token = client.access_token().ok_or("Not signed in to Matrix")?;
+    let resp = crate::cloud::wait_client().get(url.as_str()).bearer_auth(token).send().await;
+    let resp = resp.map_err(|e| e.without_url().to_string())?;
+    let status = resp.status();
+    let body = resp.bytes().await.map_err(|e| e.without_url().to_string())?.to_vec();
+    if !status.is_success() {
+        return Err(matrix_error(status, &serde_json::from_slice(&body).unwrap_or_default()));
+    }
+    let content = match &source {
+        MediaSource::Encrypted(file) => {
+            let mut cursor = std::io::Cursor::new(body);
+            let info = file.as_ref().clone().into();
+            let mut plain = Vec::new();
+            matrix_sdk_crypto::AttachmentDecryptor::new(&mut cursor, info)
+                .map_err(|e| e.to_string())
+                .and_then(|mut r| std::io::Read::read_to_end(&mut r, &mut plain).map_err(|e| e.to_string()))?;
+            plain
+        }
+        MediaSource::Plain(_) => body,
+    };
+    let request = MediaRequestParameters { source, format: MediaFormat::File };
+    let cache = client.media_store().lock().await.map_err(|e| e.to_string())?;
+    let keep = matrix_sdk::media::store::IgnoreMediaRetentionPolicy::No;
+    cache.add_media_content(&request, content, keep).await.map_err(|e| e.to_string())
+}
+
+/// The Matrix media of a source URL, with the encrypted file info of its `encryptedFileInfoJSON` query.
+fn media_source(src: String) -> Result<MediaSource, String> {
+    Ok(match src.split_once(&format!("?{ENCRYPTED_FILE}=")) {
         Some((_, json)) => {
             let json = crate::codec::url_decode(json).ok_or("bad encrypted file info")?;
             let json = match json.starts_with('{') {
@@ -2915,9 +2988,7 @@ pub async fn media(client: Option<Client>, src: String) -> Result<Vec<u8>, Strin
             MediaSource::Encrypted(Box::new(serde_json::from_slice(&json).map_err(|e| e.to_string())?))
         }
         None => MediaSource::Plain(src.into()),
-    };
-    let request = MediaRequestParameters { source, format: MediaFormat::File };
-    client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
+    })
 }
 
 /// The session and bridge login that a bridge provisioning request acts as. The homeserver passes the request to
@@ -3033,6 +3104,78 @@ pub async fn create_group(p: Provision, kind: String, name: String, users: Vec<S
     let body = p.post(&format!("create_group/{}", crate::codec::url_encode(&kind)), body.to_string()).await?;
     let v: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     v["mxid"].as_str().map(str::to_string).ok_or_else(|| "the bridge sent no mxid".into())
+}
+
+/// The user of a bridge `resolve_identifier` or `search_users` result, by its Matrix ID.
+pub fn bridge_user(v: &Value) -> User {
+    let ids: Vec<&str> = v["identifiers"].as_array().into_iter().flatten().filter_map(|i| i.as_str()).collect();
+    let find = |scheme: &str| ids.iter().find_map(|i| i.strip_prefix(scheme)).map(str::to_string);
+    User {
+        id: v["mxid"].as_str().or(v["id"].as_str()).unwrap_or_default().into(),
+        full_name: v["name"].as_str().map(Into::into),
+        img_url: v["avatar_url"].as_str().map(Into::into),
+        phone_number: find("tel:"),
+        email: find("mailto:"),
+        ..Default::default()
+    }
+}
+
+/// The bridge that does the `PlatformAPI` work of a chat account: the SDK's `matrix` pseudo-bridge for the Matrix
+/// account (Desktop's `isMatrixChat`), whose work the Matrix client of the store does, or the cloud bridge of the
+/// account's login.
+#[derive(Clone)]
+pub enum ChatBridge {
+    Matrix(SharedStore),
+    Cloud(Provision),
+}
+
+impl ChatBridge {
+    pub fn of(store: &SharedStore, account_id: &str) -> Self {
+        match account_id {
+            "hungryserv" => ChatBridge::Matrix(store.clone()),
+            _ => ChatBridge::Cloud(store.read().provision(account_id)),
+        }
+    }
+
+    /// The provisioning capabilities: [`matrix_capabilities`] for the Matrix account.
+    pub async fn capabilities(self) -> Result<Value, String> {
+        match self {
+            ChatBridge::Matrix(_) => Ok(matrix_capabilities()),
+            ChatBridge::Cloud(p) => capabilities(p).await,
+        }
+    }
+
+    /// The users that match a name: the homeserver's user directory, or the bridge's `search_users`.
+    pub async fn search_users(self, query: String) -> Result<Vec<User>, String> {
+        match self {
+            ChatBridge::Matrix(store) => search_matrix_users(store, query).await,
+            ChatBridge::Cloud(p) => Ok(search_users(p, query).await?.iter().map(bridge_user).collect()),
+        }
+    }
+
+    /// The user of a phone number, email, username or user ID, as a bridge reply.
+    pub async fn resolve_identifier(self, identifier: String) -> Result<Option<Value>, String> {
+        match self {
+            ChatBridge::Matrix(store) => resolve_matrix_user(store, identifier).await,
+            ChatBridge::Cloud(p) => resolve_identifier(p, identifier).await,
+        }
+    }
+
+    /// The room of a direct chat with `identifier`.
+    pub async fn create_dm(self, identifier: String) -> Result<String, String> {
+        match self {
+            ChatBridge::Matrix(store) => create_matrix_dm(store, identifier).await,
+            ChatBridge::Cloud(p) => create_dm(p, identifier).await,
+        }
+    }
+
+    /// The room of a new group of `kind` with the users, named when `name` is not empty.
+    pub async fn create_group(self, kind: String, name: String, users: Vec<String>) -> Result<String, String> {
+        match self {
+            ChatBridge::Matrix(store) => create_matrix_group(store, kind, name, users).await,
+            ChatBridge::Cloud(p) => create_group(p, kind, name, users).await,
+        }
+    }
 }
 
 /// Desktop SDK's `GetProvisioningCapabilities` of its `matrix` pseudo-bridge, which Desktop's
@@ -3572,6 +3715,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     let recent = recent.collect();
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
     let (flags, usage) = (global(client, crate::features::FLAGS).await, global(client, crate::features::USAGE).await);
+    let summary = global(client, crate::features::SUMMARY).await;
     let bridges = global(client, BRIDGE_STATE).await;
     sync_account_overrides(client, store).await;
     let viewed = global(client, REQUESTS_VIEWED).await;
@@ -3606,9 +3750,11 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     }
     st.recent_emoji = recent;
     st.skin_tone = tone;
-    // The flags decide what the windows show (polls, Send Later, ...), so a change draws them again.
-    if (&st.features.flags, &st.features.usage) != (&flags, &usage) {
-        (st.features.flags, st.features.usage) = (flags, usage);
+    // The flags and the account limits decide what the windows show (polls, Send Later, the networks one can add,
+    // ...), so a change draws them again.
+    let f = &st.features;
+    if (&f.flags, &f.usage, &f.summary) != (&flags, &usage, &summary) {
+        (st.features.flags, st.features.usage, st.features.summary) = (flags, usage, summary);
         st.emit_ws("setup.updated", "", None, None, None);
     }
     // Desktop's `BRIDGE_STATES_UPDATED`: the homeserver updates the bridge states while the app runs.
@@ -4676,6 +4822,35 @@ mod tests {
         assert!(store.read().resolve_chat_idx("!room:x").is_none(), "a deleted chat stays deleted");
     }
 
+    /// Desktop's `needsUserDownload`: a bridge fails a load with `MEDIA_RELOAD_NEEDED` until the user asks for the
+    /// media, whose interactive download asks with `com.beeper.interactive_download_request` and caches it.
+    #[tokio::test]
+    async fn interactive_media_downloads_like_desktop() {
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').unwrap_or((path, "")) {
+            ("/_matrix/client/versions", _) => (200, json!({ "versions": ["v1.11"] })),
+            ("/_matrix/client/v3/keys/upload", _) => (200, json!({ "one_time_key_counts": {} })),
+            ("/_matrix/client/v3/sync", _) => (200, crate::testing::stub_sync()),
+            ("/_matrix/client/v1/media/download/x/phone", "com.beeper.interactive_download_request=true") => {
+                (200, json!("the photo"))
+            }
+            // Like Desktop, the code counts and not the status (the SDK sends a server error again for 15 minutes).
+            ("/_matrix/client/v1/media/download/x/phone", _) => {
+                (400, json!({ "errcode": super::MEDIA_RELOAD_NEEDED, "error": "the phone has the media" }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("interactive-media"), &url).await;
+        let client = store.read().matrix.clone();
+        let load = || super::media(client.clone(), "mxc://x/phone".into());
+        let e = load().await.expect_err("the bridge needs the user to ask");
+        assert!(super::reload_needed(&e), "{e}");
+        super::media_interactive(client.clone(), "mxc://x/phone".into()).await.expect("the interactive download");
+        assert_eq!(load().await.expect("the cached media"), b"\"the photo\"", "the next load reads the cache");
+        let e = super::media_interactive(client.clone(), "mxc://x/gone".into()).await.expect_err("missing media");
+        assert!(!super::reload_needed(&e) && e.contains("M_NOT_FOUND"), "{e}");
+    }
+
     /// Like Desktop's SDK on Linux, a start sets the device metadata when the stored one is missing or differs, and
     /// sends nothing when it matches.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -5642,6 +5817,42 @@ mod tests {
         assert_eq!((a.file_name.as_deref(), a.mime_type.as_deref()), (Some("a.png"), Some("image/png")));
     }
 
+    /// Desktop's `updateGroup` from the Edit Group window sends the name and the topic now, and a refusal comes back.
+    #[tokio::test]
+    async fn group_updates_report_refusals_like_desktop() {
+        use std::sync::{Arc, Mutex};
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let refuse = Arc::new(Mutex::new(false));
+        let refused = refuse.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, stub_sync()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if method == "PUT" && p.contains("/state/") => match *refused.lock().unwrap() {
+                    true => (403, json!({ "errcode": "M_FORBIDDEN", "error": "not allowed" })),
+                    false => {
+                        log.lock().unwrap().push((p.rsplit("/state/").next().unwrap().to_string(), body));
+                        (200, json!({ "event_id": "$state" }))
+                    }
+                },
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            })
+            .await;
+        let store = stub_store(&crate::testing::temp_dir("group-update"), &url).await;
+        let update = |name: &str| {
+            super::update_group(store.clone(), "!room:x".into(), Some(name.into()), Some("Topic".into()), None)
+        };
+        update("Core").await.expect("the homeserver takes the changes");
+        let sent = sent.lock().unwrap().clone();
+        let kinds: Vec<&str> = sent.iter().map(|(k, _)| k.trim_end_matches('/')).collect();
+        assert_eq!(kinds, ["m.room.name", "m.room.topic"]);
+        assert_eq!(sent[0].1, json!({ "name": "Core" }));
+        *refuse.lock().unwrap() = true;
+        assert!(update("Other").await.is_err(), "a refusal comes back to the window");
+    }
+
     /// Desktop's `buildTitle`: the management room of a bridge, `com.beeper.is_bridge_bot_room` in its `m.bridge`, is
     /// titled by the user ID of its bot, before its name.
     #[tokio::test]
@@ -5758,7 +5969,10 @@ mod tests {
         let event = json!({ "type": "com.beeper.bridge_state", "content": { "bridges": bridges } });
         let flags = json!({ "features": { "*": { "enable-polls": true } } });
         let flags = json!({ "type": crate::features::FLAGS, "content": flags });
-        sync["account_data"] = json!({ "events": [event, flags] });
+        let limits =
+            json!({ "current": { "num_accounts_against_limit": 1 }, "max": { "num_accounts_against_limit": 5 } });
+        let summary = json!({ "type": crate::features::SUMMARY, "content": limits });
+        sync["account_data"] = json!({ "events": [event, flags, summary] });
         let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
             "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
             "/_matrix/client/v3/sync" => (200, sync.clone()),
@@ -5774,7 +5988,8 @@ mod tests {
         let accounts: Vec<_> = accounts.iter().map(|a| (a.account_id.as_str(), a.remote_error.as_deref())).collect();
         assert_eq!(accounts, [("signal", Some("Logged out"))]);
         assert!(store.read().feature("enable-polls").on, "the synced flags");
-        for change in ["flags", "bridge states"] {
+        assert_eq!(store.read().features.accounts_remaining(), 4, "the synced account limits");
+        for change in ["flags and limits", "bridge states"] {
             assert_eq!(events.try_recv().expect(change).event_type, "setup.updated", "{change}");
         }
         super::sync_account_data(&client, &store).await;

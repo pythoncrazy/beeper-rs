@@ -24,6 +24,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 mod auth;
 mod mcp;
+mod new_chat;
 mod proxy;
 mod routes;
 mod search;
@@ -260,6 +261,19 @@ fn invalid_input(issues: Vec<Issue>) -> Response {
     json_with(StatusCode::BAD_REQUEST, &ApiError { message: "Invalid input", code: "VALIDATION_ERROR", details })
 }
 
+/// The zod issue of an empty string for `string().min(1)`.
+fn too_short(k: &str) -> Issue {
+    Issue(vec![
+        ("code", json!("too_small")),
+        ("minimum", json!(1)),
+        ("type", json!("string")),
+        ("inclusive", json!(true)),
+        ("exact", json!(false)),
+        ("message", json!("String must contain at least 1 character(s)")),
+        ("path", json!([k])),
+    ])
+}
+
 /// The value of a query parameter, or `None` once its zod issue joins `issues`.
 fn check<T>(issues: &mut Vec<Issue>, v: Result<T, Issue>) -> Option<T> {
     v.map_err(|issue| issues.push(issue)).ok()
@@ -391,15 +405,7 @@ impl Req {
     /// An optional zod `string().trim().min(1)` query parameter, trimmed, or its zod issue.
     fn filled(&self, k: &'static str) -> Result<Option<&str>, Issue> {
         match self.string(k)?.map(search::js_trim) {
-            Some("") => Err(Issue(vec![
-                ("code", json!("too_small")),
-                ("minimum", json!(1)),
-                ("type", json!("string")),
-                ("inclusive", json!(true)),
-                ("exact", json!(false)),
-                ("message", json!("String must contain at least 1 character(s)")),
-                ("path", json!([k])),
-            ])),
+            Some("") => Err(too_short(k)),
             v => Ok(v),
         }
     }
@@ -481,11 +487,6 @@ impl Req {
     fn page_size(&self, default: usize, min: (i64, bool), max: i64) -> Result<usize, Vec<Issue>> {
         let Some(v) = self.query.get("limit") else { return Ok(default) };
         coerce_int(v, min, max, json!(["limit"])).map(|n| n as usize)
-    }
-
-    /// [`Self::page_size`], or Desktop's answer with its zod issues.
-    fn limit(&self, default: usize, min: (i64, bool), max: i64) -> Result<usize, Response> {
-        self.page_size(default, min, max).map_err(invalid_input)
     }
 }
 
@@ -817,6 +818,9 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     if let Some(reply) = bridge_login(store, cloud, &method, &segs, &req) {
         return reply;
     }
+    if let Some(reply) = new_chat::route(store, &method, &segs, &req) {
+        return reply;
+    }
     if method == "GET" {
         return get(store, &segs, &req);
     }
@@ -996,7 +1000,7 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
     match path {
         [] => Ok(redirect("/v1/info", r.msg.header("accept"))),
         ["v1", "accounts"] => ok(&st.accounts),
-        ["v1", "accounts", id, rest @ ..] => account(st, id, rest, r),
+        ["v1", "accounts", id] => account(st, id),
         ["v1", "labels"] => ok(&st.labels),
         ["v1", "bridges", rest @ ..] => bridge_get(st, rest),
         ["v1", "chats"] => list_chats(st, r),
@@ -1257,42 +1261,8 @@ fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Repl
     ok(&json!({ "matrix": matrix, "session": st.app_state() }))
 }
 
-fn account(st: &BeeperStore, id: &str, rest: &[&str], r: &Req) -> Reply {
-    let account = st.accounts.iter().find(|a| a.account_id == id).ok_or_else(|| missing("Account not found"))?;
-    // The people of the chats of the account, each once, without the user.
-    let mut seen = std::collections::HashSet::new();
-    let users = st.chats.iter().filter(|c| c.account_id == id).flat_map(|c| &c.participants.items);
-    let users = users.filter(|p| p.is_self != Some(true) && seen.insert(p.id.as_str()));
-    let q = r.q("query").map(|q| q.trim().to_lowercase()).filter(|q| !q.is_empty());
-    // The query also finds a contact by its ID, like the exact lookup of Desktop.
-    let fields = |p: &User| {
-        [Some(p.id.clone()), p.full_name.clone(), p.username.clone(), p.email.clone(), p.phone_number.clone()]
-    };
-    let hit = |p: &&User| q.as_ref().is_none_or(|q| fields(p).iter().flatten().any(|f| f.to_lowercase().contains(q)));
-    match rest {
-        [] => ok(account),
-        ["contacts"] => {
-            r.need_q("query")?;
-            ok(&json!({ "items": users.filter(hit).collect::<Vec<_>>() }))
-        }
-        ["contacts", "list"] => {
-            let (limit, after) = (r.limit(50, MIN_1, 200)?, r.after()?);
-            let all: Vec<&User> = users.filter(hit).collect();
-            // A cursor is the ID of a contact: `before` pages to the contacts after it, `after` to the ones before it.
-            let at = r.q("cursor").map(|c| all.iter().position(|u| u.id == c).ok_or_else(|| bad("invalid cursor")));
-            let (start, end) = match (at.transpose()?, after) {
-                (None, _) => (0, limit.min(all.len())),
-                (Some(i), false) => (i + 1, (i + 1 + limit).min(all.len())),
-                (Some(i), true) => (i.saturating_sub(limit), i),
-            };
-            let items = all[start..end].to_vec();
-            let has_more = if after { start > 0 } else { end < all.len() };
-            let (oldest_cursor, newest_cursor) =
-                (items.last().map(|u| u.id.clone()), items.first().map(|u| u.id.clone()));
-            ok(&CursorPage { items, has_more, oldest_cursor, newest_cursor })
-        }
-        _ => Err(no_route()),
-    }
+fn account(st: &BeeperStore, id: &str) -> Reply {
+    ok(st.accounts.iter().find(|a| a.account_id == id).ok_or_else(|| missing("Account not found"))?)
 }
 
 /// Desktop's routes that call a Beeper Cloud bridge through the homeserver: the provisioning capabilities, the
@@ -1548,32 +1518,7 @@ fn list_chats(st: &BeeperStore, r: &Req) -> Reply {
 
 fn chats(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
     match (method, path) {
-        ("POST", []) => create_chat(st, r),
-        ("POST", ["start"]) => {
-            let account_id = r.need("accountID")?;
-            let user = &r.body["user"];
-            let uid = ["id", "phoneNumber", "username", "email"].iter().find_map(|k| user[k].as_str());
-            let uid = uid.ok_or_else(|| bad("user identifier is required"))?;
-            let existing = st.chats.iter().find(|c| {
-                c.account_id == account_id
-                    && c.chat_type == "single"
-                    && c.participants.items.iter().any(|p| p.id == uid)
-            });
-            if let Some(c) = existing {
-                return ok(&json!({ "chatID": c.id, "status": "existing" }));
-            }
-            let name = user["fullName"].as_str().map(str::to_string);
-            let (chat, status) = st.create_or_start_chat(
-                account_id,
-                "single",
-                name,
-                vec![uid.into()],
-                r.owned("messageText"),
-                None,
-                None,
-            );
-            ok(&json!({ "chatID": chat.id, "status": status }))
-        }
+        ("POST", []) => merge_chats(st, r),
         (_, [id, rest @ ..]) => {
             let idx = st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?;
             chat(st, method, idx, id, rest, r)
@@ -1582,31 +1527,18 @@ fn chats(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
     }
 }
 
-fn create_chat(st: &mut BeeperStore, r: &Req) -> Reply {
-    let (chat, status) = match r.str("mode").unwrap_or("create") {
-        "merge" => {
-            let merge = &r.body["merge"];
-            let chat_ids: Vec<String> =
-                serde_json::from_value(merge["chatIDs"].clone()).map_err(|_| bad("merge.chatIDs is required"))?;
-            let default_chat_id = merge["defaultChatID"].as_str().map(str::to_string);
-            check_merge(st, &chat_ids, default_chat_id.as_deref())?;
-            let lead = default_chat_id.as_deref().unwrap_or(&chat_ids[0]);
-            let account = st.chats[st.resolve_chat_idx(lead).expect("check_merge found the chat")].account_id.clone();
-            let title = r.need("title")?.into();
-            st.create_or_start_chat(&account, "merged", Some(title), Vec::new(), None, Some(chat_ids), default_chat_id)
-        }
-        "create" => {
-            let issues = create_chat_issues(&r.body);
-            if !issues.is_empty() {
-                return Err(invalid_input(issues));
-            }
-            let participants = r.parse("participantIDs")?;
-            let (account_id, chat_type) = (r.need("accountID")?, r.need("type")?);
-            let (title, text) = (r.owned("title"), r.owned("messageText"));
-            st.create_or_start_chat(account_id, chat_type, title, participants, text, None, None)
-        }
-        _ => return Err(bad("mode must be create or merge")),
-    };
+/// beeper-rs's `mode: "merge"` of `POST /v1/chats`, which Desktop does not have: a merged chat of the chats.
+fn merge_chats(st: &mut BeeperStore, r: &Req) -> Reply {
+    let merge = &r.body["merge"];
+    let chat_ids: Vec<String> =
+        serde_json::from_value(merge["chatIDs"].clone()).map_err(|_| bad("merge.chatIDs is required"))?;
+    let default_chat_id = merge["defaultChatID"].as_str().map(str::to_string);
+    check_merge(st, &chat_ids, default_chat_id.as_deref())?;
+    let lead = default_chat_id.as_deref().unwrap_or(&chat_ids[0]);
+    let account = st.chats[st.resolve_chat_idx(lead).expect("check_merge found the chat")].account_id.clone();
+    let title = r.need("title")?.into();
+    let (chat, status) =
+        st.create_or_start_chat(&account, "merged", Some(title), Vec::new(), None, Some(chat_ids), default_chat_id);
     ok(&json!({ "chatID": chat.id, "status": status }))
 }
 

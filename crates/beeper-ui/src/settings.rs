@@ -18,9 +18,9 @@ use crate::windows;
 use crate::zoom;
 use crate::{
     ago, badge, brand_key, checkbox, distance, divider, downloads_dir, duration, ease_out, feedback_btn, first_groups,
-    fmt_phone, group, icon_btn, inbox_label, locate, login, outline_input, pill_btn, pill_style, plan_pill, portal,
-    pref_row, reconnect, record, select, slider_style, status_text, style, svg_size, theme_cards, tinted, toggle,
-    toggle_faded, BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT,
+    fmt_phone, group, icon_btn, inbox_label, locate, outline_input, pill_btn, pill_style, plan_pill, portal, pref_row,
+    reconnect, record, select, slider_style, status_text, style, svg_size, theme_cards, tinted, toggle, toggle_faded,
+    BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT,
     ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REVOKE_CONNECTION,
     CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE,
     INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM, ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER,
@@ -278,9 +278,10 @@ pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
     let mut out = Vec::new();
     for tab in SettingsTab::listed(st) {
         let rows: Vec<_> = match tab {
-            SettingsTab::Accounts => {
-                login::addable().filter(|n| has(n.display_name)).map(|n| SettingsHit::Network(n.display_name)).collect()
-            }
+            SettingsTab::Accounts => crate::networks::addable()
+                .filter(|n| has(n.display_name))
+                .map(|n| SettingsHit::Network(n.display_name))
+                .collect(),
             _ => prefs::rows()
                 .filter(|(page, r)| *page == tab.meta().0 && !r.label.is_empty() && shown(st, r))
                 .filter(|(_, r)| {
@@ -836,8 +837,8 @@ impl BeeperGuiApp {
         drop(st);
         let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
         let add = self.integrations.add.as_ref().map(|a| self.view_add_token(a));
-        let menu =
-            self.chat_menu.as_ref().and_then(|(cid, at)| Some((cid.strip_prefix("prefs:")?, at))).map(|(id, at)| {
+        let menu = self.list().chat_menu.as_ref().and_then(|(cid, at)| Some((cid.strip_prefix("prefs:")?, at))).map(
+            |(id, at)| {
                 let (menu, sub) = self.account_menu(id, SpaceMenu::Prefs);
                 let size = self.settings_size;
                 let items = if crate::nickname::can_nickname(&self.store.read(), id) { 5.0 } else { 4.0 };
@@ -850,7 +851,8 @@ impl BeeperGuiApp {
                 mouse_area(menu)
                     .on_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
                     .on_right_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
-            });
+            },
+        );
         let profile = self.profile_overlay();
         let picker = self.pane.emoji.as_ref().filter(|pk| pk.pref.is_some()).map(|_| {
             let picker = self.view_emoji_picker(&self.store.read()).expect("the picker is open");
@@ -997,6 +999,59 @@ impl BeeperGuiApp {
         .into()
     }
 
+    /// Desktop's `LLt` under the accounts: "Add an Account" and the accounts that remain, or with none left below
+    /// Beeper Plus Plus, its `AddMoreAccountsBanner` (`RLt`) with the upgrade of `moreAccountsBannerText`.
+    fn accounts_foot(&self, st: &BeeperStore, add: UiMessage) -> El<'_> {
+        static COLLAGE: std::sync::LazyLock<iced::widget::image::Handle> = std::sync::LazyLock::new(|| {
+            iced::widget::image::Handle::from_bytes(
+                include_bytes!("../assets/settings/platform_collage.png").as_slice(),
+            )
+        });
+        let p = &self.pal;
+        let (f, plan) = (&st.features, st.whoami.plan);
+        let n = f.accounts_remaining();
+        let remaining = |n: usize, free: bool| match free {
+            true => trn("%d Free Account Remaining", "%d Free Accounts Remaining", n, &[&n]),
+            false => trn("%d Account Remaining", "%d Accounts Remaining", n, &[&n]),
+        };
+        if plan != Plan::PlusPlus && n == 0 {
+            let up = crate::networks::upgrade_plan(plan).expect("a plan below Beeper Plus Plus");
+            // Desktop's free plan raises the limit to the `max-accounts` of Beeper Plus, which it falls back to 10 for.
+            let description = match plan {
+                Plan::Free => tr("You've reached the account limit. To add another account, either disable one of your current accounts, or upgrade to %1$s to raise your account limit to %2$s.")
+                    .replace("%1$s", up)
+                    .replace("%2$s", "10"),
+                _ => trf("You've reached the account limit. To add another account, either disable one of your current accounts, or upgrade to %s to raise your account limit.", &[&up]),
+            };
+            let upgrade = button(med(trf("Upgrade to %s", &[&up]), 13.0).color(p.strong))
+                .padding([8, 10])
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 9999.0))
+                .on_press(UiMessage::Settings(Msg::Open(SettingsTab::BeeperPlus)));
+            let banner = column![
+                semi(tr("Add More Accounts"), 13.0).color(p.strong),
+                txt(remaining(0, plan == Plan::Free), 12.0).color(p.muted),
+                container(iced::widget::image(COLLAGE.clone()).width(289).height(24)).padding(Padding::ZERO.top(10)),
+                container(txt(description, 11.0).color(p.strong).center()).max_width(300).padding(Padding::ZERO.top(8)),
+                container(upgrade).padding(Padding::ZERO.top(8)),
+            ]
+            .align_x(Center);
+            return container(banner).width(Fill).padding([12, 8]).style(bordered_box(CLEAR, p.chip, 1.0, 8.0)).into();
+        }
+        // Desktop's `accountsRemainingText`.
+        let left = match f.unlimited_accounts() {
+            true => tr("Infinite Accounts Remaining").to_string(),
+            false => remaining(n, plan == Plan::Free),
+        };
+        column![
+            button(txt(tr("Add an Account"), 13.0).color(p.accent)).bare(p.accent).on_press(add),
+            txt(left, 12.0).color(p.muted)
+        ]
+        .spacing(8)
+        .align_x(Center)
+        .width(Fill)
+        .into()
+    }
+
     fn settings_content(&self, st: &BeeperStore) -> El<'_> {
         let p = &self.pal;
         let groups: Vec<El<'_>> = match self.active_settings_tab {
@@ -1078,37 +1133,21 @@ impl BeeperGuiApp {
                         ]
                     })
                     .flatten();
-                let head = row![
-                    med(tr("Accounts"), 12.0).color(p.weak),
-                    Space::new().width(Fill),
-                    icon_btn(p, icon::CIRCLE_PLUS, 16.0, 22.0, p.accent, UiMessage::Accounts(accounts::Msg::ToggleAdd))
-                ]
-                .height(26)
-                .align_y(Center)
-                .padding([0, 4]);
-                let remaining = login::FREE_ACCOUNTS.saturating_sub(st.bridge_accounts.len());
-                let foot = column![
-                    button(med(tr("Add an Account"), 13.0).color(p.accent))
-                        .bare(p.accent)
-                        .on_press(UiMessage::Accounts(accounts::Msg::ToggleAdd)),
-                    txt(trn("%d Free Account Remaining", "%d Free Accounts Remaining", remaining, &[&remaining]), 12.0)
-                        .color(p.sub)
-                ]
-                .spacing(7)
-                .align_x(Center)
-                .width(Fill);
-                vec![{
-                    let card = container(Column::with_children(rows)).width(Fill).padding(1).style(bordered_box(
-                        p.prefs_group,
-                        p.chip,
-                        1.0,
-                        8.0,
-                    ));
-                    column![head, column![card, foot].spacing(11)].spacing(8).into()
-                }]
-                .into_iter()
-                .chain(self.adding_account.then(|| group(p, None, vec![login::network_grid(st, "", p, p.strong)])))
-                .collect()
+                let add = UiMessage::Networks(crate::networks::Msg::Open);
+                let remaining = st.features.accounts_remaining();
+                // Desktop's `QLt`: the add button shows while the plan allows another account.
+                let head = row![med(tr("Accounts"), 12.0).color(p.weak), Space::new().width(Fill)]
+                    .push((remaining > 0).then(|| icon_btn(p, icon::CIRCLE_PLUS, 16.0, 22.0, p.accent, add.clone())))
+                    .height(26)
+                    .align_y(Center)
+                    .padding([0, 4]);
+                let card = container(Column::with_children(rows)).width(Fill).padding(1).style(bordered_box(
+                    p.prefs_group,
+                    p.chip,
+                    1.0,
+                    8.0,
+                ));
+                vec![column![head, column![card, self.accounts_foot(st, add)].spacing(11)].spacing(8).into()]
             }
             SettingsTab::General => self.pref_items(prefs::GENERAL, st),
             SettingsTab::Appearance => self.pref_items(prefs::APPEARANCE, st),
@@ -1763,7 +1802,16 @@ impl BeeperGuiApp {
         ]);
         // Desktop's `AccountDisconnected` banner, with Reconnect when the bridge asks for a new login.
         let again = reconnect(st, id);
-        let disconnected = bridge.and_then(|b| b.remote_error.clone()).map(|message| {
+        // Desktop's `AccountDisconnected` describes an error without a message as a problem, with its state and code.
+        let disconnected = bridge.and_then(|b| Some((b, b.remote_error.as_deref()?))).map(|(b, message)| {
+            let line = |s: String| txt(s, 11.0).color(p.strong).center().into();
+            let message: Vec<El<'_>> = match message {
+                "" => vec![
+                    line(tr("This account is having a problem, please contact support.").into()),
+                    line(format!("{}: {}", b.state, b.remote_error_code.as_deref().unwrap_or_default())),
+                ],
+                m => vec![line(m.to_string())],
+            };
             let again = again.map(|m| {
                 button(med(tr("Reconnect"), 11.0))
                     .padding([4, 8])
@@ -1773,7 +1821,7 @@ impl BeeperGuiApp {
             let banner = column![
                 svg(ERROR_CIRCLE.clone()).width(20).height(20),
                 semi(tr("Account Disconnected"), 13.0).color(p.strong),
-                txt(message, 11.0).color(p.strong).center(),
+                Column::with_children(message).spacing(11).align_x(Center),
             ]
             .push(again)
             .spacing(8)
@@ -2288,7 +2336,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::Open(tab) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 return self.open_settings(tab);
             }
             Msg::SlideTo(key, v) => self.settings_slider = Some((key, v)),
@@ -2330,7 +2378,8 @@ impl BeeperGuiApp {
                     // Desktop's network hit: the account on that network, or the Add Account window for it.
                     SettingsHit::Network(name) => {
                         let st = self.store.read();
-                        let net = login::addable().find(|n| n.display_name == name).expect("an addable network");
+                        let net =
+                            crate::networks::addable().find(|n| n.display_name == name).expect("an addable network");
                         let account = st
                             .bridge_accounts
                             .iter()
@@ -2366,5 +2415,64 @@ impl BeeperGuiApp {
             }
         }
         self.settle()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced_test::simulator::simulator;
+    use serde_json::json;
+
+    fn shows(app: &BeeperGuiApp, text: &str) -> bool {
+        simulator(app.view_settings()).find(text).is_ok()
+    }
+
+    /// Desktop's `QLt` and `LLt`: the add button and "Add an Account" open the Add an Account window, the accounts
+    /// that remain follow the summary, and with none left the `AddMoreAccountsBanner` offers the next plan.
+    #[test]
+    fn the_accounts_foot_follows_the_plan_like_desktop() {
+        let mut app = crate::fuzz::demo_app("settings-accounts-foot");
+        let _ = app.update(UiMessage::Settings(Msg::Open(SettingsTab::Accounts)));
+        app.store.write().features.summary = json!({
+            "current": { "num_accounts_against_limit": 3 },
+            "max": { "num_accounts_against_limit": 5 },
+        });
+        assert!(shows(&app, "2 Free Accounts Remaining"));
+        let mut sim = simulator(app.view_settings());
+        let _ = sim.click("Add an Account").expect("Add an Account");
+        let open = sim.into_messages().any(|m| matches!(m, UiMessage::Networks(crate::networks::Msg::Open)));
+        assert!(open, "Add an Account opens its window");
+        app.store.write().whoami.plan = Plan::Plus;
+        assert!(shows(&app, "2 Accounts Remaining"));
+        app.store.write().features.summary["current"]["num_accounts_against_limit"] = json!(5);
+        for text in ["Add More Accounts", "0 Accounts Remaining", "Upgrade to Beeper Plus Plus"] {
+            assert!(shows(&app, text), "the banner shows {text}");
+        }
+        assert!(!shows(&app, "Add an Account"), "the banner takes the place of the link");
+        app.store.write().whoami.plan = Plan::Free;
+        assert!(shows(&app, "0 Free Accounts Remaining") && shows(&app, "Upgrade to Beeper Plus"));
+        app.store.write().whoami.plan = Plan::PlusPlus;
+        assert!(shows(&app, "Add an Account") && shows(&app, "0 Accounts Remaining"), "Plus Plus has no banner");
+        app.store.write().features.summary["max"]["num_accounts_against_limit"] = json!(-1);
+        assert!(shows(&app, "Infinite Accounts Remaining"));
+    }
+
+    /// Desktop's `AccountDisconnected`: an error without a message is a problem to report, with its state and code.
+    #[test]
+    fn an_error_without_a_message_asks_for_support_like_desktop() {
+        let mut app = crate::fuzz::demo_app("settings-account-problem");
+        let _ = app.update(UiMessage::Settings(Msg::Open(SettingsTab::Accounts)));
+        let id = {
+            let mut st = app.store.write();
+            let a = &mut st.bridge_accounts[0];
+            (a.state, a.remote_error, a.remote_error_code) =
+                ("UNKNOWN_ERROR".into(), Some(String::new()), Some("panic".into()));
+            a.account_id.clone()
+        };
+        app.account_page = Some(id);
+        assert!(shows(&app, "Account Disconnected"));
+        assert!(shows(&app, "This account is having a problem, please contact support."));
+        assert!(shows(&app, "UNKNOWN_ERROR: panic"));
     }
 }

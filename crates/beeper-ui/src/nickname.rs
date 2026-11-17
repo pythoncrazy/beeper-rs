@@ -51,7 +51,7 @@ impl BeeperGuiApp {
     pub(crate) fn nickname(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
             Msg::Open(account) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 if let Some(d) = self.nickname_windows.iter().find(|d| d.account == account) {
                     return window::gain_focus(d.id);
                 }
