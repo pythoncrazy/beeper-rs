@@ -2380,6 +2380,9 @@ pub struct Pane {
     pub menu_image: bool,
     /// The quoted message whose right click opened the message menu (Desktop's `selectedLinkedMessage`).
     pub menu_linked: Option<String>,
+    /// The name and the image of the custom emoji whose right click opened the message menu, inline or a reaction,
+    /// for Desktop's "Add :%s: to Custom Emoji".
+    pub menu_emoticon: Option<(String, String)>,
     /// The messages of the gallery whose menu is open.
     pub gallery_menu: Vec<String>,
     /// The reactions list of the messages of a gallery, at a point, from the gallery menu.
@@ -2441,6 +2444,9 @@ pub struct Pane {
     pub typing: Option<(String, std::time::Instant)>,
     /// The mention pills of the composer text, which Desktop sends as `mentionedUserIDs`.
     pub mentions: Vec<Mention>,
+    /// The custom emoji that the autocomplete or the picker put in the composer as ":name:", Desktop's
+    /// `customEmoji` nodes, which go out as `#[name](url)`.
+    pub emoticons: Vec<beeper_core::codec::Emoticon>,
     /// Desktop's `pendingMessageDraft`: the composer state that an edit puts aside. Set while `editing_message_id` is.
     pub stash: Option<Stash>,
     /// The composer changed after the last save of the draft. Desktop saves it at most every 5 seconds.
@@ -2488,7 +2494,8 @@ impl Pane {
             });
         }
         self.editing_message_id = Some(mid);
-        self.composer = composer_with(text);
+        let text = composer::stored_text(self, text);
+        self.composer = composer_with(&text);
         self.mentions = mentions;
     }
 
@@ -3619,7 +3626,9 @@ impl BeeperGuiApp {
         }
         let chat = st.chats[idx].clone();
         let draft = chat.draft.clone().unwrap_or_default();
-        self.pane.composer = composer_with(draft.text.as_deref().unwrap_or_default());
+        self.pane.emoticons.clear();
+        let text = composer::stored_text(&mut self.pane, draft.text.as_deref().unwrap_or_default());
+        self.pane.composer = composer_with(&text);
         self.pane.attachments = load_draft(&st, &draft).unwrap_or_else(|e| {
             self.status_banner = e;
             Vec::new()
@@ -5737,12 +5746,15 @@ impl BeeperGuiApp {
         let carry = empty.then(|| {
             let text = std::mem::replace(&mut pane.composer, composer_with(""));
             let (files, mentions) = (std::mem::take(&mut pane.attachments), std::mem::take(&mut pane.mentions));
-            (text, files, mentions, std::mem::take(&mut pane.composer_links), pane.send_later.take())
+            let emoticons = std::mem::take(&mut pane.emoticons);
+            (text, files, mentions, std::mem::take(&mut pane.composer_links), pane.send_later.take(), emoticons)
         });
         self.select_chat(&id);
         if let Some(draft) = carry {
             let pane = &mut self.pane;
-            (pane.composer, pane.attachments, pane.mentions, pane.composer_links, pane.send_later) = draft;
+            let emoticons;
+            (pane.composer, pane.attachments, pane.mentions, pane.composer_links, pane.send_later, emoticons) = draft;
+            pane.emoticons.extend(emoticons);
             pane.draft_due = true;
         }
     }

@@ -22,6 +22,7 @@ use crate::{
     truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, Toast,
     UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
 };
+use beeper_core::codec::Emoticon;
 use beeper_core::config::{account_network, now_unix_millis};
 use beeper_core::matrix::{Mention, ROOM_MENTION};
 use beeper_core::models::*;
@@ -46,9 +47,10 @@ pub(crate) fn composer_with(text: &str) -> text_editor::Content {
 /// A misspelled word of the composer and its suggestions.
 pub(crate) type Typo = (std::ops::Range<usize>, Vec<String>);
 
-/// A row of the composer autocomplete: an emoji and its name, or a mention label, its user ID and the member.
+/// A row of the composer autocomplete: an emoji (or a custom emoji's image URL) and its name, or a mention label, its
+/// user ID and the member.
 pub enum Suggestion {
-    Emoji(String, &'static str),
+    Emoji(String, String),
     Mention(String, String, Option<Box<User>>),
 }
 
@@ -79,11 +81,64 @@ pub(crate) fn html_pills(html: &str) -> Vec<Mention> {
     runs.filter_map(|r| Some((r.text.strip_prefix('@')?.to_string(), user(r.link.as_deref()?)?))).collect()
 }
 
+/// Desktop's `customEmoji` `parseHTML` of `img[data-mx-emoticon]`: the name in its `alt` ":name:", else in its
+/// `title`, and its image.
+pub(crate) fn html_emoticons(html: &str) -> Vec<Emoticon> {
+    let runs = beeper_core::codec::html_blocks(html).into_iter().flat_map(|b| b.runs);
+    let name =
+        |s: &str| s.strip_prefix(':').and_then(|s| s.strip_suffix(':')).filter(|n| !n.is_empty()).map(str::to_string);
+    runs.filter_map(|r| {
+        let n = name(&r.text).or_else(|| r.title.as_deref().map(|t| name(t).unwrap_or_else(|| t.to_string())))?;
+        Some(Emoticon { name: n, url: r.emoticon? })
+    })
+    .collect()
+}
+
 /// The mention pills that the text still has, once for each label.
 fn pills(text: &str, mentions: &[Mention]) -> Vec<Mention> {
     let mut labels = HashSet::new();
     let kept = mentions.iter().filter(|(label, _)| text.contains(&format!("@{label}")) && labels.insert(label));
     kept.cloned().collect()
+}
+
+/// Desktop's `renderText` of the composer's custom emoji nodes: each ":name:" of the custom emoji that the composer
+/// put in the text becomes `#[name](url)`, the longest name first. Desktop sends this as the body too.
+pub(crate) fn emoticon_markdown(text: &str, emoticons: &[Emoticon]) -> String {
+    if emoticons.is_empty() {
+        return text.to_string();
+    }
+    let (mut md, mut rest) = (String::with_capacity(text.len()), text);
+    while let Some(i) = rest.find(':') {
+        md.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let shortcode = |e: &&Emoticon| {
+            !e.name.is_empty() && rest[1..].strip_prefix(e.name.as_str()).is_some_and(|r| r.starts_with(':'))
+        };
+        match emoticons.iter().filter(shortcode).max_by_key(|e| e.name.len()) {
+            Some(e) => {
+                md.push_str(&e.markdown());
+                rest = &rest[e.name.len() + 2..];
+            }
+            None => {
+                md.push(':');
+                rest = &rest[1..];
+            }
+        }
+    }
+    md + rest
+}
+
+/// The composer text of Markdown with Desktop's `#[name](url)` custom emoji: each as ":name:", with the emoji.
+pub(crate) fn emoticon_text(md: &str) -> (String, Vec<Emoticon>) {
+    let (mut text, mut last, mut found) = (String::with_capacity(md.len()), 0, Vec::new());
+    for (r, e) in beeper_core::codec::emoticons(md) {
+        text.push_str(&md[last..r.start]);
+        text.push_str(&format!(":{}:", e.name));
+        last = r.end;
+        found.push(e);
+    }
+    text.push_str(&md[last..]);
+    (text, found)
 }
 
 /// Desktop's `persistDraftRecordNow`: saves the composer state of the chat open in `pane` as its draft, or the state
@@ -97,6 +152,7 @@ pub(crate) fn save_draft(st: &mut BeeperStore, pane: &Pane) {
             (pane.composer.text(), reply, &pane.attachments, links, pane.send_later, &pane.mentions)
         }
     };
+    let text = emoticon_markdown(&text, &pane.emoticons);
     let idx = st.resolve_chat_idx(chat).expect("the open chat exists");
     let old: Vec<ChatDraftAttachment> = st.chats[idx].draft.iter().flat_map(|d| d.attachments.clone()).collect();
     let old_ids: Vec<String> = old.iter().map(|a| a.upload_id.clone()).collect();
@@ -210,6 +266,13 @@ pub struct Stash {
     pub(crate) links: Vec<(String, LinkState)>,
     pub(crate) send_later: Option<(i64, bool)>,
     pub(crate) mentions: Vec<Mention>,
+}
+
+/// The composer text of a stored text with Desktop's `#[name](url)` custom emoji, and the emoji, as its nodes.
+pub(crate) fn stored_text(pane: &mut Pane, md: &str) -> String {
+    let (text, found) = emoticon_text(md);
+    pane.emoticons.extend(found);
+    text
 }
 
 const ATTACH_BUTTONS: [u8; 8] = [0, 7, 3, 5, 2, 1, 4, 6];
@@ -421,7 +484,9 @@ impl BeeperGuiApp {
                 room.into_iter().chain(users).take(8).collect()
             }
             b':' if st.settings.on("emojiAutocomplete") => {
-                let picks = emoji::suggestions(':', query, st.skin_tone).into_iter();
+                let chat = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i]);
+                let custom = chat.map_or_else(Vec::new, |c| emoji::chat_custom(st, c));
+                let picks = emoji::suggestions(':', query, st.skin_tone, &custom).into_iter();
                 picks.map(|(c, name)| Suggestion::Emoji(c, name)).collect()
             }
             _ => return None,
@@ -434,11 +499,14 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let (trigger, picks) = self.suggestions(st)?;
         let at = self.pane().suggest.min(picks.len() - 1);
+        // Desktop's `EmojiItem`: a custom emoji's image 13 px square before its name.
         let label = |s: &Suggestion| match s {
+            Suggestion::Emoji(c, name) if emoji::is_mxc(c) => format!(" {name}"),
             Suggestion::Emoji(c, name) => format!("{c} {name}"),
             Suggestion::Mention(label, ..) => format!("@{label}"),
         };
         let face = |s: &Suggestion| match s {
+            Suggestion::Emoji(c, _) if emoji::is_mxc(c) => Some(self.custom_image(c, 13.0)),
             Suggestion::Emoji(..) => None,
             Suggestion::Mention(_, _, Some(u)) => {
                 Some(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 24.0, 0.0))
@@ -448,13 +516,18 @@ impl BeeperGuiApp {
                 Some(self.chat_avatar(&st.chats[chat.expect("the open chat")], 24.0, 0.0))
             }
         };
-        let faces = if matches!(picks[0], Suggestion::Mention(..)) { 30.0 } else { 0.0 };
+        let faces = match &picks[0] {
+            Suggestion::Mention(..) => 30.0,
+            _ if picks.iter().any(|s| matches!(s, Suggestion::Emoji(c, _) if emoji::is_mxc(c))) => 13.0,
+            _ => 0.0,
+        };
         let width =
             picks.iter().map(|s| text_width(&label(s), 13.0, Weight::Normal)).fold(0.0, f32::max) + 12.0 + faces;
         let items = picks.iter().enumerate().map(|(i, s)| {
             let (bg, fg) = if i == at { (p.accent, Color::WHITE) } else { (CLEAR, p.text) };
             let name = txt(label(s), 13.0).wrapping(iced::widget::text::Wrapping::None);
-            let b = button(row![].push(face(s)).push(name).spacing(6).align_y(Center)).padding([4, 6]).width(width);
+            let gap = if matches!(s, Suggestion::Mention(..)) { 6.0 } else { 0.0 };
+            let b = button(row![].push(face(s)).push(name).spacing(gap).align_y(Center)).padding([4, 6]).width(width);
             b.style(btn_style([bg; 3], [fg; 3], 4.0)).on_press(UiMessage::Composer(Msg::PickSuggestion(i))).into()
         });
         let list =
@@ -540,6 +613,8 @@ impl BeeperGuiApp {
             return;
         }
         let mentions = pills(&text, &std::mem::take(&mut self.pane.mentions));
+        // Desktop's text of the composer: its custom emoji as `#[name](url)`.
+        let (typed, text) = (text.clone(), emoticon_markdown(&text, &self.pane.emoticons));
         let mut st = self.store.write();
         let idx = st.resolve_chat_idx(&chat_id).expect("chat exists");
         let edit = self.pane.editing_message_id.is_some();
@@ -585,7 +660,7 @@ impl BeeperGuiApp {
             let delay =
                 st.feature("undo-send").on.then(|| prefs::UNDO_SEND_MS[usize::from(st.settings.pref("undoSendDelay"))]);
             let delay = delay.filter(|&ms| ms > 0);
-            let restore = delay.map(|_| (text.clone(), reply_to.clone(), files.clone()));
+            let restore = delay.map(|_| (typed, reply_to.clone(), files.clone()));
             let urls = text_urls(&text);
             let preview = self.pane.composer_links.iter().find_map(|(u, s)| match s {
                 LinkState::Loaded(v, img) if urls.contains(u) => {
@@ -873,6 +948,7 @@ impl BeeperGuiApp {
         let undo = self.queued_here().then(|| st.settings.hotkey_keys("Undo Pending Send").to_string());
         let marks = format::MarkStyle {
             mentions: self.pane().mentions.iter().map(|(label, _)| label.clone()).collect(),
+            emoticons: self.pane().emoticons.iter().map(|e| e.name.clone()).collect(),
             mention: p.accent,
             link: p.link,
             mark: p.tertiary,
@@ -1157,6 +1233,8 @@ pub enum Msg {
     RemoveLinkPreview(String),
     /// Picks a row of the composer autocomplete.
     PickSuggestion(usize),
+    /// Puts a custom emoji of the picker in the composer at the caret, with a space after it when `true`.
+    InsertEmoticon(Emoticon, bool),
     /// The Cut (true) and Copy items of the Edit menu, on the composer.
     Clip(bool),
     /// Desktop's type-to-focus: the composer of the pane takes the text at its end.
@@ -1427,12 +1505,23 @@ impl BeeperGuiApp {
                 }
                 return stop;
             }
+            Msg::InsertEmoticon(e, space) => {
+                let text = format!(":{}:{}", e.name, if space { " " } else { "" });
+                self.pane.emoticons.push(e);
+                let paste = text_editor::Action::Edit(text_editor::Edit::Paste(text.into()));
+                return self.update(UiMessage::Composer(Msg::Edit(paste)));
+            }
             Msg::PickSuggestion(i) => {
                 // The second click of a double click hits the list that the first pick closed.
                 let Some((at, picks)) = self.suggestions(&self.store.read()) else { return Task::none() };
                 let mut text = self.pane.composer.text();
                 let caret = format::offset(&text, self.pane.composer.cursor().position);
                 let pick = match &picks[i.min(picks.len() - 1)] {
+                    // Desktop's `#[name](url)` node of a custom emoji, which the composer shows as ":name:".
+                    Suggestion::Emoji(c, name) if emoji::is_mxc(c) => {
+                        self.pane.emoticons.push(Emoticon { name: name.clone(), url: c.clone() });
+                        format!(":{name}: ")
+                    }
                     Suggestion::Emoji(c, _) => format!("{c} "),
                     Suggestion::Mention(label, id, _) => {
                         self.pane.mentions.push((label.clone(), id.clone()));
@@ -1460,6 +1549,8 @@ impl BeeperGuiApp {
                 // Desktop scrolls the edited message into view (`scrollIntoView` of the editing target).
                 self.pane.timeline.reveal(vlist::key(&mid));
                 let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Center);
+                // Desktop's `customEmoji` nodes of the message's `img[data-mx-emoticon]`, named by their `alt`.
+                self.pane.emoticons.extend(html.as_deref().map(html_emoticons).unwrap_or_default());
                 self.pane.start_edit(mid, &old_txt, html.map_or(Vec::new(), |h| html_pills(&h)));
                 return Task::batch([operation::focus("composer-input"), shown]);
             }

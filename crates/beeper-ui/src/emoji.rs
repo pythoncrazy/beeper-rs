@@ -3,10 +3,13 @@ use crate::message;
 use crate::settings;
 use crate::style::{med, mix, txt, CLEAR};
 use crate::{BeeperGuiApp, El, UiMessage};
+use beeper_core::codec::Emoticon;
 use beeper_core::store::BeeperStore;
 use iced::gradient::Linear;
 use iced::widget::scrollable::{Direction, Scrollbar};
-use iced::widget::{button, column, container, mouse_area, operation, row, scrollable, stack, svg, text_input, Space};
+use iced::widget::{
+    button, column, container, image, mouse_area, operation, row, scrollable, stack, svg, text_input, Space,
+};
 use iced::{border, Background, Border, Center, Color, Degrees, Fill, Gradient, Padding, Shadow, Task, Vector};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -111,8 +114,50 @@ static DATA: LazyLock<Data> = LazyLock::new(|| {
     d
 });
 
-/// emoji-mart's `SearchIndex.search`: each word narrows the pool, and the last word ranks it.
-fn search(q: &str) -> Vec<usize> {
+/// An entry of the picker: an emoji of emoji-mart's data, or the custom emoji at an index of the list it shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Item {
+    Native(usize),
+    Custom(usize),
+}
+
+/// Desktop's custom emoji that the picker and the composer offer in `chat` (`customEmojisForReactions` and
+/// `customEmojisForMessageContent`): those of the own image pack, when the room takes them.
+pub(crate) fn chat_custom(st: &BeeperStore, chat: &beeper_core::models::Chat) -> Vec<Emoticon> {
+    match chat.custom_emoji {
+        true => beeper_core::matrix::pack_emojis(&st.image_pack),
+        false => Vec::new(),
+    }
+}
+
+/// Whether a reaction key or a quick reaction is a custom emoji's image (Desktop's `$o`).
+pub(crate) fn is_mxc(s: &str) -> bool {
+    s.starts_with("mxc://") || s.starts_with("localmxc://")
+}
+
+/// emoji-mart's `search` of a custom emoji (Desktop's `UZt` entry): its id (the URL), the words of its name, and its
+/// keywords (the URL, "custom" and the name), in lowercase.
+fn custom_search(e: &Emoticon) -> String {
+    let words = e.name.split(|c: char| matches!(c, '-' | '|' | '_') || c.is_whitespace());
+    let terms = std::iter::once(e.url.as_str()).chain(words).chain([e.url.as_str(), "custom", e.name.as_str()]);
+    terms.filter(|t| !t.trim().is_empty()).fold(String::new(), |s, t| s + "," + t.to_lowercase().as_str())
+}
+
+/// emoji-mart's `SearchIndex.search`: each word narrows the pool, and the last word ranks it. The custom emoji come
+/// after the data, once for each URL with its last shortcode, as emoji-mart keeps them by id.
+fn search(q: &str, custom: &[Emoticon]) -> Vec<Item> {
+    let mut by_url: Vec<(&str, usize)> = Vec::new();
+    for (i, e) in custom.iter().enumerate() {
+        match by_url.iter_mut().find(|(u, _)| *u == e.url) {
+            Some(entry) => entry.1 = i,
+            None => by_url.push((&e.url, i)),
+        }
+    }
+    let searches: Vec<String> = custom.iter().map(custom_search).collect();
+    let info = |it: Item| match it {
+        Item::Native(i) => (DATA.emojis[i].id(), DATA.emojis[i].search.as_str()),
+        Item::Custom(i) => (custom[i].url.as_str(), searches[i].as_str()),
+    };
     let mut q = q.to_lowercase();
     let dash =
         q.char_indices().zip(q.chars().skip(1)).find(|((_, c), n)| (c.is_alphanumeric() || *c == '_') && *n == '-');
@@ -125,22 +170,22 @@ fn search(q: &str) -> Vec<usize> {
             words.push(w);
         }
     }
-    let mut pool: Vec<(usize, usize)> = (0..DATA.emojis.len()).map(|i| (i, 0)).collect();
+    let natives = (0..DATA.emojis.len()).map(Item::Native);
+    let mut pool: Vec<(Item, usize)> =
+        natives.chain(by_url.iter().map(|&(_, i)| Item::Custom(i))).map(|i| (i, 0)).collect();
     for w in &words {
         let needle = format!(",{w}");
         pool = pool
             .into_iter()
-            .filter_map(|(i, _)| {
-                let e = &DATA.emojis[i];
-                let at = e.search.find(&needle)?;
-                Some((i, if e.id() == *w { 0 } else { at + 1 }))
+            .filter_map(|(it, _)| {
+                let (id, search) = info(it);
+                let at = search.find(&needle)?;
+                Some((it, if id == *w { 0 } else { at + 1 }))
             })
             .collect();
     }
     let collate = |s: &str| s.chars().map(|c| if c == '_' { '\0' } else { c }).collect::<String>();
-    pool.sort_by(|a, b| {
-        a.1.cmp(&b.1).then_with(|| collate(DATA.emojis[a.0].id()).cmp(&collate(DATA.emojis[b.0].id())))
-    });
+    pool.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| collate(info(a.0).0).cmp(&collate(info(b.0).0))));
     pool.into_iter().take(90).map(|(i, _)| i).collect()
 }
 
@@ -220,16 +265,22 @@ const QUERY_EMOJI: [(&str, &str, &str); 16] = [
 ];
 
 /// Desktop's emoji autocomplete for the text after ":": up to 10 emoji with a search term that is or starts
-/// with `q`, ranked like match-sorter, as `(emoji, name)`.
-pub(crate) fn suggestions(prefix: char, q: &str, tone: u8) -> Vec<(String, &'static str)> {
+/// with `q`, ranked like match-sorter, as `(emoji, name)`. A custom emoji of `custom` is its image URL and its
+/// shortcode.
+pub(crate) fn suggestions(prefix: char, q: &str, tone: u8, custom: &[Emoticon]) -> Vec<(String, String)> {
     let number = q.trim().is_empty() || q.trim().parse::<f64>().is_ok_and(f64::is_finite);
     if !q.starts_with(['-', '+']) && number && q != "100" {
         return Vec::new();
     }
     let lower = q.to_lowercase();
-    let mut ranked: Vec<(u8, usize, &str, usize)> = (search(q).into_iter())
-        .filter_map(|i| {
-            let terms = DATA.emojis[i].search.split(',').filter(|t| !t.is_empty());
+    let searches: Vec<String> = custom.iter().map(custom_search).collect();
+    let mut ranked: Vec<(u8, usize, &str, Item)> = (search(q, custom).into_iter())
+        .filter_map(|it| {
+            let search = match it {
+                Item::Native(i) => DATA.emojis[i].search.as_str(),
+                Item::Custom(i) => searches[i].as_str(),
+            };
+            let terms = search.split(',').filter(|t| !t.is_empty());
             let rank = |t: &str| match t {
                 _ if t == q => 7,
                 _ if t == lower => 6,
@@ -237,13 +288,16 @@ pub(crate) fn suggestions(prefix: char, q: &str, tone: u8) -> Vec<(String, &'sta
                 _ => 0,
             };
             let (at, term) = terms.enumerate().max_by_key(|&(at, t)| (rank(t), std::cmp::Reverse(at)))?;
-            (rank(term) > 0).then_some((rank(term), at, term, i))
+            (rank(term) > 0).then_some((rank(term), at, term, it))
         })
         .collect();
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then_with(|| a.2.cmp(b.2)));
-    let found = ranked.into_iter().map(|r| (DATA.emojis[r.3].skinned(tone), DATA.emojis[r.3].name)).take(10);
+    let found = ranked.into_iter().take(10).map(|r| match r.3 {
+        Item::Native(i) => (DATA.emojis[i].skinned(tone), DATA.emojis[i].name.to_string()),
+        Item::Custom(i) => (custom[i].url.clone(), custom[i].name.clone()),
+    });
     let key = format!("{prefix}{q}");
-    let first = QUERY_EMOJI.iter().find(|e| e.0 == key).map(|e| (e.2.to_string(), e.1));
+    let first = QUERY_EMOJI.iter().find(|e| e.0 == key).map(|e| (e.2.to_string(), e.1.to_string()));
     let mut seen = std::collections::HashSet::new();
     let mut picks: Vec<_> = first.into_iter().chain(found).take(10).filter(|(c, _)| seen.insert(c.clone())).collect();
     // Desktop lists 👍 before 👎 whatever their scores.
@@ -263,9 +317,11 @@ pub enum EmojiMsg {
     Pointer(u8, bool),
     Close(u32),
     Query(String),
-    Hover(usize),
-    Unhover(usize),
+    Hover(Item),
+    Unhover(Item),
     Pick(usize),
+    /// A custom emoji of the picker.
+    PickCustom(Emoticon),
     /// One of the reactions of a network that takes only some.
     React(String),
     Jump(usize),
@@ -281,7 +337,7 @@ pub struct Picker {
     /// The quick reaction that a pick sets in Settings: 0 is the Quick React emoji, 1 to 3 the custom reactions.
     pub(crate) pref: Option<u8>,
     query: String,
-    hover: Option<usize>,
+    hover: Option<Item>,
     skins_open: bool,
     scroll: f32,
 }
@@ -314,15 +370,32 @@ impl BeeperGuiApp {
         }
     }
 
-    /// The picker sections: frequently used (when there are any), then each category, or the search results.
-    fn emoji_sections(&self, pk: &Picker, st: &BeeperStore) -> Vec<(&'static str, Vec<usize>)> {
-        if !pk.query.trim().is_empty() {
-            return vec![("Search Results", search(&pk.query))];
+    /// The custom emoji of the open picker: the own pack's for a quick reaction of Settings (Desktop's
+    /// `[accountDataStore.customEmojis]`), else those the chat of the message or of the composer takes.
+    pub(crate) fn picker_custom(&self, pk: &Picker, st: &BeeperStore) -> Vec<Emoticon> {
+        if pk.pref.is_some() {
+            return beeper_core::matrix::pack_emojis(&st.image_pack);
         }
-        let frequent = frequent_emoji(st);
+        let chat = match &pk.react {
+            Some((mid, _)) => st.loaded(mid).map(|m| m.chat_id.clone()),
+            None => self.pane().selected_chat_id.clone(),
+        };
+        let chat = chat.and_then(|c| st.resolve_chat_idx(&c)).map(|i| &st.chats[i]);
+        chat.map_or_else(Vec::new, |c| chat_custom(st, c))
+    }
+
+    /// The picker sections: frequently used (when there are any), then each category, then emoji-mart's "Custom"
+    /// for the `custom` emoji, or the search results.
+    fn emoji_sections(&self, pk: &Picker, st: &BeeperStore, custom: &[Emoticon]) -> Vec<(&'static str, Vec<Item>)> {
+        if !pk.query.trim().is_empty() {
+            return vec![("Search Results", search(&pk.query, custom))];
+        }
+        let frequent = frequent_emoji(st, custom);
         let frequent = (!frequent.is_empty()).then_some((CATEGORIES[0].1, frequent));
-        let cats = DATA.categories.iter().zip(&CATEGORIES[1..]).map(|(r, (_, title))| (*title, r.clone().collect()));
-        frequent.into_iter().chain(cats).collect()
+        let cats = DATA.categories.iter().zip(&CATEGORIES[1..]);
+        let cats = cats.map(|(r, (_, title))| (*title, r.clone().map(Item::Native).collect()));
+        let custom = (!custom.is_empty()).then(|| ("Custom", (0..custom.len()).map(Item::Custom).collect()));
+        frequent.into_iter().chain(cats).chain(custom).collect()
     }
 
     pub(crate) fn update_emoji(&mut self, m: EmojiMsg) -> Task<UiMessage> {
@@ -370,6 +443,18 @@ impl BeeperGuiApp {
                 return self
                     .update(UiMessage::Composer(composer::Msg::Edit(iced::widget::text_editor::Action::Edit(paste))));
             }
+            // Desktop's `onEmojiSelect` of a custom emoji: its URL as the quick reaction or the reaction, or Desktop's
+            // `#[name](url)` in the composer.
+            EmojiMsg::PickCustom(e) => {
+                if let Some(slot) = self.pane.emoji.take_if(|pk| pk.pref.is_some()).and_then(|pk| pk.pref) {
+                    return self.update(UiMessage::Settings(settings::Msg::SetQuickEmoji(slot, e.url)));
+                }
+                if let Some((mid, _)) = self.pane.emoji.take_if(|pk| pk.react.is_some()).and_then(|pk| pk.react) {
+                    let cid = self.pane.selected_chat_id.clone().expect("an open chat");
+                    return self.update(UiMessage::Message(message::Msg::ToggleReaction(cid, mid, e.url)));
+                }
+                return self.update(UiMessage::Composer(composer::Msg::InsertEmoticon(e, false)));
+            }
             EmojiMsg::Skin(t) => {
                 let client = {
                     let mut st = self.store.write();
@@ -387,8 +472,9 @@ impl BeeperGuiApp {
                 let pk = self.pane.emoji.as_mut().expect("the picker is open");
                 pk.query.clear();
                 let pk = self.pane.emoji.as_ref().expect("the picker is open");
+                let st = self.store.read();
                 let y = self
-                    .emoji_sections(pk, &self.store.read())
+                    .emoji_sections(pk, &st, &self.picker_custom(pk, &st))
                     .iter()
                     .take(k)
                     .map(|(_, v)| section_height(v.len()))
@@ -453,7 +539,8 @@ impl BeeperGuiApp {
         }
         let c = self.emoji_colors();
         let tone = st.skin_tone;
-        let sections = self.emoji_sections(pk, st);
+        let custom = self.picker_custom(pk, st);
+        let sections = self.emoji_sections(pk, st, &custom);
         let tops: Vec<f32> = sections
             .iter()
             .scan(0.0, |y, (_, v)| {
@@ -464,8 +551,11 @@ impl BeeperGuiApp {
             .collect();
         let current = tops.iter().rposition(|&t| t <= pk.scroll + 1.0).expect("the first section starts at 0");
         let searching = !pk.query.trim().is_empty();
-        let frequent = usize::from(!frequent_emoji(st).is_empty());
-        let nav = row((1 - frequent..CATEGORIES.len()).enumerate().map(|(k, cat)| {
+        // emoji-mart's `#nav`: a button for each category, flex-grown across the 324 px between the paddings.
+        let frequent = usize::from(!frequent_emoji(st, &custom).is_empty());
+        let cats: Vec<usize> = (1 - frequent..CATEGORIES.len()).chain((!custom.is_empty()).then_some(9)).collect();
+        let tab = 324.0 / cats.len() as f32;
+        let nav = row(cats.into_iter().enumerate().map(|(k, cat)| {
             let on = !searching && k == current;
             let (fg, accent, dim) = (c.fg, c.accent, mix(c.bg, c.fg, 0.65));
             let glyph = svg(CATEGORY_ICONS[cat].clone()).width(18).height(18).style(move |_, s| svg::Style {
@@ -475,7 +565,7 @@ impl BeeperGuiApp {
                     (false, svg::Status::Idle) => dim,
                 }),
             });
-            button(container(glyph).center_x(CELL).center_y(42))
+            button(container(glyph).center_x(tab).center_y(42))
                 .padding(0)
                 .style(|_, _| button::Style::default())
                 .on_press(UiMessage::Emoji(EmojiMsg::Jump(k)))
@@ -483,12 +573,12 @@ impl BeeperGuiApp {
         }))
         .padding(Padding::ZERO.left(12.0));
         let bar = (!searching).then(|| {
-            let bar = container(Space::new().width(CELL).height(3)).style(move |_| container::Style {
+            let bar = container(Space::new().width(tab).height(3)).style(move |_| container::Style {
                 background: Some(c.accent.into()),
                 border: border::rounded(border::top(3)),
                 ..Default::default()
             });
-            container(bar).padding(Padding::ZERO.top(39.0).left(12.0 + CELL * current as f32))
+            container(bar).padding(Padding::ZERO.top(39.0).left(12.0 + tab * current as f32))
         });
         let nav = stack![nav].push(bar).height(42);
         let fade = |down: bool, border: Color| {
@@ -549,7 +639,7 @@ impl BeeperGuiApp {
         for (title, list) in &sections {
             push(header(title).into(), HEAD);
             for line in list.chunks(PER_LINE) {
-                push(row(line.iter().map(|&i| self.emoji_cell(i, tone, edge))).height(CELL).into(), CELL);
+                push(row(line.iter().map(|&i| self.emoji_cell(i, &custom, tone, edge))).height(CELL).into(), CELL);
             }
         }
         let last = sections.last().map_or(0.0, |(_, v)| section_height(v.len()));
@@ -575,7 +665,7 @@ impl BeeperGuiApp {
             container(header(title)).padding(Padding::ZERO.left(12.0).top(shift.max(-HEAD))).height(HEAD).clip(true)
         });
         let grid = stack![grid].push(sticky).push(container(fade(false, edge)).align_bottom(GRID_H));
-        let col = column![nav, search, grid, self.emoji_preview(pk, &sections, tone, &c)];
+        let col = column![nav, search, grid, self.emoji_preview(pk, &sections, &custom, tone, &c)];
         let body = container(col).width(352).height(435).style(move |_| container::Style {
             background: Some(c.bg.into()),
             border: border::rounded(10),
@@ -596,23 +686,59 @@ impl BeeperGuiApp {
         )
     }
 
-    fn emoji_cell(&self, i: usize, tone: u8, hover: Color) -> El<'static> {
-        let glyph = txt(DATA.emojis[i].skinned(tone), 24.0).line_height(1.0).font(EMOJI_FONT);
+    /// An emoji of the grid, or a custom emoji's image at emoji-mart's 24 px (`max-width` and `max-height`).
+    fn emoji_cell(&self, it: Item, custom: &[Emoticon], tone: u8, hover: Color) -> El<'static> {
+        let (glyph, pick): (El<'static>, _) = match it {
+            Item::Native(i) => {
+                (txt(DATA.emojis[i].skinned(tone), 24.0).line_height(1.0).font(EMOJI_FONT).into(), EmojiMsg::Pick(i))
+            }
+            Item::Custom(i) => (self.custom_image(&custom[i].url, 24.0), EmojiMsg::PickCustom(custom[i].clone())),
+        };
         let b = button(container(glyph).center(CELL)).padding(0).style(move |_, s| button::Style {
             background: matches!(s, button::Status::Hovered | button::Status::Pressed).then(|| hover.into()),
             border: border::rounded(CELL / 2.0),
             ..Default::default()
         });
-        mouse_area(b.on_press(UiMessage::Emoji(EmojiMsg::Pick(i))))
-            .on_enter(UiMessage::Emoji(EmojiMsg::Hover(i)))
-            .on_exit(UiMessage::Emoji(EmojiMsg::Unhover(i)))
+        mouse_area(b.on_press(UiMessage::Emoji(pick)))
+            .on_enter(UiMessage::Emoji(EmojiMsg::Hover(it)))
+            .on_exit(UiMessage::Emoji(EmojiMsg::Unhover(it)))
             .into()
     }
 
-    fn emoji_preview(&self, pk: &Picker, sections: &[(&str, Vec<usize>)], tone: u8, c: &Colors) -> El<'static> {
+    /// The emoji of a quick reaction button of Settings (Desktop's `e1e`): a custom emoji's image 16 px square.
+    pub(crate) fn quick_glyph(&self, e: &str) -> El<'static> {
+        match is_mxc(e) {
+            true => self.custom_image(e, 16.0),
+            false => txt(e.to_string(), 16.0).into(),
+        }
+    }
+
+    /// A custom emoji's image in a `size` box once it has loaded, its shape kept.
+    pub(crate) fn custom_image(&self, url: &str, size: f32) -> El<'static> {
+        match self.still(url) {
+            Some(frame) => image(frame).width(size).height(size).content_fit(iced::ContentFit::Contain).into(),
+            None => Space::new().width(size).height(size).into(),
+        }
+    }
+
+    /// emoji-mart's preview of the hovered emoji: a custom emoji shows its image, its name, and its id (the URL) as
+    /// the shortcode.
+    fn emoji_preview(
+        &self,
+        pk: &Picker,
+        sections: &[(&str, Vec<Item>)],
+        custom: &[Emoticon],
+        tone: u8,
+        c: &Colors,
+    ) -> El<'static> {
         let none = sections.iter().all(|(_, v)| v.is_empty());
-        let shown = pk.hover.map(|i| {
-            (DATA.emojis[i].skinned(tone), DATA.emojis[i].name.to_string(), format!(":{}:", DATA.emojis[i].id()))
+        let shown = pk.hover.and_then(|it| match it {
+            Item::Native(i) => Some((
+                DATA.emojis[i].skinned(tone),
+                DATA.emojis[i].name.to_string(),
+                format!(":{}:", DATA.emojis[i].id()),
+            )),
+            Item::Custom(i) => custom.get(i).map(|e| (e.url.clone(), e.name.clone(), format!(":{}:", e.url))),
         });
         let (glyph, text): (String, El<'static>) = match (shown, none) {
             (Some((g, name, code)), _) => {
@@ -644,7 +770,11 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::Emoji(EmojiMsg::SkinMenu));
             container(b).center(CELL)
         });
-        let emoji = container(txt(glyph, 36.0).line_height(1.0).font(EMOJI_FONT)).center(CELL);
+        let glyph: El<'static> = match is_mxc(&glyph) {
+            true => self.custom_image(&glyph, 36.0),
+            false => txt(glyph, 36.0).line_height(1.0).font(EMOJI_FONT).into(),
+        };
+        let emoji = container(glyph).center(CELL);
         container(row![emoji, container(text).padding(Padding::ZERO.left(12.0)).width(Fill)].push(skin).align_y(Center))
             .padding(Padding::new(16.0).left(12.0).right(16.0))
             .height(68)
@@ -713,7 +843,7 @@ static SEARCH_ICONS: LazyLock<[svg::Handle; 2]> = LazyLock::new(|| {
     .map(|s| svg::Handle::from_memory(s.as_bytes()))
 });
 
-static CATEGORY_ICONS: LazyLock<[svg::Handle; 9]> = LazyLock::new(|| {
+static CATEGORY_ICONS: LazyLock<[svg::Handle; 10]> = LazyLock::new(|| {
     [
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M256 512C114.6 512 0 397.4 0 256C0 114.6 114.6 0 256 0C397.4 0 512 114.6 512 256C512 397.4 397.4 512 256 512zM232 256C232 264 236 271.5 242.7 275.1L338.7 339.1C349.7 347.3 364.6 344.3 371.1 333.3C379.3 322.3 376.3 307.4 365.3 300L280 243.2V120C280 106.7 269.3 96 255.1 96C242.7 96 231.1 106.7 231.1 120L232 256z"/></svg>"#,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M0 256C0 114.6 114.6 0 256 0C397.4 0 512 114.6 512 256C512 397.4 397.4 512 256 512C114.6 512 0 397.4 0 256zM256 432C332.1 432 396.2 382 415.2 314.1C419.1 300.4 407.8 288 393.6 288H118.4C104.2 288 92.92 300.4 96.76 314.1C115.8 382 179.9 432 256 432V432zM176.4 160C158.7 160 144.4 174.3 144.4 192C144.4 209.7 158.7 224 176.4 224C194 224 208.4 209.7 208.4 192C208.4 174.3 194 160 176.4 160zM336.4 224C354 224 368.4 209.7 368.4 192C368.4 174.3 354 160 336.4 160C318.7 160 304.4 174.3 304.4 192C304.4 209.7 318.7 224 336.4 224z"/></svg>"#,
@@ -724,41 +854,71 @@ static CATEGORY_ICONS: LazyLock<[svg::Handle; 9]> = LazyLock::new(|| {
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><path d="M112.1 454.3c0 6.297 1.816 12.44 5.284 17.69l17.14 25.69c5.25 7.875 17.17 14.28 26.64 14.28h61.67c9.438 0 21.36-6.401 26.61-14.28l17.08-25.68c2.938-4.438 5.348-12.37 5.348-17.7L272 415.1h-160L112.1 454.3zM191.4 .0132C89.44 .3257 16 82.97 16 175.1c0 44.38 16.44 84.84 43.56 115.8c16.53 18.84 42.34 58.23 52.22 91.45c.0313 .25 .0938 .5166 .125 .7823h160.2c.0313-.2656 .0938-.5166 .125-.7823c9.875-33.22 35.69-72.61 52.22-91.45C351.6 260.8 368 220.4 368 175.1C368 78.61 288.9-.2837 191.4 .0132zM192 96.01c-44.13 0-80 35.89-80 79.1C112 184.8 104.8 192 96 192S80 184.8 80 176c0-61.76 50.25-111.1 112-111.1c8.844 0 16 7.159 16 16S200.8 96.01 192 96.01z"/></svg>"#,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M500.3 7.251C507.7 13.33 512 22.41 512 31.1V175.1C512 202.5 483.3 223.1 447.1 223.1C412.7 223.1 383.1 202.5 383.1 175.1C383.1 149.5 412.7 127.1 447.1 127.1V71.03L351.1 90.23V207.1C351.1 234.5 323.3 255.1 287.1 255.1C252.7 255.1 223.1 234.5 223.1 207.1C223.1 181.5 252.7 159.1 287.1 159.1V63.1C287.1 48.74 298.8 35.61 313.7 32.62L473.7 .6198C483.1-1.261 492.9 1.173 500.3 7.251H500.3zM74.66 303.1L86.5 286.2C92.43 277.3 102.4 271.1 113.1 271.1H174.9C185.6 271.1 195.6 277.3 201.5 286.2L213.3 303.1H239.1C266.5 303.1 287.1 325.5 287.1 351.1V463.1C287.1 490.5 266.5 511.1 239.1 511.1H47.1C21.49 511.1-.0019 490.5-.0019 463.1V351.1C-.0019 325.5 21.49 303.1 47.1 303.1H74.66zM143.1 359.1C117.5 359.1 95.1 381.5 95.1 407.1C95.1 434.5 117.5 455.1 143.1 455.1C170.5 455.1 191.1 434.5 191.1 407.1C191.1 381.5 170.5 359.1 143.1 359.1zM440.3 367.1H496C502.7 367.1 508.6 372.1 510.1 378.4C513.3 384.6 511.6 391.7 506.5 396L378.5 508C372.9 512.1 364.6 513.3 358.6 508.9C352.6 504.6 350.3 496.6 353.3 489.7L391.7 399.1H336C329.3 399.1 323.4 395.9 321 389.6C318.7 383.4 320.4 376.3 325.5 371.1L453.5 259.1C459.1 255 467.4 254.7 473.4 259.1C479.4 263.4 481.6 271.4 478.7 278.3L440.3 367.1zM116.7 219.1L19.85 119.2C-8.112 90.26-6.614 42.31 24.85 15.34C51.82-8.137 93.26-3.642 118.2 21.83L128.2 32.32L137.7 21.83C162.7-3.642 203.6-8.137 231.6 15.34C262.6 42.31 264.1 90.26 236.1 119.2L139.7 219.1C133.2 225.6 122.7 225.6 116.7 219.1H116.7z"/></svg>"#,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M64 496C64 504.8 56.75 512 48 512h-32C7.25 512 0 504.8 0 496V32c0-17.75 14.25-32 32-32s32 14.25 32 32V496zM476.3 0c-6.365 0-13.01 1.35-19.34 4.233c-45.69 20.86-79.56 27.94-107.8 27.94c-59.96 0-94.81-31.86-163.9-31.87C160.9 .3055 131.6 4.867 96 15.75v350.5c32-9.984 59.87-14.1 84.85-14.1c73.63 0 124.9 31.78 198.6 31.78c31.91 0 68.02-5.971 111.1-23.09C504.1 355.9 512 344.4 512 332.1V30.73C512 11.1 495.3 0 476.3 0z"/></svg>"#,
+        // emoji-mart's icon of a custom category.
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path d="M417.1 368c-5.937 10.27-16.69 16-27.75 16c-5.422 0-10.92-1.375-15.97-4.281L256 311.4V448c0 17.67-14.33 32-31.1 32S192 465.7 192 448V311.4l-118.3 68.29C68.67 382.6 63.17 384 57.75 384c-11.06 0-21.81-5.734-27.75-16c-8.828-15.31-3.594-34.88 11.72-43.72L159.1 256L41.72 187.7C26.41 178.9 21.17 159.3 29.1 144C36.63 132.5 49.26 126.7 61.65 128.2C65.78 128.7 69.88 130.1 73.72 132.3L192 200.6V64c0-17.67 14.33-32 32-32S256 46.33 256 64v136.6l118.3-68.29c3.838-2.213 7.939-3.539 12.07-4.051C398.7 126.7 411.4 132.5 417.1 144c8.828 15.31 3.594 34.88-11.72 43.72L288 256l118.3 68.28C421.6 333.1 426.8 352.7 417.1 368z"/></svg>"#,
     ]
     .map(|s| svg::Handle::from_memory(s.as_bytes()))
 });
 
-/// Desktop's top 27 recent emoji, merged by emoji and sorted by use count.
-fn frequent_emoji(st: &beeper_core::store::BeeperStore) -> Vec<usize> {
-    let mut counts: Vec<(usize, u64)> = Vec::new();
+/// A recent emoji: one of emoji-mart's data, or the image of a custom emoji.
+#[derive(Debug, Clone, PartialEq)]
+enum Recent {
+    Native(usize),
+    Image(String),
+}
+
+/// Desktop's `transformedRecentEmoji`: the top 27 recent emoji, merged by emoji and sorted by use count. A custom
+/// emoji is its image URL.
+fn recent_emoji(st: &BeeperStore) -> Vec<Recent> {
+    let mut counts: Vec<(Recent, u64)> = Vec::new();
     for (key, n) in &st.recent_emoji {
         let id = !key.is_empty() && key.chars().all(|c| c.is_ascii_alphabetic() || c == '_');
-        let found = if id { DATA.ids.get(key.as_str()) } else { DATA.natives.get(&bare(key)) };
-        let Some(&i) = found else { continue };
-        match counts.iter_mut().find(|(j, _)| *j == i) {
+        let found = match is_mxc(key) {
+            true => Some(Recent::Image(key.clone())),
+            false if id => DATA.ids.get(key.as_str()).map(|&i| Recent::Native(i)),
+            false => DATA.natives.get(&bare(key)).map(|&i| Recent::Native(i)),
+        };
+        let Some(r) = found else { continue };
+        match counts.iter_mut().find(|(j, _)| *j == r) {
             Some((_, c)) => *c += n,
-            None => counts.push((i, *n)),
+            None => counts.push((r, *n)),
         }
     }
-    counts.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
-    counts.into_iter().take(27).map(|(i, _)| i).collect()
+    counts.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    counts.into_iter().take(27).map(|(r, _)| r).collect()
+}
+
+/// The picker's "Frequently used": the recent emoji, with the custom emoji of `custom` when there are any (the
+/// `customFrequentlyUsed` of Desktop's `EmojiPicker`, of which emoji-mart drops the ones it does not have).
+fn frequent_emoji(st: &BeeperStore, custom: &[Emoticon]) -> Vec<Item> {
+    let item = |r: Recent| match r {
+        Recent::Native(i) => Some(Item::Native(i)),
+        Recent::Image(url) => custom.iter().position(|e| e.url == url).map(Item::Custom),
+    };
+    recent_emoji(st).into_iter().filter_map(item).collect()
 }
 
 /// Desktop's `topEmoji`: the 3 most used emoji, then 👍 ❤️ 😂.
 /// Desktop's `U3t`: the quick reactions of the hover bar, of those the network takes when it takes only some
-/// (`allowed`).
-pub(crate) fn quick_reactions(st: &beeper_core::store::BeeperStore, allowed: &[String]) -> Vec<String> {
+/// (`allowed`), and without custom emoji when it takes none (`supportsCustomEmojiReactions`).
+pub(crate) fn quick_reactions(st: &BeeperStore, allowed: &[String], custom: bool) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     match st.settings.on("quickReactionsCustomized") {
         true => out.clone_from(&st.settings.quick_reactions),
         false => {
-            let top = frequent_emoji(st).into_iter().map(|i| DATA.emojis[i].skinned(st.skin_tone));
+            let top = recent_emoji(st).into_iter().take(3).map(|r| match r {
+                Recent::Native(i) => DATA.emojis[i].skinned(st.skin_tone),
+                Recent::Image(url) => url,
+            });
             for e in top.chain(["👍", "❤️", "😂"].map(String::from)) {
                 if !out.iter().any(|o| bare(o) == bare(&e)) {
                     out.push(e);
                 }
             }
         }
+    }
+    if !custom {
+        out.retain(|e| !is_mxc(e));
     }
     if !allowed.is_empty() {
         out.retain(|e| allowed_reaction(allowed, e).is_some());
@@ -780,6 +940,27 @@ pub(crate) fn allowed_reaction(allowed: &[String], emoji: &str) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// emoji-mart's entries of Desktop's custom emoji (`UZt`): searched by the URL, the words of the name, "custom"
+    /// and the name, once for each URL with the last shortcode; the composer's node text and Desktop's `#[name](url)`.
+    #[test]
+    fn custom_emoji_search_like_emoji_mart() {
+        use crate::composer::{emoticon_markdown, emoticon_text, html_emoticons};
+        let e = |n: &str, u: &str| Emoticon { name: n.into(), url: u.into() };
+        let custom = [e("Party-Parrot", "mxc://x/P"), e("cat", "mxc://x/cat"), e("kitty", "mxc://x/cat")];
+        assert_eq!(custom_search(&custom[0]), ",mxc://x/p,party,parrot,mxc://x/p,custom,party-parrot");
+        let found: Vec<Item> = search("custom", &custom).into_iter().filter(|i| matches!(i, Item::Custom(_))).collect();
+        assert_eq!(found, [Item::Custom(2), Item::Custom(0)], "by the place of the word");
+        assert!(suggestions(':', "kitt", 0, &custom).contains(&("mxc://x/cat".into(), "kitty".into())));
+        assert!(!suggestions(':', "cat", 0, &custom).iter().any(|s| s.1 == "cat"), "emoji-mart keeps the last");
+        let (owl, ow) = (e("owl", "mxc://x/owl"), e("ow", "mxc://x/ow"));
+        let md = emoticon_markdown("a :owl: :ow: :owl :x:", &[ow.clone(), owl.clone()]);
+        assert_eq!(md, "a #[owl](mxc://x/owl) #[ow](mxc://x/ow) :owl :x:");
+        assert_eq!(emoticon_text(&md), ("a :owl: :ow: :owl :x:".into(), vec![owl, ow]));
+        let html =
+            r#"<img data-mx-emoticon src="mxc://x/a" alt=":a:"><img data-mx-emoticon src="mxc://x/b" title=":b:">"#;
+        assert_eq!(html_emoticons(html), [e("a", "mxc://x/a"), e("b", "mxc://x/b")]);
+    }
 
     /// emoji-mart hides the emoji that the font cannot draw, so each one is a single Twemoji glyph.
     #[test]
@@ -814,7 +995,7 @@ mod tests {
         assert_eq!(replace_emoticon("`a :) ", 6), None);
         assert_eq!(replace_emoticon("```\na :) ", 9), None);
         assert_eq!(replace_emoticon("`a` :) ", 7), Some(("`a` 🙂 ".into(), 9)));
-        let names = |q: &str| suggestions(':', q, 0).into_iter().map(|(c, _)| c).collect::<Vec<_>>().join("");
+        let names = |q: &str| suggestions(':', q, 0, &[]).into_iter().map(|(c, _)| c).collect::<Vec<_>>().join("");
         assert!(names(")").starts_with("🙂"), "the search knows emoticons; the composer does not ask it for them");
         let thumbs = names("thumbs");
         assert!(thumbs.find('👍') < thumbs.find('👎'), "👍 before 👎: {thumbs}");
@@ -830,8 +1011,8 @@ mod tests {
         assert_eq!(DATA.emojis[thumbs].skinned(3), "👍🏽");
         assert_eq!(DATA.emojis[DATA.ids["people_holding_hands"]].skinned(1), "🧑🏻‍🤝‍🧑🏻");
         assert_eq!(DATA.natives[&bare("👍🏿")], thumbs);
-        assert_eq!(search("thumbs").first(), Some(&thumbs));
-        assert!(search("zzzz").is_empty());
+        assert_eq!(search("thumbs", &[]).first(), Some(&Item::Native(thumbs)));
+        assert!(search("zzzz", &[]).is_empty());
     }
 }
 

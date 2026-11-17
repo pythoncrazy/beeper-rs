@@ -248,6 +248,8 @@ impl BeeperGuiApp {
 pub struct MarkStyle {
     /// The labels of the mention pills of the composer, without "@".
     pub mentions: Vec<String>,
+    /// The names of the custom emoji of the composer, which show as ":name:" where Desktop shows their image.
+    pub emoticons: Vec<String>,
     /// Desktop's `--color-primary` of a `.mention`.
     pub mention: Color,
     pub link: Color,
@@ -319,6 +321,15 @@ impl Highlighter for Marks {
         while let Some(c) = line[i..].chars().next() {
             let rest = &line[i..];
             let word_start = !line[..i].ends_with(|c: char| c.is_alphanumeric());
+            let emoticon =
+                |n: &&String| !n.is_empty() && rest[1..].strip_prefix(n.as_str()).is_some_and(|r| r.starts_with(':'));
+            if let Some(n) =
+                rest.starts_with(':').then(|| s.emoticons.iter().filter(emoticon).max_by_key(|n| n.len())).flatten()
+            {
+                out.push((i..i + 2 + n.len(), Format { color: Some(s.mention), font: None }));
+                i += 2 + n.len();
+                continue;
+            }
             if let Some(l) = s.mentions.iter().find(|l| rest.starts_with('@') && rest[1..].starts_with(l.as_str())) {
                 out.push((i..i + 1 + l.len(), mention));
                 i += 1 + l.len();
@@ -353,8 +364,13 @@ mod tests {
 
     #[test]
     fn marks_style_markdown_and_mentions_like_desktop() {
-        let style =
-            MarkStyle { mentions: vec!["Ann B".into()], mention: Color::BLACK, link: Color::WHITE, mark: Color::WHITE };
+        let style = MarkStyle {
+            mentions: vec!["Ann B".into()],
+            emoticons: Vec::new(),
+            mention: Color::BLACK,
+            link: Color::WHITE,
+            mark: Color::WHITE,
+        };
         let mut m = Marks::new(&style);
         let spans = |m: &mut Marks, line: &str| -> Vec<(String, Option<Color>, Option<Weight>)> {
             let spans = m.highlight_line(line).map(|(r, f)| (line[r].to_string(), f.color, f.font.map(|f| f.weight)));
