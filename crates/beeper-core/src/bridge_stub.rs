@@ -231,6 +231,8 @@ struct State {
     logins: Vec<(String, String)>,
     /// Each request as `METHOD path`, for the tests to check.
     log: Vec<String>,
+    /// The body of each request that has one.
+    bodies: Vec<Value>,
 }
 
 /// The cloud bridges that the stub homeserver has, and the requests that it got.
@@ -240,6 +242,11 @@ pub struct Bridges(Arc<Mutex<State>>);
 impl Bridges {
     pub fn requests(&self) -> Vec<String> {
         self.0.lock().unwrap().log.clone()
+    }
+
+    /// The bodies of the requests, in order, without the requests that had none.
+    pub fn bodies(&self) -> Vec<Value> {
+        self.0.lock().unwrap().bodies.clone()
     }
 }
 
@@ -352,6 +359,9 @@ pub async fn homeserver() -> (String, Bridges) {
     let url = serve(move |method, path, body| {
         let mut st = state.0.lock().unwrap();
         st.log.push(format!("{method} {}", path.split_once('?').map_or(path, |p| p.0)));
+        if !body.is_null() {
+            st.bodies.push(body.clone());
+        }
         reply(&mut st, method, path, &body)
     })
     .await;
