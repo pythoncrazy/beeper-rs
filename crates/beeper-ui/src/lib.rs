@@ -1,6 +1,7 @@
 pub mod accounts;
 mod add_account;
 mod anim;
+mod behavior;
 mod blocking;
 pub mod chat_list;
 mod chat_theme;
@@ -34,6 +35,7 @@ mod media_view;
 mod members;
 mod menubar;
 mod message;
+pub mod networks;
 pub mod new_chat;
 mod nickname;
 mod notify;
@@ -46,6 +48,7 @@ pub mod rail;
 mod reauth;
 mod record;
 pub mod reminders;
+mod reply_line;
 mod ring;
 mod scheduled;
 mod selectable;
@@ -135,9 +138,9 @@ use vcard::VCard;
 use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZE};
 
 use crate::style::{
-    bar, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded, fill_box, fw,
-    glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style, pick_style, scroll_style, semi,
-    shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER, SOLID_BARS,
+    bar, bordered_box, bordered_btn, brand_gray, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded,
+    fill_box, fw, glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style, pick_style, scroll_style,
+    semi, shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER, SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -372,6 +375,8 @@ pub enum UiMessage {
     Settings(settings::Msg),
     /// The chat accounts: Settings > Accounts, an account's settings and Show in Inbox, its removal, and its error banner.
     Accounts(accounts::Msg),
+    /// The networks of the Add an Account window and of the onboarding, and their accounts menu.
+    Networks(networks::Msg),
     ToggleRightPanel,
     ToggleDnd,
     /// Settings > Hotkeys: the hotkey switches, the shortcut recorder, and the Keyboard Shortcuts list.
@@ -483,8 +488,7 @@ fn muted_by(st: &BeeperStore, c: &Chat) -> Option<String> {
         });
     }
     let off = !st.settings.account(&c.account_id).notifications;
-    // Desktop's `ru`: the nickname of the account, or its network.
-    off.then(|| trf("Muted by %s", &[&st.custom_name(&c.account_id).unwrap_or(network_name(&c.account_id))]))
+    off.then(|| trf("Muted by %s", &[&behavior::account_name(st, &c.account_id)]))
 }
 
 /// Desktop's `userDisplayText`: the nickname of a chat account (`customName`), or its user.
@@ -715,6 +719,8 @@ fn inbox_label(label: &'static str) -> &'static str {
 }
 /// Desktop's `--chat-view-bubble-padding-x`, which also insets the message footer.
 const BUBBLE_PAD_X: f32 = 11.0;
+/// Desktop's `--chat-view-bubble-padding-y`.
+const BUBBLE_PAD_Y: f32 = 8.0;
 /// The widths of the Copy, Remind Me, Label and Snooze submenus of the chat menu.
 const SUB_MENU_W: [f32; 4] = [124.0, 257.0, 180.0, 257.0];
 
@@ -875,16 +881,18 @@ fn grouped_rows<'a>(p: &Palette, rows: Vec<El<'a>>) -> El<'a> {
     container(col).width(Fill).clip(true).style(fill_box(p.chip, 8.0)).into()
 }
 
-/// `ls` is Desktop's `--letter-spacing`; its initials also have `margin-right: -1px`.
-fn avatar<'a>(name: &str, size: f32, ls: f32, p: &Palette) -> El<'a> {
+/// `ls` is Desktop's `--letter-spacing`; its initials also have `margin-right: -1px`. The avatar is drawn at `alpha`.
+fn avatar<'a>(name: &str, size: f32, ls: f32, alpha: f32, p: &Palette) -> El<'a> {
     let Some(label) = initials(name) else {
-        let shade = fill_box(Color { a: 0.1, ..p.strong }, size / 2.0);
-        return container(svg(EYES.clone()).width(size).height(size)).style(shade).into();
+        let shade = fill_box(Color { a: 0.1 * alpha, ..p.strong }, size / 2.0);
+        return container(svg(EYES.clone()).width(size).height(size).opacity(alpha)).style(shade).into();
     };
     let &(bottom, top) = pick(name, &AVATAR_GRADIENTS);
-    let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, hex(top)).add_stop(1.0, hex(bottom));
+    let (top, bottom) = (hex(top).scale_alpha(alpha), hex(bottom).scale_alpha(alpha));
+    let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, top).add_stop(1.0, bottom);
     let font = crate::style::initials_font();
-    let letter = |c: char| txt(c.to_string(), size * 0.5).line_height(1.0).font(font).color(Color::WHITE).into();
+    let white = Color::WHITE.scale_alpha(alpha);
+    let letter = |c: char| txt(c.to_string(), size * 0.5).line_height(1.0).font(font).color(white).into();
     let trail = Padding::ZERO.right((ls - 1.0).max(0.0)).left((1.0 - ls).max(0.0));
     container(container(Row::with_children(label.chars().map(letter)).spacing(ls)).padding(trail))
         .center(size)
@@ -1101,7 +1109,7 @@ pub(crate) fn contact_card<'a>(
     let n = c.phones.len();
     let phones = list(&c.phones, trn("Phone Number", "Phone Numbers", n, &[]), "+ %d more", true);
     let emails = list(&c.emails, trn("Email", "Emails", c.emails.len(), &[]), " + %d more", false);
-    let details = row![avatar(&c.name, 32.0, 0.0, p), meta.push(phones).push(emails)].spacing(8);
+    let details = row![avatar(&c.name, 32.0, 0.0, 1.0, p), meta.push(phones).push(emails)].spacing(8);
     column![details, Space::new().width(180)]
 }
 
@@ -1259,6 +1267,16 @@ fn distance(ms: i64) -> String {
         }
     }
 }
+// Desktop's Material `info`, `account_circle`, `sell`, `event_busy`, `alternate_email` and `forum` icons of the
+// Chat Info behavior line, its menu and the How It Works window.
+svg_static!(INFO_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M440-280h80v-240h-80v240Zm40-320q17 0 28.5-11.5T520-640q0-17-11.5-28.5T480-680q-17 0-28.5 11.5T440-640q0 17 11.5 28.5T480-600Zm0 520q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q134 0 227-93t93-227q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93Zm0-320Z"/></svg>"##);
+svg_static!(ACCOUNT_CIRCLE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M234-276q51-39 114-61.5T480-360q69 0 132 22.5T726-276q35-41 54.5-93T800-480q0-133-93.5-226.5T480-800q-133 0-226.5 93.5T160-480q0 59 19.5 111t54.5 93Zm246-164q-59 0-99.5-40.5T340-580q0-59 40.5-99.5T480-720q59 0 99.5 40.5T620-580q0 59-40.5 99.5T480-440Zm0 360q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q53 0 100-15.5t86-44.5q-39-29-86-44.5T480-280q-53 0-100 15.5T294-220q39 29 86 44.5T480-160Zm0-360q26 0 43-17t17-43q0-26-17-43t-43-17q-26 0-43 17t-17 43q0 26 17 43t43 17Zm0-60Zm0 360Z"/></svg>"##);
+svg_static!(SELL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M856-390 570-104q-12 12-27 18t-30 6q-15 0-30-6t-27-18L103-457q-11-11-17-25.5T80-513v-287q0-33 23.5-56.5T160-880h287q16 0 31 6.5t26 17.5l352 353q12 12 17.5 27t5.5 30q0 15-5.5 29.5T856-390ZM513-160l286-286-353-354H160v286l353 354ZM260-640q25 0 42.5-17.5T320-700q0-25-17.5-42.5T260-760q-25 0-42.5 17.5T200-700q0 25 17.5 42.5T260-640Zm220 160Z"/></svg>"##);
+svg_static!(EVENT_BUSY, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="m388-212-56-56 92-92-92-92 56-56 92 92 92-92 56 56-92 92 92 92-56 56-92-92-92 92ZM200-80q-33 0-56.5-23.5T120-160v-560q0-33 23.5-56.5T200-800h40v-80h80v80h320v-80h80v80h40q33 0 56.5 23.5T840-720v560q0 33-23.5 56.5T760-80H200Zm0-80h560v-400H200v400Zm0-480h560v-80H200v80Zm0 0v-80 80Z"/></svg>"##);
+svg_static!(ALTERNATE_EMAIL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480v58q0 59-40.5 100.5T740-280q-35 0-66-15t-52-43q-29 29-65.5 43.5T480-280q-83 0-141.5-58.5T280-480q0-83 58.5-141.5T480-680q83 0 141.5 58.5T680-480v58q0 26 17 44t43 18q26 0 43-18t17-44v-58q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93h200v80H480Zm0-280q50 0 85-35t35-85q0-50-35-85t-85-35q-50 0-85 35t-35 85q0 50 35 85t85 35Z"/></svg>"##);
+svg_static!(FORUM, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M280-240q-17 0-28.5-11.5T240-280v-80h520v-360h80q17 0 28.5 11.5T880-680v600L720-240H280ZM80-280v-560q0-17 11.5-28.5T120-880h520q17 0 28.5 11.5T680-840v360q0 17-11.5 28.5T640-440H240L80-280Zm520-240v-280H160v280h440Zm-440 0v-280 280Z"/></svg>"##);
+// Desktop's `FullScreenClose` icon of the zoomed Chat Info avatar.
+svg_static!(FULL_SCREEN_CLOSE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M6 18 18 6M6 6l12 12" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 svg_static!(SELECT_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 3.25 5 7.25 9 3.25" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 
 /// Desktop's "Feedback?" button, which opens the feedback form.
@@ -1486,6 +1504,8 @@ static FILE_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock::
     })
 });
 
+// Desktop's `download` icon, the Material `download`.
+svg_static!(MAT_DOWNLOAD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"/></svg>"##);
 svg_static!(MAT_FORWARD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"/></svg>"##);
 
 svg_static!(ZOOM_LEVEL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 15" fill="#000"><path d="M20.64 14.343C21.01 14.343 21.303 14.237 21.52 14.026C21.736 13.816 21.845 13.534 21.845 13.183C21.845 12.937 21.798 12.679 21.705 12.409L17.995 2.346C17.837 1.877 17.603 1.53 17.292 1.304C16.982 1.079 16.583 0.966 16.097 0.966C15.177 0.966 14.562 1.423 14.251 2.336L10.498 12.488C10.4122 12.7219 10.3675 12.9689 10.366 13.218C10.366 13.563 10.469 13.838 10.674 14.04C10.879 14.242 11.16 14.343 11.518 14.343C11.863 14.343 12.134 14.261 12.331 14.097C12.527 13.933 12.675 13.666 12.774 13.297L13.636 10.915H18.531L19.393 13.297C19.493 13.666 19.64 13.933 19.836 14.097C20.033 14.261 20.301 14.343 20.641 14.343H20.64ZM17.995 8.999H14.198L16.07 3.479H16.123L17.995 9V8.999ZM7.87 14.325C8.175 14.325 8.42 14.233 8.608 14.048C8.7018 13.9545 8.77527 13.8427 8.8238 13.7195C8.87232 13.5962 8.89486 13.4643 8.89 13.332C8.89 13.209 8.878 13.09 8.854 12.976C8.8266 12.8487 8.78846 12.7239 8.74 12.603L6.14 5.606C5.987 5.19 5.782 4.883 5.524 4.684C5.267 4.484 4.939 4.384 4.54 4.384C4.165 4.384 3.85 4.484 3.595 4.684C3.34 4.883 3.137 5.19 2.985 5.606L0.381 12.603C0.292023 12.8359 0.244637 13.0827 0.241 13.332C0.241 13.642 0.332 13.886 0.517 14.062C0.702 14.237 0.952 14.325 1.269 14.325C1.532 14.325 1.746 14.25 1.91 14.101C2.074 13.951 2.203 13.707 2.297 13.367L2.851 11.741H6.261L6.814 13.385C6.902 13.725 7.031 13.966 7.201 14.11C7.371 14.253 7.594 14.325 7.869 14.325H7.87ZM5.787 10.16H3.31L4.45 6.494H4.626L5.786 10.159L5.787 10.16Z"/></svg>"##);
@@ -2676,7 +2696,7 @@ pub struct BeeperGuiApp {
     settings_pick: Option<SettingsHit>,
     /// The pref that a search result opened, which flashes for 2 s.
     pref_flash: Option<(&'static str, std::time::Instant)>,
-    pub adding_account: bool,
+    pub networks: networks::Networks,
     /// "Get the app" in Settings > Devices shows the QR code.
     app_qr: bool,
     storage: StoragePage,
@@ -2692,6 +2712,8 @@ pub struct BeeperGuiApp {
     hover_at: Option<std::time::Instant>,
     unhovered: Option<(String, std::time::Instant)>,
     pub flash: Option<(String, std::time::Instant)>,
+    /// Desktop's `BrandTypingIndicator` of each chat as it shows (`true`) or hides: who types, and since when.
+    typing_shown: HashMap<String, (Vec<String>, bool, std::time::Instant)>,
     last_click: Option<(String, std::time::Instant)>,
     /// The opened chats, the most recent first. While `cycling`, a selection does not reorder them.
     chat_history: Vec<String>,
@@ -2754,6 +2776,8 @@ pub struct BeeperGuiApp {
     pub group_window: Option<GroupDraft>,
     /// Desktop's Blocked users window.
     blocked_window: Option<window::Id>,
+    /// Desktop's How It Works window of the Chat Info behavior menu.
+    how_window: Option<window::Id>,
     /// Desktop's Account Nickname windows, one for each account.
     pub nickname_windows: Vec<nickname::NicknameDraft>,
     pub add_accounts: Vec<add_account::AddAccount>,
@@ -2766,8 +2790,12 @@ pub struct BeeperGuiApp {
     pub info_bookmarks: bool,
     /// The bookmarked messages that Chat Info fetches.
     hydrating: HashSet<String>,
+    /// Whether Chat Info reads the bookmarks room again after a failed restoration.
+    restoring_bookmarks: bool,
     /// The Media tab of the expanded Chat Info Media section, or None while it shows only the newest.
     pub info_media: Option<usize>,
+    /// Whether the Chat Info avatar shows zoomed to full screen.
+    pub info_zoom: bool,
     pub info_query: String,
     /// The Notes of the open chat in the Chat Info panel.
     pub info_note: text_editor::Content,
@@ -2794,6 +2822,10 @@ pub struct BeeperGuiApp {
     /// Desktop's `dismissError`: the accounts whose disconnected banner was dismissed this session.
     dismissed_errors: HashSet<String>,
     pub resolving_media: HashMap<String, bool>,
+    /// Desktop's `mediaDownloadStore`: the media URLs that a bridge loads only when the user asks (`needsDownload`),
+    /// and those whose interactive download runs (`fetching`).
+    pub(crate) needs_download: HashSet<String>,
+    pub(crate) fetching: HashSet<String>,
     video: Option<video::Video>,
     view_once: view_once::ViewOnce,
     started: std::time::Instant,
@@ -2955,7 +2987,7 @@ impl BeeperGuiApp {
             settings_focus: 0,
             settings_pick: None,
             pref_flash: None,
-            adding_account: false,
+            networks: Default::default(),
             app_qr: false,
             storage: StoragePage { ages: [1; 2], kinds: [0b1111, 0b11111], ..Default::default() },
             integrations: IntegrationsPage::default(),
@@ -2968,6 +3000,7 @@ impl BeeperGuiApp {
             hover_at: None,
             unhovered: None,
             flash: None,
+            typing_shown: HashMap::new(),
             status_banner: String::new(),
             relaunch_toast: None,
             toast: None,
@@ -3005,6 +3038,7 @@ impl BeeperGuiApp {
             label_window: None,
             group_window: None,
             blocked_window: None,
+            how_window: None,
             nickname_windows: Vec::new(),
             add_accounts: Vec::new(),
             info_desc: None,
@@ -3012,7 +3046,9 @@ impl BeeperGuiApp {
             info_all: false,
             info_bookmarks: false,
             hydrating: HashSet::new(),
+            restoring_bookmarks: false,
             info_media: None,
+            info_zoom: false,
             info_query: String::new(),
             info_note: text_editor::Content::new(),
             spaces_window: None,
@@ -3032,6 +3068,8 @@ impl BeeperGuiApp {
             quotes: HashMap::new(),
             dismissed_errors: HashSet::new(),
             resolving_media: HashMap::new(),
+            needs_download: HashSet::new(),
+            fetching: HashSet::new(),
             video: None,
             view_once: Default::default(),
             started: std::time::Instant::now(),
@@ -3096,6 +3134,11 @@ impl BeeperGuiApp {
     }
 
     fn face<'a>(&self, url: Option<&str>, name: &str, size: f32, ls: f32) -> El<'a> {
+        self.face_alpha(url, name, size, ls, 1.0)
+    }
+
+    /// [`Self::face`] at the opacity `alpha`.
+    fn face_alpha<'a>(&self, url: Option<&str>, name: &str, size: f32, ls: f32, alpha: f32) -> El<'a> {
         let loaded = url.and_then(|u| match self.avatars.get(u) {
             Some(h) => h.clone(),
             None => {
@@ -3104,8 +3147,8 @@ impl BeeperGuiApp {
             }
         });
         match loaded {
-            Some(h) => image(h).width(size).height(size).into(),
-            None => avatar(name, size, ls, &self.pal),
+            Some(h) => image(h).width(size).height(size).opacity(alpha).into(),
+            None => avatar(name, size, ls, alpha, &self.pal),
         }
     }
 
@@ -3305,6 +3348,9 @@ impl BeeperGuiApp {
             },
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
             _ if Some(id) == self.blocked_window => tr("Blocked users"),
+            // Desktop's `AddAccountsBrowserWindow` title, which it does not translate.
+            _ if Some(id) == self.networks.window => "Add an Account",
+            _ if Some(id) == self.how_window => tr("How It Works"),
             _ if self.nickname_windows.iter().any(|d| d.id == id) => tr("Account Nickname"),
             _ if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) => {
                 return tr(if d.personal { "Edit Chat for Me" } else { "Edit Group" }).into();
@@ -3547,7 +3593,7 @@ impl BeeperGuiApp {
         self.pane.selected_msgs.clear();
         self.pane.msg_anchor = None;
         (self.info_desc, self.info_more, self.info_all, self.info_bookmarks) = (None, false, false, false);
-        self.info_media = None;
+        (self.info_media, self.info_zoom) = (None, false);
         self.info_query.clear();
         self.info_note = text_editor::Content::with_text(chat.note.as_deref().unwrap_or_default());
         let pending = st.scheduled.iter().any(|s| s.chat_id == chat.id && !s.canceled);
@@ -3942,6 +3988,7 @@ impl BeeperGuiApp {
         match msg {
             // Each domain handles its own messages in its module.
             UiMessage::Accounts(msg) => return self.accounts(msg),
+            UiMessage::Networks(msg) => return self.networks(msg),
             UiMessage::Blocking(msg) => return self.blocking(msg),
             UiMessage::Nickname(msg) => return self.nickname(msg),
             UiMessage::ChatList(msg) => return self.chat_list(msg),
@@ -3985,7 +4032,14 @@ impl BeeperGuiApp {
             UiMessage::SelectChat(id) => {
                 self.select_chat(&id);
                 let (previews, unread) = (self.fetch_link_previews(), self.scroll_to_unread());
-                return Task::batch([previews, self.close_notifications(), operation::focus("composer-input"), unread]);
+                let bookmarks = self.retry_bookmarks();
+                return Task::batch([
+                    previews,
+                    bookmarks,
+                    self.close_notifications(),
+                    operation::focus("composer-input"),
+                    unread,
+                ]);
             }
             UiMessage::SwitchCard => self.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
             UiMessage::SwitchChat(id) => self.switch_chat(id),
@@ -4118,7 +4172,7 @@ impl BeeperGuiApp {
                     self.confirm = None;
                     return Task::none();
                 }
-                if self.label_settings.iter().any(|w| w.id == id) {
+                if self.label_settings.iter().any(|w| w.id == id) || Some(id) == self.how_window {
                     return match key {
                         Key::Named(Named::Escape) => window::close(id),
                         Key::Named(Named::Enter) if mods.command() => window::close(id),
@@ -4135,6 +4189,13 @@ impl BeeperGuiApp {
                     || self.add_accounts.iter().any(|a| a.id == id)
                 {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
+                }
+                // Desktop's `onEscapePressed` closes the Add an Account window, after the menu of a network.
+                if self.networks.window == Some(id) {
+                    if key == Key::Named(Named::Escape) && self.networks.menu.take().is_none() {
+                        return window::close(id);
+                    }
+                    return Task::none();
                 }
                 if self.reauth.window == Some(id) {
                     return self.reauth_key(key);
@@ -4202,6 +4263,8 @@ impl BeeperGuiApp {
                 // Desktop shows Chat Info or the thread pane, not both.
                 let closed = self.pane.thread.take().is_some();
                 self.show_right_panel = closed || !self.show_right_panel;
+                let retry = self.retry_bookmarks();
+                return Task::batch([retry, self.settle()]);
             }
             UiMessage::ToggleDnd => {
                 self.dnd_muted = !self.dnd_muted;
@@ -4249,6 +4312,7 @@ impl BeeperGuiApp {
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
             UiMessage::Typing(chat) => {
+                self.typing_changed(&chat);
                 let note = self.notify_typing(chat);
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
@@ -4875,11 +4939,13 @@ impl BeeperGuiApp {
         let animated = rising
             || self.panes().any(moving)
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
+            || self.typing_shown.values().any(|t| t.2.elapsed() < message::TYPING_FADE)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0)
             || (self.login_window.is_some() && (self.login.busy || self.login.animated()))
             || self.reauth.busy
             || self.enter_key.busy
             || self.nickname_windows.iter().any(|d| d.saving)
+            || !self.fetching.is_empty()
             || self.hover_fading()
             || self.sidebar_progress().is_some()
             || self
@@ -4974,6 +5040,8 @@ impl BeeperGuiApp {
             self.view_enter_key()
         } else if let Some(a) = self.add_accounts.iter().find(|a| a.id == id) {
             self.view_add_account(a)
+        } else if Some(id) == self.networks.window {
+            self.view_add_accounts()
         } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {
             self.view_chat_theme(chat)
         } else if let Some((_, chat)) = self.labels_windows.iter().find(|w| w.0 == id) {
@@ -4992,6 +5060,8 @@ impl BeeperGuiApp {
             self.view_nickname(d)
         } else if Some(id) == self.blocked_window {
             self.view_blocked_users()
+        } else if Some(id) == self.how_window {
+            self.view_how_it_works()
         } else if let Some((_, chat, mid)) = self.vote_windows.iter().find(|w| w.0 == id) {
             self.view_poll_votes(chat, mid)
         } else if self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none()) {
@@ -5071,7 +5141,8 @@ impl BeeperGuiApp {
         let st = self.store.read();
         // The sync task can drop a chat before StoreChanged reaches update.
         let known = |c: &str| {
-            let chat = c.strip_prefix("info:").or(c.strip_prefix("copy:")).unwrap_or(c);
+            let chat = ["info:", "copy:", SNOOZE_MENU, behavior::BEHAVIOR_MENU].iter().find_map(|k| c.strip_prefix(k));
+            let chat = chat.unwrap_or(c);
             let chat = chat.split_once('\n').map_or(chat, |k| k.0);
             let pair =
                 ["member:", "bookmark:", "contact:", "card:", "mention:"].iter().find_map(|k| chat.strip_prefix(k));
@@ -5169,6 +5240,9 @@ impl BeeperGuiApp {
             } else if let Some(id) = cid.strip_prefix(SNOOZE_MENU) {
                 let rows = self.snooze_items(&self.store.read(), &[id.to_string()]);
                 (SUB_MENU_W[3], 8.0 + rows.iter().map(|r| r.1).sum::<f32>())
+            } else if let Some(id) = cid.strip_prefix(behavior::BEHAVIOR_MENU) {
+                let (rows, w) = self.behavior_items(&self.store.read(), id);
+                (w, 8.0 + rows.iter().map(|r| r.1).sum::<f32>())
             } else if cid == RAIL_MORE {
                 let items = more_menu(&self.store.read());
                 (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
@@ -5243,7 +5317,9 @@ impl BeeperGuiApp {
             let x = if at.x + w > self.pane().size.width { at.x - w } else { at.x };
             let sub_w = self
                 .chat_sub
-                .filter(|_| !cid.starts_with("account:") && !cid.starts_with("head:") && !cid.starts_with(SNOOZE_MENU))
+                .filter(|_| {
+                    !["account:", "head:", SNOOZE_MENU, behavior::BEHAVIOR_MENU].iter().any(|k| cid.starts_with(k))
+                })
                 .map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
             let left = x + w + sub_w > self.pane().size.width;
             let y = at.y.min(self.pane().size.height - h - 8.0);
@@ -5294,6 +5370,10 @@ impl BeeperGuiApp {
             !c.in_media && chat.is_some() && chat == self.pane().selected_chat_id.as_ref()
         };
         let carousel = self.carousel.as_ref().filter(shows).and_then(|c| self.view_carousel(c));
+        // Desktop portals the zoomed Chat Info avatar over the whole window.
+        let thread = self.selection.is_empty() && self.pane().thread.is_some();
+        let zoom =
+            (self.info_zoom && self.show_right_panel && in_main && open && !thread).then(|| self.view_avatar_zoom());
         let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
         // The menus and the emoji picker of the carousel show over it.
         let hover = self.view_hover_card().filter(|_| in_main);
@@ -5302,6 +5382,7 @@ impl BeeperGuiApp {
             .push(toast)
             .push(quick_look)
             .push(carousel)
+            .push(zoom)
             .push(self.view_view_once().filter(|_| in_main))
             .push(hover)
             .push(menu_drop)

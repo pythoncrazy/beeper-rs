@@ -1372,18 +1372,18 @@ async fn lifecycle() {
     }
     let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTab(SettingsTab::Accounts)));
     {
-        let n = beeper_ui::login::FREE_ACCOUNTS - store.read().bridge_accounts.len();
+        let n = store.read().features.accounts_remaining();
         let mut sim = simulator(gui.view_settings());
         for label in ["Beeper", "+1 415-555-0142", "Beeper · alex@beeper.com", &format!("{n} Free Accounts Remaining")]
         {
             assert!(sim.find(label).is_ok(), "the accounts page shows {label}");
         }
-        assert!(sim.find("Facebook").is_err(), "the network grid starts hidden");
+        assert!(sim.find("Facebook").is_err(), "the networks are in their own window");
         let _ = sim.click("Add an Account");
-        assert!(matches!(sim.into_messages().last(), Some(UiMessage::Accounts(beeper_ui::accounts::Msg::ToggleAdd))));
+        assert!(matches!(sim.into_messages().last(), Some(UiMessage::Networks(beeper_ui::networks::Msg::Open))));
     }
-    let _ = gui.update(UiMessage::Accounts(beeper_ui::accounts::Msg::ToggleAdd));
-    assert!(simulator(gui.view_settings()).find("Facebook").is_ok(), "Add an Account shows the network grid");
+    let _ = gui.update(UiMessage::Networks(beeper_ui::networks::Msg::Open));
+    assert!(gui.networks.window.is_some(), "Add an Account opens the Add an Account window");
     let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("timeFormat", 0)));
     let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("showMessagePreviews", 1)));
     let ctrl_k = || UiMessage::KeyPressed(iced::keyboard::Key::Character("k".into()), iced::keyboard::Modifiers::CTRL);
