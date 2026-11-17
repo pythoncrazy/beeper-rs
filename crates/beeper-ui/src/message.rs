@@ -364,8 +364,6 @@ pub(crate) struct Rows {
     /// For each person other than you and the sender, the newest message that the person saw before a reply of the
     /// person, and the time.
     last_seen: HashMap<String, (usize, String)>,
-    /// The first unread message.
-    unread: Option<usize>,
     /// Whether each message is in the reply chain of the message before it.
     chained: Vec<bool>,
     /// Desktop's `replyCounts`: the messages of the same reply chain after each message.
@@ -413,7 +411,6 @@ impl Rows {
             last_live: msgs.iter().rposition(|m| m.is_deleted != Some(true)),
             any_pending: msgs.iter().any(|m| pending(st, m)),
             last_seen,
-            unread: msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)),
             chained: (0..n).map(|i| i > 0 && roots[i - 1] == roots[i]).collect(),
             gallery: gallery::starts(st, msgs, &counts),
             counts,
@@ -1239,6 +1236,16 @@ impl BeeperGuiApp {
         rows
     }
 
+    /// Desktop's `firstUnreadMessageIDIn`: the message after the read position of the open chat, below one at or
+    /// before it. The unread marks of the messages place it when the loaded messages do not reach the read position.
+    fn first_unread(&self, msgs: &[&Message]) -> Option<usize> {
+        let read = self.pane().unread_divider.as_ref();
+        let after = read.and_then(|r| msgs.windows(2).position(|w| w[0].sort_key <= *r && w[1].sort_key > *r));
+        after
+            .map(|i| i + 1)
+            .or_else(|| msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)))
+    }
+
     fn view_messages<'a>(
         &'a self,
         st: &BeeperStore,
@@ -1248,8 +1255,7 @@ impl BeeperGuiApp {
         thread: bool,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
-        let Rows { run_start, last_live, any_pending, last_seen, unread, chained, counts, gallery, keys, days, .. } =
-            rows;
+        let Rows { run_start, last_live, any_pending, last_seen, chained, counts, gallery, keys, days, .. } = rows;
         let last_received = msgs.iter().rposition(|m| m.is_sender != Some(true));
         // Desktop's `ThreadedRepliesView` lists the root and the replies of a thread under its header, and loads older
         // messages of the chat only until the root loads.
@@ -1265,7 +1271,7 @@ impl BeeperGuiApp {
                     |m: &&Message| m.sort_key > *read && m.is_sender != Some(true) && m.is_deleted != Some(true);
                 msgs.iter().position(|m| m.thread_root.as_deref() == Some(r) && unread(m))
             }),
-            None => *unread,
+            None => self.first_unread(msgs),
         };
         let first_unread = first_unread.filter(|_| !thread);
         let (h24, group) = (st.settings.pref("timeFormat") == 1, chat.chat_type == "group");
@@ -2783,7 +2789,8 @@ impl BeeperGuiApp {
                 let extend = extend && last.is_some();
                 let next = match (first.zip(last), down) {
                     (None, false) => (0..msgs.len()).rev().find(live),
-                    (None, true) => None,
+                    // Desktop's ↓ with nothing selected goes to the first message after the unread divider.
+                    (None, true) => self.first_unread(&msgs).and_then(|u| (u..msgs.len()).find(live)),
                     (Some((_, l)), true) => (l + 1..msgs.len()).find(live),
                     (Some((f, _)), false) if extend => (0..f).rev().find(live),
                     (Some((_, l)), false) => (0..l).rev().find(live).or(Some(l).filter(live)),

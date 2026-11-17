@@ -1056,7 +1056,12 @@ async fn sync_receipts(store: &SharedStore, room: &Room) {
                 st.update_message(i, |m| m.disappearing.as_mut().expect("a timer").read_at = Some(at));
             }
         }
+        // Desktop's `lastReadMessageSortKey`: the order of the event of your own receipt.
         if uid == me {
+            let idx = st.chat_idx(&chat);
+            if st.chats[idx].last_read_message_sort_key.as_ref().is_none_or(|k| *k < read) {
+                st.update_chat(idx, |c| c.last_read_message_sort_key = Some(read));
+            }
             continue;
         }
         let ts = rfc3339_from_millis(at);
@@ -4801,6 +4806,37 @@ mod tests {
         })
         .await;
         stub_store(&crate::testing::temp_dir(name), &url).await
+    }
+
+    /// Desktop's `lastReadMessageSortKey` of a room: the order of the event of your own read receipt, which a read
+    /// here goes ahead of until the receipt catches up.
+    #[tokio::test]
+    async fn own_receipts_set_the_read_position_like_desktop() {
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => {
+                let mut sync = stub_sync();
+                let receipt =
+                    json!({ "type": "m.receipt", "content": { "$e2": { "m.read": { "@me:x": { "ts": 1 } } } } });
+                sync["rooms"]["join"]["!room:x"]["ephemeral"] = json!({ "events": [receipt] });
+                (200, sync)
+            }
+            p if p.ends_with("/messages") => {
+                (200, json!({ "start": "t3", "chunk": [stub_message(3), stub_message(2), stub_message(1)] }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = crate::testing::stub_room_store(&crate::testing::temp_dir("own-receipt"), &url).await;
+        let read = |store: &crate::store::SharedStore| store.read().chat("!room:x").last_read_message_sort_key.clone();
+        assert_eq!(read(&store), Some(super::sort_key(2)), "the receipt of m2");
+        let idx = store.read().chat_idx("!room:x");
+        store.write().mark_read(idx, false);
+        assert_eq!(read(&store), Some(super::sort_key(3)), "a read here");
+        let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
+        super::sync_room(&store, &room, Vec::new()).await;
+        assert_eq!(read(&store), Some(super::sort_key(3)), "the older receipt does not move it back");
     }
 
     /// A limited sync of a room that synced before leaves out the events since the last sync, and pages back from its

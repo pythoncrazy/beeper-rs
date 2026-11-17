@@ -3329,6 +3329,45 @@ fn the_open_chat_reads_new_messages_like_desktop() {
     assert_eq!(unread(&app), 0, "back at the bottom it is read");
 }
 
+/// Desktop's `unreadDividerMessageSortKey`: a Matrix room, whose messages keep no unread mark, shows "New" after the
+/// read position that the chat had when it opened, and ↓ with nothing selected goes to the first message after it.
+#[test]
+fn the_unread_divider_follows_the_read_position_like_desktop() {
+    let mut app = demo_app("read-position");
+    let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID).unwrap().id.clone();
+    {
+        let mut st = app.store.write();
+        st.load_chat(&id);
+        let read = st.messages.iter().rfind(|m| m.chat_id == id).unwrap().clone();
+        for i in st.timeline_indices(&id).to_vec() {
+            st.update_message(i, |m| m.is_unread = Some(false));
+        }
+        let after: u64 = read.sort_key.parse().expect("a numeric sort key");
+        for n in 0..3 {
+            let (text, sort_key) = (format!("fresh {n}"), format!("{:016}", after + 1 + n));
+            let m = Message {
+                id: format!("$fresh{n}"),
+                sort_key,
+                text: Some(text),
+                is_sender: Some(false),
+                ..read.clone()
+            };
+            st.upsert_message(m);
+        }
+        let idx = st.resolve_chat_idx(&id).unwrap();
+        st.update_chat(idx, |c| (c.unread_count, c.last_read_message_sort_key) = (3, Some(read.sort_key.clone())));
+    }
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    assert_eq!(app.pane.unread_divider.as_deref().map(str::len), Some(16), "the read position when the chat opened");
+    assert_eq!(app.store.read().chat(&id).unread_count, 0, "the open chat is read");
+    assert!(simulator(app.view_main()).find("New").is_ok(), "the divider stays while the chat is open");
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::ArrowDown), Modifiers::empty()));
+    assert_eq!(app.pane.selected_msgs, ["$fresh0"], "↓ goes to the first message after the divider");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::SelectChat(id));
+    assert!(app.pane.unread_divider.is_none() && simulator(app.view_main()).find("New").is_err(), "read, no divider");
+}
+
 /// Desktop's `onRangeChange`: above its bottom, the timeline reads the open chat through the last message in view
 /// once the scroll stops, and a Matrix room, whose messages keep no unread mark, counts the messages left below.
 #[test]

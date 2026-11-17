@@ -2376,6 +2376,9 @@ pub struct Pane {
     pub draft_due: bool,
     /// Desktop's `ScrollToBottom`: whether you scrolled up from the bottom of the timeline, and since when.
     pub scrolled_up: Option<(bool, std::time::Instant)>,
+    /// Desktop's `unreadDividerMessageSortKey`: the read position of the chat when it opened, which keeps the "New"
+    /// divider in place while the chat is read.
+    pub unread_divider: Option<String>,
     /// Desktop's `ThreadedRepliesView`: the root of the thread that this pane shows in place of the chat.
     pub thread_root: Option<String>,
     /// Desktop's `openThreadedReplies`: the pane of the open thread, at the right of the chat.
@@ -3485,6 +3488,11 @@ impl BeeperGuiApp {
         }
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.pane.selected_chat_id = Some(chat_id.to_string());
+        // Desktop's `updateUnreadDividerMessageSortKey`: the read position, when a message is after it.
+        let id = st.chats[idx].id.clone();
+        st.load_chat(&id);
+        let last = st.timeline(&id).next_back().map(|m| m.sort_key.clone());
+        self.pane.unread_divider = st.chats[idx].last_read_message_sort_key.clone().filter(|k| Some(k) < last.as_ref());
         if !st.incognito() {
             st.mark_read(idx, false);
         }
