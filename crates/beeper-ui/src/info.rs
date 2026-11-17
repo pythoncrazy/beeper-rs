@@ -622,7 +622,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let mut found: Vec<&Message> = st
             .timeline(&chat.id)
-            .filter(|m| m.is_deleted != Some(true))
+            .filter(|m| m.is_deleted != Some(true) && m.view_limit.is_none())
             .filter(|m| {
                 !m.links.is_empty()
                     || m.attachments.iter().any(|a| matches!(a.attachment_type.as_str(), "img" | "video"))

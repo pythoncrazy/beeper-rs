@@ -369,6 +369,7 @@ mod tests {
             "action to unblock the other person in a DM\u{4}Unblock…",
             "message command\u{4}Reply in thread",
             "confirmation button\u{4}Remove from Beeper",
+            "view-limited media chat list preview\u{4}%d New message",
         ];
         // The source files, with those of the folders of modules.
         let mut files = Vec::new();

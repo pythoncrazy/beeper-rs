@@ -4,7 +4,7 @@ use crate::i18n::tr;
 use crate::media_view;
 use crate::message;
 use crate::style::{btn_style, fill_box, shadow_box, Bare, CLEAR};
-use crate::{ic, icon, menu_item, menu_rule, sound, tinted, BeeperGuiApp, El, UiMessage, MENU_ITEM};
+use crate::{ic, icon, menu_item, menu_rule, sound, tinted, view_once, BeeperGuiApp, El, UiMessage, MENU_ITEM};
 use iced::gradient::Linear;
 use iced::widget::{button, column, container, hover, image, mouse_area, row, slider, stack, svg, Column, Space};
 use iced::{window, Background, Center, Color, Fill, Padding, Subscription, Task};
@@ -71,7 +71,7 @@ pub enum Place {
 
 /// Desktop's `video-progress-bar`: a 3 px white bar over a dim one, and a hidden slider that seeks.
 fn video_progress<'a>(v: &Video) -> El<'a> {
-    let frac = v.media.as_ref().map_or(0.0, |m| (v.pos() / m.secs).clamp(0.0, 1.0));
+    let frac = v.progress();
     let bar = |c: Color| container(Space::new()).width(Fill).height(3).style(fill_box(c, 100.0));
     let part = |f: f32| iced::Length::FillPortion((f * 1000.0).round().max(1.0) as u16);
     let done = row![bar(Color::WHITE).width(part(frac)), Space::new().width(part(1.0 - frac))];
@@ -192,6 +192,28 @@ fn stream(path: &Path, from: f32, (w, h): (u32, u32)) -> Receiver<image::Handle>
 }
 
 impl Video {
+    /// A video of message `mid` that plays as soon as it loads.
+    fn new(mid: String, url: String, size: (u32, u32)) -> Self {
+        Video {
+            mid,
+            url,
+            size,
+            media: None,
+            at: 0.0,
+            since: Some(Instant::now()),
+            frames: None,
+            start: 0.0,
+            shown: 0,
+            frame: None,
+            rate: 1.0,
+            muted: false,
+            full: None,
+            inline: None,
+            sub: false,
+            failed: false,
+        }
+    }
+
     pub fn playing(&self) -> bool {
         self.since.is_some()
     }
@@ -202,6 +224,11 @@ impl Video {
 
     fn pos(&self) -> f32 {
         self.at + self.since.map_or(0.0, |s| s.elapsed().as_secs_f32() * self.rate)
+    }
+
+    /// The part of the loaded video that played.
+    pub(crate) fn progress(&self) -> f32 {
+        self.media.as_ref().map_or(0.0, |m| (self.pos() / m.secs).clamp(0.0, 1.0))
     }
 
     /// Desktop's `openPipWindow`: the size of the Picture in Picture window, 400 px on the longer side.
@@ -285,24 +312,7 @@ impl BeeperGuiApp {
             Msg::Play(mid, url, w, h) => {
                 let client = self.store.read().matrix.clone();
                 let u = url.clone();
-                self.video = Some(Video {
-                    mid,
-                    url: url.clone(),
-                    size: (w, h),
-                    media: None,
-                    at: 0.0,
-                    since: Some(Instant::now()),
-                    frames: None,
-                    start: 0.0,
-                    shown: 0,
-                    frame: None,
-                    rate: 1.0,
-                    muted: false,
-                    full: None,
-                    inline: None,
-                    sub: false,
-                    failed: false,
-                });
+                self.video = Some(Video::new(mid, url.clone(), (w, h)));
                 return Task::perform(
                     async move {
                         let bytes = beeper_core::matrix::media(client, u.clone()).await?;
@@ -395,6 +405,9 @@ impl BeeperGuiApp {
                 if v.pos() >= v.media.as_ref().expect("a loaded video").secs {
                     (v.at, v.since) = (0.0, None);
                     v.restart();
+                    if self.view_once.shows(&v.mid) {
+                        return self.view_once(view_once::Msg::Ended);
+                    }
                 }
                 let due = (((v.pos() - v.start) * FPS) as usize + 1).max(1);
                 while v.shown < due {
@@ -406,6 +419,15 @@ impl BeeperGuiApp {
             }
         }
         Task::none()
+    }
+
+    /// Plays the video of message `mid` in the view-once viewer, from media that the viewer loaded.
+    pub(crate) fn play_loaded(&mut self, mid: String, url: String, size: (u32, u32), media: Arc<Media>) {
+        self.audio.pause();
+        let mut v = Video::new(mid, url, size);
+        v.media = Some(media);
+        v.restart();
+        self.video = Some(v);
     }
 
     /// The carousel is open and shows the played video.

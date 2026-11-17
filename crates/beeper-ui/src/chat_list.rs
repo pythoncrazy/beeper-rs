@@ -1,6 +1,7 @@
 //! Desktop's chat list (ThreadList): its tabs and filters, the chat menu and flags, archive and read, multi-select, and the chat actions.
 
 use super::*;
+use crate::i18n::trnx;
 use crate::reminders::{last_used, last_used_label, remind_presets};
 use crate::time::list_ts;
 use crate::vcard::contact_name;
@@ -395,6 +396,10 @@ pub(crate) fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
 
 /// The text of a chat list preview, or a label for its links.
 pub(crate) fn preview_body(m: &Message) -> Option<String> {
+    // Desktop's `CP`: view-once media previews as what it is.
+    if let Some(text) = crate::view_once::preview(m) {
+        return Some(text.into());
+    }
     match m.links.len() {
         _ if m.poll.is_some() || m.call.is_some() => None,
         _ if m.html.is_some() => m.html.as_deref().map(beeper_core::codec::html_text),
@@ -421,6 +426,9 @@ pub(crate) const CALL_TAG: usize = 9;
 
 /// Desktop's `_P`: the badge of a poll, then of a call, then of the attachments.
 pub(crate) fn message_tag(m: &Message) -> Option<MediaTag> {
+    if m.view_once() {
+        return None;
+    }
     if m.poll.is_some() {
         return Some((POLL_TAG, trx("Poll", "chat list badge for a poll message"), None));
     }
@@ -1316,7 +1324,10 @@ impl BeeperGuiApp {
                 .push(column![top, preview].width(Fill))
                 .align_y(Center)
                 .padding(Padding::new(8.0).top(9.0).bottom(11.0).left(if selecting { 0.0 } else { 8.0 }));
-            let action = self.hover_progress(&key).filter(|_| !selecting).map(|t| match key.strip_prefix("draft:") {
+            // Desktop's Play button takes the place of the hover actions.
+            let plays = st.resolve_chat_idx(&key).is_some_and(|i| self.plays(&st.chats[i]));
+            let hover = !selecting && !plays;
+            let action = self.hover_progress(&key).filter(|_| hover).map(|t| match key.strip_prefix("draft:") {
                 Some(n) => Some(self.hover_btn(
                     5,
                     20.0,
@@ -1424,11 +1435,21 @@ impl BeeperGuiApp {
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
             let receipt = mine && reaction.is_none();
             let media_tag = m.and_then(message_tag);
-            let (body, italic) = match m.and_then(preview_body) {
-                Some(t) => (Some(t), false),
-                None => media_tag.as_ref().and_then(|t| t.2.clone()).map_or((None, false), |(d, i)| (Some(d), i)),
+            let plays = self.plays(c);
+            // Desktop counts the new messages of a chat whose view-once media nobody opened.
+            let fresh = (plays && c.unread_count > 0 && c.preview.as_ref().is_some_and(|m| self.view_once.unopened(m)))
+                .then(|| {
+                    let n = c.unread_count as usize;
+                    trnx("%d New message", "%d New messages", n, "view-limited media chat list preview", &[&n])
+                });
+            let (body, italic) = match (fresh.clone(), m.and_then(preview_body)) {
+                (Some(t), _) | (None, Some(t)) => (Some(t), false),
+                (None, None) => {
+                    media_tag.as_ref().and_then(|t| t.2.clone()).map_or((None, false), |(d, i)| (Some(d), i))
+                }
             };
-            let show_sender = !mine
+            let show_sender = fresh.is_none()
+                && !mine
                 && reaction.is_none()
                 && !m.is_some_and(Message::silent)
                 && (media_tag.is_some() || body.is_some())
@@ -1467,6 +1488,10 @@ impl BeeperGuiApp {
             let count = count.filter(|_| {
                 self.hovered_chat.as_ref() != Some(&c.id) || self.row_action(c, hover_action, 1.0).is_none()
             });
+            let count = match plays {
+                true => Some(self.view_once_play(&c.id)),
+                false => count,
+            };
             let sender = show_sender.then(|| preview_sender(c, m?)).flatten();
             let digits =
                 if counts && c.unread_count > 0 { unread_label(c.unread_count as usize).len() as f32 } else { 0.0 };

@@ -307,6 +307,10 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         mentions: None,
         send_status: None,
         call: None,
+        view_limit: None,
+        views_left: None,
+        view_expired: false,
+        view_kind: None,
         flags: 0,
     });
     let text = Some(crate::matrix::reaction_text(&key, target.as_ref(), who));
@@ -344,6 +348,10 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         mentions: None,
         send_status: None,
         call: None,
+        view_limit: None,
+        views_left: None,
+        view_expired: false,
+        view_kind: None,
         flags: 0,
     })
 }
@@ -766,6 +774,15 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 .map(|ids| ids.iter().filter_map(|u| u.as_str().map(String::from)).collect()),
             send_status: m.get("sendStatus").cloned().and_then(|v| serde_json::from_value(v).ok()),
             call: m.pointer("/extra/callAction").cloned().and_then(|v| serde_json::from_value(v).ok()),
+            // Desktop keeps the limit as its JSON text.
+            view_limit: m
+                .pointer("/extra/viewLimitedMedia")
+                .and_then(Value::as_str)
+                .and_then(|l| serde_json::from_str(l).ok())
+                .filter(|_| !deleted),
+            views_left: None,
+            view_expired: m.pointer("/extra/viewLimitedMediaExpired") == Some(&Value::Bool(true)),
+            view_kind: m.pointer("/extra/viewLimitedMediaKind").and_then(Value::as_str).map(str::to_string),
             flags: 0,
             id,
         });
