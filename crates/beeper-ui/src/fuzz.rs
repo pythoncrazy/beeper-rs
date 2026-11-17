@@ -3329,6 +3329,50 @@ fn the_open_chat_reads_new_messages_like_desktop() {
     assert_eq!(unread(&app), 0, "back at the bottom it is read");
 }
 
+/// Desktop's `onRangeChange`: above its bottom, the timeline reads the open chat through the last message in view
+/// once the scroll stops, and a Matrix room, whose messages keep no unread mark, counts the messages left below.
+#[test]
+fn the_open_chat_reads_through_the_last_message_in_view_like_desktop() {
+    let mut app = demo_app("read-in-view");
+    let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID).unwrap().id.clone();
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(true)));
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(true)));
+    {
+        let mut st = app.store.write();
+        let last = st.messages.iter().rfind(|m| m.chat_id == id).unwrap().clone();
+        let after: u64 = last.sort_key.parse().expect("a numeric sort key");
+        for n in 0..40 {
+            let text = format!("incoming {n}");
+            let (id, sort_key) = (format!("$in{n}"), format!("{:016}", after + 1 + n));
+            st.upsert_message(Message { id, sort_key, text: Some(text), is_sender: Some(false), ..last.clone() });
+        }
+        let idx = st.resolve_chat_idx(&id).unwrap();
+        st.update_chat(idx, |c| (c.unread_count, c.last_read_message_sort_key) = (40, Some(last.sort_key.clone())));
+    }
+    let unread = |app: &BeeperGuiApp| app.store.read().chat(&id).unread_count;
+    let redraw = || iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view_main());
+    sim.point_at(Point::new(900.0, 450.0));
+    let wheel = iced::Event::Mouse(mouse::Event::WheelScrolled { delta: ScrollDelta::Pixels { x: 0.0, y: 600.0 } });
+    let _ = sim.simulate([redraw(), wheel, redraw()]);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let _ = sim.simulate([redraw()]);
+    let relists: Vec<_> = sim.into_messages().filter(|m| matches!(m, UiMessage::Relist)).collect();
+    assert!(!relists.is_empty(), "the stopped scroll tells the app");
+    assert_eq!(unread(&app), 40, "nothing is read while the scroll moves");
+    for m in relists {
+        let _ = app.update(m);
+    }
+    let left = unread(&app);
+    assert!((1..40).contains(&left), "read through the last message in view, {left} left below it");
+    let receipt = app.store.read().outbox.iter().rev().find_map(|(_, _, o)| match o {
+        Outgoing::Read(event) => Some(event.clone()),
+        _ => None,
+    });
+    assert_eq!(receipt, Some(format!("$in{}", 39 - left)), "the receipt goes to the last message in view");
+}
+
 /// Desktop's `getLastParticipantName` and `messageSender`: a group preview and the timeline name the sender by the
 /// member's current name, so a rename shows at once.
 #[test]
@@ -8107,6 +8151,103 @@ fn row_hover_actions_fade_like_desktop() {
     assert!(app.hover_progress(&id).is_some_and(|t| t > 0.5), "they fade back out");
     std::thread::sleep(std::time::Duration::from_millis(120));
     assert_eq!(app.hover_progress(&id), None, "and are gone after it");
+}
+
+/// Desktop's view-limited media: a pill in place of the media, the viewer that counts a view, the Play queue of the
+/// chat list, the time limit, the HEIC toast and the expired media.
+#[test]
+fn view_once_media_like_desktop() {
+    use crate::view_once::{Msg, Shown};
+    let mut app = demo_app("view-once");
+    let b = app.store.read().bridge_accounts.iter().find(|b| !b.login_id.is_empty()).cloned().expect("a bridge login");
+    let them = |c: &Chat| c.participants.items.iter().find(|u| u.is_self != Some(true)).map(|u| u.id.clone());
+    let st = app.store.read();
+    let chat = st.chats.iter().find(|c| c.account_id == b.account_id && c.chat_type == "single" && them(c).is_some());
+    let chat = chat.cloned().expect("a direct chat of the login");
+    drop(st);
+    let _ = app.update(UiMessage::SelectChat(chat.id.clone()));
+    let media = |app: &BeeperGuiApp, n: i64, limit: serde_json::Value| {
+        let st = app.store.read();
+        let last = st.timeline_indices(&chat.id).last().map(|&i| st.messages[i].clone()).expect("a message");
+        let a = Attachment {
+            attachment_type: "img".into(),
+            src_url: Some(format!("mxc://x/{n}")),
+            mime_type: Some("image/jpeg".into()),
+            ..Default::default()
+        };
+        Message {
+            id: format!("vo_{n}"),
+            sort_key: beeper_core::store::sort_key(last.sort_key.parse::<i64>().expect("a sort key") + 1),
+            sender_id: them(&chat).expect("the other person"),
+            is_sender: Some(false),
+            is_deleted: None,
+            text: None,
+            html: None,
+            links: Vec::new(),
+            poll: None,
+            call: None,
+            unresolved_media: None,
+            attachments: vec![a],
+            view_limit: Some(limit),
+            ..last
+        }
+    };
+    let once = media(&app, 1, serde_json::json!({ "type": "count", "count": 1 }));
+    assert_eq!(crate::chat_list::preview_body(&once).as_deref(), Some("Sent a photo"));
+    assert_eq!(crate::chat_list::message_tag(&once), None, "no media badge");
+    app.store.write().upsert_message(once);
+    let mut sim = simulator(app.view_main());
+    let _ = sim.click("View photo").expect("the pill of received media");
+    let open: Vec<UiMessage> = sim.into_messages().collect();
+    assert!(matches!(&open[..], [UiMessage::ViewOnce(Msg::Open(m))] if m == "vo_1"));
+    assert!(app.plays(app.store.read().chat(&chat.id)), "the Play button of the chat list");
+    let _ = app.update(open[0].clone());
+    assert!(app.view_once.shows("vo_1"), "the viewer opens while the media loads");
+    let frame = (iced::widget::image::Handle::from_rgba(1, 1, vec![0; 4]), 0);
+    let shown = |mid: &str| UiMessage::ViewOnce(Msg::Loaded(mid.into(), Ok(Shown::Image(vec![frame.clone()]))));
+    let _ = app.update(shown("vo_1"));
+    let _ = simulator(app.view_main());
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Escape), Modifiers::empty()));
+    assert!(!app.view_once.is_open(), "Escape closes the viewer");
+    assert!(!app.plays(app.store.read().chat(&chat.id)), "the only view was used");
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("View photo").is_err() && sim.find("Photo").is_ok(), "the pill of used media is outlined");
+    drop(sim);
+    // Desktop's `playAll`: the received media at the end of the chat, one after the other.
+    for n in [2, 3] {
+        let m = media(&app, n, serde_json::json!({ "type": "count", "count": 1 }));
+        app.store.write().upsert_message(m);
+    }
+    let _ = app.update(UiMessage::ViewOnce(Msg::PlayAll(chat.id.clone())));
+    assert!(app.view_once.shows("vo_2"), "the queue starts after the used media");
+    let _ = app.update(shown("vo_2"));
+    let _ = app.update(UiMessage::ViewOnce(Msg::Dismiss));
+    assert!(app.view_once.shows("vo_3"), "a viewed image goes on to the next media");
+    let _ = app.update(shown("vo_3"));
+    let _ = app.update(UiMessage::ViewOnce(Msg::Dismiss));
+    assert!(!app.view_once.is_open() && !app.plays(app.store.read().chat(&chat.id)));
+    // Your own media with a time limit, and media that Desktop cannot open.
+    let timed = media(&app, 4, serde_json::json!({ "type": "count", "count": 2, "time": 5000 }));
+    app.store.write().upsert_message(Message { is_sender: Some(true), ..timed });
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("5s").is_ok(), "the time limit of your own media");
+    drop(sim);
+    let mut heic = media(&app, 5, serde_json::json!({ "type": "once" }));
+    heic.attachments[0].mime_type = Some("image/heic".into());
+    app.store.write().upsert_message(heic);
+    let _ = app.update(UiMessage::ViewOnce(Msg::Open("vo_5".into())));
+    assert!(!app.view_once.is_open() && app.status_banner == "This media can't be opened on desktop yet.");
+    // The bridge's redaction after the last view.
+    let mut st = app.store.write();
+    let i = st.find_message("vo_5").expect("the HEIC media");
+    st.update_message(i, |m| m.attachments[0].attachment_type = "video".into());
+    st.expire_message(&chat.id, "vo_5").expect("expire the media");
+    let gone = st.chat(&chat.id).preview.clone().expect("the expired media previews the chat");
+    drop(st);
+    assert_eq!(crate::chat_list::preview_body(&gone).as_deref(), Some("Expired video"));
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("Video").is_ok(), "the outlined pill");
+    assert!(sim.find("This message has been deleted").is_err());
 }
 
 /// Desktop's reactions on a network that takes only some (`allowed_reactions`): React shows them in a row instead of

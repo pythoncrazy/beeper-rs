@@ -71,8 +71,11 @@ enum Op {
     },
     /// The `com.beeper.disappearing_timer` of an edit without content.
     Timer(String, MessageTimer),
-    Redact(String),
+    /// A redaction, and whether the bridge redacted view-once media after its last view.
+    Redact(String, bool),
     Remove(String),
+    /// Desktop's `com.beeper.view_limited` update: the views left of view-once media.
+    ViewsLeft(String, u64),
     /// A poll response: the poll, the voter and the answers.
     Vote(String, String, Vec<String>),
     EndPoll(String),
@@ -610,6 +613,15 @@ fn poll_answers(c: &Value) -> Vec<String> {
     list.iter().filter_map(|a| a.as_str().map(str::to_string)).collect()
 }
 
+/// Desktop's `isBridgeBot` (`Cp`): the bot of a bridge on the Beeper homeserver.
+fn bridge_bot(user: &str) -> bool {
+    let local = user.ends_with(":beeper.local") || user.ends_with(".localhost");
+    let bot = user.strip_prefix('@').and_then(|u| u.strip_suffix("bot:beeper.local"));
+    bot.is_some_and(|b| {
+        (1..=32).contains(&b.len()) && b.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+    }) || (user.starts_with("@_bridgebot:") && local)
+}
+
 fn unresolved_media(c: &Value) -> Option<String> {
     c.get("com.beeper.unresolved_media").filter(|v| !v.is_null()).map(Value::to_string)
 }
@@ -629,7 +641,10 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         "m.room.message" | "m.sticker" | "m.room.encrypted" if deleted => (None, Vec::new(), "TEXT"),
         _ if deleted => return None,
         "m.reaction" => (None, Vec::new(), "REACTION"),
-        "m.room.redaction" => return Some(Op::Redact(s(&e["redacts"]).or(s(&c["redacts"]))?)),
+        "m.room.redaction" => {
+            let target = s(&e["redacts"]).or(s(&c["redacts"]))?;
+            return Some(Op::Redact(target, c["com.beeper.view_limited"] == true));
+        }
         "m.room.message" if rel["rel_type"] == "m.replace" => {
             let (new, ts) = (&c["m.new_content"], e["origin_server_ts"].as_i64().expect("event timestamp"));
             let (text, attachments, message_type) = content("m.room.message", new)?;
@@ -688,6 +703,11 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
             };
             (Some(text), Vec::new(), "DISAPPEARING_TIMER")
         }
+        // Desktop's `handleViewLimitedUpdateEvent` takes the views left only from a bridge bot.
+        "com.beeper.view_limited" => match (s(&rel["event_id"]), c["remaining_count"].as_u64().filter(|&n| n > 0)) {
+            (Some(target), Some(left)) if bridge_bot(&sender) => return Some(Op::ViewsLeft(target, left)),
+            _ => hide()?,
+        },
         k => content(k, c).or_else(hide)?,
     };
     let profile_name = s(&c["com.beeper.per_message_profile"]["displayname"]);
@@ -745,6 +765,10 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         send_status: None,
         call: crate::models::CallAction::of(c),
         disappearing: MessageTimer::of(&c[DISAPPEARING_TIMER], order),
+        view_limit: c.get("com.beeper.view_limited").filter(|l| l.is_object() && !deleted).cloned(),
+        views_left: None,
+        view_expired: deleted && e["unsigned"]["redacted_because"]["content"]["com.beeper.view_limited"] == true,
+        view_kind: None,
         flags: match c["m.mentions"]["user_ids"].as_array() {
             Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
             _ => 0,
@@ -1316,7 +1340,7 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
     let done = done.map(|d| (d["at_order"].as_i64(), d["updated_ts"].as_i64()));
     let reacted =
         ops.iter().filter_map(|o| if let Op::React(_, _, m) = o { Some(m.sort_key.clone()) } else { None }).max();
-    let redacted = ops.iter().any(|o| matches!(o, Op::Redact(_)));
+    let redacted = ops.iter().any(|o| matches!(o, Op::Redact(..)));
     let (members, group) = (chat.participants.total, chat.chat_type == "group");
     {
         let mut st = store.write();
@@ -1470,10 +1494,21 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                 Op::Remove(id) if here(&st, &id).is_some() => {
                     st.remove_message(&chat_id, &id).expect("remove a local echo");
                 }
-                Op::Redact(target) if here(&st, &target).is_some() => {
-                    st.delete_message(&chat_id, &target).expect("redact a known message");
+                Op::Redact(target, expired) if here(&st, &target).is_some() => {
+                    match expired {
+                        true => st.expire_message(&chat_id, &target),
+                        false => st.delete_message(&chat_id, &target),
+                    }
+                    .expect("redact a known message");
                 }
-                Op::Remove(id) | Op::Redact(id) => {
+                // Desktop's `MIN(remainingCount)` of the updates of a message.
+                Op::ViewsLeft(target, left) => {
+                    let i = here(&st, &target).filter(|&i| st.messages[i].view_limit.is_some());
+                    if let Some(i) = i.filter(|&i| st.messages[i].views_left.is_none_or(|n| left < n)) {
+                        st.update_message(i, |m| m.views_left = Some(left));
+                    }
+                }
+                Op::Remove(id) | Op::Redact(id, _) => {
                     let reacted = st
                         .timeline_indices(&chat_id)
                         .iter()
@@ -2833,6 +2868,13 @@ pub async fn resolve_identifier(p: Provision, identifier: String) -> Result<Opti
 
 pub async fn resolve_media(p: Provision, event_id: String, raw: String) -> Result<(), String> {
     p.post(&format!("resolve_media/{}", crate::codec::url_encode(&event_id)), raw).await.map(drop)
+}
+
+/// The SDK's `ViewLimitedMedia`: tells the bridge that the view-once media of `event_id` was viewed once under
+/// `limit`, so the bridge counts the view and deletes the media after its last view.
+pub async fn view_limited_media(p: Provision, event_id: String, limit: Value) -> Result<(), String> {
+    let body = serde_json::json!({ "com.beeper.view_limited": limit }).to_string();
+    p.post(&format!("view_limited_media/{}", crate::codec::url_encode(&event_id)), body).await.map(drop)
 }
 
 /// The bridge's `create_dm`: the room of the direct chat with `identifier`, which the bridge makes when it is missing.
@@ -4960,6 +5002,74 @@ mod tests {
         let m = st.message("$note");
         assert!(m.is_deleted.is_none() && m.text.as_deref() == Some("Q") && m.reactions.is_empty());
         assert_eq!(m.poll.as_ref().map(|p| p.voters()), Some(0));
+    }
+
+    /// Desktop's view-limited media: the limit of `com.beeper.view_limited`, the views left that only a bridge bot
+    /// reports, and the bridge's redaction after the last view, which keeps the message as expired media of its kind.
+    #[tokio::test]
+    async fn view_once_media_like_desktop() {
+        let image = |id: &str, limit: Value| {
+            let content = json!({ "msgtype": "m.image", "body": "a.jpg", "url": "mxc://x/a",
+                "info": { "mimetype": "image/jpeg" }, "com.beeper.view_limited": limit });
+            let mut e = stub_event(id, "m.room.message", content);
+            e["sender"] = json!("@vic:x");
+            e
+        };
+        let left = |id: &str, sender: &str, target: &str, n: u64| {
+            let rel = json!({ "rel_type": "m.reference", "event_id": target });
+            let mut e = stub_event(id, "com.beeper.view_limited", json!({ "m.relates_to": rel, "remaining_count": n }));
+            e["sender"] = json!(sender);
+            e
+        };
+        let mut redaction = stub_event("$r", "m.room.redaction", json!({ "com.beeper.view_limited": true }));
+        redaction["redacts"] = json!("$gone");
+        let events = vec![
+            image("$twice", json!({ "type": "count", "count": 2 })),
+            left("$u1", "@whatsappbot:beeper.local", "$twice", 1),
+            left("$u2", "@vic:x", "$twice", 0),
+            image("$timed", json!({ "type": "count", "count": 1, "time": 5000 })),
+            left("$u3", "@vic:x", "$timed", 1),
+            image("$gone", json!({ "type": "count", "count": 1 })),
+            redaction,
+        ];
+        let store = stub_history("view-once", events, ("!other:x", Vec::new())).await;
+        sync_stub_room(&store, "!room:x").await;
+        let st = store.read();
+        let twice = st.message("$twice");
+        assert!(twice.view_once() && twice.view_once_replay() && twice.view_once_time().is_none());
+        assert_eq!(twice.views_left, Some(1), "the bridge bot's count, not the user's");
+        assert_eq!(twice.view_once_limit(), Some(json!({ "type": "count", "count": 1 })), "Desktop's nZt");
+        let timed = st.message("$timed");
+        assert_eq!((timed.view_once_time(), timed.views_left, timed.view_once_replay()), (Some(5000), None, false));
+        let gone = st.message("$gone");
+        assert!(gone.view_once_expired() && !gone.view_once() && gone.attachments.is_empty());
+        assert_eq!(gone.view_once_kind(), Some("img"), "the expired message keeps the kind of its media");
+        let preview = st.chat("!room:x").preview.clone().expect("a preview");
+        assert_eq!(preview.id, "$gone", "Desktop's `Pct`: expired media still previews its chat");
+    }
+
+    /// The SDK's `ViewLimitedMedia`: a provisioning request through the homeserver to the bridge, with the limit of the
+    /// view.
+    #[tokio::test]
+    async fn a_view_goes_to_the_bridge_like_desktop() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| {
+            s.lock().unwrap().push((method.to_string(), path.to_string(), body));
+            (200, json!({}))
+        })
+        .await;
+        let p = super::Provision {
+            homeserver: url,
+            access_token: "token".into(),
+            user_id: "@me:beeper.com".into(),
+            bridge_id: "whatsapp".into(),
+            login_id: "15550100".into(),
+        };
+        let limit = json!({ "type": "count", "count": 1, "time": 5000 });
+        super::view_limited_media(p, "$a:b".into(), limit.clone()).await.expect("the bridge takes the view");
+        let path = "/_matrix/client/unstable/com.beeper.bridge/whatsapp/_matrix/provision/v3/view_limited_media/%24a%3Ab?user_id=%40me%3Abeeper.com&login_id=15550100";
+        assert_eq!(*seen.lock().unwrap(), [("POST".into(), path.into(), json!({ "com.beeper.view_limited": limit }))]);
     }
 
     /// Desktop's threaded replies: the `m.thread` relations of a room with threads, the thread follows, the own

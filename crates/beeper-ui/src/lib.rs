@@ -87,6 +87,7 @@ mod user_card;
 mod vcard;
 mod verify;
 mod video;
+mod view_once;
 mod vlist;
 mod voice;
 mod wants;
@@ -272,7 +273,7 @@ pub enum MenuEdit {
 #[derive(Clone)]
 pub enum UiMessage {
     Noop,
-    /// A virtual list must build other rows.
+    /// A virtual list must build other rows, or its scroll stopped.
     Relist,
     /// A view shows avatars or media that no task loads yet.
     LoadWanted,
@@ -377,6 +378,8 @@ pub enum UiMessage {
     Voice(voice::Msg),
     Record(record::Msg),
     Video(video::Msg),
+    /// Desktop's view-once media: its viewer, its views and the Play queue of a chat.
+    ViewOnce(view_once::Msg),
     Gallery(gallery::Msg),
     /// Opens the emoji picker for a quick reaction (see [`emoji::Picker::pref`]), or closes it.
     QuickEmoji(Option<u8>),
@@ -616,6 +619,9 @@ fn ghost(p: &Palette, r: f32) -> impl Fn(&Theme, button::Status) -> button::Styl
 }
 
 /// A row of a dropdown or context menu. Without a message it is greyed out.
+/// How long Desktop's flyover takes to reveal all its items, one after another.
+const FLYOVER_REVEAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Desktop's `--animation-timing`, in seconds.
 const HOVER_FADE: f32 = 0.1;
 
@@ -2283,6 +2289,10 @@ pub struct Pane {
     pub menu_selection: Option<String>,
     /// The `href` of the link whose right click opened the message menu: an `https://` or `mailto:` one.
     pub menu_link: Option<String>,
+    /// The message menu is Desktop's video menu, from a right click on the video.
+    pub video_menu: bool,
+    /// The quoted message whose right click opened the message menu (Desktop's `selectedLinkedMessage`).
+    pub menu_linked: Option<String>,
     /// The messages of the gallery whose menu is open.
     pub gallery_menu: Vec<String>,
     /// The reactions list of the messages of a gallery, at a point, from the gallery menu.
@@ -2310,6 +2320,9 @@ pub struct Pane {
     /// The messages whose spoilers were clicked open (Desktop's `.spoiler.clicked`).
     pub spoilers: HashSet<String>,
     pub hovered_msg: Option<String>,
+    /// When `hovered_msg` began, and when the pointer entered its flyover, for the flyover's staggered reveal.
+    pub hover_msg_at: Option<std::time::Instant>,
+    pub flyover_at: Option<std::time::Instant>,
     /// The selected emoji autocomplete row.
     pub suggest: usize,
     pub history: History,
@@ -2489,6 +2502,8 @@ pub struct BeeperGuiApp {
     /// The Picture in Picture window and the message of its video, and a video that should go there.
     pip: Option<(window::Id, String)>,
     pip_wanted: bool,
+    /// The video went to Picture in Picture from the video menu, so it stays there while its chat is open.
+    pip_manual: bool,
     pub hotkey_query: String,
     pub hotkey_rec: Option<HotkeyRec>,
     pub profile: profile::ProfileForm,
@@ -2718,6 +2733,7 @@ pub struct BeeperGuiApp {
     dismissed_errors: HashSet<String>,
     pub resolving_media: HashMap<String, bool>,
     video: Option<video::Video>,
+    view_once: view_once::ViewOnce,
     started: std::time::Instant,
 }
 
@@ -2789,6 +2805,7 @@ impl BeeperGuiApp {
             seen_requests: Vec::new(),
             pip: None,
             pip_wanted: false,
+            pip_manual: false,
             hotkey_query: String::new(),
             hotkey_rec: None,
             profile: profile::ProfileForm::default(),
@@ -2949,6 +2966,7 @@ impl BeeperGuiApp {
             dismissed_errors: HashSet::new(),
             resolving_media: HashMap::new(),
             video: None,
+            view_once: Default::default(),
             started: std::time::Instant::now(),
             last_click: None,
             chat_history: Vec::new(),
@@ -3858,6 +3876,7 @@ impl BeeperGuiApp {
             UiMessage::Toast(msg) => return self.toasts(msg),
             UiMessage::UserCard(msg) => return self.user_card(msg),
             UiMessage::Video(msg) => return self.video(msg),
+            UiMessage::ViewOnce(msg) => return self.view_once(msg),
             UiMessage::Voice(msg) => return self.voice(msg),
             UiMessage::Window(msg) => return self.windows(msg),
             UiMessage::Zoom(msg) => return self.set_zoom(msg),
@@ -4212,7 +4231,13 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::Noop => {}
-            UiMessage::Relist => return Task::none(),
+            UiMessage::Relist => {
+                // Above its bottom, the timeline reads through its last row in view; at the bottom its sensor reads.
+                if self.pane.scrolled_up.is_some_and(|(up, _)| up) {
+                    self.read_open_chat();
+                }
+                return Task::none();
+            }
             UiMessage::LoadWanted => return Task::batch([self.load_avatars(), self.load_media(), self.load_quotes()]),
             UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
                 self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
@@ -4339,6 +4364,9 @@ impl BeeperGuiApp {
                 if (self.recorder.is_some() || self.talk.is_some()) && m.is_empty() =>
             {
                 return self.record(record::Msg::Key(k));
+            }
+            UiMessage::KeyPressed(Key::Named(Named::Escape), _) if self.view_once.is_open() => {
+                return self.view_once(view_once::Msg::Dismiss);
             }
             UiMessage::KeyPressed(key, mods) if self.carousel.as_ref().is_some_and(|c| !c.in_media) => {
                 return self.carousel_key(&key, mods);
@@ -4744,7 +4772,10 @@ impl BeeperGuiApp {
             || self.enter_key.busy
             || self.nickname_windows.iter().any(|d| d.saving)
             || self.hover_fading()
-            || self.sidebar_progress().is_some();
+            || self.sidebar_progress().is_some()
+            || self
+                .panes()
+                .any(|p| [p.hover_msg_at, p.flyover_at].iter().flatten().any(|t| t.elapsed() < FLYOVER_REVEAL));
         let tab_at = self.media_window.as_ref().and_then(|w| w.tab_at);
         let animated = animated || tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE);
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
@@ -4794,7 +4825,8 @@ impl BeeperGuiApp {
                 .chain(self.transcribe_ticks())
                 .chain(self.audio_drag())
                 .chain(self.record_events())
-                .chain(self.video_ticks()),
+                .chain(self.video_ticks())
+                .chain(self.view_once_ticks()),
         )
     }
 
@@ -5146,6 +5178,7 @@ impl BeeperGuiApp {
             .push(toast)
             .push(quick_look)
             .push(carousel)
+            .push(self.view_view_once().filter(|_| in_main))
             .push(hover)
             .push(menu_drop)
             .push(menu)
@@ -5450,14 +5483,41 @@ impl BeeperGuiApp {
         (stack![column![Space::new().height(88.0 - 8.0 - CARD_FACE_IN), card], face].into(), high)
     }
 
-    /// Desktop's timeline effect (`markAsRead` as the newest message comes into view): the open chat is read while
-    /// its window is focused and the timeline is at its bottom, except in incognito mode.
+    /// Desktop's timeline effect (`markAsRead` through the last message in view, from `onRangeChange`): while its
+    /// window is focused, the open chat is read through the bottom message on screen, all of it at the bottom of the
+    /// timeline, except in incognito mode.
     fn read_open_chat(&self) {
         let at_bottom = self.pane.scrolled_up.is_none_or(|(up, _)| !up);
-        let Some(id) = self.pane.selected_chat_id.as_deref().filter(|_| self.focused && at_bottom) else { return };
-        let mut st = self.store.write();
-        if let Some(idx) = st.resolve_chat_idx(id).filter(|_| !st.incognito() && self.pane.thread_root.is_none()) {
-            st.mark_read(idx, false);
+        let Some(id) = self.pane.selected_chat_id.clone().filter(|_| self.focused && self.pane.thread_root.is_none())
+        else {
+            return;
+        };
+        if self.store.read().incognito() {
+            return;
+        }
+        if at_bottom {
+            let mut st = self.store.write();
+            if let Some(idx) = st.resolve_chat_idx(&id) {
+                st.mark_read(idx, false);
+            }
+            return;
+        }
+        let Some(seen) = self.pane.timeline.last_seen() else { return };
+        let through = {
+            let st = self.store.read();
+            let chat = st.resolve_chat_idx(&id).map(|i| &st.chats[i]).filter(|c| c.is_unread());
+            chat.and_then(|c| {
+                let read = c.last_read_message_sort_key.as_ref();
+                st.timeline_indices(&c.id)
+                    .iter()
+                    .map(|&i| &st.messages[i])
+                    .find(|m| vlist::key(&m.id) == seen)
+                    .filter(|m| read.is_none_or(|r| m.sort_key > *r))
+                    .map(|m| (m.chat_id.clone(), m.id.clone()))
+            })
+        };
+        if let Some((chat, mid)) = through {
+            self.store.write().mark_read_through(&chat, &mid);
         }
     }
 
@@ -5837,12 +5897,13 @@ impl BeeperGuiApp {
     /// goes on inline, and when another video plays.
     fn pip(&mut self) -> Task<UiMessage> {
         if let Some((id, mid)) = self.pip.clone() {
-            let here = self.store.read().loaded(&mid).map(|m| m.chat_id.clone()) == self.pane.selected_chat_id;
+            let here = !self.pip_manual
+                && self.store.read().loaded(&mid).map(|m| m.chat_id.clone()) == self.pane.selected_chat_id;
             let gone = self.video.as_ref().is_none_or(|v| v.mid != mid);
             if !here && !gone {
                 return Task::none();
             }
-            self.pip = None;
+            (self.pip, self.pip_manual) = (None, false);
             if let Some(v) = self.video.as_mut().filter(|_| here) {
                 v.set_pip(false);
             }

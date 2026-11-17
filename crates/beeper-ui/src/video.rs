@@ -4,7 +4,7 @@ use crate::i18n::tr;
 use crate::media_view;
 use crate::message;
 use crate::style::{btn_style, fill_box, shadow_box, Bare, CLEAR};
-use crate::{ic, icon, menu_item, menu_rule, sound, tinted, BeeperGuiApp, El, UiMessage, MENU_ITEM};
+use crate::{ic, icon, menu_item, sound, tinted, view_once, BeeperGuiApp, El, UiMessage, MENU_ITEM};
 use iced::gradient::Linear;
 use iced::widget::{button, column, container, hover, image, mouse_area, row, slider, stack, svg, Column, Space};
 use iced::{window, Background, Center, Color, Fill, Padding, Subscription, Task};
@@ -71,7 +71,7 @@ pub enum Place {
 
 /// Desktop's `video-progress-bar`: a 3 px white bar over a dim one, and a hidden slider that seeks.
 fn video_progress<'a>(v: &Video) -> El<'a> {
-    let frac = v.media.as_ref().map_or(0.0, |m| (v.pos() / m.secs).clamp(0.0, 1.0));
+    let frac = v.progress();
     let bar = |c: Color| container(Space::new()).width(Fill).height(3).style(fill_box(c, 100.0));
     let part = |f: f32| iced::Length::FillPortion((f * 1000.0).round().max(1.0) as u16);
     let done = row![bar(Color::WHITE).width(part(frac)), Space::new().width(part(1.0 - frac))];
@@ -140,6 +140,10 @@ pub enum Msg {
     Rate(f32),
     Mute,
     Fullscreen,
+    /// Desktop's `openInPip` of the video menu.
+    OpenPip,
+    /// A right click on the video: Desktop's video menu in place of the message menu.
+    Menu(String),
     Sub,
 }
 
@@ -192,6 +196,28 @@ fn stream(path: &Path, from: f32, (w, h): (u32, u32)) -> Receiver<image::Handle>
 }
 
 impl Video {
+    /// A video of message `mid` that plays as soon as it loads.
+    fn new(mid: String, url: String, size: (u32, u32)) -> Self {
+        Video {
+            mid,
+            url,
+            size,
+            media: None,
+            at: 0.0,
+            since: Some(Instant::now()),
+            frames: None,
+            start: 0.0,
+            shown: 0,
+            frame: None,
+            rate: 1.0,
+            muted: false,
+            full: None,
+            inline: None,
+            sub: false,
+            failed: false,
+        }
+    }
+
     pub fn playing(&self) -> bool {
         self.since.is_some()
     }
@@ -202,6 +228,11 @@ impl Video {
 
     fn pos(&self) -> f32 {
         self.at + self.since.map_or(0.0, |s| s.elapsed().as_secs_f32() * self.rate)
+    }
+
+    /// The part of the loaded video that played.
+    pub(crate) fn progress(&self) -> f32 {
+        self.media.as_ref().map_or(0.0, |m| (self.pos() / m.secs).clamp(0.0, 1.0))
     }
 
     /// Desktop's `openPipWindow`: the size of the Picture in Picture window, 400 px on the longer side.
@@ -285,24 +316,7 @@ impl BeeperGuiApp {
             Msg::Play(mid, url, w, h) => {
                 let client = self.store.read().matrix.clone();
                 let u = url.clone();
-                self.video = Some(Video {
-                    mid,
-                    url: url.clone(),
-                    size: (w, h),
-                    media: None,
-                    at: 0.0,
-                    since: Some(Instant::now()),
-                    frames: None,
-                    start: 0.0,
-                    shown: 0,
-                    frame: None,
-                    rate: 1.0,
-                    muted: false,
-                    full: None,
-                    inline: None,
-                    sub: false,
-                    failed: false,
-                });
+                self.video = Some(Video::new(mid, url.clone(), (w, h)));
                 return Task::perform(
                     async move {
                         let bytes = beeper_core::matrix::media(client, u.clone()).await?;
@@ -368,6 +382,15 @@ impl BeeperGuiApp {
                 self.pane.message_menu = None;
             }
             Msg::Sub => self.video.as_mut().expect("a played video").sub = true,
+            Msg::Menu(mid) => {
+                let open = self.update(UiMessage::Message(message::Msg::OpenMenu(mid)));
+                self.pane.video_menu = true;
+                return open;
+            }
+            Msg::OpenPip => {
+                self.pane.message_menu = None;
+                (self.pip_wanted, self.pip_manual) = (true, true);
+            }
             Msg::Fullscreen => {
                 let (id, area) = match self.carousel.as_ref().filter(|c| c.in_media && self.carousel_shows_video()) {
                     Some(_) => {
@@ -395,6 +418,9 @@ impl BeeperGuiApp {
                 if v.pos() >= v.media.as_ref().expect("a loaded video").secs {
                     (v.at, v.since) = (0.0, None);
                     v.restart();
+                    if self.view_once.shows(&v.mid) {
+                        return self.view_once(view_once::Msg::Ended);
+                    }
                 }
                 let due = (((v.pos() - v.start) * FPS) as usize + 1).max(1);
                 while v.shown < due {
@@ -406,6 +432,15 @@ impl BeeperGuiApp {
             }
         }
         Task::none()
+    }
+
+    /// Plays the video of message `mid` in the view-once viewer, from media that the viewer loaded.
+    pub(crate) fn play_loaded(&mut self, mid: String, url: String, size: (u32, u32), media: Arc<Media>) {
+        self.audio.pause();
+        let mut v = Video::new(mid, url, size);
+        v.media = Some(media);
+        v.restart();
+        self.video = Some(v);
     }
 
     /// The carousel is open and shows the played video.
@@ -501,12 +536,11 @@ impl BeeperGuiApp {
         if place == Place::Carousel {
             return surface.into();
         }
-        let surface = mouse_area(surface).on_right_press(UiMessage::Message(message::Msg::OpenMenu(mid.into())));
+        let surface = mouse_area(surface).on_right_press(UiMessage::Video(Msg::Menu(mid.into())));
         let on = |glyph: &svg::Handle, msg: UiMessage| -> El<'a> { self.video_button(v, glyph, msg) };
         let skips = self.video_skips(v);
-        let corners =
-            row![on(&GLYPHS[2], UiMessage::Message(message::Msg::OpenMenu(mid.into()))), Space::new().width(Fill)]
-                .push((place != Place::Pip).then(|| on(&GLYPHS[3], UiMessage::Video(Msg::Fullscreen))));
+        let corners = row![on(&GLYPHS[2], UiMessage::Video(Msg::Menu(mid.into()))), Space::new().width(Fill)]
+            .push((place != Place::Pip).then(|| on(&GLYPHS[3], UiMessage::Video(Msg::Fullscreen))));
         let progress = video_progress(v);
         let shade = Linear::new(iced::Radians(std::f32::consts::PI))
             .add_stop(0.0, Color::TRANSPARENT)
@@ -579,20 +613,25 @@ impl BeeperGuiApp {
         self.video.as_ref().filter(|v| v.mid == mid && v.media.is_some())
     }
 
-    /// Desktop's video menu items above the message menu: Fullscreen, Download, Mute and Playback Speed.
+    /// Desktop's video menu (`getContextMenuItems`): Fullscreen, Open in PiP, Download, Mute and Playback Speed.
     pub(crate) fn video_menu_rows(&self, mid: &str) -> Option<Vec<(El<'_>, f32)>> {
         let v = self.menu_video(mid)?;
         let p = &self.pal;
         let item = |label, hotkey, msg| (menu_item(p, None, tr(label).into(), hotkey, Some(msg)), MENU_ITEM);
         let speed = mouse_area(menu_item(p, None, tr("Playback Speed").into(), "›", Some(UiMessage::Video(Msg::Sub))))
             .on_enter(UiMessage::Video(Msg::Sub));
-        Some(vec![
-            item("Fullscreen", "", UiMessage::Video(Msg::Fullscreen)),
-            item("Download", "", UiMessage::Message(message::Msg::Download(mid.into(), None))),
-            item(if v.muted { "Unmute" } else { "Mute" }, "", UiMessage::Video(Msg::Mute)),
-            (speed.into(), MENU_ITEM),
-            (menu_rule(p), 11.0),
-        ])
+        let pip = self.pip.is_none().then(|| item("Open in PiP", "", UiMessage::Video(Msg::OpenPip)));
+        Some(
+            [Some(item("Fullscreen", "", UiMessage::Video(Msg::Fullscreen))), pip]
+                .into_iter()
+                .flatten()
+                .chain([
+                    item("Download", "", UiMessage::Message(message::Msg::Download(mid.into(), None))),
+                    item(if v.muted { "Unmute" } else { "Mute" }, "", UiMessage::Video(Msg::Mute)),
+                    (speed.into(), MENU_ITEM),
+                ])
+                .collect(),
+        )
     }
 
     /// The "Playback Speed" submenu, level with its row.
@@ -605,8 +644,10 @@ impl BeeperGuiApp {
             menu_item(p, lead(v.rate == r), label, "", Some(UiMessage::Video(Msg::Rate(r))))
         });
         let list = container(Column::with_children(rates).padding([4, 0])).width(SPEED_MENU_W);
+        // Level with its row, under Open in PiP when the menu has it.
+        let above = if self.pip.is_none() { 4.0 } else { 3.0 };
         Some(
-            column![Space::new().height(3.0 * MENU_ITEM), list.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))]
+            column![Space::new().height(above * MENU_ITEM), list.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))]
                 .into(),
         )
     }
@@ -616,6 +657,34 @@ impl BeeperGuiApp {
 mod tests {
     use super::*;
     use crate::windows;
+
+    /// Desktop's video menu takes the place of the message menu for a right click on the video, and its Open in PiP
+    /// keeps the video in Picture in Picture while its chat stays open.
+    #[test]
+    fn the_video_menu_like_desktop() {
+        use iced_test::simulator::simulator;
+        let mut app = crate::fuzz::demo_app("video-menu");
+        let chat = app.visible_chats(&app.store.read())[0].id.clone();
+        let _ = app.update(UiMessage::SelectChat(chat.clone()));
+        let mid = {
+            let st = app.store.read();
+            st.timeline_indices(&chat).last().map(|&i| st.messages[i].id.clone()).expect("a message")
+        };
+        let url = "mxc://x/video".to_string();
+        let _ = app.update(UiMessage::Video(Msg::Play(mid.clone(), url.clone(), 320, 180)));
+        let path = std::env::temp_dir().join(format!("beeper-rs-video-menu-{}", std::process::id()));
+        let _ = app.update(UiMessage::Video(Msg::Loaded(url, Ok(Arc::new(Media { path, secs: 10.0, sound: None })))));
+        let has = |app: &BeeperGuiApp, label: &str| simulator(app.view_message_menu(&mid).0).find(label).is_ok();
+        let _ = app.update(UiMessage::Video(Msg::Menu(mid.clone())));
+        assert!(["Fullscreen", "Open in PiP", "Download", "Mute", "Playback Speed"].iter().all(|l| has(&app, l)));
+        assert!(!has(&app, "Reply…"), "in place of the message menu");
+        let _ = app.update(UiMessage::Message(message::Msg::OpenMenu(mid.clone())));
+        assert!(has(&app, "Reply…") && !has(&app, "Open in PiP"), "the message menu has no video items");
+        let _ = app.update(UiMessage::Video(Msg::OpenPip));
+        assert!(app.pip.is_some(), "Picture in Picture opens in the chat of the video");
+        let _ = app.update(UiMessage::StoreChanged);
+        assert!(app.pip.is_some(), "and stays while the chat is open");
+    }
 
     /// Desktop's Picture in Picture: a playing video goes on in a window of 400 px on its longer side when its chat
     /// closes, comes back inline when the chat opens again, and stops when the window closes.

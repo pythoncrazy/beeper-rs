@@ -19,6 +19,7 @@ use crate::threads;
 use crate::time::{clock, day_label, day_num, day_of, format_short_ts, locale_string, today};
 use crate::timeline;
 use crate::units::human_size;
+use crate::view_once;
 use crate::windows;
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, commands, copy_text, delete_dialog, distance, downloads_dir,
@@ -316,6 +317,9 @@ fn is_vcard(a: &Attachment) -> bool {
     name.ends_with(".vcf") || a.mime_type.as_deref().is_some_and(|m| m.eq_ignore_ascii_case("text/x-vcard"))
 }
 
+/// The time from one flyover item to the next: the item's ease-out is a quarter in after 32 ms of its 0.2 s.
+const FLYOVER_STAGGER: f32 = 0.032;
+
 /// Desktop's `pm` text: the formatted body with each custom emoji (`data-mx-emoticon`) as 📟 when it has one, else
 /// the text, so a message of custom emoji is a jumbo emoji too.
 fn emoji_text(m: &Message) -> String {
@@ -559,8 +563,9 @@ impl BeeperGuiApp {
         let at = trf(if mine { "Sent at %s" } else { "Received at %s" }, &[&locale_string(&m.timestamp)]);
         let timer = disappears(st.chat(&m.chat_id), m);
         let stamp = st.settings.on("copyTimestamps");
-        let files = m.attachments.len();
-        let image = m.attachments.first().is_some_and(|a| a.attachment_type == "img");
+        // Desktop's `Hit`: view-once media has nothing to download or copy.
+        let files = if m.view_once() { 0 } else { m.attachments.len() };
+        let image = files > 0 && m.attachments.first().is_some_and(|a| a.attachment_type == "img");
         let only_image = image && m.text.is_none();
         let download = match m.attachments.first().and_then(|a| a.file_size).filter(|_| files == 1) {
             Some(n) => trf(if image { "Download Image (%s)" } else { "Download Attachment (%s)" }, &[&human_size(n)]),
@@ -572,6 +577,15 @@ impl BeeperGuiApp {
             })
             .into(),
         };
+        // Desktop's video menu takes the place of the message menu for a right click on the video, with Bookmark.
+        if let Some(rows) = self.video_menu_rows(&mid).filter(|_| self.pane().video_menu) {
+            let mark = item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone()))));
+            let rows: Vec<(El, f32)> = rows.into_iter().chain([rule(), mark]).collect();
+            let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
+            let col = Column::with_children(rows.into_iter().map(|r| r.0));
+            let menu = container(col.padding([4, 0])).width(MESSAGE_MENU_W);
+            return (menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into(), h, 0.0);
+        }
         let chat = st.chat(&cid);
         let (rules, live) = (chat.messages, m.is_deleted != Some(true));
         let others = chat.participants.items.iter().filter(|u| u.is_self != Some(true)).count();
@@ -579,7 +593,6 @@ impl BeeperGuiApp {
         let privately =
             !mine && sender && others > 1 && m.is_deleted != Some(true) && self.can(&m.account_id, "create_dm");
         let head: Vec<(El, f32)> = [
-            self.video_menu_rows(&mid),
             address.map(|e| {
                 vec![
                     item(
@@ -656,13 +669,19 @@ impl BeeperGuiApp {
             .then(|| {
                 vec![item("End Poll".into(), "", Some(UiMessage::Message(Msg::EndPoll(cid.clone(), mid.clone()))))]
             }),
-            self.pane().reply_thread.is_some().then(|| {
-                let jump = UiMessage::Commands(vec![
-                    UiMessage::CommandBar(commands::Msg::JumpTo(cid, mid.clone())),
-                    UiMessage::Message(Msg::Select(vec![mid.clone()])),
-                ]);
-                vec![item(tr("Jump to Message").into(), "", Some(jump))]
-            }),
+            // Desktop's `Z`: from the reply chain, the thread pane, or a right click on a quote, which jumps to the
+            // quoted message. The jump closes the reply chain and the thread pane.
+            (self.pane().reply_thread.is_some() || self.pane().thread.is_some() || self.pane().menu_linked.is_some())
+                .then(|| {
+                    let target = self.pane().menu_linked.clone().unwrap_or_else(|| mid.clone());
+                    let jump = UiMessage::Commands(vec![
+                        UiMessage::Message(Msg::HideReplies),
+                        UiMessage::Thread(threads::Msg::Hide),
+                        UiMessage::CommandBar(commands::Msg::JumpTo(cid, target.clone())),
+                        UiMessage::Message(Msg::Select(vec![target])),
+                    ]);
+                    vec![item(tr("Jump to Message").into(), "", Some(jump))]
+                }),
         ]
         .into_iter()
         .flatten()
@@ -1137,8 +1156,9 @@ impl BeeperGuiApp {
         }
         let (hide, members) = (st.settings.on("hideDeleted"), st.settings.on("membershipEvents"));
         let msgs: Vec<&Message> = self.pane_msgs(st);
-        let msgs: Vec<&Message> =
-            msgs.into_iter().filter(|m| !(hide && m.is_deleted == Some(true)) && (members || !membership(m))).collect();
+        // Desktop shows expired view-once media even when it hides deleted messages.
+        let hidden = |m: &Message| hide && m.is_deleted == Some(true) && !m.view_once_expired();
+        let msgs: Vec<&Message> = msgs.into_iter().filter(|m| !hidden(m) && (members || !membership(m))).collect();
         let rows = Rc::new(Rows::of(st, &msgs));
         *memo.borrow_mut() = Some((generation, chat.id.clone(), rows.clone()));
         rows
@@ -1409,7 +1429,7 @@ impl BeeperGuiApp {
         let shows_time = st.settings.on("showTimestamps") && !hide_time;
         let italic = iced::Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) };
         // Desktop keeps the row of a deleted message, with its sender, its menu and its selection.
-        let deleted = (m.is_deleted == Some(true)).then(|| {
+        let deleted = (m.is_deleted == Some(true) && !m.view_once_expired()).then(|| {
             let fg = on_wall.unwrap_or(mix(p.card, p.text, 0.8));
             let icon = svg(TRASH.clone())
                 .width(13.0 * 448.0 / 512.0)
@@ -1488,7 +1508,12 @@ impl BeeperGuiApp {
             };
             let q_mine = q.is_sender == Some(true);
             let col = self.linked_message(chat, q, group, on_wall, sent).filter(|_| !chained);
-            (col.map(|c| column![mouse_area(c).on_press(UiMessage::Message(Msg::ShowReplies(q.id.clone())))]), q_mine)
+            let quote = col.map(|c| {
+                mouse_area(c)
+                    .on_press(UiMessage::Message(Msg::ShowReplies(q.id.clone())))
+                    .on_right_press(UiMessage::Message(Msg::LinkedMenu(m.id.clone(), q.id.clone())))
+            });
+            (quote.map(|q| column![q]), q_mine)
         });
         // Desktop's `pM`: a link with a title, an image or a summary has a preview.
         for link in m.links.iter().filter(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some()) {
@@ -1497,7 +1522,11 @@ impl BeeperGuiApp {
         if ms.len() > 1 {
             parts = parts.push(self.view_gallery(ms));
         }
-        for (ai, a) in m.attachments.iter().enumerate().filter(|_| ms.len() == 1) {
+        // Desktop's `ViewLimitedMediaAttachment` takes the place of view-once media.
+        if m.view_once() {
+            parts = parts.push(self.view_once_pill(m, (bg, fg)));
+        }
+        for (ai, a) in m.attachments.iter().enumerate().filter(|_| ms.len() == 1 && !m.view_once()) {
             let name = attachment_name(a);
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
                 (_, "audio") if self.playable(a) => {
@@ -1613,6 +1642,8 @@ impl BeeperGuiApp {
         }
         if let Some(pill) = deleted {
             parts = parts.push(pill);
+        } else if m.view_once_expired() {
+            parts = parts.push(self.view_once_indicator(m, view_once::Variant::Outlined, (p.card, p.text)));
         } else if m.message_type.as_deref() == Some("HIDDEN") {
             let bold = |s: String| span::<(), _>(s).font(fw(Weight::Bold));
             let head = container(txt(tr("Hidden event"), 13.0).font(fw(Weight::Bold)))
@@ -1996,39 +2027,75 @@ impl BeeperGuiApp {
             .push(transcribe)
             .align_x(if mine { Right } else { iced::Left });
         let tools = (self.pane().hovered_msg.as_ref() == Some(&m.id)).then(|| {
+            // Desktop's flyover (`Yfe`): its items appear one after another, each from 85% of its size and clear to
+            // its full size in 0.2 s, the next one once the one before is a quarter in. The quick reactions follow
+            // once the pointer is on the flyover.
+            let shown = |at: Option<std::time::Instant>, k: usize| {
+                let t = at.map_or(1.0, |at| at.elapsed().as_secs_f32() - k as f32 * FLYOVER_STAGGER) / 0.2;
+                crate::style::cubic_bezier(t.clamp(0.0, 1.0), [0.0, 0.0, 0.58, 1.0])
+            };
+            let hover_at = self.pane().hover_msg_at;
             // Desktop's flyover buttons: a 20 px Material icon, drawn at its 1.2 scale, in 6 px of padding.
-            let b = |c: char, msg: UiMessage| -> El<'a> {
+            let b = |c: char, msg: UiMessage, v: f32| -> El<'a> {
                 let style = move |_: &Theme, s| button::Style {
                     text_color: match s {
                         button::Status::Hovered => brightness(muted, 0.8),
                         _ => muted,
-                    },
+                    }
+                    .scale_alpha(v),
                     ..Default::default()
                 };
-                button(container(ic(c, 20.0 * 1.2)).center(32)).padding(0).style(style).on_press(msg).into()
+                let glyph = ic(c, 20.0 * 1.2 * (0.85 + 0.15 * v));
+                button(container(glyph).center(32)).padding(0).style(style).on_press(msg).into()
             };
             let live = m.is_deleted != Some(true);
-            let reply = (chat.messages.reply && live)
-                .then(|| b(icon::REPLY, UiMessage::Composer(composer::Msg::StartReply(m.id.clone()))));
-            let in_thread = (!in_pane && can_thread(st, chat, m)).then(|| -> El<'a> {
-                let b = b(icon::VIEW_SIDEBAR, UiMessage::Thread(threads::Msg::Show(m.id.clone())));
-                self.tip(b, tr("Reply in thread"), vec![], tooltip::Position::Top).into()
-            });
-            let react = (chat.messages.react && m.reactable()).then(|| {
-                mouse_area(b(icon::MOOD, UiMessage::Message(Msg::React(m.id.clone()))))
-                    .on_enter(UiMessage::Message(Msg::ShowQuickReactions))
-                    .into()
-            });
-            let quick = (self.quick_open && st.settings.on("quickReactions"))
+            let base = [
+                (chat.messages.reply && live).then_some(0),
+                (!in_pane && can_thread(st, chat, m)).then_some(1),
+                (chat.messages.react && m.reactable()).then_some(2),
+            ];
+            let base: Vec<u8> = base.into_iter().flatten().collect();
+            let item = |kind: u8, k: usize| -> El<'a> {
+                let v = shown(hover_at, k);
+                match kind {
+                    0 => b(icon::REPLY, UiMessage::Composer(composer::Msg::StartReply(m.id.clone())), v),
+                    1 => {
+                        let b = b(icon::VIEW_SIDEBAR, UiMessage::Thread(threads::Msg::Show(m.id.clone())), v);
+                        self.tip(b, tr("Reply in thread"), vec![], tooltip::Position::Top).into()
+                    }
+                    _ => b(icon::MOOD, UiMessage::Message(Msg::React(m.id.clone())), v),
+                }
+            };
+            let flyover: Vec<El<'a>> = base.iter().enumerate().map(|(k, &kind)| item(kind, k)).collect();
+            // Desktop's quick reactions go only on received messages, after the other items.
+            let quick = (self.quick_open && st.settings.on("quickReactions") && !mine && base.contains(&2))
                 .then(|| crate::emoji::quick_reactions(st, &chat.allowed_reactions));
-            let quick = quick.into_iter().flatten().map(|e| -> El<'a> {
+            let quick: Vec<String> = quick.unwrap_or_default();
+            let after = hover_at.map(|t| t + std::time::Duration::from_secs_f32(base.len() as f32 * FLYOVER_STAGGER));
+            let start = self.pane().flyover_at.max(after);
+            // `disableReactions`: a quick reaction takes clicks 120 ms after the last one is in.
+            let ready = start.is_none_or(|t| {
+                t.elapsed().as_secs_f32() > (quick.len().saturating_sub(1) as f32 * FLYOVER_STAGGER) + 0.2 + 0.12
+            });
+            let quick = quick.into_iter().enumerate().map(|(j, e)| -> El<'a> {
+                let v = shown(start, j);
                 let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
-                let glyph = txt(e, 18.0).font(EMOJI_FONT);
+                let glyph = txt(e, 18.0 * (0.85 + 0.15 * v)).font(EMOJI_FONT).color(p.text.scale_alpha(v));
                 button(container(glyph).center(32))
                     .padding(0)
                     .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
-                    .on_press(msg)
+                    .on_press_maybe(ready.then_some(msg))
                     .into()
+            });
+            // `@container messageContainer (max-width: 24rem)`: a narrow chat shows the first two items only.
+            let room = if self.pane().size.width - 24.0 <= 384.0 { 2 } else { usize::MAX };
+            let flyover: Vec<El<'a>> = flyover.into_iter().chain(quick).take(room).collect();
+            let flyover = (!flyover.is_empty()).then(|| -> El<'a> {
+                let row = match mine {
+                    true => Row::with_children(flyover.into_iter().rev()),
+                    false => Row::with_children(flyover),
+                };
+                mouse_area(row).on_enter(UiMessage::Message(Msg::ShowQuickReactions)).into()
             });
             // Desktop's download button beside an attachment, and the time of a message without text in its flyover.
             // The items of a gallery open in the carousel, so a gallery has no download button here.
@@ -2050,12 +2117,11 @@ impl BeeperGuiApp {
             let time = (file.is_some() && text.is_empty() && shows_time).then(|| -> El<'a> {
                 txt(format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1), 11.0).color(muted).into()
             });
-            let all: Vec<El<'a>> =
-                [download, time, reply, in_thread, react].into_iter().flatten().chain(quick).collect();
-            match mine {
-                true => Row::with_children(all.into_iter().rev()),
-                false => Row::with_children(all),
-            }
+            let all: Vec<El<'a>> = match mine {
+                true => [flyover, time, download].into_iter().flatten().collect(),
+                false => [download, time, flyover].into_iter().flatten().collect(),
+            };
+            Row::with_children(all)
         });
         let side = (group && !mine).then(|| -> El<'a> {
             if last {
@@ -2146,14 +2212,22 @@ impl BeeperGuiApp {
         let (edge, fill) = if q_mine { (sent, mix(p.card, sent, 0.3)) } else { (p.received, p.card) };
         let max = 0.45 * self.pane().size.width;
         let boxed = move |c: El<'a>| container(c).padding(8).max_width(max).style(bordered_box(fill, edge, 2.0, 17.0));
-        let visual = q.attachments.iter().any(|a| quote_tile(a) || a.attachment_type == "audio");
+        // Desktop's view-once media, which can be viewed or expired, shows as its pill, and its text as its preview.
+        let view = q.view_once() || q.view_once_expired();
+        let visual = view || q.attachments.iter().any(|a| quote_tile(a) || a.attachment_type == "audio");
         let name = || semi(sender_label(chat, q), 12.0).line_height(Pixels(16.0));
-        let items: Vec<El<'a>> = q.attachments.iter().map(|a| self.linked_attachment(a)).collect();
+        let items: Vec<El<'a>> = match view {
+            true => vec![self.view_once_indicator(q, view_once::Variant::Quote, (fill, p.text))],
+            false => q.attachments.iter().map(|a| self.linked_attachment(a)).collect(),
+        };
         let media = (!items.is_empty() || deleted).then(|| {
-            let gone = deleted.then(|| med(tr("Message Deleted"), 13.0).color(p.text));
+            let gone = (deleted && !view).then(|| med(tr("Message Deleted"), 13.0).color(p.text));
             boxed(Row::with_children(items).push(gone).spacing(4).align_y(Center).into())
         });
-        let text = q.text.as_deref().filter(|_| !deleted).map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+        let text = q.text.as_deref().filter(|_| !deleted).map(|t| match view_once::preview(q) {
+            Some(v) => v.to_string(),
+            None => t.split_whitespace().collect::<Vec<_>>().join(" "),
+        });
         let text = text.filter(|t| !t.is_empty()).map(|t| match t.chars().count() > 128 {
             true => format!("{}...", t.chars().take(125).collect::<String>()),
             false => t,
@@ -2394,6 +2468,8 @@ pub enum Msg {
     OpenMenu(String),
     /// A right click on a link of a message, by its `href`.
     LinkMenu(String, String),
+    /// A right click on the quote in a message, by the quoted message.
+    LinkedMenu(String, String),
     /// Desktop's `createThreadWithPhoneNumber` and `createThreadWithEmail` of a contact card.
     MessageContact(String, Box<User>),
     /// Select the message, or unselect it when it is selected.
@@ -2513,8 +2589,13 @@ impl BeeperGuiApp {
             // Desktop leaves the right click on another link to Electron, which has no menu for it.
             Msg::LinkMenu(..) => {}
             Msg::MessageContact(account, user) => return self.open_dm(account, *user, None, None),
+            Msg::LinkedMenu(mid, linked) => {
+                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
+                self.pane.menu_linked = Some(linked);
+                return open;
+            }
             Msg::OpenMenu(mid) => {
-                self.pane.menu_link = None;
+                (self.pane.menu_link, self.pane.video_menu, self.pane.menu_linked) = (None, false, None);
                 // With text selected, Desktop leaves the menu to Electron's, which offers the selection.
                 self.pane.menu_selection = crate::selectable::has_selection().then(crate::selectable::text);
                 // Desktop's `selectOnly`: a right click on a message outside the selection selects it alone.
@@ -2749,9 +2830,16 @@ impl BeeperGuiApp {
             }
             Msg::HoverEnter(id) => {
                 self.quick_open &= self.pane.hovered_msg.as_ref() == Some(&id);
+                if self.pane.hovered_msg.as_ref() != Some(&id) {
+                    (self.pane.hover_msg_at, self.pane.flyover_at) = (Some(std::time::Instant::now()), None);
+                }
                 self.pane.hovered_msg = Some(id);
             }
-            Msg::ShowQuickReactions => self.quick_open = true,
+            Msg::ShowQuickReactions if !self.quick_open => {
+                self.quick_open = true;
+                self.pane.flyover_at = Some(std::time::Instant::now());
+            }
+            Msg::ShowQuickReactions => {}
             Msg::HoverExit(id) => {
                 if self.pane.hovered_msg.as_ref() == Some(&id) {
                     self.pane.hovered_msg = None;
@@ -2972,6 +3060,53 @@ mod tests {
         }
         let mut sim = simulator(app.view_conversation());
         assert!(sim.find(":a:").is_err(), "the image takes the place of the alt text");
+    }
+
+    /// Desktop's flyover (`Yfe`): the quick reactions come once the pointer is on the flyover, only on received
+    /// messages, and its items fade in one after another.
+    #[test]
+    fn flyover_quick_reactions_like_desktop() {
+        let mut app = crate::fuzz::demo_app("flyover");
+        let (chat, theirs, mine) = {
+            let st = app.store.read();
+            let pick = |c: &Chat| {
+                let msgs = st.timeline_indices(&c.id).iter().map(|&i| &st.messages[i]).filter(|m| m.reactable());
+                let msgs: Vec<&Message> = msgs.collect();
+                let theirs = msgs.iter().rev().find(|m| m.is_sender != Some(true))?.id.clone();
+                let mine = msgs.iter().rev().find(|m| m.is_sender == Some(true))?.id.clone();
+                Some((c.id.clone(), theirs, mine))
+            };
+            st.chats.iter().filter(|c| c.messages.react).find_map(pick).expect("a chat with both senders")
+        };
+        let _ = app.update(UiMessage::SelectChat(chat));
+        app.pane.size = Size::new(900.0, 700.0);
+        let quick_shown = |app: &BeeperGuiApp| simulator(app.view_conversation()).find("👍").is_ok();
+        let _ = app.update(UiMessage::Message(Msg::HoverEnter(theirs.clone())));
+        assert!(app.pane.hover_msg_at.is_some() && !quick_shown(&app), "not before the flyover has the pointer");
+        let _ = app.update(UiMessage::Message(Msg::ShowQuickReactions));
+        assert!(app.pane.flyover_at.is_some() && quick_shown(&app), "then on a received message");
+        let _ = app.update(UiMessage::Message(Msg::HoverEnter(mine)));
+        let _ = app.update(UiMessage::Message(Msg::ShowQuickReactions));
+        assert!(!quick_shown(&app), "never on your own");
+    }
+
+    /// Desktop's "Jump to Message" comes with a right click on a quote, which jumps to the quoted message, and not
+    /// with a right click on the message elsewhere.
+    #[test]
+    fn jump_to_a_quoted_message_like_desktop() {
+        let mut app = crate::fuzz::demo_app("jump-quote");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let ids: Vec<String> = {
+            let st = app.store.read();
+            app.timeline(&st).0.iter().rev().take(2).map(|m| m.id.clone()).collect()
+        };
+        let has = |app: &BeeperGuiApp| simulator(app.view_message_menu(&ids[0]).0).find("Jump to Message").is_ok();
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(ids[0].clone())));
+        assert!(!has(&app));
+        let _ = app.update(UiMessage::Message(Msg::LinkedMenu(ids[0].clone(), ids[1].clone())));
+        assert!(has(&app) && app.pane.menu_linked.as_deref() == Some(ids[1].as_str()));
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(ids[0].clone())));
+        assert!(!has(&app), "another right click forgets the quote");
     }
 
     /// Desktop's reaction pills: one pill a group of skin tones, in the order the groups first appear, and a click

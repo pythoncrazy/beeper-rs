@@ -3,7 +3,7 @@
 use super::chats::{account_ids, resolve_accounts, LIST_FLAGS};
 use super::commands::cmd;
 use super::render::Empty;
-use super::{arg, config, config_dir, js_string, write_json, CliError, Cmd, Ctx, Flag, Res, BIN, NOT_FOUND};
+use super::{arg, config, config_dir, js_string, opt_arg, write_json, CliError, Cmd, Ctx, Flag, Res, BIN, NOT_FOUND};
 use beeper_api::http::query_string;
 use beeper_core::codec::url_encode;
 use serde_json::{json, Value};
@@ -12,6 +12,27 @@ const SELECTOR: &str = "Account selector (ID, network, bridge, or user identity)
 const CONTACT_ACCOUNT: Flag = Flag::many("account", "Limit to Account ID, network, bridge, or account user");
 
 pub const COMMANDS: &[Cmd] = &[
+    Cmd {
+        description: "`accounts add` without an argument opens the guided bridge chooser. Pass a bridge ID when you already know which chat network connector to use.",
+        args: &[opt_arg("bridge", "Bridge ID, network, or type to connect. Omit to list available bridges.")],
+        flags: &[
+            Flag::many(
+                "cookie",
+                "Cookie value for non-interactive login, in name=value form. Repeat for multiple cookies.",
+            ),
+            Flag::many("field", "Field value for non-interactive login, in id=value form. Repeat for multiple fields."),
+            Flag::s("flow", "Login flow ID. If omitted, Desktop chooses the default flow."),
+            Flag::no("guided", "Prompt through login steps until completion").def("true"),
+            Flag::s("login-id", "Existing login ID to re-login as"),
+            Flag::b("non-interactive", "Do not prompt; require --flow, --field, and --cookie values when needed."),
+            Flag::b("webview", "Use Bun.WebView to collect cookie login fields when a cookie step is returned."),
+            Flag::s("webview-backend", "Bun.WebView backend for cookie login steps.")
+                .opts(&["auto", "chrome", "webkit"])
+                .def("chrome"),
+            Flag::i("webview-timeout", "Seconds to wait for Bun.WebView cookie collection.").def("120"),
+        ],
+        ..cmd("accounts add", "Connect a chat account by bridge", super::account_login::accounts_add)
+    },
     Cmd { flags: LIST_FLAGS, ..cmd("accounts chats", "List chats", super::chats::list) },
     Cmd {
         flags: &[Flag::many("account", "Filter by account selector"), Flag::b("ids", "Print only account IDs")],
@@ -220,7 +241,7 @@ fn contacts_show(c: &mut Ctx) -> Res {
     Err(CliError::abort(format!("Contact not found: {wanted}"), NOT_FOUND))
 }
 
-fn bridges(c: &mut Ctx) -> Res<Vec<Value>> {
+pub fn bridges(c: &mut Ctx) -> Res<Vec<Value>> {
     let mut list = c.get("/v1/bridges")?;
     Ok(list["items"].as_array_mut().map(std::mem::take).unwrap_or_default())
 }
@@ -243,31 +264,33 @@ fn letters(v: &Value) -> String {
     s.to_lowercase().chars().filter(char::is_ascii_alphanumeric).collect()
 }
 
-/// `resolveBridge`: an exact ID, name, network, or type, else a part of one.
-fn resolve_bridge(items: Vec<Value>, input: &str) -> Res<Value> {
+/// The bridges whose ID, name, network, or type is `input`, else the bridges where one has it.
+pub fn matching_bridges(items: Vec<Value>, input: &str) -> Vec<Value> {
     let wanted = letters(&json!(input));
     let keys = ["id", "displayName", "network", "type"];
-    let ambiguous = |all: Vec<Value>| {
-        let names: Vec<String> = all
-            .iter()
-            .map(|b| {
-                format!(
-                    "{} ({})",
-                    js_string(if b["displayName"].is_null() { &b["id"] } else { &b["displayName"] }),
-                    js_string(&b["id"])
-                )
-            })
-            .collect();
-        CliError::bug(format!("Bridge \"{input}\" is ambiguous. Use one of: {}", names.join(", ")))
-    };
     let (exact, rest): (Vec<Value>, Vec<Value>) =
         items.into_iter().partition(|b| keys.iter().any(|k| letters(&b[*k]) == wanted));
     let partial = |b: &Value| keys.iter().any(|k| letters(&b[*k]).contains(&wanted));
-    let mut matches = if exact.is_empty() { rest.into_iter().filter(partial).collect() } else { exact };
+    if exact.is_empty() {
+        rest.into_iter().filter(partial).collect()
+    } else {
+        exact
+    }
+}
+
+/// `Name (id)` of each bridge.
+pub fn bridge_names(all: &[Value]) -> String {
+    let name = |b: &Value| js_string(if b["displayName"].is_null() { &b["id"] } else { &b["displayName"] });
+    all.iter().map(|b| format!("{} ({})", name(b), js_string(&b["id"]))).collect::<Vec<_>>().join(", ")
+}
+
+/// `resolveBridge`: an exact ID, name, network, or type, else a part of one.
+fn resolve_bridge(items: Vec<Value>, input: &str) -> Res<Value> {
+    let mut matches = matching_bridges(items, input);
     match matches.len() {
         1 => Ok(matches.remove(0)),
         0 => Err(CliError::bug(format!("Unknown bridge \"{input}\". Run `{BIN} bridges list`."))),
-        _ => Err(ambiguous(matches)),
+        _ => Err(CliError::bug(format!("Bridge \"{input}\" is ambiguous. Use one of: {}", bridge_names(&matches)))),
     }
 }
 

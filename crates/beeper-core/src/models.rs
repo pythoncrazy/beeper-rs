@@ -1297,6 +1297,19 @@ pub struct Message {
     /// Desktop's `disappearingTimer` of the message.
     #[serde(rename = "disappearingTimer", default, skip_serializing_if = "Option::is_none")]
     pub disappearing: Option<MessageTimer>,
+    /// Desktop's `extra.viewLimitedMedia`: the `com.beeper.view_limited` limit of view-once media, which shows as a
+    /// pill that opens the media instead of the media.
+    #[serde(rename = "viewLimitedMedia", default, skip_serializing_if = "Option::is_none")]
+    pub view_limit: Option<serde_json::Value>,
+    /// Desktop's `viewLimitedMediaRemainingCount`: the fewest views left that the bridge reported.
+    #[serde(rename = "viewLimitedMediaRemainingCount", default, skip_serializing_if = "Option::is_none")]
+    pub views_left: Option<u64>,
+    /// Desktop's `extra.viewLimitedMediaExpired`: the bridge deleted the view-once media after its last view.
+    #[serde(rename = "viewLimitedMediaExpired", default, skip_serializing_if = "std::ops::Not::not")]
+    pub view_expired: bool,
+    /// Desktop's `extra.viewLimitedMediaKind`: the attachment type of the expired media.
+    #[serde(rename = "viewLimitedMediaKind", default, skip_serializing_if = "Option::is_none")]
+    pub view_kind: Option<String>,
     #[serde(skip)]
     pub flags: u16,
 }
@@ -1458,6 +1471,46 @@ impl Message {
     /// Desktop's reaction gates: nobody reacts to a deleted message or to a call.
     pub fn reactable(&self) -> bool {
         self.is_deleted != Some(true) && self.call.is_none()
+    }
+
+    /// Desktop's `Ao`: view-once media that is not deleted.
+    pub fn view_once(&self) -> bool {
+        self.view_limit.is_some() && self.is_deleted != Some(true)
+    }
+
+    /// Desktop's `zx`: view-once media that the bridge deleted after its last view.
+    pub fn view_once_expired(&self) -> bool {
+        self.view_expired && self.is_deleted == Some(true)
+    }
+
+    /// Desktop's `gfe`: the attachment type of the view-once media, or of the expired media.
+    pub fn view_once_kind(&self) -> Option<&str> {
+        self.view_kind.as_deref().or_else(|| Some(self.attachments.first()?.attachment_type.as_str()))
+    }
+
+    /// Desktop's `oVe`: the limit lets the media be viewed more than once.
+    pub fn view_once_replay(&self) -> bool {
+        self.view_limit.as_ref().is_some_and(|l| l["type"] == "count" && l["count"].as_u64().is_some_and(|n| n > 1))
+    }
+
+    /// Desktop's `iVe`: how long each view lasts, in milliseconds.
+    pub fn view_once_time(&self) -> Option<u64> {
+        self.view_limit.as_ref()?["time"].as_u64().filter(|&t| t > 0)
+    }
+
+    /// Desktop's `nZt`: the limit, with its count lowered to the views that the bridge reported left.
+    pub fn view_once_limit(&self) -> Option<serde_json::Value> {
+        let mut limit = self.view_limit.clone()?;
+        let count = limit["count"].as_u64();
+        if let (Some(left), Some(count)) = (self.views_left, count.filter(|_| limit["type"] == "count")) {
+            limit["count"] = left.min(count).into();
+        }
+        Some(limit)
+    }
+
+    /// Desktop's `Pct` deletion rule: a deleted message previews its chat only when its view-once media expired.
+    pub fn live_or_expired(&self) -> bool {
+        self.flags & MSG_DELETED == 0 || self.view_expired
     }
 
     /// Desktop's `isThreadOnly` with `threads` on: a thread reply that only its thread shows.

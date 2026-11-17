@@ -289,6 +289,7 @@ fn removed_from_beeper(m: &mut Message) {
     m.attachments.clear();
     m.reactions.clear();
     m.links.clear();
+    (m.view_limit, m.views_left) = (None, None);
 }
 
 /// The SQL conditions of a read of stored messages, with their arguments.
@@ -1681,8 +1682,7 @@ impl BeeperStore {
         let msg = &self.messages[idx];
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
         // Like the timeline, a thread reply previews a chat that does not show threads.
-        let shown =
-            !msg.silent() && !msg.thread_only(self.threaded(&self.chats[c_idx])) && msg.flags & MSG_DELETED == 0;
+        let shown = !msg.silent() && !msg.thread_only(self.threaded(&self.chats[c_idx])) && msg.live_or_expired();
         let chat = &mut self.chats[c_idx];
         if shown && chat.preview.as_ref().is_none_or(|p| p.sort_key <= msg.sort_key) {
             self.chat_order.remove(&activity_key(chat));
@@ -2012,6 +2012,9 @@ impl BeeperStore {
             let mut seen = std::mem::take(&mut m.seen);
             seen.extend(msg.seen);
             let disappearing = crate::models::MessageTimer::merge(m.disappearing.take(), msg.disappearing.take());
+            // Desktop keeps the views left apart from the message, and an expired message keeps the kind of its media.
+            let views_left = msg.view_limit.as_ref().and(m.views_left);
+            let view_kind = msg.view_kind.clone().or_else(|| m.view_once_kind().map(str::to_string));
             *m = Message {
                 reactions: std::mem::take(&mut m.reactions),
                 edit_history: std::mem::take(&mut m.edit_history),
@@ -2019,6 +2022,8 @@ impl BeeperStore {
                 is_unread: m.is_unread,
                 seen,
                 disappearing,
+                views_left,
+                view_kind: view_kind.filter(|_| msg.view_expired),
                 ..msg
             }
         });
@@ -2045,9 +2050,9 @@ impl BeeperStore {
         let msg = self.messages[idx].clone();
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
         if self.chats[c_idx].preview.as_ref().is_some_and(|p| p.id == msg.id) {
-            match msg.flags & MSG_DELETED {
-                0 => self.chats[c_idx].preview = Some(msg.clone()),
-                _ => self.chats[c_idx].preview = self.last_shown(&msg.chat_id),
+            match msg.live_or_expired() {
+                true => self.chats[c_idx].preview = Some(msg.clone()),
+                false => self.chats[c_idx].preview = self.last_shown(&msg.chat_id),
             }
             self.persist_chat(c_idx);
         }
@@ -2060,7 +2065,7 @@ impl BeeperStore {
         let threads = self.chat_idx_by_id.get(chat).is_some_and(|&i| self.threaded(&self.chats[i]));
         let mut last = None;
         self.scan_stored("chat_id = ?1 ORDER BY sort_key DESC", [chat], |m| {
-            let shown = !m.silent() && !m.thread_only(threads) && m.flags & MSG_DELETED == 0;
+            let shown = !m.silent() && !m.thread_only(threads) && m.live_or_expired();
             last = shown.then_some(m);
             !shown
         });
@@ -2438,6 +2443,10 @@ impl BeeperStore {
             send_status: None,
             call: None,
             disappearing: None,
+            view_limit: None,
+            views_left: None,
+            view_expired: false,
+            view_kind: None,
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);
@@ -2505,6 +2514,17 @@ impl BeeperStore {
         }
         self.emit_ws("message.deleted", &chat_id, Some(message_id), None, None);
         Ok(chat_id)
+    }
+
+    /// Desktop's redaction with `com.beeper.view_limited`: the bridge deleted view-once media after its last view, and
+    /// the message stays as an expired pill that keeps the kind of the media.
+    pub fn expire_message(&mut self, chat_id: &str, message_id: &str) -> Result<String, Error> {
+        let (_, m_idx) = self.message_in_chat(chat_id, message_id)?;
+        self.update_message(m_idx, |m| {
+            m.view_kind = m.view_once_kind().map(str::to_string);
+            m.view_expired = true;
+        });
+        self.delete_message(chat_id, message_id)
     }
 
     /// Desktop's `removeMessage`: "Remove from Beeper" deletes the message here at once, and the outbox sends the
@@ -2925,8 +2945,15 @@ impl BeeperStore {
                 self.update_message(i, |m| m.is_unread = Some(false));
             }
         }
-        let left = indices.iter().filter(|&&i| self.messages[i].is_unread == Some(true)).count() as u32;
         let idx = self.chat_idx_by_id[&chat_id];
+        // A Matrix room keeps no unread mark on its messages, only a count: the messages of others after this one are
+        // left of it, until the homeserver counts again from the receipt.
+        let marked = indices.iter().filter(|&&i| self.messages[i].is_unread == Some(true)).count();
+        let after =
+            indices.iter().map(|&i| &self.messages[i]).filter(|m| m.sort_key > key && m.is_sender != Some(true));
+        let left = u32::try_from(marked)
+            .expect("unread count")
+            .max(u32::try_from(after.count()).expect("unread count").min(self.chats[idx].unread_count));
         if self.chats[idx].flag(ChatFlag::MarkedUnread) {
             self.queue(&chat_id, Outgoing::Flag(ChatFlag::MarkedUnread, false));
         }

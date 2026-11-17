@@ -44,7 +44,7 @@ const HIDE_AFTER: Duration = Duration::from_secs(10);
 /// Decoded audio: mono 48 kHz samples and their normalized peaks.
 #[derive(Clone)]
 pub struct Clip {
-    samples: Arc<[f32]>,
+    pub(crate) samples: Arc<[f32]>,
     pub(crate) peaks: Arc<[f32]>,
 }
 
@@ -699,6 +699,10 @@ pub(crate) fn rate_menu_w() -> f32 {
 
 /// The URL of the first audio attachment of `m`, like Desktop's play queue entries.
 fn audio_url(m: &Message) -> Option<&str> {
+    // A view-once voice note plays only in its viewer.
+    if m.view_once() {
+        return None;
+    }
     m.attachments.iter().find(|a| a.attachment_type == "audio")?.src_url.as_deref()
 }
 

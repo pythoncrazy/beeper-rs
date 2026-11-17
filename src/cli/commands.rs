@@ -11,6 +11,7 @@ const TOPICS: &[(&str, &str, Option<&str>)] = &[
     ("accounts", "Manage connected chat-network accounts", Some("accounts list")),
     ("api", "Call raw Desktop API endpoints", None),
     ("auth", "Inspect and clear stored authentication", None),
+    ("auth email", "Finish email sign-in with a verification code", None),
     ("bridges", "List bridges that can connect or reconnect chat accounts", Some("bridges list")),
     ("chats", "List, search, manage, and modify chats", Some("chats list")),
     ("config", "Manage local CLI configuration", None),
@@ -19,12 +20,25 @@ const TOPICS: &[(&str, &str, Option<&str>)] = &[
     ("messages", "List, search, show, edit, delete, and export messages", None),
     ("send", "Send text, files, and reactions", None),
     ("targets", "Manage local Desktop, managed Server, and remote Beeper targets", Some("targets list")),
+    // oclif names a nested topic after the summary of its first command.
+    ("targets add", "Add a managed Beeper Desktop target", None),
+    ("verify", "Finish setup verification or verify another device", Some("verify")),
 ];
 
 pub type Topic = (&'static str, &'static str, Option<&'static str>);
 
 pub fn topic(name: &str) -> Option<&'static Topic> {
     TOPICS.iter().find(|t| t.0 == name)
+}
+
+/// The longest topic that the first words of `argv` name.
+pub fn topic_of(argv: &[String]) -> Option<&'static Topic> {
+    let words: Vec<&str> = argv.iter().map(String::as_str).take_while(|w| !w.starts_with('-')).collect();
+    (1..=words.len()).rev().find_map(|n| topic(&words[..n].join(" ")))
+}
+
+fn depth(id: &str) -> usize {
+    id.split(' ').count()
 }
 
 /// Every command, topic by topic.
@@ -35,8 +49,10 @@ pub fn all() -> impl Iterator<Item = &'static Cmd> + Clone {
         super::chats::COMMANDS,
         super::export::COMMANDS,
         super::messages::COMMANDS,
+        super::setup::COMMANDS,
         super::stream::COMMANDS,
         super::targets::COMMANDS,
+        super::verify::COMMANDS,
     ]
     .into_iter()
     .flatten()
@@ -129,11 +145,9 @@ const STATES: &[(&str, &[&str])] = &[
     ("error", &["doctor", "setup"]),
 ];
 
-/// `appRequest`: a raw request with the token of the target, and its error text.
-fn app_request(c: &mut Ctx, method: &str, path: &str, body: Option<Value>, auth: bool) -> Res<Value> {
+/// `appRequest`: a raw request with `token`, and its error text.
+pub fn app_request(c: &mut Ctx, method: &str, path: &str, body: Option<Value>, token: Option<String>) -> Res<Value> {
     let base = c.base_url()?;
-    let stored = c.target()?.get("auth").and_then(|a| a["accessToken"].as_str()).map(str::to_string);
-    let token = std::env::var("BEEPER_ACCESS_TOKEN").ok().filter(|t| !t.is_empty()).or(stored).filter(|_| auth);
     let client = beeper_api::client::BeeperClient::try_new(&base, token.unwrap_or_default()).map_err(CliError::bug)?;
     let (status, bytes) = c
         .block(client.fetch(method, path, body.as_ref()))
@@ -146,10 +160,16 @@ fn app_request(c: &mut Ctx, method: &str, path: &str, body: Option<Value>, auth:
     }
 }
 
-/// `evaluateReadiness`.
-fn readiness(c: &mut Ctx) -> Res<Value> {
+/// `evaluateReadiness` with the stored token.
+pub fn readiness(c: &mut Ctx) -> Res<Value> {
+    let token = c.stored_token()?;
+    readiness_with(c, token)
+}
+
+/// `evaluateReadiness` with `token`.
+pub fn readiness_with(c: &mut Ctx, token: Option<String>) -> Res<Value> {
     let id = js_string(&c.target()?["id"]);
-    Ok(match app_request(c, "GET", "/v1/app/setup", None, true) {
+    Ok(match app_request(c, "GET", "/v1/app/setup", None, token) {
         Ok(app) => {
             let raw = js_string(&app["state"]);
             let state = match STATES.iter().find(|s| s.0 == raw) {
@@ -308,7 +328,7 @@ fn config_reset(c: &mut Ctx) -> Res {
 fn api_get(c: &mut Ctx) -> Res {
     let path = c.arg(0).expect("a required arg").to_string();
     let data = match c.on("no-auth") {
-        true => app_request(c, "GET", &path, None, false)?,
+        true => app_request(c, "GET", &path, None, None)?,
         false => c.get(&path)?,
     };
     c.print(&data)
@@ -321,7 +341,7 @@ fn api_post(c: &mut Ctx) -> Res {
     let body: Value =
         serde_json::from_str(raw).map_err(|_| CliError::bug(format!("--body is not valid JSON: {raw}")))?;
     let data = match c.on("no-auth") {
-        true => app_request(c, "POST", &path, Some(body), false)?,
+        true => app_request(c, "POST", &path, Some(body), None)?,
         false => c.call("POST", &path, Some(body))?,
     };
     c.print(&data)
@@ -334,8 +354,8 @@ fn api_request(c: &mut Ctx) -> Res {
     }
     let body = c.str("body").filter(|b| !b.is_empty()).map(serde_json::from_str::<Value>).transpose();
     let body = body.map_err(|e| CliError::bug(format!("JSON Parse error: {e}")))?;
-    let auth = !c.on("no-auth");
-    let data = app_request(c, &method, &path, body, auth)?;
+    let token = if c.on("no-auth") { None } else { c.stored_token()? };
+    let data = app_request(c, &method, &path, body, token)?;
     c.print(&data)
 }
 
@@ -484,12 +504,18 @@ fn help_as(cmd: &Cmd, id: &str) -> String {
     out.join("\n\n") + "\n"
 }
 
+/// The nested topics and the commands of `topic`, one level down.
 fn commands_section(topic: &str) -> String {
-    let rows: Vec<(String, String)> = all()
-        .filter(|c| c.id.split(' ').next() == Some(topic) && c.id != topic)
-        .map(|c| (c.id.to_string(), c.summary.to_string()))
-        .collect();
-    section("COMMANDS", &rows)
+    let child = |id: &str| id.starts_with(&format!("{topic} ")) && depth(id) == depth(topic) + 1;
+    let topics: Vec<(String, String)> =
+        TOPICS.iter().filter(|t| child(t.0)).map(|t| (t.0.to_string(), t.1.to_string())).collect();
+    let mut commands: Vec<(String, String)> =
+        all().filter(|c| child(c.id)).map(|c| (c.id.to_string(), c.summary.to_string())).collect();
+    commands.sort();
+    match topics.is_empty() {
+        true => section("COMMANDS", &commands),
+        false => format!("{}\n\n{}", section("TOPICS", &topics), section("COMMANDS", &commands)),
+    }
 }
 
 /// The oclif help of a topic.
@@ -505,7 +531,8 @@ pub fn topic_help(t: &Topic) -> String {
 
 /// The topics and the commands without a topic, for the root help.
 pub fn root_rows() -> Vec<(String, String)> {
-    let mut rows: Vec<(String, String)> = TOPICS.iter().map(|t| (t.0.to_string(), t.1.to_string())).collect();
+    let topics = TOPICS.iter().filter(|t| depth(t.0) == 1);
+    let mut rows: Vec<(String, String)> = topics.map(|t| (t.0.to_string(), t.1.to_string())).collect();
     rows.extend(
         all().filter(|c| !c.id.contains(' ') && topic(c.id).is_none()).map(|c| (c.id.into(), c.summary.into())),
     );

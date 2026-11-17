@@ -174,6 +174,7 @@ pub(crate) fn media_items(st: &BeeperStore, media: &[Message], w: &MediaWindow) 
     let (tab, needle) = (w.tab, w.search.as_deref().unwrap_or("").trim().to_lowercase());
     let shown = |m: &&Message| {
         m.is_deleted != Some(true)
+            && m.view_limit.is_none()
             && st.chat(&m.chat_id).flags & (CHAT_LOW_PRIORITY | CHAT_REQUEST) == 0
             && match w.sent_by {
                 0 => true,
