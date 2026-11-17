@@ -12,11 +12,19 @@ pub enum Msg {
     DismissOlder(usize),
     /// Desktop's toast button: the toast closes, newest or older, and its action runs.
     Action(Option<usize>, Box<UiMessage>),
+    /// Desktop's `DownloadMobileApps` toast after the onboarding shows, or its close button hides it.
+    MobileApps(bool),
 }
+
+/// Desktop's links of the `DownloadMobileApps` toast (`O8`, `Cye` and `Tye` of sentry-common).
+const DOWNLOAD_URL: &str = "https://www.beeper.com/download";
+const IOS_URL: &str = "https://www.beeper.com/download/ios";
+const ANDROID_URL: &str = "https://www.beeper.com/download/android";
 
 impl BeeperGuiApp {
     pub(crate) fn toasts(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
+            Msg::MobileApps(on) => self.mobile_apps_toast = on,
             m @ (Msg::Hover(_) | Msg::Tick) if self.toast_clock.0 != self.status_banner => {
                 self.toast_clock = (self.status_banner.clone(), self.toast_clock.1, Duration::ZERO);
                 return self.update(UiMessage::Toast(m));
@@ -71,16 +79,18 @@ pub(crate) fn toast_box(bg: Color, p: &Palette) -> impl Fn(&Theme) -> container:
 }
 
 /// Desktop's `Archive`, `Inbox` and `LowPriority` assets, which its archive and Low Priority toasts show, its `Undo`
-/// icon, and its `Lock` icon of the recovery key reminder.
-pub(crate) static TOAST_ICONS: std::sync::LazyLock<[svg::Handle; 5]> = std::sync::LazyLock::new(|| {
+/// icon, its `Lock` icon of the recovery key reminder, and its `Phone` icon of the mobile apps toast.
+pub(crate) static TOAST_ICONS: std::sync::LazyLock<[svg::Handle; 6]> = std::sync::LazyLock::new(|| {
     [
-        "M4.556 17a1.5 1.5 0 0 1-1.1-.457A1.5 1.5 0 0 1 3 15.444V5.722q0-.292.097-.525.098-.232.253-.447l1.089-1.322a1 1 0 0 1 .389-.321Q5.06 3 5.333 3h9.334q.272 0 .505.107a1 1 0 0 1 .39.32L16.65 4.75q.156.214.253.447t.097.525v9.722a1.5 1.5 0 0 1-.457 1.1 1.5 1.5 0 0 1-1.099.456zm.31-11.667h10.267l-.66-.777H5.527zm-.31 1.556v8.555h10.888V6.89zM10 14.667l3.111-3.111-1.089-1.09-1.244 1.245V8.444H9.222v3.267l-1.244-1.244-1.09 1.089z",
-        "M15.833 2.5H4.158c-.925 0-1.65.742-1.65 1.667L2.5 15.833A1.66 1.66 0 0 0 4.158 17.5h11.675c.917 0 1.667-.75 1.667-1.667V4.167c0-.925-.75-1.667-1.667-1.667m0 10H12.5c0 1.383-1.125 2.5-2.5 2.5a2.5 2.5 0 0 1-2.5-2.5H4.158V4.167h11.675z",
-        "M11.667 4.167h6.666v1.556h-6.666zm0 4.278h6.666V10h-6.666zm0 4.278h6.666v1.555h-6.666zm-10-3.5c0 2.784 2.433 5.055 5.416 5.055H7.5v1.556L10 13.5l-2.5-2.333v1.556h-.417c-2.066 0-3.75-1.572-3.75-3.5 0-1.93 1.684-3.5 3.75-3.5H10V4.167H7.083c-2.983 0-5.416 2.271-5.416 5.056",
-        "M5.833 15.833v-1.667h5.917q1.312 0 2.281-.833.969-.834.969-2.083t-.969-2.084q-.969-.833-2.281-.833H6.5L8.667 10.5 7.5 11.666 3.333 7.5 7.5 3.333 8.667 4.5 6.5 6.666h5.25q2.021 0 3.469 1.313t1.448 3.27-1.448 3.271-3.469 1.313z",
-        "M9.996 2.712a3.9 3.9 0 0 1 1.86.461q.865.462 1.392 1.377.535.909.535 2.264v1.745q.569.079.9.423.433.447.433 1.333v5.178q0 .9-.432 1.347t-1.26.448H6.576q-.827 0-1.26-.448-.432-.446-.432-1.347v-5.178q0-.886.432-1.333.333-.344.9-.423V6.814q0-1.355.528-2.264.535-.915 1.4-1.377a3.9 3.9 0 0 1 1.852-.46m0 1.296q-.651 0-1.208.308-.55.308-.879.901-.33.594-.33 1.457v1.86h4.849v-1.86q0-.864-.337-1.457a2.25 2.25 0 0 0-.886-.901 2.43 2.43 0 0 0-1.209-.308",
+        ("0 0 20 20", "M4.556 17a1.5 1.5 0 0 1-1.1-.457A1.5 1.5 0 0 1 3 15.444V5.722q0-.292.097-.525.098-.232.253-.447l1.089-1.322a1 1 0 0 1 .389-.321Q5.06 3 5.333 3h9.334q.272 0 .505.107a1 1 0 0 1 .39.32L16.65 4.75q.156.214.253.447t.097.525v9.722a1.5 1.5 0 0 1-.457 1.1 1.5 1.5 0 0 1-1.099.456zm.31-11.667h10.267l-.66-.777H5.527zm-.31 1.556v8.555h10.888V6.89zM10 14.667l3.111-3.111-1.089-1.09-1.244 1.245V8.444H9.222v3.267l-1.244-1.244-1.09 1.089z"),
+        ("0 0 20 20", "M15.833 2.5H4.158c-.925 0-1.65.742-1.65 1.667L2.5 15.833A1.66 1.66 0 0 0 4.158 17.5h11.675c.917 0 1.667-.75 1.667-1.667V4.167c0-.925-.75-1.667-1.667-1.667m0 10H12.5c0 1.383-1.125 2.5-2.5 2.5a2.5 2.5 0 0 1-2.5-2.5H4.158V4.167h11.675z"),
+        ("0 0 20 20", "M11.667 4.167h6.666v1.556h-6.666zm0 4.278h6.666V10h-6.666zm0 4.278h6.666v1.555h-6.666zm-10-3.5c0 2.784 2.433 5.055 5.416 5.055H7.5v1.556L10 13.5l-2.5-2.333v1.556h-.417c-2.066 0-3.75-1.572-3.75-3.5 0-1.93 1.684-3.5 3.75-3.5H10V4.167H7.083c-2.983 0-5.416 2.271-5.416 5.056"),
+        ("0 0 20 20", "M5.833 15.833v-1.667h5.917q1.312 0 2.281-.833.969-.834.969-2.083t-.969-2.084q-.969-.833-2.281-.833H6.5L8.667 10.5 7.5 11.666 3.333 7.5 7.5 3.333 8.667 4.5 6.5 6.666h5.25q2.021 0 3.469 1.313t1.448 3.27-1.448 3.271-3.469 1.313z"),
+        ("0 0 20 20", "M9.996 2.712a3.9 3.9 0 0 1 1.86.461q.865.462 1.392 1.377.535.909.535 2.264v1.745q.569.079.9.423.433.447.433 1.333v5.178q0 .9-.432 1.347t-1.26.448H6.576q-.827 0-1.26-.448-.432-.446-.432-1.347v-5.178q0-.886.432-1.333.333-.344.9-.423V6.814q0-1.355.528-2.264.535-.915 1.4-1.377a3.9 3.9 0 0 1 1.852-.46m0 1.296q-.651 0-1.208.308-.55.308-.879.901-.33.594-.33 1.457v1.86h4.849v-1.86q0-.864-.337-1.457a2.25 2.25 0 0 0-.886-.901 2.43 2.43 0 0 0-1.209-.308"),
+        // Desktop's `Phone`, in its own 12x19 box.
+        ("0 0 12 19", "M3.188 18.102q-1.047 0-1.696-.618-.648-.617-.648-1.625V2.844q0-1.008.648-1.625.649-.617 1.696-.617h6.406q1.031 0 1.656.617t.625 1.625v13.008q0 1.015-.625 1.632-.625.618-1.656.618zm.335-1.813h5.68q.438 0 .68-.242.25-.234.25-.656V3.313q0-.43-.25-.665-.242-.234-.68-.234h-5.68q-.444 0-.695.234-.242.235-.242.665V15.39q0 .429.242.664.25.234.695.234m1.133-.64a.4.4 0 0 1-.414-.415q0-.188.117-.296a.4.4 0 0 1 .297-.118H8.07a.4.4 0 0 1 .414.414q0 .188-.117.297a.4.4 0 0 1-.297.117zM5.352 4.28a.614.614 0 0 1-.64-.633q-.001-.273.179-.453a.63.63 0 0 1 .46-.187h2.024q.266 0 .445.187.188.18.188.453c0 .273-.063.334-.188.454a.6.6 0 0 1-.445.18z"),
     ]
-    .map(|d| svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="{d}"/></svg>"#).into_bytes()))
+    .map(|(view, d)| svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path d="{d}"/></svg>"#).into_bytes()))
 });
 
 /// Desktop's `Toast`, which shows while `status_banner` is its text.
@@ -102,6 +112,8 @@ pub struct Toast {
     /// Desktop's `onDismiss` of a toast with `keepToastOpen` buttons: the close runs it, and the buttons do not close
     /// the toast.
     pub dismiss: Option<UiMessage>,
+    /// The links in the text, in their order: each word opens its URL, in the color of the text like Desktop's `a`.
+    pub links: Vec<(&'static str, &'static str)>,
 }
 
 impl Toast {
@@ -115,6 +127,7 @@ impl Toast {
             open: None,
             error: false,
             dismiss: None,
+            links: Vec::new(),
         }
     }
 }
@@ -210,7 +223,18 @@ impl BeeperGuiApp {
             };
             self.toast_card(&toast, None)
         });
-        let older = pills.chain(reminder).chain(older);
+        // Desktop's `DownloadMobileApps`, which has no timeout and opens the download page.
+        let apps = (main && self.mobile_apps_toast).then(|| {
+            let toast = Toast {
+                icon: Some(5),
+                open: Some(UiMessage::OpenUrl(DOWNLOAD_URL.into())),
+                dismiss: Some(UiMessage::Toast(Msg::MobileApps(false))),
+                links: vec![("iPhone", IOS_URL), ("Android", ANDROID_URL)],
+                ..Toast::new("Don't forget to take your chats with you! On your iPhone or Android...".into())
+            };
+            self.toast_card(&toast, None)
+        });
+        let older = pills.chain(reminder).chain(apps).chain(older);
         let newest = (!banner.is_empty()).then(|| -> El<'_> {
             let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::Toast(toasts::Msg::DismissBanner));
             if let Some(what) = self.undo_note.as_ref().filter(|_| self.shown_note()) {
@@ -257,9 +281,22 @@ impl BeeperGuiApp {
         };
         // Desktop's 20 px icon sits in a 2rem box with a -8 px margin, so the toast stays 2rem tall.
         let glyph = t.icon.map(|i| container(tinted(&TOAST_ICONS[i], 20.0, fg)).center(20));
-        let text = match t.strong {
-            true => semi(t.text.clone(), 13.0),
-            false => txt(t.text.clone(), 13.0),
+        let wrap = iced::widget::text::Wrapping::WordOrGlyph;
+        let text: El<'a> = match (t.links.is_empty(), t.strong) {
+            (true, true) => semi(t.text.clone(), 13.0).color(fg).wrapping(wrap).into(),
+            (true, false) => txt(t.text.clone(), 13.0).color(fg).wrapping(wrap).into(),
+            (false, _) => {
+                let mut rest = t.text.as_str();
+                let mut spans = Vec::new();
+                for &(word, url) in &t.links {
+                    let (before, after) = rest.split_once(word).expect("the toast text has its links in order");
+                    spans.push(span(before.to_string()));
+                    spans.push(span(word).link(UiMessage::OpenUrl(url.into())));
+                    rest = after;
+                }
+                spans.push(span(rest.to_string()));
+                rich_text(spans).on_link_click(|m: UiMessage| m).size(13.0).color(fg).wrapping(wrap).into()
+            }
         };
         let below = (!t.buttons.is_empty()).then(|| {
             let dot = || -> El { semi(" • ", 13.0).line_height(Pixels(18.0)).color(fg).into() };
@@ -267,7 +304,7 @@ impl BeeperGuiApp {
             let first = buttons.next().expect("a button");
             Row::with_children(std::iter::once(first).chain(buttons.flat_map(|b| [dot(), b])))
         });
-        let body = column![text.color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(below).spacing(16);
+        let body = column![text].push(below).spacing(16);
         let right = t.right.as_ref().map(|b| btn(b, p.accent));
         let dismiss = match &t.dismiss {
             Some(m) => m.clone(),

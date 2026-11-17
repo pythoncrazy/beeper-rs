@@ -140,7 +140,11 @@ fn main() {
     let _ = app.update(UiMessage::Login(LoginMsg::Code("12".into())));
     shot(&out, "login_code_typed", (330.0, 620.0), &theme, app.view_login());
     let _ = app.update(UiMessage::Login(LoginMsg::Code("123456".into())));
-    let refused = beeper_core::cloud::CloudError { status: 401, message: "Invalid code. Please try again.".into() };
+    let refused = beeper_core::cloud::CloudError {
+        status: 401,
+        message: "Invalid code. Please try again.".into(),
+        errcode: None,
+    };
     let _ = app.update(UiMessage::Login(LoginMsg::Done(Err(refused))));
     shot(&out, "login_code_error", (330.0, 620.0), &theme, app.view_login());
     let lead = beeper_ui::login::Outcome::Lead("lead".into(), vec!["alex-rs".into(), "alex2".into()]);
