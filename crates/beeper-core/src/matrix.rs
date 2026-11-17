@@ -38,7 +38,7 @@ use matrix_sdk::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::receipt::{ReceiptThread, ReceiptType};
 use matrix_sdk::ruma::events::relation::{Annotation, Reply};
-use matrix_sdk::ruma::events::room::message::{Relation, ReplacementMetadata, RoomMessageEventContent};
+use matrix_sdk::ruma::events::room::message::{Relation, RoomMessageEventContent};
 use matrix_sdk::ruma::events::room::power_levels::UserPowerLevel;
 use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::events::tag::{TagInfo, TagName};
@@ -1541,6 +1541,9 @@ pub enum Outgoing {
         target: String,
         text: String,
         mentions: Vec<Mention>,
+        /// Whether the message is an attachment, whose caption the text is.
+        #[serde(default)]
+        caption: bool,
     },
     Redact {
         target: String,
@@ -2101,6 +2104,64 @@ pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) -> Resul
 
 /// Desktop's `formatMessage`: the text, its HTML with a `matrix.to` link for each user mention, and `m.mentions` with
 /// the mentioned users, the sender of `reply_to`, and "@room".
+/// Desktop's `getCaptionEditableAttachmentContent`: the media fields of the attachment message `target` (as last
+/// edited), which an edit of its caption keeps.
+async fn caption_attachment(
+    room: &Room,
+    target: &matrix_sdk::ruma::EventId,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let unavailable = || "Attachment event content is unavailable".to_string();
+    let event = room.event(target, None).await.map_err(|_| unavailable())?;
+    let event: Value = serde_json::from_str(event.raw().json().get()).map_err(|e| e.to_string())?;
+    let content = event["content"].get("m.new_content").unwrap_or(&event["content"]);
+    let media = ["m.image", "m.video", "m.audio", "m.file"].contains(&content["msgtype"].as_str().unwrap_or_default());
+    if event["type"] != "m.room.message" || !media || (content.get("url").is_none() && content.get("file").is_none()) {
+        return Err(unavailable());
+    }
+    let mut fields: serde_json::Map<String, Value> =
+        ["url", "file", "info", "org.matrix.msc3245.voice", "org.matrix.msc1767.audio", "msgtype"]
+            .into_iter()
+            .filter_map(|k| Some((k.to_string(), content.get(k)?.clone())))
+            .collect();
+    let filename = content.get("filename").or_else(|| content.get("body")).cloned().unwrap_or_default();
+    fields.insert("filename".into(), filename);
+    Ok(fields)
+}
+
+/// Desktop's `editMessage` content: the new text in `m.new_content`, with the media of an attachment whose caption
+/// it is (an empty caption leaves the file name), and the plain text as the fallback, without a `* ` prefix.
+fn edit_content(
+    target: &matrix_sdk::ruma::EventId,
+    text: String,
+    mentions: &[Mention],
+    attachment: Option<serde_json::Map<String, Value>>,
+) -> Result<Value, String> {
+    let caption = text.trim().is_empty().then(|| attachment.as_ref().map(|a| a["filename"].clone())).flatten();
+    let content = text_content(text, mentions, None)?;
+    let mut new = serde_json::to_value(&content).expect("message content JSON");
+    let mentions = new.as_object_mut().and_then(|m| m.remove("m.mentions"));
+    let fields = attachment.unwrap_or_default();
+    for (k, v) in &fields {
+        new[k] = v.clone();
+    }
+    if let Some(name) = caption {
+        new["body"] = name;
+        let new = new.as_object_mut().expect("an object");
+        new.remove("format");
+        new.remove("formatted_body");
+    }
+    let mut outer = serde_json::json!({ "msgtype": new["msgtype"], "body": new["body"] });
+    for (k, v) in fields {
+        outer[k] = v;
+    }
+    outer["m.relates_to"] = serde_json::json!({ "event_id": target, "rel_type": "m.replace" });
+    outer["m.new_content"] = new;
+    if let Some(mentions) = mentions {
+        outer["m.mentions"] = mentions;
+    }
+    Ok(outer)
+}
+
 fn text_content(text: String, mentions: &[Mention], reply_to: Option<&str>) -> Result<RoomMessageEventContent, String> {
     let users: Vec<&Mention> = mentions.iter().filter(|m| m.1 != ROOM_MENTION).collect();
     let ids: Result<BTreeSet<OwnedUserId>, _> =
@@ -2191,11 +2252,13 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             let id = room.send_raw("m.room.message", content).with_transaction_id(txn.as_str().into());
             sent(txn, id.await.map_err(e)?.response.event_id);
         }
-        Outgoing::Edit { target, text, mentions } => {
-            let content = text_content(text, &mentions, None)?;
-            let mentions = content.mentions.clone();
-            let content = content.make_replacement(ReplacementMetadata::new(event(target)?, mentions));
-            room.send(content).await.map_err(e)?;
+        Outgoing::Edit { target, text, mentions, caption } => {
+            let target = event(target)?;
+            let attachment = match caption {
+                true => Some(caption_attachment(&room, &target).await?),
+                false => None,
+            };
+            room.send_raw("m.room.message", edit_content(&target, text, &mentions, attachment)?).await.map_err(e)?;
         }
         Outgoing::Redact { target } => {
             room.redact(&event(target)?, None, None).await.map_err(|x| x.to_string())?;
@@ -4193,6 +4256,40 @@ mod tests {
         assert!(!archived_upto(&c, Some((None, Some(10))), &new), "an unread chat is not archived up to a time");
         c.is_pinned = Some(true);
         assert!(!archived_upto(&c, Some((Some(9), None)), &old), "a pinned chat is never archived");
+    }
+
+    /// Desktop's `editMessage`: a caption edit keeps the attachment, an empty caption leaves its file name, and the
+    /// fallback has no `* ` prefix.
+    #[test]
+    fn edits_keep_the_attachment_like_desktop() {
+        let target = matrix_sdk::ruma::EventId::parse("$photo:beeper.com").unwrap();
+        let text = super::edit_content(&target, "fixed".into(), &[], None).unwrap();
+        assert_eq!(text["msgtype"], "m.text");
+        assert_eq!(text["body"], "fixed");
+        assert_eq!(text["m.new_content"], json!({ "msgtype": "m.text", "body": "fixed" }));
+        assert_eq!(text["m.relates_to"], json!({ "event_id": "$photo:beeper.com", "rel_type": "m.replace" }));
+        assert_eq!(text["m.mentions"], json!({}));
+
+        let photo: serde_json::Map<String, Value> = serde_json::from_value(json!({
+            "msgtype": "m.image", "url": "mxc://beeper.com/abc", "info": { "w": 4, "h": 3 }, "filename": "cat.jpg",
+        }))
+        .unwrap();
+        let caption = super::edit_content(&target, "a **cat**".into(), &[], Some(photo.clone())).unwrap();
+        let new = &caption["m.new_content"];
+        assert_eq!(
+            (&new["msgtype"], &new["url"], &new["filename"]),
+            (&json!("m.image"), &json!("mxc://beeper.com/abc"), &json!("cat.jpg"))
+        );
+        assert_eq!((&new["body"], &new["formatted_body"]), (&json!("a **cat**"), &json!("a <strong>cat</strong>")));
+        assert_eq!(
+            (&caption["msgtype"], &caption["url"], &caption["body"]),
+            (&json!("m.image"), &json!("mxc://beeper.com/abc"), &json!("a **cat**"))
+        );
+        assert!(caption.get("formatted_body").is_none(), "Desktop keeps the HTML in the new content");
+
+        let removed = super::edit_content(&target, String::new(), &[], Some(photo)).unwrap();
+        assert_eq!(removed["m.new_content"]["body"], "cat.jpg");
+        assert_eq!(removed["body"], "cat.jpg");
     }
 
     #[test]

@@ -2444,7 +2444,8 @@ impl BeeperStore {
                 m.edit_history.push(EditHistoryEntry { text: prev, timestamp: now_rfc3339_millis() });
             }
         });
-        self.queue(&chat_id, Outgoing::Edit { target: msg.id.clone(), text, mentions });
+        let caption = !msg.attachments.is_empty();
+        self.queue(&chat_id, Outgoing::Edit { target: msg.id.clone(), text, mentions, caption });
         Ok((chat_id, msg))
     }
 
