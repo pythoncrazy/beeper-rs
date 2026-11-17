@@ -1,8 +1,10 @@
 //! Desktop's merged chats (`unionsStore`, `UnionThreadStore`): the chat that a merged chat sent a message from in its
-//! timeline, and Unmerge.
+//! timeline, the Merged Chats section of Chat Info, and Unmerge.
 
 use super::*;
+use crate::merge_editor::MergeEdit;
 use beeper_core::store::activity_key;
+use iced::widget::column;
 
 #[derive(Clone)]
 pub enum Msg {
@@ -10,11 +12,16 @@ pub enum Msg {
     Ask(String),
     /// Desktop's `removeUnion`; an open merged chat opens its member chat with the newest activity.
     Unmerge(String),
+    /// Desktop's `D3`: the editor of a merged chat, or of a new one of the chats.
+    Open(Option<String>, Vec<String>),
+    Edit(MergeEdit),
 }
 
 impl BeeperGuiApp {
     pub(crate) fn merged(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
+            Msg::Open(union, chats) => self.open_merge(union, chats),
+            Msg::Edit(e) => self.merge_edit(e),
             Msg::Ask(id) => {
                 self.list.chat_menu = None;
                 (self.confirm, self.delete_target) = (Some(ASK_UNMERGE), Some(id));
@@ -36,6 +43,46 @@ impl BeeperGuiApp {
                 self.update(UiMessage::StoreChanged)
             }
         }
+    }
+}
+
+impl BeeperGuiApp {
+    /// Desktop's `BrandChatInfoPaneMergedChats` (`R7t`) of a merged chat: "Merged Chats" with Manage, and its member
+    /// chats with the default one marked, or a note when none is on this device.
+    pub(crate) fn view_merged_section<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
+        chat.merge.as_ref()?;
+        let p = &self.pal;
+        let idx = st.chat_idx(&chat.id);
+        let manage = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("merged:{}", chat.id)));
+        let manage = button(semi(trx("Manage", "Similar to an edit button"), 12.0).color(p.strong))
+            .padding([2, 8])
+            .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 999.0))
+            .on_press(manage);
+        let head = row![txt(tr("Merged Chats"), 12.0).color(p.strong), Space::new().width(Fill), manage];
+        let head = container(head.align_y(Center)).padding(8);
+        let members = st.members(idx);
+        let default = st.default_member(idx);
+        let body: El<'a> = match members.is_empty() {
+            true => container(txt(tr("This merged chat is empty on this device."), 13.0).color(p.sub))
+                .padding(8)
+                .width(Fill)
+                .style(fill_box(p.chip, 10.0))
+                .into(),
+            false => {
+                let rows = members.into_iter().map(|i| -> El<'a> {
+                    let c = &st.chats[i];
+                    let name = ell(&c.title, 180.0, 13.0, Weight::Normal).color(p.strong).width(Fill);
+                    let mark = (Some(i) == default).then(|| {
+                        container(semi(tr("Default"), 10.0).color(p.strong))
+                            .padding([2, 4])
+                            .style(fill_box(p.card, 4.0))
+                    });
+                    row![self.chat_avatar(c, 28.0, 1.25), name].push(mark).spacing(8).align_y(Center).padding(4).into()
+                });
+                container(Column::with_children(rows).spacing(6)).padding(8).style(fill_box(p.chip, 10.0)).into()
+            }
+        };
+        Some(column![head, body].into())
     }
 }
 

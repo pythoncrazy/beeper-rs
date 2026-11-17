@@ -99,7 +99,7 @@ pub enum LabelStep {
 const LABEL_SHEET_SIZE: Size = Size::new(395.0, 504.0);
 
 /// Desktop's `intro-avatar` faces of the New Label intro.
-static LABEL_INTRO_FACES: std::sync::LazyLock<[image::Handle; 3]> = std::sync::LazyLock::new(|| {
+pub(crate) static LABEL_INTRO_FACES: std::sync::LazyLock<[image::Handle; 3]> = std::sync::LazyLock::new(|| {
     [
         include_bytes!("../assets/label_intro/1.png").as_slice(),
         include_bytes!("../assets/label_intro/2.png").as_slice(),

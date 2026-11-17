@@ -2077,7 +2077,7 @@ impl BeeperStore {
         self.remove_label(id);
         let Some(&idx) = self.chat_idx_by_id.get(id) else { return };
         if let Some(m) = self.chats[idx].merge.take() {
-            self.set_merged_into(&m.chat_ids, None);
+            self.set_merged_into(&m.chat_ids, id, false);
         }
         let idx = self.chat_idx_by_id.remove(id).expect("the chat is here");
         let chat = self.chats.remove(idx);
@@ -2109,8 +2109,27 @@ impl BeeperStore {
         let modes = self.chats[self.chat_idx_by_id[id]].delete_modes;
         let mode = if for_everyone { DELETE_FOR_EVERYONE } else { DELETE_FOR_ME };
         assert!(modes & mode != 0, "{id} does not support delete mode {mode}");
+        let parent = self.chats[self.chat_idx_by_id[id]].merged_into_chat_id.clone();
         self.remove_chat(id);
         self.queue(id, Outgoing::DeleteChat { for_everyone });
+        if let Some(parent) = parent {
+            self.drop_from_union(&parent, id);
+        }
+    }
+
+    /// Desktop's clean-up of the unions of a deleted room: an `m.space.child` without `via` takes it out of the merged
+    /// chat `parent`, and a merged chat that has no other member room is left (`leaveUnionSpace`).
+    fn drop_from_union(&mut self, parent: &str, room: &str) {
+        let Some(idx) = self.resolve_chat_idx(parent) else { return };
+        let Some(mut merge) = self.chats[idx].merge.clone() else { return };
+        merge.chat_ids.retain(|r| r != room);
+        match merge.chat_ids.is_empty() {
+            true => self.unmerge(parent),
+            false => {
+                self.set_merge(idx, Some(merge));
+                self.queue(parent, Outgoing::LabelChild(room.into(), false));
+            }
+        }
     }
 
     pub fn upsert_message(&mut self, mut msg: Message) {
@@ -2325,13 +2344,14 @@ impl BeeperStore {
             .ok();
     }
 
-    /// Merges the member chats here into `parent`, or takes them out of their merged chat with `None`. A member room
-    /// that is not here joins when it comes (`upsert_chat`).
-    fn set_merged_into(&mut self, ids: &[String], parent: Option<&str>) {
+    /// Merges the member chats here into `parent` (`on`), or takes those of `parent` out of it. A member room that is
+    /// not here joins when it comes (`upsert_chat`).
+    fn set_merged_into(&mut self, ids: &[String], parent: &str, on: bool) {
         let here: Vec<usize> = ids.iter().filter_map(|id| self.resolve_chat_idx(id)).collect();
         for idx in here {
-            if self.chats[idx].merged_into_chat_id.as_deref() != parent {
-                self.update_chat(idx, |c| c.merged_into_chat_id = parent.map(str::to_string));
+            let now = self.chats[idx].merged_into_chat_id.as_deref();
+            if (now == Some(parent)) != on {
+                self.update_chat(idx, |c| c.merged_into_chat_id = on.then(|| parent.to_string()));
             }
         }
     }
@@ -2344,8 +2364,8 @@ impl BeeperStore {
         let gone: Vec<String> = old.filter(|c| !new.contains(c)).cloned().collect();
         let new = new.to_vec();
         self.chats[idx].merge = merge;
-        self.set_merged_into(&gone, None);
-        self.set_merged_into(&new, Some(&id));
+        self.set_merged_into(&gone, &id, false);
+        self.set_merged_into(&new, &id, true);
         self.update_chat(idx, |_| {});
     }
 
@@ -2356,6 +2376,76 @@ impl BeeperStore {
         let default_chat_id = self.chats[idx].merge.as_ref().and_then(|m| m.default_chat_id.clone());
         if self.chats[idx].merge.as_ref().is_none_or(|m| m.chat_ids != rooms) {
             self.set_merge(idx, Some(ChatMergeInfo { chat_ids: rooms, default_chat_id }));
+        }
+    }
+
+    /// Desktop's `canCreateUnion`: the plan has no `max-merge-chats` limit, or fewer merged chats than it.
+    pub fn can_create_union(&self) -> bool {
+        let max = self.features.max_merge_chats();
+        max < 0 || (self.chats.iter().filter(|c| c.merge.is_some()).count() as i64) < max
+    }
+
+    /// Desktop's `createUnion`: a merged chat of `rooms` here at once, and a `com.beeper.union` room with their
+    /// `m.space.child` state, the title and the photo `avatar` (an `mxc://` URL) on the homeserver. Returns the ID of
+    /// the merged chat, which stays its local ID once the room exists ([`Self::created_union`]).
+    pub fn create_union(
+        &mut self,
+        title: &str,
+        rooms: Vec<String>,
+        default: Option<String>,
+        avatar: Option<String>,
+    ) -> String {
+        let title = Some(title.to_string()).filter(|t| !t.is_empty());
+        let (chat, _) = self.create_or_start_chat(
+            "hungryserv",
+            "single",
+            title.clone(),
+            Vec::new(),
+            None,
+            Some(rooms.clone()),
+            default,
+        );
+        if avatar.is_some() {
+            let idx = self.chat_idx(&chat.id);
+            self.update_chat(idx, |c| c.img_url.clone_from(&avatar));
+        }
+        self.queue(&chat.id, Outgoing::CreateUnion { title, rooms, avatar });
+        chat.id
+    }
+
+    /// The homeserver made the room `room` of the merged chat `draft`: the chat takes the room ID, and keeps `draft`
+    /// as its local ID.
+    pub fn created_union(&mut self, draft: &str, room: &str) {
+        self.sent.insert(draft.into(), room.into());
+        let Some(&i) = self.chat_idx_by_id.get(draft) else { return };
+        let mut chat = self.chats[i].clone();
+        self.remove_chat(draft);
+        if self.chat_idx_by_id.contains_key(room) {
+            return;
+        }
+        let merge = chat.merge.take();
+        (chat.id, chat.local_chat_id) = (room.into(), Some(draft.into()));
+        self.upsert_chat(chat);
+        let idx = self.chat_idx(room);
+        self.set_merge(idx, merge);
+    }
+
+    /// Desktop's `updateUnion` from the merged chat editor: the title and the member rooms of the merged chat `id`,
+    /// with an `m.space.child` change for each room that joins or leaves it, and its default member chat.
+    pub fn update_union(&mut self, id: &str, title: &str, rooms: Vec<String>, default: Option<String>) {
+        let idx = self.resolve_chat_idx(id).expect("an edited merged chat");
+        let id = self.chats[idx].id.clone();
+        let old = self.chats[idx].merge.as_ref().map(|m| m.chat_ids.clone()).unwrap_or_default();
+        let added = rooms.iter().filter(|r| !old.contains(r)).map(|r| (r.clone(), true));
+        let changes: Vec<(String, bool)> =
+            added.chain(old.iter().filter(|r| !rooms.contains(r)).map(|r| (r.clone(), false))).collect();
+        self.set_merge(idx, Some(ChatMergeInfo { chat_ids: rooms, default_chat_id: default }));
+        for (room, add) in changes {
+            self.queue(&id, Outgoing::LabelChild(room, add));
+        }
+        if self.chats[idx].title != title {
+            self.update_chat(idx, |c| c.title = title.to_string());
+            self.queue(&id, Outgoing::State("m.room.name".into(), serde_json::json!({ "name": title })));
         }
     }
 
@@ -2461,7 +2551,7 @@ impl BeeperStore {
         };
         let idx = self.push_chat(chat, true);
         if let Some(m) = &merge {
-            self.set_merged_into(&m.chat_ids, Some(&id));
+            self.set_merged_into(&m.chat_ids, &id, true);
         }
         if let Some(txt) = message_text.filter(|s| !s.trim().is_empty()) {
             self.send_message(&id, Some(txt), None, None).expect("send first message to new chat");
