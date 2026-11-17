@@ -554,6 +554,15 @@ impl BeeperGuiApp {
             })
             .into(),
         };
+        // Desktop's video menu takes the place of the message menu for a right click on the video, with Bookmark.
+        if let Some(rows) = self.video_menu_rows(&mid).filter(|_| self.pane().video_menu) {
+            let mark = item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone()))));
+            let rows: Vec<(El, f32)> = rows.into_iter().chain([rule(), mark]).collect();
+            let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
+            let col = Column::with_children(rows.into_iter().map(|r| r.0));
+            let menu = container(col.padding([4, 0])).width(MESSAGE_MENU_W);
+            return (menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into(), h, 0.0);
+        }
         let chat = st.chat(&cid);
         let (rules, live) = (chat.messages, m.is_deleted != Some(true));
         let others = chat.participants.items.iter().filter(|u| u.is_self != Some(true)).count();
@@ -561,7 +570,6 @@ impl BeeperGuiApp {
         let privately =
             !mine && sender && others > 1 && m.is_deleted != Some(true) && self.can(&m.account_id, "create_dm");
         let head: Vec<(El, f32)> = [
-            self.video_menu_rows(&mid),
             address.map(|e| {
                 vec![
                     item(
@@ -2456,7 +2464,7 @@ impl BeeperGuiApp {
             Msg::LinkMenu(..) => {}
             Msg::MessageContact(account, user) => return self.open_dm(account, *user, None, None),
             Msg::OpenMenu(mid) => {
-                self.pane.menu_link = None;
+                (self.pane.menu_link, self.pane.video_menu) = (None, false);
                 // With text selected, Desktop leaves the menu to Electron's, which offers the selection.
                 self.pane.menu_selection = crate::selectable::has_selection().then(crate::selectable::text);
                 // Desktop's `selectOnly`: a right click on a message outside the selection selects it alone.

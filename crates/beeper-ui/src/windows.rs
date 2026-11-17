@@ -139,7 +139,7 @@ impl BeeperGuiApp {
                 self.chat_windows.retain(|w| w.0 != id);
                 // Desktop's `setPipState(null)`: the video stops with its Picture in Picture window.
                 if self.pip.take_if(|p| p.0 == id).is_some() {
-                    self.video = None;
+                    (self.video, self.pip_manual) = (None, false);
                 }
                 self.theme_windows.retain(|w| w.0 != id);
                 self.labels_windows.retain(|w| w.0 != id);
