@@ -714,6 +714,23 @@ impl BeeperGuiApp {
         )
     }
 
+    /// Desktop's `Nmt`: the Chat Info toggle, a 20 px info icon in 4 px of padding, shaded while Chat Info is open.
+    fn view_info_toggle<'a>(&self, st: &BeeperStore) -> El<'a> {
+        let p = &self.pal;
+        let open = self.show_right_panel;
+        let bg = if open { p.strong.scale_alpha(0.08) } else { CLEAR };
+        let muted = p.muted;
+        let icon =
+            svg(crate::INFO_CIRCLE.clone()).width(20).height(20).style(move |_, _| svg::Style { color: Some(muted) });
+        let toggle =
+            button(icon).padding(4).style(btn_style([bg; 3], [p.muted; 3], 8.0)).on_press(UiMessage::ToggleRightPanel);
+        let keys = st.settings.hotkey_keys("Toggle Chat Info").to_string();
+        let keys = prefs::hotkey_label(keys.split(", ").next().unwrap_or_default());
+        let caps = keys.split_whitespace().map(String::from).collect();
+        let toggle = self.tip_caps(toggle.into(), tr("Chat Info"), caps, tooltip::Position::Bottom);
+        container(toggle).align_right(Fill).padding(Padding::ZERO.top(8.0).right(8.0)).into()
+    }
+
     /// Desktop's `F2t` at the top of a request: the chat, the username of the other person, the description and
     /// View Profile.
     fn view_request_head<'a>(&self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
@@ -734,7 +751,33 @@ impl BeeperGuiApp {
         let profile = profile_link(chat).map(|url| {
             button(semi(tr("View Profile"), 13.0).color(p.accent)).bare(p.accent).on_press(UiMessage::OpenUrl(url))
         });
-        let col = column![avatar, column![title].push(username).align_x(Center)].push(about).push(profile);
+        // Desktop's `inviterInfo` of a group: "__INVITER__ invited you (__USERNAME__) on __PLATFORM__", with the inviter's
+        // 16 px avatar and name, which open their card.
+        let invite = chat.inviter().filter(|_| chat.chat_type == "group").map(|u| -> El<'a> {
+            let me = chat.participants.items.iter().find(|u| u.is_self == Some(true)).and_then(handle);
+            let name = u.full_name.clone().unwrap_or_else(|| u.id.clone());
+            let who = row![self.face(u.img_url.as_deref(), &name, 16.0, 0.0), semi(name, 13.0).color(p.text)]
+                .spacing(4)
+                .align_y(Center);
+            let who = self.user_trigger(chat, &u.id, who);
+            let text = tr(match me {
+                Some(_) => "__INVITER__ invited you (__USERNAME__) on __PLATFORM__",
+                None => "__INVITER__ invited you on __PLATFORM__",
+            });
+            let platform = beeper_core::config::account_network(&chat.account_id).display_name;
+            let (before, rest) = text.split_once("__INVITER__").unwrap_or(("", text));
+            let rest = rest.replace("__PLATFORM__", platform);
+            let mut line = row![txt(before.to_string(), 13.0).color(p.text), who].align_y(Center);
+            line = match (me, rest.split_once("__USERNAME__")) {
+                (Some(me), Some((a, b))) => line
+                    .push(txt(a.to_string(), 13.0).color(p.text))
+                    .push(semi(me, 13.0).color(p.text))
+                    .push(txt(b.to_string(), 13.0).color(p.text)),
+                _ => line.push(txt(rest, 13.0).color(p.text)),
+            };
+            line.wrap().into()
+        });
+        let col = column![avatar, column![title].push(username).align_x(Center)].push(about).push(profile).push(invite);
         let col = col.spacing(10).align_x(Center).max_width(480).padding(Padding::new(24.0).bottom(32.0));
         Some(container(col).center_x(Fill).into())
     }
@@ -916,7 +959,10 @@ impl BeeperGuiApp {
             .filter(|_| in_chat)
             .and_then(|i| msgs.get(i))
             .map(|m| self.day_pill(&m.timestamp).padding(Padding::ZERO.top(80.0).left(GUTTER)));
+        // Desktop's request has no thread header, with its feedback button, only the Chat Info toggle (`Nmt`) 8 px
+        // from the top right corner.
         let overlay = match in_chat {
+            true if chat.is_request == Some(true) => stack![fade, self.view_info_toggle(&st)],
             true => stack![fade, header].push(feedback).push(reminder),
             false => stack![fade],
         };
@@ -3004,6 +3050,40 @@ mod tests {
         let _ = app.update(UiMessage::Message(Msg::HoverEnter(mine)));
         let _ = app.update(UiMessage::Message(Msg::ShowQuickReactions));
         assert!(!quick_shown(&app), "never on your own");
+    }
+
+    /// Desktop's bridge request: no thread header, and a group request names who invited you on which network.
+    #[test]
+    fn request_head_names_the_inviter_like_desktop() {
+        let mut app = crate::fuzz::demo_app("request-inviter");
+        let group = {
+            let st = app.store.read();
+            let free = |c: &&Chat| c.chat_type == "group" && c.account_id != "hungryserv" && c.is_pinned != Some(true);
+            st.chats.iter().find(free).expect("a bridged group").id.clone()
+        };
+        let inviter = {
+            let mut st = app.store.write();
+            let i = st.resolve_chat_idx(&group).expect("the group");
+            let inviter =
+                st.chats[i].participants.items.iter().find(|u| u.is_self != Some(true)).expect("a member").clone();
+            let me = User {
+                id: "@me:beeper.local".into(),
+                username: Some("alex".into()),
+                is_self: Some(true),
+                added_by: Some(inviter.id.clone()),
+                ..Default::default()
+            };
+            st.update_chat(i, |c| {
+                (c.is_request, c.flags) = (Some(true), c.flags | CHAT_REQUEST);
+                c.participants.items.retain(|u| u.is_self != Some(true));
+                c.participants.items.push(me);
+            });
+            inviter.full_name.clone().expect("a name")
+        };
+        let _ = app.update(UiMessage::SelectChat(group));
+        let mut sim = simulator(app.view_conversation());
+        assert!(sim.find(inviter.as_str()).is_ok() && sim.find(" invited you (").is_ok(), "the inviter line");
+        assert!(sim.find("Feedback?").is_err(), "the feedback button goes with the thread header");
     }
 
     /// Desktop's reaction pills: one pill a group of skin tones, in the order the groups first appear, and a click
