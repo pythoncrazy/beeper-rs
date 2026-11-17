@@ -4055,11 +4055,11 @@ fn quick_reaction_settings_like_desktop() {
     assert!(simulator(app.view_settings()).find("Quick reaction emoji").is_ok());
     let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::Appearance)));
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("quickReactionsCustomized", 1)));
-    assert_eq!(crate::emoji::quick_reactions(&app.store.read()), ["👍", "❤️", "😂"], "Desktop's custom defaults");
+    assert_eq!(crate::emoji::quick_reactions(&app.store.read(), &[]), ["👍", "❤️", "😂"], "Desktop's custom defaults");
     let _ = app.update(UiMessage::QuickEmoji(Some(2)));
     let _ = simulator(app.view_settings());
     let _ = app.update(UiMessage::Emoji(EmojiMsg::Pick(0)));
-    let custom = crate::emoji::quick_reactions(&app.store.read());
+    let custom = crate::emoji::quick_reactions(&app.store.read(), &[]);
     assert!(custom[1] != "❤️" && app.pane.emoji.is_none(), "a pick sets the custom reaction: {custom:?}");
     let _ = app.update(UiMessage::QuickEmoji(Some(0)));
     let _ = app.update(UiMessage::Emoji(EmojiMsg::Pick(0)));
@@ -8060,6 +8060,38 @@ fn row_hover_actions_fade_like_desktop() {
     assert!(app.hover_progress(&id).is_some_and(|t| t > 0.5), "they fade back out");
     std::thread::sleep(std::time::Duration::from_millis(120));
     assert_eq!(app.hover_progress(&id), None, "and are gone after it");
+}
+
+/// Desktop's reactions on a network that takes only some (`allowed_reactions`): React shows them in a row instead of
+/// the emoji picker, the hover bar's quick reactions and the double-click reaction are only allowed ones.
+#[test]
+fn allowed_reactions_like_desktop() {
+    let mut app = demo_app("allowed-reactions");
+    let chat = app.visible_chats(&app.store.read())[0].id.clone();
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    let mid = {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&chat).expect("the chat");
+        st.update_chat(i, |c| c.allowed_reactions = vec!["👍".into(), "❤️".into()]);
+        let last = *st.timeline_indices(&chat).last().expect("a message");
+        st.messages[last].id.clone()
+    };
+    let allowed = app.store.read().chat(&chat).allowed_reactions.clone();
+    assert_eq!(crate::emoji::allowed_reaction(&allowed, "❤"), Some("❤️".into()), "without its variation selector");
+    assert_eq!(crate::emoji::allowed_reaction(&allowed, "😂"), None);
+    assert!(crate::emoji::quick_reactions(&app.store.read(), &allowed).iter().all(|e| allowed.contains(e)));
+    let _ = app.update(UiMessage::Message(message::Msg::React(mid.clone())));
+    {
+        let st = app.store.read();
+        let mut sim = simulator(app.view_emoji_picker(&st).expect("the reactions"));
+        assert!(sim.find("👍").is_ok() && sim.find("😂").is_err(), "only the allowed reactions");
+    }
+    let _ = app.update(UiMessage::Emoji(crate::emoji::EmojiMsg::React("👍".into())));
+    assert!(app.pane.emoji.is_none(), "a pick closes them");
+    let reacted = app.store.read().message(&mid).reactions.iter().any(|r| r.reaction_key == "👍");
+    assert!(reacted, "and reacts");
+    app.patch_settings(|s| s.quick_reaction = "😂".into());
+    assert!(matches!(app.quick_react(mid), UiMessage::Noop), "a double click does not send what the network refuses");
 }
 
 /// Desktop's `.left` transition: the space bar and the chat list slide out and back in over 0.2 s.
