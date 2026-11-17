@@ -6492,9 +6492,11 @@ fn contacts_without_a_phone_number_resolve_like_desktop() {
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleContact(lee.id.clone())));
     let nets = &app.contact_networks.as_ref().expect("the networks").1;
-    assert!(
-        matches!(&nets[..], [(a, None)] if *a == account),
-        "Desktop looks up the username, and any_phone needs a phone number"
+    let asked: Vec<&str> = nets.iter().filter(|(_, n)| n.is_none()).map(|(a, _)| a.as_str()).collect();
+    assert_eq!(
+        (asked, nets.len()),
+        (vec!["hungryserv", account.as_str()], 2),
+        "Desktop looks up the username, also as a Matrix ID, and any_phone needs a phone number"
     );
 }
 
@@ -6763,7 +6765,7 @@ fn new_chat_looks_up_identifiers_like_desktop() {
 fn new_chat_searches_connections_like_desktop() {
     let mut app = demo_app("new-chat-connections");
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
-    let account = rail_accounts(&app.store.read()).into_iter().next().expect("an account");
+    let account = rail_accounts(&app.store.read()).into_iter().find(|a| a != "hungryserv").expect("a bridge");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("dana".into())));
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("dana".into())));
@@ -6773,7 +6775,8 @@ fn new_chat_searches_connections_like_desktop() {
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("dana".into())));
     assert!(found(&app, "Connections") && found(&app, "Searching..."));
     let user = |name: &str, phone: &str| serde_json::json!({ "id": name, "mxid": format!("@x_{name}:beeper.local"), "name": name, "identifiers": [format!("tel:{phone}")] });
-    let results = vec![user("Dana One", "+15550111"), user("Dana Two", "+15550111"), user("Ann Dana", "+15550112")];
+    let results = [user("Dana One", "+15550111"), user("Dana Two", "+15550111"), user("Ann Dana", "+15550112")];
+    let results: Vec<User> = results.iter().map(new_chat::resolved_user).collect();
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::SearchedUsers(
         "dan".into(),
         account.clone(),
@@ -6785,6 +6788,64 @@ fn new_chat_searches_connections_like_desktop() {
     assert!(!found(&app, "Dana Two"), "one row per bridge and phone number");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("danae".into())));
     assert!(app.new_chat_search.is_none() && !found(&app, "Connections"));
+}
+
+/// Desktop's Matrix account in New Chat: the capabilities of the SDK's `matrix` pseudo-bridge, the profile lookup
+/// of a typed Matrix ID, the user directory only with "Include Matrix results in Start New Chat", and direct chats
+/// and groups that the Matrix client creates.
+#[test]
+fn new_chat_reaches_matrix_users_like_desktop() {
+    let mut app = demo_app("new-chat-matrix");
+    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
+    let matrix = "hungryserv".to_string();
+    let caps = ["create_dm", "lookup_username", "search"].map(|c| app.can(&matrix, c));
+    assert!(caps.iter().all(|&c| c) && !app.can(&matrix, "lookup_phone") && app.can_group(&matrix));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Account(Some(matrix.clone()))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("@vic:beeper.com".into())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("@vic:beeper.com".into())));
+    assert!(app.new_chat_search.is_none(), "the Matrix account does not search by default");
+    let nets = &app.new_chat_lookup.as_ref().expect("a lookup").1;
+    assert!(matches!(&nets[..], [(a, None)] if *a == matrix), "the Matrix account looks up the Matrix ID");
+    let vic = serde_json::json!({ "id": "@vic:beeper.com", "name": "Vic", "identifiers": ["matrix:u/vic:beeper.com"],
+        "mxid": "@vic:beeper.com" });
+    let key = "lookup:@vic:beeper.com".to_string();
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ContactNetwork(key, 0, Ok(Some(vic.clone())))));
+    assert!(found(&app, "Vic"));
+    let _ = app
+        .update(UiMessage::NewChat(new_chat::Msg::PickUser(matrix.clone(), Box::new(new_chat::resolved_user(&vic)))));
+    let n = app.creating_chat.expect("a draft");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
+    assert_eq!(app.status_banner, "Composing chat...", "the Matrix client creates the direct chat");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::DmCreated(Some(n), matrix.clone(), None, Ok("!dm:x".into()))));
+    assert_eq!(app.pending_dm, Some(("!dm:x".into(), None)), "the room opens when it syncs");
+
+    let prefs = serde_json::json!({ beeper_core::prefs::INCLUDE_MATRIX_ACCOUNT_SEARCH: true });
+    app.store.write().synced_prefs.insert(beeper_core::prefs::DESKTOP_PREFS, prefs);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Account(Some(matrix.clone()))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::NewGroup));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("una".into())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("una".into())));
+    assert!(found(&app, "Connections") && found(&app, "Searching..."), "the internal setting adds the directory");
+    let user = |id: &str, name: Option<&str>| User {
+        id: id.into(),
+        username: Some(id.into()),
+        full_name: name.map(Into::into),
+        ..Default::default()
+    };
+    let users = vec![user("@una:beeper.com", Some("Una")), user("@ula:beeper.com", None)];
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::SearchedUsers("una".into(), matrix.clone(), Ok(users))));
+    assert!(found(&app, "Una") && found(&app, "@una:beeper.com") && found(&app, "@ula:beeper.com"));
+    let n = app.creating_chat.expect("a draft");
+    for u in [user("@una:beeper.com", Some("Una")), user("@ula:beeper.com", None)] {
+        let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(matrix.clone(), Box::new(u))));
+    }
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::GroupTitle("Team".into())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
+    assert_eq!(app.status_banner, "Creating group chat...", "the Matrix client creates the group");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::GroupCreated(n, matrix, Ok("!group:x".into()))));
+    assert!(app.new_chats.iter().all(|d| d.id != n) && app.pending_dm == Some(("!group:x".into(), None)));
 }
 
 #[test]

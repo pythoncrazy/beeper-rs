@@ -2777,6 +2777,145 @@ pub async fn create_group(p: Provision, kind: String, name: String, users: Vec<S
     v["mxid"].as_str().map(str::to_string).ok_or_else(|| "the bridge sent no mxid".into())
 }
 
+/// Desktop SDK's `GetProvisioningCapabilities` of its `matrix` pseudo-bridge, which Desktop's
+/// `loadProvisioningCapabilities` gives the Matrix account: direct chats with Matrix IDs, the user directory, and
+/// private and public rooms of up to 100 people.
+pub fn matrix_capabilities() -> Value {
+    let field = |allowed: bool| serde_json::json!({ "allowed": allowed });
+    let room = |description: &str, username: bool, disappear: bool| {
+        serde_json::json!({
+            "type_description": description,
+            "name": field(true),
+            "username": field(username),
+            "avatar": field(true),
+            "topic": field(true),
+            "disappear": field(disappear),
+            "participants": { "allowed": true, "max_length": 100 },
+            "parent": field(false),
+        })
+    };
+    serde_json::json!({
+        "resolve_identifier": {
+            "create_dm": true,
+            "lookup_phone": false,
+            "lookup_email": false,
+            "lookup_username": true,
+            "any_phone": false,
+            "contact_list": false,
+            "search": true,
+        },
+        "group_creation": {
+            "group": room("a private room", false, true),
+            "public_room": room("a public room", true, false),
+        },
+    })
+}
+
+/// Desktop's `searchMatrixUsers`: up to 100 users of the homeserver's user directory (the SDK's
+/// `searchUserDirectory`), with their Matrix IDs as usernames, then a typed Matrix ID that the directory missed.
+pub async fn search_matrix_users(store: SharedStore, query: String) -> Result<Vec<User>, String> {
+    let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
+    let found = client.search_users(&query, 100).await.map_err(|e| e.to_string())?;
+    let user = |id: String, name: Option<String>, avatar: Option<String>| User {
+        username: Some(id.clone()),
+        id,
+        full_name: name.filter(|n| !n.is_empty()),
+        img_url: avatar,
+        ..Default::default()
+    };
+    let mut users: Vec<User> = found
+        .results
+        .into_iter()
+        .map(|u| user(u.user_id.to_string(), u.display_name, u.avatar_url.map(|a| a.to_string())))
+        .collect();
+    if let Some(id) = typed_matrix_id(&query).filter(|id| users.iter().all(|u| &u.id != id)) {
+        users.push(user(id.clone(), Some(id), None));
+    }
+    Ok(users)
+}
+
+/// The Matrix ID of a query that starts with `@`, for Desktop's `searchMatrixUsers`: `@x` is `@x:beeper.com`, and
+/// the server name must look like a domain (Desktop's `kI`, `^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`).
+fn typed_matrix_id(query: &str) -> Option<String> {
+    if !query.starts_with('@') || query.len() < 2 {
+        return None;
+    }
+    let id = if query.contains(':') { query.to_string() } else { format!("{query}:beeper.com") };
+    let (host, tld) = id.split(':').nth(1)?.rsplit_once('.')?;
+    let host_ok = !host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    (host_ok && tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic())).then_some(id)
+}
+
+/// Desktop SDK's `matrixResolveIdentifier`, the `resolve_identifier` of its `matrix` pseudo-bridge: the profile of a
+/// Matrix ID as a bridge reply, or `None` when the homeserver has no such user.
+pub async fn resolve_matrix_user(store: SharedStore, identifier: String) -> Result<Option<Value>, String> {
+    let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
+    let id = matrix_sdk::ruma::UserId::parse(&identifier)
+        .map_err(|e| format!("user ID {identifier:?} is not valid: {e}"))?;
+    let profile = match client.account().fetch_user_profile_of(&id).await {
+        Ok(p) => p,
+        Err(e) if e.client_api_error_kind() == Some(&ErrorKind::NotFound) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let field = |key: &str| profile.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+    Ok(Some(serde_json::json!({
+        "id": id,
+        "name": field("displayname"),
+        "avatar_url": field("avatar_url"),
+        "identifiers": [id.matrix_uri(false).to_string()],
+        "mxid": id,
+    })))
+}
+
+/// The `m.room.encryption` initial state of the rooms that Desktop's SDK makes.
+fn megolm_state() -> Value {
+    serde_json::json!({ "type": "m.room.encryption", "state_key": "", "content": { "algorithm": "m.megolm.v1.aes-sha2" } })
+}
+
+/// Desktop SDK's `createMatrixDM`, the `create_dm` of its `matrix` pseudo-bridge: a new direct room with a Matrix
+/// user, encrypted when the user has devices. Like the SDK, a user that the homeserver does not know still gets the
+/// room, it makes a new room each time, and it leaves `m.direct` alone. It returns the room ID.
+pub async fn create_matrix_dm(store: SharedStore, identifier: String) -> Result<String, String> {
+    resolve_matrix_user(store.clone(), identifier.clone())
+        .await
+        .map_err(|e| format!("failed to resolve identifier: {e}"))?;
+    let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
+    let user = matrix_sdk::ruma::UserId::parse(&identifier).map_err(|e| e.to_string())?;
+    let cached = client.encryption().get_user_devices(&user).await.map_err(|e| e.to_string())?;
+    // The SDK's `FetchKeys` asks the homeserver about a user whose devices it does not track.
+    let encrypted = match cached.devices().next() {
+        Some(_) => true,
+        None => {
+            let query = serde_json::json!({ "device_keys": { user.as_str(): [] }, "timeout": 10000 });
+            let reply = client_api(&client, reqwest::Method::POST, &["keys", "query"], &[], Some(query.to_string()))
+                .await
+                .map_err(|e| format!("failed to query devices for {identifier:?}: {e}"))?;
+            let v: Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;
+            v["device_keys"][user.as_str()].as_object().is_some_and(|d| !d.is_empty())
+        }
+    };
+    let mut body = serde_json::json!({ "invite": [user], "preset": "trusted_private_chat", "is_direct": true });
+    if encrypted {
+        body["initial_state"] = serde_json::json!([megolm_state()]);
+    }
+    create_room(client, body.to_string()).await
+}
+
+/// Desktop SDK's `convertGroupCreateToMatrix` for a `group` of its `matrix` pseudo-bridge: a new encrypted private
+/// room with the users, named when `name` is not empty. Desktop's New Chat never asks for an `unencrypted_group`.
+/// It returns the room ID.
+pub async fn create_matrix_group(store: SharedStore, name: String, users: Vec<String>) -> Result<String, String> {
+    let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
+    for (i, u) in users.iter().enumerate() {
+        matrix_sdk::ruma::UserId::parse(u).map_err(|e| format!("user ID {} ({u:?}) is not valid: {e}", i + 1))?;
+    }
+    let mut body = serde_json::json!({ "invite": users, "initial_state": [megolm_state()], "preset": "private_chat" });
+    if !name.is_empty() {
+        body["name"] = name.into();
+    }
+    create_room(client, body.to_string()).await
+}
+
 pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
     let size = matrix_sdk::ruma::uint!(96);
     let format = MediaFormat::Thumbnail(MediaThumbnailSettings::with_method(Method::Crop, size, size));
@@ -5952,6 +6091,111 @@ mod tests {
         assert_eq!(t("ban", "leave", ("Ann", false), None), "Ann was banned");
         assert_eq!(t("invite", "", ("Ann", false), Some(Some("Bob"))), "Bob invited Ann to the chat");
         assert_eq!(t("invite", "", ("Ann", true), Some(None)), "You were invited to the chat");
+    }
+
+    /// Like the `matrix` pseudo-bridge of Desktop's SDK, New Chat on the Matrix account reads the profile of a Matrix
+    /// ID, asks for the devices of a user it does not track, and creates trusted private direct rooms, encrypted only
+    /// for a user with devices, and encrypted private groups.
+    #[tokio::test]
+    async fn matrix_new_chat_requests_like_desktop_sdk() {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.starts_with("/_matrix/client/v3/profile/") && p.contains("vic") => {
+                (200, json!({ "displayname": "Vic", "avatar_url": "mxc://x/vic" }))
+            }
+            p if p.starts_with("/_matrix/client/v3/profile/") => {
+                (404, json!({ "errcode": "M_NOT_FOUND", "error": "Profile was not found" }))
+            }
+            "/_matrix/client/v3/keys/query" if body["device_keys"]["@vic:x"].is_array() => {
+                log.lock().unwrap().push((method.to_string(), "keys/query".to_string(), body));
+                (200, json!({ "device_keys": { "@vic:x": { "VICDEV": { "user_id": "@vic:x", "device_id": "VICDEV" } } } }))
+            }
+            "/_matrix/client/v3/keys/query" if body["device_keys"]["@ghost:x"].is_array() => {
+                log.lock().unwrap().push((method.to_string(), "keys/query".to_string(), body));
+                (200, json!({ "device_keys": { "@ghost:x": {} } }))
+            }
+            "/_matrix/client/v3/keys/query" => (200, json!({ "device_keys": {} })),
+            "/_matrix/client/v3/createRoom" => {
+                log.lock().unwrap().push((method.to_string(), "createRoom".to_string(), body));
+                (200, json!({ "room_id": "!new:x" }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("matrix-new-chat"), &url).await;
+        let vic = super::resolve_matrix_user(store.clone(), "@vic:x".into()).await.expect("Vic's profile");
+        let expected = json!({ "id": "@vic:x", "name": "Vic", "avatar_url": "mxc://x/vic",
+            "identifiers": ["matrix:u/vic:x"], "mxid": "@vic:x" });
+        assert_eq!(vic, Some(expected));
+        assert_eq!(super::resolve_matrix_user(store.clone(), "@ghost:x".into()).await, Ok(None), "an unknown user");
+        let bad = super::resolve_matrix_user(store.clone(), "vic".into()).await.expect_err("not a Matrix ID");
+        assert!(bad.starts_with("user ID \"vic\" is not valid"), "{bad}");
+        let take = || std::mem::take(&mut *sent.lock().unwrap());
+        let encryption = json!({ "type": "m.room.encryption", "state_key": "",
+            "content": { "algorithm": "m.megolm.v1.aes-sha2" } });
+        assert_eq!(super::create_matrix_dm(store.clone(), "@vic:x".into()).await, Ok("!new:x".into()));
+        let room = json!({ "invite": ["@vic:x"], "preset": "trusted_private_chat", "is_direct": true,
+            "initial_state": [encryption] });
+        let keys = json!({ "device_keys": { "@vic:x": [] }, "timeout": 10000 });
+        let request = |path: &str, body: Value| ("POST".to_string(), path.to_string(), body);
+        assert_eq!(take(), [request("keys/query", keys), request("createRoom", room)], "a user with devices");
+        assert_eq!(super::create_matrix_dm(store.clone(), "@ghost:x".into()).await, Ok("!new:x".into()));
+        let room = json!({ "invite": ["@ghost:x"], "preset": "trusted_private_chat", "is_direct": true });
+        let keys = json!({ "device_keys": { "@ghost:x": [] }, "timeout": 10000 });
+        assert_eq!(take(), [request("keys/query", keys), request("createRoom", room)], "an unknown user, unencrypted");
+        let bad = super::create_matrix_dm(store.clone(), "ghost".into()).await.expect_err("not a Matrix ID");
+        assert!(bad.starts_with("failed to resolve identifier: user ID"), "{bad}");
+        let users = vec!["@vic:x".to_string(), "@ghost:x".to_string()];
+        let group = super::create_matrix_group(store.clone(), "Team".into(), users.clone()).await;
+        assert_eq!(group, Ok("!new:x".into()));
+        let room = json!({ "name": "Team", "invite": users, "preset": "private_chat", "initial_state": [encryption] });
+        assert_eq!(take(), [request("createRoom", room)]);
+        assert_eq!(super::create_matrix_group(store.clone(), String::new(), users.clone()).await, Ok("!new:x".into()));
+        assert!(take()[0].2.get("name").is_none(), "a group without a name sends none");
+        let bad = super::create_matrix_group(store, String::new(), vec!["@vic:x".into(), "ghost".into()]).await;
+        assert!(bad.expect_err("a bad member").starts_with("user ID 2 (\"ghost\") is not valid"));
+        assert!(take().is_empty(), "a bad member creates nothing");
+    }
+
+    /// Desktop's `searchMatrixUsers`: the user directory with a limit of 100, Matrix IDs as usernames, and a typed
+    /// Matrix ID that the directory missed, on `beeper.com` without a server name, when its server is a domain.
+    #[tokio::test]
+    async fn matrix_user_search_like_desktop() {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |_, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/user_directory/search" => {
+                log.lock().unwrap().push(body);
+                let vic = json!({ "user_id": "@vic:example.com", "display_name": "Vic", "avatar_url": "mxc://x/vic" });
+                (200, json!({ "limited": false, "results": [vic, { "user_id": "@una:example.com" }] }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("matrix-user-search"), &url).await;
+        let search = |q: &str| {
+            let found = super::search_matrix_users(store.clone(), q.into());
+            async { serde_json::to_value(found.await.expect("the directory")).expect("users as JSON") }
+        };
+        let found = search("vi").await;
+        assert_eq!(*sent.lock().unwrap(), [json!({ "search_term": "vi", "limit": 100 })]);
+        let vic = json!({ "id": "@vic:example.com", "username": "@vic:example.com", "fullName": "Vic",
+            "imgURL": "mxc://x/vic" });
+        let una = json!({ "id": "@una:example.com", "username": "@una:example.com" });
+        assert_eq!(found, json!([vic, una]));
+        let sam = json!({ "id": "@sam:beeper.com", "username": "@sam:beeper.com", "fullName": "@sam:beeper.com" });
+        assert_eq!(search("@sam").await, json!([vic, una, sam]), "@x is on beeper.com");
+        assert_eq!(search("@vic:example.com").await, json!([vic, una]), "a listed ID comes once");
+        for q in ["@", "@sam:localhost", "@sam:x.y1", "sam:beeper.com"] {
+            assert_eq!(search(q).await, json!([vic, una]), "{q} adds nobody");
+        }
     }
 
     /// Desktop's `time_suggestion_options` comes in normalized from `com.beeper.desktop.prefs`, and
