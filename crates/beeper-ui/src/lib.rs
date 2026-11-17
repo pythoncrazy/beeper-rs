@@ -831,6 +831,10 @@ pub enum UiMessage {
     RailHover(String, Point),
     RailLeave(String),
     RailPress,
+    /// The pointer came onto (true) or left the header card of the chat, or its member list.
+    HeaderHover(bool),
+    /// The 500 ms after the pointer left the header card of this generation ran out.
+    HeaderHoverEnd(u32),
     /// Desktop's menu bar: hidden (`None`), shown, or shown with a menu open.
     MenuBar(Option<Option<usize>>),
     /// The pointer came onto a menu title, which opens its menu while another menu is open.
@@ -2486,6 +2490,17 @@ fn sender_label(chat: &Chat, m: &Message) -> String {
     member.map_or_else(|| m.sender_name.clone().expect("sender name"), member_name)
 }
 
+/// Desktop's `mD`: a participant has a name of its own, not only a phone number or an email.
+fn real_name(u: &User) -> bool {
+    let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
+    let full = u.full_name.as_deref().filter(|f| !f.is_empty());
+    u.custom_nickname.is_some()
+        || u.username.is_some()
+        || full.is_some_and(|f| {
+            !u.phone_number.as_deref().is_some_and(|ph| digits(ph) == digits(f)) && u.email.as_deref() != Some(f)
+        })
+}
+
 /// Desktop's `Fr`: the name of a participant.
 fn member_name(u: &User) -> String {
     [&u.custom_nickname, &u.full_name, &u.username, &u.email]
@@ -3772,6 +3787,8 @@ pub struct BeeperGuiApp {
     pub rail_hover: Option<(String, Point)>,
     pub user_hover: UserHover,
     pub rail_drag: Option<RailDrag>,
+    /// Desktop's header hover (`f` of `Amt`): the member list shows, and the generation of its 500 ms leave delay.
+    pub header_hover: (bool, u32),
     /// Desktop's menu bar, which Alt shows: hidden (`None`), shown, or shown with the menu of an index open.
     pub menu_bar: Option<Option<usize>>,
     /// Alt went down with no other key, so that its release toggles the menu bar.
@@ -4001,6 +4018,7 @@ impl BeeperGuiApp {
             sidebar_hidden,
             dragging: false,
             rail_hover: None,
+            header_hover: (false, 0),
             menu_bar: None,
             alt_alone: false,
             pin_hover: None,
@@ -8107,6 +8125,19 @@ impl BeeperGuiApp {
                 let write = beeper_core::matrix::set_global(client, "com.beeper.favourites_order", content);
                 return Task::perform(write, UiMessage::Pushed);
             }
+            UiMessage::HeaderHover(on) => {
+                let h = &mut self.header_hover;
+                h.1 += 1;
+                if on {
+                    h.0 = true;
+                } else {
+                    let n = h.1;
+                    let wait = async { tokio::time::sleep(std::time::Duration::from_millis(500)).await };
+                    return Task::perform(wait, move |()| UiMessage::HeaderHoverEnd(n));
+                }
+            }
+            UiMessage::HeaderHoverEnd(n) if n == self.header_hover.1 => self.header_hover.0 = false,
+            UiMessage::HeaderHoverEnd(_) => {}
             UiMessage::MenuBar(state) => self.menu_bar = state,
             UiMessage::MenuBarHover(i) => {
                 if let Some(Some(_)) = self.menu_bar {
