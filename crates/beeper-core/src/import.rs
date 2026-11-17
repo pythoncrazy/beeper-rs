@@ -313,6 +313,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         views_left: None,
         view_expired: false,
         view_kind: None,
+        buttons: Vec::new(),
         flags: 0,
     });
     let text = Some(crate::matrix::reaction_text(&key, target.as_ref(), who));
@@ -355,6 +356,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         views_left: None,
         view_expired: false,
         view_kind: None,
+        buttons: Vec::new(),
         flags: 0,
     })
 }
@@ -721,6 +723,10 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 .get(chat_id.as_str())
                 .is_some_and(|last| last.is_some_and(|k| !sort_key.is_empty() && sort_key.as_str() > k));
         let seen_by = receipts.remove(&(chat_id.clone(), id.clone())).unwrap_or_default();
+        let buttons = match crate::models::system_user(&sender_id) {
+            true => crate::models::ActionButton::list(&m["actionButtons"]),
+            false => Vec::new(),
+        };
         out.push(Message {
             account_id: account_id.into(),
             chat_id,
@@ -790,6 +796,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             views_left: None,
             view_expired: m.pointer("/extra/viewLimitedMediaExpired") == Some(&Value::Bool(true)),
             view_kind: m.pointer("/extra/viewLimitedMediaKind").and_then(Value::as_str).map(str::to_string),
+            buttons,
             flags: 0,
             id,
         });

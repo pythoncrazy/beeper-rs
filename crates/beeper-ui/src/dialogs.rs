@@ -640,7 +640,7 @@ impl BeeperGuiApp {
 
     /// Desktop's Edit Label (`Lst`) and Chats (`Nst`) sheets of Label Settings, by their step.
     pub(crate) fn open_label_sheet(&mut self, label: String, step: LabelStep) -> Task<UiMessage> {
-        self.chat_menu = None;
+        self.list.chat_menu = None;
         if let Some(d) = &self.label_window {
             return window::gain_focus(d.id);
         }
@@ -1105,7 +1105,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `editGroup(thread, "personal")`.
     pub(crate) fn open_edit_for_me(&mut self, chat: String) -> Task<UiMessage> {
-        self.chat_menu = None;
+        self.list.chat_menu = None;
         if let Some(d) = &self.group_window {
             return window::gain_focus(d.id);
         }

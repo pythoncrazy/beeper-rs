@@ -47,7 +47,7 @@ impl BeeperGuiApp {
                     }
                 }
                 drop(st);
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 self.refresh_theme_and_tray();
             }
             Msg::SnoozeTime(phrase) => self.patch_settings(|s| s.snooze_last_time = phrase),
@@ -76,10 +76,10 @@ impl BeeperGuiApp {
                 return Task::batch(notes.into_iter().chain([self.settle()]));
             }
             Msg::Menu => {
-                self.reminder_menu = Some(self.cursor.get());
+                self.list.reminder_menu = Some(self.cursor.get());
             }
             Msg::Order(i) => {
-                self.reminder_menu = None;
+                self.list.reminder_menu = None;
                 self.patch_settings(|s| s.reminders_order = i);
             }
             Msg::DismissAll => {
@@ -317,7 +317,7 @@ impl BeeperGuiApp {
             let idx = st.resolve_chat_idx(cid).expect("chat exists");
             self.remind(&mut st, idx, at, no_reply);
         }
-        self.chat_menu = None;
+        self.list.chat_menu = None;
         self.refresh_theme_and_tray();
     }
 

@@ -60,7 +60,7 @@ impl BeeperGuiApp {
             Msg::All => self.info_all ^= true,
             Msg::Bookmarks => self.info_bookmarks ^= true,
             Msg::RemoveBookmark(target) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 self.store.write().remove_bookmark(&target);
             }
             Msg::BookmarkHydrated(target, m) => {
@@ -71,7 +71,7 @@ impl BeeperGuiApp {
             Msg::Media(tab) => self.info_media = tab,
             Msg::Zoom => self.info_zoom ^= true,
             Msg::HowItWorks(true) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 if let Some(id) = self.how_window {
                     return window::gain_focus(id);
                 }
@@ -1102,7 +1102,7 @@ mod tests {
             matches!(&msgs[..], [UiMessage::Commands(c)] if matches!(&c[1], UiMessage::Info(Msg::HowItWorks(true))))
         );
         let _ = app.update(UiMessage::Info(Msg::HowItWorks(true)));
-        assert!(app.how_window.is_some() && app.chat_menu.is_none());
+        assert!(app.how_window.is_some() && app.list.chat_menu.is_none());
         let msgs: Vec<UiMessage> = {
             let mut sim = tall(app.view_how_it_works());
             assert!(sim.find("You Come First").is_ok() && sim.find("Chats Without a Label").is_ok());

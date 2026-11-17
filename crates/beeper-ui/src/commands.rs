@@ -328,7 +328,7 @@ impl BeeperGuiApp {
             SubMenu::Filters => {
                 let pick = |bit| Some(UiMessage::ChatList(chat_list::Msg::PickFilter(bit)));
                 let clear = UiMessage::ChatList(chat_list::Msg::ClearFilters);
-                let clear = (self.filters != 0).then(|| cmd("", tr("Clear all filters"), Some(clear)));
+                let clear = (self.list().filters != 0).then(|| cmd("", tr("Clear all filters"), Some(clear)));
                 let each = chat_list::FILTERS.iter().enumerate().map(|(i, f)| cmd("", tr(f.0), pick(1 << i)));
                 search(clear.into_iter().chain(each).collect())
             }
@@ -339,7 +339,7 @@ impl BeeperGuiApp {
                     (InboxTab::LowPriority, "Low Priority"),
                     (InboxTab::Requests, "Requests"),
                 ];
-                let open = |t: &InboxTab| *t == self.active_tab && self.selected_account_filter.is_none();
+                let open = |t: &InboxTab| *t == self.list().active_tab && self.list().selected_account_filter.is_none();
                 let folders = folders.into_iter().filter(|(t, _)| !open(t));
                 search(
                     folders
@@ -565,7 +565,7 @@ impl BeeperGuiApp {
             v.push(cmd(e, trx(pin, "chat command"), flag(ChatFlag::Pinned)).hotkey("Chat: Toggle Pin"));
             let mute = if has_flag(c, ChatFlag::Muted) { "Unmute" } else { "Mute" };
             v.push(cmd(e, trx(mute, "chat command"), flag(ChatFlag::Muted)).hotkey("Chat: Toggle Mute"));
-            if self.active_tab != InboxTab::Requests {
+            if self.list().active_tab != InboxTab::Requests {
                 let archived = has_flag(c, ChatFlag::Archived);
                 let title = trx(if archived { "Unarchive" } else { "Archive" }, "chat command");
                 let sub = (!archived).then(|| tr("Hides chat until new messages received"));
@@ -731,10 +731,10 @@ impl BeeperGuiApp {
             );
             v.push(here.keys(&["find", "grep"]).hotkey("Search: Room"));
         }
-        let folders = (self.active_tab != InboxTab::Requests)
+        let folders = (self.list().active_tab != InboxTab::Requests)
             .then_some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Folders)));
         v.push(cmd("Filter Chats", tr("Filter by folder type"), folders));
-        let filters = (self.active_tab != InboxTab::Requests)
+        let filters = (self.list().active_tab != InboxTab::Requests)
             .then_some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Filters)));
         v.push(cmd("Filter Chats", tr("Filter by type"), filters));
         if crate::rail_accounts(st).len() > 1 {
@@ -745,7 +745,7 @@ impl BeeperGuiApp {
             );
             v.push(filter.hotkey("Filter By Account"));
         }
-        let requests = self.active_tab == InboxTab::Requests;
+        let requests = self.list().active_tab == InboxTab::Requests;
         let (inbox, tab) = match requests {
             true => (tr("Show default inbox"), InboxTab::AllChats),
             false => (tr("Show message requests"), InboxTab::Requests),
@@ -794,6 +794,8 @@ impl BeeperGuiApp {
         v.push(space.keys(&["hide", "show"]).hotkey("Toggle Space Bar"));
         let media = &["media", "gallery", "photos", "images", "videos", "files", "links", "docs"];
         v.push(cmd("Window", tr("Media viewer"), Some(UiMessage::Media(media_view::Msg::Open))).keys(media));
+        let space = Some(UiMessage::Window(windows::Msg::OpenSpace(self.list().entry())));
+        v.push(cmd("Window", tr("Open space in new window"), space).keys(&["pop out", "detach"]));
         v.push(cmd("Window", tr("Maximize/unmaximize"), Some(UiMessage::Window(windows::Msg::ToggleMaximize(None)))));
         v.push(cmd("View", tr("Zoom in"), hot("Zoom In")).keys(&["magnify"]).hotkey("Zoom In"));
         v.push(cmd("View", tr("Zoom out"), hot("Zoom Out")).keys(&["magnify"]).hotkey("Zoom Out"));
@@ -810,8 +812,8 @@ impl BeeperGuiApp {
         ]));
         let changelog = Some(UiMessage::OpenUrl(crate::CHANGELOG_URL.into()));
         v.push(cmd("", tr("View changelog"), changelog).keys(&["whats new", "updates"]));
-        let select =
-            (self.active_tab != InboxTab::Requests).then_some(UiMessage::ChatList(chat_list::Msg::ToggleSelectMode));
+        let select = (self.list().active_tab != InboxTab::Requests)
+            .then_some(UiMessage::ChatList(chat_list::Msg::ToggleSelectMode));
         v.push(cmd("UI", tr("Toggle chat selection mode"), select));
         for theme in ThemeChoice::ALL.into_iter().filter(|t| *t != st.settings.theme) {
             let title = match theme {
@@ -1027,7 +1029,7 @@ impl BeeperGuiApp {
             }
             Msg::SearchRoom(cid) => {
                 (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, false, None);
-                (self.search_room, self.chat_menu) = (Some(cid), None);
+                (self.search_room, self.list.chat_menu) = (Some(cid), None);
                 self.search_filters.accounts.clear();
                 return operation::focus("cmd-palette-input");
             }
@@ -1051,7 +1053,7 @@ impl BeeperGuiApp {
                 };
                 drop(st);
                 (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, true, Some(menu));
-                (self.search_room, self.chat_menu, self.cmd_index) = (None, None, 0);
+                (self.search_room, self.list.chat_menu, self.cmd_index) = (None, None, 0);
                 self.command_palette_query.clear();
                 return operation::focus("cmd-palette-input");
             }

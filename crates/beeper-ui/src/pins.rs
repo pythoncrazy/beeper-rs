@@ -41,7 +41,7 @@ impl BeeperGuiApp {
                     let order = self.pins_and_rows(&st).0.iter().map(|c| c.id.clone()).collect();
                     drop(st);
                     self.pin_drag.as_mut().expect("a pin drag").order = Some(order);
-                    self.chat_menu = None;
+                    self.list.chat_menu = None;
                 }
             }
             Msg::DragEnd => {

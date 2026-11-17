@@ -572,6 +572,76 @@ pub fn gradient_text(s: &str, size: f32, line: f32) -> (svg::Handle, f32) {
     })
 }
 
+/// The scale of a dimmed emoji image, so that it stays sharp on a 2x screen.
+const DIM_SCALE: f32 = 2.0;
+
+/// Emoji text `s` at `size` px in a `line` px line box, with CSS `filter: brightness(k)`, as an image and the size
+/// of its text box. iced draws color glyphs without a tint, so the glyphs go into an image, made once for each text.
+pub fn dimmed_emoji(s: &str, size: f32, line: f32, k: f32) -> (iced::widget::image::Handle, iced::Size) {
+    use iced::widget::image::Handle;
+    thread_local!(static MEMO: Memo<(String, u32, u32, u32), (Handle, iced::Size)> = RefCell::default());
+    memo(&MEMO, (s.to_owned(), size.to_bits(), line.to_bits(), k.to_bits()), || {
+        ensure_fonts_loaded();
+        let mut fs = font_system().write().expect("font system");
+        let metrics = cosmic_text::Metrics::new(size * DIM_SCALE, line * DIM_SCALE);
+        let mut buf = cosmic_text::Buffer::new(fs.raw(), metrics);
+        let attrs = to_attributes(crate::emoji::EMOJI_FONT);
+        buf.set_text(fs.raw(), s, &attrs, cosmic_text::Shaping::Advanced, None);
+        let runs: Vec<_> = buf.layout_runs().map(|r| (r.line_y, r.line_w, r.glyphs.to_vec())).collect();
+        let width = runs.iter().map(|r| r.1).fold(0.0, f32::max).ceil().max(1.0);
+        let height = (runs.len().max(1) as f32 * line * DIM_SCALE).ceil();
+        let mut out = ::image::RgbaImage::new(width as u32, height as u32);
+        let mut swash = cosmic_text::SwashCache::new();
+        for (baseline, _, glyphs) in runs {
+            for g in glyphs {
+                let glyph = g.physical((0.0, baseline), 1.0);
+                let Some(img) = swash.get_image_uncached(fs.raw(), glyph.cache_key) else { continue };
+                let (w, h) = (img.placement.width as i32, img.placement.height as i32);
+                let (x0, y0) = (glyph.x + img.placement.left, glyph.y - img.placement.top);
+                for (i, (y, x)) in (0..h).flat_map(|y| (0..w).map(move |x| (y, x))).enumerate() {
+                    let (px, py) = (x0 + x, y0 + y);
+                    if px < 0 || py < 0 || px >= out.width() as i32 || py >= out.height() as i32 {
+                        continue;
+                    }
+                    // A glyph without colors is black, as the jumbo emoji are only emoji.
+                    let src = match img.content {
+                        cosmic_text::SwashContent::Color => [0, 1, 2, 3].map(|c| img.data[i * 4 + c]),
+                        _ => [0, 0, 0, img.data[i]],
+                    };
+                    let dst = out.get_pixel_mut(px as u32, py as u32);
+                    let (sa, da) = (f32::from(src[3]) / 255.0, f32::from(dst[3]) / 255.0);
+                    let a = sa + da * (1.0 - sa);
+                    for c in 0..3 {
+                        let v = (f32::from(src[c]) * sa + f32::from(dst[c]) * da * (1.0 - sa)) / a.max(f32::EPSILON);
+                        dst[c] = v.round() as u8;
+                    }
+                    dst[3] = (a * 255.0).round() as u8;
+                }
+            }
+        }
+        for px in out.pixels_mut() {
+            for c in 0..3 {
+                px[c] = (f32::from(px[c]) * k).round() as u8;
+            }
+        }
+        let handle = Handle::from_rgba(out.width(), out.height(), out.into_raw());
+        (handle, iced::Size::new(width / DIM_SCALE, height / DIM_SCALE))
+    })
+}
+
+/// A decoded image with CSS `filter: brightness(k)`, made once for each image.
+pub fn dimmed_image(h: &iced::widget::image::Handle, k: f32) -> iced::widget::image::Handle {
+    use iced::advanced::image::{Handle, Id};
+    thread_local!(static MEMO: Memo<(Id, u32), Handle> = RefCell::default());
+    let Handle::Rgba { width, height, pixels, .. } = h else { return h.clone() };
+    memo(&MEMO, (h.id(), k.to_bits()), || {
+        let dim = |c: u8| (f32::from(c) * k).round() as u8;
+        let pixels: Vec<u8> =
+            pixels.as_chunks::<4>().0.iter().flat_map(|&[r, g, b, a]| [dim(r), dim(g), dim(b), a]).collect();
+        Handle::from_rgba(*width, *height, pixels)
+    })
+}
+
 pub fn brand_svg(bridge_id: &str) -> svg::Handle {
     BRAND_SVGS[bridge_id][0].clone()
 }
@@ -888,6 +958,8 @@ palette! {
     main_muted: Color = hexa(0x0d4ffb, 0.14), hexa(0x0d4ffb, 0.26);
     /// `--button-secondary-main-text`.
     main_text: Color = hex(0x0d4ffb), hex(0x638efc);
+    /// `--appearance-color-bg-secondary`: the fill of Desktop's action buttons.
+    bg_secondary: Color = hex(0xeaebf0), hex(0x1c1d1e);
     /// `--appearance-color-border-secondary`.
     border_secondary: Color = hex(0xdedfe3), hexa(0xffffff, 0.1);
     /// Chromium's own `input[type=range]` fill, track and track edge.

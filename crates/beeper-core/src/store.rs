@@ -2658,6 +2658,7 @@ impl BeeperStore {
             views_left: None,
             view_expired: false,
             view_kind: None,
+            buttons: Vec::new(),
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);
