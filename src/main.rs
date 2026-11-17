@@ -185,7 +185,8 @@ mod display {
         fn event(_: &mut Self, _: &R, _: E, _: &G, _: &C, _: &Q<Self>) {}
     }
 
-    /// Picks the renderer and the cursor. It sets environment variables, so call it before any thread starts.
+    /// Picks the renderer and the cursor, and starts opening GTK for the title bar. It sets environment variables,
+    /// so call it before any thread starts.
     ///
     /// Like Desktop's Electron, it runs on Wayland when there is a compositor, and draws the window frame itself
     /// when the compositor does not (GNOME): under XWayland the scale and the cursor follow X resources that GNOME
@@ -215,6 +216,10 @@ mod display {
             .is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("renderD")));
         if std::env::var_os("ICED_BACKEND").is_none() && !(gpu_display && render_node) {
             unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia") };
+        }
+        // Without server-side decorations the window draws its own title bar, with the GTK theme like Electron's.
+        if wayland.is_some() && !has("zxdg_decoration_manager_v1") {
+            sctk_adwaita::preload();
         }
     }
 
