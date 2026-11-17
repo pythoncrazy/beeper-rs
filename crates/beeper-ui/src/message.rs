@@ -594,6 +594,8 @@ impl BeeperGuiApp {
         let sender = chat.participants.items.iter().any(|u| u.id == m.sender_id);
         let privately =
             !mine && sender && others > 1 && m.is_deleted != Some(true) && self.can(&m.account_id, "create_dm");
+        // Desktop's detected-data items (phone, address, date, flight) above these come from the macOS-only
+        // TextsSwift `detectData`; on Linux it returns nothing, so they never show (App:48518, 96520).
         let before: Vec<(El, f32)> = [
             address.map(|e| {
                 vec![
