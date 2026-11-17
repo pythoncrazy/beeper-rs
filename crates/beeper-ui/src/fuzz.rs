@@ -90,7 +90,7 @@ fn local(m: &UiMessage) -> bool {
         | UiMessage::Voice(_)
         | UiMessage::Video(_)
         | UiMessage::Logout
-        | UiMessage::Message(message::Msg::CopyImage(..)) => false,
+        | UiMessage::Message(message::Msg::CopyImage(..) | message::Msg::PressButton(..)) => false,
         UiMessage::KeyPressed(Key::Character(c), mods) => !(c == "p" && mods.command() && mods.shift()),
         UiMessage::InWindow(_, m)
         | UiMessage::Message(message::Msg::Menu(m))

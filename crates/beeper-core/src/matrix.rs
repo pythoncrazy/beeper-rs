@@ -1,15 +1,16 @@
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
-    timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatFlag,
-    ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageReminder,
-    MessageRules, MessageTimer, Older, PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack,
-    StickerSource, ThreadFollows, Timers, Transcription, User, VerificationDevice, VerificationError, VerificationQr,
-    VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER,
-    BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER,
-    EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER,
-    MSG_MENTION, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE,
-    REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    system_user, timer_distance, ActionButton, AppVerification, Attachment, AttachmentSize, Bookmark,
+    BridgeAccountInfo, Chat, ChatFlag, ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message,
+    MessageLink, MessageReminder, MessageRules, MessageTimer, Older, PollData, PollOption, PollRules, Reaction,
+    SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers, Transcription, User, VerificationDevice,
+    VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS,
+    BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS,
+    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE,
+    MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, MSG_MENTION, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR,
+    PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION,
+    TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -68,6 +69,8 @@ enum Op {
         unresolved_media: Option<String>,
         timestamp: Option<String>,
         timer: Option<MessageTimer>,
+        /// The buttons of an edit by the system user, which replace those of its own message.
+        buttons: Option<Vec<ActionButton>>,
     },
     /// The `com.beeper.disappearing_timer` of an edit without content.
     Timer(String, MessageTimer),
@@ -674,6 +677,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
                 unresolved_media: unresolved_media(new),
                 timestamp,
                 timer,
+                buttons: system_user(&sender).then(|| ActionButton::list(&new["com.beeper.buttons"])),
             });
         }
         "m.room.encrypted" => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
@@ -721,6 +725,8 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         k => content(k, c).or_else(hide)?,
     };
     let profile_name = s(&c["com.beeper.per_message_profile"]["displayname"]);
+    // Desktop's `actionButtonsFrom`: only the messages of the system user have buttons.
+    let buttons = if system_user(&sender) { ActionButton::list(&c["com.beeper.buttons"]) } else { Vec::new() };
     let user = matrix_sdk::ruma::UserId::parse(&sender).expect("sender is a user ID");
     let member = room.get_member_no_sync(&user).await.expect("read room member");
     // Desktop's `key || ""`, and its reaction of a custom emoji: its shortcode as the key and its image.
@@ -780,6 +786,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         views_left: None,
         view_expired: deleted && e["unsigned"]["redacted_because"]["content"]["com.beeper.view_limited"] == true,
         view_kind: None,
+        buttons,
         flags: match c["m.mentions"]["user_ids"].as_array() {
             Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
             _ => 0,
@@ -1579,6 +1586,7 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                     unresolved_media,
                     timestamp,
                     timer,
+                    buttons,
                 } => {
                     if let Some(i) = here(&st, &target) {
                         if let Some(timer) = timer {
@@ -1601,6 +1609,10 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                             m.unresolved_media = unresolved_media;
                             m.links = links;
                             m.html = html;
+                            // Desktop takes the buttons of an edit only from the sender of a system user message.
+                            if let Some(buttons) = buttons.filter(|_| system_user(&m.sender_id)) {
+                                m.buttons = buttons;
+                            }
                         });
                     }
                 }
@@ -3917,6 +3929,34 @@ fn matrix_error(status: reqwest::StatusCode, v: &Value) -> String {
     }
 }
 
+/// The outcome of Desktop's `pressActionButtonCallback`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pressed {
+    Ok,
+    /// The homeserver answered 429.
+    RateLimited,
+    Failed,
+}
+
+/// Desktop's `pressActionButtonCallback`: a POST without a body to the callback URL of an action button with the
+/// access token, which follows no redirect and gives up after 15 seconds.
+pub async fn press_button(url: reqwest::Url, token: String) -> Pressed {
+    if token.is_empty() {
+        return Pressed::Failed;
+    }
+    let req =
+        crate::cloud::no_redirect_client().post(url).bearer_auth(token).timeout(std::time::Duration::from_secs(15));
+    match req.send().await.map(|r| r.status()) {
+        Ok(s) if s.is_success() => Pressed::Ok,
+        Ok(reqwest::StatusCode::TOO_MANY_REQUESTS) => Pressed::RateLimited,
+        Ok(_) => Pressed::Failed,
+        Err(e) => {
+            eprintln!("[pressActionButtonCallback] request failed: {}", e.without_url());
+            Pressed::Failed
+        }
+    }
+}
+
 /// The status and the body of a request of the client-server API at `/_matrix/client/v3/{path}`.
 async fn client_request(
     client: &Client,
@@ -5529,6 +5569,66 @@ mod tests {
         super::view_limited_media(p, "$a:b".into(), limit.clone()).await.expect("the bridge takes the view");
         let path = "/_matrix/client/unstable/com.beeper.bridge/whatsapp/_matrix/provision/v3/view_limited_media/%24a%3Ab?user_id=%40me%3Abeeper.com&login_id=15550100";
         assert_eq!(*seen.lock().unwrap(), [("POST".into(), path.into(), json!({ "com.beeper.view_limited": limit }))]);
+    }
+
+    /// Desktop's `actionButtonsFrom`: the `com.beeper.buttons` of the system user's messages only, and an edit takes
+    /// the buttons of its new content only from the system user.
+    #[tokio::test]
+    async fn system_user_buttons_like_desktop() {
+        let buttons = |id: &str| json!([{ "id": id, "label": id, "action": "link", "url": "https://beeper.com" }]);
+        let message = |id: &str, sender: &str| {
+            let content = json!({ "msgtype": "m.text", "body": "Hi", "com.beeper.buttons": buttons("first") });
+            let mut e = stub_event(id, "m.room.message", content);
+            e["sender"] = json!(sender);
+            e
+        };
+        let edit = |id: &str, sender: &str, target: &str| {
+            let new = json!({ "msgtype": "m.text", "body": "Hi again", "com.beeper.buttons": buttons("edited") });
+            let content = json!({ "msgtype": "m.text", "body": "* Hi again", "m.new_content": new,
+                "m.relates_to": { "rel_type": "m.replace", "event_id": target } });
+            let mut e = stub_event(id, "m.room.message", content);
+            e["sender"] = json!(sender);
+            e
+        };
+        let events = vec![
+            message("$system", "@:beeper.local"),
+            message("$vic", "@vic:x"),
+            message("$kept", "@:beeper.local"),
+            edit("$e1", "@:beeper.local", "$system"),
+            edit("$e2", "@vic:x", "$kept"),
+        ];
+        let store = stub_history("system-buttons", events, ("!other:x", Vec::new())).await;
+        sync_stub_room(&store, "!room:x").await;
+        let st = store.read();
+        let ids = |id: &str| st.message(id).buttons.iter().map(|b| b.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids("$system"), ["edited"], "the system user's edit replaces its buttons");
+        assert!(ids("$vic").is_empty(), "another sender has no buttons");
+        assert_eq!(ids("$kept"), ["first"], "another sender's edit leaves them");
+    }
+
+    /// Desktop's `pressActionButtonCallback`: a POST without a body, `ok` for a 2xx answer, `rate_limited` for a 429,
+    /// and `failed` for another answer or without an access token.
+    #[tokio::test]
+    async fn button_callbacks_like_desktop() {
+        use super::{press_button, Pressed};
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| {
+            s.lock().unwrap().push((method.to_string(), path.to_string(), body));
+            match path {
+                "/ok" => (200, json!({})),
+                "/busy" => (429, json!({ "errcode": "M_LIMIT_EXCEEDED" })),
+                _ => (302, json!({})),
+            }
+        })
+        .await;
+        let at = |path: &str| reqwest::Url::parse(&format!("{url}{path}")).expect("a stub URL");
+        assert_eq!(press_button(at("/ok"), "token".into()).await, Pressed::Ok);
+        assert_eq!(press_button(at("/busy"), "token".into()).await, Pressed::RateLimited);
+        assert_eq!(press_button(at("/moved"), "token".into()).await, Pressed::Failed);
+        assert_eq!(press_button(at("/ok"), String::new()).await, Pressed::Failed, "no request without a token");
+        let posts = ["/ok", "/busy", "/moved"].map(|p| ("POST".to_string(), p.to_string(), Value::Null));
+        assert_eq!(*seen.lock().unwrap(), posts);
     }
 
     /// Desktop's threaded replies: the `m.thread` relations of a room with threads, the thread follows, the own
