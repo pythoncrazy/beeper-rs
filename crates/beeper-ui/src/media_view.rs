@@ -160,6 +160,8 @@ pub(crate) struct MediaWindow {
     pub(crate) tab_at: Option<(usize, std::time::Instant)>,
     /// Where the filter menu is open.
     pub(crate) menu: Option<Point>,
+    /// Desktop's `carouselState` of the Media window: its viewer.
+    pub(crate) viewer: Option<Carousel>,
     /// The item whose context menu is open, as (message, attachment or link index), and where.
     pub(crate) item_menu: Option<(String, usize, Point)>,
     pub(crate) select: bool,
@@ -188,6 +190,7 @@ impl MediaWindow {
             advance: false,
             tab_at: None,
             menu: None,
+            viewer: None,
             item_menu: None,
             select: false,
             picked: Vec::new(),
@@ -366,14 +369,59 @@ impl BeeperGuiApp {
         self.media_window.as_mut().expect("the Media window is open")
     }
 
+    /// The carousel of the window that `view` draws or that sent the message: the Media window viewer, else the
+    /// carousel of the pane, like Desktop's `carouselState` of each window.
+    pub(crate) fn carousel(&self) -> Option<&Carousel> {
+        match self.in_media.get() {
+            true => self.media_window.as_ref().and_then(|w| w.viewer.as_ref()),
+            false => self.pane().carousel.as_ref(),
+        }
+    }
+
+    pub(crate) fn carousel_mut(&mut self) -> &mut Option<Carousel> {
+        match self.in_media.get() {
+            true => &mut self.media_mut().viewer,
+            false => &mut self.pane.carousel,
+        }
+    }
+
+    /// Like Desktop, the carousel of each window closes when a sync deletes its item, and a "Media in %s" window
+    /// closes with its carousel.
+    pub(crate) fn close_gone_carousels(&mut self) -> Task<UiMessage> {
+        let close = |app: &mut Self| {
+            if app.carousel().is_some() && app.carousel_items(&app.store.read()).is_none() {
+                *app.carousel_mut() = None;
+            }
+        };
+        close(self);
+        for id in self.chat_windows.iter().map(|w| w.0).collect::<Vec<_>>() {
+            self.swap_window(id);
+            close(self);
+            self.swap_window(id);
+        }
+        if self.media_window.is_some() {
+            self.as_media(close);
+        }
+        let closed = |id: &window::Id| self.chat_windows.iter().any(|w| w.0 == *id && w.1.carousel.is_none());
+        Task::batch(self.carousel_windows.iter().filter(|w| closed(&w.0)).map(|w| window::close(w.0)))
+    }
+
+    /// Runs `f` as the Media window, whose carousel is its viewer.
+    pub(crate) fn as_media<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let was = self.in_media.replace(true);
+        let out = f(self);
+        self.in_media.set(was);
+        out
+    }
+
     /// Desktop's `reset` after a filter changes: drops the items, the selection and the viewer, and loads again.
     fn media_reset(&mut self) -> Task<UiMessage> {
         let w = self.media_mut();
         w.generation += 1;
         (w.items, w.more, w.cursor, w.loading, w.advance) = (Vec::new(), true, None, None, false);
         w.picked.clear();
-        let close = match self.carousel.as_ref().is_some_and(|c| c.in_media) {
-            true => self.media_view(Msg::CloseCarousel),
+        let close = match self.media_mut().viewer.is_some() {
+            true => self.as_media(|s| s.media_view(Msg::CloseCarousel)),
             false => Task::none(),
         };
         Task::batch([close, self.media_more()])
@@ -422,17 +470,17 @@ impl BeeperGuiApp {
         }
         w.loading = None;
         match std::mem::take(&mut w.advance) {
-            true => self.media_view(Msg::CarouselStep(true)),
+            true => self.as_media(|s| s.media_view(Msg::CarouselStep(true))),
             false => Task::none(),
         }
     }
 
     /// Desktop's filmstrip loads more items when it shows one of the last 10 loaded items.
     fn media_viewer_more(&mut self) -> Task<UiMessage> {
-        let Some(c) = self.carousel.as_ref().filter(|c| c.in_media) else { return Task::none() };
+        let Some(strip) = self.carousel().filter(|c| c.in_media).map(|c| c.strip) else { return Task::none() };
         let Some((items, at)) = self.carousel_items(&self.store.read()) else { return Task::none() };
         let size = self.media_window.as_ref().expect("the Media window is open").size;
-        let (_, end) = filmstrip(&size, at, items.len(), c.strip);
+        let (_, end) = filmstrip(&size, at, items.len(), strip);
         match items.len() - end < 10 {
             true => self.media_more(),
             false => Task::none(),
@@ -504,7 +552,7 @@ impl BeeperGuiApp {
     /// `getCarouselAttachments`, the attachments of the open chat other than audio, oldest first, or the loaded Media
     /// window items. It is `None` when the shown item is gone: a sync deleted its message, or the item was dropped.
     pub(crate) fn carousel_items(&self, st: &BeeperStore) -> Option<(Vec<(String, usize)>, usize)> {
-        let c = self.carousel.as_ref().expect("the carousel is open");
+        let c = self.carousel().expect("the carousel is open");
         let items: Vec<_> = match c.in_media {
             true => {
                 st.stored_message(&c.mid)?;
@@ -528,16 +576,16 @@ impl BeeperGuiApp {
 
     /// The size of the window of the open carousel.
     fn carousel_area(&self) -> Size {
-        match self.carousel.as_ref().expect("the carousel is open").in_media {
+        match self.carousel().expect("the carousel is open").in_media {
             true => self.media_window.as_ref().expect("the Media window is open").size,
-            false => self.pane.size,
+            false => self.pane().size,
         }
     }
 
     /// The source and the size of the video that the open carousel shows, if it shows a video that is not a GIF. Desktop
     /// shows the video at most at its own size, `100vw - 100px` wide and `90vh` high.
     pub(crate) fn carousel_video(&self) -> Option<(String, (u32, u32))> {
-        let c = self.carousel.as_ref()?;
+        let c = self.carousel()?;
         let st = self.store.read();
         let m = st.stored_message(&c.mid)?;
         let a = m.attachments.get(c.ai)?;
@@ -555,7 +603,7 @@ impl BeeperGuiApp {
         let Some((items, at)) = items else {
             return self.update(UiMessage::Media(Msg::CloseCarousel));
         };
-        let c = self.carousel.clone().expect("the carousel is open");
+        let c = self.carousel().cloned().expect("the carousel is open");
         let video = self.carousel_video().and_then(|(src, _)| self.video.as_ref().filter(|v| v.url == src));
         let (video, full) = (video.is_some(), video.is_some_and(video::Video::is_full));
         match key.as_ref() {
@@ -580,16 +628,18 @@ impl BeeperGuiApp {
 
     /// The React and Reply actions of the chat carousel on message `m`, like Desktop's `ChatCarousel`: React opens the
     /// emoji picker 4 px below the React button, with its right edge at the right edge of the button, and Reply closes
-    /// the carousel.
+    /// the carousel. A "Media in %s" window starts the reply in its thread window, Desktop's opener.
     fn carousel_actions(&self, car: &Carousel, m: &Message, c: &Chat) -> (Option<UiMessage>, Option<UiMessage>) {
         let live = !car.in_media && m.is_deleted != Some(true);
         let reply = (c.messages.reply && live).then(|| {
-            UiMessage::Commands(vec![
-                UiMessage::Media(Msg::CloseCarousel),
-                UiMessage::Composer(composer::Msg::StartReply(m.id.clone())),
-            ])
+            let start = UiMessage::Composer(composer::Msg::StartReply(m.id.clone()));
+            let start = match self.drawn_opener() {
+                Some(opener) => UiMessage::InWindow(opener, Box::new(start)),
+                None => start,
+            };
+            UiMessage::Commands(vec![UiMessage::Media(Msg::CloseCarousel), start])
         });
-        let right = self.pane.size.width - 8.0 - 28.0 * if reply.is_some() { 4.0 } else { 3.0 };
+        let right = self.pane().size.width - 8.0 - 28.0 * if reply.is_some() { 4.0 } else { 3.0 };
         let react = (c.messages.react && live)
             .then(|| UiMessage::Message(message::Msg::ReactAt(m.id.clone(), Point::new(right, 39.0))));
         (react, reply)
@@ -825,8 +875,12 @@ impl BeeperGuiApp {
             ),
             false => {
                 let (react, reply) = self.carousel_actions(car, m, c);
-                let forward = close(UiMessage::Forward(forward::Msg::Open(vec![mid.clone()])));
-                let first = [(tr("Reply…"), reply), (tr("React…"), react), (tr("Forward…"), Some(forward))];
+                // Desktop forwards only from the window of the chat, not from a "Media in %s" window.
+                let forward = self
+                    .drawn_opener()
+                    .is_none()
+                    .then(|| close(UiMessage::Forward(forward::Msg::Open(vec![mid.clone()]))));
+                let first = [(tr("Reply…"), reply), (tr("React…"), react), (tr("Forward…"), forward)];
                 let first = first.into_iter().filter_map(|(label, msg)| msg.map(|msg| (label.to_string(), msg)));
                 let delete = close(UiMessage::Message(message::Msg::AskDelete(vec![mid.clone()])));
                 (first.collect(), deletable.then(|| (tr("Delete…").into(), delete)))
@@ -1063,8 +1117,7 @@ impl BeeperGuiApp {
         });
         // Desktop loads more items when the list shows one of its last 8 rows, and again when a load adds rows.
         let row_h = if w.tab == 0 { tile + 4.0 } else { 52.0 };
-        let viewer = self.carousel.as_ref().is_some_and(|c| c.in_media);
-        let end = (w.more && !viewer).then(|| {
+        let end = (w.more && w.viewer.is_none()).then(|| {
             iced::widget::sensor(Space::new().width(Fill))
                 .key((w.generation, w.items.len()))
                 .anticipate(8.0 * row_h)
@@ -1182,7 +1235,10 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::Media(Msg::Menu(false)))
         });
         drop(st);
-        let carousel = self.carousel.as_ref().filter(|c| c.in_media).and_then(|c| self.view_carousel(c));
+        // The viewer handles its messages as the Media window, whose carousel it is.
+        let id = w.id;
+        let carousel = w.viewer.as_ref().and_then(|c| self.view_carousel(c));
+        let carousel = carousel.map(|c| c.map(move |m| UiMessage::InWindow(id, Box::new(m))));
         let ask = w.deleting.as_ref().map(|(pairs, _)| {
             let n = pairs.len();
             let body = match n {
@@ -1220,7 +1276,7 @@ impl BeeperGuiApp {
     pub(crate) fn scroll_filmstrip(&mut self, by: f32) -> Task<UiMessage> {
         let Some((items, at)) = self.carousel_items(&self.store.read()) else { return Task::none() };
         let size = self.media_window.as_ref().expect("the Media window is open").size;
-        let c = self.carousel.as_mut().expect("the carousel is open");
+        let c = self.carousel_mut().as_mut().expect("the carousel is open");
         let (start, _) = filmstrip(&size, at, items.len(), c.strip);
         c.strip = Some((start as f32 + by).round().max(0.0) as usize);
         self.media_viewer_more()
@@ -1292,6 +1348,8 @@ pub enum Msg {
 impl BeeperGuiApp {
     pub(crate) fn media_view(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
+            // The Media window items show in its viewer.
+            Msg::OpenCarousel(_, _, true) if !self.in_media.get() => return self.as_media(|s| s.media_view(msg)),
             Msg::OpenCarousel(mid, ai, in_media) => {
                 // Desktop's `AttachmentCarousel` closes Picture in Picture when it opens.
                 self.stop_pip();
@@ -1299,7 +1357,7 @@ impl BeeperGuiApp {
                 if in_media {
                     self.media_mut().advance = false;
                 }
-                self.carousel = Some(Carousel {
+                *self.carousel_mut() = Some(Carousel {
                     mid,
                     ai,
                     turns: 0,
@@ -1315,7 +1373,7 @@ impl BeeperGuiApp {
                 return Task::batch([self.load_media(), self.media_viewer_more()]);
             }
             Msg::CarouselStep(next) => {
-                let c = self.carousel.clone().expect("the carousel is open");
+                let c = self.carousel().cloned().expect("the carousel is open");
                 if c.in_media && !next {
                     self.media_mut().advance = false;
                 }
@@ -1333,19 +1391,19 @@ impl BeeperGuiApp {
                 return self.carousel_to(item);
             }
             Msg::ScrollFilmstrip(by) => return self.scroll_filmstrip(by),
-            Msg::PdfPage(n) => self.carousel.as_mut().expect("the carousel is open").page = n,
+            Msg::PdfPage(n) => self.carousel_mut().as_mut().expect("the carousel is open").page = n,
             Msg::CarouselMenu(open) => {
                 let at = self.cursor.get();
-                self.carousel.as_mut().expect("the carousel is open").menu = open.then_some(at);
+                self.carousel_mut().as_mut().expect("the carousel is open").menu = open.then_some(at);
             }
             Msg::RotateCarousel => {
-                let c = self.carousel.as_mut().expect("the carousel is open");
+                let c = self.carousel_mut().as_mut().expect("the carousel is open");
                 (c.turns, c.turned) = ((c.turns + 1) % 4, Some(std::time::Instant::now()));
             }
             // Like the unmount of Desktop's carousel, the close lets go of its PDFs.
             Msg::CloseCarousel => {
                 let task = self.close_carousel_video();
-                if self.carousel.take().is_some_and(|c| c.in_media) {
+                if self.carousel_mut().take().is_some_and(|c| c.in_media) {
                     self.media_mut().advance = false;
                 }
                 self.pdfs.clear();
@@ -1473,8 +1531,8 @@ impl BeeperGuiApp {
                     }
                     // Desktop's `removeItems`: the viewer of a deleted item shows the item that takes its place.
                     let gone = |m: &str| pairs.iter().any(|(_, x)| x == m);
-                    let shown = self.carousel.as_ref().filter(|c| c.in_media).map(|c| (c.mid.clone(), c.ai));
                     let w = self.media_mut();
+                    let shown = w.viewer.as_ref().map(|c| (c.mid.clone(), c.ai));
                     let at = shown.and_then(|(mid, ai)| w.items.iter().position(|(m, k)| m.id == mid && *k == ai));
                     let at = at.filter(|&at| gone(&w.items[at].0.id));
                     let before = at.map_or(0, |at| w.items[..at].iter().filter(|(m, _)| gone(&m.id)).count());
@@ -1483,8 +1541,8 @@ impl BeeperGuiApp {
                     let last = w.items.len().saturating_sub(1);
                     let next = at.map(|at| w.items.get((at - before).min(last)).map(|(m, k)| (m.id.clone(), *k)));
                     match next {
-                        Some(Some(item)) => return self.carousel_to(item),
-                        Some(None) => return self.media_view(Msg::CloseCarousel),
+                        Some(Some(item)) => return self.as_media(|s| s.carousel_to(item)),
+                        Some(None) => return self.as_media(|s| s.media_view(Msg::CloseCarousel)),
                         None => {}
                     }
                 }
@@ -1505,7 +1563,7 @@ impl BeeperGuiApp {
     /// Shows the carousel item `(mid, ai)` from the start.
     fn carousel_to(&mut self, (mid, ai): (String, usize)) -> Task<UiMessage> {
         self.leave_carousel_video();
-        let c = self.carousel.as_mut().expect("the carousel is open");
+        let c = self.carousel_mut().as_mut().expect("the carousel is open");
         (c.mid, c.ai, c.resume, c.menu, c.strip, c.page) = (mid, ai, None, None, None, 1);
         self.fit_carousel_video();
         self.reload_failed();
@@ -1514,7 +1572,7 @@ impl BeeperGuiApp {
 
     /// Desktop's carousel shows its item in a new `<img>`, which loads a media that failed to load again.
     fn reload_failed(&mut self) {
-        let c = self.carousel.as_ref().expect("the carousel is open");
+        let c = self.carousel().expect("the carousel is open");
         let url = {
             let st = self.store.read();
             let shown = |a: &Attachment| a.poster_img.clone().or_else(|| a.src_url.clone());
@@ -1631,10 +1689,117 @@ mod tests {
         let last = ids(&app).pop().expect("50 items");
         let _ = app.update(UiMessage::Media(Msg::OpenCarousel(last.clone(), 0, true)));
         assert!(app.media_window.as_ref().unwrap().loading.is_some(), "the filmstrip loads more near the end");
-        let _ = app.update(UiMessage::Media(Msg::CarouselStep(true)));
-        assert_eq!(app.carousel.as_ref().unwrap().mid, last, "the viewer waits");
+        let id = app.media_window.as_ref().unwrap().id;
+        let _ = app.update(UiMessage::InWindow(id, Box::new(UiMessage::Media(Msg::CarouselStep(true)))));
+        let viewer = |app: &BeeperGuiApp| app.media_window.as_ref().unwrap().viewer.as_ref().unwrap().mid.clone();
+        assert_eq!(viewer(&app), last, "the viewer waits");
         finish_media_load(&mut app);
-        assert_eq!(app.carousel.as_ref().unwrap().mid, "$page009", "and steps when the load ends");
+        assert_eq!(viewer(&app), "$page009", "and steps when the load ends");
+    }
+
+    /// The message of a click on the free space of the carousel of window `id` of `size`, which closes it.
+    fn backdrop(app: &BeeperGuiApp, id: window::Id, size: Size) -> Vec<UiMessage> {
+        let mut sim = Simulator::with_size(Default::default(), size, app.view(id));
+        sim.point_at(Point::new(4.0, size.height / 2.0));
+        let _ = sim.simulate(iced_test::simulator::click());
+        sim.into_messages().collect()
+    }
+
+    fn closes(m: &UiMessage) -> bool {
+        matches!(m, UiMessage::Media(Msg::CloseCarousel))
+    }
+
+    /// Desktop's `carouselState` of each window: the carousel of the main window, that of a chat window and the Media
+    /// window viewer are open at once, each window draws its own, and each steps and closes on its own.
+    #[test]
+    fn each_window_has_its_carousel_like_desktop() {
+        let mut app = demo_app("window-carousels");
+        photos(&app, 3, |_| None);
+        let note = "!note_self:beeper.com";
+        let _ = app.update(UiMessage::SelectChat(note.into()));
+        let _ = app.update(UiMessage::Media(Msg::OpenCarousel("$page000".into(), 0, false)));
+        let _ = app.update(UiMessage::Window(windows::Msg::OpenChat(note.into())));
+        let chat = app.chat_windows[0].0;
+        let in_chat =
+            |app: &mut BeeperGuiApp, m| drop(app.update(UiMessage::InWindow(chat, Box::new(UiMessage::Media(m)))));
+        in_chat(&mut app, Msg::OpenCarousel("$page002".into(), 0, false));
+        let _ = app.update(UiMessage::Media(Msg::Open));
+        let media = app.media_window.as_ref().unwrap().id;
+        load_all_media(&mut app);
+        let _ = app.update(UiMessage::Media(Msg::OpenCarousel("$page001".into(), 0, true)));
+        let shown = |app: &BeeperGuiApp| {
+            let viewer = &app.media_window.as_ref().unwrap().viewer;
+            [&app.pane.carousel, &app.chat_windows[0].1.carousel, viewer].map(|c| c.as_ref().map(|c| c.mid.clone()))
+        };
+        let mids = |m: [Option<&str>; 3]| m.map(|m| m.map(String::from));
+        assert_eq!(shown(&app), mids([Some("$page000"), Some("$page002"), Some("$page001")]), "all three are open");
+        let (main, size) = (app.main_window.unwrap(), Size::new(1000.0, 720.0));
+        assert!(backdrop(&app, main, size).iter().any(closes), "the main window draws its carousel");
+        let mine = |m: &UiMessage, id| matches!(m, UiMessage::InWindow(w, m) if *w == id && closes(m));
+        assert!(backdrop(&app, chat, size).iter().any(|m| mine(m, chat)), "the chat window draws its own");
+        assert!(backdrop(&app, media, size).iter().any(|m| mine(m, media)), "and so does the Media window");
+        let _ = app.update(UiMessage::Media(Msg::CarouselStep(true)));
+        let after = shown(&app);
+        assert!(after[0] != Some("$page000".into()) && after[1..] == shown(&app)[1..], "a step moves one carousel");
+        assert_eq!(after[1..], mids([None, Some("$page002"), Some("$page001")])[1..]);
+        let _ = app.update(UiMessage::WindowKey(media, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
+        assert_eq!(shown(&app)[1..], mids([None, Some("$page002"), None])[1..], "Escape closes only the viewer");
+        assert!(shown(&app)[0].is_some());
+        in_chat(&mut app, Msg::CloseCarousel);
+        assert!(shown(&app)[0].is_some() && shown(&app)[1].is_none(), "the chat window closes its own");
+    }
+
+    /// Desktop's thread window shows its carousel in its own "Media in %s" window, at least 800 by 600, which a
+    /// carousel of the thread window reuses. Its Reply starts the reply in the thread window and closes it, and it
+    /// has no Forward….
+    #[test]
+    fn thread_windows_open_media_in_windows_like_desktop() {
+        let mut app = demo_app("thread-media");
+        photos(&app, 2, |_| None);
+        let note = "!note_self:beeper.com";
+        let _ = app.update(UiMessage::Thread(crate::threads::Msg::OpenWindow(note.into(), "$page000".into())));
+        let thread = app.chat_windows[0].0;
+        let open = |app: &mut BeeperGuiApp, mid: &str| {
+            let open = UiMessage::Media(Msg::OpenCarousel(mid.into(), 0, false));
+            drop(app.update(UiMessage::InWindow(thread, Box::new(open))));
+        };
+        open(&mut app, "$page001");
+        assert!(app.chat_windows[0].1.carousel.is_none(), "the thread window shows no carousel of its own");
+        assert_eq!(app.carousel_windows.len(), 1);
+        let (id, opener) = app.carousel_windows[0];
+        assert_eq!(opener, thread);
+        fn pane(app: &BeeperGuiApp, id: window::Id) -> &crate::Pane {
+            &app.chat_windows.iter().find(|w| w.0 == id).expect("the window").1
+        }
+        assert_eq!(
+            pane(&app, id).size,
+            Size::new(800.0, 700.0),
+            "at least 800 by 600 and the size of the thread window"
+        );
+        let title = {
+            let st = app.store.read();
+            st.chats[st.resolve_chat_idx(note).unwrap()].title.clone()
+        };
+        assert_eq!(app.title(id), format!("Media in {title}"));
+        open(&mut app, "$page000");
+        assert_eq!(app.carousel_windows.len(), 1, "the next carousel shows in the same window");
+        assert_eq!(pane(&app, id).carousel.as_ref().unwrap().mid, "$page000");
+        app.cursor.set(Point::new(300.0, 300.0));
+        let _ = app.update(UiMessage::InWindow(id, Box::new(UiMessage::Media(Msg::CarouselMenu(true)))));
+        let mut sim = Simulator::with_size(Default::default(), pane(&app, id).size, app.view(id));
+        assert!(sim.find("Forward…").is_err(), "no Forward…");
+        let _ = sim.click("Reply…").expect("Reply…");
+        for m in sim.into_messages().collect::<Vec<_>>() {
+            let _ = app.update(m);
+        }
+        assert!(pane(&app, id).carousel.is_none(), "Reply closes the carousel, and its window with it");
+        assert_eq!(app.chat_windows[0].1.reply_to_message_id.as_deref(), Some("$page000"), "the thread window replies");
+        let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
+        assert!(app.carousel_windows.is_empty() && app.chat_windows.len() == 1);
+        open(&mut app, "$page001");
+        let id = app.carousel_windows[0].0;
+        let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
+        assert!(pane(&app, id).carousel.is_none(), "Escape closes the carousel of the window");
     }
 
     /// Desktop's `renderAttachment`: an item that the bridge loads only when the user asks is the file row that asks
@@ -1654,7 +1819,8 @@ mod tests {
         let _ = app.update(UiMessage::Loaded(loads::Msg::Media(url.clone(), Err(reload))));
         let _ = app.update(UiMessage::Media(Msg::OpenCarousel("$page000".into(), 0, false)));
         let fetches = |app: &BeeperGuiApp| {
-            let mut sim = simulator(app.view_carousel(app.carousel.as_ref().expect("the carousel is open")).unwrap());
+            let mut sim =
+                simulator(app.view_carousel(app.pane.carousel.as_ref().expect("the carousel is open")).unwrap());
             let _ = sim.click("phone.jpg");
             let fetch = |m| matches!(m, UiMessage::Loaded(loads::Msg::Fetch(ref u)) if *u == url);
             sim.into_messages().any(fetch)
@@ -1667,7 +1833,7 @@ mod tests {
         assert!(!matches!(app.media.get(&broken), Some(Some(Err(_)))), "the carousel loads a failed image again");
         let _ = app.update(UiMessage::Loaded(loads::Msg::Media(broken, Err("HTTP 500".into()))));
         assert!(app.needs_download.is_empty(), "another error needs no download");
-        let car = app.carousel.clone().expect("the carousel is open");
+        let car = app.pane.carousel.clone().expect("the carousel is open");
         assert!(simulator(app.view_carousel(&car).unwrap()).find("phone.jpg").is_err(), "the next item shows");
     }
 

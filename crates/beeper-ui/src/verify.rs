@@ -1035,7 +1035,7 @@ mod tests {
         app.store.write().beeper_state.verified = true;
         let _ = app.update(UiMessage::StoreChanged);
         assert_eq!(app.login.screen, Screen::Accounts, "a verified device goes on to the accounts");
-        shows(&app, &["WhatsApp", "Discord", "Bluesky", "10 free accounts remaining."]);
+        shows(&app, &["WhatsApp", "Discord", "GroupMe", "10 free accounts remaining."]);
         assert!(simulator(app.view_login()).find("Continue").is_err(), "Continue needs a connected chat account");
         let _ = app.update(LoginMsg::Query("sig".into()).into());
         shows(&app, &["Signal"]);

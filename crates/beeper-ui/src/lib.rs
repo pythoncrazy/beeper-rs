@@ -35,6 +35,8 @@ pub mod login;
 mod media_view;
 mod members;
 mod menubar;
+mod merge_editor;
+mod merged;
 mod message;
 pub mod networks;
 pub mod new_chat;
@@ -370,6 +372,8 @@ pub enum UiMessage {
     Members(members::Msg),
     /// Desktop's block and unblock of a direct chat, with Report spam, and the Blocked users window.
     Blocking(blocking::Msg),
+    /// Desktop's merged chats: Unmerge.
+    Merged(merged::Msg),
     /// Desktop's account nicknames and the Account Nickname window.
     Nickname(nickname::Msg),
     /// The keyboard focus of the controls of a window: Tab, and the mouse press that ends it.
@@ -700,6 +704,8 @@ const ASK_TRANSCRIBE: u8 = 22;
 const ASK_LOGOUT_DEVICE: u8 = 23;
 /// Desktop's "Room encryption" step of New Chat before it creates a Matrix group of more than one person.
 const ASK_ROOM_ENCRYPTION: u8 = 24;
+/// Desktop's `confirmUnmergeUnion` of a merged chat.
+const ASK_UNMERGE: u8 = 25;
 /// Desktop opens its `prefs` window at 800 x 740, in the middle of the screen.
 const SETTINGS_SIZE: Size = Size::new(800.0, 740.0);
 /// Desktop's default "Quick reaction emoji".
@@ -942,6 +948,8 @@ type Png = (Vec<u8>, (u32, u32));
 /// restore on undo.
 struct Queued {
     chat: String,
+    /// The chat of the sends: the member chat that a merged chat sends to.
+    to: String,
     due: i64,
     sends: Vec<(String, Outgoing)>,
     text: String,
@@ -1152,12 +1160,12 @@ static BADGE_RINGS: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock:
 });
 
 /// `ring` is the row color, which Desktop shows in a cutout of the avatar around the badge.
-fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32, mono: Option<&Palette>, ring: Color) -> El<'a> {
+fn badged<'a>(inner: El<'a>, brand: &str, size: f32, badge: f32, mono: Option<&Palette>, ring: Color) -> El<'a> {
     let icon: El<'a> = match mono {
-        None => svg(crate::style::brand_round(brand_key(account_id))).width(badge).height(badge).into(),
+        None => svg(crate::style::brand_round(brand)).width(badge).height(badge).into(),
         Some(p) => {
             let fg = p.strong;
-            let glyph = svg(crate::style::brand_badge(brand_key(account_id)))
+            let glyph = svg(crate::style::brand_badge(brand))
                 .style(move |_, _| svg::Style { color: Some(fg) })
                 .width(badge)
                 .height(badge);
@@ -1651,8 +1659,9 @@ const CARD_W: f32 = 200.0;
 const CARD_FACE_IN: f32 = 88.0 / 3.0;
 /// The height of a user card with only its avatar and name.
 const CARD_H: f32 = 88.0 + 8.0 + 18.0 + 8.0;
-/// The Chat Info context menus: the identity header, the title, a member, a bookmark and a contact detail.
-const INFO_MENUS: [&str; 7] = ["info:", "copy:", "member:", "bookmark:", "contact:", "mention:", "vcard:"];
+/// The Chat Info context menus: the identity header, the title, a member, a bookmark, a contact detail and the
+/// Manage menu of a merged chat.
+const INFO_MENUS: [&str; 8] = ["info:", "copy:", "member:", "bookmark:", "contact:", "mention:", "vcard:", "merged:"];
 
 /// Desktop's `setPersonalRoomName` gate: the feature is on or the chat has a personal name or photo, and the chat
 /// is a Matrix room that is not merged (`canSetPersonalOverrides`, `personalOverridesApply`).
@@ -1753,7 +1762,7 @@ fn space_error(st: &BeeperStore, id: &str) -> Option<&'static str> {
 
 /// Desktop's `getSpaceSubtitle`: the chats, reminders, requests or scheduled messages of a space.
 fn space_subtitle(st: &BeeperStore, id: &str) -> Option<String> {
-    let count = |f: &dyn Fn(&Chat) -> bool| st.chats.iter().filter(|c| c.merged_into_chat_id.is_none() && f(c)).count();
+    let count = |f: &dyn Fn(&Chat) -> bool| st.chats.iter().filter(|c| c.listed() && f(c)).count();
     let listed = |c: &Chat| c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY) == 0;
     let chats = |n: usize| trn("%d Chat", "%d Chats", n, &[&n]);
     Some(match id {
@@ -1811,7 +1820,7 @@ fn network_label(account_id: &str) -> &'static str {
 }
 
 fn chat_network(c: &Chat) -> String {
-    let plat = network_label(&c.account_id);
+    let plat = if c.merge.is_some() { merged::chat_platform(c) } else { network_label(&c.account_id) };
     c.network_name.as_deref().map_or_else(|| plat.to_string(), |n| format!("{n} • {plat}"))
 }
 
@@ -2230,9 +2239,12 @@ svg_static!(MOON_STARS, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 // Desktop's `BeeperIcon` of the networks icons.
 svg_static!(BEEPER_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 15"><path fill-rule="evenodd" clip-rule="evenodd" d="M0.350037 5.29941C0.350037 2.76021 2.33427 0.649414 4.84524 0.649414H8.75483C11.2658 0.649414 13.25 2.76021 13.25 5.29941C13.25 6.61227 12.7229 7.80414 11.8693 8.65264L7.23829 13.8348C6.60047 14.5486 5.42971 13.9544 5.62929 13.0182L6.2835 9.94942H4.84524C2.33427 9.94942 0.350037 7.83862 0.350037 5.29941ZM4.84524 2.14941C3.21937 2.14941 1.85004 3.5308 1.85004 5.29941C1.85004 7.06803 3.21937 8.44941 4.84524 8.44941H8.13699L7.54101 11.245L10.7824 7.61781L10.7997 7.60083C11.382 7.02833 11.75 6.2123 11.75 5.29941C11.75 3.5308 10.3807 2.14941 8.75483 2.14941H4.84524Z"/></svg>"##);
 
-/// Desktop's `hasOlderMessages`: the chat has events before its first loaded page.
+/// Desktop's `hasOlderMessages`: the chat has events before its first loaded page, or a member chat of a merged chat
+/// does.
 fn has_older(st: &BeeperStore, chat: &Chat) -> bool {
-    st.matrix.is_some() && chat.older != Older::Start
+    let members = st.members(st.chat_idx(&chat.id));
+    let older = |c: &Chat| c.older != Older::Start;
+    st.matrix.is_some() && if members.is_empty() { older(chat) } else { members.iter().any(|&i| older(&st.chats[i])) }
 }
 // Desktop's QR code of `https://www.beeper.com/download`.
 svg_static!(APP_QR, include_bytes!("../assets/app_qr.svg"));
@@ -2445,6 +2457,10 @@ pub struct Pane {
     pub sched_menu: Option<(Vec<String>, bool, Point)>,
     /// Desktop's `openReplyThread`: the message whose reply chain shows over the timeline.
     pub reply_thread: Option<String>,
+    /// When the reply chain last opened, for its fade-in.
+    pub reply_opened: Option<std::time::Instant>,
+    /// Desktop's `carouselState` of the window of the pane. A thread pane keeps none: its window's carousel shows it.
+    pub(crate) carousel: Option<Carousel>,
     pub top: TopOfThread,
     timeline: vlist::VList,
     thread_list: vlist::VList,
@@ -2574,6 +2590,9 @@ pub struct BeeperGuiApp {
     /// The space windows by the rail space they show, with their chat lists. Each also has a pane in
     /// `chat_windows`.
     space_windows: Vec<(window::Id, String, chat_list::ListState)>,
+    /// Desktop's `AttachmentCarouselBrowserWindow` ("Media in %s") of a thread window, as (window, thread window).
+    /// Each also has a pane in `chat_windows`, without a chat, whose carousel it shows.
+    carousel_windows: Vec<(window::Id, window::Id)>,
     /// The chat window that `view` is drawing, so `pane` gives its pane.
     drawing: std::cell::Cell<Option<window::Id>>,
     /// `view` draws the thread pane of the drawn pane.
@@ -2638,8 +2657,9 @@ pub struct BeeperGuiApp {
     pub search_select: Option<(usize, iced::Rectangle)>,
     cursor: std::cell::Cell<Point>,
     forward: Option<Forward>,
-    carousel: Option<Carousel>,
     media_window: Option<MediaWindow>,
+    /// `update` handles, or `view` draws, the Media window, whose carousel is its viewer.
+    in_media: std::cell::Cell<bool>,
     /// On X11 the copied image stays available only while its clipboard lives.
     image_clipboard: Option<arboard::Clipboard>,
     /// Desktop's `pendingButtonIDs`: the action buttons whose callback runs, as (message, button).
@@ -2814,6 +2834,8 @@ pub struct BeeperGuiApp {
     /// The window that shows the open Delete Label confirm, like Desktop's modal in that window.
     pub delete_in: Option<window::Id>,
     pub spaces_window: Option<SpacesDraft>,
+    /// Desktop's merged chat editor (`D3`).
+    pub merge_window: Option<merge_editor::MergeDraft>,
     pub group_window: Option<GroupDraft>,
     /// Desktop's Blocked users window.
     blocked_window: Option<window::Id>,
@@ -2917,6 +2939,7 @@ impl BeeperGuiApp {
             pane: Pane { size: MAIN_SIZE, ..Pane::default() },
             chat_windows: Vec::new(),
             space_windows: Vec::new(),
+            carousel_windows: Vec::new(),
             drawing: Default::default(),
             drawing_thread: Default::default(),
             thread_fraction: THREAD_FRACTION,
@@ -2958,8 +2981,8 @@ impl BeeperGuiApp {
             image_clipboard: None,
             pressing: HashSet::new(),
             forward: None,
-            carousel: None,
             media_window: None,
+            in_media: Default::default(),
             mods: keyboard::Modifiers::empty(),
             emoji_gen: 0,
             emoji_hovered: [false; 2],
@@ -3093,6 +3116,7 @@ impl BeeperGuiApp {
             info_query: String::new(),
             info_note: text_editor::Content::new(),
             spaces_window: None,
+            merge_window: None,
             vote_windows: Vec::new(),
             shot: None,
             login: Login::new(source),
@@ -3210,6 +3234,10 @@ impl BeeperGuiApp {
     }
 
     fn chat_avatar<'a>(&self, chat: &Chat, size: f32, ls: f32) -> El<'a> {
+        // Desktop's `ThreadAvatar` of a merged chat without a photo: the letter of its title.
+        if chat.merge.is_some() {
+            return self.face(chat.img_url.as_deref(), &chat.title, size, ls);
+        }
         let group = chat.chat_type == "group";
         self.people_avatar(chat.img_url.as_deref(), &chat.title, group, &chat.participants.items, size, ls)
     }
@@ -3389,6 +3417,11 @@ impl BeeperGuiApp {
                 (true, _) => tr("Chats"),
             },
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
+            // Desktop's `D3` titles, which it does not translate.
+            _ if let Some(d) = self.merge_window.as_ref().filter(|d| d.id == id) => match d.union {
+                Some(_) => "Edit merged chat",
+                None => "Merge Chats",
+            },
             _ if Some(id) == self.blocked_window => tr("Blocked users"),
             // Desktop's `AddAccountsBrowserWindow` title, which it does not translate.
             _ if Some(id) == self.networks.window => "Add an Account",
@@ -3407,6 +3440,12 @@ impl BeeperGuiApp {
                 return trn("%d vote", "%d votes", total, &[&total]);
             }
             _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => tr("Media"),
+            _ if self.carousel_opener(id).is_some() => {
+                let pane = &self.chat_windows.iter().find(|w| w.0 == id).expect("an open carousel window").1;
+                let st = self.store.read();
+                let chat = pane.carousel.as_ref().and_then(|c| st.resolve_chat_idx(&st.loaded(&c.mid)?.chat_id));
+                return trf("Media in %s", &[&chat.map_or("Beeper".into(), |i| st.chats[i].title.clone())]);
+            }
             _ if let Some((.., list)) = self.space_windows.iter().find(|w| w.0 == id) => {
                 let title = list.title(&self.store.read());
                 return if title.is_empty() { "Beeper".into() } else { title };
@@ -3567,7 +3606,7 @@ impl BeeperGuiApp {
     fn listed(&self, st: &BeeperStore, filters: u8, c: &Chat) -> bool {
         let on = |i: usize| filters & 1 << i != 0;
         let shown = |i: usize| on(i) || !filter_hit(i, c, st);
-        c.merged_into_chat_id.is_none()
+        c.listed()
             && self.list().selected_account_filter.as_ref().is_none_or(|a| in_rail_entry(st, a, c))
             // Desktop's `inSpaceViewAccountFilter`: an account takes in the chats of its network spaces too.
             && self.list().space_view_account.as_ref().is_none_or(|a| match network_space(st, a) {
@@ -3625,7 +3664,7 @@ impl BeeperGuiApp {
         self.pane.selected_chat_id = Some(chat_id.to_string());
         let id = st.chats[idx].id.clone();
         st.load_chat(&id);
-        self.pane.unread_divider = message::divider_at(&st.chats[idx], &self.pane_msgs(&st));
+        self.pane.unread_divider = message::divider_at(&st, &st.chats[idx], &self.pane_msgs(&st));
         // Desktop reads a chat with an unread divider from there, through the last message in view (`onRangeChange`).
         if !st.incognito() && self.pane.unread_divider.is_none() {
             st.mark_read(idx, false);
@@ -3766,9 +3805,10 @@ impl BeeperGuiApp {
             let root_msg = st.loaded(root);
             return root_msg.into_iter().chain(st.thread_replies(root)).collect();
         }
-        let threaded = st.threaded(&st.chats[st.resolve_chat_idx(cid).expect("an open chat")]);
-        let all = st.timeline(cid);
-        all.filter(|m| !m.thread_only(threaded)).collect()
+        let cid = &st.chats[st.resolve_chat_idx(cid).expect("an open chat")].id;
+        // A merged chat shows the replies of a member chat as that chat does.
+        let all = st.chat_timeline(cid).into_iter();
+        all.filter(|m| !m.thread_only(st.threaded(st.chat(&m.chat_id)))).collect()
     }
 
     /// The arrow keys select messages when no panel is open and the composer is empty.
@@ -3865,7 +3905,7 @@ impl BeeperGuiApp {
         if !has_older(&st, chat) {
             return Task::none();
         }
-        let (id, before) = (chat.id.clone(), st.timeline_indices(&chat.id).len());
+        let (id, before) = (chat.id.clone(), st.chat_timeline(&chat.id).len());
         drop(st);
         self.pane.top.loading = Some((std::time::Instant::now(), id.clone(), before));
         let load = beeper_core::matrix::load_older(self.store.clone(), id);
@@ -3891,7 +3931,7 @@ impl BeeperGuiApp {
         let (_, chat, before) = self.pane.top.loading.take().expect("a load ran");
         let st = self.store.read();
         let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_canonical_chat_id(c));
-        let count = open.as_ref().map(|c| st.timeline_indices(c).len());
+        let count = open.as_ref().map(|c| st.chat_timeline(c).len());
         drop(st);
         if open != Some(chat) {
             return self.load_older();
@@ -4059,6 +4099,7 @@ impl BeeperGuiApp {
             UiMessage::Accounts(msg) => return self.accounts(msg),
             UiMessage::Networks(msg) => return self.networks(msg),
             UiMessage::Blocking(msg) => return self.blocking(msg),
+            UiMessage::Merged(msg) => return self.merged(msg),
             UiMessage::Nickname(msg) => return self.nickname(msg),
             UiMessage::Focus(msg) => return self.key_focus(msg),
             UiMessage::ChatList(msg) => return self.chat_list(msg),
@@ -4224,7 +4265,6 @@ impl BeeperGuiApp {
             }
             UiMessage::WindowText(id, text) if Some(id) == self.login_window => return self.login_text(&text),
             // Chromium's Space on a focused button or `role="button"` row presses it.
-            // Chromium's Space on a focused button or `role="button"` row presses it.
             UiMessage::WindowText(id, text)
                 if text == " " && (self.key_targets.contains_key(&id) || self.asking(id)) =>
             {
@@ -4280,6 +4320,7 @@ impl BeeperGuiApp {
                     || self.labels_windows.iter().any(|w| w.0 == id)
                     || self.vote_windows.iter().any(|w| w.0 == id)
                     || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
+                    || self.merge_window.as_ref().is_some_and(|d| d.id == id)
                     || self.group_window.as_ref().is_some_and(|d| d.id == id)
                     || Some(id) == self.blocked_window
                     || self.nickname_windows.iter().any(|d| d.id == id)
@@ -4321,9 +4362,9 @@ impl BeeperGuiApp {
                         false => self.update(key),
                     };
                 }
-                let asks = self.media_window.as_ref().is_some_and(|w| w.deleting.is_some());
-                if self.carousel.as_ref().is_some_and(|c| c.in_media) && !asks {
-                    return self.carousel_key(&key, mods);
+                let w = self.media_window.as_ref().expect("the Media window is open");
+                if w.viewer.is_some() && w.deleting.is_none() {
+                    return self.as_media(|s| s.carousel_key(&key, mods));
                 }
                 if key == Key::Named(Named::Escape) {
                     let w = self.media_mut();
@@ -4561,6 +4602,10 @@ impl BeeperGuiApp {
             }
             UiMessage::HeaderHoverEnd(n) if n == self.header_hover.1 => self.header_hover.0 = false,
             UiMessage::HeaderHoverEnd(_) => {}
+            UiMessage::InWindow(id, msg) if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
+                let task = self.as_media(|s| s.handle(*msg));
+                return task.map(move |m| UiMessage::InWindow(id, Box::new(m)));
+            }
             UiMessage::InWindow(id, msg) => {
                 if self.chat_windows.iter().all(|w| w.0 != id) {
                     return self.handle(*msg);
@@ -4571,11 +4616,22 @@ impl BeeperGuiApp {
                 self.swapped = outer;
                 self.swap_window(id);
                 let task = task.map(move |m| UiMessage::InWindow(id, Box::new(m)));
-                // A chat window closes when it leaves its chat; a space window stays on its space.
-                let left = self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none());
-                return match left && !self.is_space_window(id) {
-                    false => task,
-                    true => Task::batch([task, window::close(id)]),
+                let (opener, space) = (self.carousel_opener(id), self.is_space_window(id));
+                let pane = &mut self.chat_windows.iter_mut().find(|w| w.0 == id).expect("an open chat window").1;
+                // A chat window closes when it leaves its chat, and a "Media in %s" window when its carousel closes;
+                // a space window stays on its space.
+                let close = match opener {
+                    Some(_) => pane.carousel.is_none(),
+                    None => pane.selected_chat_id.is_none() && !space,
+                };
+                if close {
+                    return Task::batch([task, window::close(id)]);
+                }
+                // Desktop's thread window shows its carousel in its "Media in %s" window.
+                let thread = pane.thread_root.is_some();
+                return match pane.carousel.take_if(|_| thread) {
+                    Some(c) => Task::batch([task, self.show_carousel_window(id, c)]),
+                    None => task,
                 };
             }
             // A sign-in through the Desktop API goes on to the check of encrypted messaging, like a sign-in here.
@@ -4597,18 +4653,16 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let left = self.pane.selected_chat_id.as_deref().is_some_and(|c| st.resolve_chat_idx(c).is_none());
                 self.selection.retain(|c| st.resolve_chat_idx(c).is_some());
-                let gone = self.carousel.is_some() && self.carousel_items(&st).is_none();
                 drop(st);
-                if gone {
-                    self.carousel = None;
-                }
+                let gone = self.close_gone_carousels();
                 if left {
                     (self.pane.selected_chat_id, self.list.chat_menu) = (None, None);
                     self.select_chat(NOTE_CHAT_ID);
                 }
                 self.refresh_theme_and_tray();
                 let older = self.load_older_everywhere();
-                return Task::batch([self.close_notifications(), self.verification_changed(), self.leave_app(), older]);
+                let tasks = [self.close_notifications(), self.verification_changed(), self.leave_app(), older, gone];
+                return Task::batch(tasks);
             }
             UiMessage::RoomJoined(r) => self.room_joined(r),
             UiMessage::Online(on) => self.online = on,
@@ -4636,7 +4690,7 @@ impl BeeperGuiApp {
             UiMessage::KeyPressed(Key::Named(Named::Escape), _) if self.view_once.is_open() => {
                 return self.view_once(view_once::Msg::Dismiss);
             }
-            UiMessage::KeyPressed(key, mods) if self.carousel.as_ref().is_some_and(|c| !c.in_media) => {
+            UiMessage::KeyPressed(key, mods) if self.pane.carousel.is_some() => {
                 return self.carousel_key(&key, mods);
             }
             // Desktop's `C_t` takes every key while a pending attachment has the focus.
@@ -4681,7 +4735,7 @@ impl BeeperGuiApp {
                 let modal = self.show_command_palette
                     || self.forward.is_some()
                     || self.creating_chat.is_some()
-                    || self.carousel.is_some();
+                    || self.pane.carousel.is_some();
                 let free = self.pane.selected_chat_id.is_none() && !modal;
                 // New Chat's own Enter starts the group from its encryption prompt.
                 let asking = window.is_some_and(|w| self.asking(w));
@@ -4946,7 +5000,8 @@ impl BeeperGuiApp {
             _ => None,
         });
         let system = iced::system::theme_changes().map(|a0| UiMessage::Settings(settings::Msg::SystemTheme(a0)));
-        let carousel = self.carousel.is_some().then(|| {
+        let viewer = self.media_window.as_ref().is_some_and(|w| w.viewer.is_some());
+        let carousel = (viewer || self.panes().any(|p| p.carousel.is_some())).then(|| {
             iced::event::listen_with(|e, _, id| match e {
                 Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(c), modifiers, .. })
                     if modifiers.is_empty() && matches!(c.as_str(), "d" | "r") =>
@@ -5031,8 +5086,8 @@ impl BeeperGuiApp {
         });
         let (rising, due) = {
             let st = self.store.read();
-            let last = self.pane().selected_chat_id.as_ref().and_then(|c| st.timeline_indices(c).last());
-            let rising = last.is_some_and(|&i| send_rise(&st, &st.messages[i]).is_some());
+            let last = self.pane().selected_chat_id.as_ref().and_then(|c| st.chat_timeline(c).last().copied());
+            let rising = last.is_some_and(|m| send_rise(&st, m).is_some());
             let pending = st.chats.iter().filter(|c| !self.expired(c));
             let send = st.scheduled.iter().filter(|s| !s.canceled).map(|s| s.send_on);
             let send = send.chain(self.pane.send_later.map(|c| c.0)).min();
@@ -5048,8 +5103,8 @@ impl BeeperGuiApp {
         let wait = |at: i64| std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
         let late = {
             let st = self.store.read();
-            let open = self.panes().filter_map(|p| p.selected_chat_id.as_ref()).map(|c| st.timeline_indices(c));
-            let echoes = open.flatten().map(|&i| &st.messages[i]);
+            let open = self.panes().filter_map(|p| p.selected_chat_id.as_ref()).map(|c| st.chat_timeline(c));
+            let echoes = open.flatten();
             let echoes = echoes.filter(|m| m.send_error.is_none() && pending(&st, m));
             echoes.map(still_sending_at).filter(|&at| at > now_unix_millis()).min()
         };
@@ -5059,8 +5114,8 @@ impl BeeperGuiApp {
         // an hour at most.
         let expiry = {
             let (st, now) = (self.store.read(), now_unix_millis());
-            let open = self.panes().filter_map(|p| p.selected_chat_id.as_ref()).map(|c| st.timeline_indices(c));
-            let left = open.flatten().filter_map(|&i| match st.messages[i].expiry(now) {
+            let open = self.panes().filter_map(|p| p.selected_chat_id.as_ref()).map(|c| st.chat_timeline(c));
+            let left = open.flatten().filter_map(|m| match m.expiry(now) {
                 Some(Countdown::Left(left)) if left > 0 => Some(left),
                 _ => None,
             });
@@ -5080,8 +5135,12 @@ impl BeeperGuiApp {
         // The loading of older messages and the fade of the scroll button, in each chat window too.
         let moving =
             |p: &Pane| p.top.loading.is_some() || p.scrolled_up.is_some_and(|s| s.1.elapsed().as_secs_f32() < 0.2);
+        // The fade-in of the reply chain, in the thread panes too.
+        let replies =
+            |p: &Pane| p.reply_thread.is_some() && p.reply_opened.is_some_and(|t| t.elapsed() < message::REPLIES_RISE);
         let animated = rising
             || self.panes().any(moving)
+            || self.panes().flat_map(|p| std::iter::once(p).chain(p.thread.as_deref())).any(replies)
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.typing_shown.values().any(|t| t.2.elapsed() < message::TYPING_FADE)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0)
@@ -5158,8 +5217,10 @@ impl BeeperGuiApp {
     pub fn view(&self, id: window::Id) -> El<'_> {
         let arrow = !self.store.read().settings.on("pointerCursor");
         self.drawing.set(self.chat_windows.iter().any(|w| w.0 == id).then_some(id));
+        self.in_media.set(self.media_window.as_ref().is_some_and(|w| w.id == id));
         let el = cursor::root(self.view_window(id), arrow, &self.cursor, id);
         self.drawing.set(None);
+        self.in_media.set(false);
         let el = match self.chat_windows.iter().any(|w| w.0 == id) {
             true => Element::from(el).map(move |m| UiMessage::InWindow(id, Box::new(m))),
             false => el.into(),
@@ -5199,6 +5260,8 @@ impl BeeperGuiApp {
             self.view_create_label(d)
         } else if let Some(w) = self.label_settings.iter().find(|w| w.id == id) {
             self.view_label_settings(w)
+        } else if let Some(d) = self.merge_window.as_ref().filter(|d| d.id == id) {
+            self.view_merge_editor(d)
         } else if let Some(d) = self.spaces_window.as_ref().filter(|d| d.id == id) {
             self.view_edit_spaces(d)
         } else if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) {
@@ -5213,6 +5276,7 @@ impl BeeperGuiApp {
             self.view_poll_votes(chat, mid)
         } else if self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none())
             && !self.is_space_window(id)
+            && self.carousel_opener(id).is_none()
         {
             // A chat window that left its chat closes, and draws nothing until it is closed.
             Space::new().into()
@@ -5521,12 +5585,13 @@ impl BeeperGuiApp {
         let elsewhere = self.delete_in.is_some_and(|w| self.label_asking(w));
         let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d) && !elsewhere);
         let confirm = confirm.map(|d| self.view_confirm(d));
+        // The carousel shows over its chat, and fills a "Media in %s" window.
         let shows = |c: &&Carousel| {
             let st = self.store.read();
             let chat = st.loaded(&c.mid).map(|m| &m.chat_id);
-            !c.in_media && chat.is_some() && chat == self.pane().selected_chat_id.as_ref()
+            self.drawn_opener().is_some() || chat.is_some() && chat == self.pane().selected_chat_id.as_ref()
         };
-        let carousel = self.carousel.as_ref().filter(shows).and_then(|c| self.view_carousel(c));
+        let carousel = self.pane().carousel.as_ref().filter(shows).and_then(|c| self.view_carousel(c));
         // Desktop portals the zoomed Chat Info avatar over the whole window.
         let thread = self.selection.is_empty() && self.pane().thread.is_some();
         let zoom =
@@ -5875,19 +5940,20 @@ impl BeeperGuiApp {
         let Some(seen) = self.pane.timeline.last_seen() else { return };
         let through = {
             let st = self.store.read();
-            let chat = st.resolve_chat_idx(&id).map(|i| &st.chats[i]).filter(|c| c.is_unread());
-            chat.and_then(|c| {
+            let chat = st.resolve_chat_idx(&id).filter(|&i| st.chats[i].is_unread());
+            chat.and_then(|i| {
+                let (c, merged) = (&st.chats[i], !st.members(i).is_empty());
                 let read = c.last_read_message_sort_key.as_ref();
-                st.timeline_indices(&c.id)
-                    .iter()
-                    .map(|&i| &st.messages[i])
-                    .find(|m| vlist::key(&m.id) == seen)
-                    .filter(|m| read.is_none_or(|r| m.sort_key > *r))
-                    .map(|m| (m.chat_id.clone(), m.id.clone()))
+                let m = st.chat_timeline(&c.id).into_iter().find(|m| vlist::key(&m.id) == seen);
+                let m = m.filter(|m| merged || read.is_none_or(|r| m.sort_key > *r));
+                m.map(|m| (i, merged, m.chat_id.clone(), m.id.clone()))
             })
         };
-        if let Some((chat, mid)) = through {
-            self.store.write().mark_read_through(&chat, &mid);
+        let mut st = self.store.write();
+        match through {
+            Some((i, true, _, mid)) => st.mark_union_read_through(i, &mid),
+            Some((_, false, chat, mid)) => st.mark_read_through(&chat, &mid),
+            None => {}
         }
     }
 

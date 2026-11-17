@@ -460,7 +460,7 @@ macro_rules! brands {
     };
 }
 
-const BRANDS: [(&str, &str, &str); 20] = brands!(
+const BRANDS: [(&str, &str, &str); 26] = brands!(
     "whatsapp",
     "twitter",
     "telegram",
@@ -477,10 +477,17 @@ const BRANDS: [(&str, &str, &str); 20] = brands!(
     "tumblr",
     "viber",
     "snapchat",
+    "groupme",
     "wechat",
+    "reddit",
+    "chatgpt-dots",
     "imessage",
+    "grokbot",
+    "muse",
     "bluesky",
-    "hungryserv"
+    "hungryserv",
+    // Desktop's `fP`, the brand of a merged chat.
+    "merged-chat"
 );
 
 static BRAND_SVGS: LazyLock<HashMap<&'static str, [svg::Handle; 4]>> = LazyLock::new(|| {

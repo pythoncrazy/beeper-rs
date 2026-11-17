@@ -290,7 +290,7 @@ pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
     let mut out = Vec::new();
     for tab in SettingsTab::listed(st) {
         let rows: Vec<_> = match tab {
-            SettingsTab::Accounts => crate::networks::addable()
+            SettingsTab::Accounts => crate::networks::addable(&st.features)
                 .filter(|n| has(n.display_name))
                 .map(|n| SettingsHit::Network(n.display_name))
                 .collect(),
@@ -2459,8 +2459,9 @@ impl BeeperGuiApp {
                     // Desktop's network hit: the account on that network, or the Add Account window for it.
                     SettingsHit::Network(name) => {
                         let st = self.store.read();
-                        let net =
-                            crate::networks::addable().find(|n| n.display_name == name).expect("an addable network");
+                        let net = crate::networks::addable(&st.features)
+                            .find(|n| n.display_name == name)
+                            .expect("an addable network");
                         let account = st
                             .bridge_accounts
                             .iter()

@@ -942,9 +942,17 @@ fn no_history(room: &Room, e: &matrix_sdk::Error) -> Vec<TimelineEvent> {
     Vec::new()
 }
 
+/// Desktop's `loadOlderMessages` of a chat, and its `paginateBoundaryHolders` of a merged chat: the member chats
+/// whose loaded messages end the newest load older messages together.
+pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> {
+    let holders = store.read().boundary_holders(&chat);
+    let loads = holders.into_iter().map(|c| load_room_older(store.clone(), c));
+    futures_util::future::try_join_all(loads).await.map(drop)
+}
+
 /// Desktop's `loadOlderMessages`: loads pages back from the `older` token of the chat until a page adds a message
 /// or the room has no older events.
-pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> {
+async fn load_room_older(store: SharedStore, chat: String) -> Result<(), String> {
     let client = store.read().matrix.clone().expect("only a Matrix chat loads older messages");
     // The note chat shows before the homeserver has a note room, and until then it has no history.
     if chat == NOTE_CHAT_ID && joined_room(&client, &chat).await.is_err() {
@@ -1112,6 +1120,48 @@ async fn sync_label(store: &SharedStore, room: &Room) {
         rooms: joined.filter_map(|v| s(&v["state_key"])).collect(),
     };
     store.write().set_label(label);
+}
+
+/// The room type of Desktop's merged chats (`unionsStore`).
+const UNION: &str = "com.beeper.union";
+
+/// Desktop's `unionMembersForParent`: the member rooms of a merged chat, the `m.space.child` state with a `via`, in
+/// the order that they joined.
+async fn union_rooms(room: &Room) -> Vec<String> {
+    let mut children = states(room, StateEventType::SpaceChild).await;
+    children.retain(|v| v["content"]["via"].as_array().is_some_and(|via| !via.is_empty()));
+    children.sort_by_key(|v| v["origin_server_ts"].as_i64());
+    children.iter().filter_map(|v| s(&v["state_key"])).collect()
+}
+
+/// Desktop's `createUnion`: a private `com.beeper.union` room with the name and the member rooms as `m.space.child`
+/// state, then its photo (`setUnionAvatarMxc`).
+async fn create_union(
+    store: &SharedStore,
+    client: &Client,
+    draft: &str,
+    title: Option<String>,
+    rooms: Vec<String>,
+    avatar: Option<String>,
+) -> Result<(), String> {
+    let name =
+        title.map(|name| serde_json::json!({ "type": "m.room.name", "state_key": "", "content": { "name": name } }));
+    let children = rooms
+        .iter()
+        .map(|r| serde_json::json!({ "type": "m.space.child", "state_key": r, "content": { "via": ["beeper.com"] } }));
+    let request = serde_json::json!({
+        "creation_content": { "type": UNION, "com.beeper.union": true },
+        "initial_state": name.into_iter().chain(children).collect::<Vec<_>>(),
+        "preset": "private_chat",
+        "visibility": "private",
+    });
+    let room = create_room(client.clone(), request.to_string()).await?;
+    let mut st = store.write();
+    st.created_union(draft, &room);
+    if let Some(url) = avatar {
+        st.queue(&room, Outgoing::State("m.room.avatar".into(), serde_json::json!({ "url": url })));
+    }
+    Ok(())
 }
 
 /// Desktop's `createLabel` and `addRoomToLabel`.
@@ -1393,7 +1443,8 @@ async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>)
     });
     sync_room(store, room, events).await;
     let mut st = store.write();
-    let idx = st.chat_idx(&chat);
+    // A merged chat that the user left is gone (`UNION_REMOVED`).
+    let Some(idx) = st.resolve_chat_idx(&chat) else { return };
     if let Some(m) = exit.and_then(|id| st.loaded(&id).cloned()) {
         st.update_chat(idx, |c| (c.last_activity, c.preview) = (Some(m.timestamp.clone()), Some(m)));
     }
@@ -1413,12 +1464,17 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
         return sync_label(store, room).await;
     }
     // Desktop's `computeAccountID`: a space is "$space" and a room of another type is "$other", out of every chat list,
-    // but a `com.beeper.local` room is a chat like an untyped one.
+    // but a `com.beeper.local` room is a chat like an untyped one, and a `com.beeper.union` room is a merged chat.
     match create["type"].as_str() {
         Some("m.space") => return sync_space(store, room).await,
-        Some(t) if t != "com.beeper.local" => return,
+        Some(UNION) if room.state() == RoomState::Left => return store.write().remove_chat(room.room_id().as_str()),
+        Some(t) if t != "com.beeper.local" && t != UNION => return,
         _ => {}
     }
+    let union = match create["type"] == UNION {
+        true => Some(union_rooms(room).await),
+        false => None,
+    };
     let chat_id = chat_id(room).await;
     let note = chat_id == NOTE_CHAT_ID;
     let accounts = store.read().bridge_accounts.clone();
@@ -1426,6 +1482,10 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
     let pins = global(&room.client(), "com.beeper.favourites_order").await;
     let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
     let mut chat = chat(room, &accounts, &rules).await;
+    // Desktop's `rT`: a merged chat is single.
+    if union.is_some() {
+        chat.chat_type = "single".into();
+    }
     let seen = {
         let st = store.read();
         st.chat_idx_by_id.get(&chat_id).is_some_and(|&i| st.chats[i].notifiable.is_some())
@@ -1480,6 +1540,9 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
         st.keep_local_flags(&mut chat);
         if !note {
             st.upsert_chat(chat);
+            if let Some(rooms) = union {
+                st.set_union(&chat_id, rooms);
+            }
         } else {
             let i = st.chat_idx(NOTE_CHAT_ID);
             let room = |c: &Chat| {
@@ -1809,6 +1872,13 @@ pub enum Outgoing {
     CreateLabel(Label),
     /// The name, color and icon of a label, with the chats to add (true) or remove (false), like Desktop's `updateLabel`.
     EditLabel(Label, Vec<(String, bool)>),
+    /// Desktop's `createUnion`: a `com.beeper.union` room with the name, the rooms as children and the photo. Its chat
+    /// is the ID of the merged chat here.
+    CreateUnion {
+        title: Option<String>,
+        rooms: Vec<String>,
+        avatar: Option<String>,
+    },
     /// Leaves the room, and forgets it for Desktop's `deleteLabel`.
     Leave(bool),
     /// A state event with an empty state key.
@@ -2489,6 +2559,9 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
     if let Outgoing::CreateLabel(label) = out {
         return Ok(create_label(store, &client, label).await?);
     }
+    if let Outgoing::CreateUnion { title, rooms, avatar } = out {
+        return Ok(create_union(store, &client, &chat, title, rooms, avatar).await?);
+    }
     let chat = store.read().sent.get(&chat).cloned().unwrap_or(chat);
     let room = chat_room(&client, &chat).await?;
     let event = |id: String| {
@@ -2793,6 +2866,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             sent(txn, id.await.map_err(e)?.response.event_id);
         }
         Outgoing::CreateLabel(_) => unreachable!("a label has no room before it is created"),
+        Outgoing::CreateUnion { .. } => unreachable!("a merged chat has no room before it is created"),
         Outgoing::EditLabel(label, changes) => {
             let state = |kind: &'static str, content: Value| room.send_state_event_raw(kind, "", content);
             state("m.room.name", serde_json::json!({ "name": label.name })).await.map_err(e)?;
@@ -3767,6 +3841,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     let f = &st.features;
     if (&f.flags, &f.usage, &f.summary) != (&flags, &usage, &summary) {
         (st.features.flags, st.features.usage, st.features.summary) = (flags, usage, summary);
+        st.apply_union_limit();
         st.emit_ws("setup.updated", "", None, None, None);
     }
     // Desktop's `BRIDGE_STATES_UPDATED`: the homeserver updates the bridge states while the app runs.
@@ -4779,8 +4854,8 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                     Some(room) if room.state() == RoomState::Left => {
                         sync_left(store, &room, update.timeline.events).await
                     }
-                    // A forgotten room, like a deleted label, is gone from the client.
-                    _ => store.write().remove_chat(id.as_str()),
+                    // A forgotten room, like a deleted label, is gone from the client, and from its merged chats.
+                    _ => store.write().remove_deleted_chat(id.as_str()),
                 }
             }
             for (id, update) in resp.rooms.joined {
@@ -5787,6 +5862,158 @@ mod tests {
             (&json!(["$e1"]), &json!([]), &json!(false))
         );
         assert!(body["com.beeper.revision_id"].is_string(), "Desktop writes a new revision");
+    }
+
+    /// Desktop's merged chats: a `com.beeper.union` room with the `m.space.child` state of its member rooms is one chat
+    /// with their newest message, the sum of their unread counts and their messages by time; its member chats leave
+    /// the list, and a union that the user left is gone (`UNION_REMOVED`).
+    #[tokio::test]
+    async fn union_rooms_merge_their_member_chats_like_desktop() {
+        let state = |kind: &str, key: &str, ts: i64, content: Value| {
+            json!({ "type": kind, "state_key": key, "sender": "@me:x", "event_id": format!("${kind}{key}"),
+                "origin_server_ts": ts, "content": content })
+        };
+        let create = |kind: Option<&str>| state("m.room.create", "", 1, json!({ "creator": "@me:x", "type": kind }));
+        let member = |who: &str| state("m.room.member", who, 1, json!({ "membership": "join", "displayname": who }));
+        let room = |events: Vec<Value>, unread: i64| {
+            json!({ "state": { "events": events }, "timeline": { "events": [] },
+                "unread_notifications": { "notification_count": unread, "highlight_count": 0 } })
+        };
+        let via = json!({ "via": ["beeper.com"] });
+        let union = room(
+            vec![
+                create(Some("com.beeper.union")),
+                member("@me:x"),
+                state("m.room.name", "", 1, json!({ "name": "Lena" })),
+                state("m.space.child", "!sg:x", 3, via.clone()),
+                state("m.space.child", "!wa:x", 2, via),
+                state("m.space.child", "!gone:x", 4, json!({})),
+            ],
+            0,
+        );
+        let sync = json!({ "next_batch": "s1", "rooms": { "join": {
+            "!union:x": union,
+            "!wa:x": room(vec![create(None), member("@me:x"), member("@lena:wa")], 2),
+            "!sg:x": room(vec![create(None), member("@me:x"), member("@lena:sg")], 1),
+        } } });
+        // The member rooms take turns: WhatsApp at 10 and 30 seconds, Signal at 20.
+        let message = |id: &str, sender: &str, s: i64, order: i64| {
+            json!({ "type": "m.room.message", "sender": sender, "event_id": id, "origin_server_ts": 1_700_000_000_000 + s * 1000,
+                "content": { "msgtype": "m.text", "body": id }, "unsigned": { "com.beeper.hs.order": order } })
+        };
+        let pages = json!({
+            "!wa:x": [message("$wa2", "@lena:wa", 30, 2), message("$wa1", "@lena:wa", 10, 1)],
+            "!sg:x": [message("$sg1", "@lena:sg", 20, 1)],
+        });
+        let left = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gone = left.clone();
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" if gone.load(std::sync::atomic::Ordering::SeqCst) => {
+                let leave = json!({ "state": { "events": [] }, "timeline": { "events": [
+                    state("m.room.member", "@me:x", 5, json!({ "membership": "leave" })) ] } });
+                (200, json!({ "next_batch": "s2", "rooms": { "leave": { "!union:x": leave } } }))
+            }
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            p if p.ends_with("/messages") => {
+                let p = p.replace("%21", "!").replace("%3A", ":");
+                let page = pages.as_object().unwrap().iter().find(|(id, _)| p.contains(id.as_str()));
+                (200, json!({ "start": "t", "chunk": page.map_or(json!([]), |p| p.1.clone()) }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("union-rooms"), &url).await;
+        for id in ["!union:x", "!wa:x", "!sg:x"] {
+            sync_stub_room(&store, id).await;
+        }
+        {
+            let st = store.read();
+            let union = st.chat("!union:x");
+            let members = union.merge.as_ref().map(|m| m.chat_ids.clone());
+            assert_eq!(members, Some(vec!["!wa:x".into(), "!sg:x".into()]), "the children with a via, as they joined");
+            assert_eq!((union.title.as_str(), union.chat_type.as_str()), ("Lena", "single"));
+            let merged = |id: &str| st.chat(id).merged_into_chat_id.clone();
+            assert_eq!((merged("!wa:x"), merged("!sg:x")), (Some("!union:x".into()), Some("!union:x".into())));
+            assert_eq!(union.unread_count, 3, "the unread counts of the member chats add up");
+            assert_eq!(union.preview.as_ref().map(|m| m.id.as_str()), Some("$wa2"), "the newest member message");
+            assert_eq!(union.last_activity, st.chat("!wa:x").last_activity);
+            let order: Vec<&str> = st.chat_timeline("!union:x").iter().map(|m| m.id.as_str()).collect();
+            assert_eq!(order, ["$wa1", "$sg1", "$wa2"], "the member messages by time");
+            let idx = st.chat_idx("!union:x");
+            assert_eq!(st.chats[st.compose_target(idx)].id, "!wa:x", "a merged chat answers the newest message");
+        }
+        left.store(true, std::sync::atomic::Ordering::SeqCst);
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await;
+        let st = store.read();
+        assert!(st.find_chat("!union:x").is_none(), "a left union is gone");
+        assert_eq!(st.chat("!wa:x").merged_into_chat_id, None, "its member chats are back in the list");
+    }
+
+    /// Desktop's `createUnion`: the merged chat is here at once, and its `com.beeper.union` room takes the name and
+    /// the children; the chat then takes the room ID and keeps its first ID. Deleting a member chat takes it out
+    /// with an `m.space.child` without `via`, and the last one leaves the union room.
+    #[tokio::test]
+    async fn merged_chats_create_their_union_room_like_desktop() {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |_, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/createRoom" => {
+                log.lock().unwrap().push(body);
+                (200, json!({ "room_id": "!union:x" }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("union-create"), &url).await;
+        let (a, b) = ("!a:x", "!b:x");
+        for id in [a, b] {
+            let room =
+                super::Chat { id: id.into(), local_chat_id: None, ..store.read().chat(super::NOTE_CHAT_ID).clone() };
+            store.write().upsert_chat(room);
+        }
+        let draft = store.write().create_union("Lena", vec![a.into(), b.into()], None, None);
+        super::flush(store.clone()).await.expect("create the union room");
+        let body = json!({
+            "creation_content": { "type": "com.beeper.union", "com.beeper.union": true },
+            "initial_state": [
+                { "type": "m.room.name", "state_key": "", "content": { "name": "Lena" } },
+                { "type": "m.space.child", "state_key": a, "content": { "via": ["beeper.com"] } },
+                { "type": "m.space.child", "state_key": b, "content": { "via": ["beeper.com"] } },
+            ],
+            "preset": "private_chat",
+            "visibility": "private",
+        });
+        assert_eq!(*sent.lock().unwrap(), [body]);
+        let mut st = store.write();
+        assert_eq!(st.resolve_canonical_chat_id(&draft).as_deref(), Some("!union:x"), "the first ID still opens it");
+        assert_eq!(st.chat(a).merged_into_chat_id.as_deref(), Some("!union:x"));
+        for room in [a, b] {
+            let i = st.chat_idx(room);
+            st.update_chat(i, |c| c.delete_modes = super::DELETE_FOR_ME);
+        }
+        st.outbox.clear();
+        st.delete_chat(a, false);
+        let kept = st.chat("!union:x").merge.as_ref().map(|m| m.chat_ids.clone());
+        assert_eq!(kept, Some(vec![b.to_string()]));
+        let child = st.outbox.last().map(|(_, c, o)| (c.as_str(), o));
+        let out = |o: &super::Outgoing| matches!(o, super::Outgoing::LabelChild(r, false) if r == a);
+        assert!(child.is_some_and(|(c, o)| c == "!union:x" && out(o)), "a child without via takes it out");
+        st.delete_chat(b, false);
+        assert!(st.find_chat("!union:x").is_none(), "the empty merged chat is gone");
+        // The leave drops the child change that had not gone out yet.
+        let outs: Vec<(&str, &super::Outgoing)> = st.outbox.iter().map(|(_, c, o)| (c.as_str(), o)).collect();
+        let deleted = |o: &super::Outgoing| matches!(o, super::Outgoing::DeleteChat { .. });
+        let left = |o: &super::Outgoing| matches!(o, super::Outgoing::Leave(true));
+        assert!(
+            matches!(&outs[..], [(x, d1), (y, d2), ("!union:x", l)] if (*x, *y) == (a, b) && deleted(d1) && deleted(d2) && left(l))
+        );
     }
 
     /// Desktop's sticker packs: the packs of the room, its space, the rooms of `m.image_pack.rooms` and the account,
