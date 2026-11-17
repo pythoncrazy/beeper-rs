@@ -140,7 +140,7 @@ impl BeeperGuiApp {
         }
         let ended = |c: &&Chat| {
             c.snoozed_until_ms.is_some_and(|at| since < at && at <= now)
-                && c.merged_into_chat_id.is_none()
+                && c.listed()
                 && (c.is_unread() || c.unread_mentions > 0)
                 && (!st.notifications_muted(c) || c.unread_mentions > 0)
         };

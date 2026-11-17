@@ -199,4 +199,24 @@ mod tests {
         let leave = |o: &beeper_core::matrix::Outgoing| matches!(o, beeper_core::matrix::Outgoing::Leave(true));
         assert!(st.outbox.iter().any(|(_, c, o)| *c == id && leave(o)), "the user leaves and forgets its room");
     }
+
+    /// Desktop's `notificationSender` and `threadForNotificationReply`: a message of a member chat notifies as the
+    /// merged chat, which it opens, and a reply from the notification goes to the member chat.
+    #[test]
+    fn merged_chats_notify_as_one_chat_like_desktop() {
+        let (mut app, id) = merged_app("merged-notify");
+        app.focused = true;
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mut m = app.store.read().message("msg_x3").clone();
+        (m.id, m.timestamp) = ("$new".into(), "2099-01-01T00:00:00.000Z".into());
+        let (note, _) = app.notification(&m).expect("a notification");
+        assert_eq!((note.toast.title.as_str(), note.chat.as_str()), ("Friends", id.as_str()));
+        let _ = app.update(UiMessage::SelectChat(id.clone()));
+        m.id = "$newer".into();
+        assert!(app.notification(&m).is_none(), "the open merged chat does not notify");
+        app.notifications.insert(7, (id.clone(), "msg_x3".into()));
+        let _ = app.notification_event(7, Some(format!("{}on my way", crate::notify::REPLY)));
+        let st = app.store.read();
+        assert!(st.timeline(LENA).any(|m| m.text.as_deref() == Some("on my way")), "the reply goes to Lena's chat");
+    }
 }
