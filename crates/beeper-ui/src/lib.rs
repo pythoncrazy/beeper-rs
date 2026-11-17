@@ -3,6 +3,7 @@ mod add_account;
 mod anim;
 mod behavior;
 mod blocking;
+mod bridge_texts;
 pub mod chat_list;
 mod chat_theme;
 mod chat_theme_window;

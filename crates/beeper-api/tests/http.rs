@@ -1253,3 +1253,80 @@ async fn bridges_list_like_desktop() {
     let none = call(port, &token, "GET", "/v1/bridges/nope/logins", "").await;
     assert_eq!(none, (200, serde_json::json!({ "items": [] })));
 }
+
+/// Desktop's setup routes check their bodies with zod's `.strict()` objects and answer the first issue, its body
+/// parser answers V8's message for malformed JSON, and the chat routes but `getChat` name a chat they do not find.
+#[tokio::test]
+async fn bodies_and_unknown_chats_get_the_errors_of_desktop() {
+    use serde_json::json;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let out_port = listener.local_addr().unwrap().port();
+    let dir = beeper_core::testing::temp_dir("http-setup-bodies");
+    // No request reaches the cloud: each body fails its schema first.
+    let cfg = CentralConfig {
+        api_url: "http://127.0.0.1:9".into(),
+        ..CentralConfig::new(dir, "127.0.0.1".into(), out_port, None)
+    };
+    tokio::spawn(serve_http(listener, StoreLock::shared(BeeperStore::from_config(cfg))));
+    let refused = |message: &str, issues: serde_json::Value| json!({ "message": message, "code": "VALIDATION_ERROR", "details": { "issues": issues } });
+    let required = |k: &str| json!({ "code": "invalid_type", "expected": "string", "received": "undefined", "path": [k], "message": "Required" });
+    let email =
+        json!({ "validation": "email", "code": "invalid_string", "message": "Invalid email", "path": ["email"] });
+    let extra = json!({ "code": "unrecognized_keys", "keys": ["x", "y"], "path": [], "message": "Unrecognized key(s) in object: 'x', 'y'" });
+    let terms = json!({ "code": "invalid_literal", "expected": true, "path": ["acceptTerms"], "message": "Invalid literal value, expected true" });
+    let no_body = json!({ "code": "invalid_type", "expected": "object", "received": "undefined", "path": [], "message": "Required" });
+    let cases = [
+        (
+            "/v1/app/setup/email",
+            r#"{"setupRequestID":"r","email":"notanemail"}"#,
+            refused("Invalid email", json!([email])),
+        ),
+        (
+            "/v1/app/setup/email",
+            r#"{"email":"a@b.co","x":1,"y":2}"#,
+            refused("Required", json!([required("setupRequestID"), extra])),
+        ),
+        ("/v1/app/setup/response", r#"{"setupRequestID":"r"}"#, refused("Required", json!([required("response")]))),
+        (
+            "/v1/app/setup/register",
+            r#"{"setupRequestID":"r","leadToken":"l","username":"u"}"#,
+            refused("Invalid literal value, expected true", json!([terms])),
+        ),
+    ];
+    for (path, body, expected) in cases {
+        assert_eq!(call(out_port, "", "POST", path, body).await, (400, expected), "{path} {body}");
+    }
+    let out = text(out_port, "POST /v1/app/setup/email HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n").await;
+    let expected = refused("Required", json!([no_body])).to_string();
+    assert!(out.starts_with("HTTP/1.1 400 ") && out.ends_with(&expected), "a request without a body: {out}");
+
+    let (port, token) = server("setup-bodies").await;
+    let purpose = json!({ "received": "x", "code": "invalid_enum_value", "options": ["login", "device"], "path": ["purpose"], "message": "Invalid enum value. Expected 'login' | 'device', received 'x'" });
+    let expected = (400, refused("Invalid enum value. Expected 'login' | 'device', received 'x'", json!([purpose])));
+    assert_eq!(call(port, &token, "POST", "/v1/app/setup/verifications", r#"{"purpose":"x"}"#).await, expected);
+    let malformed = |message: &str| (400, json!({ "message": message, "code": "UNKNOWN_ERROR" }));
+    let start = call(port, &token, "POST", "/v1/chats/start", "{x").await;
+    assert_eq!(start, malformed("Expected property name or '}' in JSON at position 1 (line 1 column 2)"));
+    let read = call(port, &token, "POST", "/v1/chats/!wa_eric:beeper.com/read", "\"text\"").await;
+    assert_eq!(
+        read,
+        malformed("Unexpected token '\"', \"\"text\"\" is not valid JSON"),
+        "a body must be an object or an array"
+    );
+    let mcp = call(port, &token, "POST", "/v0/mcp", "[1,]").await;
+    assert_eq!(mcp, malformed("Unexpected token ']', \"[1,]\" is not valid JSON"), "before the MCP transport");
+    let no_chat = |message: &str| (404, json!({ "message": message, "code": "NOT_FOUND" }));
+    assert_eq!(call(port, &token, "GET", "/v1/chats/!nope", "").await, no_chat("Chat not found"));
+    for (method, target) in [
+        ("GET", "/v1/chats/!nope/messages"),
+        ("POST", "/v1/chats/!nope/read"),
+        ("PATCH", "/v1/chats/!nope"),
+        ("GET", "/v1/messages/search?chatIDs=!nope"),
+    ] {
+        assert_eq!(
+            call(port, &token, method, target, "{}").await,
+            no_chat("Chat not found: !nope"),
+            "{method} {target}"
+        );
+    }
+}
