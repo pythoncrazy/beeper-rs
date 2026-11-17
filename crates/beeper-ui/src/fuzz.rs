@@ -7083,7 +7083,8 @@ fn message_actions_follow_room_features_like_desktop() {
         sim.into_messages().collect()
     };
     assert!(simulator(app.view_message_menu(&mine).0).find("Reply…").is_err(), "the network has no replies");
-    assert!(clicked(&app, "Edit…").is_empty() && clicked(&app, "React…").is_empty(), "disabled like Desktop");
+    assert!(clicked(&app, "Edit…").is_empty(), "disabled like Desktop");
+    assert!(simulator(app.view_message_menu(&mine).0).find("React…").is_err(), "the network has no reactions");
     let ask = clicked(&app, "Delete…");
     assert!(
         matches!(&ask[..], [UiMessage::Message(message::Msg::Menu(m))] if matches!(&**m, UiMessage::Message(message::Msg::AskDelete(v)) if v == std::slice::from_ref(&mine)))

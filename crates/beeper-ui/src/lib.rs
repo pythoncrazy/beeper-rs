@@ -1047,10 +1047,21 @@ fn pin_columns(width: f32, n: usize) -> usize {
     n.max(1).div_ceil(n.max(1).div_ceil(most))
 }
 
-/// Desktop's `canStartEditMessage` for text: an own message that is not a poll.
-/// Desktop's `canStartEditMessage` for a message of a chat with `rules`.
-fn editable(m: &Message, rules: MessageRules) -> bool {
-    m.is_sender == Some(true) && m.poll.is_none() && rules.edit
+/// Desktop's `canStartEditMessage`: an own text message, or an own message of one file whose caption the chat edits.
+fn editable(m: &Message, chat: &Chat) -> bool {
+    if m.is_sender != Some(true) || !chat.messages.edit {
+        return false;
+    }
+    let kind = m.message_type.as_deref().unwrap_or("TEXT");
+    match &m.attachments[..] {
+        [] => kind == "TEXT",
+        [a] if matches!(kind, "IMAGE" | "VIDEO" | "AUDIO" | "VOICE" | "FILE") && m.unresolved_media.is_none() => {
+            let voice = a.is_voice_note == Some(true) || kind == "VOICE";
+            let mime = a.mime_type.as_deref().unwrap_or_default();
+            beeper_core::media::takes_caption(&chat.file, mime, a.is_gif == Some(true), voice)
+        }
+        _ => false,
+    }
 }
 
 /// Desktop's `canEditMessage`: the edit window of the network is still open.
@@ -2315,6 +2326,8 @@ pub struct Pane {
     pub menu_link: Option<String>,
     /// The message menu is Desktop's video menu, from a right click on the video.
     pub video_menu: bool,
+    /// The message menu is from a right click on a shown image (Desktop's `selectedImage`).
+    pub menu_image: bool,
     /// The quoted message whose right click opened the message menu (Desktop's `selectedLinkedMessage`).
     pub menu_linked: Option<String>,
     /// The messages of the gallery whose menu is open.
@@ -3652,22 +3665,23 @@ impl BeeperGuiApp {
         self.sidebar_width + if st.settings.on("showSidebar") { 0.0 } else { 68.0 }
     }
 
-    /// The message features of the chat of `m`.
-    fn rules(&self, m: &Message) -> MessageRules {
+    /// Desktop's `canStartEditMessage` and `canEditMessage` of `m`.
+    fn can_edit(&self, m: &Message) -> bool {
         let st = self.store.read();
-        st.chat(&m.chat_id).messages
+        let chat = st.chat(&m.chat_id);
+        editable(m, chat) && edit_open(m, chat.messages)
     }
 
     /// The newest message you can edit in the open chat.
     fn last_own_message(&self) -> Option<Message> {
         let st = self.store.read();
         let id = self.pane().selected_chat_id.as_deref().expect("an open chat");
-        let rules = st.chat(id).messages;
+        let chat = st.chat(id);
         let own = st
             .timeline_indices(id)
             .iter()
             .map(|&i| &st.messages[i])
-            .rfind(|m| editable(m, rules) && edit_open(m, rules) && m.attachments.is_empty());
+            .rfind(|m| editable(m, chat) && edit_open(m, chat.messages));
         own.cloned()
     }
 

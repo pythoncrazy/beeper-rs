@@ -156,6 +156,22 @@ fn load_upload(st: &BeeperStore, id: &str) -> Result<PendingMedia, String> {
     Ok(PendingMedia { name: st.assets[id].file_name.clone(), ..portal::load_file(&path)? })
 }
 
+/// The draft of the scheduled message `s` with `reply_to`: its text, and its stored upload, which "Clear storage" can
+/// remove before the send.
+pub(crate) fn scheduled_draft(
+    media: &mut images::Images<Result<Frames, String>>,
+    st: &mut BeeperStore,
+    s: &Scheduled,
+    reply_to: Option<String>,
+) -> Result<Draft, String> {
+    let files = match &s.upload {
+        None => Vec::new(),
+        Some(id) if st.assets.contains_key(id) => vec![out_file(media, st, load_upload(st, id)?)],
+        Some(id) => return Err(format!("Couldn't attach {id}")),
+    };
+    Ok(Draft { text: Some(s.text.clone()).filter(|t| !t.is_empty()), reply_to, files, ..Draft::default() })
+}
+
 /// Desktop's caption rule: the text goes with a single file as its caption where the chat takes captions on it.
 fn caption(text: &str, files: &[PendingMedia], rules: &FileRules) -> Option<String> {
     let takes = |f: &PendingMedia| beeper_core::media::takes_caption(rules, &f.mime, f.is_gif, false);
@@ -534,28 +550,15 @@ impl BeeperGuiApp {
             if has_flag(&st.chats[idx], ChatFlag::Archived) {
                 self.set_archived(&mut st, idx, false);
             }
-            let text = Some(s.text).filter(|t| !t.is_empty());
-            let files = match s.upload {
-                None => Vec::new(),
-                // "Clear storage" can remove the upload before the send.
-                Some(id) => {
-                    let f = match st.assets.contains_key(&id) {
-                        true => load_upload(&st, &id),
-                        false => Err(format!("Couldn't attach {id}")),
-                    };
-                    let f = match f {
-                        Ok(f) => f,
-                        Err(e) => {
-                            failed.push(e);
-                            continue;
-                        }
-                    };
-                    // Desktop removes the file of a sent message.
-                    st.drop_unused_uploads(&[id]);
-                    vec![out_file(&mut self.media, &mut st, f)]
+            let draft = match scheduled_draft(&mut self.media, &mut st, &s, s.reply_to.clone()) {
+                Ok(draft) => draft,
+                Err(e) => {
+                    failed.push(e);
+                    continue;
                 }
             };
-            let draft = Draft { text, reply_to: s.reply_to, files, ..Draft::default() };
+            // Desktop removes the file of a sent message.
+            st.drop_unused_uploads(s.upload.as_slice());
             st.send(&s.chat_id, draft).expect("send scheduled");
         }
         drop(st);

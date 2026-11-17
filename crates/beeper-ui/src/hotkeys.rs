@@ -217,8 +217,7 @@ impl BeeperGuiApp {
                 .filter(|_| self.selected_message().is_some_and(|m| !m.attachments.is_empty()))
                 .map(|m| UiMessage::Message(message::Msg::Download(m, None))),
             "Message: Edit" => {
-                let edit =
-                    self.selected_message().filter(|m| editable(m, self.rules(m)) && edit_open(m, self.rules(m)));
+                let edit = self.selected_message().filter(|m| self.can_edit(m));
                 let m = chat.and_then(|_| edit.or_else(|| self.last_own_message()));
                 m.map(|m| {
                     self.pane.selected_msgs = vec![m.id.clone()];
@@ -230,7 +229,8 @@ impl BeeperGuiApp {
                 let msgs = chat.iter().flat_map(|_| self.timeline(&st).0);
                 let msgs: Vec<&Message> = msgs.filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
                 let mids = msgs.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
-                let ok = !mids.is_empty() && msgs.iter().all(|m| m.is_deleted != Some(true));
+                // Desktop's `canOpen` of the forward menu: no view-once media.
+                let ok = !mids.is_empty() && !msgs.iter().any(|m| m.view_once());
                 drop(st);
                 if !ok {
                     self.status_banner = tr("Only works when messages are selected").into();
@@ -248,7 +248,7 @@ impl BeeperGuiApp {
             "Message: Quote or Edit Selected Message" => {
                 let empty = self.pane.composer.text().is_empty();
                 self.selected_message().and_then(|m| match m.is_sender == Some(true) {
-                    true => (empty && editable(&m, self.rules(&m)) && edit_open(&m, self.rules(&m)))
+                    true => (empty && self.can_edit(&m))
                         .then(|| UiMessage::Composer(composer::Msg::StartEdit(m.id, m.text.unwrap_or_default()))),
                     false => Some(UiMessage::Composer(composer::Msg::StartReply(m.id))),
                 })

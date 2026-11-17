@@ -425,6 +425,19 @@ impl Rows {
     }
 }
 
+/// Desktop's `mhe`: Bookmark for a sent message that is not deleted, once the bookmarks room is read. The demo has no
+/// bookmarks room. Every chat here is on a bridge of Beeper's, which has bookmarks (`supportsBookmarks`).
+fn bookmarkable(st: &BeeperStore, m: &Message) -> bool {
+    m.is_deleted != Some(true) && !pending(st, m) && (st.bookmarks_room.is_some() || st.config.demo)
+}
+
+/// Desktop's Mark as Unread from `m`: in a bridged chat (`canMarkUnreadFromMessage`), and in incognito mode, which
+/// keeps the unread mark where it is, not from a message after the mark (`ue`).
+fn unread_from(st: &BeeperStore, m: &Message) -> bool {
+    let read = st.chat(&m.chat_id).last_read_message_sort_key.as_ref();
+    m.account_id != "hungryserv" && (!st.incognito() || read.is_none_or(|r| m.sort_key <= *r))
+}
+
 /// Desktop's `TopOfThread`, which loads older messages while the top of the timeline is on screen.
 #[derive(Default)]
 pub struct TopOfThread {
@@ -498,7 +511,7 @@ impl BeeperGuiApp {
             (menu_item(p, None, label, hotkey, msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m))))), MENU_ITEM)
         };
         let stamp = st.settings.on("copyTimestamps");
-        let earliest = picked.first().filter(|m| m.account_id != "hungryserv");
+        let earliest = picked.first().filter(|m| unread_from(&st, m));
         let mut rows = vec![item(
             trn("Quote reply %d message…", "Quote reply %d messages…", n, &[&n]),
             "Ctrl R",
@@ -519,7 +532,8 @@ impl BeeperGuiApp {
             if stamp { "Ctrl C" } else { "" },
             Some(UiMessage::Message(Msg::CopySelected(true))),
         ));
-        if picked.iter().all(|m| m.is_deleted != Some(true)) {
+        // Desktop's `canOpen` of the forward menu: no view-once media.
+        if !picked.iter().any(|m| m.view_once()) {
             rows.push(item(tr("Forward…").into(), "Ctrl Shift F", Some(UiMessage::RunHotkey("Message: Forward"))));
         }
         let ids: Vec<String> = picked.iter().map(|m| m.id.clone()).collect();
@@ -567,8 +581,10 @@ impl BeeperGuiApp {
         let stamp = st.settings.on("copyTimestamps");
         // Desktop's `Hit`: view-once media has nothing to download or copy.
         let files = if m.view_once() { 0 } else { m.attachments.len() };
-        let image = files > 0 && m.attachments.first().is_some_and(|a| a.attachment_type == "img");
-        let only_image = image && m.text.is_none();
+        // Desktop's `selectedImage`: the image items come with a right click on the image.
+        let image = self.pane().menu_image;
+        // Desktop's `selectedImageAttachment`: Copy copies the one image of a message without text.
+        let only_image = text.is_empty() && files == 1 && m.attachments[0].attachment_type == "img";
         let download = match m.attachments.first().and_then(|a| a.file_size).filter(|_| files == 1) {
             Some(n) => trf(if image { "Download Image (%s)" } else { "Download Attachment (%s)" }, &[&human_size(n)]),
             None => tr(match (image, files == 1) {
@@ -581,8 +597,10 @@ impl BeeperGuiApp {
         };
         // Desktop's video menu takes the place of the message menu for a right click on the video, with Bookmark.
         if let Some(rows) = self.video_menu_rows(&mid).filter(|_| self.pane().video_menu) {
-            let mark = item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone()))));
-            let rows: Vec<(El, f32)> = rows.into_iter().chain([rule(), mark]).collect();
+            let mark = bookmarkable(&st, m).then(|| {
+                [rule(), item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone()))))]
+            });
+            let rows: Vec<(El, f32)> = rows.into_iter().chain(mark.into_iter().flatten()).collect();
             let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
             let col = Column::with_children(rows.into_iter().map(|r| r.0));
             let menu = container(col.padding([4, 0])).width(MESSAGE_MENU_W);
@@ -594,6 +612,8 @@ impl BeeperGuiApp {
         let sender = chat.participants.items.iter().any(|u| u.id == m.sender_id);
         let privately =
             !mine && sender && others > 1 && m.is_deleted != Some(true) && self.can(&m.account_id, "create_dm");
+        // Desktop's `D`: the items that act on a message hide while you edit it.
+        let editing = self.pane().editing_message_id.as_ref() == Some(&mid);
         // Desktop's detected-data items (phone, address, date, flight) above these come from the macOS-only
         // TextsSwift `detectData`; on Linux it returns nothing, so they never show (App:48518, 96520).
         let before: Vec<(El, f32)> = [
@@ -618,24 +638,25 @@ impl BeeperGuiApp {
                 let load = UiMessage::Loaded(loads::Msg::ResolveMedia(m.account_id.clone(), mid.clone(), raw.clone()));
                 vec![item(label.into(), "", (state != Some(&true)).then_some(load)), rule()]
             }),
-            (editable(m, rules) && !text.is_empty()).then(|| {
+            (editable(m, chat) && !editing).then(|| {
                 let edit =
                     edit_open(m, rules).then(|| UiMessage::Composer(composer::Msg::StartEdit(mid.clone(), text)));
                 vec![item(tr("Edit…").into(), "Ctrl T", edit)]
             }),
-            (rules.reply && live).then(|| {
+            (rules.reply && live && !editing).then(|| {
                 vec![item(
                     tr("Reply…").into(),
                     "Ctrl R",
                     Some(UiMessage::Composer(composer::Msg::StartReply(mid.clone()))),
                 )]
             }),
-            (self.pane().thread_root.is_none() && can_thread(&st, chat, m)).then(|| {
+            (self.pane().thread_root.is_none() && !editing && can_thread(&st, chat, m)).then(|| {
                 let label = tr("Reply in thread…").into();
                 vec![item(label, "Ctrl ↓", Some(UiMessage::Thread(threads::Msg::Show(mid.clone()))))]
             }),
             (self.pane().thread_root.is_none()
                 && live
+                && !editing
                 && st.threaded(chat)
                 && st.thread_replies(&mid).next().is_some())
             .then(|| vec![(self.follow_item(&st, chat, &mid), MENU_ITEM)]),
@@ -646,14 +667,12 @@ impl BeeperGuiApp {
                     Some(UiMessage::ChatList(chat_list::Msg::ReplyPrivately(mid.clone()))),
                 )]
             }),
-            Some(vec![
-                item(
-                    tr("React…").into(),
-                    "",
-                    (rules.react && m.reactable()).then(|| UiMessage::Message(Msg::React(mid.clone()))),
-                ),
-                item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone())))),
-            ]),
+            (rules.react && !editing).then(|| {
+                let react = m.reactable().then(|| UiMessage::Message(Msg::React(mid.clone())));
+                vec![item(tr("React…").into(), "", react)]
+            }),
+            bookmarkable(&st, m)
+                .then(|| vec![item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone()))))]),
         ]
         .into_iter()
         .flatten()
@@ -674,7 +693,7 @@ impl BeeperGuiApp {
                 let read = UiMessage::Message(Msg::MarkReadThrough(cid.clone(), mid.clone()));
                 vec![item(tr("Mark as Read").into(), "", Some(read))]
             }),
-            (m.is_unread != Some(true) && m.account_id != "hungryserv").then(|| {
+            (unread_from(&st, m) && !pending(&st, m)).then(|| {
                 vec![item(
                     tr("Mark as Unread").into(),
                     "",
@@ -684,6 +703,7 @@ impl BeeperGuiApp {
             (mine
                 && m.poll.as_ref().is_some_and(|p| !p.ended)
                 && m.is_deleted != Some(true)
+                && !editing
                 && st.feature("enable-polls").on
                 && st.chat(&cid).polls.is_some_and(|r| r.end))
             .then(|| {
@@ -713,7 +733,6 @@ impl BeeperGuiApp {
             false => head.iter().map(|r| r.1).sum::<f32>() + 11.0,
         };
         // Desktop's `Zit`: no Delete… for the message that you edit.
-        let editing = self.pane().editing_message_id.as_ref() == Some(&mid);
         let delete = (!editing && delete_dialog(&st, &[m]).is_some())
             .then(|| item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(vec![mid.clone()])))));
         let tail: Vec<(El, f32)> = self.voice_menu_rows(&st, m).into_iter().chain(delete).collect();
@@ -736,10 +755,11 @@ impl BeeperGuiApp {
                 let label = tr(if entire { "Copy Entire Message with Timestamp" } else { "Copy with Timestamp" });
                 vec![item(label.into(), if stamp { "Ctrl C" } else { "" }, Some(copy))]
             }),
-            (image && !only_image).then(|| {
+            (image && files > 0 && !only_image).then(|| {
                 vec![item(tr("Copy Image").into(), "", Some(UiMessage::Message(Msg::CopyImage(mid.clone(), 0))))]
             }),
-            (m.is_deleted != Some(true)).then(|| {
+            // Desktop's `canOpen` of the forward menu: no view-once media.
+            (!m.view_once()).then(|| {
                 vec![item(
                     tr("Forward…").into(),
                     "Ctrl Shift F",
@@ -1659,6 +1679,8 @@ impl BeeperGuiApp {
                     // A cropped still shows from a baked cut (the renderer draws `Cover` and crops past their box).
                     let cut = |u: &String| self.cover_tile(u, (w.round() as u32, h.round() as u32));
                     let cut = thumb_url.as_ref().filter(|_| cover && !looped).and_then(cut);
+                    // Desktop's `<img>`, whose right click gives the menu its image items.
+                    let img = !is_video && matches!(thumb_url.as_ref().and_then(|u| self.media_at(u)), Some(Ok(_)));
                     let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media_at(u)) {
                         Some(Ok(_)) if let Some(t) = cut => image(t.clone()).width(w).height(h).into(),
                         Some(Ok(frames)) => {
@@ -1700,7 +1722,13 @@ impl BeeperGuiApp {
                     } else {
                         (base, UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)))
                     };
-                    button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press).into()
+                    let slot = button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press);
+                    match img {
+                        true => {
+                            mouse_area(slot).on_right_press(UiMessage::Message(Msg::ImageMenu(m.id.clone()))).into()
+                        }
+                        false => slot.into(),
+                    }
                 }
                 // Desktop's `gx` attachments show as `Wfe` contact cards, once their file is read.
                 _ if is_vcard(a) && a.src_url.as_ref().and_then(|u| self.vcard_at(u)).is_none_or(Result::is_ok) => {
@@ -2137,7 +2165,8 @@ impl BeeperGuiApp {
             .push(footer)
             .push(transcribe)
             .align_x(if mine { Right } else { iced::Left });
-        let tools = (self.pane().hovered_msg.as_ref() == Some(&m.id)).then(|| {
+        // Desktop's flyover and download button do not show on a call.
+        let tools = (self.pane().hovered_msg.as_ref() == Some(&m.id) && m.call.is_none()).then(|| {
             // Desktop's flyover (`Yfe`): its items appear one after another, each from 85% of its size and clear to
             // its full size in 0.2 s, the next one once the one before is a quarter in. The quick reactions follow
             // once the pointer is on the flyover.
@@ -2160,26 +2189,37 @@ impl BeeperGuiApp {
                 button(container(glyph).center(32)).padding(0).style(style).on_press(msg).into()
             };
             let live = m.is_deleted != Some(true);
+            // Desktop's flyover shows on no pending message, has no items on a gallery, and only React in the
+            // thread pane.
+            let items = !pending && ms.len() == 1;
             let base = [
-                (chat.messages.reply && live).then_some(0),
-                (!in_pane && can_thread(st, chat, m)).then_some(1),
-                (chat.messages.react && m.reactable()).then_some(2),
+                (items && !in_pane && chat.messages.reply && live).then_some(0),
+                (items && !in_pane && can_thread(st, chat, m)).then_some(1),
+                (items && chat.messages.react && m.reactable()).then_some(2),
             ];
             let base: Vec<u8> = base.into_iter().flatten().collect();
             let item = |kind: u8, k: usize| -> El<'a> {
                 let v = shown(hover_at, k);
-                match kind {
-                    0 => b(icon::REPLY, UiMessage::Composer(composer::Msg::StartReply(m.id.clone())), v),
-                    1 => {
-                        let b = b(icon::VIEW_SIDEBAR, UiMessage::Thread(threads::Msg::Show(m.id.clone())), v);
-                        self.tip(b, tr("Reply in thread"), vec![], tooltip::Position::Top).into()
-                    }
-                    _ => b(icon::MOOD, UiMessage::Message(Msg::React(m.id.clone())), v),
-                }
+                let (b, tip) = match kind {
+                    0 => (
+                        b(icon::REPLY, UiMessage::Composer(composer::Msg::StartReply(m.id.clone())), v),
+                        trx("Reply", "message command"),
+                    ),
+                    1 => (
+                        b(icon::VIEW_SIDEBAR, UiMessage::Thread(threads::Msg::Show(m.id.clone())), v),
+                        trx("Reply in thread", "message command"),
+                    ),
+                    _ => (
+                        b(icon::MOOD, UiMessage::Message(Msg::React(m.id.clone())), v),
+                        trx("React", "attachment carousel action"),
+                    ),
+                };
+                // Desktop's `q3t`: the tooltips of the flyover wait a second.
+                self.tip(b, tip, vec![], tooltip::Position::Top).delay(std::time::Duration::from_secs(1)).into()
             };
             let flyover: Vec<El<'a>> = base.iter().enumerate().map(|(k, &kind)| item(kind, k)).collect();
             // Desktop's quick reactions go only on received messages, after the other items.
-            let quick = (self.quick_open && st.settings.on("quickReactions") && !mine && base.contains(&2))
+            let quick = (self.quick_open && st.settings.on("quickReactions") && !mine && !in_pane && base.contains(&2))
                 .then(|| crate::emoji::quick_reactions(st, &chat.allowed_reactions));
             let quick: Vec<String> = quick.unwrap_or_default();
             let after = hover_at.map(|t| t + std::time::Duration::from_secs_f32(base.len() as f32 * FLYOVER_STAGGER));
@@ -2191,7 +2231,7 @@ impl BeeperGuiApp {
             let quick = quick.into_iter().enumerate().map(|(j, e)| -> El<'a> {
                 let v = shown(start, j);
                 let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
-                let glyph = txt(e, 18.0 * (0.85 + 0.15 * v)).font(EMOJI_FONT).color(p.text.scale_alpha(v));
+                let glyph = txt(e, 20.0 * (0.85 + 0.15 * v)).font(EMOJI_FONT).color(p.text.scale_alpha(v));
                 button(container(glyph).center(32))
                     .padding(0)
                     .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
@@ -2581,6 +2621,8 @@ pub enum Msg {
     LinkMenu(String, String),
     /// A right click on the quote in a message, by the quoted message.
     LinkedMenu(String, String),
+    /// A right click on a shown image of a message.
+    ImageMenu(String),
     /// Desktop's `createThreadWithPhoneNumber` and `createThreadWithEmail` of a contact card.
     MessageContact(String, Box<User>),
     /// Select the message, or unselect it when it is selected.
@@ -2705,8 +2747,14 @@ impl BeeperGuiApp {
                 self.pane.menu_linked = Some(linked);
                 return open;
             }
+            Msg::ImageMenu(mid) => {
+                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
+                self.pane.menu_image = true;
+                return open;
+            }
             Msg::OpenMenu(mid) => {
                 (self.pane.menu_link, self.pane.video_menu, self.pane.menu_linked) = (None, false, None);
+                self.pane.menu_image = false;
                 // With text selected, Desktop leaves the menu to Electron's, which offers the selection.
                 self.pane.menu_selection = crate::selectable::has_selection().then(crate::selectable::text);
                 // Desktop's `selectOnly`: a right click on a message outside the selection selects it alone.
@@ -2781,10 +2829,13 @@ impl BeeperGuiApp {
             Msg::DoubleClick(mid) => {
                 let st = self.store.read();
                 let action = st.settings.pref("messageDoubleClick");
-                let reactable = st.loaded(&mid).is_some_and(Message::reactable);
+                // Desktop's `$`: the chat takes reactions; a quick reaction also needs a message that takes one.
+                let react = st.loaded(&mid).is_some_and(|m| st.chat(&m.chat_id).messages.react);
+                let reactable = react && st.loaded(&mid).is_some_and(Message::reactable);
                 drop(st);
                 return match action {
-                    1 | 5 if !reactable => Task::none(),
+                    1 if !react => Task::none(),
+                    5 if !reactable => Task::none(),
                     0 => Task::none(),
                     1 => self.update(UiMessage::Message(Msg::React(mid))),
                     3 => self.update(UiMessage::Forward(forward::Msg::Open(vec![mid]))),
@@ -3304,5 +3355,201 @@ mod tests {
         };
         let _ = app.update(UiMessage::SelectChat(chat));
         assert!(simulator(app.view_conversation()).find("Seen by Bo, Ann Smith, Ann Lee").is_ok());
+    }
+
+    /// Whether the message menu of `mid` has `label`.
+    fn menu_has(app: &BeeperGuiApp, mid: &str, label: &str) -> bool {
+        simulator(app.view_message_menu(mid).0).find(label).is_ok()
+    }
+
+    /// The newest message of the open chat that `pick` takes.
+    fn newest(app: &BeeperGuiApp, pick: impl Fn(&Message) -> bool) -> String {
+        let st = app.store.read();
+        app.timeline(&st).0.into_iter().rev().find(|m| pick(m)).expect("a message").id.clone()
+    }
+
+    /// Changes the message `mid` in the store.
+    fn change(app: &BeeperGuiApp, mid: &str, f: impl FnOnce(&mut Message)) {
+        let mut st = app.store.write();
+        let i = st.message_idx(mid);
+        st.update_message(i, f);
+    }
+
+    /// Desktop's `D`: Edit…, Reply… and React… hide for the message that you edit, and `canStartEditMessage` offers
+    /// Edit… for the caption of an own image where the chat takes one.
+    #[test]
+    fn edit_items_like_desktop() {
+        let note = "!note_self:beeper.com";
+        let mut app = crate::fuzz::demo_app("edit-items");
+        let _ = app.update(UiMessage::SelectChat(note.into()));
+        let mid = newest(&app, |m| m.is_sender == Some(true) && m.attachments.is_empty() && m.poll.is_none());
+        let has = |app: &BeeperGuiApp, label| menu_has(app, &mid, label);
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
+        assert!(has(&app, "Edit…") && has(&app, "Reply…") && has(&app, "React…"));
+        let _ = app.update(UiMessage::Composer(composer::Msg::StartEdit(mid.clone(), "old".into())));
+        assert!(!has(&app, "Edit…") && !has(&app, "Reply…") && !has(&app, "React…"), "not while you edit it");
+        app.pane.end_edit();
+        let img =
+            Attachment { attachment_type: "img".into(), mime_type: Some("image/jpeg".into()), ..Default::default() };
+        change(&app, &mid, |m| (m.text, m.message_type, m.attachments) = (None, Some("IMAGE".into()), vec![img]));
+        assert!(has(&app, "Edit…"), "the caption of an own image");
+        {
+            let mut st = app.store.write();
+            let i = st.resolve_chat_idx(note).expect("the note chat");
+            st.update_chat(i, |c| c.file.clear());
+        }
+        assert!(!has(&app, "Edit…"), "not where the chat takes no caption");
+    }
+
+    /// Desktop's `mhe`: Bookmark for a message that is not deleted, once the bookmarks room is read.
+    #[test]
+    fn bookmark_item_like_desktop() {
+        let mut app = crate::fuzz::demo_app("bookmark-item");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = newest(&app, |m| m.is_deleted != Some(true));
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
+        assert!(menu_has(&app, &mid, "Bookmark"));
+        change(&app, &mid, |m| m.is_deleted = Some(true));
+        assert!(!menu_has(&app, &mid, "Bookmark"), "not on a deleted message");
+        change(&app, &mid, |m| m.is_deleted = None);
+        {
+            let mut st = app.store.write();
+            st.config.demo = false;
+            let seeded: Vec<String> = st.messages.iter().map(|m| m.id.clone()).collect();
+            st.sent.extend(seeded.into_iter().map(|id| (id.clone(), id)));
+        }
+        assert!(!menu_has(&app, &mid, "Bookmark"), "not before the bookmarks room is read");
+        app.store.write().bookmarks_room = Some(beeper_core::models::BOOKMARKS_ROOM.into());
+        assert!(menu_has(&app, &mid, "Bookmark"));
+    }
+
+    /// Desktop's Mark as Unread from a message of a bridged chat, also from an unread one, but not past the unread
+    /// mark in incognito mode, which keeps the mark where it is.
+    #[test]
+    fn mark_unread_item_like_desktop() {
+        let mut app = crate::fuzz::demo_app("unread-item");
+        let chat = {
+            let st = app.store.read();
+            let bridged = st.chats.iter().filter(|c| c.account_id != "hungryserv");
+            bridged.map(|c| c.id.clone()).find(|id| st.messages.iter().any(|m| m.chat_id == *id)).expect("a chat")
+        };
+        let _ = app.update(UiMessage::SelectChat(chat.clone()));
+        let mid = newest(&app, |m| m.is_deleted != Some(true));
+        let read_to = |app: &BeeperGuiApp, key: &str| {
+            let mut st = app.store.write();
+            let i = st.resolve_chat_idx(&chat).expect("the chat");
+            st.update_chat(i, |c| c.last_read_message_sort_key = Some(key.into()));
+        };
+        change(&app, &mid, |m| m.is_unread = Some(true));
+        read_to(&app, "0");
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
+        assert!(menu_has(&app, &mid, "Mark as Unread") && menu_has(&app, &mid, "Mark as Read"), "an unread message");
+        let trial = serde_json::json!({ "started_at": "2020-01-01T00:00:00Z", "expires_at": "2999-01-01T00:00:00Z" });
+        app.store.write().features.usage = serde_json::json!({ "incognito": trial });
+        let _ = app.update(UiMessage::RunHotkey("Toggle Incognito Mode"));
+        assert!(app.store.read().incognito());
+        assert!(!menu_has(&app, &mid, "Mark as Unread"), "incognito mode keeps the mark");
+        let key = app.store.read().message(&mid).sort_key.clone();
+        read_to(&app, &key);
+        assert!(menu_has(&app, &mid, "Mark as Unread"), "a message at the mark");
+    }
+
+    /// Desktop's `selectedImage`: a right click on the image gives Copy Image and Download Image in place of Copy with
+    /// Timestamp, and Copy copies the image of a message of one image without text (`selectedImageAttachment`).
+    #[test]
+    fn image_items_like_desktop() {
+        let mut app = crate::fuzz::demo_app("image-items");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = newest(&app, |m| m.is_deleted != Some(true) && m.attachments.is_empty());
+        let img = Attachment { attachment_type: "img".into(), src_url: Some("mxc://x/a".into()), ..Default::default() };
+        change(&app, &mid, |m| (m.text, m.attachments) = (Some("caption".into()), vec![img]));
+        let has = |app: &BeeperGuiApp, label| menu_has(app, &mid, label);
+        let copies_image = |app: &BeeperGuiApp| {
+            let mut sim = simulator(app.view_message_menu(&mid).0);
+            let _ = sim.click("Copy").expect("Copy");
+            sim.into_messages().any(|m| match m {
+                UiMessage::Message(Msg::Menu(m)) => matches!(*m, UiMessage::Message(Msg::CopyImage(..))),
+                _ => false,
+            })
+        };
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
+        assert!(has(&app, "Copy with Timestamp") && !has(&app, "Copy Image") && has(&app, "Download Attachment"));
+        let _ = app.update(UiMessage::Message(Msg::ImageMenu(mid.clone())));
+        assert!(!has(&app, "Copy with Timestamp") && has(&app, "Copy Image") && has(&app, "Download Image"));
+        assert!(!copies_image(&app), "Copy copies the text");
+        change(&app, &mid, |m| m.text = None);
+        assert!(copies_image(&app) && !has(&app, "Copy Image"), "Copy copies the one image");
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
+        assert!(copies_image(&app) && has(&app, "Copy with Timestamp"), "also without the image's right click");
+    }
+
+    /// Desktop's `canOpen` of the forward menu: Forward… also for a deleted message, but not for view-once media.
+    #[test]
+    fn forward_item_like_desktop() {
+        let mut app = crate::fuzz::demo_app("forward-item");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = newest(&app, |m| m.is_deleted != Some(true));
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
+        change(&app, &mid, |m| m.is_deleted = Some(true));
+        assert!(menu_has(&app, &mid, "Forward…"), "a deleted message");
+        change(&app, &mid, |m| (m.is_deleted, m.view_limit) = (None, Some(serde_json::json!({ "type": "count" }))));
+        assert!(!menu_has(&app, &mid, "Forward…"), "view-once media");
+    }
+
+    /// Desktop's flyover (`show` of `Yfe`) has no items on a pending message.
+    #[test]
+    fn flyover_items_like_desktop() {
+        let note = "!note_self:beeper.com";
+        let mut app = crate::fuzz::demo_app("flyover-items");
+        let _ = app.update(UiMessage::SelectChat(note.into()));
+        app.pane.size = Size::new(900.0, 700.0);
+        let (_, sent, _) = app.store.write().send_message(note, Some("hi".into()), None, None).expect("a send");
+        let reply = icon::REPLY.to_string();
+        let shows = |app: &BeeperGuiApp| simulator(app.view_conversation()).find(reply.as_str()).is_ok();
+        let _ = app.update(UiMessage::Message(Msg::HoverEnter(sent.clone())));
+        assert!(shows(&app), "a sent message");
+        app.store.write().config.demo = false;
+        assert!(!shows(&app), "a pending message");
+    }
+
+    /// Desktop's double click reactions (`$`): none in a chat without reactions, and React with... maps to an
+    /// allowed reaction.
+    #[test]
+    fn double_click_reactions_like_desktop() {
+        let mut app = crate::fuzz::demo_app("double-click-react");
+        let note = "!note_self:beeper.com";
+        let _ = app.update(UiMessage::SelectChat(note.into()));
+        let mid = newest(&app, Message::reactable);
+        let rules = |app: &BeeperGuiApp, react: bool, allowed: &[&str]| {
+            let mut st = app.store.write();
+            let i = st.resolve_chat_idx(note).expect("the note chat");
+            st.update_chat(i, |c| {
+                c.messages.react = react;
+                c.allowed_reactions = allowed.iter().map(|a| a.to_string()).collect();
+            });
+        };
+        let pref = |app: &mut BeeperGuiApp, v| {
+            let _ = app.update(UiMessage::Settings(crate::settings::Msg::SetPref("messageDoubleClick", v)));
+        };
+        let reactions = |app: &BeeperGuiApp| app.store.read().message(&mid).reactions.len();
+        let before = reactions(&app);
+        pref(&mut app, 1);
+        rules(&app, false, &[]);
+        let _ = app.update(UiMessage::Message(Msg::DoubleClick(mid.clone())));
+        assert!(app.pane.emoji.is_none(), "React opens no picker without reactions");
+        pref(&mut app, 5);
+        let _ = app.update(UiMessage::Message(Msg::DoubleClick(mid.clone())));
+        assert_eq!(reactions(&app), before, "React with... adds none without reactions");
+        let quick = app.store.read().settings.quick_reaction.clone();
+        assert_ne!(quick, "🎉");
+        rules(&app, true, &["🎉"]);
+        let _ = app.update(UiMessage::Message(Msg::DoubleClick(mid.clone())));
+        assert_eq!(reactions(&app), before, "nor one that the chat does not allow");
+        rules(&app, true, &[]);
+        let _ = app.update(UiMessage::Message(Msg::DoubleClick(mid.clone())));
+        assert!(app.store.read().message(&mid).reactions.iter().any(|r| r.reaction_key == quick));
+        pref(&mut app, 1);
+        let _ = app.update(UiMessage::Message(Msg::DoubleClick(mid.clone())));
+        assert!(app.pane.emoji.is_some(), "React opens the picker");
     }
 }

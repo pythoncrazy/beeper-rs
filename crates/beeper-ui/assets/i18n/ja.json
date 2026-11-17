@@ -1352,6 +1352,7 @@
 "read":["既読"],
 "remove group participant confirmation button\u0004Remove":["削除"],
 "required":["必須"],
+"scheduled message menu action\u0004Forward...":["転送..."],
 "seen %(lastSeen)s":["閲覧済み %(lastSeen)s"],
 "server environment fallback label\u0004Default":["デフォルト"],
 "signal/qr":["signal/qr"],

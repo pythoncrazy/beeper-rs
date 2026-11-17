@@ -16,6 +16,8 @@ pub enum Msg {
     RescheduleTo(Vec<String>, i64, bool),
     Unschedule(Vec<String>),
     Edit(String),
+    /// Desktop's Forward... of a scheduled message, which forwards a copy of it.
+    Forward(String),
     Fold(bool),
     Check,
 }
@@ -75,6 +77,10 @@ impl BeeperGuiApp {
                 drop(st);
                 return self.update(UiMessage::Composer(composer::Msg::StartEdit(id, text)));
             }
+            Msg::Forward(id) => {
+                self.pane.sched_menu = None;
+                return self.update(UiMessage::Forward(forward::Msg::Open(vec![id])));
+            }
             Msg::Fold(collapsed) => {
                 self.pane.sched_fold.0 = collapsed;
                 return operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
@@ -114,7 +120,7 @@ pub(crate) fn send_day(at: i64, h24: bool) -> String {
 }
 
 impl BeeperGuiApp {
-    /// Desktop's scheduled message menu: with `items`, Edit and Copy, then `Mhe`.
+    /// Desktop's scheduled message menu: with `items`, Edit, Copy and Forward, then `r0e`.
     pub(crate) fn view_scheduled_menu(&self, ids: &[String], items: bool) -> (El<'_>, f32) {
         let p = &self.pal;
         let st = self.store.read();
@@ -129,6 +135,10 @@ impl BeeperGuiApp {
             items.then(|| {
                 item(trx("Copy", ctx).into(), "Ctrl C", UiMessage::Message(message::Msg::CopyText(first.text.clone())))
             }),
+            items.then(|| {
+                let forward = UiMessage::Scheduled(scheduled::Msg::Forward(ids[0].clone()));
+                item(trx("Forward...", "scheduled message menu action").into(), "Ctrl Shift F", forward)
+            }),
             items.then(|| Some(menu_rule(p))),
             (!canceled).then(|| match n {
                 1 => {
@@ -140,7 +150,16 @@ impl BeeperGuiApp {
                     UiMessage::Scheduled(scheduled::Msg::SendNow(ids.clone())),
                 ),
             }),
-            Some(item(tr("Reschedule").into(), "", UiMessage::Scheduled(scheduled::Msg::Reschedule(ids.clone())))),
+            // Desktop's Reschedule needs the Send Later feature.
+            Some(Some(menu_item(
+                p,
+                None,
+                tr("Reschedule").into(),
+                "",
+                st.feature("scheduled-message")
+                    .on
+                    .then(|| UiMessage::Scheduled(scheduled::Msg::Reschedule(ids.clone()))),
+            ))),
             Some(item(
                 match (canceled, n) {
                     (true, _) => trn("Remove Unsent Message", "Remove Unsent Messages", n, &[]),
@@ -245,5 +264,50 @@ impl BeeperGuiApp {
         let bubble = mouse_area(stack![bubble, dashed::dashes(fg, 17.0)])
             .on_right_press(UiMessage::Scheduled(scheduled::Msg::Menu(vec![s.id.clone()], true)));
         row![Space::new().width(Fill), bubble].into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced_test::simulator::simulator;
+
+    /// The messages of a click on `label` in the menu of the scheduled message `id`.
+    fn click(app: &BeeperGuiApp, id: &str, label: &str) -> Vec<UiMessage> {
+        let mut sim = simulator(app.view_scheduled_menu(&[id.to_string()], true).0);
+        let _ = sim.click(label).expect(label);
+        sim.into_messages().collect()
+    }
+
+    /// Desktop's scheduled message menu: Forward... after Copy, which forwards a copy of the message, and Reschedule
+    /// only with the Send Later feature.
+    #[test]
+    fn scheduled_menu_like_desktop() {
+        let mut app = crate::fuzz::demo_app("scheduled-menu");
+        let (chat, other) = {
+            let st = app.store.read();
+            let ids: Vec<String> = st.chats.iter().take(2).map(|c| c.id.clone()).collect();
+            (ids[0].clone(), ids[1].clone())
+        };
+        app.store.write().schedule(&chat, "later".into(), None, (now_unix_millis() + 3_600_000, false), None);
+        let id = app.store.read().scheduled[0].id.clone();
+        let forward = click(&app, &id, "Forward...");
+        assert!(matches!(&forward[..], [UiMessage::Scheduled(Msg::Forward(f))] if *f == id));
+        forward.into_iter().for_each(|m| drop(app.update(m)));
+        assert_eq!(app.forward.as_ref().map(|f| f.mids.clone()), Some(vec![id.clone()]));
+        let _ = app.update(UiMessage::Forward(forward::Msg::Pick(other.clone())));
+        let _ = app.update(UiMessage::Forward(forward::Msg::Send));
+        let st = app.store.read();
+        let copy = st.messages.iter().rfind(|m| m.chat_id == other).expect("the forwarded copy");
+        assert_eq!(copy.text.as_deref(), Some("later"));
+        assert_eq!(st.scheduled.len(), 1, "the scheduled message stays");
+        drop(st);
+        assert!(matches!(&click(&app, &id, "Reschedule")[..], [UiMessage::Scheduled(Msg::Reschedule(_))]));
+        {
+            let mut st = app.store.write();
+            st.features.flags["features"]["*"]["scheduled-message"] = false.into();
+            st.features.usage = serde_json::json!({ "scheduled-message": { "used": 5 } });
+        }
+        assert!(click(&app, &id, "Reschedule").is_empty(), "the spent free plan disables Reschedule");
     }
 }

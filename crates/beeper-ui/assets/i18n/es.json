@@ -1387,6 +1387,7 @@
 "read":["leído"],
 "remove group participant confirmation button\u0004Remove":["Eliminar"],
 "required":["obligatorio"],
+"scheduled message menu action\u0004Forward...":["Reenviar…"],
 "seen %(lastSeen)s":["visto %(lastSeen)s"],
 "server environment fallback label\u0004Default":["Por defecto"],
 "signal/qr":["signal/qr"],

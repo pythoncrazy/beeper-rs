@@ -1386,6 +1386,7 @@
 "read":["chats lidos"],
 "remove group participant confirmation button\u0004Remove":["Remover"],
 "required":["exigido"],
+"scheduled message menu action\u0004Forward...":["Encaminhar…"],
 "seen %(lastSeen)s":["visto %(lastSeen)s"],
 "server environment fallback label\u0004Default":["Padrão"],
 "signal/qr":["signal/qr"],
