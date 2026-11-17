@@ -88,6 +88,23 @@ pub(crate) fn info_menu(
     key: &str,
     dm: impl Fn(&str) -> bool,
 ) -> Vec<Option<(String, Option<UiMessage>)>> {
+    // Desktop's `hj` and `pj` menus of a phone number or an email of a contact card.
+    if let Some((kind, v)) = key.strip_prefix("vcard:").and_then(|k| k.split_once(' ')) {
+        let item = |label: String, msg| Some((label, Some(msg)));
+        return match kind {
+            "phone" => {
+                let shown = fmt_phone(v);
+                vec![
+                    item(format!("Call {shown}"), UiMessage::OpenUrl(format!("tel:{}", phone_digits(v)))),
+                    item(format!("Copy {shown}"), UiMessage::Message(message::Msg::CopyText(shown))),
+                ]
+            }
+            _ => vec![
+                item(format!("Email {v}"), UiMessage::OpenUrl(format!("mailto:{v}"))),
+                item(format!("Copy {v}"), UiMessage::Message(message::Msg::CopyText(v.into()))),
+            ],
+        };
+    }
     if let Some((cid, kind)) = key.strip_prefix("contact:").and_then(|k| k.split_once(' ')) {
         let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
         let u = c.participants.items.iter().find(|u| u.is_self != Some(true)).expect("the other member");

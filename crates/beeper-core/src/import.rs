@@ -508,6 +508,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 room_features,
                 polls: Some(BEEPER_POLLS),
                 messages: BEEPER_MESSAGES,
+                allowed_reactions: Vec::new(),
                 disappearing: t.pointer("/disappearingTimer/timer").and_then(Value::as_u64).filter(|&t| t > 0),
                 timers: None,
                 older: Older::Unknown,

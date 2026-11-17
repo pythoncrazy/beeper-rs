@@ -4055,11 +4055,11 @@ fn quick_reaction_settings_like_desktop() {
     assert!(simulator(app.view_settings()).find("Quick reaction emoji").is_ok());
     let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::Appearance)));
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("quickReactionsCustomized", 1)));
-    assert_eq!(crate::emoji::quick_reactions(&app.store.read()), ["👍", "❤️", "😂"], "Desktop's custom defaults");
+    assert_eq!(crate::emoji::quick_reactions(&app.store.read(), &[]), ["👍", "❤️", "😂"], "Desktop's custom defaults");
     let _ = app.update(UiMessage::QuickEmoji(Some(2)));
     let _ = simulator(app.view_settings());
     let _ = app.update(UiMessage::Emoji(EmojiMsg::Pick(0)));
-    let custom = crate::emoji::quick_reactions(&app.store.read());
+    let custom = crate::emoji::quick_reactions(&app.store.read(), &[]);
     assert!(custom[1] != "❤️" && app.pane.emoji.is_none(), "a pick sets the custom reaction: {custom:?}");
     let _ = app.update(UiMessage::QuickEmoji(Some(0)));
     let _ = app.update(UiMessage::Emoji(EmojiMsg::Pick(0)));
@@ -6492,9 +6492,11 @@ fn contacts_without_a_phone_number_resolve_like_desktop() {
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleContact(lee.id.clone())));
     let nets = &app.contact_networks.as_ref().expect("the networks").1;
-    assert!(
-        matches!(&nets[..], [(a, None)] if *a == account),
-        "Desktop looks up the username, and any_phone needs a phone number"
+    let asked: Vec<&str> = nets.iter().filter(|(_, n)| n.is_none()).map(|(a, _)| a.as_str()).collect();
+    assert_eq!(
+        (asked, nets.len()),
+        (vec!["hungryserv", account.as_str()], 2),
+        "Desktop looks up the username, also as a Matrix ID, and any_phone needs a phone number"
     );
 }
 
@@ -6763,7 +6765,7 @@ fn new_chat_looks_up_identifiers_like_desktop() {
 fn new_chat_searches_connections_like_desktop() {
     let mut app = demo_app("new-chat-connections");
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
-    let account = rail_accounts(&app.store.read()).into_iter().next().expect("an account");
+    let account = rail_accounts(&app.store.read()).into_iter().find(|a| a != "hungryserv").expect("a bridge");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("dana".into())));
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("dana".into())));
@@ -6773,7 +6775,8 @@ fn new_chat_searches_connections_like_desktop() {
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("dana".into())));
     assert!(found(&app, "Connections") && found(&app, "Searching..."));
     let user = |name: &str, phone: &str| serde_json::json!({ "id": name, "mxid": format!("@x_{name}:beeper.local"), "name": name, "identifiers": [format!("tel:{phone}")] });
-    let results = vec![user("Dana One", "+15550111"), user("Dana Two", "+15550111"), user("Ann Dana", "+15550112")];
+    let results = [user("Dana One", "+15550111"), user("Dana Two", "+15550111"), user("Ann Dana", "+15550112")];
+    let results: Vec<User> = results.iter().map(new_chat::resolved_user).collect();
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::SearchedUsers(
         "dan".into(),
         account.clone(),
@@ -6785,6 +6788,64 @@ fn new_chat_searches_connections_like_desktop() {
     assert!(!found(&app, "Dana Two"), "one row per bridge and phone number");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("danae".into())));
     assert!(app.new_chat_search.is_none() && !found(&app, "Connections"));
+}
+
+/// Desktop's Matrix account in New Chat: the capabilities of the SDK's `matrix` pseudo-bridge, the profile lookup
+/// of a typed Matrix ID, the user directory only with "Include Matrix results in Start New Chat", and direct chats
+/// and groups that the Matrix client creates.
+#[test]
+fn new_chat_reaches_matrix_users_like_desktop() {
+    let mut app = demo_app("new-chat-matrix");
+    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
+    let matrix = "hungryserv".to_string();
+    let caps = ["create_dm", "lookup_username", "search"].map(|c| app.can(&matrix, c));
+    assert!(caps.iter().all(|&c| c) && !app.can(&matrix, "lookup_phone") && app.can_group(&matrix));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Account(Some(matrix.clone()))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("@vic:beeper.com".into())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("@vic:beeper.com".into())));
+    assert!(app.new_chat_search.is_none(), "the Matrix account does not search by default");
+    let nets = &app.new_chat_lookup.as_ref().expect("a lookup").1;
+    assert!(matches!(&nets[..], [(a, None)] if *a == matrix), "the Matrix account looks up the Matrix ID");
+    let vic = serde_json::json!({ "id": "@vic:beeper.com", "name": "Vic", "identifiers": ["matrix:u/vic:beeper.com"],
+        "mxid": "@vic:beeper.com" });
+    let key = "lookup:@vic:beeper.com".to_string();
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ContactNetwork(key, 0, Ok(Some(vic.clone())))));
+    assert!(found(&app, "Vic"));
+    let _ = app
+        .update(UiMessage::NewChat(new_chat::Msg::PickUser(matrix.clone(), Box::new(new_chat::resolved_user(&vic)))));
+    let n = app.creating_chat.expect("a draft");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
+    assert_eq!(app.status_banner, "Composing chat...", "the Matrix client creates the direct chat");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::DmCreated(Some(n), matrix.clone(), None, Ok("!dm:x".into()))));
+    assert_eq!(app.pending_dm, Some(("!dm:x".into(), None)), "the room opens when it syncs");
+
+    let prefs = serde_json::json!({ beeper_core::prefs::INCLUDE_MATRIX_ACCOUNT_SEARCH: true });
+    app.store.write().synced_prefs.insert(beeper_core::prefs::DESKTOP_PREFS, prefs);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Account(Some(matrix.clone()))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::NewGroup));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("una".into())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("una".into())));
+    assert!(found(&app, "Connections") && found(&app, "Searching..."), "the internal setting adds the directory");
+    let user = |id: &str, name: Option<&str>| User {
+        id: id.into(),
+        username: Some(id.into()),
+        full_name: name.map(Into::into),
+        ..Default::default()
+    };
+    let users = vec![user("@una:beeper.com", Some("Una")), user("@ula:beeper.com", None)];
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::SearchedUsers("una".into(), matrix.clone(), Ok(users))));
+    assert!(found(&app, "Una") && found(&app, "@una:beeper.com") && found(&app, "@ula:beeper.com"));
+    let n = app.creating_chat.expect("a draft");
+    for u in [user("@una:beeper.com", Some("Una")), user("@ula:beeper.com", None)] {
+        let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(matrix.clone(), Box::new(u))));
+    }
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::GroupTitle("Team".into())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
+    assert_eq!(app.status_banner, "Creating group chat...", "the Matrix client creates the group");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::GroupCreated(n, matrix, Ok("!group:x".into()))));
+    assert!(app.new_chats.iter().all(|d| d.id != n) && app.pending_dm == Some(("!group:x".into(), None)));
 }
 
 #[test]
@@ -8098,6 +8159,38 @@ fn view_once_media_like_desktop() {
     assert!(sim.find("This message has been deleted").is_err());
 }
 
+/// Desktop's reactions on a network that takes only some (`allowed_reactions`): React shows them in a row instead of
+/// the emoji picker, the hover bar's quick reactions and the double-click reaction are only allowed ones.
+#[test]
+fn allowed_reactions_like_desktop() {
+    let mut app = demo_app("allowed-reactions");
+    let chat = app.visible_chats(&app.store.read())[0].id.clone();
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    let mid = {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&chat).expect("the chat");
+        st.update_chat(i, |c| c.allowed_reactions = vec!["👍".into(), "❤️".into()]);
+        let last = *st.timeline_indices(&chat).last().expect("a message");
+        st.messages[last].id.clone()
+    };
+    let allowed = app.store.read().chat(&chat).allowed_reactions.clone();
+    assert_eq!(crate::emoji::allowed_reaction(&allowed, "❤"), Some("❤️".into()), "without its variation selector");
+    assert_eq!(crate::emoji::allowed_reaction(&allowed, "😂"), None);
+    assert!(crate::emoji::quick_reactions(&app.store.read(), &allowed).iter().all(|e| allowed.contains(e)));
+    let _ = app.update(UiMessage::Message(message::Msg::React(mid.clone())));
+    {
+        let st = app.store.read();
+        let mut sim = simulator(app.view_emoji_picker(&st).expect("the reactions"));
+        assert!(sim.find("👍").is_ok() && sim.find("😂").is_err(), "only the allowed reactions");
+    }
+    let _ = app.update(UiMessage::Emoji(crate::emoji::EmojiMsg::React("👍".into())));
+    assert!(app.pane.emoji.is_none(), "a pick closes them");
+    let reacted = app.store.read().message(&mid).reactions.iter().any(|r| r.reaction_key == "👍");
+    assert!(reacted, "and reacts");
+    app.patch_settings(|s| s.quick_reaction = "😂".into());
+    assert!(matches!(app.quick_react(mid), UiMessage::Noop), "a double click does not send what the network refuses");
+}
+
 /// Desktop's `.left` transition: the space bar and the chat list slide out and back in over 0.2 s.
 #[test]
 fn sidebar_slides_like_desktop() {
@@ -8111,4 +8204,34 @@ fn sidebar_slides_like_desktop() {
     let _ = app.update(UiMessage::RunHotkey("Toggle Sidebar"));
     assert!(!app.sidebar_hidden && app.sidebar_progress().is_some());
     drop(simulator(app.view_main()));
+}
+
+/// Desktop's `Wfe` contact card of a `.vcf` attachment in the timeline, with the Call and Copy menu of a number.
+#[test]
+fn contact_cards_in_the_timeline_like_desktop() {
+    let mut app = demo_app("vcard-timeline");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let url = "mxc://x/ada".to_string();
+    {
+        let mut st = app.store.write();
+        let i = *st.timeline_indices(NOTE_CHAT_ID).last().expect("a message");
+        let a = Attachment {
+            attachment_type: "unknown".into(),
+            file_name: Some("ada.vcf".into()),
+            src_url: Some(url.clone()),
+            ..Attachment::default()
+        };
+        (st.messages[i].text, st.messages[i].attachments) = (None, vec![a]);
+    }
+    let card = crate::vcard::parse_vcard("BEGIN:VCARD\nFN:Ada Lovelace\nORG:Engines\nTEL:+14155550199\nEND:VCARD\n");
+    app.vcards.insert(url, Some(Ok(card)));
+    {
+        let mut sim = simulator(app.view_conversation());
+        assert!(sim.find("Ada Lovelace").is_ok() && sim.find("Phone Number").is_ok() && sim.find("Engines").is_ok());
+    }
+    let items = info::info_menu(&app.store.read(), "vcard:phone +14155550199", |_| true);
+    let labels: Vec<&str> = items.iter().flatten().map(|i| i.0.as_str()).collect();
+    assert_eq!(labels, ["Call +1 415-555-0199", "Copy +1 415-555-0199"]);
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("vcard:phone +14155550199".into())));
+    assert!(simulator(app.view_main()).find("Call +1 415-555-0199").is_ok(), "a click on the number opens its menu");
 }

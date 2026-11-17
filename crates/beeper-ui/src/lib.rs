@@ -1050,9 +1050,17 @@ fn edit_open(m: &Message, rules: MessageRules) -> bool {
 
 /// Desktop's pending `ContactAttachment`: the avatar, the name or the organization, and the first phone number and
 /// email with the count of the others.
-fn contact_card<'a>(p: &Palette, c: &VCard) -> El<'a> {
-    let line = |s: String| txt(s, 12.0).line_height(Pixels(16.0)).color(p.text);
-    let medium = |s: String| txt(s, 14.0).font(fw(Weight::Medium)).color(p.text);
+/// Desktop's `Wfe` contact card of a vCard: the 32 px avatar, the name and the organization, then `limit` of its phone
+/// numbers and of its emails through `entry` (`true` for a phone number), with "+ %d more" after them.
+pub(crate) fn contact_card<'a>(
+    p: &Palette,
+    c: &VCard,
+    fg: Color,
+    limit: usize,
+    entry: &dyn Fn(bool, &str) -> El<'a>,
+) -> Column<'a, UiMessage> {
+    let line = |s: String| txt(s, 12.0).line_height(Pixels(16.0)).color(fg);
+    let medium = |s: String| txt(s, 14.0).font(fw(Weight::Medium)).color(fg);
     let mut meta = Column::new().push((!c.name.is_empty()).then(|| medium(c.name.clone())));
     if let Some(org) = &c.org {
         meta = meta.push(match c.name.is_empty() {
@@ -1060,18 +1068,19 @@ fn contact_card<'a>(p: &Palette, c: &VCard) -> El<'a> {
             false => container(line(org.clone())).padding(Padding::ZERO.top(4.0)).into(),
         });
     }
-    let list = |items: &[String], title: String, more: &'static str, fmt: fn(&str) -> String| {
-        let head = semi(title, 12.0).line_height(Pixels(16.0)).color(p.text);
-        let rest = items.len().saturating_sub(1);
+    let list = |items: &[String], title: String, more: &'static str, phone: bool| {
+        let head = semi(title, 12.0).line_height(Pixels(16.0)).color(fg);
+        let rest = items.len().saturating_sub(limit);
         let more = (rest > 0).then(|| line(trn(more, more, rest, &[&rest])));
         let col = column![container(head).padding(Padding::ZERO.top(6.0).bottom(4.0))];
-        (!items.is_empty()).then(|| col.push(line(fmt(&items[0]))).push(more))
+        let shown = items.iter().take(limit).map(|i| entry(phone, i));
+        (!items.is_empty()).then(|| col.extend(shown).push(more))
     };
     let n = c.phones.len();
-    let phones = list(&c.phones, trn("Phone Number", "Phone Numbers", n, &[]), "+ %d more", fmt_phone);
-    let emails = list(&c.emails, trn("Email", "Emails", c.emails.len(), &[]), " + %d more", str::to_string);
+    let phones = list(&c.phones, trn("Phone Number", "Phone Numbers", n, &[]), "+ %d more", true);
+    let emails = list(&c.emails, trn("Email", "Emails", c.emails.len(), &[]), " + %d more", false);
     let details = row![avatar(&c.name, 32.0, 0.0, p), meta.push(phones).push(emails)].spacing(8);
-    container(column![details, Space::new().width(180)]).padding([8, 10]).style(fill_box(p.received, 0.0)).into()
+    column![details, Space::new().width(180)]
 }
 
 fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
@@ -1576,7 +1585,7 @@ const CARD_FACE_IN: f32 = 88.0 / 3.0;
 /// The height of a user card with only its avatar and name.
 const CARD_H: f32 = 88.0 + 8.0 + 18.0 + 8.0;
 /// The Chat Info context menus: the identity header, the title, a member, a bookmark and a contact detail.
-const INFO_MENUS: [&str; 6] = ["info:", "copy:", "member:", "bookmark:", "contact:", "mention:"];
+const INFO_MENUS: [&str; 7] = ["info:", "copy:", "member:", "bookmark:", "contact:", "mention:", "vcard:"];
 
 /// Desktop's `setPersonalRoomName` gate: the feature is on or the chat has a personal name or photo, and the chat
 /// is a Matrix room that is not merged (`canSetPersonalOverrides`, `personalOverridesApply`).
@@ -2702,6 +2711,8 @@ pub struct BeeperGuiApp {
     pub avatars: images::Images<image::Handle>,
     wants: wants::Wants,
     pub media: images::Images<Result<Frames, String>>,
+    /// The contact cards of `.vcf` attachments by URL, `None` while they load.
+    pub(crate) vcards: HashMap<String, Option<Result<vcard::VCard, String>>>,
     /// The baked gallery tiles (`gallery.rs`).
     tiles: images::Images<image::Handle>,
     /// Desktop's account `messages` cache for quotes: a quoted message out of the timeline, `None` while it loads.
@@ -2740,7 +2751,9 @@ impl BeeperGuiApp {
         });
         let resolve =
             st.bridge_accounts.iter().filter(|_| st.config.demo).map(|b| (b.account_id.clone(), demo.clone()));
-        let resolve = resolve.collect();
+        // Desktop's `loadProvisioningCapabilities` gives the Matrix account those of the SDK's `matrix` pseudo-bridge.
+        let matrix = ("hungryserv".to_string(), beeper_core::matrix::matrix_capabilities());
+        let resolve = resolve.chain([matrix]).collect();
         drop(st);
         let sidebar_width = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-width")) {
             Ok(w) => w.parse().expect("a numeric sidebar width"),
@@ -2934,6 +2947,7 @@ impl BeeperGuiApp {
             avatars: images::Images::new(64 << 20),
             wants: wants::Wants::default(),
             media: images::Images::new(512 << 20),
+            vcards: HashMap::new(),
             tiles: images::Images::new(64 << 20),
             quotes: HashMap::new(),
             dismissed_errors: HashSet::new(),
@@ -3449,7 +3463,13 @@ impl BeeperGuiApp {
 
     /// Desktop's `createThread`: selects the most recent direct chat with the user on the account, or asks the
     /// bridge to make one.
-    fn open_dm(&mut self, account: String, user: User, draft: Option<u32>, quote: Option<String>) -> Task<UiMessage> {
+    pub(crate) fn open_dm(
+        &mut self,
+        account: String,
+        user: User,
+        draft: Option<u32>,
+        quote: Option<String>,
+    ) -> Task<UiMessage> {
         if self.sticky_banner.is_some() {
             return Task::none();
         }
@@ -3472,10 +3492,12 @@ impl BeeperGuiApp {
         }
         self.status_banner = tr("Composing chat...").into();
         self.sticky_banner = Some(self.status_banner.clone());
-        let create = beeper_core::matrix::create_dm(self.provision(&account), phone.unwrap_or(user.id));
-        Task::perform(create, move |r| {
-            UiMessage::NewChat(new_chat::Msg::DmCreated(draft, account.clone(), quote.clone(), r))
-        })
+        let (matrix, provision) = (self.matrix_bridge(&account), self.provision(&account));
+        let done = move |r| UiMessage::NewChat(new_chat::Msg::DmCreated(draft, account.clone(), quote.clone(), r));
+        match matrix {
+            Some(store) => Task::perform(beeper_core::matrix::create_matrix_dm(store, user.id), done),
+            None => Task::perform(beeper_core::matrix::create_dm(provision, phone.unwrap_or(user.id)), done),
+        }
     }
 
     /// Selects a direct chat and puts a quote before its draft, like Desktop's `replyPrivately`.
@@ -3540,10 +3562,14 @@ impl BeeperGuiApp {
     }
 
     /// The arrow keys select messages when no panel is open and the composer is empty.
-    fn quick_react(&self, mid: String) -> UiMessage {
+    pub(crate) fn quick_react(&self, mid: String) -> UiMessage {
         let chat = self.pane().selected_chat_id.clone().expect("an open chat");
         let st = self.store.read();
-        UiMessage::Message(message::Msg::ToggleReaction(chat, mid, st.settings.quick_reaction.clone()))
+        // Desktop's `REACT_WITH`: only a reaction that the network takes.
+        match crate::emoji::allowed_reaction(&st.chat(&chat).allowed_reactions, &st.settings.quick_reaction) {
+            Some(key) => UiMessage::Message(message::Msg::ToggleReaction(chat, mid, key)),
+            None => UiMessage::Noop,
+        }
     }
 
     /// The width of the rail and the chat list. Desktop keeps it when the space bar hides.
@@ -4908,6 +4934,7 @@ impl BeeperGuiApp {
                 || c == SPACE_SHEET
                 || c == SWITCH_CARD
                 || c.starts_with("draft:")
+                || c.starts_with("vcard:")
                 || c.starts_with("account:")
                 || c.starts_with("head:")
                 || st.resolve_chat_idx(chat).is_some()
@@ -5560,20 +5587,31 @@ impl BeeperGuiApp {
         self.toast = Some(t);
     }
 
-    /// Desktop's `searchUsers` on the accounts whose bridge has the `search` capability, or only on `only`.
+    /// Desktop's `searchUsers` on the accounts whose bridge has the `search` capability, or only on `only`. Desktop's
+    /// `canSearchUsersByName` leaves out the Matrix account unless "Include Matrix results in Start New Chat" is on.
     fn search_users(&mut self, q: &str, only: Option<String>) -> Task<UiMessage> {
-        let accounts = rail_accounts(&self.store.read());
-        let accounts: Vec<String> = accounts
+        let st = self.store.read();
+        let prefs = st.synced_prefs.get(beeper_core::prefs::DESKTOP_PREFS);
+        let matrix = prefs.is_some_and(|p| p[beeper_core::prefs::INCLUDE_MATRIX_ACCOUNT_SEARCH] == true);
+        let accounts: Vec<String> = rail_accounts(&st)
             .into_iter()
             .filter(|a| self.can(a, "create_dm") && self.can(a, "search") && only.as_ref().is_none_or(|o| o == a))
+            .filter(|a| matrix || a != "hungryserv")
             .collect();
+        drop(st);
         if accounts.is_empty() {
             return Task::none();
         }
         self.new_chat_search = Some((q.into(), accounts.len(), Vec::new()));
         Task::batch(accounts.into_iter().map(|a| {
-            let (q, search) = (q.to_string(), beeper_core::matrix::search_users(self.provision(&a), q.into()));
-            Task::perform(search, move |r| UiMessage::NewChat(new_chat::Msg::SearchedUsers(q.clone(), a.clone(), r)))
+            let found = match self.matrix_bridge(&a) {
+                Some(store) => Task::perform(beeper_core::matrix::search_matrix_users(store, q.into()), |r| r),
+                None => Task::perform(beeper_core::matrix::search_users(self.provision(&a), q.into()), |r| {
+                    r.map(|users| users.iter().map(new_chat::resolved_user).collect())
+                }),
+            };
+            let q = q.to_string();
+            found.map(move |r| UiMessage::NewChat(new_chat::Msg::SearchedUsers(q.clone(), a.clone(), r)))
         }))
     }
 
@@ -5606,14 +5644,21 @@ impl BeeperGuiApp {
             ];
             for id in asks.into_iter().filter(|(c, _)| self.can(a, c)).filter_map(|(_, id)| id) {
                 let (key, slot) = (key.to_string(), nets.len());
-                let resolve = beeper_core::matrix::resolve_identifier(self.provision(a), id.into());
-                tasks.push(Task::perform(resolve, move |r| {
-                    UiMessage::NewChat(new_chat::Msg::ContactNetwork(key.clone(), slot, r))
-                }));
+                let done = move |r| UiMessage::NewChat(new_chat::Msg::ContactNetwork(key.clone(), slot, r));
+                tasks.push(match self.matrix_bridge(a) {
+                    Some(store) => Task::perform(beeper_core::matrix::resolve_matrix_user(store, id.into()), done),
+                    None => Task::perform(beeper_core::matrix::resolve_identifier(self.provision(a), id.into()), done),
+                });
                 nets.push((a.clone(), None));
             }
         }
         (nets, Task::batch(tasks))
+    }
+
+    /// Desktop's `isMatrixChat`: for the Matrix account, the store whose Matrix client does the work of the SDK's
+    /// `matrix` pseudo-bridge.
+    fn matrix_bridge(&self, account_id: &str) -> Option<SharedStore> {
+        (account_id == "hungryserv").then(|| self.store.clone())
     }
 
     /// Whether the bridge of a chat account has a `resolve_identifier` provisioning capability.

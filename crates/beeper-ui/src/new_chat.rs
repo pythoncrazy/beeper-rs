@@ -15,7 +15,7 @@ pub enum Msg {
     /// Desktop's lookup of a typed phone number, email or username, after the user stops typing.
     LookupIdentifier(String),
     /// The users of an account's `search_users` for a New Chat query.
-    SearchedUsers(String, String, Result<Vec<serde_json::Value>, String>),
+    SearchedUsers(String, String, Result<Vec<User>, String>),
     ToggleResults,
     /// A click on a network of the expanded contact: the account and its user.
     PickUser(String, Box<User>),
@@ -124,7 +124,7 @@ impl BeeperGuiApp {
                 };
                 *pending -= 1;
                 let users = r.inspect_err(|e| eprintln!("search users failed for {account}: {e}")).unwrap_or_default();
-                found.extend(users.iter().map(|v| (account.clone(), resolved_user(v))));
+                found.extend(users.into_iter().map(|u| (account.clone(), u)));
             }
             Msg::ToggleResults => self.new_chat_results_expanded = !self.new_chat_results_expanded,
             Msg::ContactNetwork(id, slot, r) => {
@@ -169,11 +169,17 @@ impl BeeperGuiApp {
                     let title = if named { draft.title.clone() } else { String::new() };
                     self.status_banner = tr("Creating group chat...").into();
                     self.sticky_banner = Some(self.status_banner.clone());
-                    let create =
-                        beeper_core::matrix::create_group(self.provision(&account), "group".into(), title, users);
-                    return Task::perform(create, move |r| {
-                        UiMessage::NewChat(Msg::GroupCreated(n, account.clone(), r))
-                    });
+                    let (matrix, provision) = (self.matrix_bridge(&account), self.provision(&account));
+                    let done = move |r| UiMessage::NewChat(Msg::GroupCreated(n, account.clone(), r));
+                    return match matrix {
+                        Some(store) => {
+                            Task::perform(beeper_core::matrix::create_matrix_group(store, title, users), done)
+                        }
+                        None => Task::perform(
+                            beeper_core::matrix::create_group(provision, "group".into(), title, users),
+                            done,
+                        ),
+                    };
                 }
                 return self.open_dm(account, user, Some(n), None);
             }
