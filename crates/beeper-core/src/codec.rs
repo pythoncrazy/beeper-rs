@@ -55,12 +55,14 @@ pub struct Block {
     pub quote: u8,
     /// The level of a heading, `h1` to `h6`; 0 for other blocks.
     pub heading: u8,
+    /// Inside a `<pre>`: a code block.
+    pub pre: bool,
 }
 
 /// Splits Matrix HTML into blocks of styled runs. Reply and profile fallbacks are removed.
 pub fn html_blocks(html: &str) -> Vec<Block> {
     let (mut blocks, mut lists, mut rest) = (vec![Block::default()], Vec::<Option<u32>>::new(), html);
-    let (mut quote, mut heading) = (0u8, 0u8);
+    let (mut quote, mut heading, mut pres) = (0u8, 0u8, 0u8);
     let mut stack = vec![(Run::default(), false, false)];
     let push = |b: &mut Block, style: &Run, text: &str| match b.runs.last_mut() {
         _ if text.is_empty() => {}
@@ -90,12 +92,14 @@ pub fn html_blocks(html: &str) -> Vec<Block> {
         match (close, name.as_str()) {
             (false, "blockquote") => quote = quote.saturating_add(1),
             (true, "blockquote") => quote = quote.saturating_sub(1),
+            (false, "pre") => pres = pres.saturating_add(1),
+            (true, "pre") => pres = pres.saturating_sub(1),
             _ if level > 0 => heading = if close { 0 } else { level },
             _ => {}
         }
         let b = blocks.last_mut().expect("there is a block");
         if b.runs.is_empty() {
-            (b.quote, b.heading) = (quote, heading);
+            (b.quote, b.heading, b.pre) = (quote, heading, pres > 0);
         }
         match (close, name.as_str()) {
             (false, "ol") => lists.push(Some(0)),
@@ -367,6 +371,14 @@ mod tests {
             (Some("#ff0000".into()), Some("blue".into()), Some("#00ff00".into()))
         );
         assert_eq!(blocks[3].quote, 0, "the quote ends");
+    }
+
+    #[test]
+    fn html_blocks_mark_code_blocks() {
+        let blocks = html_blocks("<p>see</p><pre><code>fn main() {\n}</code></pre><p>after</p>");
+        let shape: Vec<(bool, String)> =
+            blocks.iter().map(|b| (b.pre, b.runs.iter().map(|r| r.text.as_str()).collect())).collect();
+        assert_eq!(shape, [(false, "see".into()), (true, "fn main() {\n}".into()), (false, "after".into())]);
     }
 
     #[test]

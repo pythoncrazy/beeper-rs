@@ -2359,8 +2359,17 @@ impl BeeperGuiApp {
                 spans
             };
             // Each block: its list marker, spans, plain text, blockquote depth, heading level and custom emoji.
-            type Block<'s> =
-                (Option<String>, Vec<iced::widget::text::Span<'s, String>>, String, u8, u8, Vec<Option<image::Handle>>);
+            // Each block: its list marker, spans, plain text, blockquote depth, heading level, custom emoji and whether it
+            // is a code block.
+            type Block<'s> = (
+                Option<String>,
+                Vec<iced::widget::text::Span<'s, String>>,
+                String,
+                u8,
+                u8,
+                Vec<Option<image::Handle>>,
+                bool,
+            );
             let blocks: Vec<Block> = match m.html.as_deref() {
                 Some(html) => beeper_core::codec::html_blocks(html)
                     .into_iter()
@@ -2375,13 +2384,19 @@ impl BeeperGuiApp {
                                 .collect(),
                             false => vec![(r, false)],
                         });
-                        let spans = with_emoji_font(runs.flat_map(rich).collect());
-                        (b.marker, heading(spans, b.heading), plain, b.quote, b.heading, images)
+                        let mut spans = with_emoji_font(runs.flat_map(rich).collect());
+                        // Desktop's `pre code` is one padded block, so its spans have no box of their own.
+                        if b.pre {
+                            for s in &mut spans {
+                                (s.highlight, s.padding) = (None, Padding::ZERO);
+                            }
+                        }
+                        (b.marker, heading(spans, b.heading), plain, b.quote, b.heading, images, b.pre)
                     })
                     .collect(),
                 None => {
                     let spans = with_emoji_font(plain(&text));
-                    vec![(None, spans, text.clone(), 0, 0, Vec::new())]
+                    vec![(None, spans, text.clone(), 0, 0, Vec::new(), false)]
                 }
             };
             let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
@@ -2389,10 +2404,20 @@ impl BeeperGuiApp {
             // fit show as they are, and the block that crosses the limit shows its first lines as plain text.
             let clamp = clamp_blocks(blocks.iter().map(|b| b.2.as_str()), max);
             let open = self.pane().unclamped.contains(&m.id);
+            // Desktop's `pre code` is a block as wide as its longest line, and the time floats under a last one.
+            let code_pad = 0.75 * 13.0 * 0.9;
+            let code_lines = blocks.iter().filter(|b| b.6).flat_map(|b| b.2.lines());
+            let code_w =
+                code_lines.map(|l| l.chars().count() as f32 * 0.6 * 13.0 * 0.9 + 2.0 * code_pad).fold(0.0, f32::max);
+            let text_w = blocks.iter().filter(|b| !b.6).flat_map(|b| b.2.lines());
+            let text_w = text_w.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
+            let last_pre = blocks.last().is_some_and(|b| b.6);
             let (room, time, footer_time) = match clamp {
                 Some(_) => (0.0, None, time),
+                None if last_pre => (0.0, None, time),
                 None => (room, time, None),
             };
+            let (footer_time, below) = if clamp.is_some() { (footer_time, None) } else { (None, footer_time) };
             let (blocks, cut) = match clamp {
                 Some((whole, left)) if !open => {
                     let cut = blocks.get(whole).map(|b| b.2.clone()).filter(|_| left > 0);
@@ -2411,16 +2436,23 @@ impl BeeperGuiApp {
             let blocks_html =
                 m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
             let width = match crate::style::wraps(&padded, max, 13.0) {
+                _ if code_w > 0.0 => Length::Fixed(code_w.max(text_w).min(max)),
                 false => Length::Shrink,
                 true if st.settings.on("balanceText") && !blocks_html => {
                     Length::Fixed(crate::style::balanced_width(&padded, max, 13.0))
                 }
                 true => Length::Fixed(max),
             };
+            // Desktop's `ol` indent: `max(1.8em, var(--ol-number-digits) * 1ch + 0.65em)`, with the digits of its
+            // longest number.
+            let digits =
+                blocks.iter().filter_map(|b| b.0.as_deref()?.strip_suffix('.')).map(str::len).max().unwrap_or(1);
+            let ol_indent =
+                (1.8 * 13.0f32).max(digits as f32 * crate::style::text_width("0", 13.0, Weight::Normal) + 0.65 * 13.0);
             let items: Vec<(u8, El<'_>)> = blocks
                 .into_iter()
                 .enumerate()
-                .map(|(i, (marker, mut spans, _, quote, level, images))| {
+                .map(|(i, (marker, mut spans, _, quote, level, images, pre))| {
                     // iced does not draw an empty last line.
                     if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
                         spans.push(span("\u{200b}").size(13.0));
@@ -2446,7 +2478,16 @@ impl BeeperGuiApp {
                         (Some(true), true) => 6.0,
                         _ => 9.0,
                     } + if level > 0 { 9.0 } else { 0.0 };
-                    let indent = |m: &String| if m == "•" { 15.6 } else { 23.4 };
+                    let indent = |m: &String| if m == "•" { 15.6 } else { ol_indent };
+                    // Desktop's `pre code`: a block on the code background, 0.75em around the text.
+                    let line: El<'_> = match pre {
+                        true => container(line)
+                            .padding(0.75 * 13.0 * 0.9)
+                            .width(Fill)
+                            .style(fill_box(Color { a: 0.1, ..p.strong }, 4.0))
+                            .into(),
+                        false => line.into(),
+                    };
                     let marker = marker.map(|m| {
                         let w = indent(&m);
                         container(txt(m, 13.0).color(fg)).width(w).align_right(w).padding(Padding::ZERO.right(5.0))
@@ -2473,10 +2514,16 @@ impl BeeperGuiApp {
                 row![toggle].push(footer_time).spacing(8).align_y(Bottom)
             });
             parts = parts.push(
-                container(column![].push(inside).push(body).push(more))
-                    .padding([BUBBLE_PAD_Y, BUBBLE_PAD_X])
-                    .max_width(0.45 * self.pane().size.width)
-                    .style(fill_box(bg, 17.0)),
+                container(
+                    column![]
+                        .push(inside)
+                        .push(body)
+                        .push(below.map(|t| container(t).align_right(width).padding(Padding::ZERO.top(4.0))))
+                        .push(more),
+                )
+                .padding([BUBBLE_PAD_Y, BUBBLE_PAD_X])
+                .max_width(0.45 * self.pane().size.width)
+                .style(fill_box(bg, 17.0)),
             );
         }
         let label = |t: String| txt(t, 12.0).color(muted);
