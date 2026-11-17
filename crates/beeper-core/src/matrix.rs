@@ -4742,24 +4742,38 @@ mod tests {
         assert_eq!(*sent.lock().unwrap(), [auth]);
     }
 
-    /// A bridge that answers its contact list without a list gives no contacts, and the other bridges give theirs.
+    /// Desktop's `fetchContacts` and `ihe`: every account gives its contact list, a bridge without a list gives none,
+    /// and a contact needs a phone number or a Matrix user.
     #[tokio::test(flavor = "multi_thread")]
-    async fn contacts_without_a_list_from_a_bridge() {
-        let url = crate::bridge_stub::serve(|_, path, _| match path.contains("/whatsapp/") {
-            true => (200, json!({ "contacts": null })),
-            false => (200, json!({ "contacts": [{ "id": "1", "name": "Sam", "identifiers": ["tel:15550100"] }] })),
+    async fn contacts_like_desktop() {
+        let url = crate::bridge_stub::serve(|_, path, _| match path {
+            p if p.contains("/whatsapp/") => (200, json!({ "contacts": null })),
+            p if p.contains("/discordgo/") => (
+                200,
+                json!({ "contacts": [
+                    { "id": "2", "name": "Ann", "mxid": "@discord_2:beeper.local" },
+                    { "id": "3", "name": "Nobody", "identifiers": [] },
+                ] }),
+            ),
+            _ => (200, json!({ "contacts": [{ "id": "1", "name": "Sam", "identifiers": ["tel:15550100"] }] })),
         })
         .await;
         let on = json!({ "state_event": "CONNECTED" });
         let bridges = json!({
             "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "a": on } },
             "telegram": { "bridgeState": { "bridgeType": "telegram" }, "remoteState": { "t": on } },
+            "discordgo": { "bridgeState": { "bridgeType": "discordgo" }, "remoteState": { "d": on } },
         });
         let accounts = crate::cloud::cloud_accounts(&bridges).expect("valid logins");
         let cloud = crate::cloud::Cloud::new(&url, &url);
         let users = tokio::task::spawn_blocking(move || cloud.contacts("token", "@me:x", &accounts)).await.unwrap();
-        let users: Vec<_> = users.iter().map(|u| (u.full_name.as_deref(), u.phone_number.as_deref())).collect();
-        assert_eq!(users, [(Some("Sam"), Some("+15550100"))]);
+        let users: Vec<_> =
+            users.iter().map(|u| (u.full_name.as_deref(), u.phone_number.as_deref(), u.mxid.as_deref())).collect();
+        assert_eq!(
+            users,
+            [(Some("Ann"), None, Some("@discord_2:beeper.local")), (Some("Sam"), Some("+15550100"), None)]
+        );
+        assert_eq!(crate::cloud::contact_account("contact:discordgo_d:2"), Some("discordgo_d"));
     }
 
     #[tokio::test]

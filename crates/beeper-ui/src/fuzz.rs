@@ -7213,3 +7213,31 @@ fn chat_info_sets_the_notification_sound_like_desktop() {
     let _ = app.update(UiMessage::Info(crate::info::Msg::SetSound(chat.into(), Some("silent".into()))));
     assert_eq!(app.store.read().chat(chat).notification_sound.as_deref(), Some("silent"));
 }
+
+/// Desktop's `sit` and `ihe`: a contact of a bridge's contact list with a Matrix user and no phone number shows in
+/// New Chat, and its own account offers that user at once.
+#[test]
+fn matrix_contacts_start_chats_like_desktop() {
+    let mut app = demo_app("matrix-contact");
+    let account = {
+        let st = app.store.read();
+        let c = st.chats.iter().find(|c| c.chat_type == "single" && c.account_id != "hungryserv").expect("a DM");
+        c.account_id.clone()
+    };
+    let caps = serde_json::json!({ "resolve_identifier": { "create_dm": true, "contact_list": true } });
+    let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(caps)));
+    let id = format!("contact:{account}:@signal_alyson:beeper.local");
+    let alyson = User {
+        id: id.clone(),
+        full_name: Some("Alyson Chang".into()),
+        mxid: Some("@signal_alyson:beeper.local".into()),
+        ..Default::default()
+    };
+    app.store.write().set_contacts(vec![alyson]);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    assert!(simulator(app.view_main()).find("Alyson Chang").is_ok(), "listed without a phone number");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleContact(id)));
+    let nets = &app.contact_networks.as_ref().expect("the networks").1;
+    let user = nets.iter().find(|(a, _)| *a == account).and_then(|(_, u)| u.clone().flatten()).expect("a user");
+    assert_eq!((user.id.as_str(), user.full_name.as_deref()), ("@signal_alyson:beeper.local", Some("Alyson Chang")));
+}

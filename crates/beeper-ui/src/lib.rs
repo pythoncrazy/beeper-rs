@@ -5727,16 +5727,21 @@ impl BeeperGuiApp {
 
     /// Desktop's `ix`: the users of a phone number, email or username on the accounts. An account with `any_phone`
     /// reaches a phone number at once; the others ask the bridge with `resolve_identifier`.
+    /// Desktop's `sit`: on each account, the user of a contact of its contact list (`known`, as its account and user),
+    /// a phone number that the network takes as is, and the lookups of the phone number, email and username.
     fn resolve_identifiers(
         &self,
         key: &str,
         accounts: &[String],
-        phone: Option<&str>,
-        email: Option<&str>,
-        username: Option<&str>,
+        (phone, email, username): (Option<&str>, Option<&str>, Option<&str>),
+        known: Option<(&str, User)>,
     ) -> (Networks, Task<UiMessage>) {
         let (mut nets, mut tasks) = (Vec::new(), Vec::new());
         for a in accounts {
+            if let Some((_, user)) = known.as_ref().filter(|(k, _)| k == a) {
+                nets.push((a.clone(), Some(Some(user.clone()))));
+                continue;
+            }
             let direct = phone.filter(|_| self.can(a, "any_phone"));
             if let Some(phone) = direct {
                 let user = User { id: phone_digits(phone), phone_number: Some(phone.into()), ..Default::default() };

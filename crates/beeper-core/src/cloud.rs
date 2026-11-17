@@ -223,10 +223,8 @@ impl Cloud {
     pub fn contacts(&self, access_token: &str, user_id: &str, accounts: &[BridgeAccountInfo]) -> Vec<User> {
         let uid = crate::codec::url_encode(user_id);
         let mut out = Vec::new();
-        for a in accounts.iter().filter(|a| {
-            a.state == "CONNECTED"
-                && matches!(a.bridge_type.as_str(), "signal" | "whatsapp" | "telegram" | "gmessages" | "imessagecloud")
-        }) {
+        // Desktop's `fetchContacts` asks every account; a bridge without a contact list gives none.
+        for a in accounts.iter().filter(|a| a.state == "CONNECTED") {
             let lid = crate::codec::url_encode(&a.login_id);
             let url = format!(
                 "{}/_matrix/client/unstable/com.beeper.bridge/{}/_matrix/provision/v3/contacts?user_id={uid}&login_id={lid}",
@@ -243,7 +241,11 @@ impl Cloud {
                     true => p.to_string(),
                     false => format!("+{p}"),
                 });
-                let Some(phone) = phone else { continue };
+                // Desktop's `NewChat` lists a contact with a name and a phone number, or with a Matrix user.
+                let mxid = field(c, "mxid");
+                if phone.is_none() && mxid.is_none() {
+                    continue;
+                }
                 let id = format!("contact:{}:{}", a.account_id, key.as_deref().unwrap_or(&name));
                 if out.iter().any(|u: &User| u.id == id) {
                     continue;
@@ -251,10 +253,11 @@ impl Cloud {
                 out.push(User {
                     id,
                     full_name: Some(name),
-                    phone_number: Some(phone),
+                    phone_number: phone,
+                    email: ids.iter().find_map(|s| s.strip_prefix("mailto:")).map(String::from),
+                    mxid,
                     img_url: field(c, "avatar_url"),
                     username: None,
-                    email: None,
                     is_self: Some(false),
                     cannot_message: None,
                     custom_nickname: None,
@@ -269,6 +272,11 @@ impl Cloud {
         });
         out
     }
+}
+
+/// The account of a contact of [`Cloud::contacts`], from its `contact:{account}:{key}` ID.
+pub fn contact_account(id: &str) -> Option<&str> {
+    Some(id.strip_prefix("contact:")?.split_once(':')?.0)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
