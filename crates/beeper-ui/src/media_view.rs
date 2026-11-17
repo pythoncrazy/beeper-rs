@@ -9,12 +9,13 @@ use crate::style::{
     bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, med, scroll_style, semi, shadow_box,
     text_width, txt, Bare, CLEAR,
 };
+use crate::time::{day_num, format_short_ts, iso_millis, today};
+use crate::units::human_size;
 use crate::windows;
 use crate::{
-    anim, closable_head, cubic_bezier, day_num, deletable, file_kind, format_short_ts, human_size, i18n, iso_millis,
-    menu_item, menu_rule, relative_date, stored, tinted, today, video, vlist, voice, zoom, BeeperGuiApp, El, Frames,
-    PillLook, UiMessage, AVATAR_SLOTS, MEDIA_ICONS, MENU_ITEM, ROW_ACTIONS, SYS_ARROW_BACK, SYS_DELETE, SYS_DOWNLOAD,
-    SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
+    anim, closable_head, cubic_bezier, deletable, file_kind, i18n, menu_item, menu_rule, relative_date, stored, tinted,
+    video, vlist, voice, zoom, BeeperGuiApp, El, Frames, PillLook, UiMessage, AVATAR_SLOTS, MEDIA_ICONS, MENU_ITEM,
+    ROW_ACTIONS, SYS_ARROW_BACK, SYS_DELETE, SYS_DOWNLOAD, SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
 };
 use beeper_core::config::civil_from_days;
 use beeper_core::models::*;
@@ -486,7 +487,7 @@ impl BeeperGuiApp {
                     .into()
             }
             _ => {
-                let name = txt(a.file_name.clone().expect("attachment file name"), 13.0).color(white);
+                let name = txt(crate::message::attachment_name(a), 13.0).color(white);
                 let link = button(name).bare(white);
                 container(link.on_press(UiMessage::Message(message::Msg::Download(mid.to_string(), Some(ai)))))
                     .center(Fill)
@@ -983,14 +984,9 @@ impl BeeperGuiApp {
     /// The square cover crop of an image or video poster, or an empty tile while it loads.
     pub(crate) fn thumb<'a>(&self, a: &Attachment, size: f32, r: f32) -> El<'a> {
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
-        match url.and_then(|u| self.media_at(u)) {
-            Some(Ok(frames)) => image(frames[0].0.clone())
-                .width(size)
-                .height(size)
-                .content_fit(iced::ContentFit::Cover)
-                .border_radius(r)
-                .into(),
-            _ => container(Space::new()).width(size).height(size).style(fill_box(self.pal.chip, r)).into(),
+        match url.and_then(|u| self.thumb_tile(u, size.round() as u32, r.round() as u8)) {
+            Some(tile) => image(tile.clone()).width(size).height(size).into(),
+            None => container(Space::new()).width(size).height(size).style(fill_box(self.pal.chip, r)).into(),
         }
     }
 

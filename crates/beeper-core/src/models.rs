@@ -410,6 +410,9 @@ pub struct User {
     pub custom_nickname: Option<String>,
     #[serde(rename = "isNetworkBot", skip_serializing_if = "Option::is_none")]
     pub is_network_bot: Option<bool>,
+    /// The Matrix user of a contact from the contact list of a bridge (`mxid`), which starts a chat on that account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mxid: Option<String>,
     #[serde(rename = "isAdmin", skip_serializing_if = "Option::is_none")]
     pub is_admin: Option<bool>,
     /// Desktop's `isPending`: invited, and not joined yet.
@@ -736,6 +739,9 @@ pub struct Chat {
     /// The personal name or photo, which `title` and `img_url` show instead of the room's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub personal: Option<Box<Personal>>,
+    /// Desktop's `chatNotificationSound`: a sound of [`CHAT_SOUNDS`], or `None` for the Default sound.
+    #[serde(rename = "chatNotificationSound", default, skip_serializing_if = "Option::is_none")]
+    pub notification_sound: Option<String>,
     #[serde(skip)]
     pub flags: u16,
 }
@@ -839,6 +845,10 @@ impl Older {
 
 /// Desktop's `PERSONAL_ROOM_NAME_EVENT_TYPE` and `PERSONAL_ROOM_AVATAR_EVENT_TYPE` (MSC4431) room account data.
 pub const PERSONAL_NAME: &str = "de.gematik.msc4431.room.name.private";
+/// Desktop's room account data of the notification sound of a chat (`chatNotificationSound`).
+pub const NOTIFICATION_SOUND: &str = "com.beeper.notification_sound";
+/// Desktop's `df`: the sounds a chat can take, by the name in `com.beeper.notification_sound`.
+pub const CHAT_SOUNDS: [&str; 7] = ["silent", "double", "dreams", "not_marimba", "rain_harp", "record", "spirit"];
 pub const PERSONAL_AVATAR: &str = "de.gematik.msc4431.room.avatar.private";
 /// Desktop's `PERSONAL_ROOM_NAME_MAX_LENGTH`.
 pub const PERSONAL_NAME_MAX: usize = 256;

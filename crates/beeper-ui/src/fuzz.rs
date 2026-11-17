@@ -11,7 +11,9 @@ use crate::rail::{draft_rail_spaces, rail_accounts, rail_owner, rail_spaces, RAI
 use crate::rail::{SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
 use crate::reminders::reminder_day;
 use crate::scheduled::send_day;
+use crate::time::{clock, format_short_ts, list_ts};
 use crate::toasts::{TOAST_TIMEOUT, UNDO_NOTE_TIMEOUT};
+use crate::units::{compact, grouped, human_size};
 use crate::windows::write_window_state;
 use beeper_core::config::CentralConfig;
 use beeper_core::matrix::ROOM_MENTION;
@@ -5173,7 +5175,11 @@ fn blocking_like_desktop() {
         matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, false))] if *c == id),
         "the composer link unblocks"
     );
-    let picked = clicks(app.view_info(), &["Unblock"]);
+    let picked = {
+        let mut sim = tall(app.view_info());
+        let _ = sim.click("Unblock").expect("Unblock");
+        sim.into_messages().collect::<Vec<_>>()
+    };
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, false))] if *c == id));
     let _ = app.update(UiMessage::Blocking(blocking::Msg::Ask(id.clone(), false)));
     for m in clicks(app.view_confirm(ASK_UNBLOCK), &["Unblock"]) {
@@ -5847,7 +5853,7 @@ fn chat_info_bookmarks_like_desktop() {
 
 #[test]
 fn timer_labels_like_date_fns() {
-    let labels: Vec<String> = DEFAULT_TIMERS.iter().map(|&ms| crate::timer_label(ms)).collect();
+    let labels: Vec<String> = DEFAULT_TIMERS.iter().map(|&ms| crate::time::timer_label(ms)).collect();
     assert_eq!(
         labels,
         [
@@ -5864,8 +5870,8 @@ fn timer_labels_like_date_fns() {
             "1 year",
         ]
     );
-    assert_eq!(crate::timer_label(7_776_000_000), "3 months");
-    assert_eq!(crate::timer_label(0), "Off");
+    assert_eq!(crate::time::timer_label(7_776_000_000), "3 months");
+    assert_eq!(crate::time::timer_label(0), "Off");
 }
 
 #[test]
@@ -7193,4 +7199,136 @@ fn calls_like_desktop() {
     let mut sim = simulator(app.view_main());
     assert!(sim.find("Voice call").is_ok(), "the call pill");
     assert!(sim.find("Missed voice call").is_err(), "without the text of the bridge");
+}
+
+/// Desktop's `BrandChatInfoNotificationSound`: Chat Info has the Notification sound select, which sets the chat sound.
+#[test]
+fn chat_info_sets_the_notification_sound_like_desktop() {
+    let mut app = demo_app("chat-sound");
+    let chat = "!wa_eric:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(chat.into()));
+    {
+        let mut sim = tall(app.view_info());
+        assert!(sim.find("Notification sound").is_ok());
+        assert!(sim.find("Silent chats still show notifications, just without a sound.").is_ok());
+    }
+    let _ = app.update(UiMessage::Info(crate::info::Msg::SetSound(chat.into(), Some("silent".into()))));
+    assert_eq!(app.store.read().chat(chat).notification_sound.as_deref(), Some("silent"));
+}
+
+/// Desktop's space sheet is as wide as its longest space name, which stays on one line.
+#[test]
+fn the_space_sheet_fits_its_names_like_desktop() {
+    let app = demo_app("space-sheet");
+    let narrow = app.view_space_sheet().1;
+    {
+        let mut st = app.store.write();
+        let kind = |a: &str| account_network(a).kind;
+        let other =
+            |b: &&BridgeAccountInfo| !matches!(kind(&b.account_id), NetworkKind::WhatsApp | NetworkKind::Telegram);
+        let account = st.bridge_accounts.iter().find(other).expect("a network with spaces").account_id.clone();
+        let name = "supersketchy's very long server name".into();
+        st.network_spaces.push(NetworkSpace { id: "!long:beeper.local".into(), account_id: account, name });
+    }
+    let wide = app.view_space_sheet().1;
+    assert_eq!(narrow, 233.0, "short names keep the usual width");
+    assert!(wide > 233.0, "a long name widens the sheet: {wide}");
+}
+
+/// Desktop's `sit` and `ihe`: a contact of a bridge's contact list with a Matrix user and no phone number shows in
+/// New Chat, and its own account offers that user at once.
+#[test]
+fn matrix_contacts_start_chats_like_desktop() {
+    let mut app = demo_app("matrix-contact");
+    let account = {
+        let st = app.store.read();
+        let c = st.chats.iter().find(|c| c.chat_type == "single" && c.account_id != "hungryserv").expect("a DM");
+        c.account_id.clone()
+    };
+    let caps = serde_json::json!({ "resolve_identifier": { "create_dm": true, "contact_list": true } });
+    let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(caps)));
+    let id = format!("contact:{account}:@signal_alyson:beeper.local");
+    let alyson = User {
+        id: id.clone(),
+        full_name: Some("Alyson Chang".into()),
+        mxid: Some("@signal_alyson:beeper.local".into()),
+        ..Default::default()
+    };
+    app.store.write().set_contacts(vec![alyson]);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    assert!(simulator(app.view_main()).find("Alyson Chang").is_ok(), "listed without a phone number");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleContact(id)));
+    let nets = &app.contact_networks.as_ref().expect("the networks").1;
+    let user = nets.iter().find(|(a, _)| *a == account).and_then(|(_, u)| u.clone().flatten()).expect("a user");
+    assert_eq!((user.id.as_str(), user.full_name.as_deref()), ("@signal_alyson:beeper.local", Some("Alyson Chang")));
+}
+
+/// Desktop's `isDraftEmpty`: leaving a New Chat draft without people or text removes it, and a draft with a person stays.
+#[test]
+fn empty_new_chat_drafts_go_like_desktop() {
+    let mut app = demo_app("empty-drafts");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    assert_eq!(app.new_chats.len(), 1);
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    assert!(app.new_chats.is_empty(), "the empty draft goes");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    assert_eq!(app.new_chats.len(), 1, "a new draft replaces an empty one");
+    let account =
+        app.store.read().chats.iter().find(|c| c.account_id != "hungryserv").expect("a chat").account_id.clone();
+    let user = User { id: "@sam:x".into(), full_name: Some("Sam".into()), ..Default::default() };
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(account, Box::new(user))));
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    assert_eq!(app.new_chats.len(), 1, "a draft with a person stays");
+}
+
+/// Desktop's `profileLink`: the network line of a DM with a profile URL opens the profile.
+#[test]
+fn chat_info_opens_the_profile_like_desktop() {
+    let mut app = demo_app("profile-link");
+    let chat = {
+        let mut st = app.store.write();
+        let i = st
+            .chats
+            .iter()
+            .position(|c| c.chat_type == "single" && crate::profile_link(c).is_none() && c.account_id != "hungryserv");
+        let i = i.expect("a DM");
+        let account = st.bridge_accounts.iter().find(|b| account_network(&b.account_id).kind == NetworkKind::Instagram);
+        let account = account.expect("an Instagram account").account_id.clone();
+        st.update_chat(i, |c| {
+            c.account_id = account;
+            let other = c.participants.items.iter_mut().find(|u| u.is_self != Some(true)).expect("the other person");
+            other.username = Some("arnayb_".into());
+        });
+        st.chats[i].id.clone()
+    };
+    let _ = app.update(UiMessage::SelectChat(chat));
+    let mut sim = tall(app.view_info());
+    let _ = sim.click("Instagram").expect("the network link");
+    let opened: Vec<String> = sim
+        .into_messages()
+        .filter_map(|m| match m {
+            UiMessage::OpenUrl(u) => Some(u),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opened, ["https://www.instagram.com/arnayb_/"]);
+}
+
+/// A bridge can send media without a file name or body: the timeline shows it, and a file row says "Attachment" like
+/// Desktop.
+#[test]
+fn nameless_attachments_like_desktop() {
+    let mut app = demo_app("nameless");
+    let chat = "!wa_eric:beeper.com";
+    {
+        let mut st = app.store.write();
+        let i = *st.timeline_indices(chat).last().expect("a message");
+        let sticker = Attachment { attachment_type: "img".into(), is_sticker: Some(true), ..Attachment::default() };
+        st.update_message(i, |m| m.attachments = vec![sticker]);
+    }
+    let _ = app.update(UiMessage::SelectChat(chat.into()));
+    let _ = simulator(app.view_main());
+    let a = Attachment { attachment_type: "unknown".into(), ..Attachment::default() };
+    assert_eq!(crate::message::attachment_name(&a), "Attachment");
 }

@@ -4,6 +4,7 @@
 use crate::blocking;
 use crate::chat_list;
 use crate::composer;
+use crate::emoji::{with_emoji_font, EMOJI_FONT};
 use crate::forward;
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
 use crate::loads;
@@ -12,19 +13,21 @@ use crate::members;
 use crate::reminders::reminder_day;
 use crate::style::{
     bold, bordered_box, bordered_btn, btn_style, clamp, fill_box, fw, hex, ic, icon, med, mix, pane_card, pick,
-    scroll_style, semi, shadow_box, stable_bar, txt, Bare, CLEAR, GUTTER,
+    scroll_style, semi, shadow_box, stable_bar, text_width, txt, Bare, CLEAR, GUTTER,
 };
 use crate::threads;
+use crate::time::{clock, day_label, day_num, day_of, format_short_ts, locale_string, today};
 use crate::timeline;
+use crate::units::human_size;
 use crate::windows;
 use crate::{
-    anim, badged, brightness, can_thread, chat_theme, clock, commands, copy_text, day_label, day_num, day_of,
-    delete_dialog, downloads_dir, ease_out, edit_open, editable, email, enter_key, feedback_btn, file_icon, fmt_phone,
-    format_short_ts, gallery, handle, has_older, human_size, lift, locale_string, locate, member_name, membership,
-    menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link, reply_root, safe_file_name, send_rise,
-    sender_label, short_title, still_sending_at, stored, tinted, today, unavailable, unused_path, video, vlist,
-    BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, CHEVRON_DOWN,
-    ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE, TRASH, VIEW_SIDEBAR,
+    anim, badged, brightness, can_thread, chat_theme, commands, copy_text, delete_dialog, downloads_dir, ease_out,
+    edit_open, editable, email, enter_key, feedback_btn, file_icon, fmt_phone, gallery, handle, has_older, lift,
+    locate, member_name, membership, menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link,
+    reply_root, safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable,
+    unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON,
+    BUBBLE_PAD_X, CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W,
+    ORANGE, POLL_CHECK, POLL_ENDED, TRASH, VIEW_SIDEBAR,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::*;
@@ -42,6 +45,15 @@ use iced::{
 };
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+
+/// The name of an attachment, or Desktop's "Attachment" for one that a bridge sent without a file name or body.
+pub(crate) fn attachment_name(a: &Attachment) -> String {
+    a.file_name.clone().unwrap_or_else(|| tr("Attachment").into())
+}
+
+/// The HTML elements that keep Desktop from balancing the lines of a message (`MessageText`).
+const BLOCK_TAGS: [&str; 15] =
+    ["pre", "blockquote", "table", "ol", "ul", "details", "hr", "p>", "p ", "h1", "h2", "h3", "h4", "h5", "h6"];
 
 static REPLY_CURVE: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
     ["", r#" transform="matrix(-1 0 0 1 26 0)""#].map(|flip| {
@@ -1059,15 +1071,21 @@ impl BeeperGuiApp {
             viewers.sort_by_key(|&(_, ts)| ts);
             let status = if let Some(&(_, ts)) = viewers.last() {
                 if group {
-                    let names: Vec<&str> = viewers
+                    // Desktop's `Seen by`: the newest reader first, by first name when no other member has it.
+                    let members = || chat.participants.items.iter().filter(|u| u.has_exited != Some(true));
+                    let first = |u: &User| u.short_name().to_lowercase();
+                    let names: Vec<String> = viewers
                         .iter()
+                        .rev()
                         .map(|&(uid, _)| {
-                            chat.participants
-                                .items
-                                .iter()
-                                .find(|u| u.id == uid)
-                                .and_then(|u| u.custom_nickname.as_deref().or(u.full_name.as_deref()))
-                                .unwrap_or(uid)
+                            let Some(u) = chat.participants.items.iter().find(|u| u.id == uid) else {
+                                return uid.to_string();
+                            };
+                            let full = u.custom_nickname.as_deref().or(u.full_name.as_deref()).unwrap_or(uid);
+                            match members().filter(|o| first(o) == first(u)).count() {
+                                1 => u.short_name(),
+                                _ => full.to_string(),
+                            }
                         })
                         .collect();
                     Some(if names.len() <= 4 {
@@ -1290,7 +1308,7 @@ impl BeeperGuiApp {
             parts = parts.push(self.view_gallery(ms));
         }
         for (ai, a) in m.attachments.iter().enumerate().filter(|_| ms.len() == 1) {
-            let name = a.file_name.clone().expect("attachment file name");
+            let name = attachment_name(a);
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
                 (_, "audio") if self.playable(a) => {
                     let ts = shows_time.then(|| {
@@ -1413,7 +1431,7 @@ impl BeeperGuiApp {
             let pill = container(line.spacing(8).align_y(Center)).padding([9, 13]);
             parts = parts.push(pill.style(bordered_box(CLEAR, p.chip, 2.0, 17.0)));
         } else if jumbo(&text) {
-            parts = parts.push(container(txt(text.clone(), 48.0)).padding([0, 12]));
+            parts = parts.push(container(txt(text.clone(), 48.0).font(EMOJI_FONT)).padding([0, 12]));
         } else if utd {
             let line = txt(text.clone(), 13.0).font(italic).color(fg.scale_alpha(0.8));
             let time = shows_time.then(|| {
@@ -1522,10 +1540,12 @@ impl BeeperGuiApp {
                     .into_iter()
                     .map(|b| {
                         let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
-                        (b.marker, b.runs.into_iter().flat_map(rich).collect(), plain)
+                        (b.marker, with_emoji_font(b.runs.into_iter().flat_map(rich).collect()), plain)
                     })
                     .collect(),
-                None => vec![(None, text.split_inclusive(' ').flat_map(plain).collect(), text.clone())],
+                None => {
+                    vec![(None, with_emoji_font(text.split_inclusive(' ').flat_map(plain).collect()), text.clone())]
+                }
             };
             let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
             // Desktop's `.message-text` clamps a message at 40 lines, and "Show more" opens it. The whole blocks that
@@ -1546,7 +1566,20 @@ impl BeeperGuiApp {
             let (mut prev_item, last) = (None, blocks.len().saturating_sub(1));
             let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
             let pad = "\u{a0}".repeat((room / nbsp).ceil() as usize);
-            let full = !st.settings.on("balanceText") && crate::style::wraps(&format!("{text}{pad}"), max, 13.0);
+            // Desktop's `message-text--balanced`: CSS `text-wrap: balance`, then the bubble shrinks to its widest line.
+            // A message with block HTML wraps as usual. A wrapped message without balance takes the whole width.
+            // The layout lets trailing spaces hang past the width, so the room of the time is measured with digits.
+            let zero = crate::style::text_width("0", 13.0, Weight::Normal);
+            let padded = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
+            let blocks_html =
+                m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
+            let width = match crate::style::wraps(&padded, max, 13.0) {
+                false => Length::Shrink,
+                true if st.settings.on("balanceText") && !blocks_html => {
+                    Length::Fixed(crate::style::balanced_width(&padded, max, 13.0))
+                }
+                true => Length::Fixed(max),
+            };
             let body = Column::with_children(blocks.into_iter().enumerate().map(|(i, (marker, mut spans, _))| {
                 // iced does not draw an empty last line.
                 if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
@@ -1571,7 +1604,7 @@ impl BeeperGuiApp {
                 });
                 container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into()
             }))
-            .width(if full { Length::Fixed(max) } else { Length::Shrink });
+            .width(width);
             let cut = cut.map(|(t, left)| {
                 txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             });
@@ -1744,7 +1777,7 @@ impl BeeperGuiApp {
                 (self.quick_open && st.settings.on("quickReactions")).then(|| crate::emoji::quick_reactions(st));
             let quick = quick.into_iter().flatten().map(|e| -> El<'a> {
                 let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
-                let glyph = txt(e, 18.0);
+                let glyph = txt(e, 18.0).font(EMOJI_FONT);
                 button(container(glyph).center(32))
                     .padding(0)
                     .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
@@ -1962,7 +1995,7 @@ impl BeeperGuiApp {
             let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
             let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
             let line = row![
-                container(txt(x.reaction_key.clone(), 17.0)).padding(Padding::ZERO.right(10.0)),
+                container(txt(x.reaction_key.clone(), 17.0).font(EMOJI_FONT)).padding(Padding::ZERO.right(10.0)),
                 container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0, 0.5))
                     .padding(Padding::ZERO.right(8.0)),
                 med(name.to_string(), 13.0).color(p.text),
@@ -1987,7 +2020,8 @@ impl BeeperGuiApp {
             let reactors: Vec<_> = ms.iter().flat_map(|m| &m.reactions).filter(|x| x.reaction_key == k).collect();
             let n = reactors.len();
             let own = reactors.iter().any(|x| st.is_me(&x.participant_id));
-            let mut pill = row![txt(k.to_string(), 16.0).line_height(Pixels(15.0))].spacing(4).align_y(Center);
+            let mut pill =
+                row![txt(k.to_string(), 16.0).line_height(Pixels(15.0)).font(EMOJI_FONT)].spacing(4).align_y(Center);
             if look.group || n > 1 {
                 for x in reactors.iter().take(3) {
                     let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
@@ -2264,7 +2298,7 @@ impl BeeperGuiApp {
                     .enumerate()
                     .filter(|(i, _)| only.is_none_or(|o| o == *i))
                     .map(|(_, a)| {
-                        let name = a.file_name.clone().expect("an attachment has a file name");
+                        let name = attachment_name(a);
                         (a.src_url.clone().expect("an attachment has a source"), name)
                     })
                     .collect();
@@ -2336,5 +2370,167 @@ impl BeeperGuiApp {
             }
         }
         self.settle()
+    }
+}
+
+impl BeeperGuiApp {
+    /// Desktop's `ScheduledMessages`: the canceled messages, the "Send Later" toggle, then the messages to send.
+    /// Desktop's `Poll` message, for a chat that can vote.
+    pub(crate) fn view_poll<'a>(
+        &'a self,
+        st: &BeeperStore,
+        chat: &Chat,
+        m: &Message,
+        poll: &PollData,
+        (bg, fg): (Color, Color),
+    ) -> El<'a> {
+        let p = &self.pal;
+        let mine = m.is_sender == Some(true);
+        let (sub, footer, fill, fill_mine, ring) = match mine {
+            true => (fg.scale_alpha(0.6), fg, fg.scale_alpha(0.22), fg.scale_alpha(0.38), fg.scale_alpha(0.85)),
+            false => (p.on_secondary, p.accent, fg.scale_alpha(0.14), fg.scale_alpha(0.24), fg.scale_alpha(0.4)),
+        };
+        let total = poll.voters();
+        let picks = poll.picks(&st.me().id);
+        let shown = !poll.undisclosed || poll.ended;
+        let multi = poll.max_selections != 1;
+        let full = multi && picks.len() >= poll.max_selections as usize;
+        let spread = if shown { total > 0 } else { !picks.is_empty() };
+        let label_alpha = if poll.ended { 0.55 } else { 1.0 };
+        let votes = trn("%d vote", "%d votes", total, &[&total]);
+        let status = match (poll.ended, multi) {
+            (true, _) => tr("Poll ended"),
+            (_, true) => tr("Select one or more options"),
+            _ => tr("Select one option"),
+        };
+        let question = if poll.question.is_empty() { tr("Poll").into() } else { poll.question.clone() };
+        let results = tr("Results will be displayed when the poll ends");
+        // Desktop's `.Poll-module__wrapper` is as wide as its content, from 240 to 380 px with its 14 px sides.
+        let width = {
+            let (semi_w, txt_w) =
+                (|s: &str| text_width(s, 13.0, Weight::Semibold), |s| text_width(s, 13.0, Weight::Normal));
+            let side = if spread { 16.0 } else { 8.0 };
+            let rows = poll.options.iter().map(|o| {
+                let n = o.voter_ids.len();
+                let faces = 23.0 + 14.0 * n.clamp(1, 3).saturating_sub(1) as f32;
+                let right = if shown && n > 0 { 10.0 + faces + 6.0 + semi_w(&n.to_string()) } else { 0.0 };
+                side + 16.0 + 8.0 + txt_w(&o.label) + right
+            });
+            let foot = match shown {
+                true if total > 0 => semi_w(&votes) + 16.0,
+                true => 0.0,
+                false => text_width(results, 11.0, Weight::Normal).max(if total > 0 { semi_w(&votes) } else { 0.0 }),
+            };
+            let head = [text_width(&question, 15.0, Weight::Semibold), 22.0 + txt_w(status), foot];
+            (rows.chain(head).fold(0.0, f32::max) + 28.0).clamp(240.0, 380.0)
+        };
+        let head = column![
+            semi(question, 15.0).line_height(Pixels(20.0)).color(fg),
+            row![
+                tinted(if poll.ended { &POLL_ENDED } else { &COMPOSER_ICONS[8] }, 16.0, sub),
+                txt(status, 13.0).color(sub)
+            ]
+            .spacing(6)
+            .align_y(Center),
+        ]
+        .spacing(4);
+        let options = poll.options.iter().map(|o| -> El<'a> {
+            let n = o.voter_ids.len();
+            let voted = picks.contains(&o.id);
+            let width = match (shown, if shown { n > 0 } else { voted }) {
+                (_, false) => 0,
+                (true, true) => u16::try_from(n * 100 / total).expect("a percentage"),
+                (false, true) => 100,
+            };
+            let bar = container(Space::new()).height(Fill).style(fill_box(if voted { fill_mine } else { fill }, 16.0));
+            let bar: El<'a> = match width {
+                0 => Space::new().into(),
+                100 => bar.width(Fill).into(),
+                w => row![bar.width(Length::FillPortion(w)), Space::new().width(Length::FillPortion(100 - w))].into(),
+            };
+            let (lf, ring) = (fg.scale_alpha(label_alpha), ring.scale_alpha(label_alpha));
+            let radius = if multi { 4.0 } else { 8.0 };
+            let check: El<'a> = match voted {
+                true => container(tinted(&POLL_CHECK, 16.0, bg)).style(fill_box(lf, radius)).into(),
+                false => {
+                    container(Space::new().width(16).height(16)).style(bordered_box(CLEAR, ring, 1.5, radius)).into()
+                }
+            };
+            let name = txt(o.label.clone(), 13.0).color(lf);
+            let faces = o.voter_ids.iter().rev().take(3).rev().enumerate().fold(Stack::new(), |s, (i, id)| {
+                let u = chat.participants.items.iter().find(|u| u.id == *id);
+                let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(id);
+                let face = container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0, 0.5))
+                    .padding(1.5)
+                    .style(fill_box(bg, 11.5));
+                s.push(container(face).padding(Padding::ZERO.left(14.0 * i as f32)))
+            });
+            let right =
+                (shown && n > 0).then(|| row![faces, semi(n.to_string(), 13.0).color(fg)].spacing(6).align_y(Center));
+            let line =
+                row![row![check, name].spacing(8).align_y(Center).width(Fill)].push(right).spacing(10).align_y(Center);
+            let answers = match (multi, voted) {
+                (true, true) => picks.iter().filter(|x| **x != o.id).cloned().collect(),
+                (true, false) => picks.iter().cloned().chain([o.id.clone()]).collect(),
+                (false, true) => Vec::new(),
+                (false, false) => vec![o.id.clone()],
+            };
+            let vote =
+                (!poll.ended && !(full && !voted)).then(|| UiMessage::Message(Msg::VotePoll(m.id.clone(), answers)));
+            let body = container(line).padding([8.0, if spread { 8.0 } else { 4.0 }]);
+            button(stack![body].push_under(bar))
+                .padding(0)
+                .width(Fill)
+                .style(btn_style([CLEAR; 3], [fg; 3], 16.0))
+                .on_press_maybe(vote)
+                .into()
+        });
+        let options = Column::with_children(options).spacing(if spread { 6 } else { 2 });
+        let foot: El<'a> = match shown {
+            true if total > 0 => button(row![semi(votes, 13.0), tinted(&CHEVRON_RIGHT, 16.0, footer)].align_y(Center))
+                .bare(footer)
+                .on_press(UiMessage::Message(Msg::OpenPollVotes(chat.id.clone(), m.id.clone())))
+                .into(),
+            true => Space::new().into(),
+            false => column![]
+                .push((total > 0).then(|| semi(votes, 13.0).color(fg)))
+                .push(txt(results, 11.0).color(sub))
+                .spacing(4)
+                .into(),
+        };
+        let foot = (!shown || total > 0).then(|| container(foot).padding(Padding::ZERO.top(10.0)));
+        let body = column![head, Space::new().height(10), options].push(foot);
+        container(body).padding(Padding::new(14.0).bottom(12.0)).width(width).style(fill_box(bg, 17.0)).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced_test::simulator::simulator;
+
+    /// Desktop's `Seen by` of a group: the newest reader first, by first name when no other member has it.
+    #[test]
+    fn seen_by_names_like_desktop() {
+        let mut app = crate::fuzz::demo_app("seen-by");
+        let chat = {
+            let mut st = app.store.write();
+            let i = st.chats.iter().position(|c| c.chat_type == "group").expect("a group");
+            let user =
+                |id: &str, name: &str| User { id: id.into(), full_name: Some(name.into()), ..Default::default() };
+            let people = [user("@a:x", "Ann Lee"), user("@b:x", "Ann Smith"), user("@c:x", "Bo Jones")];
+            st.update_chat(i, |c| c.participants.items.extend(people));
+            let id = st.chats[i].id.clone();
+            let last = *st.timeline_indices(&id).last().expect("a message");
+            let seen =
+                [("@a:x", "2030-01-01T10:00:00Z"), ("@b:x", "2030-01-01T10:01:00Z"), ("@c:x", "2030-01-01T10:02:00Z")];
+            st.update_message(last, |m| {
+                m.is_sender = Some(true);
+                m.seen = seen.iter().map(|(u, t)| (u.to_string(), t.to_string())).collect();
+            });
+            id
+        };
+        let _ = app.update(UiMessage::SelectChat(chat));
+        assert!(simulator(app.view_conversation()).find("Seen by Bo, Ann Smith, Ann Lee").is_ok());
     }
 }

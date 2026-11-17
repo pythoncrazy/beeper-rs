@@ -8,9 +8,10 @@ use crate::message;
 use crate::style::{
     bordered_btn, brand_svg, btn_style, ell, fill_box, ic, icon, scroll_style, semi, shadow_box, txt, CLEAR,
 };
+use crate::time::format_short_ts;
 use crate::{
-    activates, brand_key, composer_with, format_short_ts, membership, menu_item, menu_rule, tinted, BeeperGuiApp, El,
-    Pane, UiMessage, BUBBLE_PAD_X, CHEVRON_FORWARD, MENU_ITEM, MIN_PANE_W,
+    activates, brand_key, composer_with, membership, menu_item, menu_rule, tinted, BeeperGuiApp, El, Pane, UiMessage,
+    BUBBLE_PAD_X, CHEVRON_FORWARD, MENU_ITEM, MIN_PANE_W,
 };
 use beeper_core::models::*;
 use beeper_core::store::BeeperStore;

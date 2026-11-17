@@ -13,17 +13,18 @@ use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, ell, fill_box, fw, glow_box, gutter_style, hex, ic,
     icon, input_style, med, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
 };
+use crate::units::{compact, grouped, human_size};
 use crate::windows;
 use crate::zoom;
 use crate::{
-    ago, avatar, badge, brand_key, checkbox, compact, distance, divider, downloads_dir, duration, ease_out,
-    feedback_btn, first_groups, fmt_phone, group, grouped, human_size, icon_btn, inbox_label, locate, login,
-    outline_input, pill_btn, pill_style, plan_pill, portal, pref_row, reconnect, record, select, slider_style,
-    status_text, style, svg_size, theme_cards, tinted, toggle, toggle_faded, BeeperGuiApp, El, Toast, UiMessage,
-    ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE,
-    ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO,
-    COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM,
-    ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
+    ago, avatar, badge, brand_key, checkbox, distance, divider, downloads_dir, duration, ease_out, feedback_btn,
+    first_groups, fmt_phone, group, icon_btn, inbox_label, locate, login, outline_input, pill_btn, pill_style,
+    plan_pill, portal, pref_row, reconnect, record, select, slider_style, status_text, style, svg_size, theme_cards,
+    tinted, toggle, toggle_faded, BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE,
+    ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT,
+    ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS,
+    ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM, ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE,
+    TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
 };
 use beeper_core::config::{now_unix_millis, now_unix_secs, APP_VERSION};
 use beeper_core::matrix::DeviceInfo;

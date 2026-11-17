@@ -5,10 +5,11 @@ use crate::models::{
     ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older,
     PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers,
     Transcription, User, VerificationDevice, VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji,
-    ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM,
+    ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS,
     DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK,
-    MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMOVED_MESSAGE,
-    REMOVED_MESSAGES_ROOM, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR,
+    PERSONAL_NAME, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM,
+    USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -478,6 +479,11 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         follows: account_data(room, THREAD_FOLLOWS).await.and_then(|f| ThreadFollows::parse(&f)).unwrap_or_default(),
         thread_reads: BTreeMap::new(),
         personal: None,
+        // Desktop's `Up`: a sound it knows, else the Default sound.
+        notification_sound: account_data(room, NOTIFICATION_SOUND)
+            .await
+            .and_then(|d| s(&d["sound"]))
+            .filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
         flags: 0,
     };
     let name = account_data(room, PERSONAL_NAME).await.and_then(|n| s(&n["name"])).filter(|n| !n.is_empty());
@@ -4736,24 +4742,38 @@ mod tests {
         assert_eq!(*sent.lock().unwrap(), [auth]);
     }
 
-    /// A bridge that answers its contact list without a list gives no contacts, and the other bridges give theirs.
+    /// Desktop's `fetchContacts` and `ihe`: every account gives its contact list, a bridge without a list gives none,
+    /// and a contact needs a phone number or a Matrix user.
     #[tokio::test(flavor = "multi_thread")]
-    async fn contacts_without_a_list_from_a_bridge() {
-        let url = crate::bridge_stub::serve(|_, path, _| match path.contains("/whatsapp/") {
-            true => (200, json!({ "contacts": null })),
-            false => (200, json!({ "contacts": [{ "id": "1", "name": "Sam", "identifiers": ["tel:15550100"] }] })),
+    async fn contacts_like_desktop() {
+        let url = crate::bridge_stub::serve(|_, path, _| match path {
+            p if p.contains("/whatsapp/") => (200, json!({ "contacts": null })),
+            p if p.contains("/discordgo/") => (
+                200,
+                json!({ "contacts": [
+                    { "id": "2", "name": "Ann", "mxid": "@discord_2:beeper.local" },
+                    { "id": "3", "name": "Nobody", "identifiers": [] },
+                ] }),
+            ),
+            _ => (200, json!({ "contacts": [{ "id": "1", "name": "Sam", "identifiers": ["tel:15550100"] }] })),
         })
         .await;
         let on = json!({ "state_event": "CONNECTED" });
         let bridges = json!({
             "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "a": on } },
             "telegram": { "bridgeState": { "bridgeType": "telegram" }, "remoteState": { "t": on } },
+            "discordgo": { "bridgeState": { "bridgeType": "discordgo" }, "remoteState": { "d": on } },
         });
         let accounts = crate::cloud::cloud_accounts(&bridges).expect("valid logins");
         let cloud = crate::cloud::Cloud::new(&url, &url);
         let users = tokio::task::spawn_blocking(move || cloud.contacts("token", "@me:x", &accounts)).await.unwrap();
-        let users: Vec<_> = users.iter().map(|u| (u.full_name.as_deref(), u.phone_number.as_deref())).collect();
-        assert_eq!(users, [(Some("Sam"), Some("+15550100"))]);
+        let users: Vec<_> =
+            users.iter().map(|u| (u.full_name.as_deref(), u.phone_number.as_deref(), u.mxid.as_deref())).collect();
+        assert_eq!(
+            users,
+            [(Some("Ann"), None, Some("@discord_2:beeper.local")), (Some("Sam"), Some("+15550100"), None)]
+        );
+        assert_eq!(crate::cloud::contact_account("contact:discordgo_d:2"), Some("discordgo_d"));
     }
 
     #[tokio::test]

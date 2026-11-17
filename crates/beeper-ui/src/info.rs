@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::chat_list::preview_body;
+use crate::time::{list_ts, timer_label};
 use iced::widget::column;
 
 #[derive(Clone)]
@@ -23,6 +24,8 @@ pub enum Msg {
     Note(text_editor::Action),
     /// Desktop's disappearing messages select: a chat and a timer in ms, or 0 for Off.
     SetDisappearing(String, u64),
+    /// Desktop's "Notification sound" select: a chat and a sound of `CHAT_SOUNDS`, or `None` for Default.
+    SetSound(String, Option<String>),
 }
 
 impl BeeperGuiApp {
@@ -42,6 +45,7 @@ impl BeeperGuiApp {
                 self.store.write().update_group(&cid, None, Some(text), None);
                 return self.update(UiMessage::StoreChanged);
             }
+            Msg::SetSound(chat, sound) => self.store.write().set_notification_sound(&chat, sound),
             Msg::SetDisappearing(cid, timer) => {
                 self.store.write().set_disappearing(&cid, timer);
                 return self.update(UiMessage::StoreChanged);
@@ -225,12 +229,16 @@ impl BeeperGuiApp {
             .on_press_maybe(edit);
         let copy = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("copy:{cid}")));
         let title = mouse_area(
-            button(semi(chat.title.clone(), 15.0).color(p.strong).center()).bare(p.strong).on_press(copy.clone()),
+            button(semi(chat.title.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong).center())
+                .bare(p.strong)
+                .on_press(copy.clone()),
         )
         .on_right_press(copy);
         let meta = |s: String| {
             let copy = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("copy:{cid}\n{s}")));
-            mouse_area(txt(s, 11.0).color(Color { a: 0.6, ..p.strong })).on_right_press(copy)
+            // Desktop's `metadata` rows: 11 px text on the 18.2 px line of the 13 px header.
+            let line = txt(s, 11.0).line_height(Pixels(18.0)).color(Color { a: 0.6, ..p.strong });
+            mouse_area(line).on_right_press(copy)
         };
         let other =
             chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| chat.chat_type == "single");
@@ -245,10 +253,26 @@ impl BeeperGuiApp {
             .as_ref()
             .filter(|p| p.title.as_ref().is_some_and(|t| *t != p.room_title) && !p.room_title.is_empty())
             .map(|p| meta(trf("Originally %s", &[&p.room_title])));
+        // Desktop's `profileLink`: the network of a DM with a profile URL opens the profile.
+        let network = network_name(&chat.account_id);
+        let network: El = match profile_link(chat) {
+            Some(url) => {
+                let fg = Color { a: 0.6, ..p.strong };
+                let name = txt(network, 11.0).line_height(Pixels(18.0)).color(fg);
+                let label = row![name, ic(icon::ARROW_UP_RIGHT, 11.0).color(fg)].spacing(2).align_y(Center);
+                let open = button(label).bare(fg).on_press(UiMessage::OpenUrl(url));
+                let tip = match other.and_then(|u| u.username.as_deref()) {
+                    Some(u) => trf("Open @%1$s on %2$s", &[&u.trim_start_matches('@'), &network]),
+                    None => trf("Open in %s", &[&network]),
+                };
+                self.tip(open.into(), tip, vec!["Ctrl", "Shift", "O"], tooltip::Position::Bottom).into()
+            }
+            None => meta(network.to_string()).into(),
+        };
         let details = column![self.chat_avatar(chat, 64.0, 1.25), title]
             .push(originally)
             .push(contact)
-            .push(meta(network_name(&chat.account_id).to_string()))
+            .push(network)
             .spacing(4)
             .align_x(Center)
             .width(Fill);
@@ -480,6 +504,30 @@ impl BeeperGuiApp {
                 let head = container(txt(tr("Disappearing messages"), 11.0).color(p.strong)).padding(8);
                 column![head, column![pick, container(about).padding([0, 8])].spacing(4)]
             });
+        // Desktop's `BrandChatInfoNotificationSound`: Default, Silent, and the sound the chat has if it is another one.
+        let sound = {
+            let current = chat.notification_sound.clone();
+            let mut sounds: Vec<Option<String>> = vec![None, Some("silent".into())];
+            sounds.extend(current.clone().filter(|s| s != "silent").map(Some));
+            let labels: Vec<&'static str> = sounds.iter().map(|s| sound_label(s.as_deref())).collect();
+            let id = cid.clone();
+            let pick = pick_list(labels.clone(), Some(sound_label(current.as_deref())), move |l| {
+                let i = labels.iter().position(|o| *o == l).expect("a listed sound");
+                UiMessage::Info(info::Msg::SetSound(id.clone(), sounds[i].clone()))
+            })
+            .text_size(13)
+            .text_line_height(Pixels(16.0))
+            .handle(pick_list::Handle::None)
+            .padding([8, 12])
+            .width(Fill)
+            .style(pick_style(p.chip, p.chip, p.strong, p.strong))
+            .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border));
+            let arrow =
+                container(tinted(&SELECT_ARROW, 10.0, p.strong)).align_right(Fill).center_y(Fill).padding([0, 12]);
+            let about = txt(tr("Silent chats still show notifications, just without a sound."), 10.0).color(p.strong);
+            let head = container(txt(tr("Notification sound"), 11.0).color(p.strong)).padding(8);
+            column![head, column![stack![pick, arrow], container(about).padding([0, 8])].spacing(4)]
+        };
         let note = text_editor(&self.info_note)
             .placeholder("Notes")
             .on_action(|a0| UiMessage::Info(info::Msg::Note(a0)))
@@ -503,6 +551,7 @@ impl BeeperGuiApp {
             .push(labels)
             .push(other.and_then(|u| self.view_contact(&st, chat, u)))
             .push(timers)
+            .push(sound)
             .push(container(note).padding(Padding::ZERO.top(8.0)))
             .push(block_action(&st, chat).map(|block| {
                 // Desktop's `BrandChatInfoBlockUser` row.
@@ -534,7 +583,8 @@ impl BeeperGuiApp {
     /// Desktop's `n0e` Media section: the newest image, video and link messages, and when expanded all of them
     /// by type.
     pub(crate) fn view_info_media<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
-        const TILE: f32 = 130.0;
+        // Desktop's `mediaGrid`: two 124 px columns 8 px apart in the 8 px padding of the 272 px pane.
+        const TILE: f32 = 124.0;
         let p = &self.pal;
         let mut found: Vec<&Message> = st
             .timeline(&chat.id)
@@ -581,7 +631,13 @@ impl BeeperGuiApp {
             .flat_map(|m| {
                 let atts = m.attachments.iter().filter(|a| kinds.contains(&a.attachment_type.as_str()));
                 let atts = atts.map(|a| match a.attachment_type.as_str() {
-                    "img" | "video" => self.thumb(a, TILE, 4.0),
+                    "img" => self.thumb(a, TILE, 4.0),
+                    // Desktop's `BrandVideo` play button: a 36 px `secondary-container` disc in the middle.
+                    "video" => {
+                        let play =
+                            container(ic(icon::PLAY, 14.0).color(p.strong)).center(36).style(fill_box(p.chip, 18.0));
+                        stack![self.thumb(a, TILE, 4.0), container(play).center(TILE)].into()
+                    }
                     _ => {
                         let kind = ell(file_kind(a.mime_type.as_deref()), TILE - 16.0, 10.0, Weight::Semibold);
                         file(
@@ -735,5 +791,20 @@ impl BeeperGuiApp {
             .align_y(Center)
             .padding(8);
         column![head, body].into()
+    }
+}
+
+/// Desktop's `aX`: the name of a chat sound, and Default for none.
+fn sound_label(sound: Option<&str>) -> &'static str {
+    match sound {
+        None => tr("Default"),
+        Some("silent") => tr("Silent"),
+        Some("double") => tr("Double"),
+        Some("dreams") => tr("Dreams"),
+        Some("not_marimba") => tr("Not Marimba"),
+        Some("rain_harp") => tr("Rain Harp"),
+        Some("record") => tr("Record"),
+        Some("spirit") => tr("Spirit"),
+        Some(other) => unreachable!("the chat keeps only known sounds, not {other}"),
     }
 }

@@ -28,7 +28,7 @@ impl BeeperGuiApp {
                 self.chat_menu = None;
                 self.active_tab = InboxTab::AllChats;
                 self.selected_account_filter = acc;
-                self.creating_chat = None;
+                self.leave_draft();
             }
             Msg::SetOrder(order) => {
                 self.patch_settings(|s| s.spaces_order = order);
@@ -283,8 +283,14 @@ impl BeeperGuiApp {
             .push(badge);
             menu_line(p, line, Some(space_msg(id)))
         };
-        let shown: Vec<El> = rail_spaces(&st).iter().map(space).collect();
-        let hidden: Vec<El> = hidden_spaces(&st).iter().map(space).collect();
+        // Desktop's sheet is as wide as its longest space name, which stays on one line: the check, icon and gaps
+        // (22 + 14 + 10), the row padding (26), and room for the mute icon and the unread badge (44).
+        let (shown_ids, hidden_ids) = (rail_spaces(&st), hidden_spaces(&st));
+        let widest =
+            shown_ids.iter().chain(&hidden_ids).map(|id| text_width(&space_name(&st, id), 13.0, Weight::Normal));
+        let width = (widest.fold(0.0, f32::max) + 22.0 + 14.0 + 10.0 + 26.0 + 44.0).max(233.0);
+        let shown: Vec<El> = shown_ids.iter().map(space).collect();
+        let hidden: Vec<El> = hidden_ids.iter().map(space).collect();
         let rules = 1 + usize::from(!shown.is_empty() && !hidden.is_empty());
         let mut top: Vec<El> = shown;
         if rules == 2 {
@@ -338,14 +344,14 @@ impl BeeperGuiApp {
         let top = mouse_area(Column::with_children(top)).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
         let rest = mouse_area(rest).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
         let sheet = column![top].push(options_item).push(rest).padding([4, 0]);
-        let sheet = container(sheet).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let sheet = container(sheet).width(width).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         drop(st);
         let sub = options.filter(|_| self.chat_sub.is_some()).map(|e| {
             let (menu, sub) = self.account_menu(e, SpaceMenu::Options);
             column![Space::new().height(options_top), row![menu].push(sub)]
         });
         let w =
-            233.0 + sub.as_ref().map_or(0.0, |_| 233.0 + if self.chat_sub == Some(0) { ACCOUNT_SUB_W } else { 0.0 });
+            width + sub.as_ref().map_or(0.0, |_| 233.0 + if self.chat_sub == Some(0) { ACCOUNT_SUB_W } else { 0.0 });
         (row![sheet].push(sub).into(), w, h)
     }
 

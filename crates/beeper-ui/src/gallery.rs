@@ -6,7 +6,8 @@ use crate::loads;
 use crate::media_view;
 use crate::message;
 use crate::style::{bordered_box, fill_box, semi, shadow_box, Palette};
-use crate::{deletable, iso_millis, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, UiMessage};
+use crate::time::iso_millis;
+use crate::{deletable, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, UiMessage};
 use crate::{MENU_ITEM, MESSAGE_MENU_W};
 use beeper_core::models::{AttachmentSize, Message};
 use beeper_core::store::BeeperStore;
@@ -30,6 +31,8 @@ const BAKE: f32 = 2.0;
 pub(crate) enum Look {
     Tile(bool),
     Inline,
+    /// A square thumbnail with this corner radius, as in Chat Info and the Media window.
+    Thumb(u8),
 }
 
 /// Desktop's `lbt`: a message that can be in a gallery, with one photo or video and nothing else.
@@ -285,6 +288,11 @@ impl BeeperGuiApp {
         self.baked(url, size, Look::Inline)
     }
 
+    /// A square thumbnail cut from the media, with rounded corners: the renderer draws a `Cover` image past its box.
+    pub(crate) fn thumb_tile(&self, url: &str, side: u32, radius: u8) -> Option<&image::Handle> {
+        self.baked(url, (side, side), Look::Thumb(radius))
+    }
+
     /// The baked tile, or `None` while it bakes: a view asks for it.
     fn baked(&self, url: &str, size: (u32, u32), look: Look) -> Option<&image::Handle> {
         let Some(Ok(_)) = self.media_at(url) else { return None };
@@ -306,6 +314,7 @@ impl BeeperGuiApp {
                     Look::Tile(true) => ((outline, 2.0), RADIUS),
                     Look::Tile(false) => ((border, 0.5), RADIUS),
                     Look::Inline => ((Color::TRANSPARENT, 0.0), 17.0),
+                    Look::Thumb(r) => ((Color::TRANSPARENT, 0.0), f32::from(r)),
                 };
                 // A view asks again for a tile whose media went out of the cache.
                 let Some(Some(Ok(frames))) = self.media.get(&url) else { return None };

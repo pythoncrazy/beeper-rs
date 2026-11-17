@@ -924,6 +924,21 @@ pub fn hidden_slider(_: &Theme, _: slider::Status) -> slider::Style {
 mod tests {
     use super::*;
 
+    /// A balanced bubble keeps the room of its time after the last line: measured with digits joined to the text, as
+    /// trailing spaces hang past the width.
+    #[test]
+    fn balanced_bubbles_keep_the_room_of_the_time() {
+        let text = "Nothing bad to say about them, they put money in at our requested valuation";
+        let room = text_width("12:30 AM", 11.0, Weight::Normal) + 4.0;
+        let zero = text_width("0", 13.0, Weight::Normal);
+        let probe = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
+        let width = balanced_width(&probe, 400.0, 13.0);
+        let last = shape(text, 13.0, Weight::Normal, Some(width), |b| b.layout_runs().last().map(|r| r.line_w));
+        assert!(last.expect("a line") + room <= width + 0.5, "the time fits after the last line");
+        let lines = shape(text, 13.0, Weight::Normal, Some(width), |b| b.layout_runs().count());
+        assert_eq!(lines, 2, "and the lines stay balanced");
+    }
+
     #[test]
     fn text_memos_keep_the_measurements_in_use_and_stay_bounded() {
         thread_local!(static M: Memo<usize, usize> = RefCell::default());

@@ -53,6 +53,9 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::NewChat(Msg::Select(id)));
             }
             Msg::Select(id) => {
+                if self.creating_chat != Some(id) {
+                    self.leave_draft();
+                }
                 self.creating_chat = Some(id);
                 self.show_command_palette = false;
                 self.new_chat_query.clear();
@@ -72,8 +75,17 @@ impl BeeperGuiApp {
                 let accounts: Vec<String> =
                     rail_accounts(&st).into_iter().filter(|a| self.can(a, "create_dm")).collect();
                 drop(st);
-                let (phone, email, username) = (c.phone_number.as_deref(), c.email.as_deref(), c.username.as_deref());
-                let (nets, tasks) = self.resolve_identifiers(&id, &accounts, phone, email, username);
+                let ids = (c.phone_number.as_deref(), c.email.as_deref(), c.username.as_deref());
+                let known = c.mxid.as_ref().zip(beeper_core::cloud::contact_account(&id)).map(|(mxid, account)| {
+                    let user = User {
+                        id: mxid.clone(),
+                        full_name: c.full_name.clone(),
+                        img_url: c.img_url.clone(),
+                        ..Default::default()
+                    };
+                    (account, user)
+                });
+                let (nets, tasks) = self.resolve_identifiers(&id, &accounts, ids, known);
                 self.contact_networks = Some((id, nets));
                 return tasks;
             }
@@ -101,7 +113,8 @@ impl BeeperGuiApp {
                 let accounts: Vec<String> = listed.filter(|a| only.as_ref().is_none_or(|o| o == a)).collect();
                 drop(st);
                 let key = format!("lookup:{q}");
-                let (nets, tasks) = self.resolve_identifiers(&key, &accounts, phone.as_deref(), email, username);
+                let (nets, tasks) =
+                    self.resolve_identifiers(&key, &accounts, (phone.as_deref(), email, username), None);
                 self.new_chat_lookup = Some((key, nets));
                 return Task::batch([search, tasks]);
             }
@@ -302,6 +315,17 @@ pub struct NewChat {
 }
 
 impl BeeperGuiApp {
+    /// Desktop's `setSelectedChatTarget` with `isDraftEmpty`: leaving a New Chat draft without people, a group name,
+    /// a room to join or composer text removes it.
+    pub(crate) fn leave_draft(&mut self) {
+        let Some(n) = self.creating_chat.take() else { return };
+        let joining = self.join_matrix_mode && !self.new_chat_query.trim().is_empty();
+        let typed = !self.pane.composer.text().trim().is_empty() || joining;
+        if !typed {
+            self.new_chats.retain(|d| d.id != n || !d.users.is_empty() || !d.title.trim().is_empty());
+        }
+    }
+
     pub(crate) fn view_new_chat<'a>(&'a self) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
