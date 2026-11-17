@@ -6185,14 +6185,27 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let (accept, decline) = request_answers(chat);
         let group = chat.chat_type == "group";
-        let inviter = chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| !group).map(|u| {
+        // Desktop's `RequestNotice`: the person who added you, else the other person of a direct chat, which opens
+        // their card.
+        let other = chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| !group);
+        let inviter = chat.inviter().or(other).map(|u| {
             let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
-            id.map_or_else(|| member_name(u), |id| format!("{} ({id})", member_name(u)))
+            (u.id.clone(), id.map_or_else(|| member_name(u), |id| format!("{} ({id})", member_name(u))))
         });
-        let heading = match inviter {
-            _ if group => tr("Accept group invitation for \"__CHAT_TITLE__\"?").replace("__CHAT_TITLE__", &chat.title),
-            Some(who) => tr("Accept message request from __INVITER__?").replace("__INVITER__", &who),
-            None => tr("Accept message request?").into(),
+        let heading = tr(match (group, inviter.is_some()) {
+            (true, true) => "Accept group invitation for \"__CHAT_TITLE__\" from __INVITER__?",
+            (true, false) => "Accept group invitation for \"__CHAT_TITLE__\"?",
+            (false, true) => "Accept message request from __INVITER__?",
+            (false, false) => "Accept message request?",
+        })
+        .replace("__CHAT_TITLE__", &chat.title);
+        let line = |t: &str| txt(t.to_string(), 13.0).color(p.strong);
+        let heading: El = match inviter.as_ref().zip(heading.split_once("__INVITER__")) {
+            Some(((uid, who), (before, after))) => {
+                let who = self.user_trigger(chat, uid, line(who));
+                container(row![line(before), who, line(after)].align_y(Center).wrap()).center_x(Fill).into()
+            }
+            None => line(&heading).width(Fill).align_x(Center).into(),
         };
         let pill = |label: &str, fg: Color, msg| {
             let label = semi(label.to_string(), 12.0);
@@ -6213,7 +6226,6 @@ impl BeeperGuiApp {
                     pill(tr("Accept"), p.strong, UiMessage::ChatList(chat_list::Msg::AcceptRequest(id.clone())))
                 }))
                 .spacing(8);
-        let heading = txt(heading, 13.0).color(p.strong).width(Fill).align_x(Center);
         let body = column![heading, buttons].spacing(8).align_x(Center);
         let body = container(body).padding(12).width(Fill).max_width(388).style(fill_box(p.chip, 8.0));
         Some(container(body).padding([0, 8]).center_x(Fill).into())

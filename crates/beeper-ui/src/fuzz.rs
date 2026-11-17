@@ -5615,11 +5615,12 @@ fn message_requests_like_desktop() {
         let c = &st.chats[st.resolve_chat_idx(second).expect("a request")];
         let u = c.participants.items.iter().find(|u| u.is_self != Some(true)).expect("the other person");
         let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
-        format!("Accept message request from {}?", id.map_or(member_name(u), |id| format!("{} ({id})", member_name(u))))
+        id.map_or(member_name(u), |id| format!("{} ({id})", member_name(u)))
     };
     let picked: Vec<UiMessage> = {
         let mut sim = simulator(app.view_conversation());
-        assert!(sim.find(heading.as_str()).is_ok(), "{heading}");
+        // Desktop's `RequestNotice` names the other person in a card trigger inside the heading.
+        assert!(sim.find("Accept message request from ").is_ok() && sim.find(heading.as_str()).is_ok(), "{heading}");
         assert!(sim.find("Accept").is_ok());
         let _ = sim.click("Decline").expect("Decline");
         sim.into_messages().collect()
