@@ -810,7 +810,8 @@ impl BeeperGuiApp {
         ]
         .spacing(12)
         .padding([0, 24]);
-        let reset = brand_btn(p, trx("Reset Recovery Key", "button label"), Brand::Danger, LoginMsg::NewKey.into());
+        let reset =
+            brand_btn(p, trx("Reset Recovery Key", "button label"), Brand::Danger, LoginMsg::ConfirmReset.into());
         let back = brand_btn(p, trx("Cancel", "button label"), Brand::Muted, LoginMsg::Show(Screen::Verify).into());
         let title = bold(tr("Reset your Recovery Key"), 28.0).color(p.text_danger).center().width(Fill);
         column![Space::new().height(40), container(title).padding([0, 8]), container(warning).center(Fill)]
@@ -1149,6 +1150,15 @@ mod tests {
             }
         };
         shows(&app, &["Save Key"]);
+        // "Reset Recovery Key" deletes the bridges first, and stays on the warning when that fails.
+        app.login.screen = Screen::Reset;
+        let _ = app.update(LoginMsg::ConfirmReset.into());
+        assert!(app.login.busy);
+        let _ = app.update(LoginMsg::BridgesDeleted(Err("offline".into())).into());
+        assert_eq!(app.login.screen, Screen::Reset);
+        assert_eq!(app.login.toast.as_deref(), Some("Failed to reset. Please check your connection and try again."));
+        let _ = app.update(LoginMsg::BridgesDeleted(Ok(())).into());
+        assert_eq!(app.login.screen, Screen::NewKey, "then it makes a new key");
         let _ = app.update(LoginMsg::NewKey.into());
         assert_eq!(app.login.screen, Screen::NewKey);
         let key = "EsTG bqMm dUDy dKth xAyD 45dS HhyC WKc9 CF6B xsFi J5FQ t8u2";

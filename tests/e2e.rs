@@ -792,8 +792,8 @@ async fn lifecycle() {
     };
     let (_, by_title) = pager.request("GET", "/v1/chats/search?query=eric", None).await;
     assert_eq!(titles(&by_title), ["Eric Migicovsky"], "the default scope matches titles");
-    let (_, by_people) = pager.request("GET", "/v1/chats/search?query=eric&scope=participants", None).await;
-    assert_eq!(titles(&by_people).len(), 2, "{by_people}");
+    let (_, by_people) = pager.request("GET", "/v1/chats/search?query=migicovsky&scope=participants", None).await;
+    assert_eq!(titles(&by_people), ["Eric Migicovsky", "#desktop-release"], "newest first");
     let (_, rust) = pager.request("GET", "/v1/chats/search?query=rust&accountIDs=acc_signal", None).await;
     assert_eq!(rust["items"], json!([]));
     let eric = "/v1/chats/!wa_eric:beeper.com";
@@ -1159,8 +1159,11 @@ async fn lifecycle() {
     assert!(
         !unified["results"]["chats"].as_array().unwrap().is_empty() && unified["results"]["in_groups"] == json!([])
     );
-    let people = client.unified_search("eric").await;
-    assert_eq!(people["results"]["in_groups"][0]["title"], "#desktop-release", "groups match by participant");
+    let people = client.unified_search("migicovsky").await;
+    let mut titles: Vec<&str> =
+        people["results"]["in_groups"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap()).collect();
+    titles.sort();
+    assert_eq!(titles, ["#desktop-release", "Unified Eric + Sarah"], "chats match by participant, members as merged");
 
     let settings_hits = search_settings(&store.read(), "notifications");
     assert_eq!(settings_hits[0], SettingsHit::Section(SettingsTab::Notifications, true));

@@ -287,6 +287,15 @@ struct Reminder {
     dismiss_on_incoming_message: bool,
 }
 
+/// The `type` of a chat in the API: `group` or `single`.
+pub(super) fn chat_type(c: &Chat) -> &'static str {
+    if c.chat_type == "group" {
+        "group"
+    } else {
+        "single"
+    }
+}
+
 /// Desktop's `mapChat`: `participants` keeps at most `max_participants` members (all for `None`), and `preview` adds
 /// the newest message like `listChats`.
 pub(super) fn chat<'a>(
@@ -333,7 +342,7 @@ pub(super) fn chat<'a>(
         title: &c.title,
         description: c.description.as_deref(),
         img_url: c.img_url.as_deref(),
-        chat_type: if c.chat_type == "group" { "group" } else { "single" },
+        chat_type: chat_type(c),
         is_read_only: c.is_read_only,
         participants: Participants {
             items: shown.iter().map(participant).collect(),

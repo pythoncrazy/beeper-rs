@@ -45,6 +45,7 @@ pub mod rail;
 mod reauth;
 mod record;
 pub mod reminders;
+mod ring;
 mod scheduled;
 mod selectable;
 pub mod settings;
@@ -2267,6 +2268,9 @@ pub struct Pane {
     pub selected_chat_id: Option<String>,
     /// Desktop's composer `attachments`.
     pub attachments: Vec<PendingMedia>,
+    /// The pending attachment with the keyboard focus, and the one whose Quick Look shows (Desktop's `C_t`).
+    pub att_focus: Option<usize>,
+    pub quick_look: Option<usize>,
     pub composer_links: Vec<(String, LinkState)>,
     pub message_menu: Option<(String, Point)>,
     /// The text selected when the message menu opened, which turns it into the menu for the selection.
@@ -2476,6 +2480,9 @@ pub struct BeeperGuiApp {
     pub space_view_account: Option<String>,
     /// The requests that the Requests view last marked as seen.
     seen_requests: Vec<String>,
+    /// The Picture in Picture window and the message of its video, and a video that should go there.
+    pip: Option<(window::Id, String)>,
+    pip_wanted: bool,
     pub hotkey_query: String,
     pub hotkey_rec: Option<HotkeyRec>,
     pub profile: profile::ProfileForm,
@@ -2635,6 +2642,8 @@ pub struct BeeperGuiApp {
     rail_float: bool,
     /// Desktop's local `sidebar-hidden`: hides the rail and the chat list.
     pub sidebar_hidden: bool,
+    /// When the sidebar last hid or showed, for its slide.
+    sidebar_slide: Option<std::time::Instant>,
     pub dragging: bool,
     /// The rail space under the cursor, and where the cursor is in it.
     pub rail_hover: Option<(String, Point)>,
@@ -2769,6 +2778,8 @@ impl BeeperGuiApp {
             selected_account_filter: None,
             space_view_account: None,
             seen_requests: Vec::new(),
+            pip: None,
+            pip_wanted: false,
             hotkey_query: String::new(),
             hotkey_rec: None,
             profile: profile::ProfileForm::default(),
@@ -2880,6 +2891,7 @@ impl BeeperGuiApp {
             sidebar_width,
             rail_float: false,
             sidebar_hidden,
+            sidebar_slide: None,
             dragging: false,
             rail_hover: None,
             header_hover: (false, 0),
@@ -3186,6 +3198,8 @@ impl BeeperGuiApp {
     pub fn title(&self, id: window::Id) -> String {
         match () {
             _ if Some(id) == self.settings_window => tr("Settings"),
+            // Desktop's `Gyt` title, which it does not translate.
+            _ if self.pip.as_ref().is_some_and(|p| p.0 == id) => "Picture in Picture",
             _ if self.theme_windows.iter().any(|w| w.0 == id) => tr("Chat Theme"),
             _ if self.labels_windows.iter().any(|w| w.0 == id) => tr("Edit Labels"),
             _ if self.label_settings.iter().any(|w| w.id == id) => tr("Label Settings"),
@@ -3420,7 +3434,12 @@ impl BeeperGuiApp {
         self.unread_view = false;
         // A running load or retry of the last chat goes on to this chat when it ends.
         (self.pane.top.shown, self.pane.top.tries) = (false, 0);
-        self.video = None;
+        // Desktop's `maybeCreatePip`: a playing video goes on in Picture in Picture when its chat closes.
+        match self.video.as_ref() {
+            _ if self.pip.is_some() => {}
+            Some(v) if v.playing() && !v.is_full() => self.pip_wanted = true,
+            _ => self.video = None,
+        }
         drop(st);
         if let Some(root) = self.open_threads.get(chat_id).cloned() {
             self.open_thread(chat_id.into(), root);
@@ -3647,9 +3666,16 @@ impl BeeperGuiApp {
         Task::perform(async move { tokio::time::sleep(wait).await }, |()| UiMessage::Timeline(timeline::Msg::LoadOlder))
     }
 
+    /// How far the sidebar's slide is, `transition: all 0.2s cubic-bezier(0.165, 0.84, 0.44, 1)`, while it runs.
+    pub(crate) fn sidebar_progress(&self) -> Option<f32> {
+        let t = self.sidebar_slide?.elapsed().as_secs_f32() / 0.2;
+        (t < 1.0).then(|| crate::style::cubic_bezier(t, [0.165, 0.84, 0.44, 1.0]))
+    }
+
     fn set_sidebar_hidden(&mut self, hidden: bool) {
         if self.sidebar_hidden != hidden {
             self.sidebar_hidden = hidden;
+            self.sidebar_slide = Some(std::time::Instant::now());
             let path = self.store.read().config.data_dir.join("sidebar-hidden");
             std::fs::write(path, hidden.to_string()).expect("write sidebar-hidden");
         }
@@ -3706,7 +3732,7 @@ impl BeeperGuiApp {
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
         let (shown, dismissals) = (self.stackable_toast(), self.toast_dismissals);
         let task = self.handle(msg);
-        let task = Task::batch([task, self.view_requests()]);
+        let task = Task::batch([task, self.view_requests(), self.pip()]);
         self.keep_shown();
         let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
@@ -3941,6 +3967,10 @@ impl BeeperGuiApp {
                 return self.login_key(key, mods);
             }
             UiMessage::WindowKey(_, Key::Named(Named::Escape), _) if self.menu_bar.is_some() => self.menu_bar = None,
+            // Desktop's `onEscapePressed` of the Picture in Picture window.
+            UiMessage::WindowKey(id, Key::Named(Named::Escape), _) if self.pip.as_ref().is_some_and(|p| p.0 == id) => {
+                return window::close(id);
+            }
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
@@ -4295,6 +4325,10 @@ impl BeeperGuiApp {
             }
             UiMessage::KeyPressed(key, mods) if self.carousel.as_ref().is_some_and(|c| !c.in_media) => {
                 return self.carousel_key(&key, mods);
+            }
+            // Desktop's `C_t` takes every key while a pending attachment has the focus.
+            UiMessage::KeyPressed(key, _) if self.pane.att_focus.is_some() => {
+                return self.update(UiMessage::Composer(composer::Msg::AttachmentKey(key)));
             }
             UiMessage::KeyPressed(key, mods) => {
                 let z = mods.command() && matches!(key.as_ref(), Key::Character(c) if c.eq_ignore_ascii_case("z"));
@@ -4680,7 +4714,8 @@ impl BeeperGuiApp {
             || self.reauth.busy
             || self.enter_key.busy
             || self.nickname_windows.iter().any(|d| d.saving)
-            || self.hover_fading();
+            || self.hover_fading()
+            || self.sidebar_progress().is_some();
         let tab_at = self.media_window.as_ref().and_then(|w| w.tab_at);
         let animated = animated || tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE);
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
@@ -4754,6 +4789,8 @@ impl BeeperGuiApp {
             self.view_settings()
         } else if let Some(w) = self.media_window.as_ref().filter(|w| w.id == id) {
             self.view_media(w)
+        } else if self.pip.as_ref().is_some_and(|p| p.0 == id) {
+            self.view_pip()
         } else if Some(id) == self.login_window {
             self.view_login()
         } else if Some(id) == self.verify.window {
@@ -4820,7 +4857,17 @@ impl BeeperGuiApp {
         let shown = self.store.read().settings.on("showSidebar");
         let rail = (shown && !self.sidebar_hidden).then(|| self.view_rail());
         let sidebar = (!self.sidebar_hidden).then(|| self.view_sidebar());
-        let body = Row::new().push(rail).push(sidebar).push(stack![right, grip]);
+        // Desktop's `.left` transition: the space bar and the chat list slide out to nothing when they hide, at once
+        // empty, and slide back in when they show.
+        let left: El<'_> = match self.sidebar_progress() {
+            Some(t) => {
+                let full = self.sidebar_width + 68.0;
+                let width = full * if self.sidebar_hidden { 1.0 - t } else { t };
+                container(Row::new().push(rail).push(sidebar)).width(width).clip(true).into()
+            }
+            None => Row::new().push(rail).push(sidebar).into(),
+        };
+        let body = Row::new().push(left).push(stack![right, grip]);
         let body = container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
         // Desktop's `hoveringTrigger`: with the space bar hidden, the 20px at the left edge slide it in over the list.
         let float = (!shown && !self.sidebar_hidden).then(|| -> El<'_> {
@@ -5064,8 +5111,10 @@ impl BeeperGuiApp {
         let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
         // The menus and the emoji picker of the carousel show over it.
         let hover = self.view_hover_card().filter(|_| in_main);
+        let quick_look = self.view_attachment_quick_look().filter(|_| in_main);
         let layers = stack![base]
             .push(toast)
+            .push(quick_look)
             .push(carousel)
             .push(self.view_view_once().filter(|_| in_main))
             .push(hover)
@@ -5734,6 +5783,41 @@ impl BeeperGuiApp {
             .align_right(Fill)
             .padding(Padding::ZERO.top(top).right(4.0))
             .into()
+    }
+
+    /// Desktop's Picture in Picture window (`Gyt`): frameless and on top, 16 px from the top left corner, while the
+    /// video that went on plays out of its chat. It closes when the chat of the video opens again, where the video
+    /// goes on inline, and when another video plays.
+    fn pip(&mut self) -> Task<UiMessage> {
+        if let Some((id, mid)) = self.pip.clone() {
+            let here = self.store.read().loaded(&mid).map(|m| m.chat_id.clone()) == self.pane.selected_chat_id;
+            let gone = self.video.as_ref().is_none_or(|v| v.mid != mid);
+            if !here && !gone {
+                return Task::none();
+            }
+            self.pip = None;
+            if let Some(v) = self.video.as_mut().filter(|_| here) {
+                v.set_pip(false);
+            }
+            return window::close(id);
+        }
+        let Some(v) = self.video.as_mut().filter(|_| std::mem::take(&mut self.pip_wanted)) else {
+            return Task::none();
+        };
+        v.set_pip(true);
+        let (w, h) = v.pip_size();
+        let (id, open) = window::open(window::Settings {
+            size: Size::new(w as f32, h as f32),
+            position: window::Position::Specific(Point::new(16.0, 16.0)),
+            decorations: false,
+            resizable: false,
+            transparent: true,
+            level: window::Level::AlwaysOnTop,
+            min_size: None,
+            ..Self::window_settings(Size::new(w as f32, h as f32))
+        });
+        self.pip = Some((id, v.mid.clone()));
+        open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0)))
     }
 
     /// Desktop's `updateLastViewedRequestsAt` when the Requests view shows, and when its requests change while it
