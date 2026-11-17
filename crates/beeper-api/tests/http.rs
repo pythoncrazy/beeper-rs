@@ -874,9 +874,9 @@ async fn websocket_sends_the_app_state_like_desktop() {
     write_ws_frame(&mut ws, 0x1, br#"{"type":"subscriptions.set","chatIDs":["*"],"app":{"state":true}}"#, true)
         .await
         .unwrap();
-    assert_eq!(next(&mut ws).await.unwrap()["type"], "subscriptions.updated");
     let snapshot = next(&mut ws).await.unwrap();
     assert_eq!((snapshot["type"].as_str(), snapshot["seq"].as_u64()), (Some("app.state.updated"), Some(1)));
+    assert_eq!(next(&mut ws).await.unwrap()["type"], "subscriptions.updated", "after the snapshot, like Desktop");
     assert_eq!(snapshot["appState"]["e2ee"]["verified"], store.read().beeper_state.verified);
     store.read().emit_ws("setup.updated", "", None, None, None);
     assert!(next(&mut ws).await.is_none(), "an unchanged state sends nothing");
@@ -1232,4 +1232,27 @@ async fn search_messages_filters_orders_and_pages_like_desktop() {
         let (status, body) = get("/v1/messages/search", query.clone()).await;
         assert_eq!((status, body.to_string()), (400, invalid(issues)), "{query}");
     }
+}
+
+/// Desktop's Stainless MCP routes read the MCP URL before the MCP SDK's transport checks the request, answer with
+/// `res.json` and no `id`, and the transport writes its errors with `writeHead`, without a `Content-Type`.
+#[tokio::test]
+async fn mcp_errors_come_from_the_layer_of_desktop() {
+    let (port, token) = server("mcp-errors").await;
+    let request = |method: &str, target: &str, headers: &str| {
+        format!("{method} {target} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\n{headers}content-length: 2\r\nconnection: close\r\n\r\n{{}}")
+    };
+    let json = "content-type: application/json; charset=utf-8\r\n";
+    let filters = text(port, &request("POST", "/v0/mcp?operation=x", "")).await;
+    let message = "Invalid request: Validation error: Invalid enum value. Expected 'read' | 'write', received 'x' at \\\"operation[0]\\\"";
+    assert!(filters.starts_with("HTTP/1.1 400 ") && filters.contains(json), "{filters}");
+    assert!(
+        filters.ends_with(&format!(r#"{{"jsonrpc":"2.0","error":{{"code":-32000,"message":"{message}"}}}}"#)),
+        "{filters}"
+    );
+    let get = text(port, &request("GET", "/v0/mcp", "")).await;
+    assert!(get.ends_with(r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"Method not supported"}}"#), "{get}");
+    let accept = text(port, &request("POST", "/v0/mcp", "content-type: application/json\r\n")).await;
+    assert!(accept.starts_with("HTTP/1.1 406 ") && !accept.to_lowercase().contains("content-type:"), "{accept}");
+    assert!(accept.ends_with(r#""id":null}"#), "{accept}");
 }
