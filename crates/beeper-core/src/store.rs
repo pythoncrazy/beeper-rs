@@ -2942,8 +2942,15 @@ impl BeeperStore {
                 self.update_message(i, |m| m.is_unread = Some(false));
             }
         }
-        let left = indices.iter().filter(|&&i| self.messages[i].is_unread == Some(true)).count() as u32;
         let idx = self.chat_idx_by_id[&chat_id];
+        // A Matrix room keeps no unread mark on its messages, only a count: the messages of others after this one are
+        // left of it, until the homeserver counts again from the receipt.
+        let marked = indices.iter().filter(|&&i| self.messages[i].is_unread == Some(true)).count();
+        let after =
+            indices.iter().map(|&i| &self.messages[i]).filter(|m| m.sort_key > key && m.is_sender != Some(true));
+        let left = u32::try_from(marked)
+            .expect("unread count")
+            .max(u32::try_from(after.count()).expect("unread count").min(self.chats[idx].unread_count));
         if self.chats[idx].flag(ChatFlag::MarkedUnread) {
             self.queue(&chat_id, Outgoing::Flag(ChatFlag::MarkedUnread, false));
         }
