@@ -1,6 +1,6 @@
 //! Desktop's Beeper Profile page of Settings (`ProfileSubView`), with its menu and prompts.
 
-use crate::i18n::{tr, trf, trx};
+use crate::i18n::{tr, trf, trx, trxf};
 use crate::settings;
 use crate::style::{
     bold, bordered_box, btn_style, fill_box, fw, ic, icon, med, semi, shadow_box, txt, Bare, Palette, CLEAR,
@@ -10,13 +10,14 @@ use crate::{
     PendingMedia, SettingsTab, Toast, UiMessage, CHEVRON_DOWN,
 };
 use beeper_core::cloud::{Cloud, CloudError};
+use beeper_core::config::now_unix_millis;
 use beeper_core::models::{Plan, User};
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
 use iced::widget::{
-    button, column, container, hover, image, mouse_area, rich_text, row, span, text_input, Column, Space,
+    button, column, container, hover, image, mouse_area, rich_text, row, span, text_editor, text_input, Column, Space,
 };
-use iced::{Center, Color, Fill, Padding, Task, Theme};
+use iced::{Center, Color, Fill, Padding, Pixels, Task, Theme};
 use std::path::PathBuf;
 
 /// The edits and the open prompts of the Beeper Profile page.
@@ -33,10 +34,22 @@ pub struct ProfileForm {
     pub delete: Option<(String, bool, Option<String>)>,
     /// Desktop's `ChangeEmailModal`: the current, new and confirmed email, whether it saves, and its error.
     pub change_email: Option<([String; 3], bool, Option<String>)>,
-    /// Desktop's `ShowRecoveryKeyModal`, and whether the key was copied.
-    pub recovery_key: Option<bool>,
+    /// Desktop's `ShowRecoveryKeyModal` and its step.
+    pub recovery_key: Option<KeyStep>,
     /// The section that waits for the answer to "You have unsaved changes".
     pub leaving: Option<SettingsTab>,
+}
+
+/// Desktop's `DEFERRED_RECOVERY_CODE_SETUP` banner shows a day after the recovery key was made.
+const KEY_BANNER_AFTER: i64 = 24 * 60 * 60 * 1000;
+
+/// The steps of Desktop's `ShowRecoveryKeyModal`.
+pub enum KeyStep {
+    /// The key, and whether it was copied.
+    Display(bool),
+    /// The typed key, whether it verifies, and its error.
+    Verify(text_editor::Content, bool, Option<String>),
+    Verified,
 }
 
 #[derive(Clone)]
@@ -50,7 +63,16 @@ pub enum Msg {
     Saved(Result<(), String>),
     Menu,
     RecoveryKey(bool),
+    /// "Save key now" of the banner: the recovery key in Settings, and no banner for the rest of the session.
+    SaveKeyNow,
     CopyRecoveryKey,
+    /// Next after the copy: the key is typed again to check that it was saved.
+    KeyNext,
+    KeyEdit(text_editor::Action),
+    KeyPaste,
+    KeyPasted(Option<String>),
+    /// The homeserver took the typed key, or refused it with the error.
+    KeyVerified(Result<(), String>),
     /// Opens the delete prompt, or changes its text. `None` closes it.
     Delete(Option<String>),
     ConfirmDelete,
@@ -147,10 +169,39 @@ impl BeeperGuiApp {
                 }
             }
             Msg::Menu => f.menu = !f.menu,
-            Msg::RecoveryKey(open) => f.recovery_key = open.then_some(false),
+            Msg::RecoveryKey(open) => f.recovery_key = open.then_some(KeyStep::Display(false)),
+            Msg::SaveKeyNow => {
+                (f.recovery_key, self.key_banner_closed) = (Some(KeyStep::Display(false)), true);
+                return self.open_settings(SettingsTab::Profile);
+            }
             Msg::CopyRecoveryKey => {
-                f.recovery_key = Some(true);
+                f.recovery_key = Some(KeyStep::Display(true));
                 return iced::clipboard::write(self.store.read().beeper_state.secrets.recovery_code.clone());
+            }
+            Msg::KeyNext => f.recovery_key = Some(KeyStep::Verify(text_editor::Content::new(), false, None)),
+            Msg::KeyEdit(action) => {
+                let Some(KeyStep::Verify(typed, false, error)) = &mut f.recovery_key else { return Task::none() };
+                crate::verify::edit_recovery_key(typed, action);
+                *error = None;
+                return self.check_typed_key();
+            }
+            Msg::KeyPaste => return iced::clipboard::read().map(|t| UiMessage::Profile(Msg::KeyPasted(t))),
+            Msg::KeyPasted(text) => {
+                let Some(KeyStep::Verify(typed, false, error)) = &mut f.recovery_key else { return Task::none() };
+                *typed =
+                    text_editor::Content::with_text(&crate::verify::format_recovery_key(&text.unwrap_or_default()));
+                *error = None;
+                return self.check_typed_key();
+            }
+            Msg::KeyVerified(Ok(())) => {
+                beeper_core::matrix::mark_recovery_key_backed_up(&self.store);
+                f.recovery_key = Some(KeyStep::Verified);
+            }
+            Msg::KeyVerified(Err(e)) => {
+                if let Some(KeyStep::Verify(_, busy, error)) = &mut f.recovery_key {
+                    *busy = false;
+                    *error = Some(trxf("Error: %s", "recovery key verification error", &[&e]));
+                }
             }
             Msg::Delete(text) => {
                 let busy = f.delete.as_ref().is_some_and(|d| d.1);
@@ -393,16 +444,42 @@ impl BeeperGuiApp {
             .spacing(12);
             return Some(card(content.into(), 350.0, UiMessage::Profile(Msg::CloseEmail)));
         }
-        let copied = f.recovery_key?;
+        let close = UiMessage::Profile(Msg::RecoveryKey(false));
+        let copied = match f.recovery_key.as_ref()? {
+            KeyStep::Display(copied) => *copied,
+            KeyStep::Verify(typed, busy, error) => {
+                // Desktop's verify step: the key typed again, which checks itself once it is complete.
+                let heading = if *busy { tr("Verifying...") } else { tr("Verify recovery key") };
+                let input = crate::verify::key_input(
+                    p,
+                    typed,
+                    error.is_some(),
+                    |a| UiMessage::Profile(Msg::KeyEdit(a)),
+                    UiMessage::Profile(Msg::KeyPaste),
+                );
+                let content = column![semi(heading, 15.0).color(p.strong), input]
+                    .push(error.as_ref().map(|e| txt(e.clone(), 11.0).color(p.danger)))
+                    .spacing(12)
+                    .align_x(Center);
+                return Some(card(content.into(), 350.0, close));
+            }
+            KeyStep::Verified => {
+                let done = ic(icon::CHECK, 36.0).color(p.accent);
+                let content = column![done, semi(tr("Verified"), 15.0).color(p.strong)].spacing(8).align_x(Center);
+                return Some(card(content.into(), 350.0, close));
+            }
+        };
         let key = st.beeper_state.secrets.recovery_code.clone();
-        let label = match copied && st.beeper_state.has_backed_up_code {
-            true => tr("Copied"),
-            false => tr("Copy to Clipboard"),
+        // Desktop's button: "Copy to Clipboard", then "Next" to verify the key, or "Copied" once it is backed up.
+        let (label, press) = match (copied, st.beeper_state.has_backed_up_code) {
+            (false, _) => (tr("Copy to Clipboard"), Msg::CopyRecoveryKey),
+            (true, true) => (tr("Copied"), Msg::CopyRecoveryKey),
+            (true, false) => (trx("Next", "button label"), Msg::KeyNext),
         };
         let copy = button(med(label, 13.0).color(Color::WHITE))
             .padding([6, 14])
             .style(btn_style([p.accent; 3], [Color::WHITE; 3], 8.0))
-            .on_press(UiMessage::Profile(Msg::CopyRecoveryKey));
+            .on_press(UiMessage::Profile(press));
         let content = column![
             container(txt(key, 15.0).font(fw(Weight::Semibold)).color(p.strong).center())
                 .padding(12)
@@ -415,7 +492,49 @@ impl BeeperGuiApp {
         ]
         .spacing(12)
         .align_x(Center);
-        Some(card(content.into(), 350.0, UiMessage::Profile(Msg::RecoveryKey(false))))
+        Some(card(content.into(), 350.0, close))
+    }
+
+    /// Desktop's `HeaderBanners` backup banner over the chat list: a recovery key this device made over a day ago and
+    /// never verified, with the `deferred-recovery-code-setup` flag.
+    pub(crate) fn view_key_banner<'a>(&self, st: &BeeperStore) -> Option<El<'a>> {
+        let s = &st.beeper_state;
+        let made = s.recovery_code_generated_at;
+        let due = !s.secrets.recovery_code.is_empty() && made > 0 && now_unix_millis() - made >= KEY_BANNER_AFTER;
+        if self.key_banner_closed || s.has_backed_up_code || !due || !st.feature("deferred-recovery-code-setup").on {
+            return None;
+        }
+        let p = &self.pal;
+        let save = button(med(tr("Save key now"), 13.0).color(Color::WHITE))
+            .padding(8)
+            .style(btn_style([p.accent; 3], [Color::WHITE; 3], 8.0))
+            .on_press(UiMessage::Profile(Msg::SaveKeyNow));
+        let banner = column![
+            semi(tr("If you lose your device..."), 16.0).line_height(Pixels(20.0)).color(p.accent),
+            txt(tr("You'll need your recovery key to access your encrypted data."), 11.0).color(p.strong).center(),
+            save,
+        ]
+        .spacing(12)
+        .align_x(Center);
+        Some(container(banner).padding([16, 8]).center_x(Fill).into())
+    }
+
+    /// Desktop's verify step: a complete typed key verifies when it is the key of this device.
+    fn check_typed_key(&mut self) -> Task<UiMessage> {
+        let mine = beeper_core::matrix::recovery_key_chars(&self.store.read().beeper_state.secrets.recovery_code);
+        let Some(KeyStep::Verify(typed, busy, error)) = &mut self.profile.recovery_key else { return Task::none() };
+        let key = beeper_core::matrix::recovery_key_chars(&typed.text());
+        if key.len() != 48 {
+            return Task::none();
+        }
+        if key != mine {
+            *error = Some(tr("Entered key does not match your recovery key").into());
+            return Task::none();
+        }
+        *busy = true;
+        Task::perform(beeper_core::matrix::recover(self.store.clone(), key), |r| {
+            UiMessage::Profile(Msg::KeyVerified(r))
+        })
     }
 }
 
