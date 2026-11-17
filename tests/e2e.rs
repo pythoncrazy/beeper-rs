@@ -841,7 +841,7 @@ async fn lifecycle() {
     assert_eq!(names.len(), 12);
     assert!(names.contains(&"send_message") && names.contains(&"search_chats"));
     let (_, only) = client.mcp_at("/v0/mcp?tool=search_chats&tool=get_chat", rpc(2, "tools/list", json!({}))).await;
-    assert_eq!(only["result"]["tools"].as_array().unwrap().len(), 2, "the tool filter of the MCP URL");
+    assert_eq!(only["result"]["tools"].as_array().unwrap().len(), 3, "the tool filter of the MCP URL, and search_docs");
     let (_, without) = client.mcp_at("/v0/mcp?no_tool=search_chats", rpc(2, "tools/list", json!({}))).await;
     assert_eq!(without["result"]["tools"].as_array().unwrap().len(), 11);
     let (status, unknown) = client.mcp_at("/v0/mcp?tool=nope", rpc(2, "tools/list", json!({}))).await;

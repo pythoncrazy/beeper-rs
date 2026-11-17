@@ -137,10 +137,12 @@ impl BeeperGuiApp {
             let shows = e.hovered == Some(i) || e.drag.is_some();
             let handle = tinted(&DRAG_HANDLE, 16.0, handle_color.scale_alpha(if shows { fade } else { 0.0 }));
             let handle = mouse_area(handle).interaction(mouse::Interaction::Move);
+            let gone = (n > 1).then(|| edit(Msg::Remove(label.clone())));
             let remove = button(ic(icon::CLOSE, 14.0))
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [p.text.scale_alpha(fade); 3], 0.0))
-                .on_press_maybe((n > 1).then(|| edit(Msg::Remove(label))));
+                .on_press_maybe(gone.clone());
+            let remove = self.plain(format!("time-remove-{label}"), remove, gone);
             let icons = row![handle, remove].spacing(6).align_y(Center).padding(Padding::ZERO.left(8.0));
             let line = mouse_area(row![labels, icons].align_y(Center))
                 .on_press(edit(Msg::Grab(Some(i))))
@@ -148,8 +150,12 @@ impl BeeperGuiApp {
                 .on_exit(edit(Msg::Hover(i, false)));
             rows = rows.push(line);
         }
-        let solid = |content: El<'static>, msg: Option<UiMessage>| {
-            button(content).padding([4, 6]).style(pill_style(p)).on_press_maybe(msg)
+        let solid = |key: &str, content: El<'static>, msg: Option<UiMessage>| {
+            self.plain(
+                format!("time-{key}"),
+                button(content).padding([4, 6]).style(pill_style(p)).on_press_maybe(msg.clone()),
+                msg,
+            )
         };
         let foot: El = match &e.input {
             Some(text) => {
@@ -166,8 +172,8 @@ impl BeeperGuiApp {
                 let save = addable(&saved, text, now).map(|_| edit(Msg::Save));
                 let add = row![
                     input,
-                    solid(ic(icon::CHECK, 16.0).into(), save),
-                    solid(ic(icon::CLOSE, 16.0).into(), Some(edit(Msg::Cancel)))
+                    solid("save", ic(icon::CHECK, 16.0).into(), save),
+                    solid("cancel", ic(icon::CLOSE, 16.0).into(), Some(edit(Msg::Cancel)))
                 ]
                 .spacing(6)
                 .align_y(Center);
@@ -179,11 +185,23 @@ impl BeeperGuiApp {
             None => {
                 let label = |t| txt(tr(t), 13.0).line_height(1.0).into();
                 let add = (n < TIME_SUGGESTIONS_MAX).then(|| edit(Msg::Add));
-                let buttons = row![solid(label("Add"), add), solid(label("Reset"), Some(edit(Msg::Reset)))];
+                let buttons =
+                    row![solid("add", label("Add"), add), solid("reset", label("Reset"), Some(edit(Msg::Reset)))];
                 container(buttons.spacing(6)).width(Fill).align_right(Fill).padding(Padding::ZERO.top(6.0)).into()
             }
         };
         column![container(header).padding(Padding::ZERO.bottom(8.0)), rows, foot].width(Fill).padding(16).into()
+    }
+}
+
+impl BeeperGuiApp {
+    /// A plain `<button>` of the Settings window, which takes the focus without showing it (`button { outline: 0 }`)
+    /// while it works.
+    fn plain<'a>(&self, key: String, b: impl Into<El<'a>>, press: Option<UiMessage>) -> El<'a> {
+        match press {
+            Some(m) => self.target(self.settings_window, key, b, focus::Keys::press(m), focus::Look::Hidden),
+            None => b.into(),
+        }
     }
 }
 

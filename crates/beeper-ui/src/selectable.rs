@@ -95,6 +95,7 @@ pub fn selectable<'a, Link: Clone + 'static, Message>(
         color: None,
         on_link_click: None,
         on_link_menu: None,
+        on_image_menu: None,
         link_tip: None,
         tip: None,
         images: Vec::new(),
@@ -110,6 +111,7 @@ pub struct Selectable<'a, Link: Clone + 'static, Message> {
     color: Option<Color>,
     on_link_click: Option<Box<dyn Fn(Link) -> Message + 'a>>,
     on_link_menu: Option<Box<dyn Fn(Link) -> Message + 'a>>,
+    on_image_menu: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     link_tip: Option<LinkTip<'a, Link, Message>>,
     /// The tooltip of the hovered link, made for the overlay.
     tip: Option<Element<'a, Message>>,
@@ -150,6 +152,13 @@ impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
     /// The message of a right press on a link, which then takes the press from the widgets around the text.
     pub fn on_link_menu(mut self, on_link_menu: impl Fn(Link) -> Message + 'a) -> Self {
         self.on_link_menu = Some(Box::new(on_link_menu));
+        self
+    }
+
+    /// The message of a right press on the image of an [`IMAGE_SLOT`] span, by its place among the images, which
+    /// then takes the press from the widgets around the text.
+    pub fn on_image_menu(mut self, on_image_menu: impl Fn(usize) -> Message + 'a) -> Self {
+        self.on_image_menu = Some(Box::new(on_image_menu));
         self
     }
 
@@ -433,6 +442,15 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
                 let link = hovered_link.and_then(|span| self.spans().get(span)?.link.clone());
                 if let (Some(link), Some(on_menu)) = (link, &self.on_link_menu) {
                     shell.publish(on_menu(link));
+                    shell.capture_event();
+                    return;
+                }
+                let slot = inside
+                    .and_then(|p| state.paragraph.hit_span(p))
+                    .filter(|&s| self.spans().get(s).is_some_and(|s| s.text == IMAGE_SLOT));
+                if let (Some(slot), Some(on_menu)) = (slot, &self.on_image_menu) {
+                    let k = self.spans()[..slot].iter().filter(|s| s.text == IMAGE_SLOT).count();
+                    shell.publish(on_menu(k));
                     shell.capture_event();
                 }
             }
@@ -721,5 +739,21 @@ mod tests {
         assert_eq!(texts(all, &p, bounds), "hi");
         let tail = Selection::Drag { anchor: Point::new(390.0, 8.0), head: Point::new(399.0, 8.0), held: false };
         assert!(tail.part(p.buffer(), bounds).is_none(), "the padding alone is no selection");
+    }
+
+    /// A right press on the image of a custom emoji gives its place among the images, for Desktop's menu of it, and
+    /// one on the text does not.
+    #[test]
+    fn a_right_press_on_an_image_names_it() {
+        use iced::advanced::mouse::{Button, Event as MouseEvent};
+        let spans = vec![span::<(), Font>("hi ").size(13.0), span(IMAGE_SLOT).size(13.0), span(IMAGE_SLOT).size(13.0)];
+        let text: Element<'_, usize> = selectable(spans).on_image_menu(|k| k).into();
+        let mut sim = iced_test::simulator::Simulator::with_size(Default::default(), Size::new(200.0, 40.0), text);
+        let at = crate::style::text_width("hi ", 13.0, iced::font::Weight::Normal);
+        for x in [at + 19.5, at + 6.5, 4.0] {
+            sim.point_at(Point::new(x, 8.0));
+            let _ = sim.simulate([Event::Mouse(MouseEvent::ButtonPressed(Button::Right))]);
+        }
+        assert_eq!(sim.into_messages().collect::<Vec<_>>(), [1, 0]);
     }
 }

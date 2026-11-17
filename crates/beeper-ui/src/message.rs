@@ -1121,6 +1121,19 @@ impl BeeperGuiApp {
                 let label = tr(if entire { "Copy Entire Message with Timestamp" } else { "Copy with Timestamp" });
                 vec![item(label.into(), if stamp { "Ctrl C" } else { "" }, Some(copy))]
             }),
+            // Desktop's item of a right-clicked custom emoji that is not the own one's name yet: it adds the image to
+            // the own image pack, and is off when the pack has the name.
+            self.pane()
+                .menu_emoticon
+                .as_ref()
+                .filter(|(n, u)| !n.is_empty() && !u.is_empty() && !crate::emoji::is_mxc(n))
+                .map(|(name, url)| {
+                    let taken = st.image_pack["images"]
+                        .get(name)
+                        .is_some_and(|i| !matches!(i, serde_json::Value::Null | serde_json::Value::Bool(false)));
+                    let add = UiMessage::Message(Msg::AddCustomEmoji(name.clone(), url.clone()));
+                    vec![item(trf("Add :%s: to Custom Emoji", &[name]), "", (!taken).then_some(add))]
+                }),
             (image && files > 0 && !only_image).then(|| {
                 vec![item(tr("Copy Image").into(), "", Some(UiMessage::Message(Msg::CopyImage(mid.clone(), 0))))]
             }),
@@ -1465,9 +1478,10 @@ impl BeeperGuiApp {
         let verify = verify.map(|v| container(v).padding([0, 12]));
         // Desktop's `ThreadComposerDisabled` in place of the composer: a link to the new chat of an upgraded chat, or
         // "You blocked __NAME__. Unblock".
-        let disabled = |lead: String, link: &str, end: &str, msg| -> El<'_> {
+        let disabled = |leading: Option<El<'static>>, lead: String, link: &str, end: &str, msg| -> El<'static> {
             let part = |t: String, c: Color| txt(t, 13.0).color(c);
-            let link = row![part(lead, p.sub), part(link.into(), p.text), part(end.into(), p.sub)];
+            let link = row![].push(leading).push(part(lead, p.sub)).push(part(link.into(), p.text));
+            let link = link.push(part(end.into(), p.sub)).align_y(Center);
             let link = button(container(link).center_x(Fill).center_y(36))
                 .padding(8)
                 .style(btn_style([CLEAR; 3], [p.sub; 3], 0.0))
@@ -1477,13 +1491,20 @@ impl BeeperGuiApp {
         let upgraded = chat.replacement_room.as_deref().and_then(|r| st.resolve_chat_idx(r)).map(|i| {
             let lead = format!("{} ", tr("Chat was upgraded."));
             let msg = UiMessage::SelectChat(st.chats[i].id.clone());
-            disabled(lead, tr("Click here to follow the conversation"), ".", msg)
+            disabled(None, lead, tr("Click here to follow the conversation"), ".", msg)
         });
-        let blocked = (st.user_blocked(chat) && chat.block & NO_UNBLOCK == 0).then(|| {
-            let lead = tr("You blocked __NAME__. __UNBLOCK__").replace("__NAME__", &chat.title);
+        // Desktop's `blockedComposerThread`: a merged chat whose target member chat is blocked leads with its switcher.
+        let merged = !st.members(st.chat_idx(&chat.id)).is_empty();
+        let target = if merged { &st.chats[self.compose_target_of(&st, st.chat_idx(&chat.id))] } else { chat };
+        let blocked = (st.user_blocked(target) && target.block & NO_UNBLOCK == 0).then(|| {
+            let lead = tr("You blocked __NAME__. __UNBLOCK__").replace("__NAME__", &target.title);
             let lead = lead.trim_end_matches("__UNBLOCK__").to_string();
             let unblock = trx("Unblock", "action to unblock the other person in a DM");
-            disabled(lead, unblock, "", UiMessage::Blocking(blocking::Msg::Ask(chat.id.clone(), false)))
+            let switcher = merged.then(|| -> El<'static> {
+                let face = container(self.chat_avatar(target, 20.0, 1.25)).padding(Padding::ZERO.right(6.0));
+                mouse_area(face).on_enter(UiMessage::SwitchCard).into()
+            });
+            disabled(switcher, lead, unblock, "", UiMessage::Blocking(blocking::Msg::Ask(target.id.clone(), false)))
         });
         // Desktop's `ThreadComposer` draws nothing once the user left the chat or was removed from it.
         let composer = match upgraded.or(blocked) {
@@ -2289,11 +2310,17 @@ impl BeeperGuiApp {
             let runs = custom.map(beeper_core::codec::html_blocks).unwrap_or_default().into_iter().flat_map(|b| b.runs);
             let glyphs: Vec<El<'a>> = runs
                 .map(|r| match r.emoticon.as_deref() {
-                    Some(url) => match self.still(url) {
-                        Some(frame) if selected => image(crate::style::dimmed_image(&frame, 0.8)).height(48.0).into(),
-                        Some(frame) => image(frame).height(48.0).into(),
-                        None => Space::new().width(48.0).height(48.0).into(),
-                    },
+                    Some(url) => {
+                        let img: El<'a> = match self.still(url) {
+                            Some(frame) if selected => {
+                                image(crate::style::dimmed_image(&frame, 0.8)).height(48.0).into()
+                            }
+                            Some(frame) => image(frame).height(48.0).into(),
+                            None => Space::new().width(48.0).height(48.0).into(),
+                        };
+                        let menu = Msg::EmoticonMenu(m.id.clone(), r.title.clone(), url.to_string());
+                        mouse_area(img).on_right_press(UiMessage::Message(menu)).into()
+                    }
                     None => emoji(r.text),
                 })
                 .collect();
@@ -2474,7 +2501,7 @@ impl BeeperGuiApp {
                 String,
                 u8,
                 u8,
-                Vec<Option<image::Handle>>,
+                Vec<(Option<image::Handle>, Option<String>, String)>,
                 bool,
             );
             let blocks: Vec<Block> = match m.html.as_deref() {
@@ -2482,8 +2509,9 @@ impl BeeperGuiApp {
                     .into_iter()
                     .map(|b| {
                         let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
-                        let images = b.runs.iter().filter_map(|r| r.emoticon.as_deref()).map(|u| self.still(u));
-                        let images = images.collect();
+                        // Each custom emoji's image, `title` and `data-original-src`.
+                        let images = b.runs.iter().filter_map(|r| Some((r.emoticon.as_deref()?, r.title.clone())));
+                        let images = images.map(|(u, title)| (self.still(u), title, u.to_string())).collect();
                         let runs = b.runs.into_iter().flat_map(|r| match room_mention && r.link.is_none() && !r.code {
                             true => room_parts(&r.text)
                                 .into_iter()
@@ -2574,7 +2602,14 @@ impl BeeperGuiApp {
                         Some(self.tip_card(med(host, 13.0).color(p.strong)).into())
                     };
                     let line = crate::selectable::selectable(spans)
-                        .images(images)
+                        .images(images.iter().map(|i| i.0.clone()).collect())
+                        .on_image_menu({
+                            let (id, images) = (m.id.clone(), images);
+                            move |k| {
+                                let (_, title, src) = images[k].clone();
+                                UiMessage::Message(Msg::EmoticonMenu(id.clone(), title, src))
+                            }
+                        })
                         .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                         .on_link_click(UiMessage::OpenUrl)
@@ -2815,7 +2850,7 @@ impl BeeperGuiApp {
             let flyover: Vec<El<'a>> = base.iter().enumerate().map(|(k, &kind)| item(kind, k)).collect();
             // Desktop's quick reactions go only on received messages, after the other items.
             let quick = (self.quick_open && st.settings.on("quickReactions") && !mine && !in_pane && base.contains(&2))
-                .then(|| crate::emoji::quick_reactions(st, &chat.allowed_reactions));
+                .then(|| crate::emoji::quick_reactions(st, &chat.allowed_reactions, chat.custom_emoji));
             let quick: Vec<String> = quick.unwrap_or_default();
             let after = hover_at.map(|t| t + std::time::Duration::from_secs_f32(base.len() as f32 * FLYOVER_STAGGER));
             let start = self.pane().flyover_at.max(after);
@@ -2826,7 +2861,18 @@ impl BeeperGuiApp {
             let quick = quick.into_iter().enumerate().map(|(j, e)| -> El<'a> {
                 let v = shown(start, j);
                 let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
-                let glyph = txt(e, 20.0 * (0.85 + 0.15 * v)).font(EMOJI_FONT).color(p.text.scale_alpha(v));
+                // Desktop's custom emoji among the quick reactions: its image 16 px square.
+                let glyph: El<'a> = match crate::emoji::is_mxc(&e) {
+                    true => match self.still(&e) {
+                        Some(frame) => image(frame)
+                            .width(16.0 * (0.85 + 0.15 * v))
+                            .height(16.0 * (0.85 + 0.15 * v))
+                            .opacity(v)
+                            .into(),
+                        None => Space::new().width(16.0).height(16.0).into(),
+                    },
+                    false => txt(e, 20.0 * (0.85 + 0.15 * v)).font(EMOJI_FONT).color(p.text.scale_alpha(v)).into(),
+                };
                 button(container(glyph).center(32))
                     .padding(0)
                     .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
@@ -3330,7 +3376,16 @@ impl BeeperGuiApp {
             let hover = look.hover.unwrap_or(fill);
             let style = bordered_btn([fill, hover, hover], [look.fg.0; 3], look.ring.0, look.ring.1, 14.0);
             let pill = button(pill).padding([4.0 + look.ring.1, 5.0 + look.ring.1]).style(style);
-            r.push(pill.on_press(toggle_reaction(st, &chat.id, ms, &group)))
+            let pill = pill.on_press(toggle_reaction(st, &chat.id, ms, &group));
+            // Desktop's `.message-reaction-container` of a custom emoji: its right click has the item that adds it.
+            let custom = keys.first().and_then(|x| Some((x.reaction_key.clone(), x.img_url.clone()?)));
+            match (custom.filter(|(_, u)| crate::emoji::is_mxc(u)), ms.first()) {
+                (Some((key, url)), Some(m)) => {
+                    let menu = UiMessage::Message(Msg::ReactionMenu(m.id.clone(), key, url));
+                    r.push(mouse_area(pill).on_right_press(menu))
+                }
+                _ => r.push(pill),
+            }
         })
     }
 }
@@ -3360,6 +3415,14 @@ pub enum Msg {
     LinkedMenu(String, String),
     /// A right click on a shown image of a message.
     ImageMenu(String),
+    /// A right click on a custom emoji in the text of a message: its `title` and its image.
+    EmoticonMenu(String, Option<String>, String),
+    /// A right click on a reaction of a message with a custom emoji's image: its key (the shortcode) and the image.
+    ReactionMenu(String, String, String),
+    /// Desktop's `addCustomEmoji` of the message menu: the name and the image.
+    AddCustomEmoji(String, String),
+    /// The write of the own image pack after an emoji was added, by its name, and the pack before it.
+    CustomEmojiAdded(String, serde_json::Value, Result<(), String>),
     /// Desktop's `createThreadWithPhoneNumber` and `createThreadWithEmail` of a contact card.
     MessageContact(String, Box<User>),
     /// Select the message, or unselect it when it is selected.
@@ -3499,9 +3562,56 @@ impl BeeperGuiApp {
                 self.pane.menu_image = true;
                 return open;
             }
+            // Desktop's `selectedImage` with `dataset.mxEmoticon`: the name is its `title` without the first and the
+            // last character (the colons of ":name:").
+            Msg::EmoticonMenu(mid, title, src) => {
+                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
+                self.pane.menu_image = true;
+                let name = title.map(|t| t.chars().skip(1).collect::<String>()).map(|t| {
+                    let mut t = t;
+                    t.pop();
+                    t
+                });
+                self.pane.menu_emoticon = name.map(|n| (n, src));
+                return open;
+            }
+            // Desktop's `selectedReaction` with an image (`dataset.reactionImgUrl`) and its key.
+            Msg::ReactionMenu(mid, key, url) => {
+                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
+                self.pane.menu_emoticon = Some((key, url));
+                return open;
+            }
+            Msg::AddCustomEmoji(name, url) => {
+                let mut st = self.store.write();
+                match beeper_core::matrix::with_custom_emoji(&st.image_pack, &name, &url) {
+                    Err(e) => {
+                        drop(st);
+                        self.show(Toast::new(trf("Couldn't add the emoji: %s", &[&e])));
+                    }
+                    // Desktop's `set` shows the pack at once, and writes it.
+                    Ok(pack) => {
+                        let old = std::mem::replace(&mut st.image_pack, pack.clone());
+                        let Some(c) = st.matrix.clone() else {
+                            drop(st);
+                            return self.update(UiMessage::Message(Msg::CustomEmojiAdded(name, old, Ok(()))));
+                        };
+                        let write = beeper_core::matrix::set_global(c, beeper_core::matrix::IMAGE_PACK, pack);
+                        return Task::perform(write, move |r| {
+                            UiMessage::Message(Msg::CustomEmojiAdded(name.clone(), old.clone(), r))
+                        });
+                    }
+                }
+            }
+            Msg::CustomEmojiAdded(name, _, Ok(())) => self.show(Toast::new(trf("Added emoji :%s:", &[&name]))),
+            // Desktop's `setAccountData` puts the old pack back with its own toast, then the menu shows its own.
+            Msg::CustomEmojiAdded(_, old, Err(e)) => {
+                self.store.write().image_pack = old;
+                self.fail(Toast::new(format!("Settings couldn't be saved: {e}")));
+                self.show(Toast::new(trf("Couldn't add the emoji: %s", &[&e])));
+            }
             Msg::OpenMenu(mid) => {
                 (self.pane.menu_link, self.pane.video_menu, self.pane.menu_linked) = (None, false, None);
-                self.pane.menu_image = false;
+                (self.pane.menu_image, self.pane.menu_emoticon) = (false, None);
                 // With text selected, Desktop leaves the menu to Electron's, which offers the selection.
                 self.pane.menu_selection = crate::selectable::has_selection().then(crate::selectable::text);
                 // Desktop's `selectOnly`: a right click on a message outside the selection selects it alone.

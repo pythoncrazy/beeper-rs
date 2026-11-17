@@ -10,6 +10,9 @@ pub const CHAT_NOTIFY_ANYWAY: u16 = 1 << 6;
 pub const CHAT_MERGED_PARENT: u16 = 1 << 7;
 pub const CHAT_HIDDEN: u16 = 1 << 8;
 pub const CHAT_REQUEST: u16 = 1 << 9;
+/// A merged chat past the plan's `max-merge-chats` (Desktop's `isUnionActive` is false): it is hidden, and its member
+/// chats show on their own.
+pub const CHAT_INACTIVE_UNION: u16 = 1 << 10;
 pub const DELETE_FOR_ME: u8 = 1 << 0;
 pub const DELETE_FOR_EVERYONE: u8 = 1 << 1;
 /// The `Chat::block` bits: the `block_user`, `no_unblock` and `report_spam` room features, and Desktop's
@@ -143,14 +146,21 @@ pub fn beeper_files() -> Files {
 /// Desktop's `roomFeatures` of a room without `com.beeper.room_features`: the `file` of the `defaultFeatures` of the
 /// `m.bridge` protocol, else of the bridge (Desktop's `lP`), else of the generic bridge.
 pub fn default_files(bridge: &serde_json::Value) -> Files {
-    static TABLE: std::sync::LazyLock<std::collections::HashMap<String, Files>> = std::sync::LazyLock::new(|| {
-        serde_json::from_str(include_str!("room_files.json")).expect("the default room features parse")
-    });
+    DEFAULT_FILES.get(default_features(bridge)).expect("a default table").clone()
+}
+
+static DEFAULT_FILES: std::sync::LazyLock<std::collections::HashMap<String, Files>> = std::sync::LazyLock::new(|| {
+    serde_json::from_str(include_str!("room_files.json")).expect("the default room features parse")
+});
+
+/// The `Od` entry of Desktop's `roomFeatures` of a room without `com.beeper.room_features`, by its table: the
+/// `m.bridge` protocol's, else the bridge's (Desktop's `lP`), else the generic bridge's.
+pub fn default_features(bridge: &serde_json::Value) -> &'static str {
     // Desktop's `Od` entries that share a table.
     let table = |k: &str| match k {
-        "android-sms" | "dummybridge" | "google-messages" | "gvoice" => TABLE.get("generic"),
-        "facebook" | "instagram" | "instagramgo" => TABLE.get("facebookgo"),
-        k => TABLE.get(k),
+        "android-sms" | "dummybridge" | "google-messages" | "gvoice" => Some("generic"),
+        "facebook" | "instagram" | "instagramgo" => Some("facebookgo"),
+        k => DEFAULT_FILES.get_key_value(k).map(|(k, _)| k.as_str()),
     };
     // Desktop's `lP` leaves out Google Messages and the iMessage cloud bridges.
     let platform = match bridge["com.beeper.bridge_name"].as_str() {
@@ -159,8 +169,17 @@ pub fn default_files(bridge: &serde_json::Value) -> Files {
         Some("gmessages" | "imessage" | "imessagecloud" | "imessagego") => None,
         name => name,
     };
-    let rules = bridge["protocol"]["id"].as_str().and_then(table).or_else(|| platform.and_then(table));
-    rules.unwrap_or_else(|| table("generic").expect("a generic table")).clone()
+    let key = bridge["protocol"]["id"].as_str().and_then(table).or_else(|| platform.and_then(table));
+    key.unwrap_or("generic")
+}
+
+/// Desktop's `custom_emoji_reactions` of `com.beeper.room_features`, which lets the room take the custom emoji of the
+/// own image pack, in reactions and in messages. Of the defaults, only Beeper's (`OBe`) has it.
+pub fn custom_emoji(features: Option<&serde_json::Value>, bridge: &serde_json::Value) -> bool {
+    match features.filter(|f| f.as_object().is_some_and(|f| !f.is_empty())) {
+        Some(f) => f["custom_emoji_reactions"] == true,
+        None => default_features(bridge) == "beeper",
+    }
 }
 /// The `com.beeper.room_features` formatting keys of Desktop's formatting menu buttons, in menu order.
 pub const FORMATS: [&str; 9] = [
@@ -733,6 +752,10 @@ pub struct Chat {
     /// when it is empty (`canReactWithAnyEmoji`).
     #[serde(rename = "allowedReactions", default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_reactions: Vec<String>,
+    /// Desktop's `custom_emoji_reactions` room feature (see [`custom_emoji`]): the picker and the composer offer the
+    /// custom emoji of the own image pack.
+    #[serde(rename = "customEmojiReactions", default = "yes")]
+    pub custom_emoji: bool,
     /// Desktop's `disappearingTimer`: the `com.beeper.disappearing_timer` of new messages in ms.
     #[serde(rename = "disappearingTimer", default, skip_serializing_if = "Option::is_none")]
     pub disappearing: Option<u64>,
@@ -1017,6 +1040,10 @@ fn beeper_messages() -> MessageRules {
 pub const BEEPER_POLLS: PollRules =
     PollRules { hidden_votes: true, end: true, duplicates: true, max_options: 20, max_length: 200 };
 
+fn yes() -> bool {
+    true
+}
+
 fn all_formats() -> u16 {
     ALL_FORMATS
 }
@@ -1120,7 +1147,12 @@ impl Chat {
             (self.merge.is_some(), CHAT_MERGED_PARENT),
             (self.is_hidden_from_inbox == Some(true), CHAT_HIDDEN),
             (self.is_request == Some(true), CHAT_REQUEST),
-        ]) | (self.flags & CHAT_NOTIFY_ANYWAY);
+        ]) | (self.flags & (CHAT_NOTIFY_ANYWAY | CHAT_INACTIVE_UNION));
+    }
+
+    /// Whether the chat lists show the chat: it is no member chat of a merged chat, and no hidden merged chat.
+    pub fn listed(&self) -> bool {
+        self.merged_into_chat_id.is_none() && self.flags & CHAT_INACTIVE_UNION == 0
     }
 }
 

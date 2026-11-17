@@ -4393,11 +4393,15 @@ fn quick_reaction_settings_like_desktop() {
     assert!(simulator(app.view_settings()).find("Quick reaction emoji").is_ok());
     let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::Appearance)));
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("quickReactionsCustomized", 1)));
-    assert_eq!(crate::emoji::quick_reactions(&app.store.read(), &[]), ["👍", "❤️", "😂"], "Desktop's custom defaults");
+    assert_eq!(
+        crate::emoji::quick_reactions(&app.store.read(), &[], true),
+        ["👍", "❤️", "😂"],
+        "Desktop's custom defaults"
+    );
     let _ = app.update(UiMessage::QuickEmoji(Some(2)));
     let _ = simulator(app.view_settings());
     let _ = app.update(UiMessage::Emoji(EmojiMsg::Pick(0)));
-    let custom = crate::emoji::quick_reactions(&app.store.read(), &[]);
+    let custom = crate::emoji::quick_reactions(&app.store.read(), &[], true);
     assert!(custom[1] != "❤️" && app.pane.emoji.is_none(), "a pick sets the custom reaction: {custom:?}");
     let _ = app.update(UiMessage::QuickEmoji(Some(0)));
     let _ = app.update(UiMessage::Emoji(EmojiMsg::Pick(0)));
@@ -8737,7 +8741,7 @@ fn allowed_reactions_like_desktop() {
     let allowed = app.store.read().chat(&chat).allowed_reactions.clone();
     assert_eq!(crate::emoji::allowed_reaction(&allowed, "❤"), Some("❤️".into()), "without its variation selector");
     assert_eq!(crate::emoji::allowed_reaction(&allowed, "😂"), None);
-    assert!(crate::emoji::quick_reactions(&app.store.read(), &allowed).iter().all(|e| allowed.contains(e)));
+    assert!(crate::emoji::quick_reactions(&app.store.read(), &allowed, true).iter().all(|e| allowed.contains(e)));
     let _ = app.update(UiMessage::Message(message::Msg::React(mid.clone())));
     {
         let st = app.store.read();
@@ -8834,4 +8838,159 @@ fn contact_cards_in_the_timeline_like_desktop() {
     assert_eq!(labels, ["Call +1 415-555-0199", "Copy +1 415-555-0199"]);
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("vcard:phone +14155550199".into())));
     assert!(simulator(app.view_main()).find("Call +1 415-555-0199").is_ok(), "a click on the number opens its menu");
+}
+
+/// The chat that the custom emoji tests open, with its last message, and Desktop's custom emoji of the own image pack
+/// (`m.image_pack`) for it.
+fn custom_emoji_chat(app: &mut BeeperGuiApp, takes: bool) -> (String, String) {
+    let chat = app.visible_chats(&app.store.read())[0].id.clone();
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    let mut st = app.store.write();
+    st.image_pack = serde_json::json!({ "images": {
+        "party_parrot": { "url": "mxc://x/parrot" }, "cat": { "url": "mxc://x/cat", "usage": ["sticker"] } } });
+    let i = st.resolve_chat_idx(&chat).expect("the chat");
+    st.update_chat(i, |c| c.custom_emoji = takes);
+    let last = *st.timeline_indices(&chat).last().expect("a message");
+    (chat, st.messages[last].id.clone())
+}
+
+/// The pixels of a frame of `sim`, at its scale of 2.
+fn custom_emoji_pixels(sim: &mut Simulator<'_, UiMessage>) -> ::image::RgbaImage {
+    let thread = std::thread::current().id();
+    let dir = std::env::temp_dir().join(format!("beeper-rs-custom-emoji-{}-{thread:?}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("shot"));
+    let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+    let shot = ::image::open(&png).unwrap().into_rgba8();
+    std::fs::remove_dir_all(&dir).unwrap();
+    shot
+}
+
+/// Desktop's emoji picker with `customEmojisForReactions`: the own pack's images in emoji-mart's "Custom" category
+/// and its search, its preview with the URL as the shortcode, a pick reacting with the image, which then is a quick
+/// reaction where the room takes custom emoji. A room without `custom_emoji_reactions` has none.
+#[test]
+fn custom_emoji_picker_like_desktop() {
+    use crate::emoji::{EmojiMsg, Item};
+    let mut app = demo_app("custom-emoji-picker");
+    let (_, mid) = custom_emoji_chat(&mut app, true);
+    let red = image::Handle::from_rgba(8, 8, [255, 0, 0, 255].repeat(64));
+    app.media.insert("mxc://x/parrot".into(), Some(Ok(vec![(red, 0)])));
+    let _ = app.update(UiMessage::Message(message::Msg::React(mid.clone())));
+    let custom = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        app.picker_custom(app.pane.emoji.as_ref().expect("the picker"), &st)
+    };
+    let names: Vec<String> = custom(&app).into_iter().map(|e| e.name).collect();
+    assert_eq!(names, ["party_parrot", "cat"], "every image of the pack, stickers too");
+    let _ = app.update(UiMessage::Emoji(EmojiMsg::Query("party_parrot".into())));
+    {
+        let st = app.store.read();
+        let picker = app.view_emoji_picker(&st).unwrap();
+        let mut sim = Simulator::with_size(Default::default(), Size::new(352.0, 435.0), picker);
+        // The first cell of "Search Results": 12 px in, under the nav (42), the search (47) and the header (30).
+        let px = custom_emoji_pixels(&mut sim).get_pixel(2 * 30, 2 * (42 + 47 + 30 + 18)).0;
+        assert!(px[0] > 200 && px[1] < 60 && px[2] < 60, "the custom emoji's image comes first: {px:?}");
+    }
+    let _ = app.update(UiMessage::Emoji(EmojiMsg::Hover(Item::Custom(0))));
+    {
+        let st = app.store.read();
+        let mut sim = simulator(app.view_emoji_picker(&st).unwrap());
+        assert!(sim.find("party_parrot").is_ok() && sim.find(":mxc://x/parrot:").is_ok(), "emoji-mart's preview");
+    }
+    let picked = custom(&app)[0].clone();
+    let _ = app.update(UiMessage::Emoji(EmojiMsg::PickCustom(picked)));
+    let st = app.store.read();
+    let reaction = st.message(&mid).reactions.iter().find(|r| st.is_me(&r.participant_id)).cloned();
+    assert_eq!(reaction.map(|r| r.reaction_key), Some("mxc://x/parrot".into()), "the key is the image");
+    assert!(crate::emoji::quick_reactions(&st, &[], true).contains(&"mxc://x/parrot".to_string()));
+    assert!(!crate::emoji::quick_reactions(&st, &[], false).iter().any(|e| crate::emoji::is_mxc(e)));
+    drop(st);
+    let (_, mid) = custom_emoji_chat(&mut app, false);
+    let _ = app.update(UiMessage::Message(message::Msg::React(mid)));
+    assert!(custom(&app).is_empty(), "a room without custom_emoji_reactions");
+    // The quick reactions of Settings take the pack's emoji in any room.
+    let _ = app.update(UiMessage::QuickEmoji(Some(1)));
+    assert_eq!(custom(&app).len(), 2);
+}
+
+/// Desktop's composer autocomplete with custom emoji: ":par" offers the image with its name, a pick puts Desktop's
+/// `customEmoji` node in (":name:" here), and the send has `#[name](url)` as the body and the image in the HTML.
+/// The draft keeps it.
+#[test]
+fn custom_emoji_composer_like_desktop() {
+    let mut app = demo_app("custom-emoji-composer");
+    let (chat, _) = custom_emoji_chat(&mut app, true);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi :par".into())));
+    let rows = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        let rows = app.suggestions(&st).map_or_else(Vec::new, |(_, rows)| rows);
+        let emoji = |s| match s {
+            Suggestion::Emoji(c, name) => Some((c, name)),
+            Suggestion::Mention(..) => None,
+        };
+        rows.into_iter().filter_map(emoji).collect::<Vec<_>>()
+    };
+    // match-sorter ranks "parachute" first, whose first term starts with "par", before "party" of the name.
+    let at = rows(&app).iter().position(|r| *r == ("mxc://x/parrot".to_string(), "party_parrot".to_string()));
+    assert!(at.is_some_and(|at| at > 0) && rows(&app)[0].1 == "Parachute", "{:?}", rows(&app));
+    let _ = app.update(UiMessage::Composer(composer::Msg::PickSuggestion(at.unwrap())));
+    assert_eq!(app.pane.composer.text(), "hi :party_parrot: ");
+    // The draft has Desktop's text of the node, and gives the node back.
+    let other = app.store.read().chats.iter().find(|c| c.id != chat).unwrap().id.clone();
+    let _ = app.update(UiMessage::SelectChat(other));
+    let draft = app.store.read().chat(&chat).draft.clone().and_then(|d| d.text);
+    assert_eq!(draft.as_deref(), Some("hi #[party_parrot](mxc://x/parrot) "));
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    assert_eq!(app.pane.composer.text(), "hi :party_parrot: ");
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let st = app.store.read();
+    let sent = st.outbox.iter().find_map(|(_, _, o)| match o {
+        Outgoing::Send { text, .. } => Some(text.clone()),
+        _ => None,
+    });
+    assert_eq!(sent.as_deref(), Some("hi #[party_parrot](mxc://x/parrot)"));
+    let echo = st.timeline_indices(&chat).last().and_then(|&i| st.messages[i].html.clone());
+    let img =
+        r#"<img data-mx-emoticon src="mxc://x/parrot" alt=":party_parrot:" title=":party_parrot:" height="32" />"#;
+    assert_eq!(echo, Some(format!("hi {img}")));
+    drop(st);
+    // A room without custom emoji offers none.
+    custom_emoji_chat(&mut app, false);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(":par".into())));
+    assert!(rows(&app).iter().all(|(c, _)| !crate::emoji::is_mxc(c)));
+}
+
+/// Desktop's "Add :%s: to Custom Emoji" (M24): a right click on an inline custom emoji (named by its `title`) or on a
+/// reaction of an image with a shortcode adds it to the own image pack, with Desktop's toasts, and is off when the pack
+/// has the name. A right click on the image hides Copy with Timestamp like one on any image.
+#[test]
+fn add_custom_emoji_like_desktop() {
+    use message::Msg::{AddCustomEmoji, EmoticonMenu, ReactionMenu};
+    let mut app = demo_app("add-custom-emoji");
+    let (_, mid) = custom_emoji_chat(&mut app, true);
+    fn menu<'a>(app: &'a BeeperGuiApp, mid: &str) -> Simulator<'a, UiMessage> {
+        simulator(app.view_message_menu(mid).0)
+    }
+    let item = "Add :owl: to Custom Emoji";
+    let _ = app.update(UiMessage::Message(EmoticonMenu(mid.clone(), Some(":owl:".into()), "mxc://x/owl".into())));
+    assert!(menu(&app, &mid).find(item).is_ok() && menu(&app, &mid).find("Copy with Timestamp").is_err());
+    let _ = app.update(UiMessage::Message(AddCustomEmoji("owl".into(), "mxc://x/owl".into())));
+    assert_eq!(app.status_banner, "Added emoji :owl:");
+    assert_eq!(app.store.read().image_pack["images"]["owl"], serde_json::json!({ "url": "mxc://x/owl" }));
+    let mut sim = menu(&app, &mid);
+    let _ = sim.click(item);
+    assert!(sim.into_messages().next().is_none(), "off once the pack has the name");
+    let _ = app.update(UiMessage::Message(AddCustomEmoji("owl".into(), "mxc://x/owl".into())));
+    assert_eq!(app.status_banner, "Couldn't add the emoji: You already have a custom emoji named owl");
+    let _ = app.update(UiMessage::Message(ReactionMenu(mid.clone(), "blob".into(), "mxc://x/blob".into())));
+    assert!(
+        menu(&app, &mid).find("Add :blob: to Custom Emoji").is_ok()
+            && menu(&app, &mid).find("Copy with Timestamp").is_ok()
+    );
+    // A reaction whose key is the image itself, and an image without a title, have no name.
+    let _ = app.update(UiMessage::Message(ReactionMenu(mid.clone(), "mxc://x/b".into(), "mxc://x/b".into())));
+    assert!(menu(&app, &mid).find("Add :mxc://x/b: to Custom Emoji").is_err());
+    let _ = app.update(UiMessage::Message(EmoticonMenu(mid.clone(), None, "mxc://x/c".into())));
+    assert!(menu(&app, &mid).find("Copy with Timestamp").is_err() && app.pane.menu_emoticon.is_none());
 }
