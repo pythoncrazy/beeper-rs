@@ -13,6 +13,7 @@ mod format;
 mod gallery;
 mod i18n;
 mod images;
+mod integrations;
 mod lift;
 mod links;
 pub mod login;
@@ -787,34 +788,10 @@ pub enum UiMessage {
     /// Clears the chosen storage of all chats (0), the cache (1) or the open chat (2).
     ClearStorage(u8),
     StorageCleared(Result<(), String>),
-    /// The "Install to..." choice, as an index into [`MCP_TARGETS`].
-    McpTarget(usize),
-    /// Installs the Beeper MCP server in a client of [`MCP_CLIENTS`] or [`MCP_TARGETS`].
-    McpInstall(&'static str),
-    /// Copies a value of Settings > Integrations; its copy button shows a check for 2 s.
-    CopyField(u8, String),
-    CopyDone(u8),
+    /// Settings > Integrations: the Desktop API tokens and connections, Remote Access, and the MCP install.
+    Integrations(integrations::Msg),
     JoinCommunity,
     CommunityJoined(Result<(), String>),
-    /// A new token request of the Desktop API (no outcome), or the end of one.
-    TokenRequest(String, Option<beeper_core::connect::Outcome>),
-    TokenWrite,
-    TokenExpiry(Expiry),
-    /// Approve or Decline in the "Approve connection" dialog.
-    TokenAnswer(bool),
-    TokenClose,
-    /// Revoke in Approved connections, which asks first.
-    RevokeConnection(String),
-    /// The Remote Access toggle, which asks before it turns on.
-    RemoteAccess(bool),
-    RevokeConfirmed,
-    /// The "+" of Approved connections opens the token dialog, and Escape closes it.
-    AddToken(bool),
-    AddTokenName(String),
-    AddTokenExpiry(Expiry),
-    AddTokenWrite,
-    CreateToken,
-    CopyToken,
     OpenQuickLook(String, String),
     OpenUrl(String),
     /// The result of opening a URL in the browser.
@@ -7601,32 +7578,7 @@ impl BeeperGuiApp {
                 }
                 return self.scan_storage();
             }
-            UiMessage::McpTarget(i) => self.integrations.target = i,
-            UiMessage::McpInstall(client) => {
-                let value = mcp_value(client, &self.store.read().config.base_url());
-                let app = match client {
-                    "Claude Desktop" => return self.update(UiMessage::OpenUrl(value)),
-                    "Cursor" => "Cursor",
-                    "VS Code" => "Visual Studio Code",
-                    _ => {
-                        self.status_banner = tr("Command copied to clipboard! Run it in your terminal.").into();
-                        return iced::clipboard::write(value);
-                    }
-                };
-                self.status_banner = trf("Opening %s to install Beeper MCP...", &[&app]);
-                return self.update(UiMessage::OpenUrl(value));
-            }
-            UiMessage::CopyField(i, value) => {
-                self.integrations.copied = Some(i);
-                let wait = async { tokio::time::sleep(std::time::Duration::from_secs(2)).await };
-                let done = Task::perform(wait, move |()| UiMessage::CopyDone(i));
-                return Task::batch([iced::clipboard::write(value), done]);
-            }
-            UiMessage::CopyDone(i) => {
-                if self.integrations.copied == Some(i) {
-                    self.integrations.copied = None;
-                }
-            }
+            UiMessage::Integrations(msg) => return self.integrations(msg),
             UiMessage::JoinCommunity => {
                 if self.store.read().resolve_chat_idx(COMMUNITY_ROOM).is_some() {
                     let close = window::close(self.settings_window.expect("the settings window is open"));
@@ -7638,77 +7590,6 @@ impl BeeperGuiApp {
                         UiMessage::CommunityJoined(r.map(drop))
                     });
                 }
-            }
-            UiMessage::TokenRequest(id, None) => {
-                let st = self.store.read();
-                if let Some(r) = st.connect.requests.iter().find(|r| r.id == id) {
-                    let name = r.client.name.clone().filter(|n| !n.is_empty());
-                    let name = name.unwrap_or_else(|| tr("Unknown Client").into());
-                    let version = r.client.version.as_ref().map(|v| format!("v{v}")).unwrap_or_default();
-                    let write = r.scopes.iter().any(|s| s == beeper_core::connect::WRITE);
-                    let app = format!("{name} {version}").trim_end().to_string();
-                    self.token_ask = Some(TokenAsk { id, app, write, expiry: Expiry(2_592_000), timed_out: false });
-                }
-            }
-            UiMessage::TokenRequest(id, Some(outcome)) => {
-                if let Some(a) = self.token_ask.as_mut().filter(|a| a.id == id) {
-                    a.timed_out = outcome == beeper_core::connect::Outcome::Timeout;
-                }
-            }
-            UiMessage::TokenWrite => self.token_ask.as_mut().expect("an open token request").write ^= true,
-            UiMessage::TokenExpiry(e) => self.token_ask.as_mut().expect("an open token request").expiry = e,
-            UiMessage::TokenAnswer(approve) => {
-                let a = self.token_ask.take().expect("an open token request");
-                let scopes = match a.write {
-                    true => vec![beeper_core::connect::READ.into(), beeper_core::connect::WRITE.into()],
-                    false => vec![beeper_core::connect::READ.into()],
-                };
-                self.store.write().answer_token_request(&a.id, approve.then_some((scopes, a.expiry.0)));
-            }
-            UiMessage::TokenClose => self.token_ask = None,
-            UiMessage::RevokeConnection(id) => {
-                (self.integrations.revoke, self.confirm) = (Some(id), Some(ASK_REVOKE_CONNECTION))
-            }
-            UiMessage::RemoteAccess(true) if self.confirm != Some(ASK_REMOTE_ACCESS) => {
-                self.confirm = Some(ASK_REMOTE_ACCESS);
-            }
-            UiMessage::RemoteAccess(on) => {
-                self.confirm = None;
-                self.patch_settings(|s| s.remote_access = on);
-                self.relaunch_toast = Some(match on {
-                    true => "Remote Access will be enabled after relaunch",
-                    false => "Remote Access will be disabled after relaunch",
-                });
-            }
-            UiMessage::RevokeConfirmed => {
-                self.confirm = None;
-                self.store.write().revoke_token(&self.integrations.revoke.take().expect("a connection to revoke"));
-            }
-            UiMessage::AddToken(open) => {
-                self.integrations.add = open.then(|| AddToken {
-                    name: String::new(),
-                    expiry: Expiry(2_592_000),
-                    write: false,
-                    token: None,
-                    copied: false,
-                });
-                return operation::focus("token-name");
-            }
-            UiMessage::AddTokenName(name) => self.integrations.add.as_mut().expect("the token dialog").name = name,
-            UiMessage::AddTokenExpiry(e) => self.integrations.add.as_mut().expect("the token dialog").expiry = e,
-            UiMessage::AddTokenWrite => self.integrations.add.as_mut().expect("the token dialog").write ^= true,
-            UiMessage::CreateToken => {
-                let a = self.integrations.add.as_mut().expect("the token dialog");
-                let mut scopes = vec![beeper_core::connect::READ.to_string()];
-                scopes.extend(a.write.then(|| beeper_core::connect::WRITE.to_string()));
-                let client = (!a.name.is_empty())
-                    .then(|| beeper_core::connect::ClientInfo { name: Some(a.name.clone()), ..Default::default() });
-                a.token = Some(self.store.write().create_token(scopes, a.expiry.0, client));
-            }
-            UiMessage::CopyToken => {
-                let a = self.integrations.add.as_mut().expect("the token dialog");
-                a.copied = true;
-                return iced::clipboard::write(a.token.clone().expect("a created token"));
             }
             UiMessage::CommunityJoined(r) => {
                 self.integrations.joining = false;
@@ -8570,6 +8451,12 @@ impl BeeperGuiApp {
                 }
             }
         }
+        self.settle()
+    }
+
+    /// The end of a message that did not return its own task: shows a new Matrix error, and loads the avatars and
+    /// the media that the views want.
+    fn settle(&mut self) -> Task<UiMessage> {
         // A write lock empties the memo of the views, so take one only for a change.
         if self.store.read().matrix_error.is_some() {
             self.status_banner = self.store.write().matrix_error.take().expect("a Matrix error");
@@ -8620,7 +8507,9 @@ impl BeeperGuiApp {
             feed(f.0.read().focus_tx.subscribe(), UiMessage::FocusRequested)
         });
         let tokens = Subscription::run_with(StoreFeed(self.store.clone(), 2), |f| {
-            feed(f.0.read().connect_tx.subscribe(), |(id, outcome)| UiMessage::TokenRequest(id, outcome))
+            feed(f.0.read().connect_tx.subscribe(), |(id, outcome)| {
+                UiMessage::Integrations(integrations::Msg::Request(id, outcome))
+            })
         });
         let launches = Subscription::run_with(StoreFeed(self.store.clone(), 3), |f| {
             feed(f.0.read().launch_tx.subscribe(), UiMessage::SecondInstance)
@@ -9182,26 +9071,31 @@ impl BeeperGuiApp {
                 ]
                 .spacing(8);
                 let notice = container(notice).width(Fill).padding([8, 16]).style(fill_box(p.chip, 8.0));
-                column![notice, row![button("Close", false, UiMessage::TokenClose)]].spacing(16).into()
+                column![notice, row![button("Close", false, UiMessage::Integrations(integrations::Msg::Close))]]
+                    .spacing(16)
+                    .into()
             }
             false => {
                 let label = |t: &'static str| txt(tr(t), 12.0).color(p.text);
                 let sensitive = column![
-                    row![label("Allow sensitive actions").width(Fill), toggle(p, a.write, Some(UiMessage::TokenWrite))]
-                        .align_y(Center)
-                        .height(38)
-                        .padding([0, 8]),
+                    row![
+                        label("Allow sensitive actions").width(Fill),
+                        toggle(p, a.write, Some(UiMessage::Integrations(integrations::Msg::Write)))
+                    ]
+                    .align_y(Center)
+                    .height(38)
+                    .padding([0, 8]),
                     container(txt(tr("Grant permission to send messages and modify your account"), 11.0).color(p.sub))
                         .padding(Padding::new(8.0).top(0.0))
                 ];
-                let expiry = select(p, EXPIRIES, a.expiry, UiMessage::TokenExpiry);
+                let expiry = select(p, EXPIRIES, a.expiry, |a0| UiMessage::Integrations(integrations::Msg::Expiry(a0)));
                 let expiry = row![label("Expires in").width(Fill), expiry].align_y(Center).height(38).padding([0, 8]);
                 let rows = column![sensitive, divider(p.prefs_border, 0.0), expiry, divider(p.prefs_border, 0.0)];
                 let group =
                     container(rows).width(Fill).padding(1).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
                 let buttons = row![
-                    button("Decline", false, UiMessage::TokenAnswer(false)),
-                    button("Approve", true, UiMessage::TokenAnswer(true))
+                    button("Decline", false, UiMessage::Integrations(integrations::Msg::Answer(false))),
+                    button("Approve", true, UiMessage::Integrations(integrations::Msg::Answer(true)))
                 ]
                 .spacing(8);
                 let fine = txt(tr("Only approve if you initiated this connection and trust the application."), 12.0)

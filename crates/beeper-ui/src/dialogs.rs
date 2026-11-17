@@ -1,6 +1,7 @@
 //! The confirmation dialogs, and the Label, Edit Labels, Edit Group, Blocked users and New Poll windows.
 
 use crate::i18n::{tr, trf, trn, trx};
+use crate::integrations;
 use crate::style::{
     bar, bold, bordered_box, btn_style, ell, fill_box, fw, ic, icon, input_style, med, mix, scroll_style, semi,
     shadow_box, text_width, txt, Bare, CLEAR,
@@ -438,7 +439,7 @@ impl BeeperGuiApp {
             ASK_REVOKE_CONNECTION => (
                 tr("Are you sure you want to revoke this connection?").into(),
                 tr("Connected clients will lose access to Beeper Desktop API").into(),
-                vec![(tr("Revoke"), UiMessage::RevokeConfirmed)],
+                vec![(tr("Revoke"), UiMessage::Integrations(integrations::Msg::RevokeConfirmed))],
             ),
             ASK_REMOVE_ACCOUNT => {
                 let id = self.delete_target.clone().expect("an account to remove");
@@ -451,7 +452,7 @@ impl BeeperGuiApp {
             ASK_REMOTE_ACCESS => (
                 tr("Enable Remote Access?").into(),
                 tr("This can expose the Beeper Desktop API to the public internet based on your firewall settings. Only enable if you know what you are doing.").into(),
-                vec![(tr("Allow Remote Access"), UiMessage::RemoteAccess(true))],
+                vec![(tr("Allow Remote Access"), UiMessage::Integrations(integrations::Msg::RemoteAccess(true)))],
             ),
             ASK_BLOCK..=ASK_UNBLOCK_OFFLINE => {
                 let id = self.delete_target.clone().expect("a DM to block");

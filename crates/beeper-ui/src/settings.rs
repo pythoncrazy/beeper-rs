@@ -2,6 +2,7 @@
 //! Devices and Accounts pages.
 
 use crate::i18n::{tr, trf, trn, trnx, trs, trx};
+use crate::integrations;
 use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, ell, fill_box, fw, glow_box, gutter_style, hex, ic,
     icon, input_style, med, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
@@ -833,8 +834,8 @@ impl BeeperGuiApp {
             None => {
                 let name = text_input("Cursor", &a.name)
                     .id("token-name")
-                    .on_input(UiMessage::AddTokenName)
-                    .on_submit(UiMessage::CreateToken)
+                    .on_input(|a0| UiMessage::Integrations(integrations::Msg::AddName(a0)))
+                    .on_submit(UiMessage::Integrations(integrations::Msg::Create))
                     .size(12)
                     .width(200)
                     .padding([4, 6])
@@ -842,21 +843,22 @@ impl BeeperGuiApp {
                 let line = |t, control: El<'a>| -> El<'a> {
                     row![label(t).width(Fill), control].align_y(Center).height(38).padding([0, 8]).into()
                 };
-                let expiry = select(
-                    p,
-                    [EXPIRIES[4], EXPIRIES[0], EXPIRIES[1], EXPIRIES[2], EXPIRIES[3]],
-                    a.expiry,
-                    UiMessage::AddTokenExpiry,
-                );
+                let expiry =
+                    select(p, [EXPIRIES[4], EXPIRIES[0], EXPIRIES[1], EXPIRIES[2], EXPIRIES[3]], a.expiry, |a0| {
+                        UiMessage::Integrations(integrations::Msg::AddExpiry(a0))
+                    });
                 let sensitive = column![
-                    line("Allow sensitive actions", toggle(p, a.write, Some(UiMessage::AddTokenWrite))),
+                    line(
+                        "Allow sensitive actions",
+                        toggle(p, a.write, Some(UiMessage::Integrations(integrations::Msg::AddWrite)))
+                    ),
                     container(txt(tr("Grant permission to send messages and modify your account"), 11.0).color(p.sub))
                         .padding(Padding::new(8.0).top(0.0))
                 ];
                 let create = button(semi(tr("Create Access Token"), 12.0).color(p.accent))
                     .padding([4, 8])
                     .style(btn_style([p.accent.scale_alpha(0.1); 3], [p.accent; 3], 20.0))
-                    .on_press(UiMessage::CreateToken);
+                    .on_press(UiMessage::Integrations(integrations::Msg::Create));
                 let rows = vec![
                     line("Name (optional)", name.into()),
                     divider(p.prefs_border, 0.0),
@@ -888,7 +890,8 @@ impl BeeperGuiApp {
                 .spacing(4)
                 .align_y(Center)
                 .width(72);
-                let shown = mouse_area(row![shown, copy].spacing(8).align_y(Center)).on_press(UiMessage::CopyToken);
+                let shown = mouse_area(row![shown, copy].spacing(8).align_y(Center))
+                    .on_press(UiMessage::Integrations(integrations::Msg::CopyToken));
                 column![note, shown].spacing(8).align_x(Center).width(Fill).into()
             }
         };
@@ -1138,7 +1141,7 @@ impl BeeperGuiApp {
             button(tinted(icon, 16.0, p.text))
                 .padding(4)
                 .style(btn_style([CLEAR; 3], [p.text; 3], 4.0))
-                .on_press(UiMessage::CopyField(i, value))
+                .on_press(UiMessage::Integrations(integrations::Msg::CopyField(i, value)))
         };
         let community = match (st.resolve_chat_idx(COMMUNITY_ROOM).is_some(), s.joining) {
             (true, _) => "Open Developer Community chat",
@@ -1165,7 +1168,7 @@ impl BeeperGuiApp {
                 button(txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(Pixels(16.0)).color(p.accent))
                     .padding([4, 8])
                     .style(btn_style([CLEAR; 3], [p.accent; 3], 20.0))
-                    .on_press(UiMessage::McpInstall(name));
+                    .on_press(UiMessage::Integrations(integrations::Msg::McpInstall(name)));
             let line = row![svg(logo.clone()).width(18).height(18), semi(name, 14.0).color(p.text)].spacing(8);
             let line = row![line.width(Fill).align_y(Center), connect]
                 .align_y(Center)
@@ -1175,7 +1178,9 @@ impl BeeperGuiApp {
         let target = MCP_TARGETS[s.target];
         let value = mcp_value(target, &base);
         let pick = select(p, MCP_TARGETS, target, |t| {
-            UiMessage::McpTarget(MCP_TARGETS.iter().position(|x| *x == t).expect("a listed client"))
+            UiMessage::Integrations(integrations::Msg::McpTarget(
+                MCP_TARGETS.iter().position(|x| *x == t).expect("a listed client"),
+            ))
         });
         mcp.push(
             row![container(body(tr("Install to..."), p.text)).width(Fill), pick].align_y(Center).padding(13).into(),
@@ -1187,7 +1192,7 @@ impl BeeperGuiApp {
                 button(label)
                     .padding([4, 8])
                     .style(btn_style([blue; 3], [Color::WHITE; 3], 4.0))
-                    .on_press(UiMessage::McpInstall(target)),
+                    .on_press(UiMessage::Integrations(integrations::Msg::McpInstall(target))),
             )
             .padding(Padding::ZERO.bottom(8.0))
         });
@@ -1251,8 +1256,12 @@ impl BeeperGuiApp {
                         row![body(&name, p.text)].push(tag).spacing(6).align_y(Center),
                         body(&when, p.text.scale_alpha(0.7))
                     ];
-                    let revoke = container(pill_btn(p, tr("Revoke"), UiMessage::RevokeConnection(t.id.clone())))
-                        .padding(Padding::ZERO.right(8.0));
+                    let revoke = container(pill_btn(
+                        p,
+                        tr("Revoke"),
+                        UiMessage::Integrations(integrations::Msg::Revoke(t.id.clone())),
+                    ))
+                    .padding(Padding::ZERO.right(8.0));
                     let line =
                         row![text.width(Fill), revoke].align_y(Center).padding(Padding::new(8.0).left(13.0).right(4.0));
                     [divider(p.prefs_border, 0.0), line.into()]
@@ -1263,7 +1272,7 @@ impl BeeperGuiApp {
         let plus = button(tinted(&ADD_ICON, 20.0, p.accent))
             .padding(0)
             .style(btn_style([CLEAR; 3], [p.accent; 3], 10.0))
-            .on_press(UiMessage::AddToken(true));
+            .on_press(UiMessage::Integrations(integrations::Msg::Add(true)));
         let approved = column![
             row![container(body(tr("Approved connections"), p.muted)).width(Fill), plus]
                 .align_y(Center)
@@ -1278,7 +1287,7 @@ impl BeeperGuiApp {
             tr("Remote Access"),
             Some(tr("When enabled, the Desktop API & MCP will be available on the public internet. Changes take effect after relaunch.")),
             None,
-            toggle(p, on, (!fixed).then_some(UiMessage::RemoteAccess(!on))),
+            toggle(p, on, (!fixed).then_some(UiMessage::Integrations(integrations::Msg::RemoteAccess(!on)))),
         );
         let remote: El<'a> = match fixed {
             true => {

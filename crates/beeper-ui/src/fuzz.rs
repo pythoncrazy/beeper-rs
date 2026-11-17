@@ -2707,7 +2707,7 @@ fn integrations_like_desktop() {
     let on = app.store.read().api_on.subscribe();
     let _ = app.update(UiMessage::ToggleSetting(|x| x.enable_pas_api ^= true));
     assert!(*on.borrow() && app.store.read().settings.enable_pas_api, "the toggle starts the Desktop API");
-    let _ = app.update(UiMessage::McpTarget(3));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::McpTarget(3)));
     assert!(simulator(app.view_settings()).find("Prefer Streamable HTTP when possible.").is_ok());
     let _ = app.update(UiMessage::JoinCommunity);
     assert_eq!(app.update(UiMessage::JoinCommunity).units(), 0, "a second click waits for the join");
@@ -2733,7 +2733,7 @@ fn approve_connection_like_desktop() {
         let client =
             ClientInfo { name: Some("Raycast".into()), version: version.map(String::from), ..ClientInfo::default() };
         let (id, _, rx) = app.store.write().connect.request(client, vec!["read".into()], "raycast://oauth");
-        let _ = app.update(UiMessage::TokenRequest(id.clone(), None));
+        let _ = app.update(UiMessage::Integrations(integrations::Msg::Request(id.clone(), None)));
         (id, rx)
     };
     let (_, mut rx) = ask(&mut app, Some("1.2"));
@@ -2743,20 +2743,20 @@ fn approve_connection_like_desktop() {
     }
     drop(sim);
     assert_eq!(app.token_ask.as_ref().unwrap().app, "Raycast v1.2");
-    let _ = app.update(UiMessage::TokenWrite);
-    let _ = app.update(UiMessage::TokenExpiry(Expiry(3600)));
-    let _ = app.update(UiMessage::TokenAnswer(true));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::Write));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::Expiry(Expiry(3600))));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::Answer(true)));
     let token = rx.try_recv().unwrap().expect("approved");
     let stored = app.store.read().connect.validate(&token, "", "").expect("the token works");
     assert_eq!(stored.scopes, ["read", "write"], "Allow sensitive actions grants write");
     assert!(stored.expires_at.unwrap() - stored.created_at == 3_600_000 && app.token_ask.is_none());
     let (_, mut rx) = ask(&mut app, None);
-    let _ = app.update(UiMessage::TokenAnswer(false));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::Answer(false)));
     assert_eq!(rx.try_recv().unwrap(), None, "Decline rejects the request");
     let (id, _) = ask(&mut app, None);
-    let _ = app.update(UiMessage::TokenRequest(id, Some(Outcome::Timeout)));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::Request(id, Some(Outcome::Timeout))));
     assert!(simulator(app.view_main()).find("The request has timed out.").is_ok());
-    let _ = app.update(UiMessage::TokenClose);
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::Close));
     assert!(app.token_ask.is_none());
 }
 
@@ -2765,16 +2765,16 @@ fn approved_connections_like_desktop() {
     let mut app = demo_app("connections");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::Integrations));
     assert!(simulator(app.view_settings()).find("Add a connection to get started").is_ok());
-    let _ = app.update(UiMessage::AddToken(true));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::Add(true)));
     let mut sim = simulator(app.view_settings());
     for label in ["Name (optional)", "Expires In", "Allow sensitive actions", "Create Access Token"] {
         assert!(sim.find(label).is_ok(), "{label} shows");
     }
     drop(sim);
-    let _ = app.update(UiMessage::AddTokenName("Script".into()));
-    let _ = app.update(UiMessage::AddTokenWrite);
-    let _ = app.update(UiMessage::AddTokenExpiry(Expiry(0)));
-    let _ = app.update(UiMessage::CreateToken);
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::AddName("Script".into())));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::AddWrite));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::AddExpiry(Expiry(0))));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::Create));
     let token = app.integrations.add.as_ref().unwrap().token.clone().expect("the token shows once");
     assert!(simulator(app.view_settings()).find(token.as_str()).is_ok());
     let stored = app.store.read().connect.validate(&token, "", "").expect("the token works");
@@ -2790,7 +2790,7 @@ fn approved_connections_like_desktop() {
     let msgs: Vec<_> = sim.into_messages().collect();
     msgs.into_iter().for_each(|m| drop(app.update(m)));
     assert!(simulator(app.view_settings()).find("Are you sure you want to revoke this connection?").is_ok());
-    let _ = app.update(UiMessage::RevokeConfirmed);
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::RevokeConfirmed));
     assert!(app.store.read().connect.validate(&token, "", "").is_err() && app.confirm.is_none());
     assert_eq!(crate::distance(50 * 60_000), "about 1 hour");
     assert_eq!(crate::distance(30 * 86_400_000), "about 1 month");
@@ -2801,20 +2801,23 @@ fn approved_connections_like_desktop() {
 fn remote_access_like_desktop() {
     let mut app = demo_app("remote");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::Integrations));
-    let _ = app.update(UiMessage::RemoteAccess(true));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::RemoteAccess(true)));
     assert!(
         simulator(app.view_settings()).find("Enable Remote Access?").is_ok()
             && !app.store.read().settings.remote_access
     );
-    let _ = app.update(UiMessage::RemoteAccess(true));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::RemoteAccess(true)));
     assert!(app.store.read().settings.remote_access && app.confirm.is_none(), "Allow Remote Access turns it on");
     assert_eq!(app.relaunch_toast, Some("Remote Access will be enabled after relaunch"));
-    let _ = app.update(UiMessage::RemoteAccess(false));
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::RemoteAccess(false)));
     assert!(!app.store.read().settings.remote_access && app.confirm.is_none(), "off needs no confirmation");
     app.store.write().config.launch_host = true;
     let mut sim = simulator(app.view_settings());
     let _ = sim.click("Remote Access");
-    assert!(sim.into_messages().all(|m| !matches!(m, UiMessage::RemoteAccess(_))), "--pas-hostname locks the toggle");
+    assert!(
+        sim.into_messages().all(|m| !matches!(m, UiMessage::Integrations(integrations::Msg::RemoteAccess(_)))),
+        "--pas-hostname locks the toggle"
+    );
 }
 
 #[test]
