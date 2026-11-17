@@ -262,7 +262,10 @@ impl BeeperGuiApp {
                     stack![container(ic(g, size)).center(14)].push(dot).into()
                 }
                 (None, Some(l)) => label_icon(l, 14.0, p.strong),
-                (None, None) => svg(brand_svg(brand_key(&owner))).width(14).height(14).into(),
+                (None, None) => match network_space(&st, id).and_then(|n| n.avatar.as_deref().map(|a| (a, &n.name))) {
+                    Some((url, name)) => self.face(Some(url), name, 14.0, 0.0),
+                    None => svg(brand_svg(brand_key(&owner))).width(14).height(14).into(),
+                },
             };
             let muted = match (view, label) {
                 (Some(_), _) => false,
@@ -421,9 +424,11 @@ impl BeeperGuiApp {
             let space = network_space(&st, &acc);
             let owner = space.map_or(acc.as_str(), |n| &n.account_id);
             let label = rail_label(&st, &acc);
-            let logo: El<'static> = match label {
-                Some(l) => label_icon(l, 28.0, p.strong),
-                None => svg(brand_svg(brand_key(owner))).width(28).height(28).into(),
+            // Desktop's `JO`: a network space with its own picture shows it, else the brand logo.
+            let logo: El<'_> = match (label, space.and_then(|n| n.avatar.as_deref())) {
+                (Some(l), _) => label_icon(l, 28.0, p.strong),
+                (None, Some(url)) => self.face(Some(url), &space.expect("a space").name, 28.0, 0.0),
+                (None, None) => svg(brand_svg(brand_key(owner))).width(28).height(28).into(),
             };
             let n = tally(&format!("rail:{acc}"), &|c| {
                 in_rail_entry(&st, &acc, c) && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0
