@@ -2639,6 +2639,8 @@ pub struct BeeperGuiApp {
     rail_float: bool,
     /// Desktop's local `sidebar-hidden`: hides the rail and the chat list.
     pub sidebar_hidden: bool,
+    /// When the sidebar last hid or showed, for its slide.
+    sidebar_slide: Option<std::time::Instant>,
     pub dragging: bool,
     /// The rail space under the cursor, and where the cursor is in it.
     pub rail_hover: Option<(String, Point)>,
@@ -2885,6 +2887,7 @@ impl BeeperGuiApp {
             sidebar_width,
             rail_float: false,
             sidebar_hidden,
+            sidebar_slide: None,
             dragging: false,
             rail_hover: None,
             header_hover: (false, 0),
@@ -3662,9 +3665,16 @@ impl BeeperGuiApp {
         Task::perform(async move { tokio::time::sleep(wait).await }, |()| UiMessage::Timeline(timeline::Msg::LoadOlder))
     }
 
+    /// How far the sidebar's slide is, `transition: all 0.2s cubic-bezier(0.165, 0.84, 0.44, 1)`, while it runs.
+    pub(crate) fn sidebar_progress(&self) -> Option<f32> {
+        let t = self.sidebar_slide?.elapsed().as_secs_f32() / 0.2;
+        (t < 1.0).then(|| crate::style::cubic_bezier(t, [0.165, 0.84, 0.44, 1.0]))
+    }
+
     fn set_sidebar_hidden(&mut self, hidden: bool) {
         if self.sidebar_hidden != hidden {
             self.sidebar_hidden = hidden;
+            self.sidebar_slide = Some(std::time::Instant::now());
             let path = self.store.read().config.data_dir.join("sidebar-hidden");
             std::fs::write(path, hidden.to_string()).expect("write sidebar-hidden");
         }
@@ -4699,7 +4709,8 @@ impl BeeperGuiApp {
             || self.reauth.busy
             || self.enter_key.busy
             || self.nickname_windows.iter().any(|d| d.saving)
-            || self.hover_fading();
+            || self.hover_fading()
+            || self.sidebar_progress().is_some();
         let tab_at = self.media_window.as_ref().and_then(|w| w.tab_at);
         let animated = animated || tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE);
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
@@ -4840,7 +4851,17 @@ impl BeeperGuiApp {
         let shown = self.store.read().settings.on("showSidebar");
         let rail = (shown && !self.sidebar_hidden).then(|| self.view_rail());
         let sidebar = (!self.sidebar_hidden).then(|| self.view_sidebar());
-        let body = Row::new().push(rail).push(sidebar).push(stack![right, grip]);
+        // Desktop's `.left` transition: the space bar and the chat list slide out to nothing when they hide, at once
+        // empty, and slide back in when they show.
+        let left: El<'_> = match self.sidebar_progress() {
+            Some(t) => {
+                let full = self.sidebar_width + 68.0;
+                let width = full * if self.sidebar_hidden { 1.0 - t } else { t };
+                container(Row::new().push(rail).push(sidebar)).width(width).clip(true).into()
+            }
+            None => Row::new().push(rail).push(sidebar).into(),
+        };
+        let body = Row::new().push(left).push(stack![right, grip]);
         let body = container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
         // Desktop's `hoveringTrigger`: with the space bar hidden, the 20px at the left edge slide it in over the list.
         let float = (!shown && !self.sidebar_hidden).then(|| -> El<'_> {
