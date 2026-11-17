@@ -1330,6 +1330,9 @@ pub struct Message {
     /// Desktop's `extra.viewLimitedMediaKind`: the attachment type of the expired media.
     #[serde(rename = "viewLimitedMediaKind", default, skip_serializing_if = "Option::is_none")]
     pub view_kind: Option<String>,
+    /// Desktop's `actionButtons`: the buttons under a message from the [`system_user`].
+    #[serde(rename = "actionButtons", default, skip_serializing_if = "Vec::is_empty")]
+    pub buttons: Vec<ActionButton>,
     #[serde(skip)]
     pub flags: u16,
 }
@@ -1420,6 +1423,95 @@ impl CallAction {
 
     pub fn is_video(&self) -> bool {
         self.call_type.as_deref() == Some("video")
+    }
+}
+
+/// Desktop's `vp`: the homeserver's own user, whose messages can have action buttons.
+pub fn system_user(id: &str) -> bool {
+    id == "@:beeper.local"
+}
+
+/// What an action button does when pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ButtonAction {
+    /// Opens the URL.
+    Link,
+    /// Posts to the URL.
+    Callback,
+}
+
+/// Desktop's `ZI`: the only paths that a callback button can post to.
+const CALLBACK_PATHS: [&str; 1] = ["/_matrix/client/unstable/com.beeper.tips/download_links/email"];
+
+/// Desktop's `actionButtons`: an entry of the `com.beeper.buttons` of a message from the [`system_user`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionButton {
+    pub id: String,
+    pub label: String,
+    pub action: ButtonAction,
+    pub url: String,
+    /// Desktop's `icon.material`. Its `icon.sf` is for Apple's platforms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+impl ActionButton {
+    /// Desktop's `tD`: the valid buttons of a `com.beeper.buttons` list, the first of each ID, and 10 at most.
+    pub fn list(v: &serde_json::Value) -> Vec<Self> {
+        let mut out: Vec<Self> = Vec::new();
+        for b in v.as_array().into_iter().flatten().filter_map(Self::of) {
+            if !out.iter().any(|o| o.id == b.id) {
+                out.push(b);
+            }
+        }
+        out.truncate(10);
+        out
+    }
+
+    /// Desktop's `eD`: a button needs an ID, a label and a URL, trimmed, and a known action. Its icon is a Material
+    /// name of 64 characters at most.
+    fn of(v: &serde_json::Value) -> Option<Self> {
+        let s = |k: &str| v[k].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+        let action = match v["action"].as_str()? {
+            "link" => ButtonAction::Link,
+            "callback" => ButtonAction::Callback,
+            _ => return None,
+        };
+        let name =
+            |m: &&str| m.len() <= 64 && m.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_');
+        let icon = v["icon"]["material"].as_str().map(str::trim).filter(|m| !m.is_empty()).filter(name);
+        Some(Self { id: s("id")?, label: s("label")?, action, url: s("url")?, icon: icon.map(String::from) })
+    }
+
+    /// Desktop's `s0e`: the link that a link button opens, a `beeper://` deep link as it is or an `https:` URL.
+    pub fn link(&self) -> Option<String> {
+        if self.url.starts_with("beeper://") {
+            return Some(self.url.clone());
+        }
+        reqwest::Url::parse(&self.url).ok().filter(|u| u.scheme() == "https").map(String::from)
+    }
+
+    /// Desktop's `iD`: the URL that a callback button posts to, only an `https:` one on the host and port of the
+    /// homeserver, without credentials, a query or a fragment, at one of the [`CALLBACK_PATHS`].
+    pub fn callback_url(&self, homeserver: &str) -> Option<reqwest::Url> {
+        let (url, home) = (reqwest::Url::parse(&self.url).ok()?, reqwest::Url::parse(homeserver).ok()?);
+        let ok = url.scheme() == "https"
+            && url.host_str() == home.host_str()
+            && url.port() == home.port()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && !self.url.contains(['#', '?'])
+            && CALLBACK_PATHS.contains(&url.path());
+        ok.then_some(url)
+    }
+
+    /// Desktop's `H4t`: the renderer shows only the buttons that can open their link or post to their URL.
+    pub fn usable(&self, homeserver: &str) -> bool {
+        match self.action {
+            ButtonAction::Link => self.link().is_some(),
+            ButtonAction::Callback => self.callback_url(homeserver).is_some(),
+        }
     }
 }
 
@@ -2072,6 +2164,65 @@ mod tests {
         let generic = files(serde_json::json!({ "com.beeper.bridge_name": "gmessages" }));
         assert_eq!(generic[FILE_IMAGE].max_size, Some(20 * 1024 * 1024), "Desktop leaves Google Messages out");
         assert!(files(serde_json::json!({ "com.beeper.bridge_name": "groupme" })).is_empty());
+    }
+
+    /// Desktop's `tD` and `eD`: trimmed fields, a known action, the first button of each ID, 10 at most, and a
+    /// Material icon name of lowercase letters, digits and `_`.
+    #[test]
+    fn action_buttons_parse_like_desktop() {
+        use serde_json::json;
+        let b = |id: &str| json!({ "id": id, "label": " Go ", "action": "link", "url": " https://beeper.com " });
+        let list = json!([
+            b("a"),
+            { "id": "a", "label": "Again", "action": "link", "url": "https://x.io" },
+            { "id": "c", "label": "Bad", "action": "open", "url": "https://x.io" },
+            { "id": "d", "label": " ", "action": "link", "url": "https://x.io" },
+            { "id": "e", "label": "Mail", "action": "callback", "url": "https://x.io", "icon": { "material": "mail" } },
+            { "id": "f", "label": "Sf", "action": "link", "url": "https://x.io", "icon": { "sf": "envelope" } },
+            { "id": "g", "label": "Caps", "action": "link", "url": "https://x.io", "icon": { "material": "Mail" } },
+            "text",
+        ]);
+        let got = ActionButton::list(&list);
+        let ids: Vec<&str> = got.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["a", "e", "f", "g"], "invalid ones dropped, the first of an ID kept");
+        assert_eq!((got[0].label.as_str(), got[0].url.as_str()), ("Go", "https://beeper.com"));
+        assert_eq!((got[1].action, got[1].icon.as_deref()), (ButtonAction::Callback, Some("mail")));
+        assert_eq!((got[2].icon.as_deref(), got[3].icon.as_deref()), (None, None));
+        let many: Vec<serde_json::Value> = (0..12).map(|i| b(&i.to_string())).collect();
+        assert_eq!(ActionButton::list(&json!(many)).len(), 10, "Desktop's `QI`");
+        assert!(ActionButton::list(&json!({ "id": "a" })).is_empty());
+    }
+
+    /// Desktop's `s0e` of a link button and `iD` of a callback button: a deep link or an `https:` link, and a post only
+    /// to an allowed path on the homeserver.
+    #[test]
+    fn action_button_urls_like_desktop() {
+        let b =
+            |action, url: &str| ActionButton { id: "a".into(), label: "A".into(), action, url: url.into(), icon: None };
+        let link = |url: &str| b(ButtonAction::Link, url).link();
+        assert_eq!(link("beeper://settings").as_deref(), Some("beeper://settings"));
+        assert_eq!(link("https://Beeper.com").as_deref(), Some("https://beeper.com/"));
+        assert_eq!((link("http://beeper.com"), link("javascript:alert(1)")), (None, None));
+        let home = "https://matrix.beeper.com";
+        let path = "/_matrix/client/unstable/com.beeper.tips/download_links/email";
+        let callback = |url: String| b(ButtonAction::Callback, &url).callback_url(home).map(String::from);
+        assert_eq!(
+            callback(format!("https://matrix.beeper.com{path}")),
+            Some(format!("https://matrix.beeper.com{path}"))
+        );
+        for bad in [
+            format!("http://matrix.beeper.com{path}"),
+            format!("https://beeper.com{path}"),
+            format!("https://matrix.beeper.com:8448{path}"),
+            format!("https://me:pw@matrix.beeper.com{path}"),
+            format!("https://matrix.beeper.com{path}?x=1"),
+            format!("https://matrix.beeper.com{path}#x"),
+            "https://matrix.beeper.com/_matrix/client/v3/logout".into(),
+        ] {
+            assert_eq!(callback(bad.clone()), None, "{bad}");
+        }
+        assert!(!b(ButtonAction::Callback, &format!("https://x.io{path}")).usable(home));
+        assert!(b(ButtonAction::Link, "https://x.io").usable(home));
     }
 
     #[test]

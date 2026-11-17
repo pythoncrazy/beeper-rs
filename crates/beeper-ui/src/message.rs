@@ -19,6 +19,7 @@ use crate::style::{
 use crate::threads;
 use crate::time::{clock, day_label, day_num, day_of, format_short_ts, locale_string, today};
 use crate::timeline;
+use crate::toasts::Toast;
 use crate::units::human_size;
 use crate::view_once;
 use crate::windows;
@@ -28,11 +29,11 @@ use crate::{
     locate, member_name, membership, menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link,
     reply_root, safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable,
     unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON,
-    BUBBLE_PAD_X, BUBBLE_PAD_Y, CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM,
-    MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TIMER, TRASH,
+    BUBBLE_PAD_X, BUBBLE_PAD_Y, CHEVRON_DOWN, CHEVRON_FORWARD, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE,
+    ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TIMER, TRASH,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
-use beeper_core::matrix::ROOM_MENTION;
+use beeper_core::matrix::{Pressed, ROOM_MENTION};
 use beeper_core::models::*;
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
@@ -296,6 +297,77 @@ fn typing_tip(names: &[String]) -> String {
             format!("{} and {more} other{verb} typing…", names[..6].join(", "))
         }
     }
+}
+
+/// Desktop's `ActionButtonIcon`: a Material icon drawn 16 px at its 1.2 scale in the 14 px icon box of a `Button`,
+/// which shows the middle 14/19.2 of it.
+static BUTTON_ICONS: std::sync::LazyLock<HashMap<&str, svg::Handle>> =
+    std::sync::LazyLock::new(|| crate::material_icons(14.0 / 19.2));
+
+/// The rays of Desktop's `Button-module__spinner` mask.
+const SPINNER_RAYS: &str = "M8.33333 17.5V14.1667C8.33333 13.7064 8.70643 13.3333 9.16667 13.3333C9.6269 13.3333 10 13.7064 10 14.1667V17.5C10 17.9602 9.6269 18.3333 9.16667 18.3333C8.70643 18.3333 8.33333 17.9602 8.33333 17.5ZM5.03581 12.1191C5.36124 11.7937 5.88876 11.7937 6.21419 12.1191C6.53963 12.4446 6.53963 12.9721 6.21419 13.2975L3.85742 15.6543C3.53198 15.9797 3.00447 15.9797 2.67904 15.6543C2.3536 15.3289 2.3536 14.8013 2.67904 14.4759L5.03581 12.1191ZM12.1191 12.1191C12.4242 11.814 12.9067 11.7952 13.234 12.0622L13.2975 12.1191L15.6543 14.4759L15.7121 14.5394C15.9789 14.8667 15.9594 15.3492 15.6543 15.6543C15.3492 15.9594 14.8667 15.9789 14.5394 15.7121L14.4759 15.6543L12.1191 13.2975L12.0622 13.234C11.7952 12.9067 11.814 12.4242 12.1191 12.1191ZM4.16667 8.33333C4.6269 8.33333 5 8.70643 5 9.16667C5 9.6269 4.6269 10 4.16667 10H0.833333C0.373096 10 0 9.6269 0 9.16667C0 8.70643 0.373096 8.33333 0.833333 8.33333H4.16667ZM17.5 8.33333C17.9602 8.33333 18.3333 8.70643 18.3333 9.16667C18.3333 9.6269 17.9602 10 17.5 10H14.1667C13.7064 10 13.3333 9.6269 13.3333 9.16667C13.3333 8.70643 13.7064 8.33333 14.1667 8.33333H17.5ZM2.67904 2.74414C2.98419 2.43909 3.46667 2.4201 3.79394 2.68717L3.85742 2.74414L6.21419 5.10091L6.27116 5.16439C6.53819 5.49166 6.51923 5.97416 6.21419 6.2793C5.90919 6.5843 5.42659 6.60378 5.09928 6.33708L5.03581 6.2793L2.67904 3.92253L2.62126 3.85905C2.35451 3.53174 2.37402 3.04916 2.67904 2.74414ZM14.4759 2.74414C14.8013 2.41874 15.3289 2.4188 15.6543 2.74414C15.9797 3.06958 15.9797 3.59709 15.6543 3.92253L13.2975 6.2793C12.9721 6.60473 12.4446 6.60473 12.1191 6.2793C11.7938 5.95385 11.7937 5.42631 12.1191 5.10091L14.4759 2.74414ZM8.33333 4.16667V0.833333C8.33333 0.373096 8.70643 0 9.16667 0C9.6269 0 10 0.373096 10 0.833333V4.16667C10 4.6269 9.6269 5 9.16667 5C8.70643 5 8.33333 4.6269 8.33333 4.16667Z";
+
+/// Desktop's `Button-module__spinner`: the rays under a conic gradient from 15% of the color at the top, clockwise to
+/// all of it. resvg has no conic gradient, so each 10° wedge of the rays takes the opacity of its middle.
+static BUTTON_SPINNER: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    let (c, tau) = (18.3333 / 2.0, std::f32::consts::TAU);
+    let at = |k: u8| {
+        let a = f32::from(k) * tau / 36.0;
+        format!("{} {}", c + 20.0 * a.sin(), c - 20.0 * a.cos())
+    };
+    let wedges: String = (0..36)
+        .map(|k| {
+            let alpha = 0.15 + 0.85 * (f32::from(k) + 0.5) / 36.0;
+            format!(
+                r##"<clipPath id="w{k}"><path d="M{c} {c}L{}L{}Z"/></clipPath><use xlink:href="#r" clip-path="url(#w{k})" fill-opacity="{alpha}"/>"##,
+                at(k),
+                at(k + 1)
+            )
+        })
+        .collect();
+    let doc = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 18.3333 18.3333"><defs><path id="r" d="{SPINNER_RAYS}"/></defs>{wedges}</svg>"##
+    );
+    svg::Handle::from_memory(doc.into_bytes())
+});
+
+/// Desktop's `Button-module__spinner`, `size` px, which turns a twelfth at a time, once in 0.8 s.
+fn button_spinner<'a>(size: f32, color: Color) -> El<'a> {
+    let step = (crate::login::EPOCH.elapsed().as_secs_f32() / 0.8 * 12.0).floor();
+    svg(BUTTON_SPINNER.clone())
+        .width(size)
+        .height(size)
+        .opacity(color.a)
+        .rotation(iced::Rotation::Solid(iced::Radians(step / 12.0 * std::f32::consts::TAU)))
+        .style(move |_, _| svg::Style { color: Some(color) })
+        .into()
+}
+
+/// Desktop's `ActionButtons` button: a rounded `secondary` `Button` of the `md` size, 32 px high, on
+/// `--semantic-colors-bg-secondary`, with its icon, its label in 13 px semibold and a chevron on a link, 6 px apart.
+/// Without `press` its callback runs: disabled at half opacity on the `bg-disabled` fill, with the spinner in place
+/// of its content.
+fn action_button<'a>(p: &crate::style::Palette, b: &ActionButton, press: Option<UiMessage>) -> El<'a> {
+    let loading = press.is_none();
+    let shown = |c: Color| if loading { CLEAR } else { c };
+    let icon = b.icon.as_deref().and_then(|n| BUTTON_ICONS.get(n)).map(|h| tinted(h, 14.0, shown(p.main_text)));
+    let label = semi(b.label.clone(), 13.0).line_height(1.0).color(shown(p.main_text));
+    // Desktop's `chevron-compact-right`, the Material `chevron_forward` of 14 px.
+    let chevron = (b.action == ButtonAction::Link).then(|| tinted(&CHEVRON_FORWARD, 14.0, shown(p.tertiary)));
+    let content = row![].push(icon).push(label).push(chevron).spacing(6).align_y(Center);
+    let (alpha, bg) = if loading { (0.5, p.main_muted) } else { (1.0, p.bg_secondary) };
+    let spinner = loading.then(|| container(button_spinner(14.0, p.main_text.scale_alpha(alpha))).center(Fill));
+    // The 1 px transparent border of `Button-module__button` adds to its 12 px padding.
+    button(stack![container(content).center_y(Fill)].push(spinner))
+        .height(32)
+        .padding([0, 13])
+        .style(move |_, _| button::Style {
+            background: Some(bg.scale_alpha(alpha).into()),
+            border: border::rounded(9999),
+            ..Default::default()
+        })
+        .on_press_maybe(press)
+        .into()
 }
 
 /// Desktop's `--color-on-error-container`, the same in the light and dark themes.
@@ -2476,6 +2548,7 @@ impl BeeperGuiApp {
             (threaded && !in_pane && !thread).then(|| self.thread_replies_button(st, chat, &m.id)).flatten();
         let thread_button = thread_button.map(|b| container(b).padding(Padding::ZERO.top(2.0)));
         let parts = column![parts]
+            .push(self.action_buttons(st, m))
             .push(edits)
             .push(actions)
             .push(thread_button)
@@ -2650,6 +2723,26 @@ impl BeeperGuiApp {
             .on_right_press(menu)
             .on_double_click(UiMessage::Message(Msg::DoubleClick(m.id.clone())));
         column![head, line].into()
+    }
+
+    /// Desktop's `ActionButtons` (`W4t`) under a message of the system user that is not deleted: the buttons that
+    /// can open their link or post to their URL, in a wrapping row 4 px apart and 4 px below the message.
+    fn action_buttons<'a>(&self, st: &BeeperStore, m: &Message) -> Option<El<'a>> {
+        if m.is_deleted == Some(true) || !system_user(&m.sender_id) {
+            return None;
+        }
+        let home = &st.beeper_state.homeserver;
+        let buttons: Vec<El<'a>> = (m.buttons.iter().filter(|b| b.usable(home)))
+            .map(|b| {
+                let loading = self.pressing.iter().any(|(mid, id)| *mid == m.id && *id == b.id);
+                let press = UiMessage::Message(Msg::PressButton(m.id.clone(), b.id.clone()));
+                action_button(&self.pal, b, (!loading).then_some(press))
+            })
+            .collect();
+        (!buttons.is_empty()).then(|| {
+            let row = Row::with_children(buttons).spacing(4).wrap().vertical_spacing(4);
+            container(row).padding(Padding::ZERO.top(4.0)).into()
+        })
     }
 
     /// Desktop's `bfe` (`LinkedMessage`) of the quoted message `q`: a box of its media, the tags of its other
@@ -2987,6 +3080,10 @@ pub enum Msg {
     ToggleEditHistory(String),
     /// "Show more" or "Show less" of a message over 40 lines.
     ToggleClamp(String),
+    /// A press of an action button, by its message and its ID.
+    PressButton(String, String),
+    /// The end of the callback of an action button.
+    Pressed(String, String, Pressed),
     HoverEnter(String),
     ShowQuickReactions,
     HoverExit(String),
@@ -3313,6 +3410,18 @@ impl BeeperGuiApp {
                     self.pane.unclamped.insert(mid);
                 }
             }
+            Msg::PressButton(mid, id) => return self.press_button(mid, id),
+            // Desktop's `z4t`: a toast when the homeserver answered 429, and an error toast when the callback failed.
+            Msg::Pressed(mid, id, r) => {
+                self.pressing.remove(&(mid, id));
+                match r {
+                    Pressed::Ok => {}
+                    Pressed::RateLimited => {
+                        self.show(Toast::new(tr("We're on it. If nothing arrives, try again in a few minutes.").into()))
+                    }
+                    Pressed::Failed => self.fail(Toast::new(tr("Couldn't reach Beeper. Try again.").into())),
+                }
+            }
             Msg::ToggleEditHistory(mid) => {
                 self.pane.expanded_history_msg_id =
                     (self.pane.expanded_history_msg_id.as_ref() != Some(&mid)).then_some(mid);
@@ -3336,6 +3445,34 @@ impl BeeperGuiApp {
             }
         }
         self.settle()
+    }
+
+    /// Desktop's `W4t` press: a link button opens its link, and a callback button posts once at a time, with its
+    /// spinner for 500 ms at least.
+    fn press_button(&mut self, mid: String, id: String) -> Task<UiMessage> {
+        let st = self.store.read();
+        let home = &st.beeper_state.homeserver;
+        let live = st.loaded(&mid).filter(|m| m.is_deleted != Some(true) && system_user(&m.sender_id));
+        let b = live.and_then(|m| m.buttons.iter().find(|b| b.id == id));
+        let link = b.filter(|b| b.action == ButtonAction::Link).and_then(ActionButton::link);
+        let url = b.filter(|b| b.action == ButtonAction::Callback).and_then(|b| b.callback_url(home));
+        let token = st.beeper_state.access_token.clone();
+        drop(st);
+        if let Some(link) = link {
+            return match link.starts_with(crate::deeplink::SCHEME) {
+                true => self.open_link(&link),
+                false => self.update(UiMessage::OpenUrl(link)),
+            };
+        }
+        let Some(url) = url else { return Task::none() };
+        if !self.pressing.insert((mid.clone(), id.clone())) {
+            return Task::none();
+        }
+        let press = async move {
+            let wait = tokio::time::sleep(std::time::Duration::from_millis(500));
+            tokio::join!(beeper_core::matrix::press_button(url, token), wait).0
+        };
+        Task::perform(press, move |r| UiMessage::Message(Msg::Pressed(mid, id, r)))
     }
 }
 
@@ -3577,6 +3714,74 @@ mod tests {
         let _ = app.update(UiMessage::Message(Msg::HoverEnter(mine)));
         let _ = app.update(UiMessage::Message(Msg::ShowQuickReactions));
         assert!(!quick_shown(&app), "never on your own");
+    }
+
+    /// Desktop's `ActionButtons` under a message of the system user: the buttons that can open their link or post to
+    /// the homeserver, a deep link that opens, and a callback that runs once at a time, then a toast for a 429 and an
+    /// error toast for a failure.
+    #[test]
+    fn system_user_buttons_like_desktop() {
+        let mut app = crate::fuzz::demo_app("action-buttons");
+        let path = "/_matrix/client/unstable/com.beeper.tips/download_links/email";
+        let button = |id: &str, action, url: String| ActionButton {
+            id: id.into(),
+            label: format!("Label {id}"),
+            action,
+            url,
+            icon: Some("mail".into()),
+        };
+        {
+            let mut st = app.store.write();
+            // Nothing answers there, so no callback leaves the machine.
+            st.beeper_state.homeserver = "https://127.0.0.1:9".into();
+            let m = st.messages[*st.timeline_indices(crate::NOTE_CHAT_ID).last().expect("a message")].clone();
+            let buttons = vec![
+                button("tips", ButtonAction::Link, "beeper://tips/add-account".into()),
+                button("email", ButtonAction::Callback, format!("https://127.0.0.1:9{path}")),
+                button("elsewhere", ButtonAction::Callback, format!("https://x.io{path}")),
+                button("plain", ButtonAction::Link, "http://x.io".into()),
+            ];
+            let system = "@:beeper.local".to_string();
+            let tip = Message { id: "$tip".into(), sender_id: system, is_sender: Some(false), buttons, ..m.clone() };
+            st.upsert_message(tip);
+            let fake = vec![button("fake", ButtonAction::Link, "https://x.io".into())];
+            st.upsert_message(Message { id: "$fake".into(), is_sender: Some(false), buttons: fake, ..m });
+        }
+        let _ = app.update(UiMessage::SelectChat(crate::NOTE_CHAT_ID.into()));
+        app.pane.size = Size::new(900.0, 700.0);
+        let shown = |app: &BeeperGuiApp, label: &str| simulator(app.view_conversation()).find(label).is_ok();
+        assert!(shown(&app, "Label tips") && shown(&app, "Label email"));
+        assert!(!shown(&app, "Label elsewhere") && !shown(&app, "Label plain"), "only the usable buttons");
+        assert!(!shown(&app, "Label fake"), "only the system user's messages have buttons");
+        let mut sim = simulator(app.view_conversation());
+        sim.click("Label tips").expect("the link button");
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        let press =
+            |m: &UiMessage| matches!(m, UiMessage::Message(Msg::PressButton(mid, id)) if mid == "$tip" && id == "tips");
+        assert!(msgs.iter().any(press), "a press of the button");
+        msgs.into_iter().for_each(|m| _ = app.update(m));
+        assert!(app.adding_account, "the deep link of the tip opens Add Account");
+        let email = || UiMessage::Message(Msg::PressButton("$tip".into(), "email".into()));
+        let _ = app.update(email());
+        let _ = app.update(email());
+        assert_eq!(app.pressing.len(), 1, "one callback at a time");
+        let mut sim = simulator(app.view_conversation());
+        let _ = sim.click("Label email");
+        assert!(!sim.into_messages().any(|m| matches!(m, UiMessage::Message(Msg::PressButton(..)))), "disabled");
+        let done = |r| UiMessage::Message(Msg::Pressed("$tip".into(), "email".into(), r));
+        let _ = app.update(done(Pressed::RateLimited));
+        assert!(app.pressing.is_empty());
+        assert_eq!(app.status_banner, "We're on it. If nothing arrives, try again in a few minutes.");
+        assert!(app.toast.as_ref().is_some_and(|t| !t.error));
+        let _ = app.update(done(Pressed::Failed));
+        assert_eq!(app.status_banner, "Couldn't reach Beeper. Try again.");
+        assert!(app.toast.as_ref().is_some_and(|t| t.error));
+        {
+            let mut st = app.store.write();
+            let i = st.loaded_idx("$tip").expect("the tip");
+            st.update_message(i, |m| m.is_deleted = Some(true));
+        }
+        assert!(!shown(&app, "Label tips"), "a deleted message has no buttons");
     }
 
     /// Desktop's `DJ` splits the text around each "@room".

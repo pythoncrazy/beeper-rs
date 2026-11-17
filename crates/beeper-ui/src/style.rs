@@ -863,6 +863,8 @@ palette! {
     main_muted: Color = hexa(0x0d4ffb, 0.14), hexa(0x0d4ffb, 0.26);
     /// `--button-secondary-main-text`.
     main_text: Color = hex(0x0d4ffb), hex(0x638efc);
+    /// `--appearance-color-bg-secondary`: the fill of Desktop's action buttons.
+    bg_secondary: Color = hex(0xeaebf0), hex(0x1c1d1e);
     /// `--appearance-color-border-secondary`.
     border_secondary: Color = hex(0xdedfe3), hexa(0xffffff, 0.1);
     /// Chromium's own `input[type=range]` fill, track and track edge.

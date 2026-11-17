@@ -836,14 +836,28 @@ const LABEL_COLORS: [(u32, u32); 12] = [
     (0x5583FC, 0x1E54E1),
 ];
 
+/// Desktop's `fD`: the Material icons by name, which labels and action buttons show. Each icon keeps the middle
+/// `share` of its view box, as a box that clips the icon drawn larger.
+fn material_icons(share: f32) -> HashMap<&'static str, svg::Handle> {
+    let icon = |line: &'static str| {
+        let [name, view, d] = line.split('\t').collect::<Vec<_>>()[..] else { panic!("a Material icon line") };
+        let box_of = view.split(' ').map(|v| v.parse::<f32>().expect("a view box number")).collect::<Vec<_>>();
+        let [x, y, w, h] = box_of[..] else { panic!("a view box") };
+        let (x, y, w, h) = (x + w * (1.0 - share) / 2.0, y + h * (1.0 - share) / 2.0, w * share, h * share);
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x} {y} {w} {h}"><path fill="currentColor" d="{d}"/></svg>"#
+        );
+        (name, svg::Handle::from_memory(svg.into_bytes()))
+    };
+    include_str!("../assets/material_icons.tsv").lines().map(icon).collect()
+}
+
 /// Desktop's `yD`: the label icons by id, in the order of the picker.
 static LABEL_ICONS: std::sync::LazyLock<Vec<(&str, svg::Handle)>> = std::sync::LazyLock::new(|| {
+    let icons = material_icons(1.0);
     let icon = |line: &'static str| {
-        let [id, _, d] = line.split('\t').collect::<Vec<_>>()[..] else { panic!("a label icon line") };
-        let svg = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path fill="currentColor" d="{d}"/></svg>"#
-        );
-        (id, svg::Handle::from_memory(svg.into_bytes()))
+        let (id, name) = line.split_once('\t').expect("a label icon line");
+        (id, icons[name].clone())
     };
     include_str!("../assets/label_icons.tsv").lines().map(icon).collect()
 });
@@ -2605,6 +2619,8 @@ pub struct BeeperGuiApp {
     media_window: Option<MediaWindow>,
     /// On X11 the copied image stays available only while its clipboard lives.
     image_clipboard: Option<arboard::Clipboard>,
+    /// Desktop's `pendingButtonIDs`: the action buttons whose callback runs, as (message, button).
+    pressing: HashSet<(String, String)>,
     pub filters: u8,
     emoji_gen: u32,
     emoji_hovered: [bool; 2],
@@ -2909,6 +2925,7 @@ impl BeeperGuiApp {
             search_select: None,
             cursor: Default::default(),
             image_clipboard: None,
+            pressing: HashSet::new(),
             forward: None,
             carousel: None,
             media_window: None,
@@ -4923,6 +4940,7 @@ impl BeeperGuiApp {
             || self.reauth.busy
             || self.enter_key.busy
             || self.nickname_windows.iter().any(|d| d.saving)
+            || !self.pressing.is_empty()
             || self.hover_fading()
             || self.sidebar_progress().is_some()
             || self
