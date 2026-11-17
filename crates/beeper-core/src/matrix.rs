@@ -1120,9 +1120,21 @@ async fn create_label(store: &SharedStore, client: &Client, label: Label) -> Res
     Ok(())
 }
 
-/// Desktop's bookmark restoration: the whole bookmarks room once, then its new events.
+/// Desktop's bookmark restoration: the whole bookmarks room once, then its new events. A restoration whose history
+/// does not load fails, like Desktop's `runRestoration`, and the next one starts over.
 async fn sync_bookmarks(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
-    let events = if store.read().bookmarks_room.is_none() { all_history(room).await } else { events };
+    let restoring = store.read().bookmarks_room.is_none();
+    let events = match restoring {
+        true => match history_from_start(room).await {
+            (events, None) => events,
+            (_, Some(e)) => {
+                eprintln!("[bookmarks] restoration failed: {e}");
+                store.write().bookmarks_failed = true;
+                return;
+            }
+        },
+        false => events,
+    };
     let me = room.own_user_id().as_str();
     let changes = events
         .iter()
@@ -1240,17 +1252,34 @@ pub async fn bookmarked_message(client: Client, chat: String, target: String, ac
 }
 
 async fn all_history(room: &Room) -> Vec<TimelineEvent> {
+    match history_from_start(room).await {
+        (events, None) => events,
+        (events, Some(e)) => events.into_iter().chain(no_history(room, &e)).collect(),
+    }
+}
+
+/// The events of a room from its start, oldest first, back to the first page that does not load, and its error.
+async fn history_from_start(room: &Room) -> (Vec<TimelineEvent>, Option<matrix_sdk::Error>) {
     let (mut pages, mut from) = (Vec::new(), None);
     loop {
         let (events, end) = match page(room, from, 100).await {
             Ok(p) => p,
-            Err(e) => return pages.into_iter().rev().flatten().chain(no_history(room, &e)).collect(),
+            Err(e) => return (pages.into_iter().rev().flatten().collect(), Some(e)),
         };
         pages.push(events);
         match end {
             Some(token) => from = Some(token),
-            None => return pages.into_iter().rev().flatten().collect(),
+            None => return (pages.into_iter().rev().flatten().collect(), None),
         }
+    }
+}
+
+/// Desktop's `bookmarkStore.restore` when Chat Info opens after a failed restoration: reads the bookmarks room again.
+pub async fn restore_bookmarks(store: SharedStore) {
+    let client = store.read().matrix.clone().expect("bookmarks restore with a Matrix client");
+    match joined_room(&client, BOOKMARKS_ROOM).await {
+        Ok(room) => sync_bookmarks(&store, &room, Vec::new()).await,
+        Err(e) => eprintln!("[bookmarks] restoration failed: {e}"),
     }
 }
 

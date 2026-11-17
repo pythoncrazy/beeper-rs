@@ -378,6 +378,21 @@ mod tests {
             "command bar heading for snoozing chats\u{4}Snooze",
             "space name for snoozed chats\u{4}Snoozed",
             "notification body when a snoozed chat returns\u{4}Had activity while snoozed",
+            "chat behavior explanation, a label whose details are missing\u{4}Unknown label",
+            "chat behavior explanation row\u{4}Chat Snooze",
+            "chat behavior explanation row\u{4}Chat Settings",
+            // Desktop translates the Chat Info behavior line and menu rows in no language.
+            "chat info line\u{4}Snoozed until %s",
+            "chat info line\u{4}Muted by you",
+            "chat info line\u{4}Hidden and muted by %s",
+            "chat info line\u{4}Hidden by %s",
+            "chat info line\u{4}Hidden and muted",
+            "chat info menu row\u{4}Snoozes until %s",
+            "chat info menu row\u{4}Shows only DMs",
+            "chat info menu row\u{4}Hides and mutes this chat",
+            "chat info menu row\u{4}Hides this chat",
+            "chat info menu row\u{4}Mutes this chat",
+            "chat info menu row\u{4}Shows and notifies",
         ];
         // The source files, with those of the folders of modules.
         let mut files = Vec::new();

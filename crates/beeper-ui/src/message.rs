@@ -2520,7 +2520,7 @@ impl BeeperGuiApp {
     }
 
     /// The first frame of the image at `url`, once it has loaded.
-    fn still(&self, url: &str) -> Option<image::Handle> {
+    pub(crate) fn still(&self, url: &str) -> Option<image::Handle> {
         self.media_at(url).and_then(|m| m.as_ref().ok()).and_then(|f| f.first()).map(|f| f.0.clone())
     }
 
