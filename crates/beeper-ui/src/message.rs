@@ -391,16 +391,28 @@ pub(crate) struct Rows {
     days: Vec<usize>,
 }
 
+/// The first message of the membership event run of each message: Desktop's `MembershipGrouper` groups the member
+/// events of a day in a row.
+pub(crate) fn member_runs(msgs: &[&Message]) -> Vec<usize> {
+    let mut run_start: Vec<usize> = (0..msgs.len()).collect();
+    for i in 1..msgs.len() {
+        let (a, b) = (msgs[i - 1], msgs[i]);
+        if membership(a) && membership(b) && day_num(&a.timestamp) == day_num(&b.timestamp) {
+            run_start[i] = run_start[i - 1];
+        }
+    }
+    run_start
+}
+
+/// The size of the membership run that starts at `start`.
+fn run_size(runs: &[usize], start: usize) -> usize {
+    runs[start..].iter().take_while(|&&r| r == start).count()
+}
+
 impl Rows {
     fn of(st: &BeeperStore, msgs: &[&Message]) -> Self {
         let n = msgs.len();
-        let mut run_start: Vec<usize> = (0..n).collect();
-        for i in 1..n {
-            let (a, b) = (msgs[i - 1], msgs[i]);
-            if membership(a) && membership(b) && day_num(&a.timestamp) == day_num(&b.timestamp) {
-                run_start[i] = run_start[i - 1];
-            }
-        }
+        let run_start = member_runs(msgs);
         let mut last_seen = HashMap::new();
         let mut replied: HashSet<&str> = HashSet::new();
         for (k, m) in msgs.iter().enumerate().rev() {
@@ -1307,6 +1319,25 @@ impl BeeperGuiApp {
         rows
     }
 
+    /// Desktop's `MembershipGrouper`: a collapsed group of three or more member events opens while the selection is in
+    /// it, and the group that opened so closes again once the selection leaves it.
+    fn follow_member_selection(&mut self) {
+        let group = {
+            let st = self.store.read();
+            let (msgs, _) = self.timeline(&st);
+            let runs = member_runs(&msgs);
+            let picked = msgs.iter().position(|m| membership(m) && self.pane.selected_msgs.contains(&m.id));
+            let start = picked.map(|i| runs[i]).filter(|&s| run_size(&runs, s) >= 3);
+            start.map(|s| msgs[s].id.clone())
+        };
+        if let Some(auto) = self.pane.auto_members.take_if(|a| group.as_ref() != Some(a)) {
+            self.pane.open_members.remove(&auto);
+        }
+        if let Some(group) = group.filter(|g| self.pane.open_members.insert(g.clone())) {
+            self.pane.auto_members = Some(group);
+        }
+    }
+
     /// The message of the open chat that the unread divider goes before.
     pub(crate) fn first_unread(&self, msgs: &[&Message]) -> Option<usize> {
         let at = self.pane().unread_divider.as_ref()?;
@@ -1381,12 +1412,12 @@ impl BeeperGuiApp {
             if membership(m) {
                 let mut rows = Column::new();
                 let s = run_start[i];
-                let size = run_start[s..].iter().take_while(|&&r| r == s).count();
+                let size = run_size(run_start, s);
                 let open = self.pane().open_members.contains(&msgs[s].id);
                 let dim = self.wallpaper_fg(st, chat, thread).unwrap_or(p.muted).scale_alpha(0.75);
                 if size >= 3 && i == s {
                     let label = row![
-                        txt(format!("{size} Membership Events"), 11.0).color(dim),
+                        txt(trn("%d Membership Event", "%d Membership Events", size, &[&size]), 11.0).color(dim),
                         txt(if open { tr("Collapse") } else { tr("Expand") }, 11.0).color(p.accent.scale_alpha(0.75))
                     ];
                     let toggle = button(label.spacing(4))
@@ -2901,6 +2932,7 @@ impl BeeperGuiApp {
                     (true, None) => return Task::none(),
                     (false, next) => self.pane.selected_msgs = next.into_iter().collect(),
                 }
+                self.follow_member_selection();
                 return match self.pane.selected_msgs.last() {
                     Some(mid) => {
                         self.pane.timeline.reveal(vlist::key(mid));

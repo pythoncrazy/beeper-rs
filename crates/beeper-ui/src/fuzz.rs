@@ -3484,6 +3484,52 @@ fn a_chat_the_user_left_like_desktop() {
     assert!(simulator(app.view_sidebar()).find("Ann left").is_ok(), "no sender name");
 }
 
+/// Desktop's `MembershipGrouper`: three member events of a day fold under "3 Membership Events", the group opens while
+/// the keyboard selection is in it and closes once the selection leaves, and a group that closes drops its selection.
+#[test]
+fn membership_groups_follow_the_selection_like_desktop() {
+    let mut app = demo_app("member-groups");
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("membershipEvents", 1)));
+    let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID && !c.is_unread()).unwrap().id.clone();
+    {
+        let mut st = app.store.write();
+        st.load_chat(&id);
+        let last = st.messages.iter().rfind(|m| m.chat_id == id).unwrap().clone();
+        let after: u64 = last.sort_key.parse().expect("a numeric sort key");
+        let rows =
+            [("MEMBERSHIP", "Ann joined"), ("MEMBERSHIP", "Bob joined"), ("MEMBERSHIP", "Cy left"), ("TEXT", "hi")];
+        for (n, (kind, text)) in rows.into_iter().enumerate() {
+            let m = Message {
+                id: format!("$m{n}"),
+                sort_key: format!("{:016}", after + 1 + n as u64),
+                text: Some(text.into()),
+                message_type: Some(kind.into()),
+                is_sender: Some(false),
+                ..last.clone()
+            };
+            st.upsert_message(m);
+        }
+    }
+    let _ = app.update(UiMessage::SelectChat(id));
+    assert!(simulator(app.view_main()).find("3 Membership Events").is_ok());
+    let step = |app: &mut BeeperGuiApp, down: bool| {
+        let key = if down { Named::ArrowDown } else { Named::ArrowUp };
+        let _ = app.update(UiMessage::KeyPressed(Key::Named(key), Modifiers::empty()));
+    };
+    step(&mut app, false);
+    assert_eq!(app.pane.selected_msgs, ["$m3"]);
+    assert!(app.pane.open_members.is_empty(), "the group stays closed");
+    step(&mut app, false);
+    assert_eq!(app.pane.selected_msgs, ["$m2"]);
+    assert!(app.pane.open_members.contains("$m0"), "the selection opens the group");
+    assert!(simulator(app.view_main()).find("Cy left").is_ok());
+    step(&mut app, true);
+    assert!(app.pane.open_members.is_empty(), "and it closes when the selection leaves");
+    step(&mut app, false);
+    let _ = app.update(UiMessage::Members(members::Msg::Toggle("$m0".into())));
+    assert!(app.pane.open_members.is_empty() && app.pane.selected_msgs.is_empty(), "closing drops the selection");
+}
+
 /// Desktop's `rWe`: only the last of a sender's messages in a minute shows the time.
 #[test]
 fn times_show_once_a_minute_like_desktop() {

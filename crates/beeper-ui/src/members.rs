@@ -70,9 +70,21 @@ impl BeeperGuiApp {
                 self.store.write().remove_member(&cid, &uid);
             }
             Msg::Toggle(id) => {
-                if !self.pane.open_members.remove(&id) {
-                    self.pane.open_members.insert(id);
+                if self.pane.open_members.insert(id.clone()) {
+                    return self.settle();
                 }
+                self.pane.open_members.remove(&id);
+                self.pane.auto_members.take_if(|a| *a == id);
+                // Desktop's `MembershipGrouper` unselects the events of a group that closes.
+                let st = self.store.read();
+                let (msgs, _) = self.timeline(&st);
+                let runs = message::member_runs(&msgs);
+                let start = msgs.iter().position(|m| m.id == id);
+                let group = start
+                    .map_or(0..0, |s| s..s + msgs[s..].iter().zip(&runs[s..]).take_while(|(_, &r)| r == s).count());
+                let ids: Vec<String> = msgs[group].iter().map(|m| m.id.clone()).collect();
+                drop(st);
+                self.pane.selected_msgs.retain(|m| !ids.contains(m));
             }
         }
         self.settle()

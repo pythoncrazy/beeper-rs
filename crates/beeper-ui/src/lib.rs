@@ -2380,6 +2380,8 @@ pub struct Pane {
     pub emoticon: Option<(String, String, usize)>,
     /// The first message IDs of the expanded membership event groups.
     pub open_members: HashSet<String>,
+    /// The membership event group that opened because the selection went into it.
+    pub auto_members: Option<String>,
     pub size: Size,
     pub send_later: Option<(i64, bool)>,
     /// Desktop's `ScheduledMessages` state: collapsed and collapsible.
