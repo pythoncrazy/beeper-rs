@@ -985,7 +985,8 @@ async fn lifecycle() {
     shows(&login, &["Check alex@example.com for your login code", "Open Email"]);
     let _ = login.update(UiMessage::Login(LoginMsg::Code("12 34 56".into())));
     assert_eq!(login.login.code, "123456");
-    let refused = beeper_core::cloud::CloudError { status: 401, message: "Invalid code".into(), errcode: None };
+    let refused =
+        beeper_core::cloud::CloudError { status: 401, message: "Invalid code".into(), errcode: None, body: None };
     let _ = login.update(UiMessage::Login(LoginMsg::Done(Err(refused))));
     assert_eq!(login.login.error.as_deref(), Some("Invalid code"), "a refused code shows under the heading");
     shows(&login, &["Invalid code"]);

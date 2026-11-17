@@ -144,6 +144,7 @@ fn main() {
         status: 401,
         message: "Invalid code. Please try again.".into(),
         errcode: None,
+        body: None,
     };
     let _ = app.update(UiMessage::Login(LoginMsg::Done(Err(refused))));
     shot(&out, "login_code_error", (330.0, 620.0), &theme, app.view_login());
