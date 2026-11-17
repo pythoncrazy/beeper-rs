@@ -1,6 +1,7 @@
 //! Desktop's command bar commands (`Efe`): the categories, the titles, the search keywords and the hotkeys.
 use crate::blocking;
 use crate::i18n::{tr, trf, trx};
+use crate::media_view;
 use crate::members;
 use crate::new_chat;
 use crate::reminders;
@@ -665,7 +666,7 @@ impl BeeperGuiApp {
         let space = cmd("", tr("Toggle space bar"), hot("Toggle Space Bar"));
         v.push(space.keys(&["hide", "show"]).hotkey("Toggle Space Bar"));
         let media = &["media", "gallery", "photos", "images", "videos", "files", "links", "docs"];
-        v.push(cmd("Window", tr("Media viewer"), Some(UiMessage::OpenMedia)).keys(media));
+        v.push(cmd("Window", tr("Media viewer"), Some(UiMessage::Media(media_view::Msg::Open))).keys(media));
         v.push(cmd("Window", tr("Maximize/unmaximize"), Some(UiMessage::ToggleMaximize(None))));
         v.push(cmd("View", tr("Zoom in"), hot("Zoom In")).keys(&["magnify"]).hotkey("Zoom In"));
         v.push(cmd("View", tr("Zoom out"), hot("Zoom Out")).keys(&["magnify"]).hotkey("Zoom Out"));

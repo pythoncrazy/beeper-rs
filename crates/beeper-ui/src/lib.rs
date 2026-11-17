@@ -80,7 +80,7 @@ pub use crate::dialogs::{
 use crate::dialogs::{DEFAULT_LABEL_ICON, GROUP_SIZE, LABEL_SETTINGS_SIZE};
 use crate::i18n::{tr, trf, trn, trs, trx};
 use crate::login::{Login, LoginMsg};
-use crate::media_view::{decode_media, media_items, run_ffmpeg, Carousel, MediaWindow, MEDIA_PAGE, TAB_SLIDE};
+use crate::media_view::{decode_media, run_ffmpeg, Carousel, MediaWindow, TAB_SLIDE};
 use crate::message::Rows;
 pub use crate::message::TopOfThread;
 use crate::settings::{
@@ -475,43 +475,8 @@ pub enum UiMessage {
     ImageFetched(Result<(usize, usize, Vec<u8>), String>),
     /// Desktop's forward dialog: the chats to forward the selected messages to.
     Forward(forward::Msg),
-    /// Show an attachment of a message full screen, in the Media window with `true`.
-    OpenCarousel(String, usize, bool),
-    /// Show the previous (`false`) or next (`true`) image of the carousel.
-    CarouselStep(bool),
-    RotateCarousel,
-    CloseCarousel,
-    /// Open the carousel menu at the cursor, or close it.
-    CarouselMenu(bool),
-    /// Scroll the filmstrip of the Media window by a number of items.
-    ScrollFilmstrip(f32),
-    /// Open Desktop's Media window, or focus it.
-    OpenMedia,
-    /// Show the Media, Links or Docs tab of the Media window.
-    MediaTab(usize),
-    /// Load more items in the Media window.
-    MediaMore,
-    /// Show the Media window items that all, you or others sent.
-    MediaSentBy(u8),
-    /// Show the oldest Media window items first.
-    MediaOldest(bool),
-    /// Search the Media window by caption, or close the search with `None`.
-    MediaSearch(Option<String>),
-    MediaMenu(bool),
-    /// Open the context menu of a Media window item, or close it with `None`.
-    MediaItemMenu(Option<(String, usize)>),
-    /// Close the Media window item menu and run its action.
-    MediaItemAct(Box<UiMessage>),
-    MediaSelect(bool),
-    /// Select or unselect a Media window item, as (message, attachment or link index).
-    MediaPick(String, usize),
-    MediaPickAll,
-    /// Download the selected Media window attachments.
-    MediaSave,
-    /// Ask to delete Media window items.
-    MediaAskDelete(Vec<(String, usize)>),
-    /// Delete the items that the Media window dialog asks about, or cancel with `false`.
-    MediaDelete(bool),
+    /// Desktop's Media window and full-screen carousel: the tabs, filters, selection and menus of the media of a chat.
+    Media(media_view::Msg),
     Modifiers(keyboard::Modifiers),
     /// Open a message in the main window.
     GoToMessage(String, String),
@@ -5562,90 +5527,7 @@ impl BeeperGuiApp {
                     self.status_banner = tr("Couldn't copy the image").into();
                 }
             }
-            UiMessage::OpenCarousel(mid, ai, in_media) => {
-                self.leave_carousel_video();
-                self.carousel =
-                    Some(Carousel { mid, ai, turns: 0, turned: None, in_media, resume: None, menu: None, strip: None });
-                self.fit_carousel_video();
-                return self.load_media();
-            }
-            UiMessage::CarouselStep(next) => {
-                // The second click of a double click on an arrow can step past the first or the last image.
-                let item = self.carousel_items(&self.store.read()).and_then(|(items, at)| {
-                    let to = if next { at + 1 } else { at.checked_sub(1)? };
-                    items.into_iter().nth(to)
-                });
-                let Some(item) = item else { return Task::none() };
-                self.leave_carousel_video();
-                let c = self.carousel.as_mut().expect("the carousel is open");
-                (c.mid, c.ai, c.resume, c.menu, c.strip) = (item.0, item.1, None, None, None);
-                self.fit_carousel_video();
-                return self.load_media();
-            }
-            UiMessage::ScrollFilmstrip(by) => return self.scroll_filmstrip(by),
-            UiMessage::CarouselMenu(open) => {
-                let at = self.cursor.get();
-                self.carousel.as_mut().expect("the carousel is open").menu = open.then_some(at);
-            }
-            UiMessage::RotateCarousel => {
-                let c = self.carousel.as_mut().expect("the carousel is open");
-                (c.turns, c.turned) = ((c.turns + 1) % 4, Some(std::time::Instant::now()));
-            }
-            UiMessage::CloseCarousel => {
-                let task = self.close_carousel_video();
-                self.carousel = None;
-                return task;
-            }
-            UiMessage::OpenMedia => {
-                if let Some(w) = &self.media_window {
-                    return window::gain_focus(w.id);
-                }
-                // Desktop's `media-viewer` window state.
-                let settings = self.saved_window_settings("media-viewer", Size::new(1000.0, 720.0));
-                let (size, (id, open)) = (settings.size, window::open(settings));
-                self.media_window = Some(MediaWindow {
-                    id,
-                    tab: 0,
-                    size,
-                    shown: MEDIA_PAGE,
-                    sent_by: 0,
-                    oldest: false,
-                    search: None,
-                    tab_at: None,
-                    menu: None,
-                    item_menu: None,
-                    select: false,
-                    picked: Vec::new(),
-                    deleting: None,
-                });
-                return Task::batch([open.map(UiMessage::WindowOpened), self.load_media()]);
-            }
-            UiMessage::MediaTab(tab) => {
-                let w = self.media_mut();
-                (w.tab_at, w.tab) = (Some((w.tab, std::time::Instant::now())), tab);
-                return self.media_reload();
-            }
-            UiMessage::MediaSentBy(n) => {
-                let w = self.media_mut();
-                (w.sent_by, w.menu) = (n, None);
-                return self.media_reload();
-            }
-            UiMessage::MediaOldest(on) => {
-                let w = self.media_mut();
-                (w.oldest, w.menu) = (on, None);
-                return self.media_reload();
-            }
-            UiMessage::MediaSearch(q) => {
-                let w = self.media_mut();
-                let open = q.is_some() && w.search.is_none();
-                w.search = q;
-                let reload = self.media_reload();
-                return if open { Task::batch([reload, operation::focus("media-search")]) } else { reload };
-            }
-            UiMessage::MediaMenu(open) => {
-                let at = self.cursor.get();
-                self.media_mut().menu = open.then_some(at);
-            }
+            UiMessage::Media(msg) => return self.media_view(msg),
             UiMessage::Modifiers(mods) => {
                 // Electron's `autoHideMenuBar`: Alt on its own shows the menu bar, and hides it again.
                 let was = std::mem::replace(&mut self.mods, mods);
@@ -5665,83 +5547,9 @@ impl BeeperGuiApp {
                     }
                 }
             }
-            UiMessage::MediaSelect(on) => {
-                let w = self.media_mut();
-                w.select = on;
-                w.picked.clear();
-            }
-            UiMessage::MediaPick(mid, k) => {
-                let w = self.media_mut();
-                w.select = true;
-                match w.picked.iter().position(|(m, i)| *m == mid && *i == k) {
-                    Some(at) => _ = w.picked.remove(at),
-                    None => w.picked.push((mid, k)),
-                }
-            }
-            UiMessage::MediaPickAll => {
-                let st = self.store.read();
-                let w = self.media_window.as_ref().expect("the Media window is open");
-                let media = self.media_messages(&st);
-                let all = media_items(&st, &media, w).into_iter().take(w.shown).map(|(i, k)| (media[i].id.clone(), k));
-                let all = all.collect();
-                drop(st);
-                self.media_mut().picked = all;
-            }
-            UiMessage::MediaSave => {
-                let w = self.media_window.as_ref().expect("the Media window is open");
-                let files = if w.tab == 1 { Vec::new() } else { w.picked.clone() };
-                return Task::batch(files.into_iter().map(|(mid, k)| self.update(UiMessage::Download(mid, Some(k)))));
-            }
-            UiMessage::MediaAskDelete(items) => {
-                let st = self.store.read();
-                let mut pairs: Vec<(String, String)> = Vec::new();
-                for (mid, _) in &items {
-                    let m = &stored(&st, mid);
-                    if deletable(&st, m) && !pairs.iter().any(|(_, x)| x == mid) {
-                        pairs.push((m.chat_id.clone(), mid.clone()));
-                    }
-                }
-                let skipped = items.iter().filter(|(mid, _)| !deletable(&st, &stored(&st, mid))).count();
-                drop(st);
-                match pairs.is_empty() {
-                    true => self.status_banner = tr("These messages can’t be deleted").into(),
-                    false => self.media_mut().deleting = Some((pairs, skipped)),
-                }
-            }
-            UiMessage::MediaDelete(go) => {
-                let (pairs, skipped) = self.media_mut().deleting.take().expect("the delete dialog is open");
-                if go {
-                    let mut st = self.store.write();
-                    for (cid, mid) in &pairs {
-                        st.redact_message(cid, mid).expect("delete message");
-                    }
-                    drop(st);
-                    self.media_mut().picked.retain(|(m, _)| pairs.iter().all(|(_, x)| x != m));
-                    if skipped > 0 {
-                        self.status_banner = trn(
-                            "Skipped %d item that can’t be deleted",
-                            "Skipped %d items that can’t be deleted",
-                            skipped,
-                            &[&skipped],
-                        );
-                    }
-                }
-            }
-            UiMessage::MediaItemMenu(item) => {
-                let at = self.cursor.get();
-                self.media_mut().item_menu = item.map(|(mid, k)| (mid, k, at));
-            }
-            UiMessage::MediaItemAct(msg) => {
-                self.media_mut().item_menu = None;
-                return self.update(*msg);
-            }
             UiMessage::CopyLink(url) => {
                 self.status_banner = tr("Copied to clipboard!").into();
                 return iced::clipboard::write(url);
-            }
-            UiMessage::MediaMore => {
-                self.media_mut().shown += MEDIA_PAGE;
-                return self.load_media();
             }
             UiMessage::GoToMessage(chat, mid) => {
                 let main = window::gain_focus(self.main_window.expect("the main window is open"));
@@ -5860,7 +5668,7 @@ impl BeeperGuiApp {
                     } else if w.deleting.is_some() {
                         w.deleting = None;
                     } else if let Some(q) = w.search.as_ref().map(|q| (!q.is_empty()).then(String::new)) {
-                        return self.update(UiMessage::MediaSearch(q));
+                        return self.update(UiMessage::Media(media_view::Msg::Search(q)));
                     } else if w.select {
                         (w.select, w.picked) = (false, Vec::new());
                     } else {
@@ -9939,7 +9747,7 @@ impl BeeperGuiApp {
             .width(68)
             .padding(Padding::ZERO.top(14.0));
         let me = st.me();
-        let media = UiMessage::OpenMedia;
+        let media = UiMessage::Media(media_view::Msg::Open);
         let me_btn = button(self.face(me.img_url.as_deref(), me.full_name.as_deref().expect("self name"), 36.0, 0.0))
             .padding(0)
             .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))

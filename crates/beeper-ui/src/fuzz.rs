@@ -86,7 +86,9 @@ fn local(m: &UiMessage) -> bool {
         | UiMessage::Logout
         | UiMessage::CopyImage(..) => false,
         UiMessage::KeyPressed(Key::Character(c), mods) => !(c == "p" && mods.command() && mods.shift()),
-        UiMessage::InWindow(_, m) | UiMessage::MessageMenu(m) | UiMessage::MediaItemAct(m) => local(m),
+        UiMessage::InWindow(_, m) | UiMessage::MessageMenu(m) | UiMessage::Media(media_view::Msg::ItemAct(m)) => {
+            local(m)
+        }
         _ => true,
     }
 }
@@ -238,7 +240,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         38 => UiMessage::ToggleSelected(chat),
         39 => UiMessage::SelectionSet(flag, rng.coin()),
         40 => UiMessage::SearchRoom(text),
-        41 => UiMessage::OpenMedia,
+        41 => UiMessage::Media(media_view::Msg::Open),
         42 => UiMessage::CloseModals,
         43 => UiMessage::ToggleAttachMenu,
         44 => UiMessage::OpenChatWindow(chat),
@@ -1518,26 +1520,26 @@ fn the_composer_pill_quotes_like_desktop() {
 #[test]
 fn media_window_menu_and_rows_like_desktop() {
     let mut app = demo_app("media-rows");
-    let _ = app.update(UiMessage::OpenMedia);
+    let _ = app.update(UiMessage::Media(media_view::Msg::Open));
     let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
     let _ = app.update(UiMessage::WindowResized(id, Size::new(1000.0, 720.0)));
     app.cursor.set(Point::new(900.0, 40.0));
-    let _ = app.update(UiMessage::MediaMenu(true));
+    let _ = app.update(UiMessage::Media(media_view::Msg::Menu(true)));
     assert_eq!(app.media_window.as_ref().unwrap().menu, Some(Point::new(900.0, 40.0)), "the menu opens at the cursor");
-    let _ = app.update(UiMessage::MediaMenu(false));
+    let _ = app.update(UiMessage::Media(media_view::Msg::Menu(false)));
     let (mid, k) = {
         let mut st = app.store.write();
         let media = app.media_messages(&st);
-        let (i, k) = crate::media_items(&st, &media, app.media_window.as_ref().unwrap())[0];
+        let (i, k) = crate::media_view::media_items(&st, &media, app.media_window.as_ref().unwrap())[0];
         let j = st.find_message(&media[i].id).expect("a stored message");
         st.update_message(j, |m| m.attachments[k].file_size = Some(2048));
         (media[i].id.clone(), k)
     };
-    let _ = app.update(UiMessage::MediaSelect(true));
-    let _ = app.update(UiMessage::MediaPick(mid, k));
+    let _ = app.update(UiMessage::Media(media_view::Msg::Select(true)));
+    let _ = app.update(UiMessage::Media(media_view::Msg::Pick(mid, k)));
     let count = format!("1 selected ({})", human_size(2048));
     assert!(simulator(app.view(id)).find(count.as_str()).is_ok(), "the selection bar counts the items");
-    let _ = app.update(UiMessage::MediaSelect(false));
+    let _ = app.update(UiMessage::Media(media_view::Msg::Select(false)));
     let img = "https://example.com/preview.png";
     {
         let mut st = app.store.write();
@@ -1545,7 +1547,7 @@ fn media_window_menu_and_rows_like_desktop() {
         let url = "https://example.com/page".into();
         st.update_message(i, |m| m.links = vec![MessageLink { url, img: Some(img.into()), ..Default::default() }]);
     }
-    let _ = app.update(UiMessage::MediaTab(1));
+    let _ = app.update(UiMessage::Media(media_view::Msg::Tab(1)));
     drop(app.view(id));
     assert!(app.wants.media.borrow().contains(img), "the row loads the preview image");
 }
@@ -1562,7 +1564,7 @@ fn image(st: &BeeperStore) -> (usize, usize) {
 #[test]
 fn media_viewer_deletes_like_desktop() {
     let mut app = demo_app("media-delete");
-    let _ = app.update(UiMessage::OpenMedia);
+    let _ = app.update(UiMessage::Media(media_view::Msg::Open));
     let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
     let (mid, ai, chat) = {
         let mut st = app.store.write();
@@ -1573,7 +1575,7 @@ fn media_viewer_deletes_like_desktop() {
         (st.messages[i].id.clone(), ai, c)
     };
     let _ = app.update(UiMessage::WindowResized(id, Size::new(1000.0, 720.0)));
-    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), ai, true));
+    let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, true)));
     let click = |app: &BeeperGuiApp| -> Vec<UiMessage> {
         let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view(id));
         sim.point_at(Point::new(898.0, 25.0));
@@ -1581,7 +1583,10 @@ fn media_viewer_deletes_like_desktop() {
         sim.into_messages().collect()
     };
     let delete = click(&app);
-    assert!(matches!(&delete[..], [UiMessage::MediaAskDelete(v)] if v[..] == [(mid.clone(), ai)]), "Delete shows");
+    assert!(
+        matches!(&delete[..], [UiMessage::Media(media_view::Msg::AskDelete(v))] if v[..] == [(mid.clone(), ai)]),
+        "Delete shows"
+    );
     let _ = app.update(delete.into_iter().next().unwrap());
     assert!(simulator(app.view(id)).find("Are you sure you want to delete this message?").is_ok());
     let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), Modifiers::empty()));
@@ -1590,7 +1595,7 @@ fn media_viewer_deletes_like_desktop() {
     app.store.write().chats[chat].messages.delete_max_age = Some(60);
     let go = click(&app);
     assert!(matches!(&go[..], [UiMessage::GoToMessage(..)]), "an old message has no Delete");
-    let _ = app.update(UiMessage::MediaAskDelete(vec![(mid, ai)]));
+    let _ = app.update(UiMessage::Media(media_view::Msg::AskDelete(vec![(mid, ai)])));
     assert_eq!(app.status_banner, "These messages can’t be deleted");
 }
 
@@ -1598,17 +1603,17 @@ fn media_viewer_deletes_like_desktop() {
 #[test]
 fn media_filmstrip_scrolls_like_desktop() {
     let mut app = demo_app("media-strip");
-    let _ = app.update(UiMessage::OpenMedia);
+    let _ = app.update(UiMessage::Media(media_view::Msg::Open));
     let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
     let size = Size::new(300.0, 720.0);
     let _ = app.update(UiMessage::WindowResized(id, size));
     let (mid, ai) = {
         let st = app.store.read();
         let media = app.media_messages(&st);
-        let items = crate::media_items(&st, &media, app.media_window.as_ref().unwrap());
+        let items = crate::media_view::media_items(&st, &media, app.media_window.as_ref().unwrap());
         (media[items[0].0].id.clone(), items[0].1)
     };
-    let _ = app.update(UiMessage::OpenCarousel(mid, ai, true));
+    let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, ai, true)));
     let wheel = {
         let mut sim = Simulator::with_size(Default::default(), size, app.view(id));
         sim.point_at(Point::new(150.0, 700.0));
@@ -1616,24 +1621,27 @@ fn media_filmstrip_scrolls_like_desktop() {
         let _ = sim.simulate([iced::Event::Mouse(mouse::Event::WheelScrolled { delta })]);
         sim.into_messages().collect::<Vec<_>>()
     };
-    assert!(matches!(&wheel[..], [UiMessage::ScrollFilmstrip(1.0)]), "the wheel scrolls the filmstrip");
-    let _ = app.update(UiMessage::ScrollFilmstrip(2.0));
+    assert!(
+        matches!(&wheel[..], [UiMessage::Media(media_view::Msg::ScrollFilmstrip(1.0))]),
+        "the wheel scrolls the filmstrip"
+    );
+    let _ = app.update(UiMessage::Media(media_view::Msg::ScrollFilmstrip(2.0)));
     assert_eq!(app.carousel.as_ref().unwrap().strip, Some(2));
-    let _ = app.update(UiMessage::CarouselStep(true));
+    let _ = app.update(UiMessage::Media(media_view::Msg::CarouselStep(true)));
     assert_eq!(app.carousel.as_ref().unwrap().strip, None, "a step centers the current item");
 }
 
 #[test]
 fn media_carousel_draws() {
     let mut app = demo_app("mediacarousel");
-    let _ = app.update(UiMessage::OpenMedia);
+    let _ = app.update(UiMessage::Media(media_view::Msg::Open));
     let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
     let (mid, ai, chat) = {
         let st = app.store.read();
         let (i, ai) = image(&st);
         (st.messages[i].id.clone(), ai, st.messages[i].chat_id.clone())
     };
-    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), ai, true));
+    let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, true)));
     drop(app.view(id));
     let _ = app.update(UiMessage::ToggleFlag(chat.clone(), ChatFlag::LowPriority));
     drop(app.view(id));
@@ -1641,12 +1649,12 @@ fn media_carousel_draws() {
     assert!(app.carousel.is_none(), "the carousel closes when its image leaves the Media window");
     let _ = app.update(UiMessage::ToggleFlag(chat.clone(), ChatFlag::LowPriority));
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
-    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), ai, false));
+    let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, false)));
     for next in [false, true] {
         let steps = app.carousel_items(&app.store.read()).expect("the chat carousel shows the image").0.len();
-        (0..=steps).for_each(|_| drop(app.update(UiMessage::CarouselStep(next))));
+        (0..=steps).for_each(|_| drop(app.update(UiMessage::Media(media_view::Msg::CarouselStep(next)))));
     }
-    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), ai, false));
+    let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, false)));
     app.store.write().delete_message(&chat, &mid).expect("a sync deletes the image");
     drop(simulator(app.view_main()));
     let _ = app.update(UiMessage::StoreChanged);
@@ -1742,7 +1750,7 @@ fn galleries_select_and_have_a_menu_like_desktop() {
     app.mods = Modifiers::empty();
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
     assert!(app.carousel.is_some(), "a tile opens the carousel");
-    let _ = app.update(UiMessage::CloseCarousel);
+    let _ = app.update(UiMessage::Media(media_view::Msg::CloseCarousel));
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Menu(ids.clone())));
     assert_eq!(app.pane.selected_msgs, ids, "a right click selects the gallery");
     let mut sim = simulator(app.view_main());
@@ -1798,8 +1806,8 @@ fn carousel_steps_through_videos_and_files_like_desktop() {
         }
     }
     let _ = app.update(UiMessage::SelectChat(note.into()));
-    let _ = app.update(UiMessage::OpenCarousel("$item0".into(), 0, false));
-    let _ = app.update(UiMessage::CarouselStep(true));
+    let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel("$item0".into(), 0, false)));
+    let _ = app.update(UiMessage::Media(media_view::Msg::CarouselStep(true)));
     let msgs: Vec<UiMessage> = {
         let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 700.0), app.view_main());
         sim.point_at(Point::new(500.0, 375.0));
@@ -1808,12 +1816,12 @@ fn carousel_steps_through_videos_and_files_like_desktop() {
     };
     let download = |m: &UiMessage| matches!(m, UiMessage::Download(m, Some(0)) if m == "$item1");
     assert!(msgs.iter().any(download), "the link downloads the file");
-    let _ = app.update(UiMessage::CarouselStep(true));
+    let _ = app.update(UiMessage::Media(media_view::Msg::CarouselStep(true)));
     assert_eq!(app.carousel.as_ref().unwrap().mid, "$item3", "the carousel skips the audio");
     let _ =
         app.update(UiMessage::Video(video::Msg::Play("$item3".into(), "https://example.com/clip.mp4".into(), 2, 2)));
     drop(app.view_main());
-    let _ = app.update(UiMessage::CarouselStep(false));
+    let _ = app.update(UiMessage::Media(media_view::Msg::CarouselStep(false)));
     assert!(!app.video.as_ref().unwrap().playing(), "a step away pauses the video");
 }
 
@@ -1852,7 +1860,7 @@ fn inline_videos_open_the_carousel_like_desktop() {
     );
     let _ = app.update(UiMessage::Video(open.clone()));
     assert_eq!(app.carousel.as_ref().unwrap().mid, "$clip");
-    let _ = app.update(UiMessage::CloseCarousel);
+    let _ = app.update(UiMessage::Media(media_view::Msg::CloseCarousel));
     assert!(app.video.as_ref().is_some_and(|v| v.url == clip && v.playing()), "the inline video plays on close");
     let _ = app.update(UiMessage::Video(open));
     assert!(app.video.as_ref().unwrap().playing(), "the video goes on in the carousel");
@@ -1877,7 +1885,7 @@ fn inline_videos_open_the_carousel_like_desktop() {
     let speed = sim.into_messages().any(|m| matches!(m, UiMessage::Video(video::Msg::Rate(1.25))));
     assert!(speed, "the speed button goes to the next speed");
     // A video that cannot load shows Desktop's error card with a Download button in place of the video.
-    let _ = app.update(UiMessage::CloseCarousel);
+    let _ = app.update(UiMessage::Media(media_view::Msg::CloseCarousel));
     let _ = app.update(UiMessage::Video(video::Msg::Play("$clip".into(), clip.into(), 320, 180)));
     let _ = app.update(UiMessage::Video(video::Msg::Loaded(clip.into(), Err("bad file".into()))));
     let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 700.0), app.view_main());
@@ -1900,7 +1908,7 @@ fn carousel_zooms_like_desktop() {
     let frames = vec![(image::Handle::from_rgba(200, 100, vec![255; 200 * 100 * 4]), 0)];
     app.media.insert(url, Some(Ok(frames)));
     let _ = app.update(UiMessage::SelectChat(chat));
-    let _ = app.update(UiMessage::OpenCarousel(mid, 0, false));
+    let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, 0, false)));
     let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view_main());
     let (middle, beside) = (Point::new(500.0, 389.0), Point::new(650.0, 389.0));
     let click = |sim: &mut Simulator<UiMessage>, at: Point| {
@@ -1924,7 +1932,7 @@ fn carousel_zooms_like_desktop() {
     settle(&mut sim);
     click(&mut sim, beside);
     // Only the click on the free space and the click beside the image at scale 1.22 close the carousel.
-    let closes = sim.into_messages().filter(|m| matches!(m, UiMessage::CloseCarousel)).count();
+    let closes = sim.into_messages().filter(|m| matches!(m, UiMessage::Media(media_view::Msg::CloseCarousel))).count();
     assert_eq!(closes, 2, "the zoomed image covers the point beside it");
 }
 
@@ -1940,7 +1948,7 @@ fn carousel_menu_like_desktop() {
     };
     let _ = app.update(UiMessage::SelectChat(chat));
     app.pane.size = Size::new(1000.0, 720.0);
-    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), 0, false));
+    let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), 0, false)));
     let at = Point::new(500.0, 389.0);
     let right = {
         let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view_main());
@@ -1948,9 +1956,12 @@ fn carousel_menu_like_desktop() {
         let _ = sim.simulate([mouse::Event::ButtonPressed(Button::Right)].map(iced::Event::Mouse));
         sim.into_messages().collect::<Vec<_>>()
     };
-    assert!(matches!(&right[..], [UiMessage::CarouselMenu(true)]), "a right click opens the menu");
+    assert!(
+        matches!(&right[..], [UiMessage::Media(media_view::Msg::CarouselMenu(true))]),
+        "a right click opens the menu"
+    );
     app.cursor.set(at);
-    let _ = app.update(UiMessage::CarouselMenu(true));
+    let _ = app.update(UiMessage::Media(media_view::Msg::CarouselMenu(true)));
     let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view_main());
     for label in ["Download", "Copy", "Reply…", "React…", "Forward…"] {
         assert!(sim.find(label).is_ok(), "{label} shows");
@@ -1959,14 +1970,17 @@ fn carousel_menu_like_desktop() {
     sim.point_at(Point::new(700.0, 600.0));
     let _ = sim.simulate(iced_test::simulator::click());
     let msgs: Vec<UiMessage> = sim.into_messages().collect();
-    let forward = |m: &UiMessage| matches!(m, UiMessage::Commands(c) if matches!(&c[..], [UiMessage::CarouselMenu(false), UiMessage::Commands(c)] if matches!(&c[..], [UiMessage::CloseCarousel, UiMessage::Forward(forward::Msg::Open(f))] if f[..] == [mid.clone()])));
-    assert!(matches!(&msgs[..], [f, UiMessage::CarouselMenu(false)] if forward(f)), "Forward… closes the carousel");
+    let forward = |m: &UiMessage| matches!(m, UiMessage::Commands(c) if matches!(&c[..], [UiMessage::Media(media_view::Msg::CarouselMenu(false)), UiMessage::Commands(c)] if matches!(&c[..], [UiMessage::Media(media_view::Msg::CloseCarousel), UiMessage::Forward(forward::Msg::Open(f))] if f[..] == [mid.clone()])));
+    assert!(
+        matches!(&msgs[..], [f, UiMessage::Media(media_view::Msg::CarouselMenu(false))] if forward(f)),
+        "Forward… closes the carousel"
+    );
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Escape), Modifiers::empty()));
     assert!(app.carousel.as_ref().is_some_and(|c| c.menu.is_none()), "Escape closes only the menu");
-    let _ = app.update(UiMessage::OpenMedia);
+    let _ = app.update(UiMessage::Media(media_view::Msg::Open));
     let id = app.media_window.as_ref().unwrap().id;
-    let _ = app.update(UiMessage::OpenCarousel(mid, 0, true));
-    let _ = app.update(UiMessage::CarouselMenu(true));
+    let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, 0, true)));
+    let _ = app.update(UiMessage::Media(media_view::Msg::CarouselMenu(true)));
     let mut sim = simulator(app.view(id));
     assert!(sim.find("Go to Message").is_ok() && sim.find("Reply…").is_err(), "the Media window menu");
 }
@@ -1992,7 +2006,7 @@ fn carousel_react_and_reply_like_desktop() {
     };
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
     app.pane.size = Size::new(1000.0, 720.0);
-    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), 0, false));
+    let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), 0, false)));
     let click = |app: &BeeperGuiApp, at: Point| -> Vec<UiMessage> {
         let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view_main());
         sim.point_at(at);
@@ -2006,7 +2020,7 @@ fn carousel_react_and_reply_like_desktop() {
     );
     let reply = click(&app, Point::new(898.0, 25.0));
     assert!(
-        matches!(&reply[..], [UiMessage::Commands(c)] if matches!(&c[..], [UiMessage::CloseCarousel, UiMessage::StartReply(m)] if *m == mid)),
+        matches!(&reply[..], [UiMessage::Commands(c)] if matches!(&c[..], [UiMessage::Media(media_view::Msg::CloseCarousel), UiMessage::StartReply(m)] if *m == mid)),
         "Reply closes the carousel and starts a reply"
     );
     let toggle = {
@@ -2031,7 +2045,7 @@ fn carousel_tooltips_like_desktop() {
         (m.chat_id.clone(), m.id.clone())
     };
     let _ = app.update(UiMessage::SelectChat(chat));
-    let _ = app.update(UiMessage::OpenCarousel(mid, 0, false));
+    let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, 0, false)));
     let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view_main());
     let close = Point::new(982.0, 25.0);
     sim.point_at(close);
@@ -6780,7 +6794,7 @@ fn main_window_keeps_its_state_like_desktop() {
     assert!(matches!(s.position, window::Position::Specific(p) if p == Point::new(40.0, 30.0)));
     // Desktop's Media window keeps its state under `media-viewer`.
     write_window_state(&path, "media-viewer", false, Size::new(800.0, 600.0), Some(Point::new(10.0, 20.0)));
-    let _ = app.update(UiMessage::OpenMedia);
+    let _ = app.update(UiMessage::Media(media_view::Msg::Open));
     assert_eq!(app.media_window.as_ref().unwrap().size, Size::new(800.0, 600.0), "the Media window opens at its size");
     assert_eq!(app.main_window_settings().size, Size::new(900.0, 700.0), "the main window keeps its state");
     // Desktop's chat windows keep the size of the last one under `pop-out-thread`.

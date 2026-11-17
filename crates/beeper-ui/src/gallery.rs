@@ -2,6 +2,7 @@
 //! show as one gallery of up to four tiles.
 use crate::forward;
 use crate::i18n::{tr, trx};
+use crate::media_view;
 use crate::style::{bordered_box, fill_box, semi, shadow_box, Palette};
 use crate::{deletable, iso_millis, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, UiMessage};
 use crate::{MENU_ITEM, MESSAGE_MENU_W};
@@ -200,7 +201,7 @@ impl BeeperGuiApp {
             Msg::Tile(mid) => {
                 return match self.mods.command() || self.mods.shift() {
                     true => self.update(UiMessage::ClickMessage(mid)),
-                    false => self.update(UiMessage::OpenCarousel(mid, 0, false)),
+                    false => self.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, 0, false))),
                 };
             }
             // A right click selects only the gallery, unless all of it is selected.

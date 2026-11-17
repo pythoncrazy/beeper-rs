@@ -1,6 +1,7 @@
 //! Desktop's inline video player (`Video/index.tsx`): frames streamed from ffmpeg, the sound track, and the hover
 //! controls.
 use crate::i18n::tr;
+use crate::media_view;
 use crate::style::{btn_style, fill_box, shadow_box, Bare, CLEAR};
 use crate::{ic, icon, menu_item, menu_rule, sound, tinted, BeeperGuiApp, El, UiMessage, MENU_ITEM};
 use iced::gradient::Linear;
@@ -297,7 +298,7 @@ impl BeeperGuiApp {
             // Desktop pauses the inline video and opens the carousel, where the video goes on at the same time, play
             // state and speed.
             Msg::Open(mid, ai, w, h) => {
-                let task = self.update(UiMessage::OpenCarousel(mid, ai, false));
+                let task = self.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, ai, false)));
                 self.carousel.as_mut().expect("the carousel is open").resume = Some((w, h));
                 return task;
             }

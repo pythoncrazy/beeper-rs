@@ -4,6 +4,7 @@
 use crate::blocking;
 use crate::forward;
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
+use crate::media_view;
 use crate::members;
 use crate::reminders::reminder_day;
 use crate::style::{
@@ -1317,7 +1318,7 @@ impl BeeperGuiApp {
                         } else if is_video && a.is_gif != Some(true) {
                             (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
                         } else {
-                            (base, UiMessage::OpenCarousel(m.id.clone(), ai, false))
+                            (base, UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)))
                         };
                     button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press).into()
                 }
