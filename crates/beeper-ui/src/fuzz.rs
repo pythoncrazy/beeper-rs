@@ -5308,6 +5308,12 @@ fn disconnected_banners_like_desktop() {
     };
     let banner = format!("{name} disconnected");
     assert!(simulator(app.view_sidebar()).find(banner.as_str()).is_ok(), "the inbox shows it");
+    // `.app-status > div`: 8 px below the header, 40 px tall, its text in the middle.
+    let text = {
+        let st = app.store.read();
+        simulator(app.view_network_status(&st).expect("a banner")).find(banner.as_str()).expect("the text").bounds()
+    };
+    assert!((text.center_y() - 28.0).abs() < 1.0, "the text is centered in the banner: {text:?}");
     let _ = app.update(UiMessage::Accounts(accounts::Msg::DismissError(account.clone())));
     assert!(simulator(app.view_sidebar()).find(banner.as_str()).is_err(), "dismissed for the session");
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some(account))));
@@ -9076,4 +9082,29 @@ fn add_custom_emoji_like_desktop() {
     assert!(menu(&app, &mid).find("Add :mxc://x/b: to Custom Emoji").is_err());
     let _ = app.update(UiMessage::Message(EmoticonMenu(mid.clone(), None, "mxc://x/c".into())));
     assert!(menu(&app, &mid).find("Copy with Timestamp").is_err() && app.pane.menu_emoticon.is_none());
+}
+
+/// Desktop's `ZGe`: the chat row of a message that failed to send shows the red `ErroredIcon` in place of its sent
+/// icon.
+#[test]
+fn failed_sends_show_their_icon_in_the_chat_list_like_desktop() {
+    let app = demo_app("chat-row-errored");
+    let red = |app: &BeeperGuiApp| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(320.0, 800.0), app.view_sidebar());
+        let shot = custom_emoji_pixels(&mut sim);
+        shot.pixels().filter(|px| px[0] > 220 && (40..110).contains(&px[1]) && (30..100).contains(&px[2])).count()
+    };
+    let unpinned = |c: &&&Chat| !c.flag(ChatFlag::Pinned) && c.preview.as_ref().is_some_and(|m| m.reactions.is_empty());
+    let idx = app.visible_chats(&app.store.read()).iter().find(unpinned).map(|c| c.id.clone()).expect("a chat");
+    let idx = app.store.read().chat_idx(&idx);
+    app.store.write().update_chat(idx, |c| {
+        let m = c.preview.as_mut().expect("a preview");
+        (m.is_sender, m.send_error) = (Some(true), None);
+    });
+    let before = red(&app);
+    app.store.write().update_chat(idx, |c| {
+        let m = c.preview.as_mut().expect("a preview");
+        m.send_error = Some(beeper_core::models::SendError { message: Some("not connected".into()), retrying: false });
+    });
+    assert!(red(&app) > before + 20, "the row shows the red icon");
 }

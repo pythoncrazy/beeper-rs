@@ -1397,6 +1397,13 @@ svg_static!(NEW_LABEL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 svg_static!(DRAFT_RING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30"><rect x=".5" y=".5" width="29" height="29" rx="7.5" fill="none" stroke="#000" stroke-dasharray="3 2"/></svg>"##);
 svg_static!(DASHED_RING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="1" y="1" width="30" height="30" rx="7" fill="none" stroke="#000" stroke-width="2" stroke-dasharray="6 3" stroke-dashoffset="8.5"/></svg>"##);
 
+/// Desktop's `ChatErrorIcon`: the exclamation mark in a ring of a message that failed to send.
+static ERRORED: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><path fill="#000" d="M5.9962 9.41198C6.17045 9.41198 6.31771 9.35304 6.438 9.23518C6.55828 9.1173 6.61842 8.97124 6.61842 8.797C6.61842 8.62275 6.55949 8.47549 6.44162 8.3552C6.32375 8.23492 6.17769 8.17478 6.00345 8.17478C5.8292 8.17478 5.68193 8.23371 5.56165 8.35158C5.44137 8.46946 5.38123 8.61551 5.38123 8.78975C5.38123 8.964 5.44016 9.11127 5.55802 9.23155C5.6759 9.35183 5.82196 9.41198 5.9962 9.41198ZM5.38123 6.93758H6.61842V2.49709H5.38123V6.93758Z"/><circle cx="6" cy="6" r="5.375" stroke="#000" fill="none" stroke-width="1.25"/></svg>"##[..])
+});
+/// Desktop's `--error-color` of the errored icon of a chat row.
+const ERROR_COLOR: Color = Color::from_rgb8(0xf4, 0x43, 0x36);
+
 static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
     [
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none" stroke="#000"><circle cx="6" cy="6" r="5.4" stroke-width="1.2" stroke-dasharray="2.4 1.84" transform="rotate(-79 6 6)"/><path d="M3.4 6.1 5.2 7.9 8.6 4.4" stroke-width="1.1"/></svg>"##[..],
@@ -6577,13 +6584,16 @@ impl BeeperGuiApp {
                     ),
                 };
                 let icon = svg(brand_svg(brand_key(&b.account_id))).width(22).height(22);
-                let line = row![icon, text].push(end).spacing(8).align_y(Center);
+                // `.network-status`: the 22 px icon with a 9 px margin makes the row 40 px, its items centered.
+                let line = row![icon, text].push(end).spacing(8).align_y(Center).height(Fill);
                 let msg = again.unwrap_or(UiMessage::Accounts(accounts::Msg::OpenSettings(b.account_id.clone())));
                 let banner = button(line).padding([0, 8]).height(40).style(btn_style([p.hover; 3], [p.fg; 3], 12.0));
-                container(banner.on_press(msg)).padding(Padding::new(8.0).top(0.0).left(0.0)).into()
+                banner.on_press(msg).into()
             })
             .collect();
-        (!banners.is_empty()).then(|| Column::with_children(banners).into())
+        // `.app-status > div { margin: 8px 0 }`, whose margins collapse between banners, and the 8 px on the right.
+        (!banners.is_empty())
+            .then(|| Column::with_children(banners).spacing(8).padding(Padding::new(8.0).left(0.0)).into())
     }
 
     /// Desktop's message request box (`T2t`) under the messages, with its Block, Decline and Accept buttons.
