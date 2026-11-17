@@ -1629,7 +1629,7 @@ fn space_name(st: &BeeperStore, id: &str) -> String {
         _ => match (rail_label(st, id), network_space(st, id)) {
             (Some(l), _) if l.name.is_empty() => trx("Label", "fallback label space name").into(),
             (Some(l), _) => l.name.clone(),
-            (None, Some(n)) => format!("{} ({})", n.name, network_label(&n.account_id)),
+            (None, Some(n)) => format!("{} ({})", n.name, account_display_name(st, &n.account_id, &rail_accounts(st))),
             // Desktop's `accountDisplayName`: "<user> · <network>" when the bridge has more than one account.
             (None, None) => account_display_name(st, id, &rail_accounts(st)),
         },
@@ -2408,8 +2408,8 @@ impl Pane {
     }
 }
 
-/// The tab, the filters and the account of a chat list.
-type ListKey = (InboxTab, u8, Option<String>);
+/// The tab, the filters, the space and the space view account of a chat list.
+type ListKey = (InboxTab, u8, Option<String>, Option<String>);
 
 /// Values that views compute from the store, kept until the next write to the store.
 #[derive(Default)]
@@ -2475,6 +2475,9 @@ pub struct BeeperGuiApp {
     pub pal: Palette,
     pub active_tab: InboxTab,
     pub selected_account_filter: Option<String>,
+    /// Desktop's `spaceViewAccountFilter`: the account or network space that the Archive, Low Priority or Requests
+    /// view shows the chats of, from its filter menu.
+    pub space_view_account: Option<String>,
     pub hotkey_query: String,
     pub hotkey_rec: Option<HotkeyRec>,
     pub profile: profile::ProfileForm,
@@ -2753,6 +2756,7 @@ impl BeeperGuiApp {
             zoom_drag: None,
             active_tab: InboxTab::AllChats,
             selected_account_filter: None,
+            space_view_account: None,
             hotkey_query: String::new(),
             hotkey_rec: None,
             profile: profile::ProfileForm::default(),
@@ -3243,9 +3247,13 @@ impl BeeperGuiApp {
         self.chats_with(st, self.filters)
     }
 
+    fn list_key(&self, filters: u8) -> ListKey {
+        (self.active_tab, filters, self.selected_account_filter.clone(), self.space_view_account.clone())
+    }
+
     /// The chats of the list with `filters`, computed once for each store generation.
     fn chats_with<'a>(&self, st: &'a BeeperStore, filters: u8) -> Vec<&'a Chat> {
-        let key = (self.active_tab, filters, self.selected_account_filter.clone());
+        let key = self.list_key(filters);
         let memo = self.memo();
         let known = memo.and_then(|m| m.lists.borrow().get(&key).cloned());
         let order = known.unwrap_or_else(|| {
@@ -3264,7 +3272,7 @@ impl BeeperGuiApp {
     fn row_keys(&self, rest: &[&Chat]) -> Rc<[u64]> {
         let make = || rest.iter().map(|c| vlist::key(&c.id)).collect();
         let Some(memo) = self.memo() else { return make() };
-        let key = (self.active_tab, self.filters, self.selected_account_filter.clone());
+        let key = self.list_key(self.filters);
         let keys = memo.keys.borrow_mut().entry(key).or_insert_with(make).clone();
         assert_eq!(keys.len(), rest.len(), "the memo has the keys of the same rows");
         keys
@@ -3325,6 +3333,11 @@ impl BeeperGuiApp {
         let shown = |i: usize| on(i) || !filter_hit(i, c, st);
         c.merged_into_chat_id.is_none()
             && self.selected_account_filter.as_ref().is_none_or(|a| in_rail_entry(st, a, c))
+            // Desktop's `inSpaceViewAccountFilter`: an account takes in the chats of its network spaces too.
+            && self.space_view_account.as_ref().is_none_or(|a| match network_space(st, a) {
+                Some(_) => in_rail_entry(st, a, c),
+                None => &c.account_id == a,
+            })
             && match self.active_tab {
                 InboxTab::AllChats => {
                     let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
@@ -4128,6 +4141,7 @@ impl BeeperGuiApp {
                     self.refresh_theme_and_tray();
                 } else if self.active_tab != InboxTab::AllChats {
                     self.active_tab = InboxTab::AllChats;
+                    self.space_view_account = None;
                 } else {
                     self.status_banner.clear();
                 }

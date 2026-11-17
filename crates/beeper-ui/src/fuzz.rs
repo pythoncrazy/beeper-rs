@@ -5032,6 +5032,60 @@ fn hidden_space_bar_floats_like_desktop() {
 }
 
 #[test]
+fn space_view_account_filter_like_desktop() {
+    let mut app = demo_app("space-view-account");
+    let pick = |account: &str| {
+        let st = app.store.read();
+        let free = |c: &&Chat| c.id != NOTE_CHAT_ID && c.is_pinned != Some(true) && c.account_id == account;
+        st.chats.iter().find(free).expect("a chat of the account").id.clone()
+    };
+    let (signal, whatsapp) = (pick("acc_signal"), pick("acc_whatsapp"));
+    for id in [&signal, &whatsapp] {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(id).expect("a chat");
+        st.update_chat(idx, |c| (c.is_request, c.flags) = (Some(true), c.flags | CHAT_REQUEST));
+    }
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Requests)));
+    {
+        // Requests lists the accounts whose bridge takes requests.
+        let mut sim = simulator(app.view_filter_menu());
+        assert!(sim.find("Signal").is_ok() && sim.find("WhatsApp").is_err() && sim.find("Low Priority").is_err());
+    }
+    let ids =
+        |app: &BeeperGuiApp| app.visible_chats(&app.store.read()).iter().map(|c| c.id.clone()).collect::<Vec<_>>();
+    assert!(ids(&app).contains(&signal) && ids(&app).contains(&whatsapp));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::PickAccount("acc_signal".into())));
+    assert_eq!(ids(&app), std::slice::from_ref(&signal), "the account shows only its requests");
+    {
+        let mut sim = simulator(app.view_sidebar());
+        assert!(sim.find("Signal").is_ok(), "the header names the account under the space");
+    }
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::PickAccount("acc_signal".into())));
+    assert!(app.space_view_account.is_none(), "picking the account again shows every account");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::PickAccount("acc_signal".into())));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::FilterButton));
+    assert!(app.space_view_account.is_none() && app.filters == 0, "the active filter button clears the filters");
+    // Archive lists every account, and a space change drops the account.
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Archived)));
+    {
+        let mut sim = simulator(app.view_filter_menu());
+        assert!(sim.find("Signal").is_ok() && sim.find("WhatsApp").is_ok() && sim.find("Low Priority").is_ok());
+    }
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::PickAccount("acc_whatsapp".into())));
+    assert!(app.visible_chats(&app.store.read()).iter().all(|c| c.account_id == "acc_whatsapp"));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::LowPriority)));
+    assert!(app.space_view_account.is_none(), "another space drops the account");
+    // An account space without requests has no Requests filter in its menu.
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("acc_whatsapp".into()))));
+    {
+        let mut sim = simulator(app.view_filter_menu());
+        assert!(sim.find("Requests").is_err() && sim.find("Archived").is_ok() && sim.find("Signal").is_err());
+    }
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("acc_signal".into()))));
+    assert!(simulator(app.view_filter_menu()).find("Requests").is_ok());
+}
+
+#[test]
 fn request_rows_like_desktop() {
     let mut app = demo_app("request-rows");
     let (dm, group) = {
