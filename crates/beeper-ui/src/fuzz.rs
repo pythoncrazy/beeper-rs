@@ -8363,9 +8363,21 @@ fn sidebar_slides_like_desktop() {
     drop(simulator(app.view_main()));
     std::thread::sleep(std::time::Duration::from_millis(220));
     assert_eq!(app.sidebar_progress(), None, "and is gone after 0.2 s");
+    // Desktop's "Show Sidebar" button at the left of the thread header while the sidebar is hidden.
+    let show = |app: &BeeperGuiApp| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+        sim.point_at(Point::new(30.0, 22.0));
+        let press = iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let release = iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
+        let _ = sim.simulate([press, release]);
+        sim.into_messages().any(|m| matches!(m, UiMessage::RunHotkey("Toggle Sidebar")))
+    };
+    assert!(show(&app), "the header shows the sidebar again");
     let _ = app.update(UiMessage::RunHotkey("Toggle Sidebar"));
     assert!(!app.sidebar_hidden && app.sidebar_progress().is_some());
     drop(simulator(app.view_main()));
+    std::thread::sleep(std::time::Duration::from_millis(220));
+    assert!(!show(&app), "not while the sidebar shows");
 }
 
 /// Desktop's `Wfe` contact card of a `.vcf` attachment in the timeline, with the Call and Copy menu of a number.
