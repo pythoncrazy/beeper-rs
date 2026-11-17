@@ -257,7 +257,9 @@ impl BeeperGuiApp {
         });
         let toasts: Vec<El> = older.chain(newest).collect();
         (!toasts.is_empty()).then(|| {
-            let list = mouse_area(Column::with_children(toasts).spacing(8))
+            // Desktop's `toasts-list`: `sidebarWidth - accountSwitcherWidth` wide, at least 300 px, inside 8 px sides.
+            let width = self.sidebar_width.max(300.0) - 16.0;
+            let list = mouse_area(Column::with_children(toasts).spacing(8).max_width(width))
                 .on_enter(UiMessage::Toast(toasts::Msg::Hover(true)))
                 .on_exit(UiMessage::Toast(toasts::Msg::Hover(false)));
             container(list).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
