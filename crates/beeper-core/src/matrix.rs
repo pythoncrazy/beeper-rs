@@ -551,7 +551,9 @@ fn content(kind: &str, c: &Value) -> Option<(Option<String>, Vec<Attachment>, &'
         ("m.room.message", Some("m.file")) => Some((caption(c), vec![attachment(c, "unknown")], "FILE")),
         ("m.room.message", Some("m.location")) => Some((body(c), Vec::new(), "LOCATION")),
         ("m.room.message", Some("m.notice")) => Some((body(c), Vec::new(), "NOTICE")),
-        ("m.room.message", _) => Some((body(c), Vec::new(), "TEXT")),
+        // Desktop's `wi`: an emote is plain text, and another msgtype (a `com.beeper.gallery`, a `com.beeper.command`,
+        // an `m.key.verification.request`) is a `HIDDEN` row.
+        ("m.room.message", Some("m.text" | "m.emote")) => Some((body(c), Vec::new(), "TEXT")),
         _ => None,
     }
 }
@@ -4473,6 +4475,23 @@ mod tests {
         assert_eq!(inbox_done(None, 5), json!({}), "Desktop unarchives with an empty object");
         assert_eq!(inbox_done(Some(-3), 5), json!({ "at_ts": 5, "updated_ts": 5, "at_order": -3 }));
         assert!([-5, 0, 7, -9_007_199_254_740_991].iter().all(|&o| order_of(&sort_key(o)) == o));
+    }
+
+    /// Desktop's `wi`: an emote is text, and a gallery, a command or a verification request is not shown as text.
+    #[tokio::test]
+    async fn msgtypes_like_desktop() {
+        let event = |id: &str, kind: &str| stub_event(id, "m.room.message", json!({ "msgtype": kind, "body": id }));
+        let kinds = [("$t", "m.text"), ("$e", "m.emote"), ("$g", "com.beeper.gallery"), ("$c", "com.beeper.command")];
+        let mut events: Vec<Value> = kinds.iter().map(|(id, kind)| event(id, kind)).collect();
+        events.push(event("$v", "m.key.verification.request"));
+        let store = stub_history("msgtypes", events, ("!other:x", Vec::new())).await;
+        sync_stub_room(&store, "!room:x").await;
+        let st = store.read();
+        let kind = |id: &str| {
+            st.messages.iter().find(|m| m.id == id).and_then(|m| m.message_type.clone()).filter(|t| t != "HIDDEN")
+        };
+        assert_eq!((kind("$t").as_deref(), kind("$e").as_deref()), (Some("TEXT"), Some("TEXT")));
+        assert!(["$g", "$c", "$v"].iter().all(|id| kind(id).is_none()), "no text rows for the other msgtypes");
     }
 
     /// Other clients send events without the fields that Desktop expects, and Desktop shows them as well as it can.
