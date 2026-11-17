@@ -392,7 +392,7 @@ impl BeeperGuiApp {
     /// Desktop's `pre-verification` stage: reads what encrypted messaging needs once Matrix is connected.
     pub(crate) fn check_e2ee(&mut self) -> Task<UiMessage> {
         // The screens of encrypted messaging have no keyboard stops, so the focus of the sign-in screens ends.
-        (self.login.busy, self.login.focus) = (true, None);
+        (self.login.busy, self.login.focus) = (true, Default::default());
         Task::perform(beeper_core::matrix::e2ee_setup(self.store.clone()), |r| LoginMsg::E2ee(r).into())
     }
 
@@ -451,21 +451,24 @@ impl BeeperGuiApp {
         // The sign-in screens wait for the result of their Matrix call, for example the check of encrypted messaging.
         let sign_in_done = self.login.signing_in() && !self.login.busy;
         let checking = sign_in_done || matches!(screen, Screen::Verify | Screen::RecoveryKey) || confirmed;
-        self.login.screen = match (checking, screen, verified, waiting) {
-            (true, Screen::Verify | Screen::RecoveryKey, false, _) => return Task::none(),
+        match (checking, screen, verified, waiting) {
+            (true, Screen::Verify | Screen::RecoveryKey, false, _) => Task::none(),
             (true, _, _, true) => {
                 (self.login.screen, self.login.late) = (Screen::Syncing, false);
                 let late = async { tokio::time::sleep(std::time::Duration::from_secs(60)).await };
-                return Task::perform(late, |()| LoginMsg::KeysLate.into());
+                Task::perform(late, |()| LoginMsg::KeysLate.into())
             }
             (true, _, true, false) | (false, Screen::Syncing, true, false) if connected => {
                 self.login = Login::default();
-                return self.enter_app();
+                self.enter_app(beeper_core::store::NOTE_CHAT_ID)
             }
-            (true, _, _, false) | (false, Screen::Syncing, _, false) => Screen::Accounts,
-            _ => return Task::none(),
-        };
-        Task::none()
+            // Desktop's sign-in window becomes resizable on Connect Chat Accounts.
+            (true, _, _, false) | (false, Screen::Syncing, _, false) => {
+                self.login.screen = Screen::Accounts;
+                window::set_resizable(self.login_window.expect("an open sign-in window, checked above"), true)
+            }
+            _ => Task::none(),
+        }
     }
 
     /// Desktop's `AwaitVerification`: the request to the other devices, then their QR code or their emojis.
@@ -984,11 +987,15 @@ mod tests {
         let mut app = crate::fuzz::demo_app("verify-onboarding");
         app.login_window = Some(window::Id::unique());
         app.store.write().beeper_state.verified = false;
-        (app.login.screen, app.login.focus) = (Screen::Code, Some(3));
+        app.login.screen = Screen::Code;
+        app.login.focus.set(Some(crate::login::Stop::Resend));
         let _ = app.check_e2ee();
         app.login.screen = Screen::RecoveryKey;
         let _ = app.login_text(" ");
-        assert!(app.login.focus.is_none(), "the keys of the encryption screens find no stale stop of the sign-in");
+        assert!(
+            app.login.focus.get().is_none(),
+            "the keys of the encryption screens find no stale stop of the sign-in"
+        );
         let phone = DeviceInfo {
             id: "PHONE".into(),
             name: "Pixel".into(),
@@ -1028,7 +1035,7 @@ mod tests {
         app.store.write().beeper_state.verified = true;
         let _ = app.update(UiMessage::StoreChanged);
         assert_eq!(app.login.screen, Screen::Accounts, "a verified device goes on to the accounts");
-        shows(&app, &["WhatsApp", "Discord", "Bluesky", "10 free accounts remaining."]);
+        shows(&app, &["WhatsApp", "Discord", "GroupMe", "10 free accounts remaining."]);
         assert!(simulator(app.view_login()).find("Continue").is_err(), "Continue needs a connected chat account");
         let _ = app.update(LoginMsg::Query("sig".into()).into());
         shows(&app, &["Signal"]);

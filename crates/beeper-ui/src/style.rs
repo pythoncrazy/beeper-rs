@@ -460,7 +460,7 @@ macro_rules! brands {
     };
 }
 
-const BRANDS: [(&str, &str, &str); 21] = brands!(
+const BRANDS: [(&str, &str, &str); 26] = brands!(
     "whatsapp",
     "twitter",
     "telegram",
@@ -477,8 +477,13 @@ const BRANDS: [(&str, &str, &str); 21] = brands!(
     "tumblr",
     "viber",
     "snapchat",
+    "groupme",
     "wechat",
+    "reddit",
+    "chatgpt-dots",
     "imessage",
+    "grokbot",
+    "muse",
     "bluesky",
     "hungryserv",
     // Desktop's `fP`, the brand of a merged chat.
@@ -958,6 +963,9 @@ palette! {
     main_muted: Color = hexa(0x0d4ffb, 0.14), hexa(0x0d4ffb, 0.26);
     /// `--button-secondary-main-text`.
     main_text: Color = hex(0x0d4ffb), hex(0x638efc);
+    /// `--app-focus-ring`, which is `--semantic-colors-bg-fill-main`: the `:focus-visible` outline of Desktop's
+    /// `Button`, `Toggle` and `Checkbox`.
+    focus_ring: Color = hex(0x0d4ffb), hex(0x0d4ffb);
     /// `--appearance-color-bg-secondary`: the fill of Desktop's action buttons.
     bg_secondary: Color = hex(0xeaebf0), hex(0x1c1d1e);
     /// `--appearance-color-border-secondary`.
@@ -1137,7 +1145,8 @@ mod tests {
 
     #[test]
     fn palette_matches_desktop_tokens() {
-        let rows: [(&str, Token, Color, Color); 9] = [
+        let rows: [(&str, Token, Color, Color); 10] = [
+            ("--app-focus-ring", |p| p.focus_ring, hex(0x0d4ffb), hex(0x0d4ffb)),
             ("--left-pane-bg", |p| p.window, hex(0xeaebf0), hex(0x1c1d1e)),
             ("--color-primary", |p| p.accent, hex(0x0d4ffb), hex(0x2561fb)),
             ("--color-secondary-container", |p| p.received, hex(0xefeff0), hex(0x232326)),

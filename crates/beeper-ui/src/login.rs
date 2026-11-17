@@ -1,8 +1,9 @@
 use crate::accounts;
+use crate::focus::Focus;
 use crate::i18n::{tr, trx, trxf};
 use crate::style::{
     bold, bordered_box, btn_style, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi, shadow_box,
-    txt, Palette, CLEAR,
+    txt, Bare, Palette, CLEAR,
 };
 use crate::verify::Brand;
 use crate::{BeeperGuiApp, El, UiMessage};
@@ -33,11 +34,21 @@ pub(crate) const SIZE: Size = Size::new(330.0, 620.0);
 const EMAIL_INPUT: &str = "login-email";
 const CODE_INPUT: &str = "login-code";
 const USERNAME_INPUT: &str = "login-username";
+const PASSWORD_INPUT: &str = "login-password";
 const TERMS_URL: &str = "https://www.beeper.com/terms-onboarding";
 const PRIVACY_URL: &str = "https://www.beeper.com/privacy";
 /// Desktop's `--color-on-error-container`: the error toast.
 const ERROR_RED: Color = Color::from_rgb8(220, 54, 46);
+/// Desktop's `Y0.UNKNOWN_ERROR` and `Y0.NO_EMAIL_SUPPORT` of `provisionLogin`.
+const UNKNOWN_ERROR: &str = "Something went wrong. Please try again or contact support.";
 const NO_EMAIL_LOGIN: &str = "The server does not support email-based login. Try logging in with a username instead.";
+/// The Next presses with no email after which Desktop offers its password login.
+const PASSWORD_LOGIN_PRESSES: u8 = 10;
+
+/// Desktop's `BasketballSpinner`, the icon of the username field while the server checks the name.
+static SPINNER: LazyLock<svg::Handle> = LazyLock::new(|| {
+    svg::Handle::from_memory(br##"<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 18 18"><path fill="#C362FF" stroke="#000" stroke-miterlimit="10" stroke-width=".505" d="M9.074 16.93a7.925 7.925 0 1 0 0-15.85 7.925 7.925 0 0 0 0 15.85Z"/><path stroke="#000" stroke-miterlimit="10" stroke-width=".505" d="M9.348 16.922c2.381-.082 4.19-3.695 4.039-8.070-.15-4.374-2.203-7.854-4.584-7.772S4.614 4.775 4.765 9.150c.15 4.374 2.202 7.853 4.583 7.772ZM8.803 1.084l.544 15.843M1.154 9.276l15.842-.544"/><path fill="#C362FF" fill-rule="evenodd" clip-rule="evenodd" style="mix-blend-mode:multiply" d="M16.996 8.734a7.9 7.9 0 0 0-2.618-5.615A7.926 7.926 0 0 1 2.516 13.454a7.926 7.926 0 0 0 14.48-4.72"/></svg>"##.as_slice())
+});
 
 /// Desktop's `logo-google.svg`.
 const GOOGLE_G: &str = r##"<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M23.52 12.2724C23.52 11.4216 23.4432 10.6044 23.3016 9.81836H12V14.46H18.4584C18.3247 15.1942 18.0435 15.8937 17.6318 16.5162C17.2202 17.1386 16.6865 17.6712 16.0632 18.0816V21.0936H19.9416C22.2108 19.0032 23.52 15.9264 23.52 12.2724Z" fill="#4285F4"/><path fill-rule="evenodd" d="M12 24C15.24 24 17.9568 22.926 19.9416 21.0924L16.0632 18.0816C14.9892 18.8016 13.6152 19.2276 12 19.2276C8.87399 19.2276 6.22799 17.1156 5.28599 14.28H1.27679V17.388C2.27521 19.3761 3.80684 21.0474 5.70051 22.2151C7.59418 23.3827 9.77527 24.0007 12 24Z" fill="#34A853"/><path fill-rule="evenodd" d="M5.286 14.2801C5.046 13.5601 4.9092 12.7921 4.9092 12.0001C4.9092 11.2081 5.046 10.4401 5.286 9.72006V6.61206H1.2768C0.436818 8.28391 -0.00043132 10.1291 3.19265e-07 12.0001C3.19265e-07 13.9369 0.4632 15.7681 1.2768 17.3881L5.2848 14.2801H5.286Z" fill="#FBBC05"/><path fill-rule="evenodd" d="M12 4.7724C13.7616 4.7724 15.3432 5.3784 16.5876 6.5676L20.0292 3.126C17.9508 1.188 15.234 0 12 0C7.30799 0 3.25199 2.688 1.27679 6.612L5.28479 9.72C6.23039 6.8832 8.87519 4.7724 12 4.7724Z" fill="#EA4335"/></svg>"##;
@@ -153,7 +164,11 @@ pub enum Stop {
     Google,
     Email,
     Field,
+    /// The password field of the password login.
+    Password,
     Next,
+    /// "Login with password" or "Use magic code".
+    Toggle,
     OpenEmail,
     Resend,
     Fresh,
@@ -213,6 +228,18 @@ pub struct Login {
     pub username: String,
     /// The usernames that the server suggests, which the sync icon of the field goes through.
     suggestions: Vec<String>,
+    /// Desktop's `UsernameInput`: the answer of the check of the name (`None` until it comes), whether the check
+    /// runs, and the number of the last change, so that the check of an older name is dropped.
+    pub available: Option<bool>,
+    pub checking: bool,
+    pub check: u32,
+    /// Desktop's hidden password login of the email screen: the Next presses with no email, the
+    /// "Login with password" link that the tenth one shows, and whether the screen asks for a username and a password.
+    empty_nexts: u8,
+    pub password_link: bool,
+    pub password_login: bool,
+    pub user: String,
+    pub password: String,
     /// The error under the heading of a screen, and Desktop's red error toast at the top of the window.
     pub error: Option<String>,
     pub toast: Option<String>,
@@ -222,8 +249,8 @@ pub struct Login {
     tried_codes: Vec<String>,
     /// The bubble of Chromium's `type=email` check over the email field.
     pub invalid: Option<String>,
-    /// The index of the control in `Screen::stops` that has the keyboard focus.
-    pub focus: Option<usize>,
+    /// The control of `Screen::stops` that has the keyboard focus.
+    pub focus: Focus<Stop>,
     request: String,
     lead_token: String,
     pub busy: bool,
@@ -248,6 +275,11 @@ pub struct Login {
 }
 
 impl Login {
+    /// The control with the keyboard focus, when the screen has it.
+    fn stop(&self) -> Option<Stop> {
+        self.focus.get().filter(|s| self.stops().contains(s))
+    }
+
     /// The screens with the floating welcome illustration, and the toast of a pasted code until it goes.
     pub fn animated(&self) -> bool {
         matches!(self.screen, Screen::Import | Screen::Welcome | Screen::Syncing) || self.pasted() || self.waiting
@@ -271,6 +303,19 @@ impl Login {
     pub fn new(source: Option<PathBuf>) -> Self {
         Login { screen: if source.is_some() { Screen::Import } else { Screen::Welcome }, source, ..Login::default() }
     }
+
+    /// The controls that Tab reaches: the password login adds its field and its link to the email screen.
+    fn stops(&self) -> &'static [Stop] {
+        match (self.screen, self.password_login, self.password_link) {
+            (Screen::Email, true, _) => &[Stop::Menu, Stop::Field, Stop::Password, Stop::Next, Stop::Toggle],
+            (Screen::Email, false, true) => &[Stop::Menu, Stop::Field, Stop::Next, Stop::Toggle],
+            (screen, ..) => screen.stops(),
+        }
+    }
+
+    fn focus_on(&mut self, stop: Stop) {
+        self.focus.set(self.stops().contains(&stop).then_some(stop));
+    }
 }
 
 #[derive(Clone)]
@@ -289,10 +334,17 @@ pub enum LoginMsg {
     Show(Screen),
     Google,
     Email(String),
+    /// The username and the password of the password login, and its "Login with password" or "Use magic code".
+    User(String),
+    Password(String),
+    TogglePassword,
     SubmitEmail,
     Code(String),
     Resend,
     Username(String),
+    /// The debounced check of the username of a change, and its answer.
+    CheckUsername(u32),
+    UsernameChecked(u32, Result<bool, CloudError>),
     SubmitUsername,
     /// The sync icon of the username field: the next suggestion.
     NextSuggestion,
@@ -409,11 +461,27 @@ fn open_email_client() -> Task<UiMessage> {
 
 /// An error of beeper-rs itself, which shows in the toast like a network error.
 fn local_error(message: String) -> CloudError {
-    CloudError { status: 0, message }
+    CloudError { status: 0, message, errcode: None }
 }
 
 fn session(cloud: &Cloud, jwt: &str) -> Result<Outcome, CloudError> {
     cloud.finish(jwt).map(|(s, p, a)| Outcome::Session(s, p, a))
+}
+
+/// Desktop's password login, with its texts for the Matrix error codes of a refusal.
+fn password_session(cloud: &Cloud, user: &str, password: &str) -> Result<Outcome, CloudError> {
+    let session = cloud.password_login(user, password).map_err(|e| {
+        let code = e.errcode.as_deref().unwrap_or_default();
+        let message = match () {
+            _ if code.contains("M_UNKNOWN") => "Please enter a valid username.",
+            _ if code.contains("M_INVALID_PARAM") => "Please enter a valid password.",
+            _ if code.contains("M_FORBIDDEN") => "Incorrect username or password. Please try again.",
+            _ => "Something went wrong confirming your credentials, try again or contact support.",
+        };
+        CloudError { message: tr(message).into(), ..e }
+    })?;
+    let (profile, accounts) = cloud.whoami(&session.access_token)?;
+    Ok(Outcome::Session(session, profile, accounts))
 }
 
 fn card_style(bg: Color) -> impl Fn(&Theme) -> container::Style {
@@ -541,7 +609,7 @@ pub(crate) fn heading<'a>(s: &str, size: f32) -> El<'a> {
     container(svg(text).width(width).height(40)).center_x(Fill).into()
 }
 
-pub(crate) fn art<'a>(i: usize, height: f32) -> El<'a> {
+pub(crate) fn art<'a>(i: usize, height: impl Into<iced::Length>) -> El<'a> {
     svg(ART[i].clone()).width(Fill).height(height).into()
 }
 
@@ -568,13 +636,7 @@ fn field_with_icons<'a, M: Into<UiMessage> + 'a>(
     icons: Vec<El<'a>>,
 ) -> El<'a> {
     let room = if icons.is_empty() { 12.0 } else { 8.0 + 22.0 * icons.len() as f32 };
-    let input = text_input(hint, value)
-        .id(id)
-        .on_input_maybe(on.map(|on| move |v| on(v).into()))
-        .size(14)
-        .line_height(iced::Pixels(18.0))
-        .padding(Padding::new(10.0).left(12.0).right(room))
-        .style(input_style(p.chip, p.on_secondary, p.on_secondary, p.accent, 19.0));
+    let input = brand_input(p, id, hint, value, on).padding(Padding::new(10.0).left(12.0).right(room));
     let icons = (!icons.is_empty()).then(|| {
         container(row(icons).spacing(2).align_y(Center)).align_right(Fill).center_y(38).padding(Padding::ZERO.right(8))
     });
@@ -586,6 +648,23 @@ fn field_with_icons<'a, M: Into<UiMessage> + 'a>(
         container(chip).padding(Padding::ZERO.left(26))
     });
     stack![column![Space::new().height(FLOAT_LABEL), input]].push(chip).into()
+}
+
+/// The text field of Desktop's `BrandInput`, 38 px high.
+fn brand_input<'a, M: Into<UiMessage> + 'a>(
+    p: &Palette,
+    id: &'static str,
+    hint: &'a str,
+    value: &'a str,
+    on: Option<fn(String) -> M>,
+) -> text_input::TextInput<'a, UiMessage, Theme> {
+    text_input(hint, value)
+        .id(id)
+        .on_input_maybe(on.map(|on| move |v| on(v).into()))
+        .size(14)
+        .line_height(iced::Pixels(18.0))
+        .padding(Padding::new(10.0).left(12.0).right(12.0))
+        .style(input_style(p.chip, p.on_secondary, p.on_secondary, p.accent, 19.0))
 }
 
 impl BeeperGuiApp {
@@ -603,10 +682,10 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `showHomePage` after the onboarding: the same window becomes the main window, resizable, at
-    /// 1200x800.
-    pub fn enter_app(&mut self) -> Task<UiMessage> {
+    /// 1200x800, and shows `chat`.
+    pub fn enter_app(&mut self, chat: &str) -> Task<UiMessage> {
         let id = self.login_window.take().expect("login window is open");
-        self.select_chat(NOTE_CHAT_ID);
+        self.select_chat(chat);
         self.main_window = Some(id);
         Task::batch([window::set_resizable(id, true), BeeperGuiApp::resize_around(id, crate::MAIN_SIZE)])
     }
@@ -645,15 +724,45 @@ impl BeeperGuiApp {
     fn show_screen(&mut self, screen: Screen) -> Task<UiMessage> {
         let l = &mut self.login;
         (l.screen, l.error, l.toast, l.invalid) = (screen, None, None, None);
-        l.focus = screen.stops().iter().position(|s| *s == Stop::Field);
-        // Desktop mounts a new email form, so the screen shows empty.
+        // Desktop mounts a new email form, so the screen shows empty, without its password login.
         if screen == Screen::Email {
             l.email.clear();
+            (l.empty_nexts, l.password_link, l.password_login) = (0, false, false);
         }
+        l.focus_on(Stop::Field);
         if screen == Screen::Verify {
             return self.start_login_verification();
         }
         screen.field().map_or_else(Task::none, operation::focus)
+    }
+
+    /// Desktop's `authenticationMode` of the email screen: a switch clears the toast and the fields of the other
+    /// mode, and focuses the first field.
+    fn set_password_login(&mut self, on: bool) -> Task<UiMessage> {
+        let l = &mut self.login;
+        (l.password_login, l.toast, l.invalid) = (on, None, None);
+        if on {
+            l.email.clear();
+        } else {
+            (l.user, l.password) = Default::default();
+        }
+        l.focus_on(Stop::Field);
+        operation::focus(EMAIL_INPUT)
+    }
+
+    /// Desktop's `UsernameInput`: a name of 3 characters or more is checked 300 ms after its last change, while the
+    /// field shows a spinner.
+    fn check_username(&mut self) -> Task<UiMessage> {
+        let l = &mut self.login;
+        l.check += 1;
+        if l.username.len() < 3 {
+            (l.checking, l.available) = (false, None);
+            return Task::none();
+        }
+        l.checking = true;
+        let n = l.check;
+        let later = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
+        Task::perform(later, move |()| LoginMsg::CheckUsername(n).into())
     }
 
     pub fn update_login(&mut self, msg: LoginMsg) -> Task<UiMessage> {
@@ -675,12 +784,34 @@ impl BeeperGuiApp {
             LoginMsg::Email(v) => {
                 l.email = v;
                 (l.toast, l.invalid) = (None, None);
-                l.focus = Screen::Email.stops().iter().position(|s| *s == Stop::Field);
+                l.focus_on(Stop::Field);
+            }
+            LoginMsg::User(v) => {
+                (l.user, l.toast) = (v, None);
+                l.focus_on(Stop::Field);
+            }
+            LoginMsg::Password(v) => {
+                (l.password, l.toast) = (v, None);
+                l.focus_on(Stop::Password);
+            }
+            LoginMsg::TogglePassword => {
+                let on = !l.password_login;
+                return self.set_password_login(on);
+            }
+            LoginMsg::SubmitEmail if l.password_login => {
+                let (user, password) = (l.user.clone(), l.password.clone());
+                return self.background(move |c| password_session(c, &user, &password));
             }
             LoginMsg::SubmitEmail | LoginMsg::Resend => {
                 let email = l.email.trim().to_string();
                 if email.is_empty() {
                     l.toast = Some(tr("Please enter your email.").into());
+                    // Desktop's tenth Next with no email shows its password login.
+                    l.empty_nexts = l.empty_nexts.saturating_add(1);
+                    if l.empty_nexts == PASSWORD_LOGIN_PRESSES {
+                        l.password_link = true;
+                        return self.set_password_login(true);
+                    }
                     return Task::none();
                 }
                 if let Some(e) = email_mismatch(&email) {
@@ -690,9 +821,11 @@ impl BeeperGuiApp {
                 l.code.clear();
                 l.tried_codes.clear();
                 return self.background(move |c| {
-                    let (request, methods) = c.start_login()?;
+                    // Desktop's `provisionLogin`: a server without the email login, or any failure, refuses.
+                    let unknown = |_| local_error(tr(UNKNOWN_ERROR).into());
+                    let (request, methods) = c.start_login().map_err(unknown)?;
                     if !methods.iter().any(|m| m == "email") {
-                        return Err(CloudError { status: 409, message: NO_EMAIL_LOGIN.into() });
+                        return Err(local_error(tr(NO_EMAIL_LOGIN).into()));
                     }
                     c.send_login_email(&request, &email)?;
                     Ok(Outcome::Requested(request))
@@ -719,9 +852,43 @@ impl BeeperGuiApp {
                 });
             }
             LoginMsg::Username(v) => {
-                l.username = username_input(&v);
+                let name = username_input(&v);
                 (l.error, l.toast) = (None, None);
+                if name != l.username {
+                    l.username = name;
+                    return self.check_username();
+                }
             }
+            // Desktop's `qHt` after the local rules (`Pzt`), which refuse a name without asking the server.
+            LoginMsg::CheckUsername(n) if n == l.check => {
+                (l.available, l.toast) = (None, None);
+                if !username_ok(&l.username) {
+                    (l.available, l.checking) = (Some(false), false);
+                    return Task::none();
+                }
+                let (cloud, name) = (self.cloud.clone(), l.username.clone());
+                let ask = async move {
+                    tokio::task::spawn_blocking(move || cloud.username_available(&name))
+                        .await
+                        .expect("username check worker thread")
+                };
+                return Task::perform(ask, move |r| LoginMsg::UsernameChecked(n, r).into());
+            }
+            LoginMsg::UsernameChecked(n, r) if n == l.check => {
+                l.checking = false;
+                match r {
+                    Ok(available) => l.available = Some(available),
+                    Err(e) => {
+                        eprintln!("Error validating username: {}", e.message);
+                        let text = match e.message.is_empty() {
+                            true => tr("Error checking username availability. Please try again.").into(),
+                            false => e.message,
+                        };
+                        (l.available, l.toast) = (None, Some(text));
+                    }
+                }
+            }
+            LoginMsg::CheckUsername(_) | LoginMsg::UsernameChecked(..) => {}
             LoginMsg::NextSuggestion => {
                 let at = l.suggestions.iter().position(|s| *s == l.username).map_or(0, |i| i + 1);
                 let name = l.suggestions[at % l.suggestions.len()].clone();
@@ -729,7 +896,6 @@ impl BeeperGuiApp {
             }
             LoginMsg::SubmitUsername => {
                 let (request, lead, name) = (l.request.clone(), l.lead_token.clone(), l.username.clone());
-                assert!(username_ok(&name), "Next takes a valid username only");
                 return self.background(move |c| session(c, &c.register(&request, &lead, &name)?));
             }
             LoginMsg::Menu => {}
@@ -737,15 +903,24 @@ impl BeeperGuiApp {
             LoginMsg::OpenEmail => return open_email_client(),
             LoginMsg::StartOver => self.login = Login::new(l.source.take()),
             LoginMsg::Query(q) => l.query = q,
+            // Desktop's tenth click on the heading finishes the onboarding, without its Continue.
             LoginMsg::Headline => {
                 l.headline_clicks += 1;
                 if l.headline_clicks == 10 {
-                    return self.update_login(LoginMsg::Continue);
+                    self.login = Login::default();
+                    return self.enter_app(NOTE_CHAT_ID);
                 }
             }
+            // Desktop's Continue selects the first read chat (`selectFirstReadThread`), and a second later shows its
+            // toast of the mobile apps.
             LoginMsg::Continue => {
                 self.login = Login::default();
-                return self.enter_app();
+                let first_read =
+                    self.visible_chats(&self.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
+                let enter = self.enter_app(first_read.as_deref().unwrap_or(NOTE_CHAT_ID));
+                let later = async { tokio::time::sleep(std::time::Duration::from_secs(1)).await };
+                let toast = Task::perform(later, |()| UiMessage::Toast(crate::toasts::Msg::MobileApps(true)));
+                return Task::batch([enter, toast]);
             }
             LoginMsg::E2ee(r) => return self.e2ee_checked(r),
             LoginMsg::AnotherWay => l.another_way = true,
@@ -848,7 +1023,7 @@ impl BeeperGuiApp {
                         l.lead_token = token;
                         l.username = suggestions.first().map(|s| username_input(s)).unwrap_or_default();
                         l.suggestions = suggestions;
-                        return self.show_screen(Screen::Username);
+                        return Task::batch([self.show_screen(Screen::Username), self.check_username()]);
                     }
                     Ok(Outcome::Read(data)) => {
                         l.import = Some(data);
@@ -930,7 +1105,7 @@ impl BeeperGuiApp {
             }
             Screen::Welcome => {
                 // Chromium's focus ring of a link: a 1 px orange outline.
-                let ring = (l.focus.map(|i| l.screen.stops()[i]) == Some(Stop::Terms))
+                let ring = (l.stop() == Some(Stop::Terms))
                     .then(|| border::rounded(2).color(Color::from_rgb8(229, 151, 0)).width(1));
                 // Desktop's one sentence with the two links in it, wrapped like `text-wrap: balance`.
                 let sentence = tr("By continuing, you agree to our %1$s and have read our %2$s.");
@@ -985,33 +1160,60 @@ impl BeeperGuiApp {
                 ]
                 .into()
             }
-            Screen::Email => column![
-                Space::new().height(40),
-                heading(tr("Enter your Email"), 36.0),
-                Space::new().height(FLOAT_LABEL),
-                Space::new().height(Fill),
-                art(1, 314.0),
-                Space::new().height(Fill),
-                actions(
-                    vec![
-                        field(p, EMAIL_INPUT, tr("Email"), &l.email, (!l.busy).then_some(LoginMsg::Email)),
-                        brand_button(
-                            p,
-                            label(trx("Next", "button label"), None),
-                            Brand::Primary,
-                            self.login_act(Stop::Next),
-                            l.busy
-                        ),
-                    ],
-                    24.0
-                ),
-            ]
-            .into(),
+            Screen::Email => {
+                let free = !l.busy;
+                let first = match l.password_login {
+                    true => field(
+                        p,
+                        EMAIL_INPUT,
+                        trx("Username", "input placeholder"),
+                        &l.user,
+                        free.then_some(LoginMsg::User),
+                    ),
+                    false => field(p, EMAIL_INPUT, tr("Email"), &l.email, free.then_some(LoginMsg::Email)),
+                };
+                // Desktop's password field has no floating label.
+                let password = l.password_login.then(|| {
+                    let hint = trx("Enter Password", "input placeholder");
+                    brand_input(p, PASSWORD_INPUT, hint, &l.password, free.then_some(LoginMsg::Password))
+                        .secure(true)
+                        .into()
+                });
+                let next = brand_button(
+                    p,
+                    label(trx("Next", "button label"), None),
+                    Brand::Primary,
+                    self.login_act(Stop::Next),
+                    l.busy,
+                );
+                let toggle = l.password_link.then(|| {
+                    let text = match l.password_login {
+                        true => trx("Use magic code", "button label"),
+                        false => trx("Login with password", "button label"),
+                    };
+                    let link = button(txt(text, 13.0).color(p.accent)).bare(p.accent);
+                    container(link.on_press_maybe(self.login_act(Stop::Toggle))).center_x(Fill).into()
+                });
+                // The illustration gives its room to the fields of the password login.
+                let art = match l.password_link {
+                    true => art(1, Fill),
+                    false => column![Space::new().height(Fill), art(1, 314.0), Space::new().height(Fill)].into(),
+                };
+                let form = [Some(first), password, Some(next), toggle].into_iter().flatten().collect();
+                column![
+                    Space::new().height(40),
+                    heading(tr("Enter your Email"), 36.0),
+                    Space::new().height(FLOAT_LABEL),
+                    art,
+                    actions(form, 24.0),
+                ]
+                .into()
+            }
             Screen::Code => {
                 // Desktop's `OTPInput`: six 41.3x56 slots 8 px apart, with a 2 px ring outside the focused slot, and
                 // red digits and rings on all slots after an error.
                 let error = l.error.is_some();
-                let focused = l.focus.map(|i| l.screen.stops()[i]) == Some(Stop::Field);
+                let focused = l.stop() == Some(Stop::Field);
                 let slots = row((0..6).map(|i| {
                     let ink = if error { ERROR_RED } else { p.strong };
                     let digit: Option<El<'_>> = l
@@ -1134,9 +1336,9 @@ impl BeeperGuiApp {
             Screen::NewKey | Screen::ConfirmKey => self.view_onboarding_new_key(),
             Screen::Reset => self.view_onboarding_reset(),
             Screen::Username => {
-                // Desktop checks a name from 3 characters on, and shows the same text for every name it refuses.
-                let valid = (l.username.len() >= 3).then(|| username_ok(&l.username));
-                let refused = (valid == Some(false)).then(|| tr("Username is not available. Try something else."));
+                // Desktop shows the same text for every name that the rules or the server refuse.
+                let refused =
+                    (l.available == Some(false)).then(|| tr("Username is not available. Try something else."));
                 let icon = |i: usize, size: f32, color: Color, msg: Option<UiMessage>| -> El<'_> {
                     let glyph = svg(ICONS[i].clone())
                         .width(size)
@@ -1153,8 +1355,14 @@ impl BeeperGuiApp {
                 };
                 // `--color-solids-green` and `--color-on-surface-variant`.
                 let (green, grey) = (Color::from_rgb8(25, 186, 59), p.muted);
+                // Desktop's `basketball-spinner` while the name is checked, else `done` for a free name.
+                let status: Option<El<'_>> = match (l.checking, l.available) {
+                    (true, _) => Some(container(svg(SPINNER.clone()).width(20).height(20)).center(20).into()),
+                    (false, Some(true)) if !l.username.is_empty() => Some(icon(2, 20.0, green, None)),
+                    _ => None,
+                };
                 let icons = [
-                    (valid == Some(true)).then(|| icon(2, 20.0, green, None)),
+                    status,
                     (!l.suggestions.is_empty()).then(|| icon(3, 18.0, grey, Some(LoginMsg::NextSuggestion.into()))),
                     (!l.username.is_empty())
                         .then(|| icon(4, 20.0, grey, Some(LoginMsg::Username(String::new()).into()))),
@@ -1245,9 +1453,10 @@ impl BeeperGuiApp {
             (Stop::Resend, _) => LoginMsg::Resend.into(),
             (Stop::Fresh, _) => LoginMsg::Fresh.into(),
             (Stop::Import, _) => LoginMsg::Import.into(),
-            (Stop::Field | Stop::Next, Screen::Email) => LoginMsg::SubmitEmail.into(),
-            // Desktop disables Next until the name is valid.
-            (Stop::Field | Stop::Next, Screen::Username) if username_ok(&self.login.username) => {
+            (Stop::Field | Stop::Password | Stop::Next, Screen::Email) => LoginMsg::SubmitEmail.into(),
+            (Stop::Toggle, _) => LoginMsg::TogglePassword.into(),
+            // Desktop disables Next until the check of the name allows it.
+            (Stop::Field | Stop::Next, Screen::Username) if self.login.available == Some(true) => {
                 LoginMsg::SubmitUsername.into()
             }
             (Stop::Field | Stop::Next, Screen::Username) => return None,
@@ -1264,24 +1473,19 @@ impl BeeperGuiApp {
             return self.run_hotkey(h, digit);
         }
         let l = &mut self.login;
-        let stops = l.screen.stops();
+        let stops = l.stops();
         match key {
             Key::Named(Named::Escape) => (l.menu, self.networks.menu) = (false, None),
-            Key::Named(Named::Tab) if !stops.is_empty() && (mods - Modifiers::SHIFT).is_empty() => {
-                let n = stops.len();
-                let at = match (l.focus, mods.shift()) {
-                    (None, false) => 0,
-                    (None, true) => n - 1,
-                    (Some(i), false) => (i + 1) % n,
-                    (Some(i), true) => (i + n - 1) % n,
+            Key::Named(Named::Tab) if (mods - Modifiers::SHIFT).is_empty() => {
+                return match l.focus.step(stops, mods.shift()) {
+                    Some(Stop::Field) => operation::focus(l.screen.field().expect("a screen with a field")),
+                    Some(Stop::Password) => operation::focus(PASSWORD_INPUT),
+                    Some(_) => crate::focus::blur(),
+                    None => Task::none(),
                 };
-                l.focus = Some(at);
-                // Focusing an ID that no widget has takes the focus from the text field.
-                let id = if stops[at] == Stop::Field { l.screen.field().expect("a screen with a field") } else { "" };
-                return operation::focus(id);
             }
             Key::Named(Named::Enter) if mods.is_empty() => {
-                let stop = l.focus.map(|i| stops[i]).or(l.screen.field().map(|_| Stop::Field));
+                let stop = l.stop().or(l.screen.field().map(|_| Stop::Field));
                 return stop.and_then(|s| self.login_act(s)).map_or_else(Task::none, |m| self.update(m));
             }
             _ => {}
@@ -1294,11 +1498,12 @@ impl BeeperGuiApp {
     pub fn login_text(&mut self, text: &str) -> Task<UiMessage> {
         let l = &mut self.login;
         if l.screen == Screen::Code && text.len() == 1 && text.chars().all(|c| c.is_ascii_digit()) {
-            l.focus = Screen::Code.stops().iter().position(|s| *s == Stop::Field);
+            l.focus_on(Stop::Field);
             let code = format!("{}{text}", l.code);
             return Task::batch([self.update_login(LoginMsg::Code(code)), operation::focus(CODE_INPUT)]);
         }
-        let stop = l.focus.map(|i| l.screen.stops()[i]).filter(|s| *s != Stop::Field && text == " ");
+        let field = |s: &Stop| matches!(s, Stop::Field | Stop::Password);
+        let stop = l.stop().filter(|s| !field(s) && text == " ");
         stop.and_then(|s| self.login_act(s)).map_or_else(Task::none, |m| self.update(m))
     }
 }
@@ -1361,5 +1566,192 @@ mod tests {
         for (v, want) in rows {
             assert_eq!(super::email_mismatch(v).as_deref(), want, "{v}");
         }
+    }
+
+    use super::{LoginMsg, Outcome, Screen, Stop};
+    use crate::fuzz::{signed_out_app, task_actions, task_messages};
+    use crate::{BeeperGuiApp, UiMessage};
+    use iced_test::simulator::simulator;
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    /// The sign-in window of a new install, whose Beeper API and homeserver are the stub at `url`.
+    fn stub_sign_in(name: &str, url: &str) -> BeeperGuiApp {
+        let mut app = signed_out_app(name);
+        app.cloud = Arc::new(beeper_core::cloud::Cloud::new(url, url));
+        app
+    }
+
+    /// Sends each message of a task until no task outputs more, like the iced runtime.
+    async fn settle(app: &mut BeeperGuiApp, msg: UiMessage) {
+        let mut queue = vec![msg];
+        while let Some(m) = queue.pop() {
+            queue.extend(task_messages(app.update(m)).await);
+        }
+    }
+
+    fn shows(app: &BeeperGuiApp, text: &str) -> bool {
+        simulator(app.view_login()).find(text).is_ok()
+    }
+
+    /// Desktop's `UsernameInput`: the spinner while a name waits for its debounced check, one server check for the
+    /// last of quick changes, the local rules before the server, and the error of a failed check in the toast.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn usernames_are_checked_on_the_server_like_desktop() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let log = asked.clone();
+        let url = beeper_core::bridge_stub::serve(move |_, path, _| {
+            let name = path.strip_prefix("/_matrix/client/v3/register/available?username=").expect("a name check");
+            log.lock().unwrap().push(name.to_string());
+            match name {
+                "alex-rs" => (200, json!({ "available": true })),
+                "taken" => (400, json!({ "errcode": "M_USER_IN_USE", "error": "User ID already taken." })),
+                _ => (500, json!({ "errcode": "M_UNKNOWN", "error": "Internal server error" })),
+            }
+        })
+        .await;
+        let mut app = stub_sign_in("username-check", &url);
+        let task = app.update(LoginMsg::Done(Ok(Outcome::Lead("lead".into(), vec!["alex-rs".into()]))).into());
+        assert!(app.login.checking, "the suggestion is checked");
+        assert!(app.login_act(Stop::Next).is_none(), "Next waits for the check");
+        for m in task_messages(task).await {
+            settle(&mut app, m).await;
+        }
+        assert_eq!((app.login.checking, app.login.available), (false, Some(true)));
+        assert!(app.login_act(Stop::Next).is_some(), "a free name enables Next");
+
+        let first = app.update(LoginMsg::Username("take".into()).into());
+        let last = app.update(LoginMsg::Username("taken".into()).into());
+        for m in [task_messages(first).await, task_messages(last).await].concat() {
+            settle(&mut app, m).await;
+        }
+        assert_eq!(*asked.lock().unwrap(), ["alex-rs", "taken"], "only the last of quick changes is checked");
+        assert!(shows(&app, "Username is not available. Try something else."));
+        assert!(app.login_act(Stop::Next).is_none());
+
+        settle(&mut app, LoginMsg::Username("ab".into()).into()).await;
+        assert_eq!((app.login.checking, app.login.available), (false, None), "a short name is not checked");
+        settle(&mut app, LoginMsg::Username("my-bot".into()).into()).await;
+        assert_eq!(app.login.available, Some(false), "the rules refuse a name that ends with bot");
+        assert_eq!(asked.lock().unwrap().len(), 2, "names that the rules refuse do not reach the server");
+
+        settle(&mut app, LoginMsg::Username("boom".into()).into()).await;
+        assert_eq!((app.login.toast.as_deref(), app.login.available), (Some("Internal server error"), None));
+    }
+
+    /// Desktop's hidden password login: the tenth Next with no email switches to a username and a password, Tab
+    /// reaches the new controls, a refusal shows Desktop's text for its error code, and "Use magic code" goes back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_tenth_empty_next_offers_the_password_login_like_desktop() {
+        use iced::keyboard::{key::Named, Key, Modifiers};
+        let url = beeper_core::bridge_stub::serve(|method, path, body| match (method, path) {
+            ("POST", "/_matrix/client/v3/login") if body["password"] == "right" => {
+                (200, json!({ "user_id": "@alex:beeper.com", "access_token": "token", "device_id": "DEV" }))
+            }
+            ("POST", "/_matrix/client/v3/login") => {
+                (403, json!({ "errcode": "M_FORBIDDEN", "error": "Invalid username or password" }))
+            }
+            ("GET", "/whoami") => (200, json!({ "userInfo": { "username": "alex" }, "user": { "bridges": {} } })),
+            _ => (404, json!({ "errcode": "M_UNRECOGNIZED" })),
+        })
+        .await;
+        let mut app = stub_sign_in("password-login", &url);
+        let _ = app.update(LoginMsg::Show(Screen::Email).into());
+        for _ in 0..9 {
+            let _ = app.update(LoginMsg::SubmitEmail.into());
+        }
+        assert_eq!(app.login.toast.as_deref(), Some("Please enter your email."));
+        assert!(!shows(&app, "Login with password"), "nine Nexts keep the email login");
+        let _ = app.update(LoginMsg::SubmitEmail.into());
+        assert!(app.login.password_login && app.login.toast.is_none(), "the tenth switches to the password login");
+        assert!(shows(&app, "Use magic code"));
+
+        let id = app.login_window.expect("the sign-in window");
+        let tabs: Vec<_> = (0..4)
+            .map(|_| {
+                let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Tab), Modifiers::empty()));
+                app.login.focus.get().expect("a focused control")
+            })
+            .collect();
+        assert_eq!(tabs, [Stop::Password, Stop::Next, Stop::Toggle, Stop::Menu]);
+
+        let _ = app.update(LoginMsg::User("alex".into()).into());
+        let _ = app.update(LoginMsg::Password("wrong".into()).into());
+        settle(&mut app, LoginMsg::SubmitEmail.into()).await;
+        assert_eq!(app.login.toast.as_deref(), Some("Incorrect username or password. Please try again."));
+
+        let _ = app.update(LoginMsg::TogglePassword.into());
+        assert!(!app.login.password_login && app.login.user.is_empty() && app.login.password.is_empty());
+        assert!(shows(&app, "Login with password"), "the link stays to switch again");
+        let _ = app.update(LoginMsg::TogglePassword.into());
+        let _ = app.update(LoginMsg::User("alex".into()).into());
+        let _ = app.update(LoginMsg::Password("right".into()).into());
+        let done = task_messages(app.update(LoginMsg::SubmitEmail.into())).await;
+        assert!(matches!(done.as_slice(), [UiMessage::Login(LoginMsg::Done(Ok(Outcome::Session(..))))]));
+        let _ = app.update(done.into_iter().next().expect("the session"));
+        let st = app.store.read();
+        assert!(st.signed_in() && st.beeper_state.user_id == "@alex:beeper.com", "the password signs in");
+    }
+
+    /// Desktop's Continue of Connect Chat Accounts selects the first read chat and shows the mobile apps toast a
+    /// second later, whose links and close work. The tenth click on the heading does neither.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn continue_selects_a_read_chat_and_shows_the_mobile_apps_toast_like_desktop() {
+        let onboarding = |name: &str| {
+            let mut app = crate::fuzz::demo_app(name);
+            (app.login_window, app.main_window, app.login.screen) = (app.main_window, None, Screen::Accounts);
+            app
+        };
+        let mut app = onboarding("onboarding-continue");
+        let first_read = app.visible_chats(&app.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
+        assert!(first_read.as_deref().is_some_and(|c| c != beeper_core::store::NOTE_CHAT_ID), "a read demo chat");
+        let task = app.update(LoginMsg::Continue.into());
+        assert_eq!(app.pane.selected_chat_id, first_read, "Desktop's selectFirstReadThread");
+        assert!(!app.mobile_apps_toast, "the toast comes a second later");
+        let start = std::time::Instant::now();
+        for m in task_messages(task).await {
+            let _ = app.update(m);
+        }
+        assert!(app.mobile_apps_toast && start.elapsed() >= std::time::Duration::from_secs(1));
+        // Clicks all over the toasts: the links open their app store, the rest of the toast the download page, and
+        // the close button hides it.
+        let size = iced::Size::new(600.0, 200.0);
+        let mut sim = iced_test::Simulator::with_size(Default::default(), size, app.view_toast(true).expect("toasts"));
+        for y in (0..200).step_by(4) {
+            for x in (76..600).step_by(4) {
+                sim.point_at(iced::Point::new(x as f32, y as f32));
+                let _ = sim.simulate(iced_test::simulator::click());
+            }
+        }
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        let opens = |url: &str| msgs.iter().any(|m| matches!(m, UiMessage::OpenUrl(u) if u == url));
+        let urls = ["https://www.beeper.com/download/ios", "https://www.beeper.com/download/android"];
+        assert!(urls.into_iter().chain(["https://www.beeper.com/download"]).all(opens));
+        let close = UiMessage::Toast(crate::toasts::Msg::MobileApps(false));
+        assert!(msgs.iter().any(|m| matches!(m, UiMessage::Toast(crate::toasts::Msg::MobileApps(false)))));
+        let _ = app.update(close);
+        assert!(!app.mobile_apps_toast, "the close hides the toast");
+
+        let mut app = onboarding("onboarding-headline");
+        let mut task = iced::Task::none();
+        for _ in 0..10 {
+            task = app.update(LoginMsg::Headline.into());
+        }
+        assert!(app.main_window.is_some());
+        assert_eq!(app.pane.selected_chat_id.as_deref(), Some(beeper_core::store::NOTE_CHAT_ID));
+        assert!(task_messages(task).await.is_empty(), "no mobile apps toast");
+    }
+
+    /// Desktop's sign-in window becomes resizable on Connect Chat Accounts.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_chat_accounts_is_resizable_like_desktop() {
+        let mut app = crate::fuzz::demo_app("onboarding-resizable");
+        let id = app.main_window.take().expect("the main window");
+        (app.login_window, app.login.screen) = (Some(id), Screen::Syncing);
+        app.store.write().bridge_accounts.clear();
+        let actions = task_actions(app.advance_onboarding()).await;
+        assert_eq!(app.login.screen, Screen::Accounts);
+        let resizable = |a: &iced_runtime::Action<UiMessage>| matches!(a, iced_runtime::Action::Window(iced_runtime::window::Action::SetResizable(w, true)) if *w == id);
+        assert!(actions.iter().any(resizable), "the window becomes resizable");
     }
 }
