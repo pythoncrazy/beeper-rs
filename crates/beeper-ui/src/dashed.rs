@@ -3,14 +3,16 @@ use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, renderer, Renderer as _};
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
 
-/// A 1px dashed border with rounded corners, like CSS `border: 1px dashed`. Put it over the content in a stack.
+/// A dashed border `width` px wide with rounded corners, like CSS `border: 1px dashed`. Put it over the content in a
+/// stack.
 pub struct Dashes {
     color: Color,
     radius: f32,
+    width: f32,
 }
 
-pub fn dashes<'a, Message>(color: Color, radius: f32) -> Element<'a, Message> {
-    Element::new(Dashes { color, radius })
+pub fn dashes<'a, Message>(color: Color, radius: f32, width: f32) -> Element<'a, Message> {
+    Element::new(Dashes { color, radius, width })
 }
 
 /// The point at `s` along the rounded rectangle `b` with corner radius `r`, clockwise from the top left corner.
@@ -60,16 +62,17 @@ impl<Message> Widget<Message, Theme, Renderer> for Dashes {
         _: mouse::Cursor,
         _: &Rectangle,
     ) {
-        let b = layout.bounds().shrink(0.5);
-        let r = self.radius.min(b.width / 2.0).min(b.height / 2.0);
+        let w = self.width;
+        let b = layout.bounds().shrink(w / 2.0);
+        let r = (self.radius - w / 2.0).max(0.0).min(b.width / 2.0).min(b.height / 2.0);
         let total = 2.0 * (b.width + b.height - 4.0 * r) + 2.0 * std::f32::consts::PI * r;
-        // Chrome draws 3px dashes and 3px gaps, stretched so that the pattern fits.
-        let period = total / (total / 6.0).round().max(1.0);
+        // Chrome draws dashes and gaps three times the width long, stretched so that the pattern fits.
+        let period = total / (total / (6.0 * w)).round().max(1.0);
         let mut s = 0.0;
         while s < total {
             if s % period < period / 2.0 {
                 let p = along(b, r, s);
-                let bounds = Rectangle::new(Point::new(p.x - 0.5, p.y - 0.5), Size::new(1.0, 1.0));
+                let bounds = Rectangle::new(Point::new(p.x - w / 2.0, p.y - w / 2.0), Size::new(w, w));
                 renderer.fill_quad(renderer::Quad { bounds, ..Default::default() }, self.color);
             }
             s += 0.5;

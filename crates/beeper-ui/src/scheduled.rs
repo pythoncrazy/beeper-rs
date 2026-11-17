@@ -261,7 +261,7 @@ impl BeeperGuiApp {
             .padding([9.0, BUBBLE_PAD_X])
             .max_width(0.45 * self.pane().size.width)
             .style(fill_box(bg, 17.0));
-        let bubble = mouse_area(stack![bubble, dashed::dashes(fg, 17.0)])
+        let bubble = mouse_area(stack![bubble, dashed::dashes(fg, 17.0, 1.0)])
             .on_right_press(UiMessage::Scheduled(scheduled::Msg::Menu(vec![s.id.clone()], true)));
         row![Space::new().width(Fill), bubble].into()
     }

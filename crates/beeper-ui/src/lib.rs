@@ -45,6 +45,7 @@ pub mod rail;
 mod reauth;
 mod record;
 pub mod reminders;
+mod reply_line;
 mod ring;
 mod scheduled;
 mod selectable;
@@ -874,16 +875,18 @@ fn grouped_rows<'a>(p: &Palette, rows: Vec<El<'a>>) -> El<'a> {
     container(col).width(Fill).clip(true).style(fill_box(p.chip, 8.0)).into()
 }
 
-/// `ls` is Desktop's `--letter-spacing`; its initials also have `margin-right: -1px`.
-fn avatar<'a>(name: &str, size: f32, ls: f32, p: &Palette) -> El<'a> {
+/// `ls` is Desktop's `--letter-spacing`; its initials also have `margin-right: -1px`. The avatar is drawn at `alpha`.
+fn avatar<'a>(name: &str, size: f32, ls: f32, alpha: f32, p: &Palette) -> El<'a> {
     let Some(label) = initials(name) else {
-        let shade = fill_box(Color { a: 0.1, ..p.strong }, size / 2.0);
-        return container(svg(EYES.clone()).width(size).height(size)).style(shade).into();
+        let shade = fill_box(Color { a: 0.1 * alpha, ..p.strong }, size / 2.0);
+        return container(svg(EYES.clone()).width(size).height(size).opacity(alpha)).style(shade).into();
     };
     let &(bottom, top) = pick(name, &AVATAR_GRADIENTS);
-    let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, hex(top)).add_stop(1.0, hex(bottom));
+    let (top, bottom) = (hex(top).scale_alpha(alpha), hex(bottom).scale_alpha(alpha));
+    let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, top).add_stop(1.0, bottom);
     let font = crate::style::initials_font();
-    let letter = |c: char| txt(c.to_string(), size * 0.5).line_height(1.0).font(font).color(Color::WHITE).into();
+    let white = Color::WHITE.scale_alpha(alpha);
+    let letter = |c: char| txt(c.to_string(), size * 0.5).line_height(1.0).font(font).color(white).into();
     let trail = Padding::ZERO.right((ls - 1.0).max(0.0)).left((1.0 - ls).max(0.0));
     container(container(Row::with_children(label.chars().map(letter)).spacing(ls)).padding(trail))
         .center(size)
@@ -1100,7 +1103,7 @@ pub(crate) fn contact_card<'a>(
     let n = c.phones.len();
     let phones = list(&c.phones, trn("Phone Number", "Phone Numbers", n, &[]), "+ %d more", true);
     let emails = list(&c.emails, trn("Email", "Emails", c.emails.len(), &[]), " + %d more", false);
-    let details = row![avatar(&c.name, 32.0, 0.0, p), meta.push(phones).push(emails)].spacing(8);
+    let details = row![avatar(&c.name, 32.0, 0.0, 1.0, p), meta.push(phones).push(emails)].spacing(8);
     column![details, Space::new().width(180)]
 }
 
@@ -2671,6 +2674,8 @@ pub struct BeeperGuiApp {
     hover_at: Option<std::time::Instant>,
     unhovered: Option<(String, std::time::Instant)>,
     pub flash: Option<(String, std::time::Instant)>,
+    /// Desktop's `BrandTypingIndicator` of each chat as it shows (`true`) or hides: who types, and since when.
+    typing_shown: HashMap<String, (Vec<String>, bool, std::time::Instant)>,
     last_click: Option<(String, std::time::Instant)>,
     /// The opened chats, the most recent first. While `cycling`, a selection does not reorder them.
     chat_history: Vec<String>,
@@ -2943,6 +2948,7 @@ impl BeeperGuiApp {
             hover_at: None,
             unhovered: None,
             flash: None,
+            typing_shown: HashMap::new(),
             status_banner: String::new(),
             relaunch_toast: None,
             toast: None,
@@ -3070,6 +3076,11 @@ impl BeeperGuiApp {
     }
 
     fn face<'a>(&self, url: Option<&str>, name: &str, size: f32, ls: f32) -> El<'a> {
+        self.face_alpha(url, name, size, ls, 1.0)
+    }
+
+    /// [`Self::face`] at the opacity `alpha`.
+    fn face_alpha<'a>(&self, url: Option<&str>, name: &str, size: f32, ls: f32, alpha: f32) -> El<'a> {
         let loaded = url.and_then(|u| match self.avatars.get(u) {
             Some(h) => h.clone(),
             None => {
@@ -3078,8 +3089,8 @@ impl BeeperGuiApp {
             }
         });
         match loaded {
-            Some(h) => image(h).width(size).height(size).into(),
-            None => avatar(name, size, ls, &self.pal),
+            Some(h) => image(h).width(size).height(size).opacity(alpha).into(),
+            None => avatar(name, size, ls, alpha, &self.pal),
         }
     }
 
@@ -4216,6 +4227,7 @@ impl BeeperGuiApp {
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
             UiMessage::Typing(chat) => {
+                self.typing_changed(&chat);
                 let note = self.notify_typing(chat);
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
@@ -4842,6 +4854,7 @@ impl BeeperGuiApp {
         let animated = rising
             || self.panes().any(moving)
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
+            || self.typing_shown.values().any(|t| t.2.elapsed() < message::TYPING_FADE)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0)
             || (self.login_window.is_some() && (self.login.busy || self.login.animated()))
             || self.reauth.busy
