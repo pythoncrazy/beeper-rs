@@ -43,6 +43,7 @@ pub mod new_chat;
 mod nickname;
 mod notify;
 mod pdf;
+mod phone;
 mod pins;
 mod popover;
 mod portal;
@@ -4251,6 +4252,9 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::Composer(composer::Msg::Type(text)));
             }
             UiMessage::WindowText(id, text) if Some(id) == self.login_window => return self.login_text(&text),
+            UiMessage::WindowText(id, text) if self.add_account_dropdown(id) => {
+                return self.update_add_account(id, add_account::AddMsg::Text(text));
+            }
             // Chromium's Space on a focused button or `role="button"` row presses it.
             UiMessage::WindowText(id, text) if text == " " && Some(id) == self.settings_window => {
                 return self.settings_press();
@@ -4295,6 +4299,10 @@ impl BeeperGuiApp {
                         Key::Named(Named::Enter) if mods.command() => window::close(id),
                         _ => Task::none(),
                     };
+                }
+                // The open dropdown of a phone field takes the keys, so Escape closes it and not the window.
+                if self.add_account_dropdown(id) {
+                    return self.update_add_account(id, add_account::AddMsg::Key(key));
                 }
                 if self.theme_windows.iter().any(|w| w.0 == id)
                     || self.labels_windows.iter().any(|w| w.0 == id)
@@ -4974,6 +4982,16 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
+        // The Page Up and Page Down of the open dropdown of a phone field, which `keys` does not send.
+        let dropdown = self.add_accounts.iter().any(|a| self.add_account_dropdown(a.id)).then(|| {
+            iced::event::listen_with(|e, _, id| match e {
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: key @ Key::Named(Named::PageUp | Named::PageDown),
+                    ..
+                }) => Some(UiMessage::AddAccount(id, add_account::AddMsg::Key(key))),
+                _ => None,
+            })
+        });
         let drag = self.dragging.then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
@@ -5155,6 +5173,7 @@ impl BeeperGuiApp {
                 .chain(poll_drag)
                 .chain(time_drag)
                 .chain(carousel)
+                .chain(dropdown)
                 .chain(tick)
                 .chain(toast)
                 .chain(shot)
