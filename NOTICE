@@ -64,6 +64,7 @@ The files in `crates/beeper-core/assets/themes/` come from the `beeper/themes` r
 - **Add members icon (`crates/beeper-ui/assets/add_account.svg`)**: The path data comes from the `AddAccount` system icon of Beeper Desktop. It is property of Beeper Inc.
 - **Call icon (`CALL` SVG in `crates/beeper-ui/src/lib.rs`)**: The path data comes from the `Call` system icon of Beeper Desktop. It is property of Beeper Inc.
 - **Toast icons (`TOAST_ICONS` SVGs in `crates/beeper-ui/src/lib.rs`)**: The path data comes from the `Archive`, `Inbox`, `LowPriority` and `Undo` assets of Beeper Desktop. It is property of Beeper Inc.
+- **Country list (`crates/beeper-ui/assets/countries.json`)**: The country list of react-international-phone 4.5.0 (`https://github.com/ybrusentsov/react-international-phone`), which Beeper Desktop's phone field uses. Copyright (c) 2022 Yurii Brusentsov, licensed under the MIT License. The license text is in `crates/beeper-ui/assets/REACT-INTERNATIONAL-PHONE-LICENSE.txt`. `crates/beeper-ui/src/phone.rs` ports the library's masks, country guessing and country dropdown.
 - **Iced (`iced`, `iced_test`)**: Copyright Héctor Ramón (`https://github.com/iced-rs/iced`), licensed under the MIT License.
 - **iced_tiny_skia (`vendor/iced_tiny_skia/`)**: The iced_tiny_skia 0.14.1 crate of Iced with the iced commit `0553559827` applied. Copyright Héctor Ramón, Iced contributors (`https://github.com/iced-rs/iced`), licensed under the MIT License. The license text is in `vendor/iced_tiny_skia/LICENSE`.
 
