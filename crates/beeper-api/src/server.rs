@@ -5,8 +5,8 @@ use crate::http::{
 use beeper_core::bridge_login;
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
-    cloud_bridge, millis_from_iso, millis_from_rfc3339, now_rfc3339_millis, CentralConfig, APP_BUNDLE_ID, APP_NAME,
-    APP_VERSION, NETWORK_SPECS,
+    cloud_bridge, millis_from_rfc3339, now_rfc3339_millis, CentralConfig, APP_BUNDLE_ID, APP_NAME, APP_VERSION,
+    NETWORK_SPECS,
 };
 use beeper_core::connect::{Token, READ};
 use beeper_core::matrix;
@@ -264,6 +264,10 @@ fn invalid_input(issues: Vec<Issue>) -> Response {
 
 /// The zod issue of an empty string for `string().min(1)`.
 fn too_short(k: &str) -> Issue {
+    too_short_at(json!([k]))
+}
+
+fn too_short_at(path: Value) -> Issue {
     Issue(vec![
         ("code", json!("too_small")),
         ("minimum", json!(1)),
@@ -271,8 +275,60 @@ fn too_short(k: &str) -> Issue {
         ("inclusive", json!(true)),
         ("exact", json!(false)),
         ("message", json!("String must contain at least 1 character(s)")),
-        ("path", json!([k])),
+        ("path", path),
     ])
+}
+
+/// The zod issue of a `string().min(1)` value at `path`.
+fn filled_issue(v: Option<&Value>, path: Value) -> Option<Issue> {
+    match v {
+        Some(Value::String(s)) if s.is_empty() => Some(too_short_at(path)),
+        v => string_issue(v, false, path),
+    }
+}
+
+/// The zod issue of a value that is not of a JSON type, unless `optional` and missing: `boolean` or `number`.
+fn kind_issue(v: Option<&Value>, kind: &str, optional: bool, path: Value) -> Option<Issue> {
+    let fits = match v {
+        None => optional,
+        Some(v) => zod_type(Some(v)) == kind,
+    };
+    (!fits).then(|| type_issue(["code", "expected", "received"], kind, zod_type(v), path))
+}
+
+/// zod's checks of `number().int().nonnegative()`, after the type.
+fn whole_issues(n: f64, path: Value) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    if n.fract() != 0.0 {
+        issues.push(Issue(vec![
+            ("code", json!("invalid_type")),
+            ("expected", json!("integer")),
+            ("received", json!("float")),
+            ("message", json!("Expected integer, received float")),
+            ("path", path.clone()),
+        ]));
+    }
+    if n < 0.0 {
+        issues.push(Issue(vec![
+            ("code", json!("too_small")),
+            ("minimum", json!(0)),
+            ("type", json!("number")),
+            ("inclusive", json!(true)),
+            ("exact", json!(false)),
+            ("message", json!("Number must be greater than or equal to 0")),
+            ("path", path),
+        ]));
+    }
+    issues
+}
+
+/// Desktop's answer to a tool input with zod issues.
+fn checked(issues: Vec<Issue>) -> Result<(), Response> {
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(invalid_input(issues))
+    }
 }
 
 /// zod's `string().email()`: the regex of zod 3, `^(?!\.)(?!.*\.\.)([A-Z0-9_'+\-\.]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9\-]*\.)+[A-Z]{2,}$`
@@ -563,12 +619,13 @@ impl Req {
         self.direction().map_err(|issue| invalid_input(vec![issue]))
     }
 
-    fn need_q(&self, k: &str) -> Result<&str, Response> {
-        self.q(k).filter(|v| !v.trim().is_empty()).ok_or_else(|| required(k))
-    }
-
     fn str(&self, k: &str) -> Option<&str> {
         self.body[k].as_str()
+    }
+
+    /// A key of the input of Desktop's tool routes, `{...query, ...params, ...body}`: the body's, else the query's.
+    fn input(&self, k: &str) -> Option<&Value> {
+        self.body.get(k).or_else(|| self.query.get(k))
     }
 
     /// The body as Express's JSON parser leaves it: `None` (`undefined`) without a JSON body, and `{}` for an empty
@@ -926,6 +983,18 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     if let Some(reply) = auth::route(store, &method, &segs, &req, granted.as_ref()) {
         return reply;
     }
+    // The bridge routes' schemas take a bridge ID of `^[A-Za-z0-9_-]+$`.
+    if let ["v1", "bridges", id, ..] = &segs[..] {
+        if !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+            let message = "Bridge ID may only contain letters, numbers, underscores, and hyphens";
+            return Err(invalid_input(vec![Issue(vec![
+                ("validation", json!("regex")),
+                ("code", json!("invalid_string")),
+                ("message", json!(message)),
+                ("path", json!(["bridgeID"])),
+            ])]));
+        }
+    }
     if let ("POST", ["v1", "app", "setup", step @ ("start" | "email" | "response" | "register")]) =
         (method.as_str(), &segs[..])
     {
@@ -1143,15 +1212,16 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
         ["v1", "chats", id, rest @ ..] => {
             // Desktop's `getChat` names no chat, unlike its `getChatMeta` of the other chat routes.
             let unknown = || if rest.is_empty() { missing("Chat not found") } else { no_chat(id) };
+            // Desktop checks `GetChatInput` before it looks for the chat.
+            let max = match (rest, r.query.get("maxParticipantCount")) {
+                ([], Some(v)) => {
+                    coerce_int(v, (-1, true), 500, json!(["maxParticipantCount"])).map_err(invalid_input)?
+                }
+                _ => 100,
+            };
             let idx = st.resolve_chat_idx(id).ok_or_else(unknown)?;
             match rest {
-                [] => {
-                    let max = r.q("maxParticipantCount").map_or(Ok(100), |v| match v.parse::<i64>() {
-                        Ok(n @ -1..=500) => Ok(n),
-                        _ => Err(bad("maxParticipantCount must be an integer from -1 to 500")),
-                    })?;
-                    ok(&view::chat(st, &st.chats[idx], usize::try_from(max).ok(), false))
-                }
+                [] => ok(&view::chat(st, &st.chats[idx], usize::try_from(max).ok(), false)),
                 ["messages"] => list_messages(st, idx, r),
                 ["messages", mid] => {
                     let m = st.stored_message(mid).filter(|m| st.in_chat(idx, &m.chat_id));
@@ -1196,7 +1266,21 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
             )
         }
         ("POST", ["v1", "assets", "download"]) => {
-            let url = r.need("url")?;
+            // Desktop's `DownloadAssetInput`: a URL of at least one character, which its refinement checks for a
+            // media scheme, unless the type of the URL aborts the parse.
+            let url = r.input("url");
+            let mut issues: Vec<Issue> = filled_issue(url, json!(["url"])).into_iter().collect();
+            let url = url.and_then(Value::as_str);
+            if url.is_some_and(|u| !u.starts_with("mxc://") && !u.starts_with("localmxc://")) {
+                let message = "URL must start with mxc:// or localmxc://";
+                issues.push(Issue(vec![
+                    ("code", json!("custom")),
+                    ("message", json!(message)),
+                    ("path", json!(["url"])),
+                ]));
+            }
+            checked(issues)?;
+            let url = url.expect("the input passed its schema");
             let failed = || json_with(StatusCode::OK, &json!({ "error": asset_failure(url).1 }));
             // Desktop's `resolveMatrixAsset` downloads only media URLs.
             let media = url.starts_with("mxc://") || url.starts_with("localmxc://");
@@ -1676,6 +1760,7 @@ fn chats(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
     match (method, path) {
         ("POST", []) => merge_chats(st, r),
         (_, [id, rest @ ..]) => {
+            chat_input(method, rest, r)?;
             let idx = st.resolve_chat_idx(id).ok_or_else(|| no_chat(id))?;
             chat(st, method, idx, id, rest, r)
         }
@@ -1916,6 +2001,128 @@ fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
     ok(&chat_search(st, &ChatSearch::parse(r)?))
 }
 
+/// Desktop's `Sp` and `SetChatReminderInput`: the time of `reminder.remindAt`, or of the older `remindAtMs`, and
+/// `dismissOnIncomingMessage`.
+fn reminder_input(r: &Req) -> Result<(i64, Option<bool>), Response> {
+    let reminder = r.input("reminder");
+    let Some(Value::Object(o)) = reminder else {
+        let issue = type_issue(["code", "expected", "received"], "object", zod_type(reminder), json!(["reminder"]));
+        return Err(invalid_input(vec![issue]));
+    };
+    let path = |k: &str| json!(["reminder", k]);
+    let legacy = match (o.get("remindAt"), o.get("remindAtMs")) {
+        (None, Some(ms)) => Some(match ms {
+            Value::String(s) => js_number(s),
+            v => v.as_f64().unwrap_or(f64::NAN),
+        })
+        .filter(|ms| ms.is_finite()),
+        _ => None,
+    };
+    // `new Date(ms).toISOString()` throws for a time past the range of `Date`.
+    if legacy.is_some_and(|ms| ms.abs() > 8.64e15) {
+        return Err(failed("Invalid time value"));
+    }
+    let mut issues = Vec::new();
+    let at = match (legacy, o.get("remindAt")) {
+        (Some(ms), _) => Some(ms.trunc() as i64),
+        (None, Some(Value::String(s))) => zod_datetime(s, false).or_else(|| {
+            issues.push(Issue(vec![
+                ("code", json!("invalid_string")),
+                ("validation", json!("datetime")),
+                ("message", json!("Invalid datetime")),
+                ("path", path("remindAt")),
+            ]));
+            None
+        }),
+        (None, v) => {
+            issues.extend(string_issue(v, false, path("remindAt")));
+            None
+        }
+    };
+    let dismiss = o.get("dismissOnIncomingMessage");
+    issues.extend(kind_issue(dismiss, "boolean", true, path("dismissOnIncomingMessage")));
+    checked(issues)?;
+    Ok((at.expect("a checked time"), dismiss.and_then(Value::as_bool)))
+}
+
+/// The zod issues of `SendMessageInput`: the text, the reply, the attachment, then the refinement that needs one of
+/// the text and the attachment.
+fn send_issues(r: &Req) -> Vec<Issue> {
+    let at = |k: &str| json!(["attachment", k]);
+    let mut issues: Vec<Issue> =
+        ["text", "replyToMessageID"].into_iter().filter_map(|k| string_issue(r.input(k), true, json!([k]))).collect();
+    match r.input("attachment") {
+        None => {}
+        Some(Value::Object(a)) => {
+            issues.extend(string_issue(a.get("uploadID"), false, at("uploadID")));
+            issues.extend(["mimeType", "fileName"].into_iter().filter_map(|k| string_issue(a.get(k), true, at(k))));
+            match a.get("size") {
+                None => {}
+                Some(Value::Object(size)) => issues.extend(
+                    ["width", "height"]
+                        .into_iter()
+                        .filter_map(|k| kind_issue(size.get(k), "number", false, json!(["attachment", "size", k]))),
+                ),
+                v => issues.extend(kind_issue(v, "object", false, at("size"))),
+            }
+            issues.extend(kind_issue(a.get("duration"), "number", true, at("duration")));
+            let kinds = ["image", "video", "audio", "file", "gif", "voice-note", "sticker"];
+            issues.extend(a.get("type").and_then(|t| enum_issue(Some(t), &kinds, at("type"))));
+        }
+        v => issues.extend(kind_issue(v, "object", false, json!(["attachment"]))),
+    }
+    // Every issue above aborts the parse, which skips the refinement.
+    let text = r.input("text").and_then(Value::as_str).unwrap_or_default();
+    if issues.is_empty() && r.input("attachment").is_none() && text.is_empty() {
+        issues.push(Issue(vec![
+            ("code", json!("custom")),
+            ("message", json!("Either text or attachment is required.")),
+            ("path", json!([])),
+        ]));
+    }
+    issues
+}
+
+/// Desktop's zod schemas of the chat routes, which it checks before it looks for the chat.
+fn chat_input(method: &str, rest: &[&str], r: &Req) -> Result<(), Response> {
+    let at = |k: &str| json!([k]);
+    let optional = |k: &'static str| string_issue(r.input(k), true, at(k));
+    checked(match (method, rest) {
+        ("PATCH", []) => {
+            let nullable =
+                |k: &'static str| r.input(k).filter(|v| !v.is_null()).and_then(|v| string_issue(Some(v), false, at(k)));
+            let mut issues: Vec<Issue> = ["title", "description", "imgURL"].into_iter().filter_map(nullable).collect();
+            let flags = ["isArchived", "isLowPriority", "isPinned", "isMuted"];
+            issues.extend(flags.into_iter().filter_map(|k| kind_issue(r.input(k), "boolean", true, at(k))));
+            match r.input("messageExpirySeconds") {
+                None | Some(Value::Null) => {}
+                Some(v) => match v.as_f64() {
+                    Some(n) => issues.extend(whole_issues(n, at("messageExpirySeconds"))),
+                    None => issues.extend(kind_issue(Some(v), "number", false, at("messageExpirySeconds"))),
+                },
+            }
+            issues
+        }
+        ("POST", ["archive"]) => kind_issue(r.input("archived"), "boolean", true, at("archived")).into_iter().collect(),
+        ("POST", ["read" | "unread"]) => optional("messageID").into_iter().collect(),
+        ("POST", ["reminders"]) => return reminder_input(r).map(drop),
+        ("POST", ["messages"]) => send_issues(r),
+        ("PUT", ["messages", _]) => filled_issue(r.input("text"), at("text")).into_iter().collect(),
+        // Desktop's `Xt` reads the strings `true` and `false` of a query as booleans.
+        ("DELETE", ["messages", _]) => match r.input("forEveryone") {
+            Some(Value::String(s)) if s == "true" || s == "false" => Vec::new(),
+            v => kind_issue(v, "boolean", true, at("forEveryone")).into_iter().collect(),
+        },
+        ("POST", ["messages", _, "reactions"]) => {
+            [filled_issue(r.input("reactionKey"), at("reactionKey")), optional("transactionID")]
+                .into_iter()
+                .flatten()
+                .collect()
+        }
+        _ => Vec::new(),
+    })
+}
+
 fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str], r: &Req) -> Reply {
     match (method, rest) {
         ("PATCH", []) => {
@@ -1934,7 +2141,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             chat_reply(st, idx)
         }
         ("POST", ["archive"]) => {
-            let archived = r.body["archived"].as_bool().unwrap_or(true);
+            let archived = r.input("archived").and_then(Value::as_bool).unwrap_or(true);
             st.set_chat_flag(idx, ChatFlag::Archived, Some(archived));
             empty(StatusCode::NO_CONTENT, Vec::new())
         }
@@ -1951,21 +2158,9 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             chat_reply(st, idx)
         }
         ("POST", ["reminders"]) => {
-            let reminder = &r.body["reminder"];
-            // Desktop's `Sp` also takes the older `remindAtMs`.
-            let at = match (&reminder["remindAt"], &reminder["remindAtMs"]) {
-                (Value::String(at), _) => millis_from_iso(at),
-                (Value::Null, ms) => ms.as_i64(),
-                _ => None,
-            };
-            let invalid =
-                || error(StatusCode::BAD_REQUEST, "reminder.remindAt must be a valid ISO timestamp", "INVALID_INPUT");
+            let (at, dismiss) = reminder_input(r)?;
             // Desktop's `setReminder` dismisses the reminder on an incoming message when the request does not say.
-            let dismiss = match &reminder["dismissOnIncomingMessage"] {
-                Value::Null => true,
-                v => v.as_bool().ok_or_else(|| bad("reminder.dismissOnIncomingMessage must be a boolean"))?,
-            };
-            let reminder = ChatReminder { remind_at_ms: at.ok_or_else(invalid)?, dismiss_on_incoming_message: dismiss };
+            let reminder = ChatReminder { remind_at_ms: at, dismiss_on_incoming_message: dismiss.unwrap_or(true) };
             st.set_reminder(idx, Some(reminder));
             empty(StatusCode::NO_CONTENT, Vec::new())
         }
@@ -1975,7 +2170,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         }
         ("POST", ["messages"]) => send_message(st, id, r),
         ("PUT", ["messages", mid]) => {
-            let text = r.need("text")?;
+            let text = r.input("text").and_then(Value::as_str).expect("the input passed its schema");
             let (msg, rules) = message_rules(st, id, mid)?;
             let refuse = |message| Err(error(StatusCode::BAD_REQUEST, message, "EDIT_NOT_ALLOWED"));
             if !MessageRules::young(rules.edit_max_age, &msg.timestamp) {
@@ -2010,15 +2205,20 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             empty(StatusCode::NO_CONTENT, Vec::new())
         }
         ("POST", ["messages", mid, "reactions"]) => {
-            let key = r.need("reactionKey")?;
-            let (cid, tx) = st.add_reaction(id, mid, key, None, r.owned("transactionID")).map_err(store_error)?;
-            ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "transactionID": tx, "success": true }))
+            let key = r.input("reactionKey").and_then(Value::as_str).expect("the input passed its schema");
+            let tx = r.input("transactionID").and_then(Value::as_str).map(str::to_string);
+            let (cid, tx) = st.add_reaction(id, mid, key, None, tx).map_err(store_error)?;
+            ok(&json!({ "success": true, "chatID": cid, "messageID": mid, "reactionKey": key, "transactionID": tx }))
         }
-        // Desktop also takes the key from the query, for keys that a path cannot carry.
+        // Desktop also takes the key from the query, for keys that a path cannot carry. That route skips the schema,
+        // so its handler checks the key.
         ("DELETE", ["messages", mid, "reactions", rest @ ..]) if rest.len() <= 1 => {
             let key = rest.first().copied().unwrap_or_else(|| r.q("reactionKey").unwrap_or_default());
+            if key.is_empty() {
+                return Err(required("reactionKey"));
+            }
             let cid = st.remove_reaction(id, mid, key).map_err(store_error)?;
-            ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "success": true }))
+            ok(&json!({ "success": true, "chatID": cid, "messageID": mid, "reactionKey": key }))
         }
         _ => Err(no_route()),
     }
@@ -2216,14 +2416,9 @@ fn upload_file(st: &BeeperStore, a: &Value) -> Result<OutFile, Response> {
 
 /// Desktop's `sendMessage`: the text, or the file with the text as its caption, like the composer.
 fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
-    let file = match &r.body["attachment"] {
-        Value::Null => None,
-        a => Some(upload_file(st, a)?),
-    };
-    let (text, reply_to) = (r.owned("text"), r.owned("replyToMessageID"));
-    if text.is_none() && file.is_none() {
-        return Err(bad("text or attachment is required"));
-    }
+    let file = r.input("attachment").map(|a| upload_file(st, a)).transpose()?;
+    let text = |k: &str| r.input(k).and_then(Value::as_str).map(str::to_string);
+    let (text, reply_to) = (text("text").filter(|t| !t.is_empty() || file.is_none()), text("replyToMessageID"));
     let draft = Draft { text, reply_to, files: file.into_iter().collect(), ..Draft::default() };
     let (chat_id, txns) = st.send(id, draft).map_err(store_error)?;
     ok(&json!({ "chatID": chat_id, "pendingMessageID": txns[0] }))
@@ -2418,7 +2613,9 @@ fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
 /// Desktop's `search`: `searchChats` with the scope `titles` and with the scope `participants`, 30 chats each, and the
 /// first page of `searchMessages`.
 fn unified_search(st: &BeeperStore, r: &Req) -> Reply {
-    let q = r.need_q("query")?;
+    // Desktop's `UnifiedSearchInput`: `query`, a string of at least one character.
+    checked(filled_issue(r.query.get("query"), json!(["query"])).into_iter().collect())?;
+    let q = r.q("query").expect("the input passed its schema");
     let chats = |people| chat_search(st, &ChatSearch::of(q, people, 30)).items;
     let messages = message_search(st, &MessageSearch::of(q))?;
     ok(&json!({ "results": { "chats": chats(false), "in_groups": chats(true), "messages": messages } }))
@@ -2692,9 +2889,13 @@ fn serve_asset(path: std::path::PathBuf, r: &Req) -> Reply {
 }
 
 fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
+    // Desktop's `FocusAppInput`: optional strings.
+    let fields = ["chatID", "messageID", "draftText", "draftAttachmentPath"];
+    checked(fields.into_iter().filter_map(|k| string_issue(r.input(k), true, json!([k]))).collect())?;
+    let text = |k: &str| r.input(k).and_then(Value::as_str);
     // Desktop's `focusApp` uses the message and the draft only with a chat, and fails on a draft text without one.
-    let idx = r.str("chatID").map(|id| st.resolve_chat_idx(id).ok_or_else(|| no_chat(id))).transpose()?;
-    let (text, path) = (r.owned("draftText"), r.owned("draftAttachmentPath"));
+    let idx = text("chatID").map(|id| st.resolve_chat_idx(id).ok_or_else(|| no_chat(id))).transpose()?;
+    let (text, path) = (text("draftText").map(str::to_string), text("draftAttachmentPath").map(str::to_string));
     if idx.is_none() && text.is_some() {
         let message = "Failed to execute tool: focusApp";
         return Err(error_with(StatusCode(500), message, "TOOL_EXECUTION_ERROR", json!({})));
