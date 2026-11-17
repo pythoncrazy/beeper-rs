@@ -20,6 +20,8 @@ pub struct Wants {
     pub quotes: RefCell<BTreeSet<(String, String)>>,
     /// The shown voice notes to transcribe automatically.
     pub transcribe: RefCell<BTreeSet<String>>,
+    /// The URLs of the shown contact cards (`.vcf` attachments) to read.
+    pub vcards: RefCell<BTreeSet<String>>,
     /// A view asked for a URL after the last frame.
     fresh: Cell<bool>,
 }

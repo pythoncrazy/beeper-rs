@@ -1093,7 +1093,12 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let vcard = pm.name.ends_with(".vcf") || pm.mime == "text/x-vcard";
         if pm.frames.is_empty() && vcard {
-            contact_card(p, &parse_vcard(&String::from_utf8_lossy(&pm.bytes)))
+            let entry = |phone: bool, s: &str| -> El<'a> {
+                let s = if phone { crate::fmt_phone(s) } else { s.to_string() };
+                txt(s, 12.0).line_height(Pixels(16.0)).color(p.text).into()
+            };
+            let card = contact_card(p, &parse_vcard(&String::from_utf8_lossy(&pm.bytes)), p.text, 1, &entry);
+            container(card).padding([8, 10]).style(fill_box(p.received, 0.0)).into()
         } else if pm.frames.is_empty() {
             let ext = std::path::Path::new(&pm.name).extension().map(|e| e.to_string_lossy().to_uppercase());
             let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();

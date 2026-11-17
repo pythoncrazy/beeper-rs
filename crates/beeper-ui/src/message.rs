@@ -293,6 +293,12 @@ pub(crate) fn time_hidden(m: &Message, next: Option<&Message>, h24: bool) -> boo
     })
 }
 
+/// Desktop's `gx`: an attachment that is a contact card.
+fn is_vcard(a: &Attachment) -> bool {
+    let name = a.file_name.as_deref().unwrap_or_default().to_lowercase();
+    name.ends_with(".vcf") || a.mime_type.as_deref().is_some_and(|m| m.eq_ignore_ascii_case("text/x-vcard"))
+}
+
 /// Desktop's `pm` text: the formatted body with each custom emoji (`data-mx-emoticon`) as 📟 when it has one, else
 /// the text, so a message of custom emoji is a jumbo emoji too.
 fn emoji_text(m: &Message) -> String {
@@ -1535,6 +1541,13 @@ impl BeeperGuiApp {
                     };
                     button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press).into()
                 }
+                // Desktop's `gx` attachments show as `Wfe` contact cards, once their file is read.
+                _ if is_vcard(a) && a.src_url.as_ref().and_then(|u| self.vcard_at(u)).is_none_or(Result::is_ok) => {
+                    match a.src_url.as_ref().and_then(|u| self.vcard_at(u)) {
+                        Some(Ok(card)) => self.view_contact_attachment(m, ai, card, mine, (bg, fg)),
+                        _ => Space::new().into(),
+                    }
+                }
                 _ => {
                     let meta = file_label(a).into_iter().chain(a.file_size.map(human_size)).collect::<Vec<_>>();
                     // Desktop's `AttachmentFileRow`: at most 240 px wide, the name in `body-sm` on two lines at most,
@@ -2165,6 +2178,64 @@ impl BeeperGuiApp {
 
     /// Desktop's reactions list of messages `ms`: each reaction with the face and the name of its sender, by group, and "and N more" after 19 when there are more than 20.
     /// Desktop's `Tfe`: a custom emoji's image 16 high, or the emoji.
+    /// Desktop's `Wfe` in the timeline: the contact card in the colors of the bubble, its first 10 phone numbers and
+    /// emails, which start a chat on an account that can message them and else open their Call or Email and Copy menu,
+    /// and its Download button.
+    fn view_contact_attachment<'a>(
+        &self,
+        m: &Message,
+        ai: usize,
+        card: &crate::vcard::VCard,
+        mine: bool,
+        (bg, fg): (Color, Color),
+    ) -> El<'a> {
+        let p = &self.pal;
+        let account = m.account_id.clone();
+        let entry = |phone: bool, s: &str| -> El<'a> {
+            let shown = if phone { crate::fmt_phone(s) } else { s.to_string() };
+            let reach = self.can(&account, if phone { "lookup_phone" } else { "lookup_email" });
+            let (label, msg) = match reach {
+                true => {
+                    let user = match phone {
+                        true => User { id: s.into(), phone_number: Some(s.into()), ..Default::default() },
+                        false => User { id: s.into(), email: Some(s.into()), ..Default::default() },
+                    };
+                    (format!("{shown} →"), UiMessage::Message(Msg::MessageContact(account.clone(), Box::new(user))))
+                }
+                false => {
+                    let kind = if phone { "phone" } else { "email" };
+                    (shown, UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("vcard:{kind} {s}"))))
+                }
+            };
+            let text = txt(label, 12.0).line_height(Pixels(16.0)).color(if reach { fg } else { p.link });
+            button(text).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(msg).into()
+        };
+        let body = crate::contact_card(p, card, fg, 10, &entry);
+        let glyph: El<'a> = ic(icon::DOWNLOAD, 16.0).color(fg).into();
+        let download = button(container(glyph).center_x(Fill))
+            .padding([4, 6])
+            .width(Fill)
+            .style(crate::style::bordered_btn([CLEAR; 3], [fg; 3], fg, 1.0, 4.0))
+            .on_press(UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))));
+        let body = body.push(container(download).padding(Padding::ZERO.top(12.0)));
+        // `.contact-attachment` is as wide as its details, at least 200 px, and its button stretches across it.
+        let w = |s: &str, size: f32, weight| crate::style::text_width(s, size, weight);
+        let entries =
+            card.phones.iter().take(10).map(|n| w(&format!("{} →", crate::fmt_phone(n)), 12.0, Weight::Normal));
+        let entries = entries.chain(card.emails.iter().take(10).map(|e| w(&format!("{e} →"), 12.0, Weight::Normal)));
+        let text =
+            [w(&card.name, 14.0, Weight::Medium), w(card.org.as_deref().unwrap_or_default(), 12.0, Weight::Normal)]
+                .into_iter()
+                .chain(entries)
+                .fold(w(&trn("Phone Number", "Phone Numbers", 2, &[]), 12.0, Weight::Semibold), f32::max);
+        let fill = if mine { bg } else { p.received };
+        container(body)
+            .width((32.0 + 8.0 + text.ceil()).max(180.0) + 20.0)
+            .padding([8, 10])
+            .style(fill_box(fill, 17.0))
+            .into()
+    }
+
     /// The first frame of the image at `url`, once it has loaded.
     fn still(&self, url: &str) -> Option<image::Handle> {
         self.media_at(url).and_then(|m| m.as_ref().ok()).and_then(|f| f.first()).map(|f| f.0.clone())
@@ -2265,6 +2336,8 @@ pub enum Msg {
     OpenMenu(String),
     /// A right click on a link of a message, by its `href`.
     LinkMenu(String, String),
+    /// Desktop's `createThreadWithPhoneNumber` and `createThreadWithEmail` of a contact card.
+    MessageContact(String, Box<User>),
     /// Select the message, or unselect it when it is selected.
     Click(String),
     Select(Vec<String>),
@@ -2381,6 +2454,7 @@ impl BeeperGuiApp {
             }
             // Desktop leaves the right click on another link to Electron, which has no menu for it.
             Msg::LinkMenu(..) => {}
+            Msg::MessageContact(account, user) => return self.open_dm(account, *user, None, None),
             Msg::OpenMenu(mid) => {
                 self.pane.menu_link = None;
                 // With text selected, Desktop leaves the menu to Electron's, which offers the selection.
