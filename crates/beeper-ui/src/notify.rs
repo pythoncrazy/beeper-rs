@@ -168,6 +168,24 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's notifications of an own message that failed: "Message failed to send" for a send of this device
+    /// that waits for Retry (`onNotSent`), else "Message may have failed to send" (`notifyErroredMessage`). Once a
+    /// message, and not for messages from before the start.
+    pub(crate) fn notify_failed(&mut self, m: &Message) -> Task<UiMessage> {
+        let failed = m.is_sender == Some(true) && m.send_error.as_ref().is_some_and(|e| !e.retrying);
+        if !failed || m.timestamp <= self.booted || !self.notified.insert(format!("failed:{}", m.id)) {
+            return Task::none();
+        }
+        let st = self.store.read();
+        let Some(chat) = st.find_chat(&m.chat_id) else { return Task::none() };
+        let here = st.outbox.iter().any(|o| o.2.message() == Some(m.id.as_str()));
+        let body = if here { "Message failed to send" } else { "Message may have failed to send" };
+        let toast = Toast { title: chat.title.clone(), body: body.into(), ..Toast::default() };
+        let note = Note { chat: chat.id.clone(), message: m.id.clone(), toast };
+        drop(st);
+        self.show_note(note, false)
+    }
+
     pub(crate) fn notify_message(&mut self, m: &Message) -> Task<UiMessage> {
         if let Some(t) = self.pending.typing.get_mut(&m.chat_id) {
             t.1 = None;

@@ -755,6 +755,29 @@ fn command_bar_commands_like_desktop() {
     assert!(titles(&app, "").contains(&"Unread".to_string()));
 }
 
+/// Desktop's notification of a send that failed: once, and only for messages since the start.
+#[test]
+fn failed_sends_notify_like_desktop() {
+    let mut app = demo_app("failed-notify");
+    let m = {
+        let mut st = app.store.write();
+        let i = st.messages.iter().position(|m| m.is_sender == Some(true)).expect("an own message");
+        let old = st.messages[i].clone();
+        st.update_message(i, |m| {
+            m.timestamp = beeper_core::config::now_rfc3339_millis();
+            m.send_error = Some(beeper_core::models::SendError { message: Some("no".into()), retrying: false });
+        });
+        (old, st.messages[i].clone())
+    };
+    let key = format!("failed:{}", m.1.id);
+    let mut stale = m.0.clone();
+    stale.send_error = m.1.send_error.clone();
+    let _ = app.notify_failed(&stale);
+    assert!(!app.notified.contains(&key), "a message from before the start does not notify");
+    let _ = app.update(UiMessage::Upserted(Box::new(m.1.clone())));
+    assert!(app.notified.contains(&key), "a failed send notifies");
+}
+
 #[test]
 fn closing_the_main_window_hides_it_like_desktop() {
     let mut app = demo_app("closehide");
