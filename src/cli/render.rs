@@ -448,8 +448,11 @@ pub fn layout(el: &El, cols: usize, color: Option<bool>) -> String {
     rows.collect::<Vec<_>>().join("\n")
 }
 
+/// Prints `el`, or nothing for an empty element, like ink renders nothing for `undefined` or an empty list.
 pub fn print(el: &El) {
-    println!("{}", layout(el, columns(1), color_mode()));
+    if !matches!(el, El::Empty) {
+        println!("{}", layout(el, columns(1), color_mode()));
+    }
 }
 
 // ─── formatting (`lib/ink/format.js`) ──────────────────────────────────────────

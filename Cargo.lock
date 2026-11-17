@@ -484,6 +484,8 @@ dependencies = [
  "chrono",
  "iced",
  "iced_test",
+ "libc",
+ "qrcodegen",
  "rusqlite",
  "sctk-adwaita",
  "serde",
