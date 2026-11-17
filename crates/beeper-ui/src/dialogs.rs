@@ -4,6 +4,7 @@ use crate::accounts;
 use crate::blocking;
 use crate::blocking::blocked_chats;
 use crate::chat_list;
+use crate::focus::{self, Keys, Look};
 use crate::i18n::{tr, trf, trn, trx};
 use crate::info;
 use crate::integrations;
@@ -34,6 +35,7 @@ use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
 use iced::gradient::Linear;
+use iced::keyboard::key::Named;
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
     button, column, container, image, mouse_area, operation, row, scrollable, stack, text_editor, text_input, Column,
@@ -85,6 +87,8 @@ pub struct LabelDraft {
     pub more: bool,
     /// The step of the New Label wizard, or the sheet of an existing label: Pick for Chats, Details for Edit Label.
     pub step: LabelStep,
+    /// Desktop's `focusedIndex` of the `IconColorGrid`: the cell that the arrows move and Enter and Space pick.
+    pub cell: Option<usize>,
 }
 
 /// A step of Desktop's New Label wizard (`krt`).
@@ -97,6 +101,30 @@ pub enum LabelStep {
 
 /// The size of Desktop's Chats and Edit Label sheets of Label Settings.
 const LABEL_SHEET_SIZE: Size = Size::new(395.0, 504.0);
+
+/// Desktop's arrows in the `IconColorGrid` (`KZ` and `GZ`): ← and → move along the row, and ↑ and ↓ to the cell of
+/// the row above or below whose middle is nearest, in the rows that `spread` makes `width` wide.
+fn grid_move(at: usize, key: Named, width: f32) -> usize {
+    let per = ((width + 10.0) / 42.0) as usize;
+    let sections = [(0, LABEL_COLORS.len()), (LABEL_COLORS.len(), LABEL_ICONS.len())];
+    let rows: Vec<(usize, usize)> = sections
+        .into_iter()
+        .flat_map(|(start, n)| (0..n).step_by(per).map(move |i| (start + i, per.min(n - i))))
+        .collect();
+    let r = rows.iter().position(|&(s, n)| (s..s + n).contains(&at)).expect("a cell of the grid");
+    let (start, n) = rows[r];
+    let left = |(_, n): (usize, usize), j: usize| if n < 2 { 0.0 } else { j as f32 * (width - 32.0) / (n - 1) as f32 };
+    let to = match key {
+        Named::ArrowLeft => return at.saturating_sub(1).max(start),
+        Named::ArrowRight => return (at + 1).min(start + n - 1),
+        Named::ArrowUp => r.checked_sub(1),
+        _ => Some(r + 1).filter(|&r| r < rows.len()),
+    };
+    let Some(to) = to else { return at };
+    let x = left(rows[r], at - start);
+    let far = |j: usize| (left(rows[to], j) - x).abs();
+    (0..rows[to].1).min_by(|&a, &b| far(a).total_cmp(&far(b))).map_or(at, |j| rows[to].0 + j)
+}
 
 /// Desktop's `intro-avatar` faces of the New Label intro.
 pub(crate) static LABEL_INTRO_FACES: std::sync::LazyLock<[image::Handle; 3]> = std::sync::LazyLock::new(|| {
@@ -112,7 +140,18 @@ impl LabelDraft {
     pub(crate) fn new(id: window::Id) -> Self {
         let (name, search, chats) = (String::new(), String::new(), Vec::new());
         let icon = Some(DEFAULT_LABEL_ICON.into());
-        LabelDraft { id, label: None, name, search, chats, color: None, icon, more: false, step: LabelStep::Pick }
+        LabelDraft {
+            id,
+            label: None,
+            name,
+            search,
+            chats,
+            color: None,
+            icon,
+            more: false,
+            step: LabelStep::Pick,
+            cell: None,
+        }
     }
 
     fn edit(id: window::Id, l: &Label) -> Self {
@@ -160,6 +199,10 @@ pub enum LabelEdit {
     Color(u8),
     /// Picks an icon, or clears the picked icon.
     Icon(&'static str),
+    /// An arrow in the color and icon grid, or the focus coming to the grid, which forgets its cell.
+    Grid(Option<Named>),
+    /// Enter or Space in the grid: picks or clears the color or icon of its cell.
+    GridPick,
     /// Get Started, Next or Done: the next step, or creates or saves the label.
     Advance,
     Back,
@@ -532,7 +575,7 @@ impl BeeperGuiApp {
                 );
                 let allow = vec![(tr("Allow Access"), UiMessage::Voice(voice::Msg::Allow(true)))];
                 let disable = (tr("Disable"), UiMessage::Voice(voice::Msg::Allow(false)));
-                return self.dialog_with(tr("Privacy notice").into(), body, None, allow, disable);
+                return self.dialog_with(self.asking_in(), tr("Privacy notice").into(), body, None, allow, disable);
             }
             // Desktop's "Room encryption" `PrefsActionPrompt` of New Chat.
             ASK_ROOM_ENCRYPTION => {
@@ -552,7 +595,8 @@ impl BeeperGuiApp {
                 let extra = column![option, txt(note, 12.0).color(p.text.scale_alpha(0.72))].spacing(10);
                 let start = vec![(tr("Start group chat"), UiMessage::NewChat(crate::new_chat::Msg::Start))];
                 let cancel = (trx("Cancel", "button label"), UiMessage::Ask(None));
-                return self.dialog_with(tr("Room encryption").into(), String::new(), Some(extra.into()), start, cancel);
+                let title = tr("Room encryption").into();
+                return self.dialog_with(self.asking_in(), title, String::new(), Some(extra.into()), start, cancel);
             }
             ASK_UNMERGE => {
                 let id = self.delete_target.clone().expect("a merged chat to unmerge");
@@ -562,12 +606,12 @@ impl BeeperGuiApp {
                 )];
                 let body = tr("This will split this merged chat back into individual chats.").into();
                 let keep = (tr("Keep chats merged"), UiMessage::Ask(None));
-                return self.dialog_with(tr("Unmerge Chat?").into(), body, None, unmerge, keep);
+                return self.dialog_with(self.asking_in(), tr("Unmerge Chat?").into(), body, None, unmerge, keep);
             }
             _ => unreachable!("dialog {dialog}"),
         };
         let spam = (dialog == ASK_BLOCK).then(|| self.report_spam_box()).flatten();
-        self.dialog_with(title, body, spam, actions, (tr("Cancel"), UiMessage::Ask(None)))
+        self.dialog_with(self.asking_in(), title, body, spam, actions, (tr("Cancel"), UiMessage::Ask(None)))
     }
 
     /// The "Report spam" checkbox of the Block dialog, when the bridge reports spam.
@@ -581,21 +625,23 @@ impl BeeperGuiApp {
         })
     }
 
-    /// A confirmation dialog over a window, with its actions after the cancel button.
+    /// A confirmation dialog over `window`, with its actions after the cancel button.
     pub(crate) fn dialog<'a>(
         &'a self,
+        window: Option<window::Id>,
         title: String,
         body: String,
         actions: Vec<(&'static str, UiMessage)>,
         cancel: (&'static str, UiMessage),
     ) -> El<'a> {
-        self.dialog_with(title, body, None, actions, cancel)
+        self.dialog_with(window, title, body, None, actions, cancel)
     }
 
     /// A confirmation dialog with `extra` under its text, like the checkbox of Electron's `showMessageBox`. An empty
     /// text leaves only `extra`.
     fn dialog_with<'a>(
         &'a self,
+        window: Option<window::Id>,
         title: String,
         body: String,
         extra: Option<El<'a>>,
@@ -603,12 +649,16 @@ impl BeeperGuiApp {
         (no, cancel): (&'static str, UiMessage),
     ) -> El<'a> {
         let p = &self.pal;
-        let action = |(label, msg): (&'static str, UiMessage)| {
-            button(med(label, 13.0).color(Color::WHITE).wrapping(iced::widget::text::Wrapping::None))
+        // GTK's buttons of Electron's `showMessageBox`: Tab goes through them with Adwaita's dashed
+        // focus line, and the last one is the default (`defaultId`), which has the focus when the dialog opens.
+        let last = actions.len().saturating_sub(1);
+        let action = |(i, (label, msg)): (usize, (&'static str, UiMessage))| {
+            let b = button(med(label, 13.0).color(Color::WHITE).wrapping(iced::widget::text::Wrapping::None))
                 .padding([5, 12])
                 .style(btn_style([p.accent; 3], [Color::WHITE; 3], 6.0))
-                .on_press(msg)
-                .into()
+                .on_press(msg.clone());
+            let keys = if i == last { Keys::press(msg).default_focus() } else { Keys::press(msg) };
+            self.target(window, format!("ask-{i}"), b, keys, Look::Dashed(Color::WHITE))
         };
         // Like a native message box, the dialog is 340 wide and grows to keep its buttons on one line.
         let buttons: f32 = std::iter::once((no, Weight::Normal, 12.0))
@@ -619,18 +669,27 @@ impl BeeperGuiApp {
             .push((!body.is_empty()).then(|| txt(body, 13.0).color(p.text)))
             .push(extra)
             .push(
-                row![Space::new().width(Fill), pill_btn(p, no, cancel.clone())]
-                    .extend(actions.into_iter().map(action))
-                    .spacing(8),
+                row![
+                    Space::new().width(Fill),
+                    self.target(
+                        window,
+                        "ask-cancel",
+                        pill_btn(p, no, cancel.clone()),
+                        Keys::press(cancel.clone()),
+                        Look::Dashed(p.text)
+                    )
+                ]
+                .extend(actions.into_iter().enumerate().map(action))
+                .spacing(8),
             )
             .spacing(10)
             .padding(16)
             .width(buttons.max(308.0) + 40.0);
         mouse_area(
-            container(
+            container(focus::trap(
                 mouse_area(container(card).style(shadow_box(p.elevated, p.menu_border, 12.0, 24.0)))
                     .on_press(UiMessage::Noop),
-            )
+            ))
             .center(Fill)
             .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.45), 0.0)),
         )
@@ -665,6 +724,13 @@ impl BeeperGuiApp {
             LabelEdit::More => d.more = !d.more,
             LabelEdit::Color(c) => d.color = (d.color != Some(c)).then_some(c),
             LabelEdit::Icon(i) => d.icon = (d.icon.as_deref() != Some(i)).then(|| i.into()),
+            LabelEdit::Grid(None) => d.cell = None,
+            LabelEdit::Grid(Some(k)) => d.cell = Some(d.cell.map_or(0, |at| grid_move(at, k, d.size().width - 48.0))),
+            LabelEdit::GridPick => match d.cell {
+                Some(c) if c < LABEL_COLORS.len() => return self.label_edit(LabelEdit::Color(c as u8)),
+                Some(c) => return self.label_edit(LabelEdit::Icon(LABEL_ICONS[c - LABEL_COLORS.len()].0)),
+                None => {}
+            },
             LabelEdit::Cancel => return window::close(d.id),
             LabelEdit::Back => d.step = LabelStep::Pick,
             LabelEdit::Advance if !d.ready() => {}
@@ -752,12 +818,15 @@ impl BeeperGuiApp {
         let id = st.sent.get(&w.label).unwrap_or(&w.label);
         let Some(l) = st.labels.iter().find(|l| l.id == *id) else { return Space::new().into() };
         let pane = |e| UiMessage::Labels(labels::Msg::Pane(w.id, e));
+        // The `:focus-visible` outlines of Label Settings: Desktop's `Button`s, and `--app-focus-ring` rings inside
+        // the rows of `.LabelSettings-module__group` and `__settingRow`, and on `__menuPill`.
+        let ring = |offset, radius| Look::Outline { color: p.focus_ring, width: 2.0, offset, radius };
+        let target = |key: &str, b: El<'a>, keys, look| self.target(Some(w.id), key, b, keys, look);
         let link = btn_style([CLEAR; 3], [p.accent; 3], 0.0);
         let edit = trx("Edit", "edit a label name, icon and color");
-        let edit = button(txt(edit, 13.0).color(p.accent))
-            .padding(0)
-            .style(link)
-            .on_press(UiMessage::Labels(labels::Msg::Edit(l.id.clone())));
+        let open = UiMessage::Labels(labels::Msg::Edit(l.id.clone()));
+        let edit = button(txt(edit, 13.0).color(p.accent)).padding(0).style(link).on_press(open.clone());
+        let edit = target("edit", edit.into(), Keys::press(open), Look::button(p, 4.0));
         let head = column![
             container(label_tile(l, 54.0, 28.0, 20.0, p.strong)).padding(Padding::ZERO.bottom(16.0)),
             semi(l.name.clone(), 18.0).line_height(Pixels(24.0)).color(p.strong).align_x(Center),
@@ -788,11 +857,13 @@ impl BeeperGuiApp {
             false => container(faces).width(Fill).into(),
         };
         let group = row![group, ic(icon::CHEVRON_RIGHT, 16.0).color(p.sub)].spacing(8).align_y(Center);
+        let chats = UiMessage::Labels(labels::Msg::EditChats(l.id.clone()));
         let group = button(group)
             .padding(Padding::new(8.0).left(12.0))
             .width(Fill)
             .style(btn_style([p.chip; 3], [p.text; 3], 16.0))
-            .on_press(UiMessage::Labels(labels::Msg::EditChats(l.id.clone())));
+            .on_press(chats.clone());
+        let group = target("chats", group.into(), Keys::press(chats), ring(-2.0, 16.0));
         let now = l.inbox.unwrap_or("all");
         let inbox_name = |o: &str, label: &'static str| match o {
             "none" => trx(label, "label inbox visibility option"),
@@ -806,6 +877,7 @@ impl BeeperGuiApp {
             .height(24)
             .style(btn_style([p.selected; 3], [p.sub; 3], 12.0))
             .on_press(pane(LabelPane::Menu(!w.menu)));
+        let pill = target("inbox", pill.into(), Keys::press(pane(LabelPane::Menu(!w.menu))), ring(0.0, 12.0));
         let setting = |glyph: char, label: &str, end: El<'a>| -> El<'a> {
             row![container(ic(glyph, 18.0).color(p.strong)).center_x(28), txt(label.to_string(), 13.0).width(Fill), end]
                 .spacing(8)
@@ -816,17 +888,21 @@ impl BeeperGuiApp {
         };
         let rule = container(container(Space::new()).width(Fill).height(0.5).style(fill_box(p.prefs_border, 0.0)))
             .padding(Padding::ZERO.left(40.0).right(8.0));
-        let mute = toggle(p, l.muted, Some(UiMessage::Labels(labels::Msg::Mute(l.id.clone(), !l.muted))));
+        let flip = UiMessage::Labels(labels::Msg::Mute(l.id.clone(), !l.muted));
+        let mute = toggle(p, l.muted, Some(flip.clone()));
+        // The `<label>` row of Mute shows the ring of its switch, which Space flips.
+        let mute = setting(icon::NOTIFICATIONS_OFF, trx("Mute", "label setting"), mute);
         let settings = column![
-            setting(icon::INBOX, tr("Show in Inbox"), pill.into()),
+            setting(icon::INBOX, tr("Show in Inbox"), pill),
             rule,
-            setting(icon::NOTIFICATIONS_OFF, trx("Mute", "label setting"), mute),
+            target("mute", mute, Keys::checkbox(flip), ring(-2.0, 16.0))
         ];
         let delete = button(container(txt(tr("Delete Label"), 13.0).color(p.danger)).center_y(24))
             .padding([8, 12])
             .width(Fill)
             .style(btn_style([p.chip; 3], [p.danger; 3], 16.0))
             .on_press(pane(LabelPane::Delete));
+        let delete = target("delete", delete.into(), Keys::press(pane(LabelPane::Delete)), ring(-2.0, 16.0));
         let body = column![
             head,
             column![title(trx("Chats", "label settings section")), group].padding(Padding::ZERO.top(16.0)),
@@ -838,6 +914,7 @@ impl BeeperGuiApp {
             .padding([6, 14])
             .style(btn_style([p.accent; 3], [Color::WHITE; 3], 999.0))
             .on_press(pane(LabelPane::Done));
+        let done = target("done", done.into(), Keys::press(pane(LabelPane::Done)), Look::button(p, 999.0));
         let footer = container(done).align_right(Fill).align_bottom(Fill).padding(Padding::new(16.0).top(12.0));
         let card = stack![scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill), footer];
         let card = container(card).height(Fill).clip(true).style(fill_box(p.card, 12.0));
@@ -880,16 +957,26 @@ impl BeeperGuiApp {
             (false, LabelStep::Details) => ((tr("Back"), LabelEdit::Back), tr("Next")),
             (true, _) => ((tr("Cancel"), LabelEdit::Cancel), tr("Done")),
         };
+        // Desktop's `Button`s; Get Started has `autoFocus`, and a disabled Next takes no focus.
         let back = button(container(med(back, 13.0)).center_y(32))
             .padding([0, 12])
             .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 16.0))
-            .on_press(edit(undo));
+            .on_press(edit(undo.clone()));
+        let back = self.target(Some(d.id), "back", back, Keys::press(edit(undo)), Look::button(p, 16.0));
         let ready = d.ready();
         let bg = if ready { p.accent } else { p.accent.scale_alpha(0.4) };
         let next = button(container(med(next, 13.0)).center_y(32))
             .padding([0, 14])
             .style(btn_style([bg; 3], [Color::WHITE.scale_alpha(if ready { 1.0 } else { 0.6 }); 3], 16.0))
             .on_press_maybe(ready.then_some(edit(LabelEdit::Advance)));
+        let next: El<'a> = match ready {
+            true => {
+                let keys = Keys::press(edit(LabelEdit::Advance));
+                let keys = if d.step == LabelStep::Intro { keys.default_focus() } else { keys };
+                self.target(Some(d.id), "next", next, keys, Look::button(p, 16.0))
+            }
+            false => next.into(),
+        };
         let footer = row![Space::new().width(Fill), back, next].spacing(8).padding(Padding::new(16.0).top(12.0));
         let card = container(column![container(body).height(Fill), footer]).height(Fill).clip(true);
         let head = semi(self.title(d.id), 13.0).color(p.strong);
@@ -960,8 +1047,11 @@ impl BeeperGuiApp {
             .line_height(Pixels(16.0))
             .padding([14, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-        let clear = (!d.search.trim().is_empty())
-            .then(|| icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, edit(LabelEdit::Search(String::new()))));
+        let clear = (!d.search.trim().is_empty()).then(|| {
+            let empty = edit(LabelEdit::Search(String::new()));
+            let clear = icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, empty.clone());
+            self.target(Some(d.id), "clear", clear, Keys::press(empty), Look::Hidden)
+        });
         let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search]
             .push(clear)
             .spacing(10)
@@ -1015,6 +1105,13 @@ impl BeeperGuiApp {
     fn label_grid<'a>(&self, d: &LabelDraft, width: f32) -> El<'a> {
         let p = &self.pal;
         let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
+        // Desktop's grid is one stop: its arrows move the focused cell, which has `box-shadow: 0 0 0 2px
+        // var(--app-focus-ring)`, and Enter and Space pick it.
+        let held = self.key_held(Some(d.id), "grid");
+        let cell = d.cell.filter(|_| held);
+        let focused = move |i: usize, b: El<'a>, radius: f32| -> El<'a> {
+            crate::ring::ring(b, if cell == Some(i) { p.focus_ring } else { CLEAR }, 2.0, radius).into()
+        };
         let shade = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
         let colors = (0..LABEL_COLORS.len() as u8).map(|c| -> El<'a> {
             let on = d.color == Some(c);
@@ -1026,23 +1123,21 @@ impl BeeperGuiApp {
             });
             let ring = if on { (CLEAR, p.accent) } else { (shade, CLEAR) };
             let dot = container(dot).center(32).style(bordered_box(ring.0, ring.1, 2.0, 16.0));
-            button(dot)
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 16.0))
-                .on_press(edit(LabelEdit::Color(c)))
-                .into()
+            let b = button(dot).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 16.0));
+            focused(usize::from(c), b.on_press(edit(LabelEdit::Color(c))).into(), 16.0)
         });
-        let icons = LABEL_ICONS.iter().map(|(id, h)| -> El<'a> {
+        let icons = LABEL_ICONS.iter().enumerate().map(|(i, (id, h))| -> El<'a> {
             let on = d.icon.as_deref() == Some(*id);
             let ring = if on { (p.chip, p.accent) } else { (CLEAR, CLEAR) };
             let cell = container(tinted(h, 16.0, p.strong)).center(32).style(bordered_box(ring.0, ring.1, 2.0, 18.0));
-            button(cell)
-                .padding(0)
-                .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 18.0))
-                .on_press(edit(LabelEdit::Icon(id)))
-                .into()
+            let b = button(cell).padding(0).style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 18.0));
+            focused(LABEL_COLORS.len() + i, b.on_press(edit(LabelEdit::Icon(id))).into(), 18.0)
         });
-        column![spread(colors.collect(), 32.0, width), spread(icons.collect(), 32.0, width)].spacing(20).into()
+        let grid = column![spread(colors.collect(), 32.0, width), spread(icons.collect(), 32.0, width)].spacing(20);
+        let keys = Keys::arrows(move |k| Some(edit(LabelEdit::Grid(Some(k)))))
+            .pressed(edit(LabelEdit::GridPick))
+            .on_focus(edit(LabelEdit::Grid(None)));
+        self.target(Some(d.id), "grid", grid, keys, Look::Hidden)
     }
 
     /// Desktop's `XLt` Edit Labels window: the chat, a New Label button and a switch for each label.
@@ -1101,6 +1196,19 @@ impl BeeperGuiApp {
     /// Whether the open Delete Label confirm shows in the window `id`.
     pub(crate) fn label_asking(&self, id: window::Id) -> bool {
         self.confirm == Some(ASK_DELETE_LABEL) && self.delete_in == Some(id)
+    }
+
+    /// The window that shows the confirmation dialog, if one shows.
+    fn asking_in(&self) -> Option<window::Id> {
+        match self.confirm? {
+            d if crate::SETTINGS_DIALOGS.contains(&d) => self.settings_window,
+            _ => self.delete_in.filter(|w| self.label_asking(*w)).or(self.main_window),
+        }
+    }
+
+    /// Whether a confirmation dialog shows in the window: the confirmation of the app, or Discard poll.
+    pub(crate) fn asking(&self, id: window::Id) -> bool {
+        self.asking_in() == Some(id) || self.poll_windows.iter().any(|d| d.id == id && d.discarding)
     }
 
     /// Desktop's `editGroup(thread, "personal")`.
@@ -1410,11 +1518,20 @@ impl BeeperGuiApp {
                     ]
                     .spacing(8)
                     .align_y(Center);
+                    let open = UiMessage::Blocking(blocking::Msg::OpenUser(c.id.clone()));
                     let row = button(container(line).center_y(24))
                         .padding(8)
                         .width(Fill)
                         .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                        .on_press(UiMessage::Blocking(blocking::Msg::OpenUser(c.id.clone())));
+                        .on_press(open.clone());
+                    // Desktop's rows are plain `<button>`s, whose focus does not show.
+                    let row = self.target(
+                        self.blocked_window,
+                        format!("blocked-{}", c.id),
+                        row,
+                        Keys::press(open),
+                        Look::Hidden,
+                    );
                     let rule = container(Space::new()).width(Fill).height(1).style(fill_box(p.prefs_border, 0.0));
                     column![].push((i > 0).then_some(rule)).push(row).into()
                 });
@@ -1423,10 +1540,12 @@ impl BeeperGuiApp {
             }
         };
         let body = column![title, list].spacing(10).padding(Padding::new(12.0).bottom(0.0)).height(Fill);
+        let close = UiMessage::Blocking(blocking::Msg::CloseList);
         let done = button(med(tr("Done"), 13.0).color(Color::WHITE))
             .padding([6, 14])
             .style(btn_style([p.accent; 3], [Color::WHITE; 3], 999.0))
-            .on_press(UiMessage::Blocking(blocking::Msg::CloseList));
+            .on_press(close.clone());
+        let done = self.target(self.blocked_window, "done", done, Keys::press(close), Look::button(p, 999.0));
         let footer = container(done).align_right(Fill).padding(Padding::new(12.0).top(10.0));
         container(column![body, footer]).width(Fill).height(Fill).style(fill_box(p.elevated, 0.0)).into()
     }
@@ -1554,6 +1673,8 @@ impl BeeperGuiApp {
         drop(st);
         let id = d.id;
         let edit = move |e| UiMessage::Poll(id, e);
+        // The `:focus-visible` rings of the Poll Creator: 2 px of `--color-primary` at an `outline-offset`.
+        let ring = |offset, radius| Look::Outline { color: p.accent, width: 2.0, offset, radius };
         let weak = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
         let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(weak, 0.0));
         let card = |c: Column<'a, UiMessage>| container(c).width(Fill).clip(true).style(fill_box(p.received, 12.0));
@@ -1584,13 +1705,17 @@ impl BeeperGuiApp {
                 .padding([8, 0])
                 .style(input_style(CLEAR, p.strong.scale_alpha(fade), p.sub, p.accent, 0.0));
             let error = repeats[i].then(|| txt(tr("This option already exists"), 11.0).color(p.danger));
+            // `.PollCreator-module__removeOption:focus-visible` shows the button with a 2 px ring 2 px outside it.
             let remove = (d.options.len() > 2).then(|| {
-                let red = p.danger.scale_alpha(f32::from(u8::from(d.hovered == Some(i))));
+                let key = format!("remove-{i}");
+                let shown = d.hovered == Some(i) || self.key_held(Some(id), &key);
+                let red = p.danger.scale_alpha(f32::from(u8::from(shown)));
                 let hover = Color::from_rgba8(0xff, 0x14, 0x16, 0x20 as f32 / 255.0);
-                button(container(tinted(&DELETE, 16.0, red)).center(28))
+                let b = button(container(tinted(&DELETE, 16.0, red)).center(28))
                     .padding(0)
                     .style(btn_style([CLEAR, hover, hover], [red; 3], 14.0))
-                    .on_press(edit(PollEdit::Remove(i)))
+                    .on_press(edit(PollEdit::Remove(i)));
+                self.target(Some(id), key, b, Keys::press(edit(PollEdit::Remove(i))), ring(2.0, 14.0))
             });
             let line = row![handle.interaction(grab), column![input].push(error).spacing(1).width(Fill)]
                 .push(remove)
@@ -1608,6 +1733,7 @@ impl BeeperGuiApp {
                 .width(Fill)
                 .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
                 .on_press(edit(PollEdit::Add));
+            let add = self.target(Some(id), "add", add, Keys::press(edit(PollEdit::Add)), ring(-2.0, 0.0));
             options = options.push(rule()).push(add);
         }
         let hint = (rules.max_options > 0).then(|| {
@@ -1618,13 +1744,17 @@ impl BeeperGuiApp {
             };
             txt(hint, 11.0).color(p.sub)
         });
+        // Desktop's `<label>` rows around a `Toggle`, which Space flips, with `.PollCreator-module__settingRow:has(
+        // :focus-visible)`: a 2 px `--app-focus-ring` outline 2 px inside the row.
         let setting = |label: &'static str, on: bool, msg: fn(bool) -> PollEdit| {
             let line = row![txt(tr(label), 14.0).line_height(Pixels(18.0)).color(p.strong).width(Fill)]
                 .push(toggle(p, on, Some(edit(msg(!on)))))
                 .spacing(10)
                 .align_y(Center)
                 .padding([10, 12]);
-            mouse_area(line).on_press(edit(msg(!on)))
+            let look = Look::Outline { color: p.focus_ring, width: 2.0, offset: -2.0, radius: 0.0 };
+            let line = mouse_area(line).on_press(edit(msg(!on)));
+            self.target(Some(id), label, line, Keys::checkbox(edit(msg(!on))), look)
         };
         let mut settings = column![setting("Allow multiple answers", d.multiple, PollEdit::Multiple)];
         if rules.hidden_votes {
@@ -1645,6 +1775,10 @@ impl BeeperGuiApp {
             .width(Fill)
             .style(btn_style([bg; 3], [Color::WHITE; 3], 999.0))
             .on_press_maybe(ready.then(|| edit(PollEdit::Send)));
+        let send: El<'a> = match ready {
+            true => self.target(Some(id), "send", send, Keys::press(edit(PollEdit::Send)), ring(2.0, 999.0)),
+            false => send.into(),
+        };
         let fade = Linear::new(Radians(0.0))
             .add_stop(0.0, p.card)
             .add_stop(0.55, p.card)
@@ -1663,6 +1797,7 @@ impl BeeperGuiApp {
             true => stack![
                 window,
                 self.dialog(
+                    Some(id),
                     tr("Discard poll?").into(),
                     tr("Your poll draft will be deleted.").into(),
                     vec![(tr("Discard"), edit(PollEdit::Discard(true)))],

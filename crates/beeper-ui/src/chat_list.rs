@@ -1,6 +1,7 @@
 //! Desktop's chat list (ThreadList): its tabs and filters, the chat menu and flags, archive and read, multi-select, and the chat actions.
 
 use super::*;
+use crate::focus::{Keys, Look};
 use crate::i18n::trnx;
 use crate::reminders::{last_used, last_used_label, remind_presets};
 use crate::time::list_ts;
@@ -1258,12 +1259,19 @@ impl BeeperGuiApp {
         let title = column![line.push(chevron).spacing(1.4).align_y(Center)]
             .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))
             .padding([0, 8]);
+        // Desktop's buttons of the chat list header take the focus without showing it (`button { outline: 0 }`).
+        let window = self.drawing.get().or(self.main_window);
+        let plain =
+            |key: &str, b: El<'static>, msg: UiMessage| self.target(window, key, b, Keys::press(msg), Look::Hidden);
         let title: El<'_> = match list.locked {
             true => title.into(),
-            false => mouse_area(title)
-                .on_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(SPACE_SHEET.into())))
-                .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("head:{}", list.entry()))))
-                .into(),
+            false => {
+                let sheet = UiMessage::ChatList(chat_list::Msg::OpenMenu(SPACE_SHEET.into()));
+                let title = mouse_area(title)
+                    .on_press(sheet.clone())
+                    .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("head:{}", list.entry()))));
+                self.target(window, "list-title", title, Keys::press(sheet), Look::Hidden)
+            }
         };
         let title = container(title).width(Fill).clip(true);
         let head_btn = |c: char, size: f32, [l, r]: [f32; 2], msg: UiMessage| {
@@ -1289,30 +1297,39 @@ impl BeeperGuiApp {
             let pill = row![trigger, container(ic(icon::FILTER_LIST, 16.8).color(fg)).center_x(27).center_y(20)];
             let ring = if active { p.accent } else { CLEAR };
             let face = bordered_btn([CLEAR, p.hover, p.hover], [fg; 3], ring, 1.0, 12.0);
-            let el = mouse_area(
-                button(pill).padding(0).style(face).on_press(UiMessage::ChatList(chat_list::Msg::FilterButton)),
-            )
-            .on_right_press(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
-            self.tip(el.into(), tr("Filter"), vec![], tooltip::Position::Bottom)
+            let press = UiMessage::ChatList(chat_list::Msg::FilterButton);
+            let el = mouse_area(button(pill).padding(0).style(face).on_press(press.clone()))
+                .on_right_press(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
+            self.tip(plain("list-filter", el.into(), press), tr("Filter"), vec![], tooltip::Position::Bottom)
         });
         let below = |el: El<'static>, label, keys| self.tip(el, label, keys, tooltip::Position::Bottom);
         let options = (self.list().active_tab == InboxTab::Reminders).then(|| {
+            let menu = UiMessage::Reminders(reminders::Msg::Menu);
             let btn = button(container(tinted(&TUNE, 18.0, p.strong)).center_x(30).center_y(26))
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
-                .on_press(UiMessage::Reminders(reminders::Msg::Menu));
-            below(btn.into(), tr("Display Options"), vec![])
+                .on_press(menu.clone());
+            below(plain("list-options", btn.into(), menu), tr("Display Options"), vec![])
         });
         let header = row![title]
             .push(filter)
             .push(options)
             .push(below(
-                head_btn(icon::SEARCH, 23.0, [7.5, 10.0], UiMessage::CommandBar(commands::Msg::TogglePalette)).into(),
+                plain(
+                    "list-search",
+                    head_btn(icon::SEARCH, 23.0, [7.5, 10.0], UiMessage::CommandBar(commands::Msg::TogglePalette))
+                        .into(),
+                    UiMessage::CommandBar(commands::Msg::TogglePalette),
+                ),
                 tr("Search Chats"),
                 vec!["Ctrl", "K"],
             ))
             .push(below(
-                head_btn(icon::EDIT_SQUARE, 20.0, [0.0, 3.0], UiMessage::NewChat(new_chat::Msg::Open)).into(),
+                plain(
+                    "list-new-chat",
+                    head_btn(icon::EDIT_SQUARE, 20.0, [0.0, 3.0], UiMessage::NewChat(new_chat::Msg::Open)).into(),
+                    UiMessage::NewChat(new_chat::Msg::Open),
+                ),
                 tr("New Chat"),
                 vec!["Ctrl", "N"],
             ))
@@ -1396,6 +1413,9 @@ impl BeeperGuiApp {
                     .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone())))
                     .on_enter(UiMessage::Pins(pins::Msg::Hover(Some(c.id.clone()))))
                     .on_exit(UiMessage::Pins(pins::Msg::Hover(None)));
+                // Desktop's pins are `dnd-kit` sortables, which show Chromium's ring; their keys reorder the pins in
+                // Desktop, which beeper-rs does not do.
+                let item = self.target(window, format!("pin-{}", c.id), item, Keys::default(), Look::Auto);
                 r.push(container(item).center_x(cell))
             }))
         };
