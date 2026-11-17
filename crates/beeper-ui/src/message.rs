@@ -1652,7 +1652,11 @@ impl BeeperGuiApp {
                         let pill = if mine { Color { a: 0.3, ..fg } } else { p.accent };
                         s.font(bold).color(Color::WHITE).background(pill).border(border::rounded(4)).padding(2)
                     }
-                    Some(_) => s.font(bold).color(if mine { fg } else { p.accent }),
+                    Some(id) => s.font(bold).color(if mine { fg } else { p.accent }).link(format!(
+                        "{}{} {id}",
+                        crate::MENTION,
+                        m.chat_id
+                    )),
                     None => s.underline(r.underline || r.link.is_some()).link_maybe(r.link.clone()),
                 };
                 let arrow = s.link.is_some().then(arrow);
