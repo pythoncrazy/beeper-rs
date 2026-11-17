@@ -16,6 +16,8 @@ pub enum Msg {
     RetryMedia(String),
     ResolveMedia(String, String, String),
     MediaResolved(String, String, String, Result<(), String>),
+    /// A load of items of the Media window.
+    MediaPage(window::Id, media_view::MediaPage),
 }
 
 impl BeeperGuiApp {
@@ -71,6 +73,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::Quote(id, r) => _ = self.quotes.insert(id, Some(r.map(|m| *m))),
+            Msg::MediaPage(id, page) => return Task::batch([self.media_paged(id, page), self.settle()]),
         }
         self.settle()
     }

@@ -540,6 +540,12 @@ pub struct BeeperStore {
     pub bookmarks: HashMap<String, Bookmark>,
     /// The bookmarked messages that are not loaded, as Chat Info fetched them, or None when they are unavailable.
     pub bookmarked: HashMap<String, Option<Message>>,
+    /// Desktop's reminders room, after its history is read: its `messageRemindersStatus` is "restored".
+    pub reminders_room: Option<String>,
+    /// The active message reminders of the reminders room by the event ID of the message.
+    pub message_reminders: HashMap<String, MessageReminder>,
+    /// The latest reminder event of each message with a reminder, which a dismissal redacts.
+    pub reminder_events: HashMap<String, String>,
     /// Desktop's `mx_removed_messages` after the history of the removed-messages room is read: the removal events by
     /// the event ID of the removed message.
     pub removals: Option<HashMap<String, Vec<String>>>,
@@ -715,6 +721,9 @@ impl BeeperStore {
             bookmarks_room: None,
             bookmarks: HashMap::new(),
             bookmarked: HashMap::new(),
+            reminders_room: None,
+            message_reminders: HashMap::new(),
+            reminder_events: HashMap::new(),
             removals: None,
             outbox_ready: Default::default(),
             sent_flags: HashMap::new(),
@@ -1348,6 +1357,7 @@ impl BeeperStore {
             merged_into_chat_id: None,
             preview: None,
             reminder: None,
+            snoozed_until_ms: None,
             chat_theme: None,
             note: None,
             notifiable: None,
@@ -2011,6 +2021,7 @@ impl BeeperStore {
         self.update_message(idx, |m| {
             let mut seen = std::mem::take(&mut m.seen);
             seen.extend(msg.seen);
+            let disappearing = crate::models::MessageTimer::merge(m.disappearing.take(), msg.disappearing.take());
             // Desktop keeps the views left apart from the message, and an expired message keeps the kind of its media.
             let views_left = msg.view_limit.as_ref().and(m.views_left);
             let view_kind = msg.view_kind.clone().or_else(|| m.view_once_kind().map(str::to_string));
@@ -2020,6 +2031,7 @@ impl BeeperStore {
                 is_bookmarked: m.is_bookmarked,
                 is_unread: m.is_unread,
                 seen,
+                disappearing,
                 views_left,
                 view_kind: view_kind.filter(|_| msg.view_expired),
                 ..msg
@@ -2199,6 +2211,7 @@ impl BeeperStore {
             merged_into_chat_id: None,
             preview: None,
             reminder: None,
+            snoozed_until_ms: None,
             chat_theme: None,
             note: None,
             notifiable: None,
@@ -2440,6 +2453,7 @@ impl BeeperStore {
             mentions: None,
             send_status: None,
             call: None,
+            disappearing: None,
             view_limit: None,
             views_left: None,
             view_expired: false,
@@ -2863,6 +2877,74 @@ impl BeeperStore {
         }
     }
 
+    /// Desktop's `applyMessageReminderEvent` and `applyMessageReminderRedaction` for the reminders room events, in
+    /// timeline order: the message and its new reminder with the reminder event, if any. Each chat that changes is
+    /// upserted.
+    pub fn apply_message_reminders(&mut self, room: &str, changes: Vec<(String, Option<(String, MessageReminder)>)>) {
+        self.reminders_room = Some(room.into());
+        let mut touched = BTreeSet::new();
+        for (target, r) in changes {
+            let old = match r {
+                Some((event, r)) => {
+                    self.reminder_events.insert(target.clone(), event);
+                    touched.insert(r.room_id.clone());
+                    self.message_reminders.insert(target, r)
+                }
+                None => {
+                    self.reminder_events.remove(&target);
+                    self.message_reminders.remove(&target)
+                }
+            };
+            touched.extend(old.map(|r| r.room_id));
+        }
+        touched.iter().for_each(|chat| self.touch_chat(chat));
+    }
+
+    /// Desktop's `setMessageReminder` (`at`) and `clearMessageReminder` (None) of the message `target` in `chat`.
+    pub fn set_message_reminder(&mut self, chat: &str, target: &str, at: Option<i64>) {
+        let room = self.reminders_room.clone().expect("message reminders wait for the reminders room");
+        match at {
+            Some(remind_at_ms) => {
+                self.message_reminders.insert(target.into(), MessageReminder { room_id: chat.into(), remind_at_ms });
+            }
+            None => drop(self.message_reminders.remove(target)),
+        }
+        self.queue(&room, Outgoing::MessageReminder { room: chat.into(), target: target.into(), at });
+        self.touch_chat(chat);
+    }
+
+    /// Desktop's `messageRemindersForChat`: the message reminders of the chat and of the chats merged into it, the
+    /// soonest first, with the event ID of their message.
+    pub fn message_reminders_of(&self, chat: &str) -> Vec<(&str, &MessageReminder)> {
+        let of = |room: &str| {
+            room == chat
+                || self
+                    .resolve_chat_idx(room)
+                    .is_some_and(|i| self.chats[i].merged_into_chat_id.as_deref() == Some(chat))
+        };
+        let mut v: Vec<_> =
+            self.message_reminders.iter().filter(|(_, r)| of(&r.room_id)).map(|(id, r)| (id.as_str(), r)).collect();
+        v.sort_by_key(|(id, r)| (r.remind_at_ms, *id));
+        v
+    }
+
+    /// Upserts the chat `id`, or its parent chat, after a change that is not in the chat itself.
+    fn touch_chat(&self, id: &str) {
+        let Some(i) = self.resolve_chat_idx(id) else { return };
+        let c = &self.chats[i];
+        let c = c.merged_into_chat_id.as_deref().and_then(|p| self.resolve_chat_idx(p)).map_or(c, |p| &self.chats[p]);
+        self.emit_ws("chat.upserted", &c.id, None, Some(c.clone()), None);
+    }
+
+    /// Desktop's `setSnooze` and `clearSnooze` of one chat: `com.beeper.chats.snoozed` room account data with
+    /// `snoozed_until_ms`, or empty.
+    pub fn set_snooze(&mut self, idx: usize, until: Option<i64>) {
+        self.update_chat(idx, |c| c.snoozed_until_ms = until);
+        let id = self.chats[idx].id.clone();
+        let content = until.map_or(serde_json::json!({}), |ms| serde_json::json!({ "snoozed_until_ms": ms }));
+        self.queue(&id, Outgoing::RoomData(SNOOZED.into(), content));
+    }
+
     /// Desktop's `setTranscriptionByMessageEventID`: the transcription of the first attachment of the message `target`.
     /// Like Desktop, it skips a message that is not stored or has no attachment.
     pub fn set_transcription(&mut self, target: &str, t: Transcription) {
@@ -3076,10 +3158,11 @@ impl BeeperStore {
     }
 
     /// Reads the stored messages that `q` selects, newest first by time and then by row like Desktop's
-    /// `searchRoomMessages`, with their rows, until `f` returns false.
-    pub fn scan_by_time(&self, q: &Query, f: impl FnMut(i64, Message) -> bool) {
+    /// `searchRoomMessages`, or oldest first like its `sortOrder: "asc"`, with their rows, until `f` returns false.
+    pub fn scan_by_time(&self, q: &Query, oldest: bool, f: impl FnMut(i64, Message) -> bool) {
         let all = if q.0.is_empty() { "1".to_string() } else { q.0.join(" AND ") };
-        self.scan_rows(&format!("{all} ORDER BY {TIME} DESC, n DESC"), rusqlite::params_from_iter(&q.1), f);
+        let dir = if oldest { "ASC" } else { "DESC" };
+        self.scan_rows(&format!("{all} ORDER BY {TIME} {dir}, n {dir}"), rusqlite::params_from_iter(&q.1), f);
     }
 
     /// The id, chat, Unix seconds and stored bytes of each message.
@@ -3166,6 +3249,28 @@ mod tests {
         let mut ids = HashSet::new();
         st.scan(&super::Query::default().text(q), |m| ids.insert(m.id) || true);
         ids
+    }
+
+    /// Desktop's `searchRoomMessages` with `sortOrder: "asc"` reads oldest first by time and row, and its `after`
+    /// cursor takes the messages past a row.
+    #[test]
+    fn message_search_reads_oldest_first() {
+        let st = super::BeeperStore::from_config(crate::testing::demo_config("oldest-first"));
+        let rows = |q: super::Query, oldest| {
+            let mut rows = Vec::new();
+            st.scan_by_time(&q, oldest, |n, m| {
+                rows.push((crate::config::millis_from_rfc3339(&m.timestamp).expect("a message time"), n));
+                true
+            });
+            rows
+        };
+        let oldest = rows(super::Query::default().has(None), true);
+        assert!(oldest.len() > 2, "the demo has attachments");
+        assert!(oldest.is_sorted(), "oldest first");
+        let mut newest = rows(super::Query::default().has(None), false);
+        newest.reverse();
+        assert_eq!(newest, oldest);
+        assert_eq!(rows(super::Query::default().has(None).past_row(oldest[1], true), true), oldest[2..]);
     }
 
     #[test]
@@ -3519,6 +3624,23 @@ mod tests {
         );
         assert_eq!(st.outbox.len(), 4);
     }
+    /// Desktop's `setSnooze` and `clearSnooze`: `com.beeper.chats.snoozed` room account data with the end of the
+    /// snooze, or empty.
+    #[test]
+    fn snoozes_are_room_account_data_like_desktop() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("snooze"));
+        let id = st.chats[0].id.clone();
+        st.set_snooze(0, Some(1_900_000_000_000));
+        assert_eq!(st.chats[0].snoozed_until_ms, Some(1_900_000_000_000));
+        st.set_snooze(0, None);
+        assert_eq!(st.chats[0].snoozed_until_ms, None);
+        let data: Vec<_> = st.outbox.iter().map(|(_, r, o)| (r.clone(), o)).collect();
+        assert!(matches!(&data[..], [(a, super::Outgoing::RoomData(k, on)), (b, super::Outgoing::RoomData(_, off))]
+            if *a == id && *b == id && k == "com.beeper.chats.snoozed"
+                && *on == serde_json::json!({ "snoozed_until_ms": 1_900_000_000_000_i64 })
+                && *off == serde_json::json!({})));
+    }
+
     #[test]
     fn bookmarks_follow_the_bookmarks_room() {
         let config = crate::testing::demo_config("bookmarks");

@@ -2,6 +2,15 @@
 
 use super::*;
 use iced::widget::column;
+use std::sync::LazyLock;
+
+/// The plus of Desktop's `PlusIcon` on the avatar of the `GroupTitleBar`.
+static PLUS: LazyLock<svg::Handle> = LazyLock::new(|| {
+    svg::Handle::from_memory(
+        br#"<svg width="7" height="8" viewBox="0 0 7 8" xmlns="http://www.w3.org/2000/svg"><path d="M6.82227 2.78906V4.27246H0V2.78906H6.82227ZM4.21094 0V7.24609H2.61816V0H4.21094Z" fill="white"/></svg>"#
+            .as_slice(),
+    )
+});
 
 #[derive(Clone)]
 pub enum Msg {
@@ -29,6 +38,13 @@ pub enum Msg {
     NewGroup,
     /// The group name of the open draft.
     GroupTitle(String),
+    /// A click on the avatar of Desktop's `GroupTitleBar`, which asks for an image.
+    PickAvatar,
+    /// The image file that the user picked for the group avatar of a draft.
+    AvatarPicked(u32, Result<Vec<std::path::PathBuf>, String>),
+    AvatarLoaded(u32, Result<PendingMedia, String>),
+    /// The Encrypted toggle of Desktop's "Room encryption" step of a new Matrix group.
+    Encrypted(bool),
     Query(String),
     ToggleExpanded,
     ToggleChats,
@@ -49,12 +65,14 @@ impl BeeperGuiApp {
             Msg::Open => {
                 self.chat_menu = None;
                 let id = self.new_chats.iter().map(|d| d.id).max().map_or(0, |n| n + 1);
-                self.new_chats.insert(0, NewChat { id, users: Vec::new(), group: false, title: String::new() });
+                let draft = NewChat { id, users: Vec::new(), group: false, title: String::new(), photo: None };
+                self.new_chats.insert(0, draft);
                 return self.update(UiMessage::NewChat(Msg::Select(id)));
             }
             Msg::Select(id) => {
                 if self.creating_chat != Some(id) {
                     self.leave_draft();
+                    self.group_encrypted = true;
                 }
                 self.creating_chat = Some(id);
                 self.show_command_palette = false;
@@ -138,13 +156,24 @@ impl BeeperGuiApp {
             Msg::PickUser(account, user) => {
                 let n = self.creating_chat.expect("an open draft");
                 let group = self.can_group(&account);
+                let max = self
+                    .caps
+                    .get(&account)
+                    .and_then(|c| c["group_creation"]["group"]["participants"]["max_length"].as_u64());
                 let draft = self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft");
                 if !group {
                     draft.users = vec![(account, *user)];
-                } else if draft.users.iter().all(|(_, u)| u.id != user.id) {
-                    draft.users.push((account, *user));
-                } else {
+                } else if draft.users.iter().any(|(_, u)| u.id == user.id) {
                     return Task::none();
+                } else if let Some(max) = max.filter(|&m| m > 0 && draft.users.len() as u64 >= m) {
+                    // Desktop's `C$t` toast.
+                    let max = usize::try_from(max).expect("a participant limit fits in usize");
+                    let (one, many) =
+                        ("%1$s groups can have up to %2$d person", "%1$s groups can have up to %2$d people");
+                    self.show(Toast::new(trn(one, many, max, &[&network_label(&account), &max])));
+                    return Task::none();
+                } else {
+                    draft.users.push((account, *user));
                 }
                 draft.group |= draft.users.len() > 1;
                 self.new_chat_query.clear();
@@ -159,30 +188,71 @@ impl BeeperGuiApp {
                 let n = self.creating_chat.expect("an open draft");
                 self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").title = t;
             }
+            // Desktop's Start (`D`), and Start of the "Room encryption" step (`R`), which Matrix groups of more than
+            // one person ask first.
             Msg::Start => {
                 let Some(n) = self.creating_chat else { return Task::none() };
                 let draft = self.new_chats.iter().find(|d| d.id == n).expect("the open draft");
                 let Some((account, user)) = draft.users.first().cloned() else { return Task::none() };
                 if draft.group {
+                    let asked = self.confirm.take_if(|d| *d == ASK_ROOM_ENCRYPTION).is_some();
+                    let matrix = self.matrix_bridge(&account);
+                    if matrix.is_some() && draft.users.len() > 1 && !asked {
+                        self.confirm = Some(ASK_ROOM_ENCRYPTION);
+                        return Task::none();
+                    }
                     let users = draft.users.iter().map(|(_, u)| u.id.clone()).collect();
+                    // Desktop's `createChatFromDraft` sends the name and the avatar only when the bridge allows a name.
                     let named = self.caps[&account]["group_creation"]["group"]["name"]["allowed"] == true;
                     let title = if named { draft.title.clone() } else { String::new() };
+                    let photo =
+                        draft.photo.as_ref().filter(|_| named).map(|(bytes, mime, _)| (bytes.clone(), mime.clone()));
                     self.status_banner = tr("Creating group chat...").into();
                     self.sticky_banner = Some(self.status_banner.clone());
-                    let (matrix, provision) = (self.matrix_bridge(&account), self.provision(&account));
-                    let done = move |r| UiMessage::NewChat(Msg::GroupCreated(n, account.clone(), r));
-                    return match matrix {
-                        Some(store) => {
-                            Task::perform(beeper_core::matrix::create_matrix_group(store, title, users), done)
+                    let (store, provision) = (self.store.clone(), self.provision(&account));
+                    // Desktop's `createGroupThread`: an `unencrypted_group` when the Matrix step turned encryption
+                    // off, then `setRoomAvatar`.
+                    let kind = if asked && !self.group_encrypted { "unencrypted_group" } else { "group" };
+                    let create = async move {
+                        let room = match matrix {
+                            Some(matrix) => {
+                                beeper_core::matrix::create_matrix_group(matrix, kind.into(), title, users).await?
+                            }
+                            None => beeper_core::matrix::create_group(provision, kind.into(), title, users).await?,
+                        };
+                        if let Some((bytes, mime)) = photo {
+                            beeper_core::matrix::set_room_avatar(store, room.clone(), bytes, mime).await?;
                         }
-                        None => Task::perform(
-                            beeper_core::matrix::create_group(provision, "group".into(), title, users),
-                            done,
-                        ),
+                        Ok(room)
                     };
+                    return Task::perform(create, move |r| {
+                        UiMessage::NewChat(Msg::GroupCreated(n, account.clone(), r))
+                    });
                 }
                 return self.open_dm(account, user, Some(n), None);
             }
+            Msg::PickAvatar => {
+                let n = self.creating_chat.expect("an open draft");
+                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Image);
+                return Task::perform(pick, move |r| UiMessage::NewChat(Msg::AvatarPicked(n, r)));
+            }
+            Msg::AvatarPicked(n, Ok(paths)) => {
+                let Some(path) = paths.into_iter().next() else { return Task::none() };
+                let load = async move {
+                    tokio::task::spawn_blocking(move || portal::load_file(&path)).await.expect("file load thread")
+                };
+                return Task::perform(load, move |r| UiMessage::NewChat(Msg::AvatarLoaded(n, r)));
+            }
+            Msg::AvatarPicked(_, Err(e)) | Msg::AvatarLoaded(_, Err(e)) => self.fail(Toast::new(e)),
+            Msg::AvatarLoaded(n, Ok(m)) => match round_avatar(&m.bytes) {
+                Ok(h) => {
+                    if let Some(d) = self.new_chats.iter_mut().find(|d| d.id == n) {
+                        d.photo = Some((m.bytes, m.mime, h));
+                    }
+                }
+                Err(_) => self.fail(Toast::new(tr("Failed to upload image").into())),
+            },
+            Msg::Encrypted(on) => self.group_encrypted = on,
             Msg::DmCreated(n, account, quote, r) => self.chat_created(n, &account, quote, r, "creating thread"),
             Msg::GroupCreated(n, account, r) => self.chat_created(Some(n), &account, None, r, "creating group chat"),
             Msg::Delete(id) => {
@@ -324,17 +394,20 @@ pub struct NewChat {
     pub group: bool,
     /// The group name of Desktop's `GroupTitleBar`.
     pub title: String,
+    /// The group avatar of Desktop's `GroupTitleBar` (`imgURL`): the image, its MIME type and its round picture.
+    pub photo: Option<(Vec<u8>, String, image::Handle)>,
 }
 
 impl BeeperGuiApp {
     /// Desktop's `setSelectedChatTarget` with `isDraftEmpty`: leaving a New Chat draft without people, a group name,
-    /// a room to join or composer text removes it.
+    /// a group avatar, a room to join or composer text removes it.
     pub(crate) fn leave_draft(&mut self) {
         let Some(n) = self.creating_chat.take() else { return };
         let joining = self.join_matrix_mode && !self.new_chat_query.trim().is_empty();
         let typed = !self.pane.composer.text().trim().is_empty() || joining;
         if !typed {
-            self.new_chats.retain(|d| d.id != n || !d.users.is_empty() || !d.title.trim().is_empty());
+            let empty = |d: &NewChat| d.users.is_empty() && d.title.trim().is_empty() && d.photo.is_none();
+            self.new_chats.retain(|d| d.id != n || !empty(d));
         }
     }
 
@@ -377,18 +450,28 @@ impl BeeperGuiApp {
                     .padding([8, 13])
                     .style(fill_box(p.chip, 0.0));
             let (joining, error) = (self.join_room.0, self.join_room.1.as_deref());
-            let input = field(tr("Room address or Matrix link"));
+            // `.joinInputs .joinInput input`: 32 px tall on the secondary container, body-md text, radius 8.
+            let input = text_input(tr("Room address or Matrix link"), &self.new_chat_query)
+                .id("new-chat-input")
+                .on_input(|q| UiMessage::NewChat(new_chat::Msg::Query(q)))
+                .size(14)
+                .line_height(Pixels(18.0))
+                .padding([7, 10])
+                .style(input_style(p.chip, p.strong, p.sub, p.accent, 8.0));
             let input =
                 if joining { input } else { input.on_submit(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)) };
-            let inputs = row![tinted(&MAT_LINK, 18.0, p.sub), input]
+            // `.joinError`: under the input, 4 px above and 10 px below.
+            let error = error.map(|e| {
+                container(txt(e.to_string(), 12.0).color(p.text_danger)).padding(Padding::ZERO.top(4).bottom(10))
+            });
+            let link = container(tinted(&MAT_LINK, 18.0, p.sub)).padding(Padding::ZERO.top(7));
+            let inputs = row![link, column![input].push(error).width(Fill)]
                 .spacing(8)
-                .align_y(Center)
                 .padding(Padding::new(6.0).left(13.0).right(8.0));
-            let error = error.map(|e| container(txt(e.to_string(), 12.0).color(p.text_danger)).padding([0, 13]));
             let ready = !joining && !self.new_chat_query.trim().is_empty();
             let label = if joining { tr("Joining...") } else { tr("Join") };
             let join = footer(label, "ENTER", ready.then_some(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)));
-            let body = column![head, inputs].push(error).push(Space::new().height(Fill)).push(join);
+            let body = column![head, inputs].push(Space::new().height(Fill)).push(join);
             return container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into();
         }
         let all = rail_accounts(&st);
@@ -571,8 +654,12 @@ impl BeeperGuiApp {
             && search.is_none_or(|(_, n, f)| *n == 0 && f.is_empty())
             && contacts.is_empty()
         {
-            let none = if group { tr("Start typing to search for people to add") } else { tr("No results found") };
-            col = col.push(heading(none));
+            // Desktop's "No results found" is only for a query, in a DM draft.
+            match group {
+                true => col = col.push(heading(tr("Start typing to search for people to add"))),
+                false if !q.is_empty() => col = col.push(heading(tr("No results found"))),
+                false => {}
+            }
         }
         if !contacts.is_empty() {
             col = col.push(heading(tr("In your contacts")));
@@ -640,6 +727,7 @@ impl BeeperGuiApp {
                 );
             }
         }
+        // Desktop's `T$t`.
         let caps = account.map(|a| &self.caps[a]["group_creation"]["group"]);
         let ready = match (group, caps) {
             (false, _) => users.len() == 1,
@@ -648,8 +736,10 @@ impl BeeperGuiApp {
                 let fewest = g["participants"]["min_length"]
                     .as_u64()
                     .unwrap_or(u64::from(g["participants"]["required"] == true));
+                let most = g["participants"]["max_length"].as_u64().filter(|&m| m > 0).unwrap_or(u64::MAX);
                 let named = g["name"]["required"] != true || draft.is_some_and(|d| !d.title.trim().is_empty());
-                users.len() as u64 >= fewest && named && g["avatar"]["required"] != true
+                let pictured = g["avatar"]["required"] != true || draft.is_some_and(|d| d.photo.is_some());
+                (fewest..=most).contains(&(users.len() as u64)) && named && pictured
             }
         };
         let start = if group { tr("Start group chat") } else { tr("Start chat") };
@@ -661,8 +751,25 @@ impl BeeperGuiApp {
         let panel = container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0));
         let named = caps.is_some_and(|g| g["name"]["allowed"] == true);
         let title = draft.filter(|_| group && named).map(|d| {
-            let members: Vec<User> = d.users.iter().map(|(_, u)| u.clone()).collect();
-            let face = self.people_avatar(None, "", true, &members, 28.0, 0.0);
+            // Desktop's `ThreadAvatar` of the `GroupTitleBar`: the picked image, the members, or an empty circle.
+            let face: El<'_> = match (&d.photo, d.users.is_empty()) {
+                (Some((.., h)), _) => image(h.clone()).width(28).height(28).into(),
+                (None, false) => {
+                    let members: Vec<User> = d.users.iter().map(|(_, u)| u.clone()).collect();
+                    self.people_avatar(None, "", true, &members, 28.0, 0.0)
+                }
+                (None, true) => container(Space::new().width(28).height(28)).style(fill_box(p.chip, 14.0)).into(),
+            };
+            // Desktop's `PlusIcon`: a 16px badge with a white border, 5px past the right of the avatar.
+            let plus = container(svg(PLUS.clone()).width(7).height(8)).center(16).style(|_| container::Style {
+                background: Some(p.accent.into()),
+                border: iced::border::rounded(8).color(Color::WHITE).width(2),
+                ..Default::default()
+            });
+            let picker = stack![face, container(plus).padding(Padding::ZERO.top(12).left(17))].width(33).height(28);
+            let picker = mouse_area(picker)
+                .on_press(UiMessage::NewChat(new_chat::Msg::PickAvatar))
+                .interaction(mouse::Interaction::Pointer);
             let name = text_input(tr("New Group Chat"), &d.title)
                 .on_input(|a0| UiMessage::NewChat(new_chat::Msg::GroupTitle(a0)))
                 .width(200)
@@ -670,7 +777,8 @@ impl BeeperGuiApp {
                 .padding(0)
                 .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
             let bg = if self.dark { Color::BLACK } else { Color::WHITE };
-            container(row![face, name].spacing(8).align_y(Center)).center_x(Fill).center_y(38).style(move |_| {
+            // The badge sticks out 5px of the 8px gap.
+            container(row![picker, name].spacing(3).align_y(Center)).center_x(Fill).center_y(38).style(move |_| {
                 container::Style {
                     background: Some(bg.into()),
                     border: iced::border::rounded(10),

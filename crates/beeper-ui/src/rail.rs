@@ -105,7 +105,7 @@ impl BeeperGuiApp {
 }
 
 /// Desktop's custom spaces by their space IDs, in the default order.
-pub(crate) const RAIL_VIEWS: [(&str, Option<InboxTab>); 7] = [
+pub(crate) const RAIL_VIEWS: [(&str, Option<InboxTab>); 8] = [
     ("inbox", Some(InboxTab::AllChats)),
     ("archive", Some(InboxTab::Archived)),
     (LABEL_NUDGE, None),
@@ -113,6 +113,7 @@ pub(crate) const RAIL_VIEWS: [(&str, Option<InboxTab>); 7] = [
     ("scheduled", Some(InboxTab::SendLater)),
     ("requests", Some(InboxTab::Requests)),
     ("low_priority", Some(InboxTab::LowPriority)),
+    ("snoozed", Some(InboxTab::Snoozed)),
 ];
 
 /// Desktop's `orderedSidebarSpaces`: the spaces of the `spaces_order` setting in its order, without the hidden
@@ -246,6 +247,7 @@ impl BeeperGuiApp {
                 None => self.selected_account_filter.as_ref() == Some(id),
             };
             let glyph: El = match (view, label) {
+                (Some(v), _) if v.0 == "snoozed" => container(tinted(&MOON_STARS, 12.0, p.strong)).center(14).into(),
                 (Some(v), _) => {
                     let (g, size) = match v.0 {
                         "inbox" => (icon::INBOX, 13.0),
@@ -498,6 +500,10 @@ impl BeeperGuiApp {
                 "reminders" => tab("rail-reminders", i, g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
                 "scheduled" => tab("rail-send-later", i, g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
                 "requests" => tab("rail-requests", i, g(icon::EMAIL), InboxTab::Requests, requests, false),
+                "snoozed" => {
+                    let moon = tinted(&MOON_STARS, 24.0, p.strong);
+                    tab("rail-snoozed", i, moon, InboxTab::Snoozed, 0, false)
+                }
                 "low_priority" => tab(
                     "rail-low-priority",
                     i,
@@ -569,8 +575,10 @@ pub(crate) const LABEL_NUDGE: &str = "create-label-nudge";
 /// Desktop's `allSpaces` in the default order.
 pub(crate) fn all_spaces(st: &BeeperStore) -> Vec<String> {
     let nudge = st.feature("labels-v2").show && st.labels.is_empty() && !st.settings.ever_labeled;
-    let views = RAIL_VIEWS.iter().filter(|v| nudge || v.0 != LABEL_NUDGE).map(|v| v.0.to_string());
-    views.chain(rail_accounts(st)).collect()
+    let views = RAIL_VIEWS.iter().filter(|v| (nudge || v.0 != LABEL_NUDGE) && v.0 != "snoozed");
+    // Desktop's Snoozed space follows the accounts while snoozing is on.
+    let snoozed = st.feature("snooze").on.then(|| "snoozed".to_string());
+    views.map(|v| v.0.to_string()).chain(rail_accounts(st)).chain(snoozed).collect()
 }
 
 /// A press on a rail space, which Desktop's `Drop` sorts after the cursor moves 5px.

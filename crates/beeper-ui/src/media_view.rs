@@ -26,7 +26,7 @@ use iced::widget::{
     button, column, container, image, mouse_area, row, scrollable, stack, svg, text_input, tooltip, Column, Row, Space,
 };
 use iced::{border, mouse, window, Center, Color, Fill, Padding, Pixels, Point, Right, Size, Task, Theme};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// ffmpeg over `bytes`, which it reads from a temporary file of its own: an MP4 or M4A with its `moov` atom at the
 /// end, as many encoders write them, needs an input that ffmpeg can seek, which a pipe is not.
@@ -131,16 +131,31 @@ pub(crate) struct Carousel {
     pub(crate) page: usize,
 }
 
-/// Desktop's Media window: its tab (Media, Links or Docs), its size, how many items it shows,
-/// its filters (sent by all, you or others; oldest first; the caption search), and if its filter menu is open.
+/// Desktop's Media window: its tab (Media, Links or Docs), its size, its filters (sent by all, you or others; oldest
+/// first; the text of the caption search field), and if its filter menu is open.
 pub(crate) struct MediaWindow {
     pub(crate) id: window::Id,
     pub(crate) tab: usize,
     pub(crate) size: Size,
-    pub(crate) shown: usize,
     pub(crate) sent_by: u8,
     pub(crate) oldest: bool,
     pub(crate) search: Option<String>,
+    /// The caption search of the items: the trimmed text of the search field 300 ms after its last change, like
+    /// Desktop's `setSearchText`.
+    pub(crate) query: String,
+    /// The count of the changes of the search field, so that only the last one searches.
+    pub(crate) typed: u64,
+    /// The loaded items in their order, as (message, attachment or link index), like Desktop's `items`.
+    pub(crate) items: Vec<(Arc<Message>, usize)>,
+    /// Whether more items can load, and the time and row of the message past which they load.
+    pub(crate) more: bool,
+    pub(crate) cursor: Option<(i64, i64)>,
+    /// When the running load of items started. The skeleton tiles pulse from then.
+    pub(crate) loading: Option<std::time::Instant>,
+    /// The count of the filter changes, so that a load for older filters does nothing, like Desktop's `generation`.
+    pub(crate) generation: u64,
+    /// Desktop's `advanceViewerAfterLoad`: the viewer steps to the next item when the running load ends.
+    pub(crate) advance: bool,
     /// The tab before the last tab change, and when the change was.
     pub(crate) tab_at: Option<(usize, std::time::Instant)>,
     /// Where the filter menu is open.
@@ -151,6 +166,39 @@ pub(crate) struct MediaWindow {
     pub(crate) picked: Vec<(String, usize)>,
     /// The (chat, message) pairs that the delete dialog asks about, and how many items it skips.
     pub(crate) deleting: Option<(Vec<(String, String)>, usize)>,
+}
+
+impl MediaWindow {
+    /// A Media window of `size` on the newest images and videos, before its first load.
+    fn new(id: window::Id, size: Size) -> Self {
+        Self {
+            id,
+            tab: 0,
+            size,
+            sent_by: 0,
+            oldest: false,
+            search: None,
+            query: String::new(),
+            typed: 0,
+            items: Vec::new(),
+            more: true,
+            cursor: None,
+            loading: None,
+            generation: 0,
+            advance: false,
+            tab_at: None,
+            menu: None,
+            item_menu: None,
+            select: false,
+            picked: Vec::new(),
+            deleting: None,
+        }
+    }
+
+    /// The loaded message `mid`.
+    fn message(&self, mid: &str) -> Option<&Arc<Message>> {
+        self.items.iter().find(|(m, _)| m.id == mid).map(|(m, _)| m)
+    }
 }
 
 /// The time of the slide of Desktop's `BrandSegmentControl` highlight, in seconds.
@@ -164,46 +212,119 @@ pub(crate) fn slide(widths: &[f32], (from, to): (usize, usize), t: f32) -> (f32,
     (left(from) + (left(to) - left(from)) * k, widths[from] + (widths[to] - widths[from]) * k)
 }
 
-/// Desktop's Media window page size.
-pub(crate) const MEDIA_PAGE: usize = 50;
+/// Desktop's `limit` of a read of the Media window items, in messages.
+const MEDIA_PAGE: usize = 50;
+/// The most reads of a load of Desktop's Media window without an item.
+const MEDIA_READS: usize = 5;
 
 const MEDIA_TABS: [&str; 3] = ["Media", "Links", "Docs"];
 
-/// The items of the Media window tab, as (index of `media`, attachment or link index), in its order. `media` holds the
-/// stored messages with media. Like Desktop, it skips low priority chats and message requests.
-pub(crate) fn media_items(st: &BeeperStore, media: &[Message], w: &MediaWindow) -> Vec<(usize, usize)> {
-    let (tab, needle) = (w.tab, w.search.as_deref().unwrap_or("").trim().to_lowercase());
-    let shown = |m: &&Message| {
-        m.is_deleted != Some(true)
-            && m.view_limit.is_none()
-            && st.chat(&m.chat_id).flags & (CHAT_LOW_PRIORITY | CHAT_REQUEST) == 0
-            && match w.sent_by {
-                0 => true,
-                1 => m.is_sender == Some(true),
-                2 => m.is_sender != Some(true),
-                n => unreachable!("sent by {n}"),
-            }
-            && m.text.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+/// The filters of a load of the Media window items, the time and row that it loads past, and the filter count.
+pub(crate) struct MediaAsk {
+    tab: usize,
+    sent_by: u8,
+    oldest: bool,
+    query: String,
+    cursor: Option<(i64, i64)>,
+    generation: u64,
+}
+
+impl MediaAsk {
+    pub(crate) fn of(w: &MediaWindow) -> Self {
+        let (tab, sent_by, oldest, query) = (w.tab, w.sent_by, w.oldest, w.query.clone());
+        Self { tab, sent_by, oldest, query, cursor: w.cursor, generation: w.generation }
+    }
+}
+
+/// The items of a load of the Media window, whether more can load, and the time and row past which they load.
+#[derive(Clone)]
+pub struct MediaPage {
+    generation: u64,
+    items: Vec<(Arc<Message>, usize)>,
+    more: bool,
+    cursor: Option<(i64, i64)>,
+}
+
+/// Desktop's Media window `loadMore` over its `searchRoomMessages`: reads of 50 messages past the cursor, newest or
+/// oldest first by time and row, until one has items of the tab, at most 5. The caption search is the message search
+/// with partial matches. Like Desktop, a read skips deleted, hidden and view-once messages and low priority chats,
+/// and the load then drops the items of message requests.
+pub(crate) fn media_page(st: &BeeperStore, ask: &MediaAsk) -> MediaPage {
+    let kinds: &[&str] = match ask.tab {
+        0 => &["img", "video"],
+        1 => &["link"],
+        _ => &["unknown"],
     };
-    let mut items: Vec<_> = media
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| shown(m))
-        .flat_map(|(i, m)| {
-            let parts: Vec<usize> = match tab {
+    let (mut cursor, mut more, mut items) = (ask.cursor, true, Vec::new());
+    for _ in 0..MEDIA_READS {
+        let mut q = Query::default().has(Some(kinds));
+        if ask.sent_by > 0 {
+            q = q.sent(ask.sent_by == 1);
+        }
+        if !ask.query.is_empty() {
+            q = q.text(&ask.query);
+        }
+        if let Some(at) = cursor {
+            q = q.past_row(at, ask.oldest);
+        }
+        let mut rows = Vec::new();
+        st.scan_by_time(&q, ask.oldest, |n, m| {
+            if m.is_deleted != Some(true)
+                && !matches!(m.message_type.as_deref(), Some("HIDDEN" | "REACTION"))
+                && m.view_limit.is_none()
+                && st.chat(&m.chat_id).flags & CHAT_LOW_PRIORITY == 0
+            {
+                rows.push((n, m));
+            }
+            rows.len() <= MEDIA_PAGE
+        });
+        more = rows.len() > MEDIA_PAGE;
+        rows.truncate(MEDIA_PAGE);
+        cursor = rows.last().map(|(n, m)| (iso_millis(&m.timestamp), *n));
+        // Desktop's `getItemsFromMessage`: the images and videos, the links or the files of the message.
+        for (_, m) in rows {
+            let parts: Vec<usize> = match ask.tab {
                 1 => (0..m.links.len()).collect(),
                 _ => {
-                    let kinds: &[&str] = if tab == 0 { &["img", "video"] } else { &["unknown"] };
                     let atts = m.attachments.iter().enumerate();
                     atts.filter(|(_, a)| kinds.contains(&a.attachment_type.as_str())).map(|(k, _)| k).collect()
                 }
             };
-            let t = iso_millis(&m.timestamp);
-            parts.into_iter().map(move |k| (t, i, k))
-        })
-        .collect();
-    items.sort_by_key(|&(t, ..)| if w.oldest { t } else { -t });
-    items.into_iter().map(|(_, i, k)| (i, k)).collect()
+            let m = Arc::new(m);
+            items.extend(parts.into_iter().map(|k| (m.clone(), k)));
+        }
+        if !more || cursor.is_none() || !items.is_empty() {
+            break;
+        }
+    }
+    items.retain(|(m, _)| st.chat(&m.chat_id).flags & CHAT_REQUEST == 0);
+    MediaPage { generation: ask.generation, items, more, cursor }
+}
+
+/// Runs the running load of the Media window to its end, as the worker thread would.
+#[cfg(test)]
+pub(crate) fn finish_media_load(app: &mut BeeperGuiApp) {
+    while let Some(w) = app.media_window.as_ref().filter(|w| w.loading.is_some()) {
+        let (id, page) = (w.id, media_page(&app.store.read(), &MediaAsk::of(w)));
+        let _ = app.update(UiMessage::Loaded(loads::Msg::MediaPage(id, page)));
+    }
+}
+
+/// Loads all the items of the Media window.
+#[cfg(test)]
+pub(crate) fn load_all_media(app: &mut BeeperGuiApp) {
+    finish_media_load(app);
+    while app.media_window.as_ref().is_some_and(|w| w.more) {
+        let _ = app.update(UiMessage::Media(Msg::More));
+        finish_media_load(app);
+    }
+}
+
+/// The opacity of Desktop's `media-viewer-pulse` at `t` seconds: from 0.55 to 1 and back in 1.2 s, `ease-in-out`.
+fn pulse(t: f32) -> f32 {
+    let half = (t / 0.6).rem_euclid(2.0);
+    let k = cubic_bezier(if half < 1.0 { half } else { 2.0 - half }, [0.42, 0.0, 0.58, 1.0]);
+    0.55 + 0.45 * k
 }
 
 /// The items that the Media window filmstrip shows, as a range: from the scrolled item `from`, or around the current
@@ -245,10 +366,77 @@ impl BeeperGuiApp {
         self.media_window.as_mut().expect("the Media window is open")
     }
 
-    /// Show the first page of the Media window items after a filter changes.
-    pub(crate) fn media_reload(&mut self) -> Task<UiMessage> {
-        self.media_mut().shown = MEDIA_PAGE;
-        self.load_media()
+    /// Desktop's `reset` after a filter changes: drops the items, the selection and the viewer, and loads again.
+    fn media_reset(&mut self) -> Task<UiMessage> {
+        let w = self.media_mut();
+        w.generation += 1;
+        (w.items, w.more, w.cursor, w.loading, w.advance) = (Vec::new(), true, None, None, false);
+        w.picked.clear();
+        let close = match self.carousel.as_ref().is_some_and(|c| c.in_media) {
+            true => self.media_view(Msg::CloseCarousel),
+            false => Task::none(),
+        };
+        Task::batch([close, self.media_more()])
+    }
+
+    /// Desktop's `setSearchText`: searches the trimmed text of the search field when it changed.
+    fn media_search(&mut self) -> Task<UiMessage> {
+        let w = self.media_mut();
+        let query = w.search.as_deref().unwrap_or("").trim();
+        if query == w.query {
+            return Task::none();
+        }
+        w.query = query.to_string();
+        self.media_reset()
+    }
+
+    /// Desktop's `loadMore`: loads the next Media window items on a worker thread, unless a load runs or all loaded.
+    pub(crate) fn media_more(&mut self) -> Task<UiMessage> {
+        let w = self.media_mut();
+        if w.loading.is_some() || !w.more {
+            return Task::none();
+        }
+        w.loading = Some(std::time::Instant::now());
+        self.media_read()
+    }
+
+    fn media_read(&self) -> Task<UiMessage> {
+        let w = self.media_window.as_ref().expect("the Media window is open");
+        let (store, ask, id) = (self.store.clone(), MediaAsk::of(w), w.id);
+        let read = async move {
+            tokio::task::spawn_blocking(move || media_page(&store.read(), &ask)).await.expect("media page thread")
+        };
+        Task::perform(read, move |page| UiMessage::Loaded(loads::Msg::MediaPage(id, page)))
+    }
+
+    /// The end of a load of the Media window `id`: like Desktop, it adds the items, loads again when it found none
+    /// and more can load, and steps the viewer that waits for them.
+    pub(crate) fn media_paged(&mut self, id: window::Id, page: MediaPage) -> Task<UiMessage> {
+        let w = self.media_window.as_mut().filter(|w| w.id == id && w.generation == page.generation);
+        let Some(w) = w else { return Task::none() };
+        let again = page.items.is_empty() && page.more && page.cursor.is_some();
+        w.items.extend(page.items);
+        (w.more, w.cursor) = (page.more, page.cursor);
+        if again {
+            return self.media_read();
+        }
+        w.loading = None;
+        match std::mem::take(&mut w.advance) {
+            true => self.media_view(Msg::CarouselStep(true)),
+            false => Task::none(),
+        }
+    }
+
+    /// Desktop's filmstrip loads more items when it shows one of the last 10 loaded items.
+    fn media_viewer_more(&mut self) -> Task<UiMessage> {
+        let Some(c) = self.carousel.as_ref().filter(|c| c.in_media) else { return Task::none() };
+        let Some((items, at)) = self.carousel_items(&self.store.read()) else { return Task::none() };
+        let size = self.media_window.as_ref().expect("the Media window is open").size;
+        let (_, end) = filmstrip(&size, at, items.len(), c.strip);
+        match items.len() - end < 10 {
+            true => self.media_more(),
+            false => Task::none(),
+        }
     }
 
     /// Starts the loads of the media that a view asked for, when a client or HTTPS can load them.
@@ -307,34 +495,21 @@ impl BeeperGuiApp {
         }
     }
 
-    /// The stored messages with media for the Media window, newest first. The memo keeps them until the store changes.
-    pub(crate) fn media_messages(&self, st: &BeeperStore) -> Rc<[Message]> {
-        let memo = self.memo();
-        if let Some(all) = memo.and_then(|m| m.media.borrow().clone()) {
-            return all;
-        }
-        let mut all = Vec::new();
-        st.scan(&Query::default().media(), |m| {
-            all.push(m);
-            true
-        });
-        let all: Rc<[Message]> = all.into();
-        if let Some(m) = memo {
-            *m.media.borrow_mut() = Some(all.clone());
-        }
-        all
+    /// Desktop's `hasNextViewerItem`: the Media window viewer has a next item while more items can load.
+    fn more_media(&self, car: &Carousel) -> bool {
+        car.in_media && self.media_window.as_ref().is_some_and(|w| w.more)
     }
 
     /// The (message, attachment index) items of the carousel, and the position of the shown one: like Desktop's
-    /// `getCarouselAttachments`, the attachments of the open chat other than audio, oldest first, or the Media window
-    /// items. It is `None` when the shown item is gone: a sync deleted its message, or its chat left the Media window.
+    /// `getCarouselAttachments`, the attachments of the open chat other than audio, oldest first, or the loaded Media
+    /// window items. It is `None` when the shown item is gone: a sync deleted its message, or the item was dropped.
     pub(crate) fn carousel_items(&self, st: &BeeperStore) -> Option<(Vec<(String, usize)>, usize)> {
         let c = self.carousel.as_ref().expect("the carousel is open");
         let items: Vec<_> = match c.in_media {
             true => {
-                let media = self.media_messages(st);
-                let items = media_items(st, &media, self.media_window.as_ref().expect("the Media window is open"));
-                items.into_iter().map(|(i, k)| (media[i].id.clone(), k)).collect()
+                st.stored_message(&c.mid)?;
+                let w = self.media_window.as_ref().expect("the Media window is open");
+                w.items.iter().map(|(m, k)| (m.id.clone(), *k)).collect()
             }
             false => {
                 let chat = &st.loaded(&c.mid)?.chat_id;
@@ -391,7 +566,7 @@ impl BeeperGuiApp {
             Key::Named(Named::ArrowLeft) if mods.is_empty() && at > 0 => {
                 self.update(UiMessage::Media(Msg::CarouselStep(false)))
             }
-            Key::Named(Named::ArrowRight) if mods.is_empty() && at + 1 < items.len() => {
+            Key::Named(Named::ArrowRight) if mods.is_empty() && (at + 1 < items.len() || self.more_media(&c)) => {
                 self.update(UiMessage::Media(Msg::CarouselStep(true)))
             }
             Key::Character("d") if mods.is_empty() => {
@@ -564,10 +739,10 @@ impl BeeperGuiApp {
             }
         };
         let strip = car.in_media.then(|| {
-            let size = self.media_window.as_ref().expect("the Media window is open").size;
-            let (start, end) = filmstrip(&size, at, items.len(), car.strip);
-            let thumbs = items[start..end].iter().enumerate().map(|(k, (mid, ai))| -> El<'a> {
-                let a = &stored(&st, mid).attachments[*ai];
+            let w = self.media_window.as_ref().expect("the Media window is open");
+            let (start, end) = filmstrip(&w.size, at, items.len(), car.strip);
+            let thumbs = w.items[start..end].iter().enumerate().map(|(k, (m, ai))| -> El<'a> {
+                let (mid, a) = (&m.id, &m.attachments[*ai]);
                 let edge = if start + k == at { p.accent } else { CLEAR };
                 let face = container(self.thumb(a, 44.0, 6.0)).padding(2);
                 let face = face.style(bordered_box(white.scale_alpha(0.1), edge, 2.0, 8.0));
@@ -603,7 +778,7 @@ impl BeeperGuiApp {
         let body = column![container(head).padding(8).height(50), main];
         let layer = stack![body]
             .push((at > 0).then(|| step(false)))
-            .push((at + 1 < items.len()).then(|| step(true)))
+            .push((at + 1 < items.len() || self.more_media(car)).then(|| step(true)))
             .push(video.and_then(|(src, _)| self.view_carousel_video_controls(&src)))
             .push(pages)
             .push(reactions)
@@ -680,8 +855,6 @@ impl BeeperGuiApp {
             let mark = on.then(|| tinted(done_icon, 14.0, Color::WHITE));
             container(mark).center(20).style(bordered_box(bg, edge, 1.5, 10.0)).into()
         };
-        let media = self.media_messages(&st);
-        let items = media_items(&st, &media, w);
         // Desktop's `label-sm` (11/14) and `body-sm` (13/16) type of the Media window.
         let sub = |s: String| txt(s, 11.0).color(p.on_secondary);
         // Desktop's `BrandSegmentControl`: the highlight slides to the selected tab in `0.25s`.
@@ -754,16 +927,16 @@ impl BeeperGuiApp {
         let cols = ((inner / 160.0) as usize).max(3);
         let tile = (inner - 20.0 - 4.0 * (cols - 1) as f32) / cols as f32;
         let text_w = inner - 20.0 - 48.0 - 8.0 - 150.0;
-        let mut groups: Vec<(String, Vec<(usize, usize)>)> = Vec::new();
-        for &(i, k) in items.iter().take(w.shown) {
-            let label = media_group(day_num(&media[i].timestamp));
+        let mut groups: Vec<(String, Vec<(&Message, usize)>)> = Vec::new();
+        for (m, k) in &w.items {
+            let label = media_group(day_num(&m.timestamp));
             match groups.last_mut() {
-                Some((l, g)) if *l == label => g.push((i, k)),
-                _ => groups.push((label, vec![(i, k)])),
+                Some((l, g)) if *l == label => g.push((m, *k)),
+                _ => groups.push((label, vec![(m, *k)])),
             }
         }
         let body = groups.iter().fold(Column::new(), |col, (label, group)| {
-            let days = group.iter().map(|&(i, _)| day_num(&media[i].timestamp));
+            let days = group.iter().map(|&(m, _)| day_num(&m.timestamp));
             let (lo, hi) = (days.clone().min().expect("a group has items"), days.max().expect("a group has items"));
             let full = |d| i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0));
             let range = if lo == hi { full(lo) } else { format!("{} - {}", full(lo), full(hi)) };
@@ -771,8 +944,7 @@ impl BeeperGuiApp {
             let col = col.push(container(head).padding(Padding::new(6.0).top(12.0).left(10.0).right(10.0)));
             match w.tab {
                 0 => group.chunks(cols).fold(col, |col, chunk| {
-                    let tiles = chunk.iter().map(|&(i, k)| -> El<'a> {
-                        let m = &media[i];
+                    let tiles = chunk.iter().map(|&(m, k)| -> El<'a> {
                         let a = &m.attachments[k];
                         let badge = match (a.is_gif == Some(true), a.attachment_type == "video") {
                             (true, _) => Some(row![semi(tr("GIF"), 11.0)]),
@@ -826,8 +998,7 @@ impl BeeperGuiApp {
                             .padding(Padding::new(0.0).bottom(4.0).left(10.0).right(10.0)),
                     )
                 }),
-                _ => group.iter().fold(col, |col, &(i, k)| {
-                    let m = &media[i];
+                _ => group.iter().fold(col, |col, &(m, k)| {
                     let icon = |glyph, size| -> El<'a> {
                         container(tinted(glyph, size, p.on_secondary)).center(40).style(fill_box(p.chip, 8.0)).into()
                     };
@@ -881,27 +1052,43 @@ impl BeeperGuiApp {
                 }),
             }
         });
-        let more = w.shown < items.len();
-        let list: El<'a> = match items.is_empty() {
+        // Desktop loads more items when the list shows one of its last 8 rows, and again when a load adds rows.
+        let row_h = if w.tab == 0 { tile + 4.0 } else { 52.0 };
+        let viewer = self.carousel.as_ref().is_some_and(|c| c.in_media);
+        let end = (w.more && !viewer).then(|| {
+            iced::widget::sensor(Space::new().width(Fill))
+                .key((w.generation, w.items.len()))
+                .anticipate(8.0 * row_h)
+                .on_show(|_| UiMessage::Media(Msg::More))
+        });
+        // Desktop's pulsing skeleton rows while items load: three without items, else one under them.
+        let skeletons = w.loading.map_or(0, |_| if w.items.is_empty() { 3 } else { 1 });
+        let fade = w.loading.map_or(1.0, |at| pulse(at.elapsed().as_secs_f32()));
+        let skeleton = |_| -> El<'a> {
+            let tiles = (0..cols).map(|_| -> El<'a> {
+                let face = container(Space::new()).width(tile).height(tile);
+                face.style(fill_box(p.chip.scale_alpha(fade), 8.0)).into()
+            });
+            let row = container(Row::with_children(tiles).spacing(4));
+            row.padding(Padding::new(0.0).bottom(4.0).left(10.0).right(10.0)).into()
+        };
+        let body = body.push(end).extend((0..skeletons).map(skeleton));
+        let list: El<'a> = match w.items.is_empty() && w.loading.is_none() {
             true => container(txt(tr("Nothing here"), 13.0).color(p.on_secondary)).center_x(Fill).padding(16).into(),
             false => scrollable(body.push(Space::new().height(8)))
                 .direction(bar())
                 .height(Fill)
                 .style(scroll_style(p.scroll))
-                .on_scroll(move |v| {
-                    if more && v.relative_offset().y > 0.8 {
-                        UiMessage::Media(Msg::More)
-                    } else {
-                        UiMessage::Noop
-                    }
-                })
                 .into(),
         };
         let title = container(semi(tr("Media"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
         let footer = w.select.then(|| {
             let bytes: u64 = match w.tab {
                 1 => 0,
-                _ => w.picked.iter().filter_map(|(mid, k)| stored(&st, mid).attachments[*k].file_size).sum(),
+                _ => {
+                    let shown = w.items.iter().filter(|(m, k)| picked(&m.id, *k));
+                    shown.filter_map(|(m, k)| m.attachments[*k].file_size).sum()
+                }
             };
             let n = w.picked.len();
             let count = match bytes {
@@ -929,8 +1116,9 @@ impl BeeperGuiApp {
         let pane = column![header, rule()].push(search_row).push(list).push(footer);
         let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.card, 12.0));
         let base = container(column![title, pane]).padding(8).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
-        let item_menu = w.item_menu.as_ref().map(|(mid, k, at)| {
-            let m = &stored(&st, mid);
+        // A filter change can drop the item of an open menu.
+        let item_menu = w.item_menu.as_ref().and_then(|(mid, k, at)| {
+            let m = w.message(mid)?;
             let act = |label: &str, msg| {
                 menu_item(p, None, label.into(), "", Some(UiMessage::Media(Msg::ItemAct(Box::new(msg)))))
             };
@@ -955,9 +1143,12 @@ impl BeeperGuiApp {
             let col = Column::with_children([go, menu_rule(p)].into_iter().chain(actions));
             let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
             let at = Padding::ZERO.left(at.x.min(w.size.width - 180.0 - 8.0)).top(at.y.min(w.size.height - h - 8.0));
-            mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
-                .on_press(UiMessage::Media(Msg::ItemMenu(None)))
-                .on_right_press(UiMessage::Media(Msg::ItemMenu(None)))
+            let menu = container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill);
+            Some(
+                mouse_area(menu)
+                    .on_press(UiMessage::Media(Msg::ItemMenu(None)))
+                    .on_right_press(UiMessage::Media(Msg::ItemMenu(None))),
+            )
         });
         // Desktop's filter menu is a native menu at the cursor.
         let menu = w.menu.map(|at| {
@@ -1022,7 +1213,7 @@ impl BeeperGuiApp {
         let c = self.carousel.as_mut().expect("the carousel is open");
         let (start, _) = filmstrip(&size, at, items.len(), c.strip);
         c.strip = Some((start as f32 + by).round().max(0.0) as usize);
-        Task::none()
+        self.media_viewer_more()
     }
 
     /// The square cover crop of an image or video poster, or an empty tile while it loads.
@@ -1067,8 +1258,10 @@ pub enum Msg {
     SentBy(u8),
     /// Show the oldest Media window items first.
     Oldest(bool),
-    /// Search the Media window by caption, or close the search with `None`.
+    /// Change the text of the Media window search field, or close the search with `None`.
     Search(Option<String>),
+    /// The 300 ms after a change of the search field: the search starts if the field has not changed since.
+    Searched(u64),
     Menu(bool),
     /// Open the context menu of a Media window item, or close it with `None`.
     ItemMenu(Option<(String, usize)>),
@@ -1091,6 +1284,9 @@ impl BeeperGuiApp {
         match msg {
             Msg::OpenCarousel(mid, ai, in_media) => {
                 self.leave_carousel_video();
+                if in_media {
+                    self.media_mut().advance = false;
+                }
                 self.carousel = Some(Carousel {
                     mid,
                     ai,
@@ -1103,20 +1299,25 @@ impl BeeperGuiApp {
                     page: 1,
                 });
                 self.fit_carousel_video();
-                return self.load_media();
+                return Task::batch([self.load_media(), self.media_viewer_more()]);
             }
             Msg::CarouselStep(next) => {
+                let c = self.carousel.clone().expect("the carousel is open");
+                if c.in_media && !next {
+                    self.media_mut().advance = false;
+                }
+                let Some((items, at)) = self.carousel_items(&self.store.read()) else { return Task::none() };
                 // The second click of a double click on an arrow can step past the first or the last image.
-                let item = self.carousel_items(&self.store.read()).and_then(|(items, at)| {
-                    let to = if next { at + 1 } else { at.checked_sub(1)? };
-                    items.into_iter().nth(to)
-                });
-                let Some(item) = item else { return Task::none() };
-                self.leave_carousel_video();
-                let c = self.carousel.as_mut().expect("the carousel is open");
-                (c.mid, c.ai, c.resume, c.menu, c.strip, c.page) = (item.0, item.1, None, None, None, 1);
-                self.fit_carousel_video();
-                return self.load_media();
+                let to = if next { Some(at + 1) } else { at.checked_sub(1) };
+                let Some(item) = to.and_then(|to| items.into_iter().nth(to)) else {
+                    // Desktop's `viewerNext` past the last loaded item steps when the next load ends.
+                    if next && self.more_media(&c) {
+                        self.media_mut().advance = true;
+                        return self.media_more();
+                    }
+                    return Task::none();
+                };
+                return self.carousel_to(item);
             }
             Msg::ScrollFilmstrip(by) => return self.scroll_filmstrip(by),
             Msg::PdfPage(n) => self.carousel.as_mut().expect("the carousel is open").page = n,
@@ -1131,7 +1332,9 @@ impl BeeperGuiApp {
             // Like the unmount of Desktop's carousel, the close lets go of its PDFs.
             Msg::CloseCarousel => {
                 let task = self.close_carousel_video();
-                self.carousel = None;
+                if self.carousel.take().is_some_and(|c| c.in_media) {
+                    self.media_mut().advance = false;
+                }
                 self.pdfs.clear();
                 return task;
             }
@@ -1142,48 +1345,55 @@ impl BeeperGuiApp {
                 // Desktop's `media-viewer` window state.
                 let settings = self.saved_window_settings("media-viewer", Size::new(1000.0, 720.0));
                 let (size, (id, open)) = (settings.size, window::open(settings));
-                self.media_window = Some(MediaWindow {
-                    id,
-                    tab: 0,
-                    size,
-                    shown: MEDIA_PAGE,
-                    sent_by: 0,
-                    oldest: false,
-                    search: None,
-                    tab_at: None,
-                    menu: None,
-                    item_menu: None,
-                    select: false,
-                    picked: Vec::new(),
-                    deleting: None,
-                });
-                return Task::batch([open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0))), self.load_media()]);
+                self.media_window = Some(MediaWindow::new(id, size));
+                return Task::batch([open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0))), self.media_more()]);
             }
             Msg::Tab(tab) => {
                 let w = self.media_mut();
-                (w.tab_at, w.tab) = (Some((w.tab, std::time::Instant::now())), tab);
-                return self.media_reload();
+                if w.tab != tab {
+                    (w.tab_at, w.tab) = (Some((w.tab, std::time::Instant::now())), tab);
+                    return self.media_reset();
+                }
             }
             Msg::SentBy(n) => {
                 let w = self.media_mut();
-                (w.sent_by, w.menu) = (n, None);
-                return self.media_reload();
+                w.menu = None;
+                if w.sent_by != n {
+                    w.sent_by = n;
+                    return self.media_reset();
+                }
             }
             Msg::Oldest(on) => {
                 let w = self.media_mut();
-                (w.oldest, w.menu) = (on, None);
-                return self.media_reload();
+                w.menu = None;
+                if w.oldest != on {
+                    w.oldest = on;
+                    return self.media_reset();
+                }
             }
             Msg::Search(q) => {
                 let w = self.media_mut();
                 let open = q.is_some() && w.search.is_none();
-                w.search = q;
-                let reload = self.media_reload();
-                return if open {
-                    Task::batch([reload, iced::widget::operation::focus("media-search")])
-                } else {
-                    reload
+                (w.search, w.typed) = (q, w.typed + 1);
+                // Desktop closes the search at once, and searches 300 ms after the last change of the field.
+                let search = match w.search.is_some() {
+                    true => {
+                        let n = w.typed;
+                        let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
+                        Task::perform(wait, move |()| UiMessage::Media(Msg::Searched(n)))
+                    }
+                    false => self.media_search(),
                 };
+                return match open {
+                    true => Task::batch([search, iced::widget::operation::focus("media-search")]),
+                    false => search,
+                };
+            }
+            Msg::Searched(n) => {
+                // The window can close before the wait ends.
+                if self.media_window.as_ref().is_some_and(|w| w.typed == n) {
+                    return self.media_search();
+                }
             }
             Msg::Menu(open) => {
                 let at = self.cursor.get();
@@ -1203,13 +1413,8 @@ impl BeeperGuiApp {
                 }
             }
             Msg::PickAll => {
-                let st = self.store.read();
-                let w = self.media_window.as_ref().expect("the Media window is open");
-                let media = self.media_messages(&st);
-                let all = media_items(&st, &media, w).into_iter().take(w.shown).map(|(i, k)| (media[i].id.clone(), k));
-                let all = all.collect();
-                drop(st);
-                self.media_mut().picked = all;
+                let w = self.media_mut();
+                w.picked = w.items.iter().map(|(m, k)| (m.id.clone(), *k)).collect();
             }
             Msg::Save => {
                 let w = self.media_window.as_ref().expect("the Media window is open");
@@ -1222,14 +1427,15 @@ impl BeeperGuiApp {
             }
             Msg::AskDelete(items) => {
                 let st = self.store.read();
+                let w = self.media_window.as_ref().expect("the Media window is open");
+                let items: Vec<&Arc<Message>> = items.iter().filter_map(|(mid, _)| w.message(mid)).collect();
                 let mut pairs: Vec<(String, String)> = Vec::new();
-                for (mid, _) in &items {
-                    let m = &stored(&st, mid);
-                    if deletable(&st, m) && !pairs.iter().any(|(_, x)| x == mid) {
-                        pairs.push((m.chat_id.clone(), mid.clone()));
+                for m in &items {
+                    if deletable(&st, m) && !pairs.iter().any(|(_, x)| *x == m.id) {
+                        pairs.push((m.chat_id.clone(), m.id.clone()));
                     }
                 }
-                let skipped = items.iter().filter(|(mid, _)| !deletable(&st, &stored(&st, mid))).count();
+                let skipped = items.iter().filter(|m| !deletable(&st, m)).count();
                 drop(st);
                 match pairs.is_empty() {
                     true => self.status_banner = tr("These messages can’t be deleted").into(),
@@ -1244,7 +1450,6 @@ impl BeeperGuiApp {
                         st.redact_message(cid, mid).expect("delete message");
                     }
                     drop(st);
-                    self.media_mut().picked.retain(|(m, _)| pairs.iter().all(|(_, x)| x != m));
                     if skipped > 0 {
                         self.status_banner = trn(
                             "Skipped %d item that can’t be deleted",
@@ -1252,6 +1457,22 @@ impl BeeperGuiApp {
                             skipped,
                             &[&skipped],
                         );
+                    }
+                    // Desktop's `removeItems`: the viewer of a deleted item shows the item that takes its place.
+                    let gone = |m: &str| pairs.iter().any(|(_, x)| x == m);
+                    let shown = self.carousel.as_ref().filter(|c| c.in_media).map(|c| (c.mid.clone(), c.ai));
+                    let w = self.media_mut();
+                    let at = shown.and_then(|(mid, ai)| w.items.iter().position(|(m, k)| m.id == mid && *k == ai));
+                    let at = at.filter(|&at| gone(&w.items[at].0.id));
+                    let before = at.map_or(0, |at| w.items[..at].iter().filter(|(m, _)| gone(&m.id)).count());
+                    w.items.retain(|(m, _)| !gone(&m.id));
+                    w.picked.retain(|(m, _)| !gone(m));
+                    let last = w.items.len().saturating_sub(1);
+                    let next = at.map(|at| w.items.get((at - before).min(last)).map(|(m, k)| (m.id.clone(), *k)));
+                    match next {
+                        Some(Some(item)) => return self.carousel_to(item),
+                        Some(None) => return self.media_view(Msg::CloseCarousel),
+                        None => {}
                     }
                 }
             }
@@ -1263,12 +1484,18 @@ impl BeeperGuiApp {
                 self.media_mut().item_menu = None;
                 return self.update(*msg);
             }
-            Msg::More => {
-                self.media_mut().shown += MEDIA_PAGE;
-                return self.load_media();
-            }
+            Msg::More => return self.media_more(),
         }
         self.settle()
+    }
+
+    /// Shows the carousel item `(mid, ai)` from the start.
+    fn carousel_to(&mut self, (mid, ai): (String, usize)) -> Task<UiMessage> {
+        self.leave_carousel_video();
+        let c = self.carousel.as_mut().expect("the carousel is open");
+        (c.mid, c.ai, c.resume, c.menu, c.strip, c.page) = (mid, ai, None, None, None, 1);
+        self.fit_carousel_video();
+        Task::batch([self.load_media(), self.media_viewer_more()])
     }
 }
 
@@ -1293,5 +1520,148 @@ mod ffmpeg_tests {
         assert!(moov > mdat, "the index comes after the media");
         let frames = super::decode_media(bytes).expect("the first frame");
         assert_eq!(frames.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fuzz::demo_app;
+    use beeper_core::config::rfc3339_from_millis;
+    use iced_test::simulator::{simulator, Simulator};
+
+    /// Adds `n` images with the captions of `text` to the note to self, a minute apart in 2027, the last one newest.
+    fn photos(app: &BeeperGuiApp, n: usize, text: impl Fn(usize) -> Option<&'static str>) {
+        let note = "!note_self:beeper.com";
+        let mut st = app.store.write();
+        let base = st.messages[*st.timeline_indices(note).last().expect("a note")].clone();
+        for i in 0..n {
+            let a = Attachment {
+                attachment_type: "img".into(),
+                src_url: Some(format!("https://example.com/{i}.png")),
+                ..Default::default()
+            };
+            let timestamp = rfc3339_from_millis(1_800_000_000_000 + i as i64 * 60_000);
+            let (id, sort_key, text) = (format!("$page{i:03}"), format!("{:016}", 9_000_000 + i), text(i));
+            let links = Vec::new();
+            let text = text.map(Into::into);
+            st.upsert_message(Message { id, sort_key, timestamp, attachments: vec![a], links, text, ..base.clone() });
+        }
+    }
+
+    fn ids(app: &BeeperGuiApp) -> Vec<String> {
+        app.media_window.as_ref().expect("the Media window is open").items.iter().map(|(m, _)| m.id.clone()).collect()
+    }
+
+    fn page(range: impl DoubleEndedIterator<Item = usize>) -> Vec<String> {
+        range.rev().map(|i| format!("$page{i:03}")).collect()
+    }
+
+    /// Desktop's Media window loads 50 messages at a time, newest first by time, shows skeleton rows while it loads
+    /// and loads more 8 rows before the end of the list. A filter change loads again from the start, and drops the
+    /// loads for the filters before it.
+    #[test]
+    fn media_window_pages_like_desktop() {
+        let mut app = demo_app("media-pages");
+        photos(&app, 120, |_| None);
+        let _ = app.update(UiMessage::Media(Msg::Open));
+        let id = app.media_window.as_ref().unwrap().id;
+        let size = Size::new(1000.0, 720.0);
+        let _ = app.update(UiMessage::Window(windows::Msg::Resized(id, size)));
+        assert!(app.media_window.as_ref().unwrap().loading.is_some(), "the window loads when it opens");
+        assert!(simulator(app.view(id)).find(tr("Nothing here")).is_err(), "skeleton rows show while it loads");
+        finish_media_load(&mut app);
+        assert_eq!(ids(&app), page(70..120), "the first load has the newest 50 messages");
+        let w = app.media_window.as_ref().unwrap();
+        assert!(w.more && w.loading.is_none());
+        let more = {
+            let mut sim = Simulator::with_size(Default::default(), size, app.view(id));
+            let _ = sim.simulate([iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))]);
+            sim.into_messages().any(|m| matches!(m, UiMessage::Media(Msg::More)))
+        };
+        assert!(more, "nine rows of tiles are near the end of the list");
+        let _ = app.update(UiMessage::Media(Msg::More));
+        finish_media_load(&mut app);
+        assert_eq!(ids(&app)[50..70], page(50..70)[..], "the next load has the next 50");
+        let stale = media_page(&app.store.read(), &MediaAsk::of(app.media_window.as_ref().unwrap()));
+        let _ = app.update(UiMessage::Media(Msg::Oldest(true)));
+        let _ = app.update(UiMessage::Loaded(loads::Msg::MediaPage(id, stale)));
+        assert!(ids(&app).is_empty(), "a load for the filters before does nothing");
+        load_all_media(&mut app);
+        let w = app.media_window.as_ref().unwrap();
+        assert!(w.items.windows(2).all(|p| iso_millis(&p[0].0.timestamp) <= iso_millis(&p[1].0.timestamp)));
+        let oldest: Vec<String> = page(0..120).into_iter().rev().collect();
+        assert!(ids(&app).ends_with(&oldest), "oldest first");
+    }
+
+    /// Desktop's Media window viewer steps past the last loaded item when the next load ends.
+    #[test]
+    fn media_viewer_waits_for_the_next_load_like_desktop() {
+        let mut app = demo_app("media-advance");
+        photos(&app, 60, |_| None);
+        let _ = app.update(UiMessage::Media(Msg::Open));
+        finish_media_load(&mut app);
+        let last = ids(&app).pop().expect("50 items");
+        let _ = app.update(UiMessage::Media(Msg::OpenCarousel(last.clone(), 0, true)));
+        assert!(app.media_window.as_ref().unwrap().loading.is_some(), "the filmstrip loads more near the end");
+        let _ = app.update(UiMessage::Media(Msg::CarouselStep(true)));
+        assert_eq!(app.carousel.as_ref().unwrap().mid, last, "the viewer waits");
+        finish_media_load(&mut app);
+        assert_eq!(app.carousel.as_ref().unwrap().mid, "$page009", "and steps when the load ends");
+    }
+
+    /// Desktop's caption search: 300 ms after the last change of the field, the message search with partial matches
+    /// over the captions and the file names. Closing the search shows all the items at once.
+    #[test]
+    fn media_window_searches_captions_like_desktop() {
+        let mut app = demo_app("media-search");
+        photos(&app, 3, |i| [Some("Sunset at the beach"), Some("a sunny day"), None][i]);
+        let _ = app.update(UiMessage::Media(Msg::Open));
+        let id = app.media_window.as_ref().unwrap().id;
+        load_all_media(&mut app);
+        let all = ids(&app);
+        let typed = |app: &mut BeeperGuiApp, q: &str| {
+            let _ = app.update(UiMessage::Media(Msg::Search(Some(q.into()))));
+            app.media_window.as_ref().unwrap().typed
+        };
+        let _ = typed(&mut app, "");
+        let early = typed(&mut app, " su");
+        let last = typed(&mut app, " sun ");
+        let _ = app.update(UiMessage::Media(Msg::Searched(early)));
+        assert_eq!(app.media_window.as_ref().unwrap().query, "", "a change of the field waits for the next");
+        let _ = app.update(UiMessage::Media(Msg::Searched(last)));
+        assert_eq!(app.media_window.as_ref().unwrap().query, "sun", "the search takes the trimmed text");
+        load_all_media(&mut app);
+        let found = ids(&app);
+        assert!(found.starts_with(&page(0..2)), "a caption word starts with the text: {found:?}");
+        assert!(!found.contains(&"$page002".into()));
+        let last = typed(&mut app, "unny");
+        let _ = app.update(UiMessage::Media(Msg::Searched(last)));
+        load_all_media(&mut app);
+        assert!(simulator(app.view(id)).find(tr("Nothing here")).is_ok(), "the search matches the start of words");
+        let _ = app.update(UiMessage::Media(Msg::Search(None)));
+        load_all_media(&mut app);
+        assert_eq!(ids(&app), all, "closing the search shows all items");
+        {
+            let mut st = app.store.write();
+            let i = st.find_message("$page002").expect("a photo");
+            st.update_message(i, |m| {
+                let a = &mut m.attachments[0];
+                (a.attachment_type, a.file_name) = ("unknown".into(), Some("quokka-ledger.pdf".into()));
+            });
+        }
+        let _ = app.update(UiMessage::Media(Msg::Tab(2)));
+        let last = typed(&mut app, "ledg");
+        let _ = app.update(UiMessage::Media(Msg::Searched(last)));
+        load_all_media(&mut app);
+        assert_eq!(ids(&app), ["$page002"], "the search finds file names");
+    }
+
+    /// Desktop's skeleton tiles pulse from 0.55 to full opacity and back in 1.2 s.
+    #[test]
+    fn skeleton_tiles_pulse_like_desktop() {
+        let round = |t: f32| (pulse(t) * 100.0).round() / 100.0;
+        assert_eq!([0.0, 0.6, 1.2, 1.8].map(round), [0.55, 1.0, 0.55, 1.0]);
+        assert!([0.3, 0.9].iter().all(|&t| (pulse(t) - 0.775).abs() < 1e-3), "halfway at a quarter and three quarters");
     }
 }
