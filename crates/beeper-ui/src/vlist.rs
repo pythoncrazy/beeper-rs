@@ -167,6 +167,20 @@ impl VList {
         self.0.borrow().sticky
     }
 
+    /// The key of the row at the far edge of the last visible span, like the end of virtua's `onRangeChange`: the
+    /// bottom row of a list anchored at its bottom, and the last row of one anchored at its top.
+    pub fn last_seen(&self) -> Option<u64> {
+        let inner = self.0.borrow();
+        let (keys, end, _, starts) = &inner.starts;
+        let (at, len) = inner.seen?;
+        let n = keys.len();
+        let at = at.clamp(0.0, (starts.get(n)? - len).max(0.0));
+        match end {
+            true => keys.get(n.checked_sub(1)?.checked_sub(starts[1..].partition_point(|&s| s <= at))?).copied(),
+            false => keys.get(starts[..n].partition_point(|&s| s < at + len).checked_sub(1)?).copied(),
+        }
+    }
+
     /// Makes the next view build the row of `key` in the middle of the visible span.
     pub fn reveal(&self, key: u64) {
         self.0.borrow_mut().target = Some(key);
@@ -307,7 +321,9 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
             (start < row || into > LABEL).then_some(start)
         });
         let sticky_changed = std::mem::replace(&mut inner.sticky, sticky) != sticky;
-        if changed || sticky_changed || at < inner.safe.0 || at + viewport.height > inner.safe.1 {
+        // `virtua`'s `onRangeChange` once the scroll stops, for the timeline to read through its last row in view.
+        let settled = !scrolling && inner.moved.take().is_some();
+        if changed || sticky_changed || settled || at < inner.safe.0 || at + viewport.height > inner.safe.1 {
             shell.publish(self.relist.clone());
         }
     }
@@ -355,5 +371,22 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
     ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
         let rows = layout.children().next().expect("the rows node");
         overlay::from_children(&mut self.children, tree, rows, renderer, viewport, translation)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The last row in view: the bottom one of a timeline anchored at its bottom, the last one of a list from the top.
+    #[test]
+    fn the_last_row_in_view() {
+        let keys: Vec<u64> = (0..10).collect();
+        for (end, at, want) in [(true, 0.0, 9), (true, 25.0, 8), (true, 45.0, 7), (false, 0.0, 2), (false, 25.0, 3)] {
+            let list = VList::default();
+            let _: Element<'_, ()> = list.view(&keys, end, 20.0, (), |_| iced::widget::Space::new().into());
+            list.0.borrow_mut().seen = Some((at, 50.0));
+            assert_eq!(list.last_seen(), Some(want), "anchored at the end: {end}, {at} px in");
+        }
     }
 }
