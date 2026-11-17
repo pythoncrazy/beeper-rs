@@ -12,7 +12,8 @@ pub(crate) const MERGE_SIZE: Size = Size::new(340.0, 570.0);
 /// Desktop's `Q`: the most chats of a section of the chat list.
 const SECTION: usize = 8;
 /// Desktop's `lte`, the "Learn more" page of merged chats.
-const MERGE_HELP: &str = "https://help.beeper.com/en_US/quick-references/how-to-create-and-manage-merged-chats";
+pub(crate) const MERGE_HELP: &str =
+    "https://help.beeper.com/en_US/quick-references/how-to-create-and-manage-merged-chats";
 
 /// A step of the editor (`f`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -64,12 +65,12 @@ pub enum MergeEdit {
 }
 
 /// Desktop's `uS` and `isMergeable`: a direct chat that is not hidden, read-only or merged already.
-fn mergeable(c: &Chat) -> bool {
+pub(crate) fn mergeable(c: &Chat) -> bool {
     c.chat_type == "single" && c.merge.is_none() && c.merged_into_chat_id.is_none() && !c.is_read_only
 }
 
 /// The other person of a direct chat (`Ui`).
-fn other(c: &Chat) -> Option<&User> {
+pub(crate) fn other(c: &Chat) -> Option<&User> {
     c.participants.items.iter().find(|u| u.is_self != Some(true))
 }
 

@@ -36,6 +36,7 @@ mod media_view;
 mod members;
 mod menubar;
 mod merge_editor;
+mod merge_suggest;
 mod merged;
 mod message;
 pub mod networks;
@@ -374,6 +375,8 @@ pub enum UiMessage {
     Blocking(blocking::Msg),
     /// Desktop's merged chats: Unmerge.
     Merged(merged::Msg),
+    /// Desktop's merge suggestions and the nudge of the composer switcher of a merged chat.
+    MergeSuggest(merge_suggest::Msg),
     /// Desktop's account nicknames and the Account Nickname window.
     Nickname(nickname::Msg),
     /// The keyboard focus of the controls of a window: Tab, and the mouse press that ends it.
@@ -2442,6 +2445,10 @@ pub struct Pane {
     /// Desktop's `composeTargetID` of a merged chat, and whether the switcher pinned it (`!shouldAutoUpdateTarget`).
     /// An unpinned target holds while the composer has a draft (`hasBlockingComposerContent`).
     pub compose_target: Option<(String, bool)>,
+    /// Desktop's `MergeSuggestionBanner` showed when the chat opened.
+    pub merge_banner: bool,
+    /// Desktop's `TargetSwitcherNudge` showed when the merged chat opened.
+    pub nudge: bool,
     /// Desktop's `ScheduledMessages` state: collapsed and collapsible.
     pub sched_fold: (bool, bool),
     pub sched_menu: Option<(Vec<String>, bool, Point)>,
@@ -3674,6 +3681,10 @@ impl BeeperGuiApp {
         self.pane.reply_to_message_id = draft.reply_to_message_id;
         (self.pane.editing_message_id, self.pane.stash) = (None, None);
         self.pane.mentions = draft.mentions;
+        // Desktop's `seedComposeTarget`: the member chat of the draft's `send_room_id` is the pinned target.
+        let members = st.members(idx);
+        let seeded = draft.send_room_id.filter(|r| members.iter().any(|&m| st.chats[m].id == *r));
+        self.pane.compose_target = seeded.map(|r| (r, true));
         self.pane.selected_msgs.clear();
         self.pane.msg_anchor = None;
         (self.info_desc, self.info_more, self.info_all, self.info_bookmarks) = (None, false, false, false);
@@ -3697,6 +3708,7 @@ impl BeeperGuiApp {
         if let Some(root) = self.open_threads.get(chat_id).cloned() {
             self.open_thread(chat_id.into(), root);
         }
+        self.mount_merge_prompts();
         self.refresh_theme_and_tray();
     }
 
@@ -4091,6 +4103,7 @@ impl BeeperGuiApp {
             UiMessage::Networks(msg) => return self.networks(msg),
             UiMessage::Blocking(msg) => return self.blocking(msg),
             UiMessage::Merged(msg) => return self.merged(msg),
+            UiMessage::MergeSuggest(msg) => return self.merge_suggest(msg),
             UiMessage::Nickname(msg) => return self.nickname(msg),
             UiMessage::Focus(msg) => return self.key_focus(msg),
             UiMessage::ChatList(msg) => return self.chat_list(msg),
@@ -4143,11 +4156,18 @@ impl BeeperGuiApp {
                     unread,
                 ]);
             }
-            UiMessage::SwitchCard => self.list.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
+            UiMessage::SwitchCard => {
+                self.list.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get()));
+                // Desktop's merged chat `composeSwitchTargets.onOpen` dismisses the switcher nudge.
+                if self.merged_targets(&self.store.read()).is_some_and(|t| t.len() >= 2) {
+                    self.dismiss_nudge();
+                }
+            }
             UiMessage::SwitchChat(id) if self.merged_targets(&self.store.read()).is_some() => {
-                // Desktop's merged chat `composeSwitchTargets.onSelect`: `setComposeTarget`.
+                // Desktop's merged chat `composeSwitchTargets.onSelect`: `setComposeTarget`, which saves the draft.
                 self.list.chat_menu = None;
                 self.pane.compose_target = Some((id, true));
+                self.pane.draft_due = true;
             }
             UiMessage::SwitchChat(id) => self.switch_chat(id),
             UiMessage::InThread(msg) => return self.in_thread(*msg),

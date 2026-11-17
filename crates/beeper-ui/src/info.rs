@@ -647,12 +647,14 @@ impl BeeperGuiApp {
             });
         let body = column![header]
             .push(behavior)
+            .push(self.view_merge_promo(&st, chat))
             .push(self.view_merged_section(&st, chat))
             .push(desc)
             .push(members)
             .push(media)
             .push(bookmarks)
             .push(labels)
+            .push(self.view_merge_card(&st, chat))
             .push(other.and_then(|u| self.view_contact(&st, chat, u)))
             .push(timers)
             .push(sound)
