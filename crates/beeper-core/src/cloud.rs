@@ -61,7 +61,8 @@ pub fn cloud_accounts(bridges: &Value) -> Result<Vec<BridgeAccountInfo>, CloudEr
                     .map(|p| serde_json::from_value(p.clone()))
                     .transpose()
                     .map_err(|e| bad(&format!("{id} remote_profile: {e}")))?,
-                remote_error: field(r, "message").filter(|_| r["has_error"] == true),
+                remote_error: (r["has_error"] == true).then(|| field(r, "message").unwrap_or_default()),
+                remote_error_code: field(r, "error").filter(|_| r["has_error"] == true),
             });
         }
     }
@@ -494,10 +495,14 @@ mod tests {
         let bridges = json!({ "discordgo": { "bridgeState": { "bridgeType": "discordgo" }, "remoteState": {
             "d1": { "state_event": "BAD_CREDENTIALS", "has_error": true, "message": "Token expired" } } },
             "signal": { "bridgeState": { "bridgeType": "signal" }, "remoteState": {
-            "s1": { "state_event": "CONNECTED", "has_error": false, "message": "ok" } } } });
-        let mut errors: Vec<_> = cloud_accounts(&bridges).unwrap().into_iter().map(|a| a.remote_error).collect();
+            "s1": { "state_event": "CONNECTED", "has_error": false, "message": "ok" } } },
+            "telegram": { "bridgeState": { "bridgeType": "telegram" }, "remoteState": {
+            "t1": { "state_event": "UNKNOWN_ERROR", "has_error": true, "error": "tg-panic" } } } });
+        let errors = cloud_accounts(&bridges).unwrap().into_iter().map(|a| (a.remote_error, a.remote_error_code));
+        let mut errors: Vec<_> = errors.collect();
         errors.sort();
-        assert_eq!(errors, [None, Some("Token expired".to_string())]);
+        let error = |m: &str, code: Option<&str>| (Some(m.to_string()), code.map(str::to_string));
+        assert_eq!(errors, [(None, None), error("", Some("tg-panic")), error("Token expired", None)]);
     }
 
     #[test]
