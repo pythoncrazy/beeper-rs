@@ -5000,7 +5000,6 @@ fn hidden_space_bar_floats_like_desktop() {
             account_id: account.clone(),
             name: "Acme".into(),
             avatar: Some("mxc://beeper.local/acme".into()),
-            ..NetworkSpace::default()
         });
         account
     };
