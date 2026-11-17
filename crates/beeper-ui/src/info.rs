@@ -19,6 +19,8 @@ pub enum Msg {
     RemoveBookmark(String),
     /// A bookmarked message that is not loaded, or None when the server does not give it.
     BookmarkHydrated(String, Option<Box<Message>>),
+    /// The end of a restoration of the bookmarks room that Chat Info started.
+    BookmarksRestored,
     Media(Option<usize>),
     Query(String),
     Note(text_editor::Action),
@@ -26,6 +28,10 @@ pub enum Msg {
     SetDisappearing(String, u64),
     /// Desktop's "Notification sound" select: a chat and a sound of `CHAT_SOUNDS`, or `None` for Default.
     SetSound(String, Option<String>),
+    /// Opens Desktop's How It Works window of the behavior menu with `true`, and its Done button closes it.
+    HowItWorks(bool),
+    /// Desktop's `$8t`: a click on the Chat Info avatar zooms it to full screen, and a click on it there zooms it out.
+    Zoom,
 }
 
 impl BeeperGuiApp {
@@ -61,7 +67,19 @@ impl BeeperGuiApp {
                 self.hydrating.remove(&target);
                 self.store.write().bookmarked.insert(target, m.map(|m| *m));
             }
+            Msg::BookmarksRestored => self.restoring_bookmarks = false,
             Msg::Media(tab) => self.info_media = tab,
+            Msg::Zoom => self.info_zoom ^= true,
+            Msg::HowItWorks(true) => {
+                self.chat_menu = None;
+                if let Some(id) = self.how_window {
+                    return window::gain_focus(id);
+                }
+                let (id, open) = self.open_child(behavior::HOW_SIZE);
+                self.how_window = Some(id);
+                return open;
+            }
+            Msg::HowItWorks(false) => return window::close(self.how_window.expect("How It Works is open")),
             Msg::Note(action) => {
                 let edit = action.is_edit();
                 self.info_note.perform(action);
@@ -77,6 +95,21 @@ impl BeeperGuiApp {
             Msg::SetPersonalName(chat, name) => self.set_personal_name(chat, name),
         }
         self.settle()
+    }
+
+    /// Desktop's Bookmarks section calls `restore()` when it shows: Chat Info that opens after a failed restoration
+    /// reads the bookmarks room again.
+    pub(crate) fn retry_bookmarks(&mut self) -> Task<UiMessage> {
+        let failed = {
+            let st = self.store.read();
+            st.bookmarks_failed && st.matrix.is_some()
+        };
+        if !self.show_right_panel || !failed || self.restoring_bookmarks {
+            return Task::none();
+        }
+        self.restoring_bookmarks = true;
+        let restore = beeper_core::matrix::restore_bookmarks(self.store.clone());
+        Task::perform(restore, |()| UiMessage::Info(info::Msg::BookmarksRestored))
     }
 }
 
@@ -134,12 +167,9 @@ pub(crate) fn info_menu(
     if let Some((cid, mid)) = key.strip_prefix("bookmark:").and_then(|k| k.split_once(' ')) {
         let jump =
             st.loaded(mid).is_some().then(|| UiMessage::CommandBar(commands::Msg::JumpTo(cid.into(), mid.into())));
-        let remove = UiMessage::Info(info::Msg::RemoveBookmark(mid.into()));
-        return vec![
-            Some((tr("Jump to Message").into(), jump)),
-            None,
-            Some((tr("Remove Bookmark").into(), Some(remove))),
-        ];
+        // Desktop's "Remove Bookmark" waits for the restoration of the bookmarks.
+        let remove = st.bookmarks_restored().then(|| UiMessage::Info(info::Msg::RemoveBookmark(mid.into())));
+        return vec![Some((tr("Jump to Message").into(), jump)), None, Some((tr("Remove Bookmark").into(), remove))];
     }
     // Desktop's `b2t` menu of a mention: message the person, and open their profile on the network.
     if let Some((cid, uid)) = key.strip_prefix("mention:").and_then(|k| k.split_once(' ')) {
@@ -303,13 +333,15 @@ impl BeeperGuiApp {
             }
             None => meta(network.to_string()).into(),
         };
-        let details = column![self.chat_avatar(chat, 64.0, 1.25), title]
-            .push(originally)
-            .push(contact)
-            .push(network)
-            .spacing(4)
-            .align_x(Center)
-            .width(Fill);
+        // Desktop's `.thread-info-avatar img` has the `zoom-in` cursor.
+        let group = chat.chat_type == "group";
+        let image =
+            chat.img_url.is_some() || faces_of(&chat.participants.items, group).0.iter().any(|u| u.img_url.is_some());
+        let avatar = mouse_area(self.chat_avatar(chat, 64.0, 1.25)).on_press(UiMessage::Info(info::Msg::Zoom));
+        let avatar = if image { avatar.interaction(mouse::Interaction::ZoomIn) } else { avatar };
+        let details =
+            column![avatar, title].push(originally).push(contact).push(network).spacing(4).align_x(Center).width(Fill);
+        let behavior = self.view_behavior_line(&st, chat);
         let can_desc = chat.edits & 1 << 2 != 0;
         let small =
             |s: &'static str, w: Weight, c: Color| crate::style::t(s, 11.0, w).line_height(Pixels(14.0)).color(c);
@@ -604,6 +636,7 @@ impl BeeperGuiApp {
                 selection: p.accent.scale_alpha(0.3),
             });
         let body = column![header]
+            .push(behavior)
             .push(desc)
             .push(members)
             .push(media)
@@ -640,8 +673,45 @@ impl BeeperGuiApp {
             .into()
     }
 
-    /// Desktop's `n0e` Media section: the newest image, video and link messages, and when expanded all of them
-    /// by type.
+    /// Desktop's zoomed `thread-info-avatar`: over a `#000000e6` backdrop, the avatar of the chat with its full-size
+    /// image fills 90% of the smaller side of the window, with the close icon at the top right. A click zooms it out.
+    pub(crate) fn view_avatar_zoom(&self) -> El<'_> {
+        let st = self.store.read();
+        let cid = self.pane().selected_chat_id.as_deref().expect("a chat is selected");
+        let chat = st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")].clone();
+        let group = chat.chat_type == "group";
+        let url = chat.img_url.clone().or_else(|| {
+            let others = (!group).then(|| faces_of(&chat.participants.items, false).0);
+            others.and_then(|o| o.first().and_then(|u| u.img_url.clone()))
+        });
+        drop(st);
+        let full = url.as_deref().and_then(|u| self.still(u));
+        let shown = iced::widget::responsive(move |area| {
+            let size = 0.9 * area.width.min(area.height);
+            let avatar: El = match &full {
+                Some(h) => image(h.clone())
+                    .width(size)
+                    .height(size)
+                    .content_fit(iced::ContentFit::Cover)
+                    .border_radius(size / 2.0)
+                    .into(),
+                None => self.chat_avatar(&chat, size, 1.25),
+            };
+            let avatar = mouse_area(avatar).interaction(mouse::Interaction::ZoomOut);
+            container(avatar).center(Fill).into()
+        });
+        let close = container(tinted(&FULL_SCREEN_CLOSE, 32.0, Color::WHITE)).align_right(Fill).padding(18);
+        let backdrop = container(stack![shown, close])
+            .width(Fill)
+            .height(Fill)
+            .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.9), 0.0));
+        mouse_area(backdrop).on_press(UiMessage::Info(info::Msg::Zoom)).into()
+    }
+
+    /// Desktop's `C0e` Media section: the newest messages with attachments or links, and when expanded all of them
+    /// by type. Desktop's `attachmentMessages` takes the image, video and link messages of `populateAttachmentMessages`
+    /// and every loaded message with an attachment or a link (`pushMessages`); the open chat has all its stored
+    /// messages loaded, so its audio and file messages show too.
     pub(crate) fn view_info_media<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         // Desktop's `mediaGrid`: two 124 px columns 8 px apart in the 8 px padding of the 272 px pane.
         const TILE: f32 = 124.0;
@@ -649,10 +719,7 @@ impl BeeperGuiApp {
         let mut found: Vec<&Message> = st
             .timeline(&chat.id)
             .filter(|m| m.is_deleted != Some(true) && m.view_limit.is_none())
-            .filter(|m| {
-                !m.links.is_empty()
-                    || m.attachments.iter().any(|a| matches!(a.attachment_type.as_str(), "img" | "video"))
-            })
+            .filter(|m| !m.links.is_empty() || !m.attachments.is_empty())
             .collect();
         if found.is_empty() {
             return None;
@@ -672,13 +739,17 @@ impl BeeperGuiApp {
         };
         let links = matches!(self.info_media, None | Some(3));
         let white = Color::WHITE;
-        let sender = |m: &Message| -> El<'a> {
-            let u = chat.participants.items.iter().find(|u| u.id == m.sender_id);
-            let name = u.map(member_name).or_else(|| m.sender_name.clone()).unwrap_or_else(|| m.sender_id.clone());
-            let face = container(self.face(u.and_then(|u| u.img_url.as_deref()), &name, 20.0, 0.0))
+        // Desktop's `MediaWithSender`: the avatar of a member sender, with their full name in a tooltip on the left.
+        let sender = |m: &Message| -> Option<El<'a>> {
+            let u = chat.participants.items.iter().find(|u| u.id == m.sender_id)?;
+            let face = container(self.face(u.img_url.as_deref(), &member_name(u), 20.0, 0.0))
                 .padding(2)
                 .style(shadow_box(white, CLEAR, 12.0, 8.0));
-            container(face).padding(8).into()
+            let face: El = match u.full_name.clone() {
+                Some(name) => self.tip(face.into(), name, vec![], tooltip::Position::Left).into(),
+                None => face.into(),
+            };
+            Some(container(face).padding(8).into())
         };
         let file = |title: String, sub: El<'a>| -> El<'a> {
             let title = txt(crate::style::clamped(&title, TILE - 16.0, 3, 10.0, Weight::Normal).to_string(), 10.0)
@@ -714,7 +785,7 @@ impl BeeperGuiApp {
                     file(title, row![tinted(&MEDIA_ICONS[2], 12.0, p.strong), url].align_y(Center).into())
                 });
                 atts.chain(urls).map(|tile| {
-                    let face = stack![tile, sender(m)].width(TILE).height(TILE);
+                    let face = stack![tile].push(sender(m)).width(TILE).height(TILE);
                     button(face)
                         .padding(0)
                         .style(btn_style([CLEAR; 3], [p.strong; 3], 4.0))
@@ -776,6 +847,7 @@ impl BeeperGuiApp {
         let expandable = marked.len() > SHOWN;
         let shown = if self.info_bookmarks { marked.len() } else { marked.len().min(SHOWN) };
         let (h24, dim) = (st.settings.pref("timeFormat") == 1, Color { a: 0.7, ..p.strong });
+        let restored = st.bookmarks_restored();
         let rows: Vec<El> = marked[..shown]
             .iter()
             .map(|&(target, m)| {
@@ -809,7 +881,9 @@ impl BeeperGuiApp {
                         let remove = button(ic(icon::CLOSE, 16.0).color(p.sub))
                             .padding(4)
                             .style(btn_style([CLEAR; 3], [p.sub; 3], 8.0))
-                            .on_press(UiMessage::Info(info::Msg::RemoveBookmark(target.into())));
+                            .on_press_maybe(
+                                restored.then(|| UiMessage::Info(info::Msg::RemoveBookmark(target.into()))),
+                            );
                         let text = tr("It was deleted or is no longer available.");
                         (row![blank(), lines(title.into(), text), remove], None)
                     }
@@ -826,14 +900,18 @@ impl BeeperGuiApp {
                 mouse_area(btn).on_right_press(menu).into()
             })
             .collect();
+        // Desktop's empty Bookmarks by `bookmarkStore.status`: restored, failed, or still loading.
+        let (title, about) = match (restored, st.bookmarks_failed) {
+            (true, _) => (tr("No Bookmarks"), Some(tr("Bookmarked messages will appear here."))),
+            (false, true) => (tr("Bookmarks unavailable"), Some(tr("Reopen this pane to try again."))),
+            (false, false) => (tr("Loading…"), None),
+        };
         let body: El = match rows.is_empty() {
             true => container(
-                column![
-                    semi(tr("No Bookmarks"), 11.0).color(p.strong),
-                    txt(tr("Bookmarked messages will appear here."), 10.0).color(p.sub)
-                ]
-                .spacing(4)
-                .align_x(Center),
+                column![semi(title, 11.0).color(p.strong)]
+                    .push(about.map(|a| txt(a, 10.0).color(p.sub)))
+                    .spacing(4)
+                    .align_x(Center),
             )
             .center_x(Fill)
             .padding([12, 8])
@@ -866,5 +944,205 @@ fn sound_label(sound: Option<&str>) -> &'static str {
         Some("record") => tr("Record"),
         Some("spirit") => tr("Spirit"),
         Some(other) => unreachable!("the chat keeps only known sounds, not {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fuzz::demo_app;
+    use iced_test::simulator::Simulator;
+
+    const JORDAN: &str = "!im_jordan:beeper.com";
+
+    fn tall(el: El<'_>) -> Simulator<'_, UiMessage> {
+        Simulator::with_size(Default::default(), Size::new(1024.0, 2000.0), el)
+    }
+
+    /// A press and a release of the mouse at `at`.
+    fn click_at(sim: &mut Simulator<UiMessage>, at: Point) {
+        sim.point_at(at);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+        let _ = sim.simulate(iced_test::simulator::click());
+    }
+
+    /// A demo app with the Chat Info of `chat` open.
+    fn info_app(name: &str, chat: &str) -> BeeperGuiApp {
+        let mut app = demo_app(name);
+        let _ = app.update(UiMessage::SelectChat(chat.into()));
+        app.show_right_panel = true;
+        app
+    }
+
+    /// Adds a message from `sender` with an attachment of `kind` named `name` to the chat, newest.
+    fn attach(app: &BeeperGuiApp, chat: &str, sender: &str, kind: &str, name: &str) {
+        let mut st = app.store.write();
+        let base = st.messages[*st.timeline_indices(chat).last().expect("a message")].clone();
+        let a = Attachment {
+            attachment_type: kind.into(),
+            file_name: Some(name.into()),
+            mime_type: Some(if kind == "audio" { "audio/mpeg" } else { "application/pdf" }.into()),
+            src_url: Some(format!("https://example.com/{name}")),
+            ..Default::default()
+        };
+        let sort_key = format!("{:016}", 9_000_000 + st.timeline_indices(chat).len());
+        let id = format!("${name}");
+        let m = Message { id, sender_id: sender.into(), attachments: vec![a], links: Vec::new(), sort_key, ..base };
+        st.upsert_message(m);
+    }
+
+    /// Desktop's `$8t`: a click on the Chat Info avatar portals it over the whole window, and a click anywhere there
+    /// zooms it out. Another chat opens with the avatar in place.
+    #[test]
+    fn chat_info_avatar_zooms_like_desktop() {
+        let mut app = info_app("chat-info-zoom", JORDAN);
+        let msgs: Vec<UiMessage> = {
+            let mut sim = tall(app.view_info());
+            click_at(&mut sim, Point::new(150.0, 92.0));
+            sim.into_messages().collect()
+        };
+        assert!(matches!(&msgs[..], [UiMessage::Info(Msg::Zoom)]), "the avatar zooms");
+        let corner = |app: &BeeperGuiApp| -> Vec<UiMessage> {
+            let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view_main());
+            click_at(&mut sim, Point::new(4.0, 700.0));
+            sim.into_messages().collect()
+        };
+        assert!(!corner(&app).iter().any(|m| matches!(m, UiMessage::Info(Msg::Zoom))));
+        let _ = app.update(UiMessage::Info(Msg::Zoom));
+        assert!(matches!(&corner(&app)[..], [UiMessage::Info(Msg::Zoom)]), "the backdrop covers the window");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        assert!(!app.info_zoom);
+    }
+
+    /// Desktop's Media section takes the loaded audio and file messages too, so its Audio and Files tabs list them.
+    #[test]
+    fn chat_info_media_lists_audio_and_files_like_desktop() {
+        let mut app = info_app("chat-info-media-files", JORDAN);
+        let me = app.store.read().me().id.clone();
+        attach(&app, JORDAN, &me, "audio", "song.mp3");
+        attach(&app, JORDAN, "@stranger:beeper.com", "unknown", "notes.pdf");
+        {
+            let mut sim = tall(app.view_info());
+            assert!(sim.find("notes.pdf").is_ok() && sim.find("PDF").is_ok(), "the newest tiles show the file");
+            assert!(sim.find("song.mp3").is_ok() && sim.find("Audio").is_ok());
+        }
+        let _ = app.update(UiMessage::Info(Msg::Media(Some(2))));
+        {
+            let mut sim = tall(app.view_info());
+            assert!(sim.find("song.mp3").is_ok() && sim.find("notes.pdf").is_err(), "the Audio tab");
+        }
+        let _ = app.update(UiMessage::Info(Msg::Media(Some(4))));
+        let mut sim = tall(app.view_info());
+        assert!(sim.find("notes.pdf").is_ok() && sim.find("song.mp3").is_err(), "the Files tab");
+    }
+
+    /// Desktop's empty Bookmarks by `bookmarkStore.status`, and its Remove Bookmark only once they are restored.
+    #[test]
+    fn chat_info_bookmarks_wait_for_the_restoration_like_desktop() {
+        let app = info_app("chat-info-bookmarks-status", "!tg_rust:beeper.com");
+        app.store.write().config.demo = false;
+        {
+            let mut sim = tall(app.view_info());
+            assert!(sim.find("Loading…").is_ok() && sim.find("No Bookmarks").is_err());
+        }
+        app.store.write().bookmarks_failed = true;
+        {
+            let mut sim = tall(app.view_info());
+            assert!(sim.find("Bookmarks unavailable").is_ok());
+            assert!(sim.find("Reopen this pane to try again.").is_ok());
+        }
+        let menu = info_menu(&app.store.read(), "bookmark:!tg_rust:beeper.com $m", |_| true);
+        assert!(matches!(&menu[2], Some((_, None))), "Remove Bookmark waits for the restoration");
+        app.store.write().apply_bookmarks("!bookmarks", Vec::new());
+        assert!(!app.store.read().bookmarks_failed);
+        assert!(tall(app.view_info()).find("No Bookmarks").is_ok());
+    }
+
+    /// A demo app where Desktop's `snoozeOrSchedulesEnabled` is on: the internal channel with labels.
+    fn behavior_app(name: &str) -> BeeperGuiApp {
+        let app = info_app(name, JORDAN);
+        app.store.write().whoami.internal = true;
+        app
+    }
+
+    fn line(app: &BeeperGuiApp) -> Option<String> {
+        let st = app.store.read();
+        behavior::behavior(&st, st.chat(JORDAN)).and_then(|b| b.line(false))
+    }
+
+    /// Desktop's behavior line (`P0e`): what mutes or hides the chat, its Visibility and Notifications menu with what
+    /// each source does, and How It Works.
+    #[test]
+    fn chat_info_behavior_line_like_desktop() {
+        let mut app = behavior_app("chat-info-behavior");
+        assert_eq!(line(&app), None, "a chat that shows and notifies has no line");
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(JORDAN.into(), ChatFlag::Muted)));
+        assert_eq!(line(&app).as_deref(), Some("Muted by you"));
+        let msgs: Vec<UiMessage> = {
+            let mut sim = tall(app.view_info());
+            let _ = sim.click("Muted by you").expect("the behavior line");
+            sim.into_messages().collect()
+        };
+        let menu = format!("{}{JORDAN}", behavior::BEHAVIOR_MENU);
+        assert!(matches!(&msgs[..], [UiMessage::ChatList(chat_list::Msg::OpenMenu(k))] if *k == menu));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(menu.clone())));
+        let msgs: Vec<UiMessage> = {
+            let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view_main());
+            for text in ["Visibility and Notifications", "Chat Settings", "Mutes this chat"] {
+                assert!(sim.find(text).is_ok(), "the menu has {text}");
+            }
+            let _ = sim.click("How It Works").expect("How It Works");
+            sim.into_messages().collect()
+        };
+        assert!(
+            matches!(&msgs[..], [UiMessage::Commands(c)] if matches!(&c[1], UiMessage::Info(Msg::HowItWorks(true))))
+        );
+        let _ = app.update(UiMessage::Info(Msg::HowItWorks(true)));
+        assert!(app.how_window.is_some() && app.chat_menu.is_none());
+        let msgs: Vec<UiMessage> = {
+            let mut sim = tall(app.view_how_it_works());
+            assert!(sim.find("You Come First").is_ok() && sim.find("Chats Without a Label").is_ok());
+            let _ = sim.click("Done").expect("Done");
+            sim.into_messages().collect()
+        };
+        assert!(matches!(&msgs[..], [UiMessage::Info(Msg::HowItWorks(false))]));
+        // A muted label of the chat mutes it too, but the chat's own mute decides.
+        let _ = app.update(UiMessage::Labels(labels::Msg::Switch("lbl_work".into(), JORDAN.into(), true)));
+        let _ = app.update(UiMessage::Labels(labels::Msg::Mute("lbl_work".into(), true)));
+        assert_eq!(line(&app).as_deref(), Some("Muted by you"));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(JORDAN.into(), ChatFlag::Muted)));
+        assert_eq!(line(&app).as_deref(), Some("Muted by Work"));
+        let _ = app.update(UiMessage::Labels(labels::Msg::SetInbox("lbl_work".into(), Some("none"))));
+        assert_eq!(line(&app).as_deref(), Some("Hidden and muted by Work"));
+        let rows = |app: &BeeperGuiApp| {
+            let st = app.store.read();
+            let mut sim =
+                tall(Column::with_children(app.behavior_items(&st, JORDAN).0.into_iter().map(|r| r.0)).into());
+            sim.find("Work").is_ok() && sim.find("Hides and mutes this chat").is_ok()
+        };
+        assert!(rows(&app), "the label hides and mutes the chat");
+        app.store.write().whoami.internal = false;
+        assert_eq!(line(&app), None, "only with snoozing or label schedules");
+    }
+
+    /// Desktop's "Snoozed until %s" line of a snoozed chat, with the time of a snooze that ends today.
+    #[test]
+    fn chat_info_behavior_line_of_a_snoozed_chat() {
+        let mut app = behavior_app("chat-info-behavior-snooze");
+        {
+            let mut st = app.store.write();
+            st.features.internal = true;
+            st.features.flags["features"]["*"]["snooze"] = serde_json::json!(true);
+        }
+        let at = now_unix_millis() + 60_000;
+        let _ = app.update(UiMessage::Reminders(reminders::Msg::Snooze(vec![JORDAN.into()], Some(at))));
+        let shown = match day_of(at) == today() {
+            true => clock(at, false),
+            false => scheduled::send_day(at, false),
+        };
+        assert_eq!(line(&app), Some(format!("Snoozed until {shown}")));
+        let st = app.store.read();
+        let mut sim = tall(Column::with_children(app.behavior_items(&st, JORDAN).0.into_iter().map(|r| r.0)).into());
+        assert!(sim.find("Chat Snooze").is_ok() && sim.find(format!("Snoozes until {shown}").as_str()).is_ok());
     }
 }

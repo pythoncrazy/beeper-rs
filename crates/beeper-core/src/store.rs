@@ -536,6 +536,8 @@ pub struct BeeperStore {
     pub outbox: Vec<(i64, String, Outgoing)>,
     /// Desktop's bookmarks room, after its history is read.
     pub bookmarks_room: Option<String>,
+    /// Desktop's `bookmarkStore.status` "failed": the history of the bookmarks room did not load.
+    pub bookmarks_failed: bool,
     /// The bookmarks of the bookmarks room by the event ID of the message.
     pub bookmarks: HashMap<String, Bookmark>,
     /// The bookmarked messages that are not loaded, as Chat Info fetched them, or None when they are unavailable.
@@ -719,6 +721,7 @@ impl BeeperStore {
             ui_auth_token: None,
             outbox: Vec::new(),
             bookmarks_room: None,
+            bookmarks_failed: false,
             bookmarks: HashMap::new(),
             bookmarked: HashMap::new(),
             reminders_room: None,
@@ -2867,9 +2870,14 @@ impl BeeperStore {
         self.queue(&room, Outgoing::Bookmark { room: chat, target: target.into(), on: false });
     }
 
+    /// Desktop's `bookmarkStore.isRestored`: the bookmarks room was read, or the demo keeps its bookmarks locally.
+    pub fn bookmarks_restored(&self) -> bool {
+        self.bookmarks_room.is_some() || self.config.demo
+    }
+
     /// Desktop's `applyBookmark` for the bookmarks room events, in timeline order.
     pub fn apply_bookmarks(&mut self, room: &str, changes: Vec<(String, Option<Bookmark>)>) {
-        self.bookmarks_room = Some(room.into());
+        (self.bookmarks_room, self.bookmarks_failed) = (Some(room.into()), false);
         for (target, b) in changes {
             let on = b.is_some();
             match b {

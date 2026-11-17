@@ -866,6 +866,11 @@ impl BeeperGuiApp {
             let col = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
             return container(col).width(SUB_MENU_W[3]).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
         }
+        if let Some(id) = cid.strip_prefix(behavior::BEHAVIOR_MENU) {
+            let (rows, w) = self.behavior_items(&self.store.read(), id);
+            let col = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
+            return container(col).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+        }
         if let Some(n) = cid.strip_prefix("draft:") {
             let delete = menu_item(
                 p,
