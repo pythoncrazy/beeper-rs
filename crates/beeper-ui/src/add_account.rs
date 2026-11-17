@@ -1,5 +1,6 @@
 //! Desktop's `LoginBrowserWindow` with the `BridgeV2AuthComponent` of a Beeper Cloud bridge: it adds an account of
 //! a network, or logs an account in again. The bridge describes each step (see `beeper_core::bridge_login`).
+use crate::bridge_texts::{bridge_error, bridge_text};
 use crate::i18n::{tr, trf, trx};
 use crate::phone::{self, KeyOutcome, Phone, PhoneMsg};
 use crate::style::{brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, Palette, CLEAR};
@@ -775,7 +776,7 @@ impl BeeperGuiApp {
             ("gmessages", _) => (
                 line(tr("Open Messages by Google on your Android phone").into()).into(),
                 ["Open the side menu", "Click \"Device pairing\""],
-                vec![line(s.instructions.clone()).into()],
+                vec![line(bridge_text("instructions", &s.step_id, &s.instructions)).into()],
             ),
             _ => return None,
         };
@@ -797,8 +798,9 @@ impl BeeperGuiApp {
                 .into()
         };
         let para = |s: String| -> El<'a> { txt(s, 14.0).color(p.strong).center().width(Fill).into() };
-        let error_line = |e: &'a str| -> El<'a> {
-            row![svg(ERROR_CIRCLE.clone()).width(16).height(16), txt(e, 13.0).color(p.danger)]
+        // Desktop's `Za(error, "error")`: the bridge's error in the app language.
+        let error_line = |e: &str| -> El<'a> {
+            row![svg(ERROR_CIRCLE.clone()).width(16).height(16), txt(bridge_error(e), 13.0).color(p.danger)]
                 .spacing(4)
                 .align_y(Center)
                 .into()
@@ -827,7 +829,10 @@ impl BeeperGuiApp {
         };
         // Desktop's `auths` steps take the place of the bridge's instructions when it has them.
         let instructions = |s: &'a Step| {
-            (!s.instructions.is_empty()).then(|| self.login_steps(a, s).unwrap_or_else(|| para(s.instructions.clone())))
+            (!s.instructions.is_empty()).then(|| {
+                let text = bridge_text("instructions", &s.step_id, &s.instructions);
+                self.login_steps(a, s).unwrap_or_else(|| para(text))
+            })
         };
         let loading = || para(tr("Loading...").into());
         let body: El<'a> = match (&a.failed, &a.step) {
@@ -945,7 +950,10 @@ impl BeeperGuiApp {
             let items = options.into_iter().map(|f| {
                 let key = format!("{}/{}", a.bridge, f.id);
                 let label = FLOW_LABELS.iter().find(|l| l.0 == key).map(|l| tr(l.1).to_string());
-                let label = label.unwrap_or_else(|| if f.name.is_empty() { f.id.clone() } else { f.name.clone() });
+                let label = label.unwrap_or_else(|| match f.name.is_empty() {
+                    true => f.id.clone(),
+                    false => bridge_text("flowName", &key, &f.name),
+                });
                 menu_item(p, None, label, "", (!a.busy).then(|| go(AddMsg::Flow(f.id.clone()))))
             });
             let list = container(Column::with_children(items).padding([4, 0])).width(200);
@@ -964,6 +972,10 @@ impl BeeperGuiApp {
         let fields = &s.user_input.as_ref().expect("a form step").fields;
         let rows = fields.iter().map(|f| -> El<'a> {
             let value = a.values[&f.id].as_str();
+            // Desktop's `rs(ci(stepId, field.id), …)`: the field's texts in the app language.
+            let key = format!("{}/{}", s.step_id, f.id);
+            let name = bridge_text("fieldLabel", &key, &f.name);
+            let description = bridge_text("fieldDescription", &key, &f.description);
             let secret = matches!(f.kind.as_str(), "password" | "token");
             let shown = a.shown.contains(&f.id);
             let id = f.id.clone();
@@ -972,7 +984,7 @@ impl BeeperGuiApp {
                     pick_list(f.options.as_slice(), Some(value.to_string()).filter(|v| !v.is_empty()), move |v| {
                         go(AddMsg::Field(id.clone(), v))
                     })
-                    .placeholder(trf("Select %s...", &[&f.name]))
+                    .placeholder(trf("Select %s...", &[&name]))
                     .width(Fill)
                     .into()
                 }
@@ -982,7 +994,7 @@ impl BeeperGuiApp {
                     self.view_phone(field, ids, tr("Enter phone number"), phone, go(AddMsg::Submit))
                 }
                 _ => {
-                    let hint = if secret { "••••••••".into() } else { f.name.clone() };
+                    let hint = if secret { "••••••••".into() } else { name.clone() };
                     let input = text_input(&hint, value)
                         .on_input(move |v| go(AddMsg::Field(id.clone(), v)))
                         .on_submit(go(AddMsg::Submit))
@@ -1005,12 +1017,9 @@ impl BeeperGuiApp {
                 }
             };
             let error = a.touched.contains(&f.id).then(|| invalid(f, value)).flatten();
-            column![semi(f.name.as_str(), 13.0).color(p.strong), control]
+            column![semi(name, 13.0).color(p.strong), control]
                 .push(error.map(|e| txt(e, 12.0).color(p.text_danger)))
-                .push(
-                    (!f.description.is_empty())
-                        .then(|| txt(f.description.as_str(), 12.0).color(p.strong.scale_alpha(0.7))),
-                )
+                .push((!description.is_empty()).then(|| txt(description, 12.0).color(p.strong.scale_alpha(0.7))))
                 .spacing(4)
                 .into()
         });
@@ -1026,12 +1035,13 @@ impl BeeperGuiApp {
                 .style(btn_style([CLEAR; 3], [p.accent, p.accent, p.sub], 6.0))
                 .on_press_maybe((!a.busy).then(|| go(AddMsg::Back)))
         });
-        let intro = (!s.instructions.is_empty())
-            .then(|| txt(s.instructions.as_str(), 14.0).color(p.strong).center().width(Fill));
+        let intro = (!s.instructions.is_empty()).then(|| {
+            txt(bridge_text("instructions", &s.step_id, &s.instructions), 14.0).color(p.strong).center().width(Fill)
+        });
         let start_over = a.error.as_deref().map(|e| {
             column![
                 txt(tr("Something went wrong and we couldn't add your account."), 13.0).color(p.strong),
-                txt(e, 13.0).color(p.danger),
+                txt(bridge_error(e), 13.0).color(p.danger),
                 button(med(tr("Start Over"), 13.0)).on_press_maybe((!a.busy).then(|| go(AddMsg::StartOver))),
             ]
             .spacing(8)
