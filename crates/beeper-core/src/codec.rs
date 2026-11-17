@@ -42,6 +42,8 @@ pub struct Run {
     /// The `data-mx-color` (or `data-mx-bg-color`, which Desktop also applies as the text color) of a span, or a
     /// `<font color>`.
     pub color: Option<String>,
+    /// The `src` of an `<img data-mx-emoticon>`, a custom emoji in the text, whose run text is its `alt`.
+    pub emoticon: Option<String>,
 }
 
 /// A paragraph or a list item, with its list marker.
@@ -109,6 +111,11 @@ pub fn html_blocks(html: &str) -> Vec<Block> {
                 })
             }
             (false, "br" | "hr") if !hidden => push(b, &style, "\n"),
+            // Desktop's `xi` with `isEmoji`, and `alt || "📟"` as the text of a custom emoji.
+            (false, "img") if !hidden && tag.contains("data-mx-emoticon") => {
+                let text = attr(tag, "alt").filter(|a| !a.is_empty()).unwrap_or_else(|| "📟".into());
+                b.runs.push(Run { text, emoticon: attr(tag, "src"), ..style.clone() });
+            }
             (false, "img") if !hidden => push(b, &style, &attr(tag, "alt").unwrap_or_default()),
             _ => {}
         }
@@ -335,6 +342,9 @@ mod tests {
         assert_eq!(blocks[0].runs[1], Run { bold: true, ..run("team") });
         assert_eq!(blocks[0].runs[3], Run { link: Some("https://x.test/?a=1&b=2".into()), ..run("PR") });
         assert_eq!(blocks[0].runs[5], Run { code: true, ..run("x<y") });
+        let emoticon = |alt: &str| Run { emoticon: Some("mxc://x/e".into()), ..run(alt) };
+        let custom = r#"hi <img data-mx-emoticon src="mxc://x/e" alt=":e:"><img data-mx-emoticon src="mxc://x/e"> ok"#;
+        assert_eq!(html_blocks(custom)[0].runs, [run("hi "), emoticon(":e:"), emoticon("📟"), run(" ok")]);
         assert_eq!(blocks[2], Block { marker: Some("2.".into()), runs: vec![run("two")], ..Block::default() });
         assert_eq!(html_text(html), "Invite to team & PR\nx<y\n1. one\n2. two\n\nend");
     }

@@ -288,9 +288,21 @@ pub(crate) fn time_hidden(m: &Message, next: Option<&Message>, h24: bool) -> boo
     next.is_some_and(|n| {
         n.sender_id == m.sender_id
             && n.message_type.as_deref() != Some("HIDDEN")
-            && !jumbo(n.text.as_deref().unwrap_or_default())
+            && !jumbo(&emoji_text(n))
             && format_short_ts(&n.timestamp, h24) == format_short_ts(&m.timestamp, h24)
     })
+}
+
+/// Desktop's `pm` text: the formatted body with each custom emoji (`data-mx-emoticon`) as 📟 when it has one, else
+/// the text, so a message of custom emoji is a jumbo emoji too.
+fn emoji_text(m: &Message) -> String {
+    match m.html.as_deref().filter(|h| h.contains("data-mx-emoticon")) {
+        Some(html) => {
+            let runs = beeper_core::codec::html_blocks(html).into_iter().flat_map(|b| b.runs);
+            runs.map(|r| if r.emoticon.is_some() { "📟".into() } else { r.text }).collect()
+        }
+        None => m.text.clone().unwrap_or_default(),
+    }
 }
 
 fn jumbo(text: &str) -> bool {
@@ -1389,6 +1401,7 @@ impl BeeperGuiApp {
             _ if utd => tr("This message is waiting for decryption.").into(),
             _ => m.text.clone().unwrap_or_default(),
         };
+        let big = !utd && m.poll.is_none() && jumbo(&emoji_text(m));
         let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
         let named = (group || network_bot(chat, &m.sender_id)) && !mine && first;
         let sender = || {
@@ -1403,7 +1416,7 @@ impl BeeperGuiApp {
         let text_bubble = m.is_deleted != Some(true)
             && call.is_none()
             && m.message_type.as_deref() != Some("HIDDEN")
-            && !jumbo(&text)
+            && !big
             && (utd || (!text.is_empty() && poll.is_none() && m.message_type.as_deref() != Some("VOICE")));
         let inside = (named && !media && text_bubble).then(|| container(sender()).padding(Padding::ZERO.bottom(2.0)));
         if named && inside.is_none() {
@@ -1566,8 +1579,24 @@ impl BeeperGuiApp {
             ];
             let pill = container(line.spacing(8).align_y(Center)).padding([9, 13]);
             parts = parts.push(pill.style(bordered_box(CLEAR, p.chip, 2.0, 17.0)));
-        } else if jumbo(&text) {
-            parts = parts.push(container(txt(text.clone(), 48.0).font(EMOJI_FONT)).padding([0, 12]));
+        } else if big {
+            // Custom emoji are 1em high images among the 48 px emoji.
+            let custom = m.html.as_deref().filter(|h| h.contains("data-mx-emoticon"));
+            let runs = custom.map(beeper_core::codec::html_blocks).unwrap_or_default().into_iter().flat_map(|b| b.runs);
+            let glyphs: Vec<El<'a>> = runs
+                .map(|r| match r.emoticon.as_deref() {
+                    Some(url) => match self.still(url) {
+                        Some(frame) => image(frame).height(48.0).into(),
+                        None => Space::new().width(48.0).height(48.0).into(),
+                    },
+                    None => txt(r.text, 48.0).font(EMOJI_FONT).into(),
+                })
+                .collect();
+            let line: El<'a> = match glyphs.is_empty() {
+                true => txt(text.clone(), 48.0).font(EMOJI_FONT).into(),
+                false => Row::with_children(glyphs).align_y(Bottom).into(),
+            };
+            parts = parts.push(container(line).padding([0, 12]));
         } else if utd {
             let line = txt(text.clone(), 13.0).font(italic).color(fg.scale_alpha(0.8));
             let time = shows_time.then(|| {
@@ -1610,6 +1639,9 @@ impl BeeperGuiApp {
             let arrow =
                 || span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(11.0).color(fg);
             let rich = |r: beeper_core::codec::Run| {
+                if r.emoticon.is_some() {
+                    return [Some(span(crate::selectable::IMAGE_SLOT).size(13.0)), None].into_iter().flatten();
+                }
                 // Desktop's `--font-weight-emphasized` bold, and its inline `code`: `--font-family-mono` at 0.9em and
                 // weight 500, on `--color-on-surface` at 0.1 with a 4 px radius and `.1em .33em` of padding.
                 let style = if r.italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
@@ -1678,19 +1710,23 @@ impl BeeperGuiApp {
                 spans.extend(text[at..].split_inclusive(' ').map(word));
                 spans
             };
-            // Each block: its list marker, spans, plain text, blockquote depth and heading level.
-            let blocks: Vec<(Option<String>, Vec<_>, String, u8, u8)> = match m.html.as_deref() {
+            // Each block: its list marker, spans, plain text, blockquote depth, heading level and custom emoji.
+            type Block<'s> =
+                (Option<String>, Vec<iced::widget::text::Span<'s, String>>, String, u8, u8, Vec<Option<image::Handle>>);
+            let blocks: Vec<Block> = match m.html.as_deref() {
                 Some(html) => beeper_core::codec::html_blocks(html)
                     .into_iter()
                     .map(|b| {
                         let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
+                        let images = b.runs.iter().filter_map(|r| r.emoticon.as_deref()).map(|u| self.still(u));
+                        let images = images.collect();
                         let spans = with_emoji_font(b.runs.into_iter().flat_map(rich).collect());
-                        (b.marker, heading(spans, b.heading), plain, b.quote, b.heading)
+                        (b.marker, heading(spans, b.heading), plain, b.quote, b.heading, images)
                     })
                     .collect(),
                 None => {
                     let spans = with_emoji_font(plain(&text));
-                    vec![(None, spans, text.clone(), 0, 0)]
+                    vec![(None, spans, text.clone(), 0, 0, Vec::new())]
                 }
             };
             let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
@@ -1729,7 +1765,7 @@ impl BeeperGuiApp {
             let items: Vec<(u8, El<'_>)> = blocks
                 .into_iter()
                 .enumerate()
-                .map(|(i, (marker, mut spans, _, quote, level))| {
+                .map(|(i, (marker, mut spans, _, quote, level, images))| {
                     // iced does not draw an empty last line.
                     if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
                         spans.push(span("\u{200b}").size(13.0));
@@ -1739,6 +1775,7 @@ impl BeeperGuiApp {
                     }
                     let id = m.id.clone();
                     let line = crate::selectable::selectable(spans)
+                        .images(images)
                         .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                         .on_link_click(UiMessage::OpenUrl)
@@ -2128,12 +2165,17 @@ impl BeeperGuiApp {
 
     /// Desktop's reactions list of messages `ms`: each reaction with the face and the name of its sender, by group, and "and N more" after 19 when there are more than 20.
     /// Desktop's `Tfe`: a custom emoji's image 16 high, or the emoji.
+    /// The first frame of the image at `url`, once it has loaded.
+    fn still(&self, url: &str) -> Option<image::Handle> {
+        self.media_at(url).and_then(|m| m.as_ref().ok()).and_then(|f| f.first()).map(|f| f.0.clone())
+    }
+
     fn reaction_glyph<'a>(&self, x: &Reaction, size: f32, line: f32) -> El<'a> {
         // A key that is itself an image, as stored before keys had their shortcode, shows the image too.
         let url = x.img_url.as_deref().or(Some(x.reaction_key.as_str()).filter(|k| k.starts_with("mxc://")));
         match url {
-            Some(url) => match self.media_at(url).and_then(|m| m.as_ref().ok()).and_then(|f| f.first()) {
-                Some(frame) => image(frame.0.clone()).height(16.0).into(),
+            Some(url) => match self.still(url) {
+                Some(frame) => image(frame).height(16.0).into(),
                 None => Space::new().width(16.0).height(16.0).into(),
             },
             None => txt(x.reaction_key.clone(), size).line_height(Pixels(line)).font(EMOJI_FONT).into(),
@@ -2772,6 +2814,32 @@ mod tests {
         app.pane.message_menu = None;
         let _ = app.update(UiMessage::Message(Msg::LinkMenu(mid.clone(), "http://a.io".into())));
         assert!(app.pane.message_menu.is_none(), "Desktop has no menu for another link");
+    }
+
+    /// Desktop's custom emoji (`data-mx-emoticon`): images in the text instead of their `alt`, and a message of them
+    /// alone is a jumbo emoji like one of emoji.
+    #[test]
+    fn custom_emoji_like_desktop() {
+        let img = |alt: &str| format!(r#"<img data-mx-emoticon src="mxc://x/{alt}" alt=":{alt}:" height="32">"#);
+        let mut app = crate::fuzz::demo_app("custom-emoji");
+        let base = app.store.read().messages[0].clone();
+        let msg = |html: String| Message { text: Some(":a:".into()), html: Some(html), ..base.clone() };
+        assert!(jumbo(&emoji_text(&msg(format!("{} {}", img("a"), img("b"))))), "custom emoji alone are jumbo");
+        assert!(jumbo(&emoji_text(&msg(format!("{}😀", img("a"))))), "with emoji too");
+        assert!(!jumbo(&emoji_text(&msg(format!("hi {}", img("a"))))), "not with text");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = {
+            let st = app.store.read();
+            app.timeline(&st).0.last().expect("a message").id.clone()
+        };
+        {
+            let mut st = app.store.write();
+            let i = st.messages.iter().position(|m| m.id == mid).expect("the message");
+            let m = &mut st.messages[i];
+            (m.text, m.html) = (Some("hi :a:".into()), Some(format!("hi {}", img("a"))));
+        }
+        let mut sim = simulator(app.view_conversation());
+        assert!(sim.find(":a:").is_err(), "the image takes the place of the alt text");
     }
 
     /// Desktop's reaction pills: one pill a group of skin tones, in the order the groups first appear, and a click
