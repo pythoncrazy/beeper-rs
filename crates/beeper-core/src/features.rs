@@ -1,10 +1,29 @@
 //! Desktop's `clientConfigStore.features`, with the free uses of its `freebieStore`.
 use crate::bridge_login::Flow;
 use crate::config::{millis_from_rfc3339, now_unix_secs};
+use crate::models::NetworkSpec;
 use serde_json::Value;
 
 pub const FLAGS: &str = "com.beeper.feature_flags";
 pub const USAGE: &str = "com.beeper.freebie_usage";
+/// Desktop's `BRIDGE_ACCOUNT_SUMMARY`: the accounts that count against the plan's limits, and the limits.
+pub const SUMMARY: &str = "com.beeper.bridge_account_summary";
+
+/// Desktop's default `BRIDGE_ACCOUNT_SUMMARY` (`Bi`).
+static DEFAULT_SUMMARY: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    serde_json::json!({
+        "current": { "num_accounts": 0, "num_accounts_against_limit": 0, "bridges": {} },
+        "max": { "num_accounts_against_limit": 10, "bridges": {} },
+    })
+});
+
+/// Desktop's `platformBridgeKey`, the `network` of a platform, which keys the account limits.
+fn network_key(n: &NetworkSpec) -> &'static str {
+    match n.bridge_id {
+        "tumblr" => "tumblrdms",
+        id => id,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Feature {
@@ -21,12 +40,14 @@ impl Feature {
     }
 }
 
-/// The account's feature flags and free uses, and whether `whoami` reports a Plus subscription and the internal
-/// channel.
+/// The account's feature flags, free uses and account limits, and whether `whoami` reports a Plus subscription and
+/// the internal channel.
 #[derive(Debug, Clone, Default)]
 pub struct Flags {
     pub flags: Value,
     pub usage: Value,
+    /// Desktop's `bridgeAccountSummary`; `Null` until the account data comes.
+    pub summary: Value,
     pub subscribed: bool,
     pub internal: bool,
 }
@@ -51,7 +72,42 @@ impl Flags {
                 { "name": "labels", "type": "count", "default_limit": 1 },
             ],
         });
-        Flags { flags, usage: Value::Null, subscribed: false, internal: false }
+        // The limits of the free plan: ten accounts, one on each network.
+        let networks = crate::config::NETWORK_SPECS[1..].iter().map(|n| (network_key(n).to_string(), 1.into()));
+        let max = serde_json::json!({ "num_accounts_against_limit": 10, "bridges": Value::Object(networks.collect()) });
+        let summary = serde_json::json!({ "current": DEFAULT_SUMMARY["current"], "max": max });
+        Flags { flags, usage: Value::Null, summary, subscribed: false, internal: false }
+    }
+
+    /// Desktop's `updateBridgeAccountSummary`: the account data, or its default without it.
+    fn summary(&self) -> &Value {
+        if self.summary.is_null() {
+            &DEFAULT_SUMMARY
+        } else {
+            &self.summary
+        }
+    }
+
+    /// Desktop's `hasUnlimitedAccounts`: the plan has no total limit.
+    pub fn unlimited_accounts(&self) -> bool {
+        self.summary()["max"]["num_accounts_against_limit"].as_i64() == Some(-1)
+    }
+
+    /// Desktop's `accountsRemaining` (`sC`): the accounts that the plan still allows, `usize::MAX` without a limit.
+    pub fn accounts_remaining(&self) -> usize {
+        let s = self.summary();
+        match s["max"]["num_accounts_against_limit"].as_i64().unwrap_or(0) {
+            -1 => usize::MAX,
+            max => (max - s["current"]["num_accounts_against_limit"].as_i64().unwrap_or(0)).max(0) as usize,
+        }
+    }
+
+    /// Desktop's `isPlanCapped` (`iC`) of a network: its accounts reached the plan's limit for it. Without a limit
+    /// for it, a paid plan has none and the free plan allows none.
+    pub fn plan_capped(&self, network: &NetworkSpec) -> bool {
+        let (s, key) = (self.summary(), network_key(network));
+        let max = s["max"]["bridges"][key].as_i64().unwrap_or(if self.subscribed { -1 } else { 0 });
+        max != -1 && s["current"]["bridges"][key].as_i64().unwrap_or(0) >= max
     }
 
     /// Desktop's `combinedFeatures`: the `appType:desktop` flags override the `*` flags.
@@ -187,7 +243,7 @@ mod tests {
             ],
         });
         let usage = json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2020-01-04T00:00:00Z" }, "remind-later": { "used": 5 } });
-        let mut f = Flags { flags, usage, subscribed: false, internal: false };
+        let mut f = Flags { flags, usage, summary: Value::Null, subscribed: false, internal: false };
         let lock = Feature { show: true, on: false, upgrade: true };
         let open = Feature { on: true, ..lock };
         assert_eq!(f.get("undo-send", 0), lock);
@@ -239,6 +295,32 @@ mod tests {
         assert_eq!(f.get("snooze", 0), Feature { show: true, on: true, upgrade: true }, "a freebie opens it");
         f.usage = json!({ "snooze": { "used": 3 } });
         assert_eq!(f.free_uses("snooze"), Some((3, 3)), "the free snoozes are used up");
+    }
+
+    /// Desktop's `addAccountStore` limits from `com.beeper.bridge_account_summary`, in the shape of a real free account.
+    #[test]
+    fn account_limits_follow_the_summary_like_desktop() {
+        let network = |id| crate::config::find_network(id).expect("a known network");
+        let mut f = Flags::default();
+        assert_eq!(f.accounts_remaining(), 10, "Desktop's default summary allows ten accounts");
+        assert!(f.plan_capped(network("signal")), "the default free plan has no network limits");
+        f.subscribed = true;
+        assert!(!f.plan_capped(network("signal")), "a paid plan without a network limit has none");
+        f.subscribed = false;
+        f.summary = json!({
+            "current": { "num_accounts": 6, "num_accounts_against_limit": 6, "bridges": { "discord": 1, "tumblrdms": 1 } },
+            "max": { "num_accounts_against_limit": 12, "bridges": { "discord": 1, "signal": 1, "tumblrdms": 2 } },
+            "fallback_plan": null,
+        });
+        assert_eq!((f.accounts_remaining(), f.unlimited_accounts()), (6, false));
+        assert!(f.plan_capped(network("discord")) && !f.plan_capped(network("signal")));
+        assert!(!f.plan_capped(network("tumblr")), "Tumblr's network is tumblrdms");
+        f.summary["current"]["num_accounts_against_limit"] = json!(13);
+        assert_eq!(f.accounts_remaining(), 0, "more accounts than the limit leave none");
+        f.summary["max"]["num_accounts_against_limit"] = json!(-1);
+        assert_eq!((f.accounts_remaining(), f.unlimited_accounts()), (usize::MAX, true));
+        assert_eq!(Flags::free_plan().accounts_remaining(), 10);
+        assert!(!Flags::free_plan().plan_capped(network("whatsapp")), "the free plan allows one account a network");
     }
 
     #[test]

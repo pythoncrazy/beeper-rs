@@ -34,6 +34,7 @@ mod media_view;
 mod members;
 mod menubar;
 mod message;
+pub mod networks;
 pub mod new_chat;
 mod nickname;
 mod notify;
@@ -135,9 +136,9 @@ use vcard::VCard;
 use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZE};
 
 use crate::style::{
-    bar, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded, fill_box, fw,
-    glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style, pick_style, scroll_style, semi,
-    shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER, SOLID_BARS,
+    bar, bordered_box, bordered_btn, brand_gray, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded,
+    fill_box, fw, glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style, pick_style, scroll_style,
+    semi, shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER, SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -372,6 +373,8 @@ pub enum UiMessage {
     Settings(settings::Msg),
     /// The chat accounts: Settings > Accounts, an account's settings and Show in Inbox, its removal, and its error banner.
     Accounts(accounts::Msg),
+    /// The networks of the Add an Account window and of the onboarding, and their accounts menu.
+    Networks(networks::Msg),
     ToggleRightPanel,
     ToggleDnd,
     /// Settings > Hotkeys: the hotkey switches, the shortcut recorder, and the Keyboard Shortcuts list.
@@ -2676,7 +2679,7 @@ pub struct BeeperGuiApp {
     settings_pick: Option<SettingsHit>,
     /// The pref that a search result opened, which flashes for 2 s.
     pref_flash: Option<(&'static str, std::time::Instant)>,
-    pub adding_account: bool,
+    pub networks: networks::Networks,
     /// "Get the app" in Settings > Devices shows the QR code.
     app_qr: bool,
     storage: StoragePage,
@@ -2955,7 +2958,7 @@ impl BeeperGuiApp {
             settings_focus: 0,
             settings_pick: None,
             pref_flash: None,
-            adding_account: false,
+            networks: Default::default(),
             app_qr: false,
             storage: StoragePage { ages: [1; 2], kinds: [0b1111, 0b11111], ..Default::default() },
             integrations: IntegrationsPage::default(),
@@ -3305,6 +3308,8 @@ impl BeeperGuiApp {
             },
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
             _ if Some(id) == self.blocked_window => tr("Blocked users"),
+            // Desktop's `AddAccountsBrowserWindow` title, which it does not translate.
+            _ if Some(id) == self.networks.window => "Add an Account",
             _ if self.nickname_windows.iter().any(|d| d.id == id) => tr("Account Nickname"),
             _ if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) => {
                 return tr(if d.personal { "Edit Chat for Me" } else { "Edit Group" }).into();
@@ -3941,6 +3946,7 @@ impl BeeperGuiApp {
         match msg {
             // Each domain handles its own messages in its module.
             UiMessage::Accounts(msg) => return self.accounts(msg),
+            UiMessage::Networks(msg) => return self.networks(msg),
             UiMessage::Blocking(msg) => return self.blocking(msg),
             UiMessage::Nickname(msg) => return self.nickname(msg),
             UiMessage::ChatList(msg) => return self.chat_list(msg),
@@ -4134,6 +4140,13 @@ impl BeeperGuiApp {
                     || self.add_accounts.iter().any(|a| a.id == id)
                 {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
+                }
+                // Desktop's `onEscapePressed` closes the Add an Account window, after the menu of a network.
+                if self.networks.window == Some(id) {
+                    if key == Key::Named(Named::Escape) && self.networks.menu.take().is_none() {
+                        return window::close(id);
+                    }
+                    return Task::none();
                 }
                 if self.reauth.window == Some(id) {
                     return self.reauth_key(key);
@@ -4973,6 +4986,8 @@ impl BeeperGuiApp {
             self.view_enter_key()
         } else if let Some(a) = self.add_accounts.iter().find(|a| a.id == id) {
             self.view_add_account(a)
+        } else if Some(id) == self.networks.window {
+            self.view_add_accounts()
         } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {
             self.view_chat_theme(chat)
         } else if let Some((_, chat)) = self.labels_windows.iter().find(|w| w.0 == id) {

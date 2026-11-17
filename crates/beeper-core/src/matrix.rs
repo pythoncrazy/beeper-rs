@@ -3542,6 +3542,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     let recent = recent.collect();
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
     let (flags, usage) = (global(client, crate::features::FLAGS).await, global(client, crate::features::USAGE).await);
+    let summary = global(client, crate::features::SUMMARY).await;
     let bridges = global(client, BRIDGE_STATE).await;
     sync_account_overrides(client, store).await;
     let viewed = global(client, REQUESTS_VIEWED).await;
@@ -3576,9 +3577,11 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     }
     st.recent_emoji = recent;
     st.skin_tone = tone;
-    // The flags decide what the windows show (polls, Send Later, ...), so a change draws them again.
-    if (&st.features.flags, &st.features.usage) != (&flags, &usage) {
-        (st.features.flags, st.features.usage) = (flags, usage);
+    // The flags and the account limits decide what the windows show (polls, Send Later, the networks one can add,
+    // ...), so a change draws them again.
+    let f = &st.features;
+    if (&f.flags, &f.usage, &f.summary) != (&flags, &usage, &summary) {
+        (st.features.flags, st.features.usage, st.features.summary) = (flags, usage, summary);
         st.emit_ws("setup.updated", "", None, None, None);
     }
     // Desktop's `BRIDGE_STATES_UPDATED`: the homeserver updates the bridge states while the app runs.
@@ -5703,7 +5706,10 @@ mod tests {
         let event = json!({ "type": "com.beeper.bridge_state", "content": { "bridges": bridges } });
         let flags = json!({ "features": { "*": { "enable-polls": true } } });
         let flags = json!({ "type": crate::features::FLAGS, "content": flags });
-        sync["account_data"] = json!({ "events": [event, flags] });
+        let limits =
+            json!({ "current": { "num_accounts_against_limit": 1 }, "max": { "num_accounts_against_limit": 5 } });
+        let summary = json!({ "type": crate::features::SUMMARY, "content": limits });
+        sync["account_data"] = json!({ "events": [event, flags, summary] });
         let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
             "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
             "/_matrix/client/v3/sync" => (200, sync.clone()),
@@ -5719,7 +5725,8 @@ mod tests {
         let accounts: Vec<_> = accounts.iter().map(|a| (a.account_id.as_str(), a.remote_error.as_deref())).collect();
         assert_eq!(accounts, [("signal", Some("Logged out"))]);
         assert!(store.read().feature("enable-polls").on, "the synced flags");
-        for change in ["flags", "bridge states"] {
+        assert_eq!(store.read().features.accounts_remaining(), 4, "the synced account limits");
+        for change in ["flags and limits", "bridge states"] {
             assert_eq!(events.try_recv().expect(change).event_type, "setup.updated", "{change}");
         }
         super::sync_account_data(&client, &store).await;
