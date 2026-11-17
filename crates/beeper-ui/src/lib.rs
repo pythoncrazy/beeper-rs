@@ -601,6 +601,9 @@ fn ghost(p: &Palette, r: f32) -> impl Fn(&Theme, button::Status) -> button::Styl
 }
 
 /// A row of a dropdown or context menu. Without a message it is greyed out.
+/// Desktop's `--animation-timing`, in seconds.
+const HOVER_FADE: f32 = 0.1;
+
 fn menu_item<'a>(
     p: &Palette,
     lead: Option<El<'a>>,
@@ -2589,6 +2592,9 @@ pub struct BeeperGuiApp {
     pub quick_look_target: Option<(String, String)>,
     quick_open: bool,
     pub hovered_chat: Option<String>,
+    /// When `hovered_chat` began, and the row the pointer last left with when, for the fade of the hover actions.
+    hover_at: Option<std::time::Instant>,
+    unhovered: Option<(String, std::time::Instant)>,
     pub flash: Option<(String, std::time::Instant)>,
     last_click: Option<(String, std::time::Instant)>,
     /// The opened chats, the most recent first. While `cycling`, a selection does not reorder them.
@@ -2842,6 +2848,8 @@ impl BeeperGuiApp {
             quick_look_target: None,
             quick_open: false,
             hovered_chat: None,
+            hover_at: None,
+            unhovered: None,
             flash: None,
             status_banner: String::new(),
             relaunch_toast: None,
@@ -4638,7 +4646,8 @@ impl BeeperGuiApp {
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0)
             || (self.login_window.is_some() && (self.login.busy || self.login.animated()))
             || self.reauth.busy
-            || self.enter_key.busy;
+            || self.enter_key.busy
+            || self.hover_fading();
         let tab_at = self.media_window.as_ref().and_then(|w| w.tab_at);
         let animated = animated || tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE);
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
@@ -5574,7 +5583,25 @@ impl BeeperGuiApp {
         self.list_muted(st, c) && c.unread_mentions == 0 || c.flags & CHAT_ARCHIVED != 0
     }
 
-    fn row_action<'a>(&self, c: &Chat, pref: u8) -> Option<El<'a>> {
+    /// Desktop's `.ThreadListItem-module__hoverActions` transition: the hover actions of a row fade and grow in over
+    /// `--animation-timing` (0.1 s, ease-in-out) while the pointer is on it, and back out after it leaves. Gives how far
+    /// in they are, or `None` when they do not show.
+    pub(crate) fn hover_progress(&self, key: &str) -> Option<f32> {
+        let gone = |at: std::time::Instant| (at.elapsed().as_secs_f32() / HOVER_FADE).min(1.0);
+        match (&self.hovered_chat, &self.unhovered) {
+            (Some(k), _) if k == key => Some(crate::login::ease_in_out(self.hover_at.map_or(1.0, gone))),
+            (_, Some((k, at))) if k == key && gone(*at) < 1.0 => Some(1.0 - crate::login::ease_in_out(gone(*at))),
+            _ => None,
+        }
+    }
+
+    /// Whether a row's hover actions are fading in or out.
+    fn hover_fading(&self) -> bool {
+        let fading = |at: &std::time::Instant| at.elapsed().as_secs_f32() < HOVER_FADE;
+        self.hover_at.as_ref().is_some_and(fading) || self.unhovered.as_ref().is_some_and(|(_, at)| fading(at))
+    }
+
+    fn row_action<'a>(&self, c: &Chat, pref: u8, t: f32) -> Option<El<'a>> {
         let unread = c.is_unread();
         let archived = c.flags & CHAT_ARCHIVED != 0;
         let (glyph, size, label, keys, msg) = match pref {
@@ -5604,9 +5631,10 @@ impl BeeperGuiApp {
             }
             _ => return None,
         };
-        Some(self.hover_btn(glyph, size, label, keys, msg))
+        Some(self.hover_btn(glyph, size, label, keys, msg, t))
     }
 
+    /// A hover action `t` of the way into its fade, from 30% of its size and clear to its full size and color.
     fn hover_btn<'a>(
         &self,
         glyph: usize,
@@ -5614,13 +5642,11 @@ impl BeeperGuiApp {
         label: &'a str,
         keys: Vec<&'static str>,
         msg: UiMessage,
+        t: f32,
     ) -> El<'a> {
         let p = &self.pal;
-        let btn = button(tinted(&ROW_ACTIONS[glyph], size, p.strong)).padding(6).style(btn_style(
-            [CLEAR; 3],
-            [p.strong; 3],
-            0.0,
-        ));
+        let icon = tinted(&ROW_ACTIONS[glyph], size * (0.3 + 0.7 * t), p.strong.scale_alpha(t));
+        let btn = button(container(icon).center(size)).padding(6).style(btn_style([CLEAR; 3], [p.strong; 3], 0.0));
         let tip = self.tip(btn.on_press(msg).into(), label, keys, tooltip::Position::Right);
         let top = 22f32.min(51.0 - 12.0 - size);
         container(tip.delay(std::time::Duration::from_secs(1)))

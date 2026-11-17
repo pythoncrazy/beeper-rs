@@ -97,7 +97,7 @@ static SCENE: LazyLock<([svg::Handle; 13], iced::widget::image::Handle)> = LazyL
 const SCENE_SIZE: Size = Size::new(314.0, 396.0);
 
 /// CSS `ease-in-out`, `cubic-bezier(0.42, 0, 0.58, 1)`, at `x` in 0..1.
-fn ease_in_out(x: f32) -> f32 {
+pub(crate) fn ease_in_out(x: f32) -> f32 {
     let bezier = |s: f32, a: f32, b: f32| 3.0 * a * s * (1.0 - s) * (1.0 - s) + 3.0 * b * s * s * (1.0 - s) + s * s * s;
     let (mut lo, mut hi) = (0.0, 1.0);
     for _ in 0..20 {

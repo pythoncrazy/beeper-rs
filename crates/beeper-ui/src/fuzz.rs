@@ -7563,3 +7563,19 @@ fn no_tooltip_over_an_open_menu_like_desktop() {
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
     assert_ne!(tip_pixel(&app, "tip-hidden"), [255; 4], "not over the open filter menu");
 }
+
+/// Desktop's hover actions of a chat row fade and grow in over 0.1 s, and back out after the pointer leaves.
+#[test]
+fn row_hover_actions_fade_like_desktop() {
+    let mut app = demo_app("row-hover-fade");
+    let id = app.visible_chats(&app.store.read())[0].id.clone();
+    let hover = |app: &mut BeeperGuiApp, on| app.update(UiMessage::ChatList(chat_list::Msg::Hover(id.clone(), on)));
+    let _ = hover(&mut app, true);
+    assert!(app.hover_progress(&id).is_some_and(|t| t < 0.5), "the actions start small and clear");
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    assert_eq!(app.hover_progress(&id), Some(1.0), "and are in after the transition");
+    let _ = hover(&mut app, false);
+    assert!(app.hover_progress(&id).is_some_and(|t| t > 0.5), "they fade back out");
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    assert_eq!(app.hover_progress(&id), None, "and are gone after it");
+}
