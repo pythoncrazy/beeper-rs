@@ -106,9 +106,7 @@ pub(crate) fn otp_code(text: &str) -> Option<&str> {
 pub(crate) struct Note {
     chat: String,
     message: String,
-    title: String,
-    body: String,
-    silent: bool,
+    toast: Toast,
 }
 
 /// Desktop's notification state of each chat.
@@ -194,9 +192,7 @@ impl BeeperGuiApp {
             self.pending.repeat.insert(chat.clone(), (self.pending.timer, note.clone()));
             wait(secs, UiMessage::NotifyTimer(chat.clone(), self.pending.timer))
         });
-        let show = Task::perform(show(note.title, note.body, note.silent, Vec::new()), move |r| {
-            UiMessage::Notified(r.map(|id| (id, (chat, message))))
-        });
+        let show = Task::perform(show(note.toast), move |r| UiMessage::Notified(r.map(|id| (id, (chat, message)))));
         Task::batch([show].into_iter().chain(again))
     }
 
@@ -232,8 +228,7 @@ impl BeeperGuiApp {
         let started: Vec<String> = now.iter().filter(|u| !before.contains(u)).cloned().collect();
         *before = now;
         let Some(c) = st.find_chat(&chat) else { return Task::none() };
-        let shown = cfg!(target_os = "linux")
-            && self.pane.selected_chat_id.as_ref() != Some(&chat)
+        let shown = self.pane.selected_chat_id.as_ref() != Some(&chat)
             && !st.notifications_muted(c)
             && c.is_hidden_from_inbox != Some(true)
             && c.is_request != Some(true)
@@ -247,13 +242,8 @@ impl BeeperGuiApp {
             let Some(p) = c.participants.items.iter().find(|p| p.id == user) else { continue };
             let name = p.full_name.as_deref().expect("members have a name");
             let body = if c.chat_type == "group" { format!("{name} is typing...") } else { "typing...".into() };
-            notes.push(Note {
-                chat: chat.clone(),
-                message: String::new(),
-                title: c.title.clone(),
-                body,
-                silent: false,
-            });
+            let toast = Toast { title: c.title.clone(), body, ..Toast::default() };
+            notes.push(Note { chat: chat.clone(), message: String::new(), toast });
         }
         drop(st);
         Task::batch(notes.into_iter().map(|n| self.show_note(n, false)).collect::<Vec<_>>())
@@ -265,8 +255,7 @@ impl BeeperGuiApp {
         let reaction = c.preview.as_ref().filter(|p| p.message_type.as_deref() == Some("REACTION"));
         let reaction = reaction.map(|p| self.notify_message(p));
         let st = self.store.read();
-        let request = cfg!(target_os = "linux")
-            && c.is_request == Some(true)
+        let request = c.is_request == Some(true)
             && !self.pending.old_chats.contains(&c.id)
             && c.last_activity.as_ref().is_some_and(|t| *t > self.booted)
             && st.settings.on("requestNotifications")
@@ -275,13 +264,8 @@ impl BeeperGuiApp {
         drop(st);
         let request = request.then(|| {
             let body = crate::i18n::tr(if c.chat_type == "group" { "Group Invitation" } else { "Chat Invitation" });
-            let note = Note {
-                chat: c.id.clone(),
-                message: String::new(),
-                title: c.title.clone(),
-                body: body.into(),
-                silent: false,
-            };
+            let toast = Toast { title: c.title.clone(), body: body.into(), ..Toast::default() };
+            let note = Note { chat: c.id.clone(), message: String::new(), toast };
             self.show_note(note, false)
         });
         Task::batch(reaction.into_iter().chain(request))
@@ -290,9 +274,6 @@ impl BeeperGuiApp {
     /// The notification of a new message, and the code to copy, if Desktop shows one. A message with a code always
     /// shows one when "Auto copy OTP/2FA codes" is on.
     pub(crate) fn notification(&mut self, m: &Message) -> Option<(Note, Option<String>)> {
-        if !cfg!(target_os = "linux") {
-            return None;
-        }
         let st = self.store.read();
         let chat = st.find_chat(&m.chat_id)?;
         let group = chat.chat_type == "group";
@@ -331,7 +312,22 @@ impl BeeperGuiApp {
             true => sender.map_or(text.clone(), |s| format!("{s}: {text}")),
             false => "You have a new message".into(),
         };
-        Some((Note { chat: chat.id.clone(), message: m.id.clone(), title: chat.title.clone(), body, silent }, otp))
+        // Desktop's actions of a message notification, which only its macOS notifications show: Mark as Read and the
+        // reminders, or none with a code, and a reply field where the chat takes replies and previews show.
+        let (mut buttons, mut reply) = (Vec::new(), None);
+        if cfg!(target_os = "macos") && otp.is_none() {
+            let action = |key: &str, label: &'static str| {
+                (key.to_string(), crate::i18n::trx(label, "notification action button").to_string())
+            };
+            buttons.push(action("markRead", "Mark as Read"));
+            if st.feature("remind-later").on {
+                buttons.extend([action("remind1h", "Remind in 1 Hour"), action("remind8h", "Remind in 8 Hours")]);
+            }
+            let replies = chat.messages.reply || st.threaded(chat);
+            reply = (account.previews && !chat.is_read_only && replies).then(|| crate::i18n::tr("Reply").to_string());
+        }
+        let toast = Toast { title: chat.title.clone(), body, silent, buttons, reply };
+        Some((Note { chat: chat.id.clone(), message: m.id.clone(), toast }, otp))
     }
 
     /// Desktop's notification click: jumps to the message, then shows the window.
@@ -339,11 +335,30 @@ impl BeeperGuiApp {
         if self.verify.note.as_ref().is_some_and(|n| n.0 == id) {
             return self.verification_note_event(action.as_deref());
         }
-        let clicked = action.as_deref() == Some("default");
-        let Some((chat, msg)) = self.notifications.remove(&id).filter(|_| clicked) else { return Task::none() };
-        let focus = self.update(UiMessage::FocusRequested(Some(chat.clone())));
-        let jump = (!msg.is_empty()).then(|| self.update(UiMessage::JumpTo(chat, msg)));
-        Task::batch([focus, self.set_hidden(false)].into_iter().chain(jump))
+        let Some((chat, msg)) = self.notifications.remove(&id) else { return Task::none() };
+        // Desktop's `markRead`, `remind1h` and `remind8h` actions, and its reply from the notification.
+        let hours = |h: i64| UiMessage::SetReminder(chat.clone(), Some(now_unix_millis() + h * 3_600_000));
+        match action.as_deref() {
+            Some("markRead") if msg.is_empty() => self.update(UiMessage::MarkRead(chat)),
+            Some("markRead") => self.update(UiMessage::MarkReadThrough(chat, msg)),
+            Some("remind1h") => self.update(hours(1)),
+            Some("remind8h") => self.update(hours(8)),
+            Some(a) if a.starts_with(REPLY) => {
+                let text = a[REPLY.len()..].to_string();
+                let draft = beeper_core::store::Draft { text: Some(text), ..Default::default() };
+                if let Err(e) = self.store.write().send(&chat, draft) {
+                    self.status_banner = e.to_string();
+                }
+                self.refresh_theme_and_tray();
+                Task::none()
+            }
+            Some("default") => {
+                let focus = self.update(UiMessage::FocusRequested(Some(chat.clone())));
+                let jump = (!msg.is_empty()).then(|| self.update(UiMessage::JumpTo(chat, msg)));
+                Task::batch([focus, self.set_hidden(false)].into_iter().chain(jump))
+            }
+            _ => Task::none(),
+        }
     }
 
     /// Desktop's `clearShownNotifications`: close the notifications of read chats without a reminder, and of the
@@ -372,6 +387,45 @@ impl BeeperGuiApp {
     }
 }
 
+/// A notification to show: its title and text, without its sound when `silent`, with `buttons` of an action key and
+/// a label, and with a reply field of a placeholder where the platform has one.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Toast {
+    pub title: String,
+    pub body: String,
+    pub silent: bool,
+    pub buttons: Vec<(String, String)>,
+    /// Only macOS notifications have a reply field, like Desktop's (Electron's `hasReply`).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub reply: Option<String>,
+}
+
+/// The action of a reply to a notification, before the text of the reply.
+pub(crate) const REPLY: &str = "reply:";
+
+#[cfg(target_os = "windows")]
+mod win;
+
+#[cfg(target_os = "macos")]
+mod mac;
+
+/// A listener of notification events: the notification ID and the action.
+#[cfg(not(target_os = "linux"))]
+type Listener = iced::futures::channel::mpsc::UnboundedSender<(u32, Option<String>)>;
+
+/// The listeners of the notification events of the platforms that call back on threads of their own.
+#[cfg(not(target_os = "linux"))]
+static LISTENERS: std::sync::Mutex<Vec<Listener>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(not(target_os = "linux"))]
+static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+#[cfg(not(target_os = "linux"))]
+fn emit(id: u32, action: Option<String>) {
+    let mut listeners = LISTENERS.lock().expect("the listener lock is not poisoned");
+    listeners.retain(|tx| tx.unbounded_send((id, action.clone())).is_ok());
+}
+
 #[cfg(target_os = "linux")]
 static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::const_new();
 
@@ -381,17 +435,35 @@ pub(crate) async fn bus() -> Result<&'static zbus::Connection, String> {
     BUS.get_or_try_init(zbus::Connection::session).await.map_err(|e| e.to_string())
 }
 
-/// Shows a notification that a click opens, with `buttons` of an action key and a label.
+/// Shows a notification that a click opens, and returns its ID.
 #[cfg(target_os = "linux")]
-pub async fn show(title: String, body: String, silent: bool, buttons: Vec<(&str, &str)>) -> Result<u32, String> {
-    let hints = std::collections::HashMap::from([("suppress-sound", zbus::zvariant::Value::from(silent))]);
+pub(crate) async fn show(t: Toast) -> Result<u32, String> {
+    use beeper_core::config::{INSTALL_ID, INSTALL_NAME};
+    // The `desktop-entry` hint, which Electron's notifications send too, names the entry whose icon the server shows.
+    let hints = std::collections::HashMap::from([
+        ("suppress-sound", zbus::zvariant::Value::from(t.silent)),
+        ("desktop-entry", zbus::zvariant::Value::from(INSTALL_ID)),
+    ]);
+    let buttons = t.buttons.iter().map(|(key, label)| (key.as_str(), label.as_str()));
     let actions: Vec<&str> =
         [("default", "")].into_iter().chain(buttons).flat_map(|(key, label)| [key, label]).collect();
-    let args = ("Beeper", 0u32, "", title, body, actions, hints, -1i32);
+    let args = (INSTALL_NAME, 0u32, "", &t.title, &t.body, actions, hints, -1i32);
     let path = "/org/freedesktop/Notifications";
     let iface = Some("org.freedesktop.Notifications");
     let reply = bus().await?.call_method(iface, path, iface, "Notify", &args).await.map_err(|e| e.to_string())?;
     Ok(reply.body().deserialize().expect("Notify returns the notification id"))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn show(t: Toast) -> Result<u32, String> {
+    let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(target_os = "windows")]
+    win::show(id, &t)?;
+    #[cfg(target_os = "macos")]
+    mac::show(id, t)?;
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    drop(t);
+    Ok(id)
 }
 
 #[cfg(target_os = "linux")]
@@ -401,6 +473,18 @@ pub(crate) async fn close(ids: Vec<u32>) -> Result<(), String> {
         bus().await?.call_method(iface, path, iface, "CloseNotification", &id).await.map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// macOS keeps a shown notification until the user dismisses it.
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn close(ids: Vec<u32>) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    return win::close(&ids);
+    #[cfg(not(target_os = "windows"))]
+    {
+        drop(ids);
+        Ok(())
+    }
 }
 
 /// A notification id, and the action that the user invoked, or `None` when the server closed it.
@@ -433,26 +517,18 @@ pub fn events() -> impl iced::futures::Stream<Item = (u32, Option<String>)> {
     })
 }
 
+/// A notification id, and the action that the user invoked.
 #[cfg(not(target_os = "linux"))]
-pub async fn show(_title: String, _body: String, _silent: bool, _buttons: Vec<(&str, &str)>) -> Result<u32, String> {
-    unreachable!("only the Linux build shows notifications")
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) async fn close(_ids: Vec<u32>) -> Result<(), String> {
-    unreachable!("only the Linux build shows notifications")
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn events() -> iced::futures::stream::Empty<(u32, Option<String>)> {
-    unreachable!("only the Linux build shows notifications")
+pub fn events() -> iced::futures::channel::mpsc::UnboundedReceiver<(u32, Option<String>)> {
+    let (tx, rx) = iced::futures::channel::mpsc::unbounded();
+    LISTENERS.lock().expect("the listener lock is not poisoned").push(tx);
+    rx
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn account_settings_change_notifications() {
         use beeper_core::models::AccountProps;
@@ -471,7 +547,7 @@ mod tests {
         let note = |app: &mut BeeperGuiApp, props: AccountProps, m: &mut Message, id: &str| {
             let _ = app.update(UiMessage::SetAccountProps(chat.account_id.clone(), props));
             m.id = id.into();
-            app.notification(m).map(|(n, _)| (n.body, n.silent))
+            app.notification(m).map(|(n, _)| (n.toast.body, n.toast.silent))
         };
         let on = AccountProps::default();
         assert_eq!(note(&mut app, on, &mut m, "a"), Some(("hi".into(), false)));
@@ -489,6 +565,20 @@ mod tests {
         let _ = app.update(UiMessage::NotificationEvent(7, Some("default".into())));
         assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&chat.id));
         assert_eq!(app.flash.as_ref().map(|f| &f.0), Some(&mid), "a click jumps to the message");
+        // Desktop's actions of its macOS notifications: Mark as Read, a reminder, and a reply.
+        let event = |app: &mut BeeperGuiApp, action: String| {
+            app.notifications.insert(8, (chat.id.clone(), mid.clone()));
+            let _ = app.update(UiMessage::NotificationEvent(8, Some(action)));
+        };
+        app.store.write().mark_unread_from_message(&chat.id, &mid);
+        event(&mut app, "markRead".into());
+        assert!(!app.store.read().chat(&chat.id).is_unread(), "Mark as Read reads the chat");
+        event(&mut app, "remind1h".into());
+        let at = app.store.read().chat(&chat.id).reminder.as_ref().map(|r| r.remind_at_ms);
+        assert!(at.is_some_and(|at| (at - now_unix_millis() - 3_600_000).abs() < 60_000), "reminded in an hour");
+        event(&mut app, format!("{REPLY}on my way"));
+        let sent = app.store.read().timeline(&chat.id).any(|m| m.text.as_deref() == Some("on my way"));
+        assert!(sent, "a reply sends to the chat");
     }
 
     fn attachment(kind: &str, file: Option<&str>) -> Attachment {

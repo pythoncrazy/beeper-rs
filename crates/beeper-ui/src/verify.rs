@@ -150,17 +150,13 @@ impl BeeperGuiApp {
 
     /// Desktop's `sendVerificationNotification`: the OS notification of the request with Accept and Decline.
     fn notify_request(&self, id: String, text: String) -> Task<UiMessage> {
-        if !cfg!(target_os = "linux") {
-            return Task::none();
-        }
         let silent = self.store.read().settings.pref("messageSound") == 1;
         let buttons = vec![
-            ("verificationAccept", trx("Accept", "button label")),
-            ("verificationDecline", trx("Decline", "button label")),
+            ("verificationAccept".into(), trx("Accept", "button label").to_string()),
+            ("verificationDecline".into(), trx("Decline", "button label").to_string()),
         ];
-        Task::perform(crate::notify::show(text, String::new(), silent, buttons), move |r| {
-            VerifyMsg::Noted(id, r).into()
-        })
+        let toast = crate::notify::Toast { title: text, silent, buttons, ..Default::default() };
+        Task::perform(crate::notify::show(toast), move |r| VerifyMsg::Noted(id, r).into())
     }
 
     /// Desktop's actions of the notification of a request: Accept and Decline answer it, and a click shows the app.

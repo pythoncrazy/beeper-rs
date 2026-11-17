@@ -13,7 +13,7 @@ import re
 import sys
 
 js = open(glob.glob(f"{sys.argv[1]}/build/renderer/deep-link-*.js")[0], encoding="utf-8").read()
-rust = "".join(open(f, encoding="utf-8").read() for f in glob.glob("crates/*/src/*.rs"))
+rust = "".join(open(f, encoding="utf-8").read() for f in glob.glob("crates/*/src/**/*.rs", recursive=True))
 unescape = {"\\": "\\", '"': '"', "n": "\n"}
 tokens = re.finditer(r'//[^\n]*|r(#*)".*?"\1|\'(?:\\.|[^\\\'\n])\'|"((?:[^"\\]|\\.)*)"', rust, re.S)
 used = {re.sub(r"\\(.)", lambda e: unescape.get(e.group(1), e.group(0)), t[2]) for t in tokens if t[2] is not None}

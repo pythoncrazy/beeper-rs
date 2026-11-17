@@ -370,8 +370,21 @@ mod tests {
             "message command\u{4}Reply in thread",
             "confirmation button\u{4}Remove from Beeper",
         ];
-        for file in std::fs::read_dir(dir).unwrap() {
-            let src = std::fs::read_to_string(file.unwrap().path()).unwrap();
+        // The source files, with those of the folders of modules.
+        let mut files = Vec::new();
+        let mut dirs = vec![std::path::PathBuf::from(dir)];
+        while let Some(d) = dirs.pop() {
+            for entry in std::fs::read_dir(d).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path)
+                } else {
+                    files.push(path)
+                }
+            }
+        }
+        for file in files {
+            let src = std::fs::read_to_string(file).unwrap();
             for (call, n) in [("trx(\"", 2), ("trxf(\"", 2), ("trnx(\"", 3)] {
                 for (at, _) in src.match_indices(call).filter(|(at, _)| !src[..*at].ends_with("fn ")) {
                     let args: Vec<&str> = src[at + call.len() - 1..].split('"').skip(1).step_by(2).take(n).collect();
