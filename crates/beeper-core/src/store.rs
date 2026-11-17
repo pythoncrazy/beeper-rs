@@ -524,6 +524,8 @@ pub struct BeeperStore {
     pub api_on: tokio::sync::watch::Sender<bool>,
     pub matrix: Option<matrix_sdk::Client>,
     pub matrix_error: Option<String>,
+    /// The homeserver ended this device's session (signed out elsewhere); the app starts over at sign-in.
+    pub session_ended: bool,
     /// Desktop's `isSyncing`: the app is connected to Matrix and waits for its first sync.
     pub syncing: bool,
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
@@ -695,6 +697,7 @@ impl BeeperStore {
             api_on: tokio::sync::watch::channel(false).0,
             matrix: None,
             matrix_error: None,
+            session_ended: false,
             syncing: false,
             sas_confirm: None,
             pending_recovery_key: None,
