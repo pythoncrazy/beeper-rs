@@ -555,7 +555,9 @@ async fn assets_upload_and_serve_like_desktop() {
     let field = "--b\r\ncontent-disposition: form-data; name=\"fileName\"\r\n\r\nx.txt\r\n--b--\r\n";
     assert_eq!(body(&send("POST", "/v1/assets/upload", multipart, field).await)["code"], "MISSING_FILE");
     let download = send("POST", "/v1/assets/download", json, &json!({ "url": src }).to_string()).await;
-    assert_eq!(body(&download), json!({ "error": "URL must be mxc:// or localmxc://" }));
+    // `DownloadAssetInput` refines the URL before the handler sees it.
+    let refined = json!({ "code": "custom", "message": "URL must start with mxc:// or localmxc://", "path": ["url"] });
+    assert_eq!(body(&download), serde_json::from_str::<serde_json::Value>(&invalid(json!([refined]))).unwrap());
 
     let serve = format!("/v1/assets/serve?url={}", beeper_api::codec::url_encode(src));
     let out = send("GET", &serve, "", "").await;
@@ -1352,4 +1354,120 @@ async fn bodies_and_unknown_chats_get_the_errors_of_desktop() {
             "{method} {target}"
         );
     }
+}
+
+/// Desktop's tool routes check `{...query, ...params, ...body}` with their zod input schemas before they look for
+/// the chat, and answer the issues.
+#[tokio::test]
+async fn tool_inputs_are_checked_like_desktop() {
+    use serde_json::json;
+    let (port, token) = server("tool-inputs").await;
+    let required = |path: serde_json::Value, kind: &str| json!({ "code": "invalid_type", "expected": kind, "received": "undefined", "path": path, "message": "Required" });
+    let short = |path: serde_json::Value| json!({ "code": "too_small", "minimum": 1, "type": "string", "inclusive": true, "exact": false, "message": "String must contain at least 1 character(s)", "path": path });
+    let wrong = |path: serde_json::Value, kind: &str, got: &str| json!({ "code": "invalid_type", "expected": kind, "received": got, "path": path, "message": format!("Expected {kind}, received {got}") });
+    let custom = |path: serde_json::Value, message: &str| json!({ "code": "custom", "message": message, "path": path });
+    let chat = "/v1/chats/!wa_eric:beeper.com";
+    let cases = [
+        ("PUT", "/v1/chats/!nope/messages/msg_1001".to_string(), r#"{"text":""}"#, json!([short(json!(["text"]))])),
+        (
+            "POST",
+            format!("{chat}/messages/msg_1001/reactions"),
+            "{}",
+            json!([required(json!(["reactionKey"]), "string")]),
+        ),
+        ("POST", format!("{chat}/reminders"), "{}", json!([required(json!(["reminder"]), "object")])),
+        (
+            "POST",
+            format!("{chat}/reminders"),
+            r#"{"reminder":{"remindAt":"tomorrow","dismissOnIncomingMessage":1}}"#,
+            json!([
+                { "code": "invalid_string", "validation": "datetime", "message": "Invalid datetime", "path": ["reminder", "remindAt"] },
+                wrong(json!(["reminder", "dismissOnIncomingMessage"]), "boolean", "number"),
+            ]),
+        ),
+        (
+            "POST",
+            format!("{chat}/archive"),
+            r#"{"archived":"yes"}"#,
+            json!([wrong(json!(["archived"]), "boolean", "string")]),
+        ),
+        (
+            "POST",
+            format!("{chat}/messages"),
+            "{}",
+            json!([custom(json!([]), "Either text or attachment is required.")]),
+        ),
+        (
+            "POST",
+            format!("{chat}/messages"),
+            r#"{"text":5,"attachment":{"uploadID":1,"size":{"width":1}}}"#,
+            json!([
+                wrong(json!(["text"]), "string", "number"),
+                wrong(json!(["attachment", "uploadID"]), "string", "number"),
+                required(json!(["attachment", "size", "height"]), "number"),
+            ]),
+        ),
+        (
+            "PATCH",
+            chat.to_string(),
+            r#"{"title":null,"isPinned":"yes","messageExpirySeconds":-1.5}"#,
+            json!([
+                wrong(json!(["isPinned"]), "boolean", "string"),
+                { "code": "invalid_type", "expected": "integer", "received": "float", "message": "Expected integer, received float", "path": ["messageExpirySeconds"] },
+                { "code": "too_small", "minimum": 0, "type": "number", "inclusive": true, "exact": false, "message": "Number must be greater than or equal to 0", "path": ["messageExpirySeconds"] },
+            ]),
+        ),
+        (
+            "DELETE",
+            format!("{chat}/messages/msg_1001?forEveryone=yes"),
+            "",
+            json!([wrong(json!(["forEveryone"]), "boolean", "string")]),
+        ),
+        (
+            "POST",
+            "/v1/assets/download".to_string(),
+            r#"{"url":""}"#,
+            json!([short(json!(["url"])), custom(json!(["url"]), "URL must start with mxc:// or localmxc://")]),
+        ),
+        (
+            "POST",
+            "/v1/focus".to_string(),
+            r#"{"draftText":1}"#,
+            json!([wrong(json!(["draftText"]), "string", "number")]),
+        ),
+        (
+            "GET",
+            "/v1/bridges/bad!id".to_string(),
+            "",
+            json!([{ "validation": "regex", "code": "invalid_string", "message": "Bridge ID may only contain letters, numbers, underscores, and hyphens", "path": ["bridgeID"] }]),
+        ),
+        (
+            "GET",
+            format!("{chat}?maxParticipantCount=x"),
+            "",
+            json!([wrong(json!(["maxParticipantCount"]), "number", "nan")]),
+        ),
+        ("GET", "/v1/search?query=".to_string(), "", json!([short(json!(["query"]))])),
+    ];
+    for (method, target, body, issues) in cases {
+        assert_eq!(
+            call(port, &token, method, &target, body).await,
+            (400, serde_json::from_str::<serde_json::Value>(&invalid(issues)).unwrap()),
+            "{method} {target} {body}"
+        );
+    }
+    let reminder = r#"{"reminder":{"remindAtMs":1900000000000}}"#;
+    let request = format!(
+        "POST {chat}/reminders HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reminder}",
+        reminder.len()
+    );
+    assert!(text(port, &request).await.starts_with("HTTP/1.1 204 "), "the older remindAtMs");
+    let edited = call(port, &token, "PUT", &format!("{chat}/messages/msg_1001"), r#"{"text":" "}"#).await;
+    assert_eq!((edited.0, &edited.1["text"]), (200, &json!(" ")), "zod's min(1) takes a blank text");
+    let (_, added) =
+        call(port, &token, "POST", &format!("{chat}/messages/msg_1001/reactions"), r#"{"reactionKey":"👍"}"#).await;
+    let keys: Vec<&String> = added.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["success", "chatID", "messageID", "reactionKey", "transactionID"], "Desktop's key order");
+    let removed = call(port, &token, "DELETE", &format!("{chat}/messages/msg_1001/reactions?reactionKey="), "").await;
+    assert_eq!(removed, (400, json!({ "message": "reactionKey is required", "code": "INVALID_INPUT" })));
 }
