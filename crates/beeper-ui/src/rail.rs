@@ -1,0 +1,553 @@
+//! Desktop's space bar (rail): its spaces, their order and drags, the floating rail, and the width of the sidebar.
+
+use super::*;
+use iced::widget::column;
+
+#[derive(Clone)]
+pub enum Msg {
+    Select(Option<String>),
+    Float(bool),
+    SetOrder(Vec<SpaceOrder>),
+    ResizeStart,
+    ResizeMoved(Point),
+    ResizeEnd,
+    /// A double click on the sidebar edge gives the sidebar its first width, like Desktop.
+    ResetWidth,
+    /// The cursor is over a rail space, at this point in it.
+    Hover(String, Point),
+    Leave(String),
+    Press,
+    DragMoved(Point),
+    DragEnd,
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn rail(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::Select(acc) => {
+                self.chat_menu = None;
+                self.active_tab = InboxTab::AllChats;
+                self.selected_account_filter = acc;
+                self.creating_chat = None;
+            }
+            Msg::SetOrder(order) => {
+                self.patch_settings(|s| s.spaces_order = order);
+                if let Some(d) = self.spaces_window.as_mut() {
+                    let st = self.store.read();
+                    d.order =
+                        rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st)).collect();
+                }
+            }
+            Msg::ResizeStart => self.dragging = true,
+            Msg::ResetWidth => self.sidebar_width = SIDEBAR_WIDTH,
+            Msg::Float(on) => self.rail_float = on,
+            Msg::ResizeMoved(pt) => {
+                let width = pt.x - 68.0 - 2.0;
+                if width >= 172.0 {
+                    self.sidebar_width = width.min(732.0);
+                }
+                self.set_sidebar_hidden(width < 172.0);
+            }
+            Msg::Hover(id, at) => {
+                if let Some(order) = self.rail_drag.as_mut().filter(|d| d.id != id).and_then(|d| {
+                    let order = d.order.as_mut()?;
+                    let from = order.iter().position(|o| *o == d.id).expect("the dragged space");
+                    Some((order, from))
+                }) {
+                    let (order, from) = order;
+                    let to = order.iter().position(|o| *o == id).expect("a rail space");
+                    let item = order.remove(from);
+                    order.insert(to, item);
+                }
+                self.rail_hover = Some((id, at));
+            }
+            Msg::Leave(id) => {
+                if self.rail_hover.as_ref().is_some_and(|h| h.0 == id) {
+                    self.rail_hover = None;
+                }
+            }
+            Msg::Press => {
+                let Some((id, grab)) = self.rail_hover.clone() else { return Task::none() };
+                self.rail_drag = Some(RailDrag { id, grab, from: None, at: Point::ORIGIN, order: None });
+            }
+            Msg::DragMoved(at) => {
+                let Some(d) = self.rail_drag.as_mut() else { return Task::none() };
+                d.at = at;
+                if d.order.is_none() && at.distance(*d.from.get_or_insert(at)) > 5.0 {
+                    let st = self.store.read();
+                    let draft = self.label_window.as_ref().filter(|w| w.label.is_none());
+                    d.order = Some(draft.map_or_else(|| rail_spaces(&st), |w| draft_rail_spaces(&st, &w.name)));
+                    self.chat_menu = None;
+                }
+            }
+            Msg::DragEnd => {
+                let Some(order) = self.rail_drag.take().and_then(|d| d.order) else { return Task::none() };
+                let old = self.store.read().settings.spaces_order.clone();
+                let order: Vec<String> =
+                    order.into_iter().map(|id| if id == LABEL_DRAFT { LABEL_NUDGE.into() } else { id }).collect();
+                let shown = order.iter().map(|id| SpaceOrder {
+                    id: id.clone(),
+                    visible: old.iter().find(|o| o.id == *id).is_none_or(|o| o.visible),
+                });
+                let rest = old.iter().filter(|o| !order.contains(&o.id)).cloned();
+                let order = shown.chain(rest).collect();
+                self.patch_settings(|s| s.spaces_order = order);
+            }
+            Msg::ResizeEnd => {
+                self.dragging = false;
+                let path = self.store.read().config.data_dir.join("sidebar-width");
+                std::fs::write(path, self.sidebar_width.to_string()).expect("write the sidebar width");
+            }
+        }
+        self.settle()
+    }
+}
+
+/// Desktop's custom spaces by their space IDs, in the default order.
+pub(crate) const RAIL_VIEWS: [(&str, Option<InboxTab>); 7] = [
+    ("inbox", Some(InboxTab::AllChats)),
+    ("archive", Some(InboxTab::Archived)),
+    (LABEL_NUDGE, None),
+    ("reminders", Some(InboxTab::Reminders)),
+    ("scheduled", Some(InboxTab::SendLater)),
+    ("requests", Some(InboxTab::Requests)),
+    ("low_priority", Some(InboxTab::LowPriority)),
+];
+
+/// Desktop's `orderedSidebarSpaces`: the spaces of the `spaces_order` setting in its order, without the hidden
+/// ones, then the other spaces in the default order.
+pub(crate) fn rail_spaces(st: &BeeperStore) -> Vec<String> {
+    ordered_spaces(all_spaces(st), &st.settings.spaces_order)
+}
+
+/// Desktop's `setDraftLabel`: the draft label named `name` is a label space, and it takes the order slot of the nudge.
+pub(crate) fn draft_rail_spaces(st: &BeeperStore, name: &str) -> Vec<String> {
+    let mut all: Vec<String> = all_spaces(st).into_iter().filter(|s| s != LABEL_NUDGE).collect();
+    let key = name.to_lowercase();
+    let after = |s: &String| rail_label(st, s).is_some_and(|l| l.name.to_lowercase() > key);
+    all.insert(all.iter().position(after).unwrap_or(all.len()), LABEL_DRAFT.into());
+    let order = st.settings.spaces_order.iter().map(|o| match o.id == LABEL_NUDGE {
+        true => SpaceOrder { id: LABEL_DRAFT.into(), ..o.clone() },
+        false => o.clone(),
+    });
+    ordered_spaces(all, &order.collect::<Vec<_>>())
+}
+
+/// The `chat_menu` key of the sidebar overflow menu.
+pub(crate) const RAIL_MORE: &str = "rail:more";
+
+/// Where `account_menu` shows: on a sidebar space, in the Edit Spaces gear menu, or on the sidebar header.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum SpaceMenu {
+    Rail,
+    Gear,
+    Header,
+    /// The rows of the Accounts settings, like Desktop's `PL` with `hideSettings` and `hideAddRemoveAccounts`.
+    Prefs,
+    /// The Space Options submenu of the space sheet (`sfe`), which keeps `chat_sub` at `Some(1)` while it is open.
+    Options,
+}
+
+/// The account of an account or network space.
+pub(crate) fn rail_owner(st: &BeeperStore, id: &str) -> String {
+    network_space(st, id).map_or(id, |n| n.account_id.as_str()).to_string()
+}
+
+/// The account, network and label spaces in the default order.
+pub(crate) fn rail_accounts(st: &BeeperStore) -> Vec<String> {
+    let mut accounts: Vec<String> =
+        std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone())).collect();
+    accounts.sort_by_cached_key(|a| {
+        (a != "hungryserv", st.chats.iter().position(|c| &c.account_id == a).unwrap_or(usize::MAX))
+    });
+    let spaces = st.network_spaces.iter().filter(|n| accounts.contains(&n.account_id) && space_shown(st, n));
+    accounts.extend(spaces.map(|n| n.id.clone()).collect::<Vec<_>>());
+    if st.feature("labels-v2").on {
+        let mut labels: Vec<&Label> = st.labels.iter().collect();
+        labels.sort_by_cached_key(|l| l.name.to_lowercase());
+        accounts.extend(labels.into_iter().map(|l| format!("label:{}", l.id)));
+    }
+    accounts
+}
+
+/// Finds the label of a rail entry.
+pub(crate) fn rail_label<'a>(st: &'a BeeperStore, id: &str) -> Option<&'a Label> {
+    let id = id.strip_prefix("label:")?;
+    let id = st.sent.get(id).map_or(id, String::as_str);
+    st.labels.iter().find(|l| l.id == id)
+}
+
+/// Desktop's `allSpaces`: WhatsApp Communities and Telegram Topics are spaces only when their setting is on.
+pub(crate) fn space_shown(st: &BeeperStore, n: &NetworkSpace) -> bool {
+    match account_network(&n.account_id).kind {
+        NetworkKind::WhatsApp => st.settings.on("whatsappCommunities"),
+        NetworkKind::Telegram => st.settings.on("telegramTopics"),
+        _ => true,
+    }
+}
+
+/// Finds the network space of a rail entry. Other rail entries are accounts.
+pub(crate) fn network_space<'a>(st: &'a BeeperStore, id: &str) -> Option<&'a NetworkSpace> {
+    st.network_spaces.iter().find(|n| n.id == id && space_shown(st, n))
+}
+
+/// Desktop's space filter: an account shows the chats that are not in one of its shown network spaces.
+pub(crate) fn in_rail_entry(st: &BeeperStore, id: &str, c: &Chat) -> bool {
+    if let Some(l) = rail_label(st, id) {
+        return c.label_ids.contains(&l.id);
+    }
+    match network_space(st, id) {
+        Some(n) => c.account_id == n.account_id && c.network_id.as_ref() == Some(&n.id),
+        None => c.account_id == id && c.network_id.as_ref().is_none_or(|n| network_space(st, n).is_none()),
+    }
+}
+
+impl BeeperGuiApp {
+    /// Desktop's account context menu (`gYe`) of a sidebar account or network space.
+    pub(crate) fn view_account_menu(&self, entry: &str) -> El<'_> {
+        let (menu, sub) = self.account_menu(entry, SpaceMenu::Rail);
+        row![menu].push(sub).into()
+    }
+
+    /// Desktop's `kS`: the items of a label space menu, after an empty `lead` of that width.
+    pub(crate) fn label_items<'a>(&self, l: &Label, lead: f32) -> Vec<El<'a>> {
+        let p = &self.pal;
+        let blank = || Some(Space::new().width(lead).into());
+        let mute = trx(if l.muted { "Unmute" } else { "Mute" }, "label context menu action");
+        let heading = (!l.name.is_empty()).then(|| menu_heading(p, l.name.clone()));
+        let items = [
+            menu_item(p, blank(), mute.into(), "", Some(UiMessage::MuteLabel(l.id.clone(), !l.muted))),
+            menu_item(p, blank(), tr("Label Settings").into(), "", Some(UiMessage::OpenLabelSettings(l.id.clone()))),
+        ];
+        heading.into_iter().chain(items).collect()
+    }
+
+    /// Desktop's space sheet (`zft`): the shown spaces with a check on the selected one, then the hidden spaces. The
+    /// Space Options of an account space or the items of a label space follow, then the space actions. Returns the
+    /// sheet, its width and its height.
+    pub(crate) fn view_space_sheet(&self) -> (El<'_>, f32, f32) {
+        let p = &self.pal;
+        let st = self.store.read();
+        let requests = st.chats.iter().any(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0);
+        let blank = || Some(Space::new().width(22).into());
+        let space = |id: &String| -> El<'_> {
+            let view = RAIL_VIEWS.iter().find(|v| v.0 == id);
+            let label = rail_label(&st, id);
+            let owner = rail_owner(&st, id);
+            let on = match view {
+                Some(v) => self.selected_account_filter.is_none() && v.1 == Some(self.active_tab),
+                None => self.selected_account_filter.as_ref() == Some(id),
+            };
+            let glyph: El = match (view, label) {
+                (Some(v), _) => {
+                    let (g, size) = match v.0 {
+                        "inbox" => (icon::INBOX, 13.0),
+                        "archive" => (icon::ARCHIVE, 12.0),
+                        "reminders" => (icon::SCHEDULE, 12.0),
+                        "scheduled" => (icon::SCHEDULE_SEND, 12.0),
+                        "requests" => (icon::EMAIL, 12.0),
+                        "low_priority" => (icon::LOW_PRIORITY_SPACE, 12.0),
+                        _ => (icon::MAPS_UGC, 12.0),
+                    };
+                    let dot = (v.0 == "requests" && requests).then(|| {
+                        let dot = container(Space::new()).width(6).height(6);
+                        container(dot.style(bordered_box(p.accent, p.text, 1.0, 3.0))).align_right(16)
+                    });
+                    stack![container(ic(g, size)).center(14)].push(dot).into()
+                }
+                (None, Some(l)) => label_icon(l, 14.0, p.strong),
+                (None, None) => svg(brand_svg(brand_key(&owner))).width(14).height(14).into(),
+            };
+            let muted = match (view, label) {
+                (Some(_), _) => false,
+                (None, Some(l)) => l.muted,
+                (None, None) => !st.settings.account(&owner).notifications,
+            };
+            let status = space_error(&st, id);
+            let badge = status.map(|s| container(semi(tr(s), 10.0)).padding([2, 6]).style(fill_box(p.chip, 9.0)));
+            let line = row![
+                container(on.then(|| ic(icon::CHECK, 14.0))).width(22),
+                glyph,
+                Space::new().width(6),
+                txt(space_name(&st, id), 13.0).line_height(Pixels(MENU_LINE)),
+                Space::new().width(4)
+            ]
+            .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0)))
+            .push(Space::new().width(Fill))
+            .push(badge);
+            menu_line(p, line, Some(space_msg(id)))
+        };
+        let shown: Vec<El> = rail_spaces(&st).iter().map(space).collect();
+        let hidden: Vec<El> = hidden_spaces(&st).iter().map(space).collect();
+        let rules = 1 + usize::from(!shown.is_empty() && !hidden.is_empty());
+        let mut top: Vec<El> = shown;
+        if rules == 2 {
+            top.push(menu_rule(p));
+        }
+        top.extend(hidden);
+        top.push(menu_rule(p));
+        let mut h = (top.len() - rules) as f32 * MENU_ITEM + rules as f32 * 11.0;
+        let entry = self.selected_account_filter.as_deref();
+        let options = match entry.map(|e| (e, rail_label(&st, e))) {
+            Some((_, Some(l))) => {
+                let items = self.label_items(l, 22.0);
+                h += items.len() as f32 * MENU_ITEM + 11.0;
+                top.extend(items.into_iter().chain([menu_rule(p)]));
+                None
+            }
+            Some((e, None)) => Some(e),
+            None => None,
+        };
+        let open = UiMessage::ChatSub(Some(1));
+        let item = menu_item(p, blank(), tr("Space Options").into(), "›", Some(open.clone()));
+        let options_item = options.map(|_| mouse_area(item).on_enter(open));
+        let options_top = h;
+        let labels = st.feature("labels-v2").show;
+        let rest = column![menu_item(p, blank(), tr("Select Chats").into(), "", Some(UiMessage::ToggleSelectMode))]
+            .push(labels.then(|| {
+                menu_item(p, blank(), tr("New Label").into(), "", Some(UiMessage::OpenCreateLabel(Vec::new())))
+            }))
+            .push(menu_rule(p))
+            .push(menu_item(p, blank(), tr("Edit Spaces...").into(), "", Some(UiMessage::OpenEditSpaces)))
+            .push(menu_item(
+                p,
+                blank(),
+                tr("Add/Remove Accounts...").into(),
+                "",
+                Some(UiMessage::OpenSettings(SettingsTab::Accounts)),
+            ));
+        h += 8.0 + f32::from(u8::from(options.is_some()) + 3 + u8::from(labels)) * MENU_ITEM + 11.0;
+        let top = mouse_area(Column::with_children(top)).on_enter(UiMessage::ChatSub(None));
+        let rest = mouse_area(rest).on_enter(UiMessage::ChatSub(None));
+        let sheet = column![top].push(options_item).push(rest).padding([4, 0]);
+        let sheet = container(sheet).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        drop(st);
+        let sub = options.filter(|_| self.chat_sub.is_some()).map(|e| {
+            let (menu, sub) = self.account_menu(e, SpaceMenu::Options);
+            column![Space::new().height(options_top), row![menu].push(sub)]
+        });
+        let w =
+            233.0 + sub.as_ref().map_or(0.0, |_| 233.0 + if self.chat_sub == Some(0) { ACCOUNT_SUB_W } else { 0.0 });
+        (row![sheet].push(sub).into(), w, h)
+    }
+
+    pub(crate) fn view_rail(&self) -> El<'_> {
+        let p = &self.pal;
+        let drag = self.rail_drag.as_ref().filter(|d| d.order.is_some());
+        let rail_btn = |glyph: El<'static>, on: bool, msg: UiMessage| {
+            button(container(glyph).center(36))
+                .padding(0)
+                .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.strong; 3], 14.0))
+                .on_press_maybe(drag.is_none().then_some(msg))
+        };
+        let quiet = self.chat_menu.is_some() || drag.is_some();
+        let tip = |btn, label, keys| self.tip(btn, label, keys, tooltip::Position::Right);
+        let hotkey = |n: usize| -> Vec<&'static str> {
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9"].get(n).map_or(vec![], |d| vec!["Ctrl", "Alt", d])
+        };
+        let st = self.store.read();
+        let numbers = st.settings.on("showUnreadCount");
+        let badge = |btn: El<'static>, n: usize, number: bool| -> El<'static> {
+            let dot = match number && numbers {
+                true => container(semi(unread_label(n), 10.0).color(Color::WHITE))
+                    .padding([0, 4])
+                    .center_y(14)
+                    .width(Shrink)
+                    .style(fill_box(p.accent, 8.0)),
+                false => container(Space::new()).width(8).height(8).style(fill_box(p.accent, 4.0)),
+            };
+            let corner = (n > 0).then(|| container(dot).align_right(36).padding(Padding::ZERO.top(2.0).right(2.0)));
+            stack![btn].push(corner).into()
+        };
+        let countable = |c: &Chat| {
+            c.flags & CHAT_UNREAD != 0
+                && c.flags & (CHAT_ARCHIVED | CHAT_REQUEST) == 0
+                && c.merged_into_chat_id.is_none()
+                && (c.unread_mentions > 0 || !st.notifications_muted(c))
+        };
+        let tally = |key: &str, f: &dyn Fn(&Chat) -> bool| {
+            self.count(key, || st.chats.iter().filter(|c| countable(c) && f(c)).count())
+        };
+        let tab =
+            |id: &'static str, key: usize, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
+                let on = self.active_tab == t && self.selected_account_filter.is_none();
+                let btn = badge(rail_btn(glyph, on, UiMessage::SelectTab(t)).into(), n, number);
+                let view = RAIL_VIEWS.iter().find(|v| v.1 == Some(t)).expect("a sidebar view").0;
+                let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{view}"))).into();
+                let btn = if quiet { btn } else { tip(btn, t.label(), hotkey(key)).into() };
+                container(btn).id(id).into()
+            };
+        let requests = self.count("requests", || {
+            st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0).count()
+        });
+        let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
+        let ring_color = if self.dark { Color::WHITE } else { Color::BLACK };
+        let ring = svg(DASHED_RING.clone())
+            .width(32)
+            .height(32)
+            .opacity(0.15_f32)
+            .style(move |_, _| svg::Style { color: Some(ring_color) });
+        let add_space =
+            container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
+        let account = |i: usize, acc: String| -> El<'_> {
+            let on = self.selected_account_filter.as_ref() == Some(&acc);
+            let space = network_space(&st, &acc);
+            let owner = space.map_or(acc.as_str(), |n| &n.account_id);
+            let label = rail_label(&st, &acc);
+            let logo: El<'static> = match label {
+                Some(l) => label_icon(l, 28.0, p.strong),
+                None => svg(brand_svg(brand_key(owner))).width(28).height(28).into(),
+            };
+            let n = tally(&format!("rail:{acc}"), &|c| {
+                in_rail_entry(&st, &acc, c) && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0
+            });
+            let label = match (label, space) {
+                (Some(l), _) => l.name.clone(),
+                (None, Some(n)) => format!("{} ({})", n.name, network_label(owner)),
+                (None, None) => network_label(owner).to_string(),
+            };
+            let error = space_error(&st, &acc);
+            let label = match error {
+                Some(s) => format!("{label} ({s})"),
+                None => label,
+            };
+            let btn = rail_btn(logo, on, UiMessage::Rail(rail::Msg::Select((!on).then_some(acc.clone())))).into();
+            let btn = match error {
+                Some(_) => {
+                    let corner = container(svg(ERROR_CIRCLE.clone()).width(14).height(14));
+                    stack![btn, corner.align_right(36).padding(Padding::ZERO.top(2.0).right(2.0))].into()
+                }
+                None => badge(btn, n, true),
+            };
+            let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into();
+            if quiet {
+                btn
+            } else {
+                self.tip(btn, label, hotkey(i), tooltip::Position::Right).into()
+            }
+        };
+        let labels = st.feature("labels-v2");
+        let add_label = button(add_space)
+            .padding(0)
+            .style(ghost(p, 12.0))
+            .on_press_maybe(labels.on.then(|| UiMessage::OpenCreateLabel(Vec::new())));
+        let mut add_label = Some(add_label);
+        let draft = self.label_window.as_ref().filter(|d| d.label.is_none());
+        let draft_btn = |i: usize, d: &LabelDraft| -> El<'static> {
+            let (l, fg) =
+                (Label { name: d.name.clone(), color: d.color, icon: d.icon.clone(), ..Label::default() }, p.strong);
+            let ring = svg(DRAFT_RING.clone()).width(30).height(30).style(move |_, _| svg::Style { color: Some(fg) });
+            let logo = container(stack![ring, container(label_icon(&l, 28.0, fg)).center(30)]).into();
+            let btn: El = mouse_area(rail_btn(logo, false, UiMessage::OpenCreateLabel(Vec::new())))
+                .on_right_press(UiMessage::OpenCreateLabel(Vec::new()))
+                .into();
+            if quiet {
+                btn
+            } else {
+                self.tip(btn, l.name, hotkey(i), tooltip::Position::Right).into()
+            }
+        };
+        let ids = match drag.and_then(|d| d.order.clone()) {
+            Some(order) => order,
+            None => draft.map_or_else(|| rail_spaces(&st), |d| draft_rail_spaces(&st, &d.name)),
+        };
+        let mut lifted = None;
+        let spaces = ids.into_iter().enumerate().map(|(i, id)| {
+            let el = match id.as_str() {
+                "inbox" => tab(
+                    "rail-inbox",
+                    i,
+                    g(icon::INBOX),
+                    InboxTab::AllChats,
+                    tally("rail:inbox", &|c| c.flags & (CHAT_HIDDEN | CHAT_LOW_PRIORITY) == 0),
+                    true,
+                ),
+                "archive" => tab("rail-archive", i, g(icon::ARCHIVE), InboxTab::Archived, 0, false),
+                LABEL_NUDGE => tip(add_label.take().expect("one nudge").into(), tr("Create Label"), vec![]).into(),
+                LABEL_DRAFT => draft_btn(i, draft.expect("an open Create Label")),
+                "reminders" => tab("rail-reminders", i, g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
+                "scheduled" => tab("rail-send-later", i, g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
+                "requests" => tab("rail-requests", i, g(icon::EMAIL), InboxTab::Requests, requests, false),
+                "low_priority" => tab(
+                    "rail-low-priority",
+                    i,
+                    g(icon::LOW_PRIORITY_SPACE),
+                    InboxTab::LowPriority,
+                    tally("rail:low", &|c| c.flags & CHAT_LOW_PRIORITY != 0),
+                    true,
+                ),
+                _ => account(i, id.clone()),
+            };
+            let el = match drag {
+                Some(d) if d.id == id => {
+                    lifted = Some(el);
+                    Space::new().width(36).height(36).into()
+                }
+                _ => el,
+            };
+            let hover = id.clone();
+            mouse_area(el)
+                .on_move(move |at| UiMessage::Rail(rail::Msg::Hover(hover.clone(), at)))
+                .on_exit(UiMessage::Rail(rail::Msg::Leave(id)))
+                .into()
+        });
+        let top: Vec<El> = spaces.collect();
+        let lifted = lifted.zip(drag).map(|(el, d)| {
+            let (x, y) = ((d.at.x - d.grab.x).clamp(0.0, 32.0), (d.at.y - d.grab.y).max(0.0));
+            container(el).padding(Padding::ZERO.left(x).top(y))
+        });
+        let top = Column::with_children(top)
+            .push(badge(
+                rail_btn(g(icon::MORE_HORIZ), false, UiMessage::OpenChatMenu(RAIL_MORE.into())).into(),
+                if hidden_spaces(&st).iter().any(|s| s == "requests") { requests } else { 0 },
+                false,
+            ))
+            .spacing(8)
+            .align_x(Center)
+            .width(68)
+            .padding(Padding::ZERO.top(14.0));
+        let me = st.me();
+        let media = UiMessage::Media(media_view::Msg::Open);
+        let me_btn = button(self.face(me.img_url.as_deref(), me.full_name.as_deref().expect("self name"), 36.0, 0.0))
+            .padding(0)
+            .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
+            .on_press(UiMessage::OpenSettings(SettingsTab::General));
+        let footer = column![
+            tip(rail_btn(g(icon::PHOTO_LIBRARY), false, media).into(), tr("Media"), vec![]),
+            tip(
+                rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::OpenSettings(SettingsTab::Accounts)).into(),
+                tr("Add an account"),
+                vec!["Ctrl", ","]
+            ),
+            tip(me_btn.into(), tr("Settings"), vec!["Ctrl", ","]),
+        ]
+        .spacing(8)
+        .align_x(Center)
+        .padding(Padding::ZERO.bottom(16.0));
+        let scroll = scrollable(top).direction(Direction::Vertical(Scrollbar::hidden())).height(Fill);
+        let rail = container(column![scroll, footer].align_x(Center)).width(68).height(Fill);
+        let rail = mouse_area(rail.style(fill_box(p.hover, 0.0)))
+            .on_right_press(UiMessage::OpenChatMenu("account:inbox".into()));
+        stack![rail].push(lifted).into()
+    }
+}
+
+pub(crate) const LABEL_NUDGE: &str = "create-label-nudge";
+
+/// Desktop's `allSpaces` in the default order.
+pub(crate) fn all_spaces(st: &BeeperStore) -> Vec<String> {
+    let nudge = st.feature("labels-v2").show && st.labels.is_empty() && !st.settings.ever_labeled;
+    let views = RAIL_VIEWS.iter().filter(|v| nudge || v.0 != LABEL_NUDGE).map(|v| v.0.to_string());
+    views.chain(rail_accounts(st)).collect()
+}
+
+/// A press on a rail space, which Desktop's `Drop` sorts after the cursor moves 5px.
+pub struct RailDrag {
+    pub id: String,
+    /// Where the press was in the space, where the cursor first moved in the window, and where it is.
+    pub grab: Point,
+    pub from: Option<Point>,
+    pub at: Point,
+    /// The rail order while the space moves, or none before the drag starts.
+    pub order: Option<Vec<String>>,
+}

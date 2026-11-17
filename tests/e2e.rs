@@ -1444,9 +1444,9 @@ async fn lifecycle() {
         let hidden = std::fs::read_to_string(store.read().config.data_dir.join("sidebar-hidden")).unwrap();
         assert_eq!(hidden, "true", "the hidden sidebar stays hidden after a restart");
         let width = gui.sidebar_width;
-        let _ = gui.update(UiMessage::DragMoved(iced::Point::new(200.0, 0.0)));
+        let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::ResizeMoved(iced::Point::new(200.0, 0.0))));
         assert!(gui.sidebar_hidden && gui.sidebar_width == width, "a drag below Desktop's minimum keeps it hidden");
-        let _ = gui.update(UiMessage::DragMoved(iced::Point::new(400.0, 0.0)));
+        let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::ResizeMoved(iced::Point::new(400.0, 0.0))));
         assert!(!gui.sidebar_hidden && gui.sidebar_width == 330.0, "a wider drag shows it again");
         let main = iced::window::Id::unique();
         gui.main_window = Some(main);
@@ -1467,7 +1467,7 @@ async fn lifecycle() {
         let (signal, whatsapp) = (account("signal"), account("whatsapp"));
         st.network_spaces.extend([space("g1", signal, "Guild"), space("c1", whatsapp, "Community")]);
     }
-    let _ = gui.update(UiMessage::SelectAccount(Some("c1".into())));
+    let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::Select(Some("c1".into()))));
     assert!(simulator(gui.view_main()).find("Community").is_err(), "WhatsApp Communities are not spaces by default");
     let _ = gui.update(UiMessage::SetPref("whatsappCommunities", 1));
     assert!(
@@ -1475,7 +1475,7 @@ async fn lifecycle() {
         "the setting shows WhatsApp Communities as spaces"
     );
     let _ = gui.update(UiMessage::SetPref("whatsappCommunities", 0));
-    let _ = gui.update(UiMessage::SelectAccount(Some("g1".into())));
+    let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::Select(Some("g1".into()))));
     {
         let mut sim = simulator(gui.view_main());
         assert!(sim.find("Guild (Signal)").is_ok(), "the header shows the server name and its network");

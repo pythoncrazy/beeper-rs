@@ -6,6 +6,8 @@ use crate::composer::{composer_action, hidden_actions, mention_label};
 use crate::forward::forward_chats;
 use crate::info::info_menu;
 use crate::new_chat::{account_display_name, chat_people, typed_phone};
+use crate::rail::{all_spaces, LABEL_NUDGE};
+use crate::rail::{draft_rail_spaces, rail_accounts, rail_owner, rail_spaces, RAIL_MORE, RAIL_VIEWS};
 use crate::reminders::reminder_day;
 use crate::scheduled::send_day;
 use crate::toasts::{TOAST_TIMEOUT, UNDO_NOTE_TIMEOUT};
@@ -252,7 +254,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         52 => UiMessage::ArchiveStale,
         53 => UiMessage::Forward(forward::Msg::Open(vec![msg])),
         54 if app.forward.is_some() => UiMessage::Forward(forward::Msg::Pick(chat)),
-        55 => UiMessage::SelectAccount(rng.coin().then(|| rng.pick(&accounts).clone())),
+        55 => UiMessage::Rail(rail::Msg::Select(rng.coin().then(|| rng.pick(&accounts).clone()))),
         56 if !hits.is_empty() => UiMessage::PickSetting(*rng.pick(&hits)),
         57 => UiMessage::WindowFocused(rng.coin()),
         58 => UiMessage::HotkeyQuery(text),
@@ -672,7 +674,7 @@ fn status_pills_like_desktop() {
     assert_eq!(texts(&app), ["Connecting..."]);
     let _ = app.update(UiMessage::PillHover(true));
     assert_eq!(texts(&app), ["Connecting... (WhatsApp)"], "the pointer shows the accounts");
-    let _ = app.update(UiMessage::SelectAccount(Some("acc_telegram".into())));
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("acc_telegram".into()))));
     assert!(texts(&app).is_empty(), "an account space shows only its own account");
 }
 
@@ -3290,14 +3292,14 @@ fn pins_drag_into_order_like_desktop() {
     let before = pins(&app);
     assert!(before.len() >= 2, "the demo has pins: {before:?}");
     let (first, last) = (before[0].clone(), before[before.len() - 1].clone());
-    let _ = app.update(UiMessage::PinHover(Some(first.clone())));
-    let _ = app.update(UiMessage::PinPress);
-    let _ = app.update(UiMessage::PinDragMoved(Point::new(10.0, 10.0)));
-    let _ = app.update(UiMessage::PinDragMoved(Point::new(12.0, 12.0)));
+    let _ = app.update(UiMessage::Pins(pins::Msg::Hover(Some(first.clone()))));
+    let _ = app.update(UiMessage::Pins(pins::Msg::Press));
+    let _ = app.update(UiMessage::Pins(pins::Msg::DragMoved(Point::new(10.0, 10.0))));
+    let _ = app.update(UiMessage::Pins(pins::Msg::DragMoved(Point::new(12.0, 12.0))));
     assert_eq!(pins(&app), before, "a move under 5 px is a click");
-    let _ = app.update(UiMessage::PinDragMoved(Point::new(40.0, 10.0)));
-    let _ = app.update(UiMessage::PinHover(Some(last.clone())));
-    let _ = app.update(UiMessage::PinDragEnd);
+    let _ = app.update(UiMessage::Pins(pins::Msg::DragMoved(Point::new(40.0, 10.0))));
+    let _ = app.update(UiMessage::Pins(pins::Msg::Hover(Some(last.clone()))));
+    let _ = app.update(UiMessage::Pins(pins::Msg::DragEnd));
     let after = pins(&app);
     let want: Vec<String> = before[1..].iter().cloned().chain([first.clone()]).collect();
     assert_eq!(after, want, "the first pin goes to the place of the last");
@@ -3438,7 +3440,7 @@ fn account_space_titles_like_desktop() {
         let st = app.store.read();
         format!("{} · {}", account_user(&st, &b.account_id), network_label(&b.account_id))
     };
-    let _ = app.update(UiMessage::SelectAccount(Some(b.account_id.clone())));
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some(b.account_id.clone()))));
     assert!(simulator(app.view_sidebar()).find(title.as_str()).is_ok(), "{title}");
 }
 
@@ -4051,7 +4053,7 @@ fn labels_in_the_rail_like_desktop() {
         ["label:lbl_favorite", "label:lbl_vip", "label:lbl_work"],
         "labels follow the accounts by name"
     );
-    let _ = app.update(UiMessage::SelectAccount(Some("label:lbl_work".into())));
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("label:lbl_work".into()))));
     {
         let st = app.store.read();
         let work = &st.labels.iter().find(|l| l.id == "lbl_work").expect("the work label").rooms;
@@ -4135,7 +4137,7 @@ fn edit_and_delete_labels_like_desktop() {
     assert_eq!(app.status_banner, "Updated Work Team");
     let _ = app.update(UiMessage::Undo(false));
     assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.name == "Work" && l.rooms == rooms));
-    let _ = app.update(UiMessage::SelectAccount(Some("label:lbl_work".into())));
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("label:lbl_work".into()))));
     let _ = app.update(UiMessage::OpenLabelSettings("lbl_work".into()));
     let _ = app.update(UiMessage::LabelPane(app.label_settings[0].id, LabelPane::Delete));
     simulator(app.view_confirm(ASK_DELETE_LABEL)).find("Delete").expect("a Delete button");
@@ -4369,19 +4371,19 @@ fn sidebar_spaces_drag_like_desktop() {
     let hide = SpaceOrder { id: "requests".into(), visible: false };
     app.patch_settings(|s| s.spaces_order = vec![hide.clone()]);
     let press = |app: &mut BeeperGuiApp, moves: &[f32]| {
-        let _ = app.update(UiMessage::RailHover("inbox".into(), Point::new(18.0, 18.0)));
-        let _ = app.update(UiMessage::RailPress);
+        let _ = app.update(UiMessage::Rail(rail::Msg::Hover("inbox".into(), Point::new(18.0, 18.0))));
+        let _ = app.update(UiMessage::Rail(rail::Msg::Press));
         for &y in moves {
-            let _ = app.update(UiMessage::RailDragMoved(Point::new(34.0, y)));
+            let _ = app.update(UiMessage::Rail(rail::Msg::DragMoved(Point::new(34.0, y))));
         }
     };
     press(&mut app, &[32.0, 34.0]);
-    let _ = app.update(UiMessage::RailDragEnd);
+    let _ = app.update(UiMessage::Rail(rail::Msg::DragEnd));
     assert_eq!(app.store.read().settings.spaces_order, std::slice::from_ref(&hide), "a click does not sort");
     press(&mut app, &[32.0, 60.0]);
-    let _ = app.update(UiMessage::RailHover("archive".into(), Point::new(18.0, 4.0)));
+    let _ = app.update(UiMessage::Rail(rail::Msg::Hover("archive".into(), Point::new(18.0, 4.0))));
     let _ = app.view_rail();
-    let _ = app.update(UiMessage::RailDragEnd);
+    let _ = app.update(UiMessage::Rail(rail::Msg::DragEnd));
     let st = app.store.read();
     assert_eq!(rail_spaces(&st)[..2], ["archive", "inbox"]);
     assert_eq!(st.settings.spaces_order.last(), Some(&hide), "the hidden spaces stay hidden");
@@ -4521,7 +4523,7 @@ fn disconnected_banners_like_desktop() {
     assert!(simulator(app.view_sidebar()).find(banner.as_str()).is_ok(), "the inbox shows it");
     let _ = app.update(UiMessage::DismissAccountError(account.clone()));
     assert!(simulator(app.view_sidebar()).find(banner.as_str()).is_err(), "dismissed for the session");
-    let _ = app.update(UiMessage::SelectAccount(Some(account)));
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some(account))));
     assert!(simulator(app.view_sidebar()).find(banner.as_str()).is_err(), "a dismissed account stays dismissed");
 }
 
@@ -4600,7 +4602,7 @@ fn background_menus_like_desktop() {
     assert!(!app.select_mode && app.selection == [first.clone()]);
     let _ = app.update(UiMessage::ToggleSelected(first));
     assert!(app.selection.is_empty() && !app.select_mode, "the mode ends with the last chat");
-    let _ = app.update(UiMessage::SelectAccount(Some("label:lbl_work".into())));
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("label:lbl_work".into()))));
     let has = |app: &BeeperGuiApp, key: &str, items: &[&str]| {
         let mut sim = simulator(app.view_chat_menu(key, false, 900.0));
         items.iter().all(|i| sim.find(*i).is_ok())
@@ -4611,7 +4613,7 @@ fn background_menus_like_desktop() {
     );
     let account = app.store.read().bridge_accounts[0].account_id.clone();
     assert!(has(&app, &format!("head:{account}"), &["Select Chats", "Show in Inbox", "Account Settings..."]));
-    let _ = app.update(UiMessage::SelectAccount(None));
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(None)));
 
     let chat = app.store.read().chats[0].id.clone();
     let _ = app.update(UiMessage::ClickChat(chat.clone()));
@@ -4660,7 +4662,7 @@ fn space_sheet_like_desktop() {
     assert!(app.label_settings.iter().any(|w| w.label == "lbl_work"));
     let _ = app.update(UiMessage::CloseModals);
     let account = app.store.read().bridge_accounts[0].account_id.clone();
-    let _ = app.update(UiMessage::SelectAccount(Some(account)));
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some(account))));
     pick(&mut app, "Space Options", &actions, &["Label Settings", "Account Settings..."]);
     assert_eq!(app.chat_sub, Some(1), "Space Options opens its submenu");
     let _ = app.update(UiMessage::OpenChatMenu(SPACE_SHEET.into()));
@@ -4672,7 +4674,7 @@ fn space_sheet_like_desktop() {
 #[test]
 fn label_settings_like_desktop() {
     let mut app = demo_app("label-settings");
-    let _ = app.update(UiMessage::SelectAccount(Some("label:lbl_work".into())));
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("label:lbl_work".into()))));
     let _ = app.update(UiMessage::OpenChatMenu(SPACE_SHEET.into()));
     let picked: Vec<UiMessage> = {
         let mut sim = simulator(app.view_main());
@@ -4837,17 +4839,23 @@ fn hidden_space_bar_floats_like_desktop() {
             xs.iter().map(|&x| iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::new(x, 300.0) }));
         interact(app, main, Size::new(1440.0, 900.0), Point::new(xs[0], 300.0), moved.collect())
     };
-    assert!(!hover(&app, &[100.0]).iter().any(|m| matches!(m, UiMessage::FloatRail(true))));
+    assert!(!hover(&app, &[100.0]).iter().any(|m| matches!(m, UiMessage::Rail(rail::Msg::Float(true)))));
     let msgs = hover(&app, &[5.0]);
-    assert!(msgs.iter().any(|m| matches!(m, UiMessage::FloatRail(true))), "the left edge slides the space bar in");
-    let _ = app.update(UiMessage::FloatRail(true));
+    assert!(
+        msgs.iter().any(|m| matches!(m, UiMessage::Rail(rail::Msg::Float(true)))),
+        "the left edge slides the space bar in"
+    );
+    let _ = app.update(UiMessage::Rail(rail::Msg::Float(true)));
     let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(main));
     for x in [30.0, 200.0] {
         sim.point_at(Point::new(x, 300.0));
         let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::new(x, 300.0) })]);
     }
     let msgs: Vec<UiMessage> = sim.into_messages().collect();
-    assert!(msgs.iter().any(|m| matches!(m, UiMessage::FloatRail(false))), "leaving the space bar hides it");
+    assert!(
+        msgs.iter().any(|m| matches!(m, UiMessage::Rail(rail::Msg::Float(false)))),
+        "leaving the space bar hides it"
+    );
     let account = {
         let mut st = app.store.write();
         let kind = |a: &str| account_network(a).kind;
@@ -4861,7 +4869,7 @@ fn hidden_space_bar_floats_like_desktop() {
         });
         account
     };
-    let _ = app.update(UiMessage::SelectAccount(Some("!acme:beeper.local".into())));
+    let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("!acme:beeper.local".into()))));
     let title = format!("Acme ({})", network_label(&account));
     assert!(
         simulator(app.view_sidebar()).find(title.as_str()).is_ok(),
@@ -5572,27 +5580,27 @@ fn user_hover_cards_like_desktop() {
     let shows = |app: &BeeperGuiApp| simulator(app.view_main()).find("@batuhan").is_ok();
     let due = |app: &mut BeeperGuiApp| {
         let n = app.user_hover.r#gen;
-        let _ = app.update(UiMessage::HoverUserDue(n));
+        let _ = app.update(UiMessage::UserCard(user_card::Msg::Due(n)));
     };
     // The card waits 300 ms on the trigger, and a pass over the trigger shows nothing.
-    let _ = app.update(UiMessage::HoverUser(Some(key.clone())));
+    let _ = app.update(UiMessage::UserCard(user_card::Msg::Hover(Some(key.clone()))));
     let stale = app.user_hover.r#gen;
-    let _ = app.update(UiMessage::HoverUser(None));
-    let _ = app.update(UiMessage::HoverUserDue(stale));
+    let _ = app.update(UiMessage::UserCard(user_card::Msg::Hover(None)));
+    let _ = app.update(UiMessage::UserCard(user_card::Msg::Due(stale)));
     assert!(!shows(&app));
-    let _ = app.update(UiMessage::HoverUser(Some(key.clone())));
+    let _ = app.update(UiMessage::UserCard(user_card::Msg::Hover(Some(key.clone()))));
     due(&mut app);
     assert!(shows(&app), "the card shows after the wait");
     // The pointer crosses from the trigger to the card, which keeps it; leaving the card hides it.
-    let _ = app.update(UiMessage::HoverUser(None));
-    let _ = app.update(UiMessage::HoverUserCard(true));
+    let _ = app.update(UiMessage::UserCard(user_card::Msg::Hover(None)));
+    let _ = app.update(UiMessage::UserCard(user_card::Msg::HoverCard(true)));
     due(&mut app);
     assert!(shows(&app));
-    let _ = app.update(UiMessage::HoverUserCard(false));
+    let _ = app.update(UiMessage::UserCard(user_card::Msg::HoverCard(false)));
     due(&mut app);
     assert!(!shows(&app));
     // Only the chat of the card shows it.
-    let _ = app.update(UiMessage::HoverUser(Some(key)));
+    let _ = app.update(UiMessage::UserCard(user_card::Msg::Hover(Some(key))));
     due(&mut app);
     let _ = app.update(UiMessage::SelectChat("!wa_family:beeper.com".into()));
     assert!(!shows(&app));
@@ -6105,14 +6113,17 @@ fn double_clicks_like_desktop() {
     let below = interact(&app, main, size, Point::new(900.0, 90.0), twice[..2].to_vec());
     assert!(matches!(&below[..], [UiMessage::HoverEnter(_), UiMessage::OpenUrl(_)]), "the card opens its link");
     let edge = interact(&app, main, Size::new(1440.0, 900.0), Point::new(68.0 + SIDEBAR_WIDTH + 1.0, 400.0), twice);
-    assert!(edge.iter().any(|m| matches!(m, UiMessage::ResetSidebarWidth)), "the sidebar edge resets: {edge:?}");
-    let _ = app.update(UiMessage::DragStart);
-    let _ = app.update(UiMessage::DragMoved(Point::new(500.0, 10.0)));
-    let _ = app.update(UiMessage::DragEnd);
+    assert!(
+        edge.iter().any(|m| matches!(m, UiMessage::Rail(rail::Msg::ResetWidth))),
+        "the sidebar edge resets: {edge:?}"
+    );
+    let _ = app.update(UiMessage::Rail(rail::Msg::ResizeStart));
+    let _ = app.update(UiMessage::Rail(rail::Msg::ResizeMoved(Point::new(500.0, 10.0))));
+    let _ = app.update(UiMessage::Rail(rail::Msg::ResizeEnd));
     assert!(app.sidebar_width > SIDEBAR_WIDTH);
-    let _ = app.update(UiMessage::DragStart);
-    let _ = app.update(UiMessage::ResetSidebarWidth);
-    let _ = app.update(UiMessage::DragEnd);
+    let _ = app.update(UiMessage::Rail(rail::Msg::ResizeStart));
+    let _ = app.update(UiMessage::Rail(rail::Msg::ResetWidth));
+    let _ = app.update(UiMessage::Rail(rail::Msg::ResizeEnd));
     assert_eq!(app.sidebar_width, SIDEBAR_WIDTH);
     let saved =
         std::fs::read_to_string(app.store.read().config.data_dir.join("sidebar-width")).expect("the saved width");

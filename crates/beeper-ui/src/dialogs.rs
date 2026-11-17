@@ -6,6 +6,7 @@ use crate::i18n::{tr, trf, trn, trx};
 use crate::info;
 use crate::integrations;
 use crate::members;
+use crate::rail;
 use crate::reminders;
 use crate::style::{
     bar, bold, bordered_box, btn_style, ell, fill_box, fw, ic, icon, input_style, med, mix, scroll_style, semi,
@@ -635,7 +636,7 @@ impl BeeperGuiApp {
                     return window::close(id);
                 }
                 let label = self.store.write().create_label(&name, color, icon, chats);
-                let open = UiMessage::SelectAccount(Some(format!("label:{label}")));
+                let open = UiMessage::Rail(rail::Msg::Select(Some(format!("label:{label}"))));
                 let _ = self.update(open.clone());
                 let (what, text) = (format!("Create label \"{name}\""), format!("Created {name}"));
                 self.act(what, UiMessage::DeleteLabel(label.clone()), Some((text, Some(open))));

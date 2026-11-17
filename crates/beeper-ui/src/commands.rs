@@ -4,6 +4,7 @@ use crate::i18n::{tr, trf, trx};
 use crate::media_view;
 use crate::members;
 use crate::new_chat;
+use crate::rail;
 use crate::reminders;
 use crate::scheduled;
 use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
@@ -268,7 +269,7 @@ impl BeeperGuiApp {
                         _ => st.bridge_accounts.iter().find(|b| b.account_id == a).and_then(|b| b.display_text()),
                     };
                     let title = title.unwrap_or_else(|| network_name(&a).into());
-                    let pick = cmd("", title, Some(UiMessage::SelectAccount(Some(a.clone()))));
+                    let pick = cmd("", title, Some(UiMessage::Rail(rail::Msg::Select(Some(a.clone())))));
                     let pick = Command { digit: (i < 8).then_some(i + 2), ..pick.keys(&[network_name(&a)]) };
                     Command { account: Some(a), ..pick.hotkey(SPACES) }
                 });
