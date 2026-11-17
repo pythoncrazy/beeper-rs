@@ -354,6 +354,21 @@ fn jumbo(text: &str) -> bool {
 }
 
 /// The values of the timeline rows that depend on all messages of the list.
+/// The container of the unread divider, which a chat scrolls to when it opens.
+const UNREAD_DIVIDER: &str = "unread-divider";
+
+/// Desktop's `updateUnreadDividerMessageSortKey` and `firstUnreadMessageIDIn` when a chat opens: the message after its
+/// read position, below one at or before it, when a message is after it. The unread marks of the messages place it
+/// when the loaded messages do not reach the read position.
+pub(crate) fn divider_at(chat: &Chat, msgs: &[&Message]) -> Option<String> {
+    let last = msgs.last().map(|m| &m.sort_key);
+    let read = chat.last_read_message_sort_key.as_ref().filter(|k| Some(*k) < last);
+    let after = read.and_then(|r| msgs.windows(2).position(|w| w[0].sort_key <= *r && w[1].sort_key > *r));
+    let at = after.map(|i| i + 1);
+    let at = at.or_else(|| msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)));
+    at.map(|i| msgs[i].id.clone())
+}
+
 pub(crate) struct Rows {
     /// The messages, as indices of `messages`.
     pub(crate) msgs: Vec<usize>,
@@ -364,8 +379,6 @@ pub(crate) struct Rows {
     /// For each person other than you and the sender, the newest message that the person saw before a reply of the
     /// person, and the time.
     last_seen: HashMap<String, (usize, String)>,
-    /// The first unread message.
-    unread: Option<usize>,
     /// Whether each message is in the reply chain of the message before it.
     chained: Vec<bool>,
     /// Desktop's `replyCounts`: the messages of the same reply chain after each message.
@@ -413,7 +426,6 @@ impl Rows {
             last_live: msgs.iter().rposition(|m| m.is_deleted != Some(true)),
             any_pending: msgs.iter().any(|m| pending(st, m)),
             last_seen,
-            unread: msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)),
             chained: (0..n).map(|i| i > 0 && roots[i - 1] == roots[i]).collect(),
             gallery: gallery::starts(st, msgs, &counts),
             counts,
@@ -1161,7 +1173,21 @@ impl BeeperGuiApp {
         let msg = format!("msg-{mid}");
         self.pane.timeline.reveal(vlist::key(&mid));
         self.flash = Some((mid, std::time::Instant::now()));
-        locate(msg, self.pane.scroll_id(), false)
+        locate(msg, self.pane.scroll_id(), crate::Align::Center)
+    }
+
+    /// Desktop's `scrollToUnreadDivider` when a chat opens: the unread divider 80 px under the top of the timeline,
+    /// which reads the chat only as far as it shows.
+    pub(crate) fn scroll_to_unread(&mut self) -> Task<UiMessage> {
+        let mid = {
+            let st = self.store.read();
+            let msgs = self.pane_msgs(&st);
+            self.first_unread(&msgs).map(|i| msgs[i].id.clone())
+        };
+        let Some(mid) = mid else { return Task::none() };
+        self.pane.scrolled_up = Some((true, std::time::Instant::now()));
+        self.pane.timeline.reveal(vlist::key(&mid));
+        locate(UNREAD_DIVIDER, self.pane.scroll_id(), crate::Align::Start(80.0))
     }
 
     /// Desktop's `UnreadDivider`: "New", or the incognito line with the days left of a free trial.
@@ -1281,6 +1307,12 @@ impl BeeperGuiApp {
         rows
     }
 
+    /// The message of the open chat that the unread divider goes before.
+    pub(crate) fn first_unread(&self, msgs: &[&Message]) -> Option<usize> {
+        let at = self.pane().unread_divider.as_ref()?;
+        msgs.iter().position(|m| m.id == *at)
+    }
+
     fn view_messages<'a>(
         &'a self,
         st: &BeeperStore,
@@ -1290,8 +1322,7 @@ impl BeeperGuiApp {
         thread: bool,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
-        let Rows { run_start, last_live, any_pending, last_seen, unread, chained, counts, gallery, keys, days, .. } =
-            rows;
+        let Rows { run_start, last_live, any_pending, last_seen, chained, counts, gallery, keys, days, .. } = rows;
         let last_received = msgs.iter().rposition(|m| m.is_sender != Some(true));
         // Desktop's `ThreadedRepliesView` lists the root and the replies of a thread under its header, and loads older
         // messages of the chat only until the root loads.
@@ -1307,7 +1338,7 @@ impl BeeperGuiApp {
                     |m: &&Message| m.sort_key > *read && m.is_sender != Some(true) && m.is_deleted != Some(true);
                 msgs.iter().position(|m| m.thread_root.as_deref() == Some(r) && unread(m))
             }),
-            None => *unread,
+            None => self.first_unread(msgs),
         };
         let first_unread = first_unread.filter(|_| !thread);
         let (h24, group) = (st.settings.pref("timeFormat") == 1, chat.chat_type == "group");
@@ -1326,7 +1357,7 @@ impl BeeperGuiApp {
                 head = head.push(self.day_pill(&m.timestamp).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
             if first_unread.is_some_and(|u| (i..end).contains(&u)) {
-                head = head.push(self.unread_divider(st));
+                head = head.push(container(self.unread_divider(st)).id(UNREAD_DIVIDER));
             }
             if let Some(timer) = m.timer {
                 let next =
@@ -2857,7 +2888,8 @@ impl BeeperGuiApp {
                 let extend = extend && last.is_some();
                 let next = match (first.zip(last), down) {
                     (None, false) => (0..msgs.len()).rev().find(live),
-                    (None, true) => None,
+                    // Desktop's ↓ with nothing selected goes to the first message after the unread divider.
+                    (None, true) => self.first_unread(&msgs).and_then(|u| (u..msgs.len()).find(live)),
                     (Some((_, l)), true) => (l + 1..msgs.len()).find(live),
                     (Some((f, _)), false) if extend => (0..f).rev().find(live),
                     (Some((_, l)), false) => (0..l).rev().find(live).or(Some(l).filter(live)),
@@ -2872,7 +2904,7 @@ impl BeeperGuiApp {
                 return match self.pane.selected_msgs.last() {
                     Some(mid) => {
                         self.pane.timeline.reveal(vlist::key(mid));
-                        locate(format!("msg-{mid}"), self.pane.scroll_id(), true)
+                        locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Nearest)
                     }
                     None => operation::focus("composer-input"),
                 };
