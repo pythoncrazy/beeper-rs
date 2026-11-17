@@ -7563,3 +7563,43 @@ fn no_tooltip_over_an_open_menu_like_desktop() {
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
     assert_ne!(tip_pixel(&app, "tip-hidden"), [255; 4], "not over the open filter menu");
 }
+
+/// Desktop's keys of pending attachments (`C_t`): ← and → move between them, Space opens a Quick Look that follows
+/// the focus, Backspace removes one and focuses the one before, and → past the last goes back to the input.
+#[test]
+fn pending_attachment_keys_like_desktop() {
+    use iced::keyboard::{key::Named, Key};
+    let mut app = demo_app("attachment-keys");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let mut png = Vec::new();
+    ::image::RgbaImage::new(30, 20).write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).unwrap();
+    let file = |name: &str, bytes: &[u8]| {
+        let path = std::env::temp_dir().join(format!("beeper-rs-keys-{}-{name}", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let f = portal::load_file(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        PendingMedia { name: name.into(), ..f }
+    };
+    app.pane.attachments = vec![file("a.png", &png), file("b.pdf", b"%PDF"), file("c.png", &png)];
+    let press = |app: &mut BeeperGuiApp, k: Named| app.update(UiMessage::KeyPressed(Key::Named(k), Default::default()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FocusAttachment(2)));
+    let _ = press(&mut app, Named::ArrowLeft);
+    assert_eq!(app.pane.att_focus, Some(1));
+    let _ = press(&mut app, Named::ArrowLeft);
+    let _ = press(&mut app, Named::ArrowLeft);
+    assert_eq!(app.pane.att_focus, Some(0), "the first one keeps the focus");
+    let _ = press(&mut app, Named::Space);
+    assert_eq!(app.pane.quick_look, Some(0));
+    assert!(app.view_attachment_quick_look().is_some(), "the Quick Look shows");
+    let _ = press(&mut app, Named::ArrowRight);
+    assert_eq!((app.pane.att_focus, app.pane.quick_look), (Some(1), Some(1)), "the Quick Look follows the focus");
+    let _ = press(&mut app, Named::Escape);
+    assert_eq!((app.pane.att_focus, app.pane.quick_look), (Some(1), None));
+    let _ = press(&mut app, Named::Backspace);
+    let names: Vec<&str> = app.pane.attachments.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!((names, app.pane.att_focus), (vec!["a.png", "c.png"], Some(0)), "the one before takes the focus");
+    let _ = press(&mut app, Named::ArrowRight);
+    let _ = press(&mut app, Named::ArrowRight);
+    assert_eq!(app.pane.att_focus, None, "past the last one, the input");
+    drop(simulator(app.view_main()));
+}
