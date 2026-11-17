@@ -1071,15 +1071,21 @@ impl BeeperGuiApp {
             viewers.sort_by_key(|&(_, ts)| ts);
             let status = if let Some(&(_, ts)) = viewers.last() {
                 if group {
-                    let names: Vec<&str> = viewers
+                    // Desktop's `Seen by`: the newest reader first, by first name when no other member has it.
+                    let members = || chat.participants.items.iter().filter(|u| u.has_exited != Some(true));
+                    let first = |u: &User| u.short_name().to_lowercase();
+                    let names: Vec<String> = viewers
                         .iter()
+                        .rev()
                         .map(|&(uid, _)| {
-                            chat.participants
-                                .items
-                                .iter()
-                                .find(|u| u.id == uid)
-                                .and_then(|u| u.custom_nickname.as_deref().or(u.full_name.as_deref()))
-                                .unwrap_or(uid)
+                            let Some(u) = chat.participants.items.iter().find(|u| u.id == uid) else {
+                                return uid.to_string();
+                            };
+                            let full = u.custom_nickname.as_deref().or(u.full_name.as_deref()).unwrap_or(uid);
+                            match members().filter(|o| first(o) == first(u)).count() {
+                                1 => u.short_name(),
+                                _ => full.to_string(),
+                            }
                         })
                         .collect();
                     Some(if names.len() <= 4 {
@@ -2495,5 +2501,36 @@ impl BeeperGuiApp {
         let foot = (!shown || total > 0).then(|| container(foot).padding(Padding::ZERO.top(10.0)));
         let body = column![head, Space::new().height(10), options].push(foot);
         container(body).padding(Padding::new(14.0).bottom(12.0)).width(width).style(fill_box(bg, 17.0)).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced_test::simulator::simulator;
+
+    /// Desktop's `Seen by` of a group: the newest reader first, by first name when no other member has it.
+    #[test]
+    fn seen_by_names_like_desktop() {
+        let mut app = crate::fuzz::demo_app("seen-by");
+        let chat = {
+            let mut st = app.store.write();
+            let i = st.chats.iter().position(|c| c.chat_type == "group").expect("a group");
+            let user =
+                |id: &str, name: &str| User { id: id.into(), full_name: Some(name.into()), ..Default::default() };
+            let people = [user("@a:x", "Ann Lee"), user("@b:x", "Ann Smith"), user("@c:x", "Bo Jones")];
+            st.update_chat(i, |c| c.participants.items.extend(people));
+            let id = st.chats[i].id.clone();
+            let last = *st.timeline_indices(&id).last().expect("a message");
+            let seen =
+                [("@a:x", "2030-01-01T10:00:00Z"), ("@b:x", "2030-01-01T10:01:00Z"), ("@c:x", "2030-01-01T10:02:00Z")];
+            st.update_message(last, |m| {
+                m.is_sender = Some(true);
+                m.seen = seen.iter().map(|(u, t)| (u.to_string(), t.to_string())).collect();
+            });
+            id
+        };
+        let _ = app.update(UiMessage::SelectChat(chat));
+        assert!(simulator(app.view_conversation()).find("Seen by Bo, Ann Smith, Ann Lee").is_ok());
     }
 }
