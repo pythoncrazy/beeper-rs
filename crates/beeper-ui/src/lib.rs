@@ -2435,8 +2435,6 @@ struct Memo {
     words: std::cell::RefCell<Option<Words>>,
     /// The command bar finds for a query, its filters and its room.
     hits: std::cell::RefCell<Option<(HitsKey, Hits)>>,
-    /// The stored messages with media, newest first.
-    media: std::cell::RefCell<Option<Rc<[Message]>>>,
     /// The unread threads of all chats, as the chat index and the root.
     threads: std::cell::RefCell<Option<Threads>>,
 }
@@ -3359,7 +3357,6 @@ impl BeeperGuiApp {
             self.memo.keys.borrow_mut().clear();
             self.memo.words.take();
             self.memo.hits.take();
-            self.memo.media.take();
             self.memo.threads.take();
         }
         Some(&self.memo)
@@ -4764,8 +4761,11 @@ impl BeeperGuiApp {
             || self
                 .panes()
                 .any(|p| [p.hover_msg_at, p.flyover_at].iter().flatten().any(|t| t.elapsed() < FLYOVER_REVEAL));
-        let tab_at = self.media_window.as_ref().and_then(|w| w.tab_at);
-        let animated = animated || tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE);
+        // The tab slide and the skeleton tiles of the Media window.
+        let media = self.media_window.as_ref().is_some_and(|w| {
+            w.loading.is_some() || w.tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE)
+        });
+        let animated = animated || media;
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
             .then(|| Subscription::run(tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0))));
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));

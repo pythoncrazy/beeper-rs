@@ -1648,12 +1648,11 @@ fn media_window_menu_and_rows_like_desktop() {
     let _ = app.update(UiMessage::Media(media_view::Msg::Menu(false)));
     let (mid, k) = {
         let mut st = app.store.write();
-        let media = app.media_messages(&st);
-        let (i, k) = crate::media_view::media_items(&st, &media, app.media_window.as_ref().unwrap())[0];
-        let j = st.find_message(&media[i].id).expect("a stored message");
-        st.update_message(j, |m| m.attachments[k].file_size = Some(2048));
-        (media[i].id.clone(), k)
+        let (i, k) = image(&st);
+        st.update_message(i, |m| m.attachments[k].file_size = Some(2048));
+        (st.messages[i].id.clone(), k)
     };
+    media_view::load_all_media(&mut app);
     let _ = app.update(UiMessage::Media(media_view::Msg::Select(true)));
     let _ = app.update(UiMessage::Media(media_view::Msg::Pick(mid, k)));
     let count = format!("1 selected ({})", human_size(2048));
@@ -1667,6 +1666,7 @@ fn media_window_menu_and_rows_like_desktop() {
         st.update_message(i, |m| m.links = vec![MessageLink { url, img: Some(img.into()), ..Default::default() }]);
     }
     let _ = app.update(UiMessage::Media(media_view::Msg::Tab(1)));
+    media_view::load_all_media(&mut app);
     drop(app.view(id));
     assert!(app.wants.media.borrow().contains(img), "the row loads the preview image");
 }
@@ -1693,6 +1693,7 @@ fn media_viewer_deletes_like_desktop() {
         (st.chats[c].messages.delete, st.chats[c].messages.delete_max_age) = (true, None);
         (st.messages[i].id.clone(), ai, c)
     };
+    media_view::load_all_media(&mut app);
     let _ = app.update(UiMessage::Window(windows::Msg::Resized(id, Size::new(1000.0, 720.0))));
     let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, true)));
     let click = |app: &BeeperGuiApp| -> Vec<UiMessage> {
@@ -1726,12 +1727,8 @@ fn media_filmstrip_scrolls_like_desktop() {
     let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
     let size = Size::new(300.0, 720.0);
     let _ = app.update(UiMessage::Window(windows::Msg::Resized(id, size)));
-    let (mid, ai) = {
-        let st = app.store.read();
-        let media = app.media_messages(&st);
-        let items = crate::media_view::media_items(&st, &media, app.media_window.as_ref().unwrap());
-        (media[items[0].0].id.clone(), items[0].1)
-    };
+    media_view::load_all_media(&mut app);
+    let (mid, ai) = app.media_window.as_ref().map(|w| (w.items[0].0.id.clone(), w.items[0].1)).unwrap();
     let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, ai, true)));
     let wheel = {
         let mut sim = Simulator::with_size(Default::default(), size, app.view(id));
@@ -1760,12 +1757,13 @@ fn media_carousel_draws() {
         let (i, ai) = image(&st);
         (st.messages[i].id.clone(), ai, st.messages[i].chat_id.clone())
     };
+    media_view::load_all_media(&mut app);
     let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, true)));
     drop(app.view(id));
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(chat.clone(), ChatFlag::LowPriority)));
     drop(app.view(id));
     let _ = app.update(UiMessage::StoreChanged);
-    assert!(app.carousel.is_none(), "the carousel closes when its image leaves the Media window");
+    assert!(app.carousel.is_some(), "like Desktop's loaded items, the image stays when its chat goes low priority");
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(chat.clone(), ChatFlag::LowPriority)));
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
     let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, false)));
@@ -2099,6 +2097,7 @@ fn carousel_menu_like_desktop() {
     assert!(app.carousel.as_ref().is_some_and(|c| c.menu.is_none()), "Escape closes only the menu");
     let _ = app.update(UiMessage::Media(media_view::Msg::Open));
     let id = app.media_window.as_ref().unwrap().id;
+    media_view::load_all_media(&mut app);
     let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, 0, true)));
     let _ = app.update(UiMessage::Media(media_view::Msg::CarouselMenu(true)));
     let mut sim = simulator(app.view(id));
