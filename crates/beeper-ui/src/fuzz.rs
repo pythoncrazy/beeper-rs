@@ -7314,3 +7314,21 @@ fn chat_info_opens_the_profile_like_desktop() {
         .collect();
     assert_eq!(opened, ["https://www.instagram.com/arnayb_/"]);
 }
+
+/// A bridge can send media without a file name or body: the timeline shows it, and a file row says "Attachment" like
+/// Desktop.
+#[test]
+fn nameless_attachments_like_desktop() {
+    let mut app = demo_app("nameless");
+    let chat = "!wa_eric:beeper.com";
+    {
+        let mut st = app.store.write();
+        let i = *st.timeline_indices(chat).last().expect("a message");
+        let sticker = Attachment { attachment_type: "img".into(), is_sticker: Some(true), ..Attachment::default() };
+        st.update_message(i, |m| m.attachments = vec![sticker]);
+    }
+    let _ = app.update(UiMessage::SelectChat(chat.into()));
+    let _ = simulator(app.view_main());
+    let a = Attachment { attachment_type: "unknown".into(), ..Attachment::default() };
+    assert_eq!(crate::message::attachment_name(&a), "Attachment");
+}
