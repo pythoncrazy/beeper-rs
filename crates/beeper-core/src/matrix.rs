@@ -953,6 +953,40 @@ pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> 
     Ok(())
 }
 
+/// The most pages back that fill a gap of a limited sync.
+const GAP_PAGES: usize = 10;
+
+/// Whether the room has synced into the chat list before, so that it has events from an earlier sync.
+async fn synced_before(store: &SharedStore, room: &Room) -> bool {
+    let chat = chat_id(room).await;
+    let st = store.read();
+    st.chat_idx_by_id.get(&chat).is_some_and(|&i| st.chats[i].notifiable.is_some())
+}
+
+/// A limited sync timeline leaves a gap between the last sync and `from`: loads pages back from it until a page
+/// reaches a message that the chat has, so that the timeline has no hole.
+async fn fill_gap(store: SharedStore, room: Room, from: String) {
+    let chat = chat_id(&room).await;
+    let mut from = Some(from);
+    for _ in 0..GAP_PAGES {
+        let Some(token) = from.take() else { return };
+        let (events, end) = match page(&room, Some(token), HISTORY).await {
+            Ok(p) => p,
+            Err(e) => return eprintln!("Could not fill a gap in {}: {e}", room.room_id()),
+        };
+        let reached = {
+            let mut st = store.write();
+            st.load_chat(&chat);
+            events.iter().filter_map(TimelineEvent::event_id).any(|id| st.find_message(id.as_str()).is_some())
+        };
+        sync_room(&store, &room, events).await;
+        if reached {
+            return;
+        }
+        from = end;
+    }
+}
+
 async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
     let me = room.own_user_id().as_str();
     let ids: Vec<String> = ids.as_array().expect("typing user IDs").iter().map(|i| s(i).expect("a user ID")).collect();
@@ -4361,7 +4395,15 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             }
             for (id, update) in resp.rooms.joined {
                 let room = client.get_room(&id).expect("synced room is known");
+                // A limited timeline of a room that synced before leaves out the events since the last sync.
+                let mut gap = update.timeline.prev_batch.clone().filter(|_| update.timeline.limited);
+                if gap.is_some() && !synced_before(store, &room).await {
+                    gap = None;
+                }
                 sync_room(store, &room, update.timeline.events).await;
+                if let Some(from) = gap {
+                    tokio::spawn(fill_gap(store.clone(), room.clone(), from));
+                }
                 for e in &update.ephemeral {
                     let v: Value = e.deserialize_as().expect("ephemeral event JSON");
                     if v["type"] == "m.typing" {
@@ -4603,6 +4645,60 @@ mod tests {
         })
         .await;
         stub_store(&crate::testing::temp_dir(name), &url).await
+    }
+
+    /// A limited sync of a room that synced before leaves out the events since the last sync, and pages back from its
+    /// `prev_batch` fill the gap up to the messages the chat has, so the timeline has no hole.
+    #[tokio::test]
+    async fn limited_syncs_fill_the_gap() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        use std::sync::Arc;
+        let (syncs, pages) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (syncs2, pages2) = (syncs.clone(), pages.clone());
+        let url = crate::bridge_stub::serve(move |_, path, _| {
+            let (path, query) = path.split_once('?').unwrap_or((path, ""));
+            match path {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                "/_matrix/client/v3/sync" if syncs2.fetch_add(1, Relaxed) == 0 => (200, stub_sync()),
+                "/_matrix/client/v3/sync" => {
+                    let events: Vec<Value> = (131..=140).map(stub_message).collect();
+                    let timeline = json!({ "events": events, "limited": true, "prev_batch": "t130" });
+                    let room = json!({ "state": { "events": [] }, "timeline": timeline });
+                    (200, json!({ "next_batch": "s2", "rooms": { "join": { "!room:x": room } } }))
+                }
+                // 30 messages back from the token `tN` of message N, or the newest 30 of the first sync.
+                p if p.ends_with("/messages") => {
+                    pages2.fetch_add(1, Relaxed);
+                    let from = query.split('&').find_map(|kv| kv.strip_prefix("from=t"));
+                    let to: i64 = from.map_or(70, |t| t.parse().expect("a stub token"));
+                    let chunk: Vec<Value> = (to - 29..=to).rev().map(stub_message).collect();
+                    (200, json!({ "start": format!("t{to}"), "end": format!("t{}", to - 30), "chunk": chunk }))
+                }
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            }
+        })
+        .await;
+        let store = crate::testing::stub_room_store(&crate::testing::temp_dir("sync-gap"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        let texts = |store: &crate::store::SharedStore| {
+            let mut st = store.write();
+            st.load_chat("!room:x");
+            let texts = st.timeline_indices("!room:x").iter().map(|&i| st.messages[i].text.clone().unwrap());
+            texts.collect::<Vec<_>>()
+        };
+        let range = |a: i64, b: i64| (a..=b).map(|i| format!("m{i}")).collect::<Vec<_>>();
+        assert_eq!(texts(&store), range(41, 70), "the first sync loads the newest page");
+        assert_eq!(pages.load(Relaxed), 1);
+        super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await;
+        for _ in 0..200 {
+            if texts(&store).len() == 100 && pages.load(Relaxed) == 4 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(texts(&store), range(41, 140), "the gap from m71 to m130 is filled");
+        assert_eq!(pages.load(Relaxed), 4, "the fill stops at the page that reaches a loaded message");
     }
 
     /// A message that waits for its key is fetched again by event when keys come, so one on an older page decrypts.
