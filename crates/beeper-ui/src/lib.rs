@@ -685,6 +685,8 @@ const ASK_UNBLOCK_OFFLINE: u8 = 21;
 const ASK_TRANSCRIBE: u8 = 22;
 /// Desktop's logout of another device of the account in Settings > Devices.
 const ASK_LOGOUT_DEVICE: u8 = 23;
+/// Desktop's "Room encryption" step of New Chat before it creates a Matrix group of more than one person.
+const ASK_ROOM_ENCRYPTION: u8 = 24;
 /// Desktop opens its `prefs` window at 800 x 740, in the middle of the screen.
 const SETTINGS_SIZE: Size = Size::new(800.0, 740.0);
 /// Desktop's default "Quick reaction emoji".
@@ -2589,6 +2591,8 @@ pub struct BeeperGuiApp {
     pub new_chat_expanded: bool,
     pub new_chat_chats_expanded: bool,
     pub join_matrix_mode: bool,
+    /// The Encrypted toggle of the "Room encryption" step of the open New Chat draft.
+    pub group_encrypted: bool,
     /// Desktop's `matrixRoomJoin` of the Join a Matrix room view: a join is going on, and the error of the last one.
     join_room: (bool, Option<String>),
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
@@ -2868,6 +2872,7 @@ impl BeeperGuiApp {
             new_chat_expanded: false,
             new_chat_chats_expanded: false,
             join_matrix_mode: false,
+            group_encrypted: true,
             join_room: (false, None),
             devices: None,
             mics: None,
@@ -4206,6 +4211,8 @@ impl BeeperGuiApp {
                     (self.selection, self.select_mode) = (Vec::new(), false);
                 } else if self.join_matrix_mode {
                     self.join_matrix_mode = false;
+                } else if self.confirm == Some(ASK_ROOM_ENCRYPTION) {
+                    self.confirm = None;
                 } else if self.creating_chat.is_some() {
                     self.leave_draft();
                     self.pane.selected_chat_id = None;

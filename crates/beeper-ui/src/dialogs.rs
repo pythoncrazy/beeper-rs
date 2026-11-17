@@ -25,8 +25,8 @@ use crate::{
     ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_BLOCK, ASK_BLOCK_OFFLINE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT,
     ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE, ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT,
     ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT,
-    ASK_REMOVE_MEMBER, ASK_REVOKE_CONNECTION, ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE, DELETE, DRAG_HANDLE,
-    INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
+    ASK_REMOVE_MEMBER, ASK_REVOKE_CONNECTION, ASK_ROOM_ENCRYPTION, ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE,
+    DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
@@ -513,6 +513,26 @@ impl BeeperGuiApp {
                 let disable = (tr("Disable"), UiMessage::Voice(voice::Msg::Allow(false)));
                 return self.dialog_with(tr("Privacy notice").into(), body, None, allow, disable);
             }
+            // Desktop's "Room encryption" `PrefsActionPrompt` of New Chat.
+            ASK_ROOM_ENCRYPTION => {
+                let (p, on) = (&self.pal, self.group_encrypted);
+                let label = txt(trx("Encrypted", "new Matrix group encryption toggle label"), 13.0).color(p.strong);
+                // Desktop's `<label>`: a click anywhere on the row flips the toggle.
+                let option = container(row![label.width(Fill), toggle(p, on, None)].align_y(Center))
+                    .padding(10)
+                    .style(fill_box(p.chip, 12.0));
+                let option = mouse_area(option)
+                    .on_press(UiMessage::NewChat(crate::new_chat::Msg::Encrypted(!on)))
+                    .interaction(mouse::Interaction::Pointer);
+                let note = match on {
+                    true => tr("People invited later cannot see earlier messages."),
+                    false => tr("People invited later can see earlier messages."),
+                };
+                let extra = column![option, txt(note, 12.0).color(p.text.scale_alpha(0.72))].spacing(10);
+                let start = vec![(tr("Start group chat"), UiMessage::NewChat(crate::new_chat::Msg::Start))];
+                let cancel = (trx("Cancel", "button label"), UiMessage::Ask(None));
+                return self.dialog_with(tr("Room encryption").into(), String::new(), Some(extra.into()), start, cancel);
+            }
             _ => unreachable!("dialog {dialog}"),
         };
         let spam = (dialog == ASK_BLOCK).then(|| self.report_spam_box()).flatten();
@@ -541,7 +561,8 @@ impl BeeperGuiApp {
         self.dialog_with(title, body, None, actions, cancel)
     }
 
-    /// A confirmation dialog with `extra` under its text, like the checkbox of Electron's `showMessageBox`.
+    /// A confirmation dialog with `extra` under its text, like the checkbox of Electron's `showMessageBox`. An empty
+    /// text leaves only `extra`.
     fn dialog_with<'a>(
         &'a self,
         title: String,
@@ -563,7 +584,8 @@ impl BeeperGuiApp {
             .chain(actions.iter().map(|a| (a.0, Weight::Medium, 24.0)))
             .map(|(label, weight, pad)| text_width(label, 13.0, weight) + pad + 8.0)
             .sum();
-        let card = column![bold(title, 14.0).color(p.strong), txt(body, 13.0).color(p.text)]
+        let card = column![bold(title, 14.0).color(p.strong)]
+            .push((!body.is_empty()).then(|| txt(body, 13.0).color(p.text)))
             .push(extra)
             .push(
                 row![Space::new().width(Fill), pill_btn(p, no, cancel.clone())]

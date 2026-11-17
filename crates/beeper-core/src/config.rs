@@ -36,6 +36,8 @@ pub const DEFAULT_PAS_HOST: &str = "127.0.0.1";
 pub const DEFAULT_PAS_PORT: u16 = 23373;
 pub const DEFAULT_HOMESERVER: &str = "https://matrix.beeper.com";
 pub const DEFAULT_API_URL: &str = "https://api.beeper.com";
+/// Desktop's app API (`As` of sentry-common), which is the same in every `--server-env`.
+pub const APP_API_URL: &str = "https://texts.com/api/beeper";
 /// Desktop's `--server-env` values and the domain of each Beeper cloud, which serves `api.` and `matrix.`.
 pub const SERVER_ENVS: [(&str, &str); 4] = [
     ("production", "beeper.com"),

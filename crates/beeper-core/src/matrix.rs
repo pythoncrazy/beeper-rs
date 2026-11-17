@@ -2982,19 +2982,38 @@ pub async fn create_matrix_dm(store: SharedStore, identifier: String) -> Result<
     create_room(client, body.to_string()).await
 }
 
-/// Desktop SDK's `convertGroupCreateToMatrix` for a `group` of its `matrix` pseudo-bridge: a new encrypted private
-/// room with the users, named when `name` is not empty. Desktop's New Chat never asks for an `unencrypted_group`.
-/// It returns the room ID.
-pub async fn create_matrix_group(store: SharedStore, name: String, users: Vec<String>) -> Result<String, String> {
+/// Desktop SDK's `convertGroupCreateToMatrix` for a `group` or an `unencrypted_group` of its `matrix` pseudo-bridge:
+/// a new private room with the users, encrypted unless it is an `unencrypted_group`, and named when `name` is not
+/// empty. It returns the room ID.
+pub async fn create_matrix_group(
+    store: SharedStore,
+    kind: String,
+    name: String,
+    users: Vec<String>,
+) -> Result<String, String> {
     let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
     for (i, u) in users.iter().enumerate() {
         matrix_sdk::ruma::UserId::parse(u).map_err(|e| format!("user ID {} ({u:?}) is not valid: {e}", i + 1))?;
     }
-    let mut body = serde_json::json!({ "invite": users, "initial_state": [megolm_state()], "preset": "private_chat" });
+    let mut body = serde_json::json!({ "invite": users, "preset": "private_chat" });
+    if kind != "unencrypted_group" {
+        body["initial_state"] = serde_json::json!([megolm_state()]);
+    }
     if !name.is_empty() {
         body["name"] = name.into();
     }
     create_room(client, body.to_string()).await
+}
+
+/// Desktop's `setRoomAvatar`: uploads the image without encryption and sends it as the `m.room.avatar` of the room,
+/// which does not have to be synced yet.
+pub async fn set_room_avatar(store: SharedStore, room: String, bytes: Vec<u8>, mime: String) -> Result<(), String> {
+    let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
+    let mime: mime::Mime = mime.parse().map_err(|e| format!("bad image type {mime}: {e}"))?;
+    let url = client.media().upload(&mime, bytes, None).await.map_err(|e| e.to_string())?.content_uri;
+    let content = serde_json::json!({ "url": url }).to_string();
+    let path = ["rooms", &room, "state", "m.room.avatar", ""];
+    client_api(&client, reqwest::Method::PUT, &path, &[], Some(content)).await.map(drop)
 }
 
 pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
@@ -6306,7 +6325,8 @@ mod tests {
 
     /// Like the `matrix` pseudo-bridge of Desktop's SDK, New Chat on the Matrix account reads the profile of a Matrix
     /// ID, asks for the devices of a user it does not track, and creates trusted private direct rooms, encrypted only
-    /// for a user with devices, and encrypted private groups.
+    /// for a user with devices, and private groups, encrypted unless New Chat turned it off. Desktop's
+    /// `setRoomAvatar` then uploads the avatar of the group.
     #[tokio::test]
     async fn matrix_new_chat_requests_like_desktop_sdk() {
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -6333,6 +6353,16 @@ mod tests {
             "/_matrix/client/v3/createRoom" => {
                 log.lock().unwrap().push((method.to_string(), "createRoom".to_string(), body));
                 (200, json!({ "room_id": "!new:x" }))
+            }
+            "/_matrix/client/v1/media/config" => (200, json!({ "m.upload.size": 1_000_000 })),
+            "/_matrix/media/v3/upload" => {
+                log.lock().unwrap().push((method.to_string(), "upload".to_string(), body));
+                (200, json!({ "content_uri": "mxc://x/f" }))
+            }
+            p if p.starts_with("/_matrix/client/v3/rooms/") => {
+                let p = p.strip_prefix("/_matrix/client/v3/").expect("a room request");
+                log.lock().unwrap().push((method.to_string(), p.to_string(), body));
+                (200, json!({ "event_id": "$avatar" }))
             }
             _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
@@ -6361,15 +6391,25 @@ mod tests {
         let bad = super::create_matrix_dm(store.clone(), "ghost".into()).await.expect_err("not a Matrix ID");
         assert!(bad.starts_with("failed to resolve identifier: user ID"), "{bad}");
         let users = vec!["@vic:x".to_string(), "@ghost:x".to_string()];
-        let group = super::create_matrix_group(store.clone(), "Team".into(), users.clone()).await;
-        assert_eq!(group, Ok("!new:x".into()));
+        let group =
+            |kind: &str, name: &str| super::create_matrix_group(store.clone(), kind.into(), name.into(), users.clone());
+        assert_eq!(group("group", "Team").await, Ok("!new:x".into()));
         let room = json!({ "name": "Team", "invite": users, "preset": "private_chat", "initial_state": [encryption] });
         assert_eq!(take(), [request("createRoom", room)]);
-        assert_eq!(super::create_matrix_group(store.clone(), String::new(), users.clone()).await, Ok("!new:x".into()));
+        assert_eq!(group("group", "").await, Ok("!new:x".into()));
         assert!(take()[0].2.get("name").is_none(), "a group without a name sends none");
-        let bad = super::create_matrix_group(store, String::new(), vec!["@vic:x".into(), "ghost".into()]).await;
+        assert_eq!(group("unencrypted_group", "").await, Ok("!new:x".into()));
+        let room = json!({ "invite": users, "preset": "private_chat" });
+        assert_eq!(take(), [request("createRoom", room)], "an unencrypted group has no encryption state");
+        let bad = vec!["@vic:x".into(), "ghost".into()];
+        let bad = super::create_matrix_group(store.clone(), "group".into(), String::new(), bad).await;
         assert!(bad.expect_err("a bad member").starts_with("user ID 2 (\"ghost\") is not valid"));
         assert!(take().is_empty(), "a bad member creates nothing");
+        let avatar = super::set_room_avatar(store, "!new:x".into(), b"png".to_vec(), "image/png".into()).await;
+        assert_eq!(avatar, Ok(()));
+        let upload = ("POST".to_string(), "upload".to_string(), json!("png"));
+        let state = ("PUT".to_string(), "rooms/!new:x/state/m.room.avatar/".to_string(), json!({ "url": "mxc://x/f" }));
+        assert_eq!(take(), [upload, state], "Desktop's `setRoomAvatar` uploads the image, then sends the state");
     }
 
     /// Desktop's `searchMatrixUsers`: the user directory with a limit of 100, Matrix IDs as usernames, and a typed
