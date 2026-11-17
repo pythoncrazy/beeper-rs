@@ -1572,7 +1572,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         }
         ("POST", ["messages", mid, "reactions"]) => {
             let key = r.need("reactionKey")?;
-            let (cid, tx) = st.add_reaction(id, mid, key, r.owned("transactionID")).map_err(store_error)?;
+            let (cid, tx) = st.add_reaction(id, mid, key, None, r.owned("transactionID")).map_err(store_error)?;
             ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "transactionID": tx, "success": true }))
         }
         // Desktop also takes the key from the query, for keys that a path cannot carry.

@@ -2720,6 +2720,7 @@ impl BeeperStore {
         chat_or_local_id: &str,
         message_id: &str,
         reaction_key: &str,
+        img_url: Option<String>,
         transaction_id: Option<String>,
     ) -> Result<(String, String), Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
@@ -2733,11 +2734,11 @@ impl BeeperStore {
                 participant_id: pid.clone(),
                 reaction_key: reaction_key.to_string(),
                 animated: Some(false),
-                img_url: None,
+                img_url: img_url.clone(),
                 sort_key: String::new(),
             });
         });
-        let out = Outgoing::React { txn: tx_id.clone(), target: message_id.into(), key: reaction_key.into() };
+        let out = Outgoing::React { txn: tx_id.clone(), target: message_id.into(), key: reaction_key.into(), img_url };
         self.queue(&chat_id, out);
         Ok((chat_id, tx_id))
     }
