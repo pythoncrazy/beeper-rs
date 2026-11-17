@@ -5079,6 +5079,17 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
+        // Delete in the slots of the sign-in code, which `keys` does not send.
+        let code_delete = (self.login.screen == login::Screen::Code).then(|| {
+            iced::event::listen_with(|e, _, id| match e {
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: key @ Key::Named(Named::Delete),
+                    modifiers,
+                    ..
+                }) => Some(UiMessage::WindowKey(id, key, modifiers)),
+                _ => None,
+            })
+        });
         let drag = self.dragging.then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
@@ -5261,6 +5272,7 @@ impl BeeperGuiApp {
                 .chain(time_drag)
                 .chain(carousel)
                 .chain(dropdown)
+                .chain(code_delete)
                 .chain(tick)
                 .chain(toast)
                 .chain(shot)
