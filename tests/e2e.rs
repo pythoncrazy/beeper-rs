@@ -1902,7 +1902,9 @@ async fn e2e_api_rejects_bad_input_and_keeps_serving() {
     std::fs::write(&outside, b"secret").unwrap();
     let uploaded = client.upload_asset_base64("a.txt", "text/plain", b"attachment").await;
     let (_, refused) = client.request("POST", "/v1/assets/download", Some(json!({ "url": uploaded["srcURL"] }))).await;
-    assert_eq!(refused, json!({ "error": "URL must be mxc:// or localmxc://" }), "an upload has a file URL");
+    let issue = json!({ "code": "custom", "message": "URL must start with mxc:// or localmxc://", "path": ["url"] });
+    let invalid = json!({ "message": "Invalid input", "code": "VALIDATION_ERROR", "details": { "issues": [issue] } });
+    assert_eq!(refused, invalid, "an upload has a file URL");
     let denied = br#"{"message":"Access denied: Path must be within allowed attachment directories","code":"SERVE_ASSET_ERROR"}"#;
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut files = vec![
