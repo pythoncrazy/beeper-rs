@@ -1501,6 +1501,8 @@ static FILE_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock::
     })
 });
 
+// Desktop's `download` icon, the Material `download`.
+svg_static!(MAT_DOWNLOAD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"/></svg>"##);
 svg_static!(MAT_FORWARD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"/></svg>"##);
 
 svg_static!(ZOOM_LEVEL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 15" fill="#000"><path d="M20.64 14.343C21.01 14.343 21.303 14.237 21.52 14.026C21.736 13.816 21.845 13.534 21.845 13.183C21.845 12.937 21.798 12.679 21.705 12.409L17.995 2.346C17.837 1.877 17.603 1.53 17.292 1.304C16.982 1.079 16.583 0.966 16.097 0.966C15.177 0.966 14.562 1.423 14.251 2.336L10.498 12.488C10.4122 12.7219 10.3675 12.9689 10.366 13.218C10.366 13.563 10.469 13.838 10.674 14.04C10.879 14.242 11.16 14.343 11.518 14.343C11.863 14.343 12.134 14.261 12.331 14.097C12.527 13.933 12.675 13.666 12.774 13.297L13.636 10.915H18.531L19.393 13.297C19.493 13.666 19.64 13.933 19.836 14.097C20.033 14.261 20.301 14.343 20.641 14.343H20.64ZM17.995 8.999H14.198L16.07 3.479H16.123L17.995 9V8.999ZM7.87 14.325C8.175 14.325 8.42 14.233 8.608 14.048C8.7018 13.9545 8.77527 13.8427 8.8238 13.7195C8.87232 13.5962 8.89486 13.4643 8.89 13.332C8.89 13.209 8.878 13.09 8.854 12.976C8.8266 12.8487 8.78846 12.7239 8.74 12.603L6.14 5.606C5.987 5.19 5.782 4.883 5.524 4.684C5.267 4.484 4.939 4.384 4.54 4.384C4.165 4.384 3.85 4.484 3.595 4.684C3.34 4.883 3.137 5.19 2.985 5.606L0.381 12.603C0.292023 12.8359 0.244637 13.0827 0.241 13.332C0.241 13.642 0.332 13.886 0.517 14.062C0.702 14.237 0.952 14.325 1.269 14.325C1.532 14.325 1.746 14.25 1.91 14.101C2.074 13.951 2.203 13.707 2.297 13.367L2.851 11.741H6.261L6.814 13.385C6.902 13.725 7.031 13.966 7.201 14.11C7.371 14.253 7.594 14.325 7.869 14.325H7.87ZM5.787 10.16H3.31L4.45 6.494H4.626L5.786 10.159L5.787 10.16Z"/></svg>"##);
@@ -2817,6 +2819,10 @@ pub struct BeeperGuiApp {
     /// Desktop's `dismissError`: the accounts whose disconnected banner was dismissed this session.
     dismissed_errors: HashSet<String>,
     pub resolving_media: HashMap<String, bool>,
+    /// Desktop's `mediaDownloadStore`: the media URLs that a bridge loads only when the user asks (`needsDownload`),
+    /// and those whose interactive download runs (`fetching`).
+    pub(crate) needs_download: HashSet<String>,
+    pub(crate) fetching: HashSet<String>,
     video: Option<video::Video>,
     view_once: view_once::ViewOnce,
     started: std::time::Instant,
@@ -3059,6 +3065,8 @@ impl BeeperGuiApp {
             quotes: HashMap::new(),
             dismissed_errors: HashSet::new(),
             resolving_media: HashMap::new(),
+            needs_download: HashSet::new(),
+            fetching: HashSet::new(),
             video: None,
             view_once: Default::default(),
             started: std::time::Instant::now(),
@@ -4923,6 +4931,7 @@ impl BeeperGuiApp {
             || self.reauth.busy
             || self.enter_key.busy
             || self.nickname_windows.iter().any(|d| d.saving)
+            || !self.fetching.is_empty()
             || self.hover_fading()
             || self.sidebar_progress().is_some()
             || self
