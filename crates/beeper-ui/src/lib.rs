@@ -86,6 +86,7 @@ mod user_card;
 mod vcard;
 mod verify;
 mod video;
+mod view_once;
 mod vlist;
 mod voice;
 mod wants;
@@ -376,6 +377,8 @@ pub enum UiMessage {
     Voice(voice::Msg),
     Record(record::Msg),
     Video(video::Msg),
+    /// Desktop's view-once media: its viewer, its views and the Play queue of a chat.
+    ViewOnce(view_once::Msg),
     Gallery(gallery::Msg),
     /// Opens the emoji picker for a quick reaction (see [`emoji::Picker::pref`]), or closes it.
     QuickEmoji(Option<u8>),
@@ -2698,6 +2701,7 @@ pub struct BeeperGuiApp {
     dismissed_errors: HashSet<String>,
     pub resolving_media: HashMap<String, bool>,
     video: Option<video::Video>,
+    view_once: view_once::ViewOnce,
     started: std::time::Instant,
 }
 
@@ -2923,6 +2927,7 @@ impl BeeperGuiApp {
             dismissed_errors: HashSet::new(),
             resolving_media: HashMap::new(),
             video: None,
+            view_once: Default::default(),
             started: std::time::Instant::now(),
             last_click: None,
             chat_history: Vec::new(),
@@ -3806,6 +3811,7 @@ impl BeeperGuiApp {
             UiMessage::Toast(msg) => return self.toasts(msg),
             UiMessage::UserCard(msg) => return self.user_card(msg),
             UiMessage::Video(msg) => return self.video(msg),
+            UiMessage::ViewOnce(msg) => return self.view_once(msg),
             UiMessage::Voice(msg) => return self.voice(msg),
             UiMessage::Window(msg) => return self.windows(msg),
             UiMessage::Zoom(msg) => return self.set_zoom(msg),
@@ -4284,6 +4290,9 @@ impl BeeperGuiApp {
             {
                 return self.record(record::Msg::Key(k));
             }
+            UiMessage::KeyPressed(Key::Named(Named::Escape), _) if self.view_once.is_open() => {
+                return self.view_once(view_once::Msg::Dismiss);
+            }
             UiMessage::KeyPressed(key, mods) if self.carousel.as_ref().is_some_and(|c| !c.in_media) => {
                 return self.carousel_key(&key, mods);
             }
@@ -4720,7 +4729,8 @@ impl BeeperGuiApp {
                 .chain(self.transcribe_ticks())
                 .chain(self.audio_drag())
                 .chain(self.record_events())
-                .chain(self.video_ticks()),
+                .chain(self.video_ticks())
+                .chain(self.view_once_ticks()),
         )
     }
 
@@ -5057,6 +5067,7 @@ impl BeeperGuiApp {
         let layers = stack![base]
             .push(toast)
             .push(carousel)
+            .push(self.view_view_once().filter(|_| in_main))
             .push(hover)
             .push(menu_drop)
             .push(menu)

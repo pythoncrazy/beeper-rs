@@ -6,6 +6,11 @@ pub(crate) fn human_size(n: u64) -> String {
     format!("{} {}", v.trim_end_matches(".0"), ["B", "KB", "MB", "GB", "TB"][i as usize])
 }
 
+/// Desktop's `Nle`: whole seconds, rounded up, in the narrow English unit, like `5s`.
+pub(crate) fn seconds(ms: u64) -> String {
+    format!("{}s", ms.div_ceil(1000))
+}
+
 /// `Intl.NumberFormat` with `notation: "compact"`, like Desktop's message counts.
 pub(crate) fn compact(n: u64) -> String {
     let Some((d, unit)) = [(1e9, "B"), (1e6, "M"), (1e3, "K")].into_iter().find(|&(d, _)| n as f64 >= d) else {

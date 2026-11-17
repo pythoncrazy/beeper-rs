@@ -19,6 +19,7 @@ use crate::threads;
 use crate::time::{clock, day_label, day_num, day_of, format_short_ts, locale_string, today};
 use crate::timeline;
 use crate::units::human_size;
+use crate::view_once;
 use crate::windows;
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, commands, copy_text, delete_dialog, downloads_dir, ease_out,
@@ -535,8 +536,9 @@ impl BeeperGuiApp {
         let bookmark = tr(if m.is_bookmarked == Some(true) { "Remove Bookmark" } else { "Bookmark" });
         let at = trf(if mine { "Sent at %s" } else { "Received at %s" }, &[&locale_string(&m.timestamp)]);
         let stamp = st.settings.on("copyTimestamps");
-        let files = m.attachments.len();
-        let image = m.attachments.first().is_some_and(|a| a.attachment_type == "img");
+        // Desktop's `Hit`: view-once media has nothing to download or copy.
+        let files = if m.view_once() { 0 } else { m.attachments.len() };
+        let image = files > 0 && m.attachments.first().is_some_and(|a| a.attachment_type == "img");
         let only_image = image && m.text.is_none();
         let download = match m.attachments.first().and_then(|a| a.file_size).filter(|_| files == 1) {
             Some(n) => trf(if image { "Download Image (%s)" } else { "Download Attachment (%s)" }, &[&human_size(n)]),
@@ -1112,8 +1114,9 @@ impl BeeperGuiApp {
         }
         let (hide, members) = (st.settings.on("hideDeleted"), st.settings.on("membershipEvents"));
         let msgs: Vec<&Message> = self.pane_msgs(st);
-        let msgs: Vec<&Message> =
-            msgs.into_iter().filter(|m| !(hide && m.is_deleted == Some(true)) && (members || !membership(m))).collect();
+        // Desktop shows expired view-once media even when it hides deleted messages.
+        let hidden = |m: &Message| hide && m.is_deleted == Some(true) && !m.view_once_expired();
+        let msgs: Vec<&Message> = msgs.into_iter().filter(|m| !hidden(m) && (members || !membership(m))).collect();
         let rows = Rc::new(Rows::of(st, &msgs));
         *memo.borrow_mut() = Some((generation, chat.id.clone(), rows.clone()));
         rows
@@ -1368,7 +1371,7 @@ impl BeeperGuiApp {
         let shows_time = st.settings.on("showTimestamps") && !hide_time;
         let italic = iced::Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) };
         // Desktop keeps the row of a deleted message, with its sender, its menu and its selection.
-        let deleted = (m.is_deleted == Some(true)).then(|| {
+        let deleted = (m.is_deleted == Some(true) && !m.view_once_expired()).then(|| {
             let fg = on_wall.unwrap_or(mix(p.card, p.text, 0.8));
             let icon = svg(TRASH.clone())
                 .width(13.0 * 448.0 / 512.0)
@@ -1456,7 +1459,11 @@ impl BeeperGuiApp {
         if ms.len() > 1 {
             parts = parts.push(self.view_gallery(ms));
         }
-        for (ai, a) in m.attachments.iter().enumerate().filter(|_| ms.len() == 1) {
+        // Desktop's `ViewLimitedMediaAttachment` takes the place of view-once media.
+        if m.view_once() {
+            parts = parts.push(self.view_once_pill(m, (bg, fg)));
+        }
+        for (ai, a) in m.attachments.iter().enumerate().filter(|_| ms.len() == 1 && !m.view_once()) {
             let name = attachment_name(a);
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
                 (_, "audio") if self.playable(a) => {
@@ -1557,6 +1564,8 @@ impl BeeperGuiApp {
         }
         if let Some(pill) = deleted {
             parts = parts.push(pill);
+        } else if m.view_once_expired() {
+            parts = parts.push(self.view_once_indicator(m, view_once::Variant::Outlined, (p.card, p.text)));
         } else if m.message_type.as_deref() == Some("HIDDEN") {
             let bold = |s: String| span::<(), _>(s).font(fw(Weight::Bold));
             let head = container(txt(tr("Hidden event"), 13.0).font(fw(Weight::Bold)))
@@ -2081,14 +2090,22 @@ impl BeeperGuiApp {
         let (edge, fill) = if q_mine { (sent, mix(p.card, sent, 0.3)) } else { (p.received, p.card) };
         let max = 0.45 * self.pane().size.width;
         let boxed = move |c: El<'a>| container(c).padding(8).max_width(max).style(bordered_box(fill, edge, 2.0, 17.0));
-        let visual = q.attachments.iter().any(|a| quote_tile(a) || a.attachment_type == "audio");
+        // Desktop's view-once media, which can be viewed or expired, shows as its pill, and its text as its preview.
+        let view = q.view_once() || q.view_once_expired();
+        let visual = view || q.attachments.iter().any(|a| quote_tile(a) || a.attachment_type == "audio");
         let name = || semi(sender_label(chat, q), 12.0).line_height(Pixels(16.0));
-        let items: Vec<El<'a>> = q.attachments.iter().map(|a| self.linked_attachment(a)).collect();
+        let items: Vec<El<'a>> = match view {
+            true => vec![self.view_once_indicator(q, view_once::Variant::Quote, (fill, p.text))],
+            false => q.attachments.iter().map(|a| self.linked_attachment(a)).collect(),
+        };
         let media = (!items.is_empty() || deleted).then(|| {
-            let gone = deleted.then(|| med(tr("Message Deleted"), 13.0).color(p.text));
+            let gone = (deleted && !view).then(|| med(tr("Message Deleted"), 13.0).color(p.text));
             boxed(Row::with_children(items).push(gone).spacing(4).align_y(Center).into())
         });
-        let text = q.text.as_deref().filter(|_| !deleted).map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+        let text = q.text.as_deref().filter(|_| !deleted).map(|t| match view_once::preview(q) {
+            Some(v) => v.to_string(),
+            None => t.split_whitespace().collect::<Vec<_>>().join(" "),
+        });
         let text = text.filter(|t| !t.is_empty()).map(|t| match t.chars().count() > 128 {
             true => format!("{}...", t.chars().take(125).collect::<String>()),
             false => t,

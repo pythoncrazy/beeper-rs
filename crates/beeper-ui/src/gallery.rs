@@ -50,6 +50,7 @@ fn member(st: &BeeperStore, m: &Message, replies: usize) -> bool {
         && m.text.as_deref().is_none_or(|t| t.trim().is_empty())
         && m.linked_message_id.is_none()
         && m.unresolved_media.is_none()
+        && m.view_limit.is_none()
         && m.links.is_empty()
         && m.poll.is_none()
         && replies == 0
