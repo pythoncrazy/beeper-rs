@@ -85,7 +85,12 @@ pub(crate) fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
     use ::image::AnimationDecoder;
     // A decode here, on a worker thread, keeps the full size decode out of the first frame that draws the image.
     let still = |bytes: &[u8]| -> Result<Frames, String> {
-        let px = ::image::load_from_memory(bytes).map_err(|e| format!("Could not decode the image: {e}"))?;
+        let px = beeper_core::media::decode_upright(bytes).or_else(|e| {
+            // Formats the image crate lacks and Chromium shows, like AVIF, through ffmpeg.
+            let png = run_ffmpeg(bytes, &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"])
+                .map_err(|_| e)?;
+            beeper_core::media::decode_upright(&png)
+        })?;
         let px = px.into_rgba8();
         Ok(vec![(image::Handle::from_rgba(px.width(), px.height(), px.into_raw()), 0)])
     };

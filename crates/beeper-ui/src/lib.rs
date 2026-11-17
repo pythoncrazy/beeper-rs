@@ -862,7 +862,7 @@ fn avatar<'a>(name: &str, size: f32, ls: f32, p: &Palette) -> El<'a> {
 
 fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
     const S: u32 = 96;
-    let img = ::image::load_from_memory(bytes).map_err(|e| format!("Could not decode the image: {e}"))?;
+    let img = beeper_core::media::decode_upright(bytes)?;
     let mut px = img.resize_to_fill(S, S, ::image::imageops::FilterType::Triangle).into_rgba8();
     let r = S as f32 / 2.0;
     for (x, y, p) in px.enumerate_pixels_mut() {
