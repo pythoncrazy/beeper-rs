@@ -2268,7 +2268,10 @@ static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::n
     ]
 });
 
-fn theme_cards<'a>(p: &Palette, current: ThemeChoice) -> El<'a> {
+/// Desktop's `.theme-button`s. The current one is `disabled`, and the others take the focus without showing it
+/// (`button { outline: 0 }`).
+fn theme_cards<'a>(app: &BeeperGuiApp, current: ThemeChoice) -> El<'a> {
+    let p = &app.pal;
     let cards = ThemeChoice::ALL.iter().zip(THEME_ART.iter()).map(|(&t, art)| {
         let on = t == current;
         let edge = if on { p.accent } else { CLEAR };
@@ -2276,11 +2279,21 @@ fn theme_cards<'a>(p: &Palette, current: ThemeChoice) -> El<'a> {
             container(svg(art.clone()).width(96).height(61)).padding(2).style(bordered_box(CLEAR, edge, 2.0, 8.0));
         let fg = if on { Color::WHITE } else { p.strong };
         let label = container(txt(t.label(), 13.0).color(fg)).padding([3, 10]).style(fill_box(edge, 12.0));
-        button(column![img, label].spacing(6).align_x(Center))
+        let pick = UiMessage::Settings(settings::Msg::SelectTheme(t));
+        let card = button(column![img, label].spacing(6).align_x(Center))
             .padding(Padding { top: 7.0, right: 13.0, bottom: 9.0, left: 13.0 })
             .style(btn_style([CLEAR, p.hover, CLEAR], [p.strong; 3], 8.0))
-            .on_press_maybe((!on).then_some(UiMessage::Settings(settings::Msg::SelectTheme(t))))
-            .into()
+            .on_press_maybe((!on).then_some(pick.clone()));
+        match on {
+            true => card.into(),
+            false => app.target(
+                app.settings_window,
+                format!("theme-{t:?}"),
+                card,
+                focus::Keys::press(pick),
+                focus::Look::Hidden,
+            ),
+        }
     });
     container(Row::with_children(cards).spacing(4)).center_x(Fill).padding([14, 0]).into()
 }
@@ -2707,8 +2720,6 @@ pub struct BeeperGuiApp {
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
     pub settings_query: String,
-    /// The control of the Settings window with the keyboard focus, which Tab gives it.
-    pub settings_keys: focus::Focus<settings::Stop>,
     /// A settings slider being dragged, and its value, which Desktop saves when the drag ends.
     pub settings_slider: Option<(&'static str, u8)>,
     /// The focused row of the settings search results, and the last opened one.
@@ -2787,6 +2798,8 @@ pub struct BeeperGuiApp {
     pub pin_hover: Option<String>,
     pub pin_drag: Option<PinDrag>,
     pub main_window: Option<window::Id>,
+    /// The control of each window with the keyboard focus, which Tab gives it (see [`focus`]).
+    pub key_targets: HashMap<window::Id, iced::widget::Id>,
     /// The chat window whose message `update` handles, with the pane of the window in `pane`.
     swapped: Option<window::Id>,
     pub settings_window: Option<window::Id>,
@@ -3006,7 +3019,6 @@ impl BeeperGuiApp {
             show_command_palette: false,
             active_settings_tab: SettingsTab::General,
             settings_query: String::new(),
-            settings_keys: Default::default(),
             settings_slider: None,
             settings_focus: 0,
             settings_pick: None,
@@ -3054,6 +3066,7 @@ impl BeeperGuiApp {
             rail_drag: None,
             rail_press: None,
             main_window: None,
+            key_targets: HashMap::new(),
             swapped: None,
             settings_window: None,
             settings_size: SETTINGS_SIZE,
@@ -4211,11 +4224,11 @@ impl BeeperGuiApp {
             }
             UiMessage::WindowText(id, text) if Some(id) == self.login_window => return self.login_text(&text),
             // Chromium's Space on a focused button or `role="button"` row presses it.
-            UiMessage::WindowText(id, text) if text == " " && Some(id) == self.settings_window => {
-                return self.settings_press();
-            }
-            UiMessage::WindowText(id, text) if text == " " && self.nickname_windows.iter().any(|d| d.id == id) => {
-                return self.nickname_press(id);
+            // Chromium's Space on a focused button or `role="button"` row presses it.
+            UiMessage::WindowText(id, text)
+                if text == " " && (self.key_targets.contains_key(&id) || self.asking(id)) =>
+            {
+                return self.focus_space(id, true).unwrap_or_else(Task::none);
             }
             UiMessage::WindowText(..) => {}
             // Desktop's menu roles "close" and "minimize", whose accelerators work while the menu bar hides.
@@ -4241,8 +4254,16 @@ impl BeeperGuiApp {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
                 }
-                if self.nickname_windows.iter().any(|d| d.id == id) {
-                    return self.nickname_key(id, key, mods);
+                // Chromium's Tab, Enter and arrows in Desktop's sheets; a confirmation over Label Settings has the
+                // focus on its default button.
+                let sheet = self.nickname_windows.iter().any(|d| d.id == id)
+                    || self.label_settings.iter().any(|w| w.id == id)
+                    || self.label_window.as_ref().is_some_and(|d| d.id == id)
+                    || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
+                    || Some(id) == self.blocked_window
+                    || self.poll_windows.iter().any(|w| w.id == id);
+                if let Some(task) = sheet.then(|| self.focus_key(id, &key, mods, true)).flatten() {
+                    return task;
                 }
                 if self.label_asking(id) && key == Key::Named(Named::Escape) {
                     self.confirm = None;
@@ -4261,6 +4282,7 @@ impl BeeperGuiApp {
                     || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
                     || self.group_window.as_ref().is_some_and(|d| d.id == id)
                     || Some(id) == self.blocked_window
+                    || self.nickname_windows.iter().any(|d| d.id == id)
                     || self.add_accounts.iter().any(|a| a.id == id)
                 {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
@@ -4653,13 +4675,29 @@ impl BeeperGuiApp {
                         _ => {}
                     }
                 }
+                // Chromium's focus in a confirmation dialog, and in a window without an open chat, where Desktop's
+                // `KeyboardHandlers` leave Tab to it.
+                let window = self.swapped.or(self.main_window);
+                let modal = self.show_command_palette
+                    || self.forward.is_some()
+                    || self.creating_chat.is_some()
+                    || self.carousel.is_some();
+                let free = self.pane.selected_chat_id.is_none() && !modal;
+                // New Chat's own Enter starts the group from its encryption prompt.
+                let asking = window.is_some_and(|w| self.asking(w));
+                let defaults = asking && self.creating_chat.is_none();
+                if let Some(task) =
+                    window.filter(|_| asking || free).and_then(|w| self.focus_key(w, &key, mods, defaults))
+                {
+                    return task;
+                }
                 // Desktop's `KeyboardHandlers` and Chromium: Tab and Shift+Tab move through the composer row, and
                 // Enter presses its focused button.
-                if self.composer_takes_keys() && (mods - Modifiers::SHIFT).is_empty() {
+                let composer = window.filter(|_| self.composer_takes_keys() && (mods - Modifiers::SHIFT).is_empty());
+                if let Some(window) = composer {
                     match key.as_ref() {
                         Key::Named(Named::Tab) => {
                             let back = mods.shift();
-                            let window = self.swapped.or(self.main_window).expect("the window of the pane");
                             return focus::caret(window, self.composer_id())
                                 .map(move |at| UiMessage::Composer(composer::Msg::Tab(back, at)));
                         }

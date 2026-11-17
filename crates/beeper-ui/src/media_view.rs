@@ -1196,6 +1196,7 @@ impl BeeperGuiApp {
             };
             let title = trn("Delete message", "Delete messages", n, &[]);
             self.dialog(
+                None,
                 title,
                 body,
                 vec![(tr("Delete"), UiMessage::Media(Msg::Delete(true)))],

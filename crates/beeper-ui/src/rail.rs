@@ -1,6 +1,7 @@
 //! Desktop's space bar (rail): its spaces, their order and drags, the floating rail, and the width of the sidebar.
 
 use super::*;
+use crate::focus::{Keys, Look};
 use iced::widget::column;
 
 #[derive(Clone)]
@@ -375,11 +376,14 @@ impl BeeperGuiApp {
     pub(crate) fn view_rail(&self) -> El<'_> {
         let p = &self.pal;
         let drag = self.rail_drag.as_ref().filter(|d| d.order.is_some());
-        let rail_btn = |glyph: El<'static>, on: bool, msg: UiMessage| {
-            button(container(glyph).center(36))
+        // Desktop's buttons of the space bar take the focus without showing it (`button { outline: 0 }`).
+        let window = self.main_window;
+        let rail_btn = |key: String, glyph: El<'static>, on: bool, msg: UiMessage| -> El<'static> {
+            let b = button(container(glyph).center(36))
                 .padding(0)
                 .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.strong; 3], 14.0))
-                .on_press_maybe(drag.is_none().then_some(msg))
+                .on_press_maybe(drag.is_none().then(|| msg.clone()));
+            self.target(window, key, b, Keys::press(msg), Look::Hidden)
         };
         let quiet = self.list().chat_menu.is_some() || drag.is_some();
         let tip = |btn, label, keys| self.tip(btn, label, keys, tooltip::Position::Right);
@@ -412,8 +416,11 @@ impl BeeperGuiApp {
         let tab =
             |id: &'static str, key: usize, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
                 let on = self.list().active_tab == t && self.list().selected_account_filter.is_none();
-                let btn =
-                    badge(rail_btn(glyph, on, UiMessage::ChatList(chat_list::Msg::SelectTab(t))).into(), n, number);
+                let btn = badge(
+                    rail_btn(format!("{id}-button"), glyph, on, UiMessage::ChatList(chat_list::Msg::SelectTab(t))),
+                    n,
+                    number,
+                );
                 let view = RAIL_VIEWS.iter().find(|v| v.1 == Some(t)).expect("a sidebar view").0;
                 let btn: El = mouse_area(btn)
                     .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{view}"))))
@@ -452,7 +459,8 @@ impl BeeperGuiApp {
                 Some(s) => format!("{label} ({s})"),
                 None => label,
             };
-            let btn = rail_btn(logo, on, UiMessage::Rail(rail::Msg::Select((!on).then_some(acc.clone())))).into();
+            let select = UiMessage::Rail(rail::Msg::Select((!on).then_some(acc.clone())));
+            let btn = rail_btn(format!("rail-{acc}-button"), logo, on, select);
             let btn = match error {
                 Some(_) => {
                     let corner = container(svg(ERROR_CIRCLE.clone()).width(14).height(14));
@@ -481,7 +489,8 @@ impl BeeperGuiApp {
                 (Label { name: d.name.clone(), color: d.color, icon: d.icon.clone(), ..Label::default() }, p.strong);
             let ring = svg(DRAFT_RING.clone()).width(30).height(30).style(move |_, _| svg::Style { color: Some(fg) });
             let logo = container(stack![ring, container(label_icon(&l, 28.0, fg)).center(30)]).into();
-            let btn: El = mouse_area(rail_btn(logo, false, UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()))))
+            let open = UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()));
+            let btn: El = mouse_area(rail_btn("rail-draft-button".into(), logo, false, open))
                 .on_right_press(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())))
                 .into();
             if quiet {
@@ -532,6 +541,9 @@ impl BeeperGuiApp {
                 }
                 _ => el,
             };
+            // Desktop's spaces are `dnd-kit` sortables around their buttons: Tab shows Chromium's ring on the space,
+            // then reaches its button. The keys of the space reorder the spaces in Desktop, which beeper-rs does not do.
+            let el = self.target(window, format!("space-{id}"), el, Keys::default(), Look::Auto);
             let hover = id.clone();
             mouse_area(el)
                 .on_move(move |at| UiMessage::Rail(rail::Msg::Hover(hover.clone(), at)))
@@ -545,8 +557,12 @@ impl BeeperGuiApp {
         });
         let top = Column::with_children(top)
             .push(badge(
-                rail_btn(g(icon::MORE_HORIZ), false, UiMessage::ChatList(chat_list::Msg::OpenMenu(RAIL_MORE.into())))
-                    .into(),
+                rail_btn(
+                    "rail-more".into(),
+                    g(icon::MORE_HORIZ),
+                    false,
+                    UiMessage::ChatList(chat_list::Msg::OpenMenu(RAIL_MORE.into())),
+                ),
                 if hidden_spaces(&st).iter().any(|s| s == "requests") { requests } else { 0 },
                 false,
             ))
@@ -556,19 +572,26 @@ impl BeeperGuiApp {
             .padding(Padding::ZERO.top(14.0));
         let me = st.me();
         let media = UiMessage::Media(media_view::Msg::Open);
+        let settings = UiMessage::Settings(settings::Msg::Open(SettingsTab::General));
         let me_btn = button(self.face(me.img_url.as_deref(), me.full_name.as_deref().expect("self name"), 36.0, 0.0))
             .padding(0)
             .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
-            .on_press(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
+            .on_press(settings.clone());
+        let me_btn = self.target(window, "rail-settings", me_btn, Keys::press(settings), Look::Hidden);
         let footer = column![
-            tip(rail_btn(g(icon::PHOTO_LIBRARY), false, media).into(), tr("Media"), vec![]),
+            tip(rail_btn("rail-media".into(), g(icon::PHOTO_LIBRARY), false, media), tr("Media"), vec![]),
             // Desktop's "Add an account" opens the Add an Account window (`showAddAccountModal`).
             tip(
-                rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::Networks(crate::networks::Msg::Open)).into(),
+                rail_btn(
+                    "rail-add".into(),
+                    g(icon::LIBRARY_ADD),
+                    false,
+                    UiMessage::Networks(crate::networks::Msg::Open)
+                ),
                 tr("Add an account"),
                 vec![]
             ),
-            tip(me_btn.into(), tr("Settings"), vec!["Ctrl", ","]),
+            tip(me_btn, tr("Settings"), vec!["Ctrl", ","]),
         ]
         .spacing(8)
         .align_x(Center)
@@ -844,13 +867,21 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let edit = UiMessage::Spaces;
         let search = text_input(tr("Search Spaces"), &d.search)
+            .id("spaces-search")
             .on_input(move |q| edit(SpacesEdit::Search(q)))
             .size(13)
             .line_height(Pixels(16.0))
             .padding([14, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-        let clear = (!d.search.trim().is_empty())
-            .then(|| icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, edit(SpacesEdit::Search(String::new()))));
+        // Desktop's controls of the sheet: plain `<button>`s whose focus does not show, and the `dnd-kit` handles,
+        // which show Chromium's ring. The keys of a handle reorder the spaces in Desktop, which beeper-rs does not do.
+        let window = Some(d.id);
+        let plain =
+            |key: String, b: El<'a>, msg: UiMessage| self.target(window, key, b, Keys::press(msg), Look::Hidden);
+        let clear = (!d.search.trim().is_empty()).then(|| {
+            let empty = edit(SpacesEdit::Search(String::new()));
+            plain("clear".into(), icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, empty.clone()), empty)
+        });
         let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search]
             .push(clear)
             .spacing(10)
@@ -886,13 +917,16 @@ impl BeeperGuiApp {
                     let handle = mouse_area(container(tinted(&DRAG_HANDLE, 20.0, p.sub)).center(28))
                         .interaction(iced::mouse::Interaction::Grab)
                         .on_press(edit(SpacesEdit::Drag(id.clone())));
+                    let handle = self.target(window, format!("handle-{id}"), handle, Keys::default(), Look::Auto);
                     let lift = dragged == Some(id.as_str());
                     let body =
                         row![container(self.space_icon(&st, id)).center(20), column![name].push(sub).width(Fill),]
                             .push(gear.then(|| {
-                                mouse_area(container(ic(icon::MORE_HORIZ, 16.0).color(p.sub)).center_x(16))
+                                let menu = edit(SpacesEdit::Menu(Some(id.clone())));
+                                let gear = mouse_area(container(ic(icon::MORE_HORIZ, 16.0).color(p.sub)).center_x(16))
                                     .interaction(mouse::Interaction::Pointer)
-                                    .on_press(edit(SpacesEdit::Menu(Some(id.clone()))))
+                                    .on_press(menu.clone());
+                                plain(format!("gear-{id}"), gear.into(), menu)
                             }))
                             .push(handle)
                             .spacing(10)
@@ -964,6 +998,9 @@ impl BeeperGuiApp {
                 .padding([4, 8])
                 .style(btn_style([CLEAR; 3], [p.accent; 3], 8.0))
                 .on_press(edit(SpacesEdit::NewLabel));
+            // Desktop's `Button` with `rounded`.
+            let keys = Keys::press(edit(SpacesEdit::NewLabel));
+            let link = self.target(window, "new-label", link, keys, Look::button(p, 9999.0));
             container(link).center_x(Fill).padding(Padding { top: 8.0, right: 0.0, bottom: 4.0, left: 0.0 })
         });
         let head = container(semi(tr("Edit Spaces"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
