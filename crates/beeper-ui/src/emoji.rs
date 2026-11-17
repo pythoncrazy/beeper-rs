@@ -764,3 +764,66 @@ mod tests {
         assert!(search("zzzz").is_empty());
     }
 }
+
+/// The parts of `s`, with `true` for an emoji presentation sequence: a character with U+FE0F, and what joins it (ZWJ,
+/// skin tones, a keycap, tags). Chromium draws those with the emoji font even where the text font has the character,
+/// as Inter has ❤ and ☺, while cosmic-text takes the first font that has it.
+pub(crate) fn emoji_runs(s: &str) -> Vec<(&str, bool)> {
+    let joins = |c: char| matches!(c, '\u{fe0f}' | '\u{20e3}' | '\u{1f3fb}'..='\u{1f3ff}' | '\u{e0020}'..='\u{e007f}');
+    let (mut out, mut start) = (Vec::new(), 0);
+    let mut chars = s.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if chars.peek().map(|p| p.1) != Some('\u{fe0f}') {
+            continue;
+        }
+        let mut end = i + c.len_utf8();
+        while let Some(&(j, n)) = chars.peek() {
+            match n {
+                '\u{200d}' => {
+                    chars.next();
+                    end = chars.next().map_or(j + n.len_utf8(), |(k, m)| k + m.len_utf8());
+                }
+                n if joins(n) => end = chars.next().map(|(k, m)| k + m.len_utf8()).expect("a peeked char"),
+                _ => break,
+            }
+        }
+        out.extend((start < i).then(|| (&s[start..i], false)));
+        out.push((&s[i..end], true));
+        start = end;
+    }
+    out.extend((start < s.len()).then(|| (&s[start..], false)));
+    out
+}
+
+/// Splits the spans at their emoji presentation sequences, which take the emoji font (see [`emoji_runs`]).
+pub(crate) fn with_emoji_font<'a, L: Clone>(
+    spans: Vec<iced::widget::text::Span<'a, L>>,
+) -> Vec<iced::widget::text::Span<'a, L>> {
+    spans
+        .into_iter()
+        .flat_map(|s| match s.text.contains('\u{fe0f}') {
+            false => vec![s],
+            true => emoji_runs(&s.text)
+                .into_iter()
+                .map(|(run, emoji)| {
+                    let font = if emoji { Some(EMOJI_FONT) } else { s.font };
+                    iced::widget::text::Span { text: run.to_string().into(), font, ..s.clone() }
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod emoji_run_tests {
+    use super::emoji_runs;
+
+    #[test]
+    fn emoji_presentation_sequences_like_chromium() {
+        assert_eq!(emoji_runs("I ❤️ you"), [("I ", false), ("❤️", true), (" you", false)]);
+        assert_eq!(emoji_runs("❤"), [("❤", false)], "a text heart stays in the text font");
+        assert_eq!(emoji_runs("❤️‍🔥!"), [("❤️‍🔥", true), ("!", false)], "a ZWJ sequence");
+        assert_eq!(emoji_runs("1️⃣"), [("1️⃣", true)], "a keycap");
+        assert_eq!(emoji_runs("no emoji"), [("no emoji", false)]);
+    }
+}

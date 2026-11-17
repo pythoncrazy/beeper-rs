@@ -4,6 +4,7 @@
 use crate::blocking;
 use crate::chat_list;
 use crate::composer;
+use crate::emoji::{with_emoji_font, EMOJI_FONT};
 use crate::forward;
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
 use crate::loads;
@@ -44,6 +45,10 @@ use iced::{
 };
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+
+/// The HTML elements that keep Desktop from balancing the lines of a message (`MessageText`).
+const BLOCK_TAGS: [&str; 15] =
+    ["pre", "blockquote", "table", "ol", "ul", "details", "hr", "p>", "p ", "h1", "h2", "h3", "h4", "h5", "h6"];
 
 static REPLY_CURVE: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
     ["", r#" transform="matrix(-1 0 0 1 26 0)""#].map(|flip| {
@@ -1415,7 +1420,7 @@ impl BeeperGuiApp {
             let pill = container(line.spacing(8).align_y(Center)).padding([9, 13]);
             parts = parts.push(pill.style(bordered_box(CLEAR, p.chip, 2.0, 17.0)));
         } else if jumbo(&text) {
-            parts = parts.push(container(txt(text.clone(), 48.0)).padding([0, 12]));
+            parts = parts.push(container(txt(text.clone(), 48.0).font(EMOJI_FONT)).padding([0, 12]));
         } else if utd {
             let line = txt(text.clone(), 13.0).font(italic).color(fg.scale_alpha(0.8));
             let time = shows_time.then(|| {
@@ -1524,10 +1529,12 @@ impl BeeperGuiApp {
                     .into_iter()
                     .map(|b| {
                         let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
-                        (b.marker, b.runs.into_iter().flat_map(rich).collect(), plain)
+                        (b.marker, with_emoji_font(b.runs.into_iter().flat_map(rich).collect()), plain)
                     })
                     .collect(),
-                None => vec![(None, text.split_inclusive(' ').flat_map(plain).collect(), text.clone())],
+                None => {
+                    vec![(None, with_emoji_font(text.split_inclusive(' ').flat_map(plain).collect()), text.clone())]
+                }
             };
             let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
             // Desktop's `.message-text` clamps a message at 40 lines, and "Show more" opens it. The whole blocks that
@@ -1548,7 +1555,18 @@ impl BeeperGuiApp {
             let (mut prev_item, last) = (None, blocks.len().saturating_sub(1));
             let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
             let pad = "\u{a0}".repeat((room / nbsp).ceil() as usize);
-            let full = !st.settings.on("balanceText") && crate::style::wraps(&format!("{text}{pad}"), max, 13.0);
+            // Desktop's `message-text--balanced`: CSS `text-wrap: balance`, then the bubble shrinks to its widest line.
+            // A message with block HTML wraps as usual. A wrapped message without balance takes the whole width.
+            let padded = format!("{text}{pad}");
+            let blocks_html =
+                m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
+            let width = match crate::style::wraps(&padded, max, 13.0) {
+                false => Length::Shrink,
+                true if st.settings.on("balanceText") && !blocks_html => {
+                    Length::Fixed(crate::style::balanced_width(&padded, max, 13.0))
+                }
+                true => Length::Fixed(max),
+            };
             let body = Column::with_children(blocks.into_iter().enumerate().map(|(i, (marker, mut spans, _))| {
                 // iced does not draw an empty last line.
                 if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
@@ -1573,7 +1591,7 @@ impl BeeperGuiApp {
                 });
                 container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into()
             }))
-            .width(if full { Length::Fixed(max) } else { Length::Shrink });
+            .width(width);
             let cut = cut.map(|(t, left)| {
                 txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             });
@@ -1746,7 +1764,7 @@ impl BeeperGuiApp {
                 (self.quick_open && st.settings.on("quickReactions")).then(|| crate::emoji::quick_reactions(st));
             let quick = quick.into_iter().flatten().map(|e| -> El<'a> {
                 let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
-                let glyph = txt(e, 18.0);
+                let glyph = txt(e, 18.0).font(EMOJI_FONT);
                 button(container(glyph).center(32))
                     .padding(0)
                     .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
@@ -1964,7 +1982,7 @@ impl BeeperGuiApp {
             let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
             let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
             let line = row![
-                container(txt(x.reaction_key.clone(), 17.0)).padding(Padding::ZERO.right(10.0)),
+                container(txt(x.reaction_key.clone(), 17.0).font(EMOJI_FONT)).padding(Padding::ZERO.right(10.0)),
                 container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0, 0.5))
                     .padding(Padding::ZERO.right(8.0)),
                 med(name.to_string(), 13.0).color(p.text),
@@ -1989,7 +2007,8 @@ impl BeeperGuiApp {
             let reactors: Vec<_> = ms.iter().flat_map(|m| &m.reactions).filter(|x| x.reaction_key == k).collect();
             let n = reactors.len();
             let own = reactors.iter().any(|x| st.is_me(&x.participant_id));
-            let mut pill = row![txt(k.to_string(), 16.0).line_height(Pixels(15.0))].spacing(4).align_y(Center);
+            let mut pill =
+                row![txt(k.to_string(), 16.0).line_height(Pixels(15.0)).font(EMOJI_FONT)].spacing(4).align_y(Center);
             if look.group || n > 1 {
                 for x in reactors.iter().take(3) {
                     let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);

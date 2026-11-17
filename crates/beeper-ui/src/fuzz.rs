@@ -5175,7 +5175,11 @@ fn blocking_like_desktop() {
         matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, false))] if *c == id),
         "the composer link unblocks"
     );
-    let picked = clicks(app.view_info(), &["Unblock"]);
+    let picked = {
+        let mut sim = tall(app.view_info());
+        let _ = sim.click("Unblock").expect("Unblock");
+        sim.into_messages().collect::<Vec<_>>()
+    };
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, false))] if *c == id));
     let _ = app.update(UiMessage::Blocking(blocking::Msg::Ask(id.clone(), false)));
     for m in clicks(app.view_confirm(ASK_UNBLOCK), &["Unblock"]) {
@@ -7195,4 +7199,19 @@ fn calls_like_desktop() {
     let mut sim = simulator(app.view_main());
     assert!(sim.find("Voice call").is_ok(), "the call pill");
     assert!(sim.find("Missed voice call").is_err(), "without the text of the bridge");
+}
+
+/// Desktop's `BrandChatInfoNotificationSound`: Chat Info has the Notification sound select, which sets the chat sound.
+#[test]
+fn chat_info_sets_the_notification_sound_like_desktop() {
+    let mut app = demo_app("chat-sound");
+    let chat = "!wa_eric:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(chat.into()));
+    {
+        let mut sim = tall(app.view_info());
+        assert!(sim.find("Notification sound").is_ok());
+        assert!(sim.find("Silent chats still show notifications, just without a sound.").is_ok());
+    }
+    let _ = app.update(UiMessage::Info(crate::info::Msg::SetSound(chat.into(), Some("silent".into()))));
+    assert_eq!(app.store.read().chat(chat).notification_sound.as_deref(), Some("silent"));
 }
