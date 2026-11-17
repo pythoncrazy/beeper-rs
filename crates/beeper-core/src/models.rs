@@ -1314,6 +1314,9 @@ pub struct Message {
     /// Desktop's `extra.callAction`: a call that the bridge reported, which shows as a call pill instead of its text.
     #[serde(rename = "callAction", default, skip_serializing_if = "Option::is_none")]
     pub call: Option<CallAction>,
+    /// Desktop's `disappearingTimer` of the message.
+    #[serde(rename = "disappearingTimer", default, skip_serializing_if = "Option::is_none")]
+    pub disappearing: Option<MessageTimer>,
     /// Desktop's `extra.viewLimitedMedia`: the `com.beeper.view_limited` limit of view-once media, which shows as a
     /// pill that opens the media instead of the media.
     #[serde(rename = "viewLimitedMedia", default, skip_serializing_if = "Option::is_none")]
@@ -1329,6 +1332,66 @@ pub struct Message {
     pub view_kind: Option<String>,
     #[serde(skip)]
     pub flags: u16,
+}
+
+/// The `com.beeper.disappearing_timer` of a message, of a later edit or of the bridge's send status.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MessageTimer {
+    /// `after_send`, `after_read` or `after_read_by_recipient`. Desktop counts a missing type as `after_send`.
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The timer in ms, or 0 for none.
+    #[serde(default)]
+    pub timer: u64,
+    /// Desktop's `extra.disappearingTimerOrder`: the homeserver order of the event that set the timer.
+    #[serde(default)]
+    pub order: i64,
+    /// The read that starts an `after_read` timer, in ms: yours of a received message (Desktop's `seenByMeAt`), or
+    /// the recipient's of your `after_read_by_recipient` message (Desktop's `recipientReadTimerStartedAt`).
+    #[serde(rename = "readAt", default, skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<i64>,
+}
+
+impl MessageTimer {
+    /// Desktop's `Et` check of a `com.beeper.disappearing_timer`: only an object sets the timer.
+    pub fn of(v: &serde_json::Value, order: i64) -> Option<Self> {
+        v.is_object().then(|| Self {
+            kind: v["type"].as_str().map(String::from),
+            timer: v["timer"].as_u64().unwrap_or(0),
+            order,
+            read_at: None,
+        })
+    }
+
+    /// Desktop's `upsertMessage` of a timer: the stored one stays when its order is higher or the new event has
+    /// none, as for a redaction, and the read that started it stays.
+    pub fn merge(old: Option<Self>, new: Option<Self>) -> Option<Self> {
+        match (old, new) {
+            (Some(o), Some(n)) if o.order > n.order => Some(o),
+            (Some(o), Some(n)) => Some(Self { read_at: n.read_at.or(o.read_at), ..n }),
+            (o, n) => n.or(o),
+        }
+    }
+
+    /// Whether a read starts the timer that has not started: yours of a received message, or the recipient's of
+    /// your own (`sender`) one.
+    pub fn waits_for_read(&self, sender: bool) -> bool {
+        self.read_at.is_none()
+            && match self.kind.as_deref() {
+                Some("after_read") => !sender,
+                Some("after_read_by_recipient") => true,
+                _ => false,
+            }
+    }
+}
+
+/// Desktop's `bm` of a message with a disappearing timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Countdown {
+    /// The timer starts at a read that has not happened yet.
+    Unread,
+    /// The ms left, or 0 when the message disappeared.
+    Left(u64),
 }
 
 /// The `com.beeper.action_message` of a call, as Desktop's `callAction` keeps it.
@@ -1473,6 +1536,24 @@ impl Message {
     /// Desktop's `isThreadOnly` with `threads` on: a thread reply that only its thread shows.
     pub fn thread_only(&self, threads: bool) -> bool {
         threads && self.thread_root.is_some() && !self.broadcast
+    }
+
+    /// Desktop's `bm` at `now` in ms: the timer starts when the message is sent, or at the read of `$it`; `None`
+    /// without a timer.
+    pub fn expiry(&self, now: i64) -> Option<Countdown> {
+        let t = self.disappearing.as_ref().filter(|t| t.timer > 0)?;
+        let start = match t.kind.as_deref() {
+            None | Some("after_send") => crate::config::millis_from_rfc3339(&self.timestamp),
+            Some("after_read" | "after_read_by_recipient") => t.read_at,
+            Some(_) => return None,
+        };
+        let left = |start: i64| i64::try_from(t.timer).unwrap_or(i64::MAX).saturating_sub(now.saturating_sub(start));
+        Some(start.map_or(Countdown::Unread, |s| Countdown::Left(left(s).max(0).unsigned_abs())))
+    }
+
+    /// Desktop's `bm(e) === 0`: the timer of the message ran out.
+    pub fn disappeared(&self, now: i64) -> bool {
+        self.expiry(now) == Some(Countdown::Left(0))
     }
 
     pub fn sync_flags(&mut self) {

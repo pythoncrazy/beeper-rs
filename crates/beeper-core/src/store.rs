@@ -2021,6 +2021,7 @@ impl BeeperStore {
         self.update_message(idx, |m| {
             let mut seen = std::mem::take(&mut m.seen);
             seen.extend(msg.seen);
+            let disappearing = crate::models::MessageTimer::merge(m.disappearing.take(), msg.disappearing.take());
             // Desktop keeps the views left apart from the message, and an expired message keeps the kind of its media.
             let views_left = msg.view_limit.as_ref().and(m.views_left);
             let view_kind = msg.view_kind.clone().or_else(|| m.view_once_kind().map(str::to_string));
@@ -2030,6 +2031,7 @@ impl BeeperStore {
                 is_bookmarked: m.is_bookmarked,
                 is_unread: m.is_unread,
                 seen,
+                disappearing,
                 views_left,
                 view_kind: view_kind.filter(|_| msg.view_expired),
                 ..msg
@@ -2451,6 +2453,7 @@ impl BeeperStore {
             mentions: None,
             send_status: None,
             call: None,
+            disappearing: None,
             view_limit: None,
             views_left: None,
             view_expired: false,

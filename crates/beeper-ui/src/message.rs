@@ -22,13 +22,13 @@ use crate::units::human_size;
 use crate::view_once;
 use crate::windows;
 use crate::{
-    anim, badged, brightness, can_thread, chat_theme, commands, copy_text, delete_dialog, downloads_dir, ease_out,
-    edit_open, editable, enter_key, feedback_btn, file_icon, fmt_phone, gallery, handle, has_older, lift, locate,
-    member_name, membership, menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link, reply_root,
-    safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable, unused_path,
-    video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X,
-    CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE,
-    OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TRASH,
+    anim, badged, brightness, can_thread, chat_theme, commands, copy_text, delete_dialog, distance, downloads_dir,
+    ease_out, edit_open, editable, enter_key, feedback_btn, file_icon, fmt_phone, gallery, handle, has_older, lift,
+    locate, member_name, membership, menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link,
+    reply_root, safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable,
+    unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON,
+    BUBBLE_PAD_X, CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W,
+    ORANGE, OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TIMER, TRASH,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::*;
@@ -294,6 +294,23 @@ pub(crate) fn time_hidden(m: &Message, next: Option<&Message>, h24: bool) -> boo
     })
 }
 
+/// Desktop's `DO`: when the message disappears, or `None` without a timer.
+pub(crate) fn disappears(chat: &Chat, m: &Message) -> Option<String> {
+    let t = m.disappearing.as_ref()?;
+    Some(match m.expiry(now_unix_millis())? {
+        Countdown::Left(left) => trf("Disappears in %s", &[&distance(i64::try_from(left).unwrap_or(i64::MAX))]),
+        Countdown::Unread => {
+            let recipient = t.kind.as_deref() == Some("after_read_by_recipient") && m.is_sender == Some(true);
+            let label = match (recipient, chat.chat_type == "group") {
+                (true, true) => "Disappears %s after someone in the group reads it",
+                (true, false) => "Disappears %s after the recipient reads it",
+                (false, _) => "Disappears %s after you mark it read",
+            };
+            trf(label, &[&timer_distance(t.timer)])
+        }
+    })
+}
+
 /// Desktop's `gx`: an attachment that is a contact card.
 fn is_vcard(a: &Attachment) -> bool {
     let name = a.file_name.as_deref().unwrap_or_default().to_lowercase();
@@ -546,6 +563,7 @@ impl BeeperGuiApp {
         };
         let bookmark = tr(if m.is_bookmarked == Some(true) { "Remove Bookmark" } else { "Bookmark" });
         let at = trf(if mine { "Sent at %s" } else { "Received at %s" }, &[&locale_string(&m.timestamp)]);
+        let timer = disappears(st.chat(&m.chat_id), m);
         let stamp = st.settings.on("copyTimestamps");
         // Desktop's `Hit`: view-once media has nothing to download or copy.
         let files = if m.view_once() { 0 } else { m.attachments.len() };
@@ -728,8 +746,9 @@ impl BeeperGuiApp {
             }),
             (files > 0)
                 .then(|| vec![item(download, "Ctrl D", Some(UiMessage::Message(Msg::Download(mid.clone(), None))))]),
+            Some(vec![item(at, "", None)]),
+            timer.map(|t| vec![item(t, "", None)]),
             Some(vec![
-                item(at, "", None),
                 rule(),
                 item(tr("Report a Problem").into(), "Ctrl Shift P", Some(UiMessage::OpenUrl(ISSUES_URL.into()))),
             ]),
@@ -1250,6 +1269,8 @@ impl BeeperGuiApp {
         };
         let first_unread = first_unread.filter(|_| !thread);
         let (h24, group) = (st.settings.pref("timeFormat") == 1, chat.chat_type == "group");
+        let now = now_unix_millis();
+        let gone = |m: &Message| m.disappeared(now) && !pending(st, m);
         let item = |i: usize| -> El<'a> {
             // Desktop's `GalleryGrouper` shows a gallery at its first message.
             if gallery[i] != i {
@@ -1272,6 +1293,17 @@ impl BeeperGuiApp {
                     true => head.push(self.timer_notice(st, chat, m, timer, next.is_none())).into(),
                     false => Column::new().into(),
                 };
+            }
+            // Desktop's `DisappearedMessagesGrouper`: one note for the messages of a day whose timers ran out.
+            if gone(m) {
+                let day = |n: &Message| day_num(&n.timestamp) == day_num(&m.timestamp);
+                if prev.is_some_and(|q| gone(q) && day(q)) {
+                    return Column::new().into();
+                }
+                let n = msgs[i..].iter().take_while(|n| gone(n) && day(n)).count();
+                return head
+                    .push(self.timeline_note(trn("%d message disappeared", "%d messages disappeared", n, &[&n])))
+                    .into();
             }
             if membership(m) {
                 let mut rows = Column::new();
@@ -1299,9 +1331,12 @@ impl BeeperGuiApp {
                 }
                 return rows.into();
             }
-            let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id || membership(q));
+            let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id || membership(q) || gone(q));
             let last = msgs.get(end).is_none_or(|n| {
-                n.sender_id != m.sender_id || membership(n) || day_num(&n.timestamp) != day_num(&tail.timestamp)
+                n.sender_id != m.sender_id
+                    || membership(n)
+                    || gone(n)
+                    || day_num(&n.timestamp) != day_num(&tail.timestamp)
             });
             // Desktop's `showSeenIcon`: never on an action; in a group on an own message or the last one, and in a
             // DM on an own message after the last received one.
@@ -1654,10 +1689,18 @@ impl BeeperGuiApp {
                 }
                 _ => {
                     let meta = file_label(a).into_iter().chain(a.file_size.map(human_size)).collect::<Vec<_>>();
+                    // Desktop's disappearing timer goes after the details of a file without a caption, when the
+                    // message shows its time.
+                    let timer = disappears(chat, m).filter(|_| !hide_time && text.is_empty());
+                    let timer = timer
+                        .map(|label| self.tip(tinted(&TIMER, 10.0, p.sub), label, vec![], tooltip::Position::Left));
+                    let details = (!meta.is_empty()).then(|| txt(meta.join(" · "), 11.0).color(p.sub));
+                    let details = (details.is_some() || timer.is_some())
+                        .then(|| row![].push(details).push(timer).spacing(4).align_y(Center));
                     // Desktop's `AttachmentFileRow`: at most 240 px wide, the name in `body-sm` on two lines at most,
                     // and the details in `label-sm`.
                     let info = column![clamp(&name, 186.0, 2, 13.0, Weight::Semibold).line_height(Pixels(16.0))]
-                        .push((!meta.is_empty()).then(|| txt(meta.join(" · "), 11.0).color(p.sub)))
+                        .push(details)
                         .spacing(4);
                     let line = row![tinted(file_icon(a), 24.0, p.strong), info].spacing(8).align_y(Center);
                     button(container(line).max_width(240.0 - 2.0 * BUBBLE_PAD_X))
@@ -1762,12 +1805,16 @@ impl BeeperGuiApp {
                         // Desktop's `ReminderIndicator-module__due`: a due reminder takes the warning color.
                         marker(&OUTLINE_CLOCK, if at <= now_unix_millis() { ORANGE } else { color }, label)
                     });
-                    let n = f32::from(u8::from(bookmark.is_some()) + u8::from(reminder.is_some()));
-                    match n == 0.0 {
-                        true => (room, time),
-                        false => {
-                            let meta = row![].push(bookmark).push(reminder).push(time).spacing(4).align_y(Center);
-                            (room + 14.0 * n, Some(meta.into()))
+                    // Desktop's disappearing timer goes after the time.
+                    let timer = disappears(chat, m).map(|label| marker(&TIMER, color, label));
+                    let n =
+                        [bookmark.is_some(), reminder.is_some(), timer.is_some()].into_iter().filter(|&b| b).count();
+                    match n {
+                        0 => (room, time),
+                        n => {
+                            let meta = row![].push(bookmark).push(reminder).push(time).push(timer);
+                            let meta = meta.spacing(4).align_y(Center);
+                            (room + 14.0 * n as f32, Some(meta.into()))
                         }
                     }
                 }
@@ -2312,6 +2359,12 @@ impl BeeperGuiApp {
         let info = column![med(name.to_string(), 13.0).color(p.text)]
             .push((!meta.is_empty()).then(|| txt(meta.join(" ・ "), 11.0).color(p.sub)));
         row![tinted(file_icon(a), 20.0, p.text), info].spacing(8).align_y(Center).into()
+    }
+
+    /// Desktop's `TimelineNote`: a centered line of the timeline.
+    fn timeline_note<'a>(&self, text: String) -> El<'a> {
+        let note = container(semi(text, 11.0).color(self.pal.on_secondary)).center_x(Fill).center_y(24);
+        container(note).padding(Padding::ZERO.bottom(12.0).left(GUTTER)).into()
     }
 
     /// Desktop's `u2t`: a disappearing timer change between two rules, with "Change Setting" on the last one.

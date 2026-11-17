@@ -3,12 +3,12 @@ use crate::import::DesktopCrypto;
 use crate::models::{
     timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatFlag,
     ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageReminder,
-    MessageRules, Older, PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack, StickerSource,
-    ThreadFollows, Timers, Transcription, User, VerificationDevice, VerificationError, VerificationQr, VerificationSas,
-    VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK,
-    BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS,
-    FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, MSG_MENTION,
-    NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE,
+    MessageRules, MessageTimer, Older, PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack,
+    StickerSource, ThreadFollows, Timers, Transcription, User, VerificationDevice, VerificationError, VerificationQr,
+    VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER,
+    BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER,
+    EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER,
+    MSG_MENTION, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE,
     REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
@@ -67,7 +67,10 @@ enum Op {
         message_type: &'static str,
         unresolved_media: Option<String>,
         timestamp: Option<String>,
+        timer: Option<MessageTimer>,
     },
+    /// The `com.beeper.disappearing_timer` of an edit without content.
+    Timer(String, MessageTimer),
     /// A redaction, and whether the bridge redacted view-once media after its last view.
     Redact(String, bool),
     Remove(String),
@@ -76,8 +79,9 @@ enum Op {
     /// A poll response: the poll, the voter and the answers.
     Vote(String, String, Vec<String>),
     EndPoll(String),
-    /// A `com.beeper.message_send_status`: the message, whether it reached a user, the error, and the status.
-    SendStatus(String, bool, Option<SendError>, Box<crate::models::SendStatus>),
+    /// A `com.beeper.message_send_status`: the message, whether it reached a user, the error, the status, and the
+    /// disappearing timer of the bridge.
+    SendStatus(String, bool, Option<SendError>, Box<crate::models::SendStatus>, Option<MessageTimer>),
 }
 
 fn s(v: &Value) -> Option<String> {
@@ -635,6 +639,8 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
     let id = s(&e["event_id"]).expect("event ID");
     let kind = s(&e["type"]).expect("event type");
     let hide = || hidden.then(|| (Some(kind.clone()), Vec::new(), "HIDDEN"));
+    // Desktop's `hs.order ?? 0`: other clients and servers can leave it out.
+    let order = e["unsigned"]["com.beeper.hs.order"].as_i64().unwrap_or(0);
     let poll = matches!(kind.as_str(), "org.matrix.msc3381.poll.start" | "m.poll.start").then(|| poll(c)).flatten();
     let (text, attachments, message_type) = match kind.as_str() {
         "m.room.message" | "m.sticker" | "m.room.encrypted" if deleted => (None, Vec::new(), "TEXT"),
@@ -647,12 +653,14 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         "m.room.message" if rel["rel_type"] == "m.replace" => {
             let (new, ts) = (&c["m.new_content"], e["origin_server_ts"].as_i64().expect("event timestamp"));
             let (text, attachments, message_type) = content("m.room.message", new)?;
+            // Desktop's `saveMessageTimer` of an edit.
+            let (target, timer) = (s(&rel["event_id"])?, MessageTimer::of(&new[DISAPPEARING_TIMER], order));
             if text.is_none() && attachments.is_empty() {
-                return None;
+                return Some(Op::Timer(target, timer?));
             }
             let timestamp = (c["com.beeper.dont_render_edited"] != true).then(|| rfc3339_from_millis(ts));
             return Some(Op::Edit {
-                target: s(&rel["event_id"])?,
+                target,
                 text,
                 html: html(new),
                 links: links(new),
@@ -660,6 +668,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
                 message_type,
                 unresolved_media: unresolved_media(new),
                 timestamp,
+                timer,
             });
         }
         "m.room.encrypted" => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
@@ -679,7 +688,11 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
                     .collect(),
                 internal_error: s(&c["internal_error"]),
             };
-            return Some(Op::SendStatus(s(&rel["event_id"])?, delivered, error, Box::new(status)));
+            // Desktop's `applyDisappearingTimer` of the timer that a local bridge set on the message that it took.
+            let local = sender.ends_with(":beeper.local") || sender.ends_with(".localhost");
+            let timer = MessageTimer::of(&c["disappearing_timer"], order)
+                .filter(|_| c["status"] == "SUCCESS" && rel["rel_type"] == "m.reference" && local);
+            return Some(Op::SendStatus(s(&rel["event_id"])?, delivered, error, Box::new(status), timer));
         }
         "org.matrix.msc3381.poll.response" | "m.poll.response" => {
             return Some(Op::Vote(s(&rel["event_id"])?, sender, poll_answers(c)));
@@ -705,9 +718,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
     let profile_name = s(&c["com.beeper.per_message_profile"]["displayname"]);
     let user = matrix_sdk::ruma::UserId::parse(&sender).expect("sender is a user ID");
     let member = room.get_member_no_sync(&user).await.expect("read room member");
-    // Desktop's `hs.order ?? 0` and `key || ""`: other clients and servers can leave them out.
-    let order = e["unsigned"]["com.beeper.hs.order"].as_i64().unwrap_or(0);
-    // Desktop's reaction of a custom emoji: its shortcode as the key and its image.
+    // Desktop's `key || ""`, and its reaction of a custom emoji: its shortcode as the key and its image.
     let key = rel["key"].as_str().unwrap_or_default();
     let img_url = key.starts_with("mxc://").then(|| key.to_string());
     let shortcode = img_url.as_ref().and_then(|_| s(&c["com.beeper.reaction.shortcode"])).map(|s| s.replace(':', ""));
@@ -758,6 +769,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         }),
         send_status: None,
         call: crate::models::CallAction::of(c),
+        disappearing: MessageTimer::of(&c[DISAPPEARING_TIMER], order),
         view_limit: c.get("com.beeper.view_limited").filter(|l| l.is_object() && !deleted).cloned(),
         views_left: None,
         view_expired: deleted && e["unsigned"]["redacted_because"]["content"]["com.beeper.view_limited"] == true,
@@ -1012,11 +1024,12 @@ async fn sync_receipts(store: &SharedStore, room: &Room) {
         st.chats[idx].participants.items.iter().filter(|u| u.is_self != Some(true)).map(|u| u.id.clone()).collect()
     };
     let mut updates = Vec::new();
-    for uid in peers {
+    let me = room.own_user_id().to_string();
+    for uid in peers.into_iter().chain([me.clone()]) {
         let Ok(parsed) = matrix_sdk::ruma::UserId::parse(&uid) else { continue };
         let receipt = room.load_user_receipt(ReceiptType::Read, &ReceiptThread::Unthreaded, &parsed).await;
         if let Some((ev, r)) = receipt.expect("read receipt") {
-            let ts = r.ts.map_or_else(now_rfc3339_millis, |t| rfc3339_from_millis(i64::from(t.0)));
+            let ts = r.ts.map_or_else(now_unix_millis, |t| i64::from(t.0));
             updates.push((uid, ev.to_string(), ts));
         }
     }
@@ -1026,12 +1039,27 @@ async fn sync_receipts(store: &SharedStore, room: &Room) {
     let mut st = store.write();
     st.load_chat(&chat);
     let indices = st.timeline_indices(&chat).to_vec();
-    for (uid, ev, ts) in updates {
+    for (uid, ev, at) in updates {
         let target = indices.iter().copied().find(|&i| {
             let m = &st.messages[i];
             m.id == ev || m.reactions.iter().any(|r| r.id == ev)
         });
         let Some(target) = target else { continue };
+        // Desktop's `seenByMeAt` and `recipientReadTimerStartedAt`: the read starts the timers of the messages
+        // that it reads, your own ones for a read of the recipient.
+        let read = st.messages[target].sort_key.clone();
+        for &i in &indices {
+            let m = &st.messages[i];
+            let sender = m.is_sender == Some(true);
+            let waits = m.disappearing.as_ref().is_some_and(|t| t.waits_for_read(sender));
+            if waits && sender != (uid == me) && m.sort_key <= read {
+                st.update_message(i, |m| m.disappearing.as_mut().expect("a timer").read_at = Some(at));
+            }
+        }
+        if uid == me {
+            continue;
+        }
+        let ts = rfc3339_from_millis(at);
         for &i in &indices {
             if i != target && st.messages[i].seen.contains_key(&uid) {
                 st.update_message(i, |m| {
@@ -1452,8 +1480,11 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                 }
                 Op::EndPoll(target) if here(&st, &target).is_some() => st.update_poll(&target, |p| p.ended = true),
                 Op::Vote(..) | Op::EndPoll(_) => {}
-                Op::SendStatus(target, delivered, error, status) => {
+                Op::SendStatus(target, delivered, error, status, timer) => {
                     let i = here(&st, &target);
+                    if let Some((i, timer)) = i.zip(timer) {
+                        apply_timer(&mut st, i, timer);
+                    }
                     let m = |i: usize| &st.messages[i];
                     let changed = |i| {
                         (m(i).is_delivered, &m(i).send_error, m(i).send_status.as_ref())
@@ -1493,8 +1524,26 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                         });
                     }
                 }
-                Op::Edit { target, text, html, links, attachments, message_type, unresolved_media, timestamp } => {
+                Op::Timer(target, timer) => {
                     if let Some(i) = here(&st, &target) {
+                        apply_timer(&mut st, i, timer);
+                    }
+                }
+                Op::Edit {
+                    target,
+                    text,
+                    html,
+                    links,
+                    attachments,
+                    message_type,
+                    unresolved_media,
+                    timestamp,
+                    timer,
+                } => {
+                    if let Some(i) = here(&st, &target) {
+                        if let Some(timer) = timer {
+                            apply_timer(&mut st, i, timer);
+                        }
                         st.update_message(i, |m| {
                             let prev = match text {
                                 Some(t) => m.text.replace(t).unwrap_or_default(),
@@ -1563,6 +1612,14 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
     }
     sync_thread_reads(store, room, roots).await;
     sync_receipts(store, room).await;
+}
+
+/// Desktop's `applyDisappearingTimer`: the timer of a later event replaces the one of the message.
+fn apply_timer(st: &mut BeeperStore, i: usize, timer: MessageTimer) {
+    let new = MessageTimer::merge(st.messages[i].disappearing.clone(), Some(timer));
+    if st.messages[i].disappearing != new {
+        st.update_message(i, |m| m.disappearing = new);
+    }
 }
 
 /// Desktop's `archiveThread` content of `com.beeper.inbox.done`: archived up to `order` at `now`, or an empty object to
@@ -2349,6 +2406,15 @@ fn mention_links(text: &str, users: &[&Mention]) -> String {
     md + rest
 }
 
+/// Desktop's `disappearingTimerForMessages`: the timer state of the room, which new messages carry, but not an empty
+/// one when the network omits it (`omit_empty_timer`, which the Beeper defaults of a room without features have).
+async fn timer_for_messages(room: &Room) -> Option<Value> {
+    let timer = state(room, DISAPPEARING_TIMER).await?;
+    let features = state(room, "com.beeper.room_features").await;
+    let omit = features.is_none_or(|f| f["disappearing_timer"]["omit_empty_timer"] == true);
+    (!(timer["timer"].is_null() && omit)).then_some(timer)
+}
+
 async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), PushError> {
     let client = store.read().matrix.clone().expect("flush checks the Matrix client");
     if let Outgoing::CreateLabel(label) = out {
@@ -2399,6 +2465,9 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 content["com.beeper.linkpreviews"] = Value::Array(vec![p]);
             } else if links {
                 content["com.beeper.linkpreviews"] = Value::Array(Vec::new());
+            }
+            if let Some(timer) = timer_for_messages(&room).await {
+                content[DISAPPEARING_TIMER] = timer;
             }
             let id = room.send_raw("m.room.message", content).with_transaction_id(txn.as_str().into());
             sent(txn, id.await.map_err(e)?.response.event_id);
@@ -2640,6 +2709,9 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             }
             if broadcast {
                 content["com.beeper.broadcast_outside_thread"] = true.into();
+            }
+            if let Some(timer) = timer_for_messages(&room).await {
+                content[DISAPPEARING_TIMER] = timer;
             }
             let kind = match sticker {
                 Some(s) => {
@@ -6369,6 +6441,100 @@ mod tests {
         });
         let t = timers(Some(&f), &json!({ "users_default": 50 }), "@me:x").expect("timers");
         assert!(t.kind == "after_read" && t.timers == [3_600_000, 86_400_000] && t.can_set);
+    }
+
+    /// Desktop's `disappearingTimer` of messages: their event, a later edit or a local bridge's send status sets it,
+    /// your read starts an `after_read` timer and the recipient's one of your `after_read_by_recipient` message, and
+    /// new messages carry the timer of the room.
+    #[tokio::test]
+    async fn messages_disappear_like_desktop() {
+        use crate::models::{Countdown, DISAPPEARING_TIMER};
+        let (sent_at, my_read, vic_read) = (1_700_000_000_000_i64, 1_700_000_100_000_i64, 1_700_000_200_000_i64);
+        let event = |i: i64, sender: &str, kind: &str, content: Value| {
+            json!({ "type": kind, "sender": sender, "event_id": format!("$e{i}"), "origin_server_ts": sent_at + i,
+                "content": content, "unsigned": { "com.beeper.hs.order": i } })
+        };
+        let text = |i: i64, sender: &str, timer: Value| {
+            event(i, sender, "m.room.message", json!({ "msgtype": "m.text", "body": "hi", DISAPPEARING_TIMER: timer }))
+        };
+        let status = |i: i64, sender: &str, target: &str, timer: u64| {
+            let content = json!({ "status": "SUCCESS", "disappearing_timer": { "type": "after_send", "timer": timer },
+                "m.relates_to": { "rel_type": "m.reference", "event_id": target } });
+            event(i, sender, "com.beeper.message_send_status", content)
+        };
+        let new =
+            json!({ "msgtype": "m.text", "body": "", DISAPPEARING_TIMER: { "type": "after_read", "timer": 120_000 } });
+        let edit = json!({ "msgtype": "m.text", "body": "* ", "m.new_content": new,
+            "m.relates_to": { "rel_type": "m.replace", "event_id": "$e4" } });
+        let events = [
+            text(1, "@vic:x", json!({ "type": "after_send", "timer": 3_600_000 })),
+            text(2, "@vic:x", json!({ "type": "after_read", "timer": 60_000 })),
+            text(3, "@me:x", json!({ "type": "after_read_by_recipient", "timer": 60_000 })),
+            text(4, "@vic:x", json!({ "type": "after_read", "timer": 60_000 })),
+            text(5, "@me:x", json!(null)),
+            event(6, "@vic:x", "m.room.message", edit),
+            status(7, "@whatsappbot:beeper.local", "$e5", 5_000),
+            status(8, "@vic:x", "$e5", 1_000),
+        ];
+        let mut sync = stub_sync();
+        let room = &mut sync["rooms"]["join"]["!room:x"];
+        let state = |kind: &str, key: &str, content: Value| {
+            json!({ "type": kind, "state_key": key, "sender": "@me:x", "event_id": format!("${kind}{key}"),
+                "origin_server_ts": 1, "content": content })
+        };
+        let timer = json!({ "type": "after_read", "timer": 86_400_000 });
+        let states = room["state"]["events"].as_array_mut().unwrap();
+        states.push(state("m.room.member", "@vic:x", json!({ "membership": "join", "displayname": "Vic" })));
+        states.push(state(DISAPPEARING_TIMER, "", timer.clone()));
+        let receipts = json!({ "$e2": { "m.read": { "@me:x": { "ts": my_read } } },
+            "$e3": { "m.read": { "@vic:x": { "ts": vic_read } } } });
+        room["ephemeral"] = json!({ "events": [{ "type": "m.receipt", "content": receipts }] });
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, sync.clone()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if p.ends_with("/messages") => {
+                    (200, json!({ "start": "t", "chunk": events.iter().rev().collect::<Vec<_>>() }))
+                }
+                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+                p => {
+                    log.lock().unwrap().push((p.to_string(), body));
+                    (200, json!({ "event_id": "$sent" }))
+                }
+            })
+            .await;
+        let store = stub_store(&crate::testing::temp_dir("disappearing"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        {
+            let st = store.read();
+            let timer = |id: &str| st.message(id).disappearing.clone().expect("a timer");
+            let at = |id: &str| (timer(id).timer, timer(id).read_at);
+            assert_eq!(st.message("$e1").expiry(sent_at + 1 + 3_000_000), Some(Countdown::Left(600_000)));
+            assert!(st.message("$e1").disappeared(sent_at + 1 + 3_600_000), "an after_send timer starts at the send");
+            assert_eq!(at("$e2"), (60_000, Some(my_read)), "your read starts the timer of a received message");
+            assert_eq!(at("$e3"), (60_000, Some(vic_read)), "the recipient's read starts the timer of yours");
+            assert_eq!(at("$e4"), (120_000, None), "the edit set the timer, which waits for your read");
+            assert_eq!(st.message("$e4").expiry(i64::MAX), Some(Countdown::Unread));
+            assert_eq!(at("$e5"), (5_000, None), "only a local bridge sets the timer of a send status");
+        }
+        let out = super::Outgoing::Send {
+            txn: "txn".into(),
+            text: "hi".into(),
+            reply_to: None,
+            preview: None,
+            mentions: Vec::new(),
+            thread: None,
+            links: false,
+        };
+        store.write().queue("!room:x", out);
+        super::flush(store.clone()).await.expect("send the message");
+        let sent = sent.lock().unwrap();
+        let (_, body) = sent.iter().find(|(p, _)| p.contains("/send/m.room.message/")).expect("a message");
+        assert_eq!(body[DISAPPEARING_TIMER], timer, "Desktop's disappearingTimerForMessages");
     }
 
     #[test]
