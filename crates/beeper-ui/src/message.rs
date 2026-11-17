@@ -1109,13 +1109,15 @@ impl BeeperGuiApp {
     fn unread_divider<'a>(&self, st: &BeeperStore) -> El<'a> {
         let p = &self.pal;
         let hush = st.incognito_indicator();
-        let color = if hush { p.rule } else { p.accent.scale_alpha(0.35) };
+        let color = if hush { p.rule } else { p.accent };
         let line = || container(Space::new()).width(Fill).height(1).style(fill_box(color, 0.0));
         if !hush {
-            return row![line(), semi(tr("New"), 11.0).color(p.accent), line()]
-                .spacing(8)
+            // `.unread-divider span`: label-sm at 0.8 opacity, 12 px above and below, 10 px from the primary lines.
+            let label = txt(trx("New", "unread message divider label"), 11.0).line_height(Pixels(14.0));
+            return row![line(), label.color(p.accent.scale_alpha(0.8)), line()]
+                .spacing(10)
                 .align_y(Center)
-                .padding([6, 0])
+                .padding([12, 0])
                 .into();
         }
         let label = txt(format!("🫣 {}", tr("Unread until you reply")), 11.0);
@@ -1969,7 +1971,8 @@ impl BeeperGuiApp {
         });
         let replies = (replies > 0).then(|| -> El<'a> {
             let n = trnx("%d Reply", "%d Replies", replies, "button label for replies to a message", &[&replies]);
-            button(semi(n, 10.0).color(muted))
+            // `.MessageFooter-module__messageInfoLine .message-show-replies-button`: label-md, regular.
+            button(txt(n, 12.0).line_height(Pixels(15.0)).color(muted))
                 .padding(0)
                 .style(|_, _| button::Style::default())
                 .on_press(UiMessage::Message(Msg::ShowReplies(m.id.clone())))
