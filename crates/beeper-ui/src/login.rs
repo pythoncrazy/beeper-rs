@@ -1112,10 +1112,10 @@ impl BeeperGuiApp {
                 // slots on its bottom edge.
                 let lock =
                     stack![column![art(2, 314.0), Space::new().height(4 + 2)], container(otp).align_bottom(Fill)];
-                let info = format!("Check {}\nfor your login code", l.email.trim());
+                let info = tr("Check %(email)s for your login code").replace("%(email)s", l.email.trim());
                 let foot = rich_text![
-                    span("Didn't get a code? ").color(p.on_secondary),
-                    span(tr("Resend")).color(p.accent).link(UiMessage::Login(LoginMsg::Resend))
+                    span(format!("{} ", tr("Didn't get a code?"))).color(p.on_secondary),
+                    span(trx("Resend", "button label")).color(p.accent).link(UiMessage::Login(LoginMsg::Resend))
                 ]
                 .on_link_click(move |m: UiMessage| if l.busy { UiMessage::Noop } else { m })
                 .size(11)
@@ -1171,6 +1171,10 @@ impl BeeperGuiApp {
                         .padding([10, 0])
                         .style(input_style(CLEAR, p.fg, p.tertiary, CLEAR, 0.0)),
                 ]
+                // Desktop's `rightIcons` of the search: a 14 px "cancel" that clears it.
+                .push((!l.query.is_empty()).then(|| {
+                    crate::icon_btn(p, icon::CLOSE, 14.0, 20.0, p.tertiary, LoginMsg::Query(String::new()).into())
+                }))
                 .spacing(10)
                 .align_y(Center)
                 .padding([0, 16]);

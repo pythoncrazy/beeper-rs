@@ -47,6 +47,19 @@ pub(crate) fn attachment_text(all: &[Attachment], verbose: bool) -> Option<Strin
 }
 
 /// Desktop's notification body: the attachment text, the message text, then the link text.
+/// Desktop's `messageReminderNotificationBody`: "Reminder: " and the message with its sender in a group, or
+/// "Reminder" when the message is not stored or the account hides previews.
+pub(crate) fn reminder_body(previews: bool, chat: &Chat, m: Option<&Message>) -> String {
+    match m.filter(|_| previews) {
+        Some(m) => {
+            let sender = m.sender_name.as_deref().filter(|_| chat.chat_type == "group");
+            let text = sender.map_or_else(|| body(m), |s| format!("{s}: {}", body(m)));
+            crate::i18n::trxf("Reminder: %s", "message reminder notification body", &[&text])
+        }
+        None => crate::i18n::trx("Reminder", "thread reminder notification body").into(),
+    }
+}
+
 pub fn body(m: &Message) -> String {
     let text = m.text.as_deref().filter(|t| !t.is_empty());
     let attachment = attachment_text(&m.attachments, text.is_none());
@@ -221,6 +234,12 @@ impl BeeperGuiApp {
         Task::batch([show].into_iter().chain(again))
     }
 
+    /// Desktop's `showThreadNotification` of a due reminder or an ended snooze: `body` under the chat title.
+    pub(crate) fn notify_thread(&mut self, chat: &Chat, message: &str, body: String) -> Task<UiMessage> {
+        let toast = Toast { title: chat.title.clone(), body, ..Toast::default() };
+        self.show_note(Note { chat: chat.id.clone(), message: message.into(), toast }, false)
+    }
+
     /// Desktop's `sendQueuedNotifications` and `renotifyIfUnread`.
     pub(crate) fn notify_timer(&mut self, chat: String, timer: u64) -> Task<UiMessage> {
         let st = self.store.read();
@@ -312,9 +331,11 @@ impl BeeperGuiApp {
             && !m.silent()
             && m.timestamp > self.booted
             && m.text.as_deref() != Some(beeper_core::matrix::UTD_TEXT);
+        // Desktop's `shouldSuppressNotification`: a snoozed chat stays quiet, also for mentions.
         let shown = shown && otp.is_some()
             || shown
                 && (!st.notifications_muted(chat) || m.flags & MSG_MENTION != 0)
+                && reminders::snoozed_until(&st, chat).is_none()
                 && chat.is_hidden_from_inbox != Some(true)
                 && chat.is_request != Some(true)
                 && prefs.on("messageNotifications")

@@ -1,7 +1,8 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
-    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Older, Reaction, SpaceOrder, ThemeChoice,
-    ThreadFollows, Transcription, User, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS, CHAT_SOUNDS,
+    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, MessageTimer, Older, Reaction,
+    SpaceOrder, ThemeChoice, ThreadFollows, Transcription, User, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS,
+    CHAT_SOUNDS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -307,6 +308,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         mentions: None,
         send_status: None,
         call: None,
+        disappearing: None,
         view_limit: None,
         views_left: None,
         view_expired: false,
@@ -348,6 +350,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         mentions: None,
         send_status: None,
         call: None,
+        disappearing: None,
         view_limit: None,
         views_left: None,
         view_expired: false,
@@ -489,6 +492,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 merged_into_chat_id: None,
                 preview,
                 reminder: None,
+                snoozed_until_ms: None,
                 chat_theme: None,
                 note: note.filter(|n| !n.is_empty()),
                 notifiable: None,
@@ -774,6 +778,9 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 .map(|ids| ids.iter().filter_map(|u| u.as_str().map(String::from)).collect()),
             send_status: m.get("sendStatus").cloned().and_then(|v| serde_json::from_value(v).ok()),
             call: m.pointer("/extra/callAction").cloned().and_then(|v| serde_json::from_value(v).ok()),
+            disappearing: m.get("disappearingTimer").and_then(|t| {
+                MessageTimer::of(t, m.pointer("/extra/disappearingTimerOrder").and_then(Value::as_i64).unwrap_or(0))
+            }),
             // Desktop keeps the limit as its JSON text.
             view_limit: m
                 .pointer("/extra/viewLimitedMedia")

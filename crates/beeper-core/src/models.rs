@@ -326,6 +326,8 @@ pub struct Profile {
     pub plan: Plan,
     /// Desktop's `subscriptionAction` is "subscribe", which shows Beeper Plus in Settings.
     pub can_subscribe: bool,
+    /// Desktop's `isInternalUser`: the `channel` of the user is "INTERNAL".
+    pub internal: bool,
     /// Desktop's `loggedInUser.analyticsDisabled`, where a missing value is true.
     pub analytics_disabled: bool,
 }
@@ -338,6 +340,7 @@ impl Default for Profile {
             email: None,
             plan: Plan::Free,
             can_subscribe: true,
+            internal: false,
             analytics_disabled: true,
         }
     }
@@ -663,6 +666,9 @@ pub struct Chat {
     pub preview: Option<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reminder: Option<ChatReminder>,
+    /// Desktop's `snooze.snoozeUntilMs` of `com.beeper.chats.snoozed`.
+    #[serde(rename = "snoozedUntilMs", default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_theme: Option<ChatThemeCustom>,
     /// Desktop's local `note` thread prop, the Notes of the Chat Info panel.
@@ -859,6 +865,8 @@ impl Older {
 pub const PERSONAL_NAME: &str = "de.gematik.msc4431.room.name.private";
 /// Desktop's room account data of the notification sound of a chat (`chatNotificationSound`).
 pub const NOTIFICATION_SOUND: &str = "com.beeper.notification_sound";
+/// Desktop's room account data of a snoozed chat.
+pub const SNOOZED: &str = "com.beeper.chats.snoozed";
 /// Desktop's `df`: the sounds a chat can take, by the name in `com.beeper.notification_sound`.
 pub const CHAT_SOUNDS: [&str; 7] = ["silent", "double", "dreams", "not_marimba", "rain_harp", "record", "spirit"];
 pub const PERSONAL_AVATAR: &str = "de.gematik.msc4431.room.avatar.private";
@@ -884,11 +892,15 @@ pub const TRANSCRIPTIONS_ROOM: &str = "!transcriptions:beeper.local";
 /// The event type and the relation type of a Desktop "Remove from Beeper", and its managed room.
 pub const REMOVED_MESSAGE: &str = "com.beeper.removed_message";
 pub const REMOVED_MESSAGES_ROOM: &str = "!removed-messages:beeper.local";
+/// Desktop's `MESSAGE_REMINDER_EVENT_TYPE` and `MESSAGE_REMINDER_REL_TYPE`, and `MESSAGE_REMINDERS_ROOM_ID`, the
+/// managed room of the message reminders.
+pub const MESSAGE_REMINDER: &str = "com.beeper.message_reminder";
+pub const REMINDERS_ROOM: &str = "!reminders:beeper.local";
 /// The managed rooms on the Beeper homeserver that keep data and are not chats: the rooms of Desktop's
 /// `managedRoomEventHandlers` and `TRANSCRIPTIONS_ROOM_ID`. `!tips:beeper.local` is also a managed room, but Desktop
 /// shows it as a chat.
 pub const MANAGED_ROOMS: [&str; 5] =
-    [BOOKMARKS_ROOM, TRANSCRIPTIONS_ROOM, "!blasts:beeper.local", REMOVED_MESSAGES_ROOM, "!reminders:beeper.local"];
+    [BOOKMARKS_ROOM, TRANSCRIPTIONS_ROOM, "!blasts:beeper.local", REMOVED_MESSAGES_ROOM, REMINDERS_ROOM];
 
 /// A `com.beeper.bookmark` event of the bookmarks room, which relates to a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -897,6 +909,14 @@ pub struct Bookmark {
     pub event_id: String,
     /// `com.beeper.hs.order`, which Desktop sorts the bookmarks of a chat by.
     pub order: i64,
+}
+
+/// An active `com.beeper.message_reminder` of the reminders room: Desktop's `MessageReminder` of a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageReminder {
+    /// The room of the message.
+    pub room_id: String,
+    pub remind_at_ms: i64,
 }
 
 /// The disappearing timers of a room.
@@ -1294,6 +1314,9 @@ pub struct Message {
     /// Desktop's `extra.callAction`: a call that the bridge reported, which shows as a call pill instead of its text.
     #[serde(rename = "callAction", default, skip_serializing_if = "Option::is_none")]
     pub call: Option<CallAction>,
+    /// Desktop's `disappearingTimer` of the message.
+    #[serde(rename = "disappearingTimer", default, skip_serializing_if = "Option::is_none")]
+    pub disappearing: Option<MessageTimer>,
     /// Desktop's `extra.viewLimitedMedia`: the `com.beeper.view_limited` limit of view-once media, which shows as a
     /// pill that opens the media instead of the media.
     #[serde(rename = "viewLimitedMedia", default, skip_serializing_if = "Option::is_none")]
@@ -1309,6 +1332,66 @@ pub struct Message {
     pub view_kind: Option<String>,
     #[serde(skip)]
     pub flags: u16,
+}
+
+/// The `com.beeper.disappearing_timer` of a message, of a later edit or of the bridge's send status.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MessageTimer {
+    /// `after_send`, `after_read` or `after_read_by_recipient`. Desktop counts a missing type as `after_send`.
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The timer in ms, or 0 for none.
+    #[serde(default)]
+    pub timer: u64,
+    /// Desktop's `extra.disappearingTimerOrder`: the homeserver order of the event that set the timer.
+    #[serde(default)]
+    pub order: i64,
+    /// The read that starts an `after_read` timer, in ms: yours of a received message (Desktop's `seenByMeAt`), or
+    /// the recipient's of your `after_read_by_recipient` message (Desktop's `recipientReadTimerStartedAt`).
+    #[serde(rename = "readAt", default, skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<i64>,
+}
+
+impl MessageTimer {
+    /// Desktop's `Et` check of a `com.beeper.disappearing_timer`: only an object sets the timer.
+    pub fn of(v: &serde_json::Value, order: i64) -> Option<Self> {
+        v.is_object().then(|| Self {
+            kind: v["type"].as_str().map(String::from),
+            timer: v["timer"].as_u64().unwrap_or(0),
+            order,
+            read_at: None,
+        })
+    }
+
+    /// Desktop's `upsertMessage` of a timer: the stored one stays when its order is higher or the new event has
+    /// none, as for a redaction, and the read that started it stays.
+    pub fn merge(old: Option<Self>, new: Option<Self>) -> Option<Self> {
+        match (old, new) {
+            (Some(o), Some(n)) if o.order > n.order => Some(o),
+            (Some(o), Some(n)) => Some(Self { read_at: n.read_at.or(o.read_at), ..n }),
+            (o, n) => n.or(o),
+        }
+    }
+
+    /// Whether a read starts the timer that has not started: yours of a received message, or the recipient's of
+    /// your own (`sender`) one.
+    pub fn waits_for_read(&self, sender: bool) -> bool {
+        self.read_at.is_none()
+            && match self.kind.as_deref() {
+                Some("after_read") => !sender,
+                Some("after_read_by_recipient") => true,
+                _ => false,
+            }
+    }
+}
+
+/// Desktop's `bm` of a message with a disappearing timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Countdown {
+    /// The timer starts at a read that has not happened yet.
+    Unread,
+    /// The ms left, or 0 when the message disappeared.
+    Left(u64),
 }
 
 /// The `com.beeper.action_message` of a call, as Desktop's `callAction` keeps it.
@@ -1453,6 +1536,24 @@ impl Message {
     /// Desktop's `isThreadOnly` with `threads` on: a thread reply that only its thread shows.
     pub fn thread_only(&self, threads: bool) -> bool {
         threads && self.thread_root.is_some() && !self.broadcast
+    }
+
+    /// Desktop's `bm` at `now` in ms: the timer starts when the message is sent, or at the read of `$it`; `None`
+    /// without a timer.
+    pub fn expiry(&self, now: i64) -> Option<Countdown> {
+        let t = self.disappearing.as_ref().filter(|t| t.timer > 0)?;
+        let start = match t.kind.as_deref() {
+            None | Some("after_send") => crate::config::millis_from_rfc3339(&self.timestamp),
+            Some("after_read" | "after_read_by_recipient") => t.read_at,
+            Some(_) => return None,
+        };
+        let left = |start: i64| i64::try_from(t.timer).unwrap_or(i64::MAX).saturating_sub(now.saturating_sub(start));
+        Some(start.map_or(Countdown::Unread, |s| Countdown::Left(left(s).max(0).unsigned_abs())))
+    }
+
+    /// Desktop's `bm(e) === 0`: the timer of the message ran out.
+    pub fn disappeared(&self, now: i64) -> bool {
+        self.expiry(now) == Some(Countdown::Left(0))
     }
 
     pub fn sync_flags(&mut self) {
@@ -1732,6 +1833,8 @@ pub struct BeeperSettings {
     pub accounts: std::collections::BTreeMap<String, AccountProps>,
     /// Desktop's `time_suggestion_last_used`: the last time phrase that set a reminder, or empty.
     pub last_time: String,
+    /// Desktop's `snooze_time_suggestion_last_used`: the last time phrase that snoozed a chat, or empty.
+    pub snooze_last_time: String,
     /// Desktop's local `chat_appearance`.
     pub chat_appearance: ChatAppearance,
     /// Desktop's local `spaces_order`: the sidebar order, and the spaces that Edit Spaces hides.

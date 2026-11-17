@@ -25,6 +25,8 @@ pub enum CodeResult {
 pub struct Cloud {
     pub api_url: String,
     pub homeserver: String,
+    /// Desktop's app API, [`crate::config::APP_API_URL`].
+    pub app_api: String,
 }
 
 fn field(v: &Value, k: &str) -> Option<String> {
@@ -85,6 +87,7 @@ fn profile(info: &Value) -> Profile {
         plan,
         can_subscribe: provider.is_none_or(|p| !managed.contains(&p))
             && info["canSubscribe"]["STRIPE"].as_bool().unwrap_or(!active),
+        internal: info["channel"] == "INTERNAL",
         analytics_disabled: info["analyticsDisabled"] != false,
     }
 }
@@ -109,7 +112,7 @@ fn block_on<F: Future>(f: F) -> F::Output {
 impl Cloud {
     pub fn new(api_url: &str, homeserver: &str) -> Self {
         install_tls();
-        Self { api_url: api_url.into(), homeserver: homeserver.into() }
+        Self { api_url: api_url.into(), homeserver: homeserver.into(), app_api: crate::config::APP_API_URL.into() }
     }
 
     fn call(&self, url: &str, token: Option<&str>, body: Option<&Value>) -> Result<Value, CloudError> {
@@ -429,6 +432,17 @@ pub async fn klipy_gifs(query: String, pos: String) -> Result<(Vec<KlipyGif>, St
         })
         .collect();
     Ok((gifs, v["next"].as_str().unwrap_or_default().to_string()))
+}
+
+/// Desktop's `PlatformRemoteStatus` request, `GET /platform-status` of the app API with the Matrix access token and
+/// the app version (`callAppAPI`): the status of each platform, by Desktop platform name. Like Desktop, it reads the
+/// JSON of any HTTP status.
+pub async fn platform_status(app_api: String, token: String) -> Result<Value, String> {
+    let req =
+        http_client().get(format!("{app_api}/platform-status")).header("x-app-version", crate::config::APP_VERSION);
+    let req = if token.is_empty() { req } else { req.bearer_auth(token) };
+    let text = req.send().await.map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
 pub async fn http_bytes(url: &str) -> Result<Vec<u8>, String> {

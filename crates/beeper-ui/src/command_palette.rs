@@ -160,8 +160,11 @@ impl BeeperGuiApp {
                     .padding([8, 13])
                     .style(fill_box(p.chip, iced::border::top(18)))
             });
-            let footer = (schedule || matches!(self.cmd_submenu, Some(commands::SubMenu::Remind(_)))).then(|| {
+            let snooze = matches!(self.cmd_submenu, Some(commands::SubMenu::Snooze(_)));
+            let noted = schedule || snooze || matches!(self.cmd_submenu, Some(commands::SubMenu::Remind(_)));
+            let footer = noted.then(|| {
                 let note = match (schedule, self.cmd_no_reply) {
+                    _ if snooze => tr("Snoozed chats leave your inbox and stay quiet until the time you pick").into(),
                     (true, _) => trf(
                         "Send Later messages can only send if %s app is running (and your computer is awake)",
                         &[&"Beeper"],

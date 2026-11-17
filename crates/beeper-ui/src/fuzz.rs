@@ -5966,6 +5966,53 @@ fn disappearing_timer_changes_in_the_timeline_like_desktop() {
 }
 
 #[test]
+fn messages_disappear_like_desktop() {
+    let mut app = demo_app("disappearing-messages");
+    let id = "!tg_rust:beeper.com".to_string();
+    let now = beeper_core::config::now_unix_millis();
+    let timer = |kind: &str, timer: u64, read_at: Option<i64>| {
+        Some(MessageTimer { kind: Some(kind.into()), timer, order: 0, read_at })
+    };
+    let group = {
+        let mut st = app.store.write();
+        let last = st.timeline_indices(&id).last().map(|&i| st.messages[i].clone()).expect("a message");
+        let me = st.chat(&id).participants.items.iter().find(|u| u.is_self == Some(true));
+        let me = me.expect("the user").id.clone();
+        let messages = [
+            ("@tulir:beeper.com", timer("after_send", 1_000, None), now - 10_000),
+            ("@tulir:beeper.com", timer("after_read", 60_000, Some(now - 120_000)), now - 10_000),
+            ("@tulir:beeper.com", timer("after_send", 3_600_000, None), now),
+            (me.as_str(), timer("after_read_by_recipient", 60_000, None), now),
+            ("@tulir:beeper.com", timer("after_read", 3_600_000, None), now),
+        ];
+        for (n, (sender, disappearing, at)) in messages.into_iter().enumerate() {
+            st.upsert_message(Message {
+                id: format!("timed_{n}"),
+                sender_id: sender.into(),
+                is_sender: Some(sender == me),
+                sort_key: beeper_core::store::sort_key(
+                    last.sort_key.parse::<i64>().expect("a sort key") + 1 + n as i64,
+                ),
+                timestamp: beeper_core::config::rfc3339_from_millis(at),
+                disappearing,
+                ..last.clone()
+            });
+        }
+        st.chat(&id).chat_type == "group"
+    };
+    let _ = app.update(UiMessage::SelectChat(id));
+    assert!(tall(app.view_conversation()).find("2 messages disappeared").is_ok(), "one note for the timed-out ones");
+    let menu = |app: &BeeperGuiApp, mid: &str, label: &str| simulator(app.view_message_menu(mid).0).find(label).is_ok();
+    assert!(menu(&app, "timed_2", "Disappears in about 1 hour"), "the line after Sent at");
+    let recipient = match group {
+        true => "Disappears 1 minute after someone in the group reads it",
+        false => "Disappears 1 minute after the recipient reads it",
+    };
+    assert!(menu(&app, "timed_3", recipient), "your message waits for a read of the recipient");
+    assert!(menu(&app, "timed_4", "Disappears 1 hour after you mark it read"));
+}
+
+#[test]
 fn chat_info_member_actions_like_desktop() {
     let mut app = demo_app("chat-info-member-actions");
     let id = "!tg_rust:beeper.com".to_string();
@@ -6774,6 +6821,8 @@ fn new_chat_lists_chat_people_like_desktop() {
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("zzzz".into())));
     assert!(found(&app, "No results found") && !found(&app, "Chats"));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("  ".into())));
+    assert!(!found(&app, "No results found"), "only a query has no results");
 }
 
 #[test]
@@ -6886,6 +6935,22 @@ fn new_chat_reaches_matrix_users_like_desktop() {
     }
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::GroupTitle("Team".into())));
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
+    assert_eq!(app.confirm, Some(ASK_ROOM_ENCRYPTION), "Desktop asks about encryption first");
+    assert!(found(&app, "Room encryption") && found(&app, "People invited later cannot see earlier messages."));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_main());
+        let _ = sim.click("Encrypted").expect("the toggle row");
+        sim.into_messages().collect()
+    };
+    let off = msgs.iter().find(|m| matches!(m, UiMessage::NewChat(new_chat::Msg::Encrypted(false))));
+    let _ = app.update(off.expect("a click turns encryption off").clone());
+    assert!(found(&app, "People invited later can see earlier messages."));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Escape), keyboard::Modifiers::empty()));
+    assert!(app.confirm.is_none() && app.creating_chat == Some(n), "Escape closes the step and keeps the draft");
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), keyboard::Modifiers::empty()));
+    assert!(found(&app, "People invited later can see earlier messages."), "the toggle stays for the draft");
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), keyboard::Modifiers::empty()));
+    assert!(app.confirm.is_none(), "Enter in the step starts the group");
     assert_eq!(app.status_banner, "Creating group chat...", "the Matrix client creates the group");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::GroupCreated(n, matrix, Ok("!group:x".into()))));
     assert!(app.new_chats.iter().all(|d| d.id != n) && app.pending_dm == Some(("!group:x".into(), None)));
@@ -6913,6 +6978,50 @@ fn new_chat_groups_follow_bridge_capabilities_like_desktop() {
     assert_eq!(ids(&app), ["@three:x"], "a bridge without groups replaces the person");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     assert!(!found(&app, "New Group"), "no bridge can create groups");
+}
+
+/// Desktop's `GroupTitleBar` avatar and `T$t`: a bridge whose groups need an avatar starts one only with a picked
+/// image, and its `max_length` stops the picks with Desktop's toast.
+#[test]
+fn new_group_avatar_and_size_like_desktop() {
+    let mut app = demo_app("new-group-avatar");
+    let accounts = rail_accounts(&app.store.read());
+    let account = accounts.into_iter().find(|a| app.can_group(a) && a != "hungryserv").expect("a group bridge");
+    let group = serde_json::json!({ "name": { "allowed": true }, "avatar": { "required": true },
+        "participants": { "max_length": 2 } });
+    let _ = app.update(UiMessage::Capabilities(
+        account.clone(),
+        Ok(serde_json::json!({ "group_creation": { "group": group } })),
+    ));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::NewGroup));
+    let user = |id: &str| Box::new(User { id: id.into(), full_name: Some(id.into()), ..Default::default() });
+    for id in ["@one:x", "@two:x", "@three:x"] {
+        let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(account.clone(), user(id))));
+    }
+    assert_eq!(app.new_chats[0].users.len(), 2, "the bridge takes two people");
+    let full = format!("{} groups can have up to 2 people", network_label(&account));
+    assert_eq!(app.toast.as_ref().map(|t| t.text.as_str()), Some(full.as_str()));
+    let start = |app: &BeeperGuiApp| {
+        let mut sim = simulator(app.view_main());
+        let _ = sim.click("Start group chat").expect("the button");
+        sim.into_messages().count()
+    };
+    assert_eq!(start(&app), 0, "the bridge needs an avatar");
+    let path = beeper_core::testing::temp_dir("new-group-avatar").join("a.png");
+    ::image::RgbaImage::new(4, 4).save_with_format(&path, ::image::ImageFormat::Png).expect("write an image");
+    let n = app.new_chats[0].id;
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::AvatarLoaded(n, portal::load_file(&path))));
+    assert!(app.new_chats[0].photo.as_ref().is_some_and(|(_, mime, _)| mime == "image/png"));
+    assert_eq!(start(&app), 1, "the picked avatar enables Start");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
+    assert_eq!(app.sticky_banner.as_deref(), Some("Creating group chat..."));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::NewGroup));
+    let m = n + 1;
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::AvatarLoaded(m, portal::load_file(&path))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Select(n)));
+    assert!(app.new_chats.iter().any(|d| d.id == m), "Desktop's `isDraftEmpty` keeps a draft with an avatar");
 }
 
 #[test]
@@ -7602,6 +7711,15 @@ fn sign_in_username_and_continue_like_desktop() {
     (done.login_window, done.main_window) = (done.main_window, None);
     done.login.screen = Screen::Accounts;
     assert!(simulator(done.view_login()).find("Continue").is_ok());
+    let clear = icon::CLOSE.to_string();
+    assert!(simulator(done.view_login()).find(clear.as_str()).is_err(), "an empty search has no clear icon");
+    let _ = done.update(LoginMsg::Query("tele".into()).into());
+    let mut sim = simulator(done.view_login());
+    let _ = sim.click(clear.as_str()).expect("the clear icon of the search");
+    for m in sim.into_messages() {
+        let _ = done.update(m);
+    }
+    assert!(simulator(done.view_login()).find(clear.as_str()).is_err(), "the clear icon empties the search");
     let window = done.login_window;
     let _ = done.update(LoginMsg::Continue.into());
     assert_eq!((done.login_window, done.main_window), (None, window), "the sign-in window becomes the main window");
