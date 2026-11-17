@@ -15,8 +15,11 @@ const USAGE: &str = concat!("USAGE\n  $ ", env!("CARGO_BIN_NAME"), " [COMMAND] [
 const ARGUMENTS: &str = "ARGUMENTS
   LINK  A beeper:// link to open, in the running instance if there is one";
 const ENVIRONMENT: &str = "ENVIRONMENT
-  BEEPER_API_URL     Beeper cloud API (default: https://api.beeper.com)
-  BEEPER_MATRIX_URL  Matrix homeserver (default: https://matrix.beeper.com)";
+  BEEPER_API_URL          Beeper cloud API (default: https://api.beeper.com)
+  BEEPER_MATRIX_URL       Matrix homeserver (default: https://matrix.beeper.com)
+  BEEPER_PROFILE          Profile name, like --profile
+  BEEPER_SERVER_DATA_DIR  Data folder of a managed Server target of the CLI, where serve runs
+  BEEPER_USER_DATA_DIR    Data folder, like --data-dir";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 enum Command {
@@ -273,6 +276,13 @@ fn main() {
         Command::Version => return println!("{}", version()),
         Command::Gui | Command::Serve | Command::Info => {}
     }
+    // The CLI's managed targets: Beeper Server serves headless in `BEEPER_SERVER_DATA_DIR`, and Desktop reads
+    // `BEEPER_PROFILE` and `BEEPER_USER_DATA_DIR`.
+    let var = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
+    let server_dir = var("BEEPER_SERVER_DATA_DIR");
+    let command = if command == Command::Gui && server_dir.is_some() { Command::Serve } else { command };
+    let profile = profile.or_else(|| var("BEEPER_PROFILE"));
+    let data_dir = data_dir.or_else(|| server_dir.or_else(|| var("BEEPER_USER_DATA_DIR")).map(PathBuf::from));
     #[cfg(target_os = "linux")]
     if let Command::Gui = command {
         display::setup(ozone.as_deref());
