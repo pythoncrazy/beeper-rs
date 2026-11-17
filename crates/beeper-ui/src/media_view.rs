@@ -1,5 +1,6 @@
 //! The Media window, the carousel of a chat, and the decode and the load of the media that they show.
 
+use crate::forward;
 use crate::i18n::{tr, trn, trx};
 use crate::style::{
     bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, med, scroll_style, semi, shadow_box,
@@ -567,7 +568,7 @@ impl BeeperGuiApp {
             ),
             false => {
                 let (react, reply) = self.carousel_actions(car, m, c);
-                let forward = close(UiMessage::Forward(vec![mid.clone()]));
+                let forward = close(UiMessage::Forward(forward::Msg::Open(vec![mid.clone()])));
                 let first = [(tr("Reply…"), reply), (tr("React…"), react), (tr("Forward…"), Some(forward))];
                 let first = first.into_iter().filter_map(|(label, msg)| msg.map(|msg| (label.to_string(), msg)));
                 let delete = close(UiMessage::AskDeleteMessage(vec![mid.clone()]));

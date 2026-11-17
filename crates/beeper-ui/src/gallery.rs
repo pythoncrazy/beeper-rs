@@ -1,5 +1,6 @@
 //! Desktop's `GalleryGrouper` and `GalleryAttachments`: the photos and videos that one sender sends in a short time
 //! show as one gallery of up to four tiles.
+use crate::forward;
 use crate::i18n::{tr, trx};
 use crate::style::{bordered_box, fill_box, semi, shadow_box, Palette};
 use crate::{deletable, iso_millis, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, UiMessage};
@@ -241,7 +242,7 @@ impl BeeperGuiApp {
                 .then(|| vec![item(action("Reactions"), "", UiMessage::Gallery(Msg::Reactions(ids.clone(), at)))]),
             Some(vec![
                 item(action("Download All"), "Ctrl D", download),
-                item(action("Forward All…"), "Ctrl Shift F", UiMessage::Forward(ids.clone())),
+                item(action("Forward All…"), "Ctrl Shift F", UiMessage::Forward(forward::Msg::Open(ids.clone()))),
             ]),
             ms.iter().all(|m| deletable(&st, m)).then(|| {
                 let delete = UiMessage::AskDeleteMessage(ids.clone());

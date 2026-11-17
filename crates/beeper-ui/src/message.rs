@@ -1,6 +1,7 @@
 //! The timeline of a chat: the rows of its messages, a message with its bubble, quote and reactions, the message
 //! menu, and the dividers and the scroll button of the timeline.
 
+use crate::forward;
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
 use crate::style::{
     bold, bordered_box, bordered_btn, btn_style, clamp, fill_box, fw, hex, ic, icon, med, mix, pane_card, pick,
@@ -480,7 +481,11 @@ impl BeeperGuiApp {
             (image && !only_image)
                 .then(|| vec![item(tr("Copy Image").into(), "", Some(UiMessage::CopyImage(mid.clone(), 0)))]),
             (m.is_deleted != Some(true)).then(|| {
-                vec![item(tr("Forward…").into(), "Ctrl Shift F", Some(UiMessage::Forward(vec![mid.clone()])))]
+                vec![item(
+                    tr("Forward…").into(),
+                    "Ctrl Shift F",
+                    Some(UiMessage::Forward(forward::Msg::Open(vec![mid.clone()]))),
+                )]
             }),
             (files > 0).then(|| vec![item(download, "Ctrl D", Some(UiMessage::Download(mid.clone(), None)))]),
             Some(vec![

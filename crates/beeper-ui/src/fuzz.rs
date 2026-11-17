@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::composer::{composer_action, hidden_actions, mention_label};
+use crate::forward::forward_chats;
 use crate::toasts::{TOAST_TIMEOUT, UNDO_NOTE_TIMEOUT};
 use beeper_core::config::CentralConfig;
 use beeper_core::matrix::ROOM_MENTION;
@@ -243,8 +244,8 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         50 => UiMessage::ReminderMenu,
         51 => UiMessage::ChatSub(Some(rng.below(SUB_MENU_W.len()) as u8)),
         52 => UiMessage::ArchiveStale,
-        53 => UiMessage::Forward(vec![msg]),
-        54 if app.forward.is_some() => UiMessage::ForwardPick(chat),
+        53 => UiMessage::Forward(forward::Msg::Open(vec![msg])),
+        54 if app.forward.is_some() => UiMessage::Forward(forward::Msg::Pick(chat)),
         55 => UiMessage::SelectAccount(rng.coin().then(|| rng.pick(&accounts).clone())),
         56 if !hits.is_empty() => UiMessage::PickSetting(*rng.pick(&hits)),
         57 => UiMessage::WindowFocused(rng.coin()),
@@ -1954,7 +1955,7 @@ fn carousel_menu_like_desktop() {
     sim.point_at(Point::new(700.0, 600.0));
     let _ = sim.simulate(iced_test::simulator::click());
     let msgs: Vec<UiMessage> = sim.into_messages().collect();
-    let forward = |m: &UiMessage| matches!(m, UiMessage::Commands(c) if matches!(&c[..], [UiMessage::CarouselMenu(false), UiMessage::Commands(c)] if matches!(&c[..], [UiMessage::CloseCarousel, UiMessage::Forward(f)] if f[..] == [mid.clone()])));
+    let forward = |m: &UiMessage| matches!(m, UiMessage::Commands(c) if matches!(&c[..], [UiMessage::CarouselMenu(false), UiMessage::Commands(c)] if matches!(&c[..], [UiMessage::CloseCarousel, UiMessage::Forward(forward::Msg::Open(f))] if f[..] == [mid.clone()])));
     assert!(matches!(&msgs[..], [f, UiMessage::CarouselMenu(false)] if forward(f)), "Forward… closes the carousel");
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Escape), Modifiers::empty()));
     assert!(app.carousel.as_ref().is_some_and(|c| c.menu.is_none()), "Escape closes only the menu");
@@ -2294,9 +2295,9 @@ fn forward_selected_messages_like_desktop() {
     assert_eq!(app.forward.as_ref().map(|f| f.mids.len()), Some(2), "Ctrl Shift F forwards all selected messages");
     let target = app.visible_chats(&app.store.read()).iter().find(|c| c.id != chat).unwrap().id.clone();
     let before = texts(&app, &target).len();
-    let _ = app.update(UiMessage::ForwardPick(target.clone()));
-    let _ = app.update(UiMessage::ForwardSend);
-    let _ = app.update(UiMessage::ForwardSend);
+    let _ = app.update(UiMessage::Forward(forward::Msg::Pick(target.clone())));
+    let _ = app.update(UiMessage::Forward(forward::Msg::Send));
+    let _ = app.update(UiMessage::Forward(forward::Msg::Send));
     let after = texts(&app, &target);
     assert_eq!(after[before..], source[n - 2..], "the messages arrive in timeline order, once for a double click");
 }
