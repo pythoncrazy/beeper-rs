@@ -202,7 +202,8 @@ impl Flags {
             | "enable-polls"
             | "enable-disappearing-message-timer-config"
             | "personal-room-overrides"
-            | "drafts-sync" => self.flag(key),
+            | "drafts-sync"
+            | "deferred-recovery-code-setup" => self.flag(key),
             "archive-as-unread" | "enable-threads" | "block-users" | "delete-chats" => {
                 let on = self.flag(key).on;
                 Feature { show: on, on, upgrade: false }

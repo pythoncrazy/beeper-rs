@@ -1768,7 +1768,9 @@ impl BeeperGuiApp {
             container(pill).padding(at).height(Fill).align_bottom(Fill)
         });
         let status = self.view_network_status(&st);
-        let sidebar = stack![column![header].push(status).push(list).padding(Padding::ZERO.left(8.0))].push(pill);
+        let banner = self.view_key_banner(&st);
+        let sidebar =
+            stack![column![header].push(status).push(banner).push(list).padding(Padding::ZERO.left(8.0))].push(pill);
         let sidebar = container(sidebar).width(w).height(Fill);
         mouse_area(sidebar).on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(SIDEBAR_MENU.into()))).into()
     }

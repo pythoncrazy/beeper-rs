@@ -4200,6 +4200,14 @@ pub async fn new_recovery_key(store: &SharedStore) -> Result<String, String> {
     Ok(key)
 }
 
+/// Desktop's `markRecoveryCodeBackedUp`: the user typed the recovery key of this device again, so it is saved.
+pub fn mark_recovery_key_backed_up(store: &SharedStore) {
+    let mut st = store.write();
+    st.beeper_state.has_backed_up_code = true;
+    st.persist_state_to_sqlite();
+    st.emit_ws("setup.updated", "", None, None, None);
+}
+
 /// Desktop's `confirmResetCrossSigning`: the user typed the new recovery key again, so it is saved.
 pub fn confirm_recovery_key(store: &SharedStore, key: &str) -> Result<(), String> {
     let mut st = store.write();
