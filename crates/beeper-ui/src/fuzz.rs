@@ -7020,3 +7020,45 @@ fn hotkeys_without_an_open_chat_like_desktop() {
         let _ = app.update(UiMessage::RunHotkey(name));
     }
 }
+
+/// Desktop's `callAction`: the call of a bridge shows as a call pill without its text, the chat list shows a call
+/// badge, and nobody reacts to it.
+#[test]
+fn calls_like_desktop() {
+    use beeper_core::models::CallAction;
+    let mut app = demo_app("calls");
+    let chat = "!wa_eric:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(chat.into()));
+    let content = |kind: Option<&str>| {
+        let action = serde_json::json!({ "type": "call", "call_type": kind });
+        serde_json::json!({ "msgtype": "m.text", "body": "Missed voice call", "com.beeper.action_message": action })
+    };
+    assert_eq!(CallAction::of(&serde_json::json!({ "body": "hi" })), None);
+    let call = |n: i64, kind: Option<&str>| {
+        let st = app.store.read();
+        let last = st.timeline_indices(chat).last().map(|&i| st.messages[i].clone()).expect("a message");
+        let sort_key = beeper_core::store::sort_key(last.sort_key.parse::<i64>().expect("a sort key") + n);
+        Message {
+            id: format!("call_{n}"),
+            sort_key,
+            text: Some("Missed voice call".into()),
+            call: CallAction::of(&content(kind)),
+            ..last
+        }
+    };
+    let voice = call(1, Some("voice"));
+    assert!(!voice.reactable(), "nobody reacts to a call");
+    assert_eq!(
+        (crate::message_tag(&voice), crate::preview_body(&voice)),
+        (Some((crate::CALL_TAG, "Voice call", None)), None),
+        "the chat list shows the badge alone"
+    );
+    let video = call(2, Some("video"));
+    assert_eq!(crate::message_tag(&video), Some((crate::VIDEO_TAG, "Video call", None)));
+    let other = call(3, None);
+    assert_eq!(crate::message_tag(&other).map(|t| t.1), Some("Call"));
+    app.store.write().upsert_message(voice);
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("Voice call").is_ok(), "the call pill");
+    assert!(sim.find("Missed voice call").is_err(), "without the text of the bridge");
+}

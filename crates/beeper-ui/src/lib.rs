@@ -1778,7 +1778,7 @@ fn edit_open(m: &Message, rules: MessageRules) -> bool {
 /// The text of a chat list preview, or a label for its links.
 fn preview_body(m: &Message) -> Option<String> {
     match m.links.len() {
-        _ if m.poll.is_some() => None,
+        _ if m.poll.is_some() || m.call.is_some() => None,
         _ if m.html.is_some() => m.html.as_deref().map(beeper_core::codec::html_text),
         _ if m.text.as_ref().is_some_and(|t| !t.is_empty()) => m.text.clone(),
         _ if !m.attachments.is_empty() => None,
@@ -1836,13 +1836,37 @@ fn pin_bubble<'a>(text: &str, mention: bool, (bg, fg): (Color, Color), cell: f32
 /// shows when the message has no text, with whether that detail is italic.
 type MediaTag = (usize, &'static str, Option<(String, bool)>);
 
-/// The `TAG_ICONS` index of Desktop's Poll badge, which shows the `poll-options` icon.
-const POLL_TAG: usize = 9;
+/// The index of Desktop's Poll badge, which shows the `poll-options` icon of the composer.
+const POLL_TAG: usize = 10;
+/// The `TAG_ICONS` indices of the Video badge, whose `videocam` icon the video calls share, and of the call badge.
+const VIDEO_TAG: usize = 1;
+const CALL_TAG: usize = 9;
 
+/// Desktop's `_P`: the badge of a poll, then of a call, then of the attachments.
 fn message_tag(m: &Message) -> Option<MediaTag> {
-    match m.poll {
-        Some(_) => Some((POLL_TAG, trx("Poll", "chat list badge for a poll message"), None)),
+    if m.poll.is_some() {
+        return Some((POLL_TAG, trx("Poll", "chat list badge for a poll message"), None));
+    }
+    match &m.call {
+        Some(call) => Some((if call.is_video() { VIDEO_TAG } else { CALL_TAG }, call_label(call), None)),
         None => media_tag(&m.attachments),
+    }
+}
+
+/// Desktop's `Yle`: the label of a call.
+fn call_label(call: &beeper_core::models::CallAction) -> &'static str {
+    match call.call_type.as_deref() {
+        Some("video") => tr("Video call"),
+        Some("voice") => tr("Voice call"),
+        _ => trx("Call", "generic call type label"),
+    }
+}
+
+fn tag_glyph(tag: usize) -> &'static svg::Handle {
+    if tag == POLL_TAG {
+        &COMPOSER_ICONS[8]
+    } else {
+        &TAG_ICONS[tag]
     }
 }
 
@@ -1957,7 +1981,7 @@ fn contact_card<'a>(p: &Palette, c: &VCard) -> El<'a> {
 
 /// Desktop's chat list badge icons: image, videocam, volume_up, audio_file, account_circle, csv, folder_zip,
 /// draft and photo_library, at its `scale(1.2)` in a 12 px box.
-static TAG_ICONS: std::sync::LazyLock<[svg::Handle; 9]> = std::sync::LazyLock::new(|| {
+static TAG_ICONS: std::sync::LazyLock<[svg::Handle; 10]> = std::sync::LazyLock::new(|| {
     [
         "M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-80h560v-560H200v560Zm40-80h480L570-480 450-320l-90-120-120 160Zm-40 80v-560 560Z",
         "M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h480q33 0 56.5 23.5T720-720v180l160-160v440L720-420v180q0 33-23.5 56.5T640-160H160Zm0-80h480v-480H160v480Zm0 0v-480 480Z",
@@ -1968,6 +1992,7 @@ static TAG_ICONS: std::sync::LazyLock<[svg::Handle; 9]> = std::sync::LazyLock::n
         "M640-480v-80h80v80h-80Zm0 80h-80v-80h80v80Zm0 80v-80h80v80h-80ZM447-640l-80-80H160v480h400v-80h80v80h160v-400H640v80h-80v-80H447ZM160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Zm0-80v-480 480Z",
         "M240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z",
         "M360-400h400L622-580l-92 120-62-80-108 140Zm-40 160q-33 0-56.5-23.5T240-320v-480q0-33 23.5-56.5T320-880h480q33 0 56.5 23.5T880-800v480q0 33-23.5 56.5T800-240H320Zm0-80h480v-480H320v480ZM160-80q-33 0-56.5-23.5T80-160v-560h80v560h560v80H160Zm160-720v480-480Z",
+        "M798-120q-125 0-247-54.5T329-329Q229-429 174.5-551T120-798q0-18 12-30t30-12h162q14 0 25 9.5t13 22.5l26 140q2 16-1 27t-11 19l-97 98q20 37 47.5 71.5T387-386q31 31 65 57.5t72 48.5l94-94q9-9 23.5-13.5T670-390l138 28q14 4 23 14.5t9 23.5v162q0 18-12 30t-30 12ZM241-600l66-66-17-94h-89q5 41 14 81t26 79Zm358 358q39 17 79.5 27t81.5 13v-88l-94-19-67 67ZM241-600Zm358 358Z",
     ]
     .map(|d| {
         let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="80 -880 800 800"><path d="{d}"/></svg>"#);
@@ -6102,8 +6127,12 @@ impl BeeperGuiApp {
                 self.pane.msg_anchor = Some(mid);
             }
             UiMessage::DoubleClickMessage(mid) => {
-                let action = self.store.read().settings.pref("messageDoubleClick");
+                let st = self.store.read();
+                let action = st.settings.pref("messageDoubleClick");
+                let reactable = st.loaded(&mid).is_some_and(Message::reactable);
+                drop(st);
                 return match action {
+                    1 | 5 if !reactable => Task::none(),
                     0 => Task::none(),
                     1 => self.update(UiMessage::React(mid)),
                     3 => self.update(UiMessage::Forward(vec![mid])),
@@ -11659,7 +11688,7 @@ impl BeeperGuiApp {
                     if expired {
                         return txt(label, 13.0).color(fg).into();
                     }
-                    let glyph = tinted(if icon == POLL_TAG { &COMPOSER_ICONS[8] } else { &TAG_ICONS[icon] }, 12.0, fg);
+                    let glyph = tinted(tag_glyph(icon), 12.0, fg);
                     let label = med(label, 10.0).color(fg);
                     container(row![glyph, container(label).padding([0, 2])].align_y(Center))
                         .padding([1, 2])

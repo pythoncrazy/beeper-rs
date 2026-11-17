@@ -712,6 +712,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
             ids.filter_map(|u| u.as_str().map(String::from)).collect()
         }),
         send_status: None,
+        call: crate::models::CallAction::of(c),
         flags: match c["m.mentions"]["user_ids"].as_array() {
             Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
             _ => 0,

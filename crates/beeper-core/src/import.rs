@@ -306,6 +306,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         fallback: false,
         mentions: None,
         send_status: None,
+        call: None,
         flags: 0,
     });
     let text = Some(crate::matrix::reaction_text(&key, target.as_ref(), who));
@@ -342,6 +343,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         fallback: false,
         mentions: None,
         send_status: None,
+        call: None,
         flags: 0,
     })
 }
@@ -759,6 +761,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 .and_then(Value::as_array)
                 .map(|ids| ids.iter().filter_map(|u| u.as_str().map(String::from)).collect()),
             send_status: m.get("sendStatus").cloned().and_then(|v| serde_json::from_value(v).ok()),
+            call: m.pointer("/extra/callAction").cloned().and_then(|v| serde_json::from_value(v).ok()),
             flags: 0,
             id,
         });
