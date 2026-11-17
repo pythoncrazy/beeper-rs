@@ -1001,7 +1001,7 @@ mod tests {
             assert!(inbox.find("WhatsApp disconnected").is_ok(), "the inbox shows it too (Desktop's `mpt`)");
             assert!(inbox.find("Reconnect").is_err(), "Reconnect shows only in its space");
         }
-        app.selected_account_filter = Some("whatsapp".into());
+        app.list.selected_account_filter = Some("whatsapp".into());
         let mut sim = iced_test::simulator(app.view_sidebar());
         assert!(sim.find("WhatsApp disconnected").is_ok());
         sim.click("Reconnect").expect("the Reconnect of the banner");

@@ -89,7 +89,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `setFollowAllThreads`.
     pub(crate) fn follow_all_threads(&mut self, chat: &str, on: bool) {
-        self.chat_menu = None;
+        self.list.chat_menu = None;
         let mut st = self.store.write();
         let cid = st.chats[st.resolve_chat_idx(chat).expect("a known chat")].id.clone();
         st.follow_all_threads(&cid, on);
@@ -146,7 +146,7 @@ impl BeeperGuiApp {
             }
             all
         });
-        all.iter().filter(|(i, _)| !listed || self.listed(st, self.filters, &st.chats[*i])).cloned().collect()
+        all.iter().filter(|(i, _)| !listed || self.listed(st, self.list().filters, &st.chats[*i])).cloned().collect()
     }
 
     /// Desktop's `markAllUnreadThreadsAsRead`.

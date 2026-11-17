@@ -251,7 +251,14 @@ impl BeeperGuiApp {
                 let window = match id {
                     "main" => None,
                     "prefs" => self.settings_window,
-                    _ => self.chat_windows.iter().find(|w| w.1.selected_chat_id.as_deref() == thread).map(|w| w.0),
+                    _ if let Some(space) = id.strip_prefix("space-") => {
+                        self.space_windows.iter().find(|w| w.1 == space).map(|w| w.0)
+                    }
+                    _ => self
+                        .chat_windows
+                        .iter()
+                        .find(|w| w.1.selected_chat_id.as_deref() == thread && !self.is_space_window(w.0))
+                        .map(|w| w.0),
                 };
                 return window.map_or_else(Task::none, window::gain_focus);
             }

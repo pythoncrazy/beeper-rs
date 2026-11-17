@@ -147,6 +147,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     let open = open.is_some();
     let accounts: Vec<String> = st.accounts.iter().map(|a| a.account_id.clone()).collect();
     let rail = crate::rail_accounts(&st);
+    let spaces: Vec<String> = crate::rail_spaces(&st).into_iter().filter(|s| s != crate::LABEL_NUDGE).collect();
     drop(st);
     let chat = rng.pick(&chats).clone();
     let (mchat, msg) = rng.pick(&msgs).clone();
@@ -253,7 +254,8 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         41 => UiMessage::Media(media_view::Msg::Open),
         42 => UiMessage::CloseModals,
         43 => UiMessage::Composer(composer::Msg::ToggleAttachMenu),
-        44 => UiMessage::Window(windows::Msg::OpenChat(chat)),
+        44 if rng.coin() => UiMessage::Window(windows::Msg::OpenChat(chat)),
+        44 => UiMessage::Window(windows::Msg::OpenSpace(rng.pick(&spaces).clone())),
         45 => UiMessage::Window(windows::Msg::CloseRequested(*rng.pick(&windows(app)))),
         46..=48 => UiMessage::KeyPressed(key, mods),
         49 if !deletable.is_empty() => UiMessage::ChatList(chat_list::Msg::AskDelete(rng.pick(&deletable).clone())),
@@ -619,10 +621,13 @@ fn filter_account_submenu_like_desktop() {
     let target = target.account.clone();
     let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("telegram".into())));
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
-    assert!(!app.show_command_palette && app.selected_account_filter == target, "the network name finds the account");
+    assert!(
+        !app.show_command_palette && app.list.selected_account_filter == target,
+        "the network name finds the account"
+    );
     let _ = app.update(UiMessage::RunHotkey("Filter By Account"));
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
-    assert!(app.selected_account_filter.is_none(), "All Accounts clears the filter");
+    assert!(app.list.selected_account_filter.is_none(), "All Accounts clears the filter");
     let _ = app.update(UiMessage::RunHotkey("Command Bar"));
     assert!(app.cmd_submenu.is_none(), "the next command bar is the normal one");
 }
@@ -789,7 +794,7 @@ fn mention_menu_like_desktop() {
     };
     let _ = app.update(UiMessage::OpenUrl(format!("{}{cid} {}", crate::MENTION, user.id)));
     let key = format!("mention:{cid} {}", user.id);
-    assert_eq!(app.chat_menu.as_ref().map(|m| m.0.as_str()), Some(key.as_str()));
+    assert_eq!(app.list.chat_menu.as_ref().map(|m| m.0.as_str()), Some(key.as_str()));
     let items = info::info_menu(&app.store.read(), &key, |_| true);
     let first = items[0].as_ref().expect("an item");
     assert!(first.0.starts_with("Message ") && first.1.is_some(), "{}", first.0);
@@ -1607,7 +1612,7 @@ fn history_and_folder_submenus_like_desktop() {
     assert_eq!(titles, ["Archived", "Low Priority", "Requests"], "the open folder is not listed");
     let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("low".into())));
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
-    assert_eq!(app.active_tab, InboxTab::LowPriority);
+    assert_eq!(app.list.active_tab, InboxTab::LowPriority);
     let _ = app.update(UiMessage::RunHotkey("Command Bar"));
     let cmds = app.commands(&app.store.read(), "folder");
     assert!(cmds[0].title == "Filter by folder type" && cmds[0].msg.is_some());
@@ -2196,6 +2201,140 @@ fn chat_windows_that_left_their_chat_draw_nothing() {
     drop(simulator(app.view(id)));
 }
 
+/// The chats that a space window of rail space `entry` lists.
+fn space_chats(app: &mut BeeperGuiApp, entry: &str) -> Vec<String> {
+    let main = std::mem::replace(&mut app.list, chat_list::ListState::space(entry));
+    let chats = app.visible_chats(&app.store.read()).iter().map(|c| c.id.clone()).collect();
+    app.list = main;
+    chats
+}
+
+/// Desktop's `openSpaceInNewWindow` from the menu of a space bar account: a 1200 by 800 window titled after the
+/// space, with the chat list of the space and no space bar, on the chat of the main window when the space has it.
+/// It handles its chats and menus apart from the main window, opens once, and does not open again at launch.
+#[test]
+fn space_windows_like_desktop() {
+    let mut app = demo_app("space-window");
+    let main = app.main_window.expect("a main window");
+    let accounts = crate::rail_accounts(&app.store.read());
+    let spaces = accounts.into_iter().map(|a| (space_chats(&mut app, &a), a));
+    let (chats, acc) = spaces.max_by_key(|s| s.0.len()).expect("an account space");
+    assert!(chats.len() > 1, "the space has chats");
+    // Its chats show as rows with their titles, out of the pinned grid.
+    for c in &chats {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(c).expect("a chat");
+        st.set_chat_flag(idx, ChatFlag::Pinned, Some(false));
+    }
+    let _ = app.update(UiMessage::SelectChat(chats[1].clone()));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_account_menu(&acc));
+        let _ = sim.click("Open in New Window").expect("an Open in New Window item");
+        sim.into_messages().collect()
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.space_windows.len(), 1, "a space window opens");
+    let (id, entry, list) = &app.space_windows[0];
+    let id = *id;
+    assert!(*entry == acc && list.locked && list.selected_account_filter.as_deref() == Some(acc.as_str()));
+    let pane = &app.chat_windows.iter().find(|w| w.0 == id).expect("a pane for the space window").1;
+    assert_eq!((pane.size, pane.selected_chat_id.as_deref()), (Size::new(1200.0, 800.0), Some(chats[1].as_str())));
+    let name = crate::space_name(&app.store.read(), &acc);
+    assert_eq!(app.title(id), name, "the window is titled after its space");
+    assert!(app.list.selected_account_filter.is_none(), "the main window keeps its space");
+    {
+        let mut sim = simulator(app.view(id));
+        assert!(sim.find(iced::widget::Id::new("rail-inbox")).is_err(), "a space window has no space bar");
+        assert!(sim.find(iced::widget::Id::new("composer-input")).is_ok(), "and shows its chat");
+        let _ = sim.click(name.as_str()).expect("the space name in the header");
+        let menu = |m: &UiMessage| matches!(m, UiMessage::ChatList(chat_list::Msg::OpenMenu(_)));
+        let menus = sim.into_messages().filter(|m| matches!(m, UiMessage::InWindow(_, m) if menu(m)));
+        assert_eq!(menus.count(), 0, "its header opens neither the space sheet nor a menu");
+    }
+    assert!(simulator(app.view(main)).find(iced::widget::Id::new("rail-inbox")).is_ok(), "the main window has one");
+    // A click on a chat of its list opens the chat in the space window only.
+    let titles: Vec<(String, String)> = {
+        let st = app.store.read();
+        let others = st.chats.iter().filter(|c| c.id != chats[1] && chats.contains(&c.id));
+        others.map(|c| (c.id.clone(), c.title.clone())).collect()
+    };
+    let (picked, msgs): (String, Vec<UiMessage>) = {
+        let mut sim = simulator(app.view(id));
+        let (chat, title) = titles.iter().find(|t| sim.find(t.1.as_str()).is_ok()).expect("a row of the space");
+        let _ = sim.click(title.as_str()).expect("a chat of the space");
+        (chat.clone(), sim.into_messages().collect())
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    let pane =
+        |app: &BeeperGuiApp| app.chat_windows.iter().find(|w| w.0 == id).and_then(|w| w.1.selected_chat_id.clone());
+    assert_eq!(pane(&app), Some(picked.clone()));
+    assert_eq!(app.pane.selected_chat_id.as_deref(), Some(chats[1].as_str()), "the main window keeps its chat");
+    // The chat menu of the space window shows there, and not in the main window.
+    let _ =
+        app.update(UiMessage::InWindow(id, Box::new(UiMessage::ChatList(chat_list::Msg::OpenMenu(picked.clone())))));
+    assert!(app.list.chat_menu.is_none() && app.space_windows[0].2.chat_menu.is_some());
+    assert!(
+        simulator(app.view(id)).find("Mark as Unread").is_ok() || simulator(app.view(id)).find("Mark as Read").is_ok()
+    );
+    let main_menu = |app: &BeeperGuiApp| {
+        let mut sim = simulator(app.view(main));
+        sim.find("Mark as Unread").is_ok() || sim.find("Mark as Read").is_ok()
+    };
+    assert!(!main_menu(&app), "the main window shows no chat menu");
+    let _ = app.update(UiMessage::InWindow(id, Box::new(UiMessage::CloseModals)));
+    // Desktop's `disableSpaceSwitching`: the account hotkeys keep the space window on its space.
+    let _ = app.update(UiMessage::InWindow(id, Box::new(UiMessage::RunHotkey("Select Next Account"))));
+    assert_eq!(app.space_windows[0].2.selected_account_filter.as_deref(), Some(acc.as_str()));
+    // It opens once, and Desktop's `zv` keeps no space window for the next launch.
+    let _ = app.update(UiMessage::Window(windows::Msg::OpenSpace(acc.clone())));
+    let _ = app.update(UiMessage::Window(windows::Msg::OpenChat(chats[1].clone())));
+    assert_eq!((app.space_windows.len(), app.chat_windows.len()), (1, 2), "a chat window opens beside it");
+    let path = app.store.read().config.data_dir.join("subwindow-state.json");
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let thread = format!("thread-{}", chats[1]);
+    assert_eq!(
+        saved["openSubwindows"],
+        serde_json::json!([{"windowId": thread, "type": "thread", "threadId": chats[1]}])
+    );
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
+    assert!(app.space_windows.is_empty() && app.chat_windows.iter().all(|w| w.0 != id), "closing it forgets it");
+}
+
+/// A double click on a space of the space bar, the menus of its custom spaces and labels, and the command bar open a
+/// space window like Desktop. A custom space opens on its first chat when it lacks the chat of the main window.
+#[test]
+fn space_windows_open_like_desktop() {
+    let mut app = demo_app("space-window-open");
+    let press = |app: &mut BeeperGuiApp, space: &str| {
+        app.rail_hover = Some((space.into(), Point::new(18.0, 18.0)));
+        let _ = app.update(UiMessage::Rail(rail::Msg::Press));
+        let _ = app.update(UiMessage::Rail(rail::Msg::DragEnd));
+    };
+    press(&mut app, crate::LABEL_NUDGE);
+    press(&mut app, crate::LABEL_NUDGE);
+    press(&mut app, "archive");
+    assert!(app.space_windows.is_empty(), "Create Label and one press open nothing");
+    press(&mut app, "archive");
+    assert_eq!(app.space_windows.len(), 1, "a double click opens the space");
+    let (id, list) = (app.space_windows[0].0, &app.space_windows[0].2);
+    assert!(list.active_tab == InboxTab::Archived && list.selected_account_filter.is_none());
+    assert_eq!(app.title(id), InboxTab::Archived.label());
+    let first = space_chats(&mut app, "archive").into_iter().next();
+    assert_eq!(app.chat_windows.iter().find(|w| w.0 == id).unwrap().1.selected_chat_id, first);
+    let has = |menu: El<'_>| simulator(menu).find("Open in New Window").is_ok();
+    assert!(has(app.view_account_menu("inbox")) && has(app.view_account_menu("label:lbl_work")));
+    assert!(!has(app.view_chat_menu(crate::RAIL_MENU, false, 900.0)), "the space bar background menu has none");
+    let cmds = app.commands(&app.store.read(), "");
+    let open = cmds.iter().find(|c| c.title == "Open space in new window").expect("a command bar entry");
+    assert!(open.category == "Window" && open.keywords == ["pop out", "detach"]);
+    let _ = app.update(open.msg.clone().expect("a command"));
+    assert_eq!(app.space_windows.iter().map(|w| w.1.as_str()).collect::<Vec<_>>(), ["archive", "inbox"]);
+}
+
 #[test]
 fn typing_focuses_the_composer_like_desktop() {
     let mut app = demo_app("typefocus");
@@ -2274,7 +2413,7 @@ fn account_switcher_like_desktop() {
     let _ = app.update(UiMessage::SwitchCard);
     assert!(simulator(app.view_main()).find("Switch Chat").is_ok());
     let _ = app.update(UiMessage::SwitchChat("!alt:x".into()));
-    assert_eq!((app.pane.selected_chat_id.as_deref(), app.chat_menu.is_none()), (Some("!alt:x"), true));
+    assert_eq!((app.pane.selected_chat_id.as_deref(), app.list.chat_menu.is_none()), (Some("!alt:x"), true));
     assert_eq!(app.pane.composer.text().trim(), "hi", "the draft goes to the chat without a draft");
     let st = app.store.read();
     let old = st.chats[st.resolve_chat_idx(&chat.id).unwrap()].draft.clone().unwrap_or_default();
@@ -2825,7 +2964,7 @@ fn forward_rows_open_the_chat_menu_like_desktop() {
     for m in outside {
         let _ = app.update(m);
     }
-    assert!(app.chat_menu.is_none() && app.forward.is_some());
+    assert!(app.list.chat_menu.is_none() && app.forward.is_some());
 }
 
 #[test]
@@ -4684,11 +4823,11 @@ fn create_label_like_desktop() {
     assert_eq!(label.rooms, chats);
     assert_eq!((label.color, label.icon.as_deref()), (Some(11), None), "a second pick clears the icon");
     assert!(chats.iter().all(|c| st.chat(c).label_ids.contains(&label.id)));
-    assert_eq!(app.selected_account_filter, Some(format!("label:{}", label.id)), "the new label opens");
+    assert_eq!(app.list.selected_account_filter, Some(format!("label:{}", label.id)), "the new label opens");
     assert_eq!(app.status_banner, "Created Friends");
     drop(st);
     let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
-    assert!(app.store.read().labels.iter().all(|l| l.name != "Friends") && app.selected_account_filter.is_none());
+    assert!(app.store.read().labels.iter().all(|l| l.name != "Friends") && app.list.selected_account_filter.is_none());
 }
 
 #[test]
@@ -4727,7 +4866,7 @@ fn edit_and_delete_labels_like_desktop() {
         assert!(st.labels.iter().all(|l| l.id != "lbl_work"));
         assert!(rooms.iter().all(|r| !st.chat(r).label_ids.iter().any(|l| l == "lbl_work")));
     }
-    assert_eq!(app.selected_account_filter, None, "the inbox opens when its label is deleted");
+    assert_eq!(app.list.selected_account_filter, None, "the inbox opens when its label is deleted");
     assert_eq!(app.status_banner, "Deleted \"Work\"");
     let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     let st = app.store.read();
@@ -4752,9 +4891,9 @@ fn sidebar_follows_the_spaces_order_like_desktop() {
     assert!(!rail.iter().any(|s| s == "reminders" || s == "label:lbl_vip"), "hidden spaces leave the sidebar");
     assert_eq!(rail.len(), default.len() - 2, "the spaces that are not in the order follow");
     let _ = app.run_hotkey("Switch First 9 Spaces Modifier", 1);
-    assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
+    assert_eq!(app.list.selected_account_filter.as_deref(), Some("label:lbl_work"));
     let _ = app.run_hotkey("Switch First 9 Spaces Modifier", 0);
-    assert_eq!((app.selected_account_filter.as_deref(), app.active_tab), (None, InboxTab::Archived));
+    assert_eq!((app.list.selected_account_filter.as_deref(), app.list.active_tab), (None, InboxTab::Archived));
 }
 
 #[test]
@@ -5009,7 +5148,7 @@ fn accounts_settings_rows_have_the_account_menu_like_desktop() {
     };
     assert!(matches!(&ask[..], [UiMessage::Accounts(accounts::Msg::AskRemove(a))] if *a == account));
     let _ = app.update(ask.into_iter().next().unwrap());
-    assert!(app.chat_menu.is_none() && app.confirm == Some(ASK_REMOVE_ACCOUNT));
+    assert!(app.list.chat_menu.is_none() && app.confirm == Some(ASK_REMOVE_ACCOUNT));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Disconnect and remove the data from this account on Beeper").is_ok());
     let _ = sim.click("Remove from All Devices").expect("the confirm button");
@@ -5038,7 +5177,7 @@ fn sidebar_menus_open_accounts_like_desktop() {
         let open =
             sim.into_messages().find(|m| matches!(m, UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))));
         let _ = app.update(open.expect("the Accounts settings"));
-        assert!(app.chat_menu.is_none() && app.settings_window.is_some());
+        assert!(app.list.chat_menu.is_none() && app.settings_window.is_some());
     }
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{account}"))));
     let open: Vec<UiMessage> = {
@@ -5050,7 +5189,7 @@ fn sidebar_menus_open_accounts_like_desktop() {
         let _ = app.update(m);
     }
     assert_eq!(app.account_page.as_deref(), Some(account.as_str()));
-    assert!(app.chat_menu.is_none() && matches!(app.active_settings_tab, SettingsTab::Accounts));
+    assert!(app.list.chat_menu.is_none() && matches!(app.active_settings_tab, SettingsTab::Accounts));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Sound").is_ok(), "the account page");
 }
@@ -5119,7 +5258,7 @@ fn sidebar_view_menus_like_desktop() {
     for m in open {
         let _ = app.update(m);
     }
-    assert_eq!(app.chat_menu.as_ref().map(|m| m.0.as_str()), Some("account:inbox"));
+    assert_eq!(app.list.chat_menu.as_ref().map(|m| m.0.as_str()), Some("account:inbox"));
     let pick = |app: &mut BeeperGuiApp, item: &str| {
         let msgs: Vec<UiMessage> = {
             let mut sim = simulator(app.view_account_menu("inbox"));
@@ -5132,7 +5271,7 @@ fn sidebar_view_menus_like_desktop() {
         }
     };
     pick(&mut app, "Hide Space Bar");
-    assert!(!app.store.read().settings.on("showSidebar") && app.chat_menu.is_none());
+    assert!(!app.store.read().settings.on("showSidebar") && app.list.chat_menu.is_none());
     pick(&mut app, "Show Space Bar");
     assert!(app.store.read().settings.on("showSidebar"));
     pick(&mut app, "Settings");
@@ -5148,9 +5287,9 @@ fn background_menus_like_desktop() {
         for m in interact(app, main, Size::new(1440.0, 900.0), at, right.map(iced::Event::Mouse).to_vec()) {
             let _ = app.update(m);
         }
-        app.chat_menu.as_ref().map(|m| m.0.clone())
+        app.list.chat_menu.as_ref().map(|m| m.0.clone())
     };
-    assert_eq!(right_click(&mut app, Point::new(62.0, 300.0)).as_deref(), Some("account:inbox"), "the space bar");
+    assert_eq!(right_click(&mut app, Point::new(62.0, 300.0)).as_deref(), Some(RAIL_MENU), "the space bar");
     let _ = app.update(UiMessage::CloseModals);
     assert_eq!(right_click(&mut app, Point::new(72.0, 300.0)).as_deref(), Some(SIDEBAR_MENU), "the sidebar");
     let picked: Vec<UiMessage> = {
@@ -5164,7 +5303,7 @@ fn background_menus_like_desktop() {
     for m in picked {
         let _ = app.update(m);
     }
-    assert!(app.creating_chat.is_some() && app.chat_menu.is_none());
+    assert!(app.creating_chat.is_some() && app.list.chat_menu.is_none());
     let _ = app.update(UiMessage::CloseModals);
 
     assert_eq!(right_click(&mut app, Point::new(100.0, 26.0)).as_deref(), Some("head:inbox"), "the header");
@@ -5177,7 +5316,7 @@ fn background_menus_like_desktop() {
     for m in picked {
         let _ = app.update(m);
     }
-    assert!(app.select_mode && app.selection.is_empty() && app.chat_menu.is_none());
+    assert!(app.select_mode && app.selection.is_empty() && app.list.chat_menu.is_none());
     let first = app.list_ids(&app.store.read())[0].clone();
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleSelected(first.clone())));
     assert!(!app.select_mode && app.selection == [first.clone()]);
@@ -5205,7 +5344,7 @@ fn background_menus_like_desktop() {
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(chat)));
     assert!(simulator(app.view_main()).find("Begin Selecting").is_ok(), "the chat menu shows over the command bar");
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::CloseMenu));
-    assert!(app.show_command_palette && app.chat_menu.is_none());
+    assert!(app.show_command_palette && app.list.chat_menu.is_none());
 }
 
 #[test]
@@ -5217,7 +5356,11 @@ fn space_sheet_like_desktop() {
     for m in interact(&app, main, Size::new(1440.0, 900.0), title, clicks.map(iced::Event::Mouse).to_vec()) {
         let _ = app.update(m);
     }
-    assert_eq!(app.chat_menu.as_ref().map(|m| m.0.as_str()), Some(SPACE_SHEET), "the header title opens the sheet");
+    assert_eq!(
+        app.list.chat_menu.as_ref().map(|m| m.0.as_str()),
+        Some(SPACE_SHEET),
+        "the header title opens the sheet"
+    );
     let pick = |app: &mut BeeperGuiApp, item: &str, has: &[&str], lacks: &[&str]| {
         let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(SPACE_SHEET.into())));
         let msgs: Vec<UiMessage> = {
@@ -5237,8 +5380,8 @@ fn space_sheet_like_desktop() {
     };
     let actions = ["Select Chats", "New Label", "Edit Spaces...", "Add/Remove Accounts..."];
     pick(&mut app, "Work", &[&["Inbox", "Archive"][..], &actions].concat(), &["Space Options", "Label Settings"]);
-    assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
-    assert!(app.chat_menu.is_none());
+    assert_eq!(app.list.selected_account_filter.as_deref(), Some("label:lbl_work"));
+    assert!(app.list.chat_menu.is_none());
     pick(&mut app, "Label Settings", &["Mute"], &["Space Options", "Delete Label"]);
     assert!(app.label_settings.iter().any(|w| w.label == "lbl_work"));
     let _ = app.update(UiMessage::CloseModals);
@@ -5492,10 +5635,13 @@ fn space_view_account_filter_like_desktop() {
         assert!(sim.find("Signal").is_ok(), "the header names the account under the space");
     }
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::PickAccount("acc_signal".into())));
-    assert!(app.space_view_account.is_none(), "picking the account again shows every account");
+    assert!(app.list.space_view_account.is_none(), "picking the account again shows every account");
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::PickAccount("acc_signal".into())));
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::FilterButton));
-    assert!(app.space_view_account.is_none() && app.filters == 0, "the active filter button clears the filters");
+    assert!(
+        app.list.space_view_account.is_none() && app.list.filters == 0,
+        "the active filter button clears the filters"
+    );
     // Archive lists every account, and a space change drops the account.
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Archived)));
     {
@@ -5505,7 +5651,7 @@ fn space_view_account_filter_like_desktop() {
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::PickAccount("acc_whatsapp".into())));
     assert!(app.visible_chats(&app.store.read()).iter().all(|c| c.account_id == "acc_whatsapp"));
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::LowPriority)));
-    assert!(app.space_view_account.is_none(), "another space drops the account");
+    assert!(app.list.space_view_account.is_none(), "another space drops the account");
     // An account space without requests has no Requests filter in its menu.
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("acc_whatsapp".into()))));
     {
@@ -5653,7 +5799,7 @@ fn message_requests_like_desktop() {
     {
         let st = app.store.read();
         let c = &st.chats[st.resolve_chat_idx(first).expect("the accepted chat")];
-        assert!(c.is_request == Some(false) && c.flags & CHAT_REQUEST == 0 && app.chat_menu.is_none());
+        assert!(c.is_request == Some(false) && c.flags & CHAT_REQUEST == 0 && app.list.chat_menu.is_none());
     }
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::Click(second.clone())));
     let heading = {
@@ -5907,8 +6053,8 @@ fn sidebar_overflow_menu_lists_hidden_spaces_like_desktop() {
     for m in picked {
         let _ = app.update(m);
     }
-    assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
-    assert!(app.chat_menu.is_none());
+    assert_eq!(app.list.selected_account_filter.as_deref(), Some("label:lbl_work"));
+    assert!(app.list.chat_menu.is_none());
 }
 
 #[test]
@@ -5936,7 +6082,7 @@ fn chat_menu_acts_on_the_selection_like_desktop() {
     let st = app.store.read();
     let is_unread = |id: &str| has_flag(&st.chats[st.resolve_chat_idx(id).unwrap()], ChatFlag::MarkedUnread);
     assert!(!is_unread(&unread) && !is_unread(&read));
-    assert!(app.chat_menu.is_none() && app.selection.is_empty());
+    assert!(app.list.chat_menu.is_none() && app.selection.is_empty());
 }
 
 #[test]
@@ -5965,7 +6111,7 @@ fn label_inbox_rules_like_desktop() {
         let _ = app.update(m);
     }
     assert!(hidden(&app).iter().all(|&(group, h)| group == h), "Only DMs hides group chats");
-    assert!(app.chat_menu.is_none());
+    assert!(app.list.chat_menu.is_none());
     let _ = app.update(UiMessage::Labels(labels::Msg::SetInbox("lbl_work".into(), Some("none"))));
     assert!(hidden(&app).iter().all(|&(_, h)| h), "None hides all label chats");
     let _ = app.update(UiMessage::Labels(labels::Msg::SetInbox("lbl_work".into(), None)));
@@ -5998,7 +6144,7 @@ fn label_chats_from_the_chat_menu_like_desktop() {
     assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.rooms.iter().any(|r| r == chat)));
     assert_eq!(app.status_banner, "Added to Work");
     let _ = app.update(app.toast.as_ref().and_then(|t| t.open.clone()).expect("the toast opens the label"));
-    assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
+    assert_eq!(app.list.selected_account_filter.as_deref(), Some("label:lbl_work"));
     let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     assert!(labels(&app).is_empty());
     assert_eq!(app.status_banner, "Undo: Add to Work");
@@ -6367,7 +6513,7 @@ fn member_card_like_desktop() {
     for m in msgs {
         let _ = app.update(m);
     }
-    assert_eq!(app.chat_menu.as_ref().map(|m| m.0.as_str()), Some("card:!tg_rust:beeper.com @batuhan:beeper.com"));
+    assert_eq!(app.list.chat_menu.as_ref().map(|m| m.0.as_str()), Some("card:!tg_rust:beeper.com @batuhan:beeper.com"));
     let msgs: Vec<UiMessage> = {
         let mut sim = simulator(app.view_main());
         assert!(sim.find("@batuhan").is_ok());
@@ -6377,7 +6523,7 @@ fn member_card_like_desktop() {
     for m in msgs {
         let _ = app.update(m);
     }
-    assert!(app.chat_menu.is_none());
+    assert!(app.list.chat_menu.is_none());
     assert_eq!(app.sticky_banner.as_deref(), Some("Composing chat..."), "Send Message makes the direct chat");
 }
 
@@ -6533,7 +6679,7 @@ fn chat_info_bookmarks_like_desktop() {
     assert_eq!(labels, [Some("Jump to Message"), None, Some("Remove Bookmark")]);
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("bookmark:{id} {mid}"))));
     let _ = app.update(menu[2].clone().and_then(|i| i.1).expect("Remove Bookmark"));
-    assert!(app.chat_menu.is_none());
+    assert!(app.list.chat_menu.is_none());
     assert!(tall(app.view_info()).find("No Bookmarks").is_ok());
 }
 
@@ -7574,7 +7720,7 @@ fn edit_group_like_desktop() {
     assert!(in_menu(&mut app));
     let _ = app.update(UiMessage::OpenEditGroup(id.clone()));
     let d = app.group_window.as_ref().expect("the window opens");
-    assert!(app.chat_menu.is_none() && d.title == "Beeper Rust Core Team");
+    assert!(app.list.chat_menu.is_none() && d.title == "Beeper Rust Core Team");
     assert_eq!(d.changes(&app.store.read()), (None, None, false), "nothing changed yet");
     fn view(app: &BeeperGuiApp) -> Simulator<'_, UiMessage> {
         simulator(app.view_edit_group(app.group_window.as_ref().expect("open")))

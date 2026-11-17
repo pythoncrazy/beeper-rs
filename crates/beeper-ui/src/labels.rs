@@ -37,7 +37,7 @@ impl BeeperGuiApp {
             Msg::Toggle(label, chat, add) => self.toggle_label(label, chat, add, true),
             Msg::Switch(label, chat, add) => self.toggle_label(label, vec![chat], add, false),
             Msg::OpenEdit(chat) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 if let Some(&(id, _)) = self.labels_windows.iter().find(|w| w.1 == chat) {
                     return window::gain_focus(id);
                 }
@@ -65,7 +65,7 @@ impl BeeperGuiApp {
                 self.store.write().update_label(&id, &l.name, l.color, l.icon, l.rooms);
             }
             Msg::OpenCreate(chats) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 if let Some(d) = &self.label_window {
                     return window::gain_focus(d.id);
                 }
@@ -81,7 +81,7 @@ impl BeeperGuiApp {
             Msg::Edit(label) => return self.open_label_sheet(label, LabelStep::Details),
             Msg::EditChats(label) => return self.open_label_sheet(label, LabelStep::Pick),
             Msg::Mute(id, muted) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 let id = self.label_id(id);
                 let mut st = self.store.write();
                 let name = st.labels.iter().find(|l| l.id == id).expect("a muted label").name.clone();
@@ -91,7 +91,7 @@ impl BeeperGuiApp {
                 self.act(what, UiMessage::Labels(Msg::Mute(id, !muted)), None);
             }
             Msg::SetInbox(id, inbox) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 let id = self.label_id(id);
                 let mut st = self.store.write();
                 let old = st.labels.iter().find(|l| l.id == id).expect("a label").clone();
@@ -102,7 +102,7 @@ impl BeeperGuiApp {
                 self.act(what, UiMessage::Labels(Msg::SetInbox(id, old.inbox)), None);
             }
             Msg::OpenSettings(label) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 let label = self.label_id(label);
                 if let Some(w) = self.label_settings.iter().find(|w| w.label == label) {
                     return window::gain_focus(w.id);
@@ -135,8 +135,8 @@ impl BeeperGuiApp {
                 if let Some(d) = self.spaces_window.as_mut() {
                     d.order.retain(|o| *o != format!("label:{id}"));
                 }
-                if self.selected_account_filter.as_deref() == Some(&format!("label:{id}")) {
-                    self.selected_account_filter = None;
+                if self.list().selected_account_filter.as_deref() == Some(&format!("label:{id}")) {
+                    self.list.selected_account_filter = None;
                 }
                 let shown = self.label_settings.iter().filter(|w| w.label == id);
                 return Task::batch(shown.map(|w| window::close(w.id)).collect::<Vec<_>>());

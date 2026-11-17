@@ -1183,7 +1183,7 @@ impl BeeperGuiApp {
     /// Desktop's `jumpToMessage` and `revealMessage`: shows message `mid` of chat `cid` in the timeline of the pane,
     /// and a reply only in a thread in the thread pane. The thread pane jumps in its own thread.
     pub(crate) fn jump_to(&mut self, cid: String, mid: String) -> Task<UiMessage> {
-        (self.show_command_palette, self.command_palette_query, self.chat_menu) = (false, String::new(), None);
+        (self.show_command_palette, self.command_palette_query, self.list.chat_menu) = (false, String::new(), None);
         if self.pane.thread_root.is_none() {
             self.select_chat(&cid);
             let st = self.store.read();
@@ -2781,7 +2781,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::ToggleBookmark(mid) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 self.store.write().toggle_bookmark(&mid);
             }
             Msg::MarkUnreadFromHere(cid, mid) => {
