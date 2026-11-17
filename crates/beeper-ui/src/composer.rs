@@ -302,9 +302,11 @@ impl BeeperGuiApp {
         let before = &text[..format::offset(&text, pane.composer.cursor().position)];
         let at = before.rfind(['@', ':', '\n']).filter(|_| pane.suggest_hidden.as_ref() != Some(&text))?;
         let query = &before[at + 1..];
+        // Desktop's `findSuggestionMatch` (`[\p{L}\d+\-_]*` after the trigger): ":)" or "@a.b" suggest nothing.
+        let word = |c: char| c.is_alphabetic() || c.is_ascii_digit() || "+-_".contains(c);
         let picks: Vec<Suggestion> = match before.as_bytes()[at] {
-            _ if query.contains(char::is_whitespace) => return None,
-            b'@' if !query.contains('@') => {
+            _ if !query.chars().all(word) => return None,
+            b'@' => {
                 let chat = &st.chats[st.resolve_chat_idx(pane.selected_chat_id.as_deref()?).expect("the open chat")];
                 let key =
                     |u: &&User| [&u.full_name, &u.username, &u.email].map(|k| k.clone().unwrap_or_default()).to_vec();

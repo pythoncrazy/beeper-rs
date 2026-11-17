@@ -240,7 +240,15 @@ pub(crate) fn suggestions(prefix: char, q: &str, tone: u8) -> Vec<(String, &'sta
     let key = format!("{prefix}{q}");
     let first = QUERY_EMOJI.iter().find(|e| e.0 == key).map(|e| (e.2.to_string(), e.1));
     let mut seen = std::collections::HashSet::new();
-    first.into_iter().chain(found).take(10).filter(|(c, _)| seen.insert(c.clone())).collect()
+    let mut picks: Vec<_> = first.into_iter().chain(found).take(10).filter(|(c, _)| seen.insert(c.clone())).collect();
+    // Desktop lists 👍 before 👎 whatever their scores.
+    let at = |base: char| picks.iter().position(|(c, _)| c.starts_with(base));
+    if let (Some(down), Some(up)) = (at('👎'), at('👍')) {
+        if down < up {
+            picks.swap(down, up);
+        }
+    }
+    picks
 }
 
 #[derive(Debug, Clone)]
@@ -747,7 +755,9 @@ mod tests {
         assert_eq!(replace_emoticon("```\na :) ", 9), None);
         assert_eq!(replace_emoticon("`a` :) ", 7), Some(("`a` 🙂 ".into(), 9)));
         let names = |q: &str| suggestions(':', q, 0).into_iter().map(|(c, _)| c).collect::<Vec<_>>().join("");
-        assert!(names(")").starts_with("🙂"));
+        assert!(names(")").starts_with("🙂"), "the search knows emoticons; the composer does not ask it for them");
+        let thumbs = names("thumbs");
+        assert!(thumbs.find('👍') < thumbs.find('👎'), "👍 before 👎: {thumbs}");
         assert_eq!(names("12"), "");
         assert_eq!(names(""), "");
         assert!(names("100").starts_with("💯"));
