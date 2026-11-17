@@ -837,8 +837,8 @@ impl BeeperGuiApp {
         drop(st);
         let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
         let add = self.integrations.add.as_ref().map(|a| self.view_add_token(a));
-        let menu =
-            self.chat_menu.as_ref().and_then(|(cid, at)| Some((cid.strip_prefix("prefs:")?, at))).map(|(id, at)| {
+        let menu = self.list().chat_menu.as_ref().and_then(|(cid, at)| Some((cid.strip_prefix("prefs:")?, at))).map(
+            |(id, at)| {
                 let (menu, sub) = self.account_menu(id, SpaceMenu::Prefs);
                 let size = self.settings_size;
                 let items = if crate::nickname::can_nickname(&self.store.read(), id) { 5.0 } else { 4.0 };
@@ -851,7 +851,8 @@ impl BeeperGuiApp {
                 mouse_area(menu)
                     .on_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
                     .on_right_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
-            });
+            },
+        );
         let profile = self.profile_overlay();
         let picker = self.pane.emoji.as_ref().filter(|pk| pk.pref.is_some()).map(|_| {
             let picker = self.view_emoji_picker(&self.store.read()).expect("the picker is open");
@@ -2335,7 +2336,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::Open(tab) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 return self.open_settings(tab);
             }
             Msg::SlideTo(key, v) => self.settings_slider = Some((key, v)),

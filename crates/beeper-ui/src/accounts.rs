@@ -64,7 +64,7 @@ impl BeeperGuiApp {
             Msg::DismissError(id) => _ = self.dismissed_errors.insert(id),
             Msg::ShowAppQr => self.app_qr = true,
             Msg::OpenSettings(id) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 let open = self.open_settings(SettingsTab::Accounts);
                 self.account_page = Some(id);
                 return open;
@@ -74,7 +74,7 @@ impl BeeperGuiApp {
                 return operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
             }
             Msg::AskRemove(id) => {
-                (self.chat_menu, self.delete_target, self.confirm) = (None, Some(id), Some(ASK_REMOVE_ACCOUNT));
+                (self.list.chat_menu, self.delete_target, self.confirm) = (None, Some(id), Some(ASK_REMOVE_ACCOUNT));
             }
             Msg::Remove(id) => {
                 self.confirm = None;
@@ -91,13 +91,13 @@ impl BeeperGuiApp {
                 self.show(Toast { buttons: vec![("Report a problem", report)], ..Toast::new(text) });
             }
             Msg::SetProps(id, props) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 self.patch_settings(|s| {
                     s.accounts.insert(id, props);
                 })
             }
             Msg::SetInboxVisibility(key, option) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 let st = self.store.read();
                 let client = st.matrix.clone().expect("Show in Inbox needs a Matrix client");
                 let rules = beeper_core::matrix::with_inbox_visibility(st.inbox_rules.clone(), &key, option);

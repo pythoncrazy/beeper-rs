@@ -143,7 +143,7 @@ impl BeeperGuiApp {
                 chat.map(|id| UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(id))))
             }
             "Cycle Filters" => {
-                self.filters = match self.filters {
+                self.list.filters = match self.list().filters {
                     f if f == 1 << 4 => 0,
                     f if f.count_ones() == 1 && f < 1 << 4 => f << 1,
                     _ => 1,
@@ -154,11 +154,11 @@ impl BeeperGuiApp {
                 Some(UiMessage::Hotkeys(hotkeys::Msg::Modal(self.hotkeys_modal.is_none().then(String::new))))
             }
             "Filter: All" => {
-                self.filters = 0;
+                self.list.filters = 0;
                 None
             }
             f if FILTER_HOTKEYS.contains(&f) => {
-                self.filters ^= 1 << FILTER_HOTKEYS.iter().position(|h| *h == f).expect("a filter hotkey");
+                self.list.filters ^= 1 << FILTER_HOTKEYS.iter().position(|h| *h == f).expect("a filter hotkey");
                 None
             }
             "Chat: Send File" => chat.map(|_| UiMessage::Composer(composer::Msg::PickFiles)),
@@ -177,9 +177,11 @@ impl BeeperGuiApp {
             "Reset Zoom" => Some(UiMessage::Zoom(zoom::Msg::Step(0))),
             "Search" => Some(UiMessage::CommandBar(commands::Msg::TogglePalette)),
             "Search: Room" => chat.map(|a0| UiMessage::CommandBar(commands::Msg::SearchRoom(a0))),
+            // Desktop's `disableSpaceSwitching` keeps a space window on its space.
+            "Select Next Account" | "Select Previous Account" if self.list.locked => None,
             "Select Next Account" | "Select Previous Account" => {
                 let rail = rail_accounts(&self.store.read());
-                let at = self.selected_account_filter.as_ref().and_then(|a| rail.iter().position(|r| r == a));
+                let at = self.list().selected_account_filter.as_ref().and_then(|a| rail.iter().position(|r| r == a));
                 let to = match (name == "Select Next Account", at) {
                     (true, None) => rail.first().cloned().map(Some),
                     (true, Some(i)) => rail.get(i + 1).cloned().map(Some),

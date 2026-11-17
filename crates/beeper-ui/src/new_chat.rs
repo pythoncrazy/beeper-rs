@@ -63,7 +63,7 @@ impl BeeperGuiApp {
     pub(crate) fn new_chat(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
             Msg::Open => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 let id = self.new_chats.iter().map(|d| d.id).max().map_or(0, |n| n + 1);
                 let draft = NewChat { id, users: Vec::new(), group: false, title: String::new(), photo: None };
                 self.new_chats.insert(0, draft);
@@ -255,7 +255,7 @@ impl BeeperGuiApp {
                 // The second click of a double click on the close button hits the draft that the first click removed.
                 let Some(i) = self.new_chats.iter().position(|d| d.id == id) else { return Task::none() };
                 self.new_chats.remove(i);
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 if self.creating_chat != Some(id) {
                     return Task::none();
                 }

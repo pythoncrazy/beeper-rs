@@ -1274,7 +1274,7 @@ async fn lifecycle() {
         for m in sim.into_messages() {
             let _ = gui.update(m);
         }
-        assert_eq!(gui.active_tab, InboxTab::Requests);
+        assert_eq!(gui.list.active_tab, InboxTab::Requests);
     }
 
     let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::SelectTab(InboxTab::AllChats)));
@@ -1287,7 +1287,7 @@ async fn lifecycle() {
         }
     }
     let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::PickFilter(1)));
-    assert!(gui.filters == 0 && !gui.show_filter_menu, "picking the only active filter clears it");
+    assert!(gui.list.filters == 0 && !gui.list.show_filter_menu, "picking the only active filter clears it");
     let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
     {
         let mut sim = simulator(gui.view_main());
@@ -1403,15 +1403,15 @@ async fn lifecycle() {
     let mods = iced::keyboard::Modifiers::CTRL | iced::keyboard::Modifiers::ALT;
     let rail = |d: &str| UiMessage::KeyPressed(iced::keyboard::Key::Character(d.into()), mods);
     let _ = gui.update(rail("2"));
-    assert_eq!(gui.active_tab, InboxTab::Archived, "Ctrl Alt 2 opens Archive");
+    assert_eq!(gui.list.active_tab, InboxTab::Archived, "Ctrl Alt 2 opens Archive");
     let _ = gui.update(rail("7"));
     assert_eq!(
-        gui.selected_account_filter.as_deref(),
+        gui.list.selected_account_filter.as_deref(),
         Some("hungryserv"),
         "Ctrl Alt 7 opens the first account after the six views without the label nudge"
     );
     let _ = gui.update(rail("1"));
-    assert!(gui.active_tab == InboxTab::AllChats && gui.selected_account_filter.is_none());
+    assert!(gui.list.active_tab == InboxTab::AllChats && gui.list.selected_account_filter.is_none());
     {
         use iced::keyboard::{key::Named, Key, Modifiers};
         let ids: Vec<String> = gui.visible_chats(&store.read()).iter().take(3).map(|c| c.id.clone()).collect();
@@ -1513,7 +1513,7 @@ async fn lifecycle() {
         st.chats[i].network_id = Some("g1".into());
         let shown: Vec<_> = gui.visible_chats(&st).iter().map(|c| c.id.clone()).collect();
         assert_eq!(shown, [st.chats[i].id.clone()], "the server shows only its chats");
-        gui.selected_account_filter = Some(st.chats[i].account_id.clone());
+        gui.list.selected_account_filter = Some(st.chats[i].account_id.clone());
         assert!(!gui.visible_chats(&st).iter().any(|c| c.id == st.chats[i].id), "the account omits the server chats");
     }
     {
@@ -1531,9 +1531,9 @@ async fn lifecycle() {
         let read = st.chats[0].unread_count == 0 && st.chats[0].is_marked_unread != Some(true);
         drop(st);
         let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::OpenMenu(cid.clone())));
-        assert!(gui.chat_menu.as_ref().is_some_and(|(c, _)| *c == cid), "right-click opens the chat menu");
+        assert!(gui.list.chat_menu.as_ref().is_some_and(|(c, _)| *c == cid), "right-click opens the chat menu");
         let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleRead(cid.clone())));
-        assert!(gui.chat_menu.is_none(), "a menu action closes the menu");
+        assert!(gui.list.chat_menu.is_none(), "a menu action closes the menu");
         let c = store.read().chats[0].clone();
         assert_eq!(c.unread_count == 0 && c.is_marked_unread != Some(true), !read, "the read toggle flips the chat");
         let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::OpenMenu(cid.clone())));
@@ -1553,7 +1553,7 @@ async fn lifecycle() {
                 })
                 .collect();
             assert_eq!(sent, [Some(at), None], "a reminder is set and dismissed on the homeserver");
-            assert!(st.chats[0].reminder.is_none() && gui.chat_menu.is_none());
+            assert!(st.chats[0].reminder.is_none() && gui.list.chat_menu.is_none());
             for (i, at) in [(0, 2), (1, 1)] {
                 st.set_reminder(i, Some(ChatReminder { remind_at_ms: at, dismiss_on_incoming_message: true }));
             }
@@ -1645,7 +1645,7 @@ async fn lifecycle() {
         };
         let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::OpenMenu(doomed.clone())));
         let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::AskDelete(doomed.clone())));
-        assert!(gui.chat_menu.is_none() && simulator(gui.view_main()).find("Delete for Everyone").is_ok());
+        assert!(gui.list.chat_menu.is_none() && simulator(gui.view_main()).find("Delete for Everyone").is_ok());
         take_outbox(&mut store.write());
         let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::Delete(doomed.clone(), true)));
         let mut st = store.write();
