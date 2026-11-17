@@ -1,4 +1,5 @@
 //! Desktop's message notifications (`maybeSendNotification` and `sendNotification`).
+use crate::reminders;
 use crate::{BeeperGuiApp, UiMessage};
 use beeper_core::config::{account_network, millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::NetworkKind::*;
@@ -337,7 +338,8 @@ impl BeeperGuiApp {
         }
         let Some((chat, msg)) = self.notifications.remove(&id) else { return Task::none() };
         // Desktop's `markRead`, `remind1h` and `remind8h` actions, and its reply from the notification.
-        let hours = |h: i64| UiMessage::SetReminder(chat.clone(), Some(now_unix_millis() + h * 3_600_000));
+        let hours =
+            |h: i64| UiMessage::Reminders(reminders::Msg::Set(chat.clone(), Some(now_unix_millis() + h * 3_600_000)));
         match action.as_deref() {
             Some("markRead") if msg.is_empty() => self.update(UiMessage::MarkRead(chat)),
             Some("markRead") => self.update(UiMessage::MarkReadThrough(chat, msg)),

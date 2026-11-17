@@ -5,6 +5,7 @@ use crate::blocking;
 use crate::forward;
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
 use crate::members;
+use crate::reminders::reminder_day;
 use crate::style::{
     bold, bordered_box, bordered_btn, btn_style, clamp, fill_box, fw, hex, ic, icon, med, mix, pane_card, pick,
     scroll_style, semi, shadow_box, stable_bar, txt, Bare, CLEAR, GUTTER,
@@ -13,10 +14,10 @@ use crate::{
     anim, badged, brightness, can_thread, chat_theme, clock, commands, copy_text, day_label, day_num, day_of,
     delete_dialog, ease_out, edit_open, editable, email, enter_key, feedback_btn, file_icon, fmt_phone,
     format_short_ts, gallery, handle, has_older, human_size, lift, locale_string, locate, member_name, membership,
-    menu_item, menu_rule, network_bot, pending, pill_btn, profile_link, reminder_day, reply_root, send_rise,
-    sender_label, short_title, still_sending_at, tinted, today, unavailable, video, vlist, BeeperGuiApp, El, PillLook,
-    UiMessage, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, CHEVRON_DOWN, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM,
-    MESSAGE_MENU_W, ORANGE, TRASH, VIEW_SIDEBAR,
+    menu_item, menu_rule, network_bot, pending, pill_btn, profile_link, reply_root, send_rise, sender_label,
+    short_title, still_sending_at, tinted, today, unavailable, video, vlist, BeeperGuiApp, El, PillLook, UiMessage,
+    BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, CHEVRON_DOWN, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W,
+    ORANGE, TRASH, VIEW_SIDEBAR,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::*;

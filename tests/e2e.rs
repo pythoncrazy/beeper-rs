@@ -1515,8 +1515,8 @@ async fn lifecycle() {
         assert!(simulator(gui.view_main()).find("In an Hour").is_ok(), "Remind Me opens the presets");
         let at = beeper_core::config::now_unix_millis() + 3_600_000;
         take_outbox(&mut store.write());
-        let _ = gui.update(UiMessage::SetReminder(cid.clone(), Some(at)));
-        let _ = gui.update(UiMessage::SetReminder(cid.clone(), None));
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Set(cid.clone(), Some(at))));
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Set(cid.clone(), None)));
         {
             let mut st = store.write();
             let sent: Vec<_> = take_outbox(&mut st)
@@ -1538,14 +1538,14 @@ async fn lifecycle() {
             gui.visible_chats(&st).iter().map(|c| c.reminder.as_ref().unwrap().remind_at_ms).collect::<Vec<_>>()
         };
         assert_eq!(order(&gui), [1, 2], "reminders come by least time remaining");
-        let _ = gui.update(UiMessage::ReminderMenu);
-        let _ = gui.update(UiMessage::OrderReminders(1));
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Menu));
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Order(1)));
         assert_eq!(order(&gui), [2, 1], "the display options change the order");
         assert_eq!(store.read().settings.reminders_order, 1);
-        let _ = gui.update(UiMessage::OrderReminders(0));
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Order(0)));
         let _ = gui.update(UiMessage::Ask(Some(1)));
         assert!(simulator(gui.view_main()).find("Dismiss All Reminders?").is_ok());
-        let _ = gui.update(UiMessage::DismissAllReminders);
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::DismissAll));
         assert!(order(&gui).is_empty() && gui.confirm.is_none(), "dismiss all clears every reminder");
         let _ = gui.update(UiMessage::SelectTab(InboxTab::AllChats));
         {
@@ -1554,7 +1554,7 @@ async fn lifecycle() {
             assert!(st.set_chat_flag(1, ChatFlag::Archived, Some(true)));
             st.set_reminder(1, Some(ChatReminder { remind_at_ms: 1, dismiss_on_incoming_message: true }));
         }
-        let _ = gui.update(UiMessage::CheckReminders);
+        let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Check));
         let other = store.read().chats[1].id.clone();
         assert_eq!(store.read().chats[1].is_archived, Some(false), "a due reminder unarchives the chat");
         assert!(simulator(gui.view_main()).find("Reminder").is_ok(), "the chat list shows the Reminder badge");

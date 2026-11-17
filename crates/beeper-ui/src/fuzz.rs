@@ -5,6 +5,8 @@ use super::*;
 use crate::composer::{composer_action, hidden_actions, mention_label};
 use crate::forward::forward_chats;
 use crate::new_chat::{account_display_name, chat_people, typed_phone};
+use crate::reminders::reminder_day;
+use crate::scheduled::send_day;
 use crate::toasts::{TOAST_TIMEOUT, UNDO_NOTE_TIMEOUT};
 use beeper_core::config::CentralConfig;
 use beeper_core::matrix::ROOM_MENTION;
@@ -202,7 +204,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         3 => UiMessage::OpenChatMenu(chat),
         4 => UiMessage::ToggleFlag(chat, flag),
         5 => UiMessage::ToggleRead(chat),
-        6 => UiMessage::SetReminder(chat, rng.coin().then_some(now + 3_600_000)),
+        6 => UiMessage::Reminders(reminders::Msg::Set(chat, rng.coin().then_some(now + 3_600_000))),
         7 => UiMessage::OpenMessageMenu(msg),
         8 => UiMessage::ClickMessage(msg),
         9 => UiMessage::DoubleClickMessage(msg),
@@ -242,7 +244,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         45 => UiMessage::CloseRequested(*rng.pick(&windows(app))),
         46..=48 => UiMessage::KeyPressed(key, mods),
         49 if !deletable.is_empty() => UiMessage::AskDeleteChat(rng.pick(&deletable).clone()),
-        50 => UiMessage::ReminderMenu,
+        50 => UiMessage::Reminders(reminders::Msg::Menu),
         51 => UiMessage::ChatSub(Some(rng.below(SUB_MENU_W.len()) as u8)),
         52 => UiMessage::ArchiveStale,
         53 => UiMessage::Forward(forward::Msg::Open(vec![msg])),
@@ -820,7 +822,7 @@ fn remind_submenu_like_desktop() {
                 UiMessage::OpenSettings(_)
                     | UiMessage::Commands(_)
                     | UiMessage::OpenSubMenu(_)
-                    | UiMessage::SetReminder(..)
+                    | UiMessage::Reminders(reminders::Msg::Set(..))
             )
         };
         sim.into_messages().filter(acts).collect()
@@ -872,9 +874,9 @@ fn send_later_like_desktop() {
     }
     let _ = app.update(UiMessage::SelectTab(InboxTab::SendLater));
     assert_eq!(app.visible_chats(&app.store.read()).iter().map(|c| &c.id).collect::<Vec<_>>(), [&id]);
-    let _ = app.update(UiMessage::RescheduleTo(vec![s.id.clone()], at + 60_000, false));
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::RescheduleTo(vec![s.id.clone()], at + 60_000, false)));
     assert!(!app.store.read().scheduled[0].send_only_on_no_response);
-    let _ = app.update(UiMessage::RescheduleTo(vec![s.id.clone()], at, true));
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::RescheduleTo(vec![s.id.clone()], at, true)));
     let mut st = app.store.write();
     let (_, reply, _) = st.send_message(&id, Some("sure".into()), None, None).unwrap();
     let i = st.message_idx(&reply);
@@ -884,10 +886,10 @@ fn send_later_like_desktop() {
     assert!(app.store.read().scheduled[0].canceled, "a reply cancels an If no reply message");
     let _ = app.update(UiMessage::SelectChat(id.clone()));
     assert!(simulator(app.view_main()).find("Send Later message canceled by reply.").is_ok());
-    let _ = app.update(UiMessage::Unschedule(vec![s.id.clone()]));
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Unschedule(vec![s.id.clone()])));
     assert!(app.store.read().scheduled.is_empty());
     app.store.write().schedule(&id, "now".into(), None, (now_unix_millis() - 1, false), None);
-    let _ = app.update(UiMessage::CheckScheduled);
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Check));
     let st = app.store.read();
     assert!(
         st.scheduled.is_empty() && st.messages.last().unwrap().text.as_deref() == Some("now"),
@@ -899,7 +901,7 @@ fn send_later_like_desktop() {
     std::fs::write(&path, b"%PDF").unwrap();
     let file = portal::load_file(&path).unwrap();
     std::fs::remove_file(path).unwrap();
-    let _ = app.update(UiMessage::SendLater(Some((at, false))));
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(Some((at, false)))));
     let _ = app.update(UiMessage::FilesLoaded(vec![Ok(file.clone()), Ok(file)]));
     assert_eq!(app.pane.send_later, Some((at, false)));
     let _ = app.update(UiMessage::ComposerChanged("two files".into()));
@@ -916,7 +918,7 @@ fn send_later_like_desktop() {
     assert!(simulator(app.view_main()).find(name.as_deref().unwrap()).is_ok(), "a file part shows its name");
     let ids: Vec<String> = app.store.read().scheduled.iter().map(|s| s.id.clone()).collect();
     let uploads: Vec<String> = app.store.read().scheduled.iter().filter_map(|s| s.upload.clone()).collect();
-    let _ = app.update(UiMessage::SendNow(ids));
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::SendNow(ids)));
     let st = app.store.read();
     let last = &st.timeline_indices(&id)[st.timeline_indices(&id).len() - 3..];
     let sent: Vec<_> = last.iter().map(|&i| (st.messages[i].text.clone(), st.messages[i].attachments.len())).collect();
@@ -939,7 +941,7 @@ fn drafts_keep_the_composer_like_desktop() {
     let _ = app.update(UiMessage::ComposerChanged(text.into()));
     let _ = app.update(UiMessage::StartReply(own.clone()));
     let later = (now_unix_millis() + 3_600_000, true);
-    let _ = app.update(UiMessage::SendLater(Some(later)));
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(Some(later))));
     let _ = app.update(UiMessage::RemoveLinkPreview("https://example.com".into()));
     assert!(app.pane.draft_due, "a change starts the save timer");
     let saved = |app: &BeeperGuiApp| {
@@ -967,7 +969,7 @@ fn drafts_keep_the_composer_like_desktop() {
     assert!(matches!(pane.composer_links[..], [(_, LinkState::Discarded)]), "a removed preview stays removed");
     // Desktop's `deletePendingMessage`: a sent draft takes its file with it.
     let upload = saved(&app).attachments[0].upload_id.clone();
-    let _ = app.update(UiMessage::SendLater(None));
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(None)));
     let _ = app.update(UiMessage::SubmitComposer);
     let _ = app.update(UiMessage::SaveDrafts);
     assert!(!app.store.read().assets.contains_key(&upload), "the upload of the sent draft goes away");
@@ -2203,10 +2205,10 @@ fn typing_notices_like_desktop() {
     assert_eq!(typing(&app), Some(note.to_string()), "a key starts the notice");
     let _ = app.update(UiMessage::SubmitComposer);
     assert_eq!(typing(&app), None, "a send ends the notice");
-    let _ = app.update(UiMessage::SendLater(Some((now_unix_millis() + 3_600_000, false))));
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(Some((now_unix_millis() + 3_600_000, false)))));
     let _ = app.update(UiMessage::ComposerChanged("later".into()));
     assert_eq!(typing(&app), None, "a Send Later message has no notice");
-    let _ = app.update(UiMessage::SendLater(None));
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(None)));
     let _ = app.update(UiMessage::ComposerChanged("b".into()));
     let _ = app.update(UiMessage::TypingTick);
     assert_eq!(typing(&app), Some(note.to_string()), "the notice stays for 3 seconds");

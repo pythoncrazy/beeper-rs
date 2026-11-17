@@ -2,6 +2,8 @@
 //! of a message.
 
 use crate::i18n::{tr, trf};
+use crate::scheduled;
+use crate::scheduled::send_day;
 use crate::style::{
     bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, mix, scroll_style, semi,
     shadow_box, text_width, txt, Bare, CLEAR,
@@ -9,8 +11,8 @@ use crate::style::{
 use crate::{
     account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, contact_card, dashed, emoji, format,
     gif_width, has_flag, hotkey_key, human_size, icon_btn, images, menu_item, menu_rule, message_tag, network_name,
-    parse_vcard, portal, preview_body, record, removable, send_day, several_accounts, switch_targets, text_urls,
-    tinted, truncate, voice, BeeperGuiApp, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, Toast, UiMessage,
+    parse_vcard, portal, preview_body, record, removable, several_accounts, switch_targets, text_urls, tinted,
+    truncate, voice, BeeperGuiApp, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, Toast, UiMessage,
     CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
 };
 use beeper_core::config::{account_network, now_unix_millis};
@@ -724,7 +726,7 @@ impl BeeperGuiApp {
                 0 => Some(UiMessage::Emoji(emoji::EmojiMsg::Toggle)),
                 2 => Some(UiMessage::TogglePicker(Picker::Gif)),
                 3 => Some(UiMessage::PickFiles),
-                4 => Some(UiMessage::OpenSendLater),
+                4 => Some(UiMessage::Scheduled(scheduled::Msg::Open)),
                 1 => Some(UiMessage::Record(record::Msg::Talk)),
                 5 => Some(UiMessage::Record(record::Msg::Start)),
                 6 => Some(UiMessage::OpenPollCreator(chat.id.clone())),
@@ -1004,9 +1006,11 @@ impl BeeperGuiApp {
                     semi(when, 11.0).color(p.accent),
                     tinted(&CHEVRON_DOWN, 14.0, p.accent)
                 ];
-                let details =
-                    button(details.spacing(4).align_y(Center)).bare(p.accent).on_press(UiMessage::OpenSendLater);
-                let close = icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::SendLater(None));
+                let details = button(details.spacing(4).align_y(Center))
+                    .bare(p.accent)
+                    .on_press(UiMessage::Scheduled(scheduled::Msg::Open));
+                let close =
+                    icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::Scheduled(scheduled::Msg::Set(None)));
                 let blue = if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) };
                 let banner = container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center))
                     .padding(2)

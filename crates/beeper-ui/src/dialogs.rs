@@ -5,6 +5,7 @@ use crate::blocking::blocked_chats;
 use crate::i18n::{tr, trf, trn, trx};
 use crate::integrations;
 use crate::members;
+use crate::reminders;
 use crate::style::{
     bar, bold, bordered_box, btn_style, ell, fill_box, fw, ic, icon, input_style, med, mix, scroll_style, semi,
     shadow_box, text_width, txt, Bare, CLEAR,
@@ -317,7 +318,7 @@ impl BeeperGuiApp {
             ASK_DISMISS_REMINDERS => (
                 tr("Dismiss All Reminders?").into(),
                 tr("This will remove Reminders from all of your chats.").into(),
-                vec![(tr("Yes"), UiMessage::DismissAllReminders)],
+                vec![(tr("Yes"), UiMessage::Reminders(reminders::Msg::DismissAll))],
             ),
             ASK_DELETE_CHAT => {
                 let st = self.store.read();

@@ -3,6 +3,8 @@ use crate::blocking;
 use crate::i18n::{tr, trf, trx};
 use crate::members;
 use crate::new_chat;
+use crate::reminders;
+use crate::scheduled;
 use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
 use crate::{
     has_flag, network_name, shown, BeeperGuiApp, El, InboxTab, SettingsHit, SettingsTab, UiMessage, ASK_LOGOUT,
@@ -239,16 +241,22 @@ impl BeeperGuiApp {
         match menu {
             SubMenu::Remind(id) => {
                 let Some(c) = st.resolve_chat_idx(id).map(|i| &st.chats[i]) else { return Vec::new() };
-                let mut v = time_commands(st, query, |at| UiMessage::RemindIf(c.id.clone(), at, self.cmd_no_reply));
+                let mut v = time_commands(st, query, |at| {
+                    UiMessage::Reminders(reminders::Msg::If(c.id.clone(), at, self.cmd_no_reply))
+                });
                 v.extend(c.reminder.as_ref().map(|r| {
-                    let dismiss = cmd("", tr("dismiss reminder"), Some(UiMessage::SetReminder(c.id.clone(), None)));
+                    let dismiss = cmd(
+                        "",
+                        tr("dismiss reminder"),
+                        Some(UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), None))),
+                    );
                     Command { render: Some((tr("dismiss reminder").into(), locale_times(r.remind_at_ms).1)), ..dismiss }
                 }));
                 v
             }
             SubMenu::Schedule(ids) => time_commands(st, query, |at| match ids.is_empty() {
-                true => UiMessage::SendLater(Some((at, self.cmd_no_reply))),
-                false => UiMessage::RescheduleTo(ids.clone(), at, self.cmd_no_reply),
+                true => UiMessage::Scheduled(scheduled::Msg::Set(Some((at, self.cmd_no_reply)))),
+                false => UiMessage::Scheduled(scheduled::Msg::RescheduleTo(ids.clone(), at, self.cmd_no_reply)),
             }),
             SubMenu::FilterAccount => {
                 let all = cmd("", tr("All Accounts"), Some(UiMessage::SelectTab(InboxTab::AllChats)));
@@ -586,7 +594,7 @@ impl BeeperGuiApp {
             ));
             let category = interned(trf("%s Account", &[&crate::network_label(a)]));
             v.push(cmd(category, mute_title.replacen("%s", &user, 1), mute));
-            let later = self.pane.editing_message_id.is_none().then_some(UiMessage::OpenSendLater);
+            let later = self.pane.editing_message_id.is_none().then_some(UiMessage::Scheduled(scheduled::Msg::Open));
             let later = cmd(trx("Message", "Command bar category"), tr("Send later"), later);
             v.push(later.keys(&["schedule", "past", "future", "time"]).hotkey("Message: Send Later"));
         }
