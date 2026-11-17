@@ -16,7 +16,7 @@ impl BeeperGuiApp {
     pub(crate) fn merged(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
             Msg::Ask(id) => {
-                self.chat_menu = None;
+                self.list.chat_menu = None;
                 (self.confirm, self.delete_target) = (Some(ASK_UNMERGE), Some(id));
                 Task::none()
             }
