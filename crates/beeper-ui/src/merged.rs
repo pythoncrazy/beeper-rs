@@ -50,6 +50,90 @@ impl BeeperGuiApp {
 }
 
 impl BeeperGuiApp {
+    /// Desktop's `composeTarget` of the merged chat `idx` in the pane: the member chat that the switcher pinned, or
+    /// that the draft holds, else the member chat of the newest activity or the default one.
+    pub(crate) fn compose_target_of(&self, st: &BeeperStore, idx: usize) -> usize {
+        let pane = self.pane();
+        let held = pane.compose_target.as_ref().filter(|(_, pinned)| *pinned || !pane.composer.is_empty());
+        let members = st.members(idx);
+        let held = held.and_then(|(id, _)| members.into_iter().find(|&i| st.chats[i].id == *id));
+        held.unwrap_or_else(|| st.compose_target(idx))
+    }
+
+    /// Desktop's `composeSwitchTargets` of the open merged chat (the `chat` variant): its member chats.
+    pub(crate) fn merged_targets(&self, st: &BeeperStore) -> Option<Vec<String>> {
+        let idx = self.pane().selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c))?;
+        let members = st.members(idx);
+        (!members.is_empty()).then(|| members.into_iter().map(|i| st.chats[i].id.clone()).collect())
+    }
+
+    /// Desktop's `retargetToActivity` stops while the composer has a draft: the first character keeps the target.
+    pub(crate) fn hold_compose_target(&mut self) {
+        let pinned = self.pane.compose_target.as_ref().is_some_and(|t| t.1);
+        let st = self.store.read();
+        if pinned || !self.pane.composer.is_empty() || self.merged_targets(&st).is_none() {
+            return;
+        }
+        let Some(idx) = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)) else { return };
+        let target = st.chats[st.compose_target(idx)].id.clone();
+        drop(st);
+        self.pane.compose_target = Some((target, false));
+    }
+
+    /// Desktop's `SwitchChatHoverCard` of a merged chat: "Switch chats" and a row for each member chat, with its
+    /// avatar, its title, and its `identifierOfMember` or network, "• Blocked" for a blocked person, and a check on
+    /// the target.
+    pub(crate) fn view_merged_switch_card(&self, targets: &[String]) -> (El<'_>, f32) {
+        let p = &self.pal;
+        let st = self.store.read();
+        let idx = st.resolve_chat_idx(self.pane().selected_chat_id.as_deref().expect("an open chat")).expect("chat");
+        let on = st.chats[self.compose_target_of(&st, idx)].id.clone();
+        let members: Vec<&Chat> = targets.iter().filter_map(|t| st.find_chat(t)).collect();
+        let subtitle = |m: &Chat| {
+            let network = network_name(&m.account_id);
+            let same: Vec<&Chat> = members.iter().copied().filter(|c| network_name(&c.account_id) == network).collect();
+            identifier(&st, m, &same).unwrap_or_else(|| network.to_string())
+        };
+        let line = || container(Space::new().width(Fill).height(1)).style(fill_box(p.received, 0.0));
+        let header =
+            container(semi(tr("Switch chats"), 13.0).color(p.strong)).padding(Padding::new(12.0).left(27.0).right(8.0));
+        let wide = |m: &Chat| {
+            let name = text_width(&m.title, 16.0, Weight::Normal);
+            29.0 + 28.0 + 8.0 + name.max(text_width(&subtitle(m), 12.0, Weight::Normal)) + 8.0
+        };
+        let w = members
+            .iter()
+            .map(|m| wide(m))
+            .fold(35.0 + text_width(tr("Switch chats"), 13.0, Weight::Semibold), f32::max);
+        let w = w.min(300.0);
+        let rows = members.iter().enumerate().map(|(i, m)| -> El<'_> {
+            let selected = m.id == on;
+            let blocked = st.user_blocked(m);
+            let sub = match blocked {
+                true => format!(
+                    "{} • {}",
+                    subtitle(m),
+                    trx("Blocked", "status of a blocked person, after their username in a list of chats")
+                ),
+                false => subtitle(m),
+            };
+            let info = column![
+                ell(&m.title, w - 75.0, 16.0, Weight::Normal).color(p.strong),
+                ell(&sub, w - 75.0, 12.0, Weight::Normal).line_height(Pixels(16.0)).color(p.strong.scale_alpha(0.4)),
+            ];
+            let check = selected.then(|| ic(icon::CHECK, 13.0).color(p.strong));
+            let row = row![].push(check).push(self.chat_avatar(m, 28.0, 1.25)).push(info).spacing(8).align_y(Center);
+            let pad = Padding::new(8.0).left(if selected { 8.0 } else { 29.0 });
+            let b =
+                button(row).padding(pad).width(Fill).style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 0.0));
+            column![b.on_press(UiMessage::SwitchChat(m.id.clone()))].push((i + 1 < members.len()).then(line)).into()
+        });
+        let h = 41.0 + members.len() as f32 * 53.0;
+        let card = column![header, line()].extend(rows).width(w.ceil());
+        let card = container(card).style(shadow_box(p.menu, p.menu_border, 8.0, 16.0));
+        (mouse_area(card).on_exit(UiMessage::ChatList(chat_list::Msg::CloseMenu)).into(), h)
+    }
+
     /// Desktop's `ThreadInfoBrowserWindow.open`: a 330 by 560 window 20 px right of and below the main window, or the
     /// open one of the chat. It reads nothing.
     fn open_chat_info(&mut self, chat: String) -> Task<UiMessage> {
@@ -155,6 +239,7 @@ pub(crate) fn chat_brand(c: &Chat) -> &'static str {
 mod tests {
     use super::*;
     use crate::fuzz::demo_app;
+    use beeper_core::models::{BLOCK_USER, USER_BLOCKED};
     use iced_test::simulator::simulator;
 
     const KAI: &str = "!ig_kai:beeper.com";
@@ -223,6 +308,43 @@ mod tests {
         assert_eq!(app.pane.selected_chat_id.as_deref(), Some(LENA), "the newest member chat opens");
         let leave = |o: &beeper_core::matrix::Outgoing| matches!(o, beeper_core::matrix::Outgoing::Leave(true));
         assert!(st.outbox.iter().any(|(_, c, o)| *c == id && leave(o)), "the user leaves and forgets its room");
+    }
+
+    /// Desktop's merged chat `composeSwitchTargets`: the target's avatar opens "Switch chats" with the member chats,
+    /// a pick pins the target that the placeholder names and the message goes to, a draft holds an unpinned target,
+    /// and a blocked target leads its "You blocked" bar with the switcher.
+    #[test]
+    fn the_composer_switches_member_chats_like_desktop() {
+        let (mut app, id) = merged_app("merged-switcher");
+        let placeholder = |app: &BeeperGuiApp| {
+            let st = app.store.read();
+            app.composer_placeholder(&st, st.chat(&id))
+        };
+        assert_eq!(placeholder(&app), "Message Lena Fischer on Signal", "the newest message's chat");
+        let _ = app.update(UiMessage::SwitchCard);
+        let picked: Vec<UiMessage> = {
+            let mut sim = simulator(app.view_main());
+            assert!(sim.find("Switch chats").is_ok() && sim.find("Lena Fischer").is_ok());
+            let _ = sim.click("Kai Nakamura").expect("Kai's row");
+            sim.into_messages().collect()
+        };
+        assert!(matches!(&picked[..], [UiMessage::SwitchChat(c)] if c == KAI), "{picked:?}");
+        let _ = app.update(UiMessage::SwitchChat(KAI.into()));
+        assert_eq!(placeholder(&app), "Message Kai Nakamura on Instagram", "the pick pins the target");
+        assert_eq!(app.pane.selected_chat_id.as_deref(), Some(id.as_str()), "the merged chat stays open");
+        let _ = app.update(UiMessage::Composer(composer::Msg::Type("hi Kai".into())));
+        let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+        let st = app.store.read();
+        assert!(st.timeline(KAI).any(|m| m.text.as_deref() == Some("hi Kai")), "the message goes to Kai's chat");
+        drop(st);
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let _ = app.update(UiMessage::SelectChat(id.clone()));
+        assert_eq!(placeholder(&app), "Message Kai Nakamura on Instagram", "Kai's chat has the newest message now");
+        let lena = app.store.read().chat_idx(LENA);
+        app.store.write().update_chat(lena, |c| c.block = BLOCK_USER | USER_BLOCKED);
+        app.store.write().features.flags["features"]["*"]["block-users"] = true.into();
+        let _ = app.update(UiMessage::SwitchChat(LENA.into()));
+        assert!(simulator(app.view_main()).find("You blocked Lena Fischer. ").is_ok(), "the blocked target's bar");
     }
 
     /// Desktop's `ThreadInfoBrowserWindow`: a member chat in the Merged Chats section opens its Chat Info in a window

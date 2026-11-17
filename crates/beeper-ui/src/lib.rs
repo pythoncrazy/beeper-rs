@@ -2453,6 +2453,9 @@ pub struct Pane {
     pub auto_members: Option<String>,
     pub size: Size,
     pub send_later: Option<(i64, bool)>,
+    /// Desktop's `composeTargetID` of a merged chat, and whether the switcher pinned it (`!shouldAutoUpdateTarget`).
+    /// An unpinned target holds while the composer has a draft (`hasBlockingComposerContent`).
+    pub compose_target: Option<(String, bool)>,
     /// Desktop's `ScheduledMessages` state: collapsed and collapsible.
     pub sched_fold: (bool, bool),
     pub sched_menu: Option<(Vec<String>, bool, Point)>,
@@ -3667,6 +3670,7 @@ impl BeeperGuiApp {
         }
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.pane.selected_chat_id = Some(chat_id.to_string());
+        self.pane.compose_target = None;
         let id = st.chats[idx].id.clone();
         st.load_chat(&id);
         self.pane.unread_divider = message::divider_at(&st, &st.chats[idx], &self.pane_msgs(&st));
@@ -4158,6 +4162,11 @@ impl BeeperGuiApp {
                 ]);
             }
             UiMessage::SwitchCard => self.list.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
+            UiMessage::SwitchChat(id) if self.merged_targets(&self.store.read()).is_some() => {
+                // Desktop's merged chat `composeSwitchTargets.onSelect`: `setComposeTarget`.
+                self.list.chat_menu = None;
+                self.pane.compose_target = Some((id, true));
+            }
             UiMessage::SwitchChat(id) => self.switch_chat(id),
             UiMessage::InThread(msg) => return self.in_thread(*msg),
             UiMessage::TypingTick => {
@@ -5806,6 +5815,10 @@ impl BeeperGuiApp {
     /// Desktop's `SwitchChatHoverCard`: "Switch Chat" and a row for each chat of the person, with the avatar, the
     /// network and the user of its account, and a check on the open chat. The card closes when the pointer leaves it.
     fn view_switch_card(&self) -> (El<'_>, f32) {
+        let members = self.merged_targets(&self.store.read());
+        if let Some(members) = members {
+            return self.view_merged_switch_card(&members);
+        }
         let p = &self.pal;
         let st = self.store.read();
         let open = self.pane.selected_chat_id.as_deref().expect("an open chat");
