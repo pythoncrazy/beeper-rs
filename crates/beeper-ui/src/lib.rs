@@ -37,6 +37,7 @@ mod message;
 pub mod new_chat;
 mod nickname;
 mod notify;
+mod pdf;
 mod pins;
 mod popover;
 mod portal;
@@ -2778,6 +2779,8 @@ pub struct BeeperGuiApp {
     pub media: images::Images<Result<Frames, String>>,
     /// The contact cards of `.vcf` attachments by URL, `None` while they load.
     pub(crate) vcards: HashMap<String, Option<Result<vcard::VCard, String>>>,
+    /// The PDFs of the carousel by URL, `None` while they load; their pages are `media` (`pdf.rs`).
+    pub(crate) pdfs: HashMap<String, Option<Result<pdf::Doc, String>>>,
     /// The baked gallery tiles (`gallery.rs`).
     tiles: images::Images<image::Handle>,
     /// Desktop's account `messages` cache for quotes: a quoted message out of the timeline, `None` while it loads.
@@ -3016,6 +3019,7 @@ impl BeeperGuiApp {
             wants: wants::Wants::default(),
             media: images::Images::new(512 << 20),
             vcards: HashMap::new(),
+            pdfs: HashMap::new(),
             tiles: images::Images::new(64 << 20),
             quotes: HashMap::new(),
             dismissed_errors: HashSet::new(),
