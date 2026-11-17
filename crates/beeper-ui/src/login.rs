@@ -69,17 +69,18 @@ static BUBBLE_ARROW: LazyLock<svg::Handle> = LazyLock::new(|| {
     svg::Handle::from_memory(br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 9"><path d="M0 0.5h16L8 8.5z" fill="#fff" stroke="#a0a0a0"/><path d="M0 0h16v1H0z" fill="#fff"/></svg>"##.as_slice())
 });
 
-/// The first frames of Desktop's Lottie animations `username.json`, `email.json` and `lock.json`, made with
-/// velato, and the Google logo.
-static ART: LazyLock<[svg::Handle; 4]> = LazyLock::new(|| {
+/// Desktop's Lottie animations `username.json`, `email.json`, `lock.json` and `key.json`.
+static ART: LazyLock<[crate::lottie::Animation; 4]> = LazyLock::new(|| {
     [
-        include_bytes!("../assets/onboarding/lottie-username.svg").as_slice(),
-        include_bytes!("../assets/onboarding/lottie-email.svg"),
-        include_bytes!("../assets/onboarding/lottie-lock.svg"),
-        GOOGLE_G.as_bytes(),
+        include_bytes!("../assets/onboarding/username.json").as_slice(),
+        include_bytes!("../assets/onboarding/email.json"),
+        include_bytes!("../assets/onboarding/lock.json"),
+        include_bytes!("../assets/onboarding/key.json"),
     ]
-    .map(svg::Handle::from_memory)
+    .map(crate::lottie::Animation::new)
 });
+
+static GOOGLE: LazyLock<svg::Handle> = LazyLock::new(|| svg::Handle::from_memory(GOOGLE_G.as_bytes()));
 
 /// The layers of Desktop's `AnimatedCompositeIllustration`, bottom first: the shadow, which stays, then the 13
 /// layers that float.
@@ -575,7 +576,9 @@ pub(crate) fn brand_button<'a>(
         container(row((0..3).map(dot)).spacing(8)).center(Fill)
     });
     let hover = matches!(variant, Brand::Primary | Brand::Secondary) && msg.is_some();
-    button(stack![container(content).center_x(Fill)].push(dots))
+    // `:not(:disabled):active { transform: scale(.98) }`.
+    let pressable = msg.is_some();
+    let button = button(stack![container(content).center_x(Fill)].push(dots))
         .width(Fill)
         .padding([9, 11])
         .style(move |_: &Theme, s| {
@@ -589,8 +592,11 @@ pub(crate) fn brand_button<'a>(
                 ..Default::default()
             }
         })
-        .on_press_maybe(msg)
-        .into()
+        .on_press_maybe(msg);
+    match pressable {
+        true => crate::lift::press(button, 0.98).into(),
+        false => button.into(),
+    }
 }
 
 pub(crate) fn actions(items: Vec<El<'_>>, bottom: f32) -> El<'_> {
@@ -609,8 +615,9 @@ pub(crate) fn heading<'a>(s: &str, size: f32) -> El<'a> {
     container(svg(text).width(width).height(40)).center_x(Fill).into()
 }
 
+/// Desktop's `Lottie` of a screen: 0 username, 1 email, 2 lock and 3 key.
 pub(crate) fn art<'a>(i: usize, height: impl Into<iced::Length>) -> El<'a> {
-    svg(ART[i].clone()).width(Fill).height(height).into()
+    crate::lottie::lottie(&ART[i], height)
 }
 
 /// Desktop's `BrandInput` with `floatingPlaceholder`: text in the color of the placeholder, and the placeholder
@@ -1130,7 +1137,7 @@ impl BeeperGuiApp {
                     .width(crate::style::balanced_width(&plain, 278.0, 11.0))
                     .center();
                 let terms = container(terms).center_x(Fill);
-                let google = svg(ART[3].clone()).width(18).height(18);
+                let google = svg(GOOGLE.clone()).width(18).height(18);
                 let google_label = trxf("Continue with %s", "button label", &[&"Google"]);
                 let mail =
                     svg(ICONS[0].clone()).width(18).height(18).style(|_, _| svg::Style { color: Some(Color::WHITE) });
@@ -1423,23 +1430,28 @@ impl BeeperGuiApp {
         // Desktop's menu is a native menu, over the toast.
         let menu = l.menu.then(|| {
             let (back, last) = l.screen.menu();
-            let item =
-                |label: &'static str, hotkey, msg| crate::menu_item(p, None, tr(label).into(), hotkey, Some(msg));
+            let item = |label: &'static str, hotkey: String, msg| {
+                crate::menu_item(p, None, tr(label).into(), hotkey, Some(msg))
+            };
+            let report = crate::menubar::accelerator(self.store.read().settings.hotkey_keys("Report a Problem"));
             let items = column![]
-                .push(back.map(|s| item("Go Back", "", LoginMsg::Show(s).into())))
-                .push(item("Report a Problem", "Ctrl Shift P", UiMessage::OpenUrl(crate::ISSUES_URL.into())))
-                .push(last.map(|(label, msg)| item(label, "", msg)));
-            let items = container(items.padding([4, 0])).width(210).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+                .push(back.map(|s| item("Go Back", String::new(), LoginMsg::Show(s).into())))
+                .push(item("Report a Problem", report, UiMessage::OpenUrl(crate::ISSUES_URL.into())))
+                .push(last.map(|(label, msg)| item(label, String::new(), msg)));
+            let items = container(items.padding([4, 0])).width(240).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
             let at = Padding::ZERO.top(34.0 + pad).right(6.0 + pad);
             mouse_area(container(items).align_right(Fill).height(Fill).padding(at)).on_press(LoginMsg::Menu.into())
         });
-        stack![container(page).padding(pad).style(fill_box(frame, 0.0))]
+        let window = stack![container(page).padding(pad).style(fill_box(frame, 0.0))]
             .push(l.toast.as_deref().map(|t| toast(p, t, true)))
             .push(l.pasted().then(|| toast(p, tr("Code auto pasted from clipboard"), false)))
             .push(l.invalid.as_deref().map(bubble))
             .push(menu)
-            .push(self.view_network_menu())
-            .into()
+            .push(self.view_network_menu());
+        // Desktop's menu bar and Keyboard Shortcuts modal, which its onboarding window has too.
+        let (window, menu_drop) = self.with_menu_bar(window.into());
+        let hotkeys = self.hotkeys_modal.as_deref().map(|q| self.view_hotkeys_modal(q, SIZE));
+        stack![window].push(menu_drop).push(hotkeys).into()
     }
 
     /// What a control does when it is clicked or pressed with the keyboard. A busy screen disables its buttons.
@@ -1475,7 +1487,9 @@ impl BeeperGuiApp {
         let l = &mut self.login;
         let stops = l.stops();
         match key {
-            Key::Named(Named::Escape) => (l.menu, self.networks.menu) = (false, None),
+            Key::Named(Named::Escape) => {
+                (l.menu, self.networks.menu, self.menu_bar, self.hotkeys_modal) = (false, None, None, None);
+            }
             Key::Named(Named::Tab) if (mods - Modifiers::SHIFT).is_empty() => {
                 return match l.focus.step(stops, mods.shift()) {
                     Some(Stop::Field) => operation::focus(l.screen.field().expect("a screen with a field")),
@@ -1524,7 +1538,7 @@ mod tests {
         assert!(login.animated(), "the welcome screen ticks its animation");
         drop(super::welcome_scene());
         login.screen = super::Screen::Email;
-        assert!(!login.animated(), "the Lottie frames of the other screens stay");
+        assert!(!login.animated(), "the Lottie animations of the other screens redraw themselves");
     }
 
     #[test]

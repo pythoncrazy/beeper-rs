@@ -496,6 +496,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             .flatten()
             .filter_map(|r| r.as_str().map(str::to_string))
             .collect(),
+        custom_emoji: crate::models::custom_emoji(features.as_ref(), &bridge),
         disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
         timers: timers(features.as_ref(), &levels, me.as_str()),
         older: Older::Unknown,
@@ -3780,6 +3781,34 @@ fn sticker_pack(content: &Value, id: String, key: &str, source: Option<(&str, &s
     StickerPack { id, title, avatar: s(&content["pack"]["avatar_url"]), stickers }
 }
 
+/// Desktop's `k.IMAGE_PACK`: the own image pack of the global account data, whose images are the custom emoji.
+pub const IMAGE_PACK: &str = "m.image_pack";
+
+/// Desktop's `Gd` of `accountDataStore.customEmojis`: each image of the own image pack, with or without a usage,
+/// as a custom emoji with its shortcode, in the order of the pack.
+pub fn pack_emojis(pack: &Value) -> Vec<crate::codec::Emoticon> {
+    let images = pack["images"].as_object().into_iter().flatten();
+    let emoji = |(name, i): (&String, &Value)| Some(crate::codec::Emoticon { name: name.clone(), url: s(&i["url"])? });
+    images.filter_map(emoji).collect()
+}
+
+/// Desktop's `addCustomEmoji`: the own image pack, else `Tm` ("Your Stickers", for emoji and stickers), with the
+/// image at `url` named `name`, or the error when the pack already has the name.
+pub fn with_custom_emoji(pack: &Value, name: &str, url: &str) -> Result<Value, String> {
+    let mut pack = match pack {
+        p if p.is_object() => p.clone(),
+        _ => serde_json::json!({ "pack": { "display_name": "Your Stickers", "usage": ["emoticon", "sticker"] } }),
+    };
+    if pack.get("images").and_then(|i| i.get(name)).is_some_and(|i| !matches!(i, Value::Null | Value::Bool(false))) {
+        return Err(format!("You already have a custom emoji named {name}"));
+    }
+    if !pack["images"].is_object() {
+        pack["images"] = serde_json::json!({});
+    }
+    pack["images"][name] = serde_json::json!({ "url": url });
+    Ok(pack)
+}
+
 /// Applies a change of the inbox rules to every room.
 async fn sync_rules(client: &Client, store: &SharedStore) {
     let rules = global(client, RULES).await;
@@ -3800,6 +3829,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
         .filter_map(|e| Some((e[0].as_str()?.into(), e[1].as_u64()?)));
     let recent = recent.collect();
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
+    let pack = global(client, IMAGE_PACK).await;
     let (flags, usage) = (global(client, crate::features::FLAGS).await, global(client, crate::features::USAGE).await);
     let summary = global(client, crate::features::SUMMARY).await;
     let bridges = global(client, BRIDGE_STATE).await;
@@ -3836,6 +3866,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     }
     st.recent_emoji = recent;
     st.skin_tone = tone;
+    st.image_pack = pack;
     // The flags and the account limits decide what the windows show (polls, Send Later, the networks one can add,
     // ...), so a change draws them again.
     let f = &st.features;
@@ -7234,6 +7265,35 @@ mod tests {
         let r = with_inbox_visibility(rules, "discordgo.G1", "all");
         assert_eq!(inbox_rule(&r, "discordgo", "discordgo", Some("G1")).1, "all");
         assert!(!hidden_from_inbox(&r, "discordgo", &discord, true));
+    }
+
+    #[test]
+    fn custom_emoji_follow_desktop() {
+        use crate::codec::Emoticon;
+        use crate::models::custom_emoji;
+        let pack = json!({ "images": { "cat": { "url": "mxc://x/cat", "usage": ["sticker"] }, "bad": {},
+            "dog": { "url": "mxc://x/dog" } } });
+        let emoji = |n: &str| Emoticon { name: n.into(), url: format!("mxc://x/{n}") };
+        assert_eq!(super::pack_emojis(&pack), [emoji("cat"), emoji("dog")], "stickers too, in the pack's order");
+        assert_eq!(super::pack_emojis(&Value::Null), []);
+        let first = super::with_custom_emoji(&Value::Null, "owl", "mxc://x/owl").unwrap();
+        assert_eq!(
+            first,
+            json!({ "pack": { "display_name": "Your Stickers", "usage": ["emoticon", "sticker"] },
+                "images": { "owl": { "url": "mxc://x/owl" } } })
+        );
+        let next = super::with_custom_emoji(&pack, "owl", "mxc://x/owl").unwrap();
+        assert_eq!(super::pack_emojis(&next).last(), Some(&emoji("owl")));
+        assert_eq!(
+            super::with_custom_emoji(&pack, "cat", "mxc://y/cat"),
+            Err("You already have a custom emoji named cat".into())
+        );
+        // Beeper's defaults take custom emoji, a bridge's room features say so, and other defaults do not.
+        let beeper = json!({ "com.beeper.bridge_name": "hungryserv" });
+        let slack = json!({ "com.beeper.bridge_name": "slackgo", "protocol": { "id": "slackgo" } });
+        assert!(custom_emoji(None, &Value::Null) && custom_emoji(Some(&json!({})), &beeper));
+        assert!(!custom_emoji(None, &slack) && !custom_emoji(Some(&json!({ "edit": 2 })), &beeper));
+        assert!(custom_emoji(Some(&json!({ "custom_emoji_reactions": true })), &slack));
     }
 
     #[test]

@@ -749,7 +749,7 @@ impl BeeperGuiApp {
         column![
             Space::new().height(40),
             heading(tr("Save Your Recovery Key"), 28.0),
-            container(art(2, 240.0)).center(Fill),
+            container(art(3, 240.0)).center(Fill),
         ]
         .push(actions(vec![txt(text, 13.0).color(p.strong).center().width(Fill).into(), save], 24.0))
         .into()
