@@ -1832,20 +1832,12 @@ impl BeeperStore {
         topic: Option<String>,
         avatar: Option<Option<(String, Vec<u8>, String)>>,
     ) {
-        let idx = self.chat_idx_by_id[id];
-        self.update_chat(idx, |c| {
-            if let Some(t) = &topic {
-                c.description = Some(t.clone()).filter(|t| !t.is_empty());
-            }
-            c.edit_room(|c| {
-                if let Some(t) = &title {
-                    c.title = t.clone();
-                }
-                if let Some(a) = &avatar {
-                    c.img_url = a.as_ref().map(|a| a.0.clone());
-                }
-            });
-        });
+        self.apply_group(
+            id,
+            title.as_deref(),
+            topic.as_deref(),
+            avatar.as_ref().map(|a| a.as_ref().map(|a| a.0.as_str())),
+        );
         if let Some(name) = title {
             self.queue(id, Outgoing::State("m.room.name".into(), serde_json::json!({ "name": name })));
         }
@@ -1969,6 +1961,24 @@ impl BeeperStore {
                     .max(chat.last_read_message_sort_key.clone()),
                 ..chat
             }
+        });
+    }
+
+    /// The new title, description and avatar URL of a group here, which the homeserver took.
+    pub fn apply_group(&mut self, id: &str, title: Option<&str>, topic: Option<&str>, avatar: Option<Option<&str>>) {
+        let idx = self.chat_idx_by_id[id];
+        self.update_chat(idx, |c| {
+            if let Some(t) = topic {
+                c.description = Some(t.to_string()).filter(|t| !t.is_empty());
+            }
+            c.edit_room(|c| {
+                if let Some(t) = title {
+                    c.title = t.to_string();
+                }
+                if let Some(a) = avatar {
+                    c.img_url = a.map(str::to_string);
+                }
+            });
         });
     }
 

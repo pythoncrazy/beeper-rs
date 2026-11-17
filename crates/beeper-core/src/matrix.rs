@@ -2455,6 +2455,23 @@ async fn timer_for_messages(room: &Room) -> Option<Value> {
     (!(timer["timer"].is_null() && omit)).then_some(timer)
 }
 
+/// Desktop's `updateGroup` from the Edit Group window: the name, the topic and the avatar of a group sent now, so the
+/// window learns whether the homeserver took them.
+pub async fn update_group(
+    store: SharedStore,
+    chat: String,
+    title: Option<String>,
+    topic: Option<String>,
+    avatar: Option<Option<(Vec<u8>, String)>>,
+) -> Result<(), String> {
+    let name = title.map(|name| Outgoing::State("m.room.name".into(), serde_json::json!({ "name": name })));
+    let topic = topic.map(|topic| Outgoing::State("m.room.topic".into(), serde_json::json!({ "topic": topic })));
+    for out in name.into_iter().chain(topic).chain(avatar.map(Outgoing::Avatar)) {
+        push(&store, chat.clone(), out).await.map_err(|e| e.message)?;
+    }
+    Ok(())
+}
+
 async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), PushError> {
     let client = store.read().matrix.clone().expect("flush checks the Matrix client");
     if let Outgoing::CreateLabel(label) = out {
@@ -5726,6 +5743,42 @@ mod tests {
         let echo = store.read().stored_message(&txn).expect("the echo");
         let a = &echo.attachments[0];
         assert_eq!((a.file_name.as_deref(), a.mime_type.as_deref()), (Some("a.png"), Some("image/png")));
+    }
+
+    /// Desktop's `updateGroup` from the Edit Group window sends the name and the topic now, and a refusal comes back.
+    #[tokio::test]
+    async fn group_updates_report_refusals_like_desktop() {
+        use std::sync::{Arc, Mutex};
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let refuse = Arc::new(Mutex::new(false));
+        let refused = refuse.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, stub_sync()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if method == "PUT" && p.contains("/state/") => match *refused.lock().unwrap() {
+                    true => (403, json!({ "errcode": "M_FORBIDDEN", "error": "not allowed" })),
+                    false => {
+                        log.lock().unwrap().push((p.rsplit("/state/").next().unwrap().to_string(), body));
+                        (200, json!({ "event_id": "$state" }))
+                    }
+                },
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            })
+            .await;
+        let store = stub_store(&crate::testing::temp_dir("group-update"), &url).await;
+        let update = |name: &str| {
+            super::update_group(store.clone(), "!room:x".into(), Some(name.into()), Some("Topic".into()), None)
+        };
+        update("Core").await.expect("the homeserver takes the changes");
+        let sent = sent.lock().unwrap().clone();
+        let kinds: Vec<&str> = sent.iter().map(|(k, _)| k.trim_end_matches('/')).collect();
+        assert_eq!(kinds, ["m.room.name", "m.room.topic"]);
+        assert_eq!(sent[0].1, json!({ "name": "Core" }));
+        *refuse.lock().unwrap() = true;
+        assert!(update("Other").await.is_err(), "a refusal comes back to the window");
     }
 
     /// Desktop's `buildTitle`: the management room of a bridge, `com.beeper.is_bridge_bot_room` in its `m.bridge`, is

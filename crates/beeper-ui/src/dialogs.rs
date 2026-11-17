@@ -177,6 +177,10 @@ pub struct GroupDraft {
     pub hover: bool,
     /// Desktop's `mode === "personal"`: the Edit Chat for Me window, which sets the personal name and photo.
     pub personal: bool,
+    /// Desktop's `isSaving`: the homeserver has not answered the save yet.
+    pub saving: bool,
+    /// Desktop's `isDragActive`: a file is dragged over the window.
+    pub dropping: bool,
 }
 
 impl GroupDraft {
@@ -224,6 +228,10 @@ pub enum GroupEdit {
     Hover(bool),
     Cancel,
     Save,
+    /// The homeserver took the changes of the group, or failed with the error.
+    Saved(Result<(), String>),
+    /// A file dropped on the window, which becomes the avatar when the avatar can change.
+    Dropped(std::path::PathBuf),
 }
 
 /// A New Poll window, Desktop's `PollCreator` state.
@@ -1096,7 +1104,18 @@ impl BeeperGuiApp {
         let title = c.personal_parts().0.unwrap_or_default();
         drop(st);
         let topic = text_editor::Content::new();
-        self.group_window = Some(GroupDraft { id, chat, title, topic, photo: None, hover: false, personal: true });
+        let personal = true;
+        self.group_window = Some(GroupDraft {
+            id,
+            chat,
+            title,
+            topic,
+            photo: None,
+            hover: false,
+            personal,
+            saving: false,
+            dropping: false,
+        });
         open.chain(operation::focus(PERSONAL_INPUT)).chain(operation::select_all(PERSONAL_INPUT))
     }
 
@@ -1124,6 +1143,17 @@ impl BeeperGuiApp {
                 let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Image);
                 return Task::perform(pick, |r| UiMessage::Group(GroupEdit::Picked(r)));
             }
+            GroupEdit::Dropped(path) => {
+                let d = self.group_window.as_ref().expect("the Edit Group window is open");
+                let st = self.store.read();
+                let edits =
+                    d.personal || st.chats[st.resolve_chat_idx(&d.chat).expect("an edited group")].edits & 2 != 0;
+                drop(st);
+                return match edits && !d.saving {
+                    true => self.group_edit(GroupEdit::Picked(Ok(vec![path]))),
+                    false => Task::none(),
+                };
+            }
             GroupEdit::Picked(Ok(paths)) => {
                 let Some(path) = paths.into_iter().next() else { return Task::none() };
                 let url = format!("file://{}", path.display());
@@ -1138,6 +1168,25 @@ impl BeeperGuiApp {
                 (Ok(_), None) => {}
                 (Err(_), _) => self.fail(Toast::new(tr("Failed to upload image").into())),
             },
+            GroupEdit::Saved(r) => {
+                let Some(d) = self.group_window.as_mut() else { return Task::none() };
+                d.saving = false;
+                if let Err(e) = r {
+                    eprintln!("Could not update the group: {e}");
+                    self.fail(Toast::new(tr("Failed to update group").into()));
+                    return Task::none();
+                }
+                let (title, topic, photo) = d.changes(&self.store.read());
+                let photo = d.photo.take().filter(|_| photo);
+                if let Some(Some((url, _, h))) = &photo {
+                    self.avatars.insert(url.clone(), Some(h.clone()));
+                }
+                let url = photo.map(|p| p.map(|(url, ..)| url));
+                let (id, chat) = (d.id, d.chat.clone());
+                let avatar = url.as_ref().map(Option::as_deref);
+                self.store.write().apply_group(&chat, title.as_deref(), topic.as_deref(), avatar);
+                return window::close(id);
+            }
             GroupEdit::Cancel => {
                 return window::close(self.group_window.as_ref().expect("the Edit Group window is open").id)
             }
@@ -1148,6 +1197,15 @@ impl BeeperGuiApp {
                     return Task::none();
                 }
                 let (id, chat, personal) = (d.id, d.chat.clone(), d.personal);
+                // Desktop's `updateGroup` keeps the window open with "Saving" until the homeserver takes the changes,
+                // and leaves them unsaved after an error.
+                if !personal && self.store.read().matrix.is_some() {
+                    d.saving = true;
+                    let avatar = d.photo.as_ref().filter(|_| photo);
+                    let avatar = avatar.map(|p| p.as_ref().map(|(_, m, _)| (m.bytes.clone(), m.mime.clone())));
+                    let save = beeper_core::matrix::update_group(self.store.clone(), chat, title, topic, avatar);
+                    return Task::perform(save, |r| UiMessage::Group(GroupEdit::Saved(r)));
+                }
                 let photo = d.photo.take().filter(|_| photo);
                 if let Some(Some((url, _, h))) = &photo {
                     self.avatars.insert(url.clone(), Some(h.clone()));
@@ -1273,14 +1331,28 @@ impl BeeperGuiApp {
                 .on_press_maybe(msg)
                 .into()
         };
-        let buttons = row![
-            brand(trx("Cancel", "edit group modal button"), false, Some(edit(GroupEdit::Cancel))),
-            brand(trx("Save", "edit group modal button"), true, ready.then_some(edit(GroupEdit::Save))),
-        ]
-        .spacing(8);
+        // Desktop's `SavingButton`: "Saving" and a spinner, with Cancel disabled too.
+        let save: El<'a> = match d.saving {
+            true => {
+                let label = row![med(trx("Saving", "edit group modal button"), 14.0).color(p.on_secondary)]
+                    .push(crate::verify::spinner(14.0, p.on_secondary))
+                    .spacing(4)
+                    .align_y(Center);
+                container(label).center_x(Fill).padding([10, 12]).style(fill_box(p.chip, 9999.0)).into()
+            }
+            false => brand(trx("Save", "edit group modal button"), true, ready.then_some(edit(GroupEdit::Save))),
+        };
+        let cancel = (!d.saving).then_some(edit(GroupEdit::Cancel));
+        let buttons = row![brand(trx("Cancel", "edit group modal button"), false, cancel), save].spacing(8);
         let body = column![container(face).center_x(Fill)].push(remove).push(title).push(topic).push(note).spacing(8);
         let body = column![body, Space::new().height(Fill), buttons];
-        container(body).padding(16).width(Fill).height(Fill).style(fill_box(p.card, 0.0)).into()
+        let body = container(body).padding(16).width(Fill).height(Fill).style(fill_box(p.card, 0.0));
+        // Desktop's `dropzone` while a file is dragged over a window whose avatar can change.
+        let zone = (d.dropping && can(1)).then(|| {
+            let text = med(tr("Drop image here to upload"), 14.0).color(p.strong);
+            container(text).center(Fill).style(bordered_box(p.card.scale_alpha(0.9), p.accent, 2.0, 12.0))
+        });
+        stack![body].push(zone).into()
     }
 
     /// Desktop's `kCt`: the Blocked users window, once.
