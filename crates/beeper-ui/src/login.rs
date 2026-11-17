@@ -332,6 +332,9 @@ pub enum LoginMsg {
     Recovered(Result<(), String>),
     /// "Save Key", and "Reset Recovery Key": a new recovery key.
     NewKey,
+    /// "Reset Recovery Key": Desktop's `deleteAllBridges` first, then a new key.
+    ConfirmReset,
+    BridgesDeleted(Result<(), String>),
     MadeKey(Result<String, String>),
     CopyKey,
     /// "Next" under the new key, which asks for it again.
@@ -859,6 +862,22 @@ impl BeeperGuiApp {
                 return Task::perform(recover, |r| LoginMsg::Recovered(r).into());
             }
             LoginMsg::NewKey => return self.make_recovery_key(),
+            LoginMsg::ConfirmReset => {
+                l.busy = true;
+                let (cloud, token) = (self.cloud.clone(), self.store.read().beeper_state.access_token.clone());
+                let delete = async move {
+                    tokio::task::spawn_blocking(move || cloud.delete_all_bridges(&token).map_err(|e| e.message))
+                        .await
+                        .expect("delete bridges worker thread")
+                };
+                return Task::perform(delete, |r| LoginMsg::BridgesDeleted(r).into());
+            }
+            LoginMsg::BridgesDeleted(Ok(())) => return self.make_recovery_key(),
+            LoginMsg::BridgesDeleted(Err(e)) => {
+                eprintln!("[deleteAllBridges]:: {e}");
+                l.busy = false;
+                l.toast = Some(tr("Failed to reset. Please check your connection and try again.").into());
+            }
             LoginMsg::MadeKey(r) => {
                 l.busy = false;
                 match r {
