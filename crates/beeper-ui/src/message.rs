@@ -476,6 +476,12 @@ fn room_parts(text: &str) -> Vec<(&str, bool)> {
     parts
 }
 
+/// HTML's `dir="auto"`: whether the first strong character of `text` is of a right-to-left script.
+fn right_to_left(text: &str) -> bool {
+    let rtl = |c: char| matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF);
+    text.chars().find(|c| c.is_alphabetic()).is_some_and(rtl)
+}
+
 /// The container of the unread divider, which a chat scrolls to when it opens.
 const UNREAD_DIVIDER: &str = "unread-divider";
 
@@ -2345,8 +2351,11 @@ impl BeeperGuiApp {
             let cut = cut.map(|(t, left)| {
                 txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             });
-            let body =
-                stack![column![body].push(cut)].push(time.map(|t| container(t).align_right(Fill).align_bottom(Fill)));
+            // Desktop's `dir="auto"`: the time of a right-to-left text floats to its left, where its room is.
+            let body = stack![column![body].push(cut)].push(time.map(|t| match right_to_left(&text) {
+                true => container(t).align_left(Fill).align_bottom(Fill),
+                false => container(t).align_right(Fill).align_bottom(Fill),
+            }));
             // Desktop's `read-more-button`: the primary color, white on a sent bubble, with the time at its end.
             let more = clamp.map(|_| {
                 let label = semi(if open { tr("Show less") } else { tr("Show more") }, 14.0);
@@ -3659,6 +3668,13 @@ mod tests {
         let _ = app.update(UiMessage::Message(Msg::HoverEnter(mine)));
         let _ = app.update(UiMessage::Message(Msg::ShowQuickReactions));
         assert!(!quick_shown(&app), "never on your own");
+    }
+
+    /// HTML's `dir="auto"` takes the direction of the first strong character.
+    #[test]
+    fn text_direction_like_html() {
+        assert!(super::right_to_left("مرحبا بالعالم") && super::right_to_left("12 שלום world"));
+        assert!(!super::right_to_left("hello שלום") && !super::right_to_left("123 !?"));
     }
 
     /// Desktop's `DJ` splits the text around each "@room".
