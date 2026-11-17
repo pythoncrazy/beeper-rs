@@ -2444,6 +2444,10 @@ pub struct Pane {
     pub sched_menu: Option<(Vec<String>, bool, Point)>,
     /// Desktop's `openReplyThread`: the message whose reply chain shows over the timeline.
     pub reply_thread: Option<String>,
+    /// When the reply chain last opened, for its fade-in.
+    pub reply_opened: Option<std::time::Instant>,
+    /// Desktop's `carouselState` of the window of the pane. A thread pane keeps none: its window's carousel shows it.
+    pub(crate) carousel: Option<Carousel>,
     pub top: TopOfThread,
     timeline: vlist::VList,
     thread_list: vlist::VList,
@@ -2573,6 +2577,9 @@ pub struct BeeperGuiApp {
     /// The space windows by the rail space they show, with their chat lists. Each also has a pane in
     /// `chat_windows`.
     space_windows: Vec<(window::Id, String, chat_list::ListState)>,
+    /// Desktop's `AttachmentCarouselBrowserWindow` ("Media in %s") of a thread window, as (window, thread window).
+    /// Each also has a pane in `chat_windows`, without a chat, whose carousel it shows.
+    carousel_windows: Vec<(window::Id, window::Id)>,
     /// The chat window that `view` is drawing, so `pane` gives its pane.
     drawing: std::cell::Cell<Option<window::Id>>,
     /// `view` draws the thread pane of the drawn pane.
@@ -2637,8 +2644,9 @@ pub struct BeeperGuiApp {
     pub search_select: Option<(usize, iced::Rectangle)>,
     cursor: std::cell::Cell<Point>,
     forward: Option<Forward>,
-    carousel: Option<Carousel>,
     media_window: Option<MediaWindow>,
+    /// `update` handles, or `view` draws, the Media window, whose carousel is its viewer.
+    in_media: std::cell::Cell<bool>,
     /// On X11 the copied image stays available only while its clipboard lives.
     image_clipboard: Option<arboard::Clipboard>,
     /// Desktop's `pendingButtonIDs`: the action buttons whose callback runs, as (message, button).
@@ -2918,6 +2926,7 @@ impl BeeperGuiApp {
             pane: Pane { size: MAIN_SIZE, ..Pane::default() },
             chat_windows: Vec::new(),
             space_windows: Vec::new(),
+            carousel_windows: Vec::new(),
             drawing: Default::default(),
             drawing_thread: Default::default(),
             thread_fraction: THREAD_FRACTION,
@@ -2959,8 +2968,8 @@ impl BeeperGuiApp {
             image_clipboard: None,
             pressing: HashSet::new(),
             forward: None,
-            carousel: None,
             media_window: None,
+            in_media: Default::default(),
             mods: keyboard::Modifiers::empty(),
             emoji_gen: 0,
             emoji_hovered: [false; 2],
@@ -3418,6 +3427,12 @@ impl BeeperGuiApp {
                 return trn("%d vote", "%d votes", total, &[&total]);
             }
             _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => tr("Media"),
+            _ if self.carousel_opener(id).is_some() => {
+                let pane = &self.chat_windows.iter().find(|w| w.0 == id).expect("an open carousel window").1;
+                let st = self.store.read();
+                let chat = pane.carousel.as_ref().and_then(|c| st.resolve_chat_idx(&st.loaded(&c.mid)?.chat_id));
+                return trf("Media in %s", &[&chat.map_or("Beeper".into(), |i| st.chats[i].title.clone())]);
+            }
             _ if let Some((.., list)) = self.space_windows.iter().find(|w| w.0 == id) => {
                 let title = list.title(&self.store.read());
                 return if title.is_empty() { "Beeper".into() } else { title };
@@ -4326,9 +4341,9 @@ impl BeeperGuiApp {
                         false => self.update(key),
                     };
                 }
-                let asks = self.media_window.as_ref().is_some_and(|w| w.deleting.is_some());
-                if self.carousel.as_ref().is_some_and(|c| c.in_media) && !asks {
-                    return self.carousel_key(&key, mods);
+                let w = self.media_window.as_ref().expect("the Media window is open");
+                if w.viewer.is_some() && w.deleting.is_none() {
+                    return self.as_media(|s| s.carousel_key(&key, mods));
                 }
                 if key == Key::Named(Named::Escape) {
                     let w = self.media_mut();
@@ -4566,6 +4581,10 @@ impl BeeperGuiApp {
             }
             UiMessage::HeaderHoverEnd(n) if n == self.header_hover.1 => self.header_hover.0 = false,
             UiMessage::HeaderHoverEnd(_) => {}
+            UiMessage::InWindow(id, msg) if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
+                let task = self.as_media(|s| s.handle(*msg));
+                return task.map(move |m| UiMessage::InWindow(id, Box::new(m)));
+            }
             UiMessage::InWindow(id, msg) => {
                 if self.chat_windows.iter().all(|w| w.0 != id) {
                     return self.handle(*msg);
@@ -4576,11 +4595,22 @@ impl BeeperGuiApp {
                 self.swapped = outer;
                 self.swap_window(id);
                 let task = task.map(move |m| UiMessage::InWindow(id, Box::new(m)));
-                // A chat window closes when it leaves its chat; a space window stays on its space.
-                let left = self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none());
-                return match left && !self.is_space_window(id) {
-                    false => task,
-                    true => Task::batch([task, window::close(id)]),
+                let (opener, space) = (self.carousel_opener(id), self.is_space_window(id));
+                let pane = &mut self.chat_windows.iter_mut().find(|w| w.0 == id).expect("an open chat window").1;
+                // A chat window closes when it leaves its chat, and a "Media in %s" window when its carousel closes;
+                // a space window stays on its space.
+                let close = match opener {
+                    Some(_) => pane.carousel.is_none(),
+                    None => pane.selected_chat_id.is_none() && !space,
+                };
+                if close {
+                    return Task::batch([task, window::close(id)]);
+                }
+                // Desktop's thread window shows its carousel in its "Media in %s" window.
+                let thread = pane.thread_root.is_some();
+                return match pane.carousel.take_if(|_| thread) {
+                    Some(c) => Task::batch([task, self.show_carousel_window(id, c)]),
+                    None => task,
                 };
             }
             // A sign-in through the Desktop API goes on to the check of encrypted messaging, like a sign-in here.
@@ -4602,18 +4632,16 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let left = self.pane.selected_chat_id.as_deref().is_some_and(|c| st.resolve_chat_idx(c).is_none());
                 self.selection.retain(|c| st.resolve_chat_idx(c).is_some());
-                let gone = self.carousel.is_some() && self.carousel_items(&st).is_none();
                 drop(st);
-                if gone {
-                    self.carousel = None;
-                }
+                let gone = self.close_gone_carousels();
                 if left {
                     (self.pane.selected_chat_id, self.list.chat_menu) = (None, None);
                     self.select_chat(NOTE_CHAT_ID);
                 }
                 self.refresh_theme_and_tray();
                 let older = self.load_older_everywhere();
-                return Task::batch([self.close_notifications(), self.verification_changed(), self.leave_app(), older]);
+                let tasks = [self.close_notifications(), self.verification_changed(), self.leave_app(), older, gone];
+                return Task::batch(tasks);
             }
             UiMessage::RoomJoined(r) => self.room_joined(r),
             UiMessage::Online(on) => self.online = on,
@@ -4641,7 +4669,7 @@ impl BeeperGuiApp {
             UiMessage::KeyPressed(Key::Named(Named::Escape), _) if self.view_once.is_open() => {
                 return self.view_once(view_once::Msg::Dismiss);
             }
-            UiMessage::KeyPressed(key, mods) if self.carousel.as_ref().is_some_and(|c| !c.in_media) => {
+            UiMessage::KeyPressed(key, mods) if self.pane.carousel.is_some() => {
                 return self.carousel_key(&key, mods);
             }
             // Desktop's `C_t` takes every key while a pending attachment has the focus.
@@ -4935,7 +4963,8 @@ impl BeeperGuiApp {
             _ => None,
         });
         let system = iced::system::theme_changes().map(|a0| UiMessage::Settings(settings::Msg::SystemTheme(a0)));
-        let carousel = self.carousel.is_some().then(|| {
+        let viewer = self.media_window.as_ref().is_some_and(|w| w.viewer.is_some());
+        let carousel = (viewer || self.panes().any(|p| p.carousel.is_some())).then(|| {
             iced::event::listen_with(|e, _, id| match e {
                 Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(c), modifiers, .. })
                     if modifiers.is_empty() && matches!(c.as_str(), "d" | "r") =>
@@ -5069,8 +5098,12 @@ impl BeeperGuiApp {
         // The loading of older messages and the fade of the scroll button, in each chat window too.
         let moving =
             |p: &Pane| p.top.loading.is_some() || p.scrolled_up.is_some_and(|s| s.1.elapsed().as_secs_f32() < 0.2);
+        // The fade-in of the reply chain, in the thread panes too.
+        let replies =
+            |p: &Pane| p.reply_thread.is_some() && p.reply_opened.is_some_and(|t| t.elapsed() < message::REPLIES_RISE);
         let animated = rising
             || self.panes().any(moving)
+            || self.panes().flat_map(|p| std::iter::once(p).chain(p.thread.as_deref())).any(replies)
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.typing_shown.values().any(|t| t.2.elapsed() < message::TYPING_FADE)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0)
@@ -5147,8 +5180,10 @@ impl BeeperGuiApp {
     pub fn view(&self, id: window::Id) -> El<'_> {
         let arrow = !self.store.read().settings.on("pointerCursor");
         self.drawing.set(self.chat_windows.iter().any(|w| w.0 == id).then_some(id));
+        self.in_media.set(self.media_window.as_ref().is_some_and(|w| w.id == id));
         let el = cursor::root(self.view_window(id), arrow, &self.cursor, id);
         self.drawing.set(None);
+        self.in_media.set(false);
         let el = match self.chat_windows.iter().any(|w| w.0 == id) {
             true => Element::from(el).map(move |m| UiMessage::InWindow(id, Box::new(m))),
             false => el.into(),
@@ -5204,6 +5239,7 @@ impl BeeperGuiApp {
             self.view_poll_votes(chat, mid)
         } else if self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none())
             && !self.is_space_window(id)
+            && self.carousel_opener(id).is_none()
         {
             // A chat window that left its chat closes, and draws nothing until it is closed.
             Space::new().into()
@@ -5512,12 +5548,13 @@ impl BeeperGuiApp {
         let elsewhere = self.delete_in.is_some_and(|w| self.label_asking(w));
         let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d) && !elsewhere);
         let confirm = confirm.map(|d| self.view_confirm(d));
+        // The carousel shows over its chat, and fills a "Media in %s" window.
         let shows = |c: &&Carousel| {
             let st = self.store.read();
             let chat = st.loaded(&c.mid).map(|m| &m.chat_id);
-            !c.in_media && chat.is_some() && chat == self.pane().selected_chat_id.as_ref()
+            self.drawn_opener().is_some() || chat.is_some() && chat == self.pane().selected_chat_id.as_ref()
         };
-        let carousel = self.carousel.as_ref().filter(shows).and_then(|c| self.view_carousel(c));
+        let carousel = self.pane().carousel.as_ref().filter(shows).and_then(|c| self.view_carousel(c));
         // Desktop portals the zoomed Chat Info avatar over the whole window.
         let thread = self.selection.is_empty() && self.pane().thread.is_some();
         let zoom =

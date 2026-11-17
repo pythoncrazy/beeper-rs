@@ -568,6 +568,17 @@ fn is_vcard(a: &Attachment) -> bool {
 /// Desktop's `BrandTypingIndicator` `transition: { duration: 0.32 }`.
 pub(crate) const TYPING_FADE: std::time::Duration = std::time::Duration::from_millis(320);
 
+/// Desktop's `.reply-thread-messages` `transition-duration: 0.6s`, the longest part of the reply chain fade-in.
+pub(crate) const REPLIES_RISE: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// The reply chain overlay `t` seconds after it opened, as its opacity and how far its messages are below their place:
+/// Desktop's `.reply-thread` fades in over 0.2 s and its messages rise 10 px over 0.6 s, both on
+/// `cubic-bezier(.165, .84, .44, 1)`.
+pub(crate) fn replies_reveal(t: f32) -> (f32, f32) {
+    let curve = |d: f32| crate::style::cubic_bezier((t / d).clamp(0.0, 1.0), [0.165, 0.84, 0.44, 1.0]);
+    (curve(0.2), 10.0 * (1.0 - curve(REPLIES_RISE.as_secs_f32())))
+}
+
 /// The time from one flyover item to the next: the item's ease-out is a quarter in after 32 ms of its 0.2 s.
 const FLYOVER_STAGGER: f32 = 0.032;
 
@@ -1306,16 +1317,22 @@ impl BeeperGuiApp {
                 .on_hide(UiMessage::Timeline(timeline::Msg::Scrolled(true))),
         );
         let list = lift::tight(scroller(col).id(self.pane().scroll_id()));
+        let opened = self.pane().reply_opened.map_or(1.0, |at| at.elapsed().as_secs_f32());
+        let (shown, below) = replies_reveal(opened);
         let replies = self.pane().reply_thread.as_ref().map(|id| {
             let root = st.loaded_idx(id).map_or(id.as_str(), |i| reply_root(&st, &st.messages[i]));
             let chain: Vec<&Message> = msgs.iter().copied().filter(|m| reply_root(&st, m) == root).collect();
             let list = lift::tight(scroller(self.view_messages(&st, chat, &chain, &Rows::of(&st, &chain), true)));
+            // iced draws no widget at an opacity, so only the background and the close button fade in, and the
+            // messages rise inside the overlay, which hides what is under it.
+            let list = container(lift::lift(list, below, 1.0)).clip(true);
             // Desktop blurs the chat 8px under a 0.6 background; iced has no backdrop blur.
-            mouse_area(container(list).width(Fill).height(Fill).style(fill_box(p.card.scale_alpha(0.85), 0.0)))
+            let bg = p.card.scale_alpha(0.85 * shown);
+            mouse_area(container(list).width(Fill).height(Fill).style(fill_box(bg, 0.0)))
                 .on_press(UiMessage::Message(Msg::HideReplies))
         });
         let close = replies.is_some().then(|| -> El<'_> {
-            let close = button(ic(icon::CLOSE, 20.0).color(p.weak))
+            let close = button(ic(icon::CLOSE, 20.0).color(p.weak.scale_alpha(shown)))
                 .padding(10)
                 .style(|_, _| button::Style::default())
                 .on_press(UiMessage::Message(Msg::HideReplies));
@@ -3442,7 +3459,10 @@ impl BeeperGuiApp {
                 let chat = stored(&st, &mid).chat_id;
                 st.vote_poll(&chat, &mid, answers);
             }
-            Msg::ShowReplies(id) => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), Some(id)),
+            Msg::ShowReplies(id) => {
+                (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), Some(id));
+                self.pane.reply_opened = Some(std::time::Instant::now());
+            }
             Msg::HideReplies => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), None),
             Msg::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
             Msg::OpenPollVotes(chat, mid) => {
@@ -3956,6 +3976,29 @@ mod tests {
         app.pane.selected_msgs = ids[..2].to_vec();
         let _ = app.update(UiMessage::Message(Msg::QuoteSelected));
         assert!(app.pane.composer.text().starts_with("> "), "the selection is quoted in the composer");
+    }
+
+    /// Desktop's `.reply-thread` fades in over 0.2 s while its messages rise 10 px into place over 0.6 s, both on
+    /// `cubic-bezier(.165, .84, .44, 1)`, and a click on it still closes it while it comes in.
+    #[test]
+    fn reply_chain_fades_in_like_desktop() {
+        let near = |(a, b): (f32, f32), (x, y): (f32, f32)| (a - x).abs() < 1e-3 && (b - y).abs() < 1e-3;
+        assert!(near(replies_reveal(0.0), (0.0, 10.0)), "it starts clear and 10 px low");
+        let (shown, below) = replies_reveal(0.1);
+        assert!(shown > 0.5 && shown < 1.0 && below > 3.0, "the fast curve: {shown}, {below}");
+        let (shown, below) = replies_reveal(0.2);
+        assert!(shown > 0.999 && below > 0.0 && below < 3.0, "the background is in before the messages: {below}");
+        assert!(near(replies_reveal(REPLIES_RISE.as_secs_f32()), (1.0, 0.0)), "all in place after 0.6 s");
+        let mut app = crate::fuzz::demo_app("reply-fade");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = app.timeline(&app.store.read()).0.last().expect("a message").id.clone();
+        let _ = app.update(UiMessage::Message(Msg::ShowReplies(mid)));
+        assert!(app.pane.reply_opened.is_some_and(|t| t.elapsed() < REPLIES_RISE), "it starts to fade in");
+        let size = iced::Size::new(1000.0, 720.0);
+        let mut sim = iced_test::simulator::Simulator::with_size(Default::default(), size, app.view_main());
+        sim.point_at(Point::new(700.0, 250.0));
+        let _ = sim.simulate(iced_test::simulator::click());
+        assert!(sim.into_messages().any(|m| matches!(m, UiMessage::Message(Msg::HideReplies))));
     }
 
     /// Desktop's link items: "Copy Link" and "Copy Entire Message" only for a right click on an `https://` link, the

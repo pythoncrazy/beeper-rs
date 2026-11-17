@@ -366,7 +366,7 @@ impl BeeperGuiApp {
             // state and speed.
             Msg::Open(mid, ai, w, h) => {
                 let task = self.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, ai, false)));
-                self.carousel.as_mut().expect("the carousel is open").resume = Some((w, h));
+                self.carousel_mut().as_mut().expect("the carousel is open").resume = Some((w, h));
                 return task;
             }
             Msg::Toggle => {
@@ -444,7 +444,7 @@ impl BeeperGuiApp {
             Msg::Restore => return self.restore_pip(),
             Msg::ClosePip => self.stop_pip(),
             Msg::Fullscreen => {
-                let (id, area) = match self.carousel.as_ref().filter(|c| c.in_media && self.carousel_shows_video()) {
+                let (id, area) = match self.carousel().filter(|c| c.in_media && self.carousel_shows_video()) {
                     Some(_) => {
                         let w = self.media_window.as_ref().expect("the Media window is open");
                         (w.id, w.size)
@@ -518,6 +518,14 @@ impl BeeperGuiApp {
         self.video.as_ref().is_some_and(|v| Some(&v.url) == src.as_ref())
     }
 
+    /// The Media window viewer shows the played video, which then fills the Media window.
+    fn viewer_shows_video(&self) -> bool {
+        let was = self.in_media.replace(true);
+        let shows = self.media_window.is_some() && self.carousel_shows_video();
+        self.in_media.set(was);
+        shows
+    }
+
     /// Decode the played video at the carousel size when the carousel shows it.
     pub(crate) fn fit_carousel_video(&mut self) {
         let Some((src, size)) = self.carousel_video() else { return };
@@ -538,14 +546,14 @@ impl BeeperGuiApp {
     /// video that opened it, Desktop plays the inline video again.
     pub(crate) fn close_carousel_video(&mut self) -> Task<UiMessage> {
         let Some((src, _)) = self.carousel_video() else { return Task::none() };
-        let c = self.carousel.as_ref().expect("the carousel is open");
-        match (self.video.as_mut().filter(|v| v.url == src), c.resume) {
+        let (mid, resume) = self.carousel().map(|c| (c.mid.clone(), c.resume)).expect("the carousel is open");
+        match (self.video.as_mut().filter(|v| v.url == src), resume) {
             (Some(v), Some(size)) => {
                 v.resize(size);
                 v.play();
             }
             (Some(v), None) => v.pause(),
-            (None, Some((w, h))) => return self.video(Msg::Play(c.mid.clone(), src, w, h)),
+            (None, Some((w, h))) => return self.video(Msg::Play(mid, src, w, h)),
             (None, None) => {}
         }
         Task::none()
@@ -694,10 +702,14 @@ impl BeeperGuiApp {
     }
 
     /// The video that fills the screen, like Desktop's `screenfull` toggle on the `<video>`, if it is the video of the
-    /// carousel (`in_carousel`) or of the timeline.
+    /// carousel (`in_carousel`) or of the timeline, which the Media window viewer does not fill.
     pub(crate) fn view_full_video(&self, in_carousel: bool) -> Option<El<'_>> {
-        let v = self.video.as_ref().filter(|v| v.full.is_some() && self.carousel_shows_video() == in_carousel)?;
-        let area = match self.carousel.as_ref().filter(|c| in_carousel && c.in_media) {
+        let shown = match in_carousel {
+            true => self.carousel_shows_video(),
+            false => !self.carousel_shows_video() && !self.viewer_shows_video(),
+        };
+        let v = self.video.as_ref().filter(|v| v.full.is_some() && shown)?;
+        let area = match self.carousel().filter(|c| in_carousel && c.in_media) {
             Some(_) => self.media_window.as_ref().expect("the Media window is open").size,
             None => self.pane().size,
         };
