@@ -2298,7 +2298,7 @@ fn message_search(st: &BeeperStore, s: &MessageSearch) -> Result<Value, Response
             && (s.include_muted || c.flags & CHAT_MUTED == 0)
     };
     let mut rows = Vec::new();
-    st.scan_by_time(&q, |n, m| {
+    st.scan_by_time(&q, false, |n, m| {
         if keep(&m) {
             rows.push((n, m));
         }

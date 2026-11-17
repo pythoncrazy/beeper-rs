@@ -180,12 +180,15 @@ pub enum InboxTab {
     Reminders,
     SendLater,
     Requests,
+    /// Desktop's Snoozed space, while snoozing is on.
+    Snoozed,
 }
 
 impl InboxTab {
     pub fn label(self) -> &'static str {
         match self {
             Self::Archived => trx("Archive", "archive space name"),
+            Self::Snoozed => trx("Snoozed", "space name for snoozed chats"),
             _ => tr(["Inbox", "Low Priority", "", "Reminders", "Send Later", "Requests"][self as usize]),
         }
     }
@@ -217,6 +220,7 @@ impl InboxTab {
                 "Send a message later by clicking the clock icon in the composer",
             ),
             ("You have no messages", ""),
+            ("You don't have any snoozed chats", ""),
         ][self as usize];
         (tr(head), tr(hint))
     }
@@ -685,6 +689,8 @@ const ASK_UNBLOCK_OFFLINE: u8 = 21;
 const ASK_TRANSCRIBE: u8 = 22;
 /// Desktop's logout of another device of the account in Settings > Devices.
 const ASK_LOGOUT_DEVICE: u8 = 23;
+/// Desktop's "Room encryption" step of New Chat before it creates a Matrix group of more than one person.
+const ASK_ROOM_ENCRYPTION: u8 = 24;
 /// Desktop opens its `prefs` window at 800 x 740, in the middle of the screen.
 const SETTINGS_SIZE: Size = Size::new(800.0, 740.0);
 /// Desktop's default "Quick reaction emoji".
@@ -708,7 +714,8 @@ fn inbox_label(label: &'static str) -> &'static str {
 }
 /// Desktop's `--chat-view-bubble-padding-x`, which also insets the message footer.
 const BUBBLE_PAD_X: f32 = 11.0;
-const SUB_MENU_W: [f32; 3] = [124.0, 257.0, 180.0];
+/// The widths of the Copy, Remind Me, Label and Snooze submenus of the chat menu.
+const SUB_MENU_W: [f32; 4] = [124.0, 257.0, 180.0, 257.0];
 
 /// A flag as the chat menus show it: "Mark as Read" is for every unread chat.
 fn has_flag(c: &Chat, flag: ChatFlag) -> bool {
@@ -1212,6 +1219,8 @@ svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="
 svg_static!(TIMER, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path fill="currentColor" d="M6.5 1.553a.58.58 0 0 1-.426-.173A.57.57 0 0 1 5.9.954q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174A.57.57 0 0 1 7.1.952q0 .251-.173.426a.57.57 0 0 1-.425.175m0 8.1a.58.58 0 0 1-.426-.174.57.57 0 0 1-.175-.424q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m2.1-6.3a.58.58 0 0 1-.426-.174A.57.57 0 0 1 8 2.756q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m0 4.5a.58.58 0 0 1-.426-.173A.57.57 0 0 1 8 7.255q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m.6-2.25a.58.58 0 0 1-.426-.173.57.57 0 0 1-.175-.425q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175M5 9.803a4.7 4.7 0 0 1-1.866-.375 4.84 4.84 0 0 1-2.56-2.562A4.7 4.7 0 0 1 .2 4.997q0-.993.375-1.863A4.86 4.86 0 0 1 3.134.578 4.7 4.7 0 0 1 5 .203v.9q-1.625 0-2.762 1.138T1.099 5.003t1.138 2.763 2.762 1.137zm1.674-2.675L4.55 5.003v-3h.9v2.625l1.863 1.863z"/></svg>"##);
 svg_static!(CALL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M16.193 17.842q-2.605 0-5.146-1.136t-4.625-3.218q-2.083-2.084-3.219-4.625T2.068 3.717q0-.375.25-.625a.85.85 0 0 1 .625-.25h3.375q.292 0 .52.198a.76.76 0 0 1 .272.468l.541 2.917q.042.333-.02.563a.9.9 0 0 1-.23.395l-2.02 2.042q.416.77.989 1.49.573.718 1.26 1.385.645.646 1.355 1.198.708.552 1.5 1.01l1.958-1.958q.187-.188.49-.281.301-.094.593-.052l2.875.583a.97.97 0 0 1 .48.302.73.73 0 0 1 .187.49v3.375q0 .375-.25.625a.85.85 0 0 1-.625.25"/></svg>"##);
 svg_static!(ADD_ACCOUNT, include_bytes!("../assets/add_account.svg"));
+// Desktop's `CircleInfoIcon` of the Chat Info toggle.
+svg_static!(INFO_CIRCLE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M9.167 14.164h1.667v-5H9.167zm.833-6.667q.354 0 .594-.24.24-.239.24-.593t-.24-.594A.8.8 0 0 0 10 5.83a.8.8 0 0 0-.594.24.8.8 0 0 0-.24.594q0 .354.24.594.24.24.594.24m0 10.834a8.1 8.1 0 0 1-3.25-.657 8.4 8.4 0 0 1-2.646-1.78 8.4 8.4 0 0 1-1.78-2.647A8.1 8.1 0 0 1 1.666 10q0-1.729.656-3.25a8.4 8.4 0 0 1 1.781-2.646 8.4 8.4 0 0 1 2.646-1.781A8.1 8.1 0 0 1 10 1.664q1.73 0 3.25.656a8.4 8.4 0 0 1 2.646 1.781 8.4 8.4 0 0 1 1.781 2.646q.656 1.52.656 3.25t-.656 3.25a8.4 8.4 0 0 1-1.781 2.646 8.4 8.4 0 0 1-2.646 1.781 8.1 8.1 0 0 1-3.25.657m0-1.667q2.79 0 4.729-1.937Q16.667 12.79 16.667 10t-1.938-4.729T10 3.331 5.271 5.27 3.334 10t1.937 4.73T10 16.663"/></svg>"##);
 // Desktop's `chevron-compact-right` icon, the Material `chevron_forward`.
 svg_static!(CHEVRON_FORWARD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M504-480 320-664l56-56 240 240-240 240-56-56 184-184Z"/></svg>"##);
 // Desktop's `undo` icon of the Revert button of a hotkey.
@@ -1430,6 +1439,8 @@ static SELECTION_ICONS: std::sync::LazyLock<[svg::Handle; 8]> = std::sync::LazyL
 
 svg_static!(DROP_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M12.625 14.375 17 10l-4.375-4.375-1.062 1.063 2.562 2.562H4.5V7H3v3.75h11.125l-2.562 2.563z"/></svg>"##);
 
+// Desktop's `thumbnail-bar` system icon of "Show Sidebar".
+svg_static!(THUMBNAIL_BAR, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M3.5 16q-.62 0-1.06-.44A1.45 1.45 0 0 1 2 14.5V5.493q0-.62.44-1.056A1.45 1.45 0 0 1 3.5 4h13q.62 0 1.06.44.44.442.44 1.06v9.006q0 .62-.44 1.056A1.45 1.45 0 0 1 16.5 16zM8 14.5h8.5v-9H8zm-1.5 0v-9h-3v9z"/></svg>"##);
 svg_static!(SYS_ARROW_BACK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="m6.52 10.833 4.668 4.667L10 16.666 3.333 10 10 3.333 11.188 4.5 6.52 9.166h10.146v1.667z"/></svg>"##);
 
 svg_static!(SYS_ROTATE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M10 18.25q-1.083 0-2.052-.302a6.9 6.9 0 0 1-1.802-.865L7.229 16a5.5 5.5 0 0 0 2.771.75q2.271 0 3.885-1.615Q15.5 13.521 15.5 11.25t-1.615-3.906-4.01-1.594l1.188 1.188L10 8 7 5l3-3 1.063 1.063L9.875 4.25q3-.063 5.063 2.01T17 11.25q0 1.458-.552 2.73a7.1 7.1 0 0 1-1.5 2.218 7.1 7.1 0 0 1-2.219 1.5A6.8 6.8 0 0 1 10 18.25m-5-2-5-5 5-5 5 5zm0-2.125 2.875-2.875L5 8.375 2.125 11.25z"/></svg>"##);
@@ -1522,6 +1533,9 @@ const SWITCH_CARD: &str = "switch:card";
 
 /// The `chat_menu` key of Desktop's sidebar background menu (`Gct`).
 const SIDEBAR_MENU: &str = "sidebar:menu";
+
+/// The `chat_menu` key prefix of the Snooze menu (`Jde`) of the Chat Info toolbar, before the chat ID.
+const SNOOZE_MENU: &str = "snooze:";
 
 /// Desktop's `getLastParticipantName`: the first word of the current name of the sender of a chat preview, or the
 /// whole name when it is the phone number.
@@ -1656,6 +1670,7 @@ fn space_name(st: &BeeperStore, id: &str) -> String {
         "inbox" => tr("Inbox").into(),
         "archive" => trx("Archive", "archive space name").into(),
         "reminders" => tr("Reminders").into(),
+        "snoozed" => trx("Snoozed", "space name for snoozed chats").into(),
         "requests" => tr("Requests").into(),
         "low_priority" => tr("Low Priority").into(),
         "scheduled" => tr("Send Later").into(),
@@ -1706,9 +1721,12 @@ fn space_subtitle(st: &BeeperStore, id: &str) -> Option<String> {
         "inbox" => chats(count(&|c| c.flags & (CHAT_HIDDEN | CHAT_ARCHIVED | CHAT_LOW_PRIORITY | CHAT_REQUEST) == 0)),
         "archive" => chats(count(&|c| c.flags & CHAT_ARCHIVED != 0)),
         "reminders" => {
-            let n = count(&|c| c.reminder.is_some());
+            let n = count(&|c| c.reminder.is_some() || !st.message_reminders_of(&c.id).is_empty());
             trn("%d Reminder", "%d Reminders", n, &[&n])
         }
+        "snoozed" => chats(count(&|c| {
+            crate::reminders::snoozed_until(st, c).is_some() && c.flags & CHAT_HIDDEN == 0 && listed(c)
+        })),
         "requests" => {
             let n = count(&|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_HIDDEN == 0);
             trn("%d Request", "%d Requests", n, &[&n])
@@ -2155,6 +2173,10 @@ svg_static!(TAKE_BEEPER, include_bytes!("../assets/take_beeper.svg"));
 svg_static!(ERROR_OUTLINE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M11 15h2v2h-2zm0-8h2v6h-2zm.99-5C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"/></svg>"##);
 // Desktop's `BookmarkIcon` of the general icons.
 svg_static!(BOOKMARK_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14"><path d="M3.5 0.5H10.5C11.3284 0.5 12 1.17157 12 2V13.0625C12 13.2499 11.8949 13.4215 11.7279 13.5068C11.5608 13.5921 11.36 13.5767 11.2081 13.4669L7 10.4272L2.79188 13.4669C2.64 13.5767 2.43918 13.5921 2.27212 13.5068C2.10506 13.4215 2 13.2499 2 13.0625V2C2 1.17157 2.67157 0.5 3.5 0.5Z"/></svg>"##);
+// Desktop's `OutlineClock`, the message reminder indicator.
+svg_static!(OUTLINE_CLOCK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill-rule="evenodd" clip-rule="evenodd" d="M2.5 10a7.5 7.5 0 1114.999 0A7.5 7.5 0 012.5 10zM10 1a9 9 0 100 17.999A9 9 0 0010 1zm.75 4.5a.75.75 0 00-1.5 0V10c0 .242.116.469.314.61l3.5 2.5a.75.75 0 00.871-1.22L10.75 9.613V5.5z"/></svg>"##);
+// Desktop's Material `moon_stars`, its `snoozed-space` icon on Linux.
+svg_static!(MOON_STARS, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M600-640 480-760l120-120 120 120-120 120Zm200 120-80-80 80-80 80 80-80 80ZM483-80q-84 0-157.5-32t-128-86.5Q143-253 111-326.5T79-484q0-146 93-257.5T409-880q-18 99 11 193.5T520-521q71 71 165.5 100T879-410q-26 144-138 237T483-80Zm0-80q88 0 163-44t118-121q-86-8-163-43.5T463-465q-61-61-97-138t-43-163q-77 43-120.5 118.5T159-484q0 135 94.5 229.5T483-160Zm-20-305Z"/></svg>"##);
 // Desktop's `BeeperIcon` of the networks icons.
 svg_static!(BEEPER_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 15"><path fill-rule="evenodd" clip-rule="evenodd" d="M0.350037 5.29941C0.350037 2.76021 2.33427 0.649414 4.84524 0.649414H8.75483C11.2658 0.649414 13.25 2.76021 13.25 5.29941C13.25 6.61227 12.7229 7.80414 11.8693 8.65264L7.23829 13.8348C6.60047 14.5486 5.42971 13.9544 5.62929 13.0182L6.2835 9.94942H4.84524C2.33427 9.94942 0.350037 7.83862 0.350037 5.29941ZM4.84524 2.14941C3.21937 2.14941 1.85004 3.5308 1.85004 5.29941C1.85004 7.06803 3.21937 8.44941 4.84524 8.44941H8.13699L7.54101 11.245L10.7824 7.61781L10.7997 7.60083C11.382 7.02833 11.75 6.2123 11.75 5.29941C11.75 3.5308 10.3807 2.14941 8.75483 2.14941H4.84524Z"/></svg>"##);
 
@@ -2296,6 +2318,8 @@ pub struct Pane {
     pub quick_look: Option<usize>,
     pub composer_links: Vec<(String, LinkState)>,
     pub message_menu: Option<(String, Point)>,
+    /// The Remind Me submenu of the message menu is open.
+    pub remind_sub: bool,
     /// The text selected when the message menu opened, which turns it into the menu for the selection.
     pub menu_selection: Option<String>,
     /// The `href` of the link whose right click opened the message menu: an `https://` or `mailto:` one.
@@ -2448,8 +2472,6 @@ struct Memo {
     words: std::cell::RefCell<Option<Words>>,
     /// The command bar finds for a query, its filters and its room.
     hits: std::cell::RefCell<Option<(HitsKey, Hits)>>,
-    /// The stored messages with media, newest first.
-    media: std::cell::RefCell<Option<Rc<[Message]>>>,
     /// The unread threads of all chats, as the chat index and the root.
     threads: std::cell::RefCell<Option<Threads>>,
 }
@@ -2536,8 +2558,10 @@ pub struct BeeperGuiApp {
     /// The open selection bar menu (Remind Me or More) and the x of its button.
     selection_menu: Option<(u8, f32)>,
     chat_sub: Option<u8>,
-    /// The reminder time each chat was last reminded of.
+    /// The reminder time each chat or message was last reminded of.
     reminded: HashMap<String, i64>,
+    /// Desktop's `snoozeStore.clockMs`: when the ended snoozes were last checked.
+    snooze_clock: i64,
     pub search_room: Option<String>,
     pub search_filters: SearchFilters,
     pub search_select: Option<(usize, iced::Rectangle)>,
@@ -2600,6 +2624,8 @@ pub struct BeeperGuiApp {
     pub new_chat_expanded: bool,
     pub new_chat_chats_expanded: bool,
     pub join_matrix_mode: bool,
+    /// The Encrypted toggle of the "Room encryption" step of the open New Chat draft.
+    pub group_encrypted: bool,
     /// Desktop's `matrixRoomJoin` of the Join a Matrix room view: a join is going on, and the error of the last one.
     join_room: (bool, Option<String>),
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
@@ -2830,6 +2856,7 @@ impl BeeperGuiApp {
             chat_menu: None,
             chat_sub: None,
             reminded: HashMap::new(),
+            snooze_clock: now_unix_millis(),
             search_room: None,
             search_filters: SearchFilters::default(),
             search_select: None,
@@ -2879,6 +2906,7 @@ impl BeeperGuiApp {
             new_chat_expanded: false,
             new_chat_chats_expanded: false,
             join_matrix_mode: false,
+            group_encrypted: true,
             join_room: (false, None),
             devices: None,
             mics: None,
@@ -3309,7 +3337,10 @@ impl BeeperGuiApp {
         let (mut pinned, rest): (Vec<&Chat>, Vec<&Chat>) = self
             .visible_chats(st)
             .into_iter()
-            .partition(|c| self.active_tab.filterable() && c.flags & CHAT_PINNED != 0);
+            // Desktop's `threadsForThreadList`: Reminders, Send Later and Snoozed have no pinned grid.
+            .partition(|c| {
+                self.active_tab.filterable() && self.active_tab != InboxTab::Snoozed && c.flags & CHAT_PINNED != 0
+            });
         pinned.sort_by_key(|c| (st.pin_rank.get(&c.id).copied().unwrap_or(usize::MAX), c.last_activity.clone()));
         match st.settings.on("regularPinned") {
             true => (vec![], pinned.into_iter().chain(rest).collect()),
@@ -3372,7 +3403,6 @@ impl BeeperGuiApp {
             self.memo.keys.borrow_mut().clear();
             self.memo.words.take();
             self.memo.hits.take();
-            self.memo.media.take();
             self.memo.threads.take();
         }
         Some(&self.memo)
@@ -3388,7 +3418,13 @@ impl BeeperGuiApp {
             .filter(|&i| keep.get(i) == Some(&true) && !std::mem::replace(&mut seen[i], true))
             .collect();
         list.extend((0..keep.len()).filter(|&i| keep[i] && !seen[i]));
-        let remind_at = |i: usize| st.chats[i].reminder.as_ref().map_or(0, |r| r.remind_at_ms);
+        // Desktop's `nextReminderAtMs`: the sooner of the chat reminder and the earliest message reminder.
+        let remind_at = |i: usize| {
+            let c = &st.chats[i];
+            let chat = c.reminder.as_ref().map(|r| r.remind_at_ms);
+            chat.into_iter().chain(self.message_reminder_at(st, c)).min().unwrap_or(0)
+        };
+        let snoozed = |i: usize| st.chats[i].snoozed_until_ms.unwrap_or(i64::MAX);
         // Desktop's `activityTimestamp`: the newer of the activity and the draft.
         let activity = |i: usize| beeper_core::store::activity_key(&st.chats[i]).0;
         match (self.active_tab, st.settings.reminders_order) {
@@ -3396,6 +3432,7 @@ impl BeeperGuiApp {
             (InboxTab::Reminders, 1) => list.sort_by_key(|&i| (std::cmp::Reverse(remind_at(i)), i)),
             (InboxTab::Reminders, 2) => list.sort_by_key(|&i| (activity(i), i)),
             (InboxTab::SendLater, _) => list.sort_by_key(|&i| (next_send(st, &st.chats[i].id), i)),
+            (InboxTab::Snoozed, _) => list.sort_by_key(|&i| (snoozed(i), i)),
             _ => list.sort_by_key(|&i| (std::cmp::Reverse(activity(i)), i)),
         }
         list
@@ -3415,13 +3452,29 @@ impl BeeperGuiApp {
             && match self.active_tab {
                 InboxTab::AllChats => {
                     let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
-                    c.flags & hidden == 0 && shown(F_ARCHIVED) && shown(F_LOW_PRIORITY) && shown(F_REQUESTS)
+                    // Desktop's `shouldShowInAllChats`: a snoozed chat leaves the inbox until a message reminder is
+                    // due.
+                    let snoozed = self.selected_account_filter.is_none()
+                        && reminders::snoozed_until(st, c).is_some()
+                        && !self.due_message_reminder(st, c);
+                    c.flags & hidden == 0
+                        && !snoozed
+                        && shown(F_ARCHIVED)
+                        && shown(F_LOW_PRIORITY)
+                        && shown(F_REQUESTS)
                 }
                 InboxTab::Requests => c.flags & CHAT_REQUEST != 0,
                 InboxTab::Archived => c.archived_in_list() && shown(F_REQUESTS),
                 InboxTab::LowPriority => c.flags & CHAT_LOW_PRIORITY != 0 && shown(F_ARCHIVED) && shown(F_REQUESTS),
-                InboxTab::Reminders => c.reminder.is_some(),
+                InboxTab::Reminders => c.reminder.is_some() || self.message_reminder_at(st, c).is_some(),
                 InboxTab::SendLater => st.scheduled.iter().any(|s| s.chat_id == c.id),
+                InboxTab::Snoozed => {
+                    reminders::snoozed_until(st, c).is_some()
+                        && c.flags & CHAT_HIDDEN == 0
+                        && shown(F_ARCHIVED)
+                        && shown(F_LOW_PRIORITY)
+                        && shown(F_REQUESTS)
+                }
             }
             && (!self.active_tab.filterable()
                 || filters == 0
@@ -4218,6 +4271,8 @@ impl BeeperGuiApp {
                     (self.selection, self.select_mode) = (Vec::new(), false);
                 } else if self.join_matrix_mode {
                     self.join_matrix_mode = false;
+                } else if self.confirm == Some(ASK_ROOM_ENCRYPTION) {
+                    self.confirm = None;
                 } else if self.creating_chat.is_some() {
                     self.leave_draft();
                     self.pane.selected_chat_id = None;
@@ -4740,7 +4795,14 @@ impl BeeperGuiApp {
             let pending = st.chats.iter().filter(|c| !self.expired(c));
             let send = st.scheduled.iter().filter(|s| !s.canceled).map(|s| s.send_on);
             let send = send.chain(self.pane.send_later.map(|c| c.0)).min();
-            (rising, (pending.filter_map(|c| Some(c.reminder.as_ref()?.remind_at_ms)).min(), send))
+            let chats = pending.filter_map(|c| Some(c.reminder.as_ref()?.remind_at_ms));
+            let messages = (st.message_reminders.iter())
+                .filter(|(id, r)| {
+                    self.reminded.get(*id) != Some(&r.remind_at_ms) && reminders::message_reminders_on(&st)
+                })
+                .map(|(_, r)| r.remind_at_ms);
+            let snoozes = st.chats.iter().filter_map(|c| c.snoozed_until_ms).filter(|&at| at > self.snooze_clock);
+            (rising, (chats.chain(messages).chain(snoozes).min(), send))
         };
         let wait = |at: i64| std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
         let late = {
@@ -4752,6 +4814,18 @@ impl BeeperGuiApp {
         };
         // "Sending..." turns into "Still sending..." at its time.
         let late = late.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::AnimationTick));
+        // Desktop's `buildMessageListData` watches the clock until the next timer of the open chats runs out, or for
+        // an hour at most.
+        let expiry = {
+            let (st, now) = (self.store.read(), now_unix_millis());
+            let open = self.panes().filter_map(|p| p.selected_chat_id.as_ref()).map(|c| st.timeline_indices(c));
+            let left = open.flatten().filter_map(|&i| match st.messages[i].expiry(now) {
+                Some(Countdown::Left(left)) if left > 0 => Some(left),
+                _ => None,
+            });
+            left.min().map(|left| iced::time::every(Duration::from_millis(left.min(3_600_000))))
+        };
+        let expiry = expiry.map(|e| e.map(|_| UiMessage::AnimationTick));
         let remind = due.0.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Reminders(reminders::Msg::Check)));
         let send = due.1.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Scheduled(scheduled::Msg::Check)));
         let typed = self.panes().filter_map(|p| p.typing.as_ref().map(|t| t.1)).min();
@@ -4778,8 +4852,11 @@ impl BeeperGuiApp {
             || self
                 .panes()
                 .any(|p| [p.hover_msg_at, p.flyover_at].iter().flatten().any(|t| t.elapsed() < FLYOVER_REVEAL));
-        let tab_at = self.media_window.as_ref().and_then(|w| w.tab_at);
-        let animated = animated || tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE);
+        // The tab slide and the skeleton tiles of the Media window.
+        let media = self.media_window.as_ref().is_some_and(|w| {
+            w.loading.is_some() || w.tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE)
+        });
+        let animated = animated || media;
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
             .then(|| Subscription::run(tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0))));
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
@@ -4815,6 +4892,7 @@ impl BeeperGuiApp {
                 .chain(shot)
                 .chain(remind)
                 .chain(late)
+                .chain(expiry)
                 .chain(send)
                 .chain(queued)
                 .chain(typing)
@@ -5055,6 +5133,9 @@ impl BeeperGuiApp {
             }
             let (w, h) = if cid.starts_with("draft:") {
                 (124.0, 31.0)
+            } else if let Some(id) = cid.strip_prefix(SNOOZE_MENU) {
+                let rows = self.snooze_items(&self.store.read(), &[id.to_string()]);
+                (SUB_MENU_W[3], 8.0 + rows.iter().map(|r| r.1).sum::<f32>())
             } else if cid == RAIL_MORE {
                 let items = more_menu(&self.store.read());
                 (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
@@ -5088,6 +5169,15 @@ impl BeeperGuiApp {
                         + 44.0
                         + if self.selection.is_empty() { 2.0 * MENU_ITEM + 11.0 } else { 0.0 }
                         + if st.feature("labels-v2").on { MENU_ITEM } else { 0.0 }
+                        + if st.resolve_chat_idx(cid).is_some_and(|i| {
+                            let targets = self.selected_chats(&st);
+                            let targets = if targets.is_empty() { vec![&st.chats[i]] } else { targets };
+                            reminders::shows_snooze(&st, &targets)
+                        }) {
+                            MENU_ITEM
+                        } else {
+                            0.0
+                        }
                         + self.selection_rows(&st)
                         + match st.resolve_chat_idx(cid).map(|i| &st.chats[i]) {
                             Some(c)
@@ -5120,7 +5210,7 @@ impl BeeperGuiApp {
             let x = if at.x + w > self.pane().size.width { at.x - w } else { at.x };
             let sub_w = self
                 .chat_sub
-                .filter(|_| !cid.starts_with("account:") && !cid.starts_with("head:"))
+                .filter(|_| !cid.starts_with("account:") && !cid.starts_with("head:") && !cid.starts_with(SNOOZE_MENU))
                 .map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
             let left = x + w + sub_w > self.pane().size.width;
             let y = at.y.min(self.pane().size.height - h - 8.0);
@@ -5197,7 +5287,6 @@ impl BeeperGuiApp {
         ids.iter().for_each(|id| st.remove_from_beeper(id));
     }
 
-    /// The message menu, its height and the top of its Playback Speed row.
     /// The message menu, the composer menus or the reaction picker of the drawn pane, with their place.
     fn pane_menu(&self) -> Option<(El<'_>, f32, f32)> {
         let message_menu = self.pane().message_menu.as_ref().map(|(mid, at)| {
@@ -5206,6 +5295,14 @@ impl BeeperGuiApp {
             let y = at.y.min(self.pane().size.height - h - 8.0);
             let (sub, sub_w) = match self.view_speed_menu(mid) {
                 Some(sub) => (Some(sub), video::SPEED_MENU_W),
+                None if self.pane().remind_sub => {
+                    let st = self.store.read();
+                    let rows = self.message_remind_items(&st, mid);
+                    let body = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
+                    let style = shadow_box(self.pal.menu, self.pal.menu_border, 6.0, 16.0);
+                    let body = container(body).width(SUB_MENU_W[1]).style(style);
+                    (Some(column![Space::new().height(top), body].into()), SUB_MENU_W[1])
+                }
                 None => {
                     let st = self.store.read();
                     let room = self.pane().size.height - y - 8.0;
@@ -5809,10 +5906,23 @@ impl BeeperGuiApp {
         c.reminder.as_ref().is_some_and(|r| self.reminded.get(&c.id) == Some(&r.remind_at_ms))
     }
 
+    /// Desktop's `earliestMessageReminder` of the chat, while message reminders are on.
+    fn message_reminder_at(&self, st: &BeeperStore, c: &Chat) -> Option<i64> {
+        let first = st.message_reminders_of(&c.id).first().map(|(_, r)| r.remind_at_ms);
+        first.filter(|_| reminders::message_reminders_on(st))
+    }
+
+    /// Desktop's `hasDueMessageReminder`.
+    fn due_message_reminder(&self, st: &BeeperStore, c: &Chat) -> bool {
+        self.message_reminder_at(st, c).is_some_and(|at| at <= now_unix_millis())
+    }
+
     /// Whether the chat list draws the chat muted: Desktop's `areNotificationsMuted` of the chat, its labels or its
-    /// account, unless a reminder is due.
+    /// account, or its snooze, unless a reminder is due.
     fn list_muted(&self, st: &BeeperStore, c: &Chat) -> bool {
-        st.notifications_muted(c) && !self.expired(c)
+        (st.notifications_muted(c) || reminders::snoozed_until(st, c).is_some())
+            && !self.expired(c)
+            && !self.due_message_reminder(st, c)
     }
 
     /// Desktop's `isMuted` row style, with a grey unread dot and count: a muted chat without unread mentions, or an
@@ -6201,6 +6311,7 @@ impl BeeperGuiApp {
             "inbox" => glyph(icon::INBOX, 16.0),
             "archive" => glyph(icon::ARCHIVE, 14.0),
             "reminders" => glyph(icon::SCHEDULE, 14.0),
+            "snoozed" => tinted(&MOON_STARS, 14.0, p.strong),
             "requests" => glyph(icon::EMAIL, 16.0),
             "low_priority" => glyph(icon::LOW_PRIORITY_SPACE, 12.0),
             "scheduled" => glyph(icon::SCHEDULE_SEND, 14.0),

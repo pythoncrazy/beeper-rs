@@ -381,7 +381,7 @@ impl BeeperGuiApp {
                 v.output();
                 self.pane.message_menu = None;
             }
-            Msg::Sub => self.video.as_mut().expect("a played video").sub = true,
+            Msg::Sub => (self.video.as_mut().expect("a played video").sub, self.pane.remind_sub) = (true, false),
             Msg::Menu(mid) => {
                 let open = self.update(UiMessage::Message(message::Msg::OpenMenu(mid)));
                 self.pane.video_menu = true;

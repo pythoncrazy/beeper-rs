@@ -830,6 +830,13 @@ impl BeeperGuiApp {
             let (menu, sub) = self.account_menu(entry, SpaceMenu::Header);
             return row![menu].push(sub).into();
         }
+        // Desktop's Snooze menu of the Chat Info toolbar.
+        if let Some(id) = cid.strip_prefix(SNOOZE_MENU) {
+            let st = self.store.read();
+            let rows = self.snooze_items(&st, &[id.to_string()]);
+            let col = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
+            return container(col).width(SUB_MENU_W[3]).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+        }
         if let Some(n) = cid.strip_prefix("draft:") {
             let delete = menu_item(
                 p,
@@ -868,6 +875,10 @@ impl BeeperGuiApp {
         let reason = st.notifications_muted(c).then(|| muted_by(&st, c)).flatten();
         let picked = self.selected_chats(&st);
         let n = picked.len();
+        // Desktop's `l`: the selected chats, or the chat of the menu.
+        let chats = if n == 0 { vec![c] } else { picked.clone() };
+        let targets: Vec<String> = chats.iter().map(|c| c.id.clone()).collect();
+        let snooze = reminders::shows_snooze(&st, &chats);
         let reason = reason.filter(|_| n == 0);
         let every = |f: ChatFlag| picked.iter().all(|c| has_flag(c, f));
         let some = |f: ChatFlag| picked.iter().any(|c| has_flag(c, f));
@@ -994,6 +1005,7 @@ impl BeeperGuiApp {
             ]),
             labels.then(|| open_sub(2, trx("Label", "thread context menu submenu label"))),
             open_sub(1, tr("Remind Me")),
+            snooze.then(|| open_sub(3, trx("Snooze", "thread context menu submenu label"))),
             close_sub({
                 let delete = st.feature("delete-chats").on.then(|| {
                     let ask =
@@ -1063,7 +1075,7 @@ impl BeeperGuiApp {
                     );
                     (rows.chain([menu_rule(p), new]).collect(), 1.0)
                 }
-                _ => {
+                1 => {
                     let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
                     // Desktop's `canSetReminderFor`: Beeper Plus, a free use, or a reminder to change.
                     let can = st.feature("remind-later").on || c.reminder.is_some();
@@ -1088,11 +1100,18 @@ impl BeeperGuiApp {
                     let rules = if can { 2.0 } else { 3.0 };
                     (presets.chain([menu_rule(p), custom, menu_rule(p), dismiss]).collect(), rules)
                 }
+                _ => {
+                    let rows = self.snooze_items(&st, &targets);
+                    let rules = rows.iter().filter(|r| r.1 < MENU_ITEM).count() as f32;
+                    (rows.into_iter().map(|r| r.0).collect(), rules)
+                }
             };
             let h = 8.0 + items.len() as f32 * MENU_ITEM - rules * (MENU_ITEM - 11.0);
             let top = match i {
                 0 => 4.0 * MENU_ITEM,
                 1 if labels => 8.0 * MENU_ITEM + 22.0,
+                3 if labels => 9.0 * MENU_ITEM + 22.0,
+                3 => 8.0 * MENU_ITEM + 22.0,
                 _ => 7.0 * MENU_ITEM + 22.0,
             } + if reason.is_some() { MENU_ITEM } else { 0.0 }
                 + if can_edit_group(c) { MENU_ITEM } else { 0.0 }
@@ -1394,11 +1413,14 @@ impl BeeperGuiApp {
             let m = c.preview.as_ref().filter(|_| previews && draft.is_none());
             let reaction = m.filter(|m| m.message_type.as_deref() == Some("REACTION"));
             let next = next_send(&st, &c.id);
-            let ts = match (self.active_tab, &c.reminder, next) {
-                (InboxTab::Reminders, Some(r), _) => {
-                    format!("{} {}", reminder_day(r.remind_at_ms), clock(r.remind_at_ms, h24))
-                }
-                (InboxTab::SendLater, _, Some(at)) => format!("{} {}", reminder_day(at), clock(at, h24)),
+            // Desktop's `quietReason` "snoozed", and the time of the Reminders, Send Later or Snoozed row.
+            let snoozed = reminders::snoozed_until(&st, c);
+            let remind =
+                c.reminder.as_ref().map(|r| r.remind_at_ms).into_iter().chain(self.message_reminder_at(&st, c));
+            let ts = match (self.active_tab, remind.min(), next, snoozed) {
+                (InboxTab::Reminders, Some(at), _, _)
+                | (InboxTab::SendLater, _, Some(at), _)
+                | (InboxTab::Snoozed, _, _, Some(at)) => format!("{} {}", reminder_day(at), clock(at, h24)),
                 _ if draft.is_some() => String::new(),
                 _ => c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default(),
             };
@@ -1417,7 +1439,7 @@ impl BeeperGuiApp {
             };
             let title = c.network_name.as_ref().map_or_else(|| c.title.clone(), |n| format!("{} • {n}", c.title));
             let weight = if counts && !unread { Weight::Medium } else { Weight::Semibold };
-            let bell = if muted { 16.0 } else { 0.0 };
+            let bell = if muted { 16.0 } else { 0.0 } + if snoozed.is_some() { 16.0 } else { 0.0 };
             let pinned = c.flag(ChatFlag::Pinned);
             let pin_icon = pinned.then(|| container(tinted(&PIN, 13.0, p.strong)).padding(Padding::ZERO.right(2.0)));
             let pin_w = if pinned { 15.0 } else { 0.0 };
@@ -1425,6 +1447,7 @@ impl BeeperGuiApp {
                 .push(pin_icon)
                 .push(ell(&title, text_w - ts_w - bell - pin_w, title_size, weight).color(p.fg.scale_alpha(0.9)))
                 .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
+                .push(snoozed.map(|_| container(tinted(&MOON_STARS, 12.0, p.strong)).padding([0, 2])))
                 .push(Space::new().width(Fill))
                 .push(later.then(|| tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))))
                 .push(
