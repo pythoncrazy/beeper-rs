@@ -1397,6 +1397,11 @@ svg_static!(NEW_LABEL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 svg_static!(DRAFT_RING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30"><rect x=".5" y=".5" width="29" height="29" rx="7.5" fill="none" stroke="#000" stroke-dasharray="3 2"/></svg>"##);
 svg_static!(DASHED_RING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="1" y="1" width="30" height="30" rx="7" fill="none" stroke="#000" stroke-width="2" stroke-dasharray="6 3" stroke-dashoffset="8.5"/></svg>"##);
 
+/// Desktop's `CloseSmall` system icon.
+static CLOSE_SMALL: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="#000" d="M7.042 13.999 6 12.957l2.938-2.958L6 7.06 7.042 6.02 10 8.957l2.938-2.937 1.041 1.041L11.042 10l2.937 2.958-1.041 1.042L10 11.06z"/></svg>"##[..])
+});
+
 /// Desktop's `ChatErrorIcon`: the exclamation mark in a ring of a message that failed to send.
 static ERRORED: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><path fill="#000" d="M5.9962 9.41198C6.17045 9.41198 6.31771 9.35304 6.438 9.23518C6.55828 9.1173 6.61842 8.97124 6.61842 8.797C6.61842 8.62275 6.55949 8.47549 6.44162 8.3552C6.32375 8.23492 6.17769 8.17478 6.00345 8.17478C5.8292 8.17478 5.68193 8.23371 5.56165 8.35158C5.44137 8.46946 5.38123 8.61551 5.38123 8.78975C5.38123 8.964 5.44016 9.11127 5.55802 9.23155C5.6759 9.35183 5.82196 9.41198 5.9962 9.41198ZM5.38123 6.93758H6.61842V2.49709H5.38123V6.93758Z"/><circle cx="6" cy="6" r="5.375" stroke="#000" fill="none" stroke-width="1.25"/></svg>"##[..])
@@ -6576,8 +6581,9 @@ impl BeeperGuiApp {
                 let text = txt(format!("{name} {}", tr("disconnected")), 12.0).color(p.fg).width(Fill);
                 let end: Option<El<'_>> = match own.is_some() {
                     true => again.is_some().then(|| semi(tr("Reconnect"), 11.0).color(p.accent).into()),
+                    // Desktop's 24 px `close-small` in `--color-text-translucent-weak`.
                     false => Some(
-                        button(ic(icon::CLOSE, 14.0).color(p.sub))
+                        button(tinted(&CLOSE_SMALL, 24.0, p.fg.scale_alpha(0.7)))
                             .bare(p.sub)
                             .on_press(UiMessage::Accounts(accounts::Msg::DismissError(b.account_id.clone())))
                             .into(),
