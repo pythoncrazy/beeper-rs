@@ -3847,24 +3847,41 @@ pub async fn run(store: SharedStore) {
     }
     // Desktop's SDK catches up at once at the start, so "Syncing..." ends without waiting for a long poll.
     let now = SyncSettings::default().timeout(std::time::Duration::ZERO);
-    on_sync(&client, &store, client.sync_once(now).await).await;
+    if !on_sync(&client, &store, client.sync_once(now).await).await {
+        return;
+    }
     let settings = SyncSettings::default().timeout(std::time::Duration::from_secs(30));
     let client2 = client.clone();
     client
         .sync_with_result_callback(settings, |r| {
             let (client, store) = (client2.clone(), store.clone());
             async move {
-                on_sync(&client, &store, r).await;
-                Ok(LoopCtrl::Continue)
+                Ok(match on_sync(&client, &store, r).await {
+                    true => LoopCtrl::Continue,
+                    false => LoopCtrl::Break,
+                })
             }
         })
         .await
         .expect("Matrix sync loop");
 }
 
-/// Applies a response of the Matrix sync loop: the account data, the rooms, the invites, and the left rooms.
-async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<matrix_sdk::sync::SyncResponse>) {
+/// Applies a response of the Matrix sync loop: the account data, the rooms, the invites, and the left rooms. False
+/// when the session has ended, which stops the loop.
+async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<matrix_sdk::sync::SyncResponse>) -> bool {
     match r {
+        // The homeserver no longer knows this device's token: it was signed out from another device or the session
+        // was revoked. The next start signs in again on clean data, as after Log Out.
+        Err(e) if matches!(e.client_api_error_kind(), Some(ErrorKind::UnknownToken(_))) => {
+            let mut st = store.write();
+            if let Err(e) = std::fs::write(st.config.data_dir.join(crate::store::LOGGED_OUT), "") {
+                eprintln!("Could not mark the ended session: {e}");
+            }
+            st.matrix_error = Some(e.to_string());
+            st.session_ended = true;
+            st.emit_ws("setup.updated", "", None, None, None);
+            return false;
+        }
         Err(e) => {
             let mut st = store.write();
             if st.matrix_error.replace(e.to_string()).is_none() {
@@ -3928,6 +3945,7 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             store.write().synced();
         }
     }
+    true
 }
 
 #[cfg(test)]
@@ -3978,6 +3996,32 @@ mod tests {
         store.write().remove_chat("!room:x");
         super::sync_left(&store, &room, Vec::new()).await;
         assert!(store.read().resolve_chat_idx("!room:x").is_none(), "a deleted chat stays deleted");
+    }
+
+    /// A device signed out from elsewhere gets M_UNKNOWN_TOKEN from the sync: the loop stops, and the next start signs
+    /// in again on clean data instead of staying offline.
+    #[tokio::test]
+    async fn an_ended_session_starts_over() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let syncs = AtomicUsize::new(0);
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" if syncs.fetch_add(1, Relaxed) == 0 => (200, stub_sync()),
+            "/_matrix/client/v3/sync" => (
+                401,
+                json!({ "errcode": "M_UNKNOWN_TOKEN", "error": "Unrecognised access token", "soft_logout": false }),
+            ),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let dir = crate::testing::temp_dir("ended-session");
+        let store = stub_store(&dir, &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        let more = super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await;
+        assert!(!more, "the sync loop stops");
+        assert!(store.read().session_ended, "the app starts over");
+        assert!(dir.join(crate::store::LOGGED_OUT).exists(), "the next start deletes the data");
     }
 
     /// A homeserver that refuses the history of a room neither stops the sync of the room, which loads it again

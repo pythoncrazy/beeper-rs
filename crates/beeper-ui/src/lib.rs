@@ -442,6 +442,13 @@ impl std::fmt::Debug for UiMessage {
     }
 }
 
+/// Starts beeper-rs again with the same arguments and ends this one: after a sign-out, the store opens on clean data.
+fn restart() -> ! {
+    let exe = std::env::current_exe().expect("path of the running beeper-rs");
+    std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn().expect("restart beeper-rs");
+    std::process::exit(0);
+}
+
 fn network_name(account_id: &str) -> &'static str {
     account_network(account_id).display_name
 }
@@ -3971,11 +3978,7 @@ impl BeeperGuiApp {
                 self.confirm = None;
                 return Task::perform(beeper_core::matrix::logout(self.store.clone()), UiMessage::LoggedOut);
             }
-            UiMessage::LoggedOut(Ok(())) => {
-                let exe = std::env::current_exe().expect("path of the running beeper-rs");
-                std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn().expect("restart beeper-rs");
-                std::process::exit(0);
-            }
+            UiMessage::LoggedOut(Ok(())) => restart(),
             UiMessage::LoggedOut(Err(e)) => self.fail(Toast::new(format!("Could not log out: {e}"))),
             UiMessage::ToggleRightPanel => {
                 // Desktop shows Chat Info or the thread pane, not both.
@@ -4196,6 +4199,7 @@ impl BeeperGuiApp {
             {
                 return self.check_e2ee();
             }
+            UiMessage::StoreChanged if self.store.read().session_ended => restart(),
             UiMessage::StoreChanged => {
                 if let Some((room, quote)) =
                     self.pending_dm.take_if(|(r, _)| self.store.read().resolve_chat_idx(r).is_some())
