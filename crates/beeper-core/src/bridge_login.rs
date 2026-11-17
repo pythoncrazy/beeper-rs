@@ -27,7 +27,7 @@ pub struct Step {
     pub step_id: String,
     pub instructions: String,
     pub user_input: Option<UserInput>,
-    pub cookies: Option<Cookies>,
+    pub cookies: Option<Box<Cookies>>,
     pub display_and_wait: Option<Display>,
     #[serde(skip)]
     pub raw: Value,
@@ -55,10 +55,42 @@ pub struct Field {
     pub max_length: usize,
 }
 
+/// The browser login of a `cookies` step: the page, and the fields that the browser window reads from it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Cookies {
     pub url: String,
+    /// `None` is Desktop's own user agent, and an empty one is the browser's.
+    pub user_agent: Option<String>,
+    /// The window closes only on a URL that matches this pattern, after it has all the required fields.
+    pub wait_for_url_pattern: String,
+    pub fields: Vec<CookieField>,
+    /// The window does not show, and closes after a time.
+    pub hidden: bool,
+    /// A script whose result has the values of the `special` fields.
+    pub extract_js: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct CookieField {
+    pub id: String,
+    pub required: bool,
+    pub pattern: String,
+    /// Desktop reads the first source of each type.
+    pub sources: Vec<CookieSource>,
+}
+
+/// Where the browser window reads a field: a `cookie`, a `local_storage` item, a `request_header`, or a `special`
+/// value of the `extract_js` result.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct CookieSource {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub name: String,
+    pub cookie_domain: String,
+    pub request_url_regex: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -75,6 +107,9 @@ impl Step {
     pub fn parse(raw: Value) -> Result<Self, String> {
         let step: Step = serde_json::from_value(raw.clone()).map_err(|e| format!("Bad login step: {e}"))?;
         match step.kind.as_str() {
+            // Desktop's `getBrowserLoginFromStep`.
+            "cookies" if step.cookies.is_none() => Err("No cookies step".into()),
+            "cookies" if step.cookies.as_ref().is_some_and(|c| c.url.is_empty()) => Err("No cookies url".into()),
             "user_input" | "cookies" | "display_and_wait" | "complete" => Ok(Step { raw, ..step }),
             kind => Err(format!("Unknown login step type: {kind}")),
         }

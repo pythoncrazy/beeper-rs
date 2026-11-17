@@ -12,7 +12,7 @@ stub = []
 
 [dependencies]
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
-tokio.workspace = true
+tokio = { workspace = true, features = ["process"] }
 serde.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
@@ -29,3 +29,10 @@ ctr = "0.10.1"
 matrix-sdk-crypto = { version = "0.19.1", default-features = false }
 vodozemac = { version = "0.11.1", default-features = false, features = ["low-level-api"] }
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
