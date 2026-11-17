@@ -2,7 +2,7 @@
 //! Nickname window (`sft` with `RenameAccount`), which names an account in Beeper on all devices.
 
 use super::*;
-use crate::focus::{Caret, Focus};
+use crate::focus::{Keys, Look};
 use iced::widget::column;
 
 /// The size of Desktop's Account Nickname window.
@@ -34,23 +34,13 @@ pub enum Msg {
     HideError(window::Id, String),
 }
 
-/// An Account Nickname window: the account, the typed name, a save on its way, the error toast, and the button
-/// with the keyboard focus.
+/// An Account Nickname window: the account, the typed name, a save on its way, and the error toast.
 pub struct NicknameDraft {
     pub id: window::Id,
     pub account: String,
     pub name: String,
     pub saving: bool,
     pub error: Option<String>,
-    pub focus: Focus<Stop>,
-}
-
-/// The controls of the Account Nickname window that Tab reaches, in Desktop's DOM order. A save disables them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stop {
-    Field,
-    Cancel,
-    Save,
 }
 
 /// Desktop's `Zpe` in the account menu `rj`: an account with a bridge login, other than the Beeper account.
@@ -68,8 +58,7 @@ impl BeeperGuiApp {
                 }
                 let (id, open) = self.open_child(NICKNAME_SIZE);
                 let name = self.store.read().custom_name(&account).unwrap_or_default().to_string();
-                let draft = NicknameDraft { id, account, name, saving: false, error: None, focus: Focus::default() };
-                self.nickname_windows.push(draft);
+                self.nickname_windows.push(NicknameDraft { id, account, name, saving: false, error: None });
                 return open.chain(operation::focus(NICKNAME_INPUT)).chain(operation::select_all(NICKNAME_INPUT));
             }
             Msg::Name(id, name) => {
@@ -96,47 +85,6 @@ impl BeeperGuiApp {
         Task::none()
     }
 
-    /// A key in an Account Nickname window: Escape closes it, Tab and Shift+Tab go through its controls, and Enter
-    /// presses the focused button.
-    pub(crate) fn nickname_key(&mut self, id: window::Id, key: Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
-        match key {
-            Key::Named(Named::Escape) => window::close(id),
-            Key::Named(Named::Tab) if (mods - keyboard::Modifiers::SHIFT).is_empty() => {
-                let back = mods.shift();
-                focus::caret(id, NICKNAME_INPUT).map(move |at| UiMessage::Focus(focus::Msg::Tab(id, back, at)))
-            }
-            Key::Named(Named::Enter) if mods.is_empty() => self.nickname_press(id),
-            _ => Task::none(),
-        }
-    }
-
-    /// Tab (Shift+Tab with `back`) in an Account Nickname window, from its name field when it has the caret.
-    pub(crate) fn nickname_tab(&mut self, id: window::Id, back: bool, caret: Caret) -> Task<UiMessage> {
-        let Some(d) = self.nickname_windows.iter_mut().find(|d| d.id == id) else { return Task::none() };
-        let stops: &[Stop] = if d.saving { &[] } else { &[Stop::Field, Stop::Cancel, Stop::Save] };
-        if caret == Caret::Field {
-            d.focus.set(Some(Stop::Field));
-        }
-        match d.focus.step(stops, back) {
-            Some(Stop::Field) => {
-                d.focus.set(None);
-                operation::focus(NICKNAME_INPUT)
-            }
-            Some(_) => focus::blur(),
-            None => Task::none(),
-        }
-    }
-
-    /// Enter or Space on the focused button of an Account Nickname window.
-    pub(crate) fn nickname_press(&mut self, id: window::Id) -> Task<UiMessage> {
-        let d = self.nickname_windows.iter().find(|d| d.id == id);
-        match d.and_then(|d| d.focus.get().filter(|_| !d.saving)) {
-            Some(Stop::Cancel) => self.nickname(Msg::Cancel(id)),
-            Some(Stop::Save) => self.nickname(Msg::Save(id)),
-            Some(Stop::Field) | None => Task::none(),
-        }
-    }
-
     /// Desktop's `onSubmit` of `RenameAccount`: an unchanged name closes the window. Otherwise the window waits for
     /// `setBridgeAccountName` and closes, or shows the error. The demo keeps the name on this device.
     fn save_nickname(&mut self, id: window::Id) -> Task<UiMessage> {
@@ -149,8 +97,9 @@ impl BeeperGuiApp {
                 return window::close(id);
             }
             if !st.config.demo {
+                d.saving = true;
                 // Chromium takes the focus from a button that turns disabled.
-                (d.saving, d.focus) = (true, Focus::default());
+                self.key_targets.remove(&id);
                 let store = self.store.clone();
                 let save = beeper_core::matrix::set_bridge_account_name(store, bridge, login, d.name.clone());
                 return Task::perform(save, move |r| UiMessage::Nickname(Msg::Saved(id, r)));
@@ -221,11 +170,15 @@ impl BeeperGuiApp {
         let card = container(card).padding(12).height(Fill).style(fill_box(p.card, 14.0));
         let save = (!d.saving).then_some(UiMessage::Nickname(Msg::Save(d.id)));
         let cancel = (!d.saving).then_some(UiMessage::Nickname(Msg::Cancel(d.id)));
-        let ring = |b, stop| focus::outline(b, d.focus.is(stop), p, 9999.0);
+        // Desktop's `Button`s, which a save disables, and which take the focus while they work.
+        let button = |key: &str, b: El<'a>, msg: Option<UiMessage>| match msg {
+            Some(m) => self.target(Some(d.id), key, b, Keys::press(m), Look::button(p, 9999.0)),
+            None => b,
+        };
         let footer = row![
-            ring(main_button(p, trx("Cancel", "button label"), false, cancel, false), Stop::Cancel),
+            button("cancel", main_button(p, trx("Cancel", "button label"), false, cancel.clone(), false), cancel),
             Space::new().width(Fill),
-            ring(main_button(p, trx("Save", "button label"), true, save, d.saving), Stop::Save),
+            button("save", main_button(p, trx("Save", "button label"), true, save.clone(), d.saving), save),
         ]
         .padding(Padding::new(16.0).right(12.0).bottom(10.0).left(12.0));
         // Desktop's toasts of this window (`k3` with `matchWindowName`).

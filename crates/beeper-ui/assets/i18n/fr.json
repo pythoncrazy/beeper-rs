@@ -47,6 +47,7 @@
 "%s has to be relaunched for all hotkey changes to take effect":["%s doit être relancé pour que toutes les modifications apportées aux touches d’accès rapide prennent effet"],
 "%s if no reply":["%s en l’absence de réponse"],
 "%s turned off disappearing messages.":["%s a désactivé la disparition des messages."],
+"%s — Chat Info":["%s – Informations sur la discussion"],
 "(You)":["(Vous)"],
 "+ %d more":["+ %d de plus", "+ %d de plus"],
 "+%d more":["+%d Plus"],

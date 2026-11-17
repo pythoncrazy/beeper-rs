@@ -46,6 +46,7 @@
 "%s has to be relaunched for all hotkey changes to take effect":["すべてのホットキーの変更を反映するには、%s を再起動する必要があります"],
 "%s if no reply":["返信がない場合は%s"],
 "%s turned off disappearing messages.":["%s が消えるメッセージをオフにしました。"],
+"%s — Chat Info":["%s — チャット情報"],
 "(You)":["(自分)"],
 "+ %d more":["ほか%d件"],
 "+%d more":["その他%d個"],

@@ -47,6 +47,7 @@
 "%s has to be relaunched for all hotkey changes to take effect":["%s muss neu gestartet werden, damit alle Hotkey-Änderungen wirksam werden"],
 "%s if no reply":["%s, wenn keine Antwort"],
 "%s turned off disappearing messages.":["%s hat verschwindende Nachrichten ausgeschaltet."],
+"%s — Chat Info":["%s – Chat-Info"],
 "(You)":["(Du)"],
 "+ %d more":["+ %d weitere", "+ %d weitere"],
 "+%d more":["+ %d mehr"],

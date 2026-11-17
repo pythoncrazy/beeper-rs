@@ -682,9 +682,13 @@ impl BeeperGuiApp {
             }))
             .padding(Padding::new(8.0).top(0.0));
         let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
-        container(container(column![pane_head, scroll, toolbar]).width(300).height(Fill).style(fill_box(p.card, 10.0)))
-            .padding(Padding::new(8.0).left(0.0))
-            .into()
+        // Desktop's `thread-info--detached`: the card fills its window inside 8 px of the window color.
+        let detached = self.pane().info;
+        let card = container(column![pane_head, scroll, toolbar]).height(Fill).style(fill_box(p.card, 10.0));
+        match detached {
+            true => container(card.width(Fill)).padding(8).style(fill_box(p.window, 0.0)).into(),
+            false => container(card.width(300)).padding(Padding::new(8.0).left(0.0)).into(),
+        }
     }
 
     /// Desktop's zoomed `thread-info-avatar`: over a `#000000e6` backdrop, the avatar of the chat with its full-size

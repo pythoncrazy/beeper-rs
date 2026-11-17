@@ -1,12 +1,14 @@
 //! Desktop's `LoginBrowserWindow` with the `BridgeV2AuthComponent` of a Beeper Cloud bridge: it adds an account of
 //! a network, or logs an account in again. The bridge describes each step (see `beeper_core::bridge_login`).
 use crate::i18n::{tr, trf};
+use crate::phone::{self, KeyOutcome, Phone, PhoneMsg};
 use crate::style::{brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, Palette, CLEAR};
 use crate::{menu_item, BeeperGuiApp, El, Toast, UiMessage, ERROR_CIRCLE};
 use beeper_core::bridge_login::{self, Field, Flow, Step};
 use beeper_core::config::{cloud_bridge, find_network};
 use beeper_core::matrix::Provision;
 use beeper_core::models::NetworkSpec;
+use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::{
     button, column, container, image, mouse_area, pick_list, rich_text, row, scrollable, span, stack, svg, text_input,
     Column,
@@ -107,6 +109,8 @@ pub struct AddAccount {
     values: BTreeMap<String, String>,
     /// The fields that show their validation error: the changed ones, or all of them after a submit.
     touched: BTreeSet<String>,
+    /// The state of each phone field.
+    phones: BTreeMap<String, Phone>,
     shown: BTreeSet<String>,
     qr: Option<svg::Handle>,
     emoji: Option<image::Handle>,
@@ -150,6 +154,10 @@ pub enum AddMsg {
     Status(Result<serde_json::Value, String>),
     /// Desktop's "Continue →" of a platform status that asks to confirm.
     Continue,
+    Phone(String, PhoneMsg),
+    /// A key or typed text in the window, for an open dropdown of a phone field.
+    Key(iced::keyboard::Key),
+    Text(String),
 }
 
 /// Desktop's `di`: the validation error of a field value.
@@ -157,11 +165,8 @@ fn invalid(f: &Field, v: &str) -> Option<String> {
     if v.trim().is_empty() {
         return Some(tr("This field is required").into());
     }
-    let digits = v.chars().filter(char::is_ascii_digit).count();
     let bad = match f.kind.as_str() {
-        "phone_number" => (!(7..=15).contains(&digits)
-            || !v.chars().all(|c| c.is_ascii_digit() || " +-().".contains(c)))
-        .then_some("Please enter a valid phone number"),
+        "phone_number" => (!phone::is_valid(v)).then_some("Please enter a valid phone number"),
         "domain" => (!DOMAIN.is_match(v)).then_some("Please enter a valid domain (e.g., example.com)"),
         "email" => (!v.split_once('@').is_some_and(|(a, b)| !a.is_empty() && b.contains('.')))
             .then_some("Please enter a valid email address"),
@@ -285,6 +290,7 @@ impl BeeperGuiApp {
             menu: false,
             values: BTreeMap::new(),
             touched: BTreeSet::new(),
+            phones: BTreeMap::new(),
             shown: BTreeSet::new(),
             qr: None,
             emoji: None,
@@ -347,6 +353,18 @@ impl BeeperGuiApp {
         }
         a.values =
             step.user_input.iter().flat_map(|u| &u.fields).map(|f| (f.id.clone(), f.default_value.clone())).collect();
+        // Desktop keys the form by its field IDs, so the next form with the same fields keeps its phone fields: their
+        // country stays, and the reset of the form's values empties their number to the dial code.
+        let ids = |s: &Step| s.user_input.iter().flat_map(|u| &u.fields).map(|f| f.id.clone()).collect::<Vec<_>>();
+        let same = a.step.as_ref().is_some_and(|old| old.user_input.is_some() && ids(old) == ids(&step));
+        let old = std::mem::take(&mut a.phones);
+        for f in step.user_input.iter().flat_map(|u| &u.fields).filter(|f| f.kind == "phone_number") {
+            let kept = old.get(&f.id).filter(|_| same).map(|p| p.country);
+            let (field, value) = Phone::new(&f.default_value, kept.unwrap_or_else(phone::default_country));
+            let value = if kept.is_some() { field.phone().to_string() } else { value };
+            a.phones.insert(f.id.clone(), field);
+            a.values.insert(f.id.clone(), value);
+        }
         (a.touched, a.shown) = (BTreeSet::new(), BTreeSet::new());
         let display = step.display_and_wait.clone();
         a.qr = display.as_ref().filter(|d| d.kind == "qr").map(|d| qr_svg(&d.data));
@@ -401,9 +419,24 @@ impl BeeperGuiApp {
             },
             AddMsg::Next(_, Ok(step)) => return self.show_step(i, step),
             AddMsg::Emoji(_, r) => a.emoji = r.ok().map(image::Handle::from_bytes),
+            // A phone field takes a new value in its country, like Desktop's `PhoneInput` with a new `value`.
             AddMsg::Field(f, v) => {
+                let v = match a.phones.get_mut(&f) {
+                    Some(field) => field.set(&v),
+                    None => v,
+                };
                 a.touched.insert(f.clone());
                 a.values.insert(f, v);
+            }
+            AddMsg::Phone(f, m) => return self.update_phone(i, f, m),
+            AddMsg::Key(key) => {
+                let Some(f) = a.phones.iter().find(|p| p.1.open).map(|p| p.0.clone()) else { return Task::none() };
+                return self.dropdown_key(i, f, |p| p.key(&key));
+            }
+            AddMsg::Text(t) => {
+                let Some(f) = a.phones.iter().find(|p| p.1.open).map(|p| p.0.clone()) else { return Task::none() };
+                let now = std::time::Instant::now();
+                return self.dropdown_key(i, f, |p| p.typed_letters(&t, now));
             }
             AddMsg::Reveal(f) => {
                 if !a.shown.insert(f.clone()) {
@@ -451,6 +484,62 @@ impl BeeperGuiApp {
             AddMsg::Close => return window::close(id),
         }
         Task::none()
+    }
+
+    /// Whether the window has the open dropdown of a phone field, which takes the window's keys.
+    pub fn add_account_dropdown(&self, id: window::Id) -> bool {
+        self.add_accounts.iter().any(|a| a.id == id && a.phones.values().any(|p| p.open))
+    }
+
+    /// A change of the phone field `f` of the window `i`. Typing moves the cursor to Desktop's place in the
+    /// formatted number, a picked country focuses the input, and an opened dropdown shows at its last scroll.
+    fn update_phone(&mut self, i: usize, f: String, m: PhoneMsg) -> Task<UiMessage> {
+        let a = &mut self.add_accounts[i];
+        let (input, list) = (phone::input_id(a.id, &f), phone::list_id(a.id, &f));
+        let Some(field) = a.phones.get_mut(&f) else { return Task::none() };
+        let (value, task) = match m {
+            PhoneMsg::Input(v) => {
+                let (value, at) = field.typed(&v);
+                (value, operation::move_cursor_to(input, at))
+            }
+            PhoneMsg::Paste(v) => {
+                let (value, at) = field.pasted(&v);
+                (value, operation::move_cursor_to(input, at))
+            }
+            // Desktop shows no error of the focused field that the picked country empties, until a blur or a submit.
+            PhoneMsg::Pick(c) => {
+                a.values.insert(f.clone(), field.pick(c));
+                return operation::focus(input);
+            }
+            PhoneMsg::Toggle => {
+                return field
+                    .toggle()
+                    .map_or_else(Task::none, |y| operation::scroll_to(list, AbsoluteOffset { x: 0.0, y }));
+            }
+            PhoneMsg::Blur => {
+                field.close();
+                return Task::none();
+            }
+            PhoneMsg::Scrolled(y) => {
+                field.scrolled(y);
+                return Task::none();
+            }
+        };
+        a.touched.insert(f.clone());
+        a.values.insert(f, value);
+        task
+    }
+
+    /// A key of the window for the open dropdown of the phone field `f`.
+    fn dropdown_key(&mut self, i: usize, f: String, key: impl FnOnce(&mut Phone) -> KeyOutcome) -> Task<UiMessage> {
+        let a = &mut self.add_accounts[i];
+        let list = phone::list_id(a.id, &f);
+        let Some(field) = a.phones.get_mut(&f) else { return Task::none() };
+        match key(field) {
+            KeyOutcome::Moved(Some(y)) => operation::scroll_to(list, AbsoluteOffset { x: 0.0, y }),
+            KeyOutcome::Picked(c) => self.update_phone(i, f, PhoneMsg::Pick(c)),
+            KeyOutcome::Moved(None) | KeyOutcome::Closed | KeyOutcome::Ignored => Task::none(),
+        }
     }
 
     pub fn add_account_title(&self, id: window::Id) -> Option<String> {
@@ -793,12 +882,13 @@ impl BeeperGuiApp {
                     .width(Fill)
                     .into()
                 }
+                "phone_number" if let Some(field) = a.phones.get(&f.id) => {
+                    let ids = (phone::input_id(a.id, &f.id), phone::list_id(a.id, &f.id));
+                    let phone = move |m| go(AddMsg::Phone(id.clone(), m));
+                    self.view_phone(field, ids, tr("Enter phone number"), phone, go(AddMsg::Submit))
+                }
                 _ => {
-                    let hint = match f.kind.as_str() {
-                        "phone_number" => tr("Enter phone number").to_string(),
-                        _ if secret => "••••••••".into(),
-                        _ => f.name.clone(),
-                    };
+                    let hint = if secret { "••••••••".into() } else { f.name.clone() };
                     let input = text_input(&hint, value)
                         .on_input(move |v| go(AddMsg::Field(id.clone(), v)))
                         .on_submit(go(AddMsg::Submit))
@@ -815,14 +905,14 @@ impl BeeperGuiApp {
                     let eye = secret.then(|| {
                         accessory(if shown { EYE_OFF.clone() } else { EYE.clone() }, AddMsg::Reveal(f.id.clone()))
                     });
-                    let clear = (!secret && f.kind != "phone_number" && !value.is_empty())
+                    let clear = (!secret && !value.is_empty())
                         .then(|| accessory(CLEAR_FIELD.clone(), AddMsg::Field(f.id.clone(), String::new())));
                     row![input].push(eye).push(clear).spacing(4).align_y(Center).into()
                 }
             };
             let error = a.touched.contains(&f.id).then(|| invalid(f, value)).flatten();
             column![semi(f.name.as_str(), 13.0).color(p.strong), control]
-                .push(error.map(|e| txt(e, 12.0).color(p.danger)))
+                .push(error.map(|e| txt(e, 12.0).color(p.text_danger)))
                 .push(
                     (!f.description.is_empty())
                         .then(|| txt(f.description.as_str(), 12.0).color(p.strong.scale_alpha(0.7))),
@@ -875,8 +965,10 @@ mod tests {
     fn fields_validate_like_desktop() {
         let field = |kind: &str| Field { kind: kind.into(), ..Field::default() };
         assert_eq!(invalid(&field("username"), " ").as_deref(), Some("This field is required"));
-        assert_eq!(invalid(&field("phone_number"), "+1 555 0100").as_deref(), None);
-        assert_eq!(invalid(&field("phone_number"), "12").as_deref(), Some("Please enter a valid phone number"));
+        assert_eq!(invalid(&field("phone_number"), "+12015550123").as_deref(), None);
+        let bad = Some("Please enter a valid phone number");
+        assert_eq!(invalid(&field("phone_number"), "+15550100").as_deref(), bad, "libphonenumber wants 10 digits");
+        assert_eq!(invalid(&field("phone_number"), "+1").as_deref(), bad);
         assert_eq!(invalid(&field("email"), "a@b").as_deref(), Some("Please enter a valid email address"));
         assert_eq!(invalid(&field("domain"), "bsky.social").as_deref(), None);
         assert_eq!(invalid(&field("url"), "x.com").as_deref(), Some("Please enter a valid URL"));
@@ -1021,8 +1113,8 @@ mod tests {
     }
 
     /// The Telegram flows of the stub: the QR code of the preferred flow, the phone flow of "Login options", a
-    /// wrong phone number, a wrong code, Desktop's help under a wrong password, and the cancel of the login when the
-    /// window closes.
+    /// wrong phone number, a wrong code and Start Over, Desktop's help under a wrong password, and the cancel of the
+    /// login when the window closes.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_new_telegram_account_goes_through_the_bridge_steps() {
         let (mut app, bridges) = stub_app("telegram").await;
@@ -1046,29 +1138,25 @@ mod tests {
         assert!(send(&mut app, started).await.is_empty());
         assert!(shows(&app, id, "Please enter your phone number") && shows(&app, id, "Phone number"));
         let field = "fi.mau.telegram.login.phone_number".to_string();
-        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(field.clone(), "12".into()))).await;
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(field.clone(), "+112".into()))).await;
         assert!(shows(&app, id, "Please enter a valid phone number"));
         assert!(send(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await.is_empty(), "a bad form is not sent");
-        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(field, "15550100".into()))).await;
-        let failed = {
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(field.clone(), "+12015550123".into()))).await;
+        let sent = {
             let m = click(&app, id, "Continue");
             one(send(&mut app, m).await)
         };
-        let _ = send(&mut app, failed).await;
-        assert!(shows(&app, id, "Something went wrong and we couldn't add your account."));
-        assert!(shows(&app, id, "Phone number must be in international format"));
-        settle(&mut app, UiMessage::AddAccount(id, AddMsg::StartOver)).await;
-        let field_id = || "fi.mau.telegram.login.phone_number".to_string();
-        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(field_id(), "+15550100".into()))).await;
-        settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
+        let _ = send(&mut app, sent).await;
         assert!(shows(&app, id, "Please enter the code sent to your phone") && shows(&app, id, "Back"));
         let code = "fi.mau.telegram.login.code".to_string();
         let wrong = beeper_core::bridge_stub::WRONG_CODE.to_string();
         let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(code.clone(), wrong.clone()))).await;
         settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
+        assert!(shows(&app, id, "Something went wrong and we couldn't add your account."));
         assert!(shows(&app, id, "Invalid phone code"));
         settle(&mut app, UiMessage::AddAccount(id, AddMsg::StartOver)).await;
-        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(field_id(), "+15550100".into()))).await;
+        assert!(shows(&app, id, "Please enter your phone number"), "Start Over starts the flow again");
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(field, "+12015550123".into()))).await;
         settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
         let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(code, "12345".into()))).await;
         settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
@@ -1116,8 +1204,8 @@ mod tests {
             one(send(&mut app, m).await)
         };
         let _ = send(&mut app, started).await;
-        let _ =
-            send(&mut app, UiMessage::AddAccount(id, AddMsg::Field("phone_number".into(), "+15550100".into()))).await;
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field("phone_number".into(), "+12015550123".into())))
+            .await;
         let shown = one(send(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await);
         // The wait of the stub ends at once, so it does not run: a real bridge answers when the code is typed.
         drop(app.update(shown));
@@ -1128,8 +1216,8 @@ mod tests {
         };
         let _ = send(&mut app, back).await;
         assert!(shows(&app, id, "Please enter your phone number"), "Back shows the step before");
-        let _ =
-            send(&mut app, UiMessage::AddAccount(id, AddMsg::Field("phone_number".into(), "+15550100".into()))).await;
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field("phone_number".into(), "+12015550123".into())))
+            .await;
         settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
         assert_eq!(app.toast.as_ref().map(|t| t.text.as_str()), Some("Reconnected to WhatsApp"));
     }
@@ -1204,5 +1292,84 @@ mod tests {
         let _ = send(&mut app, opened).await;
         assert!(shows(&app, id, "Google Messages logins are paused.") && shows(&app, id, "Connect to Google Messages"));
         assert!(!shows(&app, id, "Loading...") && !shows(&app, id, "Continue →"), "a disabled platform has no login");
+    }
+
+    /// Desktop's `PhoneInput` in the Telegram phone step of the stub: the selector with the flag and the dial code,
+    /// its dropdown with the keys of the window, a picked country, its mask, a pasted number that goes to its
+    /// country, and the `+<dial code><digits>` that the form sends.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_phone_field_picks_formats_and_guesses_the_country() {
+        use crate::phone::COUNTRIES;
+        use iced::keyboard::{key::Named, Key};
+        let (mut app, bridges) = stub_app("phone-field").await;
+        let flows = one(send(&mut app, UiMessage::OpenAddAccount("telegram".into(), None)).await);
+        let id = app.add_accounts[0].id;
+        let started = one(send(&mut app, flows).await);
+        let _ = send(&mut app, started).await;
+        let started = one(send(&mut app, UiMessage::AddAccount(id, AddMsg::Flow("phone".into()))).await);
+        let _ = send(&mut app, started).await;
+        let field = "fi.mau.telegram.login.phone_number";
+        let phone = |app: &BeeperGuiApp| {
+            let a = &app.add_accounts[0];
+            (a.values[field].clone(), a.phones[field].input.clone())
+        };
+        assert_eq!(phone(&app), (String::new(), String::new()), "the value stays empty until it changes");
+        assert!(shows(&app, id, "Enter phone number"));
+        let dial = format!("+{}", COUNTRIES[crate::phone::default_country()].dial);
+        let toggle = click(&app, id, &dial);
+        assert!(matches!(toggle, UiMessage::AddAccount(_, AddMsg::Phone(_, PhoneMsg::Toggle))));
+        assert!(!shows(&app, id, "United Kingdom"), "the dropdown is closed");
+        let _ = send(&mut app, toggle).await;
+        assert!(shows(&app, id, "United Kingdom") && shows(&app, id, "+44"));
+        // The window's keys go to the dropdown: Escape closes it and not the window.
+        let escape = UiMessage::WindowKey(id, Key::Named(Named::Escape), Default::default());
+        let _ = send(&mut app, escape).await;
+        assert!(!shows(&app, id, "United Kingdom") && app.add_accounts.len() == 1);
+        let m = click(&app, id, &dial);
+        let _ = send(&mut app, m).await;
+        for t in ["u", "n", "i", "t", "e", "d", " ", "k"] {
+            let _ = send(&mut app, UiMessage::WindowText(id, t.into())).await;
+        }
+        let _ = send(&mut app, UiMessage::WindowKey(id, Key::Named(Named::Enter), Default::default())).await;
+        assert_eq!(phone(&app), ("+44".to_string(), String::new()), "typing a name and Enter pick the country");
+        assert!(!shows(&app, id, "United Kingdom") && shows(&app, id, "+44"));
+        let m = click(&app, id, "+44");
+        let _ = send(&mut app, m).await;
+        // A press on the selector only toggles the dropdown, and a press on the input closes it like Desktop's blur.
+        let mut sim = iced_test::simulator(app.view(id));
+        sim.click("+44").expect("the selector");
+        let msgs: Vec<_> = sim.into_messages().collect();
+        assert!(matches!(msgs.as_slice(), [UiMessage::AddAccount(_, AddMsg::Phone(_, PhoneMsg::Toggle))]));
+        let mut sim = iced_test::simulator(app.view(id));
+        sim.click(iced::widget::Id::from(phone::input_id(id, field))).expect("the input");
+        assert!(sim.into_messages().any(|m| matches!(m, UiMessage::AddAccount(_, AddMsg::Phone(_, PhoneMsg::Blur)))));
+        // The simulator does not run the task that scrolls the list to the selected country, so it shows the top.
+        let pick = click(&app, id, "Afghanistan");
+        assert!(matches!(pick, UiMessage::AddAccount(_, AddMsg::Phone(_, PhoneMsg::Pick(_)))));
+        let _ = send(&mut app, pick).await;
+        assert_eq!(phone(&app).0, "+93");
+        let gb = COUNTRIES.iter().position(|c| c.iso2 == "gb").expect("the United Kingdom");
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Phone(field.into(), PhoneMsg::Pick(gb)))).await;
+        // Typing formats the number with the country's mask, and a letter does nothing.
+        for c in "2079460958x".chars() {
+            let text = format!("{}{c}", app.add_accounts[0].phones[field].input);
+            let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Phone(field.into(), PhoneMsg::Input(text)))).await;
+        }
+        assert_eq!(phone(&app), ("+442079460958".to_string(), "2079 460958".to_string()));
+        assert!(shows(&app, id, "2079 460958") && !shows(&app, id, "Please enter a valid phone number"));
+        // A pasted number with a dial code goes to its country.
+        let paste = PhoneMsg::Paste("+1 201-555-0123".into());
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Phone(field.into(), paste))).await;
+        assert_eq!(phone(&app), ("+12015550123".to_string(), "(201) 555-0123".to_string()));
+        assert_eq!(COUNTRIES[app.add_accounts[0].phones[field].country].iso2, "us");
+        assert!(shows(&app, id, "(201) 555-0123") && shows(&app, id, "+1"));
+        let sent = {
+            let m = click(&app, id, "Continue");
+            one(send(&mut app, m).await)
+        };
+        let _ = send(&mut app, sent).await;
+        assert!(shows(&app, id, "Please enter the code sent to your phone"));
+        let sent = serde_json::json!({ field: "+12015550123" });
+        assert_eq!(bridges.bodies().last(), Some(&sent), "the form sends Desktop's `phone`");
     }
 }
