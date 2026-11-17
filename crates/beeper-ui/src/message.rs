@@ -1099,7 +1099,10 @@ impl BeeperGuiApp {
             .map(|m| self.day_pill(&m.timestamp).padding(Padding::ZERO.top(80.0).left(GUTTER)));
         // Desktop's request has no thread header, with its feedback button, only the Chat Info toggle (`Nmt`) 8 px
         // from the top right corner.
+        // Desktop's thread header (`ij`) is gone while chats are selected (`threadSelectionMode`).
+        let selecting = self.drawing.get().is_none() && (self.select_mode || !self.selection.is_empty());
         let overlay = match in_chat {
+            true if selecting => stack![fade],
             true if chat.is_request == Some(true) => stack![fade, self.view_info_toggle(&st)],
             true => stack![fade, header].push(feedback).push(lhs),
             false => stack![fade],
