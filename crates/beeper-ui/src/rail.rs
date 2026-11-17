@@ -505,6 +505,9 @@ impl BeeperGuiApp {
             Some(order) => order,
             None => draft.map_or_else(|| rail_spaces(&st), |d| draft_rail_spaces(&st, &d.name)),
         };
+        // A space that the keyboard moves shows in the place it drops at.
+        let items: std::sync::Arc<[String]> = ids.clone().into();
+        let ids = self.key_sort_of(window, sortable::List::Rail).and_then(|s| s.moved(&ids)).unwrap_or(ids);
         let mut lifted = None;
         let spaces = ids.into_iter().enumerate().map(|(i, id)| {
             let el = match id.as_str() {
@@ -544,8 +547,9 @@ impl BeeperGuiApp {
                 _ => el,
             };
             // Desktop's spaces are `dnd-kit` sortables around their buttons: Tab shows Chromium's ring on the space,
-            // then reaches its button. The keys of the space reorder the spaces in Desktop, which beeper-rs does not do.
-            let el = self.target(window, format!("space-{id}"), el, Keys::default(), Look::Auto);
+            // then reaches its button. Enter and Space on the space pick it up for the arrows (see `sortable`).
+            let pick = Self::pick(window, sortable::List::Rail, &id, &items, 1);
+            let el = self.target(window, format!("space-{id}"), el, Keys::press(pick), Look::Auto);
             let hover = id.clone();
             mouse_area(el)
                 .on_move(move |at| UiMessage::Rail(rail::Msg::Hover(hover.clone(), at)))
@@ -883,7 +887,7 @@ impl BeeperGuiApp {
             .padding([14, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         // Desktop's controls of the sheet: plain `<button>`s whose focus does not show, and the `dnd-kit` handles,
-        // which show Chromium's ring. The keys of a handle reorder the spaces in Desktop, which beeper-rs does not do.
+        // which show Chromium's ring, and whose Enter and Space pick the space up for the arrows (see `sortable`).
         let window = Some(d.id);
         let plain =
             |key: String, b: El<'a>, msg: UiMessage| self.target(window, key, b, Keys::press(msg), Look::Hidden);
@@ -897,17 +901,30 @@ impl BeeperGuiApp {
             .align_y(Center)
             .padding(Padding::ZERO.left(16.0).right(8.0));
         let q = d.search.trim().to_lowercase();
-        let split = d.order.iter().position(|o| o == SPACES_DIVIDER).expect("the divider");
-        let found = |ids: &'a [String]| -> Vec<&'a String> {
-            ids.iter().filter(|id| q.is_empty() || space_name(&st, id).to_lowercase().contains(&q)).collect()
+        // The shown and the hidden spaces that the search finds.
+        let found = |order: &[String]| -> (Vec<String>, Vec<String>) {
+            let split = order.iter().position(|o| o == SPACES_DIVIDER).expect("the divider");
+            let hit = |ids: &[String]| -> Vec<String> {
+                let hit = |id: &&String| q.is_empty() || space_name(&st, id).to_lowercase().contains(&q);
+                ids.iter().filter(hit).cloned().collect()
+            };
+            (hit(&order[..split]), hit(&order[split + 1..]))
         };
+        let (shown, hidden) = found(&d.order);
+        let none_hidden = hidden.is_empty();
+        let items: std::sync::Arc<[String]> =
+            shown.iter().chain([&SPACES_DIVIDER.to_string()]).chain(&hidden).cloned().collect();
+        // A space that the keyboard moves shows in the place it drops at, lifted like Desktop's drag overlay.
+        let sort = self.key_sort_of(window, sortable::List::Spaces);
+        let (shown, hidden) = sort.and_then(|s| s.moved(&d.order)).map_or((shown, hidden), |o| found(&o));
         let line = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.15);
-        let dragged = d.drag.as_ref().map(|(id, _)| id.as_str());
-        let group = |ids: Vec<&'a String>| -> Vec<El<'a>> {
+        let dragged = d.drag.as_ref().map(|(id, _)| id.as_str()).or(sort.map(|s| s.id.as_str()));
+        let group = |ids: Vec<String>| -> Vec<El<'a>> {
             let last = ids.len().saturating_sub(1);
             ids.into_iter()
                 .enumerate()
                 .map(|(i, id)| {
+                    let id = &id;
                     let (top, bottom) = (if i == 0 { 12.0 } else { 0.0 }, if i == last { 12.0 } else { 0.0 });
                     let muted = match rail_label(&st, id) {
                         Some(l) => l.muted,
@@ -926,7 +943,8 @@ impl BeeperGuiApp {
                     let handle = mouse_area(container(tinted(&DRAG_HANDLE, 20.0, p.sub)).center(28))
                         .interaction(iced::mouse::Interaction::Grab)
                         .on_press(edit(SpacesEdit::Drag(id.clone())));
-                    let handle = self.target(window, format!("handle-{id}"), handle, Keys::default(), Look::Auto);
+                    let pick = Self::pick(window, sortable::List::Spaces, id, &items, 1);
+                    let handle = self.target(window, format!("handle-{id}"), handle, Keys::press(pick), Look::Auto);
                     let lift = dragged == Some(id.as_str());
                     let body =
                         row![container(self.space_icon(&st, id)).center(20), column![name].push(sub).width(Fill),]
@@ -971,8 +989,7 @@ impl BeeperGuiApp {
                 .collect()
         };
         let header = |label: &'static str| container(txt(label, 12.0).color(p.sub)).padding([8, 0]);
-        let hidden = found(&d.order[split + 1..]);
-        let empty = hidden.is_empty().then(|| {
+        let empty = none_hidden.then(|| {
             let fill = if dragged.is_some() { CLEAR } else { p.received };
             let msg = container(txt(tr("No Hidden Spaces"), 13.0).color(p.sub)).center_x(Fill).center_y(56).style(
                 move |_: &Theme| container::Style {
@@ -988,7 +1005,7 @@ impl BeeperGuiApp {
             mouse_area(msg).on_enter(edit(SpacesEdit::Over(String::new())))
         });
         let list = column![header(trx("Pinned", "edit spaces section header"))]
-            .extend(group(found(&d.order[..split])))
+            .extend(group(shown))
             .push(mouse_area(header(tr("Hidden")).width(Fill)).on_enter(edit(SpacesEdit::Over(SPACES_DIVIDER.into()))))
             .push(empty)
             .extend(group(hidden))

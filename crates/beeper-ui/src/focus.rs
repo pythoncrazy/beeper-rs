@@ -606,8 +606,10 @@ impl BeeperGuiApp {
         keys: Keys,
         look: Look,
     ) -> El<'a> {
-        let id = iced::widget::Id::from(key.into());
-        let on = window.and_then(|w| self.key_targets.get(&w)) == Some(&id);
+        let key = key.into();
+        let lifted = self.key_sort.as_ref().is_some_and(|s| Some(s.window) == window && s.hides(&key));
+        let id = iced::widget::Id::from(key);
+        let on = window.and_then(|w| self.key_targets.get(&w)) == Some(&id) && !lifted;
         let content: El<'a> = match look {
             Look::Hidden => content.into(),
             Look::Outline { color, width, offset, radius } => {
@@ -637,7 +639,7 @@ impl BeeperGuiApp {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::fuzz::demo_app;
     use iced::advanced::renderer::Headless;
@@ -695,7 +697,7 @@ mod tests {
     }
 
     /// The survey of `window` at `size`, as a key collects it, with the caret in the text field `caret`.
-    fn survey_of(app: &BeeperGuiApp, window: window::Id, size: Size, caret: Option<&'static str>) -> Survey {
+    pub(crate) fn survey_of(app: &BeeperGuiApp, window: window::Id, size: Size, caret: Option<&'static str>) -> Survey {
         let mut renderer = renderer();
         let mut ui = iced_runtime::UserInterface::build(app.view(window), size, Default::default(), &mut renderer);
         if let Some(id) = caret {
@@ -707,23 +709,23 @@ mod tests {
     }
 
     /// The IDs of the stops of a survey.
-    fn ids(s: &Survey) -> Vec<String> {
+    pub(crate) fn ids(s: &Survey) -> Vec<String> {
         s.stops.iter().map(|(stop, _)| format!("{:?}", stop.id()).split('"').nth(1).unwrap_or("").to_string()).collect()
     }
 
     /// A key of the focus in `window`, with the survey of its view.
-    fn ask(app: &mut BeeperGuiApp, window: window::Id, size: Size, caret: Option<&'static str>, ask: Ask) {
+    pub(crate) fn ask(app: &mut BeeperGuiApp, window: window::Id, size: Size, caret: Option<&'static str>, ask: Ask) {
         let survey = survey_of(app, window, size, caret);
         let _ = app.update(UiMessage::Focus(Msg::Surveyed(window, ask, survey)));
     }
 
     /// The ID of the control of `window` with the keyboard focus.
-    fn held(app: &BeeperGuiApp, window: window::Id) -> Option<String> {
+    pub(crate) fn held(app: &BeeperGuiApp, window: window::Id) -> Option<String> {
         app.key_targets.get(&window).map(|id| format!("{id:?}").split('"').nth(1).unwrap_or("").to_string())
     }
 
     /// The pixels of `view` at `size`, from the simulator's snapshot.
-    fn shot(view: El<'_>, size: Size, name: &str) -> ::image::RgbaImage {
+    pub(crate) fn shot(view: El<'_>, size: Size, name: &str) -> ::image::RgbaImage {
         let mut sim = Simulator::with_size(Default::default(), size, view);
         let dir = std::env::temp_dir().join(format!("beeper-rs-focus-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -860,7 +862,7 @@ mod tests {
         assert_eq!(app.store.read().settings.pref(&key), before, "and so does Enter");
         let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::Accounts)));
         ask(&mut app, id, SETTINGS_SIZE, search, Ask::Tab(false));
-        assert_eq!(held(&app, id).as_deref(), Some("account-0"), "the Beeper account comes first");
+        assert_eq!(held(&app, id).as_deref(), Some("account-hungryserv"), "the Beeper account comes first");
     }
 
     /// Desktop's main window without an open chat leaves Tab to Chromium: each space of the space bar shows the

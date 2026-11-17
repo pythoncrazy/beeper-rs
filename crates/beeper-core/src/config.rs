@@ -123,6 +123,7 @@ impl Default for BeeperSettings {
             snooze_last_time: String::new(),
             chat_appearance: Default::default(),
             spaces_order: Vec::new(),
+            accounts_order: Default::default(),
             ever_labeled: false,
             labels_intro_seen: false,
             merge_intro_seen: false,

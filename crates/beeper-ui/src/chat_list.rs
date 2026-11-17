@@ -1343,6 +1343,13 @@ impl BeeperGuiApp {
         if let Some(order) = self.pin_drag.as_ref().and_then(|d| d.order.as_ref()) {
             pinned.sort_by_key(|c| order.iter().position(|o| *o == c.id).unwrap_or(usize::MAX));
         }
+        // A pin that the keyboard moves shows in the place it drops at, which it marks like a drag of the mouse.
+        let items: std::sync::Arc<[String]> = pinned.iter().map(|c| c.id.clone()).collect();
+        let sort = self.key_sort_of(window, sortable::List::Pins);
+        let dragged = dragged.or(sort.map(|s| s.id.as_str()));
+        if let Some(order) = sort.and_then(|s| s.moved(&items)) {
+            pinned.sort_by_key(|c| order.iter().position(|o| *o == c.id).unwrap_or(usize::MAX));
+        }
         let counts = st.settings.on("showUnreadCount");
         let network_icons = st.settings.on("showNetworkIcons")
             && self.list().selected_account_filter.as_deref().is_none_or(|id| rail_label(&st, id).is_some());
@@ -1413,9 +1420,10 @@ impl BeeperGuiApp {
                     .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone())))
                     .on_enter(UiMessage::Pins(pins::Msg::Hover(Some(c.id.clone()))))
                     .on_exit(UiMessage::Pins(pins::Msg::Hover(None)));
-                // Desktop's pins are `dnd-kit` sortables, which show Chromium's ring; their keys reorder the pins in
-                // Desktop, which beeper-rs does not do.
-                let item = self.target(window, format!("pin-{}", c.id), item, Keys::default(), Look::Auto);
+                // Desktop's pins are `dnd-kit` sortables, which show Chromium's ring, and whose Enter and Space pick
+                // the pin up for the arrows (see `sortable`).
+                let pick = Self::pick(window, sortable::List::Pins, &c.id, &items, cols);
+                let item = self.target(window, format!("pin-{}", c.id), item, Keys::press(pick), Look::Auto);
                 r.push(container(item).center_x(cell))
             }))
         };

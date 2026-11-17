@@ -10,6 +10,7 @@ use crate::hotkeys;
 use crate::i18n::{tr, trf, trn, trnx, trs, trx};
 use crate::integrations;
 use crate::rail::SpaceMenu;
+use crate::sortable;
 use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, ell, fill_box, fw, glow_box, gutter_style, hex, ic,
     icon, input_style, med, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
@@ -1128,19 +1129,19 @@ impl BeeperGuiApp {
                 };
                 let me = st.me();
                 // Desktop's `defaultUserDisplayText` of the Beeper account is the profile's full name.
-                let rows = std::iter::once(account(
+                let beeper = account(
                     "hungryserv",
                     me.full_name.as_deref().expect("self name"),
                     me.img_url.as_deref(),
                     "Beeper".into(),
                     false,
                     me.full_name.clone().or_else(|| me.username.clone()),
-                ))
-                .chain(st.bridge_accounts.iter().map(|b| {
+                );
+                let rows = std::iter::once(("hungryserv", beeper)).chain(st.bridge_accounts.iter().map(|b| {
                     let r = b.remote_profile.as_ref();
                     let owner = r.and_then(|r| r.name.as_deref()).unwrap_or("");
                     let photo = r.and_then(|r| r.avatar.as_deref());
-                    account(
+                    let row = account(
                         &b.account_id,
                         owner,
                         photo,
@@ -1150,16 +1151,34 @@ impl BeeperGuiApp {
                         st.custom_name(&b.account_id)
                             .map(str::to_string)
                             .or_else(|| b.display_text_with(crate::fmt_phone)),
-                    )
+                    );
+                    (b.account_id.as_str(), row)
                 }));
+                // Desktop's `ZLt` sorts the accounts by `accounts_order`, and is a `Drop` that the keyboard reorders
+                // (see `sortable`): the moved account shows in the place it drops at, at 40 % opacity.
+                let mut rows: Vec<(&str, El<'_>)> = rows.collect();
+                rows.sort_by_key(|(id, _)| st.settings.accounts_order.get(*id).copied().unwrap_or(u32::MAX));
+                let items: std::sync::Arc<[String]> = rows.iter().map(|(id, _)| id.to_string()).collect();
+                let window = self.settings_window;
+                let sort = self.key_sort_of(window, sortable::List::Accounts);
+                if let Some(order) = sort.and_then(|s| s.moved(&items)) {
+                    rows.sort_by_key(|(id, _)| order.iter().position(|o| o == id));
+                }
                 let rows = rows
+                    .into_iter()
                     .enumerate()
-                    .flat_map(|(i, r)| {
+                    .flat_map(|(i, (id, r))| {
+                        let pick = Self::pick(window, sortable::List::Accounts, id, &items, 1);
+                        let row = self.focus_row(r, format!("account-{id}"), Keys::press(pick));
+                        // `opacity: .4` over the card, as a veil of its color.
+                        let veil = container(Space::new().width(Fill).height(Fill))
+                            .style(fill_box(p.prefs_group.scale_alpha(0.6), 0.0));
+                        let lifted = sort.is_some_and(|s| s.id == id);
                         [
                             (i > 0).then(|| {
                                 container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0)).into()
                             }),
-                            Some(self.focus_row(r, format!("account-{i}"), Keys::default())),
+                            Some(stack![row].push(lifted.then_some(veil)).into()),
                         ]
                     })
                     .flatten();

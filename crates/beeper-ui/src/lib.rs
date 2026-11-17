@@ -57,6 +57,7 @@ mod ring;
 mod scheduled;
 mod selectable;
 pub mod settings;
+pub mod sortable;
 mod sound;
 mod spell;
 mod time;
@@ -426,6 +427,8 @@ pub enum UiMessage {
     MenuBar(menubar::Msg),
     /// Desktop's pinned chats grid: the hover of a tile, and the drag that orders the pins.
     Pins(pins::Msg),
+    /// Desktop's keyboard reordering of its `dnd-kit` sortables.
+    Sort(sortable::Msg),
     /// A message from a chat window, handled with its pane.
     InWindow(window::Id, Box<UiMessage>),
     KeyPressed(Key, Modifiers),
@@ -2830,6 +2833,8 @@ pub struct BeeperGuiApp {
     alt_alone: bool,
     pub pin_hover: Option<String>,
     pub pin_drag: Option<PinDrag>,
+    /// The sortable item that the keyboard moves (see [`sortable`]).
+    pub key_sort: Option<sortable::KeySort>,
     pub main_window: Option<window::Id>,
     /// The control of each window with the keyboard focus, which Tab gives it (see [`focus`]).
     pub key_targets: HashMap<window::Id, iced::widget::Id>,
@@ -3098,6 +3103,7 @@ impl BeeperGuiApp {
             alt_alone: false,
             pin_hover: None,
             pin_drag: None,
+            key_sort: None,
             user_hover: UserHover::default(),
             rail_drag: None,
             rail_press: None,
@@ -4139,6 +4145,7 @@ impl BeeperGuiApp {
             UiMessage::NewChat(msg) => return self.new_chat(msg),
             UiMessage::Notify(msg) => return self.notify_event(msg),
             UiMessage::Pins(msg) => return self.pins(msg),
+            UiMessage::Sort(msg) => return self.sortable(msg),
             UiMessage::Rail(msg) => return self.rail(msg),
             UiMessage::Record(msg) => return self.record(msg),
             UiMessage::Reminders(msg) => return self.reminders(msg),
@@ -4279,6 +4286,28 @@ impl BeeperGuiApp {
             }
             UiMessage::InputEscape(id) => {
                 return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
+            }
+            // Desktop's `KeyboardSensor` takes Space, Enter, Tab, Escape and the arrows of its window while it moves
+            // an item.
+            UiMessage::WindowText(id, text)
+                if text == " " && self.key_sort.as_ref().is_some_and(|s| s.window == id) =>
+            {
+                return self.sortable(sortable::Msg::Drop);
+            }
+            UiMessage::WindowKey(id, key, mods)
+                if self.key_sort.as_ref().is_some_and(|s| s.window == id)
+                    && sortable::key_msg(&key, mods).is_some() =>
+            {
+                return self.sortable(sortable::key_msg(&key, mods).expect("a key of the sort"));
+            }
+            // Chromium's Space on a focused control of the main window, when the composer does not take the keys.
+            UiMessage::WindowText(id, text)
+                if text == " "
+                    && Some(id) == self.main_window
+                    && self.key_targets.contains_key(&id)
+                    && !self.composer_takes_keys() =>
+            {
+                return self.focus_space(id, false).unwrap_or_else(Task::none);
             }
             UiMessage::WindowText(id, text) if self.chat_windows.iter().any(|w| w.0 == id) => {
                 return self.update(UiMessage::InWindow(id, Box::new(UiMessage::Composer(composer::Msg::Type(text)))));
