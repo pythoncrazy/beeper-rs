@@ -1813,9 +1813,11 @@ pub struct BridgeAccountInfo {
     pub remote_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_profile: Option<RemoteProfile>,
-    /// The `message` of a remote state with `has_error`, which Desktop's account page shows.
+    /// The `message` of a remote state with `has_error`, which Desktop's account page shows, and its `error` code.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_error_code: Option<String>,
 }
 
 impl BridgeAccountInfo {

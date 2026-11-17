@@ -13,7 +13,9 @@ pub enum Msg {
     Tile(String, image::Handle),
     /// A quoted message that the timeline did not have, or why it could not load.
     Quote(String, Result<Box<Message>, String>),
-    RetryMedia(String),
+    /// Desktop's `mediaDownloadStore.download`: the interactive download of a media URL, and its end.
+    Fetch(String),
+    Fetched(String, Result<(), String>),
     ResolveMedia(String, String, String),
     MediaResolved(String, String, String, Result<(), String>),
     /// A load of items of the Media window.
@@ -28,6 +30,10 @@ impl BeeperGuiApp {
             }
             Msg::Avatar(_, Err(_)) => {}
             Msg::Media(url, r) => {
+                if let Some(e) = r.as_ref().err().filter(|e| beeper_core::matrix::reload_needed(e)) {
+                    eprintln!("media needs a download that the user asks for: {e}");
+                    self.needs_download.insert(url.strip_suffix(media_view::LOOP).unwrap_or(&url).to_string());
+                }
                 self.media.insert(url, Some(r));
             }
             Msg::VCard(url, r) => {
@@ -40,9 +46,29 @@ impl BeeperGuiApp {
                 }
             }
             Msg::Tile(key, h) => self.tiles.insert(key, Some(h)),
-            Msg::RetryMedia(url) => {
-                self.media.remove(&url);
-                return self.load_media();
+            Msg::Fetch(url) => {
+                if !self.fetching.insert(url.clone()) {
+                    return Task::none();
+                }
+                let fetch = beeper_core::matrix::media_interactive(self.store.read().matrix.clone(), url.clone());
+                return Task::perform(fetch, move |r| UiMessage::Loaded(Msg::Fetched(url.clone(), r)));
+            }
+            // The next view loads the media again, from the cache that the download filled.
+            Msg::Fetched(url, r) => {
+                self.fetching.remove(&url);
+                match r {
+                    Ok(()) => {
+                        self.needs_download.remove(&url);
+                        self.media.remove(&url);
+                        self.media.remove(&format!("{url}{}", media_view::LOOP));
+                    }
+                    Err(e) => {
+                        eprintln!("interactive download failed: {e}");
+                        let text =
+                            "Could not download this file. Check that the app is running on your phone and try again.";
+                        self.fail(Toast::new(tr(text).into()));
+                    }
+                }
             }
             Msg::ResolveMedia(account_id, event_id, raw) => {
                 if self.resolving_media.get(&event_id) == Some(&true) {

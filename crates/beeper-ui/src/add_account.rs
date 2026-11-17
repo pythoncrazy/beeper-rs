@@ -817,7 +817,8 @@ mod tests {
 
     #[test]
     fn every_addable_network_has_a_cloud_bridge_but_bluesky() {
-        let none: Vec<_> = crate::login::addable().filter(|n| cloud_bridge(n).is_none()).map(|n| n.bridge_id).collect();
+        let none: Vec<_> =
+            crate::networks::addable().filter(|n| cloud_bridge(n).is_none()).map(|n| n.bridge_id).collect();
         // macOS also adds iMessage, which runs on the Mac and not in Beeper Cloud.
         let local: &[&str] = if cfg!(target_os = "macos") { &["imessage", "bluesky"] } else { &["bluesky"] };
         assert_eq!(none, local);
@@ -1001,7 +1002,7 @@ mod tests {
             assert!(inbox.find("WhatsApp disconnected").is_ok(), "the inbox shows it too (Desktop's `mpt`)");
             assert!(inbox.find("Reconnect").is_err(), "Reconnect shows only in its space");
         }
-        app.selected_account_filter = Some("whatsapp".into());
+        app.list.selected_account_filter = Some("whatsapp".into());
         let mut sim = iced_test::simulator(app.view_sidebar());
         assert!(sim.find("WhatsApp disconnected").is_ok());
         sim.click("Reconnect").expect("the Reconnect of the banner");

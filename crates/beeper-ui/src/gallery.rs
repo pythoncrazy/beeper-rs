@@ -5,13 +5,13 @@ use crate::i18n::{tr, trx};
 use crate::loads;
 use crate::media_view;
 use crate::message;
-use crate::style::{bordered_box, fill_box, semi, shadow_box, Palette};
+use crate::style::{bordered_box, btn_style, fill_box, semi, shadow_box, Palette};
 use crate::time::iso_millis;
 use crate::{deletable, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, UiMessage};
 use crate::{MENU_ITEM, MESSAGE_MENU_W};
 use beeper_core::models::{AttachmentSize, Message};
 use beeper_core::store::BeeperStore;
-use iced::widget::{container, image, mouse_area, stack, Column, Space, Stack};
+use iced::widget::{button, container, image, mouse_area, stack, Column, Space, Stack};
 use iced::{mouse, Color, Fill, Padding, Pixels, Point, Task};
 
 /// Desktop's `rbt`, `obt` and `ibt`: at most 20 messages, at most 2 minutes after the first, at most 60 seconds apart.
@@ -350,6 +350,32 @@ impl BeeperGuiApp {
             let (bw, bh) = turned((w, h), turn);
             let size = (w.round() as u32, h.round() as u32);
             let selected = self.pane().selected_msgs.contains(&m.id);
+            let more = (hidden > 0 && i + 1 == tiles.len()).then(|| {
+                let pill = label(format!("+{hidden}"), 12.0, 15.0, [4.0, 10.0], 100.0);
+                container(pill).align_right(Fill).align_bottom(Fill).padding(6)
+            });
+            let at = |tile: El<'a>| -> El<'a> {
+                container(tile).padding(Padding::ZERO.left(x - (bw - w) / 2.0).top(y - (bh - h) / 2.0)).into()
+            };
+            // Desktop's placeholder of media that a bridge loads only when the user asks: a round download button in
+            // the brand color, with a spinner while it downloads, when it is disabled but keeps its colors.
+            if let Some(src) = self.needs_download(a) {
+                let fetching = self.fetching.contains(src);
+                let icon = match fetching {
+                    true => crate::verify::spinner(16.0, p.accent),
+                    false => tinted(&crate::MAT_DOWNLOAD, 20.0, p.accent),
+                };
+                let fetch = (!fetching).then(|| UiMessage::Loaded(loads::Msg::Fetch(src.clone())));
+                let download = button(container(icon).center(40)).padding(0).on_press_maybe(fetch);
+                let style = btn_style([p.received; 3], [p.accent; 3], 20.0);
+                let download = download.style(move |t, s| match s {
+                    button::Status::Disabled => style(t, button::Status::Active),
+                    s => style(t, s),
+                });
+                let tile = stack![container(download).center(Fill)].push(more).width(w).height(h);
+                let tile = container(tile).style(bordered_box(p.chip, p.prefs_border, 0.5, RADIUS));
+                return at(container(tile).center_x(bw).center_y(bh).into());
+            }
             let base: El<'a> = match url.and_then(|u| self.tile(u, size, selected)) {
                 Some(t) => image(t.clone())
                     .width(bw)
@@ -371,15 +397,10 @@ impl BeeperGuiApp {
                 let pill = label(crate::voice::clock(d as f32), 11.0, 14.0, [1.0, 4.0], 8.0);
                 container(pill).align_bottom(Fill).padding(4)
             });
-            let more = (hidden > 0 && i + 1 == tiles.len()).then(|| {
-                let pill = label(format!("+{hidden}"), 12.0, 15.0, [4.0, 10.0], 100.0);
-                container(pill).align_right(Fill).align_bottom(Fill).padding(6)
-            });
             let marks = Stack::new().push(play).push(time).push(more).width(w).height(h);
             let marks = container(marks).padding(Padding::ZERO.left((bw - w) / 2.0).top((bh - h) / 2.0));
             let click = UiMessage::Gallery(Msg::Tile(m.id.clone()));
-            let tile = mouse_area(stack![base, marks]).on_press(click).interaction(mouse::Interaction::Pointer);
-            container(tile).padding(Padding::ZERO.left(x - (bw - w) / 2.0).top(y - (bh - h) / 2.0)).into()
+            at(mouse_area(stack![base, marks]).on_press(click).interaction(mouse::Interaction::Pointer).into())
         });
         Stack::with_children(layers).width(gw).height(gh).into()
     }

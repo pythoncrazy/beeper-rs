@@ -483,17 +483,35 @@ const BRANDS: [(&str, &str, &str); 20] = brands!(
     "hungryserv"
 );
 
-static BRAND_SVGS: LazyLock<HashMap<&'static str, [svg::Handle; 3]>> = LazyLock::new(|| {
+static BRAND_SVGS: LazyLock<HashMap<&'static str, [svg::Handle; 4]>> = LazyLock::new(|| {
     assert!(NETWORK_SPECS.iter().all(|n| BRANDS.iter().any(|b| b.0 == n.bridge_id)), "every network has a logo");
     BRANDS
         .iter()
         .map(|(id, tile, badge)| {
             assert!(tile.contains(r#"rx="9.8""#), "{id} has the tile clip");
             let round = tile.replacen(r#"rx="9.8""#, r#"rx="14""#, 1);
-            (*id, [tile.to_string(), badge.to_string(), round].map(|s| svg::Handle::from_memory(s.into_bytes())))
+            let svgs = [tile.to_string(), badge.to_string(), round, grayscale(tile)];
+            (*id, svgs.map(|s| svg::Handle::from_memory(s.into_bytes())))
         })
         .collect()
 });
+
+/// An SVG with its `#rgb` and `#rrggbb` colors made gray like CSS `filter: grayscale(100%)`, whose luminance takes
+/// 0.2126 of red, 0.7152 of green and 0.0722 of blue.
+fn grayscale(svg: &str) -> String {
+    static HEX: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b").expect("the color pattern compiles"));
+    HEX.replace_all(svg, |c: &regex::Captures| {
+        let h = &c[1];
+        let channel = |i: usize| match h.len() {
+            3 => u8::from_str_radix(&h[i..=i], 16).expect("a hex digit") * 17,
+            _ => u8::from_str_radix(&h[2 * i..2 * i + 2], 16).expect("hex digits"),
+        };
+        let y = 0.2126 * f32::from(channel(0)) + 0.7152 * f32::from(channel(1)) + 0.0722 * f32::from(channel(2));
+        format!("#{0:02x}{0:02x}{0:02x}", y.round() as u8)
+    })
+    .into_owned()
+}
 
 /// A QR code as an SVG: black modules on white, with a white `margin` of modules around them.
 pub fn qr_svg(code: &qrcodegen::QrCode, margin: i32) -> svg::Handle {
@@ -554,6 +572,11 @@ pub fn gradient_text(s: &str, size: f32, line: f32) -> (svg::Handle, f32) {
 
 pub fn brand_svg(bridge_id: &str) -> svg::Handle {
     BRAND_SVGS[bridge_id][0].clone()
+}
+
+/// The logo of a network that cannot take an account, like Desktop's `networkTileBlocked` (`grayscale(100%)`).
+pub fn brand_gray(bridge_id: &str) -> svg::Handle {
+    BRAND_SVGS[bridge_id][3].clone()
 }
 
 pub fn brand_badge(bridge_id: &str) -> svg::Handle {
@@ -949,6 +972,13 @@ pub fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CSS `grayscale(100%)` of a logo: each color becomes its luminance, and the tile keeps its shapes.
+    #[test]
+    fn blocked_logos_are_gray_like_desktop() {
+        let svg = r##"<rect fill="#48C95F"/><path fill="#fff" stroke="#000"/>"##;
+        assert_eq!(grayscale(svg), r##"<rect fill="#a6a6a6"/><path fill="#ffffff" stroke="#000000"/>"##);
+    }
 
     /// A balanced bubble keeps the room of its time after the last line: measured with digits joined to the text, as
     /// trailing spaces hang past the width.
