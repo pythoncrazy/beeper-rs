@@ -370,11 +370,33 @@ impl BeeperGuiApp {
             .into()
     }
 
+    /// Electron's context menu over selected text (electron-context-menu as Desktop sets it up): Search with Google
+    /// and Copy.
+    fn selection_menu(&self, selection: &str) -> (El<'_>, f32, f32) {
+        let p = &self.pal;
+        let item = |label: String, msg: UiMessage| {
+            menu_item(p, None, label, "", Some(UiMessage::Message(Msg::Menu(Box::new(msg)))))
+        };
+        let mut search = url::Url::parse("https://www.google.com/search").expect("a valid URL");
+        search.query_pairs_mut().append_pair("q", selection);
+        let items = column![
+            item(tr("Search with Google").into(), UiMessage::OpenUrl(search.into())),
+            menu_rule(p),
+            item(tr("Copy").into(), UiMessage::Message(Msg::CopyText(selection.to_string()))),
+        ];
+        let menu =
+            container(items.padding([4, 0])).width(MESSAGE_MENU_W).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        (menu.into(), 8.0 + 2.0 * MENU_ITEM + 11.0, 0.0)
+    }
+
     pub(crate) fn view_message_menu(&self, mid: &str) -> (El<'_>, f32, f32) {
         if let Some(menu) = self.view_gallery_menu(mid) {
             return menu;
         }
         let p = &self.pal;
+        if let Some(selection) = &self.pane().menu_selection {
+            return self.selection_menu(selection);
+        }
         let st = self.store.read();
         let m = st.message(mid);
         let (cid, mid, mine) = (m.chat_id.clone(), m.id.clone(), m.is_sender == Some(true));
@@ -1588,7 +1610,7 @@ impl BeeperGuiApp {
                 if i == last && room > 0.0 {
                     spans.push(span(pad.clone()).size(13.0));
                 }
-                let line = rich_text(spans)
+                let line = crate::selectable::selectable(spans)
                     .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .on_link_click(UiMessage::OpenUrl);
@@ -1871,11 +1893,11 @@ impl BeeperGuiApp {
                 (UiMessage::Gallery(gallery::Msg::Menu(ids.clone())), UiMessage::Gallery(gallery::Msg::Click(ids)))
             }
         };
-        let line = mouse_area(line)
+        // Inside the mouse area, whose double click takes every press.
+        let line = mouse_area(crate::click::click(line, click))
             .on_enter(UiMessage::Message(Msg::HoverEnter(m.id.clone())))
             .on_exit(UiMessage::Message(Msg::HoverExit(m.id.clone())))
             .on_right_press(menu)
-            .on_press(click)
             .on_double_click(UiMessage::Message(Msg::DoubleClick(m.id.clone())));
         column![head, line].into()
     }
@@ -2154,6 +2176,8 @@ impl BeeperGuiApp {
                 return open;
             }
             Msg::OpenMenu(mid) => {
+                // With text selected, Desktop leaves the menu to Electron's, which offers the selection.
+                self.pane.menu_selection = crate::selectable::has_selection().then(crate::selectable::text);
                 self.video.iter_mut().for_each(|v| v.sub = false);
                 (self.audio.sub, self.audio.lang) = (false, false);
                 self.pane.message_menu = Some((mid, self.cursor.get()));
@@ -2177,6 +2201,7 @@ impl BeeperGuiApp {
             {
                 return self.update(UiMessage::Composer(composer::Msg::UndoSend));
             }
+            Msg::Click(_) if crate::selectable::has_selection() => {}
             Msg::Click(mid) => {
                 let picked = self.pane.selected_msgs.contains(&mid);
                 if self.mods.shift() {
@@ -2197,6 +2222,8 @@ impl BeeperGuiApp {
                 }
                 self.pane.msg_anchor = Some(mid);
             }
+            // Desktop's double-click action waits for the selection: a double click on the text selects a word.
+            Msg::DoubleClick(_) if crate::selectable::has_selection() => {}
             Msg::DoubleClick(mid) => {
                 let st = self.store.read();
                 let action = st.settings.pref("messageDoubleClick");
