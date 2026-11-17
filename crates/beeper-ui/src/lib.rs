@@ -2389,6 +2389,8 @@ pub struct Pane {
     pub unclamped: HashSet<String>,
     /// The messages whose spoilers were clicked open (Desktop's `.spoiler.clicked`).
     pub spoilers: HashSet<String>,
+    /// The GIFs that their play button started while "Autoplay GIFs" is off, by message and attachment, from when.
+    pub played_gifs: HashMap<(String, usize), std::time::Instant>,
     pub hovered_msg: Option<String>,
     /// When `hovered_msg` began, and when the pointer entered its flyover, for the flyover's staggered reveal.
     pub hover_msg_at: Option<std::time::Instant>,
@@ -6237,7 +6239,12 @@ impl BeeperGuiApp {
             return tooltip(el, Space::new(), at);
         }
         let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
-        tooltip(el, container(body).padding([8, 11]).style(glow_box(p.card, p.shadow, 17.0, 0.0, 20.0)), at)
+        tooltip(el, self.tip_card(body), at)
+    }
+
+    /// The box of Desktop's `BrandTooltip`: `8px 11px` inside, the bubble radius and `--shadow-large-15`.
+    fn tip_card<'a>(&self, body: impl Into<El<'a>>) -> iced::widget::Container<'a, UiMessage> {
+        container(body).padding([8, 11]).style(glow_box(self.pal.card, self.pal.shadow, 17.0, 0.0, 20.0))
     }
 
     /// Desktop's `AppStatus` over the chat list: a `network-status` banner for each disconnected account of the

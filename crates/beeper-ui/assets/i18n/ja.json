@@ -410,6 +410,7 @@
 "Edit your last message":["最後のメッセージを編集"],
 "Edit...":["編集..."],
 "Edited":["編集済み"],
+"Edited after %s":["%s後に編集済み"],
 "Edit…":["編集…"],
 "Email":["メール"],
 "Email %s…":["%s にメール…"],

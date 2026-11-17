@@ -6,7 +6,8 @@
 //! paragraph.
 //! Selected text is white on Chromium's selection blue.
 //!
-//! It is iced's `Rich` text with the selection added, so links still work and the layout is the same.
+//! It is iced's `Rich` text with the selection added, so links still work and the layout is the same. A hovered link
+//! can show a tooltip above it ([`Selectable::link_tip`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -15,6 +16,7 @@ use std::time::{Duration, Instant};
 use iced::advanced::graphics::text::cosmic_text::{Affinity, Buffer, Cursor};
 use iced::advanced::image::{self as core_image, Renderer as _};
 use iced::advanced::layout::{self, Layout};
+use iced::advanced::overlay;
 use iced::advanced::renderer::{self, Quad, Renderer as _};
 use iced::advanced::text::{self as core_text, Paragraph as _, Renderer as _, Span};
 use iced::advanced::widget::{tree, Tree, Widget};
@@ -27,10 +29,14 @@ use iced::{Color, Element, Event, Length, Pixels, Point, Rectangle, Size, Theme,
 type Renderer = iced::Renderer;
 type Paragraph = <Renderer as core_text::Renderer>::Paragraph;
 type Font = <Renderer as core_text::Renderer>::Font;
+/// The tooltip of a link, if it has one.
+type LinkTip<'a, Link, Message> = Box<dyn Fn(&Link) -> Option<Element<'a, Message>> + 'a>;
 
 /// Chromium's selection on Linux: white text on blue.
 const SELECTED_BACKGROUND: Color = Color::from_rgb8(0x30, 0x64, 0xce);
 const SELECTED_TEXT: Color = Color::WHITE;
+/// The `margin` of Desktop's `BrandTooltip` between a link and its tooltip.
+const TIP_GAP: f32 = 6.0;
 /// GTK's default `gtk-double-click-time`, which Chromium follows.
 const MULTI_CLICK: Duration = Duration::from_millis(400);
 /// Every text sees a press within this long of the one it landed on, so they can tell it from a later one.
@@ -87,9 +93,10 @@ pub fn selectable<'a, Link: Clone + 'static, Message>(
         width: Length::Shrink,
         wrapping: Wrapping::default(),
         color: None,
-        hovered_link: None,
         on_link_click: None,
         on_link_menu: None,
+        link_tip: None,
+        tip: None,
         images: Vec::new(),
     }
 }
@@ -101,9 +108,11 @@ pub struct Selectable<'a, Link: Clone + 'static, Message> {
     width: Length,
     wrapping: Wrapping,
     color: Option<Color>,
-    hovered_link: Option<usize>,
     on_link_click: Option<Box<dyn Fn(Link) -> Message + 'a>>,
     on_link_menu: Option<Box<dyn Fn(Link) -> Message + 'a>>,
+    link_tip: Option<LinkTip<'a, Link, Message>>,
+    /// The tooltip of the hovered link, made for the overlay.
+    tip: Option<Element<'a, Message>>,
     images: Vec<Option<core_image::Handle>>,
 }
 
@@ -144,6 +153,13 @@ impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
         self
     }
 
+    /// The tooltip of a link while the pointer is on it, centered above the link (below it when there is no room),
+    /// at once like Desktop's `BrandTooltip`, whose `delayTime` is 0. A link without one gives `None`.
+    pub fn link_tip(mut self, link_tip: impl Fn(&Link) -> Option<Element<'a, Message>> + 'a) -> Self {
+        self.link_tip = Some(Box::new(link_tip));
+        self
+    }
+
     /// The images of the [`IMAGE_SLOT`] spans in order, each drawn 1em high in its slot once it has loaded.
     pub fn images(mut self, images: Vec<Option<core_image::Handle>>) -> Self {
         self.images = images;
@@ -157,10 +173,13 @@ impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
 
 struct State<Link> {
     spans: Vec<Span<'static, Link, Font>>,
+    hovered_link: Option<usize>,
     span_pressed: Option<usize>,
     paragraph: Paragraph,
     /// The same text all in [`SELECTED_TEXT`], drawn over the selection while there is one.
     selected_paragraph: Option<Paragraph>,
+    /// The tree of the hovered link's tooltip.
+    tip: Tree,
 }
 
 impl<Link> State<Link> {
@@ -201,9 +220,11 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
     fn state(&self) -> tree::State {
         tree::State::new(State::<Link> {
             spans: Vec::new(),
+            hovered_link: None,
             span_pressed: None,
             paragraph: Paragraph::default(),
             selected_paragraph: None,
+            tip: Tree::empty(),
         })
     }
 
@@ -279,7 +300,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
 
         // Highlights, underlines and strikethroughs of the spans, as iced's `Rich` draws them.
         for (index, span) in self.spans().iter().enumerate() {
-            let hovered_link = self.on_link_click.is_some() && Some(index) == self.hovered_link;
+            let hovered_link = self.on_link_click.is_some() && Some(index) == state.hovered_link;
             if span.highlight.is_none() && !span.underline && !span.strikethrough && !hovered_link {
                 continue;
             }
@@ -361,19 +382,23 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
         let state = tree.state.downcast_mut::<State<Link>>();
         let inside = cursor.position_in(bounds);
 
-        let was_hovered = self.hovered_link.is_some();
-        self.hovered_link = inside
+        let hovered_link = inside
             .and_then(|position| state.paragraph.hit_span(position))
             .filter(|&span| self.spans().get(span).is_some_and(|s| s.link.is_some()))
             .filter(|_| self.on_link_click.is_some());
-        if was_hovered != self.hovered_link.is_some() {
+        if state.hovered_link != hovered_link {
+            state.hovered_link = hovered_link;
             shell.request_redraw();
+            // The tooltip of the link comes or goes with the next layout of the overlays.
+            if self.link_tip.is_some() {
+                shell.invalidate_layout();
+            }
         }
 
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                if self.hovered_link.is_some() {
-                    state.span_pressed = self.hovered_link;
+                if hovered_link.is_some() {
+                    state.span_pressed = hovered_link;
                     shell.capture_event();
                     return;
                 }
@@ -405,7 +430,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
                 select(selection, shell);
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
-                let link = self.hovered_link.and_then(|span| self.spans().get(span)?.link.clone());
+                let link = hovered_link.and_then(|span| self.spans().get(span)?.link.clone());
                 if let (Some(link), Some(on_menu)) = (link, &self.on_link_menu) {
                     shell.publish(on_menu(link));
                     shell.capture_event();
@@ -424,7 +449,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
                 if let Some(Selection::Drag { anchor, head, .. }) = SELECTION.get() {
                     SELECTION.set(Some(Selection::Drag { anchor, head, held: false }));
                 }
-                let pressed = state.span_pressed.take().filter(|span| Some(*span) == self.hovered_link);
+                let pressed = state.span_pressed.take().filter(|span| Some(*span) == hovered_link);
                 let link = pressed.and_then(|span| self.spans().get(span)?.link.clone());
                 if let (Some(link), Some(on_click)) = (link, &self.on_link_click) {
                     shell.publish(on_click(link));
@@ -436,19 +461,71 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
 
     fn mouse_interaction(
         &self,
-        _tree: &Tree,
+        tree: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        if self.hovered_link.is_some() {
+        if tree.state.downcast_ref::<State<Link>>().hovered_link.is_some() {
             mouse::Interaction::Pointer
         } else if cursor.is_over(layout.bounds()) {
             mouse::Interaction::Text
         } else {
             mouse::Interaction::None
         }
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        _renderer: &Renderer,
+        _viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        let state = tree.state.downcast_mut::<State<Link>>();
+        let index = state.hovered_link?;
+        let link = self.spans.as_ref().as_ref().get(index)?.link.as_ref()?;
+        self.tip = self.link_tip.as_ref()?(link);
+        let tip = self.tip.as_mut()?;
+        let regions = state.paragraph.span_bounds(index);
+        let anchor =
+            regions.into_iter().reduce(|a, b| a.union(&b))? + (layout.position() - Point::ORIGIN) + translation;
+        state.tip.diff(tip.as_widget());
+        Some(overlay::Element::new(Box::new(TipOverlay { tip, tree: &mut state.tip, anchor })))
+    }
+}
+
+/// The tooltip of a hovered link, over the link's `anchor` box.
+struct TipOverlay<'a, 'b, Message> {
+    tip: &'b mut Element<'a, Message, Theme, Renderer>,
+    tree: &'b mut Tree,
+    anchor: Rectangle,
+}
+
+impl<Message> overlay::Overlay<Message, Theme, Renderer> for TipOverlay<'_, '_, Message> {
+    /// Desktop's `top` tooltip: centered on the link and kept in the window, above it or flipped below it
+    /// (`position-try: flip-block`).
+    fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
+        let node = self.tip.as_widget_mut().layout(self.tree, renderer, &layout::Limits::new(Size::ZERO, bounds));
+        let size = node.size();
+        let x = (self.anchor.center_x() - size.width / 2.0).min(bounds.width - size.width).max(0.0);
+        let above = self.anchor.y - TIP_GAP - size.height;
+        let y = if above >= 0.0 { above } else { self.anchor.y + self.anchor.height + TIP_GAP };
+        node.move_to(Point::new(x, y))
+    }
+
+    fn draw(
+        &self,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) {
+        let viewport = Rectangle::with_size(Size::INFINITE);
+        self.tip.as_widget().draw(self.tree, renderer, theme, style, layout, cursor, &viewport);
     }
 }
 
