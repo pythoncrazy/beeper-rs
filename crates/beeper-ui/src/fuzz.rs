@@ -518,7 +518,7 @@ fn auto_sent_gifs_keep_the_composer_like_desktop() {
         duration: None,
         sticker: None,
     };
-    let _ = app.update(UiMessage::GifDownloaded(Ok(gif)));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::Downloaded(Ok(gif))));
     let st = app.store.read();
     let last = &st.messages[*st.timeline_indices(note).last().unwrap()];
     assert!(last.text.is_none() && last.attachments[0].is_gif == Some(true), "only the GIF goes");
@@ -531,12 +531,12 @@ fn gif_picker_like_desktop() {
     let mut app = demo_app("gifpicker");
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
     app.pane.picker = Some(Picker::Gif);
-    let _ = app.update(UiMessage::GifQueryChanged("cats".into()));
-    let _ = app.update(UiMessage::GifsLoaded("ca".into(), false, Err("late".into())));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::Query("cats".into())));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::Loaded("ca".into(), false, Err("late".into()))));
     assert!(app.gif_loading && app.gif_error.is_none(), "an older query does not change the picker");
-    let _ = app.update(UiMessage::GifsLoaded("cats".into(), false, Ok((Vec::new(), String::new()))));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::Loaded("cats".into(), false, Ok((Vec::new(), String::new())))));
     assert!(simulator(app.view_main()).find("No results. Try searching something else?").is_ok());
-    let _ = app.update(UiMessage::GifsLoaded("cats".into(), false, Err("boom".into())));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::Loaded("cats".into(), false, Err("boom".into()))));
     let text = "Something went wrong (boom). Try searching something else?";
     assert!(simulator(app.view_main()).find(text).is_ok());
     // Desktop's pages: the next page joins the carousel without the GIFs that it has already.
@@ -551,14 +551,14 @@ fn gif_picker_like_desktop() {
         mp4_size: (1, 1),
     };
     let page = |ids: &[&str], next: &str| Ok((ids.iter().map(|i| gif(i)).collect(), next.to_string()));
-    let _ = app.update(UiMessage::GifsLoaded("cats".into(), false, page(&["a", "b"], "2")));
-    let _ = app.update(UiMessage::GifScrolled(0.0, 1000.0, 400.0));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::Loaded("cats".into(), false, page(&["a", "b"], "2"))));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::Scrolled(0.0, 1000.0, 400.0)));
     assert!(!app.gif_loading, "the start of the carousel loads nothing");
-    let _ = app.update(UiMessage::GifScrolled(520.0, 1000.0, 400.0));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::Scrolled(520.0, 1000.0, 400.0)));
     assert!(app.gif_loading, "the end of the carousel loads the next page");
-    let _ = app.update(UiMessage::GifsLoaded("cats".into(), true, page(&["b", "c"], "")));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::Loaded("cats".into(), true, page(&["b", "c"], ""))));
     assert_eq!(app.gifs.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(), ["a", "b", "c"]);
-    let _ = app.update(UiMessage::GifScrolled(600.0, 1000.0, 400.0));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::Scrolled(600.0, 1000.0, 400.0)));
     assert!(!app.gif_loading, "the last page has no next page");
     // Desktop's keys: Down selects, Left and Right move, Enter sends, Escape closes.
     let key =
@@ -1223,7 +1223,7 @@ fn sticker_picker_like_desktop() {
     let _ = app.update(UiMessage::SetPref("stickerPacks", 1));
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
     let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
-    let _ = app.update(UiMessage::StickerPacks(Err("Matrix is not connected yet".into())));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::StickerPacks(Err("Matrix is not connected yet".into()))));
     assert!(simulator(app.view_main()).find("No sticker packs yet.").is_ok(), "a failed load and no recent stickers");
     let source = StickerSource { room_id: "!r:x".into(), state_key: "a".into(), shortcode: "cat".into() };
     let info = serde_json::json!({ "mimetype": "image/png", "w": 2, "h": 2 });
@@ -1240,9 +1240,9 @@ fn sticker_picker_like_desktop() {
         avatar: None,
         stickers: vec![cat.clone(), tgs.clone()],
     };
-    let _ = app.update(UiMessage::StickerPacks(Ok(vec![pack])));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::StickerPacks(Ok(vec![pack]))));
     assert!(simulator(app.view_main()).find("No sticker packs yet.").is_err());
-    let _ = app.update(UiMessage::PickSticker(tgs));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::PickSticker(tgs)));
     assert_eq!(app.status_banner, "This animated sticker can't be sent in this chat.");
     assert_eq!(app.pane.picker, None, "a pick closes the picker");
     let mut png = Vec::new();
@@ -1259,7 +1259,7 @@ fn sticker_picker_like_desktop() {
         duration: None,
         sticker,
     };
-    let _ = app.update(UiMessage::StickerLoaded(Ok(f)));
+    let _ = app.update(UiMessage::Gifs(gifs::Msg::StickerLoaded(Ok(f))));
     assert_eq!(app.pane.attachments.len(), 1);
     assert_eq!(app.store.read().settings.recent_stickers, std::slice::from_ref(&cat), "the pick is a recent sticker");
     online(&app);

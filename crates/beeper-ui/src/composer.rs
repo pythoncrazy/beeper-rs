@@ -1,6 +1,8 @@
 //! The composer: its drafts, the autocomplete, the attachments and link previews, the composer buttons, and the send
 //! of a message.
 
+use crate::gifs;
+use crate::gifs::gif_width;
 use crate::i18n::{tr, trf};
 use crate::scheduled;
 use crate::scheduled::send_day;
@@ -10,10 +12,10 @@ use crate::style::{
 };
 use crate::{
     account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, contact_card, dashed, emoji, format,
-    gif_width, has_flag, hotkey_key, human_size, icon_btn, images, menu_item, menu_rule, message_tag, network_name,
-    parse_vcard, portal, preview_body, record, removable, several_accounts, switch_targets, text_urls, tinted,
-    truncate, voice, BeeperGuiApp, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, Toast, UiMessage,
-    CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
+    has_flag, hotkey_key, human_size, icon_btn, images, menu_item, menu_rule, message_tag, network_name, parse_vcard,
+    portal, preview_body, record, removable, several_accounts, switch_targets, text_urls, tinted, truncate, voice,
+    BeeperGuiApp, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, Toast, UiMessage, CHEVRON_DOWN,
+    COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
 };
 use beeper_core::config::{account_network, now_unix_millis};
 use beeper_core::matrix::{Mention, ROOM_MENTION};
@@ -664,7 +666,7 @@ impl BeeperGuiApp {
         let gif_picker = (self.pane().picker == Some(Picker::Gif)).then(|| {
             let search = text_input(tr("Search KLIPY..."), &self.gif_query)
                 .id("gif-search-input")
-                .on_input(UiMessage::GifQueryChanged)
+                .on_input(|a0| UiMessage::Gifs(gifs::Msg::Query(a0)))
                 .size(13)
                 .padding([6, 12])
                 .style(input_style(p.input, p.strong, p.sub, p.accent, 8.0));
@@ -695,7 +697,7 @@ impl BeeperGuiApp {
                     button(stack![container(cell).clip(true).style(fill_box(CLEAR, 4.0))].push(ring))
                         .padding(0)
                         .style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 4.0))
-                        .on_press(UiMessage::PickGif(g.clone()))
+                        .on_press(UiMessage::Gifs(gifs::Msg::PickGif(g.clone())))
                         .into()
                 });
                 // Desktop's skeleton tiles while the next page loads.
@@ -709,7 +711,7 @@ impl BeeperGuiApp {
                     .id("gif-carousel")
                     .on_scroll(|v| {
                         let (x, content, width) = (v.absolute_offset().x, v.content_bounds().width, v.bounds().width);
-                        UiMessage::GifScrolled(x, content, width)
+                        UiMessage::Gifs(gifs::Msg::Scrolled(x, content, width))
                     })
                     .direction(dir)
                     .height(215)
