@@ -4027,7 +4027,8 @@ impl BeeperGuiApp {
                 self.send_scheduled(due);
                 self.message_sound(&m);
                 let note = self.notify_message(&m);
-                return Task::batch([self.update(UiMessage::StoreChanged), note]);
+                let failed = self.notify_failed(&m);
+                return Task::batch([self.update(UiMessage::StoreChanged), note, failed]);
             }
             UiMessage::ChatUpserted(c) => {
                 let note = self.notify_chat(&c);
