@@ -755,11 +755,9 @@ impl BeeperGuiApp {
         let settings = tr("Settings");
         let open =
             |tab, then: UiMessage| Some(UiMessage::Commands(vec![UiMessage::Settings(settings::Msg::Open(tab)), then]));
-        let add = match self.adding_account {
-            true => UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::Accounts)),
-            false => UiMessage::Accounts(accounts::Msg::ToggleAdd),
-        };
-        v.push(cmd(settings, tr("Add Account"), open(SettingsTab::Accounts, add)).keys(prefs));
+        // Desktop's `ADD_ACCOUNT` section opens the Add an Account window (`showAddAccountModal`).
+        let add = Some(UiMessage::Networks(crate::networks::Msg::Open));
+        v.push(cmd(settings, tr("Add Account"), add).keys(prefs));
         use SettingsTab as T;
         let tabs = [T::Accounts, T::BeeperPlus, T::General, T::Ai, T::Appearance, T::Notifications, T::Hotkeys];
         for tab in tabs.into_iter().chain([T::Storage, T::Devices, T::About, T::Help, T::Integrations]) {
@@ -773,7 +771,7 @@ impl BeeperGuiApp {
                 cmd(settings, title, pick).keys(&[r.desc.unwrap_or_default(), "Preferences"])
             }));
         }
-        v.extend(crate::login::addable().map(|n| {
+        v.extend(crate::networks::addable().map(|n| {
             let title = format!("{} → {}", tr("Accounts"), n.display_name);
             cmd(
                 settings,

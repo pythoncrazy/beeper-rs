@@ -1,22 +1,21 @@
 use crate::accounts;
-use crate::i18n::{tr, trf, trn, trx, trxf};
+use crate::i18n::{tr, trx, trxf};
 use crate::style::{
-    bold, bordered_box, brand_svg, btn_style, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi,
-    shadow_box, txt, Palette, CLEAR,
+    bold, bordered_box, btn_style, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi, shadow_box,
+    txt, Palette, CLEAR,
 };
 use crate::verify::Brand;
 use crate::{BeeperGuiApp, El, UiMessage};
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
-use beeper_core::config::{account_network, NETWORK_SPECS};
 use beeper_core::import::{read_beeper_data, BeeperData};
 use beeper_core::matrix::{DeviceInfo, E2eeSetup};
 use beeper_core::models::{BridgeAccountInfo, MatrixSession, Profile};
-use beeper_core::store::{BeeperStore, Setup, NOTE_CHAT_ID};
+use beeper_core::store::{Setup, NOTE_CHAT_ID};
 use iced::gradient::Linear;
 use iced::keyboard::{key::Named, Key, Modifiers};
 use iced::widget::{
     button, column, container, mouse_area, operation, rich_text, row, scrollable, span, stack, svg, text_editor,
-    text_input, tooltip, Space,
+    text_input, Space,
 };
 use iced::{border, window, Background, Center, Color, Degrees, Fill, Gradient, Padding, Size, Task, Theme};
 use std::path::PathBuf;
@@ -415,72 +414,6 @@ fn local_error(message: String) -> CloudError {
 
 fn session(cloud: &Cloud, jwt: &str) -> Result<Outcome, CloudError> {
     cloud.finish(jwt).map(|(s, p, a)| Outcome::Session(s, p, a))
-}
-
-pub const FREE_ACCOUNTS: usize = 10;
-
-/// The networks that you can add an account on here.
-pub fn addable() -> impl Iterator<Item = &'static beeper_core::models::NetworkSpec> {
-    NETWORK_SPECS[1..].iter().filter(|n| cfg!(target_os = "macos") || n.bridge_id != "imessage")
-}
-
-/// The Connect grid. A tile opens the Add Account window of its network (Desktop's `wj`) when beeper-rs can add
-/// an account on it. A demo account adds none.
-pub fn network_grid(st: &BeeperStore, query: &str, p: &Palette, ink: Color) -> El<'static> {
-    let (accounts, features) = (&st.bridge_accounts, &st.features);
-    let q = query.trim().to_lowercase();
-    let tiles: Vec<El<'static>> = addable()
-        .filter(|n| n.display_name.to_lowercase().contains(&q) || n.bridge_id.contains(&q))
-        .map(|n| {
-            let count = accounts.iter().filter(|a| account_network(&a.bridge_id).bridge_id == n.bridge_id).count();
-            let dot = |_| {
-                container(Space::new())
-                    .width(12)
-                    .height(12)
-                    .style(fill_box(Color::from_rgb8(n.brand_rgb[0], n.brand_rgb[1], n.brand_rgb[2]), 6.0))
-                    .into()
-            };
-            let chip = (count > 0).then(|| {
-                container(row((0..count.min(4)).map(dot)).spacing(2)).padding(2).style(fill_box(p.chip, 999.0))
-            });
-            let tile = column![
-                svg(brand_svg(n.bridge_id)).width(36).height(36),
-                semi(n.display_name, 11.0).color(ink).center().width(Fill)
-            ]
-            .push(chip)
-            .spacing(10)
-            .align_x(Center)
-            .padding(8);
-            // Desktop's tile tooltip (`App:132302`): beeper-rs adds accounts on the Beeper Cloud bridges only.
-            let bridge = beeper_core::config::cloud_bridge(n);
-            let open = !st.config.demo && bridge.is_some_and(|b| count == 0 || features.multi_account(b));
-            let tip = match (bridge, count, open) {
-                (None, ..) => trf("Can't add %s", &[&n.display_name]),
-                (_, 0, _) => trf("Connect %s", &[&n.display_name]),
-                (_, _, true) => tr("Add another").into(),
-                (_, _, false) => trf("You can’t add another %s account", &[&n.display_name]),
-            };
-            let tile = button(tile)
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [ink; 3], 8.0))
-                .on_press_maybe(open.then(|| UiMessage::OpenAddAccount(n.bridge_id.into(), None)));
-            let tip = container(txt(tip, 13.0).color(p.strong))
-                .padding([6, 12])
-                .style(shadow_box(p.elevated, p.chip, 16.0, 10.0));
-            tooltip(tile, tip, tooltip::Position::Bottom).into()
-        })
-        .collect();
-    if tiles.is_empty() {
-        return container(txt(tr("No networks found"), 13.0).color(p.on_secondary)).center_x(Fill).padding(24).into();
-    }
-    let mut rows = Vec::new();
-    let mut tiles = tiles.into_iter().peekable();
-    while tiles.peek().is_some() {
-        let cells: Vec<El<'static>> = tiles.by_ref().take(4).map(|t| container(t).width(Fill).into()).collect();
-        let pad = (cells.len()..4).map(|_| Space::new().width(Fill).into());
-        rows.push(row(cells.into_iter().chain(pad)).into());
-    }
-    column(rows).spacing(24).padding(8).into()
 }
 
 fn card_style(bg: Color) -> impl Fn(&Theme) -> container::Style {
@@ -1163,23 +1096,9 @@ impl BeeperGuiApp {
             }
             Screen::Accounts => {
                 let st = self.store.read();
-                let search = row![
-                    ic(icon::SEARCH, 16.0).color(p.tertiary),
-                    text_input(tr("Search..."), &l.query)
-                        .on_input(|v| LoginMsg::Query(v).into())
-                        .size(14)
-                        .padding([10, 0])
-                        .style(input_style(CLEAR, p.fg, p.tertiary, CLEAR, 0.0)),
-                ]
-                // Desktop's `rightIcons` of the search: a 14 px "cancel" that clears it.
-                .push((!l.query.is_empty()).then(|| {
-                    crate::icon_btn(p, icon::CLOSE, 14.0, 20.0, p.tertiary, LoginMsg::Query(String::new()).into())
-                }))
-                .spacing(10)
-                .align_y(Center)
-                .padding([0, 16]);
+                let search = crate::networks::search_field(p, &l.query, |q| LoginMsg::Query(q).into());
                 let divider = container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0));
-                let grid = scrollable(network_grid(&st, &l.query, p, p.fg)).height(Fill);
+                let grid = scrollable(self.view_networks(&st, &l.query)).height(Fill);
                 // Desktop's continue bar shows once a network account is connected (`hasConnectedNetwork`).
                 let go_on = st.has_connected_network().then(|| {
                     let go_on = brand_button(
@@ -1194,12 +1113,7 @@ impl BeeperGuiApp {
                         container(go_on).padding(12)
                     ]
                 });
-                let remaining = FREE_ACCOUNTS.saturating_sub(st.bridge_accounts.len());
-                let foot = txt(
-                    trn("%d free account remaining.", "%d free accounts remaining.", remaining, &[&remaining]),
-                    12.0,
-                )
-                .color(p.on_secondary);
+                let foot = self.view_accounts_footer(&st).map(|f| container(f).center_y(31));
                 column![
                     {
                         let (headline, width) = gradient_text(tr("Connect Chat Accounts"), 26.0, 48.0);
@@ -1208,8 +1122,8 @@ impl BeeperGuiApp {
                     },
                     Space::new().height(8),
                     container(column![search, divider, grid].push(go_on)).height(Fill).style(card_style(p.card)),
-                    container(foot).center_x(Fill).center_y(31),
                 ]
+                .push(foot)
                 .padding([0, 8])
                 .into()
             }
@@ -1316,6 +1230,7 @@ impl BeeperGuiApp {
             .push(l.pasted().then(|| toast(p, tr("Code auto pasted from clipboard"), false)))
             .push(l.invalid.as_deref().map(bubble))
             .push(menu)
+            .push(self.view_network_menu())
             .into()
     }
 
@@ -1351,7 +1266,7 @@ impl BeeperGuiApp {
         let l = &mut self.login;
         let stops = l.screen.stops();
         match key {
-            Key::Named(Named::Escape) => l.menu = false,
+            Key::Named(Named::Escape) => (l.menu, self.networks.menu) = (false, None),
             Key::Named(Named::Tab) if !stops.is_empty() && (mods - Modifiers::SHIFT).is_empty() => {
                 let n = stops.len();
                 let at = match (l.focus, mods.shift()) {

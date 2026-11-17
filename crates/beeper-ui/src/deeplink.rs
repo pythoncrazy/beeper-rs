@@ -264,9 +264,7 @@ impl BeeperGuiApp {
             }
             "connect" => return self.open_settings(SettingsTab::Integrations),
             "tips" if part(1) == Some("add-account") && parts.len() == 2 => {
-                let open = self.open_settings(SettingsTab::Accounts);
-                self.adding_account = true;
-                return open;
+                return self.update(UiMessage::Networks(crate::networks::Msg::Open));
             }
             _ => {}
         }
@@ -410,6 +408,6 @@ mod tests {
         assert_eq!(open(&mut app, "beeper://connect"), "");
         assert_eq!(app.active_settings_tab, SettingsTab::Integrations);
         let _ = open(&mut app, "beeper://tips/add-account");
-        assert!(app.active_settings_tab == SettingsTab::Accounts && app.adding_account);
+        assert!(app.networks.window.is_some(), "the link opens the Add an Account window");
     }
 }

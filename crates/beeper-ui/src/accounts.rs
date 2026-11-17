@@ -4,7 +4,6 @@ use super::*;
 
 #[derive(Clone)]
 pub enum Msg {
-    ToggleAdd,
     ShowAppQr,
     Open(Option<String>),
     /// Desktop's `openManageAccountInNewWindow`.
@@ -63,7 +62,6 @@ impl BeeperGuiApp {
             }
             Msg::Cloud(Err(e)) => self.fail(Toast::new(format!("Could not load your chat accounts: {e}"))),
             Msg::DismissError(id) => _ = self.dismissed_errors.insert(id),
-            Msg::ToggleAdd => self.adding_account ^= true,
             Msg::ShowAppQr => self.app_qr = true,
             Msg::OpenSettings(id) => {
                 self.list.chat_menu = None;

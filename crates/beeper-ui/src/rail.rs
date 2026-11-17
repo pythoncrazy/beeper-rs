@@ -562,11 +562,11 @@ impl BeeperGuiApp {
             .on_press(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
         let footer = column![
             tip(rail_btn(g(icon::PHOTO_LIBRARY), false, media).into(), tr("Media"), vec![]),
+            // Desktop's "Add an account" opens the Add an Account window (`showAddAccountModal`).
             tip(
-                rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)))
-                    .into(),
+                rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::Networks(crate::networks::Msg::Open)).into(),
                 tr("Add an account"),
-                vec!["Ctrl", ","]
+                vec![]
             ),
             tip(me_btn.into(), tr("Settings"), vec!["Ctrl", ","]),
         ]

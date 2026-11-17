@@ -541,7 +541,8 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let m = st.stored_message(&c.mid)?;
         let a = m.attachments.get(c.ai)?;
-        let src = a.src_url.clone().filter(|_| a.attachment_type == "video" && a.is_gif != Some(true))?;
+        let video = a.attachment_type == "video" && a.is_gif != Some(true) && self.needs_download(a).is_none();
+        let src = a.src_url.clone().filter(|_| video)?;
         let area = self.carousel_area();
         let size = a.size.as_ref();
         let (w, h) = size.map_or((240.0, 160.0), |s| (s.width.unwrap_or(240) as f32, s.height.unwrap_or(160) as f32));
@@ -673,11 +674,14 @@ impl BeeperGuiApp {
             let before = f32::from((car.turns + 3) % 4);
             (quarter * before, quarter * (before + 1.0), at)
         });
-        let frames = url.and_then(|u| self.media_at(u)).and_then(|f| f.as_ref().ok());
-        // Desktop's `renderAttachment`: a video plays with its controls and does not zoom, a PDF shows a page with its
-        // page controls, and another file is a link that downloads it.
+        let loaded = url.and_then(|u| self.media_at(u));
+        let frames = loaded.and_then(|f| f.as_ref().ok());
+        // Desktop's `renderAttachment`: media that a bridge loads only when the user asks is a file row that asks for
+        // it, a video plays with its controls and does not zoom, a PDF shows a page with its page controls, and
+        // another file is a link that downloads it.
         let mut pages = None;
         let main: El<'a> = match (a.attachment_type.as_str(), &video) {
+            _ if self.needs_download(a).is_some() => container(self.view_file_row(m, ai, a, None)).center(Fill).into(),
             ("video", Some((src, (w, h)))) => {
                 let (w, h) = (*w as f32, *h as f32);
                 let poster: El<'a> = match frames {
@@ -687,6 +691,11 @@ impl BeeperGuiApp {
                 let video = self.view_video(mid, src, poster, (w, h), video::Place::Carousel);
                 let video = mouse_area(video).on_press(UiMessage::Noop);
                 container(video).center(Fill).padding(8).into()
+            }
+            // Desktop's `ImageError` fills the place of the image, and a click on it stays in the carousel.
+            ("img" | "video", ..) if loaded.is_some_and(Result::is_err) => {
+                let error = mouse_area(self.image_error(Fill, Fill, 0.0)).on_press(UiMessage::Noop);
+                container(error).padding(8).into()
             }
             ("img" | "video", ..) => {
                 let shown: El<'a> = match frames {
@@ -1301,6 +1310,7 @@ impl BeeperGuiApp {
                     page: 1,
                 });
                 self.fit_carousel_video();
+                self.reload_failed();
                 return Task::batch([self.load_media(), self.media_viewer_more()]);
             }
             Msg::CarouselStep(next) => {
@@ -1497,7 +1507,21 @@ impl BeeperGuiApp {
         let c = self.carousel.as_mut().expect("the carousel is open");
         (c.mid, c.ai, c.resume, c.menu, c.strip, c.page) = (mid, ai, None, None, None, 1);
         self.fit_carousel_video();
+        self.reload_failed();
         Task::batch([self.load_media(), self.media_viewer_more()])
+    }
+
+    /// Desktop's carousel shows its item in a new `<img>`, which loads a media that failed to load again.
+    fn reload_failed(&mut self) {
+        let c = self.carousel.as_ref().expect("the carousel is open");
+        let url = {
+            let st = self.store.read();
+            let shown = |a: &Attachment| a.poster_img.clone().or_else(|| a.src_url.clone());
+            st.stored_message(&c.mid).and_then(|m| m.attachments.get(c.ai).and_then(shown))
+        };
+        if let Some(url) = url.filter(|u| self.media.get(u).is_some_and(|m| m.as_ref().is_some_and(Result::is_err))) {
+            self.media.remove(&url);
+        }
     }
 }
 
@@ -1610,6 +1634,40 @@ mod tests {
         assert_eq!(app.carousel.as_ref().unwrap().mid, last, "the viewer waits");
         finish_media_load(&mut app);
         assert_eq!(app.carousel.as_ref().unwrap().mid, "$page009", "and steps when the load ends");
+    }
+
+    /// Desktop's `renderAttachment`: an item that the bridge loads only when the user asks is the file row that asks
+    /// for it, and an image that failed to load is Desktop's `ImageError`, not empty space.
+    #[test]
+    fn carousel_loading_states_like_desktop() {
+        let mut app = demo_app("carousel-states");
+        photos(&app, 2, |_| None);
+        let (url, broken) = ("https://example.com/0.png".to_string(), "https://example.com/1.png".to_string());
+        {
+            let mut st = app.store.write();
+            let i = st.message_idx("$page000");
+            st.update_message(i, |m| m.attachments[0].file_name = Some("phone.jpg".into()));
+        }
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let reload = format!("{} (HTTP 502): the phone has it", beeper_core::matrix::MEDIA_RELOAD_NEEDED);
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Media(url.clone(), Err(reload))));
+        let _ = app.update(UiMessage::Media(Msg::OpenCarousel("$page000".into(), 0, false)));
+        let fetches = |app: &BeeperGuiApp| {
+            let mut sim = simulator(app.view_carousel(app.carousel.as_ref().expect("the carousel is open")).unwrap());
+            let _ = sim.click("phone.jpg");
+            let fetch = |m| matches!(m, UiMessage::Loaded(loads::Msg::Fetch(ref u)) if *u == url);
+            sim.into_messages().any(fetch)
+        };
+        assert!(fetches(&app), "the file row asks for the media");
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Fetched(url.clone(), Ok(()))));
+        assert!(!fetches(&app), "a downloaded image shows");
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Media(broken.clone(), Err("HTTP 500".into()))));
+        let _ = app.update(UiMessage::Media(Msg::CarouselStep(true)));
+        assert!(!matches!(app.media.get(&broken), Some(Some(Err(_)))), "the carousel loads a failed image again");
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Media(broken, Err("HTTP 500".into()))));
+        assert!(app.needs_download.is_empty(), "another error needs no download");
+        let car = app.carousel.clone().expect("the carousel is open");
+        assert!(simulator(app.view_carousel(&car).unwrap()).find("phone.jpg").is_err(), "the next item shows");
     }
 
     /// Desktop's caption search: 300 ms after the last change of the field, the message search with partial matches
