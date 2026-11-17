@@ -175,11 +175,13 @@ fn fade_at(y: f32) -> f32 {
 /// Desktop's `5.75rem` of `fadeout-top`.
 pub const FADE: f32 = 92.0;
 
-/// The fade at the top of the timeline over a `size` wallpaper. Desktop masks the messages instead.
+/// The fade at the top of the timeline over a `size` wallpaper, a photo too. Desktop masks the messages instead.
 pub fn fade<'a, M: 'a>(paint: Paint, size: Size) -> Element<'a, M> {
     let [a, b, g] = match paint {
         Paint::Gradient(colors) => colors,
-        Paint::Photo(..) => return Space::new().into(),
+        Paint::Photo(photo, dim) => {
+            return photo_fade(&photo, dim, size).map_or(Space::new().into(), |h| image(h).into())
+        }
         Paint::Flat(c) => {
             let fade = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, c).add_stop(1.0, c.scale_alpha(0.0));
             let style = move |_: &Theme| container::Style {
@@ -199,6 +201,43 @@ pub fn fade<'a, M: 'a>(paint: Paint, size: Size) -> Element<'a, M> {
         [r, g, b, (fade_at(y) * 255.0).round() as u8]
     });
     image(handle).content_fit(ContentFit::None).into()
+}
+
+/// The top `FADE` pixels of a photo wallpaper as it covers a `size` box, under its `dim`, fading out downwards.
+fn photo_fade(photo: &image::Handle, dim: Color, size: Size) -> Option<image::Handle> {
+    /// A photo, the width and height of the box, and the alpha of the dim.
+    type Key = (PathBuf, u32, u32, u32);
+    static CACHE: LazyLock<Mutex<HashMap<Key, image::Handle>>> = LazyLock::new(Default::default);
+    let image::Handle::Path(_, path) = photo else { return None };
+    let (w, h) = (size.width.round() as u32, size.height.round() as u32);
+    let key = (path.clone(), w, h, dim.a.to_bits());
+    let mut cache = CACHE.lock().expect("the photo fade cache");
+    if let Some(handle) = cache.get(&key) {
+        return Some(handle.clone());
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let px = beeper_core::media::decode_upright(&bytes).ok()?.into_rgb8();
+    let (iw, ih) = (px.width() as f32, px.height() as f32);
+    // `ContentFit::Cover`: scaled to cover the box, centered.
+    let scale = (size.width / iw).max(size.height / ih);
+    let (ox, oy) = ((iw * scale - size.width) / 2.0, (ih * scale - size.height) / 2.0);
+    let rows = (FADE as u32).min(h);
+    let mut rgba = Vec::with_capacity((w * rows * 4) as usize);
+    for y in 0..rows {
+        for x in 0..w {
+            let sx = (((x as f32 + 0.5 + ox) / scale) as u32).min(px.width() - 1);
+            let sy = (((y as f32 + 0.5 + oy) / scale) as u32).min(px.height() - 1);
+            let [r, g, b] = px.get_pixel(sx, sy).0;
+            let under = |c: u8, d: f32| (f32::from(c) * (1.0 - dim.a) + d * 255.0 * dim.a).round() as u8;
+            rgba.extend([under(r, dim.r), under(g, dim.g), under(b, dim.b)]);
+            rgba.push((fade_at(y as f32 + 0.5) * 255.0).round() as u8);
+        }
+    }
+    if cache.len() >= 8 {
+        cache.clear();
+    }
+    let handle = image::Handle::from_rgba(w, rows, rgba);
+    Some(cache.entry(key).or_insert(handle).clone())
 }
 
 /// A box filled with a wallpaper. The glow stays inside the rounded corners of a `size` box.
@@ -288,5 +327,26 @@ impl BeeperGuiApp {
             }
         }
         self.settle()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Desktop's `fadeout-top` over a photo wallpaper: the photo as it covers the timeline, under its dim, fading out
+    /// over `FADE` pixels.
+    #[test]
+    fn photo_wallpapers_fade_at_the_top_like_desktop() {
+        let path = std::env::temp_dir().join(format!("beeper-rs-fade-{}.png", std::process::id()));
+        ::image::RgbImage::from_pixel(4, 4, ::image::Rgb([255, 0, 0])).save(&path).expect("write a photo");
+        let dim = Color::from_rgba(0.0, 0.0, 0.0, 0.2);
+        let fade = photo_fade(&image::Handle::from_path(&path), dim, Size::new(30.0, 300.0));
+        std::fs::remove_file(&path).expect("remove the photo");
+        let Some(image::Handle::Rgba { width, height, pixels, .. }) = fade else { panic!("a faded strip") };
+        assert_eq!((width, height), (30, FADE as u32));
+        let at = |y: u32| &pixels[(y * width * 4) as usize..(y * width * 4 + 4) as usize];
+        assert_eq!(at(0)[..3], [204, 0, 0], "the photo under its dim");
+        assert!(at(0)[3] > 250 && at(height - 1)[3] < 5, "opaque at the top, gone at the bottom");
     }
 }
