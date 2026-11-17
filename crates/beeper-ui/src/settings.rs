@@ -467,14 +467,15 @@ impl BeeperGuiApp {
         Task::batch([load, open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0)))])
     }
 
-    /// Desktop's keys of the settings window: Ctrl F focuses the search, ↑ and ↓ move through the results, and Enter is
-    /// the submit of the input. Escape in an input clears the search, and Escape elsewhere closes the window.
+    /// Desktop's keys of the settings window: the "Search: Room" hotkey (Ctrl F unless rebound) focuses the search, ↑
+    /// and ↓ move through the results, and Enter is the submit of the input. Escape in an input clears the search, and
+    /// Escape elsewhere closes the window.
     pub(crate) fn settings_key(&mut self, key: Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
         if self.hotkey_rec.is_some() {
             self.record_key(&key, mods);
             return Task::none();
         }
-        if mods.command() && key == Key::Character("f".into()) {
+        if self.find_hotkey(&key, mods).is_some_and(|(h, _)| h == "Search: Room") {
             return operation::focus("settings-search");
         }
         if mods.command() || mods.control() || mods.alt() {
