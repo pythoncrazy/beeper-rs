@@ -294,6 +294,36 @@ pub(crate) fn time_hidden(m: &Message, next: Option<&Message>, h24: bool) -> boo
     })
 }
 
+/// The states of Desktop's `AttachmentFileRow`: its media downloads, needs the user to ask for it, or is ready.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FileState {
+    Fetching,
+    Unfetched,
+    Ready,
+}
+
+/// Desktop's `FileRowSpinner`: 12 spokes that turn by a step each twelfth of a second, 24 px.
+pub(crate) fn file_row_spinner<'a>(color: Color) -> El<'a> {
+    let step = (crate::login::EPOCH.elapsed().as_secs_f32() * 12.0).floor() % 12.0;
+    svg(FILE_ROW_SPINNER.clone())
+        .width(24)
+        .height(24)
+        .rotation(iced::Rotation::Floating(iced::Radians(step * std::f32::consts::TAU / 12.0)))
+        .style(move |_, _| svg::Style { color: Some(color) })
+        .into()
+}
+
+static FILE_ROW_SPINNER: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    let spokes: String = (0..12)
+        .map(|i| {
+            let (turn, opacity) = (i * 30, 0.25 + 0.75 * i as f32 / 11.0);
+            format!(r#"<rect x="11" y="3" width="2" height="5.5" rx="1" opacity="{opacity}" transform="rotate({turn} 12 12)"/>"#)
+        })
+        .collect();
+    let svg = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#000">{spokes}</svg>"##);
+    svg::Handle::from_memory(svg.into_bytes())
+});
+
 /// Desktop's `DO`: when the message disappears, or `None` without a timer.
 pub(crate) fn disappears(chat: &Chat, m: &Message) -> Option<String> {
     let t = m.disappearing.as_ref()?;
@@ -1727,7 +1757,7 @@ impl BeeperGuiApp {
                     });
                     self.view_audio(m, a, mine, ts, fg, bg)
                 }
-                (false, "img" | "video") => {
+                (false, "img" | "video") if m.unresolved_media.is_some() || self.needs_download(a).is_none() => {
                     let is_video = a.attachment_type == "video";
                     let size = a.size.as_ref().and_then(|s| Some((s.width? as f32, s.height? as f32)));
                     let share = if self.sidebar_hidden { 0.85 } else { 0.45 };
@@ -1761,41 +1791,36 @@ impl BeeperGuiApp {
                             let frames = anim::playing(frames, st.settings.on("autoplayGifs"));
                             anim::gif(frames, self.started, move |f| image(f).width(w).height(h).border_radius(17.0))
                         }
-                        Some(Err(_)) if m.unresolved_media.is_none() => {
-                            pill(tr("Could not load. Click to try again"), 0.45)
-                        }
+                        Some(Err(_)) if m.unresolved_media.is_none() => self.image_error(w, h, 17.0),
                         _ => container(ic(icon::IMAGE, 28.0).color(p.sub))
                             .center_x(w)
                             .center_y(h)
                             .style(fill_box(p.link_card, 17.0))
                             .into(),
                     };
-                    let (slot, press): (El<'_>, _) = if let Some(raw) =
-                        m.unresolved_media.as_ref().filter(|_| !is_video)
-                    {
-                        let failed = self.resolving_media.get(&m.id) == Some(&false);
-                        let (label, alpha) = match failed {
-                            true => (tr("Could not load. Click to try again"), 0.45),
-                            false => (tr("Click to load"), 0.25),
+                    let (slot, press): (El<'_>, _) =
+                        if let Some(raw) = m.unresolved_media.as_ref().filter(|_| !is_video) {
+                            let failed = self.resolving_media.get(&m.id) == Some(&false);
+                            let (label, alpha) = match failed {
+                                true => (tr("Could not load. Click to try again"), 0.45),
+                                false => (tr("Click to load"), 0.25),
+                            };
+                            (
+                                stack![base, pill(label, alpha)].into(),
+                                UiMessage::Loaded(loads::Msg::ResolveMedia(
+                                    m.account_id.clone(),
+                                    m.id.clone(),
+                                    raw.clone(),
+                                )),
+                            )
+                        } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
+                            parts = parts.push(self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai)));
+                            continue;
+                        } else if is_video && a.is_gif != Some(true) {
+                            (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
+                        } else {
+                            (base, UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)))
                         };
-                        (
-                            stack![base, pill(label, alpha)].into(),
-                            UiMessage::Loaded(loads::Msg::ResolveMedia(
-                                m.account_id.clone(),
-                                m.id.clone(),
-                                raw.clone(),
-                            )),
-                        )
-                    } else if thumb_url.as_ref().and_then(|u| self.media_at(u)).is_some_and(Result::is_err) {
-                        (base, UiMessage::Loaded(loads::Msg::RetryMedia(thumb_url.expect("a failed media has a URL"))))
-                    } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
-                        parts = parts.push(self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai)));
-                        continue;
-                    } else if is_video && a.is_gif != Some(true) {
-                        (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
-                    } else {
-                        (base, UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)))
-                    };
                     let slot = button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press);
                     match img {
                         true => {
@@ -1811,32 +1836,12 @@ impl BeeperGuiApp {
                         _ => Space::new().into(),
                     }
                 }
+                // Desktop's file row of a file, and of media that a bridge loads only when the user asks for it.
                 _ => {
-                    let meta = file_label(a).into_iter().chain(a.file_size.map(human_size)).collect::<Vec<_>>();
                     // Desktop's disappearing timer goes after the details of a file without a caption, when the
                     // message shows its time.
                     let timer = disappears(chat, m).filter(|_| !hide_time && text.is_empty());
-                    let timer = timer
-                        .map(|label| self.tip(tinted(&TIMER, 10.0, p.sub), label, vec![], tooltip::Position::Left));
-                    let details = (!meta.is_empty()).then(|| txt(meta.join(" · "), 11.0).color(p.sub));
-                    let details = (details.is_some() || timer.is_some())
-                        .then(|| row![].push(details).push(timer).spacing(4).align_y(Center));
-                    // Desktop's `AttachmentFileRow`: at most 240 px wide, the name in `body-sm` on two lines at most,
-                    // and the details in `label-sm`.
-                    let info = column![clamp(&name, 186.0, 2, 13.0, Weight::Semibold).line_height(Pixels(16.0))]
-                        .push(details)
-                        .spacing(4);
-                    let line = row![tinted(file_icon(a), 24.0, p.strong), info].spacing(8).align_y(Center);
-                    // Desktop's `onOpenPreview`: a PDF opens in the carousel.
-                    let press = match a.src_url.is_some() && crate::pdf::is_pdf(a) {
-                        true => UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)),
-                        false => UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))),
-                    };
-                    button(container(line).max_width(240.0 - 2.0 * BUBBLE_PAD_X))
-                        .padding([8, 11])
-                        .style(btn_style([p.received; 3], [p.strong; 3], 17.0))
-                        .on_press(press)
-                        .into()
+                    self.view_file_row(m, ai, a, timer)
                 }
             };
             parts = parts.push(content);
@@ -2538,6 +2543,71 @@ impl BeeperGuiApp {
         container(line).padding(Padding::ZERO.bottom(6.0).left(GUTTER)).into()
     }
 
+    /// Desktop's `needsUserDownload`: the URL of the attachment, or of its poster, that a bridge loads only when the
+    /// user asks for it.
+    pub(crate) fn needs_download<'s>(&self, a: &'s Attachment) -> Option<&'s String> {
+        [&a.src_url, &a.poster_img].into_iter().flatten().find(|u| self.needs_download.contains(*u))
+    }
+
+    /// The state of Desktop's `AttachmentFileRow`.
+    pub(crate) fn file_state(&self, a: &Attachment) -> FileState {
+        match self.needs_download(a) {
+            Some(u) if self.fetching.contains(u) => FileState::Fetching,
+            Some(_) => FileState::Unfetched,
+            None => FileState::Ready,
+        }
+    }
+
+    /// Desktop's `AttachmentFileRow`: at most 240 px wide, the name in `body-sm` on two lines at most, and the details
+    /// in `label-sm` with the disappearing `timer`. Unfetched, it has the download icon in the brand color and asks
+    /// for the media. Fetching, it has a muted spinner and is disabled. Ready, a PDF opens in the carousel and another
+    /// file downloads.
+    pub(crate) fn view_file_row<'a>(&'a self, m: &Message, ai: usize, a: &Attachment, timer: Option<String>) -> El<'a> {
+        let p = &self.pal;
+        let meta = file_label(a).into_iter().chain(a.file_size.map(human_size)).collect::<Vec<_>>();
+        let timer = timer.map(|label| self.tip(tinted(&TIMER, 10.0, p.sub), label, vec![], tooltip::Position::Left));
+        let details = (!meta.is_empty()).then(|| txt(meta.join(" · "), 11.0).color(p.sub));
+        let details =
+            (details.is_some() || timer.is_some()).then(|| row![].push(details).push(timer).spacing(4).align_y(Center));
+        let name = attachment_name(a);
+        let info =
+            column![clamp(&name, 186.0, 2, 13.0, Weight::Semibold).line_height(Pixels(16.0))].push(details).spacing(4);
+        let (icon, press) = match self.file_state(a) {
+            FileState::Fetching => (file_row_spinner(p.weak), None),
+            FileState::Unfetched => {
+                let url = self.needs_download(a).expect("an unfetched attachment needs a download").clone();
+                (tinted(&crate::MAT_DOWNLOAD, 24.0, p.accent), Some(UiMessage::Loaded(loads::Msg::Fetch(url))))
+            }
+            // Desktop's `onOpenPreview`: a PDF opens in the carousel.
+            FileState::Ready => (
+                tinted(file_icon(a), 24.0, p.strong),
+                Some(match a.src_url.is_some() && crate::pdf::is_pdf(a) {
+                    true => UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)),
+                    false => UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))),
+                }),
+            ),
+        };
+        let line = row![icon, info].spacing(8).align_y(Center);
+        // The disabled row of a fetching file keeps its colors.
+        let style = btn_style([p.received; 3], [p.strong; 3], 17.0);
+        let style =
+            move |t: &Theme, s| style(t, if s == button::Status::Disabled { button::Status::Active } else { s });
+        button(container(line).max_width(240.0 - 2.0 * BUBBLE_PAD_X))
+            .padding([8, 11])
+            .style(style)
+            .on_press_maybe(press)
+            .into()
+    }
+
+    /// Desktop's `ImageError` in the place of a media that failed to load: the info icon on the secondary container,
+    /// with the "Image failed to load" tooltip.
+    pub(crate) fn image_error<'a>(&self, w: impl Into<Length>, h: impl Into<Length>, radius: f32) -> El<'a> {
+        let p = &self.pal;
+        let icon = tinted(&crate::INFO_CIRCLE, 24.0, p.strong);
+        let icon = self.tip(icon, tr("Image failed to load"), vec![], tooltip::Position::Top);
+        container(icon).center_x(w).center_y(h).style(fill_box(p.chip, radius)).into()
+    }
+
     /// Desktop's reactions list of messages `ms`: each reaction with the face and the name of its sender, by group, and "and N more" after 19 when there are more than 20.
     /// Desktop's `Tfe`: a custom emoji's image 16 high, or the emoji.
     /// Desktop's `Wfe` in the timeline: the contact card in the colors of the bubble, its first 10 phone numbers and
@@ -2732,7 +2802,8 @@ pub enum Msg {
     GoTo(String, String),
     /// Save the attachments of a message, or only one of them, to the downloads folder.
     Download(String, Option<usize>),
-    Downloaded(Result<String, String>),
+    /// The name of the last saved file, or the URL of the file that failed and why.
+    Downloaded(Result<String, (String, String)>),
     /// Desktop's "Delete message?" dialog of the messages.
     AskDelete(Vec<String>),
     /// Desktop's `retryErroredMessage` and `removeErroredMessage` of a failed send.
@@ -3023,38 +3094,49 @@ impl BeeperGuiApp {
                     async move {
                         let mut last = String::new();
                         for (url, name) in files {
-                            let name = safe_file_name(&name);
-                            if name.trim_matches('.').is_empty() {
-                                return Err(format!("bad file name {name:?}"));
-                            }
-                            // Desktop's `always_ask_download_location`: the save dialog picks each path.
-                            let path = match ask {
-                                true => {
-                                    let save = portal::Pick::Save(name.clone());
-                                    let picked = portal::open_files(portal::PORTAL.into(), tr("Save").into(), save);
-                                    match picked.await?.into_iter().next() {
-                                        Some(path) => path,
-                                        None => continue,
+                            let save = async {
+                                let name = safe_file_name(&name);
+                                if name.trim_matches('.').is_empty() {
+                                    return Err(format!("bad file name {name:?}"));
+                                }
+                                // Desktop's `always_ask_download_location`: the save dialog picks each path.
+                                let path = match ask {
+                                    true => {
+                                        let save = portal::Pick::Save(name.clone());
+                                        let picked = portal::open_files(portal::PORTAL.into(), tr("Save").into(), save);
+                                        match picked.await?.into_iter().next() {
+                                            Some(path) => path,
+                                            None => return Ok(None),
+                                        }
                                     }
-                                }
-                                false => {
-                                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                                    unused_path(&dir, &name)
-                                }
+                                    false => {
+                                        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                                        unused_path(&dir, &name)
+                                    }
+                                };
+                                let bytes = beeper_core::matrix::media(client.clone(), url.clone()).await?;
+                                std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+                                Ok(Some(path.file_name().expect("a file path").to_string_lossy().into_owned()))
                             };
-                            let bytes = beeper_core::matrix::media(client.clone(), url).await?;
-                            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-                            last = path.file_name().expect("a file path").to_string_lossy().into_owned();
+                            if let Some(name) = save.await.map_err(|e| (url.clone(), e))? {
+                                last = name;
+                            }
                         }
                         Ok(last)
                     },
                     |a0| UiMessage::Message(Msg::Downloaded(a0)),
                 );
             }
+            // Like Desktop's media manager, a file that the bridge only loads when the user asks needs a download.
             Msg::Downloaded(r) => {
                 self.status_banner = match r {
                     Ok(name) => trf("Downloaded %s", &[&name]),
-                    Err(e) => trf("Download failed: %s", &[&e]),
+                    Err((url, e)) => {
+                        if beeper_core::matrix::reload_needed(&e) {
+                            self.needs_download.insert(url);
+                        }
+                        trf("Download failed: %s", &[&e])
+                    }
                 }
             }
             Msg::AskDelete(mids) => {
@@ -3566,6 +3648,70 @@ mod tests {
         assert!(copies_image(&app) && !has(&app, "Copy Image"), "Copy copies the one image");
         let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
         assert!(copies_image(&app) && has(&app, "Copy with Timestamp"), "also without the image's right click");
+    }
+
+    /// Desktop's `AttachmentFileRow` states: an image that the bridge loads only when the user asks shows as an
+    /// unfetched file row, whose click starts the interactive download; the fetching row is disabled; a download
+    /// shows the image, and a failed one has Desktop's toast.
+    #[test]
+    fn file_row_states_like_desktop() {
+        let mut app = crate::fuzz::demo_app("file-row-states");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = newest(&app, |m| m.is_deleted != Some(true) && m.attachments.is_empty());
+        let url = "mxc://x/phone".to_string();
+        let img = Attachment {
+            attachment_type: "img".into(),
+            src_url: Some(url.clone()),
+            file_name: Some("photo.jpg".into()),
+            ..Default::default()
+        };
+        change(&app, &mid, |m| (m.text, m.attachments) = (None, vec![img]));
+        let a = app.store.read().message(&mid).attachments[0].clone();
+        // The URLs that a click on the row fetches.
+        let clicks = |app: &BeeperGuiApp| {
+            let mut sim = simulator(app.view_conversation());
+            let _ = sim.click("photo.jpg");
+            let fetches = sim.into_messages().filter_map(|m| match m {
+                UiMessage::Loaded(loads::Msg::Fetch(u)) => Some(u),
+                _ => None,
+            });
+            fetches.collect::<Vec<_>>()
+        };
+        assert!(simulator(app.view_conversation()).find("photo.jpg").is_err(), "a loading image has no file row");
+        let reload = format!("{} (HTTP 502): the phone has it", beeper_core::matrix::MEDIA_RELOAD_NEEDED);
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Media(url.clone(), Err(reload))));
+        assert_eq!(app.file_state(&a), FileState::Unfetched);
+        assert_eq!(clicks(&app), std::slice::from_ref(&url), "the row asks for the media");
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Fetch(url.clone())));
+        assert_eq!(app.file_state(&a), FileState::Fetching);
+        assert!(clicks(&app).is_empty(), "the fetching row is disabled");
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Fetched(url.clone(), Err("no phone".into()))));
+        assert_eq!(app.file_state(&a), FileState::Unfetched, "a failed download asks again");
+        let toast = app.shown_toast().map(|t| t.text.clone());
+        let text = "Could not download this file. Check that the app is running on your phone and try again.";
+        assert_eq!(toast.as_deref(), Some(text));
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Fetch(url.clone())));
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Fetched(url.clone(), Ok(()))));
+        assert_eq!(app.file_state(&a), FileState::Ready);
+        assert!(app.media.get(&url).is_none(), "the image loads again, from the cache");
+        assert!(simulator(app.view_conversation()).find("photo.jpg").is_err(), "the image takes its place");
+    }
+
+    /// Desktop's `ImageError`: an image that failed to load shows the info icon, not the text of unresolved media,
+    /// and its click opens the carousel, which loads it again.
+    #[test]
+    fn failed_image_like_desktop() {
+        let mut app = crate::fuzz::demo_app("failed-image");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = newest(&app, |m| m.is_deleted != Some(true) && m.attachments.is_empty());
+        let url = "mxc://x/broken".to_string();
+        let img = Attachment { attachment_type: "img".into(), src_url: Some(url.clone()), ..Default::default() };
+        change(&app, &mid, |m| (m.text, m.attachments) = (None, vec![img]));
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Media(url.clone(), Err("HTTP 500".into()))));
+        assert!(simulator(app.view_conversation()).find("Could not load. Click to try again").is_err());
+        assert!(app.needs_download.is_empty(), "another error needs no download");
+        let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, 0, false)));
+        assert!(!matches!(app.media.get(&url), Some(Some(Err(_)))), "the carousel loads the image again");
     }
 
     /// Desktop's `canOpen` of the forward menu: Forward… also for a deleted message, but not for view-once media.
