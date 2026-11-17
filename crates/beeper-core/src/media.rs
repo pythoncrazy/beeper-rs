@@ -473,6 +473,18 @@ pub fn audio_duration(path: &Path) -> Result<f64, String> {
     Ok(number(&v["streams"][0]["duration"]).or(number(&v["format"]["duration"])).unwrap_or(0.0))
 }
 
+/// An image decoded upright: its EXIF orientation applied, as Chromium draws images and sharp's `rotate()` turns them.
+pub fn decode_upright(bytes: &[u8]) -> Result<image::DynamicImage, String> {
+    use image::ImageDecoder;
+    let e = |e: image::ImageError| format!("Could not decode the image: {e}");
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().expect("in memory");
+    let mut decoder = reader.into_decoder().map_err(e)?;
+    let orientation = decoder.orientation().map_err(e)?;
+    let mut img = image::DynamicImage::from_decoder(decoder).map_err(e)?;
+    img.apply_orientation(orientation);
+    Ok(img)
+}
+
 /// The shown width and height of an image, after its EXIF orientation, like sharp's `autoOrient`.
 fn image_size(path: &Path) -> Result<(u32, u32), String> {
     use image::ImageDecoder;
@@ -648,6 +660,22 @@ mod tests {
 
     fn rule(types: &[(&str, i8)]) -> FileRule {
         FileRule { mime_types: types.iter().map(|(m, l)| (m.to_string(), *l)).collect(), ..Default::default() }
+    }
+
+    /// A phone photo stores its pixels sideways with an EXIF orientation; Chromium shows it upright.
+    #[test]
+    fn images_decode_upright() {
+        use image::ImageEncoder;
+        // Two pixels side by side, red then blue, tagged "rotate 90° clockwise to show" (orientation 6).
+        let exif = [0x49, 0x49, 0x2a, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0];
+        let mut png = Vec::new();
+        let mut encoder = image::codecs::png::PngEncoder::new(&mut png);
+        encoder.set_exif_metadata(exif.to_vec()).unwrap();
+        encoder.write_image(&[255, 0, 0, 0, 0, 255], 2, 1, image::ExtendedColorType::Rgb8).unwrap();
+        let img = decode_upright(&png).unwrap().into_rgb8();
+        assert_eq!(img.dimensions(), (1, 2), "turned upright");
+        assert_eq!((img.get_pixel(0, 0).0, img.get_pixel(0, 1).0), ([255, 0, 0], [0, 0, 255]), "red on top");
+        assert!(decode_upright(b"not an image").is_err());
     }
 
     #[test]

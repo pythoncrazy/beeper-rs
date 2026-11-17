@@ -2287,7 +2287,7 @@ impl BeeperGuiApp {
                 let decode = async move {
                     let bytes = fetch.await?;
                     let decode = move || {
-                        let px = ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8();
+                        let px = beeper_core::media::decode_upright(&bytes)?.into_rgba8();
                         Ok((px.width() as usize, px.height() as usize, px.into_raw()))
                     };
                     tokio::task::spawn_blocking(decode).await.expect("image decode task")
