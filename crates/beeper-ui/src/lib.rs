@@ -43,8 +43,8 @@ mod scheduled;
 pub mod settings;
 mod sound;
 mod spell;
-#[cfg(target_os = "linux")]
 pub mod toasts;
+#[cfg(target_os = "linux")]
 mod tray;
 #[cfg(not(target_os = "linux"))]
 mod tray {
