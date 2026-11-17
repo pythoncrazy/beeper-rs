@@ -13,6 +13,7 @@ pub mod media;
 pub mod models;
 pub mod platform;
 pub mod prefs;
+pub mod search;
 pub mod storage;
 pub mod store;
 #[cfg(any(test, feature = "stub"))]
