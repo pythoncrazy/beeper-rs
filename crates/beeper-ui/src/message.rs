@@ -432,6 +432,21 @@ fn jumbo(text: &str) -> bool {
 }
 
 /// The values of the timeline rows that depend on all messages of the list.
+/// The container of the unread divider, which a chat scrolls to when it opens.
+const UNREAD_DIVIDER: &str = "unread-divider";
+
+/// Desktop's `updateUnreadDividerMessageSortKey` and `firstUnreadMessageIDIn` when a chat opens: the message after its
+/// read position, below one at or before it, when a message is after it. The unread marks of the messages place it
+/// when the loaded messages do not reach the read position.
+pub(crate) fn divider_at(chat: &Chat, msgs: &[&Message]) -> Option<String> {
+    let last = msgs.last().map(|m| &m.sort_key);
+    let read = chat.last_read_message_sort_key.as_ref().filter(|k| Some(*k) < last);
+    let after = read.and_then(|r| msgs.windows(2).position(|w| w[0].sort_key <= *r && w[1].sort_key > *r));
+    let at = after.map(|i| i + 1);
+    let at = at.or_else(|| msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)));
+    at.map(|i| msgs[i].id.clone())
+}
+
 pub(crate) struct Rows {
     /// The messages, as indices of `messages`.
     pub(crate) msgs: Vec<usize>,
@@ -442,8 +457,6 @@ pub(crate) struct Rows {
     /// For each person other than you and the sender, the newest message that the person saw before a reply of the
     /// person, and the time.
     last_seen: HashMap<String, (usize, String)>,
-    /// The first unread message.
-    unread: Option<usize>,
     /// Whether each message is in the reply chain of the message before it.
     chained: Vec<bool>,
     /// Desktop's `replyCounts`: the messages of the same reply chain after each message.
@@ -456,16 +469,28 @@ pub(crate) struct Rows {
     days: Vec<usize>,
 }
 
+/// The first message of the membership event run of each message: Desktop's `MembershipGrouper` groups the member
+/// events of a day in a row.
+pub(crate) fn member_runs(msgs: &[&Message]) -> Vec<usize> {
+    let mut run_start: Vec<usize> = (0..msgs.len()).collect();
+    for i in 1..msgs.len() {
+        let (a, b) = (msgs[i - 1], msgs[i]);
+        if membership(a) && membership(b) && day_num(&a.timestamp) == day_num(&b.timestamp) {
+            run_start[i] = run_start[i - 1];
+        }
+    }
+    run_start
+}
+
+/// The size of the membership run that starts at `start`.
+fn run_size(runs: &[usize], start: usize) -> usize {
+    runs[start..].iter().take_while(|&&r| r == start).count()
+}
+
 impl Rows {
     fn of(st: &BeeperStore, msgs: &[&Message]) -> Self {
         let n = msgs.len();
-        let mut run_start: Vec<usize> = (0..n).collect();
-        for i in 1..n {
-            let (a, b) = (msgs[i - 1], msgs[i]);
-            if membership(a) && membership(b) && day_num(&a.timestamp) == day_num(&b.timestamp) {
-                run_start[i] = run_start[i - 1];
-            }
-        }
+        let run_start = member_runs(msgs);
         let mut last_seen = HashMap::new();
         let mut replied: HashSet<&str> = HashSet::new();
         for (k, m) in msgs.iter().enumerate().rev() {
@@ -491,7 +516,6 @@ impl Rows {
             last_live: msgs.iter().rposition(|m| m.is_deleted != Some(true)),
             any_pending: msgs.iter().any(|m| pending(st, m)),
             last_seen,
-            unread: msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)),
             chained: (0..n).map(|i| i > 0 && roots[i - 1] == roots[i]).collect(),
             gallery: gallery::starts(st, msgs, &counts),
             counts,
@@ -725,7 +749,7 @@ impl BeeperGuiApp {
             .into(),
         };
         // Desktop's video menu takes the place of the message menu for a right click on the video, with Bookmark.
-        if let Some(rows) = self.video_menu_rows(&mid).filter(|_| self.pane().video_menu) {
+        if let Some(rows) = self.video_menu_rows(&mid, false).filter(|_| self.pane().video_menu) {
             let mark = bookmarkable(&st, m).then(|| {
                 [rule(), item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone()))))]
             });
@@ -897,6 +921,11 @@ impl BeeperGuiApp {
             }),
             (files > 0)
                 .then(|| vec![item(download, "Ctrl D", Some(UiMessage::Message(Msg::Download(mid.clone(), None))))]),
+            // Desktop opens the first PDF of the message in the carousel.
+            m.attachments.iter().position(crate::pdf::is_pdf).map(|ai| {
+                let open = UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, false));
+                vec![item(tr("Preview in Carousel").into(), "", Some(open))]
+            }),
             Some(vec![item(at, "", None)]),
             timer.map(|t| vec![item(t, "", None)]),
             Some(vec![
@@ -1092,12 +1121,19 @@ impl BeeperGuiApp {
         });
         // Desktop's `thread-header-card`: the avatar on its disc over the name pill, 4 px into it. The card shows no
         // hover; the pointer on it shows the members (`kmt`) instead.
-        let name_row = row![
-            semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.fg),
-            ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary)
-        ]
-        .spacing(2)
-        .align_y(Center);
+        // Desktop's `thread-header-disappearing-timer`: the 12 px timer of a chat whose messages disappear, 4 px after
+        // the name, with "Messages disappear after %s".
+        let timer = chat.disappearing.filter(|&t| t > 0).map(|t| {
+            let tertiary = p.tertiary;
+            let icon = svg(TIMER.clone()).width(12).height(12).style(move |_, _| svg::Style { color: Some(tertiary) });
+            let tip = trf("Messages disappear after %s", &[&beeper_core::models::timer_distance(t)]);
+            container(self.tip(icon.into(), tip, vec![], tooltip::Position::Bottom)).padding(Padding::ZERO.left(2))
+        });
+        let name_row = row![semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.fg)]
+            .push(timer)
+            .push(ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary))
+            .spacing(2)
+            .align_y(Center);
         // Desktop's `thread-header-status`: the activity of the other person of a 1:1 chat under the name.
         let typing = st.typing.get(cid).filter(|ids| chat.chat_type == "single" && ids.len() == 1);
         let status = typing.map(|_| txt("typing", 10.0).color(p.sub));
@@ -1291,7 +1327,21 @@ impl BeeperGuiApp {
         let msg = format!("msg-{mid}");
         self.pane.timeline.reveal(vlist::key(&mid));
         self.flash = Some((mid, std::time::Instant::now()));
-        locate(msg, self.pane.scroll_id(), false)
+        locate(msg, self.pane.scroll_id(), crate::Align::Center)
+    }
+
+    /// Desktop's `scrollToUnreadDivider` when a chat opens: the unread divider 80 px under the top of the timeline,
+    /// which reads the chat only as far as it shows.
+    pub(crate) fn scroll_to_unread(&mut self) -> Task<UiMessage> {
+        let mid = {
+            let st = self.store.read();
+            let msgs = self.pane_msgs(&st);
+            self.first_unread(&msgs).map(|i| msgs[i].id.clone())
+        };
+        let Some(mid) = mid else { return Task::none() };
+        self.pane.scrolled_up = Some((true, std::time::Instant::now()));
+        self.pane.timeline.reveal(vlist::key(&mid));
+        locate(UNREAD_DIVIDER, self.pane.scroll_id(), crate::Align::Start(80.0))
     }
 
     /// Desktop's `UnreadDivider`: "New", or the incognito line with the days left of a free trial.
@@ -1411,6 +1461,31 @@ impl BeeperGuiApp {
         rows
     }
 
+    /// Desktop's `MembershipGrouper`: a collapsed group of three or more member events opens while the selection is in
+    /// it, and the group that opened so closes again once the selection leaves it.
+    fn follow_member_selection(&mut self) {
+        let group = {
+            let st = self.store.read();
+            let (msgs, _) = self.timeline(&st);
+            let runs = member_runs(&msgs);
+            let picked = msgs.iter().position(|m| membership(m) && self.pane.selected_msgs.contains(&m.id));
+            let start = picked.map(|i| runs[i]).filter(|&s| run_size(&runs, s) >= 3);
+            start.map(|s| msgs[s].id.clone())
+        };
+        if let Some(auto) = self.pane.auto_members.take_if(|a| group.as_ref() != Some(a)) {
+            self.pane.open_members.remove(&auto);
+        }
+        if let Some(group) = group.filter(|g| self.pane.open_members.insert(g.clone())) {
+            self.pane.auto_members = Some(group);
+        }
+    }
+
+    /// The message of the open chat that the unread divider goes before.
+    pub(crate) fn first_unread(&self, msgs: &[&Message]) -> Option<usize> {
+        let at = self.pane().unread_divider.as_ref()?;
+        msgs.iter().position(|m| m.id == *at)
+    }
+
     fn view_messages<'a>(
         &'a self,
         st: &BeeperStore,
@@ -1420,8 +1495,7 @@ impl BeeperGuiApp {
         thread: bool,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
-        let Rows { run_start, last_live, any_pending, last_seen, unread, chained, counts, gallery, keys, days, .. } =
-            rows;
+        let Rows { run_start, last_live, any_pending, last_seen, chained, counts, gallery, keys, days, .. } = rows;
         let last_received = msgs.iter().rposition(|m| m.is_sender != Some(true));
         // Desktop's `ThreadedRepliesView` lists the root and the replies of a thread under its header, and loads older
         // messages of the chat only until the root loads.
@@ -1437,7 +1511,7 @@ impl BeeperGuiApp {
                     |m: &&Message| m.sort_key > *read && m.is_sender != Some(true) && m.is_deleted != Some(true);
                 msgs.iter().position(|m| m.thread_root.as_deref() == Some(r) && unread(m))
             }),
-            None => *unread,
+            None => self.first_unread(msgs),
         };
         let first_unread = first_unread.filter(|_| !thread);
         let (h24, group) = (st.settings.pref("timeFormat") == 1, chat.chat_type == "group");
@@ -1478,7 +1552,7 @@ impl BeeperGuiApp {
                 head = Column::new().push(stack![head].push_under(reply_line(segment, ink, top, bottom)));
             }
             if first_unread.is_some_and(|u| (i..end).contains(&u)) {
-                head = head.push(self.unread_divider(st));
+                head = head.push(container(self.unread_divider(st)).id(UNREAD_DIVIDER));
             }
             if let Some(timer) = m.timer {
                 let next =
@@ -1502,12 +1576,12 @@ impl BeeperGuiApp {
             if membership(m) {
                 let mut rows = Column::new();
                 let s = run_start[i];
-                let size = run_start[s..].iter().take_while(|&&r| r == s).count();
+                let size = run_size(run_start, s);
                 let open = self.pane().open_members.contains(&msgs[s].id);
                 let dim = self.wallpaper_fg(st, chat, thread).unwrap_or(p.muted).scale_alpha(0.75);
                 if size >= 3 && i == s {
                     let label = row![
-                        txt(format!("{size} Membership Events"), 11.0).color(dim),
+                        txt(trn("%d Membership Event", "%d Membership Events", size, &[&size]), 11.0).color(dim),
                         txt(if open { tr("Collapse") } else { tr("Expand") }, 11.0).color(p.accent.scale_alpha(0.75))
                     ];
                     let toggle = button(label.spacing(4))
@@ -1935,10 +2009,15 @@ impl BeeperGuiApp {
                         .push(details)
                         .spacing(4);
                     let line = row![tinted(file_icon(a), 24.0, p.strong), info].spacing(8).align_y(Center);
+                    // Desktop's `onOpenPreview`: a PDF opens in the carousel.
+                    let press = match a.src_url.is_some() && crate::pdf::is_pdf(a) {
+                        true => UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)),
+                        false => UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))),
+                    };
                     button(container(line).max_width(240.0 - 2.0 * BUBBLE_PAD_X))
                         .padding([8, 11])
                         .style(btn_style([p.received; 3], [p.strong; 3], 17.0))
-                        .on_press(UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))))
+                        .on_press(press)
                         .into()
                 }
             };
@@ -3055,7 +3134,8 @@ impl BeeperGuiApp {
                 let extend = extend && last.is_some();
                 let next = match (first.zip(last), down) {
                     (None, false) => (0..msgs.len()).rev().find(live),
-                    (None, true) => None,
+                    // Desktop's ↓ with nothing selected goes to the first message after the unread divider.
+                    (None, true) => self.first_unread(&msgs).and_then(|u| (u..msgs.len()).find(live)),
                     (Some((_, l)), true) => (l + 1..msgs.len()).find(live),
                     (Some((f, _)), false) if extend => (0..f).rev().find(live),
                     (Some((_, l)), false) => (0..l).rev().find(live).or(Some(l).filter(live)),
@@ -3067,10 +3147,11 @@ impl BeeperGuiApp {
                     (true, None) => return Task::none(),
                     (false, next) => self.pane.selected_msgs = next.into_iter().collect(),
                 }
+                self.follow_member_selection();
                 return match self.pane.selected_msgs.last() {
                     Some(mid) => {
                         self.pane.timeline.reveal(vlist::key(mid));
-                        locate(format!("msg-{mid}"), self.pane.scroll_id(), true)
+                        locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Nearest)
                     }
                     None => operation::focus("composer-input"),
                 };
@@ -3478,10 +3559,14 @@ mod tests {
             });
             inviter.full_name.clone().expect("a name")
         };
-        let _ = app.update(UiMessage::SelectChat(group));
+        let _ = app.update(UiMessage::SelectChat(group.clone()));
+        let title = app.store.read().chat(&group).title.clone();
         let mut sim = simulator(app.view_conversation());
         assert!(sim.find(inviter.as_str()).is_ok() && sim.find(" invited you (").is_ok(), "the inviter line");
         assert!(sim.find("Feedback?").is_err(), "the feedback button goes with the thread header");
+        // Desktop's `RequestNotice` asks about the invitation from the person who added you.
+        let ask = format!("Accept group invitation for \"{title}\" from ");
+        assert!(sim.find(ask.as_str()).is_ok(), "{ask}");
     }
 
     /// Desktop's "Jump to Message" comes with a right click on a quote, which jumps to the quoted message, and not

@@ -37,6 +37,7 @@ mod message;
 pub mod new_chat;
 mod nickname;
 mod notify;
+mod pdf;
 mod pins;
 mod popover;
 mod portal;
@@ -1945,18 +1946,28 @@ fn activates(msg: &UiMessage) -> bool {
     )
 }
 
-/// Finds the offset of a scrollable that shows a container: in the middle, or with the least scroll when `nearest`.
-/// The offset of the timeline counts from its bottom, because it is anchored there.
+/// Where `locate` puts a container in its scrollable.
+#[derive(Clone, Copy)]
+enum Align {
+    /// With the least scroll.
+    Nearest,
+    Center,
+    /// Its top this far under the top of the scrollable, like `virtua`'s `align: "start"` with a negative offset.
+    Start(f32),
+}
+
+/// Finds the offset of a scrollable that shows a container where `Align` puts it. The offset of the timeline counts
+/// from its bottom, because it is anchored there.
 struct Locate(
     iced::widget::Id,
     Option<(iced::Rectangle, iced::Rectangle, f32)>,
     Option<iced::Rectangle>,
-    bool,
+    Align,
     &'static str,
 );
 
-fn locate(target: impl Into<iced::widget::Id>, scroll: &'static str, nearest: bool) -> Task<UiMessage> {
-    iced::advanced::widget::operate(Locate(target.into(), None, None, nearest, scroll))
+fn locate(target: impl Into<iced::widget::Id>, scroll: &'static str, align: Align) -> Task<UiMessage> {
+    iced::advanced::widget::operate(Locate(target.into(), None, None, align, scroll))
         .then(move |y| operation::scroll_to(scroll, operation::AbsoluteOffset { x: 0.0, y }))
 }
 
@@ -1990,8 +2001,9 @@ impl iced::advanced::widget::Operation<f32> for Locate {
         let max = (content.height - view.height).max(0.0);
         let y = msg.y - content.y;
         let top = match self.3 {
-            true => at.max(y + msg.height - view.height).min(y),
-            false => y - (view.height - msg.height) / 2.0,
+            Align::Nearest => at.max(y + msg.height - view.height).min(y),
+            Align::Center => y - (view.height - msg.height) / 2.0,
+            Align::Start(gap) => y - gap,
         };
         let top = top.clamp(0.0, max);
         let anchored = matches!(self.4, "timeline" | "thread-timeline");
@@ -2372,6 +2384,8 @@ pub struct Pane {
     pub emoticon: Option<(String, String, usize)>,
     /// The first message IDs of the expanded membership event groups.
     pub open_members: HashSet<String>,
+    /// The membership event group that opened because the selection went into it.
+    pub auto_members: Option<String>,
     pub size: Size,
     pub send_later: Option<(i64, bool)>,
     /// Desktop's `ScheduledMessages` state: collapsed and collapsible.
@@ -2394,6 +2408,9 @@ pub struct Pane {
     pub draft_due: bool,
     /// Desktop's `ScrollToBottom`: whether you scrolled up from the bottom of the timeline, and since when.
     pub scrolled_up: Option<(bool, std::time::Instant)>,
+    /// Desktop's `unreadDividerMessageSortKey`: the message after the read position of the chat when it opened,
+    /// which keeps the "New" divider in place while the chat is read.
+    pub unread_divider: Option<String>,
     /// Desktop's `ThreadedRepliesView`: the root of the thread that this pane shows in place of the chat.
     pub thread_root: Option<String>,
     /// Desktop's `openThreadedReplies`: the pane of the open thread, at the right of the chat.
@@ -2542,6 +2559,8 @@ pub struct BeeperGuiApp {
     pip_wanted: bool,
     /// The video went to Picture in Picture from the video menu, so it stays there while its chat is open.
     pip_manual: bool,
+    /// Where the video menu of the Picture in Picture window is open.
+    pip_menu: Option<Point>,
     pub hotkey_query: String,
     pub hotkey_rec: Option<HotkeyRec>,
     pub profile: profile::ProfileForm,
@@ -2634,6 +2653,8 @@ pub struct BeeperGuiApp {
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
     pub confirm: Option<u8>,
     delete_target: Option<String>,
+    /// The chats of Desktop's `confirmDeleteThread`: the selected chats, or the chat of the menu.
+    delete_chats: Vec<String>,
     /// Desktop's `loading` of the device list: a logout of another device runs.
     devices_busy: bool,
     /// The "Report spam" checkbox of the Block dialog.
@@ -2769,6 +2790,8 @@ pub struct BeeperGuiApp {
     pub media: images::Images<Result<Frames, String>>,
     /// The contact cards of `.vcf` attachments by URL, `None` while they load.
     pub(crate) vcards: HashMap<String, Option<Result<vcard::VCard, String>>>,
+    /// The PDFs of the carousel by URL, `None` while they load; their pages are `media` (`pdf.rs`).
+    pub(crate) pdfs: HashMap<String, Option<Result<pdf::Doc, String>>>,
     /// The baked gallery tiles (`gallery.rs`).
     tiles: images::Images<image::Handle>,
     /// Desktop's account `messages` cache for quotes: a quoted message out of the timeline, `None` while it loads.
@@ -2850,6 +2873,7 @@ impl BeeperGuiApp {
             pip: None,
             pip_wanted: false,
             pip_manual: false,
+            pip_menu: None,
             hotkey_query: String::new(),
             hotkey_rec: None,
             profile: profile::ProfileForm::default(),
@@ -2917,6 +2941,7 @@ impl BeeperGuiApp {
             mics: None,
             confirm: None,
             delete_target: None,
+            delete_chats: Vec::new(),
             devices_busy: false,
             report_spam: false,
             reminder_menu: None,
@@ -3008,6 +3033,7 @@ impl BeeperGuiApp {
             wants: wants::Wants::default(),
             media: images::Images::new(512 << 20),
             vcards: HashMap::new(),
+            pdfs: HashMap::new(),
             tiles: images::Images::new(64 << 20),
             quotes: HashMap::new(),
             dismissed_errors: HashSet::new(),
@@ -3508,7 +3534,11 @@ impl BeeperGuiApp {
         }
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.pane.selected_chat_id = Some(chat_id.to_string());
-        if !st.incognito() {
+        let id = st.chats[idx].id.clone();
+        st.load_chat(&id);
+        self.pane.unread_divider = message::divider_at(&st.chats[idx], &self.pane_msgs(&st));
+        // Desktop reads a chat with an unread divider from there, through the last message in view (`onRangeChange`).
+        if !st.incognito() && self.pane.unread_divider.is_none() {
             st.mark_read(idx, false);
         }
         let chat = st.chats[idx].clone();
@@ -3964,8 +3994,8 @@ impl BeeperGuiApp {
             // Desktop's composer `autofocus = "end"` when a chat opens.
             UiMessage::SelectChat(id) => {
                 self.select_chat(&id);
-                let previews = self.fetch_link_previews();
-                return Task::batch([previews, self.close_notifications(), operation::focus("composer-input")]);
+                let (previews, unread) = (self.fetch_link_previews(), self.scroll_to_unread());
+                return Task::batch([previews, self.close_notifications(), operation::focus("composer-input"), unread]);
             }
             UiMessage::SwitchCard => self.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
             UiMessage::SwitchChat(id) => self.switch_chat(id),
@@ -4086,7 +4116,9 @@ impl BeeperGuiApp {
             UiMessage::WindowKey(_, Key::Named(Named::Escape), _) if self.menu_bar.is_some() => self.menu_bar = None,
             // Desktop's `onEscapePressed` of the Picture in Picture window.
             UiMessage::WindowKey(id, Key::Named(Named::Escape), _) if self.pip.as_ref().is_some_and(|p| p.0 == id) => {
-                return window::close(id);
+                if self.pip_menu.take().is_none() {
+                    return window::close(id);
+                }
             }
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
@@ -4505,7 +4537,7 @@ impl BeeperGuiApp {
                     if let Some(by) = step {
                         self.cmd_index = (self.cmd_index + by) % n;
                         self.command_list.reveal(cmds[self.cmd_index].key());
-                        return locate(format!("cmd-{}", self.cmd_index), commands::COMMANDS, true);
+                        return locate(format!("cmd-{}", self.cmd_index), commands::COMMANDS, Align::Nearest);
                     }
                 }
                 match key.as_ref() {
@@ -5307,7 +5339,8 @@ impl BeeperGuiApp {
             let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
             let y = at.y.min(self.pane().size.height - h - 8.0);
             let (sub, sub_w) = match self.view_speed_menu(mid) {
-                Some(sub) => (Some(sub), video::SPEED_MENU_W),
+                // Level with its row, under Fullscreen, Open in PiP, Download and Mute.
+                Some(sub) => (Some(column![Space::new().height(4.0 * MENU_ITEM), sub].into()), video::SPEED_MENU_W),
                 None if self.pane().remind_sub => {
                     let st = self.store.read();
                     let rows = self.message_remind_items(&st, mid);
@@ -6017,20 +6050,16 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's Picture in Picture window (`Gyt`): frameless and on top, 16 px from the top left corner, while the
-    /// video that went on plays out of its chat. It closes when the chat of the video opens again, where the video
-    /// goes on inline, and when another video plays.
+    /// video that went on plays out of its chat or out of view. It closes when the video stops or another video
+    /// plays, and when the video goes back inline (`restore_pip`). Desktop's main process makes it at least 150 px
+    /// on each side and without a shadow; iced has no shadow setting on Linux, where an undecorated window has none.
     fn pip(&mut self) -> Task<UiMessage> {
-        if let Some((id, mid)) = self.pip.clone() {
-            let here = !self.pip_manual
-                && self.store.read().loaded(&mid).map(|m| m.chat_id.clone()) == self.pane.selected_chat_id;
-            let gone = self.video.as_ref().is_none_or(|v| v.mid != mid);
-            if !here && !gone {
+        if let Some((id, mid)) = &self.pip {
+            if self.video.as_ref().is_some_and(|v| &v.mid == mid) {
                 return Task::none();
             }
-            (self.pip, self.pip_manual) = (None, false);
-            if let Some(v) = self.video.as_mut().filter(|_| here) {
-                v.set_pip(false);
-            }
+            let id = *id;
+            (self.pip, self.pip_manual, self.pip_menu) = (None, false, None);
             return window::close(id);
         }
         let Some(v) = self.video.as_mut().filter(|_| std::mem::take(&mut self.pip_wanted)) else {
@@ -6045,7 +6074,7 @@ impl BeeperGuiApp {
             resizable: false,
             transparent: true,
             level: window::Level::AlwaysOnTop,
-            min_size: None,
+            min_size: Some(Size::new(150.0, 150.0)),
             ..Self::window_settings(Size::new(w as f32, h as f32))
         });
         self.pip = Some((id, v.mid.clone()));
@@ -6180,14 +6209,27 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let (accept, decline) = request_answers(chat);
         let group = chat.chat_type == "group";
-        let inviter = chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| !group).map(|u| {
+        // Desktop's `RequestNotice`: the person who added you, else the other person of a direct chat, which opens
+        // their card.
+        let other = chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| !group);
+        let inviter = chat.inviter().or(other).map(|u| {
             let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
-            id.map_or_else(|| member_name(u), |id| format!("{} ({id})", member_name(u)))
+            (u.id.clone(), id.map_or_else(|| member_name(u), |id| format!("{} ({id})", member_name(u))))
         });
-        let heading = match inviter {
-            _ if group => tr("Accept group invitation for \"__CHAT_TITLE__\"?").replace("__CHAT_TITLE__", &chat.title),
-            Some(who) => tr("Accept message request from __INVITER__?").replace("__INVITER__", &who),
-            None => tr("Accept message request?").into(),
+        let heading = tr(match (group, inviter.is_some()) {
+            (true, true) => "Accept group invitation for \"__CHAT_TITLE__\" from __INVITER__?",
+            (true, false) => "Accept group invitation for \"__CHAT_TITLE__\"?",
+            (false, true) => "Accept message request from __INVITER__?",
+            (false, false) => "Accept message request?",
+        })
+        .replace("__CHAT_TITLE__", &chat.title);
+        let line = |t: &str| txt(t.to_string(), 13.0).color(p.strong);
+        let heading: El = match inviter.as_ref().zip(heading.split_once("__INVITER__")) {
+            Some(((uid, who), (before, after))) => {
+                let who = self.user_trigger(chat, uid, line(who));
+                container(row![line(before), who, line(after)].align_y(Center).wrap()).center_x(Fill).into()
+            }
+            None => line(&heading).width(Fill).align_x(Center).into(),
         };
         let pill = |label: &str, fg: Color, msg| {
             let label = semi(label.to_string(), 12.0);
@@ -6208,7 +6250,6 @@ impl BeeperGuiApp {
                     pill(tr("Accept"), p.strong, UiMessage::ChatList(chat_list::Msg::AcceptRequest(id.clone())))
                 }))
                 .spacing(8);
-        let heading = txt(heading, 13.0).color(p.strong).width(Fill).align_x(Center);
         let body = column![heading, buttons].spacing(8).align_x(Center);
         let body = container(body).padding(12).width(Fill).max_width(388).style(fill_box(p.chip, 8.0));
         Some(container(body).padding([0, 8]).center_x(Fill).into())

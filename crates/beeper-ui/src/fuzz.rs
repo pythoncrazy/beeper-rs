@@ -1898,8 +1898,8 @@ fn file_rows_like_desktop() {
     assert_eq!(sim.find("beeper-v4-spec.pdf").expect("the file name").bounds().height, 16.0);
 }
 
-/// Desktop's carousel shows every attachment of the chat but audio: a video plays with its controls, and a file is a
-/// link that downloads it. A step away from a playing video pauses it.
+/// Desktop's carousel shows every attachment of the chat but audio: a video plays with its controls, and a file other
+/// than a PDF is a link that downloads it. A step away from a playing video pauses it.
 #[test]
 fn carousel_steps_through_videos_and_files_like_desktop() {
     let note = "!note_self:beeper.com";
@@ -1908,7 +1908,7 @@ fn carousel_steps_through_videos_and_files_like_desktop() {
         let st = app.store.read();
         st.messages[*st.timeline_indices(note).last().unwrap()].clone()
     };
-    let kinds = [("img", "a.png"), ("unknown", "spec.pdf"), ("audio", "voice.ogg"), ("video", "clip.mp4")];
+    let kinds = [("img", "a.png"), ("unknown", "spec.zip"), ("audio", "voice.ogg"), ("video", "clip.mp4")];
     {
         let mut st = app.store.write();
         for (i, (kind, name)) in kinds.into_iter().enumerate() {
@@ -3265,6 +3265,8 @@ fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
         for n in 0..40 {
             st.send_message(NOTE_CHAT_ID, Some(format!("line {n}")), None, None).expect("a demo send");
         }
+        // Like the composer, a send reads the chat.
+        st.mark_chat_read(NOTE_CHAT_ID, true);
         let i = st.chat_idx(NOTE_CHAT_ID);
         st.update_chat(i, |c| c.unread_count = 2);
     }
@@ -3304,7 +3306,7 @@ fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
 #[test]
 fn the_open_chat_reads_new_messages_like_desktop() {
     let mut app = demo_app("open-chat-read");
-    let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID).unwrap().id.clone();
+    let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID && !c.is_unread()).unwrap().id.clone();
     let _ = app.update(UiMessage::SelectChat(id.clone()));
     let arrive = |app: &mut BeeperGuiApp| {
         let mut st = app.store.write();
@@ -3326,6 +3328,51 @@ fn the_open_chat_reads_new_messages_like_desktop() {
     assert_eq!(unread(&app), 1, "scrolled up, it stays unread");
     let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(false)));
     assert_eq!(unread(&app), 0, "back at the bottom it is read");
+}
+
+/// Desktop's `unreadDividerMessageSortKey`: a Matrix room, whose messages keep no unread mark, shows "New" after the
+/// read position that the chat had when it opened, and ↓ with nothing selected goes to the first message after it.
+#[test]
+fn the_unread_divider_follows_the_read_position_like_desktop() {
+    let mut app = demo_app("read-position");
+    let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID).unwrap().id.clone();
+    {
+        let mut st = app.store.write();
+        st.load_chat(&id);
+        let read = st.messages.iter().rfind(|m| m.chat_id == id).unwrap().clone();
+        for i in st.timeline_indices(&id).to_vec() {
+            st.update_message(i, |m| m.is_unread = Some(false));
+        }
+        let after: u64 = read.sort_key.parse().expect("a numeric sort key");
+        for n in 0..3 {
+            let (text, sort_key) = (format!("fresh {n}"), format!("{:016}", after + 1 + n));
+            let m = Message {
+                id: format!("$fresh{n}"),
+                sort_key,
+                text: Some(text),
+                is_sender: Some(false),
+                ..read.clone()
+            };
+            st.upsert_message(m);
+        }
+        let idx = st.resolve_chat_idx(&id).unwrap();
+        st.update_chat(idx, |c| (c.unread_count, c.last_read_message_sort_key) = (3, Some(read.sort_key.clone())));
+    }
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    assert_eq!(app.pane.unread_divider.as_deref(), Some("$fresh0"), "after the read position when the chat opened");
+    let unread = |app: &BeeperGuiApp| app.store.read().chat(&id).unread_count;
+    assert_eq!(unread(&app), 3, "the chat opens at its divider, and reads only what shows");
+    assert!(app.pane.scrolled_up.is_some_and(|(up, _)| up), "above the bottom of the timeline");
+    assert!(simulator(app.view_main()).find("New").is_ok());
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::ArrowDown), Modifiers::empty()));
+    assert_eq!(app.pane.selected_msgs, ["$fresh0"], "↓ goes to the first message after the divider");
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(true)));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(false)));
+    assert_eq!(unread(&app), 0, "the bottom of the timeline reads it");
+    assert!(simulator(app.view_main()).find("New").is_ok(), "the divider stays while the chat is open");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::SelectChat(id));
+    assert!(app.pane.unread_divider.is_none() && simulator(app.view_main()).find("New").is_err(), "read, no divider");
 }
 
 /// Desktop's `onRangeChange`: above its bottom, the timeline reads the open chat through the last message in view
@@ -3435,6 +3482,52 @@ fn a_chat_the_user_left_like_desktop() {
     let _ = app.update(UiMessage::Composer(composer::Msg::Type("typed anyway".into())));
     assert!(app.pane.composer.text().is_empty(), "typing goes nowhere without a composer");
     assert!(simulator(app.view_sidebar()).find("Ann left").is_ok(), "no sender name");
+}
+
+/// Desktop's `MembershipGrouper`: three member events of a day fold under "3 Membership Events", the group opens while
+/// the keyboard selection is in it and closes once the selection leaves, and a group that closes drops its selection.
+#[test]
+fn membership_groups_follow_the_selection_like_desktop() {
+    let mut app = demo_app("member-groups");
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("membershipEvents", 1)));
+    let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID && !c.is_unread()).unwrap().id.clone();
+    {
+        let mut st = app.store.write();
+        st.load_chat(&id);
+        let last = st.messages.iter().rfind(|m| m.chat_id == id).unwrap().clone();
+        let after: u64 = last.sort_key.parse().expect("a numeric sort key");
+        let rows =
+            [("MEMBERSHIP", "Ann joined"), ("MEMBERSHIP", "Bob joined"), ("MEMBERSHIP", "Cy left"), ("TEXT", "hi")];
+        for (n, (kind, text)) in rows.into_iter().enumerate() {
+            let m = Message {
+                id: format!("$m{n}"),
+                sort_key: format!("{:016}", after + 1 + n as u64),
+                text: Some(text.into()),
+                message_type: Some(kind.into()),
+                is_sender: Some(false),
+                ..last.clone()
+            };
+            st.upsert_message(m);
+        }
+    }
+    let _ = app.update(UiMessage::SelectChat(id));
+    assert!(simulator(app.view_main()).find("3 Membership Events").is_ok());
+    let step = |app: &mut BeeperGuiApp, down: bool| {
+        let key = if down { Named::ArrowDown } else { Named::ArrowUp };
+        let _ = app.update(UiMessage::KeyPressed(Key::Named(key), Modifiers::empty()));
+    };
+    step(&mut app, false);
+    assert_eq!(app.pane.selected_msgs, ["$m3"]);
+    assert!(app.pane.open_members.is_empty(), "the group stays closed");
+    step(&mut app, false);
+    assert_eq!(app.pane.selected_msgs, ["$m2"]);
+    assert!(app.pane.open_members.contains("$m0"), "the selection opens the group");
+    assert!(simulator(app.view_main()).find("Cy left").is_ok());
+    step(&mut app, true);
+    assert!(app.pane.open_members.is_empty(), "and it closes when the selection leaves");
+    step(&mut app, false);
+    let _ = app.update(UiMessage::Members(members::Msg::Toggle("$m0".into())));
+    assert!(app.pane.open_members.is_empty() && app.pane.selected_msgs.is_empty(), "closing drops the selection");
 }
 
 /// Desktop's `rWe`: only the last of a sender's messages in a minute shows the time.
@@ -5568,11 +5661,12 @@ fn message_requests_like_desktop() {
         let c = &st.chats[st.resolve_chat_idx(second).expect("a request")];
         let u = c.participants.items.iter().find(|u| u.is_self != Some(true)).expect("the other person");
         let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
-        format!("Accept message request from {}?", id.map_or(member_name(u), |id| format!("{} ({id})", member_name(u))))
+        id.map_or(member_name(u), |id| format!("{} ({id})", member_name(u)))
     };
     let picked: Vec<UiMessage> = {
         let mut sim = simulator(app.view_conversation());
-        assert!(sim.find(heading.as_str()).is_ok(), "{heading}");
+        // Desktop's `RequestNotice` names the other person in a card trigger inside the heading.
+        assert!(sim.find("Accept message request from ").is_ok() && sim.find(heading.as_str()).is_ok(), "{heading}");
         assert!(sim.find("Accept").is_ok());
         let _ = sim.click("Decline").expect("Decline");
         sim.into_messages().collect()
@@ -5709,6 +5803,46 @@ fn delete_chat_follows_the_flag_like_desktop() {
     assert_eq!(shown(&app), (true, true));
     app.store.write().features.flags["features"]["*"]["delete-chats"] = false.into();
     assert_eq!(shown(&app), (false, false));
+}
+
+/// Desktop's `confirmDeleteThread` with chats selected: "Delete Chats" with only the delete action that all of them
+/// take, which deletes them all, or a toast when they share none.
+#[test]
+fn deleting_selected_chats_like_desktop() {
+    let mut app = demo_app("delete-selected");
+    let ids: Vec<String> = {
+        let mut st = app.store.write();
+        let others = st.chats.iter().enumerate().filter(|(_, c)| c.id != NOTE_CHAT_ID).map(|(i, _)| i);
+        let picked: Vec<usize> = others.take(4).collect();
+        let modes = [DELETE_FOR_ME | DELETE_FOR_EVERYONE, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DELETE_FOR_EVERYONE];
+        for (&i, m) in picked.iter().zip(modes) {
+            st.update_chat(i, |c| c.delete_modes = m);
+        }
+        picked.iter().map(|&i| st.chats[i].id.clone()).collect()
+    };
+    let select = |app: &mut BeeperGuiApp, a: &str, b: &str| {
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::BeginSelecting(a.into())));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleSelected(b.into())));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::AskDelete(a.into())));
+    };
+    select(&mut app, &ids[0], &ids[1]);
+    assert_eq!(app.confirm, Some(ASK_DELETE_CHAT));
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_confirm(ASK_DELETE_CHAT));
+        assert!(sim.find("Delete Chats").is_ok());
+        assert!(sim.find("This action will permanently delete these chats for all participants.").is_ok());
+        assert!(sim.find("Delete for Me").is_err(), "only the action that both chats take");
+        let _ = sim.click("Delete for Everyone").expect("Delete for Everyone");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    let gone = |app: &BeeperGuiApp, id: &str| app.store.read().resolve_chat_idx(id).is_none();
+    assert!(gone(&app, &ids[0]) && gone(&app, &ids[1]) && app.selection.is_empty(), "both chats are deleted");
+    select(&mut app, &ids[2], &ids[3]);
+    assert_eq!(app.status_banner, "Selected chats do not support the same delete action");
+    assert!(!gone(&app, &ids[2]) && !gone(&app, &ids[3]));
 }
 
 #[test]
@@ -8351,6 +8485,33 @@ fn allowed_reactions_like_desktop() {
     assert!(reacted, "and reacts");
     app.patch_settings(|s| s.quick_reaction = "😂".into());
     assert!(matches!(app.quick_react(mid), UiMessage::Noop), "a double click does not send what the network refuses");
+}
+
+/// Desktop's `thread-header-disappearing-timer`: a chat whose messages disappear shows a timer after its name in the
+/// header, which makes the name pill wider.
+#[test]
+fn the_header_shows_the_disappearing_timer_like_desktop() {
+    let mut app = demo_app("header-timer");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let header = |app: &BeeperGuiApp| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_conversation());
+        let dir = std::env::temp_dir().join(format!("beeper-rs-header-timer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("header"));
+        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        let shot = ::image::open(&png).unwrap().into_rgba8();
+        std::fs::remove_dir_all(&dir).unwrap();
+        // The row of the name pill, under the avatar.
+        let k = shot.width() / 1200;
+        (0..shot.width()).filter(|&x| shot.get_pixel(x, 62 * k).0 != shot.get_pixel(0, 62 * k).0).count()
+    };
+    let plain = header(&app);
+    {
+        let mut st = app.store.write();
+        let i = st.chat_idx(NOTE_CHAT_ID);
+        st.update_chat(i, |c| c.disappearing = Some(86_400_000));
+    }
+    assert!(header(&app) > plain, "the timer widens the name pill");
 }
 
 /// Desktop's `.left` transition: the space bar and the chat list slide out and back in over 0.2 s.

@@ -3,7 +3,7 @@
 //! middle, and a drag pans inside the bounds of the zoomed area. A click outside the content publishes `outside`.
 use crate::{BeeperGuiApp, UiMessage};
 use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{tree, Tree, Widget};
+use iced::advanced::widget::{tree, Operation, Tree, Widget};
 use iced::advanced::{mouse, renderer, Clipboard, Shell};
 use iced::keyboard::{self, Key};
 use iced::Task;
@@ -103,6 +103,11 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Zoom<'_, M> {
         let child = self.content.as_widget_mut().layout(&mut tree.children[0], renderer, &limits.loose());
         let at = Point::new((size.width - child.size().width) / 2.0, (size.height - child.size().height) / 2.0);
         layout::Node::with_children(size, vec![child.move_to(at)])
+    }
+
+    fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
+        let content = layout.children().next().expect("the content");
+        self.content.as_widget_mut().operate(&mut tree.children[0], content, renderer, operation);
     }
 
     fn update(

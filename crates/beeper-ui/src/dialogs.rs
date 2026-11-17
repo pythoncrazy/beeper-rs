@@ -328,17 +328,25 @@ impl BeeperGuiApp {
                 tr("This will remove Reminders from all of your chats.").into(),
                 vec![(tr("Yes"), UiMessage::Reminders(reminders::Msg::DismissAll))],
             ),
+            // Desktop's `confirmDeleteThread`: the delete actions that all the chats take.
             ASK_DELETE_CHAT => {
                 let st = self.store.read();
-                let id = self.delete_target.clone().expect("a chat to delete");
-                let c = &st.chats[st.resolve_chat_idx(&id).expect("the chat to delete exists")];
-                let delete = |label, everyone| (label, UiMessage::ChatList(chat_list::Msg::Delete(id.clone(), everyone)));
-                let (body, actions) = match c.delete_modes {
-                    DELETE_FOR_ME => {
-                        (tr("This action will permanently delete this chat."), vec![delete(tr("Delete Chat"), false)])
-                    }
+                let chats: Vec<&Chat> =
+                    self.delete_chats.iter().filter_map(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i]).collect();
+                let modes = chats.iter().fold(DELETE_FOR_ME | DELETE_FOR_EVERYONE, |all, c| all & c.delete_modes);
+                let many = chats.len() > 1;
+                let ids = self.delete_chats.clone();
+                let delete = |label, everyone| (label, UiMessage::ChatList(chat_list::Msg::DeleteAll(ids.clone(), everyone)));
+                let (body, actions) = match modes {
+                    DELETE_FOR_ME => (
+                        tr(if many { "This action will permanently delete these chats." } else { "This action will permanently delete this chat." }),
+                        vec![delete(tr("Delete Chat"), false)],
+                    ),
                     DELETE_FOR_EVERYONE => (
-                        tr("This action will permanently delete this chat for all participants."),
+                        tr(match many {
+                            true => "This action will permanently delete these chats for all participants.",
+                            false => "This action will permanently delete this chat for all participants.",
+                        }),
                         vec![delete(tr("Delete for Everyone"), true)],
                     ),
                     _ => (
@@ -346,7 +354,11 @@ impl BeeperGuiApp {
                         vec![delete(tr("Delete for Me"), false), delete(tr("Delete for Everyone"), true)],
                     ),
                 };
-                (format!("Delete {}", c.title), body.into(), actions)
+                let title = match &chats[..] {
+                    [one] => trf("Delete %s", &[&one.title]),
+                    _ => tr("Delete Chats").into(),
+                };
+                (title, body.into(), actions)
             }
             ASK_LEAVE_CHAT => {
                 let id = self.delete_target.clone().expect("a chat to leave");

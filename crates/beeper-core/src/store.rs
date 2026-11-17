@@ -1959,6 +1959,11 @@ impl BeeperStore {
                 notifiable: c.notifiable.take(),
                 older: std::mem::take(&mut c.older),
                 thread_reads: std::mem::take(&mut c.thread_reads),
+                // A read here goes ahead of the receipt that the homeserver shows later.
+                last_read_message_sort_key: c
+                    .last_read_message_sort_key
+                    .take()
+                    .max(chat.last_read_message_sort_key.clone()),
                 ..chat
             }
         });
