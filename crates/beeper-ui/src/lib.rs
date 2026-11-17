@@ -2289,6 +2289,8 @@ pub struct Pane {
     pub menu_selection: Option<String>,
     /// The `href` of the link whose right click opened the message menu: an `https://` or `mailto:` one.
     pub menu_link: Option<String>,
+    /// The message menu is Desktop's video menu, from a right click on the video.
+    pub video_menu: bool,
     /// The quoted message whose right click opened the message menu (Desktop's `selectedLinkedMessage`).
     pub menu_linked: Option<String>,
     /// The messages of the gallery whose menu is open.
@@ -2500,6 +2502,8 @@ pub struct BeeperGuiApp {
     /// The Picture in Picture window and the message of its video, and a video that should go there.
     pip: Option<(window::Id, String)>,
     pip_wanted: bool,
+    /// The video went to Picture in Picture from the video menu, so it stays there while its chat is open.
+    pip_manual: bool,
     pub hotkey_query: String,
     pub hotkey_rec: Option<HotkeyRec>,
     pub profile: profile::ProfileForm,
@@ -2801,6 +2805,7 @@ impl BeeperGuiApp {
             seen_requests: Vec::new(),
             pip: None,
             pip_wanted: false,
+            pip_manual: false,
             hotkey_query: String::new(),
             hotkey_rec: None,
             profile: profile::ProfileForm::default(),
@@ -5846,12 +5851,13 @@ impl BeeperGuiApp {
     /// goes on inline, and when another video plays.
     fn pip(&mut self) -> Task<UiMessage> {
         if let Some((id, mid)) = self.pip.clone() {
-            let here = self.store.read().loaded(&mid).map(|m| m.chat_id.clone()) == self.pane.selected_chat_id;
+            let here = !self.pip_manual
+                && self.store.read().loaded(&mid).map(|m| m.chat_id.clone()) == self.pane.selected_chat_id;
             let gone = self.video.as_ref().is_none_or(|v| v.mid != mid);
             if !here && !gone {
                 return Task::none();
             }
-            self.pip = None;
+            (self.pip, self.pip_manual) = (None, false);
             if let Some(v) = self.video.as_mut().filter(|_| here) {
                 v.set_pip(false);
             }
