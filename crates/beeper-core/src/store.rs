@@ -2277,9 +2277,21 @@ impl BeeperStore {
         default.and_then(|d| members.iter().copied().find(|&i| self.chats[i].id == d)).or(members.first().copied())
     }
 
-    /// Desktop's `seedComposeTarget` of a merged chat: the member chat with the newest message, unless it is your own
-    /// and older than 30 minutes, which goes to the default member chat. Another chat sends to itself.
-    pub fn send_target(&self, idx: usize) -> usize {
+    /// The chat that a send to the chat `idx` through the Desktop API goes to: the default member chat of a merged
+    /// chat, else its member chat with the newest activity, or the chat itself.
+    fn send_target(&self, idx: usize) -> usize {
+        let members = self.members(idx);
+        let default = self.chats[idx].merge.as_ref().and_then(|m| m.default_chat_id.as_deref());
+        let default = default.and_then(|d| members.iter().copied().find(|&i| self.chats[i].id == d));
+        let newest =
+            || members.iter().copied().max_by(|&a, &b| self.chats[a].last_activity.cmp(&self.chats[b].last_activity));
+        default.or_else(newest).unwrap_or(idx)
+    }
+
+    /// Desktop's `seedComposeTarget` of a merged chat, where its composer sends: the member chat with the newest
+    /// message, unless it is your own and older than 30 minutes, which goes to the default member chat. Another chat
+    /// sends to itself.
+    pub fn compose_target(&self, idx: usize) -> usize {
         let members = self.members(idx);
         let ms = |i: &usize| self.chats[*i].preview.as_ref().and_then(|m| millis_from_rfc3339(&m.timestamp));
         let latest = members.iter().filter(|i| ms(i).is_some()).max_by_key(|i| ms(i));

@@ -944,6 +944,8 @@ type Png = (Vec<u8>, (u32, u32));
 /// restore on undo.
 struct Queued {
     chat: String,
+    /// The chat of the sends: the member chat that a merged chat sends to.
+    to: String,
     due: i64,
     sends: Vec<(String, Outgoing)>,
     text: String,
