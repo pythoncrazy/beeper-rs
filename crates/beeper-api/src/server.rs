@@ -12,7 +12,7 @@ use beeper_core::connect::{Token, READ};
 use beeper_core::matrix;
 use beeper_core::models::*;
 use beeper_core::platform::{extension_of, is_mime, mime_type_of, path_to_file_url, OsKind};
-use beeper_core::store::{activity_key, tokenize, BeeperStore, Draft, OutFile, Query, SharedStore};
+use beeper_core::store::{activity_key, BeeperStore, Draft, OutFile, Query, SharedStore};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -26,6 +26,7 @@ mod auth;
 mod mcp;
 mod proxy;
 mod routes;
+mod search;
 mod view;
 
 struct Response {
@@ -80,6 +81,22 @@ struct Issue(Vec<(&'static str, Value)>);
 impl Serialize for Issue {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.collect_map(self.0.iter().map(|(k, v)| (k, v)))
+    }
+}
+
+impl Issue {
+    fn get(&self, k: &str) -> Option<&Value> {
+        self.0.iter().find(|(key, _)| *key == k).map(|(_, v)| v)
+    }
+
+    /// Whether zod aborts the parse at the issue, so that it skips the refinements of the object: a wrong type or
+    /// enum value. The failed checks of a value, like a bound or the `int` of a number, only make it dirty.
+    fn aborts(&self) -> bool {
+        match self.get("code").and_then(Value::as_str) {
+            Some("too_small" | "too_big" | "invalid_string") => false,
+            Some("invalid_type") => self.get("expected") != Some(&json!("integer")),
+            _ => true,
+        }
     }
 }
 
@@ -143,6 +160,50 @@ fn js_number(s: &str) -> f64 {
     }
 }
 
+/// The Unix milliseconds of a string that zod's `datetime()` accepts: a valid date, a time with optional seconds and
+/// fraction, and `Z`, or with `offset` also a `±hh[:]mm` offset. `Date` keeps the milliseconds of the fraction.
+fn zod_datetime(s: &str, offset: bool) -> Option<i64> {
+    let b = s.as_bytes();
+    let num = |at: usize, len: usize| {
+        let digits = b.get(at..at + len).filter(|d| d.iter().all(u8::is_ascii_digit))?;
+        Some(digits.iter().fold(0, |n, d| n * 10 + i64::from(d - b'0')))
+    };
+    let is = |at: usize, c: u8| b.get(at) == Some(&c);
+    let (y, m, d) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let date_ok =
+        is(4, b'-') && is(7, b'-') && is(10, b'T') && (1..=12).contains(&m) && (1..=days[m as usize - 1]).contains(&d);
+    let (h, min) = (num(11, 2)?, num(14, 2)?);
+    if !date_ok || !is(13, b':') || h > 23 || min > 59 {
+        return None;
+    }
+    let (mut sec, mut ms, mut at) = (0, 0, 16);
+    if is(at, b':') {
+        sec = num(at + 1, 2).filter(|&s| s <= 59)?;
+        at += 3;
+        if is(at, b'.') {
+            let len = b[at + 1..].iter().take_while(|d| d.is_ascii_digit()).count();
+            ms = num(at + 1, len.min(3)).filter(|_| len > 0)? * 10_i64.pow(3 - len.min(3) as u32);
+            at += 1 + len;
+        }
+    }
+    let zone = match &b[at..] {
+        b"Z" => 0,
+        [sign @ (b'+' | b'-'), ..] if offset => {
+            let colon = is(at + 3, b':') as usize;
+            let (oh, om) = (num(at + 1, 2)?, num(at + 3 + colon, 2)?);
+            if b.len() != at + 5 + colon {
+                return None;
+            }
+            (oh * 60 + om) * 60_000 * if *sign == b'-' { -1 } else { 1 }
+        }
+        _ => return None,
+    };
+    let utc = format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{sec:02}.{ms:03}Z");
+    Some(millis_from_rfc3339(&utc).expect("a valid time") - zone)
+}
+
 /// The `(minimum, inclusive)` of zod's number checks `min(1)` and `positive()`.
 const MIN_1: (i64, bool) = (1, true);
 const POSITIVE: (i64, bool) = (0, false);
@@ -197,6 +258,11 @@ fn coerce_int(v: &Value, (min, inclusive): (i64, bool), max: i64, path: Value) -
 fn invalid_input(issues: Vec<Issue>) -> Response {
     let details = json!(Issues { issues });
     json_with(StatusCode::BAD_REQUEST, &ApiError { message: "Invalid input", code: "VALIDATION_ERROR", details })
+}
+
+/// The value of a query parameter, or `None` once its zod issue joins `issues`.
+fn check<T>(issues: &mut Vec<Issue>, v: Result<T, Issue>) -> Option<T> {
+    v.map_err(|issue| issues.push(issue)).ok()
 }
 
 /// The issues of Desktop's zod schema `CreateChatInput` for a request body.
@@ -317,20 +383,72 @@ impl Req {
         }
     }
 
-    /// An ISO 8601 date-time query parameter, in Unix milliseconds.
-    fn date(&self, k: &str) -> Result<Option<i64>, Response> {
-        let ms =
-            self.q(k).map(|v| millis_from_iso(v).ok_or_else(|| bad(&format!("{k} must be an ISO 8601 date-time"))));
-        ms.transpose()
+    /// An optional zod `string()` query parameter, or its zod issue.
+    fn string(&self, k: &'static str) -> Result<Option<&str>, Issue> {
+        string_issue(self.query.get(k), true, json!([k])).map_or(Ok(self.q(k)), Err)
+    }
+
+    /// An optional zod `string().trim().min(1)` query parameter, trimmed, or its zod issue.
+    fn filled(&self, k: &'static str) -> Result<Option<&str>, Issue> {
+        match self.string(k)?.map(search::js_trim) {
+            Some("") => Err(Issue(vec![
+                ("code", json!("too_small")),
+                ("minimum", json!(1)),
+                ("type", json!("string")),
+                ("inclusive", json!(true)),
+                ("exact", json!(false)),
+                ("message", json!("String must contain at least 1 character(s)")),
+                ("path", json!([k])),
+            ])),
+            v => Ok(v),
+        }
+    }
+
+    /// An optional zod enum query parameter, or its zod issue.
+    fn choice(&self, k: &'static str, options: &[&str]) -> Result<Option<&str>, Issue> {
+        let v = self.query.get(k);
+        v.and_then(|v| enum_issue(Some(v), options, json!([k]))).map_or(Ok(v.and_then(Value::as_str)), Err)
+    }
+
+    /// An optional array of zod enum values, from a repeated key, a `key[]` key or a single value, or its zod issues.
+    fn choices(&self, k: &'static str, options: &[&str]) -> Result<Vec<&str>, Vec<Issue>> {
+        let values = self.qs(k);
+        let issue = |(i, v): (usize, &&str)| enum_issue(Some(&json!(v)), options, json!([k, i]));
+        let issues: Vec<Issue> = values.iter().enumerate().filter_map(issue).collect();
+        if issues.is_empty() {
+            Ok(values)
+        } else {
+            Err(issues)
+        }
+    }
+
+    /// Desktop's optional boolean query parameter `Xt`, `true` or `false`, which is `default` when missing, or its zod
+    /// issue.
+    fn boolean(&self, k: &'static str, default: bool) -> Result<bool, Issue> {
+        match self.query.get(k) {
+            None => Ok(default),
+            Some(v) if v == "true" || v == "false" => Ok(v == "true"),
+            v => Err(type_issue(["code", "expected", "received"], "boolean", zod_type(v), json!([k]))),
+        }
+    }
+
+    /// An optional zod `datetime()` query parameter, with an offset when `offset`, in Unix milliseconds, or its zod
+    /// issue.
+    fn datetime(&self, k: &'static str, offset: bool) -> Result<Option<i64>, Issue> {
+        let invalid = || {
+            Issue(vec![
+                ("code", json!("invalid_string")),
+                ("validation", json!("datetime")),
+                ("message", json!("Invalid datetime")),
+                ("path", json!([k])),
+            ])
+        };
+        self.string(k)?.map(|s| zod_datetime(s, offset).ok_or_else(invalid)).transpose()
     }
 
     /// Desktop's optional `direction` enum: `before` (the default) or `after`, or its zod issue.
     fn direction(&self) -> Result<bool, Issue> {
-        let v = self.query.get("direction");
-        match v.and_then(|d| enum_issue(Some(d), &["after", "before"], json!(["direction"]))) {
-            Some(issue) => Err(issue),
-            None => Ok(v.is_some_and(|d| d == "after")),
-        }
+        self.choice("direction", &["after", "before"]).map(|d| d == Some("after"))
     }
 
     /// [`Self::direction`], or Desktop's answer with its zod issue.
@@ -1364,31 +1482,6 @@ fn bridge_get(st: &BeeperStore, path: &[&str]) -> Reply {
     }
 }
 
-/// One page of chats from keys in `chat_order` order, newest first, with Desktop's chat cursors
-/// `<last activity ms>:<chat>`. Merged member chats show only in their merged chat, like Desktop.
-fn chat_page<'a>(
-    st: &'a BeeperStore,
-    r: &Req,
-    keys: impl Iterator<Item = (i64, &'a str)>,
-    keep: impl Fn(&Chat) -> bool,
-    limit: usize,
-) -> Reply {
-    let chats = keys.map(|k| (k, st.chat(k.1)));
-    let (chats, has_more) = take_page(chats.filter(|(_, c)| c.merged_into_chat_id.is_none() && keep(c)), limit);
-    let cursor = |(ms, id): (i64, &str)| Some(format!("{ms}:{id}"));
-    let input = || r.q("cursor").map(str::to_string);
-    let oldest_cursor = chats.last().map_or_else(input, |&(k, _)| cursor(k));
-    let newest_cursor = chats.first().map_or_else(input, |&(k, _)| cursor(k));
-    let items = chats.into_iter().map(|(_, c)| view::chat(st, c, Some(20), true)).collect();
-    ok(&CursorPage { items, has_more, oldest_cursor, newest_cursor })
-}
-
-/// The `chat_order` key of a chat cursor.
-fn chat_cursor(r: &Req) -> Result<Option<(i64, String)>, Response> {
-    let key = |c: &str| c.split_once(':').and_then(|(ms, id)| Some((ms.parse().ok()?, id.to_string())));
-    r.q("cursor").map(|c| key(c).ok_or_else(|| bad("invalid cursor"))).transpose()
-}
-
 /// A range of `chat_order` keys.
 type ChatRange = (Bound<(i64, String)>, Bound<(i64, String)>);
 
@@ -1427,8 +1520,9 @@ fn rooms_range(cursor: &str, after: bool) -> Option<ChatRange> {
 /// cursor. `hasMore` means a full page of rows, and the rows of the member chats of merged chats do not show, like
 /// Desktop.
 fn list_chats(st: &BeeperStore, r: &Req) -> Reply {
-    let mut issues: Vec<Issue> = string_issue(r.query.get("cursor"), true, json!(["cursor"])).into_iter().collect();
-    let after = r.direction().map_err(|issue| issues.push(issue)).ok();
+    let mut issues = Vec::new();
+    check(&mut issues, r.string("cursor"));
+    let after = check(&mut issues, r.direction());
     let limit = r.page_size(25, MIN_1, 200).map_err(|found| issues.extend(found)).ok();
     let (Some(after), Some(limit), true) = (after, limit, issues.is_empty()) else { return Err(invalid_input(issues)) };
     let accounts: Vec<&str> = r.qs("accountIDs").into_iter().filter(|a| !a.trim().is_empty()).collect();
@@ -1525,70 +1619,211 @@ fn check_merge(st: &BeeperStore, chat_ids: &[String], default_chat_id: Option<&s
     ids.all(|id| st.resolve_chat_idx(id).is_some()).then_some(()).ok_or_else(|| missing("Chat not found"))
 }
 
-/// Whether each word starts a word of the title and the network of the chat, or with `people` of the names of its
-/// participants: Desktop's `searchTitlesOrNetworkDetailed` and `searchParticipantsDetailed`.
-fn chat_hit(c: &Chat, people: bool, words: &[String]) -> bool {
-    let fields: Vec<&String> = match people {
-        true => c.participants.items.iter().flat_map(|p| [&p.full_name, &p.custom_nickname]).flatten().collect(),
-        false => [Some(&c.title), c.network_name.as_ref()].into_iter().flatten().collect(),
-    };
-    let tokens = tokenize(&fields.into_iter().map(String::as_str).collect::<Vec<_>>().join(" "));
-    words.iter().all(|w| tokens.iter().any(|t| t.starts_with(w.as_str())))
+/// The input of Desktop's `searchChats` (`SearchChatsInput`).
+#[derive(Default)]
+struct ChatSearch<'a> {
+    cursor: Option<&'a str>,
+    after: bool,
+    inbox: Option<&'a str>,
+    label: Option<&'a str>,
+    unread_only: bool,
+    limit: usize,
+    chat_type: Option<&'a str>,
+    query: &'a str,
+    people: bool,
+    active_before: Option<i64>,
+    active_after: Option<i64>,
+    accounts: Vec<&'a str>,
+    include_muted: bool,
 }
 
-/// Desktop's `searchChats`: the chats by last activity, newest first. The default scope `titles` matches the title
-/// and the network, and the scope `participants` matches the names of the participants.
-fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
-    let (mut mask, mut want) = match r.q("inbox") {
-        None => (0, 0),
-        Some("archive") => (CHAT_ARCHIVED, CHAT_ARCHIVED),
-        Some("low-priority") => (CHAT_LOW_PRIORITY, CHAT_LOW_PRIORITY),
-        Some("primary") => (CHAT_ARCHIVED | CHAT_LOW_PRIORITY, 0),
-        Some(_) => return Err(bad("inbox must be primary, low-priority, or archive")),
-    };
-    if r.flag("unreadOnly", false)? {
-        (mask, want) = (mask | CHAT_UNREAD, want | CHAT_UNREAD);
+impl<'a> ChatSearch<'a> {
+    /// The chat sections of Desktop's `search`, which call `searchChats` with a query, a scope and a limit.
+    fn of(query: &'a str, people: bool, limit: usize) -> Self {
+        ChatSearch { query: search::js_trim(query), people, limit, include_muted: true, ..ChatSearch::default() }
     }
-    if !r.flag("includeMuted", true)? {
-        mask |= CHAT_MUTED;
+
+    /// The `SearchChatsInput` of a request, or Desktop's answer with its zod issues in the order of the schema.
+    fn parse(r: &'a Req) -> Result<Self, Response> {
+        let mut issues = Vec::new();
+        let cursor = check(&mut issues, r.string("cursor")).flatten();
+        let after = check(&mut issues, r.direction()).unwrap_or_default();
+        let inbox = check(&mut issues, r.choice("inbox", &["primary", "low-priority", "archive"])).flatten();
+        let label = check(&mut issues, r.string("labelID")).flatten();
+        let unread_only = check(&mut issues, r.boolean("unreadOnly", false)).unwrap_or_default();
+        let limit = r.page_size(50, MIN_1, 200).unwrap_or_else(|found| {
+            issues.extend(found);
+            0
+        });
+        let chat_type = check(&mut issues, r.choice("type", &["single", "group", "any"])).flatten();
+        let query = check(&mut issues, r.filled("query")).flatten();
+        let scope = check(&mut issues, r.choice("scope", &["titles", "participants"])).flatten();
+        let active_before = check(&mut issues, r.datetime("lastActivityBefore", false)).flatten();
+        let active_after = check(&mut issues, r.datetime("lastActivityAfter", false)).flatten();
+        let include_muted = check(&mut issues, r.boolean("includeMuted", true)).unwrap_or_default();
+        if !issues.is_empty() {
+            return Err(invalid_input(issues));
+        }
+        Ok(ChatSearch {
+            cursor,
+            after,
+            inbox,
+            label,
+            unread_only,
+            limit,
+            chat_type: chat_type.filter(|&t| t != "any"),
+            query: query.unwrap_or_default(),
+            people: scope == Some("participants"),
+            active_before,
+            active_after,
+            accounts: r.qs("accountIDs"),
+            include_muted,
+        })
     }
-    let people = match r.q("scope") {
-        None | Some("titles") => false,
-        Some("participants") => true,
-        Some(_) => return Err(bad("scope must be titles or participants")),
-    };
-    let chat_type = r.q("type").filter(|&t| t != "any");
-    let (after, limit, accounts, label) = (r.after()?, r.limit(50, MIN_1, 200)?, r.qs("accountIDs"), r.q("labelID"));
-    let (active_before, active_after, cursor) =
-        (r.date("lastActivityBefore")?, r.date("lastActivityAfter")?, chat_cursor(r)?);
-    let keep = |c: &Chat| {
-        let ms = || activity_key(c).0;
-        c.flags & mask == want
-            && chat_type.is_none_or(|t| c.chat_type == t)
-            && (accounts.is_empty() || accounts.contains(&c.account_id.as_str()))
-            && label.is_none_or(|l| c.label_ids.iter().any(|id| id == l))
-            && active_before.is_none_or(|b| ms() < b)
-            && active_after.is_none_or(|a| ms() > a)
-    };
-    let Some(query) = r.q("query").map(str::trim).filter(|q| !q.is_empty()) else {
-        let range = cursor.clone().map_or((Unbounded, Unbounded), |c| past(c, after));
-        return chat_page(st, r, chat_keys(st, range), keep, limit);
-    };
-    let words = tokenize(query);
-    let hit = |c: &Chat| chat_hit(c, people, &words);
-    let past =
-        |k: (i64, &str)| cursor.as_ref().is_none_or(|c| k != (c.0, c.1.as_str()) && (k > (c.0, c.1.as_str())) == after);
-    let mut keys: Vec<(i64, &str)> = st
-        .chat_search()
-        .query_all_tokens(query)
-        .into_iter()
-        .map(|i| &st.chats[i as usize])
-        .filter(|c| hit(c))
-        .map(|c| (activity_key(c).0, c.id.as_str()))
-        .filter(|&k| past(k))
+}
+
+/// Desktop's `timestamp` of a chat in Unix milliseconds: its last activity, or its newer draft.
+fn chat_time(c: &Chat) -> Option<i64> {
+    (c.last_activity.is_some() || c.draft.as_ref().is_some_and(|d| d.ts.is_some())).then(|| activity_key(c).0)
+}
+
+/// A key of Desktop's chat search cursors: the title hits for a query in the scope `titles`, the time and the chat.
+struct ChatKey<'a> {
+    score: Option<usize>,
+    ts: i64,
+    id: &'a str,
+}
+
+impl ChatKey<'_> {
+    /// The cursor of the key: its JSON in base64.
+    fn cursor(&self) -> String {
+        let key = match self.score {
+            Some(score) => json!({ "score": score, "ts": self.ts, "id": self.id }),
+            None => json!({ "ts": self.ts, "id": self.id }),
+        };
+        base64_encode_standard(key.to_string().as_bytes())
+    }
+
+    /// Desktop's comparators `B` (with a score) and `me` of the key and a decoded cursor, with JavaScript's `!==` and
+    /// `-` on the values of the cursor: positive when the key comes after the cursor, and NaN for a bad cursor.
+    fn past(&self, cursor: &Value) -> f64 {
+        let diff = |k: &str, own: i64| match cursor.get(k) {
+            Some(Value::Number(n)) if n.as_f64() == Some(own as f64) => None,
+            v => Some(js_to_number(v) - own as f64),
+        };
+        let id = || f64::from(locale_cmp(self.id, &js_string(cursor.get("id"))) as i8);
+        self.score.and_then(|s| diff("score", s as i64)).or_else(|| diff("ts", self.ts)).unwrap_or_else(id)
+    }
+}
+
+/// JavaScript's `Number` of a JSON value, or of `undefined` for none.
+fn js_to_number(v: Option<&Value>) -> f64 {
+    match v {
+        None => f64::NAN,
+        Some(Value::Null) => 0.0,
+        Some(Value::Bool(b)) => f64::from(u8::from(*b)),
+        Some(Value::Number(n)) => n.as_f64().unwrap_or(f64::NAN),
+        Some(v) => js_number(&js_string(Some(v))),
+    }
+}
+
+/// JavaScript's `String` of a JSON value, or of `undefined` for none.
+fn js_string(v: Option<&Value>) -> String {
+    match v {
+        None => "undefined".into(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(a)) => {
+            let item = |v: &Value| if v.is_null() { String::new() } else { js_string(Some(v)) };
+            a.iter().map(item).collect::<Vec<_>>().join(",")
+        }
+        Some(Value::Object(_)) => "[object Object]".into(),
+        Some(v) => v.to_string(),
+    }
+}
+
+/// Desktop's decoding of a chat search cursor: a JSON object (or array) in base64, read like Node's lenient
+/// `Buffer.from(cursor, "base64")`, which takes the URL-safe alphabet too, skips other characters and stops at `=`.
+fn decode_chat_cursor(cursor: &str) -> Option<Value> {
+    let b64: String = cursor
+        .chars()
+        .take_while(|&c| c != '=')
+        .filter_map(|c| match c {
+            '-' => Some('+'),
+            '_' => Some('/'),
+            c if c.is_ascii_alphanumeric() || c == '+' || c == '/' => Some(c),
+            _ => None,
+        })
         .collect();
-    keys.sort_unstable_by(|a, b| b.cmp(a));
-    chat_page(st, r, keys.into_iter(), keep, limit)
+    let json = String::from_utf8_lossy(&base64_decode(&b64).expect("base64 characters")).into_owned();
+    serde_json::from_str(&json).ok().filter(|v: &Value| v.is_object() || v.is_array())
+}
+
+/// Desktop's `searchChats`: the chats that match the query in the scope `titles` (the title and the network), by the
+/// title hits of the query, or in the scope `participants`, or all chats without a query, then newest first. Member
+/// chats show as their merged chat, with the most hits of the members. Both directions take the first chats past
+/// the cursor, whose keys are base64 JSON.
+fn chat_search<'a>(st: &'a BeeperStore, s: &ChatSearch) -> CursorPage<view::ApiChat<'a>> {
+    let pool = st.chats.iter().filter(|c| s.accounts.is_empty() || s.accounts.contains(&c.account_id.as_str()));
+    let found: Vec<(&Chat, usize)> = match s.query {
+        "" => pool.map(|c| (c, 0)).collect(),
+        q => search::search(pool, q, s.people),
+    };
+    let (mut chats, mut merged) = (Vec::new(), Vec::<(&Chat, usize)>::new());
+    for (c, hits) in found {
+        let parent = match &c.merged_into_chat_id {
+            _ if c.merge.is_some() => Some(c),
+            Some(id) => st.resolve_chat_idx(id).map(|i| &st.chats[i]),
+            None => None,
+        };
+        match parent {
+            None => chats.push((c, hits)),
+            Some(p) => match merged.iter_mut().find(|(m, _)| m.id == p.id) {
+                Some(m) => m.1 = m.1.max(hits),
+                None => merged.push((p, hits)),
+            },
+        }
+    }
+    chats.extend(merged);
+    let titles = !s.query.is_empty() && !s.people;
+    let ts = |c: &Chat| chat_time(c).unwrap_or(0);
+    chats.sort_by(|a, b| {
+        let hits = if titles { b.1.cmp(&a.1) } else { std::cmp::Ordering::Equal };
+        hits.then(ts(b.0).cmp(&ts(a.0))).then_with(|| locale_cmp(&a.0.id, &b.0.id))
+    });
+    let keep = |c: &Chat| {
+        let ms = chat_time(c);
+        s.chat_type.is_none_or(|t| view::chat_type(c) == t)
+            && (!s.unread_only || c.unread_count > 0)
+            && s.label.is_none_or(|l| c.label_ids.iter().any(|id| id == l))
+            && (s.include_muted || c.flags & CHAT_MUTED == 0)
+            && s.active_before.is_none_or(|b| ms.is_none_or(|ms| ms < b))
+            && s.active_after.is_none_or(|a| ms.is_none_or(|ms| ms > a))
+            && match s.inbox {
+                Some("primary") => c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY | CHAT_HIDDEN) == 0,
+                Some("low-priority") => c.flags & CHAT_LOW_PRIORITY != 0,
+                Some("archive") => c.flags & CHAT_ARCHIVED != 0,
+                _ => true,
+            }
+    };
+    let cursor = s.cursor.and_then(decode_chat_cursor);
+    let past = |k: &ChatKey| cursor.as_ref().is_none_or(|c| if s.after { k.past(c) < 0.0 } else { k.past(c) > 0.0 });
+    let rows: Vec<(&Chat, ChatKey)> = chats
+        .iter()
+        .filter(|(c, _)| keep(c))
+        .map(|&(c, hits)| (c, ChatKey { score: titles.then_some(hits), ts: ts(c), id: &c.id }))
+        .filter(|(_, k)| past(k))
+        .collect();
+    let page = &rows[..rows.len().min(s.limit)];
+    CursorPage {
+        items: page.iter().map(|(c, _)| view::chat(st, c, Some(20), false)).collect(),
+        has_more: rows.len() > s.limit,
+        oldest_cursor: page.last().map(|(_, k)| k.cursor()),
+        newest_cursor: page.first().map(|(_, k)| k.cursor()),
+    }
+}
+
+fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
+    ok(&chat_search(st, &ChatSearch::parse(r)?))
 }
 
 fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str], r: &Req) -> Reply {
@@ -1898,26 +2133,104 @@ fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
     ok(&json!({ "chatID": chat_id, "pendingMessageID": txns[0] }))
 }
 
-/// Desktop's `searchMessages`: the newest messages that match the query and the filters, at most 20 for each page,
-/// with the chats of the messages. The cursor is a sort key.
-fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
-    let media = r.qs("mediaTypes");
-    if let Some(m) = media.iter().find(|m| !["any", "video", "image", "link", "file"].contains(m)) {
-        return Err(bad(&format!("unknown mediaTypes value {m}")));
+/// The input of Desktop's `searchMessages` (`SearchMessagesInput`).
+#[derive(Default)]
+struct MessageSearch<'a> {
+    query: &'a str,
+    cursor: Option<&'a str>,
+    after: bool,
+    chat_ids: Vec<&'a str>,
+    accounts: Vec<&'a str>,
+    chat_type: Option<&'a str>,
+    media: Vec<&'a str>,
+    sender: Option<&'a str>,
+    date_after: Option<i64>,
+    date_before: Option<i64>,
+    limit: usize,
+    exclude_low_priority: bool,
+    include_muted: bool,
+}
+
+impl<'a> MessageSearch<'a> {
+    /// The message section of Desktop's `search`, which calls `searchMessages` with a query and a limit of 20.
+    fn of(query: &'a str) -> Self {
+        MessageSearch { query, limit: 20, exclude_low_priority: true, include_muted: true, ..MessageSearch::default() }
     }
-    let chat_type = r.q("chatType");
-    if chat_type.is_some_and(|t| t != "group" && t != "single") {
-        return Err(bad("chatType must be group or single"));
+
+    /// The `SearchMessagesInput` of a request, or Desktop's answer with its zod issues in the order of the schema.
+    /// The refinement on the dates runs unless an issue aborts the parse.
+    fn parse(r: &'a Req) -> Result<Self, Response> {
+        let mut issues = Vec::new();
+        let query = check(&mut issues, r.string("query")).flatten();
+        let cursor = check(&mut issues, r.string("cursor")).flatten();
+        let after = check(&mut issues, r.direction()).unwrap_or_default();
+        let chat_type = check(&mut issues, r.choice("chatType", &["group", "single"])).flatten();
+        let media = r.choices("mediaTypes", &["any", "video", "image", "link", "file"]).unwrap_or_else(|found| {
+            issues.extend(found);
+            Vec::new()
+        });
+        let sender = check(&mut issues, r.string("sender")).flatten();
+        let date_after = check(&mut issues, r.datetime("dateAfter", true)).flatten();
+        let date_before = check(&mut issues, r.datetime("dateBefore", true)).flatten();
+        let limit = r.page_size(20, POSITIVE, 20).unwrap_or_else(|found| {
+            issues.extend(found);
+            0
+        });
+        let exclude_low_priority = check(&mut issues, r.boolean("excludeLowPriority", true)).unwrap_or_default();
+        let include_muted = check(&mut issues, r.boolean("includeMuted", true)).unwrap_or_default();
+        if !issues.iter().any(Issue::aborts) && date_after.zip(date_before).is_some_and(|(a, b)| a >= b) {
+            issues.push(Issue(vec![
+                ("code", json!("custom")),
+                ("message", json!("'dateAfter' must be earlier than 'dateBefore' when both are provided.")),
+                ("path", json!(["dateAfter"])),
+            ]));
+        }
+        if !issues.is_empty() {
+            return Err(invalid_input(issues));
+        }
+        Ok(MessageSearch {
+            query: query.unwrap_or_default(),
+            cursor,
+            after,
+            chat_ids: r.qs("chatIDs"),
+            accounts: r.qs("accountIDs"),
+            chat_type,
+            media,
+            sender,
+            date_after,
+            date_before,
+            limit,
+            exclude_low_priority,
+            include_muted,
+        })
     }
-    let (after, cursor, limit, sender) = (r.after()?, r.q("cursor"), r.limit(20, POSITIVE, 20)?, r.q("sender"));
-    let (date_after, date_before) = (r.date("dateAfter")?, r.date("dateBefore")?);
-    if date_after.zip(date_before).is_some_and(|(a, b)| a >= b) {
-        return Err(bad("'dateAfter' must be earlier than 'dateBefore' when both are provided."));
+}
+
+/// Desktop's `dr`: a cursor of its Beeper part and its iMessage part, `<beeper>|<imessage>`.
+fn joined_cursor(beeper: Option<String>, imessage: Option<&str>) -> Option<String> {
+    match imessage {
+        Some(i) => Some(format!("{}|{i}", beeper.unwrap_or_default())),
+        None => beeper,
     }
-    let (exclude_low, include_muted, accounts) =
-        (r.flag("excludeLowPriority", true)?, r.flag("includeMuted", true)?, r.qs("accountIDs"));
+}
+
+/// A page of Desktop's `searchMessages`, with the chats of its messages.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MessagePage<'a> {
+    items: Vec<view::ApiMessage<'a>>,
+    chats: serde_json::Map<String, Value>,
+    has_more: bool,
+    oldest_cursor: Option<String>,
+    newest_cursor: Option<String>,
+}
+
+/// Desktop's `searchMessages` over `searchRoomMessages`: the newest `limit` messages past the cursor in both
+/// directions, by time and row, that match the query as a phrase and the filters, then in sort order, with the chats
+/// of the messages. A cursor is `<time>:<row>`, and `|` and an iMessage part, which Desktop keeps.
+fn message_search(st: &BeeperStore, s: &MessageSearch) -> Result<Value, Response> {
     let mut rooms = Vec::new();
-    for id in r.qs("chatIDs") {
+    for id in &s.chat_ids {
         let chat = &st.chats[st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?];
         match &chat.merge {
             Some(m) => {
@@ -1926,79 +2239,93 @@ fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
             None => rooms.push(chat.id.clone()),
         }
     }
-    let kind = |m: &Message, k: &str| m.attachments.iter().any(|a| a.attachment_type == k);
-    let message_ok = |m: &Message| {
-        let ms = || millis_from_rfc3339(&m.timestamp).expect("RFC 3339 message time");
-        m.flags & MSG_DELETED == 0
-            && !matches!(m.message_type.as_deref(), Some("HIDDEN" | "REACTION"))
-            && match sender {
-                None => true,
-                Some("me") => m.is_sender == Some(true),
-                Some("others") => m.is_sender != Some(true),
-                Some(s) => m.sender_id == s,
-            }
-            && date_after.is_none_or(|a| ms() > a)
-            && date_before.is_none_or(|b| ms() < b)
-            && (media.is_empty()
-                || (media.contains(&"any") && !m.attachments.is_empty())
-                || (media.contains(&"image") && kind(m, "img"))
-                || (media.contains(&"video") && kind(m, "video"))
-                || (media.contains(&"file") && kind(m, "unknown"))
-                || (media.contains(&"link") && !m.links.is_empty()))
-    };
-    let chat_ok = |m: &Message| {
-        let c = st.chat(&m.chat_id);
-        (accounts.is_empty() || accounts.contains(&c.account_id.as_str()))
-            && chat_type.is_none_or(|t| c.chat_type == t)
-            && !(exclude_low && c.flags & CHAT_LOW_PRIORITY != 0)
-            && (include_muted || c.flags & CHAT_MUTED == 0)
-    };
-    let mut q = Query::default().past(cursor, after);
+    let mut q = Query::default();
     if !rooms.is_empty() {
         q = q.chats(&rooms.iter().map(String::as_str).collect::<Vec<_>>());
     }
-    if let Some(text) = r.q("query").filter(|q| !q.trim().is_empty()) {
-        q = q.text(text);
+    match s.query {
+        "" => {}
+        // Desktop asks SQLite for the empty full-text query of a blank one, which fails.
+        q if search::js_trim(q).is_empty() => {
+            let message = "Failed to execute tool: searchMessages";
+            return Err(error_with(StatusCode(500), message, "TOOL_EXECUTION_ERROR", json!({})));
+        }
+        text => q = q.text(text),
     }
-    let (items, has_more) = message_page(st, &q, limit, |m| message_ok(m) && chat_ok(m));
-    let chat = |id: &str| view::chat(st, st.chat(id), None, false);
-    let chats: HashMap<&str, view::ApiChat> = items.iter().map(|m| (m.chat_id.as_str(), chat(&m.chat_id))).collect();
-    let (oldest, newest) = (items.last().map(|m| &m.sort_key), items.first().map(|m| &m.sort_key));
-    let items: Vec<_> = items.iter().map(view::message).collect();
-    ok(&json!({ "items": items, "chats": chats, "hasMore": has_more, "oldestCursor": oldest, "newestCursor": newest }))
+    let (beeper, imessage) = match s.cursor.map(|c| c.split_once('|').unwrap_or((c, ""))) {
+        Some((b, i)) => (b, Some(i).filter(|i| !i.is_empty())),
+        None => ("", None),
+    };
+    let integer = |n: &str| Some(js_number(n)).filter(|n| n.fract() == 0.0).map(|n| n as i64);
+    let row = beeper.split_once(':').filter(|(ms, n)| !ms.is_empty() && !n.is_empty());
+    if let Some(at) = row.and_then(|(ms, n)| integer(ms).zip(integer(n))) {
+        q = q.past_row(at, s.after);
+    }
+    let kind = |m: &Message, k: &str| m.attachments.iter().any(|a| a.attachment_type == k);
+    let media = |m: &Message| match &s.media[..] {
+        [] => true,
+        media if media.contains(&"any") => !m.attachments.is_empty(),
+        media => {
+            (media.contains(&"image") && kind(m, "img"))
+                || (media.contains(&"video") && kind(m, "video"))
+                || (media.contains(&"link") && (kind(m, "link") || !m.links.is_empty()))
+                || (media.contains(&"file") && kind(m, "unknown"))
+        }
+    };
+    let keep = |m: &Message| {
+        let (ms, c) = (millis_from_rfc3339(&m.timestamp).expect("RFC 3339 message time"), st.chat(&m.chat_id));
+        m.flags & MSG_DELETED == 0
+            && !matches!(m.message_type.as_deref(), Some("HIDDEN" | "REACTION"))
+            && match s.sender {
+                None => true,
+                Some("me") => m.is_sender == Some(true),
+                Some("others") => m.is_sender != Some(true),
+                Some(id) => m.sender_id == id,
+            }
+            && s.date_before.is_none_or(|b| ms < b)
+            && s.date_after.is_none_or(|a| ms > a)
+            && media(m)
+            && (s.accounts.is_empty() || s.accounts.contains(&c.account_id.as_str()))
+            && s.chat_type.is_none_or(|t| view::chat_type(c) == t)
+            && !(s.exclude_low_priority && c.flags & CHAT_LOW_PRIORITY != 0)
+            && (s.include_muted || c.flags & CHAT_MUTED == 0)
+    };
+    let mut rows = Vec::new();
+    st.scan_by_time(&q, |n, m| {
+        if keep(&m) {
+            rows.push((n, m));
+        }
+        rows.len() <= s.limit
+    });
+    let has_more = rows.len() > s.limit;
+    rows.truncate(s.limit);
+    let cursor = |(n, m): &(i64, Message)| format!("{}:{n}", millis_from_rfc3339(&m.timestamp).expect("message time"));
+    let (oldest, newest) = (rows.last().map(cursor), rows.first().map(cursor));
+    rows.sort_by(|a, b| b.1.sort_key.cmp(&a.1.sort_key));
+    let mut chats = serde_json::Map::new();
+    for (_, m) in &rows {
+        chats.entry(&m.chat_id).or_insert_with(|| json!(view::chat(st, st.chat(&m.chat_id), None, false)));
+    }
+    Ok(json!(MessagePage {
+        items: rows.iter().map(|(_, m)| view::message(m)).collect(),
+        chats,
+        has_more,
+        oldest_cursor: joined_cursor(oldest, imessage),
+        newest_cursor: joined_cursor(newest, imessage),
+    }))
 }
 
-/// Desktop's `search`: at most 30 chats that match by title, 30 groups that match by participant, and the first page of
-/// 20 messages of `searchMessages`, each newest first.
+fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
+    ok(&message_search(st, &MessageSearch::parse(r)?)?)
+}
+
+/// Desktop's `search`: `searchChats` with the scope `titles` and with the scope `participants`, 30 chats each, and the
+/// first page of `searchMessages`.
 fn unified_search(st: &BeeperStore, r: &Req) -> Reply {
     let q = r.need_q("query")?;
-    let words = tokenize(q);
-    let mut found: Vec<&Chat> =
-        st.chat_search().query_all_tokens(q).into_iter().map(|i| &st.chats[i as usize]).collect();
-    found.sort_unstable_by_key(|c| std::cmp::Reverse(activity_key(c)));
-    let titles = found.iter().copied().filter(|c| chat_hit(c, false, &words));
-    let chats: Vec<_> = titles.take(30).map(|c| view::chat(st, c, Some(20), false)).collect();
-    let groups = found.iter().copied().filter(|c| c.chat_type == "group" && chat_hit(c, true, &words));
-    let in_groups: Vec<_> = groups.take(30).map(|c| view::chat(st, c, Some(20), false)).collect();
-    let (messages, has_more) = message_page(st, &Query::default().text(q), 20, |m| {
-        m.flags & MSG_DELETED == 0 && st.chat(&m.chat_id).flags & CHAT_LOW_PRIORITY == 0
-    });
-    let chat = |id: &str| view::chat(st, st.chat(id), None, false);
-    let referenced: HashMap<&str, view::ApiChat> =
-        messages.iter().map(|m| (m.chat_id.as_str(), chat(&m.chat_id))).collect();
-    ok(&json!({
-        "results": {
-            "chats": chats,
-            "in_groups": in_groups,
-            "messages": {
-                "chats": referenced,
-                "hasMore": has_more,
-                "items": messages.iter().map(|m| view::message(m)).collect::<Vec<_>>(),
-                "newestCursor": messages.first().map(|m| &m.sort_key),
-                "oldestCursor": messages.last().map(|m| &m.sort_key)
-            }
-        }
-    }))
+    let chats = |people| chat_search(st, &ChatSearch::of(q, people, 30)).items;
+    let messages = message_search(st, &MessageSearch::of(q))?;
+    ok(&json!({ "results": { "chats": chats(false), "in_groups": chats(true), "messages": messages } }))
 }
 
 /// The MIME type and the extension of the `file-type` package for the first bytes of a file.
