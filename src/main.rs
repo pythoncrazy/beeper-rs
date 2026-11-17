@@ -169,21 +169,22 @@ mod display {
         fn event(_: &mut Self, _: &R, _: E, _: &G, _: &C, _: &Q<Self>) {}
     }
 
-    /// Picks the window system and the renderer. It sets environment variables, so call it before any thread starts.
-    /// It uses X11 when the Wayland compositor does not draw window frames. It uses tiny-skia when the display
-    /// cannot show GPU frames, because wgpu then loads every Vulkan driver and renders on the CPU with lavapipe.
+    /// Picks the renderer and the cursor. It sets environment variables, so call it before any thread starts.
+    ///
+    /// Like Desktop's Electron, it runs on Wayland when there is a compositor, and draws the window frame itself
+    /// when the compositor does not (GNOME): under XWayland the scale and the cursor follow X resources that GNOME
+    /// sets late or not at all, so the cursor turns small. It uses tiny-skia when the display cannot show GPU
+    /// frames, because wgpu then loads every Vulkan driver and renders on the CPU with lavapipe.
     pub fn setup() {
         let wayland = C::connect_to_env().ok().and_then(|c| {
             let (globals, _) = wayland_client::globals::registry_queue_init::<Probe>(&c).ok()?;
             Some(globals.contents().with_list(|l| l.iter().map(|g| g.interface.clone()).collect::<Vec<_>>()))
         });
-        let has = |interface: &str| wayland.iter().flatten().any(|g| g.starts_with(interface));
-        let set = ["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"].map(std::env::var_os);
-        let x11 = set.map(|v| v.is_some()) == [true, true, false] && !has("zxdg_decoration");
-        if x11 {
-            unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+        let has = |interface: &str| wayland.iter().flatten().any(|g| g == interface);
+        if wayland.is_some() && !has("wp_cursor_shape_manager_v1") {
+            cursor_theme();
         }
-        let gpu_display = match wayland.is_some() && !x11 {
+        let gpu_display = match wayland.is_some() {
             true => has("zwp_linux_dmabuf_v1"),
             false => x11rb::connect(None).is_ok_and(|(c, _)| {
                 ["DRI3", "NV-GLX"].iter().any(|e| c.extension_information(e).is_ok_and(|i| i.is_some()))
@@ -193,6 +194,25 @@ mod display {
             .is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("renderD")));
         if std::env::var_os("ICED_BACKEND").is_none() && !(gpu_display && render_node) {
             unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia") };
+        }
+    }
+
+    /// A compositor without the cursor-shape protocol (GNOME before 48) leaves the cursor to the app, and winit
+    /// draws it from `XCURSOR_THEME` and `XCURSOR_SIZE`, which GNOME does not set. GTK and Chromium read the
+    /// cursor of the desktop settings, so this passes those on.
+    fn cursor_theme() {
+        let get = |key: &str| {
+            let out =
+                std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", key]).output();
+            let out = out.ok().filter(|o| o.status.success())?;
+            let value = String::from_utf8(out.stdout).ok()?.trim().trim_matches('\'').to_string();
+            Some(value).filter(|v| !v.is_empty())
+        };
+        let unset = [("XCURSOR_THEME", "cursor-theme"), ("XCURSOR_SIZE", "cursor-size")]
+            .into_iter()
+            .filter(|(var, _)| std::env::var_os(var).is_none());
+        for (var, value) in unset.filter_map(|(var, key)| Some((var, get(key)?))) {
+            unsafe { std::env::set_var(var, value) };
         }
     }
 }
