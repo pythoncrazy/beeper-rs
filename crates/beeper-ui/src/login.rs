@@ -575,7 +575,9 @@ pub(crate) fn brand_button<'a>(
         container(row((0..3).map(dot)).spacing(8)).center(Fill)
     });
     let hover = matches!(variant, Brand::Primary | Brand::Secondary) && msg.is_some();
-    button(stack![container(content).center_x(Fill)].push(dots))
+    // `:not(:disabled):active { transform: scale(.98) }`.
+    let pressable = msg.is_some();
+    let button = button(stack![container(content).center_x(Fill)].push(dots))
         .width(Fill)
         .padding([9, 11])
         .style(move |_: &Theme, s| {
@@ -589,8 +591,11 @@ pub(crate) fn brand_button<'a>(
                 ..Default::default()
             }
         })
-        .on_press_maybe(msg)
-        .into()
+        .on_press_maybe(msg);
+    match pressable {
+        true => crate::lift::press(button, 0.98).into(),
+        false => button.into(),
+    }
 }
 
 pub(crate) fn actions(items: Vec<El<'_>>, bottom: f32) -> El<'_> {
@@ -1423,23 +1428,28 @@ impl BeeperGuiApp {
         // Desktop's menu is a native menu, over the toast.
         let menu = l.menu.then(|| {
             let (back, last) = l.screen.menu();
-            let item =
-                |label: &'static str, hotkey, msg| crate::menu_item(p, None, tr(label).into(), hotkey, Some(msg));
+            let item = |label: &'static str, hotkey: String, msg| {
+                crate::menu_item(p, None, tr(label).into(), hotkey, Some(msg))
+            };
+            let report = crate::menubar::accelerator(self.store.read().settings.hotkey_keys("Report a Problem"));
             let items = column![]
-                .push(back.map(|s| item("Go Back", "", LoginMsg::Show(s).into())))
-                .push(item("Report a Problem", "Ctrl Shift P", UiMessage::OpenUrl(crate::ISSUES_URL.into())))
-                .push(last.map(|(label, msg)| item(label, "", msg)));
-            let items = container(items.padding([4, 0])).width(210).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+                .push(back.map(|s| item("Go Back", String::new(), LoginMsg::Show(s).into())))
+                .push(item("Report a Problem", report, UiMessage::OpenUrl(crate::ISSUES_URL.into())))
+                .push(last.map(|(label, msg)| item(label, String::new(), msg)));
+            let items = container(items.padding([4, 0])).width(240).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
             let at = Padding::ZERO.top(34.0 + pad).right(6.0 + pad);
             mouse_area(container(items).align_right(Fill).height(Fill).padding(at)).on_press(LoginMsg::Menu.into())
         });
-        stack![container(page).padding(pad).style(fill_box(frame, 0.0))]
+        let window = stack![container(page).padding(pad).style(fill_box(frame, 0.0))]
             .push(l.toast.as_deref().map(|t| toast(p, t, true)))
             .push(l.pasted().then(|| toast(p, tr("Code auto pasted from clipboard"), false)))
             .push(l.invalid.as_deref().map(bubble))
             .push(menu)
-            .push(self.view_network_menu())
-            .into()
+            .push(self.view_network_menu());
+        // Desktop's menu bar and Keyboard Shortcuts modal, which its onboarding window has too.
+        let (window, menu_drop) = self.with_menu_bar(window.into());
+        let hotkeys = self.hotkeys_modal.as_deref().map(|q| self.view_hotkeys_modal(q, SIZE));
+        stack![window].push(menu_drop).push(hotkeys).into()
     }
 
     /// What a control does when it is clicked or pressed with the keyboard. A busy screen disables its buttons.
@@ -1475,7 +1485,9 @@ impl BeeperGuiApp {
         let l = &mut self.login;
         let stops = l.stops();
         match key {
-            Key::Named(Named::Escape) => (l.menu, self.networks.menu) = (false, None),
+            Key::Named(Named::Escape) => {
+                (l.menu, self.networks.menu, self.menu_bar, self.hotkeys_modal) = (false, None, None, None);
+            }
             Key::Named(Named::Tab) if (mods - Modifiers::SHIFT).is_empty() => {
                 return match l.focus.step(stops, mods.shift()) {
                     Some(Stop::Field) => operation::focus(l.screen.field().expect("a screen with a field")),

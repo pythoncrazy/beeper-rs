@@ -40,7 +40,7 @@ use iced::widget::{
     button, column, container, mouse_area, operation, rich_text, row, scrollable, slider, span, stack, svg, text_input,
     tooltip, Column, Row, Space,
 };
-use iced::{window, Center, Color, Fill, Length, Padding, Pixels, Task, Theme};
+use iced::{window, Center, Color, Fill, Length, Padding, Pixels, Size, Task, Theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -115,10 +115,11 @@ impl SettingsTab {
         }
     }
 
-    /// Desktop's `.account-pref-pane` gives the Accounts, Devices and Storage panes `--appearance-color-bg-primary`.
+    /// Desktop's `.account-pref-pane` gives the Profile, Accounts, Devices and Storage panes
+    /// `--appearance-color-bg-primary`.
     pub fn pane(self, p: &Palette) -> Color {
         match self {
-            Self::Accounts | Self::Devices | Self::Storage => p.card,
+            Self::Profile | Self::Accounts | Self::Devices | Self::Storage => p.card,
             _ => p.prefs_pane,
         }
     }
@@ -1756,9 +1757,12 @@ impl BeeperGuiApp {
         container(card).width(Fill).padding(14).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0)).into()
     }
 
-    /// Desktop's Keyboard Shortcuts list: the first keys of each hotkey, at the right of the window.
-    pub(crate) fn view_hotkeys_modal(&self, query: &str) -> El<'_> {
+    /// Desktop's Keyboard Shortcuts list: the first keys of each hotkey, at the right of a `window`. In a window too
+    /// narrow for it, like the sign-in window, it narrows, where Desktop's goes past the left edge of the window.
+    pub(crate) fn view_hotkeys_modal(&self, query: &str, window: Size) -> El<'_> {
         let p = &self.pal;
+        let card_w = (window.width - 13.0).min(350.0);
+        let row_w = card_w - 25.0;
         let st = self.store.read();
         let modifier_only = |k: &str| k.rsplit('+').next().is_some_and(|m| ["ctrl", "shift", "alt"].contains(&m));
         let all = prefs::HOTKEYS
@@ -1784,18 +1788,18 @@ impl BeeperGuiApp {
                     .style(fill_box(p.fg.scale_alpha(0.15), 4.0))
             });
             let caps = Row::with_children(caps.map(El::from)).spacing(4).padding(Padding::ZERO.right(4.0));
-            let name = ell(tr(name), 325.0 - 22.4 - 12.0 - caps_w, 13.0, Weight::Normal).color(p.text);
+            let name = ell(tr(name), row_w - 22.4 - 12.0 - caps_w, 13.0, Weight::Normal).color(p.text);
             let line = row![name, Space::new().width(Fill), caps].spacing(12).align_y(Center);
             let hover = p.fg.scale_alpha(0.05);
             button(line)
-                .width(325)
+                .width(row_w)
                 .padding([4.8, 11.2])
                 .style(btn_style([CLEAR, hover, hover], [p.text; 3], 8.0))
                 .on_press(UiMessage::Noop)
                 .into()
         };
         let groups = first_groups(&shown, |h| h.1).into_iter().map(|group| {
-            let head = container(semi(tr(group), 13.0).color(p.text)).padding([4.8, 11.2]).width(325);
+            let head = container(semi(tr(group), 13.0).color(p.text)).padding([4.8, 11.2]).width(row_w);
             let rows = shown.iter().filter(|h| h.1 == group).map(row);
             column![head].extend(rows).padding(Padding::ZERO.top(12.8)).into()
         });
@@ -1806,7 +1810,7 @@ impl BeeperGuiApp {
                 .center_y(Fill)
         });
         let list = Column::with_children(groups).push(empty).width(Fill).align_x(Center);
-        let height = 0.8 * self.pane().size.height / self.zoom;
+        let height = 0.8 * window.height;
         let list = scrollable(list)
             .direction(bar())
             .style(scroll_style(p.scroll))
@@ -1826,7 +1830,7 @@ impl BeeperGuiApp {
             container(Space::new()).width(Fill).height(1).style(fill_box(rule, 0.0)),
             list,
         ]
-        .width(350)
+        .width(card_w)
         .padding([13, 0]);
         let card = mouse_area(container(card).style(fill_box(p.elevated, 0.0))).on_press(UiMessage::Noop);
         let shade = container(card).align_right(Fill).center_y(Fill).padding(Padding::ZERO.right(13.0));
