@@ -1,6 +1,9 @@
 //! Desktop's chat list (ThreadList): its tabs and filters, the chat menu and flags, archive and read, multi-select, and the chat actions.
 
 use super::*;
+use crate::reminders::{last_used, last_used_label, remind_presets};
+use crate::time::list_ts;
+use crate::vcard::contact_name;
 use iced::widget::column;
 
 #[derive(Clone)]

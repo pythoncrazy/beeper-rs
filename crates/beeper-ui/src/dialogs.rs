@@ -17,15 +17,16 @@ use crate::style::{
     bar, bold, bordered_box, btn_style, ell, fill_box, fw, ic, icon, input_style, med, mix, scroll_style, semi,
     shadow_box, text_width, txt, Bare, CLEAR,
 };
+use crate::units::human_size;
 use crate::{
-    badge, chat_search_subtitle, checkbox, checkbox_plus, delete_dialog, grouped_rows, human_size, icon_btn,
-    inbox_label, label_icon, label_tile, login, member_name, menu_item, network_name, pill_btn, portal, reconnect,
-    round_avatar, spread, stored, tinted, toggle, voice, BeeperGuiApp, El, PendingMedia, Toast, UiMessage,
-    ACCOUNT_SUB_W, ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_BLOCK, ASK_BLOCK_OFFLINE, ASK_CLEAR_CACHE,
-    ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE, ASK_DISMISS_REMINDERS,
-    ASK_LEAVE_CHAT, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ, ASK_REMOTE_ACCESS,
-    ASK_REMOVE_ACCOUNT, ASK_REMOVE_MEMBER, ASK_REVOKE_CONNECTION, ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE,
-    DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
+    badge, chat_search_subtitle, checkbox, checkbox_plus, delete_dialog, grouped_rows, icon_btn, inbox_label,
+    label_icon, label_tile, login, member_name, menu_item, network_name, pill_btn, portal, reconnect, round_avatar,
+    spread, stored, tinted, toggle, voice, BeeperGuiApp, El, PendingMedia, Toast, UiMessage, ACCOUNT_SUB_W,
+    ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_BLOCK, ASK_BLOCK_OFFLINE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT,
+    ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE, ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT,
+    ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT,
+    ASK_REMOVE_MEMBER, ASK_REVOKE_CONNECTION, ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE, DELETE, DRAG_HANDLE,
+    INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;

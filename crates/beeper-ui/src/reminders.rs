@@ -121,3 +121,29 @@ impl BeeperGuiApp {
         }
     }
 }
+
+/// Desktop's default `time_suggestion_options`.
+pub(crate) const TIME_SUGGESTIONS: [&str; 6] =
+    ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "This Weekend", "Next Week"];
+
+/// Desktop's `wJe`: the time suggestions that fall in the future, with their times.
+pub(crate) fn remind_presets(now: i64) -> impl Iterator<Item = (&'static str, i64)> {
+    TIME_SUGGESTIONS.into_iter().filter_map(move |s| parse_when_millis(s, now).filter(|at| *at > now).map(|at| (s, at)))
+}
+
+/// Desktop's `dD`: the last time phrase that set a reminder, read again now, when it falls in the future.
+pub(crate) fn last_used(st: &BeeperStore, now: i64) -> Option<i64> {
+    Some(&st.settings.last_time)
+        .filter(|t| !t.is_empty())
+        .and_then(|t| parse_when_millis(t, now))
+        .filter(|at| *at > now)
+}
+
+/// Desktop's "Last Used" time: `EEE dd MMM`, with the year when it is not this year, and the time.
+pub(crate) fn last_used_label(at: i64, h24: bool) -> String {
+    let (y, m, d) = civil_from_days(day_of(at));
+    let month = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(' ').nth(m as usize - 1).expect("a month");
+    let year = if y == civil_from_days(today()).0 { String::new() } else { format!(" {y}") };
+    let wd = WEEKDAYS[(day_of(at) + 4).rem_euclid(7) as usize];
+    format!("{} {d:02} {month}{year}, {:0>8}", &wd[..3], clock(at, h24))
+}

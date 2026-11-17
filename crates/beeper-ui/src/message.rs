@@ -15,16 +15,17 @@ use crate::style::{
     scroll_style, semi, shadow_box, stable_bar, txt, Bare, CLEAR, GUTTER,
 };
 use crate::threads;
+use crate::time::{clock, day_label, day_num, day_of, format_short_ts, locale_string, today};
 use crate::timeline;
+use crate::units::human_size;
 use crate::windows;
 use crate::{
-    anim, badged, brightness, can_thread, chat_theme, clock, commands, copy_text, day_label, day_num, day_of,
-    delete_dialog, downloads_dir, ease_out, edit_open, editable, email, enter_key, feedback_btn, file_icon, fmt_phone,
-    format_short_ts, gallery, handle, has_older, human_size, lift, locale_string, locate, member_name, membership,
-    menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link, reply_root, safe_file_name, send_rise,
-    sender_label, short_title, still_sending_at, stored, tinted, today, unavailable, unused_path, video, vlist,
-    BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, CHEVRON_DOWN,
-    ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE, TRASH, VIEW_SIDEBAR,
+    anim, badged, brightness, can_thread, chat_theme, commands, copy_text, delete_dialog, downloads_dir, ease_out,
+    edit_open, editable, email, enter_key, feedback_btn, file_icon, fmt_phone, gallery, handle, has_older, lift,
+    locate, member_name, membership, menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link,
+    reply_root, safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable,
+    unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON,
+    BUBBLE_PAD_X, CHEVRON_DOWN, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE, TRASH, VIEW_SIDEBAR,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::*;

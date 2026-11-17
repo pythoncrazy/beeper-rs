@@ -46,6 +46,7 @@ mod scheduled;
 pub mod settings;
 mod sound;
 mod spell;
+mod time;
 mod timeline;
 pub mod toasts;
 #[cfg(target_os = "linux")]
@@ -75,7 +76,9 @@ mod tray {
 }
 pub mod style;
 pub mod threads;
+mod units;
 mod user_card;
+mod vcard;
 mod verify;
 mod video;
 mod vlist;
@@ -116,8 +119,11 @@ use rail::{
 use rail::{SpacesDraft, SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
 use reminders::{remind_label, reminder_day};
 use scheduled::next_send;
+use time::{clock, day_label, day_num, day_of, locale_string, today, WEEKDAYS};
 use toasts::{Toast, TOASTS_SHOWN, TOAST_TICK};
+use units::human_size;
 use user_card::UserHover;
+use vcard::VCard;
 use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZE};
 
 use crate::style::{
@@ -434,7 +440,6 @@ impl std::fmt::Debug for UiMessage {
     }
 }
 
-const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 fn network_name(account_id: &str) -> &'static str {
     account_network(account_id).display_name
 }
@@ -535,45 +540,6 @@ fn brand_key(account_id: &str) -> &'static str {
     account_network(account_id).bridge_id
 }
 
-fn iso_millis(iso: &str) -> i64 {
-    millis_from_rfc3339(iso).unwrap_or_else(|| panic!("timestamp {iso} is not RFC 3339"))
-}
-
-pub fn format_short_ts(iso: &str, twenty_four: bool) -> String {
-    clock(iso_millis(iso), twenty_four)
-}
-
-/// date-fns `h:mm a` or `HH:mm`, which Desktop formats in English.
-fn clock(ms: i64, twenty_four: bool) -> String {
-    let (f, hm) = clock_format(ms, twenty_four);
-    i18n::en_date(f, (0, 1, 1), hm)
-}
-
-/// Desktop's `Cp`: the time in the app language.
-fn local_clock(ms: i64, twenty_four: bool) -> String {
-    let (f, hm) = clock_format(ms, twenty_four);
-    i18n::date(f, (0, 1, 1), hm)
-}
-
-fn clock_format(ms: i64, twenty_four: bool) -> (i18n::Date, (i64, i64)) {
-    let mins = local_millis(ms).div_euclid(60_000).rem_euclid(1440);
-    let f = match (twenty_four, mins < 720) {
-        (true, _) => i18n::Date::Clock24,
-        (false, true) => i18n::Date::Am,
-        (false, false) => i18n::Date::Pm,
-    };
-    (f, (mins / 60, mins % 60))
-}
-
-/// The en-US `Date.toLocaleString()` of a timestamp, like "10/16/2026, 10:40:56 PM".
-fn locale_string(iso: &str) -> String {
-    let ms = local_millis(iso_millis(iso));
-    let (y, mo, d) = civil_from_days(ms.div_euclid(86_400_000));
-    let s = ms.div_euclid(1000).rem_euclid(86_400);
-    let (h, ampm) = (s / 3600, ["AM", "PM"][usize::from(s >= 43_200)]);
-    format!("{mo}/{d}/{y}, {}:{:02}:{:02} {ampm}", (h + 11) % 12 + 1, s / 60 % 60, s % 60)
-}
-
 /// Desktop's `sanitize-filename`: the name without path characters, control characters and trailing dots or spaces.
 fn safe_file_name(name: &str) -> String {
     let name: String = name.chars().filter(|c| !r#"/\?<>:*|""#.contains(*c) && !c.is_control()).collect();
@@ -604,69 +570,6 @@ fn copy_text(m: &Message, stamp: bool, many: bool) -> String {
         .chain((!body.is_empty()).then_some(body))
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn day_num(iso: &str) -> i64 {
-    day_of(iso_millis(iso))
-}
-
-fn day_of(ms: i64) -> i64 {
-    local_millis(ms).div_euclid(86_400_000)
-}
-
-fn today() -> i64 {
-    day_of(now_unix_millis())
-}
-
-fn day_label(iso: &str) -> String {
-    let (d, today) = (day_num(iso), today());
-    let wd = WEEKDAYS[(d + 4).rem_euclid(7) as usize];
-    match today - d {
-        0 => tr("Today").into(),
-        1 => tr("Yesterday").into(),
-        2..=6 => tr(wd).into(),
-        _ => {
-            let ((y, m, dd), ty) = (civil_from_days(d), civil_from_days(today).0);
-            let year = if y == ty { String::new() } else { format!(", {y}") };
-            format!("{}, {} {dd}{year}", &wd[..3], i18n::en_short_month(m))
-        }
-    }
-}
-
-fn list_ts(iso: &str, h24: bool) -> String {
-    const DAY: i64 = 86_400_000;
-    let d = day_num(iso);
-    let age = now_unix_millis() - millis_from_rfc3339(iso).expect("RFC 3339 timestamp");
-    match today() - d {
-        0 => local_clock(iso_millis(iso), h24),
-        1 => tr("Yesterday").into(),
-        _ if age < 7 * DAY => tr(WEEKDAYS[(d + 4).rem_euclid(7) as usize]).into(),
-        _ if age < 365 * DAY => i18n::date(i18n::Date::MonthDay, civil_from_days(d), (0, 0)),
-        _ => i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0)),
-    }
-}
-
-fn human_size(n: u64) -> String {
-    let i = (n.max(1) as f64).log(1024.0).floor() as i32;
-    let v = format!("{:.1}", n as f64 / 1024f64.powi(i));
-    format!("{} {}", v.trim_end_matches(".0"), ["B", "KB", "MB", "GB", "TB"][i as usize])
-}
-
-/// `Intl.NumberFormat` with `notation: "compact"`, like Desktop's message counts.
-fn compact(n: u64) -> String {
-    let Some((d, unit)) = [(1e9, "B"), (1e6, "M"), (1e3, "K")].into_iter().find(|&(d, _)| n as f64 >= d) else {
-        return n.to_string();
-    };
-    let v = n as f64 / d;
-    let v = if v < 10.0 { format!("{v:.1}").trim_end_matches(".0").to_string() } else { format!("{v:.0}") };
-    format!("{v}{unit}")
-}
-
-/// `toLocaleString` of a count, with thousands separators.
-fn grouped(n: u64) -> String {
-    let s = n.to_string();
-    let digits: Vec<String> = s.as_bytes().rchunks(3).rev().map(|c| String::from_utf8_lossy(c).into()).collect();
-    digits.join(",")
 }
 
 /// `dir/name`, or `dir/stem (n).ext` with the first free `n`.
@@ -776,31 +679,6 @@ fn inbox_label(label: &'static str) -> &'static str {
 /// Desktop's `--chat-view-bubble-padding-x`, which also insets the message footer.
 const BUBBLE_PAD_X: f32 = 11.0;
 const SUB_MENU_W: [f32; 3] = [124.0, 257.0, 180.0];
-/// Desktop's default `time_suggestion_options`.
-const TIME_SUGGESTIONS: [&str; 6] =
-    ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "This Weekend", "Next Week"];
-
-/// Desktop's `wJe`: the time suggestions that fall in the future, with their times.
-fn remind_presets(now: i64) -> impl Iterator<Item = (&'static str, i64)> {
-    TIME_SUGGESTIONS.into_iter().filter_map(move |s| parse_when_millis(s, now).filter(|at| *at > now).map(|at| (s, at)))
-}
-
-/// Desktop's `dD`: the last time phrase that set a reminder, read again now, when it falls in the future.
-fn last_used(st: &BeeperStore, now: i64) -> Option<i64> {
-    Some(&st.settings.last_time)
-        .filter(|t| !t.is_empty())
-        .and_then(|t| parse_when_millis(t, now))
-        .filter(|at| *at > now)
-}
-
-/// Desktop's "Last Used" time: `EEE dd MMM`, with the year when it is not this year, and the time.
-fn last_used_label(at: i64, h24: bool) -> String {
-    let (y, m, d) = civil_from_days(day_of(at));
-    let month = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(' ').nth(m as usize - 1).expect("a month");
-    let year = if y == civil_from_days(today()).0 { String::new() } else { format!(" {y}") };
-    let wd = WEEKDAYS[(day_of(at) + 4).rem_euclid(7) as usize];
-    format!("{} {d:02} {month}{year}, {:0>8}", &wd[..3], clock(at, h24))
-}
 
 /// A flag as the chat menus show it: "Mark as Read" is for every unread chat.
 fn has_flag(c: &Chat, flag: ChatFlag) -> bool {
@@ -1143,58 +1021,6 @@ fn edit_open(m: &Message, rules: MessageRules) -> bool {
     m.is_deleted != Some(true) && MessageRules::young(rules.edit_max_age, &m.timestamp)
 }
 
-/// Desktop's contact name from a vCard file name, without a leading `123.ext.` and the `.vcf`.
-fn contact_name(f: &str) -> String {
-    let rest = f.split_once('.').filter(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-    let rest = rest
-        .and_then(|(_, r)| r.split_once('.'))
-        .filter(|(w, _)| !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
-    rest.map_or(f, |(_, r)| r).replacen(".vcf", "", 1)
-}
-
-/// The parts of a vCard that Desktop's contact card shows.
-#[derive(Debug, Default, PartialEq)]
-struct VCard {
-    name: String,
-    org: Option<String>,
-    phones: Vec<String>,
-    emails: Vec<String>,
-}
-
-/// Desktop's `parseVCardAsContact`: unfolds the lines, drops the parameters and groups, and splits each value at the
-/// unescaped `;`, or else at the unescaped `,`. The name is `FN`, or else the given and family names of `N`.
-fn parse_vcard(text: &str) -> VCard {
-    let mut lines: Vec<String> = Vec::new();
-    for l in text.lines() {
-        match lines.last_mut().filter(|_| l.starts_with([' ', '\t'])) {
-            Some(last) => last.push_str(l.trim()),
-            None => lines.push(l.to_string()),
-        }
-    }
-    let bare = |v: &str, c: char| v.starts_with(c) || v.as_bytes().windows(2).any(|w| w[1] == c as u8 && w[0] != b'\\');
-    let split = |v: &str| -> Vec<String> {
-        let v = v.replace("\\n", "\n");
-        let Some(c) = [';', ','].into_iter().find(|&c| bare(&v, c)) else {
-            return vec![v.replace("\\,", ",").replace("\\;", ";")];
-        };
-        let other = if c == ';' { ',' } else { ';' };
-        let v = v.replace(&format!("\\{other}"), &other.to_string()).replace(&format!("\\{c}"), "\0");
-        v.split(c).map(|p| p.replace('\0', &c.to_string())).collect()
-    };
-    let mut fields = HashMap::<String, Vec<Vec<String>>>::new();
-    for l in &lines {
-        let (key, value) = l.split_once(':').unwrap_or((l, ""));
-        let key = key.split(';').next().expect("split gives one part");
-        fields.entry(key.split_once('.').map_or(key, |(_, k)| k).to_lowercase()).or_default().push(split(value));
-    }
-    let first = |k: &str| fields.get(k).and_then(|v| v[0].iter().find(|s| !s.is_empty()).cloned());
-    let all = |k: &str| fields.get(k).into_iter().flatten().flatten().filter(|s| !s.is_empty()).cloned().collect();
-    let n = fields.get("n").map(|n| n[0].clone()).unwrap_or_default();
-    let given = [n.get(1), n.first()].into_iter().flatten().filter(|s| !s.is_empty()).cloned();
-    let name = first("fn").unwrap_or_else(|| given.collect::<Vec<_>>().join(" "));
-    VCard { name, org: first("org"), phones: all("tel"), emails: all("email") }
-}
-
 /// Desktop's pending `ContactAttachment`: the avatar, the name or the organization, and the first phone number and
 /// email with the count of the others.
 fn contact_card<'a>(p: &Palette, c: &VCard) -> El<'a> {
@@ -1348,15 +1174,6 @@ svg_static!(VSCODE_LOGO, include_bytes!("../assets/integrations/vscode.svg"));
 svg_static!(COPY_ICON, include_bytes!("../assets/integrations/copy.svg"));
 svg_static!(COPIED_ICON, include_bytes!("../assets/integrations/done.svg"));
 svg_static!(ADD_ICON, include_bytes!("../assets/integrations/add.svg"));
-
-/// Desktop's `KJ`: the timer, or "Off".
-fn timer_label(ms: u64) -> String {
-    if ms == 0 {
-        trx("Off", "disappearing messages timer option").into()
-    } else {
-        timer_distance(ms)
-    }
-}
 
 /// date-fns `formatDistance` in English, as Desktop shows the age and the expiry of a connection.
 fn distance(ms: i64) -> String {
@@ -6344,17 +6161,6 @@ mod tests {
         assert_eq!(tag(&[voice]), Some((2, "Voice Note", Some("01:05".into()))));
         assert_eq!(tag(&[a("video", "c.mp4", "video/mp4")]), Some((1, "Video", Some("01:05".into()))));
         assert_eq!(tag(&[a("unknown", "12.abc.Ann.vcf", "")]), Some((4, "Contact", Some("Ann".into()))));
-        let card =
-            "BEGIN:VCARD\r\nVERSION:3.0\r\nN:Doe;Jo;;;\r\nORG:Acme\\, Inc.\r\nitem1.TEL;type=CELL:+1555\r\n 0100\r\n\
-            TEL:+15550100200\r\nEMAIL:jo@x.y\r\nEND:VCARD\r\n";
-        let want = VCard {
-            name: "Jo Doe".into(),
-            org: Some("Acme, Inc.".into()),
-            phones: vec!["+15550100".into(), "+15550100200".into()],
-            emails: vec!["jo@x.y".into()],
-        };
-        assert_eq!(parse_vcard(card), want, "Desktop's `parseVCardAsContact`");
-        assert_eq!(parse_vcard("FN:Ann\nN:B;C").name, "Ann");
         assert_eq!(tag(&[a("unknown", "d.zip", "")]).map(|t| t.1), Some("ZIP"));
         assert_eq!(tag(&[a("unknown", "d.pdf", "application/pdf")]).map(|t| t.1), Some("Document"));
         assert_eq!(tag(&[a("img", "", ""), a("img", "", "")]), Some((8, "Media", None)));
