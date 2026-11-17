@@ -3354,10 +3354,14 @@ mod tests {
             });
             inviter.full_name.clone().expect("a name")
         };
-        let _ = app.update(UiMessage::SelectChat(group));
+        let _ = app.update(UiMessage::SelectChat(group.clone()));
+        let title = app.store.read().chat(&group).title.clone();
         let mut sim = simulator(app.view_conversation());
         assert!(sim.find(inviter.as_str()).is_ok() && sim.find(" invited you (").is_ok(), "the inviter line");
         assert!(sim.find("Feedback?").is_err(), "the feedback button goes with the thread header");
+        // Desktop's `RequestNotice` asks about the invitation from the person who added you.
+        let ask = format!("Accept group invitation for \"{title}\" from ");
+        assert!(sim.find(ask.as_str()).is_ok(), "{ask}");
     }
 
     /// Desktop's "Jump to Message" comes with a right click on a quote, which jumps to the quoted message, and not

@@ -64,6 +64,7 @@
 "About %s":["Acerca de %s"],
 "Accept":["Aceptar"],
 "Accept group invitation":["Aceptar invitación a grupo"],
+"Accept group invitation for \"__CHAT_TITLE__\" from __INVITER__?":["¿Aceptar invitación a grupo para «__CHAT_TITLE__» de __INVITER__?"],
 "Accept group invitation for \"__CHAT_TITLE__\"?":["¿Aceptar invitación a grupo para «__CHAT_TITLE__»?"],
 "Accept message request":["Aceptar solicitud de mensaje"],
 "Accept message request from __INVITER__?":["¿Aceptar solicitud de mensaje de __INVITER__?"],
