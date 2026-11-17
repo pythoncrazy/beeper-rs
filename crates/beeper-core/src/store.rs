@@ -562,6 +562,8 @@ pub struct BeeperStore {
     pub typing: HashMap<String, Vec<String>>,
     /// `io.element.recent_emoji` keys (emoji or emoji-mart ids) with their use counts.
     pub recent_emoji: Vec<(String, u64)>,
+    /// Desktop's `accountDataStore.imagePack`: the own `m.image_pack`, whose images are the custom emoji, or null.
+    pub image_pack: serde_json::Value,
     pub scheduled: Vec<Scheduled>,
     /// The last synced global account data of each event in [`crate::prefs::SYNCED`].
     pub synced_prefs: BTreeMap<&'static str, serde_json::Value>,
@@ -734,6 +736,7 @@ impl BeeperStore {
             sent: HashMap::new(),
             typing: HashMap::new(),
             recent_emoji: Vec::new(),
+            image_pack: serde_json::Value::Null,
             scheduled: Vec::new(),
             synced_prefs: BTreeMap::new(),
             skin_tone: 0,
@@ -1402,6 +1405,7 @@ impl BeeperStore {
             polls: Some(BEEPER_POLLS),
             messages: BEEPER_MESSAGES,
             allowed_reactions: Vec::new(),
+            custom_emoji: true,
             disappearing: None,
             timers: None,
             older: Older::Unknown,
@@ -2272,6 +2276,7 @@ impl BeeperStore {
             polls: Some(BEEPER_POLLS),
             messages: BEEPER_MESSAGES,
             allowed_reactions: Vec::new(),
+            custom_emoji: true,
             disappearing: None,
             timers: None,
             older: Older::Unknown,

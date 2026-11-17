@@ -44,6 +44,8 @@ pub struct Run {
     pub color: Option<String>,
     /// The `src` of an `<img data-mx-emoticon>`, a custom emoji in the text, whose run text is its `alt`.
     pub emoticon: Option<String>,
+    /// The `title` of a custom emoji, `:name:` from Desktop's composer, which its "Add :%s: to Custom Emoji" takes.
+    pub title: Option<String>,
 }
 
 /// A paragraph or a list item, with its list marker.
@@ -118,7 +120,7 @@ pub fn html_blocks(html: &str) -> Vec<Block> {
             // Desktop's `xi` with `isEmoji`, and `alt || "📟"` as the text of a custom emoji.
             (false, "img") if !hidden && tag.contains("data-mx-emoticon") => {
                 let text = attr(tag, "alt").filter(|a| !a.is_empty()).unwrap_or_else(|| "📟".into());
-                b.runs.push(Run { text, emoticon: attr(tag, "src"), ..style.clone() });
+                b.runs.push(Run { text, emoticon: attr(tag, "src"), title: attr(tag, "title"), ..style.clone() });
             }
             (false, "img") if !hidden => push(b, &style, &attr(tag, "alt").unwrap_or_default()),
             _ => {}
@@ -178,8 +180,54 @@ pub fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
+/// The marks around the index of a custom emoji while [`markdown_html`] parses the Markdown: private-use characters.
+const MARK_OPEN: char = '\u{e000}';
+const MARK_CLOSE: char = '\u{e001}';
+
+/// A custom emoji of Desktop's composer Markdown, `#[name](mxc://…)`: its shortcode and image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Emoticon {
+    pub name: String,
+    pub url: String,
+}
+
+impl Emoticon {
+    /// Desktop's `emoticon` renderer: `<img data-mx-emoticon … height="32" />`, escaped like its `Ia`.
+    pub fn html(&self) -> String {
+        let esc = |s: &str| s.replace('&', "&amp;").replace('>', "&gt;").replace('<', "&lt;").replace('"', "&quot;");
+        let (src, name) = (esc(&self.url), esc(&self.name));
+        format!(r#"<img data-mx-emoticon src="{src}" alt=":{name}:" title=":{name}:" height="32" />"#)
+    }
+
+    /// Desktop's `renderText` of a custom emoji node: its Markdown.
+    pub fn markdown(&self) -> String {
+        format!("#[{}]({})", self.name, self.url)
+    }
+}
+
+/// The custom emoji of composer Markdown and their places: Desktop's `MH`,
+/// `#\[(?![^\]\n]*#\[)([^\]\n]+?)\]\(((?:local)?mxc:\/\/[^)\n]+)\)`, with the name and the URL trimmed.
+pub fn emoticons(md: &str) -> Vec<(std::ops::Range<usize>, Emoticon)> {
+    let (mut out, mut from) = (Vec::new(), 0);
+    while let Some(at) = md[from..].find("#[").map(|i| from + i) {
+        from = at + 2;
+        let rest = &md[at + 2..];
+        let Some(close) = rest.find([']', '\n']).filter(|&c| c > 0 && rest.as_bytes()[c] == b']') else { continue };
+        let name = &rest[..close];
+        let Some(tail) = rest[close + 1..].strip_prefix('(').filter(|_| !name.contains("#[")) else { continue };
+        let Some(end) = tail.find([')', '\n']).filter(|&e| tail.as_bytes()[e] == b')') else { continue };
+        let url = &tail[..end];
+        if !url.strip_prefix("local").unwrap_or(url).strip_prefix("mxc://").is_some_and(|r| !r.is_empty()) {
+            continue;
+        }
+        from = at + 2 + close + 2 + end + 1;
+        out.push((at..from, Emoticon { name: name.trim().into(), url: url.trim().into() }));
+    }
+    out
+}
+
 /// Converts composer Markdown to Matrix HTML like Desktop: GFM, a line break is a `<br>`, typed HTML stays text,
-/// and one paragraph is not wrapped. Gives `None` when the text has no formatting.
+/// a custom emoji is its image, and one paragraph is not wrapped. Gives `None` when the text has no formatting.
 pub fn markdown_html(md: &str) -> Option<String> {
     use pulldown_cmark::{html, CowStr, Event, Options, Parser};
     let render = |events: &mut dyn Iterator<Item = Event>| {
@@ -187,11 +235,54 @@ pub fn markdown_html(md: &str) -> Option<String> {
         html::push_html(&mut out, events);
         out
     };
-    let parser = Parser::new_ext(md, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH);
-    let rich = render(&mut parser.map(|e| match e {
-        Event::SoftBreak => Event::HardBreak,
-        Event::Html(h) | Event::InlineHtml(h) => Event::Text(h),
-        e => e,
+    // Desktop's `emoticon` extension of marked comes before the other inline rules, so each custom emoji is a mark
+    // while the Markdown parses, and then its image, or its Markdown again in code.
+    let found = emoticons(md);
+    let mark = |i: usize| format!("{MARK_OPEN}{i}{MARK_CLOSE}");
+    let (mut text, mut last) = (String::with_capacity(md.len()), 0);
+    for (i, (r, _)) in found.iter().enumerate() {
+        text.push_str(&md[last..r.start]);
+        text.push_str(&mark(i));
+        last = r.end;
+    }
+    text.push_str(&md[last..]);
+    let restore =
+        |t: &str| found.iter().enumerate().fold(t.to_string(), |t, (i, (r, _))| t.replace(&mark(i), &md[r.clone()]));
+    let images = |t: &str| {
+        let (mut out, mut rest) = (Vec::new(), t);
+        while let Some((a, b)) = rest.find(MARK_OPEN).and_then(|a| Some((a, a + rest[a..].find(MARK_CLOSE)?))) {
+            let Some((_, e)) = rest[a + MARK_OPEN.len_utf8()..b].parse::<usize>().ok().and_then(|k| found.get(k))
+            else {
+                break;
+            };
+            if a > 0 {
+                out.push(Event::Text(rest[..a].to_string().into()));
+            }
+            out.push(Event::InlineHtml(e.html().into()));
+            rest = &rest[b + MARK_CLOSE.len_utf8()..];
+        }
+        if !rest.is_empty() {
+            out.push(Event::Text(restore(rest).into()));
+        }
+        out
+    };
+    let mut code = false;
+    let parser = Parser::new_ext(&text, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH);
+    let rich = render(&mut parser.flat_map(|e| match e {
+        Event::SoftBreak => vec![Event::HardBreak],
+        Event::Html(h) | Event::InlineHtml(h) => vec![Event::Text(restore(&h).into())],
+        Event::Start(t @ pulldown_cmark::Tag::CodeBlock(_)) => {
+            code = true;
+            vec![Event::Start(t)]
+        }
+        Event::End(t @ pulldown_cmark::TagEnd::CodeBlock) => {
+            code = false;
+            vec![Event::End(t)]
+        }
+        Event::Code(c) => vec![Event::Code(restore(&c).into())],
+        Event::Text(t) if code => vec![Event::Text(restore(&t).into())],
+        Event::Text(t) => images(&t),
+        e => vec![e],
     }));
     let rich = rich.trim_end();
     let rich =
@@ -321,6 +412,38 @@ mod tests {
         ] {
             assert_eq!(markdown_html(md).as_deref(), Some(html), "{md:?}");
         }
+    }
+
+    /// Desktop's `emoticon` extension of marked: `#[name](mxc://…)` is the image of a custom emoji, also among other
+    /// formatting, but not in code.
+    #[test]
+    fn markdown_custom_emoji_like_desktop() {
+        let img =
+            |n: &str| format!(r#"<img data-mx-emoticon src="mxc://x/{n}" alt=":{n}:" title=":{n}:" height="32" />"#);
+        assert_eq!(markdown_html("#[cat](mxc://x/cat)"), Some(img("cat")));
+        assert_eq!(markdown_html("hi #[ cat ](mxc://x/cat ) & you"), Some(format!("hi {} &amp; you", img("cat"))));
+        assert_eq!(
+            markdown_html("**#[cat](mxc://x/cat)**#[dog](mxc://x/dog)"),
+            Some(format!("<strong>{}</strong>{}", img("cat"), img("dog")))
+        );
+        assert_eq!(
+            markdown_html("`#[cat](mxc://x/cat)` #[cat](mxc://x/cat)"),
+            Some(format!("<code>#[cat](mxc://x/cat)</code> {}", img("cat")))
+        );
+        let quoted = Emoticon { name: "a\"<b".into(), url: "mxc://x/y&z".into() }.html();
+        assert_eq!(
+            quoted,
+            r#"<img data-mx-emoticon src="mxc://x/y&amp;z" alt=":a&quot;&lt;b:" title=":a&quot;&lt;b:" height="32" />"#
+        );
+        let found = |md: &str| emoticons(md).into_iter().map(|(r, e)| (r, e.name, e.url)).collect::<Vec<_>>();
+        assert_eq!(found("#[a #[b](mxc://x/b)"), [(4..19, "b".into(), "mxc://x/b".into())]);
+        assert_eq!(found("#[l](localmxc://x/l)"), [(0..20, "l".into(), "localmxc://x/l".into())]);
+        for none in ["#[](mxc://x/a)", "#[a](mxc://)", "#[a](https://x/a)", "#[a\n](mxc://x/a)", "#[a](mxc://x\n)"] {
+            assert_eq!(found(none), [], "{none:?}");
+        }
+        assert_eq!(markdown_html("#[a](https://x.test)"), Some("#<a href=\"https://x.test\">a</a>".into()));
+        let runs = &html_blocks(&img("cat"))[0].runs;
+        assert_eq!((runs[0].text.as_str(), runs[0].title.as_deref()), (":cat:", Some(":cat:")));
     }
 
     /// Desktop's `data-mx-spoiler`: a run of its own in the timeline, and "█" per character in plain text.
