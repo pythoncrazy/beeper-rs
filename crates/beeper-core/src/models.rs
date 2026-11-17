@@ -326,6 +326,8 @@ pub struct Profile {
     pub plan: Plan,
     /// Desktop's `subscriptionAction` is "subscribe", which shows Beeper Plus in Settings.
     pub can_subscribe: bool,
+    /// Desktop's `isInternalUser`: the `channel` of the user is "INTERNAL".
+    pub internal: bool,
     /// Desktop's `loggedInUser.analyticsDisabled`, where a missing value is true.
     pub analytics_disabled: bool,
 }
@@ -338,6 +340,7 @@ impl Default for Profile {
             email: None,
             plan: Plan::Free,
             can_subscribe: true,
+            internal: false,
             analytics_disabled: true,
         }
     }
@@ -663,6 +666,9 @@ pub struct Chat {
     pub preview: Option<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reminder: Option<ChatReminder>,
+    /// Desktop's `snooze.snoozeUntilMs` of `com.beeper.chats.snoozed`.
+    #[serde(rename = "snoozedUntilMs", default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_theme: Option<ChatThemeCustom>,
     /// Desktop's local `note` thread prop, the Notes of the Chat Info panel.
@@ -859,6 +865,8 @@ impl Older {
 pub const PERSONAL_NAME: &str = "de.gematik.msc4431.room.name.private";
 /// Desktop's room account data of the notification sound of a chat (`chatNotificationSound`).
 pub const NOTIFICATION_SOUND: &str = "com.beeper.notification_sound";
+/// Desktop's room account data of a snoozed chat.
+pub const SNOOZED: &str = "com.beeper.chats.snoozed";
 /// Desktop's `df`: the sounds a chat can take, by the name in `com.beeper.notification_sound`.
 pub const CHAT_SOUNDS: [&str; 7] = ["silent", "double", "dreams", "not_marimba", "rain_harp", "record", "spirit"];
 pub const PERSONAL_AVATAR: &str = "de.gematik.msc4431.room.avatar.private";
@@ -884,11 +892,15 @@ pub const TRANSCRIPTIONS_ROOM: &str = "!transcriptions:beeper.local";
 /// The event type and the relation type of a Desktop "Remove from Beeper", and its managed room.
 pub const REMOVED_MESSAGE: &str = "com.beeper.removed_message";
 pub const REMOVED_MESSAGES_ROOM: &str = "!removed-messages:beeper.local";
+/// Desktop's `MESSAGE_REMINDER_EVENT_TYPE` and `MESSAGE_REMINDER_REL_TYPE`, and `MESSAGE_REMINDERS_ROOM_ID`, the
+/// managed room of the message reminders.
+pub const MESSAGE_REMINDER: &str = "com.beeper.message_reminder";
+pub const REMINDERS_ROOM: &str = "!reminders:beeper.local";
 /// The managed rooms on the Beeper homeserver that keep data and are not chats: the rooms of Desktop's
 /// `managedRoomEventHandlers` and `TRANSCRIPTIONS_ROOM_ID`. `!tips:beeper.local` is also a managed room, but Desktop
 /// shows it as a chat.
 pub const MANAGED_ROOMS: [&str; 5] =
-    [BOOKMARKS_ROOM, TRANSCRIPTIONS_ROOM, "!blasts:beeper.local", REMOVED_MESSAGES_ROOM, "!reminders:beeper.local"];
+    [BOOKMARKS_ROOM, TRANSCRIPTIONS_ROOM, "!blasts:beeper.local", REMOVED_MESSAGES_ROOM, REMINDERS_ROOM];
 
 /// A `com.beeper.bookmark` event of the bookmarks room, which relates to a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -897,6 +909,14 @@ pub struct Bookmark {
     pub event_id: String,
     /// `com.beeper.hs.order`, which Desktop sorts the bookmarks of a chat by.
     pub order: i64,
+}
+
+/// An active `com.beeper.message_reminder` of the reminders room: Desktop's `MessageReminder` of a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageReminder {
+    /// The room of the message.
+    pub room_id: String,
+    pub remind_at_ms: i64,
 }
 
 /// The disappearing timers of a room.
@@ -1732,6 +1752,8 @@ pub struct BeeperSettings {
     pub accounts: std::collections::BTreeMap<String, AccountProps>,
     /// Desktop's `time_suggestion_last_used`: the last time phrase that set a reminder, or empty.
     pub last_time: String,
+    /// Desktop's `snooze_time_suggestion_last_used`: the last time phrase that snoozed a chat, or empty.
+    pub snooze_last_time: String,
     /// Desktop's local `chat_appearance`.
     pub chat_appearance: ChatAppearance,
     /// Desktop's local `spaces_order`: the sidebar order, and the spaces that Edit Spaces hides.
