@@ -3064,6 +3064,121 @@ pub async fn set_global(client: Client, kind: &'static str, content: Value) -> R
     client.account().set_account_data_raw(kind, raw).await.map(drop).map_err(|e| e.to_string())
 }
 
+/// A request of the client-server API at `/_matrix/client/v3/{path}` with the session of the client, for the Matrix
+/// proxy of the Desktop API, which passes bodies and replies through as they are. Gives the body of the reply, or the
+/// Matrix error of the homeserver as `M_CODE (HTTP 404): error`.
+async fn client_api(
+    client: &Client,
+    method: reqwest::Method,
+    path: &[&str],
+    query: &[(&str, &str)],
+    body: Option<String>,
+) -> Result<String, String> {
+    let mut url = client.homeserver();
+    url.path_segments_mut().expect("a base URL").pop_if_empty().extend(["_matrix", "client", "v3"]).extend(path);
+    if !query.is_empty() {
+        url.query_pairs_mut().extend_pairs(query);
+    }
+    let token = client.access_token().ok_or("Not signed in to Matrix")?;
+    let mut req = crate::cloud::http_client().request(method, url.as_str()).bearer_auth(token);
+    if let Some(body) = body {
+        req = req.header("content-type", "application/json").body(body);
+    }
+    let res = req.send().await.map_err(|e| e.without_url().to_string())?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| e.without_url().to_string())?;
+    if status.is_success() {
+        return Ok(text);
+    }
+    let v: Value = serde_json::from_str(&text).unwrap_or_default();
+    match v["errcode"].as_str() {
+        Some(code) => Err(format!("{code} (HTTP {}): {}", status.as_u16(), v["error"].as_str().unwrap_or_default())),
+        None => Err(format!("HTTP {status}")),
+    }
+}
+
+fn own_id(client: &Client) -> String {
+    client.user_id().expect("signed-in client has a user ID").to_string()
+}
+
+/// Desktop SDK's `getAccountData`: the content of a global account data event of the user.
+pub async fn get_account_data(client: Client, kind: String) -> Result<String, String> {
+    client_api(&client, reqwest::Method::GET, &["user", &own_id(&client), "account_data", &kind], &[], None).await
+}
+
+/// Desktop SDK's `setAccountData`: sets a global account data event of the user to the JSON text `content`.
+pub async fn set_account_data(client: Client, kind: String, content: String) -> Result<(), String> {
+    let path = ["user", &own_id(&client), "account_data", &kind];
+    client_api(&client, reqwest::Method::PUT, &path, &[], Some(content)).await.map(drop)
+}
+
+/// Desktop SDK's `getRoomAccountData`: the content of an account data event of the user in a room.
+pub async fn get_room_account_data(client: Client, room: String, kind: String) -> Result<String, String> {
+    let path = ["user", &own_id(&client), "rooms", &room, "account_data", &kind];
+    client_api(&client, reqwest::Method::GET, &path, &[], None).await
+}
+
+/// Desktop SDK's `setRoomAccountData`: sets an account data event of the user in a room to the JSON text `content`.
+pub async fn set_room_account_data(client: Client, room: String, kind: String, content: String) -> Result<(), String> {
+    let path = ["user", &own_id(&client), "rooms", &room, "account_data", &kind];
+    client_api(&client, reqwest::Method::PUT, &path, &[], Some(content)).await.map(drop)
+}
+
+/// Desktop SDK's `fetchRoomState`: the state events of a room, from the homeserver.
+pub async fn fetch_room_state(client: Client, room: String) -> Result<String, String> {
+    client_api(&client, reqwest::Method::GET, &["rooms", &room, "state"], &[], None).await
+}
+
+/// Desktop SDK's `fetchRoomStateEvent`: the whole state event of a type and state key, from the homeserver.
+pub async fn fetch_room_state_event(client: Client, room: String, kind: String, key: String) -> Result<String, String> {
+    let path = ["rooms", &room, "state", &kind, &key];
+    client_api(&client, reqwest::Method::GET, &path, &[("format", "event")], None).await
+}
+
+/// Desktop SDK's `fetchEvent`: an event of a known room, decrypted when the client has its key.
+pub async fn fetch_event(client: Client, room: String, event: String) -> Result<String, String> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room).map_err(|e| e.to_string())?;
+    let room = client.get_room(&room_id).ok_or_else(|| format!("Room {room_id} not found"))?;
+    let event = OwnedEventId::try_from(event).map_err(|e| e.to_string())?;
+    Ok(room.event(&event, None).await.map_err(|e| e.to_string())?.raw().json().get().into())
+}
+
+/// Desktop SDK's `getProfile`: the profile of a user, from the homeserver.
+pub async fn get_profile(client: Client, user: String) -> Result<String, String> {
+    client_api(&client, reqwest::Method::GET, &["profile", &user], &[], None).await
+}
+
+/// Desktop SDK's `joinRoomByID` for a room ID, and `joinRoom` through the server `via`, when given, for an alias.
+/// Gives the ID of the joined room.
+pub async fn join_room(client: Client, room: String, via: String) -> Result<String, String> {
+    use matrix_sdk::ruma::{OwnedServerName, RoomId, RoomOrAliasId};
+    let room = RoomOrAliasId::parse(room).map_err(|e| e.to_string())?;
+    let joined = match <&RoomId>::try_from(&*room) {
+        Ok(id) => client.join_room_by_id(id).await,
+        Err(_) => {
+            let vias = match via.is_empty() {
+                true => Vec::new(),
+                false => vec![OwnedServerName::try_from(via).map_err(|e| e.to_string())?],
+            };
+            client.join_room_by_id_or_alias(&room, &vias).await
+        }
+    };
+    Ok(joined.map_err(|e| e.to_string())?.room_id().to_string())
+}
+
+/// Desktop SDK's `leaveRoom`.
+pub async fn leave_room(client: Client, room: String) -> Result<(), String> {
+    client_api(&client, reqwest::Method::POST, &["rooms", &room, "leave"], &[], Some("{}".into())).await.map(drop)
+}
+
+/// Desktop SDK's `createRoom` with the JSON text of the request, which keeps keys that the SDK's request type drops.
+/// Gives the ID of the new room.
+pub async fn create_room(client: Client, request: String) -> Result<String, String> {
+    let reply = client_api(&client, reqwest::Method::POST, &["createRoom"], &[], Some(request)).await?;
+    let v: Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;
+    v["room_id"].as_str().map(String::from).ok_or_else(|| "createRoom reply has no room_id".into())
+}
+
 async fn retry_after_backup(client: Client, store: SharedStore) {
     let mut states = client.encryption().backups().state_stream();
     while let Some(state) = states.next().await {

@@ -17,9 +17,12 @@ pub(super) enum Auth {
     Token(&'static [&'static str]),
     /// The route checks the token itself.
     Own,
+    /// Desktop's `requireAuth` of the Matrix proxy, which refuses with Matrix errors: `read` for GET, `write` for the
+    /// other methods.
+    Matrix,
 }
 
-use Auth::{Open, Own};
+use Auth::{Matrix, Open, Own};
 const R: Auth = Auth::Token(&[READ]);
 const W: Auth = Auth::Token(&[WRITE]);
 const RW: Auth = Auth::Token(&[READ, WRITE]);
@@ -134,6 +137,18 @@ pub(super) const ROUTES: &[Route] = &[
     other("GET", "/focus", Open),
     other("GET", "/focus/{chatID}", Open),
     other("GET", "/focus/{chatID}/{messageID}", Open),
+    other("GET", "/_matrix/client/v3/user/{userID}/account_data/{eventType}", Matrix),
+    other("PUT", "/_matrix/client/v3/user/{userID}/account_data/{eventType}", Matrix),
+    other("GET", "/_matrix/client/v3/user/{userID}/rooms/{roomID}/account_data/{eventType}", Matrix),
+    other("PUT", "/_matrix/client/v3/user/{userID}/rooms/{roomID}/account_data/{eventType}", Matrix),
+    other("GET", "/_matrix/client/v3/rooms/{roomID}/account_data/{eventType}", Matrix),
+    other("PUT", "/_matrix/client/v3/rooms/{roomID}/account_data/{eventType}", Matrix),
+    other("GET", "/_matrix/client/v3/rooms/{roomID}/state/{*statePath}", Matrix),
+    other("GET", "/_matrix/client/v3/rooms/{roomID}/event/{eventID}", Matrix),
+    other("GET", "/_matrix/client/v3/profile/{userID}", Matrix),
+    other("POST", "/_matrix/client/v3/join/{roomIDOrAlias}", Matrix),
+    other("POST", "/_matrix/client/v3/rooms/{roomID}/leave", Matrix),
+    other("POST", "/_matrix/client/v3/createRoom", Matrix),
 ];
 
 /// The segments of a path, without the first slash and an optional last slash.
