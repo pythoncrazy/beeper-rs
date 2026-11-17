@@ -571,8 +571,12 @@ impl BeeperGuiApp {
             && search.is_none_or(|(_, n, f)| *n == 0 && f.is_empty())
             && contacts.is_empty()
         {
-            let none = if group { tr("Start typing to search for people to add") } else { tr("No results found") };
-            col = col.push(heading(none));
+            // Desktop's "No results found" is only for a query, in a DM draft.
+            match group {
+                true => col = col.push(heading(tr("Start typing to search for people to add"))),
+                false if !q.is_empty() => col = col.push(heading(tr("No results found"))),
+                false => {}
+            }
         }
         if !contacts.is_empty() {
             col = col.push(heading(tr("In your contacts")));

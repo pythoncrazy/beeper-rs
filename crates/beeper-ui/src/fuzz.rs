@@ -6775,6 +6775,8 @@ fn new_chat_lists_chat_people_like_desktop() {
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("zzzz".into())));
     assert!(found(&app, "No results found") && !found(&app, "Chats"));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("  ".into())));
+    assert!(!found(&app, "No results found"), "only a query has no results");
 }
 
 #[test]
@@ -7603,6 +7605,15 @@ fn sign_in_username_and_continue_like_desktop() {
     (done.login_window, done.main_window) = (done.main_window, None);
     done.login.screen = Screen::Accounts;
     assert!(simulator(done.view_login()).find("Continue").is_ok());
+    let clear = icon::CLOSE.to_string();
+    assert!(simulator(done.view_login()).find(clear.as_str()).is_err(), "an empty search has no clear icon");
+    let _ = done.update(LoginMsg::Query("tele".into()).into());
+    let mut sim = simulator(done.view_login());
+    let _ = sim.click(clear.as_str()).expect("the clear icon of the search");
+    for m in sim.into_messages() {
+        let _ = done.update(m);
+    }
+    assert!(simulator(done.view_login()).find(clear.as_str()).is_err(), "the clear icon empties the search");
     let window = done.login_window;
     let _ = done.update(LoginMsg::Continue.into());
     assert_eq!((done.login_window, done.main_window), (None, window), "the sign-in window becomes the main window");
