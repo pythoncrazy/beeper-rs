@@ -2,14 +2,19 @@
 //! flags, defaults, text output, `--json` envelope, and exit codes. They talk to any Desktop API server through
 //! [`BeeperClient`].
 
+mod account_login;
 mod accounts;
 mod chats;
 pub mod commands;
 mod export;
 mod messages;
+mod oauth;
+mod profiles;
 mod render;
+mod setup;
 mod stream;
 mod targets;
+mod verify;
 
 use beeper_api::client::{ApiError, BeeperClient};
 use serde_json::{json, Map, Value};
@@ -442,14 +447,20 @@ impl Ctx {
         Ok(self.target()?["baseURL"].as_str().expect("a target has a base URL").to_string())
     }
 
-    /// `requireToken`: `BEEPER_ACCESS_TOKEN`, else the stored token of the target.
-    pub fn token(&mut self) -> Res<String> {
-        let base = self.base_url()?;
+    /// The token of `getAccessToken`: `BEEPER_ACCESS_TOKEN`, else the stored token of the target.
+    pub fn stored_token(&mut self) -> Res<Option<String>> {
         let stored = self.target()?.get("auth").and_then(|a| a["accessToken"].as_str()).map(str::to_string);
-        match std::env::var("BEEPER_ACCESS_TOKEN").ok().filter(|t| !t.is_empty()).or(stored) {
-            Some(token) => Ok(token),
-            None => self.no_token(&base),
+        Ok(std::env::var("BEEPER_ACCESS_TOKEN").ok().filter(|t| !t.is_empty()).or(stored))
+    }
+
+    /// `requireToken`: the stored token, else a new token from the browser sign-in of `ensureDesktopToken`, which
+    /// looks for Desktop on the other usual ports for the built-in `desktop` target.
+    pub fn token(&mut self) -> Res<String> {
+        if let Some(token) = self.stored_token()? {
+            return Ok(token);
         }
+        let (base, scan) = (self.base_url()?, self.target()?["id"] == "desktop");
+        oauth::ensure_desktop_token(self, &base, scan, true)
     }
 
     /// `createClient`: a client of the target with its token.
@@ -461,23 +472,6 @@ impl Ctx {
             self.client = Some(client);
         }
         Ok(self.client.as_ref().expect("the client is set"))
-    }
-
-    /// `ensureDesktopToken` without a stored token: a signed-out target stops with exit 3. beeper-rs has no browser
-    /// OAuth flow, so a signed-in target asks for a token.
-    fn no_token(&self, base: &str) -> Res<String> {
-        let probe = BeeperClient::try_new(base, "").map_err(CliError::bug)?;
-        let reachable = self.block(probe.call("GET", "/v1/info", None)).is_ok();
-        if !reachable {
-            return Err(CliError::abort(format!("Could not find a running Beeper Desktop API on {base}."), 4));
-        }
-        let state = self.block(probe.call("GET", "/v1/app/setup", None)).ok();
-        if state.is_some_and(|s| s["state"] == "needs-login") {
-            let msg = "Beeper Desktop is not signed in. Open Beeper Desktop and sign in, then rerun this command.";
-            return Err(CliError::abort(msg, 3));
-        }
-        let msg = "No access token for this target. Set BEEPER_ACCESS_TOKEN to a Desktop API token.";
-        Err(CliError::abort(msg, 3))
     }
 
     pub fn call(&mut self, method: &str, path: &str, body: Option<Value>) -> Res<Value> {
@@ -646,10 +640,34 @@ pub fn config() -> Res<Map<String, Value>> {
     Ok(read_json(&config_dir().join("config.json"))?.unwrap_or_default())
 }
 
-fn resolve_target(name: Option<&str>) -> Res<Map<String, Value>> {
+/// `updateConfig`.
+pub fn update_config(change: impl FnOnce(&mut Map<String, Value>)) -> Res {
+    let mut config = config()?;
+    change(&mut config);
+    write_json(&config_dir().join("config.json"), &config)
+}
+
+pub fn target_path(id: &str) -> PathBuf {
+    config_dir().join("targets").join(format!("{id}.json"))
+}
+
+/// `readTarget`: the stored target `id`. A managed local runtime answers on its own port (`normalizeLocalTarget`).
+pub fn read_target(id: &str) -> Res<Option<Map<String, Value>>> {
+    Ok(read_json(&target_path(id))?.map(normalize_target))
+}
+
+fn normalize_target(mut t: Map<String, Value>) -> Map<String, Value> {
+    let local = t.get("managed").is_some_and(truthy) && t.get("type").is_none_or(|k| k != "remote");
+    let port = t.get("port").or_else(|| t.get("runtime").and_then(|r| r.get("port"))).filter(|p| truthy(p)).cloned();
+    if let (true, Some(port)) = (local, port) {
+        t.insert("baseURL".into(), json!(format!("http://127.0.0.1:{}", js_string(&port))));
+    }
+    t
+}
+
+pub fn resolve_target(name: Option<&str>) -> Res<Map<String, Value>> {
     let config = config()?;
     let env = std::env::var("BEEPER_TARGET").ok();
-    let read = |id: &str| read_json(&config_dir().join("targets").join(format!("{id}.json")));
     let with_auth = |mut t: Map<String, Value>| {
         let shared = t.get("auth").is_none() && t["type"] == "desktop" && config.contains_key("auth");
         if shared && config.get("baseURL").is_none_or(|b| *b == t["baseURL"]) {
@@ -674,7 +692,7 @@ fn resolve_target(name: Option<&str>) -> Res<Map<String, Value>> {
         .or(env)
         .or_else(|| config.get("defaultTarget").and_then(|v| v.as_str()).map(str::to_string))
     {
-        return match (read(&id)?, id == "desktop") {
+        return match (read_target(&id)?, id == "desktop") {
             (Some(t), _) => Ok(with_auth(t)),
             (None, true) => Ok(builtin()),
             (None, false) => {
@@ -686,7 +704,7 @@ fn resolve_target(name: Option<&str>) -> Res<Map<String, Value>> {
     if all.len() == 1 {
         return Ok(with_auth(all.remove(0)));
     }
-    Ok(read("desktop")?.map_or_else(builtin, with_auth))
+    Ok(read_target("desktop")?.map_or_else(builtin, with_auth))
 }
 
 pub fn list_targets() -> Res<Vec<Map<String, Value>>> {
@@ -694,7 +712,7 @@ pub fn list_targets() -> Res<Vec<Map<String, Value>>> {
     let mut names: Vec<PathBuf> =
         std::fs::read_dir(&dir).map_or(Vec::new(), |d| d.flatten().map(|e| e.path()).collect());
     names.retain(|p| p.extension().is_some_and(|e| e == "json"));
-    let mut all: Vec<_> = names.iter().filter_map(|p| read_json(p).ok().flatten()).collect();
+    let mut all: Vec<_> = names.iter().filter_map(|p| read_json(p).ok().flatten()).map(normalize_target).collect();
     all.sort_by(|a, b| js_string(&a["id"]).cmp(&js_string(&b["id"])));
     Ok(all)
 }
@@ -703,6 +721,32 @@ pub fn list_targets() -> Res<Vec<Map<String, Value>>> {
 pub fn write_event(event: &str, data: Value) {
     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("a time after 1970").as_millis();
     eprintln!("{}", json!({ "event": event, "data": data, "ts": ts as u64 }));
+}
+
+/// `process.stdin.isTTY`: whether someone can answer prompts.
+pub fn interactive() -> bool {
+    std::io::IsTerminal::is_terminal(&std::io::stdin())
+}
+
+/// `promptText`: asks on stdout and reads one trimmed line, which is empty at the end of the input.
+pub fn prompt(label: &str) -> Res<String> {
+    use std::io::Write;
+    print!("{label}");
+    std::io::stdout().flush().map_err(|e| CliError::bug(e.to_string()))?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).map_err(|e| CliError::bug(e.to_string()))?;
+    Ok(line.trim().to_string())
+}
+
+/// `promptYesNo` (`[y/N]`) and `promptYesNoDefaultYes` (`[Y/n]`).
+pub fn confirm(label: &str, default: bool) -> Res<bool> {
+    let answer = prompt(&format!("{label} {} ", if default { "[Y/n]" } else { "[y/N]" }))?.to_lowercase();
+    Ok(["y", "yes"].contains(&answer.as_str()) || (default && answer.is_empty()))
+}
+
+/// The time `ms` milliseconds from now, as `Date.toISOString` writes it.
+pub fn iso_in(ms: i64) -> String {
+    (chrono::Utc::now() + chrono::Duration::milliseconds(ms)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 /// Prints `err` like `BeeperCommand.catch`, and returns the exit code.
@@ -769,7 +813,7 @@ pub fn not_a_command(words: &str, topic: Option<&str>) -> i32 {
 /// Runs the client command in `argv` (the words after the program name), and returns the exit code.
 pub fn run(argv: &[String]) -> i32 {
     let help = argv.iter().any(|a| a == "--help" || a == "-h");
-    let topic = argv.first().map(String::as_str).and_then(commands::topic);
+    let topic = commands::topic_of(argv);
     let index =
         topic.and_then(|t| t.2).map(|id| (commands::all().find(|c| c.id == id).expect("a topic index exists"), 1));
     // oclif's command lookup: a word after a command without arguments makes the words an unknown command.

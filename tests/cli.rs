@@ -416,3 +416,415 @@ fn cli_manages_targets_and_downloads_and_exports() {
         again.stderr
     );
 }
+
+/// A stub Desktop API on a free port: `route` answers each request from its method, path, and body, and the stub
+/// keeps a log of the requests.
+struct Stub {
+    base: String,
+    log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+fn stub(route: impl Fn(&str, &str, &str) -> (u16, Value) + Send + 'static) -> Stub {
+    use std::io::{BufRead, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let requests = log.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = std::io::BufReader::new(&stream);
+            let (mut head, mut line) = (String::new(), String::new());
+            while reader.read_line(&mut line).unwrap() > 2 {
+                head.push_str(&std::mem::take(&mut line));
+            }
+            let length = head
+                .lines()
+                .find_map(|l| l.to_lowercase().strip_prefix("content-length: ").map(|n| n.trim().parse().unwrap()))
+                .unwrap_or(0);
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let mut words = head.split(' ');
+            let (method, path) = (words.next().unwrap().to_string(), words.next().unwrap().to_string());
+            let body = String::from_utf8(body).unwrap();
+            let token = head.lines().find_map(|l| l.strip_prefix("authorization: Bearer ")).unwrap_or("-").to_string();
+            requests.lock().unwrap().push(format!("{method} {path} {token} {body}").trim_end().to_string());
+            let (status, reply) = route(&method, &path, &body);
+            let reply = if status == 204 { String::new() } else { reply.to_string() };
+            let head = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                reply.len()
+            );
+            (&stream).write_all(format!("{head}{reply}").as_bytes()).unwrap();
+        }
+    });
+    Stub { base, log }
+}
+
+impl Stub {
+    /// The CLI against the stub, without a token, with the programs in `bin` before the others.
+    fn command(&self, config: &std::path::Path, bin: &std::path::Path, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_beeper-rs"));
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        command
+            .args(args)
+            .args(["--base-url", &self.base])
+            .env("BEEPER_CLI_CONFIG_DIR", config)
+            .env("PATH", path)
+            .env_remove("BEEPER_ACCESS_TOKEN")
+            .env_remove("BEEPER_READONLY");
+        command
+    }
+
+    fn requests(&self) -> Vec<String> {
+        std::mem::take(&mut self.log.lock().unwrap())
+    }
+}
+
+/// The value of `key` in the query of `url`.
+fn query_value(url: &str, key: &str) -> String {
+    let query = url.split_once('?').unwrap().1;
+    let value = query.split('&').find_map(|p| p.strip_prefix(&format!("{key}="))).unwrap();
+    beeper_core::codec::url_decode(value).unwrap()
+}
+
+/// An executable script `name` in `dir`.
+fn script(dir: &std::path::Path, name: &str, text: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join(name), text).unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(dir.join(name), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn cli_signs_in_with_oauth_pkce_like_upstream() {
+    let dir = beeper_core::testing::temp_dir("cli-oauth");
+    // The browser of the test writes down the page that the CLI opens.
+    let (bin, opened) = (dir.join("bin"), dir.join("opened.txt"));
+    script(&bin, "xdg-open", &format!("#!/bin/sh\necho \"$1\" > {}\n", opened.display()));
+    let challenge = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let wanted = challenge.clone();
+    let desktop = stub(move |method, path, body| match (method, path) {
+        ("GET", "/v1/info") => (200, json!({})),
+        ("GET", "/v1/app/setup") => (401, json!({ "message": "Unauthorized" })),
+        ("POST", "/oauth/register") => (201, json!({ "client_id": "cli_stub" })),
+        ("POST", "/oauth/token") => {
+            let form = format!("?{body}");
+            let verifier = query_value(&form, "code_verifier");
+            let s256 = beeper_api::codec::base64_encode_url_nopad(&beeper_api::codec::sha256(verifier.as_bytes()));
+            match s256 == *wanted.lock().unwrap() && query_value(&form, "code") == "code_1" {
+                true => (
+                    200,
+                    json!({ "access_token": "tok_oauth", "token_type": "Bearer", "expires_in": 3600, "scope": "read write" }),
+                ),
+                false => (400, json!({ "error": "invalid_grant" })),
+            }
+        }
+        ("GET", "/v1/accounts") => (200, json!([{ "accountID": "acc_stub", "network": "Stub" }])),
+        _ => (404, json!({ "message": "Not found" })),
+    });
+    let config = dir.join("cli");
+    let mut cli = desktop.command(&config, &bin, &["accounts", "list", "--json"]);
+    let cli = cli.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let start = std::time::Instant::now();
+    while std::fs::read_to_string(&opened).map_or(true, |u| !u.ends_with('\n')) {
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "the CLI opens the authorization page");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let url = std::fs::read_to_string(&opened).unwrap().trim().to_string();
+    let authorize =
+        format!("{}/oauth/authorize?client_id=cli_stub&redirect_uri=http%3A%2F%2F127.0.0.1%3A", desktop.base);
+    assert!(url.starts_with(&authorize), "{url}");
+    assert_eq!(
+        (query_value(&url, "scope"), query_value(&url, "code_challenge_method")),
+        ("read write".into(), "S256".into())
+    );
+    *challenge.lock().unwrap() = query_value(&url, "code_challenge");
+    // The browser follows the redirect of the approved page to the callback of the CLI.
+    let redirect = query_value(&url, "redirect_uri");
+    let state = beeper_core::codec::url_encode(&query_value(&url, "state"));
+    let page = beeper_api::client::BeeperClient::new(redirect.trim_end_matches("/callback"), "");
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (status, html) = rt.block_on(page.fetch("GET", &format!("/callback?code=code_1&state={state}"), None)).unwrap();
+    assert_eq!((status, String::from_utf8(html).unwrap().contains("You can close this tab")), (200, true));
+    let out = Out::of(cli.wait_with_output().unwrap());
+    assert_eq!(out.json()["data"], json!([{ "accountID": "acc_stub", "network": "Stub" }]), "{}", out.stderr);
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(config.join("config.json")).unwrap()).unwrap();
+    assert_eq!(saved["baseURL"], desktop.base);
+    let auth = &saved["auth"];
+    assert_eq!(
+        (auth["accessToken"].clone(), auth["clientID"].clone(), auth["source"].clone(), auth["tokenType"].clone()),
+        (json!("tok_oauth"), json!("cli_stub"), json!("desktop-oauth"), json!("Bearer"))
+    );
+    assert!(auth["expiresAt"].as_str().unwrap().ends_with('Z'));
+    let requests = desktop.requests();
+    let paths: Vec<&str> = requests.iter().map(|r| r.split(' ').nth(1).unwrap()).collect();
+    assert_eq!(paths, ["/v1/info", "/v1/app/setup", "/oauth/register", "/oauth/token", "/v1/accounts"]);
+    assert!(requests[2].contains("{\"client_name\":\"Beeper CLI\",\"grant_types\":[\"authorization_code\"]"));
+    let exchange = "POST /oauth/token - grant_type=authorization_code&client_id=cli_stub&code=code_1&code_verifier=";
+    assert!(requests[3].starts_with(exchange), "{}", requests[3]);
+    assert_eq!(requests[4], "GET /v1/accounts tok_oauth");
+
+    // A non-interactive `setup --oauth` needs --yes to open the browser, and a signed-out Desktop stops the sign-in.
+    let out = Out::of(desktop.command(&dir.join("other"), &bin, &["setup", "--oauth", "--json"]).output().unwrap());
+    let error: Value = serde_json::from_str(&out.stderr).unwrap();
+    assert_eq!(error["error"], "OAuth setup requires an interactive terminal or --yes to open the browser.");
+    let signed_out = stub(|_, path, _| match path {
+        "/v1/info" => (200, json!({})),
+        _ => (200, json!({ "state": "needs-login" })),
+    });
+    let out = Out::of(signed_out.command(&dir.join("other"), &bin, &["chats", "list", "--json"]).output().unwrap());
+    let error: Value = serde_json::from_str(&out.stderr).unwrap();
+    let msg = "Beeper Desktop is not signed in. Open Beeper Desktop and sign in, then rerun this command.";
+    assert_eq!((out.code, error["error"].clone(), error["kind"].clone()), (3, json!(msg), json!("abort")));
+}
+
+#[test]
+fn cli_signs_in_by_email_and_registers() {
+    let dir = beeper_core::testing::temp_dir("cli-email");
+    let desktop = stub(|_, path, _| match path {
+        "/v1/app/setup/start" => (200, json!({ "setupRequestID": "req_1", "signInMethods": ["email"] })),
+        "/v1/app/setup/email" => (204, Value::Null),
+        "/v1/app/setup/response" => (
+            200,
+            json!({ "registrationRequired": true, "setupRequestID": "req_1", "leadToken": "lead", "usernameSuggestions": ["alex"] }),
+        ),
+        "/v1/app/setup/register" => {
+            (200, json!({ "matrix": { "accessToken": "tok_email" }, "session": { "state": "ready" } }))
+        }
+        "/v1/app/setup" => (200, json!({ "state": "ready" })),
+        "/v1/accounts" => (200, json!({ "items": [{ "network": "WhatsApp" }] })),
+        _ => (404, json!({ "message": "Not found" })),
+    });
+    let (config, bin) = (dir.join("cli"), dir.join("bin"));
+    let run = |args: &[&str]| Out::of(desktop.command(&config, &bin, args).output().unwrap());
+    let started = run(&["auth", "email", "start", "--email", "a@b.c", "--json"]);
+    assert_eq!(started.json()["data"], json!({ "setupRequestID": "req_1" }));
+    let email = "POST /v1/app/setup/email - {\"setupRequestID\":\"req_1\",\"email\":\"a@b.c\"}";
+    assert_eq!(desktop.requests(), ["POST /v1/app/setup/start -", email]);
+    let refused = run(&["auth", "email", "response", "--code", "123", "--setup-request-id", "req_1", "--json"]);
+    let error: Value = serde_json::from_str(&refused.stderr).unwrap();
+    assert_eq!(error["error"], "Registration requires --yes to accept the Beeper terms in non-interactive setup.");
+    let args = ["--code", "123", "--setup-request-id", "req_1", "--username", "alex", "--yes", "--json"];
+    let done = run(&[&["auth", "email", "response"][..], &args].concat()).json()["data"].clone();
+    let auth = json!({ "source": "manual", "tokenType": "Bearer" });
+    let target = json!({ "id": "custom", "type": "desktop", "baseURL": desktop.base, "auth": auth });
+    let readiness = json!({ "state": "ready", "app": { "state": "ready" }, "actions": ["chats list", "messages list", "send text"] });
+    assert_eq!(
+        done,
+        json!({ "accounts": ["WhatsApp"], "authSource": "manual", "readiness": readiness, "target": target })
+    );
+    let register = desktop.requests().into_iter().find(|r| r.contains("/register")).unwrap();
+    let body = "{\"acceptTerms\":true,\"leadToken\":\"lead\",\"setupRequestID\":\"req_1\",\"username\":\"alex\"}";
+    assert_eq!(register, format!("POST /v1/app/setup/register - {body}"));
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(config.join("config.json")).unwrap()).unwrap();
+    assert_eq!(saved["auth"], json!({ "accessToken": "tok_email", "source": "manual", "tokenType": "Bearer" }));
+    let setup = run(&["setup", "--email", "a@b.c", "--json"]);
+    let hint = "Email setup prompts for the verification code. For automation, use `beeper-rs auth email start`";
+    assert!(setup.stderr.contains(hint), "{}", setup.stderr);
+}
+
+#[test]
+fn cli_adds_accounts_through_bridge_login_steps() {
+    let dir = beeper_core::testing::temp_dir("cli-accounts-add");
+    let sessions = "/v1/bridges/stubnet/login-sessions";
+    let desktop = stub(move |_, path, body| match path {
+        "/v1/bridges" => (
+            200,
+            json!({ "items": [{ "id": "stubnet", "type": "stubnet", "provider": "cloud", "displayName": "Stub Net", "network": "stubnet", "status": "available", "supportsMultipleAccounts": false }] }),
+        ),
+        "/v1/bridges/stubnet/login-flows" => {
+            (200, json!({ "items": [{ "id": "qr", "name": "QR" }, { "id": "password", "name": "Password" }] }))
+        }
+        p if p == sessions && body.contains("\"qr\"") => (
+            200,
+            json!({ "loginSessionID": "ls2", "status": "in_progress", "currentStep": { "type": "display_and_wait", "stepID": "q1", "display": { "type": "code", "data": "1234-5678" } } }),
+        ),
+        p if p == sessions => (
+            200,
+            json!({ "loginSessionID": "ls1", "status": "in_progress", "currentStep": { "type": "user_input", "stepID": "s1", "instructions": "Enter your details", "fields": [{ "id": "username", "label": "Username", "type": "username" }, { "id": "region", "label": "Region", "initialValue": "eu" }] } }),
+        ),
+        p if p == format!("{sessions}/ls1/steps/s1") => (
+            200,
+            json!({ "loginSessionID": "ls1", "status": "in_progress", "currentStep": { "type": "cookies", "stepID": "c1", "url": "https://example.com/login", "fields": [{ "id": "session" }] } }),
+        ),
+        _ => (
+            200,
+            json!({ "loginSessionID": "ls1", "status": "complete", "loginID": "login_1", "currentStep": { "type": "complete", "login": { "loginID": "login_1" } } }),
+        ),
+    });
+    let (config, bin) = (dir.join("cli"), dir.join("bin"));
+    let run = |args: &[&str]| {
+        let mut command = desktop.command(&config, &bin, args);
+        Out::of(command.env("BEEPER_ACCESS_TOKEN", "tok").output().unwrap())
+    };
+    let list = run(&["accounts", "add"]).stdout;
+    let cloud =
+        "\n\nBeeper Cloud Accounts\n  Stub Net (stubnet) - single account\n    beeper-rs accounts add stubnet\n\n";
+    assert!(list.starts_with(&format!("Choose a bridge to connect an account:{cloud}")), "{list}");
+    let many = run(&["accounts", "add", "stub", "--non-interactive", "--json"]);
+    assert!(
+        many.stderr.contains("Multiple sign-in methods are available for Stub Net. Pass --flow."),
+        "{}",
+        many.stderr
+    );
+    let waiting = run(&["accounts", "add", "stubnet", "--flow", "qr", "--non-interactive"]).stdout;
+    let step = "status: in_progress\nstep: display_and_wait\nstep_id: q1\ndisplay: code\n1234-5678\n";
+    assert_eq!(waiting, step.repeat(2), "the guide shows the step, and then prints the session it stops at");
+    let missing = run(&["accounts", "add", "stubnet", "--flow", "password", "--non-interactive"]);
+    let hint = "Missing required field username. Pass --field username=... or run without --non-interactive.";
+    assert!(missing.stderr.contains(hint), "{}", missing.stderr);
+    desktop.requests();
+    let flags = ["--flow", "password", "--field", "username=alex", "--cookie", "session=abc", "--non-interactive"];
+    let done = run(&[&["accounts", "add", "Stub Net"][..], &flags].concat()).stdout;
+    let steps = "status: in_progress\nstep: user_input\nEnter your details\nstep_id: s1\nfield username: Username (username)\nfield region: Region\nstatus: in_progress\nstep: cookies\nstep_id: c1\nurl: https://example.com/login\ncookie field session: cookie\n";
+    assert!(done.starts_with(steps), "{done}");
+    assert!(done.ends_with("status: complete\nlogin_id: login_1\nstep: complete\ncomplete: login_1\n"), "{done}");
+    let posts: Vec<String> = desktop.requests().into_iter().filter(|r| r.starts_with("POST")).collect();
+    let fields = "{\"type\":\"user_input\",\"fields\":{\"username\":\"alex\",\"region\":\"eu\"}}";
+    let cookies = "{\"type\":\"cookies\",\"fields\":{\"session\":\"abc\"},\"source\":\"api\"}";
+    assert_eq!(
+        posts,
+        [
+            format!("POST {sessions} tok {{\"flowID\":\"password\"}}"),
+            format!("POST {sessions}/ls1/steps/s1 tok {fields}"),
+            format!("POST {sessions}/ls1/steps/c1 tok {cookies}"),
+        ]
+    );
+}
+
+#[test]
+fn cli_setup_and_verify_follow_the_app_state() {
+    let d = demo("setup");
+    let data = d.config.with_file_name("data");
+    // `setup` finds the signed-in session in the data folder of the app on this device.
+    let found = Out::of(d.command(&["setup", "--json"]).env("BEEPER_USER_DATA_DIR", &data).output().unwrap());
+    let found = found.json()["data"].clone();
+    assert_eq!(found["state"], "desktop-ready");
+    assert_eq!(
+        found["recommendedAction"],
+        json!({ "id": "use-desktop-session", "command": "beeper-rs setup -t custom --local" })
+    );
+    assert_eq!(found["localDesktop"]["signedInAs"], "@alex:beeper.com");
+    let mut elsewhere = d.command(&["setup", "--json"]);
+    elsewhere.env("BEEPER_USER_DATA_DIR", d.config.with_file_name("none"));
+    let elsewhere = Out::of(elsewhere.output().unwrap()).json()["data"].clone();
+    assert_eq!(elsewhere["state"], "desktop-running-session-unreadable");
+    assert_eq!(elsewhere["recommendedAction"]["command"], "beeper-rs setup --oauth --yes");
+    let local = d.command(&["setup", "--local", "--json"]).env("BEEPER_USER_DATA_DIR", &data).output().unwrap();
+    let local = Out::of(local).json()["data"].clone();
+    assert_eq!(
+        (local["authSource"].clone(), local["readiness"]["state"].clone()),
+        (json!("desktop-db"), json!("ready"))
+    );
+    assert_eq!(local["target"]["auth"], json!({ "source": "desktop-db", "tokenType": "Bearer" }));
+    // The stored token of the new `desktop` target works without BEEPER_ACCESS_TOKEN.
+    let mut plain = Command::new(env!("CARGO_BIN_EXE_beeper-rs"));
+    plain.args(["chats", "list", "--limit", "1", "--ids", "-t", "desktop"]).env("BEEPER_CLI_CONFIG_DIR", &d.config);
+    assert_eq!(Out::of(plain.env_remove("BEEPER_ACCESS_TOKEN").output().unwrap()).stdout, "local_tg_rust\n");
+    let both = d.run(&["setup", "--local", "--oauth"]);
+    assert!(both.stderr.contains("Specify at most one of --local, --oauth, or --email"), "{}", both.stderr);
+
+    assert_eq!(d.run(&["verify", "list", "--json"]).json()["data"], json!([]));
+    let null = "{\n  \"success\": true,\n  \"data\": null,\n  \"error\": null\n}\n";
+    assert_eq!(d.run(&["verify", "show", "--json"]).stdout, null);
+    assert_eq!(d.run(&["verify", "show"]).stdout, "null\n");
+    assert_eq!(d.run(&["verify", "--json"]).json()["data"]["state"], "ready");
+    assert_eq!(d.run(&["verify", "status", "--json"]).json()["data"]["state"], "ready");
+    let approve = d.run(&["verify", "approve", "--json"]);
+    let error: Value = serde_json::from_str(&approve.stderr).unwrap();
+    assert_eq!(error["error"], "409 Verification action is not available in the current app state");
+
+    // `messages context` centers on a message ID.
+    let context = d.run(&["messages", "context", "--chat", "local_wa_eric", "--id", "msg_1000b", "--json"]).json();
+    let ids = |k: &str| context["data"][k].as_array().unwrap().iter().map(|m| m["id"].clone()).collect::<Vec<_>>();
+    assert_eq!((ids("before"), ids("after")), (vec![json!("msg_1000a")], vec![json!("msg_1001"), json!("msg_1000c")]));
+}
+
+/// Stops the managed Server of a test, also when the test fails.
+struct Running<'a>(&'a dyn Fn(&[&str]) -> Out);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        (self.0)(&["targets", "stop", "home"]);
+    }
+}
+
+#[test]
+fn cli_runs_managed_server_targets_with_beeper_rs() {
+    let dir = beeper_core::testing::temp_dir("cli-managed");
+    let (config, home, bin) = (dir.join("cli"), dir.join("home"), dir.join("bin"));
+    let systemctl = dir.join("systemctl.log");
+    script(&bin, "systemctl", &format!("#!/bin/sh\necho \"$*\" >> {}\n", systemctl.display()));
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let run = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_beeper-rs"));
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        command
+            .args(args)
+            .env("BEEPER_CLI_CONFIG_DIR", &config)
+            .env("HOME", &home)
+            .env("PATH", path)
+            // The Server of the target never reaches Beeper's servers.
+            .env("BEEPER_API_URL", "http://127.0.0.1:9")
+            .env("BEEPER_MATRIX_URL", "http://127.0.0.1:9")
+            .env_remove("BEEPER_SERVER_BIN")
+            .env_remove("BEEPER_ACCESS_TOKEN")
+            .env_remove("BEEPER_READONLY");
+        Out::of(command.output().unwrap())
+    };
+    let added = run(&["targets", "add", "server", "home", "--port", &port.to_string(), "--json"]).json();
+    let (base, data_dir) =
+        (format!("http://127.0.0.1:{port}"), config.join("profiles/server/home").display().to_string());
+    assert_eq!(
+        added["data"],
+        json!({
+            "message": "Added target: home", "detail": base, "id": "home", "type": "server", "name": "home",
+            "baseURL": base, "managed": true, "dataDir": data_dir, "profile": "home",
+            "runtime": { "install": "server", "dataDir": data_dir, "port": port }, "serverEnv": "production", "port": port
+        })
+    );
+    assert_eq!(run(&["targets", "add", "server", "home"]).code, 1, "a target name is unique");
+    let _running = Running(&run);
+    assert_eq!(run(&["targets", "start", "home"]).stdout, format!("✓ Started target: home  {base}\n"));
+    // This program serves the Desktop API headless in the data folder of the target, from `BEEPER_SERVER_DATA_DIR`.
+    assert!(config.join("profiles/server/home/beeper-rs.db").exists());
+    let status = run(&["targets", "status", "home", "--json"]).json()["data"].clone();
+    assert_eq!((status["reachable"].clone(), status["actualType"].clone()), (json!(true), json!("server")));
+    assert_eq!(run(&["api", "get", "/v1/app/setup", "--no-auth", "-t", "home"]).json()["data"]["state"], "needs-login");
+    assert_eq!(run(&["targets", "restart", "home"]).stdout, format!("✓ Restarted target: home  {base}\n"));
+    assert_eq!(run(&["targets", "stop", "home"]).stdout, "✓ Stopped target: home\n");
+    assert!(run(&["targets", "stop", "home"]).stderr.contains("│ Profile \"home\" is not running.\n"));
+    let log = config.join("logs/profiles/home.err.log");
+    std::fs::write(&log, "one\ntwo\nthree\n").unwrap();
+    assert_eq!(
+        run(&["targets", "logs", "home", "--lines", "2"]).stdout,
+        format!("\n==> {} <==\ntwo\nthree\n", log.display())
+    );
+
+    let enabled = run(&["targets", "enable", "home", "--json"]).json()["data"].clone();
+    let unit = home.join(".config/systemd/user/beeper-profile-home.service");
+    assert_eq!(enabled["path"], unit.display().to_string());
+    let text = std::fs::read_to_string(&unit).unwrap();
+    let program = env!("CARGO_BIN_EXE_beeper-rs");
+    let exec =
+        format!("ExecStart={program} --host=127.0.0.1 --port={port} --data-dir={data_dir} --server-env=production\n");
+    assert!(
+        text.contains(&exec) && text.contains(&format!("Environment=BEEPER_SERVER_DATA_DIR={data_dir}\n")),
+        "{text}"
+    );
+    run(&["targets", "disable", "home"]);
+    assert!(!unit.exists());
+    let calls = "--user daemon-reload\n--user enable --now beeper-profile-home.service\n--user disable --now beeper-profile-home.service\n--user daemon-reload\n";
+    assert_eq!(std::fs::read_to_string(&systemctl).unwrap(), calls);
+
+    run(&["targets", "add", "desktop", "--port", &port.to_string()]);
+    let desktop = run(&["targets", "stop", "desktop"]);
+    let refusal = "AbortError: Target \"desktop\" is not a local Beeper Server install.";
+    assert!(desktop.stderr.contains(refusal), "{}", desktop.stderr);
+    let help = run(&["targets", "add", "--help"]).stdout;
+    let topic = "Add a managed Beeper Desktop target\n\nUSAGE\n  $ beeper-rs targets add COMMAND\n\nCOMMANDS\n  targets add desktop";
+    assert!(help.starts_with(topic), "{help}");
+    let help = run(&["auth", "--help"]).stdout;
+    let sections = "\nTOPICS\n  auth email  Finish email sign-in with a verification code\n\nCOMMANDS\n  auth logout  Clear stored authentication\n  auth status";
+    assert!(help.contains(sections), "{help}");
+}
