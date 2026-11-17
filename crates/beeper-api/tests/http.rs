@@ -515,7 +515,9 @@ async fn routes_match_like_express() {
         }
     }
     let count = doc["paths"].as_object().unwrap().values().map(|m| m.as_object().unwrap().len()).sum::<usize>();
-    assert_eq!(count, 67);
+    assert_eq!(count, 78, "the 67 operations of the routes and the 11 of the Matrix proxy");
+    let tags: Vec<&str> = doc["tags"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(tags[tags.len() - 2..], ["Matrix", "OAuth"]);
 }
 
 #[tokio::test]

@@ -193,7 +193,8 @@ pub(super) fn find(method: &str, path: &str) -> Result<(&'static Route, Vec<Stri
     Ok((route, segs))
 }
 
-/// The OpenAPI document of Desktop 4.3.308, without the Matrix routes. The `paths` give the operations of the routes.
+/// The OpenAPI document of Desktop 4.3.308. The `paths` give the operations of the routes, and the Matrix paths of
+/// Desktop's `includeMatrixCompat`, which name their parameters like the Matrix spec rather than like the routes.
 static OPENAPI: LazyLock<Value> =
     LazyLock::new(|| serde_json::from_str(include_str!("../../assets/openapi.json")).expect("OpenAPI JSON"));
 
@@ -208,6 +209,9 @@ static SPEC: LazyLock<String> = LazyLock::new(|| {
         assert_eq!(operation["operationId"], name, "the OpenAPI JSON has the operation of {method} {}", route.path);
         paths.entry(route.path).or_insert_with(|| json!({}))[method] = operation.clone();
     }
+    // Desktop's `ge` adds the Matrix paths after the generated document.
+    let all = OPENAPI["paths"].as_object().expect("OpenAPI paths");
+    paths.extend(all.iter().filter(|(p, _)| p.starts_with("/_matrix/")).map(|(p, ops)| (p.clone(), ops.clone())));
     doc["paths"] = paths.into();
     let base = "\0";
     doc["servers"][0]["url"] = base.into();
