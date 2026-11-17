@@ -1134,8 +1134,8 @@ async fn union_rooms(room: &Room) -> Vec<String> {
     children.iter().filter_map(|v| s(&v["state_key"])).collect()
 }
 
-/// Desktop's `createUnion` and `setUnionAvatarMxc`: a private `com.beeper.union` room with the name and the member
-/// rooms as `m.space.child` state, then its photo.
+/// Desktop's `createUnion`: a private `com.beeper.union` room with the name and the member rooms as `m.space.child`
+/// state, then its photo (`setUnionAvatarMxc`).
 async fn create_union(
     store: &SharedStore,
     client: &Client,
@@ -1144,24 +1144,22 @@ async fn create_union(
     rooms: Vec<String>,
     avatar: Option<String>,
 ) -> Result<(), String> {
-    use matrix_sdk::ruma::api::client::room::create_room::v3::{Request, RoomPreset};
-    fn raw<T>(v: Value) -> Raw<T> {
-        Raw::from_json(serde_json::value::to_raw_value(&v).expect("union JSON"))
-    }
-    let event = |kind: &str, key: &str, content: Value| {
-        raw(serde_json::json!({ "type": kind, "state_key": key, "content": content }))
-    };
-    let mut request = Request::new();
-    request.creation_content = Some(raw(serde_json::json!({ "type": UNION, "com.beeper.union": true })));
-    let name = title.map(|name| event("m.room.name", "", serde_json::json!({ "name": name })));
-    let children = rooms.iter().map(|r| event("m.space.child", r, serde_json::json!({ "via": ["beeper.com"] })));
-    request.initial_state = name.into_iter().chain(children).collect();
-    request.preset = Some(RoomPreset::PrivateChat);
-    let room = client.create_room(request).await.map_err(|e| e.to_string())?;
-    store.write().created_union(draft, room.room_id().as_str());
+    let name =
+        title.map(|name| serde_json::json!({ "type": "m.room.name", "state_key": "", "content": { "name": name } }));
+    let children = rooms
+        .iter()
+        .map(|r| serde_json::json!({ "type": "m.space.child", "state_key": r, "content": { "via": ["beeper.com"] } }));
+    let request = serde_json::json!({
+        "creation_content": { "type": UNION, "com.beeper.union": true },
+        "initial_state": name.into_iter().chain(children).collect::<Vec<_>>(),
+        "preset": "private_chat",
+        "visibility": "private",
+    });
+    let room = create_room(client.clone(), request.to_string()).await?;
+    let mut st = store.write();
+    st.created_union(draft, &room);
     if let Some(url) = avatar {
-        let content = serde_json::json!({ "url": url });
-        room.send_state_event_raw("m.room.avatar", "", content).await.map_err(|e| e.to_string())?;
+        st.queue(&room, Outgoing::State("m.room.avatar".into(), serde_json::json!({ "url": url })));
     }
     Ok(())
 }
@@ -5952,6 +5950,69 @@ mod tests {
         let st = store.read();
         assert!(st.find_chat("!union:x").is_none(), "a left union is gone");
         assert_eq!(st.chat("!wa:x").merged_into_chat_id, None, "its member chats are back in the list");
+    }
+
+    /// Desktop's `createUnion`: the merged chat is here at once, and its `com.beeper.union` room takes the name and
+    /// the children; the chat then takes the room ID and keeps its first ID. Deleting a member chat takes it out
+    /// with an `m.space.child` without `via`, and the last one leaves the union room.
+    #[tokio::test]
+    async fn merged_chats_create_their_union_room_like_desktop() {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |_, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/createRoom" => {
+                log.lock().unwrap().push(body);
+                (200, json!({ "room_id": "!union:x" }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("union-create"), &url).await;
+        let (a, b) = ("!a:x", "!b:x");
+        for id in [a, b] {
+            let room =
+                super::Chat { id: id.into(), local_chat_id: None, ..store.read().chat(super::NOTE_CHAT_ID).clone() };
+            store.write().upsert_chat(room);
+        }
+        let draft = store.write().create_union("Lena", vec![a.into(), b.into()], None, None);
+        super::flush(store.clone()).await.expect("create the union room");
+        let body = json!({
+            "creation_content": { "type": "com.beeper.union", "com.beeper.union": true },
+            "initial_state": [
+                { "type": "m.room.name", "state_key": "", "content": { "name": "Lena" } },
+                { "type": "m.space.child", "state_key": a, "content": { "via": ["beeper.com"] } },
+                { "type": "m.space.child", "state_key": b, "content": { "via": ["beeper.com"] } },
+            ],
+            "preset": "private_chat",
+            "visibility": "private",
+        });
+        assert_eq!(*sent.lock().unwrap(), [body]);
+        let mut st = store.write();
+        assert_eq!(st.resolve_canonical_chat_id(&draft).as_deref(), Some("!union:x"), "the first ID still opens it");
+        assert_eq!(st.chat(a).merged_into_chat_id.as_deref(), Some("!union:x"));
+        for room in [a, b] {
+            let i = st.chat_idx(room);
+            st.update_chat(i, |c| c.delete_modes = super::DELETE_FOR_ME);
+        }
+        st.outbox.clear();
+        st.delete_chat(a, false);
+        let kept = st.chat("!union:x").merge.as_ref().map(|m| m.chat_ids.clone());
+        assert_eq!(kept, Some(vec![b.to_string()]));
+        let child = st.outbox.last().map(|(_, c, o)| (c.as_str(), o));
+        let out = |o: &super::Outgoing| matches!(o, super::Outgoing::LabelChild(r, false) if r == a);
+        assert!(child.is_some_and(|(c, o)| c == "!union:x" && out(o)), "a child without via takes it out");
+        st.delete_chat(b, false);
+        assert!(st.find_chat("!union:x").is_none(), "the empty merged chat is gone");
+        // The leave drops the child change that had not gone out yet.
+        let outs: Vec<(&str, &super::Outgoing)> = st.outbox.iter().map(|(_, c, o)| (c.as_str(), o)).collect();
+        let deleted = |o: &super::Outgoing| matches!(o, super::Outgoing::DeleteChat { .. });
+        let left = |o: &super::Outgoing| matches!(o, super::Outgoing::Leave(true));
+        assert!(
+            matches!(&outs[..], [(x, d1), (y, d2), ("!union:x", l)] if (*x, *y) == (a, b) && deleted(d1) && deleted(d2) && left(l))
+        );
     }
 
     /// Desktop's sticker packs: the packs of the room, its space, the rooms of `m.image_pack.rooms` and the account,

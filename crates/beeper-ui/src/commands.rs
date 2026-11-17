@@ -589,6 +589,8 @@ impl BeeperGuiApp {
                 .keys(&["search", "find", "filter"])
                 .hotkey("Search"),
         );
+        let merge = UiMessage::Merged(crate::merged::Msg::Open(None, Vec::new()));
+        v.push(cmd(CHATS, tr("Merge chats"), Some(merge)).keys(&["combine"]));
         let list = self.visible_chats(st);
         let at = self.pane.selected_chat_id.as_ref().and_then(|id| list.iter().position(|c| &c.id == id));
         let step =

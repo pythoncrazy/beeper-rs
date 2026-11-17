@@ -164,6 +164,16 @@ pub(crate) fn info_menu(
             )],
         };
     }
+    // Desktop's Manage menu of the Merged Chats section (`R7t`).
+    if let Some(cid) = key.strip_prefix("merged:") {
+        let edit = UiMessage::Merged(merged::Msg::Open(Some(cid.into()), Vec::new()));
+        let unmerge = UiMessage::Merged(merged::Msg::Ask(cid.into()));
+        return vec![
+            Some((trx("Edit", "merged chat manage menu").into(), Some(edit))),
+            None,
+            Some((trx("Unmerge", "merged chat manage menu").into(), Some(unmerge))),
+        ];
+    }
     if let Some((cid, mid)) = key.strip_prefix("bookmark:").and_then(|k| k.split_once(' ')) {
         let jump =
             st.loaded(mid).is_some().then(|| UiMessage::CommandBar(commands::Msg::JumpTo(cid.into(), mid.into())));
@@ -637,6 +647,7 @@ impl BeeperGuiApp {
             });
         let body = column![header]
             .push(behavior)
+            .push(self.view_merged_section(&st, chat))
             .push(desc)
             .push(members)
             .push(media)

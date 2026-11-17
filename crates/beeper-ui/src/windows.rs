@@ -184,6 +184,7 @@ impl BeeperGuiApp {
                 }
                 self.label_settings.retain(|w| w.id != id);
                 self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
+                self.merge_window = self.merge_window.take().filter(|d| d.id != id);
                 self.group_window = self.group_window.take().filter(|d| d.id != id);
                 self.blocked_window = self.blocked_window.filter(|w| *w != id);
                 if self.networks.window.take_if(|w| *w == id).is_some() {
@@ -372,7 +373,8 @@ impl BeeperGuiApp {
 
     /// The windows besides the main window, Desktop's `subWindows`.
     pub(crate) fn sub_windows(&self) -> Vec<window::Id> {
-        let drafts = [self.label_window.as_ref().map(|d| d.id), self.spaces_window.as_ref().map(|d| d.id)];
+        let merge = self.merge_window.as_ref().map(|d| d.id);
+        let drafts = [self.label_window.as_ref().map(|d| d.id), self.spaces_window.as_ref().map(|d| d.id), merge];
         let singles = [self.settings_window, self.media_window.as_ref().map(|w| w.id)].into_iter().chain(drafts);
         let lists = self.chat_windows.iter().map(|w| w.0).chain(self.theme_windows.iter().map(|w| w.0));
         let lists = lists.chain(self.labels_windows.iter().map(|w| w.0)).chain(self.vote_windows.iter().map(|w| w.0));

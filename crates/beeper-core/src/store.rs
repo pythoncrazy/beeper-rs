@@ -2379,13 +2379,32 @@ impl BeeperStore {
         }
     }
 
+    /// Desktop's `canCreateUnion`: the plan has no `max-merge-chats` limit, or fewer merged chats than it.
+    pub fn can_create_union(&self) -> bool {
+        let max = self.features.max_merge_chats();
+        max < 0 || (self.chats.iter().filter(|c| c.merge.is_some()).count() as i64) < max
+    }
+
     /// Desktop's `createUnion`: a merged chat of `rooms` here at once, and a `com.beeper.union` room with their
     /// `m.space.child` state, the title and the photo `avatar` (an `mxc://` URL) on the homeserver. Returns the ID of
     /// the merged chat, which stays its local ID once the room exists ([`Self::created_union`]).
-    pub fn create_union(&mut self, title: &str, rooms: Vec<String>, default: Option<String>, avatar: Option<String>) -> String {
+    pub fn create_union(
+        &mut self,
+        title: &str,
+        rooms: Vec<String>,
+        default: Option<String>,
+        avatar: Option<String>,
+    ) -> String {
         let title = Some(title.to_string()).filter(|t| !t.is_empty());
-        let (chat, _) =
-            self.create_or_start_chat("hungryserv", "single", title.clone(), Vec::new(), None, Some(rooms.clone()), default);
+        let (chat, _) = self.create_or_start_chat(
+            "hungryserv",
+            "single",
+            title.clone(),
+            Vec::new(),
+            None,
+            Some(rooms.clone()),
+            default,
+        );
         if avatar.is_some() {
             let idx = self.chat_idx(&chat.id);
             self.update_chat(idx, |c| c.img_url.clone_from(&avatar));
@@ -2418,7 +2437,8 @@ impl BeeperStore {
         let id = self.chats[idx].id.clone();
         let old = self.chats[idx].merge.as_ref().map(|m| m.chat_ids.clone()).unwrap_or_default();
         let added = rooms.iter().filter(|r| !old.contains(r)).map(|r| (r.clone(), true));
-        let changes: Vec<(String, bool)> = added.chain(old.iter().filter(|r| !rooms.contains(r)).map(|r| (r.clone(), false))).collect();
+        let changes: Vec<(String, bool)> =
+            added.chain(old.iter().filter(|r| !rooms.contains(r)).map(|r| (r.clone(), false))).collect();
         self.set_merge(idx, Some(ChatMergeInfo { chat_ids: rooms, default_chat_id: default }));
         for (room, add) in changes {
             self.queue(&id, Outgoing::LabelChild(room, add));

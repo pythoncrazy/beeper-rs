@@ -339,6 +339,8 @@ impl BeeperGuiApp {
             "",
             Some(UiMessage::ChatList(chat_list::Msg::ToggleSelectMode))
         )]
+        // Desktop's `nfe`: Select Chats, then Merge Chats.
+        .push(menu_item(p, blank(), tr("Merge Chats").into(), "", Some(open_merge())))
         .push(labels.then(|| {
             menu_item(
                 p,
@@ -357,7 +359,7 @@ impl BeeperGuiApp {
             "",
             Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
         ));
-        h += 8.0 + f32::from(u8::from(options.is_some()) + 3 + u8::from(labels)) * MENU_ITEM + 11.0;
+        h += 8.0 + f32::from(u8::from(options.is_some()) + 4 + u8::from(labels)) * MENU_ITEM + 11.0;
         let top = mouse_area(Column::with_children(top)).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
         let rest = mouse_area(rest).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
         let sheet = column![top].push(options_item).push(rest).padding([4, 0]);
@@ -619,6 +621,11 @@ pub struct SpacesDraft {
 /// The size of Desktop's Edit Spaces window.
 pub(crate) const SPACES_SIZE: Size = Size::new(360.0, 560.0);
 
+/// Desktop's Merge Chats item (`new D3("inbox_context_menu")`): the editor of a new merged chat.
+fn open_merge() -> UiMessage {
+    UiMessage::Merged(merged::Msg::Open(None, Vec::new()))
+}
+
 /// Desktop's `HIDDEN_DIVIDER_ID`.
 pub(crate) const SPACES_DIVIDER: &str = "__hidden_divider__";
 
@@ -674,7 +681,9 @@ impl BeeperGuiApp {
                 "",
                 Some(UiMessage::ChatList(chat_list::Msg::ToggleSelectMode)),
             );
-            mouse_area(item).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)))
+            // Desktop's `nfe`: Select Chats, then Merge Chats.
+            let merge = menu_item(p, None, tr("Merge Chats").into(), "", Some(open_merge()));
+            mouse_area(column![item, merge]).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)))
         });
         if kind == SpaceMenu::Header && RAIL_VIEWS.iter().any(|v| v.0 == entry) {
             let menu = container(column![select].padding([4, 0])).width(233);

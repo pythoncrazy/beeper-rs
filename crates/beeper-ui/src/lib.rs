@@ -34,6 +34,7 @@ pub mod login;
 mod media_view;
 mod members;
 mod menubar;
+mod merge_editor;
 mod merged;
 mod message;
 pub mod networks;
@@ -1655,8 +1656,9 @@ const CARD_W: f32 = 200.0;
 const CARD_FACE_IN: f32 = 88.0 / 3.0;
 /// The height of a user card with only its avatar and name.
 const CARD_H: f32 = 88.0 + 8.0 + 18.0 + 8.0;
-/// The Chat Info context menus: the identity header, the title, a member, a bookmark and a contact detail.
-const INFO_MENUS: [&str; 7] = ["info:", "copy:", "member:", "bookmark:", "contact:", "mention:", "vcard:"];
+/// The Chat Info context menus: the identity header, the title, a member, a bookmark, a contact detail and the
+/// Manage menu of a merged chat.
+const INFO_MENUS: [&str; 8] = ["info:", "copy:", "member:", "bookmark:", "contact:", "mention:", "vcard:", "merged:"];
 
 /// Desktop's `setPersonalRoomName` gate: the feature is on or the chat has a personal name or photo, and the chat
 /// is a Matrix room that is not merged (`canSetPersonalOverrides`, `personalOverridesApply`).
@@ -2800,6 +2802,8 @@ pub struct BeeperGuiApp {
     /// The window that shows the open Delete Label confirm, like Desktop's modal in that window.
     pub delete_in: Option<window::Id>,
     pub spaces_window: Option<SpacesDraft>,
+    /// Desktop's merged chat editor (`D3`).
+    pub merge_window: Option<merge_editor::MergeDraft>,
     pub group_window: Option<GroupDraft>,
     /// Desktop's Blocked users window.
     blocked_window: Option<window::Id>,
@@ -3076,6 +3080,7 @@ impl BeeperGuiApp {
             info_query: String::new(),
             info_note: text_editor::Content::new(),
             spaces_window: None,
+            merge_window: None,
             vote_windows: Vec::new(),
             shot: None,
             login: Login::new(source),
@@ -3376,6 +3381,11 @@ impl BeeperGuiApp {
                 (true, _) => tr("Chats"),
             },
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
+            // Desktop's `D3` titles, which it does not translate.
+            _ if let Some(d) = self.merge_window.as_ref().filter(|d| d.id == id) => match d.union {
+                Some(_) => "Edit merged chat",
+                None => "Merge Chats",
+            },
             _ if Some(id) == self.blocked_window => tr("Blocked users"),
             // Desktop's `AddAccountsBrowserWindow` title, which it does not translate.
             _ if Some(id) == self.networks.window => "Add an Account",
@@ -4245,6 +4255,7 @@ impl BeeperGuiApp {
                     || self.labels_windows.iter().any(|w| w.0 == id)
                     || self.vote_windows.iter().any(|w| w.0 == id)
                     || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
+                    || self.merge_window.as_ref().is_some_and(|d| d.id == id)
                     || self.group_window.as_ref().is_some_and(|d| d.id == id)
                     || Some(id) == self.blocked_window
                     || self.nickname_windows.iter().any(|d| d.id == id)
@@ -5119,6 +5130,8 @@ impl BeeperGuiApp {
             self.view_create_label(d)
         } else if let Some(w) = self.label_settings.iter().find(|w| w.id == id) {
             self.view_label_settings(w)
+        } else if let Some(d) = self.merge_window.as_ref().filter(|d| d.id == id) {
+            self.view_merge_editor(d)
         } else if let Some(d) = self.spaces_window.as_ref().filter(|d| d.id == id) {
             self.view_edit_spaces(d)
         } else if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) {
