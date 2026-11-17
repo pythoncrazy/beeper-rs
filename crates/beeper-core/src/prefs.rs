@@ -196,6 +196,9 @@ pub const ARCHIVE_AGE_DAYS: [i64; 6] = [3, 7, 14, 28, 90, 365];
 pub const QUICK_REACTIONS_CUSTOMIZED: Pref = t("quickReactionsCustomized", "", false);
 /// Desktop's `message_double_click_reaction`, any emoji, which [`crate::models::BeeperSettings`] keeps as text.
 pub const QUICK_REACTION: &str = "message_double_click_reaction";
+/// Desktop's `include_matrix_account_search`, the internal-only "Include Matrix results in Start New Chat": the
+/// user search of the Matrix account, off unless Desktop turned it on.
+pub const INCLUDE_MATRIX_ACCOUNT_SEARCH: &str = "include_matrix_account_search";
 pub const ARCHIVE_SCOPE: Pref = s("archiveScope", "", &["all", "read"], 0);
 pub const ARCHIVE_AGE: Pref = s("archiveAge", "", &["3 days", "7 days", "14 days", "28 days", "3 months", "1 year"], 0);
 

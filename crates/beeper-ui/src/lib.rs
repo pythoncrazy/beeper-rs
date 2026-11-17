@@ -2720,7 +2720,9 @@ impl BeeperGuiApp {
         });
         let resolve =
             st.bridge_accounts.iter().filter(|_| st.config.demo).map(|b| (b.account_id.clone(), demo.clone()));
-        let resolve = resolve.collect();
+        // Desktop's `loadProvisioningCapabilities` gives the Matrix account those of the SDK's `matrix` pseudo-bridge.
+        let matrix = ("hungryserv".to_string(), beeper_core::matrix::matrix_capabilities());
+        let resolve = resolve.chain([matrix]).collect();
         drop(st);
         let sidebar_width = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-width")) {
             Ok(w) => w.parse().expect("a numeric sidebar width"),
@@ -3436,10 +3438,12 @@ impl BeeperGuiApp {
         }
         self.status_banner = tr("Composing chat...").into();
         self.sticky_banner = Some(self.status_banner.clone());
-        let create = beeper_core::matrix::create_dm(self.provision(&account), phone.unwrap_or(user.id));
-        Task::perform(create, move |r| {
-            UiMessage::NewChat(new_chat::Msg::DmCreated(draft, account.clone(), quote.clone(), r))
-        })
+        let (matrix, provision) = (self.matrix_bridge(&account), self.provision(&account));
+        let done = move |r| UiMessage::NewChat(new_chat::Msg::DmCreated(draft, account.clone(), quote.clone(), r));
+        match matrix {
+            Some(store) => Task::perform(beeper_core::matrix::create_matrix_dm(store, user.id), done),
+            None => Task::perform(beeper_core::matrix::create_dm(provision, phone.unwrap_or(user.id)), done),
+        }
     }
 
     /// Selects a direct chat and puts a quote before its draft, like Desktop's `replyPrivately`.
@@ -5434,20 +5438,31 @@ impl BeeperGuiApp {
         self.toast = Some(t);
     }
 
-    /// Desktop's `searchUsers` on the accounts whose bridge has the `search` capability, or only on `only`.
+    /// Desktop's `searchUsers` on the accounts whose bridge has the `search` capability, or only on `only`. Desktop's
+    /// `canSearchUsersByName` leaves out the Matrix account unless "Include Matrix results in Start New Chat" is on.
     fn search_users(&mut self, q: &str, only: Option<String>) -> Task<UiMessage> {
-        let accounts = rail_accounts(&self.store.read());
-        let accounts: Vec<String> = accounts
+        let st = self.store.read();
+        let prefs = st.synced_prefs.get(beeper_core::prefs::DESKTOP_PREFS);
+        let matrix = prefs.is_some_and(|p| p[beeper_core::prefs::INCLUDE_MATRIX_ACCOUNT_SEARCH] == true);
+        let accounts: Vec<String> = rail_accounts(&st)
             .into_iter()
             .filter(|a| self.can(a, "create_dm") && self.can(a, "search") && only.as_ref().is_none_or(|o| o == a))
+            .filter(|a| matrix || a != "hungryserv")
             .collect();
+        drop(st);
         if accounts.is_empty() {
             return Task::none();
         }
         self.new_chat_search = Some((q.into(), accounts.len(), Vec::new()));
         Task::batch(accounts.into_iter().map(|a| {
-            let (q, search) = (q.to_string(), beeper_core::matrix::search_users(self.provision(&a), q.into()));
-            Task::perform(search, move |r| UiMessage::NewChat(new_chat::Msg::SearchedUsers(q.clone(), a.clone(), r)))
+            let found = match self.matrix_bridge(&a) {
+                Some(store) => Task::perform(beeper_core::matrix::search_matrix_users(store, q.into()), |r| r),
+                None => Task::perform(beeper_core::matrix::search_users(self.provision(&a), q.into()), |r| {
+                    r.map(|users| users.iter().map(new_chat::resolved_user).collect())
+                }),
+            };
+            let q = q.to_string();
+            found.map(move |r| UiMessage::NewChat(new_chat::Msg::SearchedUsers(q.clone(), a.clone(), r)))
         }))
     }
 
@@ -5480,14 +5495,21 @@ impl BeeperGuiApp {
             ];
             for id in asks.into_iter().filter(|(c, _)| self.can(a, c)).filter_map(|(_, id)| id) {
                 let (key, slot) = (key.to_string(), nets.len());
-                let resolve = beeper_core::matrix::resolve_identifier(self.provision(a), id.into());
-                tasks.push(Task::perform(resolve, move |r| {
-                    UiMessage::NewChat(new_chat::Msg::ContactNetwork(key.clone(), slot, r))
-                }));
+                let done = move |r| UiMessage::NewChat(new_chat::Msg::ContactNetwork(key.clone(), slot, r));
+                tasks.push(match self.matrix_bridge(a) {
+                    Some(store) => Task::perform(beeper_core::matrix::resolve_matrix_user(store, id.into()), done),
+                    None => Task::perform(beeper_core::matrix::resolve_identifier(self.provision(a), id.into()), done),
+                });
                 nets.push((a.clone(), None));
             }
         }
         (nets, Task::batch(tasks))
+    }
+
+    /// Desktop's `isMatrixChat`: for the Matrix account, the store whose Matrix client does the work of the SDK's
+    /// `matrix` pseudo-bridge.
+    fn matrix_bridge(&self, account_id: &str) -> Option<SharedStore> {
+        (account_id == "hungryserv").then(|| self.store.clone())
     }
 
     /// Whether the bridge of a chat account has a `resolve_identifier` provisioning capability.
