@@ -1,6 +1,8 @@
 //! The Settings window: its sections, the settings search, the hotkey recorder, and the Storage, Integrations,
 //! Devices and Accounts pages.
 
+use crate::blocking;
+use crate::blocking::blocked_chats;
 use crate::i18n::{tr, trf, trn, trnx, trs, trx};
 use crate::integrations;
 use crate::style::{
@@ -8,14 +10,14 @@ use crate::style::{
     icon, input_style, med, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
 };
 use crate::{
-    ago, avatar, badge, blocked_chats, brand_key, checkbox, compact, distance, divider, downloads_dir, duration,
-    ease_out, feedback_btn, first_groups, fmt_phone, group, grouped, human_size, icon_btn, inbox_label, login,
-    outline_input, pill_btn, pill_style, plan_pill, pref_row, reconnect, record, select, slider_style, status_text,
-    style, svg_size, theme_cards, tinted, toggle, toggle_faded, BeeperGuiApp, El, SpaceMenu, Toast, UiMessage,
-    ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE,
-    ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO,
-    COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM,
-    ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
+    ago, avatar, badge, brand_key, checkbox, compact, distance, divider, downloads_dir, duration, ease_out,
+    feedback_btn, first_groups, fmt_phone, group, grouped, human_size, icon_btn, inbox_label, login, outline_input,
+    pill_btn, pill_style, plan_pill, pref_row, reconnect, record, select, slider_style, status_text, style, svg_size,
+    theme_cards, tinted, toggle, toggle_faded, BeeperGuiApp, El, SpaceMenu, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON,
+    APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS,
+    ASK_REMOVE_ACCOUNT, ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON,
+    CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM, ORANGE, QR_CODE, REVERT,
+    SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
 };
 use beeper_core::config::{now_unix_millis, now_unix_secs, APP_VERSION};
 use beeper_core::matrix::DeviceInfo;
@@ -1913,7 +1915,7 @@ impl BeeperGuiApp {
                 return pref_row(p, tr(r.label), Some(&dir), None, change.into());
             }
             prefs::Control::BlockedUsers => {
-                press = Some(UiMessage::OpenBlockedUsers);
+                press = Some(UiMessage::Blocking(blocking::Msg::OpenList));
                 let n = txt(blocked_chats(st).len().to_string(), 13.0).color(p.muted);
                 row![n, ic(icon::CHEVRON_RIGHT, 16.0).color(p.muted)].spacing(2).align_y(Center).into()
             }

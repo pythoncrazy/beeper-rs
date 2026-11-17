@@ -5055,12 +5055,15 @@ fn blocking_like_desktop() {
     };
     let _ = app.update(UiMessage::SelectChat(id.clone()));
     let block = app.commands(&app.store.read(), "spam").into_iter().find(|c| c.title == "Block").expect("Block");
-    assert!(matches!(block.msg, Some(UiMessage::AskBlock(c, true)) if c == id));
+    assert!(matches!(block.msg, Some(UiMessage::Blocking(blocking::Msg::Ask(c, true))) if c == id));
     let picked = clicks(app.view_chat_menu(&id, false, 900.0), &["Block…"]);
-    assert!(matches!(&picked[..], [UiMessage::AskBlock(c, true)] if *c == id));
+    assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, true))] if *c == id));
     let picked = clicks(app.view_conversation(), &["Block"]);
-    assert!(matches!(&picked[..], [UiMessage::AskBlock(c, true)] if *c == id), "the request notice has Block");
-    let _ = app.update(UiMessage::AskBlock(id.clone(), true));
+    assert!(
+        matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, true))] if *c == id),
+        "the request notice has Block"
+    );
+    let _ = app.update(UiMessage::Blocking(blocking::Msg::Ask(id.clone(), true)));
     {
         let mut sim = simulator(app.view_confirm(ASK_BLOCK));
         assert!(sim.find(format!("Block {title}?").as_str()).is_ok());
@@ -5087,10 +5090,13 @@ fn blocking_like_desktop() {
         assert!(conversation.find("Block").is_err(), "the request notice drops Block");
     }
     let picked = clicks(app.view_conversation(), &["Unblock"]);
-    assert!(matches!(&picked[..], [UiMessage::AskBlock(c, false)] if *c == id), "the composer link unblocks");
+    assert!(
+        matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, false))] if *c == id),
+        "the composer link unblocks"
+    );
     let picked = clicks(app.view_info(), &["Unblock"]);
-    assert!(matches!(&picked[..], [UiMessage::AskBlock(c, false)] if *c == id));
-    let _ = app.update(UiMessage::AskBlock(id.clone(), false));
+    assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, false))] if *c == id));
+    let _ = app.update(UiMessage::Blocking(blocking::Msg::Ask(id.clone(), false)));
     for m in clicks(app.view_confirm(ASK_UNBLOCK), &["Unblock"]) {
         let _ = app.update(m);
     }
@@ -5139,8 +5145,8 @@ fn blocked_users_like_desktop() {
         let _ = sim.click("Blocked users").expect("the Blocked users row");
         sim.into_messages().collect()
     };
-    assert!(matches!(&picked[..], [UiMessage::OpenBlockedUsers]));
-    let _ = app.update(UiMessage::OpenBlockedUsers);
+    assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::OpenList)]));
+    let _ = app.update(UiMessage::Blocking(blocking::Msg::OpenList));
     assert!(app.blocked_window.is_some());
     assert!(simulator(app.view_blocked_users()).find("No Blocked Users").is_ok());
     let (id, title) = {
@@ -5154,8 +5160,8 @@ fn blocked_users_like_desktop() {
         let _ = sim.click(title.as_str()).expect("the blocked person");
         sim.into_messages().collect()
     };
-    assert!(matches!(&picked[..], [UiMessage::OpenBlockedUser(c)] if *c == id));
-    let _ = app.update(UiMessage::OpenBlockedUser(id.clone()));
+    assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::OpenUser(c))] if *c == id));
+    let _ = app.update(UiMessage::Blocking(blocking::Msg::OpenUser(id.clone())));
     assert!(app.pane.selected_chat_id.as_deref() == Some(id.as_str()) && app.show_right_panel);
     assert!(simulator(app.view_settings()).find("1").is_ok(), "the row counts the blocked people");
 }
@@ -5394,7 +5400,7 @@ fn chat_info_member_actions_like_desktop() {
     assert!(tulir.ends_with(&[("Make Group Admin…".into(), true), ("Remove from Group…".into(), true)]));
     let me = labels(&app, "@self_telegram:beeper.com");
     assert!(me.ends_with(&[("Make Group Admin…".into(), false), ("Remove from Group…".into(), false)]));
-    let ask = |a| UiMessage::AskMember(a, id.clone(), "@tulir:beeper.com".into());
+    let ask = |a| UiMessage::Members(members::Msg::Ask(a, id.clone(), "@tulir:beeper.com".into()));
     let _ = app.update(ask(ASK_MAKE_ADMIN));
     let msgs: Vec<UiMessage> = {
         let mut sim = simulator(app.view_main());
@@ -5409,7 +5415,7 @@ fn chat_info_member_actions_like_desktop() {
     assert!(labels(&app, "@tulir:beeper.com").contains(&("Make Group Admin…".into(), false)));
     let _ = app.update(ask(ASK_REMOVE_MEMBER));
     assert!(simulator(app.view_main()).find("Are you sure you want to remove Tulir Asokan from this group?").is_ok());
-    let _ = app.update(UiMessage::RemoveMember(id.clone(), "@tulir:beeper.com".into()));
+    let _ = app.update(UiMessage::Members(members::Msg::Remove(id.clone(), "@tulir:beeper.com".into())));
     assert!(tall(app.view_info()).find("Tulir Asokan").is_err());
 }
 
@@ -5505,7 +5511,7 @@ fn add_members_like_desktop() {
     assert!(chat(&app).participants.items.iter().any(|u| u.id == pick.id));
     assert!(!app.show_command_palette);
     let total = chat(&app).participants.total;
-    let _ = app.update(UiMessage::AddMember(id.clone(), Box::new(pick)));
+    let _ = app.update(UiMessage::Members(members::Msg::Add(id.clone(), Box::new(pick))));
     assert_eq!(chat(&app).participants.total, total, "the second click of a double click adds nobody");
 }
 

@@ -1,5 +1,7 @@
 //! Desktop's command bar commands (`Efe`): the categories, the titles, the search keywords and the hotkeys.
+use crate::blocking;
 use crate::i18n::{tr, trf, trx};
+use crate::members;
 use crate::new_chat;
 use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
 use crate::{
@@ -287,8 +289,8 @@ impl BeeperGuiApp {
                 let listed = listed.map(|u| {
                     let (chat, user) = (c.id.clone(), u.id.clone());
                     let msg = match *kind {
-                        MEMBERS_KICK => UiMessage::RemoveMember(chat, user),
-                        k => UiMessage::SetAdmin(chat, user, k == MEMBERS_ADMIN),
+                        MEMBERS_KICK => UiMessage::Members(members::Msg::Remove(chat, user)),
+                        k => UiMessage::Members(members::Msg::SetAdmin(chat, user, k == MEMBERS_ADMIN)),
                     };
                     Command { user: Some(u.clone()), ..cmd("", crate::member_name(u), Some(msg)) }
                 });
@@ -345,7 +347,11 @@ impl BeeperGuiApp {
         let row = |category, u: &User| Command {
             user: Some(u.clone()),
             account: Some(c.account_id.clone()),
-            ..cmd(category, crate::member_name(u), Some(UiMessage::AddMember(c.id.clone(), Box::new(u.clone()))))
+            ..cmd(
+                category,
+                crate::member_name(u),
+                Some(UiMessage::Members(members::Msg::Add(c.id.clone(), Box::new(u.clone())))),
+            )
         };
         let q = query.trim().to_lowercase();
         let inbox = st
@@ -471,7 +477,7 @@ impl BeeperGuiApp {
                 v.push(cmd(e, trx("Delete", "chat command"), delete).keys(&["delete", "leave"]));
             }
             v.extend(crate::block_action(st, c).map(|block| {
-                let msg = Some(UiMessage::AskBlock(id(), block));
+                let msg = Some(UiMessage::Blocking(blocking::Msg::Ask(id(), block)));
                 match block {
                     true => cmd(e, trx("Block", "chat command"), msg).keys(&["spam", "report"]),
                     false => cmd(e, trx("Unblock", "chat command"), msg),

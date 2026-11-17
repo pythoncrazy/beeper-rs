@@ -1,5 +1,6 @@
 mod add_account;
 mod anim;
+mod blocking;
 mod chat_theme;
 mod commands;
 mod composer;
@@ -19,6 +20,7 @@ mod lift;
 mod links;
 pub mod login;
 mod media_view;
+mod members;
 mod menubar;
 mod message;
 pub mod new_chat;
@@ -83,6 +85,7 @@ use crate::settings::{
 };
 pub use crate::settings::{search_settings, Expiry, HotkeyRec, SettingsHit, SettingsTab, TabIcon};
 use crate::threads::{can_thread, Threads, THREAD_FRACTION};
+use blocking::block_action;
 use forward::Forward;
 use new_chat::{account_display_name, phone_digits, NewChat};
 use toasts::{Toast, TOASTS_SHOWN, TOAST_TICK};
@@ -224,21 +227,6 @@ fn unavailable(st: &BeeperStore, chat: &Chat) -> Option<String> {
             trf("You blocked %1$s. Unblock them in %2$s.", &[&chat.title, &network])
         }),
         None => chat.is_read_only.then(|| tr("Messaging isn't available in this chat").into()),
-    }
-}
-
-/// Desktop's `blockedUsersStore.threads`: the chats whose other person is blocked, by title.
-fn blocked_chats(st: &BeeperStore) -> Vec<&Chat> {
-    let mut chats: Vec<&Chat> = st.chats.iter().filter(|c| st.user_blocked(c)).collect();
-    chats.sort_by_cached_key(|c| c.title.to_lowercase());
-    chats
-}
-
-/// Desktop's Block (true) or Unblock action of a DM, when the bridge supports it.
-fn block_action(st: &BeeperStore, c: &Chat) -> Option<bool> {
-    match st.user_blocked(c) {
-        true => (c.block & NO_UNBLOCK == 0).then_some(false),
-        false => st.can_block(c).then_some(true),
     }
 }
 
@@ -596,35 +584,15 @@ pub enum UiMessage {
     NewChat(new_chat::Msg),
     /// Desktop's `replyPrivately`: the direct chat with the sender of a message, with the message quoted.
     ReplyPrivately(String),
-    /// Desktop's member "Send Message": the direct chat with a member of a chat, as (chat, user).
-    MessageMember(String, String),
-    /// Opens a member confirmation, `ASK_MAKE_ADMIN` or `ASK_REMOVE_MEMBER`, for (chat, user).
-    AskMember(u8, String, String),
+    /// The members of a chat in Chat Info: Add members, admins, removal, and the direct chat with a member.
+    Members(members::Msg),
     /// Desktop's `exportLoadedMessagesAsTextFile`: the loaded messages of the open chat in a text file on the desktop.
     ExportChat,
-    /// Desktop's Add Members button of Chat Info: the Add members submenu with the members query.
-    AddMembers(String),
-    /// Desktop's `addParticipant`: invites the user to the chat.
-    AddMember(String, Box<User>),
-    /// Desktop's `searchCmdBarUsers` for the Add members query, after the user stops typing.
-    SearchMembers(String),
-    /// Makes a member of a chat an admin (true) or a regular member, as (chat, user, admin).
-    SetAdmin(String, String, bool),
-    RemoveMember(String, String),
     AskDeleteChat(String),
     AskLeaveChat(String),
     LeaveRoom(String),
-    /// Desktop's `confirmBlockUser` (true) or `confirmUnblockUser` of a DM.
-    AskBlock(String, bool),
-    /// Desktop's `setUserBlockedOrAlert`, as (chat, block, report spam).
-    BlockUser(String, bool, bool),
-    /// The "Report spam" checkbox of the Block dialog.
-    ReportSpam(bool),
-    /// Desktop's `BlockedUsersBrowserWindow` from Settings, and its Done button.
-    OpenBlockedUsers,
-    CloseBlockedUsers,
-    /// A row of the Blocked users window: the chat with its Chat Info in the main window.
-    OpenBlockedUser(String),
+    /// Desktop's block and unblock of a direct chat, with Report spam, and the Blocked users window.
+    Blocking(blocking::Msg),
     BeginSelecting(String),
     ToggleSelected(String),
     SelectionSet(ChatFlag, bool),
@@ -648,7 +616,6 @@ pub enum UiMessage {
     SettingsStep(usize),
     PickSetting(SettingsHit),
     ToggleRightPanel,
-    ToggleMembers(String),
     ToggleDnd,
     CycleTheme,
     SelectTheme(ThemeChoice),
@@ -2482,10 +2449,17 @@ fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) -> Vec<Opti
                 Some(UiMessage::OpenUrl(format!("tel:{n}"))),
             ))
         });
-        let send = dm(&c.account_id)
-            .then(|| Some((tr("Send Message").to_string(), Some(UiMessage::MessageMember(cid.into(), uid.into())))));
+        let send = dm(&c.account_id).then(|| {
+            Some((
+                tr("Send Message").to_string(),
+                Some(UiMessage::Members(members::Msg::Message(cid.into(), uid.into()))),
+            ))
+        });
         let ask = |label: &'static str, ask, on: bool| {
-            Some((tr(label).to_string(), on.then(|| UiMessage::AskMember(ask, cid.into(), uid.into()))))
+            Some((
+                tr(label).to_string(),
+                on.then(|| UiMessage::Members(members::Msg::Ask(ask, cid.into(), uid.into()))),
+            ))
         };
         return [
             call,
@@ -6421,25 +6395,10 @@ impl BeeperGuiApp {
                 if self.cmd_submenu == Some(commands::SubMenu::AddMembers) {
                     self.new_chat_search = None;
                     let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
-                    return Task::perform(wait, move |()| UiMessage::SearchMembers(q.clone()));
+                    return Task::perform(wait, move |()| UiMessage::Members(members::Msg::Search(q.clone())));
                 }
             }
-            UiMessage::SearchMembers(q) => {
-                let q = q.trim();
-                let open = self.cmd_submenu == Some(commands::SubMenu::AddMembers);
-                let chat = self.pane.selected_chat_id.clone().filter(|_| open && !q.is_empty());
-                let Some(chat) = chat.filter(|_| q == self.command_palette_query.trim()) else {
-                    return Task::none();
-                };
-                let st = self.store.read();
-                let account = st.resolve_chat_idx(&chat).map(|i| st.chats[i].account_id.clone());
-                drop(st);
-                return self.search_users(q, account);
-            }
-            UiMessage::AddMembers(q) => {
-                let open = self.update(UiMessage::OpenSubMenu(commands::SubMenu::AddMembers));
-                return Task::batch([open, self.update(UiMessage::CommandQueryChanged(q))]);
-            }
+            UiMessage::Members(msg) => return self.members(msg),
             UiMessage::ExportChat => {
                 let st = self.store.read();
                 let Some(text) = self.export_text(&st) else { return Task::none() };
@@ -6452,13 +6411,6 @@ impl BeeperGuiApp {
                     Ok(()) => format!("Exported to {}", path.display()),
                     Err(e) => format!("Export failed: {e}"),
                 };
-            }
-            UiMessage::AddMember(chat, user) => {
-                let mut st = self.store.write();
-                // The second click of a double click hits the row of the person that the first click added.
-                if st.chat(&chat).participants.items.iter().all(|u| u.id != user.id) {
-                    st.add_member(&chat, *user);
-                }
             }
             UiMessage::CommandHighlight(i) => self.cmd_index = i,
             UiMessage::Commands(msgs) => {
@@ -6478,27 +6430,6 @@ impl BeeperGuiApp {
                 self.select_chat(&cid);
             }
             UiMessage::NewChat(msg) => return self.new_chat(msg),
-            UiMessage::MessageMember(cid, uid) => {
-                self.chat_menu = None;
-                self.user_hover = UserHover { r#gen: self.user_hover.r#gen + 1, ..UserHover::default() };
-                let st = self.store.read();
-                let c = st.chat(&cid);
-                let user = c.participants.items.iter().find(|u| u.id == uid).cloned().expect("a member of the chat");
-                let account = c.account_id.clone();
-                drop(st);
-                return self.open_dm(account, user, None, None);
-            }
-            UiMessage::AskMember(ask, cid, uid) => {
-                (self.chat_menu, self.confirm, self.delete_target) = (None, Some(ask), Some(format!("{cid} {uid}")));
-            }
-            UiMessage::SetAdmin(cid, uid, admin) => {
-                self.confirm = None;
-                self.store.write().set_admin(&cid, &uid, admin);
-            }
-            UiMessage::RemoveMember(cid, uid) => {
-                self.confirm = None;
-                self.store.write().remove_member(&cid, &uid);
-            }
             UiMessage::ReplyPrivately(mid) => {
                 let st = self.store.read();
                 let m = &stored(&st, &mid);
@@ -6637,12 +6568,7 @@ impl BeeperGuiApp {
             }
             UiMessage::SelectionMenu(menu, x) => self.selection_menu = Some((menu, x)),
             UiMessage::AskLeaveChat(id) => (self.confirm, self.delete_target) = (Some(ASK_LEAVE_CHAT), Some(id)),
-            UiMessage::AskBlock(id, block) => self.ask_block(id, block),
-            UiMessage::BlockUser(id, block, spam) => return self.block_user(&id, block, spam),
-            UiMessage::ReportSpam(on) => self.report_spam = on,
-            UiMessage::OpenBlockedUsers => return self.open_blocked_users(),
-            UiMessage::CloseBlockedUsers => return window::close(self.blocked_window.expect("Blocked users is open")),
-            UiMessage::OpenBlockedUser(id) => return self.open_blocked_user(id),
+            UiMessage::Blocking(msg) => return self.blocking(msg),
             UiMessage::LeaveRoom(id) => {
                 self.confirm = None;
                 self.store.write().leave_room(&id);
@@ -6693,11 +6619,6 @@ impl BeeperGuiApp {
                 // Desktop shows Chat Info or the thread pane, not both.
                 let closed = self.pane.thread.take().is_some();
                 self.show_right_panel = closed || !self.show_right_panel;
-            }
-            UiMessage::ToggleMembers(id) => {
-                if !self.pane.open_members.remove(&id) {
-                    self.pane.open_members.insert(id);
-                }
             }
             UiMessage::ToggleDnd => {
                 self.dnd_muted = !self.dnd_muted;
@@ -9810,7 +9731,10 @@ impl BeeperGuiApp {
                 let open = UiMessage::Commands(vec![UiMessage::CloseModals, UiMessage::OpenUrl(format!("tel:{n}"))]);
                 button(tinted(&CALL, 20.0, p.strong)).padding(4).style(muted).on_press(open)
             });
-            row![send.on_press(UiMessage::MessageMember(cid.into(), uid.into()))].push(call).spacing(8).align_y(Center)
+            row![send.on_press(UiMessage::Members(members::Msg::Message(cid.into(), uid.into())))]
+                .push(call)
+                .spacing(8)
+                .align_y(Center)
         });
         let high = high + if actions.is_some() { 36.0 } else { 0.0 };
         let card = column![Space::new().height(CARD_FACE_IN), info].push(actions).spacing(8).padding([8, 11]);
@@ -10044,7 +9968,7 @@ impl BeeperGuiApp {
                         true => trx("Block…", "action to block the other person in a DM"),
                         false => trx("Unblock…", "action to unblock the other person in a DM"),
                     };
-                    item(label, "", Some(UiMessage::AskBlock(c.id.clone(), block)))
+                    item(label, "", Some(UiMessage::Blocking(blocking::Msg::Ask(c.id.clone(), block))))
                 });
                 // Like Electron's menus, a group without items has no separator.
                 column![]
@@ -10356,49 +10280,6 @@ impl BeeperGuiApp {
             self.mark_read(st, idx);
         }
         st.set_chat_flag(idx, ChatFlag::Archived, Some(on))
-    }
-
-    /// Desktop's `confirmBlockUser` (true) and `confirmUnblockUser`: the dialog, with "Report spam" off.
-    fn ask_block(&mut self, id: String, block: bool) {
-        self.chat_menu = None;
-        self.show_command_palette = false;
-        self.report_spam = false;
-        (self.confirm, self.delete_target) = (Some(if block { ASK_BLOCK } else { ASK_UNBLOCK }), Some(id));
-    }
-
-    /// Desktop's `setUserBlockedOrAlert` and `setUserBlocked`: a disconnected account asks to reconnect first. Then
-    /// the bridge blocks or unblocks, a toast tells it with Undo when it can be undone, and a blocked request closes.
-    fn block_user(&mut self, id: &str, block: bool, spam: bool) -> Task<UiMessage> {
-        let mut st = self.store.write();
-        let c = st.chat(id);
-        if st.bridge_accounts.iter().any(|b| b.account_id == c.account_id && b.state == "BAD_CREDENTIALS") {
-            (self.confirm, self.delete_target) =
-                (Some(if block { ASK_BLOCK_OFFLINE } else { ASK_UNBLOCK_OFFLINE }), Some(id.into()));
-            return Task::none();
-        }
-        let (title, request) = (c.title.clone(), block && c.is_request == Some(true));
-        let can_undo = !block || (!spam && c.block & NO_UNBLOCK == 0);
-        self.confirm = None;
-        st.set_user_blocked(id, block, spam);
-        drop(st);
-        // The Undo of a blocked request opens it again, so the chat that is open stays open.
-        let open = self.pane.selected_chat_id.as_deref() == Some(id);
-        let selected = request && open;
-        let mut undo = vec![UiMessage::BlockUser(id.into(), !block, false)];
-        undo.extend(open.then(|| UiMessage::SelectChat(id.into())));
-        let text = trf(if block { "%s blocked" } else { "%s unblocked" }, &[&title]);
-        match can_undo {
-            true => {
-                let what = trf(if block { "Block %s" } else { "Unblock %s" }, &[&title]);
-                self.act(what, UiMessage::Commands(undo), Some((text, None)));
-            }
-            false => self.show(Toast { strong: true, ..Toast::new(text) }),
-        }
-        if selected {
-            self.leave_chat(&mut self.store.write(), None);
-            self.pane.selected_chat_id = None;
-        }
-        self.update(UiMessage::StoreChanged)
     }
 
     fn set_reminder(&mut self, cid: &str, at: Option<i64>, no_reply: Option<bool>) {
@@ -11338,7 +11219,7 @@ impl BeeperGuiApp {
         let id = &chat.id;
         let block = (st.can_block(chat) && !st.user_blocked(chat)).then(|| {
             let label = trx("Block", "action to block the other person in a DM");
-            pill(label, hex(0xdc362e), UiMessage::AskBlock(id.clone(), true))
+            pill(label, hex(0xdc362e), UiMessage::Blocking(blocking::Msg::Ask(id.clone(), true)))
         });
         let buttons = row![]
             .push(block)
@@ -11732,7 +11613,7 @@ impl BeeperGuiApp {
                     .padding([8, 11])
                     .width(Fill)
                     .style(btn_style([p.chip; 3], [fg; 3], 10.0))
-                    .on_press(UiMessage::AskBlock(cid.clone(), block));
+                    .on_press(UiMessage::Blocking(blocking::Msg::Ask(cid.clone(), block)));
                 container(row).padding(Padding::ZERO.top(8.0))
             }))
             .push((chat.member_actions & MEMBER_LEAVE != 0).then(|| {
@@ -11992,125 +11873,6 @@ impl BeeperGuiApp {
             .align_y(Center)
             .padding(8);
         column![head, body].into()
-    }
-
-    /// Desktop's `YNt` Members section of a group, with its first six members and a search above more than six.
-    fn view_members<'a>(&'a self, chat: &Chat) -> El<'a> {
-        let p = &self.pal;
-        let shade = Color { a: 0.1, ..p.strong };
-        let named = |u: &User| {
-            let full = u.full_name.as_deref();
-            u.custom_nickname.is_some()
-                || u.username.is_some()
-                || full.is_some_and(|f| {
-                    !u.phone_number.as_deref().is_some_and(|n| phone_digits(f) == phone_digits(n))
-                        && u.email.as_deref() != Some(f)
-                })
-        };
-        let mut all: Vec<&User> = chat.participants.items.iter().collect();
-        all.sort_by_cached_key(|u| {
-            (u.is_self != Some(true), u.is_admin != Some(true), !named(u), member_name(u).to_lowercase())
-        });
-        let q = self.info_query.trim().to_lowercase();
-        let hit = |u: &&User| {
-            let fields = [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email];
-            q.is_empty() || fields.iter().filter_map(|f| f.as_deref()).any(|f| f.to_lowercase().contains(&q))
-        };
-        let rows: Vec<&User> = all.iter().copied().filter(hit).collect();
-        let invite = chat.member_actions & MEMBER_INVITE != 0;
-        let expandable = rows.len() + usize::from(invite) > 6;
-        let searchable = all.len() > 6;
-        let shown = if self.info_all { rows.len() } else { rows.len().min(6 - usize::from(invite)) };
-        let add = invite.then(|| {
-            let face = row![tinted(&ADD_ACCOUNT, 28.0, p.strong), semi(tr("Add Members"), 13.0)];
-            button(face.spacing(8).align_y(Center))
-                .padding(4)
-                .width(Fill)
-                .style(btn_style([CLEAR, shade, shade], [p.strong; 3], 8.0))
-                .on_press(UiMessage::AddMembers(self.info_query.clone()))
-        });
-        let row = |u: &User| -> El<'a> {
-            let you = (u.is_self == Some(true))
-                .then(|| format!(" {}", trx("(You)", "tag shown next to the current user in participant list")));
-            // Desktop's tags: Exited, Invited and Admin, and an invited member's name at half opacity.
-            let tags: Vec<&str> = [
-                (u.has_exited == Some(true)).then(|| trx("Exited", "group participant status tag")),
-                (u.is_pending == Some(true)).then(|| trx("Invited", "group participant status tag")),
-                (u.is_admin == Some(true)).then(|| trx("Admin", "group participant status tag")),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-            let tag_w: f32 = tags.iter().map(|t| crate::style::text_width(t, 10.0, Weight::Semibold) + 14.0).sum();
-            let fade = if u.is_pending == Some(true) { 0.5 } else { 1.0 };
-            let you_w = you.as_deref().map_or(0.0, |y| crate::style::text_width(y, 13.0, Weight::Normal));
-            let name = member_name(u);
-            let strong = p.strong.scale_alpha(fade);
-            let label =
-                row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(strong)]
-                    .push(you.map(|y| txt(y, 13.0).color(strong)));
-            let tags = tags.into_iter().map(|t| -> El<'a> {
-                container(crate::style::t(t, 10.0, Weight::Semibold).line_height(Pixels(12.0)).color(p.strong))
-                    .padding([2, 4])
-                    .style(fill_box(p.card, 4.0))
-                    .into()
-            });
-            // iced draws no widget at half opacity, so only the name of an invited member fades.
-            let line = row![self.face(u.img_url.as_deref(), &name, 28.0, 0.0), label]
-                .push(Space::new().width(Fill))
-                .push(Row::with_children(tags).spacing(4))
-                .spacing(8)
-                .align_y(Center);
-            let menu = UiMessage::OpenChatMenu(format!("member:{} {}", chat.id, u.id));
-            let card = UiMessage::OpenChatMenu(format!("card:{} {}", chat.id, u.id));
-            let btn = button(line).padding(4).width(Fill).style(btn_style([CLEAR, shade, shade], [p.strong; 3], 8.0));
-            mouse_area(btn.on_press(card)).on_right_press(menu).into()
-        };
-        let search = searchable.then(|| {
-            let n = all.len();
-            let input =
-                text_input(&trn("Search %d group member", "Search %d group members", n, &[&n]), &self.info_query)
-                    .on_input(UiMessage::InfoQuery)
-                    .size(13)
-                    .line_height(Pixels(16.0))
-                    .padding([10, 12])
-                    .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
-            let clear = (!self.info_query.is_empty()).then(|| {
-                button(ic(icon::CLOSE, 20.0).color(p.sub)).bare(p.sub).on_press(UiMessage::InfoQuery(String::new()))
-            });
-            let bar = row![ic(icon::SEARCH, 20.0).color(p.sub), input].push(clear).align_y(Center).padding([0, 8]);
-            container(bar).padding(Padding::ZERO.top(8.0))
-        });
-        let toggle_label = if self.info_all { tr("Show less") } else { tr("Show all") };
-        let toggle = expandable.then(|| {
-            let chevron: El = match self.info_all {
-                true => tinted(&MAT_EXPAND_LESS, 20.0, p.strong),
-                false => ic(icon::EXPAND_MORE, 20.0).color(p.strong).into(),
-            };
-            let face = row![semi(toggle_label, 13.0), chevron].align_y(Center);
-            button(container(face).center_x(Fill))
-                .padding(2)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 9999.0))
-                .on_press(UiMessage::InfoAll)
-        });
-        let list = Column::new()
-            .push(search)
-            .push(add)
-            .extend(rows[..shown].iter().map(|u| row(u)))
-            .push(toggle)
-            .spacing(6)
-            .padding(if searchable { Padding::new(8.0).top(0.0) } else { Padding::new(8.0) });
-        let less = (expandable && self.info_all)
-            .then(|| button(semi(tr("Show less"), 11.0).color(p.accent)).bare(p.accent).on_press(UiMessage::InfoAll));
-        let head = row![txt(tr("Members"), 11.0).color(p.strong), Space::new().width(Fill)]
-            .push(less)
-            .align_y(Center)
-            .padding(8);
-        let head: El = match expandable {
-            true => mouse_area(head).on_press(UiMessage::InfoAll).into(),
-            false => head.into(),
-        };
-        column![head, container(list).style(fill_box(p.chip, 10.0))].into()
     }
 
     fn view_command_palette<'a>(&'a self) -> El<'a> {

@@ -1,20 +1,23 @@
 //! The confirmation dialogs, and the Label, Edit Labels, Edit Group, Blocked users and New Poll windows.
 
+use crate::blocking;
+use crate::blocking::blocked_chats;
 use crate::i18n::{tr, trf, trn, trx};
 use crate::integrations;
+use crate::members;
 use crate::style::{
     bar, bold, bordered_box, btn_style, ell, fill_box, fw, ic, icon, input_style, med, mix, scroll_style, semi,
     shadow_box, text_width, txt, Bare, CLEAR,
 };
 use crate::{
-    badge, blocked_chats, chat_search_subtitle, checkbox, checkbox_plus, delete_dialog, grouped_rows, human_size,
-    icon_btn, inbox_label, label_fill, label_icon, label_tile, login, member_name, menu_item, network_name, pill_btn,
-    portal, reconnect, round_avatar, spread, stored, tinted, toggle, voice, BeeperGuiApp, El, PendingMedia, Toast,
-    UiMessage, ACCOUNT_SUB_W, ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_BLOCK, ASK_BLOCK_OFFLINE,
-    ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE,
-    ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ,
-    ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REMOVE_MEMBER, ASK_REVOKE_CONNECTION, ASK_TRANSCRIBE, ASK_UNBLOCK,
-    ASK_UNBLOCK_OFFLINE, DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
+    badge, chat_search_subtitle, checkbox, checkbox_plus, delete_dialog, grouped_rows, human_size, icon_btn,
+    inbox_label, label_fill, label_icon, label_tile, login, member_name, menu_item, network_name, pill_btn, portal,
+    reconnect, round_avatar, spread, stored, tinted, toggle, voice, BeeperGuiApp, El, PendingMedia, Toast, UiMessage,
+    ACCOUNT_SUB_W, ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_BLOCK, ASK_BLOCK_OFFLINE, ASK_CLEAR_CACHE,
+    ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE, ASK_DISMISS_REMINDERS,
+    ASK_LEAVE_CHAT, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ, ASK_REMOTE_ACCESS,
+    ASK_REMOVE_ACCOUNT, ASK_REMOVE_MEMBER, ASK_REVOKE_CONNECTION, ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE,
+    DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
@@ -353,12 +356,12 @@ impl BeeperGuiApp {
                     ASK_MAKE_ADMIN => (
                         tr("Make Group Admin").into(),
                         trf("Are you sure you want to make %s an admin of this group?", &[&name]),
-                        vec![(trx("Confirm", "make group admin confirmation button"), UiMessage::SetAdmin(cid, uid, true))],
+                        vec![(trx("Confirm", "make group admin confirmation button"), UiMessage::Members(members::Msg::SetAdmin(cid, uid, true)))],
                     ),
                     _ => (
                         tr("Remove from Group").into(),
                         trf("Are you sure you want to remove %s from this group?", &[&name]),
-                        vec![(trx("Remove", "remove group participant confirmation button"), UiMessage::RemoveMember(cid, uid))],
+                        vec![(trx("Remove", "remove group participant confirmation button"), UiMessage::Members(members::Msg::Remove(cid, uid)))],
                     ),
                 }
             }
@@ -468,7 +471,7 @@ impl BeeperGuiApp {
                                 &[&network, &network],
                             ),
                         };
-                        let block = UiMessage::BlockUser(id, true, self.report_spam && c.block & REPORT_SPAM != 0);
+                        let block = UiMessage::Blocking(blocking::Msg::Block(id, true, self.report_spam && c.block & REPORT_SPAM != 0));
                         let label = trx("Block", "action to block the other person in a DM");
                         (trf("Block %s?", &[&c.title]), body, vec![(label, block)])
                     }
@@ -477,7 +480,7 @@ impl BeeperGuiApp {
                         trf("They'll also be unblocked on %s.", &[&network]),
                         vec![(
                             trx("Unblock", "action to unblock the other person in a DM"),
-                            UiMessage::BlockUser(id, false, false),
+                            UiMessage::Blocking(blocking::Msg::Block(id, false, false)),
                         )],
                     ),
                     _ => {
@@ -514,7 +517,7 @@ impl BeeperGuiApp {
         (c.block & REPORT_SPAM != 0).then(|| {
             let label = txt(tr("Report spam"), 13.0).color(self.pal.text);
             let line = row![checkbox(&self.pal, self.report_spam), label].spacing(6).align_y(Center);
-            mouse_area(line).on_press(UiMessage::ReportSpam(!self.report_spam)).into()
+            mouse_area(line).on_press(UiMessage::Blocking(blocking::Msg::ReportSpam(!self.report_spam))).into()
         })
     }
 
@@ -1280,7 +1283,7 @@ impl BeeperGuiApp {
                         .padding(8)
                         .width(Fill)
                         .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                        .on_press(UiMessage::OpenBlockedUser(c.id.clone()));
+                        .on_press(UiMessage::Blocking(blocking::Msg::OpenUser(c.id.clone())));
                     let rule = container(Space::new()).width(Fill).height(1).style(fill_box(p.prefs_border, 0.0));
                     column![].push((i > 0).then_some(rule)).push(row).into()
                 });
@@ -1292,7 +1295,7 @@ impl BeeperGuiApp {
         let done = button(med(tr("Done"), 13.0).color(Color::WHITE))
             .padding([6, 14])
             .style(btn_style([p.accent; 3], [Color::WHITE; 3], 999.0))
-            .on_press(UiMessage::CloseBlockedUsers);
+            .on_press(UiMessage::Blocking(blocking::Msg::CloseList));
         let footer = container(done).align_right(Fill).padding(Padding::new(12.0).top(10.0));
         container(column![body, footer]).width(Fill).height(Fill).style(fill_box(p.elevated, 0.0)).into()
     }

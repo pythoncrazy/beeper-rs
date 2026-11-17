@@ -1,8 +1,10 @@
 //! The timeline of a chat: the rows of its messages, a message with its bubble, quote and reactions, the message
 //! menu, and the dividers and the scroll button of the timeline.
 
+use crate::blocking;
 use crate::forward;
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
+use crate::members;
 use crate::style::{
     bold, bordered_box, bordered_btn, btn_style, clamp, fill_box, fw, hex, ic, icon, med, mix, pane_card, pick,
     scroll_style, semi, shadow_box, stable_bar, txt, Bare, CLEAR, GUTTER,
@@ -735,7 +737,7 @@ impl BeeperGuiApp {
             let lead = tr("You blocked __NAME__. __UNBLOCK__").replace("__NAME__", &chat.title);
             let lead = lead.trim_end_matches("__UNBLOCK__").to_string();
             let unblock = trx("Unblock", "action to unblock the other person in a DM");
-            disabled(lead, unblock, "", UiMessage::AskBlock(chat.id.clone(), false))
+            disabled(lead, unblock, "", UiMessage::Blocking(blocking::Msg::Ask(chat.id.clone(), false)))
         });
         // Desktop's `ThreadComposer` draws nothing once the user left the chat or was removed from it.
         let composer = match upgraded.or(blocked) {
@@ -983,7 +985,7 @@ impl BeeperGuiApp {
                     let toggle = button(label.spacing(4))
                         .padding(0)
                         .style(btn_style([Color::TRANSPARENT; 3], [dim; 3], 0.0))
-                        .on_press(UiMessage::ToggleMembers(msgs[s].id.clone()));
+                        .on_press(UiMessage::Members(members::Msg::Toggle(msgs[s].id.clone())));
                     rows = rows.push(head.push(container(toggle).center_x(Fill)));
                     head = Column::new();
                 }
@@ -1115,7 +1117,7 @@ impl BeeperGuiApp {
             let item = button(line)
                 .padding(4)
                 .style(btn_style([CLEAR, p.elevated_hover, p.elevated_hover], [p.text; 3], 4.0))
-                .on_press(UiMessage::MessageMember(chat.id.clone(), u.id.clone()));
+                .on_press(UiMessage::Members(members::Msg::Message(chat.id.clone(), u.id.clone())));
             container(item).padding([2, 0]).into()
         });
         let list = scrollable(Column::with_children(rows)).direction(stable_bar()).style(scroll_style(p.scroll));
@@ -1728,7 +1730,7 @@ impl BeeperGuiApp {
                 let url =
                     chat.participants.items.iter().find(|u| u.id == m.sender_id).and_then(|u| u.img_url.as_deref());
                 // Desktop's `sender-img`: a click starts a chat with the sender, when the account can.
-                let dm = UiMessage::MessageMember(chat.id.clone(), m.sender_id.clone());
+                let dm = UiMessage::Members(members::Msg::Message(chat.id.clone(), m.sender_id.clone()));
                 let face = mouse_area(self.face(url, &sender_label(chat, m), FACE, 0.0));
                 let face = if self.can(&chat.account_id, "create_dm") { face.on_press(dm) } else { face };
                 self.user_trigger(chat, &m.sender_id, face)
