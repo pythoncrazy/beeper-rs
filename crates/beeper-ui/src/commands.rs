@@ -520,7 +520,8 @@ impl BeeperGuiApp {
         }
         v.push(
             cmd(CHATS, tr("Search chats"), Some(UiMessage::CommandBar(Msg::TogglePalette)))
-                .keys(&["search", "find", "filter"]),
+                .keys(&["search", "find", "filter"])
+                .hotkey("Search"),
         );
         let list = self.visible_chats(st);
         let at = self.pane.selected_chat_id.as_ref().and_then(|id| list.iter().position(|c| &c.id == id));
@@ -789,6 +790,23 @@ impl BeeperGuiApp {
     /// The commands under Desktop's category headings.
     pub(crate) fn view_commands(&self, st: &BeeperStore, cmds: &[Command]) -> El<'_> {
         let p = &self.pal;
+        // Desktop's empty command bar: "No results", and in the command list the hint for people search.
+        if cmds.is_empty() && !self.command_palette_query.trim().is_empty() {
+            let key = prefs::hotkey_label(st.settings.hotkey_keys("Search").split(", ").next().unwrap_or(""));
+            let hint = self.cmd_submenu.is_none().then(|| {
+                let text =
+                    trf("Are you trying to search for people? Press %s to search all of your conversations", &[&key]);
+                row![crate::tinted(&crate::DROP_ARROW, 20.0, p.sub), txt(text, 13.0).color(p.text)]
+                    .spacing(16)
+                    .align_y(Center)
+                    .padding([8, 24])
+            });
+            let empty =
+                column![crate::ic(crate::icon::SEARCH, 24.0).color(p.sub), txt(tr("No results"), 14.0).color(p.sub)]
+                    .spacing(8)
+                    .align_x(Center);
+            return column![].push(hint).push(container(empty).center(Fill)).height(Fill).into();
+        }
         let item = |i: usize| {
             let c = &cmds[i];
             let head = ((self.cmd_submenu.is_none() || !c.category.is_empty())

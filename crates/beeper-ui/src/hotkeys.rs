@@ -183,7 +183,15 @@ impl BeeperGuiApp {
                 to.map(|a0| UiMessage::Rail(rail::Msg::Select(a0)))
             }
             "Send Feedback" => chat.map(|_| UiMessage::OpenQuickLook("Feedback".into(), FEEDBACK.into())),
-            "Settings" => Some(UiMessage::Settings(settings::Msg::Open(self.active_settings_tab))),
+            // Desktop's `openPrefsInNewWindow` focuses the open Settings, else opens it at Accounts.
+            "Settings" => {
+                let tab = if self.settings_window.is_some() {
+                    self.active_settings_tab
+                } else {
+                    crate::SettingsTab::Accounts
+                };
+                Some(UiMessage::Settings(settings::Msg::Open(tab)))
+            }
             "Switch First 9 Spaces Modifier" => {
                 let space = rail_spaces(&self.store.read()).into_iter().nth(digit);
                 space.and_then(|id| match RAIL_VIEWS.iter().find(|v| v.0 == id) {

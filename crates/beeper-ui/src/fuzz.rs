@@ -712,7 +712,16 @@ fn settings_commands_like_desktop() {
     let _ = app.update(UiMessage::RunHotkey("Command Bar"));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("Accounts → Telegram".into())));
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
-    assert!(app.active_settings_tab == SettingsTab::Accounts && app.adding_account);
+    // Desktop's network hit selects the account on that network.
+    let telegram = app
+        .store
+        .read()
+        .bridge_accounts
+        .iter()
+        .find(|a| a.bridge_id.contains("telegram"))
+        .map(|a| a.account_id.clone());
+    assert!(telegram.is_some(), "the demo has a Telegram account");
+    assert!(app.active_settings_tab == SettingsTab::Accounts && app.account_page == telegram);
 }
 
 #[test]
