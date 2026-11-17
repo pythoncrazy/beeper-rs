@@ -1557,7 +1557,9 @@ impl BeeperGuiApp {
             let pad = "\u{a0}".repeat((room / nbsp).ceil() as usize);
             // Desktop's `message-text--balanced`: CSS `text-wrap: balance`, then the bubble shrinks to its widest line.
             // A message with block HTML wraps as usual. A wrapped message without balance takes the whole width.
-            let padded = format!("{text}{pad}");
+            // The layout lets trailing spaces hang past the width, so the room of the time is measured with digits.
+            let zero = crate::style::text_width("0", 13.0, Weight::Normal);
+            let padded = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
             let blocks_html =
                 m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
             let width = match crate::style::wraps(&padded, max, 13.0) {
