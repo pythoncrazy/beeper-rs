@@ -21,12 +21,14 @@ impl Feature {
     }
 }
 
-/// The account's feature flags and free uses, and whether `whoami` reports a Plus subscription.
+/// The account's feature flags and free uses, and whether `whoami` reports a Plus subscription and the internal
+/// channel.
 #[derive(Debug, Clone, Default)]
 pub struct Flags {
     pub flags: Value,
     pub usage: Value,
     pub subscribed: bool,
+    pub internal: bool,
 }
 
 impl Flags {
@@ -49,7 +51,7 @@ impl Flags {
                 { "name": "labels", "type": "count", "default_limit": 1 },
             ],
         });
-        Flags { flags, usage: Value::Null, subscribed: false }
+        Flags { flags, usage: Value::Null, subscribed: false, internal: false }
     }
 
     /// Desktop's `combinedFeatures`: the `appType:desktop` flags override the `*` flags.
@@ -154,6 +156,12 @@ impl Flags {
                 let free = !on && self.free("labels").is_some();
                 Feature { show: inbox || on || free, on: on || free, upgrade: inbox && !on }
             }
+            // Desktop's `features[SNOOZE]`: only for the internal channel, and open while a free snooze is.
+            "snooze" if !self.internal => Feature { show: false, on: false, upgrade: false },
+            "snooze" => match (self.flag(key), self.free(key)) {
+                (f, Some(_)) if !f.on => Feature { show: true, on: true, ..f },
+                (f, _) => f,
+            },
             "scheduled-message" => match (self.flag(key), self.free(key)) {
                 (f, Some((open, left))) if !f.on => Feature { show: true, on: open && (scheduled as i64) < left, ..f },
                 (f, _) => f,
@@ -179,7 +187,7 @@ mod tests {
             ],
         });
         let usage = json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2020-01-04T00:00:00Z" }, "remind-later": { "used": 5 } });
-        let mut f = Flags { flags, usage, subscribed: false };
+        let mut f = Flags { flags, usage, subscribed: false, internal: false };
         let lock = Feature { show: true, on: false, upgrade: true };
         let open = Feature { on: true, ..lock };
         assert_eq!(f.get("undo-send", 0), lock);
@@ -216,6 +224,21 @@ mod tests {
         assert_eq!(free.free_uses("voice-transcription"), Some((0, 5)));
         free.usage = json!({ "voice-transcription": { "used": 5 } });
         assert_eq!(free.free_uses("voice-transcription"), Some((5, 5)));
+    }
+
+    /// Desktop's `features[SNOOZE]`: hidden outside the internal channel, else the flag, opened by a snooze freebie.
+    #[test]
+    fn snooze_is_for_the_internal_channel_like_desktop() {
+        let mut f = Flags::free_plan();
+        f.flags["features"]["*"]["snooze"] = json!(false);
+        assert!(!f.get("snooze", 0).show, "only the internal channel snoozes");
+        f.internal = true;
+        assert_eq!(f.get("snooze", 0), Feature { show: true, on: false, upgrade: true });
+        let snooze = json!({ "name": "snooze", "type": "count", "default_limit": 3 });
+        f.flags["freebies"].as_array_mut().expect("the freebies").push(snooze);
+        assert_eq!(f.get("snooze", 0), Feature { show: true, on: true, upgrade: true }, "a freebie opens it");
+        f.usage = json!({ "snooze": { "used": 3 } });
+        assert_eq!(f.free_uses("snooze"), Some((3, 3)), "the free snoozes are used up");
     }
 
     #[test]

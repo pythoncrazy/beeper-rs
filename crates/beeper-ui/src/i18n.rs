@@ -370,6 +370,14 @@ mod tests {
             "message command\u{4}Reply in thread",
             "confirmation button\u{4}Remove from Beeper",
             "view-limited media chat list preview\u{4}%d New message",
+            "message menu action\u{4}Edit Reminder",
+            "message reminder menu action\u{4}Mark as Done",
+            // Desktop's Japanese catalog has no snooze strings.
+            "thread context menu submenu label\u{4}Snooze",
+            "chat info toolbar button\u{4}Snooze",
+            "command bar heading for snoozing chats\u{4}Snooze",
+            "space name for snoozed chats\u{4}Snoozed",
+            "notification body when a snoozed chat returns\u{4}Had activity while snoozed",
         ];
         // The source files, with those of the folders of modules.
         let mut files = Vec::new();

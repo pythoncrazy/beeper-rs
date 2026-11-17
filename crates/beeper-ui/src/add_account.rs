@@ -114,6 +114,19 @@ pub struct AddAccount {
     run: u32,
     /// The device tab of Desktop's login steps: iPhone (`false`) or Android (`true`).
     android: bool,
+    /// Desktop's `PlatformRemoteStatus`: the message of the platform's entry of `/platform-status`.
+    status: Option<String>,
+    /// Desktop's `remoteState`: the status hides the login (`disabled`), or hides it until Continue (`confirm`).
+    remote: Remote,
+}
+
+/// Desktop's `remoteState` of the Add Account window.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Remote {
+    #[default]
+    Open,
+    Disabled,
+    Confirm,
 }
 
 #[derive(Clone)]
@@ -133,6 +146,10 @@ pub enum AddMsg {
     /// The iPhone (`false`) or Android (`true`) tab of the login steps.
     Device(bool),
     Close,
+    /// The reply of Desktop's `/platform-status`.
+    Status(Result<serde_json::Value, String>),
+    /// Desktop's "Continue →" of a platform status that asks to confirm.
+    Continue,
 }
 
 /// Desktop's `di`: the validation error of a field value.
@@ -240,11 +257,15 @@ impl BeeperGuiApp {
             emoji: None,
             run: 0,
             android: false,
+            status: None,
+            remote: Remote::Open,
         });
         let p = self.add_provision(self.add_accounts.len() - 1);
+        let status = beeper_core::cloud::platform_status(self.cloud.app_api.clone(), p.access_token.clone());
+        let status = Task::perform(status, move |r| UiMessage::AddAccount(id, AddMsg::Status(r)));
         let flows = bridge_login::flows(p, self.cloud.api_url.clone());
         let flows = Task::perform(flows, move |r| UiMessage::AddAccount(id, AddMsg::Flows(r)));
-        Task::batch([open.discard(), flows])
+        Task::batch([open.discard(), flows, status])
     }
 
     /// Desktop's `disposeIfNotLoggedIn`: a closed window cancels its login process.
@@ -381,6 +402,18 @@ impl BeeperGuiApp {
             AddMsg::Flow(f) => return self.start_flow(i, f),
             AddMsg::Menu => a.menu ^= true,
             AddMsg::Device(android) => a.android = android,
+            AddMsg::Status(Err(e)) => eprintln!("platform status failed: {e}"),
+            // Desktop's platform name of a cloud bridge is `bridge-` and the bridge.
+            AddMsg::Status(Ok(v)) => {
+                let s = &v[format!("bridge-{}", a.bridge)];
+                if s["disabled"] == true {
+                    a.remote = Remote::Disabled;
+                } else if s["confirm"] == true {
+                    a.remote = Remote::Confirm;
+                }
+                a.status = s["message"].as_str().map(str::to_string);
+            }
+            AddMsg::Continue => a.remote = Remote::Open,
             AddMsg::Copy(code) => return iced::clipboard::write(code),
             AddMsg::Close => return window::close(id),
         }
@@ -583,8 +616,15 @@ impl BeeperGuiApp {
             }
             None => svg(brand_svg(a.network.bridge_id)).width(52).height(52).into(),
         };
+        let body = match a.remote {
+            Remote::Open => Some(body),
+            Remote::Disabled => None,
+            Remote::Confirm => Some(primary(format!("{} →", tr("Continue")), Some(AddMsg::Continue))),
+        };
         let failed = a.failed.as_deref().map(error_line);
-        let main = column![mark, semi(header, 17.0).color(p.strong).center(), body]
+        let main = column![mark, semi(header, 17.0).color(p.strong).center()]
+            .push(a.status.clone().map(para))
+            .push(body)
             .push(failed)
             .spacing(24)
             .align_x(Center)
@@ -784,7 +824,7 @@ mod tests {
         assert_eq!(cloud_bridge(find_network("slackgo").unwrap()), Some("slackgo"));
     }
 
-    /// A signed-in app whose homeserver and Beeper API are the stub bridges of `beeper_core::bridge_stub`.
+    /// A signed-in app whose homeserver, Beeper API and app API are the stub bridges of `beeper_core::bridge_stub`.
     async fn stub_app(name: &str) -> (BeeperGuiApp, beeper_core::bridge_stub::Bridges) {
         use beeper_core::models::{MatrixSession, Profile};
         let (url, bridges) = beeper_core::bridge_stub::homeserver().await;
@@ -799,7 +839,8 @@ mod tests {
         };
         store.write().sign_in(session, url.clone(), &Profile::default(), Vec::new());
         let mut app = BeeperGuiApp::boot(store).0;
-        app.cloud = std::sync::Arc::new(beeper_core::cloud::Cloud::new(&url, &url));
+        let cloud = beeper_core::cloud::Cloud::new(&url, &url);
+        app.cloud = std::sync::Arc::new(beeper_core::cloud::Cloud { app_api: url, ..cloud });
         (app, bridges)
     }
 
@@ -840,9 +881,10 @@ mod tests {
         sim.into_messages().next().unwrap_or_else(|| panic!("{text} has no message"))
     }
 
-    /// The one message of the Add Account window among the messages of a task.
+    /// The one login message of the Add Account window among the messages of a task, without the platform status.
     fn one(msgs: Vec<UiMessage>) -> UiMessage {
-        let mut ours: Vec<_> = msgs.into_iter().filter(|m| matches!(m, UiMessage::AddAccount(..))).collect();
+        let login = |m: &UiMessage| matches!(m, UiMessage::AddAccount(_, m) if !matches!(m, AddMsg::Status(_)));
+        let mut ours: Vec<_> = msgs.into_iter().filter(login).collect();
         assert_eq!(ours.len(), 1, "one message of the window");
         ours.remove(0)
     }
@@ -986,5 +1028,32 @@ mod tests {
         assert!(shows(&app, id, "Click the button below to open the browser and begin authentication with X."));
         assert!(shows(&app, id, "Open X Login"));
         assert_eq!(app.add_accounts[0].other_flows().count(), 0, "X has one flow, so no Login options");
+    }
+
+    /// Desktop's `PlatformRemoteStatus` with the stub's `/platform-status`: the message of the platform under the
+    /// header, a `disabled` status that hides the login, and a `confirm` status that hides it until "Continue →".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_platform_status_shows_its_message_and_gates_the_login() {
+        let (mut app, bridges) = stub_app("platform-status").await;
+        let status = |msgs: Vec<UiMessage>| {
+            msgs.into_iter().find(|m| matches!(m, UiMessage::AddAccount(_, AddMsg::Status(_)))).expect("a status")
+        };
+        let opened = status(send(&mut app, UiMessage::OpenAddAccount("signal".into(), None)).await);
+        let id = app.add_accounts[0].id;
+        assert!(shows(&app, id, "Loading...") && !shows(&app, id, "Signal logins may be slow."));
+        let _ = send(&mut app, opened).await;
+        assert!(bridges.requests().contains(&"GET /platform-status".to_string()));
+        assert!(shows(&app, id, "Signal logins may be slow.") && shows(&app, id, "Continue →"));
+        assert!(!shows(&app, id, "Loading..."), "a status that asks to confirm hides the login");
+        let go = click(&app, id, "Continue →");
+        let _ = send(&mut app, go).await;
+        assert!(shows(&app, id, "Signal logins may be slow.") && shows(&app, id, "Loading..."));
+        assert!(!shows(&app, id, "Continue →"));
+        settle(&mut app, UiMessage::Window(crate::windows::Msg::Closed(id))).await;
+        let opened = status(send(&mut app, UiMessage::OpenAddAccount("gmessages".into(), None)).await);
+        let id = app.add_accounts[0].id;
+        let _ = send(&mut app, opened).await;
+        assert!(shows(&app, id, "Google Messages logins are paused.") && shows(&app, id, "Connect to Google Messages"));
+        assert!(!shows(&app, id, "Loading...") && !shows(&app, id, "Continue →"), "a disabled platform has no login");
     }
 }
