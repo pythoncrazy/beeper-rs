@@ -484,6 +484,14 @@ impl BeeperGuiApp {
         match key {
             Key::Named(Named::Escape) if self.confirm.is_some() => self.confirm = None,
             Key::Named(Named::Escape) if self.integrations.add.is_some() => self.integrations.add = None,
+            // Desktop's add input of the time suggestions cancels on Escape and keeps the window open.
+            Key::Named(Named::Escape) if self.time_edit.input.is_some() => {
+                let settings = self.settings_window.expect("the settings window is open");
+                return operation::is_focused(crate::time_suggestions::INPUT).then(move |on| match on {
+                    true => Task::done(UiMessage::TimeSuggestions(crate::time_suggestions::Msg::Cancel)),
+                    false => window::close(settings),
+                });
+            }
             Key::Named(Named::Escape) => {
                 return window::close(self.settings_window.expect("the settings window is open"))
             }
@@ -1825,6 +1833,9 @@ impl BeeperGuiApp {
                 }
                 prefs::Item::Theme => out.push(group(p, heading.take(), vec![theme_cards(p, s.theme)])),
                 prefs::Item::ChatTheme => out.push(group(p, heading.take(), vec![self.chat_theme_picker(st, None)])),
+                prefs::Item::TimeSuggestions => {
+                    out.push(group(p, heading.take(), vec![self.view_time_suggestions(st)]))
+                }
                 prefs::Item::Zoom(t, args) => {
                     out.push(group(p, heading.take(), vec![self.zoom_slider(s.zoom_percent, trs(t, args))]))
                 }

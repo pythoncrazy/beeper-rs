@@ -3944,6 +3944,179 @@ fn quick_reaction_settings_like_desktop() {
     assert_eq!(app.store.read().settings.quick_reaction, custom[1], "any emoji is the Quick React emoji");
 }
 
+/// Desktop's `TimeSuggestionsPreference`: Add with its checks, Enter and Escape, remove, drag to reorder, and Reset.
+#[test]
+fn time_suggestions_editor_like_desktop() {
+    use crate::time_suggestions::{suggestion_date, Msg, INPUT};
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    use iced::mouse::Event as M;
+    let mut app = demo_app("time-suggestions");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
+    fn tall(app: &BeeperGuiApp) -> Simulator<'_, UiMessage> {
+        Simulator::with_size(Default::default(), Size::new(1024.0, 4000.0), app.view_settings())
+    }
+    let list = |app: &BeeperGuiApp| -> Vec<String> {
+        app.store.read().settings.time_suggestions().into_iter().map(String::from).collect()
+    };
+    let defaults: Vec<String> = prefs::TIME_SUGGESTIONS.map(String::from).to_vec();
+    let about = "Customize time suggestions for quick reminders in the command bar and context menus. Try \
+        \"7am Tomorrow\", \"In 3 weeks\", \"Next Monday\".";
+    {
+        let mut sim = tall(&app);
+        assert!(sim.find("Time Suggestions").is_ok(), "the section heading");
+        assert!(sim.find(format!("{about} You can add up to 8.")).is_ok());
+        let at = parse_when_millis("Tomorrow", now_unix_millis()).unwrap();
+        assert!(sim.find("Tomorrow").is_ok() && sim.find(suggestion_date(at)).is_ok(), "the phrase and its time");
+        assert!(sim.find("Reset").is_ok());
+        let _ = sim.click("Add").expect("the Add button");
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(&mut app, msgs);
+    }
+    assert_eq!(app.time_edit.input.as_deref(), Some(""), "Add opens the input");
+    assert!(tall(&app).find("Add").is_err(), "the input replaces Add and Reset");
+    let type_in = |app: &mut BeeperGuiApp, text: &str| {
+        let mut sim = tall(app);
+        let _ = sim.click(iced::widget::Id::new(INPUT)).expect("the input");
+        let _ = sim.typewrite(text);
+        let _ = sim.tap_key(Key::Named(Named::Enter));
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(app, msgs);
+    };
+    for (text, why) in [("Tomorrow", "already listed"), ("yesterday", "a past time"), ("banana", "not a time")] {
+        type_in(&mut app, text);
+        assert_eq!(list(&app), defaults, "{why}");
+        assert_eq!(app.time_edit.input.as_deref(), Some(text), "the input stays open");
+        let _ = app.update(UiMessage::TimeSuggestions(Msg::Input(String::new())));
+    }
+    type_in(&mut app, "In 3w");
+    let at = parse_when_millis("In 3w", now_unix_millis()).unwrap();
+    assert!(tall(&app).find(suggestion_date(at)).is_ok(), "the preview of the new phrase");
+    assert_eq!(list(&app), [&defaults[..], &["In 3w".to_string()]].concat(), "Enter saves a new future time");
+    assert!(app.time_edit.input.is_none(), "the save closes the input");
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Add));
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Input("7am Tomorrow".into())));
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Save));
+    assert_eq!(list(&app).len(), 8);
+    assert!(tall(&app).find(format!("{about} You have reached the limit of 8.")).is_ok());
+    {
+        let mut sim = tall(&app);
+        let _ = sim.click("Add");
+        assert_eq!(sim.into_messages().count(), 0, "Add is disabled at the limit");
+    }
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Add));
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Input("in 5 days".into())));
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Save));
+    assert_eq!(list(&app).len(), 8, "no ninth phrase");
+    let settings = app.settings_window.expect("the settings window");
+    let _ = app.update(UiMessage::WindowKey(settings, Key::Named(Named::Escape), Modifiers::empty()));
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Cancel));
+    assert!(app.time_edit.input.is_none() && app.settings_window.is_some(), "Cancel closes the input");
+
+    // The remove button of a row, the close icon on the line of its phrase.
+    let remove = |app: &mut BeeperGuiApp, phrase: &str| {
+        let mut sim = tall(app);
+        let row = sim.find(phrase).expect("the phrase").bounds().center_y();
+        let close = icon::CLOSE.to_string();
+        let found = sim.find(move |c: iced_test::selector::Candidate<'_>| match c {
+            iced_test::selector::Candidate::Text { content, bounds, .. }
+                if content == close && (bounds.center_y() - row).abs() < 10.0 =>
+            {
+                Some(bounds.center())
+            }
+            _ => None,
+        });
+        sim.point_at(found.expect("the remove button"));
+        let _ = sim.simulate(iced_test::simulator::click());
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(app, msgs);
+    };
+    remove(&mut app, "In Two Hours");
+    assert!(!list(&app).contains(&"In Two Hours".to_string()) && list(&app).len() == 7, "{:?}", list(&app));
+
+    // A press on a row and a move over another row, then the drop.
+    let first = list(&app)[0].clone();
+    {
+        let mut sim = tall(&app);
+        let from = sim.find(first.as_str()).expect("the first row").bounds().center();
+        sim.point_at(from);
+        let _ = sim
+            .simulate([Event::Mouse(M::CursorMoved { position: from }), Event::Mouse(M::ButtonPressed(Button::Left))]);
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(&mut app, msgs);
+    }
+    assert_eq!(app.time_edit.drag.as_ref().map(|d| d.0), Some(0), "the press grabs the row");
+    let third = list(&app)[2].clone();
+    {
+        let mut sim = tall(&app);
+        let to = sim.find(third.as_str()).expect("the third row").bounds().center();
+        sim.point_at(to);
+        let _ = sim.simulate([Event::Mouse(M::CursorMoved { position: to })]);
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(&mut app, msgs);
+    }
+    assert_eq!(list(&app)[0], first, "the order saves at the drop");
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Grab(None)));
+    let order = list(&app);
+    assert_eq!((order[1].as_str(), order[2].as_str()), (third.as_str(), first.as_str()), "{order:?}");
+
+    while list(&app).len() > 1 {
+        let phrase = list(&app)[0].clone();
+        remove(&mut app, &phrase);
+    }
+    let last = list(&app);
+    remove(&mut app, &last[0].clone());
+    assert_eq!(list(&app), last, "the last phrase stays");
+    {
+        let mut sim = tall(&app);
+        let _ = sim.click("Reset").expect("the Reset button");
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(&mut app, msgs);
+    }
+    assert!(app.store.read().settings.time_suggestions.is_empty(), "Reset stores no list");
+    assert_eq!(list(&app), defaults, "which means Desktop's defaults");
+    let hits = search_settings(&app.store.read(), "time sugg");
+    assert!(hits.contains(&SettingsHit::Custom(SettingsTab::General, "Time suggestions")), "{hits:?}");
+}
+
+/// Desktop's `Cze` and `cy`: the Remind Me menus and the command bar offer the custom time suggestions.
+#[test]
+fn menus_use_the_time_suggestions_like_desktop() {
+    let mut app = demo_app("time-suggestion-menus");
+    let id = app.visible_chats(&app.store.read())[0].id.clone();
+    app.store.write().update_settings(|s| s.time_suggestions = vec!["In 3w".into(), "7am Tomorrow".into()]);
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(id.clone())));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::ChatSub(Some(1))));
+    {
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find("In 3w").is_ok() && sim.find("7am Tomorrow").is_ok(), "the chat menu has the custom phrases");
+        assert!(sim.find("In Two Hours").is_err(), "and not the defaults");
+        let _ = sim.click("In 3w").expect("the phrase");
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(&mut app, msgs);
+    }
+    let at = parse_when_millis("In 3w", now_unix_millis()).unwrap();
+    let reminder = app.store.read().chat(&id).reminder.clone().map(|r| r.remind_at_ms);
+    assert!(reminder.is_some_and(|r| (r - at).abs() < 60_000), "the phrase sets the reminder");
+    assert_eq!(app.store.read().settings.last_time, "In 3w", "and is kept for Last Used");
+    let _ = app.update(UiMessage::CloseModals);
+    app.selection = app.visible_chats(&app.store.read()).iter().take(2).map(|c| c.id.clone()).collect();
+    let (menu, _) = app.view_selection_menu(0);
+    let mut sim = simulator(menu);
+    assert!(sim.find("7am Tomorrow").is_ok() && sim.find("In an Hour").is_err(), "the selection bar menu too");
+    drop(sim);
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(id))));
+    let labels: Vec<String> =
+        app.commands(&app.store.read(), "").into_iter().filter_map(|c| c.render.map(|r| r.0)).collect();
+    assert!(labels.contains(&"in 3w".into()) && labels.contains(&"7am tomorrow".into()), "{labels:?}");
+    assert!(!labels.contains(&"in two hours".into()), "the command bar drops the defaults: {labels:?}");
+}
+
+fn apply_all(app: &mut BeeperGuiApp, msgs: Vec<UiMessage>) {
+    for m in msgs {
+        let _ = app.update(m);
+    }
+}
+
 #[test]
 fn polls_like_desktop() {
     let mut app = demo_app("polls");

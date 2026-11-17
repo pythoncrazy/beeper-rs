@@ -122,13 +122,10 @@ impl BeeperGuiApp {
     }
 }
 
-/// Desktop's default `time_suggestion_options`.
-pub(crate) const TIME_SUGGESTIONS: [&str; 6] =
-    ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "This Weekend", "Next Week"];
-
-/// Desktop's `wJe`: the time suggestions that fall in the future, with their times.
-pub(crate) fn remind_presets(now: i64) -> impl Iterator<Item = (&'static str, i64)> {
-    TIME_SUGGESTIONS.into_iter().filter_map(move |s| parse_when_millis(s, now).filter(|at| *at > now).map(|at| (s, at)))
+/// Desktop's `Cze`: the time suggestions of `timeSuggestionOptions` that fall in the future, with their times.
+pub(crate) fn remind_presets(s: &BeeperSettings, now: i64) -> Vec<(String, i64)> {
+    let at = |t: &str| parse_when_millis(t, now).filter(|at| *at > now);
+    s.time_suggestions().into_iter().filter_map(|t| Some((t.to_string(), at(t)?))).collect()
 }
 
 /// Desktop's `dD`: the last time phrase that set a reminder, read again now, when it falls in the future.
