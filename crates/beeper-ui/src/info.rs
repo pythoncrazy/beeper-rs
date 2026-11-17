@@ -166,7 +166,7 @@ pub(crate) fn info_menu(
     });
     let personal =
         can_edit_for_me(st, c).then(|| (tr("Edit for Me").to_string(), Some(UiMessage::OpenEditForMe(c.id.clone()))));
-    let theme = Some((tr("Chat Theme").to_string(), Some(UiMessage::OpenChatTheme(c.id.clone()))));
+    let theme = Some((tr("Chat Theme").to_string(), Some(UiMessage::ChatTheme(chat_theme::Msg::Open(c.id.clone())))));
     let text = text.unwrap_or(&c.title);
     let title = copy.then(|| Some((trf("Copy %s", &[&text]), Some(UiMessage::CopyText(text.to_string())))));
     let edits = [group, personal, theme].into_iter().flatten().map(Some);

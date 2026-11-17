@@ -547,7 +547,7 @@ mod tests {
         };
         (m.timestamp, m.text, m.attachments) = ("2099-01-01T00:00:00.000Z".into(), Some("hi".into()), Vec::new());
         let note = |app: &mut BeeperGuiApp, props: AccountProps, m: &mut Message, id: &str| {
-            let _ = app.update(UiMessage::SetAccountProps(chat.account_id.clone(), props));
+            let _ = app.update(UiMessage::Accounts(crate::accounts::Msg::SetProps(chat.account_id.clone(), props)));
             m.id = id.into();
             app.notification(m).map(|(n, _)| (n.toast.body, n.toast.silent))
         };

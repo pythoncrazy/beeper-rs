@@ -1,4 +1,5 @@
 //! Desktop's command bar commands (`Efe`): the categories, the titles, the search keywords and the hotkeys.
+use crate::accounts;
 use crate::blocking;
 use crate::i18n::{tr, trf, trx};
 use crate::media_view;
@@ -590,10 +591,10 @@ impl BeeperGuiApp {
                 _ => crate::account_user(st, a),
             };
             let mute_title = if props.notifications { tr("Mute account: %s") } else { tr("Unmute account: %s") };
-            let mute = Some(UiMessage::SetAccountProps(
+            let mute = Some(UiMessage::Accounts(accounts::Msg::SetProps(
                 a.into(),
                 AccountProps { notifications: !props.notifications, ..props },
-            ));
+            )));
             let category = interned(trf("%s Account", &[&crate::network_label(a)]));
             v.push(cmd(category, mute_title.replacen("%s", &user, 1), mute));
             let later = self.pane.editing_message_id.is_none().then_some(UiMessage::Scheduled(scheduled::Msg::Open));
@@ -633,7 +634,7 @@ impl BeeperGuiApp {
         let open = |tab, then: UiMessage| Some(UiMessage::Commands(vec![UiMessage::OpenSettings(tab), then]));
         let add = match self.adding_account {
             true => UiMessage::SelectSettingsTab(SettingsTab::Accounts),
-            false => UiMessage::ToggleAddAccount,
+            false => UiMessage::Accounts(accounts::Msg::ToggleAdd),
         };
         v.push(cmd(settings, tr("Add Account"), open(SettingsTab::Accounts, add)).keys(prefs));
         use SettingsTab as T;

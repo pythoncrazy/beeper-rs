@@ -1,6 +1,7 @@
 //! The Settings window: its sections, the settings search, the hotkey recorder, and the Storage, Integrations,
 //! Devices and Accounts pages.
 
+use crate::accounts;
 use crate::blocking;
 use crate::blocking::blocked_chats;
 use crate::i18n::{tr, trf, trn, trnx, trs, trx};
@@ -921,7 +922,7 @@ impl BeeperGuiApp {
             )
             .padding([4, 8])
             .style(btn_style([p.accent; 3], [Color::WHITE; 3], 20.0))
-            .on_press(UiMessage::ShowAppQr)
+            .on_press(UiMessage::Accounts(accounts::Msg::ShowAppQr))
             .into(),
         };
         let heading = semi(tr("Take Beeper with you"), 16.0).color(p.strong);
@@ -996,7 +997,9 @@ impl BeeperGuiApp {
                     .spacing(8)
                     .align_y(Center)
                     .padding(Padding::new(4.0).left(8.0).right(16.0));
-                    let row = button(line).bare(p.strong).on_press(UiMessage::OpenAccount(Some(logo.into())));
+                    let row = button(line)
+                        .bare(p.strong)
+                        .on_press(UiMessage::Accounts(accounts::Msg::Open(Some(logo.into()))));
                     mouse_area(row).on_right_press(UiMessage::OpenChatMenu(format!("prefs:{logo}"))).into()
                 };
                 let me = st.me();
@@ -1025,7 +1028,7 @@ impl BeeperGuiApp {
                 let head = row![
                     med(tr("Accounts"), 12.0).color(p.weak),
                     Space::new().width(Fill),
-                    icon_btn(p, icon::CIRCLE_PLUS, 16.0, 22.0, p.accent, UiMessage::ToggleAddAccount)
+                    icon_btn(p, icon::CIRCLE_PLUS, 16.0, 22.0, p.accent, UiMessage::Accounts(accounts::Msg::ToggleAdd))
                 ]
                 .height(26)
                 .align_y(Center)
@@ -1034,7 +1037,7 @@ impl BeeperGuiApp {
                 let foot = column![
                     button(med(tr("Add an Account"), 13.0).color(p.accent))
                         .bare(p.accent)
-                        .on_press(UiMessage::ToggleAddAccount),
+                        .on_press(UiMessage::Accounts(accounts::Msg::ToggleAdd)),
                     txt(trn("%d Free Account Remaining", "%d Free Accounts Remaining", remaining, &[&remaining]), 12.0)
                         .color(p.sub)
                 ]
@@ -1650,7 +1653,9 @@ impl BeeperGuiApp {
                 (b.network_name.clone(), [r.name, r.username, r.phone, r.email])
             }
         };
-        let back = button(tinted(&CHEVRON_LEFT, 16.0, p.strong)).bare(p.strong).on_press(UiMessage::OpenAccount(None));
+        let back = button(tinted(&CHEVRON_LEFT, 16.0, p.strong))
+            .bare(p.strong)
+            .on_press(UiMessage::Accounts(accounts::Msg::Open(None)));
         let title = row![svg(brand_svg(brand_key(id))).width(28).height(28), semi(network, 14.0).color(p.strong)]
             .spacing(4)
             .align_y(Center);
@@ -1667,16 +1672,16 @@ impl BeeperGuiApp {
         let set = |f: fn(&mut beeper_core::models::AccountProps)| {
             let mut q = props;
             f(&mut q);
-            UiMessage::SetAccountProps(id.into(), q)
+            UiMessage::Accounts(accounts::Msg::SetProps(id.into(), q))
         };
         let toggle = |label, on, msg| pref_row(p, tr(label), None, None, toggle_faded(p, on, Some(msg), 1.0));
         let sounds = [tr("Default").to_string(), tr("None").to_string()];
         let (account, picked) = (id.to_string(), sounds[usize::from(props.silent)].clone());
         let sound = select(p, sounds.clone(), picked, move |o| {
-            UiMessage::SetAccountProps(
+            UiMessage::Accounts(accounts::Msg::SetProps(
                 account.clone(),
                 beeper_core::models::AccountProps { silent: o == sounds[1], ..props },
-            )
+            ))
         });
         let inbox = st.matrix.as_ref().and(bridge).map(|b| {
             let labels: Vec<String> = INBOX_OPTIONS.iter().map(|&(_, l)| inbox_label(l).to_string()).collect();
@@ -1685,7 +1690,7 @@ impl BeeperGuiApp {
             let picked = labels[at].clone();
             let pick = select(p, labels.clone(), picked, move |l| {
                 let i = labels.iter().position(|x| *x == l).expect("a listed option");
-                UiMessage::SetInboxVisibility(key.clone(), INBOX_OPTIONS[i].0)
+                UiMessage::Accounts(accounts::Msg::SetInboxVisibility(key.clone(), INBOX_OPTIONS[i].0))
             });
             pref_row(p, tr("Show in Inbox"), None, None, pick)
         });
@@ -1721,7 +1726,7 @@ impl BeeperGuiApp {
                 .padding([5, 0])
                 .width(Fill)
                 .style(btn_style([CLEAR; 3], [p.danger; 3], 0.0))
-                .on_press(UiMessage::AskRemoveAccount(id.into()))
+                .on_press(UiMessage::Accounts(accounts::Msg::AskRemove(id.into())))
                 .into()
         });
         let settings = group(p, Some(tr("Settings")), rows.collect());

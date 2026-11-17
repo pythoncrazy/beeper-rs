@@ -258,11 +258,11 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         56 if !hits.is_empty() => UiMessage::PickSetting(*rng.pick(&hits)),
         57 => UiMessage::WindowFocused(rng.coin()),
         58 => UiMessage::HotkeyQuery(text),
-        59 => UiMessage::OpenAccount(rng.coin().then(|| rng.pick(&accounts).clone())),
-        60 => UiMessage::SetAccountProps(
+        59 => UiMessage::Accounts(accounts::Msg::Open(rng.coin().then(|| rng.pick(&accounts).clone()))),
+        60 => UiMessage::Accounts(accounts::Msg::SetProps(
             rng.pick(&accounts).clone(),
             beeper_core::models::AccountProps { notifications: rng.coin(), previews: rng.coin(), silent: rng.coin() },
-        ),
+        )),
         61 => UiMessage::OpenChatMenu(format!("account:{}", rng.pick(&rail))),
         62 => UiMessage::SelectMessages(vec![msg]),
         63 => UiMessage::CopySelected(rng.coin()),
@@ -3956,9 +3956,10 @@ fn chat_theme_like_desktop() {
         );
     }
     let swatch = |id: &str| Some(Bubble::Swatch { id: id.into() });
-    let _ = app.update(UiMessage::ChatBubble(None, swatch("blue")));
-    let _ = app.update(UiMessage::ChatWallpaper(None, Wallpaper::Gradient { id: "linen".into() }));
-    let _ = app.update(UiMessage::ChatWallpaper(Some(chat.clone()), Wallpaper::None));
+    let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Bubble(None, swatch("blue"))));
+    let _ =
+        app.update(UiMessage::ChatTheme(chat_theme::Msg::Wallpaper(None, Wallpaper::Gradient { id: "linen".into() })));
+    let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Wallpaper(Some(chat.clone()), Wallpaper::None)));
     let stored = serde_json::to_value(&app.store.read().settings.chat_appearance).expect("json");
     let want = serde_json::json!({
         "global": { "wallpaper": { "type": "gradient", "id": "linen" }, "bubble": { "type": "swatch", "id": "blue" } },
@@ -3980,15 +3981,18 @@ fn chat_theme_like_desktop() {
     );
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
     let _ = simulator(app.view_main());
-    let _ = app.update(UiMessage::ChatWallpaper(Some(chat.clone()), Wallpaper::Color { id: "mint".into() }));
+    let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Wallpaper(
+        Some(chat.clone()),
+        Wallpaper::Color { id: "mint".into() },
+    )));
     let _ = simulator(app.view_main());
-    let _ = app.update(UiMessage::ChatBubble(None, None));
-    let _ = app.update(UiMessage::ChatWallpaper(None, Wallpaper::None));
+    let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Bubble(None, None)));
+    let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Wallpaper(None, Wallpaper::None)));
     let a = app.store.read().settings.chat_appearance.clone();
     assert!(a.theme(None).bubble.is_none(), "the default bubble color clears");
-    let _ = app.update(UiMessage::OpenChatTheme(chat.clone()));
+    let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Open(chat.clone())));
     assert_eq!(app.theme_windows.len(), 1);
-    let _ = app.update(UiMessage::OpenChatTheme(chat.clone()));
+    let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Open(chat.clone())));
     assert_eq!(app.theme_windows.len(), 1, "a chat has one chat theme window");
     {
         let mut sim = simulator(app.view_chat_theme(&chat));
@@ -4002,14 +4006,14 @@ fn chat_theme_like_desktop() {
     assert!(simulator(app.view_chat_theme(&chat)).find("Use app default").is_err());
     let picked = dir.join("picked.PNG");
     ::image::RgbaImage::new(1, 1).save_with_format(&picked, ::image::ImageFormat::Png).expect("write a photo");
-    let _ = app.update(UiMessage::WallpaperPicked(Some(chat.clone()), Ok(vec![picked])));
+    let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::WallpaperPicked(Some(chat.clone()), Ok(vec![picked]))));
     let themed = app.store.read().settings.chat_appearance.clone();
     let Some(Wallpaper::Photo { file_name }) = themed.theme(Some(&chat)).wallpaper else { panic!("a photo wallpaper") };
     assert!(file_name.ends_with(".png") && crate::chat_theme::photo_dir(&dir).join(&file_name).exists());
     let (wallpaper, _) = crate::chat_theme::resolve(&themed, Some(&chat), true, &dir);
     assert!(matches!(wallpaper, Some((crate::chat_theme::Paint::Photo(..), Color::WHITE))));
     let _ = simulator(app.view_main());
-    let _ = app.update(UiMessage::ChatWallpaper(Some(chat.clone()), Wallpaper::None));
+    let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Wallpaper(Some(chat.clone()), Wallpaper::None)));
     assert!(!crate::chat_theme::photo_dir(&dir).join(&file_name).exists(), "an unused photo is removed");
     assert_eq!(
         crate::chat_theme::paint(&a.theme(Some(&chat)).wallpaper.unwrap(), true, &dir).unwrap().0,
@@ -4429,14 +4433,16 @@ fn accounts_settings_rows_have_the_account_menu_like_desktop() {
         let _ = sim.click("Remove Account…").expect("a Remove Account item");
         sim.into_messages().collect()
     };
-    assert!(matches!(&ask[..], [UiMessage::AskRemoveAccount(a)] if *a == account));
+    assert!(matches!(&ask[..], [UiMessage::Accounts(accounts::Msg::AskRemove(a))] if *a == account));
     let _ = app.update(ask.into_iter().next().unwrap());
     assert!(app.chat_menu.is_none() && app.confirm == Some(ASK_REMOVE_ACCOUNT));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Disconnect and remove the data from this account on Beeper").is_ok());
     let _ = sim.click("Remove from All Devices").expect("the confirm button");
-    assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::RemoveAccount(a)] if *a == account));
-    let _ = app.update(UiMessage::AccountRemoved(account.clone(), Err("offline".into())));
+    assert!(
+        matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::Accounts(accounts::Msg::Remove(a))] if *a == account)
+    );
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::Removed(account.clone(), Err("offline".into()))));
     let text = format!("There was an error disconnecting account {account}. offline");
     assert!(simulator(app.view_main()).find(text.as_str()).is_ok());
     let _ = app.update(UiMessage::Ask(None));
@@ -4494,7 +4500,7 @@ fn account_status_like_desktop() {
     app.store.write().bridge_accounts[0].state = "CONNECTED".into();
     app.store.write().bridge_accounts[0].remote_error = Some("Token expired".into());
     assert_eq!(status_text(&app.store.read(), &account), Some("Attention Required"), "another state with an error");
-    let _ = app.update(UiMessage::OpenAccount(Some(account.clone())));
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::Open(Some(account.clone()))));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Account Disconnected").is_ok() && sim.find("Token expired").is_ok());
     assert!(sim.find("Reconnect").is_err(), "a demo account cannot log in again");
@@ -4504,7 +4510,7 @@ fn account_status_like_desktop() {
     }
     assert!(simulator(app.view_settings()).find("Remove from All Devices").is_ok(), "the button asks first");
     let _ = app.update(UiMessage::Ask(None));
-    let _ = app.update(UiMessage::OpenAccount(Some("hungryserv".into())));
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::Open(Some("hungryserv".into()))));
     assert!(simulator(app.view_settings()).find("Remove Account").is_err(), "the Beeper account has no button");
 }
 
@@ -4521,7 +4527,7 @@ fn disconnected_banners_like_desktop() {
     };
     let banner = format!("{name} disconnected");
     assert!(simulator(app.view_sidebar()).find(banner.as_str()).is_ok(), "the inbox shows it");
-    let _ = app.update(UiMessage::DismissAccountError(account.clone()));
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::DismissError(account.clone())));
     assert!(simulator(app.view_sidebar()).find(banner.as_str()).is_err(), "dismissed for the session");
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some(account))));
     assert!(simulator(app.view_sidebar()).find(banner.as_str()).is_err(), "a dismissed account stays dismissed");
@@ -4735,15 +4741,15 @@ fn chat_list_mutes_receipts_and_errors_like_desktop() {
     };
     assert_eq!(state(&app), (false, false));
     let props = app.store.read().settings.account(&account);
-    let _ = app.update(UiMessage::SetAccountProps(
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::SetProps(
         account.clone(),
         beeper_core::models::AccountProps { notifications: false, ..props },
-    ));
+    )));
     assert_eq!(state(&app), (true, true), "a muted account mutes its rows");
     let idx = app.store.read().resolve_chat_idx(&id).expect("the chat");
     app.store.write().update_chat(idx, |c| c.unread_mentions = 1);
     assert_eq!(state(&app), (true, false), "a mention keeps the count blue");
-    let _ = app.update(UiMessage::SetAccountProps(account.clone(), props));
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::SetProps(account.clone(), props)));
     app.store.write().update_chat(idx, |c| c.is_archived = Some(true));
     assert_eq!(state(&app), (false, true), "archived rows are grey");
 
@@ -6510,7 +6516,10 @@ fn chat_info_header_like_desktop() {
         "Edit for Me and Chat Theme"
     );
     app.store.write().features.flags["features"]["*"]["personal-room-overrides"] = false.into();
-    assert!(matches!(&click(&app, "Edit")[..], [UiMessage::OpenChatTheme(c)] if *c == id), "one action runs at once");
+    assert!(
+        matches!(&click(&app, "Edit")[..], [UiMessage::ChatTheme(chat_theme::Msg::Open(c))] if *c == id),
+        "one action runs at once"
+    );
     set_edits(&mut app, ALL_EDITS);
     assert!(matches!(&click(&app, "Edit")[..], [UiMessage::OpenChatMenu(k)] if *k == menu));
     let _ = app.update(UiMessage::OpenChatMenu(menu));

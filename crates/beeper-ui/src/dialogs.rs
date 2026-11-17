@@ -1,5 +1,6 @@
 //! The confirmation dialogs, and the Label, Edit Labels, Edit Group, Blocked users and New Poll windows.
 
+use crate::accounts;
 use crate::blocking;
 use crate::blocking::blocked_chats;
 use crate::i18n::{tr, trf, trn, trx};
@@ -452,7 +453,7 @@ impl BeeperGuiApp {
                 (
                     "Remove Account".into(),
                     "Disconnect and remove the data from this account on Beeper".into(),
-                    vec![("Remove from All Devices", UiMessage::RemoveAccount(id))],
+                    vec![("Remove from All Devices", UiMessage::Accounts(accounts::Msg::Remove(id)))],
                 )
             }
             ASK_REMOTE_ACCESS => (
@@ -492,7 +493,7 @@ impl BeeperGuiApp {
                             _ => "Reconnect %1$s to unblock %2$s.",
                         };
                         let again = reconnect(&st, &c.account_id);
-                        let again = again.unwrap_or_else(|| UiMessage::OpenAccountSettings(c.account_id.clone()));
+                        let again = again.unwrap_or_else(|| UiMessage::Accounts(accounts::Msg::OpenSettings(c.account_id.clone())));
                         let again = vec![(tr("Reconnect"), UiMessage::Commands(vec![UiMessage::Ask(None), again]))];
                         (trf("%s Is Disconnected", &[&network]), trf(body, &[&network, &c.title]), again)
                     }

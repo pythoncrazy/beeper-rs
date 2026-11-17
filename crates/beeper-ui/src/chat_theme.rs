@@ -1,9 +1,12 @@
 //! Desktop's chat themes: the bubble colors and the wallpapers of `chatAppearanceStore`.
+use crate::i18n::tr;
 use crate::style::hex;
+use crate::toasts::Toast;
+use crate::{portal, BeeperGuiApp, UiMessage};
 use beeper_core::models::{Bubble, ChatAppearance, Wallpaper};
 use iced::gradient::Linear;
 use iced::widget::{container, image, stack, svg, Space};
-use iced::{Background, Border, Color, ContentFit, Element, Fill, Gradient, Radians, Size, Theme};
+use iced::{window, Background, Border, Color, ContentFit, Element, Fill, Gradient, Radians, Size, Task, Theme};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
@@ -223,5 +226,67 @@ pub fn fill<'a, M: 'a>(paint: Paint, size: Size, radius: f32) -> Element<'a, M> 
             container(image(glow(g, size, radius)).content_fit(ContentFit::None)).width(Fill).height(Fill).clip(true)
         ]
         .into(),
+    }
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    /// Sets the wallpaper of the chat theme of a chat, or of the default theme.
+    Wallpaper(Option<String>, Wallpaper),
+    /// Sets the bubble color of the chat theme of a chat, or of the default theme; `None` clears it.
+    Bubble(Option<String>, Option<Bubble>),
+    /// Desktop's `Choose photo`: picks a photo wallpaper for a chat, or for the default theme.
+    PickWallpaper(Option<String>),
+    WallpaperPicked(Option<String>, Result<Vec<std::path::PathBuf>, String>),
+    /// Desktop's `clearChatTheme`: the chat uses the default chat theme again.
+    Clear(String),
+    /// Desktop's `editChatTheme`: opens the chat theme window of a chat.
+    Open(String),
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn chat_theme(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::Wallpaper(chat, w) => {
+                self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.wallpaper = Some(w)));
+                self.prune_wallpapers();
+            }
+            Msg::Bubble(chat, b) => self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.bubble = b)),
+            Msg::Clear(chat) => {
+                self.patch_settings(|s| _ = s.chat_appearance.per_chat.remove(&chat));
+                self.prune_wallpapers();
+            }
+            Msg::PickWallpaper(chat) => {
+                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Image);
+                return Task::perform(pick, move |r| UiMessage::ChatTheme(Msg::WallpaperPicked(chat.clone(), r)));
+            }
+            Msg::WallpaperPicked(chat, r) => match r.map(|paths| paths.into_iter().next()) {
+                Ok(Some(path)) => {
+                    let dir = photo_dir(&self.store.read().config.data_dir);
+                    let ext =
+                        path.extension().map_or(String::new(), |e| format!(".{}", e.to_string_lossy().to_lowercase()));
+                    let file_name = format!("{}{ext}", beeper_core::connect::random_id());
+                    std::fs::create_dir_all(&dir).expect("create the chat wallpapers directory");
+                    match std::fs::copy(&path, dir.join(&file_name)) {
+                        Ok(_) => {
+                            return self
+                                .update(UiMessage::ChatTheme(Msg::Wallpaper(chat, Wallpaper::Photo { file_name })))
+                        }
+                        Err(e) => self.fail(Toast::new(format!("Could not import {}: {e}", path.display()))),
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => self.status_banner = e,
+            },
+            Msg::Open(chat) => {
+                if let Some(&(id, _)) = self.theme_windows.iter().find(|w| w.1 == chat) {
+                    return window::gain_focus(id);
+                }
+                let (id, open) = self.open_child(Size::new(380.0, 620.0));
+                self.theme_windows.push((id, chat));
+                return open;
+            }
+        }
+        self.settle()
     }
 }

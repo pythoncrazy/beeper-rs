@@ -1,3 +1,4 @@
+pub mod accounts;
 mod add_account;
 mod anim;
 mod blocking;
@@ -386,17 +387,8 @@ pub enum UiMessage {
     ToggleFlag(String, ChatFlag),
     ToggleRead(String),
     MarkRead(String),
-    /// Sets the wallpaper of the chat theme of a chat, or of the default theme.
-    ChatWallpaper(Option<String>, Wallpaper),
-    /// Sets the bubble color of the chat theme of a chat, or of the default theme; `None` clears it.
-    ChatBubble(Option<String>, Option<Bubble>),
-    /// Desktop's `Choose photo`: picks a photo wallpaper for a chat, or for the default theme.
-    PickWallpaper(Option<String>),
-    WallpaperPicked(Option<String>, Result<Vec<std::path::PathBuf>, String>),
-    /// Desktop's `clearChatTheme`: the chat uses the default chat theme again.
-    ClearChatTheme(String),
-    /// Desktop's `editChatTheme`: opens the chat theme window of a chat.
-    OpenChatTheme(String),
+    /// Desktop's chat themes: the wallpaper and bubble color of a chat or of the default theme.
+    ChatTheme(chat_theme::Msg),
     /// Desktop's `PollCreatorBrowserWindow` for a chat.
     OpenPollCreator(String),
     Poll(window::Id, PollEdit),
@@ -536,14 +528,8 @@ pub enum UiMessage {
     DeleteChat(String, bool),
     Capabilities(String, Result<serde_json::Value, String>),
     OpenSettings(SettingsTab),
-    ToggleAddAccount,
-    ShowAppQr,
-    OpenAccount(Option<String>),
-    /// Desktop's `openManageAccountInNewWindow`.
-    OpenAccountSettings(String),
-    SetAccountProps(String, beeper_core::models::AccountProps),
-    /// "Show in Inbox": the `chat_list_rules` key and option.
-    SetInboxVisibility(String, &'static str),
+    /// The chat accounts: Settings > Accounts, an account's settings and Show in Inbox, its removal, and its error banner.
+    Accounts(accounts::Msg),
     SelectSettingsTab(SettingsTab),
     SettingsQueryChanged(String),
     SettingsFocus(usize),
@@ -573,15 +559,11 @@ pub enum UiMessage {
     ZoomDrag(f32),
     ZoomRelease,
     ToggleSetting(fn(&mut BeeperSettings)),
-    /// The Beeper account profile and the chat accounts from `whoami`.
-    CloudAccounts(Result<(Profile, Vec<BridgeAccountInfo>), String>),
     AvatarLoaded(String, Result<image::Handle, String>),
     MediaLoaded(String, Result<Frames, String>),
     TileBaked(String, image::Handle),
     /// A quoted message that the timeline did not have, or why it could not load.
     QuoteLoaded(String, Result<Box<Message>, String>),
-    /// The dismiss button of the disconnected banner of an account.
-    DismissAccountError(String),
     Voice(voice::Msg),
     Record(record::Msg),
     RetryMedia(String),
@@ -694,9 +676,6 @@ pub enum UiMessage {
     Tray(Result<tray::Event, String>),
     TrayFailed(String),
     WindowResized(window::Id, Size),
-    AskRemoveAccount(String),
-    RemoveAccount(String),
-    AccountRemoved(String, Result<(), String>),
     ScreenshotCaptured(window::Id, window::Screenshot),
     KeyPressed(Key, Modifiers),
     /// Text that a key typed outside of a text field in a window.
@@ -4980,44 +4959,7 @@ impl BeeperGuiApp {
                 drop(st);
                 self.refresh_theme_and_tray();
             }
-            UiMessage::ChatWallpaper(chat, w) => {
-                self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.wallpaper = Some(w)));
-                self.prune_wallpapers();
-            }
-            UiMessage::ChatBubble(chat, b) => {
-                self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.bubble = b))
-            }
-            UiMessage::ClearChatTheme(chat) => {
-                self.patch_settings(|s| _ = s.chat_appearance.per_chat.remove(&chat));
-                self.prune_wallpapers();
-            }
-            UiMessage::PickWallpaper(chat) => {
-                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Image);
-                return Task::perform(pick, move |r| UiMessage::WallpaperPicked(chat.clone(), r));
-            }
-            UiMessage::WallpaperPicked(chat, r) => match r.map(|paths| paths.into_iter().next()) {
-                Ok(Some(path)) => {
-                    let dir = chat_theme::photo_dir(&self.store.read().config.data_dir);
-                    let ext =
-                        path.extension().map_or(String::new(), |e| format!(".{}", e.to_string_lossy().to_lowercase()));
-                    let file_name = format!("{}{ext}", beeper_core::connect::random_id());
-                    std::fs::create_dir_all(&dir).expect("create the chat wallpapers directory");
-                    match std::fs::copy(&path, dir.join(&file_name)) {
-                        Ok(_) => return self.update(UiMessage::ChatWallpaper(chat, Wallpaper::Photo { file_name })),
-                        Err(e) => self.fail(Toast::new(format!("Could not import {}: {e}", path.display()))),
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => self.status_banner = e,
-            },
-            UiMessage::OpenChatTheme(chat) => {
-                if let Some(&(id, _)) = self.theme_windows.iter().find(|w| w.1 == chat) {
-                    return window::gain_focus(id);
-                }
-                let (id, open) = self.open_child(Size::new(380.0, 620.0));
-                self.theme_windows.push((id, chat));
-                return open;
-            }
+            UiMessage::ChatTheme(msg) => return self.chat_theme(msg),
             UiMessage::OpenPollCreator(chat) => {
                 if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
                     return window::gain_focus(d.id);
@@ -5830,49 +5772,11 @@ impl BeeperGuiApp {
             }
             UiMessage::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
             UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
-            UiMessage::CloudAccounts(Ok((profile, accounts))) => {
-                let (token, uid, demo) = {
-                    let mut st = self.store.write();
-                    let email = profile.email.clone();
-                    st.features.subscribed = profile.plan != Plan::Free;
-                    st.whoami = profile;
-                    let info = (st.beeper_state.access_token.clone(), st.beeper_state.user_id.clone(), st.config.demo);
-                    if st.me().email != email {
-                        let i = st.chat_idx(NOTE_CHAT_ID);
-                        st.update_chat(i, |c| c.participants.items[0].email = email);
-                    }
-                    st.set_cloud_accounts(accounts.clone());
-                    info
-                };
-                if !demo {
-                    let connected = accounts.iter().filter(|a| a.state == "CONNECTED");
-                    let caps: Vec<_> = connected
-                        .map(|a| {
-                            let id = a.account_id.clone();
-                            Task::perform(beeper_core::matrix::capabilities(self.provision(&id)), move |r| {
-                                UiMessage::Capabilities(id.clone(), r)
-                            })
-                        })
-                        .collect();
-                    let cloud = self.cloud.clone();
-                    let contacts = Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || cloud.contacts(&token, &uid, &accounts))
-                                .await
-                                .expect("contacts worker thread")
-                        },
-                        |a0| UiMessage::NewChat(new_chat::Msg::ContactsLoaded(a0)),
-                    );
-                    return Task::batch(caps).chain(contacts);
-                }
-            }
+            UiMessage::Accounts(msg) => return self.accounts(msg),
             UiMessage::Capabilities(account, r) => match r {
                 Ok(v) => drop(self.caps.insert(account, v)),
                 Err(e) => eprintln!("provisioning capabilities failed: {e}"),
             },
-            UiMessage::CloudAccounts(Err(e)) => {
-                self.fail(Toast::new(format!("Could not load your chat accounts: {e}")))
-            }
             UiMessage::AvatarLoaded(url, Ok(h)) => {
                 self.avatars.insert(url, Some(h));
             }
@@ -6359,7 +6263,6 @@ impl BeeperGuiApp {
             UiMessage::Relist => return Task::none(),
             UiMessage::LoadWanted => return Task::batch([self.load_avatars(), self.load_media(), self.load_quotes()]),
             UiMessage::QuoteLoaded(id, r) => _ = self.quotes.insert(id, Some(r.map(|m| *m))),
-            UiMessage::DismissAccountError(id) => _ = self.dismissed_errors.insert(id),
             UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
                 self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
             }
@@ -6395,51 +6298,6 @@ impl BeeperGuiApp {
             UiMessage::OpenSettings(tab) => {
                 self.chat_menu = None;
                 return self.open_settings(tab);
-            }
-            UiMessage::ToggleAddAccount => self.adding_account ^= true,
-            UiMessage::ShowAppQr => self.app_qr = true,
-            UiMessage::OpenAccountSettings(id) => {
-                self.chat_menu = None;
-                let open = self.open_settings(SettingsTab::Accounts);
-                self.account_page = Some(id);
-                return open;
-            }
-            UiMessage::OpenAccount(id) => {
-                self.account_page = id;
-                return operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
-            }
-            UiMessage::AskRemoveAccount(id) => {
-                (self.chat_menu, self.delete_target, self.confirm) = (None, Some(id), Some(ASK_REMOVE_ACCOUNT));
-            }
-            UiMessage::RemoveAccount(id) => {
-                self.confirm = None;
-                let p = self.provision(&id);
-                let st = self.store.read();
-                let sole = st.bridge_accounts.iter().filter(|b| b.bridge_id == p.bridge_id).all(|b| b.account_id == id);
-                let removing = beeper_core::matrix::remove_account(p, st.config.api_url.clone(), sole);
-                return Task::perform(removing, move |r| UiMessage::AccountRemoved(id.clone(), r));
-            }
-            UiMessage::AccountRemoved(_, Ok(())) => return self.refresh_cloud_accounts(),
-            UiMessage::AccountRemoved(id, Err(e)) => {
-                let text = format!("There was an error disconnecting account {id}. {e}");
-                let report = UiMessage::OpenUrl(ISSUES_URL.into());
-                self.show(Toast { buttons: vec![("Report a problem", report)], ..Toast::new(text) });
-            }
-            UiMessage::SetAccountProps(id, props) => {
-                self.chat_menu = None;
-                self.patch_settings(|s| {
-                    s.accounts.insert(id, props);
-                })
-            }
-            UiMessage::SetInboxVisibility(key, option) => {
-                self.chat_menu = None;
-                let st = self.store.read();
-                let client = st.matrix.clone().expect("Show in Inbox needs a Matrix client");
-                let rules = beeper_core::matrix::with_inbox_visibility(st.inbox_rules.clone(), &key, option);
-                return Task::perform(
-                    beeper_core::matrix::set_global(client, beeper_core::matrix::RULES, rules),
-                    UiMessage::Pushed,
-                );
             }
             UiMessage::SettingsQueryChanged(q) => {
                 let st = self.store.read();
@@ -8263,7 +8121,7 @@ impl BeeperGuiApp {
         let sub = (self.chat_sub == Some(0)).then(|| {
             let items = options.map(|&(o, label)| {
                 let lead = container((o == now).then(|| ic(icon::CHECK, 14.0))).width(22).into();
-                let msg = write.then(|| UiMessage::SetInboxVisibility(key.clone(), o));
+                let msg = write.then(|| UiMessage::Accounts(accounts::Msg::SetInboxVisibility(key.clone(), o)));
                 menu_item(p, Some(lead), inbox_label(label).into(), "", msg)
             });
             let body = container(Column::with_children(items).padding([4, 0])).width(ACCOUNT_SUB_W);
@@ -8277,9 +8135,15 @@ impl BeeperGuiApp {
             (false, true) => tr("Unmute Space"),
             (false, false) => tr("Mute Space"),
         };
-        let mute = menu_item(p, None, label.into(), "", Some(UiMessage::SetAccountProps(account.into(), mute)));
+        let mute = menu_item(
+            p,
+            None,
+            label.into(),
+            "",
+            Some(UiMessage::Accounts(accounts::Msg::SetProps(account.into(), mute))),
+        );
         let accounts = UiMessage::OpenSettings(SettingsTab::Accounts);
-        let settings = UiMessage::OpenAccountSettings(account.into());
+        let settings = UiMessage::Accounts(accounts::Msg::OpenSettings(account.into()));
         let rest = match kind {
             SpaceMenu::Gear => column![mute],
             SpaceMenu::Header | SpaceMenu::Options => {
@@ -8288,7 +8152,7 @@ impl BeeperGuiApp {
             SpaceMenu::Prefs => {
                 let remove = match account {
                     "hungryserv" => UiMessage::CloseChatMenu,
-                    _ => UiMessage::AskRemoveAccount(account.into()),
+                    _ => UiMessage::Accounts(accounts::Msg::AskRemove(account.into())),
                 };
                 column![
                     mute,
@@ -9678,13 +9542,13 @@ impl BeeperGuiApp {
                     false => Some(
                         button(ic(icon::CLOSE, 14.0).color(p.sub))
                             .bare(p.sub)
-                            .on_press(UiMessage::DismissAccountError(b.account_id.clone()))
+                            .on_press(UiMessage::Accounts(accounts::Msg::DismissError(b.account_id.clone())))
                             .into(),
                     ),
                 };
                 let icon = svg(brand_svg(brand_key(&b.account_id))).width(22).height(22);
                 let line = row![icon, text].push(end).spacing(8).align_y(Center);
-                let msg = again.unwrap_or(UiMessage::OpenAccountSettings(b.account_id.clone()));
+                let msg = again.unwrap_or(UiMessage::Accounts(accounts::Msg::OpenSettings(b.account_id.clone())));
                 let banner = button(line).padding([0, 8]).height(40).style(btn_style([p.hover; 3], [p.fg; 3], 12.0));
                 container(banner.on_press(msg)).padding(Padding::new(8.0).top(0.0).left(0.0)).into()
             })
@@ -10441,12 +10305,17 @@ impl BeeperGuiApp {
             container(cross).padding(1).style(bordered_box(CLEAR, p.neutral_border, 1.0, 14.0)).into(),
             default,
             14.0,
-            UiMessage::ChatBubble(id.clone(), none),
+            UiMessage::ChatTheme(chat_theme::Msg::Bubble(id.clone(), none)),
         )];
         swatches.extend(chat_theme::BUBBLES.iter().map(|&(bid, c)| {
             let on = stored.bubble == Some(Bubble::Swatch { id: bid.into() });
             let dot = container(Space::new()).width(28).height(28).style(fill_box(hex(c), 14.0));
-            ring(dot.into(), on, 14.0, UiMessage::ChatBubble(id.clone(), Some(Bubble::Swatch { id: bid.into() })))
+            ring(
+                dot.into(),
+                on,
+                14.0,
+                UiMessage::ChatTheme(chat_theme::Msg::Bubble(id.clone(), Some(Bubble::Swatch { id: bid.into() }))),
+            )
         }));
         let tile = |fill: El<'static>, w: Wallpaper| {
             let on = stored.wallpaper.as_ref().unwrap_or(&Wallpaper::None) == &w;
@@ -10456,7 +10325,7 @@ impl BeeperGuiApp {
                 1.0,
                 10.0,
             ));
-            ring(fill.into(), on, 10.0, UiMessage::ChatWallpaper(id.clone(), w))
+            ring(fill.into(), on, 10.0, UiMessage::ChatTheme(chat_theme::Msg::Wallpaper(id.clone(), w)))
         };
         let blank = |label: &'static str| -> El<'static> {
             container(txt(tr(label), 11.0).color(p.sub)).center(Fill).style(fill_box(p.card, 10.0)).into()
@@ -10469,7 +10338,12 @@ impl BeeperGuiApp {
         let mut tiles = vec![tile(blank("None"), Wallpaper::None)];
         let photo_fill = container(photo_fill).width(Fill).height(100).padding(1);
         let photo_fill = photo_fill.style(bordered_box(CLEAR, p.neutral_border, 1.0, 10.0));
-        tiles.push(ring(photo_fill.into(), photo, 10.0, UiMessage::PickWallpaper(id.clone())));
+        tiles.push(ring(
+            photo_fill.into(),
+            photo,
+            10.0,
+            UiMessage::ChatTheme(chat_theme::Msg::PickWallpaper(id.clone())),
+        ));
         let papers = chat_theme::COLORS.iter().map(|c| Wallpaper::Color { id: c.0.into() });
         for w in papers.chain(chat_theme::GRADIENTS.iter().map(|g| Wallpaper::Gradient { id: g.0.into() })) {
             let (paint, _) = chat_theme::paint(&w, self.dark, &st.config.data_dir).expect("a known wallpaper");
@@ -10479,7 +10353,7 @@ impl BeeperGuiApp {
             let reset = a
                 .per_chat
                 .contains_key(c)
-                .then(|| pill_btn(p, tr("Use app default"), UiMessage::ClearChatTheme(c.into())));
+                .then(|| pill_btn(p, tr("Use app default"), UiMessage::ChatTheme(chat_theme::Msg::Clear(c.into()))));
             row![txt(tr("Only you see your chat themes."), 12.0).color(p.sub), Space::new().width(Fill)]
                 .push(reset)
                 .spacing(8)

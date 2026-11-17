@@ -468,14 +468,14 @@ async fn lifecycle() {
     let none = beeper_core::matrix::E2eeSetup { cross_signing: true, verified: true, devices: Vec::new() };
     let _ = gui.update(UiMessage::Login(LoginMsg::E2ee(Ok(none))));
     assert_eq!(gui.login.screen, Screen::Accounts, "an imported session shows the chat accounts");
-    let _ = gui.update(UiMessage::CloudAccounts(Err("offline".into())));
+    let _ = gui.update(UiMessage::Accounts(beeper_ui::accounts::Msg::Cloud(Err("offline".into()))));
     assert_eq!(gui.status_banner, "Could not load your chat accounts: offline");
     let bridges = json!({ "signal": { "bridgeState": { "bridgeType": "signal" }, "remoteState": { "s1": { "state_event": "CONNECTED",
         "remote_profile": { "username": "alex", "phone": "+1 415-555-0142", "avatar": "mxc://beeper.com/a" } } } } });
     let cloud = beeper_core::cloud::cloud_accounts(&bridges).expect("parse the cloud bridges");
     assert_eq!(cloud[0].display_text().as_deref(), Some("+1 415-555-0142"), "the phone comes before the username");
     let profile = Profile { email: Some("zola@example.com".into()), ..profile };
-    let _ = gui.update(UiMessage::CloudAccounts(Ok((profile, cloud))));
+    let _ = gui.update(UiMessage::Accounts(beeper_ui::accounts::Msg::Cloud(Ok((profile, cloud)))));
     assert_eq!(shared.read().accounts.iter().map(|a| a.account_id.as_str()).collect::<Vec<_>>(), ["signal"]);
     for bad in [
         json!([]),
@@ -1355,9 +1355,9 @@ async fn lifecycle() {
         }
         assert!(sim.find("Facebook").is_err(), "the network grid starts hidden");
         let _ = sim.click("Add an Account");
-        assert!(matches!(sim.into_messages().last(), Some(UiMessage::ToggleAddAccount)));
+        assert!(matches!(sim.into_messages().last(), Some(UiMessage::Accounts(beeper_ui::accounts::Msg::ToggleAdd))));
     }
-    let _ = gui.update(UiMessage::ToggleAddAccount);
+    let _ = gui.update(UiMessage::Accounts(beeper_ui::accounts::Msg::ToggleAdd));
     assert!(simulator(gui.view_settings()).find("Facebook").is_ok(), "Add an Account shows the network grid");
     let _ = gui.update(UiMessage::SetPref("timeFormat", 0));
     let _ = gui.update(UiMessage::SetPref("showMessagePreviews", 1));
