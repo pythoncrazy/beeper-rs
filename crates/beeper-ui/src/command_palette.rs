@@ -182,10 +182,16 @@ impl BeeperGuiApp {
         let hint =
             self.pane().selected_chat_id.as_deref().and_then(|cid| st.resolve_chat_idx(cid).map(|i| &st.chats[i])).map(
                 |c| {
-                    let prep = if c.chat_type == "group" { "in" } else { "with" };
-                    let label = match room {
-                        Some(_) => "Press Ctrl K to search all of your conversations".into(),
-                        None => format!("Press Ctrl F to search your conversation {prep} {}", c.title),
+                    let key =
+                        |name| prefs::hotkey_label(st.settings.hotkey_keys(name).split(", ").next().unwrap_or(""));
+                    let label = match (room, c.chat_type == "group") {
+                        (Some(_), _) => trf("Press %s to search all of your conversations", &[&key("Search")]),
+                        (None, true) => {
+                            trf("Press %1$s to search your conversation in %2$s", &[&key("Search: Room"), &c.title])
+                        }
+                        (None, false) => {
+                            trf("Press %1$s to search your conversation with %2$s", &[&key("Search: Room"), &c.title])
+                        }
                     };
                     row![tinted(&DROP_ARROW, 20.0, p.sub), txt(label, 13.0).color(p.text)]
                         .spacing(16)

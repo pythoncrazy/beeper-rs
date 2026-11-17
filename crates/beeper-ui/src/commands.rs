@@ -134,6 +134,8 @@ pub enum SubMenu {
     Members(u8),
     /// Desktop's `ADD_THREAD_PARTICIPANT`: the people to invite to the open chat.
     AddMembers,
+    /// Desktop's `THREAD_FILTERS`: the chat filters.
+    Filters,
 }
 
 pub const MEMBERS_KICK: u8 = 0;
@@ -149,6 +151,7 @@ impl SubMenu {
             SubMenu::Schedule(_) => tr("Reschedule message"),
             SubMenu::History => tr("Recently viewed chats"),
             SubMenu::Folders => tr("Filter chat folders"),
+            SubMenu::Filters => tr("Filter chats"),
             SubMenu::Links(_) => "",
             SubMenu::Members(MEMBERS_KICK) => tr("Remove member from group"),
             SubMenu::Members(MEMBERS_ADMIN) => tr("Make group admin"),
@@ -159,7 +162,7 @@ impl SubMenu {
 
     pub(crate) fn placeholder(&self) -> String {
         match self {
-            SubMenu::FilterAccount | SubMenu::Folders | SubMenu::Links(_) => String::new(),
+            SubMenu::FilterAccount | SubMenu::Folders | SubMenu::Filters | SubMenu::Links(_) => String::new(),
             SubMenu::History => tr("Search chats...").into(),
             SubMenu::Members(_) | SubMenu::AddMembers => tr("Search users...").into(),
             SubMenu::Remind(_) => {
@@ -286,6 +289,13 @@ impl BeeperGuiApp {
                     Command { account: Some(a), ..pick.hotkey(SPACES) }
                 });
                 search(std::iter::once(Command { digit: Some(1), ..all.hotkey(SPACES) }).chain(accounts).collect())
+            }
+            // Desktop's `Ait`: Clear all filters while one is on, then each filter.
+            SubMenu::Filters => {
+                let pick = |bit| Some(UiMessage::ChatList(chat_list::Msg::PickFilter(bit)));
+                let clear = (self.filters != 0).then(|| cmd("", tr("Clear all filters"), pick(self.filters)));
+                let each = chat_list::FILTERS.iter().enumerate().map(|(i, f)| cmd("", tr(f.0), pick(1 << i)));
+                search(clear.into_iter().chain(each).collect())
             }
             SubMenu::Folders => {
                 let folders = [
@@ -426,6 +436,28 @@ impl BeeperGuiApp {
             let e = if picked.len() == 1 { tr("Message") } else { tr("Messages") };
             let live = picked.iter().all(|m| m.is_deleted != Some(true));
             let rules = chat.expect("a chat of the picked messages").messages;
+            let sent = picked.iter().all(|m| !crate::pending(st, m));
+            // Desktop's `KFt` reactions: type an emoji to react with it, or to remove your reaction of it.
+            if live && sent && rules.react && picked.iter().all(|m| m.reactable()) {
+                let key = query.trim();
+                let own =
+                    |m: &&Message| m.reactions.iter().any(|r| r.reaction_key == key && st.is_me(&r.participant_id));
+                if crate::emoji::is_emoji(key) {
+                    let mine = picked.iter().any(own);
+                    let chat_id = chat.expect("a chat of the picked messages").id.clone();
+                    let toggles = picked
+                        .iter()
+                        .filter(|m| own(m) == mine)
+                        .map(|m| {
+                            UiMessage::Message(message::Msg::ToggleReaction(chat_id.clone(), m.id.clone(), key.into()))
+                        })
+                        .collect();
+                    let title = if mine { trf("Remove %s reaction", &[&key]) } else { trf("React with %s", &[&key]) };
+                    v.push(cmd(e, title, Some(UiMessage::Commands(toggles))));
+                } else if key.is_empty() {
+                    v.push(cmd(e, tr("Type any emoji to react with it"), None));
+                }
+            }
             if let [m] = picked[..] {
                 if crate::editable(m, rules) {
                     let edit = crate::edit_open(m, rules).then(|| UiMessage::RunHotkey("Message: Edit"));
@@ -433,7 +465,6 @@ impl BeeperGuiApp {
                 }
             }
             // Desktop's `ghe` with the source "Command Bar", only without pending messages.
-            let sent = picked.iter().all(|m| !crate::pending(st, m));
             if sent && crate::delete_dialog(st, &picked).is_some() {
                 let ask = UiMessage::Message(message::Msg::AskDelete(picked.iter().map(|m| m.id.clone()).collect()));
                 v.push(cmd(e, tr("Delete…"), Some(ask)).keys(&["unsend", "remove"]));
@@ -520,7 +551,8 @@ impl BeeperGuiApp {
         }
         v.push(
             cmd(CHATS, tr("Search chats"), Some(UiMessage::CommandBar(Msg::TogglePalette)))
-                .keys(&["search", "find", "filter"]),
+                .keys(&["search", "find", "filter"])
+                .hotkey("Search"),
         );
         let list = self.visible_chats(st);
         let at = self.pane.selected_chat_id.as_ref().and_then(|id| list.iter().position(|c| &c.id == id));
@@ -644,6 +676,11 @@ impl BeeperGuiApp {
         v.push(history.keys(&["history"]));
         let new_chat = cmd("", tr("Create new chat"), Some(UiMessage::NewChat(new_chat::Msg::Open)));
         v.push(new_chat.keys(&["compose", "create", "person", "chat"]).hotkey("Chat: Start New"));
+        let group = UiMessage::Commands(vec![
+            UiMessage::NewChat(new_chat::Msg::Open),
+            UiMessage::NewChat(new_chat::Msg::NewGroup),
+        ]);
+        v.push(cmd("", tr("Create new group"), Some(group)).keys(&["compose", "thread", "chat"]));
         let join = UiMessage::Commands(vec![
             UiMessage::NewChat(new_chat::Msg::Open),
             UiMessage::NewChat(new_chat::Msg::ToggleJoinMatrix),
@@ -662,6 +699,9 @@ impl BeeperGuiApp {
         let folders = (self.active_tab != InboxTab::Requests)
             .then_some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Folders)));
         v.push(cmd("Filter Chats", tr("Filter by folder type"), folders));
+        let filters = (self.active_tab != InboxTab::Requests)
+            .then_some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Filters)));
+        v.push(cmd("Filter Chats", tr("Filter by type"), filters));
         if crate::rail_accounts(st).len() > 1 {
             let filter = cmd(
                 "Filter Chats",
@@ -737,6 +777,9 @@ impl BeeperGuiApp {
         ]));
         let changelog = Some(UiMessage::OpenUrl(crate::CHANGELOG_URL.into()));
         v.push(cmd("", tr("View changelog"), changelog).keys(&["whats new", "updates"]));
+        let select =
+            (self.active_tab != InboxTab::Requests).then_some(UiMessage::ChatList(chat_list::Msg::ToggleSelectMode));
+        v.push(cmd("UI", tr("Toggle chat selection mode"), select));
         for theme in ThemeChoice::ALL.into_iter().filter(|t| *t != st.settings.theme) {
             let title = match theme {
                 ThemeChoice::System => tr("Set theme to match system"),
@@ -789,6 +832,23 @@ impl BeeperGuiApp {
     /// The commands under Desktop's category headings.
     pub(crate) fn view_commands(&self, st: &BeeperStore, cmds: &[Command]) -> El<'_> {
         let p = &self.pal;
+        // Desktop's empty command bar: "No results", and in the command list the hint for people search.
+        if cmds.is_empty() && !self.command_palette_query.trim().is_empty() {
+            let key = prefs::hotkey_label(st.settings.hotkey_keys("Search").split(", ").next().unwrap_or(""));
+            let hint = self.cmd_submenu.is_none().then(|| {
+                let text =
+                    trf("Are you trying to search for people? Press %s to search all of your conversations", &[&key]);
+                row![crate::tinted(&crate::DROP_ARROW, 20.0, p.sub), txt(text, 13.0).color(p.text)]
+                    .spacing(16)
+                    .align_y(Center)
+                    .padding([8, 24])
+            });
+            let empty =
+                column![crate::ic(crate::icon::SEARCH, 24.0).color(p.sub), txt(tr("No results"), 14.0).color(p.sub)]
+                    .spacing(8)
+                    .align_x(Center);
+            return column![].push(hint).push(container(empty).center(Fill)).height(Fill).into();
+        }
         let item = |i: usize| {
             let c = &cmds[i];
             let head = ((self.cmd_submenu.is_none() || !c.category.is_empty())

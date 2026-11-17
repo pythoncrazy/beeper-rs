@@ -2566,6 +2566,8 @@ pub struct BeeperGuiApp {
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
     pub settings_query: String,
+    /// A settings slider being dragged, and its value, which Desktop saves when the drag ends.
+    pub settings_slider: Option<(&'static str, u8)>,
     /// The focused row of the settings search results, and the last opened one.
     settings_focus: usize,
     settings_pick: Option<SettingsHit>,
@@ -2820,6 +2822,7 @@ impl BeeperGuiApp {
             show_command_palette: false,
             active_settings_tab: SettingsTab::General,
             settings_query: String::new(),
+            settings_slider: None,
             settings_focus: 0,
             settings_pick: None,
             pref_flash: None,

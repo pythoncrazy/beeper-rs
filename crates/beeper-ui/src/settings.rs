@@ -242,7 +242,9 @@ impl HotkeyRec {
 
 /// Desktop's hotkey list hides the hotkeys of the features that the account does not show.
 fn hotkey_shown(st: &BeeperStore, name: &str) -> bool {
-    prefs::hotkey_feature(name).is_none_or(|f| st.feature(f).show)
+    // Desktop's `disabled` Toggle Incognito Mode: hidden unless the account can use incognito.
+    let usable = name != "Toggle Incognito Mode" || st.feature("stealth-mode").on;
+    usable && prefs::hotkey_feature(name).is_none_or(|f| st.feature(f).show)
 }
 
 /// Desktop's `Rx`: a settings row of a feature shows when the account shows the feature.
@@ -1995,7 +1997,9 @@ impl BeeperGuiApp {
                 assert!(r.desc.is_none() && r.badge.is_none(), "{} is a plain slider", r.key);
                 let key = r.key;
                 // Desktop's range input from 0 to 1 in steps of 0.1.
-                let bar = slider(0..=100u8, s.pref(key), move |x| UiMessage::Settings(Msg::SetPref(key, x)))
+                let value = self.settings_slider.filter(|(k, _)| *k == key).map_or(s.pref(key), |(_, v)| v);
+                let bar = slider(0..=100u8, value, move |x| UiMessage::Settings(Msg::SlideTo(key, x)))
+                    .on_release(UiMessage::Settings(Msg::SlideEnd))
                     .step(10u8)
                     .height(16)
                     .style(slider_style(p));
@@ -2071,6 +2075,9 @@ pub enum Msg {
     SelectTheme(ThemeChoice),
     SystemTheme(iced::theme::Mode),
     SetPref(&'static str, u8),
+    /// A slider moves; Desktop saves its value on release (`SlideTo` then `SetPref`).
+    SlideTo(&'static str, u8),
+    SlideEnd,
     ToggleSetting(fn(&mut BeeperSettings)),
     /// Desktop's "Change" of "Downloads location", and the picked folder.
     PickDownloads,
@@ -2246,6 +2253,12 @@ impl BeeperGuiApp {
                 self.chat_menu = None;
                 return self.open_settings(tab);
             }
+            Msg::SlideTo(key, v) => self.settings_slider = Some((key, v)),
+            Msg::SlideEnd => {
+                if let Some((key, v)) = self.settings_slider.take() {
+                    return self.update(UiMessage::Settings(Msg::SetPref(key, v)));
+                }
+            }
             Msg::Query(q) => {
                 let st = self.store.read();
                 let n = search_settings(&st, &q).len();
@@ -2276,9 +2289,21 @@ impl BeeperGuiApp {
                         self.pref_flash = Some((key, std::time::Instant::now()));
                         Task::batch([load, locate(key, "settings-pane", false)])
                     }
-                    SettingsHit::Network(_) => {
-                        self.adding_account = true;
-                        load
+                    // Desktop's network hit: the account on that network, or the Add Account window for it.
+                    SettingsHit::Network(name) => {
+                        let st = self.store.read();
+                        let net = login::addable().find(|n| n.display_name == name).expect("an addable network");
+                        let account = st
+                            .bridge_accounts
+                            .iter()
+                            .find(|a| beeper_core::config::account_network(&a.bridge_id).bridge_id == net.bridge_id);
+                        let account = account.map(|a| a.account_id.clone());
+                        drop(st);
+                        let next = match account {
+                            Some(id) => self.update(UiMessage::Accounts(crate::accounts::Msg::Open(Some(id)))),
+                            None => self.update(UiMessage::OpenAddAccount(net.bridge_id.into(), None)),
+                        };
+                        Task::batch([load, next])
                     }
                     SettingsHit::Section(..) => load,
                 };

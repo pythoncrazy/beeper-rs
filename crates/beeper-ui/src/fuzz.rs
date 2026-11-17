@@ -712,7 +712,47 @@ fn settings_commands_like_desktop() {
     let _ = app.update(UiMessage::RunHotkey("Command Bar"));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("Accounts → Telegram".into())));
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
-    assert!(app.active_settings_tab == SettingsTab::Accounts && app.adding_account);
+    // Desktop's network hit selects the account on that network.
+    let telegram = app
+        .store
+        .read()
+        .bridge_accounts
+        .iter()
+        .find(|a| a.bridge_id.contains("telegram"))
+        .map(|a| a.account_id.clone());
+    assert!(telegram.is_some(), "the demo has a Telegram account");
+    assert!(app.active_settings_tab == SettingsTab::Accounts && app.account_page == telegram);
+}
+
+/// Desktop's command bar: react by typing an emoji, filter by type, a new group and chat selection mode.
+#[test]
+fn command_bar_commands_like_desktop() {
+    let mut app = demo_app("cmd-more");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let mid = {
+        let st = app.store.read();
+        app.timeline(&st).0.iter().rev().find(|m| m.reactable()).expect("a message").id.clone()
+    };
+    app.pane.selected_msgs = vec![mid.clone()];
+    let titles = |app: &BeeperGuiApp, q: &str| -> Vec<String> {
+        app.commands(&app.store.read(), q).iter().map(|c| c.title.clone()).collect()
+    };
+    assert!(titles(&app, "").contains(&"Type any emoji to react with it".to_string()));
+    let react = app
+        .commands(&app.store.read(), "🎸")
+        .into_iter()
+        .find(|c| c.title == "React with 🎸")
+        .expect("a react command");
+    let _ = app.update(react.msg.expect("an action"));
+    assert!(app.store.read().message(&mid).reactions.iter().any(|r| r.reaction_key == "🎸"), "it reacts");
+    assert!(titles(&app, "🎸").contains(&"Remove 🎸 reaction".to_string()), "and then removes");
+    app.pane.selected_msgs.clear();
+    let all = titles(&app, "");
+    for t in ["Create new group", "Filter by type", "Toggle chat selection mode"] {
+        assert!(all.contains(&t.to_string()), "{t}");
+    }
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Filters)));
+    assert!(titles(&app, "").contains(&"Unread".to_string()));
 }
 
 #[test]
@@ -2151,16 +2191,17 @@ fn selected_message_commands_like_desktop() {
     let _ = app.update(UiMessage::Message(message::Msg::Select(linked[..1].to_vec())));
     let cmds = app.commands(&app.store.read(), "");
     let titles: Vec<&str> = cmds.iter().take_while(|c| c.category == "Message").map(|c| c.title.as_str()).collect();
+    let react = "Type any emoji to react with it";
     let all = ["Edit", "Delete…", "Forward", "Copy", "Copy with timestamps", "Open link", "Unselect"];
-    assert_eq!(titles, [&all[..], &["Reply", "Send later"]].concat());
-    assert!(matches!(&cmds[5].msg, Some(UiMessage::OpenUrl(u)) if u.starts_with("https://")));
-    let _ = app.update(cmds[6].msg.clone().unwrap());
+    assert_eq!(titles, [&[react][..], &all[..], &["Reply", "Send later"]].concat());
+    assert!(matches!(&cmds[6].msg, Some(UiMessage::OpenUrl(u)) if u.starts_with("https://")));
+    let _ = app.update(cmds[7].msg.clone().unwrap());
     assert!(app.pane.selected_msgs.is_empty(), "Unselect clears the selection");
     let _ = app.update(UiMessage::Message(message::Msg::Select(linked[..2].to_vec())));
     let cmds = app.commands(&app.store.read(), "");
     let titles: Vec<&str> = cmds.iter().take_while(|c| c.category == "Messages").map(|c| c.title.as_str()).collect();
-    assert_eq!(titles, all[1..]);
-    let _ = app.update(UiMessage::Commands(vec![UiMessage::CloseModals, cmds[4].msg.clone().unwrap()]));
+    assert_eq!(titles, [&[react][..], &all[1..]].concat());
+    let _ = app.update(UiMessage::Commands(vec![UiMessage::CloseModals, cmds[5].msg.clone().unwrap()]));
     let rows = app.commands(&app.store.read(), "");
     assert_eq!(rows.len(), 2);
     assert!(
