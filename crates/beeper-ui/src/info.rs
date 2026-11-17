@@ -563,7 +563,8 @@ impl BeeperGuiApp {
     /// Desktop's `n0e` Media section: the newest image, video and link messages, and when expanded all of them
     /// by type.
     pub(crate) fn view_info_media<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
-        const TILE: f32 = 130.0;
+        // Desktop's `mediaGrid`: two 124 px columns 8 px apart in the 8 px padding of the 272 px pane.
+        const TILE: f32 = 124.0;
         let p = &self.pal;
         let mut found: Vec<&Message> = st
             .timeline(&chat.id)
