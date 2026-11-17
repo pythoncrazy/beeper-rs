@@ -8,6 +8,7 @@ use crate::new_chat;
 use crate::rail;
 use crate::reminders;
 use crate::scheduled;
+use crate::settings;
 use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
 use crate::threads;
 use crate::{
@@ -632,9 +633,10 @@ impl BeeperGuiApp {
         v.push(cmd("", inbox, Some(UiMessage::SelectTab(tab))).keys(&["dm", "unknown"]));
         let prefs = &["Preferences"];
         let settings = tr("Settings");
-        let open = |tab, then: UiMessage| Some(UiMessage::Commands(vec![UiMessage::OpenSettings(tab), then]));
+        let open =
+            |tab, then: UiMessage| Some(UiMessage::Commands(vec![UiMessage::Settings(settings::Msg::Open(tab)), then]));
         let add = match self.adding_account {
-            true => UiMessage::SelectSettingsTab(SettingsTab::Accounts),
+            true => UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::Accounts)),
             false => UiMessage::Accounts(accounts::Msg::ToggleAdd),
         };
         v.push(cmd(settings, tr("Add Account"), open(SettingsTab::Accounts, add)).keys(prefs));
@@ -642,19 +644,23 @@ impl BeeperGuiApp {
         let tabs = [T::Accounts, T::BeeperPlus, T::General, T::Ai, T::Appearance, T::Notifications, T::Hotkeys];
         for tab in tabs.into_iter().chain([T::Storage, T::Devices, T::About, T::Help, T::Integrations]) {
             let keys = if tab == T::Integrations { INTEGRATIONS } else { prefs };
-            let section = open(tab, UiMessage::PickSetting(SettingsHit::Section(tab, true)));
+            let section = open(tab, UiMessage::Settings(settings::Msg::Pick(SettingsHit::Section(tab, true))));
             v.push(cmd(settings, tab.name(), section).keys(keys));
             let rows = prefs::rows().filter(|(page, r)| *page == tab.meta().0 && !r.label.is_empty() && shown(st, r));
             v.extend(rows.map(|(_, r)| {
                 let title = format!("{} → {}", tab.name(), crate::trs(r.label, r.split_args().0));
-                let pick = open(tab, UiMessage::PickSetting(SettingsHit::Pref(tab, r)));
+                let pick = open(tab, UiMessage::Settings(settings::Msg::Pick(SettingsHit::Pref(tab, r))));
                 cmd(settings, title, pick).keys(&[r.desc.unwrap_or_default(), "Preferences"])
             }));
         }
         v.extend(crate::login::addable().map(|n| {
             let title = format!("{} → {}", tr("Accounts"), n.display_name);
-            cmd(settings, title, open(T::Accounts, UiMessage::PickSetting(SettingsHit::Network(n.display_name))))
-                .keys(prefs)
+            cmd(
+                settings,
+                title,
+                open(T::Accounts, UiMessage::Settings(settings::Msg::Pick(SettingsHit::Network(n.display_name)))),
+            )
+            .keys(prefs)
         }));
         v.push(cmd("", tr("Show settings"), hot("Settings")).keys(prefs).hotkey("Settings"));
         let incognito = st.settings.on("incognito");
@@ -692,7 +698,10 @@ impl BeeperGuiApp {
                 ThemeChoice::Light => tr("Set theme to light mode"),
                 ThemeChoice::Dark => tr("Set theme to dark mode"),
             };
-            v.push(cmd("UI", title, Some(UiMessage::SelectTheme(theme))).keys(&["dark", "light", "color"]));
+            v.push(
+                cmd("UI", title, Some(UiMessage::Settings(settings::Msg::SelectTheme(theme))))
+                    .keys(&["dark", "light", "color"]),
+            );
         }
         if self.selection.is_empty() {
             v.push(cmd(CHATS, tr("Archive all chats"), Some(UiMessage::Ask(Some(ASK_ARCHIVE_ALL)))));

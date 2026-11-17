@@ -1034,9 +1034,9 @@ async fn lifecycle() {
     );
     assert_eq!(login.pane.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
     assert!(simulator(login.view_main()).find("Note").is_ok());
-    let _ = login.update(UiMessage::ShareAnalytics);
+    let _ = login.update(UiMessage::Settings(beeper_ui::settings::Msg::ShareAnalytics));
     assert!(!login_store.read().whoami.analytics_disabled, "Share Analytics turns on at once");
-    let _ = login.update(UiMessage::AnalyticsSaved(true, Err("offline".into())));
+    let _ = login.update(UiMessage::Settings(beeper_ui::settings::Msg::AnalyticsSaved(true, Err("offline".into()))));
     assert!(login_store.read().whoami.analytics_disabled, "a failed save turns Share Analytics back off");
     assert_eq!(login.status_banner, "Something went wrong: offline");
     drop((login, login_store));
@@ -1288,7 +1288,7 @@ async fn lifecycle() {
     let _ = gui.update(UiMessage::SelectChat(prev));
     let _ = gui.update(UiMessage::ComposerChanged("Hello from **Iced** Simulator E2E!".to_string()));
     let _ = gui.update(UiMessage::SubmitComposer);
-    let _ = gui.update(UiMessage::OpenSettings(SettingsTab::Appearance));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::Open(SettingsTab::Appearance)));
     assert!(gui.settings_window.is_some());
     {
         let mut sim = simulator(gui.view_settings());
@@ -1299,14 +1299,14 @@ async fn lifecycle() {
         }
         assert!(["Light", "Dark", "System"].iter().all(|t| sim.find(*t).is_ok()), "the theme cards are shown");
     }
-    let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::Dark));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTheme(ThemeChoice::Dark)));
     assert!(gui.dark);
     {
         let st = store.read();
         assert!(st.settings.on("showMessagePreviews") && st.settings.pref("timeFormat") == 0);
     }
-    let _ = gui.update(UiMessage::SetPref("timeFormat", 1));
-    let _ = gui.update(UiMessage::SetPref("showMessagePreviews", 0));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("timeFormat", 1)));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("showMessagePreviews", 0)));
     for (step, zoom) in [(1, 1.1), (1, 1.2), (-1, 1.1), (0, 1.0), (-1, 0.9)] {
         let _ = gui.update(UiMessage::Zoom(step));
         assert_eq!(gui.zoom, zoom);
@@ -1332,7 +1332,7 @@ async fn lifecycle() {
         }
     }
     for page in [SettingsTab::General, SettingsTab::Notifications] {
-        let _ = gui.update(UiMessage::SelectSettingsTab(page));
+        let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTab(page)));
         let mut sim = simulator(gui.view_settings());
         for label in
             ["App language", "Time Format", "Share Analytics", "Delay notifications for", "Sound effect volume"]
@@ -1345,7 +1345,7 @@ async fn lifecycle() {
             assert_eq!(sim.find(label).is_ok(), tab == page, "{label} is on {tab:?}");
         }
     }
-    let _ = gui.update(UiMessage::SelectSettingsTab(SettingsTab::Accounts));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTab(SettingsTab::Accounts)));
     {
         let n = beeper_ui::login::FREE_ACCOUNTS - store.read().bridge_accounts.len();
         let mut sim = simulator(gui.view_settings());
@@ -1359,22 +1359,22 @@ async fn lifecycle() {
     }
     let _ = gui.update(UiMessage::Accounts(beeper_ui::accounts::Msg::ToggleAdd));
     assert!(simulator(gui.view_settings()).find("Facebook").is_ok(), "Add an Account shows the network grid");
-    let _ = gui.update(UiMessage::SetPref("timeFormat", 0));
-    let _ = gui.update(UiMessage::SetPref("showMessagePreviews", 1));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("timeFormat", 0)));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("showMessagePreviews", 1)));
     let ctrl_k = || UiMessage::KeyPressed(iced::keyboard::Key::Character("k".into()), iced::keyboard::Modifiers::CTRL);
-    let _ = gui.update(UiMessage::ToggleHotkey("Search"));
+    let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::Toggle("Search")));
     let _ = gui.update(ctrl_k());
     assert!(!gui.show_command_palette, "a disabled hotkey does nothing");
-    let _ = gui.update(UiMessage::RevertHotkeys);
+    let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::RevertAll));
     let _ = gui.update(ctrl_k());
     assert!(gui.show_command_palette, "Revert all enables the hotkey again");
     let _ = gui.update(UiMessage::ToggleCommandPalette);
-    let _ = gui.update(UiMessage::SelectSettingsTab(SettingsTab::Hotkeys));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTab(SettingsTab::Hotkeys)));
     assert!(simulator(gui.view_settings()).find("Ctrl Shift Alt R").is_ok(), "Reload App shows Desktop's keys");
     assert!(simulator(gui.view_settings()).find("Record Shortcut").is_err());
-    let _ = gui.update(UiMessage::ToggleHotkey("Filter: DMs"));
+    let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::Toggle("Filter: DMs")));
     assert!(simulator(gui.view_settings()).find("Record Shortcut").is_ok(), "an enabled hotkey without keys");
-    let _ = gui.update(UiMessage::RevertHotkeys);
+    let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::RevertAll));
     let mods = iced::keyboard::Modifiers::CTRL | iced::keyboard::Modifiers::ALT;
     let rail = |d: &str| UiMessage::KeyPressed(iced::keyboard::Key::Character(d.into()), mods);
     let _ = gui.update(rail("2"));
@@ -1432,10 +1432,10 @@ async fn lifecycle() {
         let _ = gui.update(UiMessage::RunHotkey("Reset Zoom"));
         let _ = gui.update(UiMessage::KeyPressed(Key::Character("/".into()), Modifiers::CTRL));
         assert!(simulator(gui.view_main()).find("Unselect Chat / Select First Chat").is_ok(), "Ctrl / lists the keys");
-        let _ = gui.update(UiMessage::HotkeysModal(Some("zoom".into())));
+        let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::Modal(Some("zoom".into()))));
         assert!(simulator(gui.view_main()).find("Reset Zoom").is_ok());
         assert!(simulator(gui.view_main()).find("Command Bar").is_err(), "the search filters the list");
-        let _ = gui.update(UiMessage::HotkeysModal(Some("qqq".into())));
+        let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::Modal(Some("qqq".into()))));
         assert!(simulator(gui.view_main()).find("No results").is_ok());
         let _ = gui.update(UiMessage::CloseModals);
         assert!(gui.hotkeys_modal.is_none(), "Escape closes the list");
@@ -1469,12 +1469,12 @@ async fn lifecycle() {
     }
     let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::Select(Some("c1".into()))));
     assert!(simulator(gui.view_main()).find("Community").is_err(), "WhatsApp Communities are not spaces by default");
-    let _ = gui.update(UiMessage::SetPref("whatsappCommunities", 1));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("whatsappCommunities", 1)));
     assert!(
         simulator(gui.view_main()).find("Community (WhatsApp)").is_ok(),
         "the setting shows WhatsApp Communities as spaces"
     );
-    let _ = gui.update(UiMessage::SetPref("whatsappCommunities", 0));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("whatsappCommunities", 0)));
     let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::Select(Some("g1".into()))));
     {
         let mut sim = simulator(gui.view_main());
@@ -1642,21 +1642,21 @@ async fn lifecycle() {
         take_outbox(&mut store.write());
     }
     let _ = gui.update(rail("1"));
-    let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTheme(ThemeChoice::System)));
     for (mode, dark) in [(iced::theme::Mode::Dark, true), (iced::theme::Mode::Light, false)] {
-        let _ = gui.update(UiMessage::SystemTheme(mode));
+        let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SystemTheme(mode)));
         assert_eq!(gui.dark, dark);
     }
-    let _ = gui.update(UiMessage::SettingsQueryChanged("tray".to_string()));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::Query("tray".to_string())));
     let _ = simulator(gui.view_settings());
     let hit = search_settings(&store.read(), "tray")[1];
-    let _ = gui.update(UiMessage::PickSetting(hit));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::Pick(hit)));
     assert_eq!(gui.active_settings_tab, SettingsTab::Appearance);
     assert!(simulator(gui.view_settings()).find("Show tray icon").is_ok());
-    let _ = gui.update(UiMessage::SetPref("appLanguage", 2));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("appLanguage", 2)));
     assert!(simulator(gui.view_main()).find("Inbox").is_ok(), "the language changes after a relaunch");
     assert!(simulator(gui.view_main()).find("App language will change after relaunch").is_ok());
-    let _ = gui.update(UiMessage::SetPref("appLanguage", 1));
+    let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("appLanguage", 1)));
     let _ = gui.update(UiMessage::Toast(beeper_ui::toasts::Msg::DismissBanner));
     let _ = gui.update(UiMessage::CloseModals);
 
@@ -1673,7 +1673,7 @@ async fn lifecycle() {
         let app_prog = iced::daemon(
             move || {
                 let (mut app, open) = BeeperGuiApp::boot(emu_store.clone());
-                let _ = app.update(UiMessage::SelectTheme(ThemeChoice::Dark));
+                let _ = app.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTheme(ThemeChoice::Dark)));
                 (app, open)
             },
             BeeperGuiApp::update,

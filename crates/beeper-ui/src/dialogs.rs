@@ -9,6 +9,7 @@ use crate::integrations;
 use crate::members;
 use crate::rail;
 use crate::reminders;
+use crate::settings;
 use crate::style::{
     bar, bold, bordered_box, btn_style, ell, fill_box, fw, ic, icon, input_style, med, mix, scroll_style, semi,
     shadow_box, text_width, txt, Bare, CLEAR,
@@ -315,7 +316,7 @@ impl BeeperGuiApp {
                 (
                     trf("Logout of %s?", &[&name.as_deref().unwrap_or(tr("this device"))]),
                     tr("This will disconnect all chat accounts on this device.").into(),
-                    vec![(tr("Logout"), UiMessage::LogoutDevice(id))],
+                    vec![(tr("Logout"), UiMessage::Settings(settings::Msg::LogoutDevice(id)))],
                 )
             }
             ASK_DISMISS_REMINDERS => (
@@ -414,7 +415,7 @@ impl BeeperGuiApp {
             ASK_CLEAR_STORAGE | ASK_CLEAR_CACHE | ASK_CLEAR_CHAT => {
                 let which = dialog - ASK_CLEAR_STORAGE;
                 let size = human_size(self.storage_pick(which).iter().map(|e| e.bytes).sum());
-                let clear = |label| vec![(tr(label), UiMessage::ClearStorage(which))];
+                let clear = |label| vec![(tr(label), UiMessage::Settings(settings::Msg::ClearStorage(which)))];
                 match which {
                     0 => {
                         let days = STORAGE_DAYS[self.storage.ages[0]];

@@ -1,4 +1,5 @@
 //! Desktop's `AudioBar`: record a voice note from the microphone, pause to play it back, and send it as Ogg Opus.
+use crate::settings;
 use crate::style::{bordered_box, btn_style, fill_box, hex, hidden_slider, txt, Bare, CLEAR};
 use crate::voice::{self, Clip, HZ, ICONS};
 use crate::{tinted, BeeperGuiApp, El, UiMessage};
@@ -227,7 +228,7 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 if !st.feature("talk-to-type").on {
                     drop(st);
-                    return self.handle(UiMessage::OpenSettings(crate::SettingsTab::BeeperPlus));
+                    return self.handle(UiMessage::Settings(settings::Msg::Open(crate::SettingsTab::BeeperPlus)));
                 }
                 // Desktop's privacy notice (`oL`) asks first.
                 if !st.settings.on("transcribeWithOpenai") {

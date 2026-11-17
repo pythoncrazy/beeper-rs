@@ -1,5 +1,6 @@
 //! Desktop's audio player (`Audio.tsx`): decoding, the waveform, playback speed, and autoplay of the next
 //! voice note.
+use crate::settings;
 use crate::style::{btn_style, clamped, fill_box, hidden_slider, ic, icon, semi, shadow_box, text_width, txt, Bare};
 use crate::{menu_item, sound, tinted, tr, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS, MENU_ITEM};
 use beeper_core::models::{Attachment, Message, Transcription};
@@ -286,7 +287,8 @@ impl BeeperGuiApp {
                 self.confirm = None;
                 // Without a voice note, the notice asks for Talk to Type.
                 let asked = self.audio.asked.take();
-                let set = self.handle(UiMessage::SetPref("transcribeWithOpenai", u8::from(on)));
+                let set =
+                    self.handle(UiMessage::Settings(settings::Msg::SetPref("transcribeWithOpenai", u8::from(on))));
                 let next = match asked {
                     _ if !on => Task::none(),
                     Some((mid, again, language)) => self.transcribe(mid, again, language, false),
@@ -359,7 +361,7 @@ impl BeeperGuiApp {
                 (audio.lang, self.pane.message_menu) = (false, None);
                 let used_up = self.store.read().features.free_uses("voice-transcription").is_some_and(|(u, l)| u >= l);
                 if used_up {
-                    return self.handle(UiMessage::OpenSettings(crate::SettingsTab::BeeperPlus));
+                    return self.handle(UiMessage::Settings(settings::Msg::Open(crate::SettingsTab::BeeperPlus)));
                 }
                 if !self.audio.transcribing.get(&mid).is_some_and(|s| !s.1) {
                     return self.transcribe(mid, true, Some(code), false);
@@ -854,7 +856,7 @@ impl BeeperGuiApp {
                 let fresh = free.is_some_and(|(used, limit)| used == 0 && limit > 0);
                 let label = small(tr(if fresh { "Try Transcribe" } else { "Transcribe" }).into(), p.accent);
                 let press = match used_up {
-                    true => UiMessage::OpenSettings(crate::SettingsTab::BeeperPlus),
+                    true => UiMessage::Settings(settings::Msg::Open(crate::SettingsTab::BeeperPlus)),
                     false => UiMessage::Voice(Msg::Transcribe(m.id.clone(), false, None)),
                 };
                 let count = count.filter(|_| free.is_some_and(|(used, limit)| used < limit));
@@ -970,7 +972,7 @@ mod tests {
         untranscribed(&mut app);
         let paywall = click(&mut app, "Transcribe");
         assert!(
-            matches!(&paywall[..], [UiMessage::OpenSettings(crate::SettingsTab::BeeperPlus)]),
+            matches!(&paywall[..], [UiMessage::Settings(settings::Msg::Open(crate::SettingsTab::BeeperPlus))]),
             "no free uses are left"
         );
     }

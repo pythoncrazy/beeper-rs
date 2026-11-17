@@ -222,15 +222,19 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         16 => UiMessage::SubmitComposer,
         17 => UiMessage::CancelComposeMode,
         18 => UiMessage::StepMessage(rng.coin(), rng.coin()),
-        19 => UiMessage::OpenSettings(*rng.pick(&SettingsTab::ALL)),
-        20 => UiMessage::SelectSettingsTab(*rng.pick(&SettingsTab::ALL)),
-        21 => UiMessage::SettingsQueryChanged(text),
-        22..=24 => UiMessage::SetPref(pref.key, rng.below(usize::from(pref.max_value()) + 1) as u8),
-        25 => UiMessage::ToggleHotkey(rng.pick(&hotkeys)),
-        26 => UiMessage::RevertHotkeys,
+        19 => UiMessage::Settings(settings::Msg::Open(*rng.pick(&SettingsTab::ALL))),
+        20 => UiMessage::Settings(settings::Msg::SelectTab(*rng.pick(&SettingsTab::ALL))),
+        21 => UiMessage::Settings(settings::Msg::Query(text)),
+        22..=24 => {
+            UiMessage::Settings(settings::Msg::SetPref(pref.key, rng.below(usize::from(pref.max_value()) + 1) as u8))
+        }
+        25 => UiMessage::Hotkeys(hotkeys::Msg::Toggle(rng.pick(&hotkeys))),
+        26 => UiMessage::Hotkeys(hotkeys::Msg::RevertAll),
         27 => UiMessage::Zoom(*rng.pick(&[-1, 0, 1])),
-        28 => UiMessage::SelectTheme(*rng.pick(&ThemeChoice::ALL)),
-        29 => UiMessage::SystemTheme(*rng.pick(&[iced::theme::Mode::Dark, iced::theme::Mode::Light])),
+        28 => UiMessage::Settings(settings::Msg::SelectTheme(*rng.pick(&ThemeChoice::ALL))),
+        29 => UiMessage::Settings(settings::Msg::SystemTheme(
+            *rng.pick(&[iced::theme::Mode::Dark, iced::theme::Mode::Light]),
+        )),
         30 => UiMessage::ToggleRightPanel,
         31 => UiMessage::ToggleCommandPalette,
         32 => UiMessage::CommandQueryChanged(text),
@@ -255,9 +259,9 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         53 => UiMessage::Forward(forward::Msg::Open(vec![msg])),
         54 if app.forward.is_some() => UiMessage::Forward(forward::Msg::Pick(chat)),
         55 => UiMessage::Rail(rail::Msg::Select(rng.coin().then(|| rng.pick(&accounts).clone()))),
-        56 if !hits.is_empty() => UiMessage::PickSetting(*rng.pick(&hits)),
+        56 if !hits.is_empty() => UiMessage::Settings(settings::Msg::Pick(*rng.pick(&hits))),
         57 => UiMessage::WindowFocused(rng.coin()),
-        58 => UiMessage::HotkeyQuery(text),
+        58 => UiMessage::Hotkeys(hotkeys::Msg::Query(text)),
         59 => UiMessage::Accounts(accounts::Msg::Open(rng.coin().then(|| rng.pick(&accounts).clone()))),
         60 => UiMessage::Accounts(accounts::Msg::SetProps(
             rng.pick(&accounts).clone(),
@@ -497,7 +501,7 @@ fn auto_sent_gifs_keep_the_composer_like_desktop() {
     let note = "!note_self:beeper.com";
     let mut app = demo_app("gifsend");
     let _ = app.update(UiMessage::SelectChat(note.into()));
-    let _ = app.update(UiMessage::SetPref("autoSendGifs", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("autoSendGifs", 1)));
     let _ = app.update(UiMessage::ComposerChanged("keep".into()));
     let mut gif = Vec::new();
     ::image::RgbaImage::new(2, 2).write_to(&mut std::io::Cursor::new(&mut gif), ::image::ImageFormat::Gif).unwrap();
@@ -645,13 +649,13 @@ fn incognito_toggle_like_desktop() {
     assert_eq!(app.status_banner, "Incognito mode on.");
     let _ = app.update(UiMessage::Undo(false));
     assert!(!on(&app, "incognito") && app.status_banner == "Undo: Enable Incognito Mode");
-    let _ = app.update(UiMessage::SetPref("typingIndicators", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("typingIndicators", 1)));
     let _ = app.update(UiMessage::Toast(toasts::Msg::DismissBanner));
-    let _ = app.update(UiMessage::SetPref("incognito", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("incognito", 1)));
     assert!(app.status_banner.is_empty(), "Settings change incognito mode without a toast");
     let _ = app.update(UiMessage::RunHotkey("Toggle Incognito Mode"));
     assert_eq!(app.status_banner, "Incognito mode off.");
-    let _ = app.update(UiMessage::SetPref("incognito", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("incognito", 1)));
     assert!(app.store.read().incognito());
     app.store.write().features.usage = trial("2020-01-04T00:00:00Z");
     assert!(!app.store.read().incognito() && app.store.read().typing_notices(), "the trial ended");
@@ -703,14 +707,14 @@ fn settings_commands_like_desktop() {
 fn closing_the_main_window_hides_it_like_desktop() {
     let mut app = demo_app("closehide");
     let main = app.main_window.expect("a main window");
-    let _ = app.update(UiMessage::SetPref("showTrayIcon", 0));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("showTrayIcon", 0)));
     let _ = app.update(UiMessage::CloseRequested(main));
     assert!(app.hidden, "the main window hides without a tray icon too");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
     assert_eq!(app.sub_windows(), [app.settings_window.expect("the settings window")]);
     let _ = app.update(UiMessage::Tray(Ok(tray::Event::Activate)));
     assert!(!app.hidden, "a click on the tray icon shows the windows");
-    let _ = app.update(UiMessage::SetPref("quitOnClose", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("quitOnClose", 1)));
     let _ = app.update(UiMessage::CloseRequested(main));
     assert!(!app.hidden, "with Quit on close, the window closes");
 }
@@ -824,7 +828,7 @@ fn remind_submenu_like_desktop() {
         let acts = |m: &UiMessage| {
             matches!(
                 m,
-                UiMessage::OpenSettings(_)
+                UiMessage::Settings(settings::Msg::Open(_))
                     | UiMessage::Commands(_)
                     | UiMessage::OpenSubMenu(_)
                     | UiMessage::Reminders(reminders::Msg::Set(..))
@@ -832,7 +836,7 @@ fn remind_submenu_like_desktop() {
         };
         sim.into_messages().filter(acts).collect()
     };
-    let upgrade = matches!(&picked[..], [UiMessage::OpenSettings(SettingsTab::BeeperPlus)]);
+    let upgrade = matches!(&picked[..], [UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus))]);
     assert!(upgrade, "without free uses only the upgrade works");
 }
 
@@ -1225,7 +1229,7 @@ fn sticker_picker_like_desktop() {
     let chat = app.store.read().chats[0].id.clone();
     let webp = FileRule { mime_types: [("image/webp".to_string(), 2)].into(), ..FileRule::default() };
     app.store.write().chats[0].file.insert(FILE_STICKER.into(), webp);
-    let _ = app.update(UiMessage::SetPref("stickerPacks", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("stickerPacks", 1)));
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
     let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
     let _ = app.update(UiMessage::Gifs(gifs::Msg::StickerPacks(Err("Matrix is not connected yet".into()))));
@@ -1292,7 +1296,7 @@ fn pickers_check_the_network_like_desktop() {
     let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
     assert_eq!((app.pane.picker, app.status_banner.as_str()), (None, ""), "the picker needs Use sticker packs");
     assert!(!hidden_actions(&app.store.read()).contains(&7));
-    let _ = app.update(UiMessage::SetPref("stickerPacks", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("stickerPacks", 1)));
     assert_eq!(hidden_actions(&app.store.read())[0], 7, "Add a sticker follows the emoji button");
     let cmds = app.commands(&app.store.read(), "");
     assert_eq!(cmds.iter().find(|c| c.title == "Send Sticker").and_then(|c| c.hotkey), Some("Message: Send Sticker"));
@@ -2206,7 +2210,7 @@ fn emoticons_follow_the_setting() {
     let _ = app.update(UiMessage::ComposerChanged("`a".into()));
     press(&mut app, true, typewrite(" :) "));
     assert_eq!(text(&app), "`a :) ", "no replacement in code");
-    let _ = app.update(UiMessage::SetPref("keepEmoticons", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("keepEmoticons", 1)));
     let _ = app.update(UiMessage::ComposerChanged(String::new()));
     press(&mut app, true, typewrite(":D "));
     assert_eq!(text(&app), ":D ", "the setting keeps emoticons");
@@ -2632,7 +2636,7 @@ fn messages_select_like_desktop() {
 #[test]
 fn devices_offer_the_app_like_desktop() {
     let mut app = demo_app("devices");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Devices));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Devices)));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Take Beeper with you").is_ok());
     let _ = sim.click("Get the app");
@@ -2640,9 +2644,9 @@ fn devices_offer_the_app_like_desktop() {
         let _ = app.update(m);
     }
     assert!(app.app_qr && simulator(app.view_settings()).find("Get the app").is_err(), "the button shows the QR code");
-    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::About));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::About)));
     assert!(!app.app_qr, "another tab hides the QR code again");
-    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::Devices));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::Devices)));
     let device = |name: &str, model: Option<&str>, kind: Option<&str>| beeper_core::matrix::DeviceInfo {
         id: name.into(),
         name: name.into(),
@@ -2652,11 +2656,11 @@ fn devices_offer_the_app_like_desktop() {
         verified: true,
         current: false,
     };
-    let _ = app.update(UiMessage::DevicesLoaded(Ok(vec![
+    let _ = app.update(UiMessage::Settings(settings::Msg::DevicesLoaded(Ok(vec![
         device("Beeper Desktop", Some("Linux PC"), Some("computer")),
         device("Beeper iPad", Some("iPad Air"), Some("tablet")),
         device("beeper-rs", None, None),
-    ])));
+    ]))));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Linux PC").is_ok() && sim.find("iPad Air").is_ok(), "the device metadata model shows");
 
@@ -2669,18 +2673,19 @@ fn devices_offer_the_app_like_desktop() {
     assert!(sim.find("Logout of Beeper Desktop?").is_ok(), "the dialog names the device");
     assert!(sim.find("This will disconnect all chat accounts on this device.").is_ok());
     drop(sim);
-    let _ = app.update(UiMessage::LogoutDevice("Beeper Desktop".into()));
+    let _ = app.update(UiMessage::Settings(settings::Msg::LogoutDevice("Beeper Desktop".into())));
     assert!(app.confirm.is_none() && app.devices_busy, "the logout runs");
     let mut sim = simulator(app.view_settings());
     let _ = sim.click("Logout");
     assert_eq!(sim.into_messages().count(), 0, "the buttons are disabled while the logout runs");
     let refused = Err(beeper_core::matrix::REAUTH.into());
-    let _ = app.update(UiMessage::DeviceLoggedOut("Beeper Desktop".into(), refused));
+    let _ = app.update(UiMessage::Settings(settings::Msg::DeviceLoggedOut("Beeper Desktop".into(), refused)));
     let modal = app.reauth.window.expect("a refused JWT asks for a sign-in code");
     let _ = app.update(UiMessage::WindowClosed(modal));
     assert!(!app.devices_busy, "a closed modal ends the logout");
-    let _ = app.update(UiMessage::LogoutDevice("Beeper Desktop".into()));
-    let _ = app.update(UiMessage::DeviceLoggedOut("Beeper Desktop".into(), Err("M_UNKNOWN".into())));
+    let _ = app.update(UiMessage::Settings(settings::Msg::LogoutDevice("Beeper Desktop".into())));
+    let _ = app
+        .update(UiMessage::Settings(settings::Msg::DeviceLoggedOut("Beeper Desktop".into(), Err("M_UNKNOWN".into()))));
     assert!(!app.devices_busy);
     assert_eq!(app.status_banner, "Couldn't delete device. Please report a problem if this keeps happening.");
 }
@@ -2688,8 +2693,8 @@ fn devices_offer_the_app_like_desktop() {
 #[test]
 fn storage_clears_like_desktop() {
     let mut app = demo_app("storage");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Storage));
-    let _ = app.update(UiMessage::StorageScanned(beeper_core::storage::scan(&app.store)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Storage)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::StorageScanned(beeper_core::storage::scan(&app.store))));
     let mut sim = tall(app.view_settings());
     for label in ["Messages", "Clear storage older than", "Clear All Cache", "Storage by Chat", "Note to self"] {
         assert!(sim.find(label).is_ok(), "{label} shows");
@@ -2698,7 +2703,7 @@ fn storage_clears_like_desktop() {
     for m in sim.into_messages() {
         let _ = app.update(m);
     }
-    let _ = app.update(UiMessage::StorageAge(1, 0));
+    let _ = app.update(UiMessage::Settings(settings::Msg::StorageAge(1, 0)));
     let _ = app.update(UiMessage::Ask(Some(ASK_CLEAR_CHAT)));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Clear storage for Note to self?").is_ok(), "the dialog names the chat");
@@ -2716,7 +2721,7 @@ fn storage_clears_like_desktop() {
 #[test]
 fn integrations_like_desktop() {
     let mut app = demo_app("integrations");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Integrations));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Integrations)));
     let mut sim = simulator(app.view_settings());
     for label in
         ["Allow connections", "Join Developer Community chat", "Open in Cursor", "Copy Command", "MCP endpoint"]
@@ -2727,12 +2732,16 @@ fn integrations_like_desktop() {
     assert!(sim.find(format!("claude mcp add beeper {base}/v0/mcp -t http -s user")).is_ok());
     drop(sim);
     let on = app.store.read().api_on.subscribe();
-    let _ = app.update(UiMessage::ToggleSetting(|x| x.enable_pas_api ^= true));
+    let _ = app.update(UiMessage::Settings(settings::Msg::ToggleSetting(|x| x.enable_pas_api ^= true)));
     assert!(*on.borrow() && app.store.read().settings.enable_pas_api, "the toggle starts the Desktop API");
     let _ = app.update(UiMessage::Integrations(integrations::Msg::McpTarget(3)));
     assert!(simulator(app.view_settings()).find("Prefer Streamable HTTP when possible.").is_ok());
-    let _ = app.update(UiMessage::JoinCommunity);
-    assert_eq!(app.update(UiMessage::JoinCommunity).units(), 0, "a second click waits for the join");
+    let _ = app.update(UiMessage::Settings(settings::Msg::JoinCommunity));
+    assert_eq!(
+        app.update(UiMessage::Settings(settings::Msg::JoinCommunity)).units(),
+        0,
+        "a second click waits for the join"
+    );
     let base = "http://127.0.0.1:23373";
     assert_eq!(
         mcp_value("Cursor", base),
@@ -2785,7 +2794,7 @@ fn approve_connection_like_desktop() {
 #[test]
 fn approved_connections_like_desktop() {
     let mut app = demo_app("connections");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Integrations));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Integrations)));
     assert!(simulator(app.view_settings()).find("Add a connection to get started").is_ok());
     let _ = app.update(UiMessage::Integrations(integrations::Msg::Add(true)));
     let mut sim = simulator(app.view_settings());
@@ -2822,7 +2831,7 @@ fn approved_connections_like_desktop() {
 #[test]
 fn remote_access_like_desktop() {
     let mut app = demo_app("remote");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Integrations));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Integrations)));
     let _ = app.update(UiMessage::Integrations(integrations::Msg::RemoteAccess(true)));
     assert!(
         simulator(app.view_settings()).find("Enable Remote Access?").is_ok()
@@ -2845,7 +2854,7 @@ fn remote_access_like_desktop() {
 #[test]
 fn ai_settings_like_desktop() {
     let mut app = demo_app("ai");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Ai));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Ai)));
     let mut sim = simulator(app.view_settings());
     for heading in ["General", "Voice Transcription", "AI Mentions"] {
         assert!(sim.find(heading).is_ok(), "the {heading} group shows");
@@ -2854,12 +2863,13 @@ fn ai_settings_like_desktop() {
     assert!(sim.find(mention).is_ok() && sim.find("Requires a paid subscription.").is_ok());
     let _ = sim.click("Whisper");
     let msgs: Vec<_> = sim.into_messages().collect();
-    let upsell = msgs.iter().all(|m| matches!(m, UiMessage::SelectSettingsTab(SettingsTab::BeeperPlus)));
+    let upsell =
+        msgs.iter().all(|m| matches!(m, UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::BeeperPlus))));
     assert!(!msgs.is_empty() && upsell, "a locked Plus toggle opens Beeper Plus");
     let rows = ["Automatically", "Improves accuracy."];
     let shown = |app: &BeeperGuiApp| rows.map(|r| simulator(app.view_settings()).find(r).is_ok());
     assert_eq!(shown(&app), [false; 2], "Desktop shows the transcription rows only while Whisper is on");
-    let _ = app.update(UiMessage::SetPref("transcribeWithOpenai", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("transcribeWithOpenai", 1)));
     assert_eq!(shown(&app), [true; 2]);
 }
 
@@ -2883,7 +2893,7 @@ fn undo_send_like_desktop() {
     use iced::keyboard::{Key, Modifiers};
     let mut app = demo_app("undo-send");
     app.store.write().features.flags["features"]["*"]["undo-send"] = true.into();
-    let _ = app.update(UiMessage::SetPref("undoSendDelay", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("undoSendDelay", 1)));
     let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
     let send = |app: &mut BeeperGuiApp, text: &str| {
         let edit = text_editor::Edit::Paste(Arc::new(text.into()));
@@ -2898,7 +2908,7 @@ fn undo_send_like_desktop() {
     let _ = app.update(UiMessage::KeyPressed(Key::Character("z".into()), Modifiers::COMMAND));
     assert_eq!(count(&app), before, "Ctrl Z takes the message back");
     assert_eq!(app.pane.composer.text().trim(), "oops", "the composer has the text again");
-    let _ = app.update(UiMessage::SetPref("undoOnPendingClick", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("undoOnPendingClick", 1)));
     let id = send(&mut app, "");
     let _ = app.update(UiMessage::ClickMessage(id));
     assert_eq!((count(&app), app.pane.composer.text().trim()), (before, "oops"), "a click on the message undoes");
@@ -3574,12 +3584,12 @@ fn attachments_show_download_and_time_on_hover_like_desktop() {
 #[test]
 fn plus_rows_follow_the_feature_flags() {
     let mut app = demo_app("features");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
     let clicks = |app: &BeeperGuiApp, label: &str| {
         let mut sim = Simulator::with_size(Default::default(), Size::new(1024.0, 4000.0), app.view_settings());
         assert!(sim.find(label).is_ok(), "{label} shows");
         let _ = sim.click(label);
-        sim.into_messages().filter(|m| matches!(m, UiMessage::SetPref(..))).count()
+        sim.into_messages().filter(|m| matches!(m, UiMessage::Settings(settings::Msg::SetPref(..)))).count()
     };
     // Rows with a Plus pill lay out each word of the label apart.
     let undo = "pending";
@@ -3602,15 +3612,15 @@ fn plus_rows_follow_the_feature_flags() {
 #[test]
 fn every_pref_value_renders() {
     let mut app = demo_app("prefs");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
     for (tab, pref) in prefs() {
-        let _ = app.update(UiMessage::SelectSettingsTab(tab));
+        let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(tab)));
         for v in 0..=pref.max_value() {
-            let _ = app.update(UiMessage::SetPref(pref.key, v));
+            let _ = app.update(UiMessage::Settings(settings::Msg::SetPref(pref.key, v)));
             let _ = simulator(app.view_settings());
             let _ = simulator(app.view_main());
         }
-        let _ = app.update(UiMessage::SetPref(pref.key, pref.default_value()));
+        let _ = app.update(UiMessage::Settings(settings::Msg::SetPref(pref.key, pref.default_value())));
     }
 }
 
@@ -3634,14 +3644,14 @@ fn zoom_keys_like_desktop() {
         let _ = app.update(UiMessage::KeyPressed(Key::Character(key.into()), Modifiers::CTRL));
         assert_eq!(app.zoom, zoom, "ctrl {key}");
     }
-    let _ = app.update(UiMessage::SetPref("fontSize", 0));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 0)));
     assert_eq!(app.zoom, 0.75, "the font size 9 is a root font of 12 px, as in Desktop");
 }
 
 #[test]
 fn search_finds_custom_items_like_desktop() {
     let mut app = demo_app("search-custom");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
     let hit =
         |q: &str| search_settings(&app.store.read(), q).into_iter().find(|h| matches!(h, SettingsHit::Custom(..)));
     assert_eq!(hit("wallpaper"), Some(SettingsHit::Custom(SettingsTab::Appearance, "Default chat theme")));
@@ -3652,7 +3662,7 @@ fn search_finds_custom_items_like_desktop() {
     assert!(names("sound effect volume").contains(&"Sound Effect Volume".to_string()));
     let mcp = search_settings(&app.store.read(), "mcp");
     assert_eq!(mcp.first(), Some(&SettingsHit::Section(SettingsTab::Integrations, true)), "a section keyword matches");
-    let _ = app.update(UiMessage::PickSetting(hit("wallpaper").expect("a hit")));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Pick(hit("wallpaper").expect("a hit"))));
     assert_eq!(app.active_settings_tab, SettingsTab::Appearance);
     assert_eq!(app.pref_flash.map(|f| f.0), Some("Default chat theme"));
     let _ = simulator(app.view_settings());
@@ -3661,7 +3671,7 @@ fn search_finds_custom_items_like_desktop() {
 #[test]
 fn settings_nav_follows_the_plan() {
     let mut app = demo_app("settings-nav");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Beeper Plus").is_ok() && sim.find("Free").is_ok(), "a free account can subscribe");
     let _ = sim.click("Incognito").expect("the incognito row");
@@ -3671,7 +3681,7 @@ fn settings_nav_follows_the_plan() {
     assert_eq!(app.active_settings_tab, SettingsTab::BeeperPlus, "a locked row opens the subscription prompt");
     let plus = Profile { plan: Plan::PlusPlus, can_subscribe: false, ..Profile::default() };
     app.store.write().whoami = plus;
-    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::General));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::General)));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Beeper Plus").is_err(), "a subscriber does not see Beeper Plus");
     assert!(sim.find("PlusPlus").is_ok() && sim.find("++").is_ok());
@@ -3682,18 +3692,18 @@ fn settings_nav_follows_the_plan() {
 fn hotkey_recorder_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("hotkey-recorder");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Hotkeys));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Hotkeys)));
     let ch = |c: &str| Key::Character(c.into());
     let keys = |app: &BeeperGuiApp| app.store.read().settings.hotkey_keys("Search").to_string();
-    let _ = app.update(UiMessage::RecordHotkey("Search"));
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Record("Search")));
     let _ = app.settings_key(ch("k"), Modifiers::empty());
-    let _ = app.update(UiMessage::HotkeyRecorder(true));
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Recorder(true)));
     assert_eq!(app.status_banner, "You must also use a modifier key like Ctrl, Shift or Option/Alt");
-    let _ = app.update(UiMessage::HotkeyRecorder(false));
-    let _ = app.update(UiMessage::RecordHotkey("Search"));
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Recorder(false)));
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Record("Search")));
     let _ = app.settings_key(ch("j"), Modifiers::CTRL);
     assert!(simulator(app.view_settings()).find("Ctrl J is already used by Command Bar").is_ok());
-    let _ = app.update(UiMessage::HotkeyRecorder(true));
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Recorder(true)));
     assert_eq!(keys(&app), "ctrl+k", "a used combination is not saved");
     let _ = app.settings_key(Key::Named(Named::Shift), Modifiers::SHIFT);
     let _ = app.settings_key(ch("k"), Modifiers::SHIFT | Modifiers::CTRL);
@@ -3708,13 +3718,13 @@ fn hotkey_recorder_like_desktop() {
     assert!(simulator(app.view_main())
         .find("Beeper has to be relaunched for all hotkey changes to take effect")
         .is_ok());
-    let _ = app.update(UiMessage::RevertHotkey("Search"));
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Revert("Search")));
     assert_eq!(keys(&app), "ctrl+k");
-    let _ = app.update(UiMessage::RecordHotkey("Switch First 9 Chats Modifier"));
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Record("Switch First 9 Chats Modifier")));
     let _ = app.settings_key(Key::Named(Named::Control), Modifiers::empty());
     let _ = app.settings_key(ch("x"), Modifiers::CTRL);
     let _ = app.settings_key(Key::Named(Named::Shift), Modifiers::CTRL);
-    let _ = app.update(UiMessage::HotkeyRecorder(true));
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Recorder(true)));
     let modifiers = app.store.read().settings.hotkey_keys("Switch First 9 Chats Modifier").to_string();
     assert_eq!(modifiers, "ctrl+shift", "a modifier hotkey records only modifiers");
 }
@@ -3723,7 +3733,7 @@ fn hotkey_recorder_like_desktop() {
 fn profile_page_like_desktop() {
     use crate::profile::Msg;
     let mut app = demo_app("profile-page");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Profile));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Profile)));
     let me = app.store.read().me().clone();
     let username = me.username.clone().expect("a username");
     let shows = |app: &BeeperGuiApp, text: &str| simulator(app.view_settings()).find(text).is_ok();
@@ -3733,13 +3743,13 @@ fn profile_page_like_desktop() {
     assert!(!shows(&app, "Save"), "Save shows only after a change");
     let _ = app.update(UiMessage::Profile(Msg::Name("New Name".into())));
     assert!(shows(&app, "Save"));
-    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::General));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::General)));
     assert_eq!(app.active_settings_tab, SettingsTab::Profile, "unsaved changes keep the page");
     assert!(shows(&app, "You have unsaved changes"));
     let _ = app.update(UiMessage::Profile(Msg::Leave(false)));
     assert_eq!(app.active_settings_tab, SettingsTab::General);
     assert!(app.profile.name.is_none(), "Discard drops the edit");
-    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::Profile));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::Profile)));
     let _ = app.update(UiMessage::Profile(Msg::Menu));
     assert!(shows(&app, "Show Recovery Key") && shows(&app, "Logout") && shows(&app, "Delete account"));
     let _ = app.update(UiMessage::Profile(Msg::Delete(Some("nobody".into()))));
@@ -3771,12 +3781,12 @@ fn profile_page_like_desktop() {
 #[test]
 fn downloads_location_like_desktop() {
     let mut app = demo_app("downloads-location");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
     let os = downloads_dir(&app.store.read().settings);
     assert!(os.ends_with("Downloads"), "the downloads folder of the OS is the default");
-    let _ = app.update(UiMessage::DownloadsPicked(Ok(vec!["/tmp/picked".into()])));
+    let _ = app.update(UiMessage::Settings(settings::Msg::DownloadsPicked(Ok(vec!["/tmp/picked".into()]))));
     assert_eq!(downloads_dir(&app.store.read().settings), std::path::PathBuf::from("/tmp/picked"));
-    let _ = app.update(UiMessage::DownloadsPicked(Ok(vec![])));
+    let _ = app.update(UiMessage::Settings(settings::Msg::DownloadsPicked(Ok(vec![]))));
     assert_eq!(app.store.read().settings.downloads_dir, "/tmp/picked", "a cancel keeps the folder");
     let hits = search_settings(&app.store.read(), "downloads");
     let labels: Vec<String> = hits.into_iter().map(SettingsHit::label).collect();
@@ -3787,12 +3797,12 @@ fn downloads_location_like_desktop() {
 fn quick_reaction_settings_like_desktop() {
     use crate::emoji::EmojiMsg;
     let mut app = demo_app("quick-reaction-settings");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
     assert!(simulator(app.view_settings()).find("Quick reaction emoji").is_err(), "only for React with...");
-    let _ = app.update(UiMessage::SetPref("messageDoubleClick", 5));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("messageDoubleClick", 5)));
     assert!(simulator(app.view_settings()).find("Quick reaction emoji").is_ok());
-    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::Appearance));
-    let _ = app.update(UiMessage::SetPref("quickReactionsCustomized", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::Appearance)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("quickReactionsCustomized", 1)));
     assert_eq!(crate::emoji::quick_reactions(&app.store.read()), ["👍", "❤️", "😂"], "Desktop's custom defaults");
     let _ = app.update(UiMessage::QuickEmoji(Some(2)));
     let _ = simulator(app.view_settings());
@@ -3948,7 +3958,7 @@ fn poll_creator_like_desktop() {
 fn chat_theme_like_desktop() {
     let mut app = demo_app("chat-theme");
     let chat = app.store.read().chats[0].id.clone();
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Appearance));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Appearance)));
     {
         let mut sim = simulator(app.view_settings());
         assert!(
@@ -4026,7 +4036,7 @@ fn incognito_indicator_like_desktop() {
     let mut app = demo_app("incognito-indicator");
     let trial = serde_json::json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2999-01-01T00:00:00Z" } });
     app.store.write().features.usage = trial;
-    let _ = app.update(UiMessage::SetPref("incognito", 1));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("incognito", 1)));
     let chat = app.store.read().chats.iter().find(|c| c.unread_count > 0).expect("an unread chat").id.clone();
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
     let unread = |app: &BeeperGuiApp| app.store.read().chats.iter().find(|c| c.id == chat).unwrap().unread_count;
@@ -4043,7 +4053,7 @@ fn incognito_indicator_like_desktop() {
     }
     assert_eq!(unread(&app), 0);
     assert_eq!(app.pane.selected_chat_id.as_deref(), Some(chat.as_str()), "the chat stays open");
-    let _ = app.update(UiMessage::SetPref("incognitoIndicator", 0));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("incognitoIndicator", 0)));
     assert!(!app.store.read().incognito_indicator());
 }
 
@@ -4421,7 +4431,7 @@ fn create_label_shows_a_draft_space_like_desktop() {
 #[test]
 fn accounts_settings_rows_have_the_account_menu_like_desktop() {
     let mut app = demo_app("prefs-account-menu");
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Accounts));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
     let account = app.store.read().bridge_accounts[0].account_id.clone();
     let _ = app.update(UiMessage::OpenChatMenu(format!("prefs:{account}")));
     let ask: Vec<UiMessage> = {
@@ -4461,7 +4471,8 @@ fn sidebar_menus_open_accounts_like_desktop() {
         let mut sim = simulator(app.view_account_menu(entry));
         assert!(entry.starts_with("label:") || sim.find("Mute Space").is_ok());
         let _ = sim.click("Add/Remove Accounts…").expect("an Add/Remove Accounts item");
-        let open = sim.into_messages().find(|m| matches!(m, UiMessage::OpenSettings(SettingsTab::Accounts)));
+        let open =
+            sim.into_messages().find(|m| matches!(m, UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))));
         let _ = app.update(open.expect("the Accounts settings"));
         assert!(app.chat_menu.is_none() && app.settings_window.is_some());
     }
@@ -4494,7 +4505,7 @@ fn account_status_like_desktop() {
         app.store.write().bridge_accounts[0].state = state.into();
         assert_eq!(status_text(&app.store.read(), &account), Some(text));
     }
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Accounts));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
     let _ = simulator(app.view_settings());
     let _ = simulator(app.view_rail());
     app.store.write().bridge_accounts[0].state = "CONNECTED".into();
@@ -5168,7 +5179,7 @@ fn delete_chat_follows_the_flag_like_desktop() {
 #[test]
 fn blocked_users_like_desktop() {
     let mut app = demo_app("blocked-users");
-    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::General));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::General)));
     assert!(simulator(app.view_settings()).find("Blocked users").is_err(), "the block-users flag is off");
     app.store.write().features.flags["features"]["*"]["block-users"] = true.into();
     let picked: Vec<UiMessage> = {
@@ -6020,7 +6031,7 @@ fn new_chat_accounts_filter_like_desktop() {
 fn link_previews_like_desktop() {
     let note = "!note_self:beeper.com";
     let mut app = demo_app("link-previews");
-    let _ = app.update(UiMessage::SetPref("loadEmbeds", 0));
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("loadEmbeds", 0)));
     let _ = app.update(UiMessage::SelectChat(note.into()));
     let tube = "https://youtu.be/dQw4w9WgXcQ";
     {
@@ -6874,7 +6885,7 @@ fn sign_in_window_details_like_desktop() {
 fn sign_in_window_follows_the_system_theme() {
     let mut app = signed_out_app("sign-in-dark");
     for (mode, p) in [(iced::theme::Mode::Light, style::BEEPER_LIGHT), (iced::theme::Mode::Dark, style::BEEPER_DARK)] {
-        let _ = app.update(UiMessage::SystemTheme(mode));
+        let _ = app.update(UiMessage::Settings(settings::Msg::SystemTheme(mode)));
         // The frame, the card, and the Google button.
         let want = [p.window, p.primary_container, p.chip];
         assert_eq!(login_pixels(&app, &[(3, 3), (20, 60), (40, 526)]), want, "{mode:?}");

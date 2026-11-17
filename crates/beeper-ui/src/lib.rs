@@ -15,6 +15,7 @@ mod format;
 mod forward;
 mod gallery;
 mod gifs;
+pub mod hotkeys;
 mod i18n;
 mod images;
 mod info;
@@ -37,7 +38,7 @@ mod reauth;
 mod record;
 pub mod reminders;
 mod scheduled;
-mod settings;
+pub mod settings;
 mod sound;
 mod spell;
 #[cfg(target_os = "linux")]
@@ -88,8 +89,8 @@ use crate::media_view::{decode_media, run_ffmpeg, Carousel, MediaWindow, TAB_SLI
 use crate::message::Rows;
 pub use crate::message::TopOfThread;
 use crate::settings::{
-    donut, hotkey_key, mcp_value, shown, storage_totals, AddToken, IntegrationsPage, StoragePage, COMMUNITY_ROOM,
-    EXPIRIES, HOTKEYS_RELAUNCH, SETTINGS_DIALOGS, STORAGE_DAYS,
+    hotkey_key, mcp_value, shown, AddToken, IntegrationsPage, StoragePage, EXPIRIES, HOTKEYS_RELAUNCH,
+    SETTINGS_DIALOGS, STORAGE_DAYS,
 };
 pub use crate::settings::{search_settings, Expiry, HotkeyRec, SettingsHit, SettingsTab, TabIcon};
 use crate::threads::{can_thread, Threads, THREAD_FRACTION};
@@ -122,7 +123,6 @@ use beeper_core::matrix::{DeviceInfo, Mention, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind};
 use beeper_core::prefs;
-use beeper_core::storage;
 use beeper_core::store::{BeeperStore, NetworkSpace, Query, SharedStore, NOTE_CHAT_ID};
 use iced::font::Weight;
 use iced::gradient::Linear;
@@ -501,38 +501,18 @@ pub enum UiMessage {
     SelectionMenu(u8, f32),
     DeleteChat(String, bool),
     Capabilities(String, Result<serde_json::Value, String>),
-    OpenSettings(SettingsTab),
+    /// Desktop's Settings window.
+    Settings(settings::Msg),
     /// The chat accounts: Settings > Accounts, an account's settings and Show in Inbox, its removal, and its error banner.
     Accounts(accounts::Msg),
-    SelectSettingsTab(SettingsTab),
-    SettingsQueryChanged(String),
-    SettingsFocus(usize),
-    /// Moves the focused search result down by the given count, wrapping around.
-    SettingsStep(usize),
-    PickSetting(SettingsHit),
     ToggleRightPanel,
     ToggleDnd,
-    CycleTheme,
-    SelectTheme(ThemeChoice),
-    SystemTheme(iced::theme::Mode),
-    SetPref(&'static str, u8),
-    ToggleHotkey(&'static str),
-    /// Desktop's click on a `ShortcutRecorder`, which starts to record keys for the hotkey.
-    RecordHotkey(&'static str),
-    /// The Save (true) or Cancel (false) button of the recorder.
-    HotkeyRecorder(bool),
-    /// The Revert button of a hotkey with keys other than the default.
-    RevertHotkey(&'static str),
-    RevertHotkeys,
-    HotkeyQuery(String),
-    /// Opens Desktop's Keyboard Shortcuts list with the search text, or closes it.
-    HotkeysModal(Option<String>),
-    HotkeysScrolled(bool),
+    /// Settings > Hotkeys: the hotkey switches, the shortcut recorder, and the Keyboard Shortcuts list.
+    Hotkeys(hotkeys::Msg),
     Zoom(i8),
     /// The zoom slider moved to a level from -4 to 4, in steps of 10%.
     ZoomDrag(f32),
     ZoomRelease,
-    ToggleSetting(fn(&mut BeeperSettings)),
     AvatarLoaded(String, Result<image::Handle, String>),
     MediaLoaded(String, Result<Frames, String>),
     TileBaked(String, image::Handle),
@@ -552,12 +532,8 @@ pub enum UiMessage {
     /// Desktop's `openAttachmentPicker`.
     PickFiles,
     FilesPicked(Result<Vec<std::path::PathBuf>, String>),
-    /// Desktop's "Change" of "Downloads location", and the picked folder.
-    PickDownloads,
-    DownloadsPicked(Result<Vec<std::path::PathBuf>, String>),
     /// Opens the emoji picker for a quick reaction (see [`emoji::Picker::pref`]), or closes it.
     QuickEmoji(Option<u8>),
-    SetQuickEmoji(u8, String),
     /// The files to attach, or the toast text of each file that did not load.
     FilesLoaded(Vec<Result<PendingMedia, String>>),
     /// A file drag enters (true) or leaves a window.
@@ -580,35 +556,13 @@ pub enum UiMessage {
     LoadOlder,
     /// A load of older messages ended.
     LoadedOlder(Result<(), String>),
-    DevicesLoaded(Result<Vec<DeviceInfo>, String>),
-    MicsLoaded(Result<(String, Vec<String>), String>),
-    SetMicrophone(String),
-    /// Desktop's "Share Analytics" toggle.
-    ShareAnalytics,
-    /// The server saved `analyticsDisabled`, or failed and the toggle goes back to the first value.
-    AnalyticsSaved(bool, Result<(), String>),
     Ask(Option<u8>),
-    /// "Logout" of another device in Settings > Devices, its confirmation, and the end of the logout.
-    AskLogoutDevice(String),
-    LogoutDevice(String),
-    DeviceLoggedOut(String, Result<(), String>),
     /// The close of Desktop's recovery key reminder (`dismissRecoveryCodeReminder`).
     DismissRecoveryReminder,
     Logout,
     LoggedOut(Result<(), String>),
-    StorageScanned(Vec<storage::Entry>),
-    /// The age choice of the clear for all chats (0) or for the open chat (1).
-    StorageAge(usize, usize),
-    /// Toggles a type, as its index in [`storage::Kind::ALL`], for all chats (0) or for the open chat (1).
-    StorageKind(usize, usize),
-    StorageChat(String),
-    /// Clears the chosen storage of all chats (0), the cache (1) or the open chat (2).
-    ClearStorage(u8),
-    StorageCleared(Result<(), String>),
     /// Settings > Integrations: the Desktop API tokens and connections, Remote Access, and the MCP install.
     Integrations(integrations::Msg),
-    JoinCommunity,
-    CommunityJoined(Result<(), String>),
     OpenQuickLook(String, String),
     OpenUrl(String),
     /// The result of opening a URL in the browser.
@@ -2157,7 +2111,10 @@ fn more_menu(st: &BeeperStore) -> Vec<Option<(String, UiMessage)>> {
         items.extend([Some((tr("New Label…").into(), UiMessage::OpenCreateLabel(Vec::new()))), None]);
     }
     items.push(Some((tr("Edit Spaces…").into(), UiMessage::OpenEditSpaces)));
-    items.push(Some((tr("Add/Remove Accounts…").into(), UiMessage::OpenSettings(SettingsTab::Accounts))));
+    items.push(Some((
+        tr("Add/Remove Accounts…").into(),
+        UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)),
+    )));
     items
 }
 
@@ -2750,7 +2707,7 @@ fn theme_cards<'a>(p: &Palette, current: ThemeChoice) -> El<'a> {
         button(column![img, label].spacing(6).align_x(Center))
             .padding(Padding { top: 7.0, right: 13.0, bottom: 9.0, left: 13.0 })
             .style(btn_style([CLEAR, p.hover, CLEAR], [p.strong; 3], 8.0))
-            .on_press_maybe((!on).then_some(UiMessage::SelectTheme(t)))
+            .on_press_maybe((!on).then_some(UiMessage::Settings(settings::Msg::SelectTheme(t))))
             .into()
     });
     container(Row::with_children(cards).spacing(4)).center_x(Fill).padding([14, 0]).into()
@@ -3485,8 +3442,11 @@ impl BeeperGuiApp {
         let link = app.store.write().config.link.take();
         let link = link.map(|l| app.open_link(&l));
         let onboard = (!signed_in && app.store.read().signed_in()).then(|| app.resume_onboarding());
-        let tasks =
-            [open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme), app.load_avatars()];
+        let tasks = [
+            open.map(UiMessage::WindowOpened),
+            iced::system::theme().map(|a0| UiMessage::Settings(settings::Msg::SystemTheme(a0))),
+            app.load_avatars(),
+        ];
         (app, Task::batch(tasks.into_iter().chain(cloud).chain(restore).chain(link).chain(onboard)))
     }
 
@@ -4305,7 +4265,9 @@ impl BeeperGuiApp {
                 };
                 None
             }
-            "Keyboard Shortcuts" => Some(UiMessage::HotkeysModal(self.hotkeys_modal.is_none().then(String::new))),
+            "Keyboard Shortcuts" => {
+                Some(UiMessage::Hotkeys(hotkeys::Msg::Modal(self.hotkeys_modal.is_none().then(String::new))))
+            }
             "Filter: All" => {
                 self.filters = 0;
                 None
@@ -4342,7 +4304,7 @@ impl BeeperGuiApp {
                 to.map(|a0| UiMessage::Rail(rail::Msg::Select(a0)))
             }
             "Send Feedback" => chat.map(|_| UiMessage::OpenQuickLook("Feedback".into(), FEEDBACK.into())),
-            "Settings" => Some(UiMessage::OpenSettings(self.active_settings_tab)),
+            "Settings" => Some(UiMessage::Settings(settings::Msg::Open(self.active_settings_tab))),
             "Switch First 9 Spaces Modifier" => {
                 let space = rail_spaces(&self.store.read()).into_iter().nth(digit);
                 space.and_then(|id| match RAIL_VIEWS.iter().find(|v| v.0 == id) {
@@ -4360,7 +4322,7 @@ impl BeeperGuiApp {
             }
             "Toggle Space Bar" => {
                 let on = self.store.read().settings.on("showSidebar");
-                Some(UiMessage::SetPref("showSidebar", u8::from(!on)))
+                Some(UiMessage::Settings(settings::Msg::SetPref("showSidebar", u8::from(!on))))
             }
             "Zoom In" => Some(UiMessage::Zoom(1)),
             "Zoom Out" => Some(UiMessage::Zoom(-1)),
@@ -5289,7 +5251,7 @@ impl BeeperGuiApp {
                 self.integrations.add = None;
             }
             UiMessage::InputEscape(id) if Some(id) == self.settings_window => {
-                return self.update(UiMessage::SettingsQueryChanged(String::new()));
+                return self.update(UiMessage::Settings(settings::Msg::Query(String::new())));
             }
             UiMessage::InputEscape(id) => {
                 return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
@@ -5557,54 +5519,7 @@ impl BeeperGuiApp {
                 drop(st);
                 return self.open_dm(account, sender, None, Some(quote));
             }
-            UiMessage::SelectSettingsTab(SettingsTab::Help) | UiMessage::OpenSettings(SettingsTab::Help) => {
-                return Task::done(UiMessage::OpenUrl("https://help.beeper.com/?ref=desktop-app".into()));
-            }
-            UiMessage::SelectSettingsTab(t)
-                if self.active_settings_tab == SettingsTab::Profile
-                    && t != SettingsTab::Profile
-                    && self.profile.dirty(self.store.read().me()) =>
-            {
-                self.profile.leaving = Some(t);
-            }
-            UiMessage::SelectSettingsTab(t) => {
-                let top = operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
-                self.active_settings_tab = t;
-                (self.account_page, self.app_qr) = (None, false);
-                return Task::batch([top, self.load_devices()]);
-            }
-            UiMessage::DevicesLoaded(r) => (self.devices, self.devices_busy) = (Some(r), false),
-            UiMessage::AskLogoutDevice(id) => (self.confirm, self.delete_target) = (Some(ASK_LOGOUT_DEVICE), Some(id)),
-            UiMessage::LogoutDevice(id) => return self.logout_device(id),
-            UiMessage::DeviceLoggedOut(id, r) => return self.device_logged_out(id, r),
-            UiMessage::MicsLoaded(r) => {
-                if let Err(e) = &r {
-                    eprintln!("Unable to load audio input devices: {e}");
-                }
-                self.mics = Some(r);
-            }
-            UiMessage::SetMicrophone(name) => self.patch_settings(|s| s.microphone = name),
-            UiMessage::ShareAnalytics => {
-                let mut st = self.store.write();
-                let was = st.whoami.analytics_disabled;
-                st.whoami.analytics_disabled = !was;
-                let (cloud, token) = (self.cloud.clone(), st.beeper_state.access_token.clone());
-                if !st.config.demo {
-                    return Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || cloud.set_analytics_disabled(&token, !was))
-                                .await
-                                .expect("analytics worker thread")
-                        },
-                        move |r| UiMessage::AnalyticsSaved(was, r.map_err(|e| e.message)),
-                    );
-                }
-            }
-            UiMessage::AnalyticsSaved(_, Ok(())) => {}
-            UiMessage::AnalyticsSaved(was, Err(e)) => {
-                self.store.write().whoami.analytics_disabled = was;
-                self.fail(Toast::new(trf("Something went wrong: %s", &[&e])));
-            }
+            UiMessage::Settings(msg) => return self.settings(msg),
             UiMessage::Ask(dialog) => (self.confirm, self.reminder_menu) = (dialog, None),
             UiMessage::AskDeleteChat(id) => {
                 (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_CHAT), None, Some(id));
@@ -5723,17 +5638,6 @@ impl BeeperGuiApp {
                 self.dnd_muted = !self.dnd_muted;
                 self.refresh_theme_and_tray();
             }
-            UiMessage::CycleTheme => {
-                let cur = self.store.read().settings.theme;
-                let next = ThemeChoice::ALL[(ThemeChoice::ALL.iter().position(|t| *t == cur).expect("listed") + 1) % 3];
-                return self.update(UiMessage::SelectTheme(next));
-            }
-            UiMessage::SystemTheme(mode) => {
-                self.system_dark = mode == iced::theme::Mode::Dark;
-                self.refresh_theme_and_tray();
-            }
-            UiMessage::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
-            UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
             UiMessage::Accounts(msg) => return self.accounts(msg),
             UiMessage::Capabilities(account, r) => match r {
                 Ok(v) => drop(self.caps.insert(account, v)),
@@ -5822,27 +5726,6 @@ impl BeeperGuiApp {
                 return open;
             }
             UiMessage::QuickEmoji(None) => self.pane.emoji = None,
-            UiMessage::SetQuickEmoji(0, e) => {
-                self.patch_settings(|s| s.quick_reaction = e);
-                let mut st = self.store.write();
-                let client = st.matrix.clone();
-                if let Some(((kind, content), c)) = beeper_core::matrix::quick_reaction_write(&mut st).zip(client) {
-                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
-                }
-            }
-            UiMessage::SetQuickEmoji(slot, e) => {
-                self.patch_settings(|s| s.quick_reactions[usize::from(slot) - 1] = e);
-            }
-            UiMessage::PickDownloads => {
-                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Folder);
-                return Task::perform(pick, UiMessage::DownloadsPicked);
-            }
-            UiMessage::DownloadsPicked(Ok(dirs)) => {
-                if let Some(dir) = dirs.into_iter().next() {
-                    self.patch_settings(|s| s.downloads_dir = dir.display().to_string());
-                }
-            }
-            UiMessage::DownloadsPicked(Err(e)) => self.fail(Toast::new(e)),
             UiMessage::FilesPicked(r) => match r {
                 Ok(paths) => {
                     let st = self.store.read();
@@ -6051,61 +5934,7 @@ impl BeeperGuiApp {
                 return self.load_older();
             }
             UiMessage::LoadedOlder(r) => return self.loaded_older(r),
-            UiMessage::StorageScanned(all) => {
-                self.storage.chart = Some(donut(&storage_totals(&all)));
-                self.storage.all = Some(all);
-            }
-            UiMessage::StorageAge(which, i) => self.storage.ages[which] = i,
-            UiMessage::StorageKind(which, i) => self.storage.kinds[which] ^= 1 << i,
-            UiMessage::StorageChat(id) => {
-                let s = &mut self.storage;
-                (s.chat, s.ages[1], s.kinds[1]) = ((s.chat.as_ref() != Some(&id)).then_some(id), 1, 0b11111);
-            }
-            UiMessage::ClearStorage(which) => {
-                let mut picked: Vec<storage::Entry> = self.storage_pick(which).into_iter().cloned().collect();
-                if which == 0 {
-                    picked.extend(self.storage_pick(1).into_iter().cloned());
-                }
-                (self.confirm, self.storage.clearing) = (None, Some(which));
-                return Task::perform(storage::clear(self.store.clone(), picked), UiMessage::StorageCleared);
-            }
-            UiMessage::StorageCleared(r) => {
-                self.storage.clearing = None;
-                if let Err(e) = r {
-                    eprintln!("Unable to clear storage: {e}");
-                    self.fail(Toast::new(tr("Failed to clear storage").into()));
-                }
-                return self.scan_storage();
-            }
             UiMessage::Integrations(msg) => return self.integrations(msg),
-            UiMessage::JoinCommunity => {
-                if self.store.read().resolve_chat_idx(COMMUNITY_ROOM).is_some() {
-                    let close = window::close(self.settings_window.expect("the settings window is open"));
-                    return Task::batch([self.update(UiMessage::SelectChat(COMMUNITY_ROOM.into())), close]);
-                }
-                if !self.integrations.joining {
-                    self.integrations.joining = true;
-                    return Task::perform(beeper_core::matrix::join(self.store.clone(), COMMUNITY_ROOM.into()), |r| {
-                        UiMessage::CommunityJoined(r.map(drop))
-                    });
-                }
-            }
-            UiMessage::CommunityJoined(r) => {
-                self.integrations.joining = false;
-                match r {
-                    Ok(()) => {
-                        let text = tr("Successfully joined the Beeper community room!").into();
-                        self.show(Toast { buttons: vec![(tr("Open"), UiMessage::JoinCommunity)], ..Toast::new(text) });
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to join community room: {e}");
-                        self.fail(Toast::new(
-                            tr("Something went wrong while joining the Beeper Developer Community chat. Please try again.")
-                                .into(),
-                        ));
-                    }
-                }
-            }
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
             }
@@ -6257,48 +6086,9 @@ impl BeeperGuiApp {
                 self.filters = if self.filters == bit { 0 } else { bit };
                 self.show_filter_menu = false;
             }
-            UiMessage::OpenSettings(tab) => {
-                self.chat_menu = None;
-                return self.open_settings(tab);
-            }
-            UiMessage::SettingsQueryChanged(q) => {
-                let st = self.store.read();
-                let n = search_settings(&st, &q).len();
-                if n != search_settings(&st, &self.settings_query).len() {
-                    self.settings_focus = 0;
-                    self.settings_pick = self.settings_pick.filter(|_| n > 0);
-                }
-                self.settings_query = q;
-            }
-            UiMessage::SettingsFocus(i) => self.settings_focus = i,
-            UiMessage::SettingsStep(step) => {
-                self.settings_focus =
-                    (self.settings_focus + step) % search_settings(&self.store.read(), &self.settings_query).len();
-                return locate(format!("hit-{}", self.settings_focus), "settings-nav", true);
-            }
-            UiMessage::PickSetting(hit) => {
-                self.settings_pick = Some(hit);
-                let tab = match hit {
-                    SettingsHit::Section(t, _) | SettingsHit::Pref(t, _) | SettingsHit::Custom(t, _) => t,
-                    SettingsHit::Network(_) => SettingsTab::Accounts,
-                };
-                let load =
-                    Task::batch([self.update(UiMessage::SelectSettingsTab(tab)), operation::focus("settings-search")]);
-                return match hit {
-                    SettingsHit::Pref(_, &prefs::Pref { key, .. }) | SettingsHit::Custom(_, key) => {
-                        self.pref_flash = Some((key, std::time::Instant::now()));
-                        Task::batch([load, locate(key, "settings-pane", false)])
-                    }
-                    SettingsHit::Network(_) => {
-                        self.adding_account = true;
-                        load
-                    }
-                    SettingsHit::Section(..) => load,
-                };
-            }
             UiMessage::ToggleIncognito => {
                 let on = !self.store.read().settings.on("incognito");
-                let task = self.update(UiMessage::SetPref("incognito", u8::from(on)));
+                let task = self.update(UiMessage::Settings(settings::Msg::SetPref("incognito", u8::from(on))));
                 let typing = self.store.read().settings.on("typingIndicators");
                 let (text, action) = match (on, typing) {
                     (true, true) => ("Incognito mode on. Also hide when you're typing from recipients?", "Hide typing"),
@@ -6311,68 +6101,14 @@ impl BeeperGuiApp {
                 let undo = (tr("Undo"), UiMessage::UndoAction);
                 let typing = UiMessage::Commands(vec![
                     UiMessage::Toast(toasts::Msg::DismissBanner),
-                    UiMessage::SetPref("typingIndicators", u8::from(!typing)),
+                    UiMessage::Settings(settings::Msg::SetPref("typingIndicators", u8::from(!typing))),
                 ]);
                 let (buttons, right) =
                     if action.is_empty() { (Vec::new(), Some(undo)) } else { (vec![(tr(action), typing), undo], None) };
                 self.show(Toast { buttons, right, ..Toast::new(tr(text).into()) });
                 return task;
             }
-            UiMessage::SetPref(key, v) => {
-                if key == "incognito" {
-                    let was = u8::from(self.store.read().settings.on(key));
-                    let what = if v != 0 { tr("Enable Incognito Mode") } else { tr("Disable Incognito Mode") };
-                    self.act(what.into(), UiMessage::SetPref(key, was), None);
-                }
-                self.patch_settings(|s| s.set_pref(key, v));
-                self.relaunch_toast = match key {
-                    "spellcheck" | "quitOnClose" | "hwAcceleration" | "hiddenEvents" => Some("Preference changed"),
-                    "appLanguage" => Some("App language will change after relaunch"),
-                    _ => self.relaunch_toast,
-                };
-                let mut st = self.store.write();
-                let client = st.matrix.clone();
-                if let Some(((kind, content), c)) = beeper_core::matrix::pref_write(&mut st, key).zip(client) {
-                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
-                }
-            }
-            UiMessage::ToggleHotkey(name) => {
-                self.patch_settings(|s| {
-                    match s.hotkey_keys(name) {
-                        "disabled" if prefs::hotkey_default(name) == "disabled" => {
-                            s.keybindings.insert(name.into(), "".into())
-                        }
-                        "disabled" => s.keybindings.remove(name),
-                        _ => s.keybindings.insert(name.into(), "disabled".into()),
-                    };
-                });
-                (self.hotkey_rec, self.relaunch_toast) = (None, Some(HOTKEYS_RELAUNCH));
-            }
-            UiMessage::RecordHotkey(name) => {
-                if self.hotkey_rec.as_ref().is_none_or(|r| r.name != name) {
-                    self.hotkey_rec = Some(HotkeyRec { name, mods: [false; 3], key: None, buttons: false });
-                }
-            }
-            UiMessage::HotkeyRecorder(false) => self.hotkey_rec = None,
-            UiMessage::HotkeyRecorder(true) => self.save_hotkey(),
-            UiMessage::RevertHotkey(name) => {
-                self.patch_settings(|s| drop(s.keybindings.remove(name)));
-                (self.hotkey_rec, self.relaunch_toast) = (None, Some(HOTKEYS_RELAUNCH));
-            }
-            UiMessage::RevertHotkeys => {
-                self.patch_settings(|s| s.keybindings.clear());
-                return self.update(UiMessage::Relaunch);
-            }
-            UiMessage::HotkeyQuery(q) => self.hotkey_query = q,
-            UiMessage::HotkeysModal(q) => {
-                self.hotkeys_scrolled &= q.is_some();
-                let open = self.hotkeys_modal.is_none() && q.is_some();
-                self.hotkeys_modal = q;
-                if open {
-                    return operation::focus("hotkeys-search");
-                }
-            }
-            UiMessage::HotkeysScrolled(down) => self.hotkeys_scrolled = down,
+            UiMessage::Hotkeys(msg) => return self.hotkeys(msg),
             UiMessage::Zoom(step) => self.patch_settings(|s| {
                 s.zoom_percent = if step == 0 {
                     100
@@ -6901,7 +6637,7 @@ impl BeeperGuiApp {
             }
             _ => None,
         });
-        let system = iced::system::theme_changes().map(UiMessage::SystemTheme);
+        let system = iced::system::theme_changes().map(|a0| UiMessage::Settings(settings::Msg::SystemTheme(a0)));
         let carousel = self.carousel.is_some().then(|| {
             iced::event::listen_with(|e, _, id| match e {
                 Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(c), modifiers, .. })
@@ -8033,7 +7769,7 @@ impl BeeperGuiApp {
                     None,
                     tr("Add/Remove Accounts…").into(),
                     keys("Settings"),
-                    Some(UiMessage::OpenSettings(SettingsTab::Accounts))
+                    Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)))
                 ),
                 menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
                 menu_item(
@@ -8048,7 +7784,7 @@ impl BeeperGuiApp {
                     None,
                     tr("Settings").into(),
                     keys("Settings"),
-                    Some(UiMessage::OpenSettings(SettingsTab::General))
+                    Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)))
                 ),
             ];
             let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -8060,7 +7796,7 @@ impl BeeperGuiApp {
                 SpaceMenu::Rail => vec![
                     menu_rule(p),
                     item(tr("Edit Spaces…"), UiMessage::OpenEditSpaces),
-                    item(tr("Add/Remove Accounts…"), UiMessage::OpenSettings(SettingsTab::Accounts)),
+                    item(tr("Add/Remove Accounts…"), UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
                 ],
                 SpaceMenu::Header => vec![menu_rule(p), select.expect("the header menu has Select Chats").into()],
                 SpaceMenu::Gear => vec![],
@@ -8106,7 +7842,7 @@ impl BeeperGuiApp {
             "",
             Some(UiMessage::Accounts(accounts::Msg::SetProps(account.into(), mute))),
         );
-        let accounts = UiMessage::OpenSettings(SettingsTab::Accounts);
+        let accounts = UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts));
         let settings = UiMessage::Accounts(accounts::Msg::OpenSettings(account.into()));
         let rest = match kind {
             SpaceMenu::Gear => column![mute],
@@ -8308,7 +8044,7 @@ impl BeeperGuiApp {
                     None,
                     tr("Add/Remove Accounts").into(),
                     "",
-                    Some(UiMessage::OpenSettings(SettingsTab::Accounts))
+                    Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)))
                 ),
                 menu_item(
                     p,
@@ -8317,7 +8053,13 @@ impl BeeperGuiApp {
                     keys("Toggle Space Bar"),
                     Some(UiMessage::RunHotkey("Toggle Space Bar"))
                 ),
-                menu_item(p, None, tr("Settings").into(), "", Some(UiMessage::OpenSettings(SettingsTab::General))),
+                menu_item(
+                    p,
+                    None,
+                    tr("Settings").into(),
+                    "",
+                    Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)))
+                ),
             ];
             return container(col.padding([4, 0]))
                 .width(233)
@@ -8565,7 +8307,7 @@ impl BeeperGuiApp {
                         item(tr(label), remind_label(at, h24), msg)
                     });
                     let upgrade = (!can).then(|| {
-                        let open = UiMessage::OpenSettings(SettingsTab::BeeperPlus);
+                        let open = UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus));
                         [item(tr("Upgrade to Beeper Plus"), String::new(), Some(open)), menu_rule(p)]
                     });
                     let presets = upgrade.into_iter().flatten().chain(last).chain(presets);

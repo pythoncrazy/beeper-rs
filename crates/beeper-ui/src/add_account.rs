@@ -833,7 +833,7 @@ mod tests {
         assert!(sim.find("WhatsApp disconnected").is_ok());
         sim.click("Reconnect").expect("the Reconnect of the banner");
         assert!(sim.into_messages().any(again));
-        let _ = app.update(UiMessage::OpenSettings(crate::SettingsTab::Accounts));
+        let _ = app.update(UiMessage::Settings(crate::settings::Msg::Open(crate::SettingsTab::Accounts)));
         let _ = app.update(UiMessage::Accounts(crate::accounts::Msg::Open(Some("whatsapp".into()))));
         let mut sim = iced_test::simulator(app.view_settings());
         assert!(sim.find("Account Disconnected").is_ok() && sim.find("Logged out").is_ok());

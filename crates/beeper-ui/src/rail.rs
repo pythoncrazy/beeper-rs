@@ -314,7 +314,7 @@ impl BeeperGuiApp {
                 blank(),
                 tr("Add/Remove Accounts...").into(),
                 "",
-                Some(UiMessage::OpenSettings(SettingsTab::Accounts)),
+                Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
             ));
         h += 8.0 + f32::from(u8::from(options.is_some()) + 3 + u8::from(labels)) * MENU_ITEM + 11.0;
         let top = mouse_area(Column::with_children(top)).on_enter(UiMessage::ChatSub(None));
@@ -511,11 +511,12 @@ impl BeeperGuiApp {
         let me_btn = button(self.face(me.img_url.as_deref(), me.full_name.as_deref().expect("self name"), 36.0, 0.0))
             .padding(0)
             .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
-            .on_press(UiMessage::OpenSettings(SettingsTab::General));
+            .on_press(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
         let footer = column![
             tip(rail_btn(g(icon::PHOTO_LIBRARY), false, media).into(), tr("Media"), vec![]),
             tip(
-                rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::OpenSettings(SettingsTab::Accounts)).into(),
+                rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)))
+                    .into(),
                 tr("Add an account"),
                 vec!["Ctrl", ","]
             ),

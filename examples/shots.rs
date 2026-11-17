@@ -38,7 +38,7 @@ fn main() {
     let store = StoreLock::shared(BeeperStore::from_config(cfg));
     let mut app = BeeperGuiApp::new(store);
     let (choice, theme) = if dark { (ThemeChoice::Dark, Theme::Dark) } else { (ThemeChoice::Light, Theme::Light) };
-    let _ = app.update(UiMessage::SelectTheme(choice));
+    let _ = app.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTheme(choice)));
     shot(&out, "main", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::FilterButton);
     shot(&out, "main_unread", (1200.0, 800.0), &theme, app.view_main());
@@ -87,10 +87,10 @@ fn main() {
     shot(&out, "main_thread_pane", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::Thread(beeper_ui::threads::Msg::Hide));
     for tab in SettingsTab::ALL {
-        let _ = app.update(UiMessage::OpenSettings(tab));
+        let _ = app.update(UiMessage::Settings(beeper_ui::settings::Msg::Open(tab)));
         shot(&out, &format!("settings_{tab:?}").to_lowercase(), (800.0, 740.0), &theme, app.view_settings());
     }
-    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Devices));
+    let _ = app.update(UiMessage::Settings(beeper_ui::settings::Msg::Open(SettingsTab::Devices)));
     let _ = app.update(UiMessage::Ask(Some(0)));
     shot(&out, "settings_logout", (800.0, 740.0), &theme, app.view_settings());
     let _ = app.update(UiMessage::Ask(None));

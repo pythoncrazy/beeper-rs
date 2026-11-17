@@ -1,6 +1,7 @@
 //! Desktop's application menu (`menubar`), which Electron's `autoHideMenuBar` hides on Linux and Windows until Alt
 //! shows it: the Beeper, File, Edit, View, Window and Help menus over the main window.
 use crate::i18n::{tr, trf, trx};
+use crate::settings;
 use crate::style::{fill_box, shadow_box, text_width, txt};
 use crate::{menu_item, menu_rule, BeeperGuiApp, El, SettingsTab, UiMessage, ASK_LOGOUT};
 use iced::widget::{container, mouse_area, row, text_editor, Column};
@@ -26,11 +27,12 @@ impl BeeperGuiApp {
         let url = |label: String, url: &str| plain(label, UiMessage::OpenUrl(url.into()));
         let logout = || plain(trf("Logout of %s...", &[&"Beeper"]), UiMessage::Ask(Some(ASK_LOGOUT)));
         let signed_in = st.signed_in();
-        let mut beeper = vec![plain(trf("About %s", &[&"Beeper"]), UiMessage::OpenSettings(SettingsTab::About))];
+        let mut beeper =
+            vec![plain(trf("About %s", &[&"Beeper"]), UiMessage::Settings(settings::Msg::Open(SettingsTab::About)))];
         if signed_in {
             beeper.extend([
                 None,
-                plain(tr("Accounts…").into(), UiMessage::OpenSettings(SettingsTab::Accounts)),
+                plain(tr("Accounts…").into(), UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
                 hotkey(tr("Preferences"), "Settings"),
                 None,
                 hotkey(tr("Command Bar…"), "Command Bar"),
