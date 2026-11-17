@@ -386,7 +386,7 @@ impl BeeperGuiApp {
         let bookmarks = self.view_bookmarks(&st, chat);
         let feature = st.feature("labels-v2");
         let labels = feature.show.then(|| {
-            let open = feature.on.then(|| UiMessage::OpenEditLabels(cid.clone()));
+            let open = feature.on.then(|| UiMessage::Labels(labels::Msg::OpenEdit(cid.clone())));
             let mine: Vec<&Label> =
                 chat.label_ids.iter().filter_map(|id| st.labels.iter().find(|l| l.id == *id)).collect();
             let edit = (!mine.is_empty()).then(|| {

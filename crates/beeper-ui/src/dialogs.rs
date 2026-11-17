@@ -6,6 +6,8 @@ use crate::blocking::blocked_chats;
 use crate::i18n::{tr, trf, trn, trx};
 use crate::info;
 use crate::integrations;
+use crate::labels;
+use crate::labels::label_fill;
 use crate::members;
 use crate::rail;
 use crate::reminders;
@@ -16,8 +18,8 @@ use crate::style::{
 };
 use crate::{
     badge, chat_search_subtitle, checkbox, checkbox_plus, delete_dialog, grouped_rows, human_size, icon_btn,
-    inbox_label, label_fill, label_icon, label_tile, login, member_name, menu_item, network_name, pill_btn, portal,
-    reconnect, round_avatar, spread, stored, tinted, toggle, voice, BeeperGuiApp, El, PendingMedia, Toast, UiMessage,
+    inbox_label, label_icon, label_tile, login, member_name, menu_item, network_name, pill_btn, portal, reconnect,
+    round_avatar, spread, stored, tinted, toggle, voice, BeeperGuiApp, El, PendingMedia, Toast, UiMessage,
     ACCOUNT_SUB_W, ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_BLOCK, ASK_BLOCK_OFFLINE, ASK_CLEAR_CACHE,
     ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE, ASK_DISMISS_REMINDERS,
     ASK_LEAVE_CHAT, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ, ASK_REMOTE_ACCESS,
@@ -378,7 +380,7 @@ impl BeeperGuiApp {
                     "Are you sure you want to delete \"%s\"? This will remove the label from all chats.",
                     &[&name],
                 );
-                (tr("Delete Label").into(), body, vec![(tr("Delete"), UiMessage::DeleteLabel(id))])
+                (tr("Delete Label").into(), body, vec![(tr("Delete"), UiMessage::Labels(labels::Msg::Delete(id)))])
             }
             ASK_DELETE_MESSAGE => {
                 let st = self.store.read();
@@ -633,7 +635,7 @@ impl BeeperGuiApp {
                         st.update_label(&label, &name, color, icon, chats);
                         drop(st);
                         let (what, text) = (format!("Update label \"{}\"", old.name), format!("Updated {name}"));
-                        self.act(what, UiMessage::RestoreLabel(Box::new(old)), Some((text, None)));
+                        self.act(what, UiMessage::Labels(labels::Msg::Restore(Box::new(old))), Some((text, None)));
                     }
                     return window::close(id);
                 }
@@ -641,8 +643,11 @@ impl BeeperGuiApp {
                 let open = UiMessage::Rail(rail::Msg::Select(Some(format!("label:{label}"))));
                 let _ = self.update(open.clone());
                 let (what, text) = (format!("Create label \"{name}\""), format!("Created {name}"));
-                self.act(what, UiMessage::DeleteLabel(label.clone()), Some((text, Some(open))));
-                return Task::batch([window::close(id), self.update(UiMessage::OpenLabelSettings(label))]);
+                self.act(what, UiMessage::Labels(labels::Msg::Delete(label.clone())), Some((text, Some(open))));
+                return Task::batch([
+                    window::close(id),
+                    self.update(UiMessage::Labels(labels::Msg::OpenSettings(label))),
+                ]);
             }
         }
         Task::none()
@@ -691,11 +696,13 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let id = st.sent.get(&w.label).unwrap_or(&w.label);
         let Some(l) = st.labels.iter().find(|l| l.id == *id) else { return Space::new().into() };
-        let pane = |e| UiMessage::LabelPane(w.id, e);
+        let pane = |e| UiMessage::Labels(labels::Msg::Pane(w.id, e));
         let link = btn_style([CLEAR; 3], [p.accent; 3], 0.0);
         let edit = trx("Edit", "edit a label name, icon and color");
-        let edit =
-            button(txt(edit, 13.0).color(p.accent)).padding(0).style(link).on_press(UiMessage::EditLabel(l.id.clone()));
+        let edit = button(txt(edit, 13.0).color(p.accent))
+            .padding(0)
+            .style(link)
+            .on_press(UiMessage::Labels(labels::Msg::Edit(l.id.clone())));
         let head = column![
             container(label_tile(l, 54.0, 28.0, 20.0, p.strong)).padding(Padding::ZERO.bottom(16.0)),
             semi(l.name.clone(), 18.0).line_height(Pixels(24.0)).color(p.strong).align_x(Center),
@@ -730,7 +737,7 @@ impl BeeperGuiApp {
             .padding(Padding::new(8.0).left(12.0))
             .width(Fill)
             .style(btn_style([p.chip; 3], [p.text; 3], 16.0))
-            .on_press(UiMessage::EditLabelChats(l.id.clone()));
+            .on_press(UiMessage::Labels(labels::Msg::EditChats(l.id.clone())));
         let now = l.inbox.unwrap_or("all");
         let inbox_name = |o: &str, label: &'static str| match o {
             "none" => trx(label, "label inbox visibility option"),
@@ -754,7 +761,7 @@ impl BeeperGuiApp {
         };
         let rule = container(container(Space::new()).width(Fill).height(0.5).style(fill_box(p.prefs_border, 0.0)))
             .padding(Padding::ZERO.left(40.0).right(8.0));
-        let mute = toggle(p, l.muted, Some(UiMessage::MuteLabel(l.id.clone(), !l.muted)));
+        let mute = toggle(p, l.muted, Some(UiMessage::Labels(labels::Msg::Mute(l.id.clone(), !l.muted))));
         let settings = column![
             setting(icon::INBOX, tr("Show in Inbox"), pill.into()),
             rule,
@@ -786,7 +793,7 @@ impl BeeperGuiApp {
                 let lead = container((o == now).then(|| ic(icon::CHECK, 14.0))).width(22).into();
                 let msg = UiMessage::Commands(vec![
                     pane(LabelPane::Menu(false)),
-                    UiMessage::SetLabelInbox(l.id.clone(), (o != "all").then_some(o)),
+                    UiMessage::Labels(labels::Msg::SetInbox(l.id.clone(), (o != "all").then_some(o))),
                 ]);
                 menu_item(p, Some(lead), inbox_name(o, label).into(), "", Some(msg))
             });
@@ -806,7 +813,7 @@ impl BeeperGuiApp {
     /// (`Cst`) and Edit Label (`Tst`) sheets of Label Settings.
     pub(crate) fn view_create_label<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
         let p = &self.pal;
-        let edit = UiMessage::Label;
+        let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
         let body = match d.step {
             LabelStep::Intro => self.view_label_intro(d),
             LabelStep::Pick => self.view_label_pick(d),
@@ -868,7 +875,7 @@ impl BeeperGuiApp {
     /// Desktop's `LabelDetailsFields` (`Ide`): the label tile, the name field and the icon and color grid.
     fn view_label_details<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
         let p = &self.pal;
-        let edit = UiMessage::Label;
+        let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
         let tile = Label { color: d.color, icon: d.icon.clone(), ..Label::default() };
         let name = text_input(tr("Label name"), &d.name)
             .id("label-title")
@@ -890,7 +897,7 @@ impl BeeperGuiApp {
     fn view_label_pick<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
-        let edit = UiMessage::Label;
+        let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
         let search = text_input(tr("Search name, @, number, or network"), &d.search)
             .id("label-search")
             .on_input(move |q| edit(LabelEdit::Search(q)))
@@ -952,7 +959,7 @@ impl BeeperGuiApp {
     /// Desktop's `IconColorGrid`: the label colors, then the label icons, in rows `width` wide.
     fn label_grid<'a>(&self, d: &LabelDraft, width: f32) -> El<'a> {
         let p = &self.pal;
-        let edit = UiMessage::Label;
+        let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
         let shade = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
         let colors = (0..LABEL_COLORS.len() as u8).map(|c| -> El<'a> {
             let on = d.color == Some(c);
@@ -1007,13 +1014,13 @@ impl BeeperGuiApp {
         let new = button(row![glyph, txt(tr("New Label"), 13.0)].spacing(6).align_y(Center))
             .padding([6, 10])
             .style(btn_style([p.chip; 3], [p.strong; 3], 20.0))
-            .on_press(UiMessage::OpenCreateLabel(Vec::new()));
+            .on_press(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())));
         let mut labels: Vec<&Label> = st.labels.iter().collect();
         labels.sort_by_cached_key(|l| l.name.to_lowercase());
         let rows = labels.iter().map(|l| {
             let on = c.label_ids.contains(&l.id);
             let name = ell(&l.name, 183.0, 13.0, Weight::Normal).line_height(Pixels(16.0)).color(p.strong);
-            let msg = UiMessage::SwitchLabel(l.id.clone(), c.id.clone(), !on);
+            let msg = UiMessage::Labels(labels::Msg::Switch(l.id.clone(), c.id.clone(), !on));
             row![label_icon(l, 28.0, p.strong), container(name).width(Fill), toggle(p, on, Some(msg))]
                 .spacing(4)
                 .padding([10, 8])

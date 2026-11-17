@@ -216,8 +216,14 @@ impl BeeperGuiApp {
         let mute = trx(if l.muted { "Unmute" } else { "Mute" }, "label context menu action");
         let heading = (!l.name.is_empty()).then(|| menu_heading(p, l.name.clone()));
         let items = [
-            menu_item(p, blank(), mute.into(), "", Some(UiMessage::MuteLabel(l.id.clone(), !l.muted))),
-            menu_item(p, blank(), tr("Label Settings").into(), "", Some(UiMessage::OpenLabelSettings(l.id.clone()))),
+            menu_item(p, blank(), mute.into(), "", Some(UiMessage::Labels(labels::Msg::Mute(l.id.clone(), !l.muted)))),
+            menu_item(
+                p,
+                blank(),
+                tr("Label Settings").into(),
+                "",
+                Some(UiMessage::Labels(labels::Msg::OpenSettings(l.id.clone()))),
+            ),
         ];
         heading.into_iter().chain(items).collect()
     }
@@ -305,7 +311,13 @@ impl BeeperGuiApp {
         let labels = st.feature("labels-v2").show;
         let rest = column![menu_item(p, blank(), tr("Select Chats").into(), "", Some(UiMessage::ToggleSelectMode))]
             .push(labels.then(|| {
-                menu_item(p, blank(), tr("New Label").into(), "", Some(UiMessage::OpenCreateLabel(Vec::new())))
+                menu_item(
+                    p,
+                    blank(),
+                    tr("New Label").into(),
+                    "",
+                    Some(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()))),
+                )
             }))
             .push(menu_rule(p))
             .push(menu_item(p, blank(), tr("Edit Spaces...").into(), "", Some(UiMessage::OpenEditSpaces)))
@@ -430,7 +442,7 @@ impl BeeperGuiApp {
         let add_label = button(add_space)
             .padding(0)
             .style(ghost(p, 12.0))
-            .on_press_maybe(labels.on.then(|| UiMessage::OpenCreateLabel(Vec::new())));
+            .on_press_maybe(labels.on.then(|| UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()))));
         let mut add_label = Some(add_label);
         let draft = self.label_window.as_ref().filter(|d| d.label.is_none());
         let draft_btn = |i: usize, d: &LabelDraft| -> El<'static> {
@@ -438,8 +450,8 @@ impl BeeperGuiApp {
                 (Label { name: d.name.clone(), color: d.color, icon: d.icon.clone(), ..Label::default() }, p.strong);
             let ring = svg(DRAFT_RING.clone()).width(30).height(30).style(move |_, _| svg::Style { color: Some(fg) });
             let logo = container(stack![ring, container(label_icon(&l, 28.0, fg)).center(30)]).into();
-            let btn: El = mouse_area(rail_btn(logo, false, UiMessage::OpenCreateLabel(Vec::new())))
-                .on_right_press(UiMessage::OpenCreateLabel(Vec::new()))
+            let btn: El = mouse_area(rail_btn(logo, false, UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()))))
+                .on_right_press(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())))
                 .into();
             if quiet {
                 btn

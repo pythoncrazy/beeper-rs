@@ -20,6 +20,7 @@ mod i18n;
 mod images;
 mod info;
 mod integrations;
+mod labels;
 mod lift;
 mod links;
 pub mod login;
@@ -97,6 +98,7 @@ use crate::threads::{can_thread, Threads, THREAD_FRACTION};
 use blocking::block_action;
 use forward::Forward;
 use info::info_menu;
+use labels::{label_fill, label_glyph, label_rows};
 use new_chat::{account_display_name, phone_digits, NewChat};
 use pins::{bubble_text, pin_bubble, PinDrag};
 use rail::{all_spaces, RailDrag, LABEL_NUDGE};
@@ -378,35 +380,12 @@ pub enum UiMessage {
     Info(info::Msg),
     Group(GroupEdit),
     Profile(profile::Msg),
-    /// Opens the New label window with these chats picked.
-    OpenCreateLabel(Vec<String>),
-    /// Desktop's `toggleLabel` for the chats of a menu: the clicked chat, or the selected chats.
-    ToggleLabel(String, Vec<String>, bool),
-    /// Desktop's Edit Labels window of a chat.
-    OpenEditLabels(String),
-    /// A switch in the Edit Labels window: `toggleLabel` without the toast.
-    SwitchLabel(String, String, bool),
+    /// Desktop's labels: their windows, the Edit Labels switches, mute, Show in Inbox, and the undo of a change or a deletion.
+    Labels(labels::Msg),
     /// Desktop's `Txe`: undoes the last action, with an "Undo:" toast.
     UndoAction,
     /// Desktop's BrandUserHoverCard: the card of a user that shows after the pointer rests on their name or avatar.
     UserCard(user_card::Msg),
-    /// Puts back the name, color, icon and chats of a label.
-    RestoreLabel(Box<Label>),
-    /// Desktop's `restoreLabel`: makes a deleted label again, in its old place in the sidebar.
-    RestoreDeletedLabel(Box<Label>, Vec<SpaceOrder>),
-    /// Desktop's Edit Label sheet (`Lst`) of Label Settings: the name, icon and color of a label.
-    EditLabel(String),
-    /// Desktop's Chats sheet (`Nst`) of Label Settings: the chats of a label.
-    EditLabelChats(String),
-    Label(LabelEdit),
-    DeleteLabel(String),
-    /// Desktop's `setLabelInboxVisibility`.
-    SetLabelInbox(String, Option<&'static str>),
-    /// Desktop's `toggleMuteLabel`.
-    MuteLabel(String, bool),
-    /// Desktop's `CO`: opens the Label Settings window of a label.
-    OpenLabelSettings(String),
-    LabelPane(window::Id, LabelPane),
     /// Desktop's `PollVotesBrowserWindow` for a chat's poll message.
     OpenPollVotes(String, String),
     EndPoll(String, String),
@@ -1159,17 +1138,6 @@ static LABEL_ICONS: std::sync::LazyLock<Vec<(&str, svg::Handle)>> = std::sync::L
     };
     include_str!("../assets/label_icons.tsv").lines().map(icon).collect()
 });
-
-fn label_glyph(id: &str) -> Option<&'static svg::Handle> {
-    LABEL_ICONS.iter().find(|i| i.0 == id).map(|i| &i.1)
-}
-
-/// The gradient of a label color. Desktop ignores unknown colors.
-fn label_fill(color: Option<u8>) -> Option<Background> {
-    let (top, bottom) = LABEL_COLORS.get(usize::from(color?)).copied()?;
-    let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, hex(top)).add_stop(1.0, hex(bottom));
-    Some(Background::Gradient(Gradient::Linear(g)))
-}
 
 /// Desktop's `LabelSpaceIcon`: the label color with its icon, or the icon alone.
 fn label_icon<'a>(l: &Label, size: f32, fg: Color) -> El<'a> {
@@ -1995,11 +1963,6 @@ fn hidden_spaces(st: &BeeperStore) -> Vec<String> {
     hidden.map(|o| o.id.clone()).collect()
 }
 
-/// The number of rows of Desktop's label items (`kS`): the name heading, Mute or Unmute, and Label Settings.
-fn label_rows(l: &Label) -> f32 {
-    2.0 + f32::from(u8::from(!l.name.is_empty()))
-}
-
 /// The `chat_menu` key of Desktop's space sheet (`zft`), which opens from the sidebar header title.
 const SPACE_SHEET: &str = "space:sheet";
 /// The `chat_menu` key of the "Switch Chat" hover card of the composer.
@@ -2108,7 +2071,7 @@ fn more_menu(st: &BeeperStore) -> Vec<Option<(String, UiMessage)>> {
         items.push(None);
     }
     if st.feature("labels-v2").show {
-        items.extend([Some((tr("New Label…").into(), UiMessage::OpenCreateLabel(Vec::new()))), None]);
+        items.extend([Some((tr("New Label…").into(), UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())))), None]);
     }
     items.push(Some((tr("Edit Spaces…").into(), UiMessage::OpenEditSpaces)));
     items.push(Some((
@@ -2122,7 +2085,7 @@ fn more_menu(st: &BeeperStore) -> Vec<Option<(String, UiMessage)>> {
 fn space_msg(id: &str) -> UiMessage {
     match RAIL_VIEWS.iter().find(|v| v.0 == id).map(|v| v.1) {
         Some(Some(tab)) => UiMessage::SelectTab(tab),
-        Some(None) => UiMessage::OpenCreateLabel(Vec::new()),
+        Some(None) => UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())),
         None => UiMessage::Rail(rail::Msg::Select(Some(id.into()))),
     }
 }
@@ -4928,17 +4891,7 @@ impl BeeperGuiApp {
             UiMessage::OpenEditForMe(chat) => return self.open_edit_for_me(chat),
             UiMessage::Group(e) => return self.group_edit(e),
             UiMessage::Profile(m) => return self.update_profile(m),
-            UiMessage::ToggleLabel(label, chat, add) => self.toggle_label(label, chat, add, true),
-            UiMessage::SwitchLabel(label, chat, add) => self.toggle_label(label, vec![chat], add, false),
-            UiMessage::OpenEditLabels(chat) => {
-                self.chat_menu = None;
-                if let Some(&(id, _)) = self.labels_windows.iter().find(|w| w.1 == chat) {
-                    return window::gain_focus(id);
-                }
-                let (id, open) = self.open_child(Size::new(303.0, 488.0));
-                self.labels_windows.push((id, chat));
-                return open;
-            }
+            UiMessage::Labels(msg) => return self.labels(msg),
             UiMessage::UndoAction => {
                 let Some((what, undo)) = self.undo_stack.pop() else { return Task::none() };
                 let depth = self.undo_stack.len();
@@ -4949,103 +4902,6 @@ impl BeeperGuiApp {
                 self.undo_note = Some(what);
                 return task;
             }
-            UiMessage::RestoreDeletedLabel(l, order) => {
-                let mut st = self.store.write();
-                let id = st.create_label(&l.name, l.color, l.icon.clone(), l.rooms.clone());
-                if l.inbox.is_some() {
-                    st.set_label_inbox(&id, l.inbox);
-                }
-                if l.muted {
-                    st.set_label_muted(&id, true);
-                }
-                drop(st);
-                let (old, new) = (format!("label:{}", l.id), format!("label:{id}"));
-                let order =
-                    order.into_iter().map(|o| if o.id == old { SpaceOrder { id: new.clone(), ..o } } else { o });
-                self.patch_settings(|s| s.spaces_order = order.collect());
-            }
-            UiMessage::RestoreLabel(l) => {
-                let id = self.label_id(l.id);
-                self.store.write().update_label(&id, &l.name, l.color, l.icon, l.rooms);
-            }
-            UiMessage::OpenCreateLabel(chats) => {
-                self.chat_menu = None;
-                if let Some(d) = &self.label_window {
-                    return window::gain_focus(d.id);
-                }
-                let intro = !self.store.read().settings.labels_intro_seen;
-                if intro {
-                    self.patch_settings(|s| s.labels_intro_seen = true);
-                }
-                let (id, open) = self.open_child(LABEL_SETTINGS_SIZE);
-                let step = if intro { LabelStep::Intro } else { LabelStep::Pick };
-                self.label_window = Some(LabelDraft { chats, step, ..LabelDraft::new(id) });
-                return if intro { open } else { open.chain(operation::focus("label-search")) };
-            }
-            UiMessage::EditLabel(label) => return self.open_label_sheet(label, LabelStep::Details),
-            UiMessage::EditLabelChats(label) => return self.open_label_sheet(label, LabelStep::Pick),
-            UiMessage::MuteLabel(id, muted) => {
-                self.chat_menu = None;
-                let id = self.label_id(id);
-                let mut st = self.store.write();
-                let name = st.labels.iter().find(|l| l.id == id).expect("a muted label").name.clone();
-                st.set_label_muted(&id, muted);
-                drop(st);
-                let what = format!("{} \"{name}\"", if muted { "Mute" } else { "Unmute" });
-                self.act(what, UiMessage::MuteLabel(id, !muted), None);
-            }
-            UiMessage::SetLabelInbox(id, inbox) => {
-                self.chat_menu = None;
-                let id = self.label_id(id);
-                let mut st = self.store.write();
-                let old = st.labels.iter().find(|l| l.id == id).expect("a label").clone();
-                st.set_label_inbox(&id, inbox);
-                drop(st);
-                let to = INBOX_OPTIONS.iter().find(|o| o.0 == inbox.unwrap_or("all")).expect("an inbox option").1;
-                let what = format!("Set \"{}\" inbox visibility to {to}", old.name);
-                self.act(what, UiMessage::SetLabelInbox(id, old.inbox), None);
-            }
-            UiMessage::OpenLabelSettings(label) => {
-                self.chat_menu = None;
-                let label = self.label_id(label);
-                if let Some(w) = self.label_settings.iter().find(|w| w.label == label) {
-                    return window::gain_focus(w.id);
-                }
-                let (id, open) = self.open_child(LABEL_SETTINGS_SIZE);
-                self.label_settings.push(LabelSettings { id, label, menu: false });
-                return open;
-            }
-            UiMessage::LabelPane(id, e) => {
-                let w = self.label_settings.iter_mut().find(|w| w.id == id).expect("an open Label Settings window");
-                match e {
-                    LabelPane::Menu(open) => w.menu = open,
-                    LabelPane::Delete => {
-                        (self.confirm, self.delete_target) = (Some(ASK_DELETE_LABEL), Some(w.label.clone()));
-                        self.delete_in = Some(id);
-                    }
-                    LabelPane::Done => return window::close(id),
-                }
-            }
-            UiMessage::DeleteLabel(id) => {
-                self.confirm = None;
-                let id = self.label_id(id);
-                let mut st = self.store.write();
-                let label = st.labels.iter().find(|l| l.id == id).expect("a deleted label").clone();
-                let order = st.settings.spaces_order.clone();
-                st.delete_label(&id);
-                drop(st);
-                let (what, text) = (format!("Delete label \"{}\"", label.name), format!("Deleted \"{}\"", label.name));
-                self.act(what, UiMessage::RestoreDeletedLabel(Box::new(label), order), Some((text, None)));
-                if let Some(d) = self.spaces_window.as_mut() {
-                    d.order.retain(|o| *o != format!("label:{id}"));
-                }
-                if self.selected_account_filter.as_deref() == Some(&format!("label:{id}")) {
-                    self.selected_account_filter = None;
-                }
-                let shown = self.label_settings.iter().filter(|w| w.label == id);
-                return Task::batch(shown.map(|w| window::close(w.id)).collect::<Vec<_>>());
-            }
-            UiMessage::Label(edit) => return self.label_edit(edit),
             UiMessage::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
             UiMessage::OpenPollVotes(chat, mid) => {
                 if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
@@ -8290,10 +8146,14 @@ impl BeeperGuiApp {
                     let rows = sorted.into_iter().map(|l| {
                         let on = c.label_ids.contains(&l.id);
                         let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into();
-                        let msg = UiMessage::ToggleLabel(l.id.clone(), targets.clone(), !on);
+                        let msg = UiMessage::Labels(labels::Msg::Toggle(l.id.clone(), targets.clone(), !on));
                         menu_item(p, Some(lead), l.name.clone(), "", Some(msg))
                     });
-                    let new = item(tr("New Label…"), String::new(), Some(UiMessage::OpenCreateLabel(targets.clone())));
+                    let new = item(
+                        tr("New Label…"),
+                        String::new(),
+                        Some(UiMessage::Labels(labels::Msg::OpenCreate(targets.clone()))),
+                    );
                     (rows.chain([menu_rule(p), new]).collect(), 1.0)
                 }
                 _ => {
@@ -8412,7 +8272,7 @@ impl BeeperGuiApp {
             false => (format!("Remove from {name}"), format!("Removed from {name}")),
         };
         let open = add.then(|| UiMessage::Rail(rail::Msg::Select(Some(format!("label:{label}")))));
-        self.act(what, UiMessage::ToggleLabel(label, chats, !add), toast.then_some((text, open)));
+        self.act(what, UiMessage::Labels(labels::Msg::Toggle(label, chats, !add)), toast.then_some((text, open)));
     }
 
     fn act(&mut self, what: String, undo: UiMessage, toast: Option<(String, Option<UiMessage>)>) {
@@ -9786,7 +9646,7 @@ impl BeeperGuiApp {
             }
             SpacesEdit::NewLabel => {
                 let close = window::close(d.id);
-                return Task::batch([close, self.update(UiMessage::OpenCreateLabel(Vec::new()))]);
+                return Task::batch([close, self.update(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())))]);
             }
         }
         Task::none()
