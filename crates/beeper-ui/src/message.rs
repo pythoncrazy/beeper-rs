@@ -28,7 +28,7 @@ use crate::{
     reply_root, safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable,
     unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON,
     BUBBLE_PAD_X, CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W,
-    ORANGE, POLL_CHECK, POLL_ENDED, TIMER, TRASH,
+    ORANGE, OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TIMER, TRASH,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::*;
@@ -535,6 +535,8 @@ impl BeeperGuiApp {
         (menu.into(), h, 0.0)
     }
 
+    /// The message menu, its height, and the top of the row of its open Remind Me submenu, or else of its Playback
+    /// Speed row.
     pub(crate) fn view_message_menu(&self, mid: &str) -> (El<'_>, f32, f32) {
         if let Some(menu) = self.view_gallery_menu(mid) {
             return menu;
@@ -592,7 +594,7 @@ impl BeeperGuiApp {
         let sender = chat.participants.items.iter().any(|u| u.id == m.sender_id);
         let privately =
             !mine && sender && others > 1 && m.is_deleted != Some(true) && self.can(&m.account_id, "create_dm");
-        let head: Vec<(El, f32)> = [
+        let before: Vec<(El, f32)> = [
             address.map(|e| {
                 vec![
                     item(
@@ -650,6 +652,22 @@ impl BeeperGuiApp {
                 ),
                 item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone())))),
             ]),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect();
+        // Desktop's `zit` row, after Bookmark, opens the reminder submenu level with it.
+        let remind_top = before.iter().map(|r| r.1).sum::<f32>();
+        let remind = crate::reminders::can_remind(&st, m).then(|| {
+            let label = match st.message_reminders.contains_key(&mid) {
+                true => trx("Edit Reminder", "message menu action"),
+                false => trx("Remind Me", "message menu action"),
+            };
+            let open = UiMessage::Reminders(crate::reminders::Msg::MessageSub);
+            (mouse_area(menu_item(p, None, label.into(), "›", Some(open.clone()))).on_enter(open).into(), MENU_ITEM)
+        });
+        let after: Vec<(El, f32)> = [
             (m.is_unread == Some(true)).then(|| {
                 let read = UiMessage::Message(Msg::MarkReadThrough(cid.clone(), mid.clone()));
                 vec![item(tr("Mark as Read").into(), "", Some(read))]
@@ -687,7 +705,11 @@ impl BeeperGuiApp {
         .flatten()
         .flatten()
         .collect();
-        let top = head.iter().map(|r| r.1).sum::<f32>() + 11.0;
+        let head: Vec<(El, f32)> = before.into_iter().chain(remind).chain(after).collect();
+        let top = match self.pane().remind_sub {
+            true => remind_top,
+            false => head.iter().map(|r| r.1).sum::<f32>() + 11.0,
+        };
         // Desktop's `Zit`: no Delete… for the message that you edit.
         let editing = self.pane().editing_message_id.as_ref() == Some(&mid);
         let delete = (!editing && delete_dialog(&st, &[m]).is_some())
@@ -747,6 +769,23 @@ impl BeeperGuiApp {
         )
     }
 
+    /// Desktop's `Nmt`: the Chat Info toggle, a 20 px info icon in 4 px of padding, shaded while Chat Info is open.
+    fn view_info_toggle<'a>(&self, st: &BeeperStore) -> El<'a> {
+        let p = &self.pal;
+        let open = self.show_right_panel;
+        let bg = if open { p.strong.scale_alpha(0.08) } else { CLEAR };
+        let muted = p.muted;
+        let icon =
+            svg(crate::INFO_CIRCLE.clone()).width(20).height(20).style(move |_, _| svg::Style { color: Some(muted) });
+        let toggle =
+            button(icon).padding(4).style(btn_style([bg; 3], [p.muted; 3], 8.0)).on_press(UiMessage::ToggleRightPanel);
+        let keys = st.settings.hotkey_keys("Toggle Chat Info").to_string();
+        let keys = prefs::hotkey_label(keys.split(", ").next().unwrap_or_default());
+        let caps = keys.split_whitespace().map(String::from).collect();
+        let toggle = self.tip_caps(toggle.into(), tr("Chat Info"), caps, tooltip::Position::Bottom);
+        container(toggle).align_right(Fill).padding(Padding::ZERO.top(8.0).right(8.0)).into()
+    }
+
     /// Desktop's `F2t` at the top of a request: the chat, the username of the other person, the description and
     /// View Profile.
     fn view_request_head<'a>(&self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
@@ -767,7 +806,33 @@ impl BeeperGuiApp {
         let profile = profile_link(chat).map(|url| {
             button(semi(tr("View Profile"), 13.0).color(p.accent)).bare(p.accent).on_press(UiMessage::OpenUrl(url))
         });
-        let col = column![avatar, column![title].push(username).align_x(Center)].push(about).push(profile);
+        // Desktop's `inviterInfo` of a group: "__INVITER__ invited you (__USERNAME__) on __PLATFORM__", with the inviter's
+        // 16 px avatar and name, which open their card.
+        let invite = chat.inviter().filter(|_| chat.chat_type == "group").map(|u| -> El<'a> {
+            let me = chat.participants.items.iter().find(|u| u.is_self == Some(true)).and_then(handle);
+            let name = u.full_name.clone().unwrap_or_else(|| u.id.clone());
+            let who = row![self.face(u.img_url.as_deref(), &name, 16.0, 0.0), semi(name, 13.0).color(p.text)]
+                .spacing(4)
+                .align_y(Center);
+            let who = self.user_trigger(chat, &u.id, who);
+            let text = tr(match me {
+                Some(_) => "__INVITER__ invited you (__USERNAME__) on __PLATFORM__",
+                None => "__INVITER__ invited you on __PLATFORM__",
+            });
+            let platform = beeper_core::config::account_network(&chat.account_id).display_name;
+            let (before, rest) = text.split_once("__INVITER__").unwrap_or(("", text));
+            let rest = rest.replace("__PLATFORM__", platform);
+            let mut line = row![txt(before.to_string(), 13.0).color(p.text), who].align_y(Center);
+            line = match (me, rest.split_once("__USERNAME__")) {
+                (Some(me), Some((a, b))) => line
+                    .push(txt(a.to_string(), 13.0).color(p.text))
+                    .push(semi(me, 13.0).color(p.text))
+                    .push(txt(b.to_string(), 13.0).color(p.text)),
+                _ => line.push(txt(rest, 13.0).color(p.text)),
+            };
+            line.wrap().into()
+        });
+        let col = column![avatar, column![title].push(username).align_x(Center)].push(about).push(profile).push(invite);
         let col = col.spacing(10).align_x(Center).max_width(480).padding(Padding::new(24.0).bottom(32.0));
         Some(container(col).center_x(Fill).into())
     }
@@ -907,11 +972,18 @@ impl BeeperGuiApp {
             container(chat_theme::fade(paint.clone(), size)).height(chat_theme::FADE).into()
         })
         .into();
-        let reminder = chat.reminder.as_ref().filter(|_| !self.expired(chat)).map(|r| {
-            let (day, time) =
-                (reminder_day(r.remind_at_ms), clock(r.remind_at_ms, st.settings.pref("timeFormat") == 1));
-            let at = if day_of(r.remind_at_ms) == today() { time.clone() } else { format!("{time} {day}") };
-            let tip = match r.dismiss_on_incoming_message {
+        // Desktop's pill shows the earliest message reminder until it is due, else the pending chat reminder.
+        let chat_reminder = chat.reminder.as_ref().filter(|_| !self.expired(chat));
+        let chat_reminder = chat_reminder.map(|r| (r.remind_at_ms, r.dismiss_on_incoming_message));
+        let earliest = st.message_reminders_of(&chat.id).first().map(|(_, r)| r.remind_at_ms);
+        let reminder = match earliest.filter(|_| crate::reminders::message_reminders_on(&st)) {
+            Some(at) => (at > now_unix_millis()).then_some((at, false)),
+            None => chat_reminder,
+        };
+        let reminder = reminder.map(|(remind_at_ms, if_no_reply)| {
+            let (day, time) = (reminder_day(remind_at_ms), clock(remind_at_ms, st.settings.pref("timeFormat") == 1));
+            let at = if day_of(remind_at_ms) == today() { time.clone() } else { format!("{time} {day}") };
+            let tip = match if_no_reply {
                 true => trf("Set to remind at %s if no reply", &[&at]),
                 false => trf("Set to remind at %s", &[&at]),
             };
@@ -949,7 +1021,10 @@ impl BeeperGuiApp {
             .filter(|_| in_chat)
             .and_then(|i| msgs.get(i))
             .map(|m| self.day_pill(&m.timestamp).padding(Padding::ZERO.top(80.0).left(GUTTER)));
+        // Desktop's request has no thread header, with its feedback button, only the Chat Info toggle (`Nmt`) 8 px
+        // from the top right corner.
         let overlay = match in_chat {
+            true if chat.is_request == Some(true) => stack![fade, self.view_info_toggle(&st)],
             true => stack![fade, header].push(feedback).push(reminder),
             false => stack![fade],
         };
@@ -1711,21 +1786,34 @@ impl BeeperGuiApp {
                     let meta = row![txt(label, 11.0).color(ON_ERROR_CONTAINER), tip].spacing(4).align_y(Center);
                     (crate::style::text_width(label, 11.0, Weight::Normal) + 28.0, Some(meta.into()))
                 }
-                // Desktop's `BookmarkIndicator` goes before the time, and the disappearing timer after it.
+                // Desktop's `BookmarkIndicator` and `ReminderIndicator` (`E3`) go before the time.
                 None => {
                     let color = if mine { sent_meta } else { p.sub };
-                    let icon = |handle: &svg::Handle, label: String| {
+                    let marker = |handle: &svg::Handle, color: Color, label: String| {
                         let icon = svg(handle.clone()).width(10).height(10);
                         let icon = icon.style(move |_, _| svg::Style { color: Some(color) });
                         self.tip(icon.into(), label, vec![], tooltip::Position::Left)
                     };
                     let bookmark =
-                        (m.is_bookmarked == Some(true)).then(|| icon(&BOOKMARK_ICON, tr("Bookmarked").into()));
-                    let timer = disappears(chat, m).map(|label| icon(&TIMER, label));
-                    match usize::from(bookmark.is_some()) + usize::from(timer.is_some()) {
+                        (m.is_bookmarked == Some(true)).then(|| marker(&BOOKMARK_ICON, color, tr("Bookmarked").into()));
+                    let reminder =
+                        st.message_reminders.get(&m.id).filter(|_| crate::reminders::message_reminders_on(st));
+                    let reminder = reminder.filter(|_| m.is_deleted != Some(true)).map(|r| {
+                        let at = r.remind_at_ms;
+                        let h24 = st.settings.pref("timeFormat") == 1;
+                        let label = trf("Reminder: %1$s %2$s", &[&reminder_day(at), &clock(at, h24)]);
+                        // Desktop's `ReminderIndicator-module__due`: a due reminder takes the warning color.
+                        marker(&OUTLINE_CLOCK, if at <= now_unix_millis() { ORANGE } else { color }, label)
+                    });
+                    // Desktop's disappearing timer goes after the time.
+                    let timer = disappears(chat, m).map(|label| marker(&TIMER, color, label));
+                    let n =
+                        [bookmark.is_some(), reminder.is_some(), timer.is_some()].into_iter().filter(|&b| b).count();
+                    match n {
                         0 => (room, time),
                         n => {
-                            let meta = row![].push(bookmark).push(time).push(timer).spacing(4).align_y(Center);
+                            let meta = row![].push(bookmark).push(reminder).push(time).push(timer);
+                            let meta = meta.spacing(4).align_y(Center);
                             (room + 14.0 * n as f32, Some(meta.into()))
                         }
                     }
@@ -2603,7 +2691,7 @@ impl BeeperGuiApp {
                     self.pane.selected_msgs = vec![mid.clone()];
                 }
                 self.video.iter_mut().for_each(|v| v.sub = false);
-                (self.audio.sub, self.audio.lang) = (false, false);
+                (self.audio.sub, self.audio.lang, self.pane.remind_sub) = (false, false, false);
                 self.pane.message_menu = Some((mid, self.cursor.get()));
                 self.pane.gallery_menu.clear();
             }
@@ -3088,6 +3176,40 @@ mod tests {
         let _ = app.update(UiMessage::Message(Msg::HoverEnter(mine)));
         let _ = app.update(UiMessage::Message(Msg::ShowQuickReactions));
         assert!(!quick_shown(&app), "never on your own");
+    }
+
+    /// Desktop's bridge request: no thread header, and a group request names who invited you on which network.
+    #[test]
+    fn request_head_names_the_inviter_like_desktop() {
+        let mut app = crate::fuzz::demo_app("request-inviter");
+        let group = {
+            let st = app.store.read();
+            let free = |c: &&Chat| c.chat_type == "group" && c.account_id != "hungryserv" && c.is_pinned != Some(true);
+            st.chats.iter().find(free).expect("a bridged group").id.clone()
+        };
+        let inviter = {
+            let mut st = app.store.write();
+            let i = st.resolve_chat_idx(&group).expect("the group");
+            let inviter =
+                st.chats[i].participants.items.iter().find(|u| u.is_self != Some(true)).expect("a member").clone();
+            let me = User {
+                id: "@me:beeper.local".into(),
+                username: Some("alex".into()),
+                is_self: Some(true),
+                added_by: Some(inviter.id.clone()),
+                ..Default::default()
+            };
+            st.update_chat(i, |c| {
+                (c.is_request, c.flags) = (Some(true), c.flags | CHAT_REQUEST);
+                c.participants.items.retain(|u| u.is_self != Some(true));
+                c.participants.items.push(me);
+            });
+            inviter.full_name.clone().expect("a name")
+        };
+        let _ = app.update(UiMessage::SelectChat(group));
+        let mut sim = simulator(app.view_conversation());
+        assert!(sim.find(inviter.as_str()).is_ok() && sim.find(" invited you (").is_ok(), "the inviter line");
+        assert!(sim.find("Feedback?").is_err(), "the feedback button goes with the thread header");
     }
 
     /// Desktop's "Jump to Message" comes with a right click on a quote, which jumps to the quoted message, and not

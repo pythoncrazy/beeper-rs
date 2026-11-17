@@ -2,14 +2,14 @@ use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
     timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatFlag,
-    ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules,
-    MessageTimer, Older, PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack, StickerSource,
-    ThreadFollows, Timers, Transcription, User, VerificationDevice, VerificationError, VerificationQr, VerificationSas,
-    VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK,
-    BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS,
-    FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NOTIFICATION_SOUND,
-    NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, TRANSCRIPTION,
-    TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageReminder,
+    MessageRules, MessageTimer, Older, PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack,
+    StickerSource, ThreadFollows, Timers, Transcription, User, VerificationDevice, VerificationError, VerificationQr,
+    VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER,
+    BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER,
+    EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER,
+    MSG_MENTION, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE,
+    REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -460,6 +460,11 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
                 dismiss_on_incoming_message: r["dismiss_on_incoming_message"] == true,
             })
         }),
+        // Desktop's `com.beeper.chats.snoozed` handler keeps a snooze that ends in the future.
+        snoozed_until_ms: account_data(room, SNOOZED)
+            .await
+            .and_then(|s| s["snoozed_until_ms"].as_i64())
+            .filter(|&ms| ms > now_unix_millis()),
         chat_theme: None,
         note: None,
         notifiable: None,
@@ -965,6 +970,40 @@ pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> 
     Ok(())
 }
 
+/// The most pages back that fill a gap of a limited sync.
+const GAP_PAGES: usize = 10;
+
+/// Whether the room has synced into the chat list before, so that it has events from an earlier sync.
+async fn synced_before(store: &SharedStore, room: &Room) -> bool {
+    let chat = chat_id(room).await;
+    let st = store.read();
+    st.chat_idx_by_id.get(&chat).is_some_and(|&i| st.chats[i].notifiable.is_some())
+}
+
+/// A limited sync timeline leaves a gap between the last sync and `from`: loads pages back from it until a page
+/// reaches a message that the chat has, so that the timeline has no hole.
+async fn fill_gap(store: SharedStore, room: Room, from: String) {
+    let chat = chat_id(&room).await;
+    let mut from = Some(from);
+    for _ in 0..GAP_PAGES {
+        let Some(token) = from.take() else { return };
+        let (events, end) = match page(&room, Some(token), HISTORY).await {
+            Ok(p) => p,
+            Err(e) => return eprintln!("Could not fill a gap in {}: {e}", room.room_id()),
+        };
+        let reached = {
+            let mut st = store.write();
+            st.load_chat(&chat);
+            events.iter().filter_map(TimelineEvent::event_id).any(|id| st.find_message(id.as_str()).is_some())
+        };
+        sync_room(&store, &room, events).await;
+        if reached {
+            return;
+        }
+        from = end;
+    }
+}
+
 async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
     let me = room.own_user_id().as_str();
     let ids: Vec<String> = ids.as_array().expect("typing user IDs").iter().map(|i| s(i).expect("a user ID")).collect();
@@ -1103,6 +1142,39 @@ fn bookmark_change(e: &Value, me: &str) -> Option<(String, Option<Bookmark>)> {
         BOOKMARK if e["sender"] == me => {
             let order = e["unsigned"]["com.beeper.hs.order"].as_i64().unwrap_or(0);
             Some((target, Some(Bookmark { room_id, event_id: s(&e["event_id"])?, order })))
+        }
+        "m.room.redaction" => Some((target, None)),
+        _ => None,
+    }
+}
+
+/// Desktop's message reminder restoration (`restoreMessageReminders`): the whole reminders room once, then its new
+/// events (`handleMessageReminderRoomEvents`).
+async fn sync_message_reminders(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
+    let events = if store.read().reminders_room.is_none() { all_history(room).await } else { events };
+    let me = room.own_user_id().as_str();
+    let changes = events
+        .iter()
+        .filter_map(|e| {
+            message_reminder_change(&serde_json::from_str(e.raw().json().get()).expect("timeline event JSON"), me)
+        })
+        .collect();
+    store.write().apply_message_reminders(room.room_id().as_str(), changes);
+}
+
+/// Desktop's `applyMessageReminderEvent` and `applyMessageReminderRedaction`: the message and its new reminder with
+/// the reminder event, if any. A redacted reminder event changes nothing, and so do the malformed events and the
+/// reminders of another sender.
+fn message_reminder_change(e: &Value, me: &str) -> Option<(String, Option<(String, MessageReminder)>)> {
+    let rel = &e["content"]["com.beeper.relates_to"];
+    if rel["rel_type"] != MESSAGE_REMINDER {
+        return None;
+    }
+    let (target, room_id) = (s(&rel["event_id"])?, s(&rel["room_id"])?);
+    match e["type"].as_str()? {
+        MESSAGE_REMINDER if e["sender"] == me && e["unsigned"]["redacted_because"].is_null() => {
+            let remind_at_ms = e["content"]["remind_at_ms"].as_i64().filter(|&at| at > 0)?;
+            Some((target, Some((s(&e["event_id"])?, MessageReminder { room_id, remind_at_ms }))))
         }
         "m.room.redaction" => Some((target, None)),
         _ => None,
@@ -1285,6 +1357,7 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
         TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
         REMOVED_MESSAGES_ROOM => return sync_removals(store, room, events).await,
+        REMINDERS_ROOM => return sync_message_reminders(store, room, events).await,
         id if MANAGED_ROOMS.contains(&id) => return,
         _ => {}
     }
@@ -1699,6 +1772,13 @@ pub enum Outgoing {
         room: String,
         target: String,
         on: bool,
+    },
+    /// Desktop's `sendMessageReminder` (`at`) or `redactMessageReminder` (None) of a message in a room. Its chat is
+    /// the reminders room.
+    MessageReminder {
+        room: String,
+        target: String,
+        at: Option<i64>,
     },
     /// Desktop's `removeMessageFromBeeper`: a removal of a message in a room. Its chat is the removed-messages room.
     RemoveFromBeeper {
@@ -2688,6 +2768,25 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 _ => {}
             }
         }
+        // Desktop sends a new reminder event for each time, and its dismissal redacts the latest one.
+        Outgoing::MessageReminder { room: chat, target, at } => {
+            let target = event(target)?.to_string();
+            let rel = serde_json::json!({ "event_id": target, "room_id": chat, "rel_type": MESSAGE_REMINDER });
+            match at {
+                Some(at) => {
+                    let content = serde_json::json!({ "com.beeper.relates_to": rel, "remind_at_ms": at });
+                    let id = room.send_raw(MESSAGE_REMINDER, content).await.map_err(e)?.response.event_id;
+                    store.write().reminder_events.insert(target, id.to_string());
+                }
+                None => {
+                    let known = store.read().reminder_events.get(&target).cloned();
+                    if let Some(id) = known {
+                        redact_with(&client, &room, &id, serde_json::json!({ "com.beeper.relates_to": rel })).await?;
+                        store.write().reminder_events.remove(&target);
+                    }
+                }
+            }
+        }
         // Desktop sends a pending removal again after a restart, but not when the room already has a removal.
         Outgoing::RemoveFromBeeper { txn, room: chat, target } => {
             let target = event(target)?.to_string();
@@ -3020,19 +3119,38 @@ pub async fn create_matrix_dm(store: SharedStore, identifier: String) -> Result<
     create_room(client, body.to_string()).await
 }
 
-/// Desktop SDK's `convertGroupCreateToMatrix` for a `group` of its `matrix` pseudo-bridge: a new encrypted private
-/// room with the users, named when `name` is not empty. Desktop's New Chat never asks for an `unencrypted_group`.
-/// It returns the room ID.
-pub async fn create_matrix_group(store: SharedStore, name: String, users: Vec<String>) -> Result<String, String> {
+/// Desktop SDK's `convertGroupCreateToMatrix` for a `group` or an `unencrypted_group` of its `matrix` pseudo-bridge:
+/// a new private room with the users, encrypted unless it is an `unencrypted_group`, and named when `name` is not
+/// empty. It returns the room ID.
+pub async fn create_matrix_group(
+    store: SharedStore,
+    kind: String,
+    name: String,
+    users: Vec<String>,
+) -> Result<String, String> {
     let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
     for (i, u) in users.iter().enumerate() {
         matrix_sdk::ruma::UserId::parse(u).map_err(|e| format!("user ID {} ({u:?}) is not valid: {e}", i + 1))?;
     }
-    let mut body = serde_json::json!({ "invite": users, "initial_state": [megolm_state()], "preset": "private_chat" });
+    let mut body = serde_json::json!({ "invite": users, "preset": "private_chat" });
+    if kind != "unencrypted_group" {
+        body["initial_state"] = serde_json::json!([megolm_state()]);
+    }
     if !name.is_empty() {
         body["name"] = name.into();
     }
     create_room(client, body.to_string()).await
+}
+
+/// Desktop's `setRoomAvatar`: uploads the image without encryption and sends it as the `m.room.avatar` of the room,
+/// which does not have to be synced yet.
+pub async fn set_room_avatar(store: SharedStore, room: String, bytes: Vec<u8>, mime: String) -> Result<(), String> {
+    let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
+    let mime: mime::Mime = mime.parse().map_err(|e| format!("bad image type {mime}: {e}"))?;
+    let url = client.media().upload(&mime, bytes, None).await.map_err(|e| e.to_string())?.content_uri;
+    let content = serde_json::json!({ "url": url }).to_string();
+    let path = ["rooms", &room, "state", "m.room.avatar", ""];
+    client_api(&client, reqwest::Method::PUT, &path, &[], Some(content)).await.map(drop)
 }
 
 pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
@@ -4433,7 +4551,15 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             }
             for (id, update) in resp.rooms.joined {
                 let room = client.get_room(&id).expect("synced room is known");
+                // A limited timeline of a room that synced before leaves out the events since the last sync.
+                let mut gap = update.timeline.prev_batch.clone().filter(|_| update.timeline.limited);
+                if gap.is_some() && !synced_before(store, &room).await {
+                    gap = None;
+                }
                 sync_room(store, &room, update.timeline.events).await;
+                if let Some(from) = gap {
+                    tokio::spawn(fill_gap(store.clone(), room.clone(), from));
+                }
                 for e in &update.ephemeral {
                     let v: Value = e.deserialize_as().expect("ephemeral event JSON");
                     if v["type"] == "m.typing" {
@@ -4675,6 +4801,60 @@ mod tests {
         })
         .await;
         stub_store(&crate::testing::temp_dir(name), &url).await
+    }
+
+    /// A limited sync of a room that synced before leaves out the events since the last sync, and pages back from its
+    /// `prev_batch` fill the gap up to the messages the chat has, so the timeline has no hole.
+    #[tokio::test]
+    async fn limited_syncs_fill_the_gap() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        use std::sync::Arc;
+        let (syncs, pages) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (syncs2, pages2) = (syncs.clone(), pages.clone());
+        let url = crate::bridge_stub::serve(move |_, path, _| {
+            let (path, query) = path.split_once('?').unwrap_or((path, ""));
+            match path {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                "/_matrix/client/v3/sync" if syncs2.fetch_add(1, Relaxed) == 0 => (200, stub_sync()),
+                "/_matrix/client/v3/sync" => {
+                    let events: Vec<Value> = (131..=140).map(stub_message).collect();
+                    let timeline = json!({ "events": events, "limited": true, "prev_batch": "t130" });
+                    let room = json!({ "state": { "events": [] }, "timeline": timeline });
+                    (200, json!({ "next_batch": "s2", "rooms": { "join": { "!room:x": room } } }))
+                }
+                // 30 messages back from the token `tN` of message N, or the newest 30 of the first sync.
+                p if p.ends_with("/messages") => {
+                    pages2.fetch_add(1, Relaxed);
+                    let from = query.split('&').find_map(|kv| kv.strip_prefix("from=t"));
+                    let to: i64 = from.map_or(70, |t| t.parse().expect("a stub token"));
+                    let chunk: Vec<Value> = (to - 29..=to).rev().map(stub_message).collect();
+                    (200, json!({ "start": format!("t{to}"), "end": format!("t{}", to - 30), "chunk": chunk }))
+                }
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            }
+        })
+        .await;
+        let store = crate::testing::stub_room_store(&crate::testing::temp_dir("sync-gap"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        let texts = |store: &crate::store::SharedStore| {
+            let mut st = store.write();
+            st.load_chat("!room:x");
+            let texts = st.timeline_indices("!room:x").iter().map(|&i| st.messages[i].text.clone().unwrap());
+            texts.collect::<Vec<_>>()
+        };
+        let range = |a: i64, b: i64| (a..=b).map(|i| format!("m{i}")).collect::<Vec<_>>();
+        assert_eq!(texts(&store), range(41, 70), "the first sync loads the newest page");
+        assert_eq!(pages.load(Relaxed), 1);
+        super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await;
+        for _ in 0..200 {
+            if texts(&store).len() == 100 && pages.load(Relaxed) == 4 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(texts(&store), range(41, 140), "the gap from m71 to m130 is filled");
+        assert_eq!(pages.load(Relaxed), 4, "the fill stops at the page that reaches a loaded message");
     }
 
     /// A message that waits for its key is fetched again by event when keys come, so one on an older page decrypts.
@@ -5914,6 +6094,83 @@ mod tests {
         assert!(!st.chat_idx_by_id.contains_key(BOOKMARKS_ROOM), "the bookmarks room is not a chat");
     }
 
+    /// Desktop's message reminders: the own reminders of the reminders room, the latest event of a message winning
+    /// and a redaction ending it; a new reminder is a new `com.beeper.message_reminder` event there, and Mark as
+    /// Done redacts it with the relation in the redaction.
+    #[tokio::test]
+    async fn message_reminders_follow_the_reminders_room_like_desktop() {
+        use crate::models::REMINDERS_ROOM;
+        let rel = |id: &str| json!({ "event_id": id, "room_id": "!room:x", "rel_type": "com.beeper.message_reminder" });
+        let remind = |id: &str, target: &str, at: i64| {
+            stub_event(
+                id,
+                "com.beeper.message_reminder",
+                json!({ "com.beeper.relates_to": rel(target), "remind_at_ms": at }),
+            )
+        };
+        let mut foreign = remind("$r3", "$c", 9);
+        foreign["sender"] = "@other:x".into();
+        let redaction =
+            stub_event("$r5", "m.room.redaction", json!({ "redacts": "$r4", "com.beeper.relates_to": rel("$b") }));
+        let reminders =
+            vec![remind("$r1", "$a", 5), remind("$r2", "$a", 7), foreign, remind("$r4", "$b", 8), redaction];
+        let mut sync = stub_sync();
+        sync["rooms"]["join"][REMINDERS_ROOM] = sync["rooms"]["join"]["!room:x"].clone();
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| {
+            let path = crate::codec::url_decode(path.split('?').next().expect("a path")).expect("an encoded path");
+            match path.as_str() {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, sync.clone()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if p.ends_with("/messages") => {
+                    let page = if p.contains(REMINDERS_ROOM) { reminders.clone() } else { Vec::new() };
+                    (200, json!({ "start": "t", "chunk": page.into_iter().rev().collect::<Vec<_>>() }))
+                }
+                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+                p => {
+                    log.lock().unwrap().push((p.to_string(), body));
+                    (200, json!({ "event_id": "$sent" }))
+                }
+            }
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("message-reminders"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        sync_stub_room(&store, REMINDERS_ROOM).await;
+        {
+            let st = store.read();
+            assert_eq!(st.reminders_room.as_deref(), Some(REMINDERS_ROOM));
+            let active: Vec<(&str, i64)> =
+                st.message_reminders_of("!room:x").iter().map(|(id, r)| (*id, r.remind_at_ms)).collect();
+            assert_eq!(
+                active,
+                [("$a", 7)],
+                "the latest event wins, others' reminders are skipped, a redaction ends one"
+            );
+            assert!(!st.chat_idx_by_id.contains_key(REMINDERS_ROOM), "the reminders room is not a chat");
+        }
+        let at = super::now_unix_millis() + 60_000;
+        store.write().set_message_reminder("!room:x", "$m", Some(at));
+        super::flush(store.clone()).await.expect("the reminder is sent");
+        store.write().set_message_reminder("!room:x", "$m", None);
+        super::flush(store.clone()).await.expect("the reminder is redacted");
+        let room = format!("/_matrix/client/v3/rooms/{REMINDERS_ROOM}/");
+        let sent: Vec<(String, Value)> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(p, b)| Some((p.strip_prefix(&room)?.to_string(), b.clone())))
+            .collect();
+        assert!(sent[0].0.starts_with("send/com.beeper.message_reminder/"), "{}", sent[0].0);
+        assert_eq!(sent[0].1, json!({ "com.beeper.relates_to": rel("$m"), "remind_at_ms": at }));
+        assert!(sent[1].0.starts_with("redact/$sent/"), "{}", sent[1].0);
+        assert_eq!(sent[1].1, json!({ "com.beeper.relates_to": rel("$m") }));
+        assert!(store.read().message_reminders_of("!room:x").iter().all(|(id, _)| *id != "$m"));
+    }
+
     /// Desktop's "Remove from Beeper": the own removals of the removed-messages room delete their messages, a new
     /// removal goes to that room with one transaction ID and stays pending after a failure until the next launch, and
     /// a redaction of a removed message redacts its removal.
@@ -6114,6 +6371,28 @@ mod tests {
         assert_eq!(bookmark_change(&ev("m.room.redaction", "@me:x"), "@me:x"), Some(("$m".into(), None)));
         let bare = json!({ "type": "m.room.redaction", "sender": "@me:x", "redacts": "$b", "content": {} });
         assert!(bookmark_change(&bare, "@me:x").is_none(), "a redaction without a relation is unresolved");
+    }
+
+    /// Desktop's `applyMessageReminderEvent`: a redacted event and one without a positive `remind_at_ms` change
+    /// nothing.
+    #[test]
+    fn message_reminder_events_like_desktop() {
+        use super::message_reminder_change as change;
+        use crate::models::MessageReminder;
+        use serde_json::json;
+        let rel = json!({ "event_id": "$m", "room_id": "!r", "rel_type": "com.beeper.message_reminder" });
+        let ev = json!({ "type": "com.beeper.message_reminder", "sender": "@me:x", "event_id": "$e",
+            "content": { "com.beeper.relates_to": rel, "remind_at_ms": 9 } });
+        let r = MessageReminder { room_id: "!r".into(), remind_at_ms: 9 };
+        assert_eq!(change(&ev, "@me:x"), Some(("$m".into(), Some(("$e".into(), r)))));
+        let mut redacted = ev.clone();
+        redacted["unsigned"] = json!({ "redacted_because": {} });
+        assert_eq!(change(&redacted, "@me:x"), None);
+        for at in [json!(0), json!("9"), Value::Null] {
+            let mut bad = ev.clone();
+            bad["content"]["remind_at_ms"] = at;
+            assert_eq!(change(&bad, "@me:x"), None, "a malformed time");
+        }
     }
 
     /// Desktop's `parseTranscription`: the last plain text, and the engine "unknown" when the event has none.
@@ -6376,7 +6655,8 @@ mod tests {
 
     /// Like the `matrix` pseudo-bridge of Desktop's SDK, New Chat on the Matrix account reads the profile of a Matrix
     /// ID, asks for the devices of a user it does not track, and creates trusted private direct rooms, encrypted only
-    /// for a user with devices, and encrypted private groups.
+    /// for a user with devices, and private groups, encrypted unless New Chat turned it off. Desktop's
+    /// `setRoomAvatar` then uploads the avatar of the group.
     #[tokio::test]
     async fn matrix_new_chat_requests_like_desktop_sdk() {
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -6403,6 +6683,16 @@ mod tests {
             "/_matrix/client/v3/createRoom" => {
                 log.lock().unwrap().push((method.to_string(), "createRoom".to_string(), body));
                 (200, json!({ "room_id": "!new:x" }))
+            }
+            "/_matrix/client/v1/media/config" => (200, json!({ "m.upload.size": 1_000_000 })),
+            "/_matrix/media/v3/upload" => {
+                log.lock().unwrap().push((method.to_string(), "upload".to_string(), body));
+                (200, json!({ "content_uri": "mxc://x/f" }))
+            }
+            p if p.starts_with("/_matrix/client/v3/rooms/") => {
+                let p = p.strip_prefix("/_matrix/client/v3/").expect("a room request");
+                log.lock().unwrap().push((method.to_string(), p.to_string(), body));
+                (200, json!({ "event_id": "$avatar" }))
             }
             _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
@@ -6431,15 +6721,25 @@ mod tests {
         let bad = super::create_matrix_dm(store.clone(), "ghost".into()).await.expect_err("not a Matrix ID");
         assert!(bad.starts_with("failed to resolve identifier: user ID"), "{bad}");
         let users = vec!["@vic:x".to_string(), "@ghost:x".to_string()];
-        let group = super::create_matrix_group(store.clone(), "Team".into(), users.clone()).await;
-        assert_eq!(group, Ok("!new:x".into()));
+        let group =
+            |kind: &str, name: &str| super::create_matrix_group(store.clone(), kind.into(), name.into(), users.clone());
+        assert_eq!(group("group", "Team").await, Ok("!new:x".into()));
         let room = json!({ "name": "Team", "invite": users, "preset": "private_chat", "initial_state": [encryption] });
         assert_eq!(take(), [request("createRoom", room)]);
-        assert_eq!(super::create_matrix_group(store.clone(), String::new(), users.clone()).await, Ok("!new:x".into()));
+        assert_eq!(group("group", "").await, Ok("!new:x".into()));
         assert!(take()[0].2.get("name").is_none(), "a group without a name sends none");
-        let bad = super::create_matrix_group(store, String::new(), vec!["@vic:x".into(), "ghost".into()]).await;
+        assert_eq!(group("unencrypted_group", "").await, Ok("!new:x".into()));
+        let room = json!({ "invite": users, "preset": "private_chat" });
+        assert_eq!(take(), [request("createRoom", room)], "an unencrypted group has no encryption state");
+        let bad = vec!["@vic:x".into(), "ghost".into()];
+        let bad = super::create_matrix_group(store.clone(), "group".into(), String::new(), bad).await;
         assert!(bad.expect_err("a bad member").starts_with("user ID 2 (\"ghost\") is not valid"));
         assert!(take().is_empty(), "a bad member creates nothing");
+        let avatar = super::set_room_avatar(store, "!new:x".into(), b"png".to_vec(), "image/png".into()).await;
+        assert_eq!(avatar, Ok(()));
+        let upload = ("POST".to_string(), "upload".to_string(), json!("png"));
+        let state = ("PUT".to_string(), "rooms/!new:x/state/m.room.avatar/".to_string(), json!({ "url": "mxc://x/f" }));
+        assert_eq!(take(), [upload, state], "Desktop's `setRoomAvatar` uploads the image, then sends the state");
     }
 
     /// Desktop's `searchMatrixUsers`: the user directory with a limit of 100, Matrix IDs as usernames, and a typed

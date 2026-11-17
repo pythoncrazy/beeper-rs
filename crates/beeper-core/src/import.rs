@@ -492,6 +492,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 merged_into_chat_id: None,
                 preview,
                 reminder: None,
+                snoozed_until_ms: None,
                 chat_theme: None,
                 note: note.filter(|n| !n.is_empty()),
                 notifiable: None,

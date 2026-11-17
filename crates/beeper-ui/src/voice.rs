@@ -354,8 +354,8 @@ impl BeeperGuiApp {
             Msg::SeekEnd => audio.output(),
             Msg::Menu => (audio.menu, audio.pill) = (Some(self.cursor.get()), false),
             Msg::PillMenu => (audio.menu, audio.pill, audio.sub) = (Some(self.cursor.get()), true, false),
-            Msg::Sub => (audio.sub, audio.lang) = (true, false),
-            Msg::LangSub => (audio.sub, audio.lang) = (false, true),
+            Msg::Sub => (audio.sub, audio.lang, self.pane.remind_sub) = (true, false, false),
+            Msg::LangSub => (audio.sub, audio.lang, self.pane.remind_sub) = (false, true, false),
             // Desktop's `retranscribeWithLanguage`: the paywall when no free transcriptions are left.
             Msg::Language(mid, code) => {
                 (audio.lang, self.pane.message_menu) = (false, None);
