@@ -229,12 +229,16 @@ impl BeeperGuiApp {
             .on_press_maybe(edit);
         let copy = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("copy:{cid}")));
         let title = mouse_area(
-            button(semi(chat.title.clone(), 15.0).color(p.strong).center()).bare(p.strong).on_press(copy.clone()),
+            button(semi(chat.title.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong).center())
+                .bare(p.strong)
+                .on_press(copy.clone()),
         )
         .on_right_press(copy);
         let meta = |s: String| {
             let copy = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("copy:{cid}\n{s}")));
-            mouse_area(txt(s, 11.0).color(Color { a: 0.6, ..p.strong })).on_right_press(copy)
+            // Desktop's `metadata` rows: 11 px text on the 18.2 px line of the 13 px header.
+            let line = txt(s, 11.0).line_height(Pixels(18.0)).color(Color { a: 0.6, ..p.strong });
+            mouse_area(line).on_right_press(copy)
         };
         let other =
             chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| chat.chat_type == "single");
@@ -254,7 +258,8 @@ impl BeeperGuiApp {
         let network: El = match profile_link(chat) {
             Some(url) => {
                 let fg = Color { a: 0.6, ..p.strong };
-                let label = row![txt(network, 11.0).color(fg), ic(icon::ARROW_UP_RIGHT, 11.0).color(fg)].spacing(2);
+                let name = txt(network, 11.0).line_height(Pixels(18.0)).color(fg);
+                let label = row![name, ic(icon::ARROW_UP_RIGHT, 11.0).color(fg)].spacing(2).align_y(Center);
                 let open = button(label).bare(fg).on_press(UiMessage::OpenUrl(url));
                 let tip = match other.and_then(|u| u.username.as_deref()) {
                     Some(u) => trf("Open @%1$s on %2$s", &[&u.trim_start_matches('@'), &network]),
