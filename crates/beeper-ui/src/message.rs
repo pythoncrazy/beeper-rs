@@ -28,8 +28,8 @@ use crate::{
     locate, member_name, membership, menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link,
     reply_root, safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable,
     unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON,
-    BUBBLE_PAD_X, CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W,
-    ORANGE, OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TIMER, TRASH,
+    BUBBLE_PAD_X, BUBBLE_PAD_Y, CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM,
+    MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TIMER, TRASH,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::matrix::ROOM_MENTION;
@@ -2088,13 +2088,13 @@ impl BeeperGuiApp {
             };
             parts = parts.push(container(line).padding([0, 12]));
         } else if utd {
-            let line = txt(text.clone(), 13.0).font(italic).color(fg.scale_alpha(0.8));
+            let line = txt(text.clone(), 13.0).line_height(Pixels(16.0)).font(italic).color(fg.scale_alpha(0.8));
             let time = shows_time.then(|| {
                 let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
                 txt(time, 11.0).color(if mine { sent_meta } else { p.sub })
             });
             let body = column![].push(inside).push(row![line].push(time).spacing(4).align_y(Bottom));
-            parts = parts.push(container(body).padding([9.0, BUBBLE_PAD_X]).style(fill_box(bg, 17.0)));
+            parts = parts.push(container(body).padding([BUBBLE_PAD_Y, BUBBLE_PAD_X]).style(fill_box(bg, 17.0)));
         } else if !text.is_empty() && poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
             let ts = shows_time.then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
             let room = ts.as_deref().map_or(0.0, |t| crate::style::text_width(t, 11.0, Weight::Normal) + 4.0);
@@ -2350,7 +2350,7 @@ impl BeeperGuiApp {
             });
             parts = parts.push(
                 container(column![].push(inside).push(body).push(more))
-                    .padding([9.0, BUBBLE_PAD_X])
+                    .padding([BUBBLE_PAD_Y, BUBBLE_PAD_X])
                     .max_width(0.45 * self.pane().size.width)
                     .style(fill_box(bg, 17.0)),
             );

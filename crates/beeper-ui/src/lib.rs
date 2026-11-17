@@ -716,6 +716,8 @@ fn inbox_label(label: &'static str) -> &'static str {
 }
 /// Desktop's `--chat-view-bubble-padding-x`, which also insets the message footer.
 const BUBBLE_PAD_X: f32 = 11.0;
+/// Desktop's `--chat-view-bubble-padding-y`.
+const BUBBLE_PAD_Y: f32 = 8.0;
 /// The widths of the Copy, Remind Me, Label and Snooze submenus of the chat menu.
 const SUB_MENU_W: [f32; 4] = [124.0, 257.0, 180.0, 257.0];
 
