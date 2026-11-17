@@ -43,6 +43,10 @@ use iced::{
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+/// The HTML elements that keep Desktop from balancing the lines of a message (`MessageText`).
+const BLOCK_TAGS: [&str; 15] =
+    ["pre", "blockquote", "table", "ol", "ul", "details", "hr", "p>", "p ", "h1", "h2", "h3", "h4", "h5", "h6"];
+
 static REPLY_CURVE: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
     ["", r#" transform="matrix(-1 0 0 1 26 0)""#].map(|flip| {
         svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0.5 0.5 25 19"><path{flip} fill="currentColor" fill-rule="evenodd" d="M17 15.5C9.544 15.5 3.5 9.456 3.5 2V.5h-3V2c0 9.113 7.387 16.5 16.5 16.5h6a1.5 1.5 0 0 0 0-3z"/></svg>"#).into_bytes())
@@ -1546,7 +1550,18 @@ impl BeeperGuiApp {
             let (mut prev_item, last) = (None, blocks.len().saturating_sub(1));
             let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
             let pad = "\u{a0}".repeat((room / nbsp).ceil() as usize);
-            let full = !st.settings.on("balanceText") && crate::style::wraps(&format!("{text}{pad}"), max, 13.0);
+            // Desktop's `message-text--balanced`: CSS `text-wrap: balance`, then the bubble shrinks to its widest line.
+            // A message with block HTML wraps as usual. A wrapped message without balance takes the whole width.
+            let padded = format!("{text}{pad}");
+            let blocks_html =
+                m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
+            let width = match crate::style::wraps(&padded, max, 13.0) {
+                false => Length::Shrink,
+                true if st.settings.on("balanceText") && !blocks_html => {
+                    Length::Fixed(crate::style::balanced_width(&padded, max, 13.0))
+                }
+                true => Length::Fixed(max),
+            };
             let body = Column::with_children(blocks.into_iter().enumerate().map(|(i, (marker, mut spans, _))| {
                 // iced does not draw an empty last line.
                 if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
@@ -1571,7 +1586,7 @@ impl BeeperGuiApp {
                 });
                 container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into()
             }))
-            .width(if full { Length::Fixed(max) } else { Length::Shrink });
+            .width(width);
             let cut = cut.map(|(t, left)| {
                 txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             });
