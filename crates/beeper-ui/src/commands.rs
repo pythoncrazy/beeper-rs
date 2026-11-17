@@ -1006,3 +1006,5 @@ impl BeeperGuiApp {
         self.settle()
     }
 }
+
+impl BeeperGuiApp {}

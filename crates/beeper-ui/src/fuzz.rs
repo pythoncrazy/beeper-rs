@@ -8,6 +8,7 @@ use crate::info::info_menu;
 use crate::new_chat::{account_display_name, chat_people, typed_phone};
 use crate::rail::{all_spaces, LABEL_NUDGE};
 use crate::rail::{draft_rail_spaces, rail_accounts, rail_owner, rail_spaces, RAIL_MORE, RAIL_VIEWS};
+use crate::rail::{SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
 use crate::reminders::reminder_day;
 use crate::scheduled::send_day;
 use crate::toasts::{TOAST_TIMEOUT, UNDO_NOTE_TIMEOUT};

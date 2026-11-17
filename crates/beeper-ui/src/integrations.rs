@@ -1,6 +1,7 @@
 //! Settings > Integrations: the Desktop API tokens and connections, Remote Access, and the MCP install.
 
 use super::*;
+use iced::widget::column;
 
 #[derive(Clone)]
 pub enum Msg {
@@ -132,5 +133,94 @@ impl BeeperGuiApp {
             }
         }
         self.settle()
+    }
+}
+
+/// Desktop's "Approve connection" dialog of a token request from the Desktop API.
+pub(crate) struct TokenAsk {
+    pub(crate) id: String,
+    /// The client name and version.
+    pub(crate) app: String,
+    pub(crate) write: bool,
+    pub(crate) expiry: Expiry,
+    pub(crate) timed_out: bool,
+}
+
+impl BeeperGuiApp {
+    /// Desktop's `BeeperConnectAccessTokenRequestModal`, over the main window.
+    pub(crate) fn view_token_ask<'a>(&'a self, a: &'a TokenAsk) -> El<'a> {
+        let p = &self.pal;
+        let sentence = tr("A third-party app <app/> wants to access your chats through Beeper Desktop API.");
+        let (before, after) = sentence.split_once("<app/>").expect("the sentence names the app");
+        let main =
+            rich_text![span::<(), _>(before), span(a.app.as_str()).font(fw(Weight::Bold)).color(p.strong), span(after)]
+                .size(15.0)
+                .line_height(Pixels(20.0))
+                .color(p.text)
+                .align_x(Center)
+                .width(Fill);
+        let button = |label: &'static str, primary: bool, msg: UiMessage| -> El<'a> {
+            let (bg, fg) = if primary { (p.accent, Color::WHITE) } else { (p.button, p.strong) };
+            let label = txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(Pixels(16.0)).color(fg);
+            button(container(label).center_y(Fill))
+                .height(32)
+                .padding([0, 12])
+                .style(bordered_btn([bg; 3], [fg; 3], if primary { bg } else { p.button_border }, 1.0, 6.0))
+                .on_press(msg)
+                .into()
+        };
+        let body: El<'a> = match a.timed_out {
+            true => {
+                let notice = column![
+                    semi(tr("The request has timed out."), 15.0).line_height(Pixels(20.0)).color(p.strong),
+                    txt(tr("To try again you will need to relaunch the third-party app or re-request login in its MCP settings."), 13.0)
+                        .color(p.text)
+                ]
+                .spacing(8);
+                let notice = container(notice).width(Fill).padding([8, 16]).style(fill_box(p.chip, 8.0));
+                column![notice, row![button("Close", false, UiMessage::Integrations(integrations::Msg::Close))]]
+                    .spacing(16)
+                    .into()
+            }
+            false => {
+                let label = |t: &'static str| txt(tr(t), 12.0).color(p.text);
+                let sensitive = column![
+                    row![
+                        label("Allow sensitive actions").width(Fill),
+                        toggle(p, a.write, Some(UiMessage::Integrations(integrations::Msg::Write)))
+                    ]
+                    .align_y(Center)
+                    .height(38)
+                    .padding([0, 8]),
+                    container(txt(tr("Grant permission to send messages and modify your account"), 11.0).color(p.sub))
+                        .padding(Padding::new(8.0).top(0.0))
+                ];
+                let expiry = select(p, EXPIRIES, a.expiry, |a0| UiMessage::Integrations(integrations::Msg::Expiry(a0)));
+                let expiry = row![label("Expires in").width(Fill), expiry].align_y(Center).height(38).padding([0, 8]);
+                let rows = column![sensitive, divider(p.prefs_border, 0.0), expiry, divider(p.prefs_border, 0.0)];
+                let group =
+                    container(rows).width(Fill).padding(1).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
+                let buttons = row![
+                    button("Decline", false, UiMessage::Integrations(integrations::Msg::Answer(false))),
+                    button("Approve", true, UiMessage::Integrations(integrations::Msg::Answer(true)))
+                ]
+                .spacing(8);
+                let fine = txt(tr("Only approve if you initiated this connection and trust the application."), 12.0)
+                    .color(p.sub)
+                    .align_x(Center)
+                    .width(Fill);
+                column![
+                    container(group).padding([8, 0]),
+                    container(buttons).padding(Padding::new(0.0).top(16.0).bottom(8.0)),
+                    fine
+                ]
+                .into()
+            }
+        };
+        let title = container(semi(tr("Approve connection"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
+        let content = column![container(main).padding(Padding::new(0.0).top(32.0).bottom(16.0)), body];
+        let pane = column![title, container(content).padding([0, 16])];
+        let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
+        mouse_area(container(pane).padding(8)).on_press(UiMessage::Noop).into()
     }
 }

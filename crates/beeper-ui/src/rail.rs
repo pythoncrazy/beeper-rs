@@ -576,3 +576,384 @@ pub struct RailDrag {
     /// The rail order while the space moves, or none before the drag starts.
     pub order: Option<Vec<String>>,
 }
+
+/// The Edit Spaces window: the shown spaces, then `SPACES_DIVIDER`, then the hidden spaces.
+pub struct SpacesDraft {
+    pub id: window::Id,
+    pub order: Vec<String>,
+    pub search: String,
+    /// The space that the drag handle moves, and the order before the drag.
+    pub drag: Option<(String, Vec<String>)>,
+    /// The space of the open gear menu, and where it opened.
+    pub menu: Option<(String, Point)>,
+    /// Whether the list scrolled down, so the search row casts a shadow.
+    pub scrolled: bool,
+}
+
+/// The size of Desktop's Edit Spaces window.
+pub(crate) const SPACES_SIZE: Size = Size::new(360.0, 560.0);
+
+/// Desktop's `HIDDEN_DIVIDER_ID`.
+pub(crate) const SPACES_DIVIDER: &str = "__hidden_divider__";
+
+#[derive(Debug, Clone)]
+pub enum SpacesEdit {
+    Search(String),
+    Drag(String),
+    /// The dragged space moves to this space, or to the end for an empty ID.
+    Over(String),
+    Drop,
+    NewLabel,
+    /// The gear menu of a space, or no menu.
+    Menu(Option<String>),
+    /// A gear menu item.
+    Act(Box<UiMessage>),
+    Scrolled(bool),
+}
+
+impl BeeperGuiApp {
+    /// The menu of a sidebar space and its Show in Inbox submenu. The gear menu of the Edit Spaces window
+    /// (`mYe` and `gYe`) has fewer items, and the sidebar header menu (`Ede` with `Ide` or `Ade`) has Select Chats.
+    /// A label space has the label items (`kS`) instead.
+    pub(crate) fn account_menu(&self, entry: &str, kind: SpaceMenu) -> (El<'_>, Option<El<'_>>) {
+        let p = &self.pal;
+        let st = self.store.read();
+        let select = (kind == SpaceMenu::Header).then(|| {
+            let item = menu_item(
+                p,
+                None,
+                tr("Select Chats").into(),
+                "",
+                Some(UiMessage::ChatList(chat_list::Msg::ToggleSelectMode)),
+            );
+            mouse_area(item).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)))
+        });
+        if kind == SpaceMenu::Header && RAIL_VIEWS.iter().any(|v| v.0 == entry) {
+            let menu = container(column![select].padding([4, 0])).width(233);
+            return (menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into(), None);
+        }
+        if RAIL_VIEWS.iter().any(|v| v.0 == entry) {
+            let keys = |name| prefs::hotkey_label(st.settings.hotkey_keys(name));
+            let bar = if st.settings.on("showSidebar") { "Hide Space Bar" } else { "Show Space Bar" };
+            let col = column![
+                menu_item(
+                    p,
+                    None,
+                    tr("Add/Remove Accounts…").into(),
+                    keys("Settings"),
+                    Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)))
+                ),
+                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
+                menu_item(
+                    p,
+                    None,
+                    tr(bar).into(),
+                    keys("Toggle Space Bar"),
+                    Some(UiMessage::RunHotkey("Toggle Space Bar"))
+                ),
+                menu_item(
+                    p,
+                    None,
+                    tr("Settings").into(),
+                    keys("Settings"),
+                    Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)))
+                ),
+            ];
+            let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            return (menu.into(), None);
+        }
+        if let Some(l) = rail_label(&st, entry) {
+            let item = |label: &str, msg| menu_item(p, None, label.into(), "", Some(msg));
+            let tail = match kind {
+                SpaceMenu::Rail => vec![
+                    menu_rule(p),
+                    item(tr("Edit Spaces…"), UiMessage::OpenEditSpaces),
+                    item(tr("Add/Remove Accounts…"), UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
+                ],
+                SpaceMenu::Header => vec![menu_rule(p), select.expect("the header menu has Select Chats").into()],
+                SpaceMenu::Gear => vec![],
+                SpaceMenu::Prefs | SpaceMenu::Options => unreachable!("only account spaces have these menus"),
+            };
+            let col = Column::with_children(self.label_items(l, 0.0).into_iter().chain(tail));
+            let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            return (menu.into(), None);
+        }
+        let space = network_space(&st, entry);
+        let account = space.map_or(entry, |n| n.account_id.as_str());
+        let bridge = match account {
+            "hungryserv" => "hungryserv",
+            _ => &st.bridge_accounts.iter().find(|b| b.account_id == account).expect("a rail account").bridge_id,
+        };
+        let (key, now) =
+            beeper_core::matrix::inbox_rule(&st.inbox_rules, account, bridge, space.map(|n| n.id.as_str()));
+        let props = st.settings.account(account);
+        let muted = !props.notifications;
+        let write = st.matrix.is_some();
+        let options = INBOX_OPTIONS.iter().filter(|o| space.is_none() || o.0 != "dmOnly");
+        let sub = (self.chat_sub == Some(0)).then(|| {
+            let items = options.map(|&(o, label)| {
+                let lead = container((o == now).then(|| ic(icon::CHECK, 14.0))).width(22).into();
+                let msg = write.then(|| UiMessage::Accounts(accounts::Msg::SetInboxVisibility(key.clone(), o)));
+                menu_item(p, Some(lead), inbox_label(label).into(), "", msg)
+            });
+            let body = container(Column::with_children(items).padding([4, 0])).width(ACCOUNT_SUB_W);
+            body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
+        });
+        let inbox = menu_item(
+            p,
+            None,
+            tr("Show in Inbox").into(),
+            "›",
+            Some(UiMessage::CommandBar(commands::Msg::ChatSub(Some(0)))),
+        );
+        let mute = beeper_core::models::AccountProps { notifications: muted, ..props };
+        let gear = kind == SpaceMenu::Gear;
+        let label = match (gear, muted) {
+            (true, _) => trx(if muted { "Unmute" } else { "Mute" }, "account context menu action"),
+            (false, true) => tr("Unmute Space"),
+            (false, false) => tr("Mute Space"),
+        };
+        let mute = menu_item(
+            p,
+            None,
+            label.into(),
+            "",
+            Some(UiMessage::Accounts(accounts::Msg::SetProps(account.into(), mute))),
+        );
+        let accounts = UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts));
+        let settings = UiMessage::Accounts(accounts::Msg::OpenSettings(account.into()));
+        let rest = match kind {
+            SpaceMenu::Gear => column![mute],
+            SpaceMenu::Header | SpaceMenu::Options => {
+                column![mute, menu_rule(p), menu_item(p, None, tr("Account Settings...").into(), "", Some(settings))]
+            }
+            SpaceMenu::Prefs => {
+                let remove = match account {
+                    "hungryserv" => UiMessage::ChatList(chat_list::Msg::CloseMenu),
+                    _ => UiMessage::Accounts(accounts::Msg::AskRemove(account.into())),
+                };
+                column![
+                    mute,
+                    menu_rule(p),
+                    menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
+                    menu_item(p, None, tr("Remove Account…").into(), "", Some(remove)),
+                ]
+            }
+            SpaceMenu::Rail => column![
+                mute,
+                menu_rule(p),
+                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
+                menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts)),
+                menu_rule(p),
+                menu_item(p, None, tr("Account Settings…").into(), "", Some(settings)),
+            ],
+        };
+        // Desktop's Reconnect item (`App:89486`) of an account whose bridge asks for a new login.
+        let again = reconnect(&st, account).filter(|_| kind != SpaceMenu::Gear);
+        let again = again.map(|m| column![menu_rule(p), menu_item(p, None, tr("Reconnect").into(), "", Some(m))]);
+        let col = column![
+            select,
+            mouse_area(inbox).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(Some(0)))),
+            mouse_area(rest.push(again))
+                .on_enter(UiMessage::CommandBar(commands::Msg::ChatSub((kind == SpaceMenu::Options).then_some(1))))
+        ];
+        let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        (menu.into(), sub.map(Into::into))
+    }
+
+    pub(crate) fn spaces_edit(&mut self, e: SpacesEdit) -> Task<UiMessage> {
+        let d = self.spaces_window.as_mut().expect("the Edit Spaces window is open");
+        match e {
+            SpacesEdit::Search(q) => d.search = q,
+            SpacesEdit::Scrolled(down) => d.scrolled = down,
+            SpacesEdit::Drag(id) => d.drag = Some((id, d.order.clone())),
+            SpacesEdit::Over(to) => {
+                let Some((id, _)) = &d.drag else { return Task::none() };
+                let from = d.order.iter().position(|o| o == id).expect("a dragged space");
+                let to = d.order.iter().position(|o| *o == to).unwrap_or(d.order.len() - 1);
+                let item = d.order.remove(from);
+                d.order.insert(to, item);
+            }
+            SpacesEdit::Drop => {
+                let Some((_, before)) = d.drag.take() else { return Task::none() };
+                if d.order[0] == SPACES_DIVIDER && d.order.len() > 1 {
+                    let inbox = d.order.iter().position(|o| o == "inbox").unwrap_or(1);
+                    let first = d.order.remove(inbox);
+                    d.order.insert(0, first);
+                }
+                if d.order == before {
+                    return Task::none();
+                }
+                let split = d.order.iter().position(|o| o == SPACES_DIVIDER).expect("the divider");
+                let order = d.order.iter().enumerate().filter(|(i, _)| *i != split);
+                let order = order.map(|(i, id)| SpaceOrder { id: id.clone(), visible: i < split }).collect();
+                let old = self.store.read().settings.spaces_order.clone();
+                self.patch_settings(|s| s.spaces_order = order);
+                self.act(tr("Reorder sidebar").into(), UiMessage::Rail(rail::Msg::SetOrder(old)), None);
+            }
+            SpacesEdit::Menu(id) => (d.menu, self.chat_sub) = (id.map(|id| (id, self.cursor.get())), None),
+            SpacesEdit::Act(m) => {
+                if !matches!(*m, UiMessage::CommandBar(commands::Msg::ChatSub(_))) {
+                    d.menu = None;
+                }
+                return self.update(*m);
+            }
+            SpacesEdit::NewLabel => {
+                let close = window::close(d.id);
+                return Task::batch([close, self.update(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())))]);
+            }
+        }
+        Task::none()
+    }
+
+    pub(crate) fn view_edit_spaces<'a>(&'a self, d: &'a SpacesDraft) -> El<'a> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let edit = UiMessage::Spaces;
+        let search = text_input(tr("Search Spaces"), &d.search)
+            .on_input(move |q| edit(SpacesEdit::Search(q)))
+            .size(13)
+            .line_height(Pixels(16.0))
+            .padding([14, 0])
+            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+        let clear = (!d.search.trim().is_empty())
+            .then(|| icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, edit(SpacesEdit::Search(String::new()))));
+        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search]
+            .push(clear)
+            .spacing(10)
+            .align_y(Center)
+            .padding(Padding::ZERO.left(16.0).right(8.0));
+        let q = d.search.trim().to_lowercase();
+        let split = d.order.iter().position(|o| o == SPACES_DIVIDER).expect("the divider");
+        let found = |ids: &'a [String]| -> Vec<&'a String> {
+            ids.iter().filter(|id| q.is_empty() || space_name(&st, id).to_lowercase().contains(&q)).collect()
+        };
+        let line = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.15);
+        let dragged = d.drag.as_ref().map(|(id, _)| id.as_str());
+        let group = |ids: Vec<&'a String>| -> Vec<El<'a>> {
+            let last = ids.len().saturating_sub(1);
+            ids.into_iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    let (top, bottom) = (if i == 0 { 12.0 } else { 0.0 }, if i == last { 12.0 } else { 0.0 });
+                    let muted = match rail_label(&st, id) {
+                        Some(l) => l.muted,
+                        None => {
+                            !RAIL_VIEWS.iter().any(|v| v.0 == id)
+                                && !st.settings.account(&rail_owner(&st, id)).notifications
+                        }
+                    };
+                    let gear = !RAIL_VIEWS.iter().any(|v| v.0 == id) && id != LABEL_NUDGE;
+                    let room = if gear { 190.0 } else { 216.0 };
+                    let name = row![ell(&space_name(&st, id), room, 13.0, Weight::Semibold).color(p.strong)]
+                        .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)))
+                        .spacing(2)
+                        .align_y(Center);
+                    let sub = space_subtitle(&st, id).map(|t| txt(t, 11.0).color(p.sub));
+                    let handle = mouse_area(container(tinted(&DRAG_HANDLE, 20.0, p.sub)).center(28))
+                        .interaction(iced::mouse::Interaction::Grab)
+                        .on_press(edit(SpacesEdit::Drag(id.clone())));
+                    let lift = dragged == Some(id.as_str());
+                    let body =
+                        row![container(self.space_icon(&st, id)).center(20), column![name].push(sub).width(Fill),]
+                            .push(gear.then(|| {
+                                mouse_area(container(ic(icon::MORE_HORIZ, 16.0).color(p.sub)).center_x(16))
+                                    .interaction(mouse::Interaction::Pointer)
+                                    .on_press(edit(SpacesEdit::Menu(Some(id.clone()))))
+                            }))
+                            .push(handle)
+                            .spacing(10)
+                            .align_y(Center)
+                            .padding([6, 12]);
+                    let fill = p.received;
+                    let body = container(body).style(move |_: &Theme| container::Style {
+                        background: Some(fill.into()),
+                        border: iced::Border {
+                            radius: border::Radius {
+                                top_left: top,
+                                top_right: top,
+                                bottom_right: bottom,
+                                bottom_left: bottom,
+                            },
+                            ..iced::Border::default()
+                        },
+                        shadow: if lift {
+                            Shadow {
+                                color: Color::BLACK.scale_alpha(0.15),
+                                offset: Vector::new(0.0, 4.0),
+                                blur_radius: 12.0,
+                            }
+                        } else {
+                            Shadow::default()
+                        },
+                        ..Default::default()
+                    });
+                    let rule =
+                        (i != last).then(|| container(Space::new()).width(Fill).height(1).style(fill_box(line, 0.0)));
+                    mouse_area(column![body].push(rule)).on_enter(edit(SpacesEdit::Over(id.clone()))).into()
+                })
+                .collect()
+        };
+        let header = |label: &'static str| container(txt(label, 12.0).color(p.sub)).padding([8, 0]);
+        let hidden = found(&d.order[split + 1..]);
+        let empty = hidden.is_empty().then(|| {
+            let fill = if dragged.is_some() { CLEAR } else { p.received };
+            let msg = container(txt(tr("No Hidden Spaces"), 13.0).color(p.sub)).center_x(Fill).center_y(56).style(
+                move |_: &Theme| container::Style {
+                    background: Some(fill.into()),
+                    border: iced::Border {
+                        color: p.received,
+                        width: if fill == CLEAR { 1.0 } else { 0.0 },
+                        radius: 12.0.into(),
+                    },
+                    ..Default::default()
+                },
+            );
+            mouse_area(msg).on_enter(edit(SpacesEdit::Over(String::new())))
+        });
+        let list = column![header(trx("Pinned", "edit spaces section header"))]
+            .extend(group(found(&d.order[..split])))
+            .push(mouse_area(header(tr("Hidden")).width(Fill)).on_enter(edit(SpacesEdit::Over(SPACES_DIVIDER.into()))))
+            .push(empty)
+            .extend(group(hidden))
+            .padding(Padding { top: 0.0, right: 13.0, bottom: 30.0, left: 13.0 });
+        let list = scrollable(list)
+            .direction(Direction::Vertical(Scrollbar::hidden()))
+            .height(Fill)
+            .on_scroll(move |v| edit(SpacesEdit::Scrolled(v.absolute_offset().y > 0.0)));
+        let shade = d
+            .scrolled
+            .then(|| container(Space::new()).width(Fill).height(2).style(fill_box(p.strong.scale_alpha(0.1), 0.0)));
+        let card =
+            container(column![search, stack![list].push(shade)]).height(Fill).clip(true).style(fill_box(p.card, 12.0));
+        let new = st.feature("labels-v2").show.then(|| {
+            let link = button(txt(tr("New Label"), 13.0).color(p.accent))
+                .padding([4, 8])
+                .style(btn_style([CLEAR; 3], [p.accent; 3], 8.0))
+                .on_press(edit(SpacesEdit::NewLabel));
+            container(link).center_x(Fill).padding(Padding { top: 8.0, right: 0.0, bottom: 4.0, left: 0.0 })
+        });
+        let head = container(semi(tr("Edit Spaces"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
+        let window = container(column![head, card].push(new)).padding(8).style(fill_box(p.window, 0.0));
+        let window = mouse_area(window).on_release(edit(SpacesEdit::Drop));
+        let Some((id, at)) = &d.menu else {
+            drop(st);
+            return window.into();
+        };
+        let h = 8.0 + MENU_ITEM * rail_label(&st, id).map_or(2.0, label_rows);
+        drop(st);
+        let (menu, sub) = self.account_menu(id, SpaceMenu::Gear);
+        let x = if at.x + 233.0 > SPACES_SIZE.width { at.x - 233.0 } else { at.x }.max(4.0);
+        let y = at.y.min(SPACES_SIZE.height - h - 8.0);
+        let sub_x = (x + 233.0).min(SPACES_SIZE.width - ACCOUNT_SUB_W - 4.0);
+        let act = |m| UiMessage::Spaces(SpacesEdit::Act(Box::new(m)));
+        let place = |m: El<'a>, x: f32| -> El<'a> {
+            let m = mouse_area(m.map(act)).on_press(UiMessage::Noop);
+            container(m).padding(Padding::ZERO.left(x).top(y)).into()
+        };
+        let close = mouse_area(container(Space::new()).width(Fill).height(Fill))
+            .on_press(edit(SpacesEdit::Menu(None)))
+            .on_right_press(edit(SpacesEdit::Menu(None)));
+        stack![window, close, place(menu, x)].push(sub.map(|s| place(s, sub_x))).into()
+    }
+}
