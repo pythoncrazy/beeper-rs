@@ -175,6 +175,11 @@ pub(crate) fn save_draft(st: &mut BeeperStore, pane: &Pane) {
     };
     let discarded = links.iter().filter(|(_, s)| matches!(s, LinkState::Discarded)).map(|(u, _)| u.clone());
     let mentions = pills(&text, mentions);
+    // Desktop's `draftSendRoomID`: the member chat of the quoted message, else the target that the switcher pinned.
+    let id = &st.chats[idx].id;
+    let quoted = reply.as_deref().and_then(|r| st.loaded(r)).map(|m| m.chat_id.clone()).filter(|c| c != id);
+    let pinned = pane.compose_target.as_ref().filter(|t| t.1).map(|t| t.0.clone());
+    let send_room_id = quoted.or(pinned).filter(|_| st.chats[idx].merge.is_some());
     let draft = ChatDraft {
         text: Some(text).filter(|t| !t.trim().is_empty()),
         attachments,
@@ -183,6 +188,7 @@ pub(crate) fn save_draft(st: &mut BeeperStore, pane: &Pane) {
         discarded_links: discarded.collect(),
         mentions,
         ts: None,
+        send_room_id,
     };
     // Desktop's `applyDraftTime`: the draft time changes with the text or the files.
     let old = st.chats[idx].draft.as_ref();

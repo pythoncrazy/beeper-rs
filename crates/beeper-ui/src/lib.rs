@@ -3,6 +3,7 @@ mod add_account;
 mod anim;
 mod behavior;
 mod blocking;
+mod bridge_texts;
 pub mod chat_list;
 mod chat_theme;
 mod chat_theme_window;
@@ -32,10 +33,12 @@ mod linkify;
 mod links;
 mod loads;
 pub mod login;
+mod lottie;
 mod media_view;
 mod members;
 mod menubar;
 mod merge_editor;
+mod merge_suggest;
 mod merged;
 mod message;
 pub mod networks;
@@ -241,7 +244,8 @@ const FILTER_HOTKEYS: [&str; 5] =
     ["Filter: Unread", "Filter: Drafts", "Filter: Unanswered", "Filter: DMs", "Filter: Groups"];
 /// The hotkeys that act on the sign-in window and before sign-in. Desktop binds all hotkeys there, but the others act
 /// on chats and on the command bar, which Desktop does not draw before the onboarding ends.
-const SIGN_IN_HOTKEYS: [&str; 10] = [
+const SIGN_IN_HOTKEYS: [&str; 11] = [
+    "Keyboard Shortcuts",
     "Minimize To Tray",
     "Quit App",
     "Reload App",
@@ -375,6 +379,8 @@ pub enum UiMessage {
     Blocking(blocking::Msg),
     /// Desktop's merged chats: Unmerge.
     Merged(merged::Msg),
+    /// Desktop's merge suggestions and the nudge of the composer switcher of a merged chat.
+    MergeSuggest(merge_suggest::Msg),
     /// Desktop's account nicknames and the Account Nickname window.
     Nickname(nickname::Msg),
     /// The keyboard focus of the controls of a window: Tab, and the mouse press that ends it.
@@ -2459,6 +2465,10 @@ pub struct Pane {
     /// Desktop's `composeTargetID` of a merged chat, and whether the switcher pinned it (`!shouldAutoUpdateTarget`).
     /// An unpinned target holds while the composer has a draft (`hasBlockingComposerContent`).
     pub compose_target: Option<(String, bool)>,
+    /// Desktop's `MergeSuggestionBanner` showed when the chat opened.
+    pub merge_banner: bool,
+    /// Desktop's `TargetSwitcherNudge` showed when the merged chat opened.
+    pub nudge: bool,
     /// Desktop's `ScheduledMessages` state: collapsed and collapsible.
     pub sched_fold: (bool, bool),
     pub sched_menu: Option<(Vec<String>, bool, Point)>,
@@ -2857,6 +2867,8 @@ pub struct BeeperGuiApp {
     /// Desktop's Account Nickname windows, one for each account.
     pub nickname_windows: Vec<nickname::NicknameDraft>,
     pub add_accounts: Vec<add_account::AddAccount>,
+    /// The browser of the cookie logins. The tests find none, so that they never start one.
+    pub find_browser: fn() -> Option<std::path::PathBuf>,
     /// The Chat Info group description while it is edited, and whether it shows all of its lines.
     pub info_desc: Option<text_editor::Content>,
     pub info_more: bool,
@@ -3118,6 +3130,7 @@ impl BeeperGuiApp {
             how_window: None,
             nickname_windows: Vec::new(),
             add_accounts: Vec::new(),
+            find_browser: if cfg!(test) { || None } else { beeper_core::browser_login::find_browser },
             info_desc: None,
             info_more: false,
             info_all: false,
@@ -3701,6 +3714,10 @@ impl BeeperGuiApp {
         self.pane.reply_to_message_id = draft.reply_to_message_id;
         (self.pane.editing_message_id, self.pane.stash) = (None, None);
         self.pane.mentions = draft.mentions;
+        // Desktop's `seedComposeTarget`: the member chat of the draft's `send_room_id` is the pinned target.
+        let members = st.members(idx);
+        let seeded = draft.send_room_id.filter(|r| members.iter().any(|&m| st.chats[m].id == *r));
+        self.pane.compose_target = seeded.map(|r| (r, true));
         self.pane.selected_msgs.clear();
         self.pane.msg_anchor = None;
         (self.info_desc, self.info_more, self.info_all, self.info_bookmarks) = (None, false, false, false);
@@ -3724,6 +3741,7 @@ impl BeeperGuiApp {
         if let Some(root) = self.open_threads.get(chat_id).cloned() {
             self.open_thread(chat_id.into(), root);
         }
+        self.mount_merge_prompts();
         self.refresh_theme_and_tray();
     }
 
@@ -4118,6 +4136,7 @@ impl BeeperGuiApp {
             UiMessage::Networks(msg) => return self.networks(msg),
             UiMessage::Blocking(msg) => return self.blocking(msg),
             UiMessage::Merged(msg) => return self.merged(msg),
+            UiMessage::MergeSuggest(msg) => return self.merge_suggest(msg),
             UiMessage::Nickname(msg) => return self.nickname(msg),
             UiMessage::Focus(msg) => return self.key_focus(msg),
             UiMessage::ChatList(msg) => return self.chat_list(msg),
@@ -4170,11 +4189,18 @@ impl BeeperGuiApp {
                     unread,
                 ]);
             }
-            UiMessage::SwitchCard => self.list.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
+            UiMessage::SwitchCard => {
+                self.list.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get()));
+                // Desktop's merged chat `composeSwitchTargets.onOpen` dismisses the switcher nudge.
+                if self.merged_targets(&self.store.read()).is_some_and(|t| t.len() >= 2) {
+                    self.dismiss_nudge();
+                }
+            }
             UiMessage::SwitchChat(id) if self.merged_targets(&self.store.read()).is_some() => {
-                // Desktop's merged chat `composeSwitchTargets.onSelect`: `setComposeTarget`.
+                // Desktop's merged chat `composeSwitchTargets.onSelect`: `setComposeTarget`, which saves the draft.
                 self.list.chat_menu = None;
                 self.pane.compose_target = Some((id, true));
+                self.pane.draft_due = true;
             }
             UiMessage::SwitchChat(id) => self.switch_chat(id),
             UiMessage::InThread(msg) => return self.in_thread(*msg),
@@ -4258,7 +4284,7 @@ impl BeeperGuiApp {
                 match (was == Modifiers::ALT, mods == Modifiers::ALT) {
                     (false, true) if was.is_empty() => self.alt_alone = true,
                     (true, false) if mods.is_empty() && std::mem::take(&mut self.alt_alone) => {
-                        if self.main_window.is_some() {
+                        if self.main_window.or(self.login_window).is_some() {
                             self.menu_bar = if self.menu_bar.is_some() { None } else { Some(None) };
                         }
                     }
@@ -5437,17 +5463,10 @@ impl BeeperGuiApp {
             .style(fill_box(self.pal.window, 0.0))
             .into(),
         };
-        // Desktop's menu bar, which Alt shows over the content of the main window.
-        let base = match self.menu_bar.filter(|_| in_main) {
-            Some(open) => column![self.view_menu_bar(open), base].into(),
-            None => base,
+        let (base, menu_drop) = match in_main {
+            true => self.with_menu_bar(base),
+            false => (base, None),
         };
-        let menu_drop = self.menu_bar.flatten().filter(|_| in_main).map(|i| {
-            let (menu, x) = self.view_menu_dropdown(i);
-            let at = Padding::ZERO.left(x).top(menubar::BAR_H);
-            mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
-                .on_press(UiMessage::MenuBar(menubar::Msg::Show(None)))
-        });
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
             (None, true) => Some(self.view_command_palette()),
@@ -5641,7 +5660,8 @@ impl BeeperGuiApp {
         let thread = self.selection.is_empty() && self.pane().thread.is_some();
         let zoom =
             (self.info_zoom && self.show_right_panel && in_main && open && !thread).then(|| self.view_avatar_zoom());
-        let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
+        let window = self.pane().size * (1.0 / self.zoom);
+        let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q, window));
         // The menus and the emoji picker of the carousel show over it.
         let hover = self.view_hover_card().filter(|_| in_main);
         let quick_look = self.view_attachment_quick_look().filter(|_| in_main);

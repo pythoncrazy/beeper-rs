@@ -6,7 +6,7 @@ use crate::settings;
 use crate::style::{fill_box, shadow_box, text_width, txt};
 use crate::windows;
 use crate::{menu_item, menu_rule, BeeperGuiApp, El, SettingsTab, UiMessage, ASK_LOGOUT};
-use iced::widget::{container, mouse_area, row, text_editor, Column};
+use iced::widget::{column, container, mouse_area, row, text_editor, Column};
 use iced::{font::Weight, Fill, Padding, Task};
 
 /// The height of the menu bar.
@@ -15,6 +15,20 @@ pub(crate) const BAR_H: f32 = 26.0;
 const TITLE_PAD: f32 = 8.0;
 const BAR_PAD: f32 = 4.0;
 const MENU_W: f32 = 233.0;
+
+/// The text of the first combination of hotkey `keys` in Electron's native menus, which put the modifiers in
+/// Chromium's order (Alt, Ctrl, Shift) with "+" between them: "Alt+Ctrl+Q" for `ctrl+alt+q`.
+pub(crate) fn accelerator(keys: &str) -> String {
+    let combo = keys.split(", ").next().expect("split gives one part");
+    if combo == "disabled" {
+        return String::new();
+    }
+    let mut key = combo.rsplit('+').next().expect("rsplit gives one part").chars();
+    let key: String = key.next().into_iter().flat_map(char::to_uppercase).chain(key).collect();
+    let mods = [("alt", "Alt"), ("ctrl", "Ctrl"), ("shift", "Shift")];
+    let mods = mods.into_iter().filter(|(m, _)| combo.split('+').any(|p| p == *m)).map(|(_, name)| name);
+    mods.chain([key.as_str()]).collect::<Vec<_>>().join("+")
+}
 
 /// An item of a menu: its label, its hotkey, and what it does, or `None` for a rule.
 pub(crate) type Item = Option<(String, &'static str, UiMessage)>;
@@ -27,8 +41,17 @@ impl BeeperGuiApp {
         let hotkey = |label: &str, name: &'static str| Some((label.to_string(), name, UiMessage::RunHotkey(name)));
         let plain = |label: String, msg: UiMessage| Some((label, "", msg));
         let url = |label: String, url: &str| plain(label, UiMessage::OpenUrl(url.into()));
-        let logout = || plain(trf("Logout of %s...", &[&"Beeper"]), UiMessage::Ask(Some(ASK_LOGOUT)));
         let signed_in = st.signed_in();
+        // The sign-in window shows no dialog, so its Logout logs out at once like the Beeper menu of Desktop, whose
+        // `logout` gets the menu item as its reason. Before sign-in, Desktop's `doLogout` only relaunches the app.
+        let logout = || {
+            let msg = match (self.main_window, signed_in) {
+                (Some(_), _) => UiMessage::Ask(Some(ASK_LOGOUT)),
+                (None, true) => UiMessage::Logout,
+                (None, false) => UiMessage::Window(windows::Msg::Relaunch),
+            };
+            plain(trf("Logout of %s...", &[&"Beeper"]), msg)
+        };
         let mut beeper =
             vec![plain(trf("About %s", &[&"Beeper"]), UiMessage::Settings(settings::Msg::Open(SettingsTab::About)))];
         if signed_in {
@@ -46,13 +69,21 @@ impl BeeperGuiApp {
             beeper.extend([hotkey(&trf("Minimize to %s", &[&"Tray"]), "Minimize To Tray"), None]);
         }
         beeper.extend([logout(), hotkey(&trf("Quit %s", &[&"Beeper"]), "Quit App")]);
-        let main = self.main_window;
+        // The menu bar of the sign-in window acts on it, which Desktop does not let maximize.
+        let main = self.main_window.or(self.login_window);
         let file = vec![
             hotkey(tr("Open..."), "Chat: Send File"),
             hotkey(tr("New Chat"), "Chat: Start New"),
             None,
             main.map(|id| (tr("Close Window").to_string(), "", UiMessage::Window(windows::Msg::CloseRequested(id)))),
-            hotkey(tr("Open Chat in New Window"), "Open in New Window"),
+            // Desktop's `openChatInNewWindow` opens the open chat, and does nothing without one.
+            plain(
+                tr("Open Chat in New Window").into(),
+                self.pane
+                    .selected_chat_id
+                    .clone()
+                    .map_or(UiMessage::Noop, |c| UiMessage::Window(windows::Msg::OpenChat(c))),
+            ),
         ];
         let edit = vec![
             plain(tr("Cut").into(), UiMessage::Composer(composer::Msg::Clip(true))),
@@ -65,7 +96,8 @@ impl BeeperGuiApp {
         let view = vec![hotkey(bar, "Toggle Space Bar"), hotkey(sidebar, "Toggle Sidebar")];
         let window = vec![
             main.map(|id| (tr("Minimize").to_string(), "", UiMessage::Window(windows::Msg::Minimize(id)))),
-            main.map(|id| (tr("Zoom").to_string(), "", UiMessage::Window(windows::Msg::ToggleMaximize(Some(id))))),
+            self.main_window
+                .map(|id| (tr("Zoom").to_string(), "", UiMessage::Window(windows::Msg::ToggleMaximize(Some(id))))),
         ];
         let mut help = vec![
             hotkey(tr("Report a Problem"), "Report a Problem"),
@@ -109,6 +141,19 @@ impl BeeperGuiApp {
         container(bar).width(Fill).height(BAR_H).style(fill_box(p.window, 0.0)).into()
     }
 
+    /// `base` under the menu bar when Alt shows it, and the open menu, which goes over all the window.
+    pub(crate) fn with_menu_bar<'a>(&'a self, base: El<'a>) -> (El<'a>, Option<El<'a>>) {
+        let Some(open) = self.menu_bar else { return (base, None) };
+        let drop = open.map(|i| {
+            let (menu, x) = self.view_menu_dropdown(i);
+            let at = Padding::ZERO.left(x).top(BAR_H);
+            mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+                .on_press(UiMessage::MenuBar(Msg::Show(None)))
+                .into()
+        });
+        (column![self.view_menu_bar(open), base].into(), drop)
+    }
+
     /// The open menu, and its left edge under its title.
     pub(crate) fn view_menu_dropdown(&self, open: usize) -> (El<'_>, f32) {
         let p = &self.pal;
@@ -120,7 +165,7 @@ impl BeeperGuiApp {
             Some((label, hotkey, msg)) => {
                 let keys = match hotkey {
                     "" => String::new(),
-                    name => beeper_core::prefs::hotkey_label(st.settings.hotkey_keys(name)),
+                    name => accelerator(st.settings.hotkey_keys(name)),
                 };
                 menu_item(p, None, label, keys, Some(UiMessage::MenuBar(Msg::Run(Box::new(msg)))))
             }

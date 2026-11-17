@@ -1,10 +1,12 @@
 //! Desktop's `LoginBrowserWindow` with the `BridgeV2AuthComponent` of a Beeper Cloud bridge: it adds an account of
 //! a network, or logs an account in again. The bridge describes each step (see `beeper_core::bridge_login`).
-use crate::i18n::{tr, trf};
+use crate::bridge_texts::{bridge_error, bridge_text};
+use crate::i18n::{tr, trf, trx};
 use crate::phone::{self, KeyOutcome, Phone, PhoneMsg};
 use crate::style::{brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, Palette, CLEAR};
 use crate::{menu_item, BeeperGuiApp, El, Toast, UiMessage, ERROR_CIRCLE};
 use beeper_core::bridge_login::{self, Field, Flow, Step};
+use beeper_core::browser_login::{self, BrowserLogin, Outcome};
 use beeper_core::config::{cloud_bridge, find_network};
 use beeper_core::matrix::Provision;
 use beeper_core::models::NetworkSpec;
@@ -57,6 +59,8 @@ const CLOUD_LIMITS: [(&str, &str); 11] = [
 ];
 /// The step whose instructions Desktop shows with a Done button when the login completes (`Cpe`).
 const DONE_STEP: &str = "fi.mau.viber.login.complete";
+/// The text when no browser can open a cookie login. Desktop opens its own window, so it has no such text.
+const NO_BROWSER: &str = "To log in to %s, install Chrome, Chromium, Brave, Edge or Vivaldi.";
 
 /// A 24px stroke icon like the ones of Desktop's icon set.
 fn stroke(paths: &str) -> svg::Handle {
@@ -81,6 +85,12 @@ static EYE_OFF: LazyLock<svg::Handle> = LazyLock::new(|| {
     ))
 });
 static CLEAR_FIELD: LazyLock<svg::Handle> = LazyLock::new(|| stroke(r#"<path d="M18 6 6 18M6 6l12 12"/>"#));
+/// Desktop's `ExternalLinkIcon` of the "Open %s Login" button.
+static EXTERNAL: LazyLock<svg::Handle> = LazyLock::new(|| {
+    let path = r#"<path d="M1 7L7 1M7 1V5.5M7 1H2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#;
+    let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" fill="none">{path}</svg>"#);
+    svg::Handle::from_memory(svg.into_bytes())
+});
 /// Desktop's `og`: a domain name.
 static DOMAIN: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?i)^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$")
@@ -122,6 +132,17 @@ pub struct AddAccount {
     status: Option<String>,
     /// Desktop's `remoteState`: the status hides the login (`disabled`), or hides it until Continue (`confirm`).
     remote: Remote,
+    /// The browser window of a `cookies` step.
+    browser: Browser,
+}
+
+/// The browser window of a `cookies` step.
+#[derive(Clone, PartialEq)]
+enum Browser {
+    Closed,
+    Open,
+    /// No browser could open, for this reason.
+    Failed(String),
 }
 
 /// Desktop's `remoteState` of the Add Account window.
@@ -158,6 +179,10 @@ pub enum AddMsg {
     /// A key or typed text in the window, for an open dropdown of a phone field.
     Key(iced::keyboard::Key),
     Text(String),
+    /// Desktop's "Open %s Login" of a `cookies` step.
+    OpenBrowser,
+    /// The fields that the browser window read when it closed.
+    Browser(u32, Result<Outcome, String>),
 }
 
 /// Desktop's `di`: the validation error of a field value.
@@ -195,6 +220,22 @@ fn invalid(f: &Field, v: &str) -> Option<String> {
     // Desktop ignores a pattern that does not compile.
     let pattern = regex::Regex::new(&f.pattern).ok().filter(|_| !f.pattern.is_empty());
     pattern.filter(|p| !p.is_match(v)).map(|_| tr("Invalid format").into())
+}
+
+/// Desktop's `AuthButton` with its `ExternalLinkIcon`: a 250 px blue pill whose filter brightens it on hover and
+/// press.
+fn auth_button<'a>(label: String, msg: UiMessage) -> El<'a> {
+    let blue = crate::hex(0x0d4ffb);
+    let lit = |k: f32| Color { r: (blue.r * k).min(1.0), g: (blue.g * k).min(1.0), b: (blue.b * k).min(1.0), a: 1.0 };
+    let icon = svg(EXTERNAL.clone()).width(10).height(10).style(|_, _| svg::Style { color: Some(Color::WHITE) });
+    // `gap: 1ch` of 14 px text.
+    let label = row![med(label, 14.0), icon].spacing(7).align_y(Center);
+    let button = button(container(label).center_x(Fill))
+        .width(Fill)
+        .padding([10, 12])
+        .style(btn_style([blue, lit(1.025), lit(1.085)], [Color::WHITE; 3], 999.0))
+        .on_press(msg);
+    container(button).max_width(250).into()
 }
 
 /// The icons in Desktop's WeChat and Viber steps: its `add` and `scan` glyphs, and its `Dots` and `QrCode` icons.
@@ -298,6 +339,7 @@ impl BeeperGuiApp {
             android: false,
             status: None,
             remote: Remote::Open,
+            browser: Browser::Closed,
         });
         let p = self.add_provision(self.add_accounts.len() - 1);
         let status = beeper_core::cloud::platform_status(self.cloud.app_api.clone(), p.access_token.clone());
@@ -326,8 +368,8 @@ impl BeeperGuiApp {
             .map(|process| Task::perform(bridge_login::cancel(p.clone(), process), |_| UiMessage::Noop));
         let a = &mut self.add_accounts[i];
         a.run += 1;
-        (a.flow, a.step, a.error, a.failed, a.busy, a.menu, a.qr, a.emoji) =
-            (flow.clone(), None, None, None, true, false, None, None);
+        (a.flow, a.step, a.error, a.failed, a.busy, a.menu, a.qr, a.emoji, a.browser) =
+            (flow.clone(), None, None, None, true, false, None, None, Browser::Closed);
         let (id, run) = (a.id, a.run);
         let start =
             Task::perform(bridge_login::start(p, flow), move |r| UiMessage::AddAccount(id, AddMsg::Started(run, r)));
@@ -371,6 +413,10 @@ impl BeeperGuiApp {
         a.emoji = None;
         let process = a.process.clone().expect("a running login process");
         a.step = Some(step.clone());
+        // Desktop's `BrowserCookieLogin` clicks its one "Open %s Login" button at once.
+        if step.kind == "cookies" {
+            return self.open_browser(i);
+        }
         let Some(d) = display else { return Task::none() };
         let wait = Task::perform(bridge_login::submit(p, process, step, serde_json::Value::Null), move |r| {
             UiMessage::AddAccount(id, AddMsg::Next(run, r))
@@ -381,6 +427,24 @@ impl BeeperGuiApp {
             })
         });
         Task::batch([wait].into_iter().chain(emoji))
+    }
+
+    /// Desktop's `launchBrowserWindow` for the `cookies` step: the browser window of the login page, which reads
+    /// the fields of the step.
+    fn open_browser(&mut self, i: usize) -> Task<UiMessage> {
+        let find = self.find_browser;
+        let a = &mut self.add_accounts[i];
+        let cookies = a.step.as_ref().and_then(|s| s.cookies.as_ref()).expect("a cookies step");
+        let login = BrowserLogin::new(cookies, a.network.bridge_id, &a.flow);
+        let Some(browser) = find() else {
+            a.browser = Browser::Failed(NO_BROWSER.replace("%s", a.network.display_name));
+            return Task::none();
+        };
+        a.browser = Browser::Open;
+        let (id, run) = (a.id, a.run);
+        Task::perform(browser_login::log_in(browser, login), move |r| {
+            UiMessage::AddAccount(id, AddMsg::Browser(run, r))
+        })
     }
 
     pub fn update_add_account(&mut self, id: window::Id, msg: AddMsg) -> Task<UiMessage> {
@@ -405,7 +469,7 @@ impl BeeperGuiApp {
         let a = &mut self.add_accounts[i];
         match msg {
             AddMsg::Flows(Ok(_)) => unreachable!("handled above"),
-            AddMsg::Started(r, _) | AddMsg::Next(r, _) | AddMsg::Emoji(r, _) if r != run => {}
+            AddMsg::Started(r, _) | AddMsg::Next(r, _) | AddMsg::Emoji(r, _) | AddMsg::Browser(r, _) if r != run => {}
             AddMsg::Flows(Err(e)) | AddMsg::Started(_, Err(e)) => (a.failed, a.busy) = (Some(e), false),
             AddMsg::Started(_, Ok((process, step))) => {
                 a.process = Some(process);
@@ -480,6 +544,20 @@ impl BeeperGuiApp {
                 a.status = s["message"].as_str().map(str::to_string);
             }
             AddMsg::Continue => a.remote = Remote::Open,
+            AddMsg::OpenBrowser => return self.open_browser(i),
+            AddMsg::Browser(_, Err(e)) => a.browser = Browser::Failed(e),
+            // Desktop's `didFinish`: a window that the user closed first offers the button again.
+            AddMsg::Browser(_, Ok(o)) if !o.finished => a.browser = Browser::Closed,
+            // Desktop's `handleSubmitCookies` throws without fields, which its `login` shows as an unknown error.
+            AddMsg::Browser(_, Ok(o)) if o.fields.is_empty() => {
+                (a.browser, a.failed) = (Browser::Closed, Some("An unknown error occurred".into()));
+            }
+            AddMsg::Browser(_, Ok(o)) => {
+                (a.browser, a.busy) = (Browser::Closed, true);
+                let step = a.step.clone().expect("a cookies step");
+                let process = a.process.clone().expect("a running login process");
+                return Task::perform(bridge_login::submit(p, process, step, o.fields.into()), next);
+            }
             AddMsg::Copy(code) => return iced::clipboard::write(code),
             AddMsg::Close => return window::close(id),
         }
@@ -698,7 +776,7 @@ impl BeeperGuiApp {
             ("gmessages", _) => (
                 line(tr("Open Messages by Google on your Android phone").into()).into(),
                 ["Open the side menu", "Click \"Device pairing\""],
-                vec![line(s.instructions.clone()).into()],
+                vec![line(bridge_text("instructions", &s.step_id, &s.instructions)).into()],
             ),
             _ => return None,
         };
@@ -720,8 +798,9 @@ impl BeeperGuiApp {
                 .into()
         };
         let para = |s: String| -> El<'a> { txt(s, 14.0).color(p.strong).center().width(Fill).into() };
-        let error_line = |e: &'a str| -> El<'a> {
-            row![svg(ERROR_CIRCLE.clone()).width(16).height(16), txt(e, 13.0).color(p.danger)]
+        // Desktop's `Za(error, "error")`: the bridge's error in the app language.
+        let error_line = |e: &str| -> El<'a> {
+            row![svg(ERROR_CIRCLE.clone()).width(16).height(16), txt(bridge_error(e), 13.0).color(p.danger)]
                 .spacing(4)
                 .align_y(Center)
                 .into()
@@ -750,7 +829,10 @@ impl BeeperGuiApp {
         };
         // Desktop's `auths` steps take the place of the bridge's instructions when it has them.
         let instructions = |s: &'a Step| {
-            (!s.instructions.is_empty()).then(|| self.login_steps(a, s).unwrap_or_else(|| para(s.instructions.clone())))
+            (!s.instructions.is_empty()).then(|| {
+                let text = bridge_text("instructions", &s.step_id, &s.instructions);
+                self.login_steps(a, s).unwrap_or_else(|| para(text))
+            })
         };
         let loading = || para(tr("Loading...").into());
         let body: El<'a> = match (&a.failed, &a.step) {
@@ -778,11 +860,28 @@ impl BeeperGuiApp {
                     col.spacing(16).align_x(Center).into()
                 }
                 "user_input" => column![self.view_add_form(a, s)].push(self.password_help(a, s)).spacing(16).into(),
+                // Desktop's `BrowserLoginOption`, whose text shows the state of the browser window.
                 "cookies" => {
-                    let text =
-                        trf("Click the button below to open the browser and begin authentication with %s.", &[&name]);
-                    // beeper-rs cannot embed Desktop's isolated browser window that reads the cookies.
-                    column![para(text), primary(trf("Open %s Login", &[&name]), None)].spacing(16).into()
+                    let hidden = s.cookies.as_ref().is_some_and(|c| c.hidden);
+                    let window = trx("window", "browser login UI container");
+                    match &a.browser {
+                        Browser::Open if !hidden && !a.busy => {
+                            para(trf("Continue login in the browser %s", &[&window]))
+                        }
+                        Browser::Open | Browser::Closed if hidden || a.busy => para(tr("Authenticating...").into()),
+                        browser => {
+                            let text = trf(
+                                "Click the button below to open the browser and begin authentication with %s.",
+                                &[&name],
+                            );
+                            let error = match browser {
+                                Browser::Failed(e) => Some(error_line(e)),
+                                _ => None,
+                            };
+                            let open = auth_button(trf("Open %s Login", &[&name]), go(AddMsg::OpenBrowser));
+                            column![para(text), open].push(error).spacing(16).align_x(Center).into()
+                        }
+                    }
                 }
                 _ => {
                     let done = primary(tr("Done").into(), Some(AddMsg::Close));
@@ -851,7 +950,10 @@ impl BeeperGuiApp {
             let items = options.into_iter().map(|f| {
                 let key = format!("{}/{}", a.bridge, f.id);
                 let label = FLOW_LABELS.iter().find(|l| l.0 == key).map(|l| tr(l.1).to_string());
-                let label = label.unwrap_or_else(|| if f.name.is_empty() { f.id.clone() } else { f.name.clone() });
+                let label = label.unwrap_or_else(|| match f.name.is_empty() {
+                    true => f.id.clone(),
+                    false => bridge_text("flowName", &key, &f.name),
+                });
                 menu_item(p, None, label, "", (!a.busy).then(|| go(AddMsg::Flow(f.id.clone()))))
             });
             let list = container(Column::with_children(items).padding([4, 0])).width(200);
@@ -870,6 +972,10 @@ impl BeeperGuiApp {
         let fields = &s.user_input.as_ref().expect("a form step").fields;
         let rows = fields.iter().map(|f| -> El<'a> {
             let value = a.values[&f.id].as_str();
+            // Desktop's `rs(ci(stepId, field.id), …)`: the field's texts in the app language.
+            let key = format!("{}/{}", s.step_id, f.id);
+            let name = bridge_text("fieldLabel", &key, &f.name);
+            let description = bridge_text("fieldDescription", &key, &f.description);
             let secret = matches!(f.kind.as_str(), "password" | "token");
             let shown = a.shown.contains(&f.id);
             let id = f.id.clone();
@@ -878,7 +984,7 @@ impl BeeperGuiApp {
                     pick_list(f.options.as_slice(), Some(value.to_string()).filter(|v| !v.is_empty()), move |v| {
                         go(AddMsg::Field(id.clone(), v))
                     })
-                    .placeholder(trf("Select %s...", &[&f.name]))
+                    .placeholder(trf("Select %s...", &[&name]))
                     .width(Fill)
                     .into()
                 }
@@ -888,7 +994,7 @@ impl BeeperGuiApp {
                     self.view_phone(field, ids, tr("Enter phone number"), phone, go(AddMsg::Submit))
                 }
                 _ => {
-                    let hint = if secret { "••••••••".into() } else { f.name.clone() };
+                    let hint = if secret { "••••••••".into() } else { name.clone() };
                     let input = text_input(&hint, value)
                         .on_input(move |v| go(AddMsg::Field(id.clone(), v)))
                         .on_submit(go(AddMsg::Submit))
@@ -911,12 +1017,9 @@ impl BeeperGuiApp {
                 }
             };
             let error = a.touched.contains(&f.id).then(|| invalid(f, value)).flatten();
-            column![semi(f.name.as_str(), 13.0).color(p.strong), control]
+            column![semi(name, 13.0).color(p.strong), control]
                 .push(error.map(|e| txt(e, 12.0).color(p.text_danger)))
-                .push(
-                    (!f.description.is_empty())
-                        .then(|| txt(f.description.as_str(), 12.0).color(p.strong.scale_alpha(0.7))),
-                )
+                .push((!description.is_empty()).then(|| txt(description, 12.0).color(p.strong.scale_alpha(0.7))))
                 .spacing(4)
                 .into()
         });
@@ -932,12 +1035,13 @@ impl BeeperGuiApp {
                 .style(btn_style([CLEAR; 3], [p.accent, p.accent, p.sub], 6.0))
                 .on_press_maybe((!a.busy).then(|| go(AddMsg::Back)))
         });
-        let intro = (!s.instructions.is_empty())
-            .then(|| txt(s.instructions.as_str(), 14.0).color(p.strong).center().width(Fill));
+        let intro = (!s.instructions.is_empty()).then(|| {
+            txt(bridge_text("instructions", &s.step_id, &s.instructions), 14.0).color(p.strong).center().width(Fill)
+        });
         let start_over = a.error.as_deref().map(|e| {
             column![
                 txt(tr("Something went wrong and we couldn't add your account."), 13.0).color(p.strong),
-                txt(e, 13.0).color(p.danger),
+                txt(bridge_error(e), 13.0).color(p.danger),
                 button(med(tr("Start Over"), 13.0)).on_press_maybe((!a.busy).then(|| go(AddMsg::StartOver))),
             ]
             .spacing(8)
@@ -1256,15 +1360,36 @@ mod tests {
         assert_eq!(app.add_accounts[0].login, "15550100", "the window logs the account in again");
     }
 
-    /// The X cookie step of the stub: beeper-rs cannot open Desktop's browser window that reads the cookies.
+    /// The X cookie step of the stub: the browser window opens at once, and a machine without a browser says which
+    /// browsers log in. A window that the user closes offers the button again, and the fields of a finished login go
+    /// to the bridge.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_cookie_login_shows_the_browser_step() {
-        let (mut app, _) = stub_app("twitter").await;
+    async fn a_cookie_login_sends_the_fields_of_the_browser_window() {
+        let (mut app, bridges) = stub_app("twitter").await;
         settle(&mut app, UiMessage::OpenAddAccount("twitter".into(), None)).await;
         let id = app.add_accounts[0].id;
         assert!(shows(&app, id, "Click the button below to open the browser and begin authentication with X."));
-        assert!(shows(&app, id, "Open X Login"));
+        assert!(shows(&app, id, "To log in to X, install Chrome, Chromium, Brave, Edge or Vivaldi."));
         assert_eq!(app.add_accounts[0].other_flows().count(), 0, "X has one flow, so no Login options");
+        app.find_browser = || Some("/nonexistent/chromium".into());
+        let open = click(&app, id, "Open X Login");
+        drop(app.update(open));
+        assert!(shows(&app, id, "Continue login in the browser window"));
+        let attempt = app.add_accounts[0].run;
+        let closed = Outcome { finished: false, last_url: "https://x.com/i/flow/login".into(), ..Outcome::default() };
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Browser(attempt, Ok(closed)))).await;
+        assert!(shows(&app, id, "Open X Login") && !shows(&app, id, "Continue login in the browser window"));
+        let fields = serde_json::json!({ "ct0": "a", "auth_token": "b" }).as_object().cloned().unwrap();
+        let done = Outcome { finished: true, last_url: "https://x.com/home".into(), fields };
+        let submit = app.update(UiMessage::AddAccount(id, AddMsg::Browser(attempt, Ok(done))));
+        assert!(shows(&app, id, "Authenticating..."));
+        for m in run(submit).await {
+            settle(&mut app, m).await;
+        }
+        assert_eq!(app.toast.as_ref().map(|t| t.text.as_str()), Some("Connected to X"));
+        let process =
+            bridges.requests().into_iter().find(|r| r.ends_with("/fi.mau.twitter.login.enter_cookies/cookies"));
+        assert!(process.is_some(), "the fields went to the cookie step");
     }
 
     /// Desktop's `PlatformRemoteStatus` with the stub's `/platform-status`: the message of the platform under the

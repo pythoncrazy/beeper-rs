@@ -151,7 +151,7 @@ fn contact_name(file: &str) -> String {
 }
 
 /// A surface of Desktop's header card: its fill, its radius, an outline, and a black shadow `(y, blur, alpha byte)`.
-fn raised(
+pub(crate) fn raised(
     bg: Color,
     radius: f32,
     outline: Option<Color>,
@@ -1369,6 +1369,7 @@ impl BeeperGuiApp {
         // Desktop's `thread-header-status`: the activity of the other person of a 1:1 chat under the name.
         let typing = st.typing.get(cid).filter(|ids| chat.chat_type == "single" && ids.len() == 1);
         let status = typing.map(|_| txt("typing", 10.0).color(p.sub));
+        let status_line = status.is_some();
         let info = container(column![name_row].push(status).spacing(2).align_x(Center))
             .padding(Padding { top: 6.0, right: 6.0, bottom: 6.0, left: 10.0 })
             .style(raised(p.elevated, 14.0, Some(p.strong.scale_alpha(0.025)), (4.0, 10.0, 0x16)));
@@ -1448,8 +1449,19 @@ impl BeeperGuiApp {
             .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.into())));
         // An iced `Stack` takes the size of its first layer, so a spacer as tall as the card goes first.
         let header = stack![Space::new().width(Fill).height(84.0), bar, header];
+        // Desktop's request has no thread header, with its feedback button, only the Chat Info toggle (`Nmt`) 8 px
+        // from the top right corner.
+        // Desktop's thread header (`ij`) is gone while chats are selected (`threadSelectionMode`).
+        let selecting = self.drawing.get().is_none() && (self.select_mode || !self.selection.is_empty());
+        let headed = in_chat && !selecting && chat.is_request != Some(true);
+        // Desktop's `MergeSuggestionBanner` follows the header card 16 px under it, and the members follow it.
+        let banner = self.view_merge_banner(&st, chat).filter(|_| headed);
+        let card_h = 8.0 + 36.0 + 28.0 + if status_line { 2.0 + 13.0 } else { 0.0 };
+        let below = if banner.is_some() { 16.0 + crate::merge_suggest::BANNER_H } else { 0.0 };
+        let banner = banner.map(|b| container(b).center_x(Fill).padding(Padding::ZERO.top(card_h + 16.0 - 11.0)));
         let members = self.header_hover.0.then(|| self.header_members(chat)).flatten();
-        let members = members.filter(|_| in_chat).map(|m| container(m).center_x(Fill).padding(Padding::ZERO.top(84.0)));
+        let members =
+            members.filter(|_| in_chat).map(|m| container(m).center_x(Fill).padding(Padding::ZERO.top(84.0 + below)));
         // Desktop's `sticky-date-container`: while the timeline scrolls, the date of the day at its top floats under the
         // header.
         let sticky = self
@@ -1459,10 +1471,6 @@ impl BeeperGuiApp {
             .filter(|_| in_chat)
             .and_then(|i| msgs.get(i))
             .map(|m| self.day_pill(&m.timestamp).padding(Padding::ZERO.top(80.0).left(GUTTER)));
-        // Desktop's request has no thread header, with its feedback button, only the Chat Info toggle (`Nmt`) 8 px
-        // from the top right corner.
-        // Desktop's thread header (`ij`) is gone while chats are selected (`threadSelectionMode`).
-        let selecting = self.drawing.get().is_none() && (self.select_mode || !self.selection.is_empty());
         let overlay = match in_chat {
             true if selecting => stack![fade],
             true if chat.is_request == Some(true) => stack![fade, self.view_info_toggle(&st)],
@@ -1506,6 +1514,12 @@ impl BeeperGuiApp {
             });
             disabled(switcher, lead, unblock, "", UiMessage::Blocking(blocking::Msg::Ask(target.id.clone(), false)))
         });
+        // Desktop's `TargetSwitcherNudge` comes with the text composer and its switcher.
+        let texting = upgraded.is_none() && blocked.is_none() && !chat.exited() && unavailable(&st, chat).is_none();
+        let nudge = self
+            .view_switcher_nudge(&st)
+            .filter(|_| texting && in_chat && self.pane().thread_root.is_none() && self.drawing.get().is_none())
+            .filter(|_| self.recorder.is_none() && self.talk.is_none());
         // Desktop's `ThreadComposer` draws nothing once the user left the chat or was removed from it.
         let composer = match upgraded.or(blocked) {
             _ if chat.exited() => None,
@@ -1515,6 +1529,7 @@ impl BeeperGuiApp {
         let jump = self.view_scroll_to_bottom(&st, chat);
         let pane = column![stack![list, overlay]
             .push(sticky)
+            .push(banner)
             .push(members)
             .push(jump)
             .push(replies)
@@ -1546,7 +1561,8 @@ impl BeeperGuiApp {
         });
         let wallpaper =
             wallpaper.map(|paint| iced::widget::responsive(move |size| chat_theme::fill(paint.clone(), size, 10.0)));
-        let pane = stack![].push(wallpaper).push(pane).push(picker).push(self.view_suggestions(&st)).push(dropping);
+        let pane = stack![].push(wallpaper).push(pane).push(nudge).push(picker).push(self.view_suggestions(&st));
+        let pane = pane.push(dropping);
         container(pane).width(Fill).height(Fill).clip(true).style(pane_card(p.card)).into()
     }
 

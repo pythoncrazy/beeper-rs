@@ -194,7 +194,13 @@ impl BeeperGuiApp {
 
 /// Desktop's `Button` in its `md` size with `rounded`: the `primary` fill or the `secondary` tint, disabled at half
 /// opacity, and a spinner over the hidden label while `loading`.
-fn main_button<'a>(p: &Palette, label: &'a str, primary: bool, msg: Option<UiMessage>, loading: bool) -> El<'a> {
+pub(crate) fn main_button<'a>(
+    p: &Palette,
+    label: &'a str,
+    primary: bool,
+    msg: Option<UiMessage>,
+    loading: bool,
+) -> El<'a> {
     let (bg, fg) = if primary { (p.main, Color::WHITE) } else { (p.main_muted, p.main_text) };
     let alpha = if msg.is_some() { 1.0 } else { 0.5 };
     let label = txt(label, 13.0).line_height(1.0).color(if loading { CLEAR } else { fg.scale_alpha(alpha) });
