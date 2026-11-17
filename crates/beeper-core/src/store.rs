@@ -1279,6 +1279,27 @@ impl BeeperStore {
         name.filter(|n| !n.is_empty())
     }
 
+    /// The bridge login of a chat account, for the bridge provisioning API. An account without a bridge login is
+    /// `<bridge>.<login>`.
+    pub fn provision(&self, account_id: &str) -> crate::matrix::Provision {
+        let found = self.bridge_accounts.iter().find(|a| a.account_id == account_id);
+        let (bridge_id, login_id) = found.map_or_else(
+            || {
+                let (b, l) = account_id.split_once('.').unwrap_or((account_id, ""));
+                (b.to_string(), l.to_string())
+            },
+            |a| (a.bridge_id.clone(), a.login_id.clone()),
+        );
+        let s = &self.beeper_state;
+        crate::matrix::Provision {
+            homeserver: s.homeserver.clone(),
+            access_token: s.access_token.clone(),
+            user_id: s.user_id.clone(),
+            bridge_id,
+            login_id,
+        }
+    }
+
     pub fn set_contacts(&mut self, contacts: Vec<User>) {
         self.contacts = contacts;
         self.persist_state_to_sqlite();

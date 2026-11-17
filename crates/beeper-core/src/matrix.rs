@@ -3089,6 +3089,78 @@ pub async fn create_group(p: Provision, kind: String, name: String, users: Vec<S
     v["mxid"].as_str().map(str::to_string).ok_or_else(|| "the bridge sent no mxid".into())
 }
 
+/// The user of a bridge `resolve_identifier` or `search_users` result, by its Matrix ID.
+pub fn bridge_user(v: &Value) -> User {
+    let ids: Vec<&str> = v["identifiers"].as_array().into_iter().flatten().filter_map(|i| i.as_str()).collect();
+    let find = |scheme: &str| ids.iter().find_map(|i| i.strip_prefix(scheme)).map(str::to_string);
+    User {
+        id: v["mxid"].as_str().or(v["id"].as_str()).unwrap_or_default().into(),
+        full_name: v["name"].as_str().map(Into::into),
+        img_url: v["avatar_url"].as_str().map(Into::into),
+        phone_number: find("tel:"),
+        email: find("mailto:"),
+        ..Default::default()
+    }
+}
+
+/// The bridge that does the `PlatformAPI` work of a chat account: the SDK's `matrix` pseudo-bridge for the Matrix
+/// account (Desktop's `isMatrixChat`), whose work the Matrix client of the store does, or the cloud bridge of the
+/// account's login.
+#[derive(Clone)]
+pub enum ChatBridge {
+    Matrix(SharedStore),
+    Cloud(Provision),
+}
+
+impl ChatBridge {
+    pub fn of(store: &SharedStore, account_id: &str) -> Self {
+        match account_id {
+            "hungryserv" => ChatBridge::Matrix(store.clone()),
+            _ => ChatBridge::Cloud(store.read().provision(account_id)),
+        }
+    }
+
+    /// The provisioning capabilities: [`matrix_capabilities`] for the Matrix account.
+    pub async fn capabilities(self) -> Result<Value, String> {
+        match self {
+            ChatBridge::Matrix(_) => Ok(matrix_capabilities()),
+            ChatBridge::Cloud(p) => capabilities(p).await,
+        }
+    }
+
+    /// The users that match a name: the homeserver's user directory, or the bridge's `search_users`.
+    pub async fn search_users(self, query: String) -> Result<Vec<User>, String> {
+        match self {
+            ChatBridge::Matrix(store) => search_matrix_users(store, query).await,
+            ChatBridge::Cloud(p) => Ok(search_users(p, query).await?.iter().map(bridge_user).collect()),
+        }
+    }
+
+    /// The user of a phone number, email, username or user ID, as a bridge reply.
+    pub async fn resolve_identifier(self, identifier: String) -> Result<Option<Value>, String> {
+        match self {
+            ChatBridge::Matrix(store) => resolve_matrix_user(store, identifier).await,
+            ChatBridge::Cloud(p) => resolve_identifier(p, identifier).await,
+        }
+    }
+
+    /// The room of a direct chat with `identifier`.
+    pub async fn create_dm(self, identifier: String) -> Result<String, String> {
+        match self {
+            ChatBridge::Matrix(store) => create_matrix_dm(store, identifier).await,
+            ChatBridge::Cloud(p) => create_dm(p, identifier).await,
+        }
+    }
+
+    /// The room of a new group of `kind` with the users, named when `name` is not empty.
+    pub async fn create_group(self, kind: String, name: String, users: Vec<String>) -> Result<String, String> {
+        match self {
+            ChatBridge::Matrix(store) => create_matrix_group(store, kind, name, users).await,
+            ChatBridge::Cloud(p) => create_group(p, kind, name, users).await,
+        }
+    }
+}
+
 /// Desktop SDK's `GetProvisioningCapabilities` of its `matrix` pseudo-bridge, which Desktop's
 /// `loadProvisioningCapabilities` gives the Matrix account: direct chats with Matrix IDs, the user directory, and
 /// private and public rooms of up to 100 people.

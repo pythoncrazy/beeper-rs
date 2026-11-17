@@ -515,7 +515,9 @@ async fn routes_match_like_express() {
         }
     }
     let count = doc["paths"].as_object().unwrap().values().map(|m| m.as_object().unwrap().len()).sum::<usize>();
-    assert_eq!(count, 67);
+    assert_eq!(count, 78, "the 67 operations of the routes and the 11 of the Matrix proxy");
+    let tags: Vec<&str> = doc["tags"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(tags[tags.len() - 2..], ["Matrix", "OAuth"]);
 }
 
 #[tokio::test]
@@ -680,6 +682,78 @@ async fn contacts_and_focus_follow_desktop() {
     assert_eq!(status, "200", "a message without a chat only focuses the app");
     let (_, chat) = call("GET", "/v1/chats/!tg_rust:beeper.com".into(), "").await;
     assert_eq!(chat["isReadOnly"], false);
+}
+
+/// Desktop's `createChat` and `startChat` answer the chat like `getChat`, with `chatID` and, from `startChat`,
+/// `status`. `startChat` finds a direct chat again by any identifier of the person, `createChat` with
+/// `mode: "start"` is `startChat`, and both check their input like Desktop's zod schemas.
+#[tokio::test]
+async fn chats_are_created_and_started_like_desktop() {
+    use serde_json::{json, Value};
+    let (port, token) = server("create-chat").await;
+    let post = |target: &str, body: Value| {
+        let (token, target) = (token.clone(), target.to_string());
+        async move { call(port, &token, "POST", &target, &body.to_string()).await }
+    };
+    let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+
+    let (status, dm) = post(
+        "/v1/chats",
+        json!({ "accountID": "acc_whatsapp", "type": "single", "participantIDs": ["@pat:x"], "title": "Ignored" }),
+    )
+    .await;
+    assert_eq!((status, &dm["chatID"], &dm["title"], &dm["type"]), (200, &dm["id"], &json!("pat"), &json!("single")));
+    assert_eq!(keys(&dm).last().unwrap(), "chatID", "{dm}");
+    let (_, shown) = call(port, &token, "GET", &format!("/v1/chats/{}", dm["id"].as_str().unwrap()), "").await;
+    let mut like_get = shown.clone();
+    like_get["chatID"] = dm["id"].clone();
+    assert_eq!(dm, like_get, "the chat of getChat, then chatID");
+    let (_, group) = post(
+        "/v1/chats",
+        json!({ "accountID": "acc_whatsapp", "type": "group", "participantIDs": ["@a:x", "@b:x"], "title": "Team" }),
+    )
+    .await;
+    assert_eq!((&group["title"], &group["type"], group.get("status")), (&json!("Team"), &json!("group"), None));
+
+    let start =
+        json!({ "accountID": "acc_whatsapp", "user": { "phoneNumber": "+1 (555) 010-0999", "fullName": "Pat" } });
+    let (status, started) = post("/v1/chats/start", start).await;
+    assert_eq!((status, &started["status"], &started["title"]), (200, &json!("created"), &json!("Pat")));
+    assert_eq!(keys(&started)[keys(&started).len() - 2..], ["chatID", "status"]);
+    let again = json!({ "accountID": "acc_whatsapp", "user": { "phoneNumber": "+15550100999" } });
+    let (_, found) = post("/v1/chats/start", again.clone()).await;
+    assert_eq!((&found["id"], &found["status"]), (&started["id"], &json!("existing")), "the same phone number");
+    let mut start_mode = again;
+    start_mode["mode"] = json!("start");
+    let (_, found) = post("/v1/chats", start_mode).await;
+    assert_eq!((&found["id"], &found["status"]), (&started["id"], &json!("existing")), "mode start");
+
+    let user_issue = |path: Value, message: &str| json!({ "code": "custom", "message": message, "path": path });
+    let required = |path: &str, kind: &str| json!({ "code": "invalid_type", "expected": kind, "received": "undefined", "path": [path], "message": "Required" });
+    let cases = [
+        (json!({}), json!([required("accountID", "string"), required("user", "object")])),
+        (
+            json!({ "accountID": "acc_whatsapp", "user": { "fullName": "Pat", "id": "" }, "allowInvite": "yes" }),
+            json!([
+                user_issue(json!(["user", "id"]), "At least one of id, username, phoneNumber, or email is required."),
+                zod::boolean("allowInvite", "string"),
+            ]),
+        ),
+        (
+            json!({ "accountID": "acc_whatsapp", "user": { "email": 7 } }),
+            json!([{ "code": "invalid_type", "expected": "string", "received": "number", "path": ["user", "email"],
+                "message": "Expected string, received number" }]),
+        ),
+    ];
+    for (body, issues) in cases {
+        let (status, refused) = post("/v1/chats/start", body.clone()).await;
+        assert_eq!((status, refused.to_string()), (400, invalid(issues)), "{body}");
+    }
+    for (query, issue) in [("", required("query", "string")), ("?query=", zod::small("query", 1, "string"))] {
+        let (status, refused) =
+            call(port, &token, "GET", &format!("/v1/accounts/acc_telegram/contacts{query}"), "").await;
+        assert_eq!((status, refused.to_string()), (400, invalid(json!([issue]))), "{query}");
+    }
 }
 
 #[tokio::test]
