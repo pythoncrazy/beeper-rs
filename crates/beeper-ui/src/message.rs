@@ -11,6 +11,7 @@ use crate::style::{
     bold, bordered_box, bordered_btn, btn_style, clamp, fill_box, fw, hex, ic, icon, med, mix, pane_card, pick,
     scroll_style, semi, shadow_box, stable_bar, txt, Bare, CLEAR, GUTTER,
 };
+use crate::threads;
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, clock, commands, copy_text, day_label, day_num, day_of,
     delete_dialog, ease_out, edit_open, editable, email, enter_key, feedback_btn, file_icon, fmt_phone,
@@ -415,7 +416,7 @@ impl BeeperGuiApp {
                 .then(|| vec![item(tr("Reply…").into(), "Ctrl R", Some(UiMessage::StartReply(mid.clone())))]),
             (self.pane().thread_root.is_none() && can_thread(&st, chat, m)).then(|| {
                 let label = tr("Reply in thread…").into();
-                vec![item(label, "Ctrl ↓", Some(UiMessage::ShowThread(mid.clone())))]
+                vec![item(label, "Ctrl ↓", Some(UiMessage::Thread(threads::Msg::Show(mid.clone()))))]
             }),
             (self.pane().thread_root.is_none()
                 && live
@@ -1681,7 +1682,8 @@ impl BeeperGuiApp {
                     ..Default::default()
                 };
                 let glyph = container(tinted(&VIEW_SIDEBAR, 20.0, muted)).center(32);
-                let b = button(glyph).padding(0).style(style).on_press(UiMessage::ShowThread(m.id.clone()));
+                let b =
+                    button(glyph).padding(0).style(style).on_press(UiMessage::Thread(threads::Msg::Show(m.id.clone())));
                 self.tip(b.into(), tr("Reply in thread"), vec![], tooltip::Position::Top).into()
             });
             let react = (chat.messages.react && m.reactable()).then(|| {

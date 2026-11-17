@@ -67,7 +67,7 @@ mod tray {
     }
 }
 pub mod style;
-mod threads;
+pub mod threads;
 mod user_card;
 mod verify;
 mod video;
@@ -354,36 +354,10 @@ pub enum UiMessage {
     SwitchCard,
     /// Desktop's `composeSwitchTargets.onSelect`: the chat of the person on another account.
     SwitchChat(String),
-    /// Desktop's `showThreadedReplies`: opens the thread pane of a message, or of the thread of a reply.
-    ShowThread(String),
-    /// Desktop's `hideThreadedReplies`.
-    HideThread,
+    /// Desktop's threaded replies.
+    Thread(threads::Msg),
     /// A message of the thread pane, which the thread pane handles.
     InThread(Box<UiMessage>),
-    /// Desktop's `setBroadcastOutsideThread`: "Also send to chat".
-    SetBroadcast(bool),
-    /// The thread pane edge follows the pointer from a press, to the point, until the release (`None`).
-    ThreadDrag(Option<Point>),
-    /// Desktop's double click on the thread pane edge: the default width.
-    ResetThreadWidth,
-    /// Desktop's "More Options" of the thread pane.
-    ThreadMenu,
-    /// Desktop's `markReplyThreadReadThrough` of the thread pane.
-    MarkThreadRead,
-    /// Desktop's `showUnreadThreads`: the Unread threads view in place of the chat.
-    ShowUnreadThreads,
-    /// Desktop's unread thread card: the thread pane of the root of the chat.
-    OpenThread(String, String),
-    /// The menu of the "Unread threads" pill, or `None` to close it.
-    UnreadThreadsMenu(bool),
-    /// Desktop's `markAllUnreadThreadsAsRead`.
-    MarkAllThreadsRead,
-    /// Desktop's `setThreadFollowing` of the chat, the root and the follow.
-    FollowThread(String, String, bool),
-    /// Desktop's `setFollowAllThreads` of the chat.
-    FollowAllThreads(String, bool),
-    /// Desktop's "Open in New Window" of a thread: the window "Thread in %s" of the chat and the root.
-    OpenThreadWindow(String, String),
     ToggleFlag(String, ChatFlag),
     ToggleRead(String),
     MarkRead(String),
@@ -4443,7 +4417,8 @@ impl BeeperGuiApp {
                 self.pane.selected_msgs.iter().find_map(|id| {
                     let m = st.message(id);
                     let replied = || msgs.iter().any(|r| r.id != m.id && reply_root(&st, r) == m.id);
-                    let thread = || can_thread(&st, chat, m).then(|| UiMessage::ShowThread(m.id.clone()));
+                    let thread =
+                        || can_thread(&st, chat, m).then(|| UiMessage::Thread(threads::Msg::Show(m.id.clone())));
                     let chain = || replied().then(|| UiMessage::ShowReplies(m.id.clone()));
                     m.linked_message_id.clone().map(UiMessage::ShowReplies).or_else(thread).or_else(chain)
                 })
@@ -4844,23 +4819,10 @@ impl BeeperGuiApp {
             UiMessage::ChatSub(sub) => self.chat_sub = sub,
             UiMessage::Scheduled(msg) => return self.scheduled(msg),
             UiMessage::ShowReplies(id) => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), Some(id)),
-            UiMessage::ShowThread(id) => self.show_thread(&id),
+            UiMessage::Thread(msg) => return self.threads(msg),
             UiMessage::SwitchCard => self.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
             UiMessage::SwitchChat(id) => self.switch_chat(id),
-            UiMessage::HideThread => (self.pane.thread, self.pane.thread_menu) = (None, None),
             UiMessage::InThread(msg) => return self.in_thread(*msg),
-            UiMessage::SetBroadcast(on) => self.pane.broadcast = on,
-            UiMessage::ThreadDrag(at) => self.drag_thread(at),
-            UiMessage::ResetThreadWidth => self.thread_fraction = THREAD_FRACTION,
-            UiMessage::ThreadMenu => self.pane.thread_menu = Some(self.cursor.get()),
-            UiMessage::MarkThreadRead => self.mark_thread_read(),
-            UiMessage::ShowUnreadThreads => self.show_unread_threads(),
-            UiMessage::OpenThread(chat, root) => self.open_thread(chat, root),
-            UiMessage::UnreadThreadsMenu(open) => self.unread_menu = open.then(|| self.cursor.get()),
-            UiMessage::MarkAllThreadsRead => self.mark_all_threads_read(),
-            UiMessage::FollowThread(chat, root, on) => self.follow_thread(&chat, &root, on),
-            UiMessage::FollowAllThreads(chat, on) => self.follow_all_threads(&chat, on),
-            UiMessage::OpenThreadWindow(chat, root) => return self.open_thread_window(chat, root),
             UiMessage::HideReplies => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), None),
             UiMessage::TypingTick => {
                 let client = self.store.read().matrix.clone();
@@ -6961,8 +6923,10 @@ impl BeeperGuiApp {
         });
         let thread_drag = self.thread_drag.then(|| {
             iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::ThreadDrag(Some(position))),
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::ThreadDrag(None)),
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(UiMessage::Thread(threads::Msg::Drag(Some(position))))
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Thread(threads::Msg::Drag(None))),
                 _ => None,
             })
         });
@@ -8523,7 +8487,7 @@ impl BeeperGuiApp {
                     .push((n <= 1 && st.threaded(c)).then(|| {
                         let on = c.follows.follows_all(c.participants.total);
                         let label = tr(if on { "Stop Following All Threads" } else { "Follow All Threads" });
-                        item(label, "", Some(UiMessage::FollowAllThreads(c.id.clone(), !on)))
+                        item(label, "", Some(UiMessage::Thread(threads::Msg::FollowAll(c.id.clone(), !on))))
                     }))
                     .push(can_edit_group(c).then(|| {
                         let open = UiMessage::OpenEditGroup(c.id.clone());

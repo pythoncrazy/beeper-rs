@@ -77,14 +77,15 @@ fn main() {
     shot(&out, "main_voice", (1200.0, 800.0), &theme, app.view_main());
     app.select_chat("!sl_infra:beeper.com");
     shot(&out, "main_threads", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::ShowUnreadThreads);
+    let _ = app.update(UiMessage::Thread(beeper_ui::threads::Msg::ShowUnread));
     shot(&out, "main_unread_threads", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::OpenThread("!sl_infra:beeper.com".into(), "msg_1007".into()));
+    let _ =
+        app.update(UiMessage::Thread(beeper_ui::threads::Msg::Open("!sl_infra:beeper.com".into(), "msg_1007".into())));
     shot(&out, "main_unread_thread", (1200.0, 800.0), &theme, app.view_main());
     app.select_chat("!sl_infra:beeper.com");
-    let _ = app.update(UiMessage::ShowThread("msg_1007".into()));
+    let _ = app.update(UiMessage::Thread(beeper_ui::threads::Msg::Show("msg_1007".into())));
     shot(&out, "main_thread_pane", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::HideThread);
+    let _ = app.update(UiMessage::Thread(beeper_ui::threads::Msg::Hide));
     for tab in SettingsTab::ALL {
         let _ = app.update(UiMessage::OpenSettings(tab));
         shot(&out, &format!("settings_{tab:?}").to_lowercase(), (800.0, 740.0), &theme, app.view_settings());

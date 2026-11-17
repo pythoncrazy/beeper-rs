@@ -1051,7 +1051,7 @@ fn threads_like_desktop() {
     let edit = text_editor::Edit::Paste(Arc::new("done".into()));
     let _ = app.update(in_thread(UiMessage::ComposerEdit(text_editor::Action::Edit(edit))));
     assert!(simulator(app.view_main()).find("Also send to chat").is_ok(), "a draft shows the toggle in Slack");
-    let _ = app.update(in_thread(UiMessage::SetBroadcast(true)));
+    let _ = app.update(in_thread(UiMessage::Thread(threads::Msg::SetBroadcast(true))));
     let _ = app.update(in_thread(UiMessage::SubmitComposer));
     {
         let st = app.store.read();
@@ -1063,7 +1063,7 @@ fn threads_like_desktop() {
     }
     let thread = app.pane.thread.as_ref().unwrap();
     assert!(thread.composer.text().trim().is_empty() && !thread.broadcast, "a send clears the thread composer");
-    let _ = app.update(UiMessage::HideThread);
+    let _ = app.update(UiMessage::Thread(threads::Msg::Hide));
     assert!(app.pane.thread.is_none());
     let _ = app.update(UiMessage::OpenMessageMenu(root.into()));
     let mut sim = simulator(app.view_main());
@@ -1110,7 +1110,7 @@ fn thread_pane_keys_like_desktop() {
     let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
     app.select_chat(chat);
     let up = UiMessage::KeyPressed(Key::Named(Named::ArrowUp), Modifiers::empty());
-    let _ = app.update(UiMessage::ShowThread(root.into()));
+    let _ = app.update(UiMessage::Thread(threads::Msg::Show(root.into())));
     let _ = app.update(up.clone());
     let thread = |app: &BeeperGuiApp| app.pane.thread.as_ref().unwrap().selected_msgs.clone();
     assert_eq!((thread(&app), app.pane.selected_msgs.clone()), (vec!["msg_1011".to_string()], vec![]));
@@ -1125,7 +1125,7 @@ fn thread_pane_keys_like_desktop() {
     let _ = app.update(UiMessage::InThread(Box::new(UiMessage::JumpTo(chat.into(), root.into()))));
     assert_eq!(app.pane.composer.text(), draft, "the pane jumps in its thread and keeps the chat");
     assert_eq!(app.flash.as_ref().map(|f| f.0.as_str()), Some(root));
-    let _ = app.update(UiMessage::HideThread);
+    let _ = app.update(UiMessage::Thread(threads::Msg::Hide));
     let _ = app.update(UiMessage::JumpTo(chat.into(), "msg_1011".into()));
     assert_eq!(app.pane.thread.as_ref().and_then(|t| t.thread_root.as_deref()), Some(root), "the reply opens its pane");
     assert_eq!(app.flash.as_ref().map(|f| f.0.as_str()), Some("msg_1011"));
@@ -1139,10 +1139,10 @@ fn unread_threads_like_desktop() {
     let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
     let badge = app.badge_count();
     assert!(simulator(app.view_sidebar()).find("Unread threads").is_ok(), "the pill shows an unread thread");
-    let _ = app.update(UiMessage::UnreadThreadsMenu(true));
+    let _ = app.update(UiMessage::Thread(threads::Msg::UnreadMenu(true)));
     assert!(simulator(app.view_main()).find("Mark 1 Thread as Read").is_ok());
     let _ = app.update(UiMessage::CloseModals);
-    let _ = app.update(UiMessage::ShowUnreadThreads);
+    let _ = app.update(UiMessage::Thread(threads::Msg::ShowUnread));
     assert!(app.pane.selected_chat_id.is_none() && app.unread_view);
     {
         let mut sim = simulator(app.view_main());
@@ -1150,7 +1150,7 @@ fn unread_threads_like_desktop() {
             assert!(sim.find(t).is_ok(), "the view shows {t}");
         }
     }
-    let _ = app.update(UiMessage::OpenThread(chat.into(), root.into()));
+    let _ = app.update(UiMessage::Thread(threads::Msg::Open(chat.into(), root.into())));
     let thread = app.pane.thread.as_ref().expect("the card opens the thread pane");
     assert_eq!(thread.thread_divider.as_deref(), Some("0000000000001009"), "the divider stays at the old read mark");
     {
@@ -1197,7 +1197,7 @@ fn thread_follows_like_desktop() {
     let st = app.store.read();
     assert!(st.unread_threads(0..st.chats.len()).is_empty(), "an unfollowed thread is not unread");
     drop(st);
-    let _ = app.update(UiMessage::ShowThread(root.into()));
+    let _ = app.update(UiMessage::Thread(threads::Msg::Show(root.into())));
     let edit = text_editor::Edit::Paste(Arc::new("back".into()));
     let _ = app.update(UiMessage::InThread(Box::new(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)))));
     let _ = app.update(UiMessage::InThread(Box::new(UiMessage::SubmitComposer)));
@@ -1209,7 +1209,7 @@ fn thread_follows_like_desktop() {
         let _ = app.update(m);
     }
     assert_eq!(follows(&app).follow_all, Some(false));
-    let _ = app.update(UiMessage::OpenThreadWindow(chat.into(), root.into()));
+    let _ = app.update(UiMessage::Thread(threads::Msg::OpenWindow(chat.into(), root.into())));
     let id = app.chat_windows.last().expect("a thread window").0;
     assert_eq!(app.title(id), "Thread in #desktop-release");
     let _ = app.update(UiMessage::InWindow(id, Box::new(UiMessage::CloseModals)));

@@ -9,6 +9,7 @@ use crate::rail;
 use crate::reminders;
 use crate::scheduled;
 use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
+use crate::threads;
 use crate::{
     has_flag, network_name, shown, BeeperGuiApp, El, InboxTab, SettingsHit, SettingsTab, UiMessage, ASK_LOGOUT,
 };
@@ -455,7 +456,7 @@ impl BeeperGuiApp {
             }
             if let [m] = picked[..] {
                 if crate::can_thread(st, chat.expect("a chat of the picked messages"), m) {
-                    let thread = Some(UiMessage::ShowThread(m.id.clone()));
+                    let thread = Some(UiMessage::Thread(threads::Msg::Show(m.id.clone())));
                     v.push(cmd(e, trx("Reply in thread", "message command"), thread).hotkey("Show Replies"));
                 }
             }

@@ -10,6 +10,7 @@ use crate::style::{
     bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, mix, scroll_style, semi,
     shadow_box, text_width, txt, Bare, CLEAR,
 };
+use crate::threads;
 use crate::{
     account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, contact_card, dashed, emoji, format,
     has_flag, hotkey_key, human_size, icon_btn, images, menu_item, menu_rule, message_tag, network_name, parse_vcard,
@@ -989,7 +990,7 @@ impl BeeperGuiApp {
             let label = txt(tr("Also send to chat"), 13.0).color(p.sub);
             let line = row![checkbox(p, pane.broadcast), label].spacing(4).align_y(Center);
             let toggle = mouse_area(container(line).padding(Padding::ZERO.left(1.0).bottom(6.0)));
-            toggle.on_press(UiMessage::SetBroadcast(!pane.broadcast)).into()
+            toggle.on_press(UiMessage::Thread(threads::Msg::SetBroadcast(!pane.broadcast))).into()
         });
         // Desktop's `messageInputExternal`: the quote, the attachments and the link previews inside the pill.
         let external: Vec<El<'a>> =
