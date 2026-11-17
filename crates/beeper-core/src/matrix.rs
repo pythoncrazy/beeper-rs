@@ -767,10 +767,11 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         thread_root: s(&rel["event_id"]).filter(|_| rel["rel_type"] == "m.thread"),
         broadcast: rel["rel_type"] == "m.thread" && c["com.beeper.broadcast_outside_thread"] == true,
         fallback: rel["rel_type"] == "m.thread" && rel["is_falling_back"] != false,
-        // Desktop's `mentions`: the user IDs of `m.mentions`, and none without it.
+        // Desktop's `mentions`: the user IDs of `m.mentions` and "@room" for its `room`, and none without it.
         mentions: c["m.mentions"].is_object().then(|| {
-            let ids = c["m.mentions"]["user_ids"].as_array().into_iter().flatten();
-            ids.filter_map(|u| u.as_str().map(String::from)).collect()
+            let ids = c["m.mentions"]["user_ids"].as_array().into_iter().flatten().filter_map(|u| u.as_str());
+            let room = (c["m.mentions"]["room"] == true).then_some(ROOM_MENTION);
+            ids.filter(|&u| u != ROOM_MENTION).chain(room).map(String::from).collect()
         }),
         send_status: None,
         call: crate::models::CallAction::of(c),
@@ -5130,6 +5131,31 @@ mod tests {
         assert_eq!(inbox_done(None, 5), json!({}), "Desktop unarchives with an empty object");
         assert_eq!(inbox_done(Some(-3), 5), json!({ "at_ts": 5, "updated_ts": 5, "at_order": -3 }));
         assert!([-5, 0, 7, -9_007_199_254_740_991].iter().all(|&o| order_of(&sort_key(o)) == o));
+    }
+
+    /// Desktop's `WR`: a message's mentions are the user IDs of `m.mentions` and "@room" for its `room`, and none
+    /// without `m.mentions`.
+    #[tokio::test]
+    async fn room_mentions_like_desktop() {
+        let text = |id: &str, mentions: Option<Value>| {
+            let mut c = json!({ "msgtype": "m.text", "body": "@room look" });
+            if let Some(m) = mentions {
+                c["m.mentions"] = m;
+            }
+            stub_event(id, "m.room.message", c)
+        };
+        let events = vec![
+            text("$room", Some(json!({ "user_ids": ["@a:x"], "room": true }))),
+            text("$users", Some(json!({ "user_ids": ["@a:x"] }))),
+            text("$none", None),
+        ];
+        let store = stub_history("room-mentions", events, ("!other:x", Vec::new())).await;
+        sync_stub_room(&store, "!room:x").await;
+        let st = store.read();
+        let mentions = |id: &str| st.messages.iter().find(|m| m.id == id).and_then(|m| m.mentions.clone());
+        assert_eq!(mentions("$room"), Some(vec!["@a:x".to_string(), super::ROOM_MENTION.to_string()]));
+        assert_eq!(mentions("$users"), Some(vec!["@a:x".to_string()]));
+        assert_eq!(mentions("$none"), None);
     }
 
     /// Desktop's `wi`: an emote is text, and a gallery, a command or a verification request is not shown as text.
