@@ -5,6 +5,7 @@ mod blocking;
 pub mod chat_list;
 mod chat_theme;
 mod chat_theme_window;
+mod click;
 mod command_palette;
 pub mod commands;
 pub mod composer;
@@ -43,6 +44,7 @@ mod reauth;
 mod record;
 pub mod reminders;
 mod scheduled;
+mod selectable;
 pub mod settings;
 mod sound;
 mod spell;
@@ -2268,6 +2270,8 @@ pub struct Pane {
     pub attachments: Vec<PendingMedia>,
     pub composer_links: Vec<(String, LinkState)>,
     pub message_menu: Option<(String, Point)>,
+    /// The text selected when the message menu opened, which turns it into the menu for the selection.
+    pub menu_selection: Option<String>,
     /// The messages of the gallery whose menu is open.
     pub gallery_menu: Vec<String>,
     /// The reactions list of the messages of a gallery, at a point, from the gallery menu.
@@ -4348,6 +4352,9 @@ impl BeeperGuiApp {
                         return self.update(UiMessage::Message(message::Msg::React(
                             self.single_msg().cloned().expect("a selected message"),
                         )));
+                    }
+                    Key::Character("c") if mods.command() && !mods.shift() && selectable::has_selection() => {
+                        return iced::clipboard::write(selectable::text());
                     }
                     Key::Character("c") if mods.command() && !mods.shift() && !self.pane.selected_msgs.is_empty() => {
                         let stamp = self.store.read().settings.on("copyTimestamps");
