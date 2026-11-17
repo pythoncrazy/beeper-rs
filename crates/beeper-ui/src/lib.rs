@@ -3532,10 +3532,14 @@ impl BeeperGuiApp {
     }
 
     /// The arrow keys select messages when no panel is open and the composer is empty.
-    fn quick_react(&self, mid: String) -> UiMessage {
+    pub(crate) fn quick_react(&self, mid: String) -> UiMessage {
         let chat = self.pane().selected_chat_id.clone().expect("an open chat");
         let st = self.store.read();
-        UiMessage::Message(message::Msg::ToggleReaction(chat, mid, st.settings.quick_reaction.clone()))
+        // Desktop's `REACT_WITH`: only a reaction that the network takes.
+        match crate::emoji::allowed_reaction(&st.chat(&chat).allowed_reactions, &st.settings.quick_reaction) {
+            Some(key) => UiMessage::Message(message::Msg::ToggleReaction(chat, mid, key)),
+            None => UiMessage::Noop,
+        }
     }
 
     /// The width of the rail and the chat list. Desktop keeps it when the space bar hides.

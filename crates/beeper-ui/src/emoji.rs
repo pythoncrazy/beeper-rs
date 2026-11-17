@@ -266,6 +266,8 @@ pub enum EmojiMsg {
     Hover(usize),
     Unhover(usize),
     Pick(usize),
+    /// One of the reactions of a network that takes only some.
+    React(String),
     Jump(usize),
     Scrolled(f32),
     SkinMenu,
@@ -344,6 +346,12 @@ impl BeeperGuiApp {
             }
             EmojiMsg::Close(g) if g == self.emoji_gen && self.emoji_hovered == [false; 2] => self.pane.emoji = None,
             EmojiMsg::Close(_) => {}
+            EmojiMsg::React(key) => {
+                if let Some((mid, _)) = self.pane.emoji.take().and_then(|pk| pk.react) {
+                    let cid = self.pane.selected_chat_id.clone().expect("an open chat");
+                    return self.update(UiMessage::Message(message::Msg::ToggleReaction(cid, mid, key)));
+                }
+            }
             EmojiMsg::Pick(i) => {
                 let tone = self.store.read().skin_tone;
                 if let Some(slot) = self.pane.emoji.take_if(|pk| pk.pref.is_some()).and_then(|pk| pk.pref) {
@@ -411,8 +419,38 @@ impl BeeperGuiApp {
         operation::focus(SEARCH_INPUT)
     }
 
+    /// Desktop's `.message-buttons` with `.message-react-buttons`: the allowed reactions of the network, 16 px with
+    /// 6 px around each, wrapping at 285 px.
+    fn view_allowed_reactions<'a>(&self, allowed: &[String]) -> El<'a> {
+        let c = self.emoji_colors();
+        let buttons = allowed.iter().map(|r| -> El<'a> {
+            let glyph = crate::style::txt(r.clone(), 16.0).line_height(1.0).font(EMOJI_FONT);
+            let style = crate::style::btn_style([CLEAR, c.input, c.input], [c.fg; 3], 4.0);
+            button(glyph).padding(6).style(style).on_press(UiMessage::Emoji(EmojiMsg::React(r.clone()))).into()
+        });
+        let edge = self.pal.menu_border;
+        container(row(buttons).wrap())
+            .max_width(285)
+            .style(move |_| container::Style {
+                background: Some(c.bg.into()),
+                border: border::rounded(6).color(edge).width(1),
+                shadow: Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.1),
+                    offset: Vector::new(0.0, 4.0),
+                    blur_radius: 16.0,
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
     pub(crate) fn view_emoji_picker(&self, st: &BeeperStore) -> Option<El<'_>> {
         let pk = self.pane().emoji.as_ref()?;
+        // Desktop's `Y1t`: a network that takes only some reactions shows them in a row instead of the picker.
+        let allowed = pk.react.as_ref().and_then(|(mid, _)| Some(&st.chat(&st.loaded(mid)?.chat_id).allowed_reactions));
+        if let Some(allowed) = allowed.filter(|a| !a.is_empty()) {
+            return Some(self.view_allowed_reactions(allowed));
+        }
         let c = self.emoji_colors();
         let tone = st.skin_tone;
         let sections = self.emoji_sections(pk, st);
@@ -707,19 +745,36 @@ fn frequent_emoji(st: &beeper_core::store::BeeperStore) -> Vec<usize> {
 }
 
 /// Desktop's `topEmoji`: the 3 most used emoji, then 👍 ❤️ 😂.
-pub(crate) fn quick_reactions(st: &beeper_core::store::BeeperStore) -> Vec<String> {
-    if st.settings.on("quickReactionsCustomized") {
-        return st.settings.quick_reactions.clone();
-    }
-    let top = frequent_emoji(st).into_iter().take(3).map(|i| DATA.emojis[i].skinned(st.skin_tone));
+/// Desktop's `U3t`: the quick reactions of the hover bar, of those the network takes when it takes only some
+/// (`allowed`).
+pub(crate) fn quick_reactions(st: &beeper_core::store::BeeperStore, allowed: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for e in top.chain(["👍", "❤️", "😂"].map(String::from)) {
-        if !out.iter().any(|o| bare(o) == bare(&e)) {
-            out.push(e);
+    match st.settings.on("quickReactionsCustomized") {
+        true => out.clone_from(&st.settings.quick_reactions),
+        false => {
+            let top = frequent_emoji(st).into_iter().map(|i| DATA.emojis[i].skinned(st.skin_tone));
+            for e in top.chain(["👍", "❤️", "😂"].map(String::from)) {
+                if !out.iter().any(|o| bare(o) == bare(&e)) {
+                    out.push(e);
+                }
+            }
         }
+    }
+    if !allowed.is_empty() {
+        out.retain(|e| allowed_reaction(allowed, e).is_some());
     }
     out.truncate(3);
     out
+}
+
+/// Desktop's reaction of a network that takes only the `allowed` ones: the allowed reaction that is `emoji` without
+/// its variation selectors, or `emoji` itself when the network takes any (`canReactWithAnyEmoji`).
+pub(crate) fn allowed_reaction(allowed: &[String], emoji: &str) -> Option<String> {
+    let plain = |s: &str| s.replace('\u{FE0F}', "");
+    match allowed.is_empty() {
+        true => Some(emoji.to_string()),
+        false => allowed.iter().find(|a| plain(a) == plain(emoji)).cloned(),
+    }
 }
 
 #[cfg(test)]

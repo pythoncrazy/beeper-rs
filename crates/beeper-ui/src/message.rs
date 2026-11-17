@@ -1954,8 +1954,8 @@ impl BeeperGuiApp {
                     .on_enter(UiMessage::Message(Msg::ShowQuickReactions))
                     .into()
             });
-            let quick =
-                (self.quick_open && st.settings.on("quickReactions")).then(|| crate::emoji::quick_reactions(st));
+            let quick = (self.quick_open && st.settings.on("quickReactions"))
+                .then(|| crate::emoji::quick_reactions(st, &chat.allowed_reactions));
             let quick = quick.into_iter().flatten().map(|e| -> El<'a> {
                 let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
                 let glyph = txt(e, 18.0).font(EMOJI_FONT);

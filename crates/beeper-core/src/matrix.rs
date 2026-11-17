@@ -471,6 +471,11 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         room_features,
         polls: features.as_ref().map_or(Some(BEEPER_POLLS), poll_rules),
         messages: features.as_ref().map_or(BEEPER_MESSAGES, message_rules),
+        allowed_reactions: (features.as_ref().map(|f| f["allowed_reactions"].as_array().into_iter().flatten()))
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r.as_str().map(str::to_string))
+            .collect(),
         disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
         timers: timers(features.as_ref(), &levels, me.as_str()),
         older: Older::Unknown,

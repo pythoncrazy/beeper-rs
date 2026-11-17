@@ -718,6 +718,10 @@ pub struct Chat {
     /// The edit, delete, reaction and reply features of the network.
     #[serde(default = "beeper_messages")]
     pub messages: MessageRules,
+    /// Desktop's `allowed_reactions` of `com.beeper.room_features`: the only reactions the network takes, or any emoji
+    /// when it is empty (`canReactWithAnyEmoji`).
+    #[serde(rename = "allowedReactions", default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_reactions: Vec<String>,
     /// Desktop's `disappearingTimer`: the `com.beeper.disappearing_timer` of new messages in ms.
     #[serde(rename = "disappearingTimer", default, skip_serializing_if = "Option::is_none")]
     pub disappearing: Option<u64>,
