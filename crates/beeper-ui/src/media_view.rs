@@ -984,14 +984,9 @@ impl BeeperGuiApp {
     /// The square cover crop of an image or video poster, or an empty tile while it loads.
     pub(crate) fn thumb<'a>(&self, a: &Attachment, size: f32, r: f32) -> El<'a> {
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
-        match url.and_then(|u| self.media_at(u)) {
-            Some(Ok(frames)) => image(frames[0].0.clone())
-                .width(size)
-                .height(size)
-                .content_fit(iced::ContentFit::Cover)
-                .border_radius(r)
-                .into(),
-            _ => container(Space::new()).width(size).height(size).style(fill_box(self.pal.chip, r)).into(),
+        match url.and_then(|u| self.thumb_tile(u, size.round() as u32, r.round() as u8)) {
+            Some(tile) => image(tile.clone()).width(size).height(size).into(),
+            None => container(Space::new()).width(size).height(size).style(fill_box(self.pal.chip, r)).into(),
         }
     }
 
