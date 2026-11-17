@@ -28,7 +28,7 @@ use crate::{
     safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable, unused_path,
     video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X,
     CHEVRON_DOWN, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE,
-    POLL_CHECK, POLL_ENDED, TRASH,
+    OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TRASH,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::*;
@@ -518,6 +518,8 @@ impl BeeperGuiApp {
         (menu.into(), h, 0.0)
     }
 
+    /// The message menu, its height, and the top of the row of its open Remind Me submenu, or else of its Playback
+    /// Speed row.
     pub(crate) fn view_message_menu(&self, mid: &str) -> (El<'_>, f32, f32) {
         if let Some(menu) = self.view_gallery_menu(mid) {
             return menu;
@@ -565,7 +567,7 @@ impl BeeperGuiApp {
         let sender = chat.participants.items.iter().any(|u| u.id == m.sender_id);
         let privately =
             !mine && sender && others > 1 && m.is_deleted != Some(true) && self.can(&m.account_id, "create_dm");
-        let head: Vec<(El, f32)> = [
+        let before: Vec<(El, f32)> = [
             self.video_menu_rows(&mid),
             address.map(|e| {
                 vec![
@@ -624,6 +626,22 @@ impl BeeperGuiApp {
                 ),
                 item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone())))),
             ]),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect();
+        // Desktop's `zit` row, after Bookmark, opens the reminder submenu level with it.
+        let remind_top = before.iter().map(|r| r.1).sum::<f32>();
+        let remind = crate::reminders::can_remind(&st, m).then(|| {
+            let label = match st.message_reminders.contains_key(&mid) {
+                true => trx("Edit Reminder", "message menu action"),
+                false => trx("Remind Me", "message menu action"),
+            };
+            let open = UiMessage::Reminders(crate::reminders::Msg::MessageSub);
+            (mouse_area(menu_item(p, None, label.into(), "›", Some(open.clone()))).on_enter(open).into(), MENU_ITEM)
+        });
+        let after: Vec<(El, f32)> = [
             (m.is_unread == Some(true)).then(|| {
                 let read = UiMessage::Message(Msg::MarkReadThrough(cid.clone(), mid.clone()));
                 vec![item(tr("Mark as Read").into(), "", Some(read))]
@@ -661,7 +679,11 @@ impl BeeperGuiApp {
         .flatten()
         .flatten()
         .collect();
-        let top = head.iter().map(|r| r.1).sum::<f32>() + 11.0;
+        let head: Vec<(El, f32)> = before.into_iter().chain(remind).chain(after).collect();
+        let top = match self.pane().remind_sub {
+            true => remind_top,
+            false => head.iter().map(|r| r.1).sum::<f32>() + 11.0,
+        };
         // Desktop's `Zit`: no Delete… for the message that you edit.
         let editing = self.pane().editing_message_id.as_ref() == Some(&mid);
         let delete = (!editing && delete_dialog(&st, &[m]).is_some())
@@ -880,11 +902,18 @@ impl BeeperGuiApp {
             container(chat_theme::fade(paint.clone(), size)).height(chat_theme::FADE).into()
         })
         .into();
-        let reminder = chat.reminder.as_ref().filter(|_| !self.expired(chat)).map(|r| {
-            let (day, time) =
-                (reminder_day(r.remind_at_ms), clock(r.remind_at_ms, st.settings.pref("timeFormat") == 1));
-            let at = if day_of(r.remind_at_ms) == today() { time.clone() } else { format!("{time} {day}") };
-            let tip = match r.dismiss_on_incoming_message {
+        // Desktop's pill shows the earliest message reminder until it is due, else the pending chat reminder.
+        let chat_reminder = chat.reminder.as_ref().filter(|_| !self.expired(chat));
+        let chat_reminder = chat_reminder.map(|r| (r.remind_at_ms, r.dismiss_on_incoming_message));
+        let earliest = st.message_reminders_of(&chat.id).first().map(|(_, r)| r.remind_at_ms);
+        let reminder = match earliest.filter(|_| crate::reminders::message_reminders_on(&st)) {
+            Some(at) => (at > now_unix_millis()).then_some((at, false)),
+            None => chat_reminder,
+        };
+        let reminder = reminder.map(|(remind_at_ms, if_no_reply)| {
+            let (day, time) = (reminder_day(remind_at_ms), clock(remind_at_ms, st.settings.pref("timeFormat") == 1));
+            let at = if day_of(remind_at_ms) == today() { time.clone() } else { format!("{time} {day}") };
+            let tip = match if_no_reply {
                 true => trf("Set to remind at %s if no reply", &[&at]),
                 false => trf("Set to remind at %s", &[&at]),
             };
@@ -1660,16 +1689,34 @@ impl BeeperGuiApp {
                     let meta = row![txt(label, 11.0).color(ON_ERROR_CONTAINER), tip].spacing(4).align_y(Center);
                     (crate::style::text_width(label, 11.0, Weight::Normal) + 28.0, Some(meta.into()))
                 }
-                // Desktop's `BookmarkIndicator` goes before the time.
-                None if m.is_bookmarked == Some(true) => {
+                // Desktop's `BookmarkIndicator` and `ReminderIndicator` (`E3`) go before the time.
+                None => {
                     let color = if mine { sent_meta } else { p.sub };
-                    let icon = svg(BOOKMARK_ICON.clone()).width(10).height(10);
-                    let icon = icon.style(move |_, _| svg::Style { color: Some(color) });
-                    let label = tr("Bookmarked");
-                    let icon = self.tip(icon.into(), label, vec![], tooltip::Position::Left);
-                    (room + 14.0, Some(row![icon].push(time).spacing(4).align_y(Center).into()))
+                    let marker = |handle: &svg::Handle, color: Color, label: String| {
+                        let icon = svg(handle.clone()).width(10).height(10);
+                        let icon = icon.style(move |_, _| svg::Style { color: Some(color) });
+                        self.tip(icon.into(), label, vec![], tooltip::Position::Left)
+                    };
+                    let bookmark =
+                        (m.is_bookmarked == Some(true)).then(|| marker(&BOOKMARK_ICON, color, tr("Bookmarked").into()));
+                    let reminder =
+                        st.message_reminders.get(&m.id).filter(|_| crate::reminders::message_reminders_on(st));
+                    let reminder = reminder.filter(|_| m.is_deleted != Some(true)).map(|r| {
+                        let at = r.remind_at_ms;
+                        let h24 = st.settings.pref("timeFormat") == 1;
+                        let label = trf("Reminder: %1$s %2$s", &[&reminder_day(at), &clock(at, h24)]);
+                        // Desktop's `ReminderIndicator-module__due`: a due reminder takes the warning color.
+                        marker(&OUTLINE_CLOCK, if at <= now_unix_millis() { ORANGE } else { color }, label)
+                    });
+                    let n = f32::from(u8::from(bookmark.is_some()) + u8::from(reminder.is_some()));
+                    match n == 0.0 {
+                        true => (room, time),
+                        false => {
+                            let meta = row![].push(bookmark).push(reminder).push(time).spacing(4).align_y(Center);
+                            (room + 14.0 * n, Some(meta.into()))
+                        }
+                    }
                 }
-                None => (room, time),
             };
             let me = |id: &str| id == st.beeper_state.user_id;
             let arrow =
@@ -2537,7 +2584,7 @@ impl BeeperGuiApp {
                     self.pane.selected_msgs = vec![mid.clone()];
                 }
                 self.video.iter_mut().for_each(|v| v.sub = false);
-                (self.audio.sub, self.audio.lang) = (false, false);
+                (self.audio.sub, self.audio.lang, self.pane.remind_sub) = (false, false, false);
                 self.pane.message_menu = Some((mid, self.cursor.get()));
                 self.pane.gallery_menu.clear();
             }
