@@ -217,6 +217,22 @@ pub(crate) fn in_rail_entry(st: &BeeperStore, id: &str, c: &Chat) -> bool {
 }
 
 impl BeeperGuiApp {
+    /// The chats whose unread messages the space bar counts, as indices of `chats`, found once for each store
+    /// generation: unread, neither archived nor a request, in the chat list, and notifying or with a mention.
+    pub(crate) fn counted_chats(&self, st: &BeeperStore) -> Rc<[usize]> {
+        let find = || -> Rc<[usize]> {
+            let counted = |c: &Chat| {
+                c.flags & CHAT_UNREAD != 0
+                    && c.flags & (CHAT_ARCHIVED | CHAT_REQUEST) == 0
+                    && c.listed()
+                    && (c.unread_mentions > 0 || !st.notifications_muted(c))
+            };
+            (0..st.chats.len()).filter(|&i| counted(&st.chats[i])).collect()
+        };
+        let Some(memo) = self.memo() else { return find() };
+        memo.counted.borrow_mut().get_or_insert_with(find).clone()
+    }
+
     /// Desktop's account context menu (`gYe`) of a sidebar account or network space.
     pub(crate) fn view_account_menu(&self, entry: &str) -> El<'_> {
         let (menu, sub) = self.account_menu(entry, SpaceMenu::Rail);
@@ -406,14 +422,9 @@ impl BeeperGuiApp {
             let corner = (n > 0).then(|| container(dot).align_right(36).padding(Padding::ZERO.top(2.0).right(2.0)));
             stack![btn].push(corner).into()
         };
-        let countable = |c: &Chat| {
-            c.flags & CHAT_UNREAD != 0
-                && c.flags & (CHAT_ARCHIVED | CHAT_REQUEST) == 0
-                && c.listed()
-                && (c.unread_mentions > 0 || !st.notifications_muted(c))
-        };
+        let counted = self.counted_chats(&st);
         let tally = |key: &str, f: &dyn Fn(&Chat) -> bool| {
-            self.count(key, || st.chats.iter().filter(|c| countable(c) && f(c)).count())
+            self.count(key, || counted.iter().filter(|&&i| f(&st.chats[i])).count())
         };
         let tab =
             |id: &'static str, key: usize, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
@@ -452,7 +463,7 @@ impl BeeperGuiApp {
                 (None, None) => svg(brand_svg(brand_key(owner))).width(28).height(28).into(),
             };
             let n = tally(&format!("rail:{acc}"), &|c| {
-                in_rail_entry(&st, &acc, c) && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0
+                c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0 && in_rail_entry(&st, &acc, c)
             });
             // Desktop's `iR`: the space name, with the account's nickname.
             let label = space_name(&st, &acc);

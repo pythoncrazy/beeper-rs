@@ -1525,206 +1525,210 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
     let (members, group) = (chat.participants.total, chat.chat_type == "group");
     {
         let mut st = store.write();
-        // A pin changed here keeps its local place until the homeserver's `favourites_order` shows it.
-        let rank = match st.local_flag(&chat_id, ChatFlag::Pinned) {
-            Some(true) => rank.or(st.pin_rank.get(&chat_id).copied()),
-            Some(false) => None,
-            None => rank,
-        };
-        let old = match rank {
-            Some(r) => st.pin_rank.insert(chat_id.clone(), r),
-            None => st.pin_rank.remove(&chat_id),
-        };
-        if old != rank {
-            st.persist_state_to_sqlite();
-        }
-        st.keep_local_flags(&mut chat);
-        if !note {
-            st.upsert_chat(chat);
-            if let Some(rooms) = union {
-                st.set_union(&chat_id, rooms);
-            }
-        } else {
-            let i = st.chat_idx(NOTE_CHAT_ID);
-            let room = |c: &Chat| {
-                (
-                    c.img_url.clone(),
-                    c.is_muted,
-                    c.is_pinned,
-                    c.is_low_priority,
-                    (c.unread_count, c.unread_mentions),
-                    c.is_marked_unread,
-                    c.reminder.clone(),
-                )
+        // The writes of the room make one SQLite commit.
+        st.batch(|st| {
+            // A pin changed here keeps its local place until the homeserver's `favourites_order` shows it.
+            let rank = match st.local_flag(&chat_id, ChatFlag::Pinned) {
+                Some(true) => rank.or(st.pin_rank.get(&chat_id).copied()),
+                Some(false) => None,
+                None => rank,
             };
-            if room(&st.chats[i]) != room(&chat) {
-                st.update_chat(i, |c| {
+            let old = match rank {
+                Some(r) => st.pin_rank.insert(chat_id.clone(), r),
+                None => st.pin_rank.remove(&chat_id),
+            };
+            if old != rank {
+                st.persist_state_to_sqlite();
+            }
+            st.keep_local_flags(&mut chat);
+            if !note {
+                st.upsert_chat(chat);
+                if let Some(rooms) = union {
+                    st.set_union(&chat_id, rooms);
+                }
+            } else {
+                let i = st.chat_idx(NOTE_CHAT_ID);
+                let room = |c: &Chat| {
                     (
-                        c.img_url,
+                        c.img_url.clone(),
                         c.is_muted,
                         c.is_pinned,
                         c.is_low_priority,
                         (c.unread_count, c.unread_mentions),
                         c.is_marked_unread,
-                        c.reminder,
-                    ) = room(&chat);
-                });
+                        c.reminder.clone(),
+                    )
+                };
+                if room(&st.chats[i]) != room(&chat) {
+                    st.update_chat(i, |c| {
+                        (
+                            c.img_url,
+                            c.is_muted,
+                            c.is_pinned,
+                            c.is_low_priority,
+                            (c.unread_count, c.unread_mentions),
+                            c.is_marked_unread,
+                            c.reminder,
+                        ) = room(&chat);
+                    });
+                }
             }
-        }
-        st.load_chat(&chat_id);
-        // Desktop finds the target of an event only in the room of the event.
-        let here = |st: &BeeperStore, id: &str| st.loaded_idx(id).filter(|&i| st.messages[i].chat_id == chat_id);
-        // A placeholder that decrypted to an edit, a reaction or a hidden event was no message, so its order does not
-        // count, like a redacted one: Desktop's `countsAsUnread` row of an edit is the edited message.
-        let mut stale = redacted;
-        for id in non_messages {
-            if here(&st, &id).is_some() {
-                st.remove_message(&chat_id, &id).expect("remove a decrypted placeholder");
-                stale = true;
+            st.load_chat(&chat_id);
+            // Desktop finds the target of an event only in the room of the event.
+            let here = |st: &BeeperStore, id: &str| st.loaded_idx(id).filter(|&i| st.messages[i].chat_id == chat_id);
+            // A placeholder that decrypted to an edit, a reaction or a hidden event was no message, so its order does not
+            // count, like a redacted one: Desktop's `countsAsUnread` row of an edit is the edited message.
+            let mut stale = redacted;
+            for id in non_messages {
+                if here(st, &id).is_some() {
+                    st.remove_message(&chat_id, &id).expect("remove a decrypted placeholder");
+                    stale = true;
+                }
             }
-        }
-        for op in ops {
-            match op {
-                Op::Upsert(m) => st.upsert_message(*m),
-                Op::Vote(target, voter, answers) if here(&st, &target).is_some() => {
-                    st.update_poll(&target, |p| p.respond(&voter, &answers));
-                }
-                Op::EndPoll(target) if here(&st, &target).is_some() => st.update_poll(&target, |p| p.ended = true),
-                Op::Vote(..) | Op::EndPoll(_) => {}
-                Op::SendStatus(target, delivered, error, status, timer) => {
-                    let i = here(&st, &target);
-                    if let Some((i, timer)) = i.zip(timer) {
-                        apply_timer(&mut st, i, timer);
+            for op in ops {
+                match op {
+                    Op::Upsert(m) => st.upsert_message(*m),
+                    Op::Vote(target, voter, answers) if here(st, &target).is_some() => {
+                        st.update_poll(&target, |p| p.respond(&voter, &answers));
                     }
-                    let m = |i: usize| &st.messages[i];
-                    let changed = |i| {
-                        (m(i).is_delivered, &m(i).send_error, m(i).send_status.as_ref())
-                            != (delivered, &error, Some(&*status))
-                    };
-                    if let Some(i) = i.filter(|&i| changed(i)) {
-                        st.update_message(i, |m| {
-                            (m.is_delivered, m.send_error, m.send_status) = (delivered, error, Some(*status))
-                        });
-                    }
-                }
-                Op::React(target, r, mut preview) => {
-                    let target_idx = here(&st, &target);
-                    let target_msg = target_idx.map(|i| &st.messages[i]);
-                    let target_mine = target_msg.is_some_and(|m| m.is_sender == Some(true));
-                    let who = match preview.is_sender == Some(true) {
-                        true => Some("You"),
-                        false => group.then(|| preview.sender_name.as_deref().expect("sender name")),
-                    };
-                    preview.text = Some(reaction_text(&r.reaction_key, target_msg, who));
-                    if let Some(i) = target_idx {
-                        st.update_message(i, |m| {
-                            m.reactions.retain(|x| x.id != r.id);
-                            m.reactions.push(r);
-                        });
-                    }
-                    let idx = st.chat_idx(&chat_id);
-                    let shown = preview.is_sender == Some(true) || (members <= 20 && (!group || target_mine));
-                    let newer = st.chats[idx]
-                        .preview
-                        .as_ref()
-                        .is_none_or(|p| p.sort_key < preview.sort_key || p.id == preview.id);
-                    if shown && newer {
-                        st.update_chat(idx, |c| {
-                            c.last_activity = Some(preview.timestamp.clone());
-                            c.preview = Some(*preview);
-                        });
-                    }
-                }
-                Op::Timer(target, timer) => {
-                    if let Some(i) = here(&st, &target) {
-                        apply_timer(&mut st, i, timer);
-                    }
-                }
-                Op::Edit {
-                    target,
-                    text,
-                    html,
-                    links,
-                    attachments,
-                    message_type,
-                    unresolved_media,
-                    timestamp,
-                    timer,
-                    buttons,
-                } => {
-                    if let Some(i) = here(&st, &target) {
-                        if let Some(timer) = timer {
-                            apply_timer(&mut st, i, timer);
+                    Op::EndPoll(target) if here(st, &target).is_some() => st.update_poll(&target, |p| p.ended = true),
+                    Op::Vote(..) | Op::EndPoll(_) => {}
+                    Op::SendStatus(target, delivered, error, status, timer) => {
+                        let i = here(st, &target);
+                        if let Some((i, timer)) = i.zip(timer) {
+                            apply_timer(st, i, timer);
                         }
-                        st.update_message(i, |m| {
-                            let prev = match text {
-                                Some(t) => m.text.replace(t).unwrap_or_default(),
-                                None => m.text.take().unwrap_or_default(),
-                            };
-                            if let Some(timestamp) =
-                                timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t))
-                            {
-                                m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
-                            }
-                            if !attachments.is_empty() {
-                                m.attachments = attachments;
-                                m.message_type = Some(message_type.into());
-                            }
-                            m.unresolved_media = unresolved_media;
-                            m.links = links;
-                            m.html = html;
-                            // Desktop takes the buttons of an edit only from the sender of a system user message.
-                            if let Some(buttons) = buttons.filter(|_| system_user(&m.sender_id)) {
-                                m.buttons = buttons;
-                            }
-                        });
+                        let m = |i: usize| &st.messages[i];
+                        let changed = |i| {
+                            (m(i).is_delivered, &m(i).send_error, m(i).send_status.as_ref())
+                                != (delivered, &error, Some(&*status))
+                        };
+                        if let Some(i) = i.filter(|&i| changed(i)) {
+                            st.update_message(i, |m| {
+                                (m.is_delivered, m.send_error, m.send_status) = (delivered, error, Some(*status))
+                            });
+                        }
                     }
-                }
-                Op::Remove(id) if here(&st, &id).is_some() => {
-                    st.remove_message(&chat_id, &id).expect("remove a local echo");
-                }
-                Op::Redact(target, expired) if here(&st, &target).is_some() => {
-                    match expired {
-                        true => st.expire_message(&chat_id, &target),
-                        false => st.delete_message(&chat_id, &target),
+                    Op::React(target, r, mut preview) => {
+                        let target_idx = here(st, &target);
+                        let target_msg = target_idx.map(|i| &st.messages[i]);
+                        let target_mine = target_msg.is_some_and(|m| m.is_sender == Some(true));
+                        let who = match preview.is_sender == Some(true) {
+                            true => Some("You"),
+                            false => group.then(|| preview.sender_name.as_deref().expect("sender name")),
+                        };
+                        preview.text = Some(reaction_text(&r.reaction_key, target_msg, who));
+                        if let Some(i) = target_idx {
+                            st.update_message(i, |m| {
+                                m.reactions.retain(|x| x.id != r.id);
+                                m.reactions.push(r);
+                            });
+                        }
+                        let idx = st.chat_idx(&chat_id);
+                        let shown = preview.is_sender == Some(true) || (members <= 20 && (!group || target_mine));
+                        let newer = st.chats[idx]
+                            .preview
+                            .as_ref()
+                            .is_none_or(|p| p.sort_key < preview.sort_key || p.id == preview.id);
+                        if shown && newer {
+                            st.update_chat(idx, |c| {
+                                c.last_activity = Some(preview.timestamp.clone());
+                                c.preview = Some(*preview);
+                            });
+                        }
                     }
-                    .expect("redact a known message");
-                }
-                // Desktop's `MIN(remainingCount)` of the updates of a message.
-                Op::ViewsLeft(target, left) => {
-                    let i = here(&st, &target).filter(|&i| st.messages[i].view_limit.is_some());
-                    if let Some(i) = i.filter(|&i| st.messages[i].views_left.is_none_or(|n| left < n)) {
-                        st.update_message(i, |m| m.views_left = Some(left));
+                    Op::Timer(target, timer) => {
+                        if let Some(i) = here(st, &target) {
+                            apply_timer(st, i, timer);
+                        }
                     }
-                }
-                Op::Remove(id) | Op::Redact(id, _) => {
-                    let reacted = st
-                        .timeline_indices(&chat_id)
-                        .iter()
-                        .copied()
-                        .find(|&i| st.messages[i].reactions.iter().any(|r| r.id == id));
-                    if let Some(i) = reacted {
-                        st.update_message(i, |m| m.reactions.retain(|r| r.id != id));
+                    Op::Edit {
+                        target,
+                        text,
+                        html,
+                        links,
+                        attachments,
+                        message_type,
+                        unresolved_media,
+                        timestamp,
+                        timer,
+                        buttons,
+                    } => {
+                        if let Some(i) = here(st, &target) {
+                            if let Some(timer) = timer {
+                                apply_timer(st, i, timer);
+                            }
+                            st.update_message(i, |m| {
+                                let prev = match text {
+                                    Some(t) => m.text.replace(t).unwrap_or_default(),
+                                    None => m.text.take().unwrap_or_default(),
+                                };
+                                if let Some(timestamp) =
+                                    timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t))
+                                {
+                                    m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
+                                }
+                                if !attachments.is_empty() {
+                                    m.attachments = attachments;
+                                    m.message_type = Some(message_type.into());
+                                }
+                                m.unresolved_media = unresolved_media;
+                                m.links = links;
+                                m.html = html;
+                                // Desktop takes the buttons of an edit only from the sender of a system user message.
+                                if let Some(buttons) = buttons.filter(|_| system_user(&m.sender_id)) {
+                                    m.buttons = buttons;
+                                }
+                            });
+                        }
+                    }
+                    Op::Remove(id) if here(st, &id).is_some() => {
+                        st.remove_message(&chat_id, &id).expect("remove a local echo");
+                    }
+                    Op::Redact(target, expired) if here(st, &target).is_some() => {
+                        match expired {
+                            true => st.expire_message(&chat_id, &target),
+                            false => st.delete_message(&chat_id, &target),
+                        }
+                        .expect("redact a known message");
+                    }
+                    // Desktop's `MIN(remainingCount)` of the updates of a message.
+                    Op::ViewsLeft(target, left) => {
+                        let i = here(st, &target).filter(|&i| st.messages[i].view_limit.is_some());
+                        if let Some(i) = i.filter(|&i| st.messages[i].views_left.is_none_or(|n| left < n)) {
+                            st.update_message(i, |m| m.views_left = Some(left));
+                        }
+                    }
+                    Op::Remove(id) | Op::Redact(id, _) => {
+                        let reacted = st
+                            .timeline_indices(&chat_id)
+                            .iter()
+                            .copied()
+                            .find(|&i| st.messages[i].reactions.iter().any(|r| r.id == id));
+                        if let Some(i) = reacted {
+                            st.update_message(i, |m| m.reactions.retain(|r| r.id != id));
+                        }
                     }
                 }
             }
-        }
-        let idx = st.chat_idx(&chat_id);
-        if let Some(older) = older {
-            st.update_chat(idx, |c| c.older = older);
-        }
-        let msgs = st.timeline(&chat_id);
-        let last = msgs.clone().rev().find(|m| m.message_type.as_deref() != Some("MEMBERSHIP")).map(|m| &m.sort_key);
-        let stored = msgs.flat_map(|m| &m.reactions).map(|r| &r.sort_key).max();
-        let old = st.chats[idx].notifiable.as_ref().filter(|_| !stale);
-        let notifiable = [old, last, reacted.as_ref(), stored].into_iter().flatten().max().cloned();
-        let notifiable = Some(notifiable.unwrap_or_else(|| sort_key(MIN_SAFE_INTEGER)));
-        let archived = st
-            .local_flag(&chat_id, ChatFlag::Archived)
-            .unwrap_or_else(|| archived_upto(&st.chats[idx], done, notifiable.as_deref().expect("a notifiable order")));
-        if (st.chats[idx].is_archived, &st.chats[idx].notifiable) != (Some(archived), &notifiable) {
-            st.update_chat(idx, |c| (c.is_archived, c.notifiable) = (Some(archived), notifiable));
-        }
+            let idx = st.chat_idx(&chat_id);
+            if let Some(older) = older {
+                st.update_chat(idx, |c| c.older = older);
+            }
+            let msgs = st.timeline(&chat_id);
+            let last =
+                msgs.clone().rev().find(|m| m.message_type.as_deref() != Some("MEMBERSHIP")).map(|m| &m.sort_key);
+            let stored = msgs.flat_map(|m| &m.reactions).map(|r| &r.sort_key).max();
+            let old = st.chats[idx].notifiable.as_ref().filter(|_| !stale);
+            let notifiable = [old, last, reacted.as_ref(), stored].into_iter().flatten().max().cloned();
+            let notifiable = Some(notifiable.unwrap_or_else(|| sort_key(MIN_SAFE_INTEGER)));
+            let archived = st.local_flag(&chat_id, ChatFlag::Archived).unwrap_or_else(|| {
+                archived_upto(&st.chats[idx], done, notifiable.as_deref().expect("a notifiable order"))
+            });
+            if (st.chats[idx].is_archived, &st.chats[idx].notifiable) != (Some(archived), &notifiable) {
+                st.update_chat(idx, |c| (c.is_archived, c.notifiable) = (Some(archived), notifiable));
+            }
+        });
     }
     sync_thread_reads(store, room, roots).await;
     sync_receipts(store, room).await;
@@ -1755,7 +1759,7 @@ fn archived_upto(c: &Chat, done: Option<(Option<i64>, Option<i64>)>, notifiable:
         Some((Some(order), _)) => sort_key(order).as_str() >= notifiable,
         Some((None, Some(at))) => {
             let unread = c.is_unread();
-            at >= crate::store::activity_key(c).0 && at < now_unix_millis() && !unread
+            at >= crate::store::activity_ms(c) && at < now_unix_millis() && !unread
         }
         _ => false,
     }

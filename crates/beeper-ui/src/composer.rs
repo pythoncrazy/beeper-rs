@@ -724,6 +724,10 @@ impl BeeperGuiApp {
 
     /// Desktop's `ScheduledStore.sendMessage`: a typed message or a file, which moves an archived chat to the inbox.
     pub(crate) fn send_scheduled(&mut self, due: Vec<Scheduled>) {
+        // A write lock empties the memo of the views, so nothing to send takes none.
+        if due.is_empty() {
+            return;
+        }
         let mut st = self.store.write();
         let mut failed = Vec::new();
         for s in due {
