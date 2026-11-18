@@ -555,7 +555,9 @@ async fn assets_upload_and_serve_like_desktop() {
     let field = "--b\r\ncontent-disposition: form-data; name=\"fileName\"\r\n\r\nx.txt\r\n--b--\r\n";
     assert_eq!(body(&send("POST", "/v1/assets/upload", multipart, field).await)["code"], "MISSING_FILE");
     let download = send("POST", "/v1/assets/download", json, &json!({ "url": src }).to_string()).await;
-    assert_eq!(body(&download), json!({ "error": "URL must be mxc:// or localmxc://" }));
+    // `DownloadAssetInput` refines the URL before the handler sees it.
+    let refined = json!({ "code": "custom", "message": "URL must start with mxc:// or localmxc://", "path": ["url"] });
+    assert_eq!(body(&download), serde_json::from_str::<serde_json::Value>(&invalid(json!([refined]))).unwrap());
 
     let serve = format!("/v1/assets/serve?url={}", beeper_api::codec::url_encode(src));
     let out = send("GET", &serve, "", "").await;
@@ -874,9 +876,9 @@ async fn websocket_sends_the_app_state_like_desktop() {
     write_ws_frame(&mut ws, 0x1, br#"{"type":"subscriptions.set","chatIDs":["*"],"app":{"state":true}}"#, true)
         .await
         .unwrap();
-    assert_eq!(next(&mut ws).await.unwrap()["type"], "subscriptions.updated");
     let snapshot = next(&mut ws).await.unwrap();
     assert_eq!((snapshot["type"].as_str(), snapshot["seq"].as_u64()), (Some("app.state.updated"), Some(1)));
+    assert_eq!(next(&mut ws).await.unwrap()["type"], "subscriptions.updated", "after the snapshot, like Desktop");
     assert_eq!(snapshot["appState"]["e2ee"]["verified"], store.read().beeper_state.verified);
     store.read().emit_ws("setup.updated", "", None, None, None);
     assert!(next(&mut ws).await.is_none(), "an unchanged state sends nothing");
@@ -1232,4 +1234,240 @@ async fn search_messages_filters_orders_and_pages_like_desktop() {
         let (status, body) = get("/v1/messages/search", query.clone()).await;
         assert_eq!((status, body.to_string()), (400, invalid(issues)), "{query}");
     }
+}
+
+/// Desktop's Stainless MCP routes read the MCP URL before the MCP SDK's transport checks the request, answer with
+/// `res.json` and no `id`, and the transport writes its errors with `writeHead`, without a `Content-Type`.
+#[tokio::test]
+async fn mcp_errors_come_from_the_layer_of_desktop() {
+    let (port, token) = server("mcp-errors").await;
+    let request = |method: &str, target: &str, headers: &str| {
+        format!("{method} {target} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\n{headers}content-length: 2\r\nconnection: close\r\n\r\n{{}}")
+    };
+    let json = "content-type: application/json; charset=utf-8\r\n";
+    let filters = text(port, &request("POST", "/v0/mcp?operation=x", "")).await;
+    let message = "Invalid request: Validation error: Invalid enum value. Expected 'read' | 'write', received 'x' at \\\"operation[0]\\\"";
+    assert!(filters.starts_with("HTTP/1.1 400 ") && filters.contains(json), "{filters}");
+    assert!(
+        filters.ends_with(&format!(r#"{{"jsonrpc":"2.0","error":{{"code":-32000,"message":"{message}"}}}}"#)),
+        "{filters}"
+    );
+    let get = text(port, &request("GET", "/v0/mcp", "")).await;
+    assert!(get.ends_with(r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"Method not supported"}}"#), "{get}");
+    let accept = text(port, &request("POST", "/v0/mcp", "content-type: application/json\r\n")).await;
+    assert!(accept.starts_with("HTTP/1.1 406 ") && !accept.to_lowercase().contains("content-type:"), "{accept}");
+    assert!(accept.ends_with(r#""id":null}"#), "{accept}");
+}
+
+/// Desktop's `listBridges` leaves out the Beeper and iMessage bridges and names each network by its ID, and its
+/// login routes read the bridge accounts, so an unknown bridge has no logins rather than a 404.
+#[tokio::test]
+async fn bridges_list_like_desktop() {
+    let (port, token) = server("bridges").await;
+    let (status, list) = call(port, &token, "GET", "/v1/bridges", "").await;
+    assert_eq!(status, 200);
+    let items = list["items"].as_array().unwrap();
+    let ids: Vec<&str> = items.iter().map(|b| b["id"].as_str().unwrap()).collect();
+    assert!(!ids.contains(&"hungryserv") && !ids.contains(&"imessage"), "{ids:?}");
+    let whatsapp = items.iter().find(|b| b["id"] == "whatsapp").unwrap();
+    assert_eq!((&whatsapp["displayName"], &whatsapp["network"]), (&"WhatsApp".into(), &"whatsapp".into()));
+    let slack = items.iter().find(|b| b["id"] == "slackgo").unwrap();
+    assert_eq!(slack["network"], "slack");
+    let not_found = serde_json::json!({ "message": "Bridge not found", "code": "NOT_FOUND" });
+    assert_eq!(call(port, &token, "GET", "/v1/bridges/hungryserv", "").await, (404, not_found));
+    let none = call(port, &token, "GET", "/v1/bridges/nope/logins", "").await;
+    assert_eq!(none, (200, serde_json::json!({ "items": [] })));
+}
+
+/// Desktop's setup routes check their bodies with zod's `.strict()` objects and answer the first issue, its body
+/// parser answers V8's message for malformed JSON, and the chat routes but `getChat` name a chat they do not find.
+#[tokio::test]
+async fn bodies_and_unknown_chats_get_the_errors_of_desktop() {
+    use serde_json::json;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let out_port = listener.local_addr().unwrap().port();
+    let dir = beeper_core::testing::temp_dir("http-setup-bodies");
+    // No request reaches the cloud: each body fails its schema first.
+    let cfg = CentralConfig {
+        api_url: "http://127.0.0.1:9".into(),
+        ..CentralConfig::new(dir, "127.0.0.1".into(), out_port, None)
+    };
+    tokio::spawn(serve_http(listener, StoreLock::shared(BeeperStore::from_config(cfg))));
+    let refused = |message: &str, issues: serde_json::Value| json!({ "message": message, "code": "VALIDATION_ERROR", "details": { "issues": issues } });
+    let required = |k: &str| json!({ "code": "invalid_type", "expected": "string", "received": "undefined", "path": [k], "message": "Required" });
+    let email =
+        json!({ "validation": "email", "code": "invalid_string", "message": "Invalid email", "path": ["email"] });
+    let extra = json!({ "code": "unrecognized_keys", "keys": ["x", "y"], "path": [], "message": "Unrecognized key(s) in object: 'x', 'y'" });
+    let terms = json!({ "code": "invalid_literal", "expected": true, "path": ["acceptTerms"], "message": "Invalid literal value, expected true" });
+    let no_body = json!({ "code": "invalid_type", "expected": "object", "received": "undefined", "path": [], "message": "Required" });
+    let cases = [
+        (
+            "/v1/app/setup/email",
+            r#"{"setupRequestID":"r","email":"notanemail"}"#,
+            refused("Invalid email", json!([email])),
+        ),
+        (
+            "/v1/app/setup/email",
+            r#"{"email":"a@b.co","x":1,"y":2}"#,
+            refused("Required", json!([required("setupRequestID"), extra])),
+        ),
+        ("/v1/app/setup/response", r#"{"setupRequestID":"r"}"#, refused("Required", json!([required("response")]))),
+        (
+            "/v1/app/setup/register",
+            r#"{"setupRequestID":"r","leadToken":"l","username":"u"}"#,
+            refused("Invalid literal value, expected true", json!([terms])),
+        ),
+    ];
+    for (path, body, expected) in cases {
+        assert_eq!(call(out_port, "", "POST", path, body).await, (400, expected), "{path} {body}");
+    }
+    let out = text(out_port, "POST /v1/app/setup/email HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n").await;
+    let expected = refused("Required", json!([no_body])).to_string();
+    assert!(out.starts_with("HTTP/1.1 400 ") && out.ends_with(&expected), "a request without a body: {out}");
+
+    let (port, token) = server("setup-bodies").await;
+    let purpose = json!({ "received": "x", "code": "invalid_enum_value", "options": ["login", "device"], "path": ["purpose"], "message": "Invalid enum value. Expected 'login' | 'device', received 'x'" });
+    let expected = (400, refused("Invalid enum value. Expected 'login' | 'device', received 'x'", json!([purpose])));
+    assert_eq!(call(port, &token, "POST", "/v1/app/setup/verifications", r#"{"purpose":"x"}"#).await, expected);
+    let malformed = |message: &str| (400, json!({ "message": message, "code": "UNKNOWN_ERROR" }));
+    let start = call(port, &token, "POST", "/v1/chats/start", "{x").await;
+    assert_eq!(start, malformed("Expected property name or '}' in JSON at position 1 (line 1 column 2)"));
+    let read = call(port, &token, "POST", "/v1/chats/!wa_eric:beeper.com/read", "\"text\"").await;
+    assert_eq!(
+        read,
+        malformed("Unexpected token '\"', \"\"text\"\" is not valid JSON"),
+        "a body must be an object or an array"
+    );
+    let mcp = call(port, &token, "POST", "/v0/mcp", "[1,]").await;
+    assert_eq!(mcp, malformed("Unexpected token ']', \"[1,]\" is not valid JSON"), "before the MCP transport");
+    let no_chat = |message: &str| (404, json!({ "message": message, "code": "NOT_FOUND" }));
+    assert_eq!(call(port, &token, "GET", "/v1/chats/!nope", "").await, no_chat("Chat not found"));
+    for (method, target) in [
+        ("GET", "/v1/chats/!nope/messages"),
+        ("POST", "/v1/chats/!nope/read"),
+        ("PATCH", "/v1/chats/!nope"),
+        ("GET", "/v1/messages/search?chatIDs=!nope"),
+    ] {
+        assert_eq!(
+            call(port, &token, method, target, "{}").await,
+            no_chat("Chat not found: !nope"),
+            "{method} {target}"
+        );
+    }
+}
+
+/// Desktop's tool routes check `{...query, ...params, ...body}` with their zod input schemas before they look for
+/// the chat, and answer the issues.
+#[tokio::test]
+async fn tool_inputs_are_checked_like_desktop() {
+    use serde_json::json;
+    let (port, token) = server("tool-inputs").await;
+    let required = |path: serde_json::Value, kind: &str| json!({ "code": "invalid_type", "expected": kind, "received": "undefined", "path": path, "message": "Required" });
+    let short = |path: serde_json::Value| json!({ "code": "too_small", "minimum": 1, "type": "string", "inclusive": true, "exact": false, "message": "String must contain at least 1 character(s)", "path": path });
+    let wrong = |path: serde_json::Value, kind: &str, got: &str| json!({ "code": "invalid_type", "expected": kind, "received": got, "path": path, "message": format!("Expected {kind}, received {got}") });
+    let custom = |path: serde_json::Value, message: &str| json!({ "code": "custom", "message": message, "path": path });
+    let chat = "/v1/chats/!wa_eric:beeper.com";
+    let cases = [
+        ("PUT", "/v1/chats/!nope/messages/msg_1001".to_string(), r#"{"text":""}"#, json!([short(json!(["text"]))])),
+        (
+            "POST",
+            format!("{chat}/messages/msg_1001/reactions"),
+            "{}",
+            json!([required(json!(["reactionKey"]), "string")]),
+        ),
+        ("POST", format!("{chat}/reminders"), "{}", json!([required(json!(["reminder"]), "object")])),
+        (
+            "POST",
+            format!("{chat}/reminders"),
+            r#"{"reminder":{"remindAt":"tomorrow","dismissOnIncomingMessage":1}}"#,
+            json!([
+                { "code": "invalid_string", "validation": "datetime", "message": "Invalid datetime", "path": ["reminder", "remindAt"] },
+                wrong(json!(["reminder", "dismissOnIncomingMessage"]), "boolean", "number"),
+            ]),
+        ),
+        (
+            "POST",
+            format!("{chat}/archive"),
+            r#"{"archived":"yes"}"#,
+            json!([wrong(json!(["archived"]), "boolean", "string")]),
+        ),
+        (
+            "POST",
+            format!("{chat}/messages"),
+            "{}",
+            json!([custom(json!([]), "Either text or attachment is required.")]),
+        ),
+        (
+            "POST",
+            format!("{chat}/messages"),
+            r#"{"text":5,"attachment":{"uploadID":1,"size":{"width":1}}}"#,
+            json!([
+                wrong(json!(["text"]), "string", "number"),
+                wrong(json!(["attachment", "uploadID"]), "string", "number"),
+                required(json!(["attachment", "size", "height"]), "number"),
+            ]),
+        ),
+        (
+            "PATCH",
+            chat.to_string(),
+            r#"{"title":null,"isPinned":"yes","messageExpirySeconds":-1.5}"#,
+            json!([
+                wrong(json!(["isPinned"]), "boolean", "string"),
+                { "code": "invalid_type", "expected": "integer", "received": "float", "message": "Expected integer, received float", "path": ["messageExpirySeconds"] },
+                { "code": "too_small", "minimum": 0, "type": "number", "inclusive": true, "exact": false, "message": "Number must be greater than or equal to 0", "path": ["messageExpirySeconds"] },
+            ]),
+        ),
+        (
+            "DELETE",
+            format!("{chat}/messages/msg_1001?forEveryone=yes"),
+            "",
+            json!([wrong(json!(["forEveryone"]), "boolean", "string")]),
+        ),
+        (
+            "POST",
+            "/v1/assets/download".to_string(),
+            r#"{"url":""}"#,
+            json!([short(json!(["url"])), custom(json!(["url"]), "URL must start with mxc:// or localmxc://")]),
+        ),
+        (
+            "POST",
+            "/v1/focus".to_string(),
+            r#"{"draftText":1}"#,
+            json!([wrong(json!(["draftText"]), "string", "number")]),
+        ),
+        (
+            "GET",
+            "/v1/bridges/bad!id".to_string(),
+            "",
+            json!([{ "validation": "regex", "code": "invalid_string", "message": "Bridge ID may only contain letters, numbers, underscores, and hyphens", "path": ["bridgeID"] }]),
+        ),
+        (
+            "GET",
+            format!("{chat}?maxParticipantCount=x"),
+            "",
+            json!([wrong(json!(["maxParticipantCount"]), "number", "nan")]),
+        ),
+        ("GET", "/v1/search?query=".to_string(), "", json!([short(json!(["query"]))])),
+    ];
+    for (method, target, body, issues) in cases {
+        assert_eq!(
+            call(port, &token, method, &target, body).await,
+            (400, serde_json::from_str::<serde_json::Value>(&invalid(issues)).unwrap()),
+            "{method} {target} {body}"
+        );
+    }
+    let reminder = r#"{"reminder":{"remindAtMs":1900000000000}}"#;
+    let request = format!(
+        "POST {chat}/reminders HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reminder}",
+        reminder.len()
+    );
+    assert!(text(port, &request).await.starts_with("HTTP/1.1 204 "), "the older remindAtMs");
+    let edited = call(port, &token, "PUT", &format!("{chat}/messages/msg_1001"), r#"{"text":" "}"#).await;
+    assert_eq!((edited.0, &edited.1["text"]), (200, &json!(" ")), "zod's min(1) takes a blank text");
+    let (_, added) =
+        call(port, &token, "POST", &format!("{chat}/messages/msg_1001/reactions"), r#"{"reactionKey":"👍"}"#).await;
+    let keys: Vec<&String> = added.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["success", "chatID", "messageID", "reactionKey", "transactionID"], "Desktop's key order");
+    let removed = call(port, &token, "DELETE", &format!("{chat}/messages/msg_1001/reactions?reactionKey="), "").await;
+    assert_eq!(removed, (400, json!({ "message": "reactionKey is required", "code": "INVALID_INPUT" })));
 }

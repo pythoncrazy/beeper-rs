@@ -13,10 +13,42 @@ pub struct CloudError {
     pub message: String,
     /// The Matrix `errcode` of a refusal, which Desktop's SDK errors carry.
     pub errcode: Option<String>,
+    /// The JSON body of a refusal, which Desktop's `BeeperAPIError` keeps as its `response`.
+    pub body: Option<Box<Value>>,
 }
 
 fn fail(status: u16, message: impl Into<String>) -> CloudError {
-    CloudError { status, message: message.into(), errcode: None }
+    CloudError { status, message: message.into(), errcode: None, body: None }
+}
+
+/// The text of Desktop's `BeeperAPIError` without an `errorMessage` or `error` in the body.
+const API_ERROR: &str = "Something went wrong. Please try again or contact support.";
+
+impl CloudError {
+    /// The message of Desktop's `BeeperAPIError` for this refusal: the body's `errorMessage` or `error`, the name of
+    /// a known `errcode`, the `errcode`, or "Something went wrong. Please try again or contact support. (HTTP n)".
+    pub fn api_message(&self) -> String {
+        let body = self.body.as_deref().unwrap_or(&Value::Null);
+        let text = |k: &str| body[k].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+        let errcode = text("errcode");
+        let named = errcode.as_deref().and_then(|c| match c {
+            "M_FORBIDDEN" => Some("Forbidden"),
+            "M_UNRECOGNIZED" => Some("Unrecognized"),
+            "FI.MAU.WS_NOT_CONNECTED" => Some("Remote is not healthy"),
+            "M_UNKNOWN" => Some(API_ERROR),
+            _ => None,
+        });
+        text("errorMessage")
+            .or_else(|| text("error"))
+            .or_else(|| named.map(str::to_string))
+            .or(errcode)
+            .unwrap_or_else(|| format!("{API_ERROR} (HTTP {})", self.status))
+    }
+
+    /// The `retries` of the body of a refused sign-in code: how often the server saw a wrong code.
+    pub fn retries(&self) -> u64 {
+        self.body.as_deref().and_then(|b| b["retries"].as_u64()).unwrap_or(0)
+    }
 }
 
 pub enum CodeResult {
@@ -146,7 +178,8 @@ impl Cloud {
             let v = json.unwrap_or_default();
             let msg = ["error", "message", "errcode"].iter().find_map(|k| field(&v, k));
             let errcode = field(&v, "errcode");
-            return Err(CloudError { errcode, ..fail(status, msg.unwrap_or(format!("HTTP {status}: {text}"))) });
+            let body = (!v.is_null()).then(|| Box::new(v));
+            return Err(CloudError { errcode, body, ..fail(status, msg.unwrap_or(format!("HTTP {status}: {text}"))) });
         }
         match text.is_empty() {
             true => Ok(Value::Null),
@@ -625,6 +658,33 @@ mod tests {
         assert_eq!(check("taken").await.unwrap(), Ok(false));
         let failed = check("boom").await.unwrap().unwrap_err();
         assert_eq!((failed.status, failed.message.as_str()), (500, "Internal server error"));
+    }
+
+    /// A refused sign-in code keeps the body for Desktop's texts: its `errorMessage` before its `error`, the names
+    /// of the known error codes, the HTTP status without either, and the count of `retries`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refused_codes_keep_desktops_error_text() {
+        let url = crate::bridge_stub::serve(|_, _, body| match body["response"].as_str() {
+            Some("111111") => (400, json!({ "error": "bad", "errorMessage": "Code expired", "retries": 2 })),
+            Some("222222") => (403, json!({ "errcode": "M_FORBIDDEN", "error": "" })),
+            Some("333333") => (401, json!({ "errcode": "COM.BEEPER.WRONG" })),
+            _ => (502, json!("Bad Gateway")),
+        })
+        .await;
+        let cloud = std::sync::Arc::new(Cloud::new(&url, &url));
+        let send = |code: &'static str| {
+            let cloud = cloud.clone();
+            async move { tokio::task::spawn_blocking(move || cloud.send_login_code("req", code)).await.unwrap() }
+        };
+        let refused = |r: Result<CodeResult, CloudError>| r.err().expect("a refusal");
+        let e = refused(send("111111").await);
+        assert_eq!((e.status, e.api_message().as_str(), e.retries()), (400, "Code expired", 2));
+        let e = refused(send("222222").await);
+        assert_eq!((e.api_message().as_str(), e.retries()), ("Forbidden", 0), "the name of M_FORBIDDEN");
+        assert_eq!(refused(send("333333").await).api_message(), "COM.BEEPER.WRONG", "an unknown errcode as is");
+        let e = refused(send("444444").await);
+        let text = "Something went wrong. Please try again or contact support. (HTTP 502)";
+        assert_eq!((e.status, e.api_message().as_str()), (502, text), "a body without a message");
     }
 
     /// The reset of the recovery key deletes every bridge, like Desktop's `deleteAllBridges`.

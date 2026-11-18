@@ -746,6 +746,10 @@ pub struct Chat {
     /// checks the image size only after the conversion. Without them, `file` and the other features are defaults.
     #[serde(rename = "hasRoomFeatures", default)]
     pub room_features: bool,
+    /// Desktop's `features`: the content of the room's `com.beeper.room_features`, which the Desktop API maps to the
+    /// chat's `capabilities`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub features: Option<Box<serde_json::Value>>,
     /// The poll features of the network, or `None` when it has no polls.
     #[serde(default = "beeper_polls")]
     pub polls: Option<PollRules>,
@@ -1974,6 +1978,9 @@ pub struct BeeperSettings {
     pub chat_appearance: ChatAppearance,
     /// Desktop's local `spaces_order`: the sidebar order, and the spaces that Edit Spaces hides.
     pub spaces_order: Vec<SpaceOrder>,
+    /// Desktop's `accounts_order`: the place of each account in the accounts list of Settings, by account ID. The
+    /// accounts without one follow in their own order.
+    pub accounts_order: std::collections::BTreeMap<String, u32>,
     /// Desktop's local `has_ever_created_label`: the Create Label nudge stays hidden after the first label.
     pub ever_labeled: bool,
     /// Desktop's local `labels_intro_seen`: New Label shows its intro only the first time.

@@ -79,7 +79,8 @@ pub trait TestClient {
     }
 
     async fn focus(&self, chat_id: Option<&str>, message_id: Option<&str>, draft_text: Option<&str>) -> StatusCode {
-        let body = json!({ "chatID": chat_id, "messageID": message_id, "draftText": draft_text });
+        let fields = [("chatID", chat_id), ("messageID", message_id), ("draftText", draft_text)];
+        let body = defined(fields.map(|(k, v)| (k, v.map(|v| json!(v)))));
         self.send("POST", "/v1/focus", &[], Some(&body)).await.0
     }
 
@@ -94,7 +95,11 @@ pub trait TestClient {
         reply_to: Option<&str>,
         upload_id: Option<&str>,
     ) -> Value {
-        let body = json!({ "text": text, "replyToMessageID": reply_to, "attachment": upload_id.map(|u| json!({ "uploadID": u })) });
+        let body = defined([
+            ("text", text.map(|t| json!(t))),
+            ("replyToMessageID", reply_to.map(|r| json!(r))),
+            ("attachment", upload_id.map(|u| json!({ "uploadID": u }))),
+        ]);
         self.json("POST", &chat_path(chat_id, "/messages"), Some(body)).await
     }
 
@@ -159,4 +164,10 @@ impl TestClient for BeeperClient {
     fn api(&self) -> &BeeperClient {
         self
     }
+}
+
+/// A JSON body of the set fields, like the Stainless client, which leaves out unset ones: Desktop's zod schemas
+/// refuse `null`.
+fn defined<const N: usize>(fields: [(&str, Option<Value>); N]) -> Value {
+    Value::Object(fields.into_iter().filter_map(|(k, v)| Some((k.to_string(), v?))).collect())
 }

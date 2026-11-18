@@ -60,6 +60,7 @@ mod ring;
 mod scheduled;
 mod selectable;
 pub mod settings;
+pub mod sortable;
 mod sound;
 mod spell;
 mod time;
@@ -432,6 +433,8 @@ pub enum UiMessage {
     MenuBar(menubar::Msg),
     /// Desktop's pinned chats grid: the hover of a tile, and the drag that orders the pins.
     Pins(pins::Msg),
+    /// Desktop's keyboard reordering of its `dnd-kit` sortables.
+    Sort(sortable::Msg),
     /// A message from a chat window, handled with its pane.
     InWindow(window::Id, Box<UiMessage>),
     KeyPressed(Key, Modifiers),
@@ -1393,6 +1396,18 @@ const THEME_WINDOW: &str = r##"<rect x="10" y="7" width="76" height="47" rx="4" 
 svg_static!(NEW_LABEL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M4.3 13.953q-1.15 0-1.729-.564-.57-.571-.571-1.706V4.27q0-1.136.571-1.7Q3.15 2.001 4.3 2h7.353q1.143 0 1.714.571.579.572.579 1.7v1.67h-1.18V4.335q0-.57-.3-.864-.292-.293-.835-.293H4.314q-.55 0-.842.293c-.292.293-.293.484-.293.864v7.28q0 .573.293.865t.842.293h1.839v1.18zm3.552 3.391q-1.15 0-1.728-.571-.572-.564-.572-1.7V7.663q0-1.136.572-1.7.578-.57 1.728-.57h7.354q1.142 0 1.713.57.579.572.579 1.7v7.412q0 1.128-.579 1.699-.57.57-1.713.571zm.015-1.179h7.317q.541 0 .835-.293.3-.293.3-.864v-7.28q0-.572-.3-.865-.294-.293-.835-.293H7.867q-.55 0-.843.293-.293.294-.293.865v7.28q0 .57.293.864.293.293.843.293m4.277-2.036a.62.62 0 0 1-.176.454.6.6 0 0 1-.447.169.59.59 0 0 1-.432-.169.63.63 0 0 1-.168-.454V8.592a.63.63 0 0 1 .168-.454.57.57 0 0 1 .432-.176.6.6 0 0 1 .623.63zm-3.376-2.16a.63.63 0 0 1-.455-.17.57.57 0 0 1-.175-.431q0-.279.168-.447a.62.62 0 0 1 .462-.176h5.537a.6.6 0 0 1 .447.176.6.6 0 0 1 .175.447q0 .263-.175.432a.6.6 0 0 1-.447.168z"/></svg>"##);
 svg_static!(DRAFT_RING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30"><rect x=".5" y=".5" width="29" height="29" rx="7.5" fill="none" stroke="#000" stroke-dasharray="3 2"/></svg>"##);
 svg_static!(DASHED_RING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="1" y="1" width="30" height="30" rx="7" fill="none" stroke="#000" stroke-width="2" stroke-dasharray="6 3" stroke-dashoffset="8.5"/></svg>"##);
+
+/// Desktop's `CloseSmall` system icon.
+static CLOSE_SMALL: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="#000" d="M7.042 13.999 6 12.957l2.938-2.958L6 7.06 7.042 6.02 10 8.957l2.938-2.937 1.041 1.041L11.042 10l2.937 2.958-1.041 1.042L10 11.06z"/></svg>"##[..])
+});
+
+/// Desktop's `ChatErrorIcon`: the exclamation mark in a ring of a message that failed to send.
+static ERRORED: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><path fill="#000" d="M5.9962 9.41198C6.17045 9.41198 6.31771 9.35304 6.438 9.23518C6.55828 9.1173 6.61842 8.97124 6.61842 8.797C6.61842 8.62275 6.55949 8.47549 6.44162 8.3552C6.32375 8.23492 6.17769 8.17478 6.00345 8.17478C5.8292 8.17478 5.68193 8.23371 5.56165 8.35158C5.44137 8.46946 5.38123 8.61551 5.38123 8.78975C5.38123 8.964 5.44016 9.11127 5.55802 9.23155C5.6759 9.35183 5.82196 9.41198 5.9962 9.41198ZM5.38123 6.93758H6.61842V2.49709H5.38123V6.93758Z"/><circle cx="6" cy="6" r="5.375" stroke="#000" fill="none" stroke-width="1.25"/></svg>"##[..])
+});
+/// Desktop's `--error-color` of the errored icon of a chat row.
+const ERROR_COLOR: Color = Color::from_rgb8(0xf4, 0x43, 0x36);
 
 static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
     [
@@ -2844,6 +2859,8 @@ pub struct BeeperGuiApp {
     alt_alone: bool,
     pub pin_hover: Option<String>,
     pub pin_drag: Option<PinDrag>,
+    /// The sortable item that the keyboard moves (see [`sortable`]).
+    pub key_sort: Option<sortable::KeySort>,
     pub main_window: Option<window::Id>,
     /// The control of each window with the keyboard focus, which Tab gives it (see [`focus`]).
     pub key_targets: HashMap<window::Id, iced::widget::Id>,
@@ -3114,6 +3131,7 @@ impl BeeperGuiApp {
             alt_alone: false,
             pin_hover: None,
             pin_drag: None,
+            key_sort: None,
             user_hover: UserHover::default(),
             rail_drag: None,
             rail_press: None,
@@ -4164,6 +4182,7 @@ impl BeeperGuiApp {
             UiMessage::NewChat(msg) => return self.new_chat(msg),
             UiMessage::Notify(msg) => return self.notify_event(msg),
             UiMessage::Pins(msg) => return self.pins(msg),
+            UiMessage::Sort(msg) => return self.sortable(msg),
             UiMessage::Rail(msg) => return self.rail(msg),
             UiMessage::Record(msg) => return self.record(msg),
             UiMessage::Reminders(msg) => return self.reminders(msg),
@@ -4311,6 +4330,28 @@ impl BeeperGuiApp {
             }
             UiMessage::InputEscape(id) => {
                 return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
+            }
+            // Desktop's `KeyboardSensor` takes Space, Enter, Tab, Escape and the arrows of its window while it moves
+            // an item.
+            UiMessage::WindowText(id, text)
+                if text == " " && self.key_sort.as_ref().is_some_and(|s| s.window == id) =>
+            {
+                return self.sortable(sortable::Msg::Drop);
+            }
+            UiMessage::WindowKey(id, key, mods)
+                if self.key_sort.as_ref().is_some_and(|s| s.window == id)
+                    && sortable::key_msg(&key, mods).is_some() =>
+            {
+                return self.sortable(sortable::key_msg(&key, mods).expect("a key of the sort"));
+            }
+            // Chromium's Space on a focused control of the main window, when the composer does not take the keys.
+            UiMessage::WindowText(id, text)
+                if text == " "
+                    && Some(id) == self.main_window
+                    && self.key_targets.contains_key(&id)
+                    && !self.composer_takes_keys() =>
+            {
+                return self.focus_space(id, false).unwrap_or_else(Task::none);
             }
             UiMessage::WindowText(id, text) if self.chat_windows.iter().any(|w| w.0 == id) => {
                 return self.update(UiMessage::InWindow(id, Box::new(UiMessage::Composer(composer::Msg::Type(text)))));
@@ -5093,6 +5134,17 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
+        // Delete in the slots of the sign-in code, which `keys` does not send.
+        let code_delete = (self.login.screen == login::Screen::Code).then(|| {
+            iced::event::listen_with(|e, _, id| match e {
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: key @ Key::Named(Named::Delete),
+                    modifiers,
+                    ..
+                }) => Some(UiMessage::WindowKey(id, key, modifiers)),
+                _ => None,
+            })
+        });
         let drag = self.dragging.then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
@@ -5275,6 +5327,7 @@ impl BeeperGuiApp {
                 .chain(time_drag)
                 .chain(carousel)
                 .chain(dropdown)
+                .chain(code_delete)
                 .chain(tick)
                 .chain(toast)
                 .chain(shot)
@@ -6542,21 +6595,25 @@ impl BeeperGuiApp {
                 let text = txt(format!("{name} {}", tr("disconnected")), 12.0).color(p.fg).width(Fill);
                 let end: Option<El<'_>> = match own.is_some() {
                     true => again.is_some().then(|| semi(tr("Reconnect"), 11.0).color(p.accent).into()),
+                    // Desktop's 24 px `close-small` in `--color-text-translucent-weak`.
                     false => Some(
-                        button(ic(icon::CLOSE, 14.0).color(p.sub))
+                        button(tinted(&CLOSE_SMALL, 24.0, p.fg.scale_alpha(0.7)))
                             .bare(p.sub)
                             .on_press(UiMessage::Accounts(accounts::Msg::DismissError(b.account_id.clone())))
                             .into(),
                     ),
                 };
                 let icon = svg(brand_svg(brand_key(&b.account_id))).width(22).height(22);
-                let line = row![icon, text].push(end).spacing(8).align_y(Center);
+                // `.network-status`: the 22 px icon with a 9 px margin makes the row 40 px, its items centered.
+                let line = row![icon, text].push(end).spacing(8).align_y(Center).height(Fill);
                 let msg = again.unwrap_or(UiMessage::Accounts(accounts::Msg::OpenSettings(b.account_id.clone())));
                 let banner = button(line).padding([0, 8]).height(40).style(btn_style([p.hover; 3], [p.fg; 3], 12.0));
-                container(banner.on_press(msg)).padding(Padding::new(8.0).top(0.0).left(0.0)).into()
+                banner.on_press(msg).into()
             })
             .collect();
-        (!banners.is_empty()).then(|| Column::with_children(banners).into())
+        // `.app-status > div { margin: 8px 0 }`, whose margins collapse between banners, and the 8 px on the right.
+        (!banners.is_empty())
+            .then(|| Column::with_children(banners).spacing(8).padding(Padding::new(8.0).left(0.0)).into())
     }
 
     /// Desktop's message request box (`T2t`) under the messages, with its Block, Decline and Accept buttons.

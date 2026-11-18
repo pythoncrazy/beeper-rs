@@ -226,6 +226,8 @@ pub struct Login {
     pub screen: Screen,
     pub email: String,
     pub code: String,
+    /// The slot of Desktop's `OTPInput` with the focus while the code field has it: each digit is an input of its own.
+    pub slot: usize,
     pub username: String,
     /// The usernames that the server suggests, which the sync icon of the field goes through.
     suggestions: Vec<String>,
@@ -317,6 +319,69 @@ impl Login {
     fn focus_on(&mut self, stop: Stop) {
         self.focus.set(self.stops().contains(&stop).then_some(stop));
     }
+
+    /// Desktop's `getFirstAvailableSlotIndex` of `OTPInput`: the first empty slot, or the first slot of a whole code.
+    fn first_slot(&self) -> usize {
+        match self.code.len() {
+            n if n < CODE_SLOTS => n,
+            _ => 0,
+        }
+    }
+}
+
+/// The slots of Desktop's code input.
+const CODE_SLOTS: usize = 6;
+
+/// Desktop's `handleChange` of `OTPInput`: a digit typed in slot `at` takes its place, and the focus goes to the
+/// next slot, but not past the last one.
+fn slot_digit(code: &str, at: usize, digit: char) -> (String, usize) {
+    let mut digits: Vec<char> = code.chars().collect();
+    match digits.get_mut(at) {
+        Some(d) => *d = digit,
+        None => digits.push(digit),
+    }
+    (digits.into_iter().collect(), (at + 1).min(CODE_SLOTS - 1))
+}
+
+/// Desktop's `handlePaste` of `OTPInput`: the digits of the text fill the slots from `at`, and the focus stays.
+fn slot_paste(code: &str, at: usize, text: &str) -> String {
+    let mut digits: Vec<char> = code.chars().collect();
+    for (j, c) in (at..CODE_SLOTS).zip(text.chars().filter(char::is_ascii_digit)) {
+        match digits.get_mut(j) {
+            Some(d) => *d = c,
+            None => digits.push(c),
+        }
+    }
+    digits.into_iter().collect()
+}
+
+/// Desktop's `handleKeyDown` of `OTPInput` on slot `at` of `code`: the code and the slot with the focus after the
+/// key, or `None` for a key that the slots leave to Chromium (Tab on the last slot).
+fn slot_key(code: &str, at: usize, key: Named) -> Option<(String, usize)> {
+    let mut digits: Vec<char> = code.chars().collect();
+    let filled = at < digits.len();
+    let slot = match key {
+        // `q[j] = ""`: the digit of the slot goes and the code closes up, and the focus goes back a slot.
+        Named::Backspace => {
+            if filled {
+                digits.remove(at);
+            }
+            at.saturating_sub(1)
+        }
+        // `Hzt`: the digits after the slot move into it, and an empty slot loses the last digit.
+        Named::Delete => {
+            if !digits.is_empty() {
+                digits.remove(at.min(digits.len() - 1));
+            }
+            at
+        }
+        Named::ArrowLeft => at.saturating_sub(1),
+        // → and Tab go only from a slot with a digit.
+        Named::ArrowRight | Named::Tab if at < CODE_SLOTS - 1 => at + usize::from(filled),
+        Named::ArrowRight => at,
+        _ => return None,
+    };
+    Some((digits.into_iter().collect(), slot))
 }
 
 #[derive(Clone)]
@@ -341,6 +406,10 @@ pub enum LoginMsg {
     TogglePassword,
     SubmitEmail,
     Code(String),
+    /// Text typed (`false`) or pasted (`true`) into the focused slot of the code.
+    Slot(String, bool),
+    /// A press on the slots of the code.
+    SlotsPressed,
     Resend,
     Username(String),
     /// The debounced check of the username of a change, and its answer.
@@ -462,7 +531,24 @@ fn open_email_client() -> Task<UiMessage> {
 
 /// An error of beeper-rs itself, which shows in the toast like a network error.
 fn local_error(message: String) -> CloudError {
-    CloudError { status: 0, message, errcode: None }
+    CloudError { status: 0, message, errcode: None, body: None }
+}
+
+/// Desktop's `uge`: the text of a refused sign-in code. After two wrong codes it is "Invalid code. Please try again.";
+/// before, the message of the `BeeperAPIError`, or of a failed request, or "Invalid code. Please try again or
+/// contact support." without one. The code screen shows it under the heading, or in the toast for a 5xx or a
+/// request that got no answer.
+fn code_error(e: CloudError) -> CloudError {
+    let message = match (e.retries(), e.status) {
+        (2.., _) => tr("Invalid code. Please try again.").to_string(),
+        (_, 0) => e.message.clone(),
+        _ => e.api_message(),
+    };
+    let message = match message.is_empty() {
+        true => tr("Invalid code. Please try again or contact support.").to_string(),
+        false => message,
+    };
+    CloudError { message, ..e }
 }
 
 fn session(cloud: &Cloud, jwt: &str) -> Result<Outcome, CloudError> {
@@ -737,6 +823,7 @@ impl BeeperGuiApp {
             (l.empty_nexts, l.password_link, l.password_login) = (0, false, false);
         }
         l.focus_on(Stop::Field);
+        l.slot = l.first_slot();
         if screen == Screen::Verify {
             return self.start_login_verification();
         }
@@ -825,7 +912,7 @@ impl BeeperGuiApp {
                     l.invalid = Some(e);
                     return operation::focus(EMAIL_INPUT);
                 }
-                l.code.clear();
+                (l.code, l.slot) = (String::new(), 0);
                 l.tried_codes.clear();
                 return self.background(move |c| {
                     // Desktop's `provisionLogin`: a server without the email login, or any failure, refuses.
@@ -847,11 +934,36 @@ impl BeeperGuiApp {
                     return self.update_login(LoginMsg::SubmitCode);
                 }
             }
+            LoginMsg::Slot(text, pasted) => {
+                // Desktop's paste of a whole code anywhere in the window (`onPasteText`) sends it.
+                let whole: String = text.split_whitespace().collect();
+                let code = match pasted {
+                    true if whole.len() == CODE_SLOTS && whole.chars().all(|c| c.is_ascii_digit()) => whole,
+                    true => slot_paste(&l.code, l.slot, &text),
+                    // A digit takes the place of the digit of the slot, and other text goes nowhere.
+                    false => match text.chars().last().filter(char::is_ascii_digit) {
+                        Some(d) => {
+                            let (code, slot) = slot_digit(&l.code, l.slot, d);
+                            l.slot = slot;
+                            code
+                        }
+                        None => return Task::none(),
+                    },
+                };
+                return self.update_login(LoginMsg::Code(code));
+            }
+            // Desktop's `handleFocus`: a press on the slots clears a refused code and focuses the first empty slot.
+            LoginMsg::SlotsPressed => {
+                l.focus_on(Stop::Field);
+                let clear = l.error.is_some().then(|| self.update_login(LoginMsg::Code(String::new())));
+                self.login.slot = self.login.first_slot();
+                return Task::batch(clear.into_iter().chain([operation::focus(CODE_INPUT)]));
+            }
             LoginMsg::SubmitCode if l.busy => {}
             LoginMsg::SubmitCode => {
                 let (request, code) = (l.request.clone(), l.code.clone());
                 l.tried_codes.push(code.clone());
-                return self.background(move |c| match c.send_login_code(&request, &code)? {
+                return self.background(move |c| match c.send_login_code(&request, &code).map_err(code_error)? {
                     CodeResult::Token(jwt) => session(c, &jwt),
                     CodeResult::Registration { lead_token, username_suggestions } => {
                         Ok(Outcome::Lead(lead_token, username_suggestions))
@@ -1228,8 +1340,8 @@ impl BeeperGuiApp {
                         .chars()
                         .nth(i)
                         .map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(36.0)).color(ink).into());
-                    let at = focused && i == l.code.len().min(5);
-                    let caret = (at && i == l.code.len())
+                    let at = focused && i == l.slot;
+                    let caret = (at && i >= l.code.len())
                         .then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
                     let edge = match (error, at) {
                         (true, _) => ERROR_RED,
@@ -1243,13 +1355,19 @@ impl BeeperGuiApp {
                     container(slot).padding(2).style(bordered_box(CLEAR, edge, 2.0, 14.0)).into()
                 }))
                 .spacing(4);
-                let capture = text_input("", &l.code)
+                // Each slot of Desktop is an input; beeper-rs takes their typing and pastes in one empty input over them,
+                // and its keys in `code_key`. A press focuses the first empty slot.
+                let capture = text_input("", "")
                     .id(CODE_INPUT)
-                    .on_input(|v| LoginMsg::Code(v).into())
+                    .on_input(|v| LoginMsg::Slot(v, false).into())
+                    .on_paste(|v| LoginMsg::Slot(v, true).into())
                     .size(28)
                     .padding(14)
                     .style(input_style(CLEAR, CLEAR, CLEAR, CLEAR, 0.0));
-                let otp = stack![container(slots).center_x(Fill), container(capture).height(60)].height(60);
+                let press = mouse_area(container(Space::new()).width(Fill).height(60))
+                    .interaction(iced::mouse::Interaction::Text)
+                    .on_press(LoginMsg::SlotsPressed.into());
+                let otp = stack![container(slots).center_x(Fill), container(capture).height(60), press].height(60);
                 // `otpContainer`: the lock animation, 70 px over the heading, and the 4 px under its inline box, with the
                 // slots on its bottom edge.
                 let lock =
@@ -1484,6 +1602,9 @@ impl BeeperGuiApp {
         if let Some((h, digit)) = self.find_hotkey(&key, mods).filter(|(h, _)| crate::SIGN_IN_HOTKEYS.contains(h)) {
             return self.run_hotkey(h, digit);
         }
+        if let Some(task) = self.code_key(&key, mods) {
+            return task;
+        }
         let l = &mut self.login;
         let stops = l.stops();
         match key {
@@ -1492,7 +1613,11 @@ impl BeeperGuiApp {
             }
             Key::Named(Named::Tab) if (mods - Modifiers::SHIFT).is_empty() => {
                 return match l.focus.step(stops, mods.shift()) {
-                    Some(Stop::Field) => operation::focus(l.screen.field().expect("a screen with a field")),
+                    Some(Stop::Field) => {
+                        // Chromium's Tab goes into the first slot of the code, and Shift+Tab into the last one.
+                        l.slot = if mods.shift() { CODE_SLOTS - 1 } else { 0 };
+                        operation::focus(l.screen.field().expect("a screen with a field"))
+                    }
                     Some(Stop::Password) => operation::focus(PASSWORD_INPUT),
                     Some(_) => crate::focus::blur(),
                     None => Task::none(),
@@ -1507,14 +1632,50 @@ impl BeeperGuiApp {
         Task::none()
     }
 
+    /// Desktop's `handleKeyDown` of `OTPInput` on the code screen: Backspace, Delete, ←, → and Tab on the focused
+    /// slot, and Shift+Tab to the slot before it. Outside the slots, the window's `keydown` handler gives the same
+    /// keys to the first empty slot, which takes the focus when they move it, and keeps Tab there.
+    fn code_key(&mut self, key: &Key, mods: Modifiers) -> Option<Task<UiMessage>> {
+        let l = &mut self.login;
+        let Key::Named(k) = *key else { return None };
+        let inside = l.stop() == Some(Stop::Field);
+        if l.screen != Screen::Code || !(mods - Modifiers::SHIFT).is_empty() {
+            return None;
+        }
+        if k == Named::Tab && mods.shift() {
+            // Each slot is an input, so Chromium's Shift+Tab goes to the slot before.
+            return (inside && l.slot > 0).then(|| {
+                l.slot -= 1;
+                Task::none()
+            });
+        }
+        let at = if inside { l.slot } else { l.first_slot() };
+        let (code, slot) = slot_key(&l.code, at, k)?;
+        let focus = (inside || slot != at).then(|| {
+            l.slot = slot;
+            l.focus_on(Stop::Field);
+            operation::focus(CODE_INPUT)
+        });
+        // Backspace and Delete change the code through `onChange`, which clears the error.
+        let edit = matches!(k, Named::Backspace | Named::Delete).then(|| self.update_login(LoginMsg::Code(code)));
+        Some(Task::batch(focus.into_iter().chain(edit)))
+    }
+
     /// Text typed in the sign-in window outside a text field: Space presses the focused control, and a digit goes
     /// into the code, like Desktop's `keydown` handler of the code screen.
     pub fn login_text(&mut self, text: &str) -> Task<UiMessage> {
         let l = &mut self.login;
         if l.screen == Screen::Code && text.len() == 1 && text.chars().all(|c| c.is_ascii_digit()) {
-            l.focus_on(Stop::Field);
-            let code = format!("{}{text}", l.code);
-            return Task::batch([self.update_login(LoginMsg::Code(code)), operation::focus(CODE_INPUT)]);
+            let at = l.first_slot();
+            let (code, slot) = slot_digit(&l.code, at, text.chars().next().expect("a digit"));
+            // The focus goes to the next slot, so a digit in the last slot leaves it where it is.
+            let inside = at < CODE_SLOTS - 1;
+            if inside {
+                l.slot = slot;
+                l.focus_on(Stop::Field);
+            }
+            let code = self.update_login(LoginMsg::Code(code));
+            return Task::batch([code].into_iter().chain(inside.then(|| operation::focus(CODE_INPUT))));
         }
         let field = |s: &Stop| matches!(s, Stop::Field | Stop::Password);
         let stop = l.stop().filter(|s| !field(s) && text == " ");
@@ -1582,6 +1743,33 @@ mod tests {
         }
     }
 
+    /// Desktop's `OTPInput` keys: Backspace empties the slot and closes the code up, then goes back a slot; Delete
+    /// pulls the digits after the slot into it, and takes the last digit from an empty slot; → and Tab go on only
+    /// from a slot with a digit; Tab on the last slot is Chromium's.
+    #[test]
+    fn code_slot_keys_like_desktop() {
+        use iced::keyboard::key::Named::{ArrowLeft, ArrowRight, Backspace, Delete, Tab};
+        let key = super::slot_key;
+        assert_eq!(key("123", 3, Backspace), Some(("123".into(), 2)), "an empty slot goes back without a digit");
+        assert_eq!(key("123", 2, Backspace), Some(("12".into(), 1)));
+        assert_eq!(key("123456", 1, Backspace), Some(("13456".into(), 0)), "the code closes up");
+        assert_eq!(key("", 0, Backspace), Some(("".into(), 0)));
+        assert_eq!(key("123456", 1, Delete), Some(("13456".into(), 1)), "Delete keeps the slot");
+        assert_eq!(key("123", 3, Delete), Some(("12".into(), 3)), "an empty slot takes the last digit");
+        assert_eq!(key("", 0, Delete), Some(("".into(), 0)));
+        assert_eq!(key("12", 0, ArrowLeft), Some(("12".into(), 0)));
+        assert_eq!(key("12", 1, ArrowRight), Some(("12".into(), 2)));
+        assert_eq!(key("12", 2, ArrowRight), Some(("12".into(), 2)), "→ stops at the first empty slot");
+        assert_eq!(key("12", 1, Tab), Some(("12".into(), 2)));
+        assert_eq!(key("12", 2, Tab), Some(("12".into(), 2)), "Tab stays on an empty slot");
+        assert_eq!(key("123456", 5, Tab), None, "Tab leaves the last slot");
+        assert_eq!(key("123456", 5, ArrowRight), Some(("123456".into(), 5)));
+        assert_eq!(super::slot_digit("123456", 2, '9'), ("129456".into(), 3), "a digit takes the slot's place");
+        assert_eq!(super::slot_digit("12345", 5, '6'), ("123456".into(), 5), "the last slot keeps the focus");
+        assert_eq!(super::slot_paste("1", 1, "9 8x"), "198", "a paste fills the slots from the focused one");
+        assert_eq!(super::slot_paste("12345", 4, "987"), "123498", "up to the last slot");
+    }
+
     use super::{LoginMsg, Outcome, Screen, Stop};
     use crate::fuzz::{signed_out_app, task_actions, task_messages};
     use crate::{BeeperGuiApp, UiMessage};
@@ -1604,8 +1792,83 @@ mod tests {
         }
     }
 
+    /// Desktop's six slot inputs of the code: the focus starts on the first empty slot, a digit takes the place of
+    /// the digit of the slot, ←, Backspace and Shift+Tab go back a slot, and Delete keeps it. Outside the slots, the
+    /// window gives the keys to the first empty slot and keeps Tab there. A press on refused slots clears them.
+    #[test]
+    fn the_code_slots_take_the_keys_like_desktop() {
+        use iced::keyboard::{key::Named, Key, Modifiers};
+        let mut app = signed_out_app("code-slots");
+        let id = app.login_window.expect("the sign-in window");
+        let _ = app.update(LoginMsg::Email("alex@example.com".into()).into());
+        let _ = app.update(LoginMsg::Done(Ok(Outcome::Requested("req_1".into()))).into());
+        let key = |app: &mut BeeperGuiApp, k: Named, mods: Modifiers| {
+            let _ = app.update(UiMessage::WindowKey(id, Key::Named(k), mods));
+            (app.login.code.clone(), app.login.slot)
+        };
+        let typed = |app: &mut BeeperGuiApp, d: &str| {
+            let _ = app.update(LoginMsg::Slot(d.into(), false).into());
+            (app.login.code.clone(), app.login.slot)
+        };
+        let none = Modifiers::empty();
+        assert_eq!((app.login.focus.get(), app.login.slot), (Some(Stop::Field), 0), "the first slot has the focus");
+        for d in ["1", "2"] {
+            typed(&mut app, d);
+        }
+        assert_eq!(typed(&mut app, "3"), ("123".into(), 3), "each digit moves the focus on");
+        assert_eq!(typed(&mut app, "x"), ("123".into(), 3), "other text goes nowhere");
+        assert_eq!(key(&mut app, Named::ArrowLeft, none), ("123".into(), 2));
+        assert_eq!(typed(&mut app, "9"), ("129".into(), 3), "a digit takes the place of the 3");
+        assert_eq!(key(&mut app, Named::Backspace, none), ("129".into(), 2), "an empty slot goes back");
+        assert_eq!(key(&mut app, Named::Backspace, none), ("12".into(), 1), "and the next Backspace takes the 9");
+        assert_eq!(key(&mut app, Named::Tab, Modifiers::SHIFT), ("12".into(), 0), "Shift+Tab goes to the slot before");
+        assert_eq!(app.login.focus.get(), Some(Stop::Field), "inside the code");
+        assert_eq!(key(&mut app, Named::Delete, none), ("2".into(), 0), "Delete pulls the 2 into the slot");
+
+        app.login.focus.set(Some(Stop::Resend));
+        assert_eq!(key(&mut app, Named::Tab, none), ("2".into(), 0));
+        assert_eq!(app.login.focus.get(), Some(Stop::Resend), "the window keeps Tab before the last slot");
+        assert_eq!(
+            key(&mut app, Named::Backspace, none),
+            ("2".into(), 0),
+            "Backspace goes back from the first empty slot"
+        );
+        assert_eq!(app.login.focus.get(), Some(Stop::Field), "and takes the focus into the code");
+        app.login.focus.set(Some(Stop::Resend));
+        let _ = app.update(UiMessage::WindowText(id, "7".into()));
+        assert_eq!((app.login.code.as_str(), app.login.slot), ("27", 2), "a digit outside fills the first empty slot");
+        assert_eq!(app.login.focus.get(), Some(Stop::Field));
+
+        app.login.error = Some("Invalid code. Please try again.".into());
+        let _ = app.update(LoginMsg::SlotsPressed.into());
+        assert_eq!((app.login.code.as_str(), app.login.slot, app.login.error.is_none()), ("", 0, true));
+    }
+
     fn shows(app: &BeeperGuiApp, text: &str) -> bool {
         simulator(app.view_login()).find(text).is_ok()
+    }
+
+    /// Desktop's texts of a refused code: the server's `errorMessage` under the heading, "Invalid code. Please try
+    /// again." once the server counts two retries, and the message of a 5xx in the toast.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refused_codes_show_desktops_text() {
+        let url = beeper_core::bridge_stub::serve(|_, path, body| match (path, body["response"].as_str()) {
+            ("/user/login/response", Some("111111")) => (401, json!({ "errorMessage": "Wrong code", "retries": 1 })),
+            ("/user/login/response", Some("222222")) => (401, json!({ "errorMessage": "Wrong code", "retries": 2 })),
+            ("/user/login/response", _) => (503, json!({ "error": "Service unavailable" })),
+            _ => (404, json!({ "errcode": "M_UNRECOGNIZED" })),
+        })
+        .await;
+        let mut app = stub_sign_in("code-errors", &url);
+        let _ = app.update(LoginMsg::Done(Ok(Outcome::Requested("req".into()))).into());
+        let texts = |app: &BeeperGuiApp| (app.login.error.clone(), app.login.toast.clone());
+        settle(&mut app, LoginMsg::Code("111111".into()).into()).await;
+        assert_eq!(texts(&app), (Some("Wrong code".into()), None), "the server's message");
+        assert!(shows(&app, "Wrong code"), "under the heading");
+        settle(&mut app, LoginMsg::Code("222222".into()).into()).await;
+        assert_eq!(texts(&app), (Some("Invalid code. Please try again.".into()), None), "after two retries");
+        settle(&mut app, LoginMsg::Code("333333".into()).into()).await;
+        assert_eq!(texts(&app), (None, Some("Service unavailable".into())), "a 5xx in the toast");
     }
 
     /// Desktop's `UsernameInput`: the spinner while a name waits for its debounced check, one server check for the

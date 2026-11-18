@@ -107,7 +107,8 @@ async fn sync_loop(store: SharedStore) {
 
 /// One request with the token of the stub store and a JSON body, and the status and body of the reply.
 async fn call(port: u16, method: &str, path: &str, body: Value) -> (u16, Value) {
-    let body = body.to_string();
+    // Desktop's body parser refuses a JSON body that is not an object or an array, like `null`.
+    let body = if body.is_null() { String::new() } else { body.to_string() };
     let req = format!(
         "{method} {path} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer token\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
