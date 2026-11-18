@@ -6,7 +6,6 @@ use super::*;
 use crate::composer::hidden_actions;
 use crate::merge_editor::{merge_keys, mergeable, other, MERGE_HELP};
 use crate::message::raised;
-use beeper_core::store::activity_key;
 use iced::widget::{column, rich_text, span};
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
@@ -64,68 +63,130 @@ fn suggestable(st: &BeeperStore, c: &Chat) -> bool {
 }
 
 /// Desktop's `mergeSuggestions`: the groups of 2 chats or more that share a key, also through each other, the
-/// biggest first, then the one of the newest activity.
+/// biggest first, then the one of the newest activity. The views show the group of one chat, which
+/// [`suggestion_of`] finds without the other groups; the tests check it against all of them.
+#[cfg(test)]
 pub(crate) fn merge_suggestions(st: &BeeperStore) -> Vec<Suggestion> {
-    let keyed: Vec<(usize, Vec<String>)> = st
-        .chats
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| suggestable(st, c))
-        .map(|(i, c)| (i, merge_keys(c)))
-        .filter(|(_, k)| !k.is_empty())
-        .collect();
-    let keys_of: HashMap<usize, &[String]> = keyed.iter().map(|(i, k)| (*i, k.as_slice())).collect();
-    let mut by_key: HashMap<&str, Vec<usize>> = HashMap::new();
-    for (i, keys) in &keyed {
-        for k in keys {
-            by_key.entry(k).or_default().push(*i);
-        }
-    }
-    let mut seen = HashSet::new();
+    let keyed = keyed_chats(st);
+    let (keys_of, by_key) = key_index(st, &keyed);
+    let mut seen = vec![false; st.chats.len()];
     let mut groups: Vec<(Vec<usize>, BTreeSet<&str>)> = Vec::new();
     for &(start, _) in &keyed {
-        if !seen.insert(start) {
+        if seen[start] {
             continue;
         }
-        let (mut rooms, mut keys, mut todo) = (vec![start], BTreeSet::new(), vec![start]);
-        while let Some(d) = todo.pop() {
-            for k in keys_of[&d] {
-                keys.insert(k.as_str());
-                for &l in &by_key[k.as_str()] {
-                    if seen.insert(l) {
-                        rooms.push(l);
-                        todo.push(l);
-                    }
-                }
-            }
-        }
+        let (rooms, keys) = sharing(start, &keys_of, &by_key, &mut seen);
         if rooms.len() >= 2 {
             groups.push((rooms, keys));
         }
     }
-    let newest = |rooms: &[usize]| rooms.iter().map(|&i| activity_key(&st.chats[i]).0).max();
-    groups.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| newest(&b.0).cmp(&newest(&a.0))));
-    let full_name = |i: &usize| other(&st.chats[*i]).and_then(|u| u.full_name.clone()).filter(|n| !n.is_empty());
-    groups
-        .into_iter()
-        .map(|(rooms, keys)| Suggestion {
-            title: rooms.iter().find_map(full_name).unwrap_or_else(|| st.chats[rooms[0]].title.clone()),
-            rooms: rooms.into_iter().map(|i| st.chats[i].id.clone()).collect(),
-            keys: keys.into_iter().map(String::from).collect(),
-        })
-        .collect()
+    let newest = |rooms: &[usize]| rooms.iter().map(|&i| beeper_core::store::activity_ms(&st.chats[i])).max();
+    groups.sort_by_cached_key(|g| std::cmp::Reverse((g.0.len(), newest(&g.0))));
+    groups.into_iter().map(|(rooms, keys)| suggestion(st, rooms, keys)).collect()
 }
 
-/// Desktop's `suggestionByRoom` of the chat `id`, which Chat Info shows (`getChatInfoSuggestion`).
+/// Desktop's `suggestionByRoom` of the chat `id`, which Chat Info shows (`getChatInfoSuggestion`): the group of
+/// `merge_suggestions` with the chat, found from the chat without the other groups.
 pub(crate) fn suggestion_of(st: &BeeperStore, id: &str) -> Option<Suggestion> {
-    merge_suggestions(st).into_iter().find(|s| s.rooms.iter().any(|r| r == id))
+    let chat = st.resolve_chat_idx(id).filter(|&i| st.chats[i].id == id)?;
+    if !suggestable(st, &st.chats[chat]) || merge_keys(&st.chats[chat]).is_empty() {
+        return None;
+    }
+    let keyed = keyed_chats(st);
+    // The chats that share a key with the chat, also through each other: each pass adds the chats with a key of the
+    // chats before, until a pass adds none.
+    let mut group: Vec<bool> = keyed.iter().map(|k| k.0 == chat).collect();
+    let mut keys: HashSet<&str> = keyed.iter().filter(|k| k.0 == chat).flat_map(|k| &k.1).map(String::as_str).collect();
+    let mut grew = true;
+    while std::mem::take(&mut grew) {
+        for (n, (_, ks)) in keyed.iter().enumerate() {
+            if !group[n] && ks.iter().any(|k| keys.contains(k.as_str())) {
+                (group[n], grew) = (true, true);
+                keys.extend(ks.iter().map(String::as_str));
+            }
+        }
+    }
+    let group: Vec<(usize, Vec<String>)> = keyed.into_iter().zip(group).filter(|g| g.1).map(|g| g.0).collect();
+    // `merge_suggestions` finds the group from its first chat, which gives the order of its chats. No other chat has
+    // a key of the group, so the index of the group finds the same order.
+    let (keys_of, by_key) = key_index(st, &group);
+    let (rooms, keys) = sharing(group[0].0, &keys_of, &by_key, &mut vec![false; st.chats.len()]);
+    (rooms.len() >= 2).then(|| suggestion(st, rooms, keys))
 }
 
-/// Desktop's `getMergeSuggestionForThread`, which the banner shows: the suggestion of the chat unless one of its keys
-/// was dismissed (`isSuggestionDismissed`).
-pub(crate) fn banner_suggestion(st: &BeeperStore, id: &str) -> Option<Suggestion> {
-    let dismissed = &st.settings.merge_suggestion_dismissed_keys;
-    suggestion_of(st, id).filter(|s| !s.keys.iter().any(|k| dismissed.contains(k)))
+/// The suggestable chats with merge keys, as indices of `chats`, with their keys.
+fn keyed_chats(st: &BeeperStore) -> Vec<(usize, Vec<String>)> {
+    let keyed = st.chats.iter().enumerate().filter(|(_, c)| suggestable(st, c));
+    keyed.map(|(i, c)| (i, merge_keys(c))).filter(|(_, k)| !k.is_empty()).collect()
+}
+
+/// The keys of each chat by its index in `chats`, and the chats of each key.
+type KeyIndex<'a> = (Vec<&'a [String]>, HashMap<&'a str, Vec<usize>>);
+
+fn key_index<'a>(st: &BeeperStore, keyed: &'a [(usize, Vec<String>)]) -> KeyIndex<'a> {
+    let mut keys_of: Vec<&[String]> = vec![&[]; st.chats.len()];
+    let mut by_key: HashMap<&str, Vec<usize>> = HashMap::with_capacity(keyed.len() * 3);
+    for (i, keys) in keyed {
+        keys_of[*i] = keys;
+        for k in keys {
+            by_key.entry(k).or_default().push(*i);
+        }
+    }
+    (keys_of, by_key)
+}
+
+/// The chats that share a key with the chat `start`, also through each other, in the order that finds them, and
+/// their keys. It marks them `seen`, and skips the chats that are seen already.
+fn sharing<'a>(
+    start: usize,
+    keys_of: &[&'a [String]],
+    by_key: &HashMap<&str, Vec<usize>>,
+    seen: &mut [bool],
+) -> (Vec<usize>, BTreeSet<&'a str>) {
+    seen[start] = true;
+    let (mut rooms, mut keys, mut todo) = (vec![start], BTreeSet::new(), vec![start]);
+    while let Some(d) = todo.pop() {
+        for k in keys_of[d] {
+            keys.insert(k.as_str());
+            for &l in &by_key[k.as_str()] {
+                if !std::mem::replace(&mut seen[l], true) {
+                    rooms.push(l);
+                    todo.push(l);
+                }
+            }
+        }
+    }
+    (rooms, keys)
+}
+
+/// The suggestion of the chats `rooms` with the keys `keys`.
+fn suggestion(st: &BeeperStore, rooms: Vec<usize>, keys: BTreeSet<&str>) -> Suggestion {
+    let full_name = |i: &usize| other(&st.chats[*i]).and_then(|u| u.full_name.clone()).filter(|n| !n.is_empty());
+    Suggestion {
+        title: rooms.iter().find_map(full_name).unwrap_or_else(|| st.chats[rooms[0]].title.clone()),
+        rooms: rooms.into_iter().map(|i| st.chats[i].id.clone()).collect(),
+        keys: keys.into_iter().map(String::from).collect(),
+    }
+}
+
+impl BeeperGuiApp {
+    /// [`suggestion_of`], computed once for each chat and store generation.
+    pub(crate) fn suggestion_of(&self, st: &BeeperStore, id: &str) -> Option<Suggestion> {
+        let Some(memo) = self.memo() else { return suggestion_of(st, id) };
+        let known = memo.suggestions.borrow().get(id).cloned();
+        known.unwrap_or_else(|| {
+            let s = suggestion_of(st, id);
+            memo.suggestions.borrow_mut().insert(id.to_string(), s.clone());
+            s
+        })
+    }
+
+    /// Desktop's `getMergeSuggestionForThread`, which the banner shows: the suggestion of the chat unless one of its
+    /// keys was dismissed (`isSuggestionDismissed`).
+    pub(crate) fn banner_suggestion(&self, st: &BeeperStore, id: &str) -> Option<Suggestion> {
+        let dismissed = &st.settings.merge_suggestion_dismissed_keys;
+        self.suggestion_of(st, id).filter(|s| !s.keys.iter().any(|k| dismissed.contains(k)))
+    }
 }
 
 /// An SVG of `w` by `h` in one color.
@@ -206,7 +267,8 @@ impl BeeperGuiApp {
         let Some(idx) = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)) else { return };
         let (id, s) = (st.chats[idx].id.clone(), &st.settings);
         let rooms = &s.merge_suggestion_seen_rooms;
-        let banner = rooms.len() < BANNER_SHOW_LIMIT && !rooms.contains(&id) && banner_suggestion(&st, &id).is_some();
+        let banner =
+            rooms.len() < BANNER_SHOW_LIMIT && !rooms.contains(&id) && self.banner_suggestion(&st, &id).is_some();
         // Desktop's `hasMergedChatSwitcher`: the `chat` switch targets, of 2 member chats or more, by the text composer.
         let switcher = st.members(idx).len() >= 2 && !st.chats[idx].exited();
         let rooms = &s.target_switcher_nudge_seen_rooms;
@@ -271,7 +333,7 @@ impl BeeperGuiApp {
     /// "Merge options" and Dismiss, on an elevated card whose tail points at the header. It needs the banner shown at
     /// the mount of the chat and a suggestion of the chat that was not dismissed.
     pub(crate) fn view_merge_banner<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
-        let s = self.pane().merge_banner.then(|| banner_suggestion(st, &chat.id))??;
+        let s = self.pane().merge_banner.then(|| self.banner_suggestion(st, &chat.id))??;
         let p = &self.pal;
         let n = s.rooms.len();
         let title = trn("%d chat on", "%d chats on", n, &[&n]);
@@ -303,7 +365,7 @@ impl BeeperGuiApp {
     /// Desktop's `BrandChatInfoPaneMergeChats` promo (`G7t`) in Chat Info until it is dismissed: the Plus pill and
     /// Dismiss, the networks of the chats, "View all your chats with %s as one conversation" and "Merge Chats".
     pub(crate) fn view_merge_promo<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
-        let s = (!st.settings.chat_info_merge_promo_dismissed).then(|| suggestion_of(st, &chat.id))??;
+        let s = (!st.settings.chat_info_merge_promo_dismissed).then(|| self.suggestion_of(st, &chat.id))??;
         let p = &self.pal;
         let close = button(container(ic(icon::CLOSE, 16.0).color(p.muted)).center(34))
             .padding(0)
@@ -338,7 +400,7 @@ impl BeeperGuiApp {
     /// Chats" with the Plus pill, a card of "View all these chats together" over their networks that opens the merge
     /// editor, and "You can separate them anytime. Learn more".
     pub(crate) fn view_merge_card<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
-        let s = st.settings.chat_info_merge_promo_dismissed.then(|| suggestion_of(st, &chat.id))??;
+        let s = st.settings.chat_info_merge_promo_dismissed.then(|| self.suggestion_of(st, &chat.id))??;
         let p = &self.pal;
         // The pill reaches 5 px over and under the 14 px line of the title.
         let head =
@@ -472,7 +534,7 @@ mod tests {
         let lena = app.store.read().chat_idx(LENA);
         app.store.write().update_chat(lena, |c| c.block = BLOCK_USER | USER_BLOCKED);
         app.store.write().features.flags["features"]["*"]["block-users"] = true.into();
-        assert!(suggestion_of(&app.store.read(), KAI).is_none(), "a blocked person is not suggested");
+        assert!(app.suggestion_of(&app.store.read(), KAI).is_none(), "a blocked person is not suggested");
     }
 
     /// Desktop's `MergeSuggestionBanner`: "2 chats on" over their networks under the header, in the first 3 chats that
@@ -507,7 +569,7 @@ mod tests {
         assert!(!app.pane.merge_banner, "nor the third again");
         app.store.write().update_settings(|s| s.merge_suggestion_seen_rooms.clear());
         let _ = app.update(UiMessage::SelectChat(KAI.into()));
-        let keys = suggestion_of(&app.store.read(), KAI).expect("a suggestion").keys;
+        let keys = app.suggestion_of(&app.store.read(), KAI).expect("a suggestion").keys;
         let _ = app.update(UiMessage::MergeSuggest(Msg::Dismiss(keys)));
         assert!(simulator(app.view_main()).find("2 chats on").is_err(), "Dismiss hides it");
     }
@@ -519,7 +581,7 @@ mod tests {
         let mut app = same_person_app("suggest-info");
         let _ = app.update(UiMessage::SelectChat(KAI.into()));
         app.show_right_panel = true;
-        let keys = suggestion_of(&app.store.read(), KAI).expect("a suggestion").keys;
+        let keys = app.suggestion_of(&app.store.read(), KAI).expect("a suggestion").keys;
         let _ = app.update(UiMessage::MergeSuggest(Msg::Dismiss(keys)));
         let opens = |m: &UiMessage| matches!(m, UiMessage::Merged(merged::Msg::Open(None, r)) if r.len() == 2);
         {

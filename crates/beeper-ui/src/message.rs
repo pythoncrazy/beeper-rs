@@ -719,6 +719,7 @@ impl Rows {
         let roots: Vec<&str> = msgs.iter().map(|m| reply_root(st, m)).collect();
         let mut later: HashMap<&str, usize> = HashMap::new();
         let mut counts = vec![0; n];
+        let day: Vec<i64> = msgs.iter().map(|m| day_num(&m.timestamp)).collect();
         for i in (0..n).rev() {
             let k = later.entry(roots[i]).or_insert(0);
             (counts[i], *k) = (*k, *k + 1);
@@ -733,9 +734,7 @@ impl Rows {
             gallery: gallery::starts(st, msgs, &counts),
             counts,
             keys: msgs.iter().map(|m| vlist::key(&m.id)).collect(),
-            days: (0..n)
-                .filter(|&i| i == 0 || day_num(&msgs[i - 1].timestamp) != day_num(&msgs[i].timestamp))
-                .collect(),
+            days: (0..n).filter(|&i| i == 0 || day[i - 1] != day[i]).collect(),
         }
     }
 }

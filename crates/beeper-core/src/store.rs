@@ -276,9 +276,14 @@ fn demo_state() -> BeeperStateRecord {
 /// The key of a chat in `chat_order`: the last activity in Unix milliseconds (0 without activity) and the chat ID.
 /// The order of a chat in the list: Desktop's `activityTimestamp`, the newer of its activity and its draft.
 pub fn activity_key(c: &Chat) -> (i64, String) {
+    (activity_ms(c), c.id.clone())
+}
+
+/// The time of [`activity_key`].
+pub fn activity_ms(c: &Chat) -> i64 {
     let ms = c.last_activity.as_deref().map(|t| millis_from_rfc3339(t).expect("RFC 3339 activity"));
     let draft = c.draft.as_ref().and_then(|d| d.ts);
-    (ms.unwrap_or(0).max(draft.unwrap_or(0)), c.id.clone())
+    ms.unwrap_or(0).max(draft.unwrap_or(0))
 }
 
 /// What a merged chat shows of its member chats.
@@ -1274,27 +1279,46 @@ impl BeeperStore {
         self.put_kv(KEY_SETUP, how.key());
     }
 
+    /// Runs `f` with its writes to SQLite in one transaction, so that they make one commit, or in the transaction
+    /// that is open already.
+    pub fn batch<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = self.db.lock().unwrap().is_autocommit();
+        if outer {
+            self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin a batch");
+        }
+        let r = f(self);
+        if outer {
+            self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit a batch");
+        }
+        r
+    }
+
+    /// Adds new chats and their messages in one SQLite transaction. A message without a sort key takes the next one.
+    pub fn add_all(&mut self, chats: Vec<Chat>, messages: Vec<Message>) {
+        self.batch(|st| {
+            let (first_chat, first_message) = (st.chats.len(), st.messages.len());
+            for c in chats {
+                st.push_chat(c, true);
+            }
+            for mut m in messages {
+                if m.sort_key.is_empty() {
+                    st.next_seq += 1;
+                    m.sort_key = sort_key(st.next_seq);
+                }
+                st.push_message(m, false);
+            }
+            (first_chat..st.chats.len()).for_each(|i| st.persist_chat(i));
+            (first_message..st.messages.len()).for_each(|i| st.persist_message(i));
+            st.persist_seq();
+        });
+        self.unload_old();
+    }
+
     pub fn import_beeper(&mut self, data: crate::import::BeeperData) {
         assert!(self.setup.is_none() && !self.signed_in(), "import into a store that is already set up");
         assert!(self.chats.is_empty() && self.messages.is_empty(), "import into a store that has chats");
-        self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin import transaction");
         self.finish_setup(Setup::Imported);
-        let (chats, messages) = (self.chats.len(), self.messages.len());
-        for c in data.chats {
-            self.push_chat(c, true);
-        }
-        for mut m in data.messages {
-            if m.sort_key.is_empty() {
-                self.next_seq += 1;
-                m.sort_key = sort_key(self.next_seq);
-            }
-            self.push_message(m, false);
-        }
-        (chats..self.chats.len()).for_each(|i| self.persist_chat(i));
-        (messages..self.messages.len()).for_each(|i| self.persist_message(i));
-        self.persist_seq();
-        self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit import transaction");
-        self.unload_old();
+        self.add_all(data.chats, data.messages);
         self.pin_rank = data.pin_rank;
         self.recent_chat_ids = data.recent_chat_ids;
         if let Some(theme) = data.theme {
@@ -1687,7 +1711,8 @@ impl BeeperStore {
 
     /// Desktop's `isUserBlocked`.
     pub fn user_blocked(&self, c: &Chat) -> bool {
-        self.can_block(c) && c.block & USER_BLOCKED != 0
+        // The bit first: the feature flag is a slower read.
+        c.block & USER_BLOCKED != 0 && self.can_block(c)
     }
 
     /// Desktop's `setUserBlocked`: the bridge blocks (true) or unblocks the other person of a DM, and reports spam
@@ -1996,7 +2021,7 @@ impl BeeperStore {
         if c.flag(ChatFlag::Muted) {
             return true;
         }
-        if self.feature("labels-v2").on && !c.label_ids.is_empty() {
+        if !c.label_ids.is_empty() && self.feature("labels-v2").on {
             return c.label_ids.iter().all(|id| self.labels.iter().any(|l| &l.id == id && l.muted));
         }
         !self.settings.account(&c.account_id).notifications
@@ -3109,7 +3134,7 @@ impl BeeperStore {
 
     /// Desktop's `labelInboxVisibility`: the labels of a chat override the inbox rule of its account.
     fn label_flags(&self, c: &Chat) -> u16 {
-        if !self.feature("labels-v2").on || c.label_ids.is_empty() {
+        if c.label_ids.is_empty() || !self.feature("labels-v2").on {
             return c.flags;
         }
         let labels = self.labels.iter().filter(|l| c.label_ids.contains(&l.id));

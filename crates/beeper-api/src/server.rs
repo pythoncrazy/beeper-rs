@@ -12,7 +12,7 @@ use beeper_core::connect::{Token, READ};
 use beeper_core::matrix;
 use beeper_core::models::*;
 use beeper_core::platform::{extension_of, is_mime, mime_type_of, path_to_file_url, OsKind};
-use beeper_core::store::{activity_key, BeeperStore, Draft, OutFile, Query, SharedStore};
+use beeper_core::store::{activity_ms, BeeperStore, Draft, OutFile, Query, SharedStore};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -1860,7 +1860,7 @@ impl<'a> ChatSearch<'a> {
 
 /// Desktop's `timestamp` of a chat in Unix milliseconds: its last activity, or its newer draft.
 fn chat_time(c: &Chat) -> Option<i64> {
-    (c.last_activity.is_some() || c.draft.as_ref().is_some_and(|d| d.ts.is_some())).then(|| activity_key(c).0)
+    (c.last_activity.is_some() || c.draft.as_ref().is_some_and(|d| d.ts.is_some())).then(|| activity_ms(c))
 }
 
 /// A key of Desktop's chat search cursors: the title hits for a query in the scope `titles`, the time and the chat.

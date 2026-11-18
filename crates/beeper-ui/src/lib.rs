@@ -2600,6 +2600,10 @@ struct Memo {
     hits: std::cell::RefCell<Option<(HitsKey, Hits)>>,
     /// The unread threads of all chats, as the chat index and the root.
     threads: std::cell::RefCell<Option<Threads>>,
+    /// The merge suggestion of each chat that a view showed.
+    suggestions: std::cell::RefCell<HashMap<String, Option<merge_suggest::Suggestion>>>,
+    /// The chats that the space bar counts: unread, not archived nor requests, listed, and notifying.
+    counted: std::cell::RefCell<Option<Rc<[usize]>>>,
 }
 
 /// The query, the filters, the room and the partial matches of a command bar search.
@@ -3614,6 +3618,8 @@ impl BeeperGuiApp {
             self.memo.words.take();
             self.memo.hits.take();
             self.memo.threads.take();
+            self.memo.suggestions.borrow_mut().clear();
+            self.memo.counted.take();
         }
         Some(&self.memo)
     }
@@ -3636,7 +3642,7 @@ impl BeeperGuiApp {
         };
         let snoozed = |i: usize| st.chats[i].snoozed_until_ms.unwrap_or(i64::MAX);
         // Desktop's `activityTimestamp`: the newer of the activity and the draft.
-        let activity = |i: usize| beeper_core::store::activity_key(&st.chats[i]).0;
+        let activity = |i: usize| beeper_core::store::activity_ms(&st.chats[i]);
         match (self.list().active_tab, st.settings.reminders_order) {
             (InboxTab::Reminders, 0) => list.sort_by_key(|&i| (remind_at(i), i)),
             (InboxTab::Reminders, 1) => list.sort_by_key(|&i| (std::cmp::Reverse(remind_at(i)), i)),
@@ -4519,22 +4525,30 @@ impl BeeperGuiApp {
             UiMessage::QuickEmoji(None) => self.pane.emoji = None,
             UiMessage::Emoji(m) => return self.update_emoji(m),
             UiMessage::Upserted(m) => {
-                let mut st = self.store.write();
-                let due = st.take_due_scheduled(now_unix_millis());
-                let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_canonical_chat_id(c));
-                if open.as_ref() == Some(&m.chat_id)
-                    && self.pane.sched_fold == (false, false)
-                    && st.scheduled.iter().any(|s| s.chat_id == m.chat_id && !s.canceled)
-                {
-                    self.pane.sched_fold = (true, true);
-                }
                 // Desktop's thread pane reads a new reply that comes into view at the bottom of the thread.
                 let thread =
                     self.pane.thread.as_ref().filter(|t| t.thread_root.is_some() && t.thread_root == m.thread_root);
-                if self.focused && thread.is_some_and(|t| t.scrolled_up.is_none_or(|(up, _)| !up)) {
-                    st.mark_thread_read(&m.chat_id, m.thread_root.as_deref().expect("a thread reply"), None);
-                }
+                let read_thread = self.focused && thread.is_some_and(|t| t.scrolled_up.is_none_or(|(up, _)| !up));
+                let st = self.store.read();
+                let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_canonical_chat_id(c));
+                // A write lock moves the store generation, which empties the memo of the views, so only a change
+                // takes one: a scheduled message that can be due or canceled, or the read of the thread.
+                let changes = read_thread || !st.scheduled.is_empty();
                 drop(st);
+                let mut due = Vec::new();
+                if changes {
+                    let mut st = self.store.write();
+                    due = st.take_due_scheduled(now_unix_millis());
+                    if open.as_ref() == Some(&m.chat_id)
+                        && self.pane.sched_fold == (false, false)
+                        && st.scheduled.iter().any(|s| s.chat_id == m.chat_id && !s.canceled)
+                    {
+                        self.pane.sched_fold = (true, true);
+                    }
+                    if read_thread {
+                        st.mark_thread_read(&m.chat_id, m.thread_root.as_deref().expect("a thread reply"), None);
+                    }
+                }
                 if open.as_ref() == Some(&m.chat_id) {
                     self.read_open_chat();
                 }
@@ -6854,6 +6868,9 @@ pub type Networks = Vec<(String, Option<Option<User>>)>;
 
 #[cfg(test)]
 mod fuzz;
+
+#[cfg(test)]
+mod perf;
 
 #[cfg(test)]
 mod tests {
