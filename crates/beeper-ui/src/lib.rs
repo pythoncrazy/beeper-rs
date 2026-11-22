@@ -4823,6 +4823,11 @@ impl BeeperGuiApp {
                         return task;
                     }
                 }
+                if self.pane.emoji.is_some() && mods.is_empty() {
+                    if let Some(task) = self.emoji_key(&key) {
+                        return task;
+                    }
+                }
                 let n = self.suggestions(&self.store.read()).map_or(0, |(_, picks)| picks.len());
                 if n > 0 && mods.is_empty() {
                     let at = self.pane.suggest.min(n - 1);
