@@ -377,7 +377,7 @@ impl BeeperGuiApp {
                 .collect(),
             SubMenu::History => {
                 let chats: Vec<&Chat> =
-                    self.chat_history.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect();
+                    st.recent_chat_ids.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect();
                 let at = self.pane.selected_chat_id.as_ref().and_then(|id| chats.iter().position(|c| &c.id == id));
                 let mut v: Vec<Command> = chats
                     .iter()

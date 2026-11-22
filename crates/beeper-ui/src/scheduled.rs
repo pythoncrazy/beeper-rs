@@ -126,18 +126,25 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let first = st.scheduled.iter().find(|s| s.id == ids[0]).expect("a scheduled message");
         let (canceled, n, ids) = (first.canceled, ids.len(), ids.to_vec());
-        let item = |label: String, hotkey, msg: UiMessage| Some(menu_item(p, None, label, hotkey, Some(msg)));
+        let key = |name| hotkey_text(st.settings.hotkey_keys(name));
+        let item = |label: String, hotkey: &str, msg: UiMessage| {
+            Some(menu_item(p, None, label, hotkey.to_string(), Some(msg)))
+        };
         let ctx = "scheduled message menu action";
         let rows = [
             items.then(|| {
-                item(trx("Edit...", ctx).into(), "Ctrl T", UiMessage::Scheduled(scheduled::Msg::Edit(ids[0].clone())))
+                item(
+                    trx("Edit...", ctx).into(),
+                    &key("Message: Edit"),
+                    UiMessage::Scheduled(scheduled::Msg::Edit(ids[0].clone())),
+                )
             }),
             items.then(|| {
                 item(trx("Copy", ctx).into(), "Ctrl C", UiMessage::Message(message::Msg::CopyText(first.text.clone())))
             }),
             items.then(|| {
                 let forward = UiMessage::Scheduled(scheduled::Msg::Forward(ids[0].clone()));
-                item(trx("Forward...", "scheduled message menu action").into(), "Ctrl Shift F", forward)
+                item(trx("Forward...", "scheduled message menu action").into(), &key("Message: Forward"), forward)
             }),
             items.then(|| Some(menu_rule(p))),
             (!canceled).then(|| match n {

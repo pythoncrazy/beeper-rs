@@ -194,7 +194,7 @@ impl BeeperGuiApp {
             return;
         };
         let area = self.thread_area.get() - THREAD_GRIP;
-        let w = self.pane.size.width / self.zoom - 8.0 - at.x;
+        let w = self.pane.size.width - 8.0 - at.x;
         self.thread_fraction = w.min(area - MIN_PANE_W).max(MIN_PANE_W) / area;
     }
 
