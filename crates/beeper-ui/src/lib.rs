@@ -4065,16 +4065,10 @@ impl BeeperGuiApp {
     }
 
     pub fn step_chat(&mut self, delta: isize) {
-        let next = {
-            let st = self.store.read();
-            let chats = self.visible_chats(&st);
-            if chats.is_empty() {
-                return;
-            }
-            let cur = self.pane.selected_chat_id.as_ref().and_then(|id| chats.iter().position(|c| &c.id == id));
-            chats[(cur.unwrap_or(0) as isize + delta).rem_euclid(chats.len() as isize) as usize].id.clone()
-        };
-        self.select_chat(&next);
+        let next = self.chat_by(&self.store.read(), delta).map(|c| c.id.clone());
+        if let Some(next) = next {
+            self.select_chat(&next);
+        }
     }
 
     /// The chat list of the space window that `view` draws, else that of the main window; in `update`, the list of
@@ -6348,10 +6342,23 @@ impl BeeperGuiApp {
         moved
     }
 
+    /// Desktop's `chatListItems`: the chats in list order, the pinned tiles and then the rows.
+    pub(crate) fn listed_chats<'a>(&self, st: &'a BeeperStore) -> Vec<&'a Chat> {
+        let (pins, rows) = self.pins_and_rows(st);
+        pins.into_iter().chain(rows).collect()
+    }
+
     /// The chat IDs in list order: the pinned tiles, then the rows.
     fn list_ids(&self, st: &BeeperStore) -> Vec<String> {
-        let (pins, rows) = self.pins_and_rows(st);
-        pins.into_iter().chain(rows).map(|c| c.id.clone()).collect()
+        self.listed_chats(st).iter().map(|c| c.id.clone()).collect()
+    }
+
+    /// Desktop's `nextChatListItem` and `prevChatListItem`: the chat `by` places after the open chat in the list, or
+    /// after the start when the list does not show it, and none past either end.
+    pub(crate) fn chat_by<'a>(&self, st: &'a BeeperStore, by: isize) -> Option<&'a Chat> {
+        let chats = self.listed_chats(st);
+        let at = self.pane().selected_chat_id.as_ref().and_then(|id| chats.iter().position(|c| &c.id == id));
+        usize::try_from(at.map_or(-1, |a| a as isize) + by).ok().and_then(|i| chats.get(i).copied())
     }
 
     /// Desktop's `afterToggleArchive` and `afterToggleRead`: select a chat next to list position `at` by the `key`

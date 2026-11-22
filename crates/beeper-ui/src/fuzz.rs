@@ -1677,6 +1677,33 @@ fn composer_actions_follow_the_chat_like_desktop() {
     assert_eq!(composer_action(&st, &chat, 7, false), (format!("Add a sticker (Unavailable for {net})"), None, false));
 }
 
+/// Desktop's chat keys follow the list (`chatListItems`): the pinned tiles in their order, then the rows. Select
+/// Next and Previous Chat stop at the ends.
+#[test]
+fn chat_keys_follow_the_list_order_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("list-order-keys");
+    let list = app.list_ids(&app.store.read());
+    let by_activity: Vec<String> = app.visible_chats(&app.store.read()).iter().map(|c| c.id.clone()).collect();
+    assert_ne!(list[..9], by_activity[..9], "the pinned tiles are not the most recent chats");
+    let key = |app: &mut BeeperGuiApp, k: &str| {
+        let _ = app.update(UiMessage::KeyPressed(Key::Character(k.into()), Modifiers::CTRL));
+        app.pane.selected_chat_id.clone().expect("a selected chat")
+    };
+    for (i, id) in list.iter().take(9).enumerate() {
+        assert_eq!(&key(&mut app, &(i + 1).to_string()), id, "Ctrl {}", i + 1);
+    }
+    let _ = key(&mut app, "1");
+    assert_eq!(key(&mut app, "]"), list[1], "Select Next Chat");
+    let _ = key(&mut app, "[");
+    assert_eq!(key(&mut app, "["), list[0], "no chat before the first");
+    let last = list.last().expect("a chat").clone();
+    let _ = app.update(UiMessage::SelectChat(last.clone()));
+    assert_eq!(key(&mut app, "]"), last, "no chat after the last");
+    let unread = app.listed_chats(&app.store.read()).iter().find(|c| c.is_unread()).map(|c| c.id.clone());
+    assert_eq!(Some(key(&mut app, "u")), unread, "Select Next Unread Chat takes the first in the list");
+}
+
 #[test]
 fn history_and_folder_submenus_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
