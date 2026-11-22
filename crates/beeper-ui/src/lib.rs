@@ -2975,6 +2975,7 @@ impl BeeperGuiApp {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => SIDEBAR_WIDTH,
             Err(e) => panic!("read the sidebar width: {e}"),
         };
+        let filters = chat_list::saved_filters(&store.read().config.data_dir);
         let audio = voice::Player::new(&store.read().config.data_dir);
         let sidebar_hidden = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-hidden")) {
             Ok(h) => h.parse().expect("a boolean sidebar-hidden"),
@@ -3004,7 +3005,7 @@ impl BeeperGuiApp {
             dark: theme,
             zoom: 1.0,
             zoom_drag: None,
-            list: chat_list::ListState::default(),
+            list: chat_list::ListState { filters, ..Default::default() },
             seen_requests: Vec::new(),
             pip: None,
             pip_wanted: false,

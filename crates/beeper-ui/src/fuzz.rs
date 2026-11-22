@@ -623,6 +623,24 @@ fn gif_picker_like_desktop() {
     assert_eq!(app.pane.picker, None);
 }
 
+/// Desktop keeps the chat list filters in `threadsFilters`, and a later launch shows them again.
+#[test]
+fn chat_list_filters_stay_after_a_relaunch_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("filters-relaunch");
+    let relaunch = |app: &BeeperGuiApp| BeeperGuiApp::new(app.store.clone()).list.filters;
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::PickFilter(1 << 1)));
+    assert_eq!(relaunch(&app), 1 << 1, "Drafts");
+    let path = app.store.read().config.data_dir.join("threadsFilters");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"["drafts"]"#, "Desktop's value");
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("y".into()), Modifiers::CTRL | Modifiers::SHIFT));
+    assert_eq!(relaunch(&app), 1 | 1 << 1, "Filter: Unread adds Unread");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ClearFilters));
+    assert_eq!(relaunch(&app), 0);
+    std::fs::write(&path, r#"["unread","default","nope"]"#).unwrap();
+    assert_eq!(relaunch(&app), 1, "without unknown values");
+}
+
 #[test]
 fn filter_account_submenu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};

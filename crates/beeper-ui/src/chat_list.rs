@@ -394,16 +394,19 @@ impl BeeperGuiApp {
             Msg::FilterButton if self.list().filters != 0 || self.list().space_view_account.is_some() => {
                 return self.update(UiMessage::ChatList(Msg::ClearFilters));
             }
-            Msg::FilterButton => self.list.filters = 1,
+            Msg::FilterButton => self.set_filters(1),
             Msg::PickFilter(bit) => {
-                self.list.filters = if self.list().filters == bit { 0 } else { bit };
+                self.set_filters(if self.list().filters == bit { 0 } else { bit });
                 self.list.show_filter_menu = false;
             }
             Msg::PickAccount(id) => {
                 self.list.space_view_account = (self.list().space_view_account.as_ref() != Some(&id)).then_some(id);
                 self.list.show_filter_menu = false;
             }
-            Msg::ClearFilters => (self.list.filters, self.list.space_view_account) = (0, None),
+            Msg::ClearFilters => {
+                self.set_filters(0);
+                self.list.space_view_account = None;
+            }
             Msg::Hover(id, true) => {
                 if self.hovered_chat.as_ref() != Some(&id) {
                     let now = std::time::Instant::now();
@@ -441,6 +444,30 @@ pub(crate) const FILTERS: [(&str, char); 8] = [
     ("Requests", icon::EMAIL),
     ("Low Priority", icon::LOW_PRIORITY_SPACE),
 ];
+
+/// Desktop's `ThreadsFilter` values of [`FILTERS`], which its `threadsFilters` keeps.
+const FILTER_IDS: [&str; 8] =
+    ["unread", "drafts", "unresponded", "dm", "group", "archived", "requests", "low_priority"];
+
+/// The file of Desktop's `threadsFilters`: the filters of the chat list, as a JSON array of their values.
+const FILTERS_FILE: &str = "threadsFilters";
+
+/// Desktop's `Put`: the filters of the `threadsFilters` that the last launch kept, without unknown values.
+pub(crate) fn saved_filters(data_dir: &std::path::Path) -> u8 {
+    let Ok(json) = std::fs::read_to_string(data_dir.join(FILTERS_FILE)) else { return 0 };
+    let ids: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+    FILTER_IDS.iter().enumerate().filter(|(_, id)| ids.iter().any(|i| i == *id)).fold(0, |f, (i, _)| f | 1 << i)
+}
+
+impl BeeperGuiApp {
+    /// Desktop's `persistThreadsFilters`: the chat list shows `filters`, which the next launch restores.
+    pub(crate) fn set_filters(&mut self, filters: u8) {
+        self.list.filters = filters;
+        let ids: Vec<&str> = (0..FILTER_IDS.len()).filter(|i| filters & 1 << i != 0).map(|i| FILTER_IDS[i]).collect();
+        let path = self.store.read().config.data_dir.join(FILTERS_FILE);
+        std::fs::write(path, serde_json::json!(ids).to_string()).expect("write the chat list filters");
+    }
+}
 
 pub(crate) const F_ARCHIVED: usize = 5;
 
