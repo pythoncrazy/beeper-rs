@@ -652,6 +652,9 @@ fn right_to_left(text: &str) -> bool {
     text.chars().find(|c| c.is_alphabetic()).is_some_and(rtl)
 }
 
+/// How far under the top of the timeline the date of the day at its top floats, under the header card.
+const STICKY_DATE: f32 = 80.0;
+
 /// The container of the unread divider, which a chat scrolls to when it opens.
 const UNREAD_DIVIDER: &str = "unread-divider";
 
@@ -1508,7 +1511,7 @@ impl BeeperGuiApp {
             .sticky()
             .filter(|_| in_chat)
             .and_then(|i| msgs.get(i))
-            .map(|m| self.day_pill(&m.timestamp).padding(Padding::ZERO.top(80.0).left(GUTTER)));
+            .map(|m| self.day_pill(&m.timestamp, true).padding(Padding::ZERO.top(STICKY_DATE).left(GUTTER)));
         let overlay = match in_chat {
             true if selecting => stack![fade],
             true if chat.is_request == Some(true) => stack![fade, self.view_info_toggle(&st)],
@@ -1797,6 +1800,9 @@ impl BeeperGuiApp {
         // Desktop's `ThreadedRepliesView` lists the root and the replies of a thread under its header, and loads older
         // messages of the chat only until the root loads.
         let root = self.pane().thread_root.as_deref();
+        let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
+        // The date of the day that starts under the header shows only where it floats.
+        let covered = list.covered().filter(|_| !thread);
         let top = if root.is_some() { 38.0 } else { 96.0 };
         let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(top).bottom(0.0));
         let loaded = root.is_some_and(|r| msgs.first().is_some_and(|m| m.id == r));
@@ -1833,7 +1839,8 @@ impl BeeperGuiApp {
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             let mut head = Column::new().width(Fill).push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
-                head = head.push(self.day_pill(&m.timestamp).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
+                let shown = covered.is_none_or(|c| i > c);
+                head = head.push(self.day_pill(&m.timestamp, shown).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
             // The `along-message-footer` line of the message before goes on through the gap below it, past its
             // sender's avatar, and the date between two messages of a chain (`MessageDate`) has a line of its own.
@@ -2004,8 +2011,8 @@ impl BeeperGuiApp {
                 None => cell.into(),
             }
         };
-        let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
-        list.sections(days.clone());
+        // The pill floats at `STICKY_DATE`, 4 px into the row of its day.
+        list.sections(days.clone(), if thread { 0.0 } else { STICKY_DATE - 4.0 });
         col.push(list.view(keys, true, 48.0, UiMessage::Relist, item))
     }
 
@@ -2059,11 +2066,12 @@ impl BeeperGuiApp {
         Some(mouse_area(list).on_enter(UiMessage::HeaderHover(true)).on_exit(UiMessage::HeaderHover(false)).into())
     }
 
-    /// Desktop's `MessageDate` pill of the day of `timestamp`, in the middle of its row.
-    fn day_pill<'a>(&self, timestamp: &str) -> iced::widget::Container<'a, UiMessage> {
+    /// Desktop's `MessageDate` pill of the day of `timestamp`, in the middle of its row, or its empty place.
+    fn day_pill<'a>(&self, timestamp: &str, shown: bool) -> iced::widget::Container<'a, UiMessage> {
         let p = &self.pal;
-        let label = semi(day_label(timestamp), 11.0).color(p.on_secondary);
-        container(container(label).padding([5, 9]).style(bordered_box(p.card, p.chip, 1.0, 12.0))).center_x(Fill)
+        let [fg, bg, edge] = if shown { [p.on_secondary, p.card, p.chip] } else { [CLEAR; 3] };
+        let label = semi(day_label(timestamp), 11.0).color(fg);
+        container(container(label).padding([5, 9]).style(bordered_box(bg, edge, 1.0, 12.0))).center_x(Fill)
     }
 
     /// A message, or the gallery of the messages `ms`.
