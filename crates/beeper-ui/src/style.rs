@@ -1147,6 +1147,31 @@ mod tests {
         assert_eq!(middle(&tiled), middle(&full), "the middle tile fills the same pixels");
     }
 
+    /// The software renderer puts a scaled up image at its bounds, like a zoomed image of the media viewer: it moved
+    /// the image up to a scale to the left and up, past its damage, which left lines when the zoom went out.
+    #[test]
+    fn scaled_up_images_draw_at_their_bounds_in_the_software_renderer() {
+        use iced::advanced::image::{Handle, Image, Renderer as _};
+        use iced::{Point, Rectangle, Size};
+        let red = Handle::from_rgba(2, 2, [255, 0, 0, 255].repeat(4));
+        let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, 16.into());
+        let bounds = Rectangle::new(Point::new(10.9, 10.9), Size::new(60.0, 60.0));
+        renderer.draw_image(Image::new(red), bounds, bounds);
+        let (mut pixmap, mut mask) = (tiny_skia::Pixmap::new(80, 80).unwrap(), tiny_skia::Mask::new(80, 80).unwrap());
+        let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(Size::new(80, 80), 1.0);
+        renderer.draw(
+            &mut pixmap.as_mut(),
+            &mut mask,
+            &viewport,
+            &[Rectangle::with_size(Size::new(80.0, 80.0))],
+            Color::WHITE,
+        );
+        let red = |x, y| pixmap.pixel(x, y).expect("a pixel in the pixmap").green() < 128;
+        assert!(!red(9, 40) && !red(40, 9), "nothing left of or above the image");
+        assert!(red(12, 40) && red(40, 12) && red(69, 69), "the image fills its bounds");
+        assert!(!red(72, 40), "nothing right of the image");
+    }
+
     #[test]
     fn palette_matches_desktop_tokens() {
         let rows: [(&str, Token, Color, Color); 10] = [
