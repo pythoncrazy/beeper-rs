@@ -492,6 +492,12 @@ pub(crate) fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
     }
 }
 
+/// Desktop's `getReadIcon` of a chat list preview: an own message shows its send state, but an own reaction does not,
+/// nor an action like "You left the chat" (`isAction`).
+pub(crate) fn read_icon(m: &Message) -> bool {
+    m.is_sender == Some(true) && m.message_type.as_deref() != Some("REACTION") && !m.silent()
+}
+
 /// The text of a chat list preview, or a label for its links.
 pub(crate) fn preview_body(m: &Message) -> Option<String> {
     // Desktop's `CP`: view-once media previews as what it is.
@@ -1625,7 +1631,7 @@ impl BeeperGuiApp {
                 .height(16)
                 .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
-            let receipt = mine && reaction.is_none();
+            let receipt = m.is_some_and(read_icon);
             let media_tag = m.and_then(message_tag);
             let plays = self.plays(c);
             // Desktop counts the new messages of a chat whose view-once media nobody opened.
