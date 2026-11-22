@@ -580,6 +580,7 @@
 "Instead of getting notified for each message, delay and batch notifications for successive texts from someone. OTP/2FA codes are always notified immediately.":["メッセージごとに通知する代わりに、同じ相手から続けて届くメッセージは、少し遅らせてまとめて通知します。 OTP/2FA コードは常にすぐに通知されます。"],
 "Integrations":["連携"],
 "Internal error logging in":["ログイン中に内部エラーが発生しました"],
+"Invalid code. Please try again or contact support.":["無効なコードです。 もう一度お試しいただくか、サポートにお問い合わせください。"],
 "Invalid code. Please try again.":["無効なコードです。 もう一度お試しください。"],
 "Invalid deep link":["無効なディープリンクです"],
 "Invalid format":["無効なフォーマットです"],
