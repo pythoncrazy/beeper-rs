@@ -24,9 +24,9 @@ use crate::{
     reconnect, record, select, slider_style, status_text, style, svg_size, theme_cards, tinted, toggle, toggle_faded,
     BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT,
     ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REVOKE_CONNECTION,
-    CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE,
-    INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM, ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER,
-    VSCODE_LOGO, ZOOM_LEVEL,
+    CHANGELOG_URL, CHEVRON_DOWN, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS,
+    ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM, ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE,
+    TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
 };
 use beeper_core::config::{now_unix_millis, now_unix_secs, APP_VERSION};
 use beeper_core::matrix::DeviceInfo;
@@ -480,6 +480,11 @@ pub(crate) const SETTINGS_DIALOGS: [u8; 8] = [
 /// Desktop's "Clear storage older than" choices, where 0 is any age.
 pub(crate) const STORAGE_DAYS: [i64; 4] = [0, 30, 90, 120];
 
+/// The prefixes of the `chat_menu` of an account in the Settings window: of its row in the Accounts settings, and of
+/// the actions of its page.
+const ROW_MENU: &str = "prefs:";
+const PAGE_MENU: &str = "account-actions:";
+
 impl BeeperGuiApp {
     pub(crate) fn open_settings(&mut self, tab: SettingsTab) -> Task<UiMessage> {
         let load = self.update(UiMessage::Settings(Msg::SelectTab(tab)));
@@ -887,22 +892,28 @@ impl BeeperGuiApp {
         drop(st);
         let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
         let add = self.integrations.add.as_ref().map(|a| self.view_add_token(a));
-        let menu = self.list().chat_menu.as_ref().and_then(|(cid, at)| Some((cid.strip_prefix("prefs:")?, at))).map(
-            |(id, at)| {
-                let (menu, sub) = self.account_menu(id, SpaceMenu::Prefs);
-                let size = self.settings_size;
-                let items = if crate::nickname::can_nickname(&self.store.read(), id) { 5.0 } else { 4.0 };
-                let (w, h) = (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + items * MENU_ITEM + 11.0);
-                let (x, y) = (at.x.min(size.width - w - 8.0), at.y.min(size.height - h - 8.0));
-                let menu = container(mouse_area(row![menu].push(sub)).on_press(UiMessage::Noop))
-                    .padding(Padding::ZERO.left(x).top(y))
-                    .width(Fill)
-                    .height(Fill);
-                mouse_area(menu)
-                    .on_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
-                    .on_right_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
-            },
-        );
+        // The menu of an account row of the Accounts settings, or of the actions of an account page.
+        let menu = self.list().chat_menu.as_ref().and_then(|(cid, at)| {
+            let (id, kind) = match cid.strip_prefix(ROW_MENU) {
+                Some(id) => (id, SpaceMenu::Prefs),
+                None => (cid.strip_prefix(PAGE_MENU)?, SpaceMenu::Page),
+            };
+            Some((id, kind, at))
+        });
+        let menu = menu.map(|(id, kind, at)| {
+            let (menu, sub) = self.account_menu(id, kind);
+            let size = self.settings_size;
+            let items = if crate::nickname::can_nickname(&self.store.read(), id) { 5.0 } else { 4.0 };
+            let (w, h) = (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + items * MENU_ITEM + 11.0);
+            let (x, y) = (at.x.min(size.width - w - 8.0), at.y.min(size.height - h - 8.0));
+            let menu = container(mouse_area(row![menu].push(sub)).on_press(UiMessage::Noop))
+                .padding(Padding::ZERO.left(x).top(y))
+                .width(Fill)
+                .height(Fill);
+            mouse_area(menu)
+                .on_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
+                .on_right_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
+        });
         let profile = self.profile_overlay();
         let picker = self.pane.emoji.as_ref().filter(|pk| pk.pref.is_some()).map(|_| {
             let picker = self.view_emoji_picker(&self.store.read()).expect("the picker is open");
@@ -1138,7 +1149,7 @@ impl BeeperGuiApp {
                         .bare(p.strong)
                         .on_press(UiMessage::Accounts(accounts::Msg::Open(Some(logo.into()))));
                     mouse_area(row)
-                        .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("prefs:{logo}"))))
+                        .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{ROW_MENU}{logo}"))))
                         .into()
                 };
                 let me = st.me();
@@ -1832,8 +1843,16 @@ impl BeeperGuiApp {
             .push(name.map(|n| semi(n, 14.0).color(p.strong)))
             .extend(lines.map(|l| txt(l, 13.0).color(p.weak).into()))
             .align_x(Center);
-        let card =
-            container(user).center_x(Fill).padding(8).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
+        // Desktop's `AccountActions`: a 20 px pill with a 16 px chevron, 8 px into the top right corner of the card,
+        // that opens the account menu.
+        let actions = button(container(tinted(&CHEVRON_DOWN, 16.0, p.strong)).center_x(32).center_y(20))
+            .padding(0)
+            .style(btn_style([p.chip; 3], [p.strong; 3], 10.0))
+            .on_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{PAGE_MENU}{id}"))));
+        let actions = container(actions).id("account-actions");
+        let card = container(user).center_x(Fill).padding(8);
+        let card = stack![card, container(actions).align_right(Fill).padding(8)];
+        let card = container(card).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
         let props = st.settings.account(id);
         let set = |f: fn(&mut beeper_core::models::AccountProps)| {
             let mut q = props;

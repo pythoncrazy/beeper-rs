@@ -5397,6 +5397,36 @@ fn accounts_settings_rows_have_the_account_menu_like_desktop() {
     assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::ChatList(chat_list::Msg::CloseMenu)]));
 }
 
+/// Desktop's `AccountActions` of an account page: the chevron in the corner of the account card opens `rj` without
+/// Account Settings…, with Edit Account Nickname… and Add/Remove Accounts….
+#[test]
+fn account_pages_have_the_account_actions_like_desktop() {
+    let mut app = demo_app("account-page-actions");
+    let account = app.store.read().bridge_accounts[0].account_id.clone();
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::Open(Some(account.clone()))));
+    let open: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_settings());
+        let at = sim.find(iced::widget::Id::new("account-actions")).expect("the actions of the page").bounds().center();
+        sim.point_at(at);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+        let _ = sim.simulate(iced_test::simulator::click());
+        sim.into_messages().collect()
+    };
+    let want = format!("account-actions:{account}");
+    assert!(matches!(&open[..], [UiMessage::ChatList(chat_list::Msg::OpenMenu(m))] if *m == want), "{:?}", open.len());
+    let _ = app.update(open.into_iter().next().unwrap());
+    let mut sim = simulator(app.view_settings());
+    for item in ["Show in Inbox", "Mute Space", "Edit Spaces…", "Edit Account Nickname…", "Add/Remove Accounts…"]
+    {
+        assert!(sim.find(item).is_ok(), "{item}");
+    }
+    assert!(sim.find("Account Settings…").is_err() && sim.find("Remove Account…").is_err());
+    let _ = sim.click("Edit Account Nickname…").expect("the nickname item");
+    let nick = sim.into_messages().any(|m| matches!(m, UiMessage::Nickname(nickname::Msg::Open(a)) if a == account));
+    assert!(nick, "the item edits the nickname of the account");
+}
+
 #[test]
 fn sidebar_menus_open_accounts_like_desktop() {
     let mut app = demo_app("rail-menus");

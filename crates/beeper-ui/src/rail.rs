@@ -158,6 +158,8 @@ pub(crate) enum SpaceMenu {
     Header,
     /// The rows of the Accounts settings, like Desktop's `PL` with `hideSettings` and `hideAddRemoveAccounts`.
     Prefs,
+    /// The actions of an account page (`AccountActions`), Desktop's `rj` with only `hideSettings`.
+    Page,
     /// The Space Options submenu of the space sheet (`sfe`), which keeps `chat_sub` at `Some(1)` while it is open.
     Options,
 }
@@ -763,7 +765,9 @@ impl BeeperGuiApp {
                 ],
                 SpaceMenu::Header => vec![menu_rule(p), select.expect("the header menu has Select Chats").into()],
                 SpaceMenu::Gear => vec![],
-                SpaceMenu::Prefs | SpaceMenu::Options => unreachable!("only account spaces have these menus"),
+                SpaceMenu::Prefs | SpaceMenu::Page | SpaceMenu::Options => {
+                    unreachable!("only account spaces have these menus")
+                }
             };
             let col = Column::with_children(self.label_items(l, 0.0).into_iter().chain(tail));
             let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -836,6 +840,13 @@ impl BeeperGuiApp {
                 .push(nickname)
                 .push(menu_item(p, None, tr("Remove Account…").into(), "", Some(remove)))
             }
+            SpaceMenu::Page => column![
+                mute,
+                menu_rule(p),
+                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
+            ]
+            .push(nickname)
+            .push(menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts))),
             SpaceMenu::Rail => column![mute]
                 .push(open)
                 .push(menu_rule(p))
