@@ -1184,6 +1184,26 @@ fn show_replies_like_desktop() {
     assert!(simulator(app.view_main()).find("Jump to Message").is_ok());
 }
 
+/// Desktop keeps the width of the thread pane in `threaded-replies-pane-fraction`, like the sidebar width.
+#[test]
+fn the_thread_pane_keeps_its_width_after_a_relaunch_like_desktop() {
+    let mut app = demo_app("thread-fraction");
+    let relaunch = |app: &BeeperGuiApp| BeeperGuiApp::new(app.store.clone()).thread_fraction;
+    assert_eq!(relaunch(&app), threads::THREAD_FRACTION);
+    app.pane.size = Size::new(1208.0, 800.0);
+    app.thread_area.set(808.0);
+    let _ = app.update(UiMessage::Thread(threads::Msg::Drag(None)));
+    let _ = app.update(UiMessage::Thread(threads::Msg::Drag(Some(Point::new(900.0, 400.0)))));
+    let _ = app.update(UiMessage::Thread(threads::Msg::Drag(None)));
+    assert_eq!(app.thread_fraction, 0.375);
+    assert_eq!(relaunch(&app), 0.375, "the dragged width");
+    let _ = app.update(UiMessage::Thread(threads::Msg::ResetWidth));
+    assert_eq!(relaunch(&app), threads::THREAD_FRACTION, "a double click resets it");
+    let path = app.store.read().config.data_dir.join("threaded-replies-pane-fraction");
+    std::fs::write(&path, "0.95").unwrap();
+    assert_eq!(relaunch(&app), 0.9, "at most 0.9");
+}
+
 /// Desktop's threaded replies: the replies button and the root line in the chat, the thread pane with its divider and
 /// its composer, which sends a thread reply with "Also send to chat", and "Reply in thread…".
 #[test]
