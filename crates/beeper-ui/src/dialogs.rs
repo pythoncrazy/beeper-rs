@@ -785,8 +785,8 @@ impl BeeperGuiApp {
             let hits = all.into_iter().filter(|c| c.title.to_lowercase().contains(&q)).map(LabelRow::Chat);
             return std::iter::once(LabelRow::Note).chain(hits).collect();
         }
-        let recent: Vec<&Chat> = self
-            .chat_history
+        let recent: Vec<&Chat> = st
+            .recent_chat_ids
             .iter()
             .filter_map(|id| st.resolve_chat_idx(id).map(|i| &st.chats[i]))
             .filter(shown)
