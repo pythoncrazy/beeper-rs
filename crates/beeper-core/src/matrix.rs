@@ -1475,7 +1475,13 @@ async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>)
     }
 }
 
-pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
+pub(crate) async fn sync_room(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
+    sync_room_after(store, room, events, None).await;
+}
+
+/// [`sync_room`] with `prev_batch`, the token of the events before `events` that a sync gives, so that a new room
+/// loads only the older events that its first page needs, not the newest ones again.
+async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, prev_batch: Option<String>) {
     match room.room_id().as_str() {
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
         TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
@@ -1516,10 +1522,17 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
         st.chat_idx_by_id.get(&chat_id).is_some_and(|&i| st.chats[i].notifiable.is_some())
     };
     let mut older = None;
-    if !seen {
+    // A new room starts with `HISTORY` events. After a sync, the page is the events before those of the sync.
+    let wanted = match &prev_batch {
+        Some(_) => HISTORY.saturating_sub(u32::try_from(events.len()).unwrap_or(u32::MAX)),
+        None => HISTORY,
+    };
+    if !seen && wanted == 0 {
+        older = prev_batch.map(Older::From);
+    } else if !seen {
         let known: HashSet<String> = events.iter().filter_map(|e| Some(e.event_id()?.to_string())).collect();
         // Without the page, `older` stays unknown and the next load of older messages tries again.
-        if let Ok((page, end)) = page(room, None, HISTORY).await.inspect_err(|e| drop(no_history(room, e))) {
+        if let Ok((page, end)) = page(room, prev_batch, wanted).await.inspect_err(|e| drop(no_history(room, e))) {
             older = Some(end.map_or(Older::Start, Older::From));
             let page = page.into_iter().filter(|e| e.event_id().is_some_and(|id| !known.contains(id.as_str())));
             events = page.chain(events).collect();
@@ -4931,7 +4944,7 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 if gap.is_some() && !synced_before(store, &room).await {
                     gap = None;
                 }
-                sync_room(store, &room, update.timeline.events).await;
+                sync_room_after(store, &room, update.timeline.events, update.timeline.prev_batch).await;
                 if let Some(from) = gap {
                     tokio::spawn(fill_gap(store.clone(), room.clone(), from));
                 }
@@ -4963,7 +4976,7 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::{stub_message, stub_store, stub_sync};
+    use crate::testing::{stub_message, stub_page, stub_store, stub_sync};
     use serde_json::{json, Value};
 
     /// Desktop keeps a chat that the user was removed from: its own member has exited, the removal previews it, and
@@ -5205,6 +5218,48 @@ mod tests {
         })
         .await;
         stub_store(&crate::testing::temp_dir(name), &url).await
+    }
+
+    /// A new room of a sync starts with `HISTORY` events: those of the sync, and the page before them from the
+    /// sync's `prev_batch`, so the newest events don't download twice.
+    #[tokio::test]
+    async fn a_new_room_loads_only_the_events_before_its_sync() {
+        let queries = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = queries.clone();
+        // The sync of `stub_store` has no timeline, and the next sync has the 10 newest events of the room.
+        let syncs = std::sync::atomic::AtomicUsize::new(0);
+        let mut sync = stub_sync();
+        let events: Vec<Value> = (61..=70).map(stub_message).collect();
+        sync["next_batch"] = json!("s2");
+        sync["rooms"]["join"]["!room:x"]["timeline"] =
+            json!({ "events": events, "limited": true, "prev_batch": "t60" });
+        let url = crate::bridge_stub::serve(move |_, path, _| {
+            let (path, query) = path.split_once('?').unwrap_or((path, ""));
+            match path {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" if syncs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 => {
+                    (200, stub_sync())
+                }
+                "/_matrix/client/v3/sync" => (200, sync.clone()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if p.ends_with("/messages") => {
+                    seen.lock().unwrap().push(query.to_string());
+                    (200, stub_page(query))
+                }
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            }
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("history-from-sync"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        assert!(super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await);
+        let queries = queries.lock().unwrap().clone();
+        assert_eq!(queries.len(), 1, "{queries:?}");
+        assert!(queries[0].contains("from=t60") && queries[0].contains("limit=20"), "{}", queries[0]);
+        let st = store.read();
+        let texts: Vec<_> = st.chat_timeline("!room:x").iter().filter_map(|m| m.text.clone()).collect();
+        assert_eq!(texts, (41..=70).map(|i| format!("m{i}")).collect::<Vec<_>>());
+        assert_eq!(st.chat("!room:x").older, crate::models::Older::From("t40".into()));
     }
 
     /// Desktop's `lastReadMessageSortKey` of a room: the order of the event of your own read receipt, which a read
