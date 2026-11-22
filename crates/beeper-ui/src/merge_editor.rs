@@ -453,8 +453,8 @@ impl BeeperGuiApp {
                 .filter(|c| !taken(c) && !st.user_blocked(c) && merge_keys(c).iter().any(|k| keys.contains(k)))
                 .collect();
             let shown = |c: &Chat, v: &[&Chat]| taken(c) || suggested.iter().chain(v).any(|s| s.id == c.id);
-            let recent: Vec<&Chat> = self
-                .chat_history
+            let recent: Vec<&Chat> = st
+                .recent_chat_ids
                 .iter()
                 .filter_map(|id| pool.iter().copied().find(|c| c.id == *id))
                 .filter(|c| !shown(c, &[]))

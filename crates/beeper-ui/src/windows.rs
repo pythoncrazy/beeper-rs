@@ -64,29 +64,7 @@ impl BeeperGuiApp {
                 return window::screenshot(id).map(move |s| UiMessage::Window(Msg::ScreenshotCaptured(id, s)));
             }
             Msg::Drawn(_) => {}
-            Msg::Resized(id, size) => {
-                // Desktop's `KeyboardSensor` cancels on a resize of the window.
-                self.key_sort.take_if(|s| s.window == id);
-                if self.main_window == Some(id) {
-                    let narrow = |s: Size| s.width / self.zoom < 600.0;
-                    if narrow(self.pane.size) != narrow(size) {
-                        self.set_sidebar_hidden(narrow(size));
-                    }
-                    self.pane.size = size;
-                    if let Some(t) = self.pane.thread.as_mut() {
-                        t.size = size;
-                    }
-                }
-                if let Some(w) = self.chat_windows.iter_mut().find(|w| w.0 == id) {
-                    w.1.size = size;
-                }
-                if let Some(w) = self.media_window.as_mut().filter(|w| w.id == id) {
-                    w.size = size;
-                }
-                if self.settings_window == Some(id) {
-                    self.settings_size = size;
-                }
-            }
+            Msg::Resized(id, size) => self.resized(id, size),
             Msg::Tray(Ok(tray::Event::Up)) => self.tray_sent = (None, true),
             // Electron cannot pop up the tray menu on Linux, so Desktop's click on a focused window does nothing.
             Msg::Tray(Ok(tray::Event::Activate)) if !self.hidden && self.focused => {}
@@ -328,6 +306,46 @@ impl BeeperGuiApp {
     /// iced opens a window at its size times the scale factor, which is the zoom.
     pub(crate) fn open_window(&self, settings: window::Settings) -> (window::Id, Task<window::Id>) {
         window::open(window::Settings { size: settings.size * (1.0 / self.zoom), ..settings })
+    }
+
+    /// The size of a window in iced's logical pixels, which the zoom scales like Desktop's CSS pixels.
+    fn resized(&mut self, id: window::Id, size: Size) {
+        // Desktop's `KeyboardSensor` cancels on a resize of the window.
+        self.key_sort.take_if(|s| s.window == id);
+        if self.main_window == Some(id) {
+            // Desktop's sidebar hides when the viewport gets narrower than 600 CSS pixels, and shows again when it
+            // gets wider.
+            let narrow = |s: Size| s.width < 600.0;
+            if narrow(self.pane.size) != narrow(size) {
+                self.set_sidebar_hidden(narrow(size));
+            }
+            self.pane.size = size;
+            if let Some(t) = self.pane.thread.as_mut() {
+                t.size = size;
+            }
+        }
+        if let Some(w) = self.chat_windows.iter_mut().find(|w| w.0 == id) {
+            w.1.size = size;
+        }
+        if let Some(w) = self.media_window.as_mut().filter(|w| w.id == id) {
+            w.size = size;
+        }
+        if self.settings_window == Some(id) {
+            self.settings_size = size;
+        }
+    }
+
+    /// iced sends no resize when the zoom changes, but Desktop's viewport follows the zoom: each window takes its
+    /// size at the new zoom, `k` times its size at the old one.
+    pub(crate) fn rezoom(&mut self, k: f32) {
+        let main = self.main_window.map(|id| (id, self.pane.size));
+        let chats = self.chat_windows.iter().map(|w| (w.0, w.1.size));
+        let media = self.media_window.as_ref().map(|w| (w.id, w.size));
+        let settings = self.settings_window.map(|id| (id, self.settings_size));
+        let all: Vec<_> = main.into_iter().chain(chats).chain(media).chain(settings).collect();
+        for (id, size) in all {
+            self.resized(id, size * k);
+        }
     }
 
     /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.

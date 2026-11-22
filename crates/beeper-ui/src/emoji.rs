@@ -6,6 +6,7 @@ use crate::{BeeperGuiApp, El, UiMessage};
 use beeper_core::codec::Emoticon;
 use beeper_core::store::BeeperStore;
 use iced::gradient::Linear;
+use iced::keyboard::{key::Named, Key};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
     button, column, container, image, mouse_area, operation, row, scrollable, stack, svg, text_input, Space,
@@ -338,6 +339,8 @@ pub struct Picker {
     pub(crate) pref: Option<u8>,
     query: String,
     hover: Option<Item>,
+    /// emoji-mart's `pos` of the keys: the row and the column of the selected emoji in the rows of the grid.
+    pos: Option<(usize, usize)>,
     skins_open: bool,
     scroll: f32,
 }
@@ -470,7 +473,7 @@ impl BeeperGuiApp {
             }
             EmojiMsg::Jump(k) => {
                 let pk = self.pane.emoji.as_mut().expect("the picker is open");
-                pk.query.clear();
+                (pk.query, pk.pos) = (String::new(), None);
                 let pk = self.pane.emoji.as_ref().expect("the picker is open");
                 let st = self.store.read();
                 let y = self
@@ -484,11 +487,13 @@ impl BeeperGuiApp {
             m => {
                 let pk = self.pane.emoji.as_mut().expect("the picker is open");
                 match m {
+                    // emoji-mart's `handleSearchInput` selects the first result.
                     EmojiMsg::Query(q) => {
+                        pk.pos = (!q.trim().is_empty()).then_some((0, 0));
                         pk.query = q;
                         return operation::scroll_to(GRID, operation::AbsoluteOffset { x: 0.0, y: 0.0 });
                     }
-                    EmojiMsg::Hover(i) => pk.hover = Some(i),
+                    EmojiMsg::Hover(i) => (pk.hover, pk.pos) = (Some(i), None),
                     EmojiMsg::Unhover(i) if pk.hover == Some(i) => pk.hover = None,
                     EmojiMsg::Scrolled(y) => pk.scroll = y,
                     EmojiMsg::SkinMenu => pk.skins_open = !pk.skins_open,
@@ -508,6 +513,67 @@ impl BeeperGuiApp {
         self.pane.emoji = Some(Picker { react, ..Picker::default() });
         self.emoji_hovered[1] = false;
         operation::focus(SEARCH_INPUT)
+    }
+
+    /// emoji-mart's `handleSearchKeyDown`: the arrows move through the grid, Enter picks the selected emoji, and Escape
+    /// clears the search. Other keys, and the reactions of a network that takes only some, are left alone.
+    pub(crate) fn emoji_key(&mut self, key: &Key) -> Option<Task<UiMessage>> {
+        let pk = self.pane.emoji.as_ref()?;
+        let st = self.store.read();
+        let allowed = pk.react.as_ref().and_then(|(mid, _)| Some(&st.chat(&st.loaded(mid)?.chat_id).allowed_reactions));
+        if allowed.is_some_and(|a| !a.is_empty()) {
+            return None;
+        }
+        let custom = self.picker_custom(pk, &st);
+        let sections = self.emoji_sections(pk, &st, &custom);
+        drop(st);
+        let rows: Vec<&[Item]> = sections.iter().flat_map(|(_, v)| v.chunks(PER_LINE)).collect();
+        let pick = pk.pos.and_then(|(r, c)| rows.get(r)?.get(c).copied());
+        let (back, across) = match key.as_ref() {
+            Key::Named(Named::Enter) => {
+                return Some(match pick {
+                    Some(Item::Native(i)) => self.update_emoji(EmojiMsg::Pick(i)),
+                    Some(Item::Custom(i)) => self.update_emoji(EmojiMsg::PickCustom(custom[i].clone())),
+                    None => Task::none(),
+                })
+            }
+            // emoji-mart's `clearSearch` keeps the focus in the search field, which an Escape leaves here.
+            Key::Named(Named::Escape) if !pk.query.is_empty() => {
+                return Some(self.update_emoji(EmojiMsg::Query(String::new())).chain(operation::focus(SEARCH_INPUT)))
+            }
+            Key::Named(Named::ArrowLeft) => (true, true),
+            Key::Named(Named::ArrowRight) => (false, true),
+            Key::Named(Named::ArrowUp) => (true, false),
+            Key::Named(Named::ArrowDown) => (false, false),
+            _ => return None,
+        };
+        let lens: Vec<usize> = rows.iter().map(|r| r.len()).collect();
+        let pos = navigate(&lens, pk.pos, back, across);
+        // emoji-mart's `scrollTo` of the row: the first row at the top, else the row in view with 0.88 of a row after
+        // it. A row is that many rows under the top of its section.
+        let top = pos.map(|(r, _)| match r {
+            0 => 0.0,
+            r => {
+                let mut left = r;
+                let mut at = 0.0;
+                for (_, v) in &sections {
+                    let n = v.len().div_ceil(PER_LINE);
+                    if left < n {
+                        break;
+                    }
+                    (left, at) = (left - n, at + section_height(v.len()));
+                }
+                at + left as f32 * CELL
+            }
+        });
+        let pk = self.pane.emoji.as_mut().expect("the picker is open");
+        (pk.pos, pk.hover) = (pos, None);
+        let to = top.and_then(|y| match () {
+            _ if y < pk.scroll => Some(y),
+            _ if y + CELL * 1.88 > pk.scroll + GRID_H => Some(y + CELL * 1.88 - GRID_H),
+            _ => None,
+        });
+        Some(to.map_or_else(Task::none, |y| operation::scroll_to(GRID, operation::AbsoluteOffset { x: 0.0, y })))
     }
 
     /// Desktop's `.message-buttons` with `.message-react-buttons`: the allowed reactions of the network, 16 px with
@@ -641,10 +707,13 @@ impl BeeperGuiApp {
             }
             y += h;
         };
+        let mut r = 0;
         for (title, list) in &sections {
             push(header(title).into(), HEAD);
             for line in list.chunks(PER_LINE) {
-                push(row(line.iter().map(|&i| self.emoji_cell(i, &custom, tone, edge))).height(CELL).into(), CELL);
+                let cell = |(k, &i)| self.emoji_cell(i, &custom, tone, edge, pk.pos == Some((r, k)));
+                push(row(line.iter().enumerate().map(cell)).height(CELL).into(), CELL);
+                r += 1;
             }
         }
         let last = sections.last().map_or(0.0, |(_, v)| section_height(v.len()));
@@ -691,8 +760,9 @@ impl BeeperGuiApp {
         )
     }
 
-    /// An emoji of the grid, or a custom emoji's image at emoji-mart's 24 px (`max-width` and `max-height`).
-    fn emoji_cell(&self, it: Item, custom: &[Emoticon], tone: u8, hover: Color) -> El<'static> {
+    /// An emoji of the grid, or a custom emoji's image at emoji-mart's 24 px (`max-width` and `max-height`), with the
+    /// hover background when the keys selected it.
+    fn emoji_cell(&self, it: Item, custom: &[Emoticon], tone: u8, hover: Color, selected: bool) -> El<'static> {
         let (glyph, pick): (El<'static>, _) = match it {
             Item::Native(i) => {
                 (txt(DATA.emojis[i].skinned(tone), 24.0).line_height(1.0).font(EMOJI_FONT).into(), EmojiMsg::Pick(i))
@@ -700,7 +770,8 @@ impl BeeperGuiApp {
             Item::Custom(i) => (self.custom_image(&custom[i].url, 24.0), EmojiMsg::PickCustom(custom[i].clone())),
         };
         let b = button(container(glyph).center(CELL)).padding(0).style(move |_, s| button::Style {
-            background: matches!(s, button::Status::Hovered | button::Status::Pressed).then(|| hover.into()),
+            background: (selected || matches!(s, button::Status::Hovered | button::Status::Pressed))
+                .then(|| hover.into()),
             border: border::rounded(CELL / 2.0),
             ..Default::default()
         });
@@ -737,7 +808,11 @@ impl BeeperGuiApp {
         c: &Colors,
     ) -> El<'static> {
         let none = sections.iter().all(|(_, v)| v.is_empty());
-        let shown = pk.hover.and_then(|it| match it {
+        let selected = pk.hover.or_else(|| {
+            let (r, c) = pk.pos?;
+            sections.iter().flat_map(|(_, v)| v.chunks(PER_LINE)).nth(r)?.get(c).copied()
+        });
+        let shown = selected.and_then(|it| match it {
             Item::Native(i) => Some((
                 DATA.emojis[i].skinned(tone),
                 DATA.emojis[i].name.to_string(),
@@ -759,7 +834,7 @@ impl BeeperGuiApp {
             ),
             (None, false) => ("☝️".into(), txt("Pick an emoji…", 21.0).color(c.fg.scale_alpha(0.45)).into()),
         };
-        let skin = (pk.hover.is_none() && !none).then(|| {
+        let skin = (selected.is_none() && !none).then(|| {
             let (edge, open) = (c.border, pk.skins_open);
             let b = button(container(skin_dot(tone)).center(22))
                 .padding(0)
@@ -823,6 +898,28 @@ impl BeeperGuiApp {
         });
         container(menu).align_right(352).align_bottom(435).padding(Padding::ZERO.right(19.0).bottom(52.0)).into()
     }
+}
+
+/// emoji-mart's `navigate` in rows of `lens` emoji: the position after an arrow key back (← or ↑) or on, across a
+/// row (← or →) or between rows, from `pos`, or none when ← or ↑ leaves the first emoji for the search field.
+fn navigate(lens: &[usize], pos: Option<(usize, usize)>, back: bool, across: bool) -> Option<(usize, usize)> {
+    let last = lens.len().checked_sub(1)?;
+    let (r, c) = match pos {
+        None => return (!back).then_some((0, 0)),
+        Some((0, 0)) if back => return None,
+        Some(p) => p,
+    };
+    let end = |r: usize| (r, lens[r] - 1);
+    Some(match (across, back) {
+        (true, true) if c > 0 => (r, c - 1),
+        (true, true) => r.checked_sub(1).map_or((0, 0), end),
+        (true, false) if c + 1 < lens[r] => (r, c + 1),
+        (true, false) if r < last => (r + 1, 0),
+        (true, false) => end(last),
+        (false, true) => r.checked_sub(1).map_or((0, 0), |r| (r, c.min(lens[r] - 1))),
+        (false, false) if r < last => (r + 1, c.min(lens[r + 1] - 1)),
+        (false, false) => end(last),
+    })
 }
 
 fn section_height(n: usize) -> f32 {
@@ -945,6 +1042,55 @@ pub(crate) fn allowed_reaction(allowed: &[String], emoji: &str) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// emoji-mart's `navigate`: → and ↓ from the search field select the first emoji, ← and ↑ there go back to it,
+    /// the arrows wrap across rows and stop at the ends, and ↑ and ↓ keep the column when the row is long enough.
+    #[test]
+    fn picker_arrows_like_emoji_mart() {
+        let lens = [9, 9, 4];
+        let go = |pos, back, across| navigate(&lens, pos, back, across);
+        assert_eq!((go(None, false, true), go(None, false, false)), (Some((0, 0)), Some((0, 0))));
+        assert_eq!((go(None, true, true), go(Some((0, 0)), true, false)), (None, None));
+        assert_eq!(go(Some((0, 8)), false, true), Some((1, 0)), "→ at the end of a row goes to the next");
+        assert_eq!(go(Some((1, 0)), true, true), Some((0, 8)), "← at the start of a row goes to the end of the last");
+        assert_eq!(go(Some((2, 3)), false, true), Some((2, 3)), "→ stops at the last emoji");
+        assert_eq!(go(Some((1, 7)), false, false), Some((2, 3)), "↓ to a short row takes its last emoji");
+        assert_eq!(go(Some((2, 1)), false, false), Some((2, 3)), "↓ on the last row goes to its end");
+        assert_eq!(go(Some((0, 5)), true, false), Some((0, 0)), "↑ on the first row goes to its start");
+        assert_eq!(go(Some((2, 2)), true, false), Some((1, 2)));
+        assert_eq!(navigate(&[], None, false, true), None, "no results select nothing");
+    }
+
+    /// emoji-mart's search keys: the first result is selected, Enter reacts with the selected emoji, and Escape
+    /// clears the search before it closes the picker.
+    #[test]
+    fn picker_keys_like_emoji_mart() {
+        let mut app = crate::fuzz::demo_app("picker-keys");
+        let chat = app.visible_chats(&app.store.read())[0].id.clone();
+        let _ = app.update(UiMessage::SelectChat(chat.clone()));
+        let mid = {
+            let st = app.store.read();
+            st.messages[*st.timeline_indices(&chat).last().expect("a message")].id.clone()
+        };
+        let key = |app: &mut BeeperGuiApp, k: Named| {
+            let _ = app.update(UiMessage::KeyPressed(Key::Named(k), iced::keyboard::Modifiers::empty()));
+        };
+        let _ = app.update(UiMessage::Message(message::Msg::React(mid.clone())));
+        let _ = app.update(UiMessage::Emoji(EmojiMsg::Query("heart".into())));
+        assert_eq!(app.pane.emoji.as_ref().and_then(|pk| pk.pos), Some((0, 0)), "the first result is selected");
+        key(&mut app, Named::Escape);
+        let pk = app.pane.emoji.as_ref().expect("Escape clears the search and keeps the picker");
+        assert_eq!((pk.query.as_str(), pk.pos), ("", None));
+        let _ = app.update(UiMessage::Emoji(EmojiMsg::Query("heart".into())));
+        key(&mut app, Named::ArrowRight);
+        key(&mut app, Named::Enter);
+        assert!(app.pane.emoji.is_none(), "Enter picks");
+        let second = &search("heart", &[])[1];
+        let Item::Native(i) = second else { panic!("a native emoji") };
+        let keys: Vec<String> =
+            app.store.read().message(&mid).reactions.iter().map(|r| r.reaction_key.clone()).collect();
+        assert!(keys.contains(&DATA.emojis[*i].native.to_string()), "{keys:?} has the second heart");
+    }
 
     /// emoji-mart's entries of Desktop's custom emoji (`UZt`): searched by the URL, the words of the name, "custom"
     /// and the name, once for each URL with the last shortcode; the composer's node text and Desktop's `#[name](url)`.

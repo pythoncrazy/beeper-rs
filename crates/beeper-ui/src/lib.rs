@@ -625,6 +625,16 @@ fn copy_text(m: &Message, stamp: bool, many: bool) -> String {
 
 /// `dir/name`, or `dir/stem (n).ext` with the first free `n`.
 /// Desktop's `downloadsDirPath`: the chosen folder, or the downloads folder of the OS.
+/// Desktop's `humanized` of a hotkey: the label of the first combination of its `keys`, empty when it is disabled.
+pub(crate) fn hotkey_text(keys: &str) -> String {
+    prefs::hotkey_label(keys.split(", ").next().unwrap_or_default())
+}
+
+/// The key caps of [`hotkey_text`].
+pub(crate) fn hotkey_caps(keys: &str) -> Vec<String> {
+    hotkey_text(keys).split_whitespace().map(String::from).collect()
+}
+
 fn downloads_dir(s: &BeeperSettings) -> std::path::PathBuf {
     match s.downloads_dir.as_str() {
         "" => beeper_core::platform::resolve_home_dir(&std::env::vars().collect()).join("Downloads"),
@@ -2808,8 +2818,7 @@ pub struct BeeperGuiApp {
     /// Desktop's `BrandTypingIndicator` of each chat as it shows (`true`) or hides: who types, and since when.
     typing_shown: HashMap<String, (Vec<String>, bool, std::time::Instant)>,
     last_click: Option<(String, std::time::Instant)>,
-    /// The opened chats, the most recent first. While `cycling`, a selection does not reorder them.
-    chat_history: Vec<String>,
+    /// While `cycling`, a selection does not reorder the history of the opened chats.
     cycling: bool,
     pub status_banner: String,
     /// The text of Desktop's toast with a "Relaunch app" button, after a change that needs a relaunch.
@@ -2975,6 +2984,7 @@ impl BeeperGuiApp {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => SIDEBAR_WIDTH,
             Err(e) => panic!("read the sidebar width: {e}"),
         };
+        let filters = chat_list::saved_filters(&store.read().config.data_dir);
         let audio = voice::Player::new(&store.read().config.data_dir);
         let sidebar_hidden = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-hidden")) {
             Ok(h) => h.parse().expect("a boolean sidebar-hidden"),
@@ -3004,7 +3014,7 @@ impl BeeperGuiApp {
             dark: theme,
             zoom: 1.0,
             zoom_drag: None,
-            list: chat_list::ListState::default(),
+            list: chat_list::ListState { filters, ..Default::default() },
             seen_requests: Vec::new(),
             pip: None,
             pip_wanted: false,
@@ -3187,7 +3197,6 @@ impl BeeperGuiApp {
             view_once: Default::default(),
             started: std::time::Instant::now(),
             last_click: None,
-            chat_history: Vec::new(),
             cycling: false,
         };
         app.store.write().load_recent();
@@ -3539,7 +3548,13 @@ impl BeeperGuiApp {
         self.pal = crate::style::palette(self.dark);
         // Desktop's `--custom-font-size` is the font size plus 3 px, and 16 px is the default.
         let font: f32 = st.settings.choice("fontSize").parse().expect("a number option");
-        self.zoom = f32::from(st.settings.zoom_percent) / 100.0 * (font + 3.0) / 16.0;
+        let zoom = f32::from(st.settings.zoom_percent) / 100.0 * (font + 3.0) / 16.0;
+        drop(st);
+        if zoom != self.zoom {
+            let k = self.zoom / zoom;
+            self.zoom = zoom;
+            self.rezoom(k);
+        }
         self.tray_sent.1 = true;
     }
 
@@ -4026,16 +4041,15 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's `pushThreadHistory`, which the command bar, the History menu and the next launch show.
     fn push_history(&mut self, chat_id: &str) {
-        self.chat_history.retain(|c| c != chat_id);
-        self.chat_history.insert(0, chat_id.to_string());
-        self.chat_history.truncate(50);
+        self.store.write().push_recent_chat(chat_id);
     }
 
     /// Selects the chat `by` steps older in the history, or the most recent chat when no chat is open.
     fn step_history(&mut self, by: isize) -> Task<UiMessage> {
         let st = self.store.read();
-        let list: Vec<&String> = self.chat_history.iter().filter(|c| st.resolve_chat_idx(c).is_some()).collect();
+        let list: Vec<&String> = st.recent_chat_ids.iter().filter(|c| st.resolve_chat_idx(c).is_some()).collect();
         let at = self.pane.selected_chat_id.as_ref().map(|s| list.iter().position(|c| *c == s));
         let to = match at {
             Some(at) => (at.map_or(-1, |a| a as isize) + by).rem_euclid(list.len().max(1) as isize) as usize,
@@ -4824,6 +4838,11 @@ impl BeeperGuiApp {
                 }
                 if self.pane.picker == Some(Picker::Gif) && mods.is_empty() {
                     if let Some(task) = self.gif_key(&key) {
+                        return task;
+                    }
+                }
+                if self.pane.emoji.is_some() && mods.is_empty() {
+                    if let Some(task) = self.emoji_key(&key) {
                         return task;
                     }
                 }
@@ -5731,7 +5750,7 @@ impl BeeperGuiApp {
         let thread = self.selection.is_empty() && self.pane().thread.is_some();
         let zoom =
             (self.info_zoom && self.show_right_panel && in_main && open && !thread).then(|| self.view_avatar_zoom());
-        let window = self.pane().size * (1.0 / self.zoom);
+        let window = self.pane().size;
         let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q, window));
         // The menus and the emoji picker of the carousel show over it.
         let hover = self.view_hover_card().filter(|_| in_main);
@@ -6405,20 +6424,20 @@ impl BeeperGuiApp {
         self.hover_at.as_ref().is_some_and(fading) || self.unhovered.as_ref().is_some_and(|(_, at)| fading(at))
     }
 
-    fn row_action<'a>(&self, c: &Chat, pref: u8, t: f32) -> Option<El<'a>> {
+    fn row_action<'a>(&self, s: &BeeperSettings, c: &Chat, pref: u8, t: f32) -> Option<El<'a>> {
         let unread = c.is_unread();
         let archived = c.flags & CHAT_ARCHIVED != 0;
-        let (glyph, size, label, keys, msg) = match pref {
+        let (glyph, size, label, hotkey, msg) = match pref {
             _ if self.list().active_tab == InboxTab::Reminders => {
-                (6, 20.0, tr("Dismiss Reminder"), vec![], UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), None)))
+                (6, 20.0, tr("Dismiss Reminder"), None, UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), None)))
             }
             _ if c.draft.is_some() => {
-                (5, 20.0, tr("Delete draft"), vec![], UiMessage::ChatList(chat_list::Msg::DeleteDraft(c.id.clone())))
+                (5, 20.0, tr("Delete draft"), None, UiMessage::ChatList(chat_list::Msg::DeleteDraft(c.id.clone())))
             }
             0 if archived || c.flags & CHAT_PINNED == 0 => {
                 let msg = UiMessage::ChatList(chat_list::Msg::ToggleFlag(c.id.clone(), ChatFlag::Archived));
                 let label = if archived { tr("Unarchive") } else { trx("Archive", "button label to archive chat") };
-                (usize::from(archived), 14.0, label, vec!["Ctrl", "E"], msg)
+                (usize::from(archived), 14.0, label, Some("Chat: Toggle Archive"), msg)
             }
             1 => {
                 let label = tr(if unread { "Mark Read" } else { "Mark Unread" });
@@ -6426,15 +6445,14 @@ impl BeeperGuiApp {
                     2 + usize::from(!unread),
                     20.0,
                     label,
-                    vec!["Ctrl", "Shift", "U"],
+                    Some("Chat: Toggle Mark As Read"),
                     UiMessage::ChatList(chat_list::Msg::ToggleRead(c.id.clone())),
                 )
             }
-            2 => {
-                (4, 20.0, tr("Open Context Menu"), vec![], UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone())))
-            }
+            2 => (4, 20.0, tr("Open Context Menu"), None, UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone()))),
             _ => return None,
         };
+        let keys = hotkey.map_or_else(Vec::new, |h| hotkey_caps(s.hotkey_keys(h)));
         Some(self.hover_btn(glyph, size, label, keys, msg, t))
     }
 
@@ -6444,14 +6462,14 @@ impl BeeperGuiApp {
         glyph: usize,
         size: f32,
         label: &'a str,
-        keys: Vec<&'static str>,
+        keys: Vec<String>,
         msg: UiMessage,
         t: f32,
     ) -> El<'a> {
         let p = &self.pal;
         let icon = tinted(&ROW_ACTIONS[glyph], size * (0.3 + 0.7 * t), p.strong.scale_alpha(t));
         let btn = button(container(icon).center(size)).padding(6).style(btn_style([CLEAR; 3], [p.strong; 3], 0.0));
-        let tip = self.tip(btn.on_press(msg).into(), label, keys, tooltip::Position::Right);
+        let tip = self.tip_caps(btn.on_press(msg).into(), label, keys, tooltip::Position::Right);
         let top = 22f32.min(51.0 - 12.0 - size);
         container(tip.delay(std::time::Duration::from_secs(1)))
             .align_right(Fill)
