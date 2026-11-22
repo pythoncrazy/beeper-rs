@@ -1295,6 +1295,16 @@ async fn mcp_errors_come_from_the_layer_of_desktop() {
     let accept = text(port, &request("POST", "/v0/mcp", "content-type: application/json\r\n")).await;
     assert!(accept.starts_with("HTTP/1.1 406 ") && !accept.to_lowercase().contains("content-type:"), "{accept}");
     assert!(accept.ends_with(r#""id":null}"#), "{accept}");
+
+    // The Stainless client of a tool refuses a missing path parameter, so `get_chat` without a chat is no chat list.
+    let call = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_chat","arguments":{}}}"#;
+    let headers = format!(
+        "content-type: application/json\r\naccept: application/json, text/event-stream\r\ncontent-length: {}\r\n",
+        call.len()
+    );
+    let out = text(port, &format!("POST /v0/mcp HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\n{headers}connection: close\r\n\r\n{call}")).await;
+    let message = r"Path parameters result in path with invalid segments:\nValue of type Undefined is not a valid path parameter\n/v1/chats/undefined\n          ^^^^^^^^^";
+    assert!(out.contains(&format!(r#""error":{{"code":-32603,"message":"{message}"}}"#)), "{out}");
 }
 
 /// Desktop's `listBridges` leaves out the Beeper and iMessage bridges and names each network by its ID, and its
