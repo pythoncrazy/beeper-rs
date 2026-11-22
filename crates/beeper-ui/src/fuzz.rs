@@ -5720,6 +5720,10 @@ fn chat_list_mutes_receipts_and_errors_like_desktop() {
     let mut m = st.messages[st.timeline_indices(&c.id)[0]].clone();
     (m.id, m.sender_id, m.seen) = ("$event".into(), me, Default::default());
     assert_eq!(receipt_tip(&st, &c, &m).as_deref(), Some("Sent"));
+    let own = Message { is_sender: Some(true), ..m.clone() };
+    assert!(chat_list::read_icon(&own), "an own message shows its read icon");
+    let left = Message { message_type: Some("MEMBERSHIP".into()), text: Some("You left the chat".into()), ..own };
+    assert!(!chat_list::read_icon(&left), "Desktop's `getReadIcon` shows none for an action");
     m.seen.insert(others[0].clone(), String::new());
     assert_eq!(receipt_tip(&st, &c, &m), Some(format!("Seen by 1 of {}", others.len())));
     m.id = "msg_1_1".into();
