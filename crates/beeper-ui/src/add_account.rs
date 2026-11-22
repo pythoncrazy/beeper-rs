@@ -309,7 +309,7 @@ impl BeeperGuiApp {
             let a = st.bridge_accounts.iter().find(|a| a.bridge_id == bridge && a.login_id == *l)?;
             st.custom_name(&a.account_id).map(str::to_string).or_else(|| a.display_text())
         });
-        let (id, open) = window::open(window::Settings {
+        let (id, open) = self.open_window(window::Settings {
             resizable: false,
             min_size: None,
             position: window::Position::Centered,

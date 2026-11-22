@@ -3214,13 +3214,15 @@ impl BeeperGuiApp {
 
     pub fn boot(store: SharedStore) -> (Self, Task<UiMessage>) {
         let mut app = Self::new(store);
+        // The zoom, which the windows open at.
+        app.refresh_theme_and_tray();
         let signed_in = app.pane.selected_chat_id.is_some();
         let mut settings = if signed_in { app.main_window_settings() } else { Self::login_window_settings() };
         let st = app.store.read();
         app.hidden = signed_in && st.settings.on("startMinimized");
         drop(st);
         settings.visible = !app.hidden;
-        let (id, open) = window::open(settings);
+        let (id, open) = app.open_window(settings);
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
         let open = open.then(move |id| Task::done(id).chain(Self::keep_on_screen(id)));
         let cloud = (signed_in && !app.store.read().config.demo).then(|| app.refresh_cloud_accounts());
@@ -3420,7 +3422,9 @@ impl BeeperGuiApp {
     /// Saves the state of window `id` under `key` in `window.json`. A maximized window keeps the bounds from before.
     fn save_window(&self, id: window::Id, key: &'static str) -> Task<UiMessage> {
         let path = self.store.read().config.data_dir.join("window.json");
-        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size)));
+        // Desktop keeps the bounds in screen pixels, and iced gives the size in pixels of the zoom.
+        let zoom = self.zoom;
+        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size * zoom)));
         let state = state.then(move |(max, size)| window::position(id).map(move |at| (max, size, at)));
         state.map(move |(max, size, at)| write_window_state(&path, key, max, size, at)).discard()
     }

@@ -17,7 +17,7 @@ use beeper_core::models::*;
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, stack, svg, tooltip, Column, Row, Space};
-use iced::{mouse, window, Center, Color, Element, Fill, Padding, Pixels, Point, Right, Size, Task};
+use iced::{mouse, Center, Color, Element, Fill, Padding, Pixels, Point, Right, Size, Task};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -105,7 +105,7 @@ impl BeeperGuiApp {
     /// Desktop's `ThreadedRepliesBrowserWindow`: a window of 380 by 700 with the thread of `root` in `chat`.
     pub(crate) fn open_thread_window(&mut self, chat: String, root: String) -> Task<UiMessage> {
         let size = Size::new(380.0, 700.0);
-        let (id, open) = window::open(Self::window_settings(size));
+        let (id, open) = self.open_window(Self::window_settings(size));
         let pane = Pane { selected_chat_id: Some(chat), thread_root: Some(root), size, ..Pane::default() };
         self.chat_windows.push((id, pane));
         // `ThreadedRepliesBrowserWindow` keeps the place of `ao.windowFeatures`.
