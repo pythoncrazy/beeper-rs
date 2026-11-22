@@ -543,7 +543,7 @@ impl BeeperGuiApp {
         let text = self.pane().composer.text();
         let line = &text[text[..trigger].rfind('\n').map_or(0, |i| i + 1)..trigger];
         let x = 8.0 + plus + 8.0 + 14.0 + 2.0 + text_width(line, 13.0, Weight::Normal);
-        let x = x.min(self.pane().size.width / self.zoom - self.left_width() - width - 36.0);
+        let x = x.min(self.pane().size.width - self.left_width() - width - 36.0);
         Some(container(list).align_bottom(Fill).padding(Padding::ZERO.left(x).bottom(34.0)).into())
     }
 
@@ -865,7 +865,7 @@ impl BeeperGuiApp {
                 true => (p.sent, mix(p.card, p.sent, 0.3)),
                 false => (p.received, p.card),
             };
-            let pill = container(body).max_width(self.pane().size.width / self.zoom / 2.0).padding(8);
+            let pill = container(body).max_width(self.pane().size.width / 2.0).padding(8);
             removable(p, pill.style(bordered_box(fill, edge, 2.0, 17.0)), UiMessage::Composer(Msg::CancelMode))
         });
         let gif_picker = (self.pane().picker == Some(Picker::Gif)).then(|| {

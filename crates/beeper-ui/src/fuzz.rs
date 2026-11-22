@@ -4205,6 +4205,32 @@ fn zoom_keys_like_desktop() {
     assert_eq!(app.zoom, 0.75, "the font size 9 is a root font of 12 px, as in Desktop");
 }
 
+/// The sizes of the windows are in iced's logical pixels, which the zoom scales like Desktop's CSS pixels: the
+/// sidebar hides under 600 of them, and a zoom resizes the viewport.
+#[test]
+fn the_zoom_resizes_the_viewport_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("zoom-viewport");
+    let main = app.main_window.expect("the main window");
+    let zoom = |app: &mut BeeperGuiApp, key: &str| {
+        let _ = app.update(UiMessage::KeyPressed(Key::Character(key.into()), Modifiers::CTRL));
+    };
+    zoom(&mut app, "=");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(640.0, 500.0))));
+    assert!(!app.sidebar_hidden, "640 CSS pixels at 110% keep the sidebar");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(590.0, 500.0))));
+    assert!(app.sidebar_hidden, "590 CSS pixels hide it");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(640.0, 500.0))));
+    assert!(!app.sidebar_hidden, "and 640 show it again");
+    zoom(&mut app, "0");
+    assert_eq!((app.pane.size.width.round(), app.sidebar_hidden), (704.0, false), "a reset widens the viewport");
+    zoom(&mut app, "=");
+    zoom(&mut app, "=");
+    assert!(app.pane.size.width < 600.0 && app.sidebar_hidden, "a zoom in narrows it, at {}", app.zoom);
+    zoom(&mut app, "0");
+    assert_eq!((app.pane.size.width.round(), app.sidebar_hidden), (704.0, false));
+}
+
 #[test]
 fn search_finds_custom_items_like_desktop() {
     let mut app = demo_app("search-custom");
