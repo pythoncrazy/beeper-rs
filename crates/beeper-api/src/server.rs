@@ -686,9 +686,15 @@ pub fn serve_http(listener: TcpListener, store: SharedStore) -> impl std::future
     let config = Arc::new(store.read().config.clone());
     let cloud = Arc::new(Cloud::new(&config.api_url, &config.homeserver));
     async move {
+        // The connections end with the server: when the API turns off, Desktop closes its clients too.
+        let mut connections = tokio::task::JoinSet::new();
         loop {
+            let accepted = tokio::select! {
+                accepted = listener.accept() => accepted,
+                Some(_) = connections.join_next() => continue,
+            };
             // A failed accept, such as one past the limit of open files, refuses that connection only, like Node.
-            let stream = match listener.accept().await {
+            let stream = match accepted {
                 Ok((stream, _)) => stream,
                 Err(e) => {
                     eprintln!("accept a Desktop API connection: {e}");
@@ -696,7 +702,7 @@ pub fn serve_http(listener: TcpListener, store: SharedStore) -> impl std::future
                     continue;
                 }
             };
-            tokio::spawn(handle_connection(stream, store.clone(), cloud.clone(), config.clone()));
+            connections.spawn(handle_connection(stream, store.clone(), cloud.clone(), config.clone()));
         }
     }
 }
@@ -882,13 +888,19 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
             continue;
         }
         if msg.start_line.starts_with("GET ") && msg.path() == "/v1/ws" && msg.header_is("upgrade", "websocket") {
-            let refused = auth::authorize(&store.read(), auth::access_token(&msg), &[beeper_core::connect::READ]).err();
-            if let Some((status, message)) = refused {
-                let head = format!("HTTP/1.1 {status} {message}\r\nConnection: close\r\n\r\n");
-                stream.write_all(head.as_bytes()).await.ok();
-                return;
-            }
-            return serve_ws(stream, buf, msg, store).await;
+            // The token check waits for the store lock on a blocking thread, like the handlers.
+            let (st, token) = (store.clone(), auth::access_token(&msg).map(str::to_string));
+            let checked = tokio::task::spawn_blocking(move || {
+                let st = st.read();
+                auth::authorize(&st, token.as_deref(), &[beeper_core::connect::READ]).map(|_| st.ws_tx.subscribe())
+            });
+            return match checked.await.expect("the token check panicked") {
+                Ok(events) => serve_ws(stream, buf, msg, store, events).await,
+                Err((status, message)) => {
+                    let head = format!("HTTP/1.1 {status} {message}\r\nConnection: close\r\n\r\n");
+                    drop(stream.write_all(head.as_bytes()).await);
+                }
+            };
         }
         // Express answers HEAD with the response of GET, without the body.
         let head_only = msg.method() == "HEAD";
@@ -3062,7 +3074,13 @@ fn close_payload(code: u16, reason: &str) -> Vec<u8> {
 /// Desktop's `maxPayload` of the WebSocket server.
 const WS_MAX_PAYLOAD: usize = 64 * 1024;
 
-async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, store: SharedStore) {
+async fn serve_ws(
+    mut stream: TcpStream,
+    leftover: Vec<u8>,
+    msg: HttpMessage,
+    store: SharedStore,
+    mut events: tokio::sync::broadcast::Receiver<WsEvent>,
+) {
     let Some(key) = msg.header("sec-websocket-key") else { return };
     let accept = base64_encode_standard(&sha1(format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes()));
     let handshake = format!(
@@ -3071,7 +3089,6 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
     if stream.write_all(handshake.as_bytes()).await.is_err() {
         return;
     }
-    let mut events = store.read().ws_tx.subscribe();
     let (reader, mut writer) = stream.into_split();
     let subs = Arc::new(RwLock::new(Vec::<String>::new()));
     let app_on = Arc::new(std::sync::atomic::AtomicBool::new(false));

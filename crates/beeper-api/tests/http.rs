@@ -92,6 +92,80 @@ async fn the_info_and_the_spec_answer_while_the_chats_load() {
     loader.join().unwrap();
 }
 
+/// Turning the API off drops the server, and with it its open connections, so a client that kept one has no access.
+#[tokio::test]
+async fn the_connections_end_with_the_server() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let cfg = CentralConfig { port, ..demo_config("http-off") };
+    let store = StoreLock::shared(BeeperStore::from_config(cfg));
+    let token = store.read().beeper_state.access_token.clone();
+    let server = tokio::spawn(serve_http(listener, store));
+    let info = b"GET /v1/info HTTP/1.1\r\nhost: x\r\n\r\n";
+    let mut http = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    http.write_all(info).await.unwrap();
+    let mut head = [0; 15];
+    http.read_exact(&mut head).await.unwrap();
+    assert_eq!(&head, b"HTTP/1.1 200 OK");
+    let upgrade = format!("GET /v1/ws HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {token}\r\n\r\n");
+    let mut ws = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    ws.write_all(upgrade.as_bytes()).await.unwrap();
+    let mut head = [0; 12];
+    ws.read_exact(&mut head).await.unwrap();
+    assert_eq!(&head, b"HTTP/1.1 101");
+
+    server.abort();
+    let _ = server.await;
+    // The rest of the first answer, then the end of the connection without an answer to the second request.
+    http.write_all(info).await.ok();
+    let mut rest = Vec::new();
+    timeout(Duration::from_secs(5), http.read_to_end(&mut rest)).await.expect("the connection ends").ok();
+    assert_eq!(String::from_utf8_lossy(&rest).matches("HTTP/1.1").count(), 0, "no second answer");
+    let mut rest = Vec::new();
+    timeout(Duration::from_secs(5), ws.read_to_end(&mut rest)).await.expect("the WebSocket ends").ok();
+}
+
+/// A WebSocket upgrade waits for the load on a blocking thread too, so more upgrades than workers block no request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_upgrades_wait_for_the_load_off_the_workers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let cfg = CentralConfig { port, ..demo_config("http-ws-loading") };
+    let store = StoreLock::shared(BeeperStore::open(cfg));
+    let token = store.read().beeper_state.access_token.clone();
+    tokio::spawn(serve_http(listener, store.clone()));
+    let (locked, load) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+    let loader = std::thread::spawn(move || {
+        let mut st = store.write();
+        locked.0.send(()).unwrap();
+        load.1.recv().unwrap();
+        st.load_chats();
+    });
+    locked.1.recv().unwrap();
+    // Blocking sockets with timeouts, since blocked workers would also stop the IO and the timers of tokio.
+    use std::io::{Read, Write};
+    let send = |request: &str| {
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        s.write_all(request.as_bytes()).unwrap();
+        s
+    };
+    let head = |mut s: std::net::TcpStream| {
+        let mut head = [0; 12];
+        s.read_exact(&mut head).map(|_| String::from_utf8_lossy(&head).into_owned())
+    };
+    let upgrade = format!("GET /v1/ws HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {token}\r\n\r\n");
+    let upgrades: Vec<_> = (0..4).map(|_| send(&upgrade)).collect();
+    std::thread::sleep(Duration::from_millis(200));
+    let info = head(send("GET /v1/info HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n"));
+    load.0.send(()).unwrap();
+    loader.join().unwrap();
+    assert_eq!(info.expect("the info answers while the upgrades wait"), "HTTP/1.1 200");
+    for ws in upgrades {
+        assert_eq!(head(ws).unwrap(), "HTTP/1.1 101", "the upgrade goes on after the load");
+    }
+}
+
 #[tokio::test]
 async fn bodies_over_the_limit_of_the_route_get_413() {
     let (port, token) = server("limits").await;

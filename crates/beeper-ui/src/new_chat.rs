@@ -191,7 +191,7 @@ impl BeeperGuiApp {
             // Desktop's Start (`D`), and Start of the "Room encryption" step (`R`), which Matrix groups of more than
             // one person ask first.
             Msg::Start => {
-                let Some(n) = self.creating_chat else { return Task::none() };
+                let Some(n) = self.creating_chat.filter(|_| !self.creating_thread()) else { return Task::none() };
                 let draft = self.new_chats.iter().find(|d| d.id == n).expect("the open draft");
                 let Some((account, user)) = draft.users.first().cloned() else { return Task::none() };
                 if draft.group {

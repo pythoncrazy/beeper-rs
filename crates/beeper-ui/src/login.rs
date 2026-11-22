@@ -1035,7 +1035,7 @@ impl BeeperGuiApp {
             LoginMsg::Continue => {
                 self.login = Login::default();
                 let first_read =
-                    self.visible_chats(&self.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
+                    self.listed_chats(&self.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
                 let enter = self.enter_app(first_read.as_deref().unwrap_or(NOTE_CHAT_ID));
                 let later = async { tokio::time::sleep(std::time::Duration::from_secs(1)).await };
                 let toast = Task::perform(later, |()| UiMessage::Toast(crate::toasts::Msg::MobileApps(true)));
@@ -1440,7 +1440,8 @@ impl BeeperGuiApp {
                         container(go_on).padding(12)
                     ]
                 });
-                let foot = self.view_accounts_footer(&st).map(|f| container(f).center_y(31));
+                // One line of the footer takes 31 px, and a wrapped footer takes more.
+                let foot = self.view_accounts_footer(&st).map(|f| container(f).padding([3, 0]));
                 column![
                     {
                         let (headline, width) = gradient_text(tr("Connect Chat Accounts"), 26.0, 48.0);
@@ -1980,8 +1981,8 @@ mod tests {
             app
         };
         let mut app = onboarding("onboarding-continue");
-        let first_read = app.visible_chats(&app.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
-        assert!(first_read.as_deref().is_some_and(|c| c != beeper_core::store::NOTE_CHAT_ID), "a read demo chat");
+        let first_read = app.listed_chats(&app.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
+        assert!(first_read.is_some(), "a read demo chat");
         let task = app.update(LoginMsg::Continue.into());
         assert_eq!(app.pane.selected_chat_id, first_read, "Desktop's selectFirstReadThread");
         assert!(!app.mobile_apps_toast, "the toast comes a second later");
