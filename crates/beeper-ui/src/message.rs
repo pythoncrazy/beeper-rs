@@ -2705,12 +2705,15 @@ impl BeeperGuiApp {
                     (quote, container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into())
                 })
                 .collect();
-            let body = Column::with_children(quotes(items, 0, p.strong)).width(width);
+            // Desktop's `dir="auto"`: a right-to-left text starts its lines at the right of the bubble, and its time
+            // floats to its left, where its room is.
+            let rtl = right_to_left(&text);
+            let start = if rtl { Right } else { iced::Left };
+            let body = Column::with_children(quotes(items, 0, p.strong)).width(width).align_x(start);
             let cut = cut.map(|(t, left)| {
                 txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             });
-            // Desktop's `dir="auto"`: the time of a right-to-left text floats to its left, where its room is.
-            let body = stack![column![body].push(cut)].push(time.map(|t| match right_to_left(&text) {
+            let body = stack![column![body].push(cut).align_x(start)].push(time.map(|t| match rtl {
                 true => container(t).align_left(Fill).align_bottom(Fill),
                 false => container(t).align_right(Fill).align_bottom(Fill),
             }));
@@ -4610,6 +4613,24 @@ mod tests {
             st.update_chat(i, |c| c.chat_type = "single".into());
         }
         assert!(alone(&app, &reply).find("Z").is_err(), "a DM has no reply avatar");
+    }
+
+    /// Desktop's `dir="auto"`: the wrapped lines of a right-to-left message start at the right of its bubble, so its
+    /// ragged edge is on the left.
+    #[test]
+    fn rtl_lines_start_at_the_right_like_desktop() {
+        let mut app = crate::fuzz::demo_app("rtl-lines");
+        app.pane.size = Size::new(1000.0, 700.0);
+        let mid =
+            plain_received(&app, "שלום עולם, זו הודעה בעברית עם מילים רבות כדי לבדוק גלישה של שורות ארוכות בממשק");
+        let shot = pixels(&mut alone(&app, &mid));
+        // The rightmost columns of the bubble and of the dark pixels of its text, at the scale of 2.
+        let rightmost = |hit: &dyn Fn([u8; 4]) -> bool| {
+            (0..shot.width()).rev().find(|&x| (0..shot.height()).any(|y| hit(shot.get_pixel(x, y).0))).expect("pixels")
+        };
+        let bubble = rightmost(&|px| near(px, app.pal.received));
+        let ink = rightmost(&|px| px[..3].iter().map(|&c| u32::from(c)).sum::<u32>() < 200);
+        assert!(bubble - ink <= 2 * (BUBBLE_PAD_X as u32 + 2), "the lines end at the padding: {bubble} {ink}");
     }
 
     /// Desktop's quote of your own message in the light theme is a white box with the border of your bubbles and its
