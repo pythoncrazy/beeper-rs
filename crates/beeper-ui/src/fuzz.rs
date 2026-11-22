@@ -4205,6 +4205,30 @@ fn zoom_keys_like_desktop() {
     assert_eq!(app.zoom, 0.75, "the font size 9 is a root font of 12 px, as in Desktop");
 }
 
+/// Desktop's windows open at their size in screen pixels whatever the zoom and the font size, and iced opens a
+/// window at its size times the scale factor.
+#[test]
+fn windows_open_at_their_size_at_any_zoom_like_desktop() {
+    use iced::futures::StreamExt;
+    let mut app = demo_app("zoomed-windows");
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 8)));
+    assert_eq!(app.zoom, 1.25, "the font size 17 is a root font of 20 px");
+    let task = app.open_settings(SettingsTab::General);
+    let actions = iced_runtime::task::into_stream(task).expect("a window opens");
+    let size = iced::futures::executor::block_on(
+        actions
+            .filter_map(|a| async move {
+                match a {
+                    iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s.size),
+                    _ => None,
+                }
+            })
+            .boxed()
+            .next(),
+    );
+    assert_eq!(size, Some(SETTINGS_SIZE * 0.8), "800 by 740 screen pixels");
+}
+
 #[test]
 fn search_finds_custom_items_like_desktop() {
     let mut app = demo_app("search-custom");
