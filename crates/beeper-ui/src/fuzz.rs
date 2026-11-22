@@ -5397,6 +5397,24 @@ fn accounts_settings_rows_have_the_account_menu_like_desktop() {
     assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::ChatList(chat_list::Msg::CloseMenu)]));
 }
 
+/// The demo has no Beeper Cloud: Remove Account takes the account out of the demo without a request to the Beeper
+/// API or the homeserver.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_demo_removes_an_account_without_the_cloud() {
+    let mut app = demo_app("demo-remove-account");
+    // A closed port for the Beeper API and the homeserver, so that a request fails at once.
+    {
+        let mut st = app.store.write();
+        (st.config.api_url, st.beeper_state.homeserver) = ("http://127.0.0.1:9".into(), "http://127.0.0.1:9".into());
+    }
+    let account = app.store.read().bridge_accounts[0].account_id.clone();
+    let task = app.update(UiMessage::Accounts(accounts::Msg::Remove(account.clone())));
+    let sent =
+        task_messages(task).await.into_iter().any(|m| matches!(m, UiMessage::Accounts(accounts::Msg::Removed(..))));
+    assert!(!sent, "no request");
+    assert!(app.store.read().bridge_accounts.iter().all(|b| b.account_id != account), "the account is gone");
+}
+
 #[test]
 fn sidebar_menus_open_accounts_like_desktop() {
     let mut app = demo_app("rail-menus");

@@ -79,10 +79,17 @@ impl BeeperGuiApp {
             Msg::Remove(id) => {
                 self.confirm = None;
                 let p = self.provision(&id);
-                let st = self.store.read();
-                let sole = st.bridge_accounts.iter().filter(|b| b.bridge_id == p.bridge_id).all(|b| b.account_id == id);
-                let removing = beeper_core::matrix::remove_account(p, st.config.api_url.clone(), sole);
-                return Task::perform(removing, move |r| UiMessage::Accounts(Msg::Removed(id.clone(), r)));
+                let mut st = self.store.write();
+                // The demo has no Beeper Cloud to ask: its account goes from the store alone.
+                if st.config.demo {
+                    let left = st.bridge_accounts.iter().filter(|b| b.account_id != id).cloned().collect();
+                    st.set_cloud_accounts(left);
+                } else {
+                    let sole =
+                        st.bridge_accounts.iter().filter(|b| b.bridge_id == p.bridge_id).all(|b| b.account_id == id);
+                    let removing = beeper_core::matrix::remove_account(p, st.config.api_url.clone(), sole);
+                    return Task::perform(removing, move |r| UiMessage::Accounts(Msg::Removed(id.clone(), r)));
+                }
             }
             Msg::Removed(_, Ok(())) => return self.refresh_cloud_accounts(),
             Msg::Removed(id, Err(e)) => {
