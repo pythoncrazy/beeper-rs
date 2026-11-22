@@ -798,6 +798,8 @@ pub(crate) mod tests {
         assert_eq!(stops, [C::Toggle, C::Field, C::Action(5)], "the toggle, the composer and Record Audio");
         assert_eq!(tab(&mut app, false, true), Some(C::Action(5)), "Tab goes to the button after the composer");
         let size = Size::new(1200.0, 800.0);
+        // The first frame finds the day under the header, whose date the next frames float.
+        let _ = shot(app.view_main(), size, "composer-first");
         let focused = shot(app.view_main(), size, "composer-focused");
         assert_eq!(tab(&mut app, false, false), None, "Tab on a button goes back to the composer");
         assert!(focused == shot(app.view_main(), size, "composer-none"), "a focused button looks the same");

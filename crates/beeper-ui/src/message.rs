@@ -652,6 +652,9 @@ fn right_to_left(text: &str) -> bool {
     text.chars().find(|c| c.is_alphabetic()).is_some_and(rtl)
 }
 
+/// How far under the top of the timeline the date of the day at its top floats, under the header card.
+const STICKY_DATE: f32 = 80.0;
+
 /// The container of the unread divider, which a chat scrolls to when it opens.
 const UNREAD_DIVIDER: &str = "unread-divider";
 
@@ -1508,7 +1511,7 @@ impl BeeperGuiApp {
             .sticky()
             .filter(|_| in_chat)
             .and_then(|i| msgs.get(i))
-            .map(|m| self.day_pill(&m.timestamp).padding(Padding::ZERO.top(80.0).left(GUTTER)));
+            .map(|m| self.day_pill(&m.timestamp, true).padding(Padding::ZERO.top(STICKY_DATE).left(GUTTER)));
         let overlay = match in_chat {
             true if selecting => stack![fade],
             true if chat.is_request == Some(true) => stack![fade, self.view_info_toggle(&st)],
@@ -1797,6 +1800,9 @@ impl BeeperGuiApp {
         // Desktop's `ThreadedRepliesView` lists the root and the replies of a thread under its header, and loads older
         // messages of the chat only until the root loads.
         let root = self.pane().thread_root.as_deref();
+        let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
+        // The date of the day that starts under the header shows only where it floats.
+        let covered = list.covered().filter(|_| !thread);
         let top = if root.is_some() { 38.0 } else { 96.0 };
         let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(top).bottom(0.0));
         let loaded = root.is_some_and(|r| msgs.first().is_some_and(|m| m.id == r));
@@ -1833,7 +1839,8 @@ impl BeeperGuiApp {
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             let mut head = Column::new().width(Fill).push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
-                head = head.push(self.day_pill(&m.timestamp).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
+                let shown = covered.is_none_or(|c| i > c);
+                head = head.push(self.day_pill(&m.timestamp, shown).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
             // The `along-message-footer` line of the message before goes on through the gap below it, past its
             // sender's avatar, and the date between two messages of a chain (`MessageDate`) has a line of its own.
@@ -2004,8 +2011,8 @@ impl BeeperGuiApp {
                 None => cell.into(),
             }
         };
-        let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
-        list.sections(days.clone());
+        // The pill floats at `STICKY_DATE`, 4 px into the row of its day.
+        list.sections(days.clone(), if thread { 0.0 } else { STICKY_DATE - 4.0 });
         col.push(list.view(keys, true, 48.0, UiMessage::Relist, item))
     }
 
@@ -2059,11 +2066,12 @@ impl BeeperGuiApp {
         Some(mouse_area(list).on_enter(UiMessage::HeaderHover(true)).on_exit(UiMessage::HeaderHover(false)).into())
     }
 
-    /// Desktop's `MessageDate` pill of the day of `timestamp`, in the middle of its row.
-    fn day_pill<'a>(&self, timestamp: &str) -> iced::widget::Container<'a, UiMessage> {
+    /// Desktop's `MessageDate` pill of the day of `timestamp`, in the middle of its row, or its empty place.
+    fn day_pill<'a>(&self, timestamp: &str, shown: bool) -> iced::widget::Container<'a, UiMessage> {
         let p = &self.pal;
-        let label = semi(day_label(timestamp), 11.0).color(p.on_secondary);
-        container(container(label).padding([5, 9]).style(bordered_box(p.card, p.chip, 1.0, 12.0))).center_x(Fill)
+        let [fg, bg, edge] = if shown { [p.on_secondary, p.card, p.chip] } else { [CLEAR; 3] };
+        let label = semi(day_label(timestamp), 11.0).color(fg);
+        container(container(label).padding([5, 9]).style(bordered_box(bg, edge, 1.0, 12.0))).center_x(Fill)
     }
 
     /// A message, or the gallery of the messages `ms`.
@@ -2602,8 +2610,6 @@ impl BeeperGuiApp {
             let code_lines = blocks.iter().filter(|b| b.6).flat_map(|b| b.2.lines());
             let code_w =
                 code_lines.map(|l| l.chars().count() as f32 * 0.6 * 13.0 * 0.9 + 2.0 * code_pad).fold(0.0, f32::max);
-            let text_w = blocks.iter().filter(|b| !b.6).flat_map(|b| b.2.lines());
-            let text_w = text_w.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
             let last_pre = blocks.last().is_some_and(|b| b.6);
             let (room, time, footer_time) = match clamp {
                 Some(_) => (0.0, None, time),
@@ -2628,8 +2634,12 @@ impl BeeperGuiApp {
             let padded = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
             let blocks_html =
                 m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
-            let width = match crate::style::wraps(&padded, max, 13.0) {
-                _ if code_w > 0.0 => Length::Fixed(code_w.max(text_w).min(max)),
+            let width = match code_w > 0.0 || crate::style::wraps(&padded, max, 13.0) {
+                _ if code_w > 0.0 => {
+                    let lines = blocks.iter().filter(|b| !b.6).flat_map(|b| b.2.lines());
+                    let text_w = lines.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
+                    Length::Fixed(code_w.max(text_w).min(max))
+                }
                 false => Length::Shrink,
                 true if st.settings.on("balanceText") && !blocks_html => {
                     Length::Fixed(crate::style::balanced_width(&padded, max, 13.0))
@@ -3526,8 +3536,9 @@ pub enum Msg {
     GoTo(String, String),
     /// Save the attachments of a message, or only one of them, to the downloads folder.
     Download(String, Option<usize>),
-    /// The name of the last saved file, or the URL of the file that failed and why.
-    Downloaded(Result<String, (String, String)>),
+    /// The text of the "Downloading" toast, and the path of the last saved file, none when the user cancelled the
+    /// save dialog, or the URL of the file that failed and why.
+    Downloaded(String, Result<Option<std::path::PathBuf>, (String, String)>),
     /// Desktop's "Delete message?" dialog of the messages.
     AskDelete(Vec<String>),
     /// Desktop's `retryErroredMessage` and `removeErroredMessage` of a failed send.
@@ -3875,12 +3886,13 @@ impl BeeperGuiApp {
                     })
                     .collect();
                 let client = st.matrix.clone();
-                self.status_banner = trf("Downloading %s", &[&files[0].1]);
-                self.sticky_banner = Some(self.status_banner.clone());
+                let busy = trf("Downloading %s", &[&files[0].1]);
+                self.status_banner = busy.clone();
+                self.sticky_banner = Some(busy.clone());
                 let (dir, ask) = (downloads_dir(&st.settings), st.settings.on("alwaysAskDownload"));
                 return Task::perform(
                     async move {
-                        let mut last = String::new();
+                        let mut last = None;
                         for (url, name) in files {
                             let save = async {
                                 let name = safe_file_name(&name);
@@ -3904,26 +3916,37 @@ impl BeeperGuiApp {
                                 };
                                 let bytes = beeper_core::matrix::media(client.clone(), url.clone()).await?;
                                 std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-                                Ok(Some(path.file_name().expect("a file path").to_string_lossy().into_owned()))
+                                Ok(Some(path))
                             };
-                            if let Some(name) = save.await.map_err(|e| (url.clone(), e))? {
-                                last = name;
+                            if let Some(path) = save.await.map_err(|e| (url.clone(), e))? {
+                                last = Some(path);
                             }
                         }
                         Ok(last)
                     },
-                    |a0| UiMessage::Message(Msg::Downloaded(a0)),
+                    move |r| UiMessage::Message(Msg::Downloaded(busy.clone(), r)),
                 );
             }
-            // Like Desktop's media manager, a file that the bridge only loads when the user asks needs a download.
-            Msg::Downloaded(r) => {
-                self.status_banner = match r {
-                    Ok(name) => trf("Downloaded %s", &[&name]),
+            // Desktop's `downloadFile` removes its "Downloading" toast, then shows the saved file, or why it failed.
+            Msg::Downloaded(busy, r) => {
+                if self.sticky_banner.take_if(|t| *t == busy).is_some() && self.status_banner == busy {
+                    self.status_banner.clear();
+                }
+                match r {
+                    Ok(None) => {}
+                    Ok(Some(path)) => {
+                        let text = trf("Downloaded %s", &[&path.file_name().expect("a file path").to_string_lossy()]);
+                        let open = UiMessage::OpenUrl(path.to_string_lossy().into_owned());
+                        let buttons = vec![(tr("Open"), open), ("Show in folder", UiMessage::ShowInFolder(path))];
+                        self.show(Toast { buttons, ..Toast::new(text) });
+                    }
                     Err((url, e)) => {
+                        // Like Desktop's media manager, a file that the bridge only loads when the user asks needs a
+                        // download.
                         if beeper_core::matrix::reload_needed(&e) {
                             self.needs_download.insert(url);
                         }
-                        trf("Download failed: %s", &[&e])
+                        self.fail(Toast::new(trf("Download failed: %s", &[&e])));
                     }
                 }
             }
@@ -4167,6 +4190,38 @@ mod tests {
         app.pane.selected_msgs = ids[..2].to_vec();
         let _ = app.update(UiMessage::Message(Msg::QuoteSelected));
         assert!(app.pane.composer.text().starts_with("> "), "the selection is quoted in the composer");
+    }
+
+    /// Desktop's `downloadFile`: the "Downloading" toast goes when the file is saved, and the "Downloaded" toast opens
+    /// the file or shows it in its folder. A cancelled save dialog shows nothing, and a failure is an error toast.
+    #[test]
+    fn download_toasts_like_desktop() {
+        let mut app = crate::fuzz::demo_app("download-toasts");
+        let busy = "Downloading a.png".to_string();
+        let start =
+            |app: &mut BeeperGuiApp| (app.status_banner, app.sticky_banner) = (busy.clone(), Some(busy.clone()));
+        let path = std::path::PathBuf::from("/tmp/saved/a (1).png");
+        start(&mut app);
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy.clone(), Ok(Some(path.clone())))));
+        assert_eq!(app.sticky_banner, None, "the Downloading toast is gone, and New Chat can start a chat again");
+        let t = app.shown_toast().expect("the Downloaded toast");
+        assert_eq!(t.text, "Downloaded a (1).png");
+        assert!(
+            matches!(&t.buttons[..], [("Open", UiMessage::OpenUrl(o)), ("Show in folder", UiMessage::ShowInFolder(s))]
+            if o == "/tmp/saved/a (1).png" && *s == path)
+        );
+        start(&mut app);
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy.clone(), Ok(None))));
+        assert_eq!((app.status_banner.as_str(), app.sticky_banner.as_deref()), ("", None), "a cancel says nothing");
+        start(&mut app);
+        let failed = Err(("mxc://x/y".into(), "boom".into()));
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy.clone(), failed)));
+        let t = app.shown_toast().expect("the failure toast");
+        assert!(t.error && t.text == "Download failed: boom");
+        // A toast that waits for an answer, like a verification request, stays.
+        (app.status_banner, app.sticky_banner) = ("Verification request from Pixel".into(), Some("Pixel".into()));
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy, Ok(Some(path)))));
+        assert_eq!(app.sticky_banner.as_deref(), Some("Pixel"));
     }
 
     /// Desktop's `.reply-thread` fades in over 0.2 s while its messages rise 10 px into place over 0.6 s, both on
