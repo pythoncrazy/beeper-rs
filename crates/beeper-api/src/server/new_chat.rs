@@ -3,8 +3,8 @@
 //! and finds the people of its chats. The bridge calls run without the store lock.
 
 use super::{
-    bad, check, create_chat_issues, error, error_with, invalid_input, missing, ok, search, store_error, string_issue,
-    too_short, type_issue, view, zod_type, Issue, Reply, Req, Response, MIN_1,
+    bad, check, create_chat_issues, custom_issue, error, error_with, invalid_input, missing, ok, search, store_error,
+    string_issue, too_short, type_issue, view, zod_type, Issue, Reply, Req, Response, MIN_1,
 };
 use crate::http::StatusCode;
 use beeper_core::matrix::{bridge_user, ChatBridge};
@@ -100,11 +100,10 @@ fn start_chat_issues(b: &Value) -> Vec<Issue> {
             // zod runs the refinement of `user` only when its fields parse.
             let named = fields[..4].iter().any(|k| u.get(*k).and_then(Value::as_str).is_some_and(|s| !s.is_empty()));
             if found.is_empty() && !named {
-                issues.push(Issue(vec![
-                    ("code", json!("custom")),
-                    ("message", json!("At least one of id, username, phoneNumber, or email is required.")),
-                    ("path", json!(["user", "id"])),
-                ]));
+                issues.push(custom_issue(
+                    "At least one of id, username, phoneNumber, or email is required.",
+                    json!(["user", "id"]),
+                ));
             }
             issues.extend(found);
         }

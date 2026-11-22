@@ -129,6 +129,45 @@ fn type_issue(keys: [&'static str; 3], expected: &str, received: &str, path: Val
     Issue(keys.map(|k| (k, value(k))).into_iter().chain([("path", path), ("message", message.into())]).collect())
 }
 
+/// zod's `custom` issue of a refinement.
+fn custom_issue(message: &str, path: Value) -> Issue {
+    Issue(vec![("code", json!("custom")), ("message", json!(message)), ("path", path)])
+}
+
+/// zod's issue of a failed bound of a `kind`: `too_small` below its `minimum`, or `too_big` above its `maximum`.
+fn bound_issue(code: &str, bound: i64, kind: &str, inclusive: bool, message: String, path: Value) -> Issue {
+    Issue(vec![
+        ("code", json!(code)),
+        (if code == "too_small" { "minimum" } else { "maximum" }, json!(bound)),
+        ("type", json!(kind)),
+        ("inclusive", json!(inclusive)),
+        ("exact", json!(false)),
+        ("message", message.into()),
+        ("path", path),
+    ])
+}
+
+/// zod's issue of the `int()` check of a number with a fraction.
+fn float_issue(path: Value) -> Issue {
+    Issue(vec![
+        ("code", json!("invalid_type")),
+        ("expected", json!("integer")),
+        ("received", json!("float")),
+        ("message", json!("Expected integer, received float")),
+        ("path", path),
+    ])
+}
+
+/// zod's issue of a string that is not a `datetime()`.
+fn datetime_issue(path: Value) -> Issue {
+    Issue(vec![
+        ("code", json!("invalid_string")),
+        ("validation", json!("datetime")),
+        ("message", json!("Invalid datetime")),
+        ("path", path),
+    ])
+}
+
 /// The zod issue of a string field, if the value is not a string.
 fn string_issue(v: Option<&Value>, optional: bool, path: Value) -> Option<Issue> {
     let ok = matches!(v, Some(Value::String(_))) || (optional && v.is_none());
@@ -220,34 +259,18 @@ fn coerce_int(v: &Value, (min, inclusive): (i64, bool), max: i64, path: Value) -
     if n.is_nan() {
         return Err(vec![type_issue(["code", "expected", "received"], "number", "nan", path)]);
     }
-    let bound = |code: &str, k, value: i64, inclusive: bool, message: String| {
-        Issue(vec![
-            ("code", json!(code)),
-            (k, json!(value)),
-            ("type", json!("number")),
-            ("inclusive", json!(inclusive)),
-            ("exact", json!(false)),
-            ("message", message.into()),
-            ("path", path.clone()),
-        ])
-    };
     let mut issues = Vec::new();
     // `fract` of an infinity is NaN, which is not an integer either.
     if n.fract() != 0.0 {
-        issues.push(Issue(vec![
-            ("code", json!("invalid_type")),
-            ("expected", json!("integer")),
-            ("received", json!("float")),
-            ("message", json!("Expected integer, received float")),
-            ("path", path.clone()),
-        ]));
+        issues.push(float_issue(path.clone()));
     }
     if n < min as f64 || (!inclusive && n == min as f64) {
         let message = format!("Number must be greater than {}{min}", if inclusive { "or equal to " } else { "" });
-        issues.push(bound("too_small", "minimum", min, inclusive, message));
+        issues.push(bound_issue("too_small", min, "number", inclusive, message, path.clone()));
     }
     if n > max as f64 {
-        issues.push(bound("too_big", "maximum", max, true, format!("Number must be less than or equal to {max}")));
+        let message = format!("Number must be less than or equal to {max}");
+        issues.push(bound_issue("too_big", max, "number", true, message, path));
     }
     if issues.is_empty() {
         Ok(n as i64)
@@ -268,15 +291,7 @@ fn too_short(k: &str) -> Issue {
 }
 
 fn too_short_at(path: Value) -> Issue {
-    Issue(vec![
-        ("code", json!("too_small")),
-        ("minimum", json!(1)),
-        ("type", json!("string")),
-        ("inclusive", json!(true)),
-        ("exact", json!(false)),
-        ("message", json!("String must contain at least 1 character(s)")),
-        ("path", path),
-    ])
+    bound_issue("too_small", 1, "string", true, "String must contain at least 1 character(s)".into(), path)
 }
 
 /// The zod issue of a `string().min(1)` value at `path`.
@@ -300,24 +315,17 @@ fn kind_issue(v: Option<&Value>, kind: &str, optional: bool, path: Value) -> Opt
 fn whole_issues(n: f64, path: Value) -> Vec<Issue> {
     let mut issues = Vec::new();
     if n.fract() != 0.0 {
-        issues.push(Issue(vec![
-            ("code", json!("invalid_type")),
-            ("expected", json!("integer")),
-            ("received", json!("float")),
-            ("message", json!("Expected integer, received float")),
-            ("path", path.clone()),
-        ]));
+        issues.push(float_issue(path.clone()));
     }
     if n < 0.0 {
-        issues.push(Issue(vec![
-            ("code", json!("too_small")),
-            ("minimum", json!(0)),
-            ("type", json!("number")),
-            ("inclusive", json!(true)),
-            ("exact", json!(false)),
-            ("message", json!("Number must be greater than or equal to 0")),
-            ("path", path),
-        ]));
+        issues.push(bound_issue(
+            "too_small",
+            0,
+            "number",
+            true,
+            "Number must be greater than or equal to 0".into(),
+            path,
+        ));
     }
     issues
 }
@@ -439,15 +447,14 @@ fn create_chat_issues(b: &Value) -> Vec<Issue> {
     issues.extend(enum_issue(b.get("type"), &["single", "group"], json!(["type"])));
     let count = b.get("participantIDs").and_then(Value::as_array).map(Vec::len);
     match b.get("participantIDs") {
-        Some(Value::Array(ids)) if ids.is_empty() => issues.push(Issue(vec![
-            ("code", json!("too_small")),
-            ("minimum", json!(1)),
-            ("type", json!("array")),
-            ("inclusive", json!(true)),
-            ("exact", json!(false)),
-            ("message", json!("Array must contain at least 1 element(s)")),
-            ("path", json!(["participantIDs"])),
-        ])),
+        Some(Value::Array(ids)) if ids.is_empty() => issues.push(bound_issue(
+            "too_small",
+            1,
+            "array",
+            true,
+            "Array must contain at least 1 element(s)".into(),
+            json!(["participantIDs"]),
+        )),
         Some(Value::Array(ids)) => {
             let items = ids.iter().enumerate();
             issues.extend(items.filter_map(|(i, v)| string_issue(Some(v), false, json!(["participantIDs", i]))));
@@ -457,11 +464,7 @@ fn create_chat_issues(b: &Value) -> Vec<Issue> {
     issues.extend(field("title", true));
     // zod runs the refinement when only the `too_small` issue, which does not abort, is present.
     if issues.len() == (count == Some(0)) as usize && b["type"] == "single" && count != Some(1) {
-        issues.push(Issue(vec![
-            ("code", json!("custom")),
-            ("message", json!("'single' chat must have exactly one participantID.")),
-            ("path", json!(["participantIDs"])),
-        ]));
+        issues.push(custom_issue("'single' chat must have exactly one participantID.", json!(["participantIDs"])));
     }
     issues
 }
@@ -598,15 +601,7 @@ impl Req {
     /// An optional zod `datetime()` query parameter, with an offset when `offset`, in Unix milliseconds, or its zod
     /// issue.
     fn datetime(&self, k: &'static str, offset: bool) -> Result<Option<i64>, Issue> {
-        let invalid = || {
-            Issue(vec![
-                ("code", json!("invalid_string")),
-                ("validation", json!("datetime")),
-                ("message", json!("Invalid datetime")),
-                ("path", json!([k])),
-            ])
-        };
-        self.string(k)?.map(|s| zod_datetime(s, offset).ok_or_else(invalid)).transpose()
+        self.string(k)?.map(|s| zod_datetime(s, offset).ok_or_else(|| datetime_issue(json!([k])))).transpose()
     }
 
     /// Desktop's optional `direction` enum: `before` (the default) or `after`, or its zod issue.
@@ -1287,11 +1282,7 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
             let url = url.and_then(Value::as_str);
             if url.is_some_and(|u| !u.starts_with("mxc://") && !u.starts_with("localmxc://")) {
                 let message = "URL must start with mxc:// or localmxc://";
-                issues.push(Issue(vec![
-                    ("code", json!("custom")),
-                    ("message", json!(message)),
-                    ("path", json!(["url"])),
-                ]));
+                issues.push(custom_issue(message, json!(["url"])));
             }
             checked(issues)?;
             let url = url.expect("the input passed its schema");
@@ -2047,12 +2038,7 @@ fn reminder_input(r: &Req) -> Result<(i64, Option<bool>), Response> {
     let at = match (legacy, o.get("remindAt")) {
         (Some(ms), _) => Some(ms.trunc() as i64),
         (None, Some(Value::String(s))) => zod_datetime(s, false).or_else(|| {
-            issues.push(Issue(vec![
-                ("code", json!("invalid_string")),
-                ("validation", json!("datetime")),
-                ("message", json!("Invalid datetime")),
-                ("path", path("remindAt")),
-            ]));
+            issues.push(datetime_issue(path("remindAt")));
             None
         }),
         (None, v) => {
@@ -2095,11 +2081,7 @@ fn send_issues(r: &Req) -> Vec<Issue> {
     // Every issue above aborts the parse, which skips the refinement.
     let text = r.input("text").and_then(Value::as_str).unwrap_or_default();
     if issues.is_empty() && r.input("attachment").is_none() && text.is_empty() {
-        issues.push(Issue(vec![
-            ("code", json!("custom")),
-            ("message", json!("Either text or attachment is required.")),
-            ("path", json!([])),
-        ]));
+        issues.push(custom_issue("Either text or attachment is required.", json!([])));
     }
     issues
 }
@@ -2491,11 +2473,10 @@ impl<'a> MessageSearch<'a> {
         let exclude_low_priority = check(&mut issues, r.boolean("excludeLowPriority", true)).unwrap_or_default();
         let include_muted = check(&mut issues, r.boolean("includeMuted", true)).unwrap_or_default();
         if !issues.iter().any(Issue::aborts) && date_after.zip(date_before).is_some_and(|(a, b)| a >= b) {
-            issues.push(Issue(vec![
-                ("code", json!("custom")),
-                ("message", json!("'dateAfter' must be earlier than 'dateBefore' when both are provided.")),
-                ("path", json!(["dateAfter"])),
-            ]));
+            issues.push(custom_issue(
+                "'dateAfter' must be earlier than 'dateBefore' when both are provided.",
+                json!(["dateAfter"]),
+            ));
         }
         if !issues.is_empty() {
             return Err(invalid_input(issues));
