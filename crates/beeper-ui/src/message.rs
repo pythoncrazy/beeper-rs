@@ -1033,7 +1033,7 @@ impl BeeperGuiApp {
                 )]
             }),
             (rules.react && !editing).then(|| {
-                let react = m.reactable().then(|| UiMessage::Message(Msg::React(mid.clone())));
+                let react = m.reactable().then(|| UiMessage::Message(Msg::ReactOn(mid.clone())));
                 vec![item(tr("React…").into(), "", react)]
             }),
             bookmarkable(&st, m)
@@ -3456,6 +3456,9 @@ pub enum Msg {
     React(String),
     /// Open the emoji picker at a point to react to a message.
     ReactAt(String, Point),
+    /// Open the emoji picker at the top left of a message to react to it, like Desktop's
+    /// `showReactionMenuForMessage` of React… and → on a selected message.
+    ReactOn(String),
     /// An action picked in the message menu, which closes it.
     Menu(Box<UiMessage>),
     CopyText(String),
@@ -3752,6 +3755,14 @@ impl BeeperGuiApp {
                 };
             }
             Msg::React(mid) => return self.open_emoji(Some((mid, self.cursor.get()))),
+            // A message off screen opens it at the cursor.
+            Msg::ReactOn(mid) => {
+                let find = iced::widget::selector::find(iced::widget::Id::from(format!("msg-{mid}")));
+                return find.map(move |t| match t.and_then(|t| t.visible_bounds()) {
+                    Some(b) => UiMessage::Message(Msg::ReactAt(mid.clone(), b.position())),
+                    None => UiMessage::Message(Msg::React(mid.clone())),
+                });
+            }
             Msg::ReactAt(mid, at) => return self.open_emoji(Some((mid, at))),
             Msg::Menu(msg) => {
                 self.pane.message_menu = None;
@@ -4868,6 +4879,30 @@ mod tests {
         let mut st = app.store.write();
         let i = st.message_idx(mid);
         st.update_message(i, f);
+    }
+
+    /// Desktop's `showReactionMenuForMessage`: React… of the menu and → on a selected message open the picker at the
+    /// top left of the message, which the selector finds on screen, not where the pointer happens to be.
+    #[test]
+    fn react_from_the_menu_and_keys_like_desktop() {
+        use iced::keyboard::{key::Named, Key, Modifiers};
+        let note = "!note_self:beeper.com";
+        let mut app = crate::fuzz::demo_app("react-on");
+        let _ = app.update(UiMessage::SelectChat(note.into()));
+        let mid = newest(&app, |m| m.reactable());
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
+        let mut sim = simulator(app.view_message_menu(&mid).0);
+        let _ = sim.click("React…").expect("React…");
+        let picked: Vec<UiMessage> = sim.into_messages().collect();
+        let on = |m: &UiMessage| matches!(m, UiMessage::Message(Msg::ReactOn(m)) if *m == mid);
+        assert!(matches!(&picked[..], [UiMessage::Message(Msg::Menu(m))] if on(m)), "React… opens it on the message");
+        let _ = app.update(UiMessage::CloseModals);
+        let _ = app.update(UiMessage::Message(Msg::Select(vec![mid.clone()])));
+        let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::ArrowRight), Modifiers::empty()));
+        assert!(app.pane.emoji.is_none(), "→ waits for the place of the message before it opens the picker");
+        let shown = simulator(app.view_main()).find(iced::widget::Id::from(format!("msg-{mid}"))).expect("the message");
+        let at = shown.visible_bounds().expect("the message is on screen").position();
+        assert!(at.x < 400.0, "the row of the message starts at the left of the timeline: {at:?}");
     }
 
     /// Desktop's `D`: Edit…, Reply… and React… hide for the message that you edit, and `canStartEditMessage` offers
