@@ -1440,7 +1440,8 @@ impl BeeperGuiApp {
                         container(go_on).padding(12)
                     ]
                 });
-                let foot = self.view_accounts_footer(&st).map(|f| container(f).center_y(31));
+                // One line of the footer takes 31 px, and a wrapped footer takes more.
+                let foot = self.view_accounts_footer(&st).map(|f| container(f).padding([3, 0]));
                 column![
                     {
                         let (headline, width) = gradient_text(tr("Connect Chat Accounts"), 26.0, 48.0);
