@@ -5397,6 +5397,36 @@ fn accounts_settings_rows_have_the_account_menu_like_desktop() {
     assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::ChatList(chat_list::Msg::CloseMenu)]));
 }
 
+/// Desktop's `AccountActions` of an account page: the chevron in the corner of the account card opens `rj` without
+/// Account Settings…, with Edit Account Nickname… and Add/Remove Accounts….
+#[test]
+fn account_pages_have_the_account_actions_like_desktop() {
+    let mut app = demo_app("account-page-actions");
+    let account = app.store.read().bridge_accounts[0].account_id.clone();
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::Open(Some(account.clone()))));
+    let open: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_settings());
+        let at = sim.find(iced::widget::Id::new("account-actions")).expect("the actions of the page").bounds().center();
+        sim.point_at(at);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+        let _ = sim.simulate(iced_test::simulator::click());
+        sim.into_messages().collect()
+    };
+    let want = format!("account-actions:{account}");
+    assert!(matches!(&open[..], [UiMessage::ChatList(chat_list::Msg::OpenMenu(m))] if *m == want), "{:?}", open.len());
+    let _ = app.update(open.into_iter().next().unwrap());
+    let mut sim = simulator(app.view_settings());
+    for item in ["Show in Inbox", "Mute Space", "Edit Spaces…", "Edit Account Nickname…", "Add/Remove Accounts…"]
+    {
+        assert!(sim.find(item).is_ok(), "{item}");
+    }
+    assert!(sim.find("Account Settings…").is_err() && sim.find("Remove Account…").is_err());
+    let _ = sim.click("Edit Account Nickname…").expect("the nickname item");
+    let nick = sim.into_messages().any(|m| matches!(m, UiMessage::Nickname(nickname::Msg::Open(a)) if a == account));
+    assert!(nick, "the item edits the nickname of the account");
+}
+
 #[test]
 fn sidebar_menus_open_accounts_like_desktop() {
     let mut app = demo_app("rail-menus");
@@ -9305,4 +9335,18 @@ fn failed_sends_show_their_icon_in_the_chat_list_like_desktop() {
         m.send_error = Some(beeper_core::models::SendError { message: Some("not connected".into()), retrying: false });
     });
     assert!(red(&app) > before + 20, "the row shows the red icon");
+}
+
+/// Like Electron's native menus, the chat menu fits its longest row: a long hotkey, or a longer translation such as
+/// German's "Als ungelesen markieren  Ctrl Shift U", widens it past Desktop's 233 px instead of wrapping the row.
+#[test]
+fn the_chat_menu_fits_its_rows() {
+    let app = demo_app("chat-menu-width");
+    assert_eq!(chat_list::chat_menu_w(&app.store.read()), 233.0);
+    let keys = ("Chat: Toggle Mark As Read".to_string(), "ctrl+shift+alt+backspace".to_string());
+    app.store.write().settings.keybindings.extend([keys]);
+    let w = |s: &str| style::text_width(s, 13.0, iced::font::Weight::Normal);
+    let row = 26.0 + w("Mark as Unread") + 16.0 + w("Ctrl Shift Alt Backspace");
+    let menu = chat_list::chat_menu_w(&app.store.read());
+    assert!(row > 233.0 && menu >= row, "{menu} fits {row}");
 }

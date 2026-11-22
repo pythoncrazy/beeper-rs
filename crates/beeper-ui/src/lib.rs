@@ -3672,11 +3672,14 @@ impl BeeperGuiApp {
         let snoozed = |i: usize| st.chats[i].snoozed_until_ms.unwrap_or(i64::MAX);
         // Desktop's `activityTimestamp`: the newer of the activity and the draft.
         let activity = |i: usize| beeper_core::store::activity_ms(&st.chats[i]);
+        // Desktop's `sortTimestamp`, which the reminder orders by message take: the activity without the draft.
+        let sort_ms = |i: usize| st.chats[i].last_activity.as_deref().and_then(millis_from_rfc3339).unwrap_or(0);
         // Each key once: the activity parses a timestamp.
         match (self.list().active_tab, st.settings.reminders_order) {
             (InboxTab::Reminders, 0) => list.sort_by_cached_key(|&i| (remind_at(i), i)),
             (InboxTab::Reminders, 1) => list.sort_by_cached_key(|&i| (std::cmp::Reverse(remind_at(i)), i)),
-            (InboxTab::Reminders, 2) => list.sort_by_cached_key(|&i| (activity(i), i)),
+            (InboxTab::Reminders, 2) => list.sort_by_cached_key(|&i| (sort_ms(i), i)),
+            (InboxTab::Reminders, _) => list.sort_by_cached_key(|&i| (std::cmp::Reverse(sort_ms(i)), i)),
             (InboxTab::SendLater, _) => list.sort_by_cached_key(|&i| (next_send(st, &st.chats[i].id), i)),
             (InboxTab::Snoozed, _) => list.sort_by_cached_key(|&i| (snoozed(i), i)),
             _ => list.sort_by_cached_key(|&i| (std::cmp::Reverse(activity(i)), i)),
@@ -5669,7 +5672,7 @@ impl BeeperGuiApp {
             } else {
                 let st = self.store.read();
                 (
-                    233.0,
+                    chat_list::chat_menu_w(&st),
                     8.0 + 10.0 * MENU_ITEM
                         + 44.0
                         + if self.selection.is_empty() { 2.0 * MENU_ITEM + 11.0 } else { 0.0 }
