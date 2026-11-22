@@ -7465,6 +7465,8 @@ fn new_chat_reaches_matrix_users_like_desktop() {
         Box::new(beeper_core::matrix::bridge_user(&vic)),
     )));
     let n = app.creating_chat.expect("a draft");
+    // A toast that stays, like a verification request, does not stop the chat from being made.
+    app.sticky_banner = Some("Verification request from Pixel".into());
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
     assert_eq!(app.status_banner, "Composing chat...", "the Matrix client creates the direct chat");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::DmCreated(Some(n), matrix.clone(), None, Ok("!dm:x".into()))));
@@ -7510,6 +7512,8 @@ fn new_chat_reaches_matrix_users_like_desktop() {
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), keyboard::Modifiers::empty()));
     assert!(app.confirm.is_none(), "Enter in the step starts the group");
     assert_eq!(app.status_banner, "Creating group chat...", "the Matrix client creates the group");
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), keyboard::Modifiers::empty()));
+    assert!(app.confirm.is_none(), "Desktop's `isCreatingThread`: Enter does not make a second group");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::GroupCreated(n, matrix, Ok("!group:x".into()))));
     assert!(app.new_chats.iter().all(|d| d.id != n) && app.pending_dm == Some(("!group:x".into(), None)));
 }

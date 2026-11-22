@@ -3799,6 +3799,13 @@ impl BeeperGuiApp {
         self.refresh_theme_and_tray();
     }
 
+    /// Desktop's `isCreatingThread`: a chat that New Chat or Reply Privately asked for is being made. Other toasts
+    /// that stay, like a verification request or a download, do not count.
+    pub(crate) fn creating_thread(&self) -> bool {
+        let busy = [tr("Composing chat..."), tr("Creating group chat...")];
+        self.sticky_banner.as_deref().is_some_and(|t| busy.contains(&t))
+    }
+
     /// Desktop's `createThread`: selects the most recent direct chat with the user on the account, or asks the
     /// bridge to make one.
     pub(crate) fn open_dm(
@@ -3808,7 +3815,7 @@ impl BeeperGuiApp {
         draft: Option<u32>,
         quote: Option<String>,
     ) -> Task<UiMessage> {
-        if self.sticky_banner.is_some() {
+        if self.creating_thread() {
             return Task::none();
         }
         // Desktop's `identifierForUser` tries the Matrix ID before the phone number.
