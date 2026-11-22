@@ -672,7 +672,9 @@ mod tests {
         assert!(path(json!({ "chatID": {} })).unwrap_err().contains("/v1/chats/[object Object]/messages"));
         assert_eq!(
             path(json!({ "chatID": ".." })).unwrap_err(),
-            format!("{invalid}Value \"..\" can't be safely passed as a path parameter\n/v1/chats/../messages\n          ^^")
+            format!(
+                "{invalid}Value \"..\" can't be safely passed as a path parameter\n/v1/chats/../messages\n          ^^"
+            )
         );
         let mut query = Vec::new();
         let args = json!({ "a": null, "ids": ["x", "y z"], "o": { "k": true }, "n": 1.0, "e": [] });
