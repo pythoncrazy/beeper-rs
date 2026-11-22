@@ -81,6 +81,22 @@ fn tipped_links(spans: &[iced::widget::text::Span<'_, String>], html: bool) -> H
 
 /// Desktop's `filter: brightness(0.8)` of the attachments of a selected message (`.message-attachments-container`),
 /// as 20% black over their 17 px corners.
+/// The user ID of a `matrix.to` mention link.
+fn mentioned_user(link: &str) -> Option<String> {
+    link.strip_prefix("https://matrix.to/#/").and_then(beeper_core::codec::url_decode).filter(|id| id.starts_with('@'))
+}
+
+/// Desktop's `MessageMention`: a user mention shows "@" and the text of its link without the "@" of the text.
+fn at_mentions(runs: &mut [beeper_core::codec::Run]) {
+    let mut prev = None;
+    for r in runs {
+        if r.link != prev && r.link.as_deref().and_then(mentioned_user).is_some() {
+            r.text = format!("@{}", r.text.strip_prefix('@').unwrap_or(&r.text));
+        }
+        prev.clone_from(&r.link);
+    }
+}
+
 fn dimmed<'a>(content: El<'a>, selected: bool) -> El<'a> {
     let shade = selected
         .then(|| container(Space::new()).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.2), 17.0)));
@@ -2439,8 +2455,7 @@ impl BeeperGuiApp {
                         iced::Font { style, ..crate::style::fw(if r.bold { Weight::Semibold } else { Weight::Normal }) }
                     }
                 };
-                let mention = r.link.as_deref().and_then(|l| l.strip_prefix("https://matrix.to/#/"));
-                let mention = mention.and_then(beeper_core::codec::url_decode).filter(|id| id.starts_with('@'));
+                let mention = r.link.as_deref().and_then(mentioned_user);
                 // Desktop's `data-mx-color` paints the text.
                 let ink = r.color.as_deref().and_then(|c| c.parse::<Color>().ok()).unwrap_or(fg);
                 let s = span(r.text).size(13.0).color(ink).font(font).strikethrough(r.strike).underline(r.underline);
@@ -2469,6 +2484,8 @@ impl BeeperGuiApp {
                     return [Some(s), None].into_iter().flatten();
                 }
                 let bold = crate::style::fw(Weight::Bold);
+                // Desktop's `.mention-hover-card-trigger` is not an external link, so it has no arrow.
+                let external = mention.is_none();
                 let s = match mention {
                     _ if room => highlighted(s),
                     Some(id) if me(&id) => highlighted(s),
@@ -2479,7 +2496,7 @@ impl BeeperGuiApp {
                     )),
                     None => s.underline(r.underline || r.link.is_some()).link_maybe(r.link.clone()),
                 };
-                let arrow = s.link.is_some().then(arrow);
+                let arrow = (external && s.link.is_some()).then(arrow);
                 [Some(s), arrow].into_iter().flatten()
             };
             let word = |w: &str| span(w.to_string()).size(13.0).color(fg);
@@ -2522,7 +2539,8 @@ impl BeeperGuiApp {
             let blocks: Vec<Block> = match m.html.as_deref() {
                 Some(html) => beeper_core::codec::html_blocks(html)
                     .into_iter()
-                    .map(|b| {
+                    .map(|mut b| {
+                        at_mentions(&mut b.runs);
                         let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
                         // Each custom emoji's image, `title` and `data-original-src`.
                         let images = b.runs.iter().filter_map(|r| Some((r.emoticon.as_deref()?, r.title.clone())));
@@ -4575,6 +4593,34 @@ mod tests {
         };
         assert!(anchor("https://example.com/docs").is_none(), "an anchor with its own URL has no tooltip");
         assert!(anchor("the docs").is_some());
+    }
+
+    /// Desktop's `MessageMention`: "@" and the text of the link without its own "@", bold, with no arrow.
+    #[test]
+    fn mentions_like_desktop() {
+        let run = |text: &str, link: &str| beeper_core::codec::Run {
+            text: text.into(),
+            link: Some(link.into()),
+            ..Default::default()
+        };
+        let (ann, bob) = ("https://matrix.to/#/@ann:x", "https://matrix.to/#/%40bob:x");
+        let mut runs = [run("Ann", ann), run(" Lee", ann), run("@Bob", bob), run("site", "https://a.test/")];
+        at_mentions(&mut runs);
+        assert_eq!(runs.map(|r| r.text), ["@Ann", " Lee", "@Bob", "site"]);
+
+        let app = crate::fuzz::demo_app("at-mentions");
+        let mid = plain_received(&app, "Ann Lee");
+        // The width of the bubble on the line of the text.
+        let width = |html: &str| {
+            change(&app, &mid, |m| m.html = Some(html.into()));
+            let shot = pixels(&mut alone(&app, &mid));
+            let inked: Vec<u32> = (0..shot.width()).filter(|&x| shot.get_pixel(x, 34).0[..3] != [255; 3]).collect();
+            (inked.last().unwrap() - inked.first().unwrap()) as f32 / 2.0
+        };
+        let mention = width(&format!("<a href=\"{ann}\">Ann Lee</a>"));
+        assert_eq!(mention, width(&format!("<a href=\"{ann}\">@Ann Lee</a>")), "the own \"@\" of the text goes");
+        let bold = width("<strong>@Ann Lee</strong>");
+        assert!((mention - bold).abs() < 3.0, "a mention of {mention} px has no arrow after its {bold} px of text");
     }
 
     /// Desktop's `MessageEditHistory`: the earlier versions as message rows above the message, at their times, with
