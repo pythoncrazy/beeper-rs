@@ -728,8 +728,10 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
             return Some(Op::Vote(s(&rel["event_id"])?, sender, poll_answers(c)));
         }
         "org.matrix.msc3381.poll.end" | "m.poll.end" => {
-            let levels = state(room, "m.room.power_levels").await.unwrap_or(Value::Null);
-            let moderator = power(&levels, &sender) >= levels["redact"].as_i64().unwrap_or(50);
+            // The SDK's power levels count the creators of a room of version 12, who are not in `users`, and default to
+            // the creator's 100 without a power levels event.
+            let user = matrix_sdk::ruma::UserId::parse(&sender).expect("sender is a user ID");
+            let moderator = room.power_levels_or_default().await.user_can_redact_event_of_other(&user);
             return Some(Op::EndPoll(s(&rel["event_id"])?, sender, moderator));
         }
         _ if poll.is_some() => (poll.as_ref().map(|p| p.question.clone()), Vec::new(), "POLL"),
@@ -5671,12 +5673,14 @@ mod tests {
             stub_event("$mine", "m.room.message", json!({ "msgtype": "m.text", "body": "mine" })),
             from("@vic:x", stub_event("$vic", "m.room.message", json!({ "msgtype": "m.text", "body": "vic's" }))),
             stub_event("$p1", "org.matrix.msc3381.poll.start", poll.clone()),
-            stub_event("$p2", "org.matrix.msc3381.poll.start", poll),
+            stub_event("$p2", "org.matrix.msc3381.poll.start", poll.clone()),
+            from("@vic:x", stub_event("$p3", "org.matrix.msc3381.poll.start", poll)),
             from("@vic:x", edit("$e1", "spoofed", "$mine")),
             edit("$e2", "spoofed", "$vic"),
             from("@vic:x", edit("$e3", "fixed", "$vic")),
             from("@vic:x", end("$x1", "$p1")),
             end("$x2", "$p2"),
+            end("$x3", "$p3"),
         ];
         let store = stub_history("edit-senders", events, ("!other:x", Vec::new())).await;
         sync_stub_room(&store, "!room:x").await;
@@ -5689,6 +5693,7 @@ mod tests {
         assert_eq!(vic.edit_history.len(), 1);
         let ended = |id: &str| st.message(id).poll.as_ref().map(|p| p.ended);
         assert_eq!((ended("$p1"), ended("$p2")), (Some(false), Some(true)));
+        assert_eq!(ended("$p3"), Some(true), "the creator of the room may end the poll of another sender");
     }
 
     /// Desktop's view-limited media: the limit of `com.beeper.view_limited`, the views left that only a bridge bot
