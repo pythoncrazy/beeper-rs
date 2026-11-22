@@ -1127,8 +1127,20 @@ fn drafts_keep_the_composer_like_desktop() {
     let upload = saved(&app).attachments[0].upload_id.clone();
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(None)));
     let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
-    let _ = app.update(UiMessage::SaveDrafts);
+    let draft = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.chats[st.resolve_chat_idx(note).unwrap()].draft.clone()
+    };
+    assert_eq!(draft(&app), None, "a send clears the draft at once");
     assert!(!app.store.read().assets.contains_key(&upload), "the upload of the sent draft goes away");
+    // A restored draft that is sent as it is goes too, with no change to save it.
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("again".into())));
+    let other = app.visible_chats(&app.store.read()).into_iter().find(|c| c.id != note).unwrap().id.clone();
+    let _ = app.update(UiMessage::SelectChat(other));
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    assert!(!app.pane.draft_due && draft(&app).is_some(), "the draft is back, with nothing to save");
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    assert_eq!(draft(&app), None, "a send of a restored draft clears it");
 }
 
 #[test]
@@ -1199,6 +1211,8 @@ fn threads_like_desktop() {
     }
     let in_thread = |m: UiMessage| UiMessage::InThread(Box::new(m));
     assert!(simulator(app.view_main()).find("Also send to chat").is_err(), "an empty composer hides the toggle");
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("main draft".into())));
+    let _ = app.update(UiMessage::SaveDrafts);
     let edit = text_editor::Edit::Paste(Arc::new("done".into()));
     let _ = app.update(in_thread(UiMessage::Composer(composer::Msg::Edit(text_editor::Action::Edit(edit)))));
     assert!(simulator(app.view_main()).find("Also send to chat").is_ok(), "a draft shows the toggle in Slack");
@@ -1211,6 +1225,8 @@ fn threads_like_desktop() {
         assert_eq!(m.linked_message_id.as_deref(), Some("msg_1011"), "the reply falls back to the newest reply");
         let c = st.chat(chat);
         assert_eq!(c.preview.as_ref().map(|p| p.id.as_str()), Some(m.id.as_str()), "it is also sent to the chat");
+        let draft = c.draft.as_ref().and_then(|d| d.text.as_deref());
+        assert_eq!(draft, Some("main draft"), "a send in the thread keeps the draft of the chat");
     }
     let thread = app.pane.thread.as_ref().unwrap();
     assert!(thread.composer.text().trim().is_empty() && !thread.broadcast, "a send clears the thread composer");
