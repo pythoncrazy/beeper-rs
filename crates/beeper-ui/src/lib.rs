@@ -4969,7 +4969,7 @@ impl BeeperGuiApp {
                     Key::Named(Named::ArrowRight)
                         if mods.is_empty() && self.single_msg().is_some() && self.can_select_messages() =>
                     {
-                        return self.update(UiMessage::Message(message::Msg::React(
+                        return self.update(UiMessage::Message(message::Msg::ReactOn(
                             self.single_msg().cloned().expect("a selected message"),
                         )));
                     }
