@@ -460,7 +460,7 @@ impl BeeperGuiApp {
         let plus = if self.pane().show_attach_menu { 36.0 + 6.0 + 2.0 + unveiled * 30.0 - 2.0 } else { 36.0 };
         let center = 8.0 + plus + 8.0 + 14.0 + 10.0;
         let left = (center - 32.0).max(8.0);
-        let bubble = container(bubble).max_width((340.0f32).min(self.pane().size.width / self.zoom - 16.0));
+        let bubble = container(bubble).max_width((340.0f32).min(self.pane().size.width - 16.0));
         let tail = container(paint(&TAIL_DOWN, 30.0, 11.0, bg)).padding(Padding::ZERO.left(center - left - 15.0));
         let nudge = column![bubble, tail];
         Some(

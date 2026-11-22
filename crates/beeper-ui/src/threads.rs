@@ -179,7 +179,7 @@ impl BeeperGuiApp {
     pub(crate) fn drag_thread(&mut self, at: Option<Point>) {
         let Some(at) = at else { return self.thread_drag = !self.thread_drag };
         let area = self.thread_area.get() - THREAD_GRIP;
-        let w = self.pane.size.width / self.zoom - 8.0 - at.x;
+        let w = self.pane.size.width - 8.0 - at.x;
         self.thread_fraction = w.min(area - MIN_PANE_W).max(MIN_PANE_W) / area;
     }
 

@@ -3545,7 +3545,13 @@ impl BeeperGuiApp {
         self.pal = crate::style::palette(self.dark);
         // Desktop's `--custom-font-size` is the font size plus 3 px, and 16 px is the default.
         let font: f32 = st.settings.choice("fontSize").parse().expect("a number option");
-        self.zoom = f32::from(st.settings.zoom_percent) / 100.0 * (font + 3.0) / 16.0;
+        let zoom = f32::from(st.settings.zoom_percent) / 100.0 * (font + 3.0) / 16.0;
+        drop(st);
+        if zoom != self.zoom {
+            let k = self.zoom / zoom;
+            self.zoom = zoom;
+            self.rezoom(k);
+        }
         self.tray_sent.1 = true;
     }
 
@@ -5737,7 +5743,7 @@ impl BeeperGuiApp {
         let thread = self.selection.is_empty() && self.pane().thread.is_some();
         let zoom =
             (self.info_zoom && self.show_right_panel && in_main && open && !thread).then(|| self.view_avatar_zoom());
-        let window = self.pane().size * (1.0 / self.zoom);
+        let window = self.pane().size;
         let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q, window));
         // The menus and the emoji picker of the carousel show over it.
         let hover = self.view_hover_card().filter(|_| in_main);
