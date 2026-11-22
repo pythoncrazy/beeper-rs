@@ -122,7 +122,7 @@ use crate::settings::{
     SETTINGS_DIALOGS, STORAGE_DAYS,
 };
 pub use crate::settings::{search_settings, Expiry, HotkeyRec, SettingsHit, SettingsTab, TabIcon};
-use crate::threads::{can_thread, Threads, THREAD_FRACTION};
+use crate::threads::{can_thread, Threads};
 use blocking::block_action;
 use chat_list::{filter_hit, FILTERS, F_ARCHIVED, F_LOW_PRIORITY, F_REQUESTS};
 use forward::Forward;
@@ -2975,6 +2975,7 @@ impl BeeperGuiApp {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => SIDEBAR_WIDTH,
             Err(e) => panic!("read the sidebar width: {e}"),
         };
+        let thread_fraction = threads::saved_thread_fraction(&store.read().config.data_dir);
         let audio = voice::Player::new(&store.read().config.data_dir);
         let sidebar_hidden = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-hidden")) {
             Ok(h) => h.parse().expect("a boolean sidebar-hidden"),
@@ -2988,7 +2989,7 @@ impl BeeperGuiApp {
             carousel_windows: Vec::new(),
             drawing: Default::default(),
             drawing_thread: Default::default(),
-            thread_fraction: THREAD_FRACTION,
+            thread_fraction,
             open_threads: HashMap::new(),
             thread_area: Default::default(),
             thread_drag: false,
