@@ -37,7 +37,8 @@ pub struct Pref {
     pub key: &'static str,
     pub label: &'static str,
     pub desc: Option<&'static str>,
-    /// The values of the `%s` placeholders in the label or the description.
+    /// The values of the `%s` placeholders in the label or the description, where the name of a hotkey stands for
+    /// its keys.
     pub args: &'static [&'static str],
     pub badge: Option<Badge>,
     /// The key of Desktop's `featureFlag`, which shows, locks or hides the row.
@@ -210,7 +211,7 @@ pub const GENERAL: &[Item] = &[
         t("incognito", "Incognito mode", false)
             .plus("stealth-mode")
             .desc("Incognito mode keeps chats unread even when you click on them and doesn't notify recipients you've read them. Respond or hit %s to mark a chat as read.")
-            .args(const { &[cmd!("", " Shift U")] }),
+            .args(&["Chat: Toggle Mark As Read"]),
         t("typingIndicators", "Show recipients I'm typing", true).plus("stealth-mode"),
         custom("blockedUsers", "Blocked users", Control::BlockedUsers).gated("block-users"),
     ]),
@@ -323,7 +324,7 @@ pub const APPEARANCE: &[Item] = &[
         custom("quickReactionsFooter", "", Control::QuickReactions(&QUICK_REACTIONS_CUSTOMIZED)),
         custom("quickReactionEmoji", "Quick reaction emoji", Control::ReactionEmoji { general: false })
             .desc("Used for quick react keyboard shortcut (%s)")
-            .args(const { &[cmd!("", " Shift R")] }),
+            .args(&["Message: Quick React"]),
         t("reactionsOnSelect", "Show reactions when a message is selected", false),
         t("feedbackWidget", "Show feedback widget", true),
         t("membershipEvents", "Show membership events", true),
@@ -347,7 +348,7 @@ pub const APPEARANCE: &[Item] = &[
     Item::Heading("Chat Appearance"),
     Item::ChatTheme,
     Item::Heading("Zoom"),
-    Item::Zoom("You can use %1$s to zoom in and %2$s to zoom out.", const { &[cmd!("", " +"), cmd!("", " -")] }),
+    Item::Zoom("You can use %1$s to zoom in and %2$s to zoom out.", &["Zoom In", "Zoom Out"]),
     Item::Heading("Font Size"),
     Item::Group(&[s("fontSize", "Font size", FONT_SIZES, 4)]),
 ];

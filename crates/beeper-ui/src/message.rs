@@ -26,12 +26,13 @@ use crate::view_once;
 use crate::windows;
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, commands, copy_text, delete_dialog, distance, downloads_dir,
-    ease_out, edit_open, editable, enter_key, feedback_btn, file_icon, fmt_phone, gallery, handle, has_older, lift,
-    locate, member_name, membership, menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link,
-    reply_root, safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable,
-    unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON,
-    BUBBLE_PAD_X, BUBBLE_PAD_Y, CHEVRON_DOWN, CHEVRON_FORWARD, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE,
-    ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TIMER, TRASH,
+    ease_out, edit_open, editable, enter_key, feedback_btn, file_icon, fmt_phone, gallery, handle, has_older,
+    hotkey_caps, hotkey_text, lift, locate, member_name, membership, menu_item, menu_rule, network_bot, pending,
+    pill_btn, portal, profile_link, reply_root, safe_file_name, send_rise, sender_label, short_title, still_sending_at,
+    stored, tinted, unavailable, unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE,
+    BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, BUBBLE_PAD_Y, CHEVRON_DOWN, CHEVRON_FORWARD, CHEVRON_RIGHT,
+    COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK, POLL_CHECK,
+    POLL_ENDED, TIMER, TRASH,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::matrix::{Pressed, ROOM_MENTION};
@@ -872,14 +873,18 @@ impl BeeperGuiApp {
         let (msgs, _) = self.timeline(&st);
         let picked: Vec<&Message> = msgs.into_iter().filter(|m| self.pane().selected_msgs.contains(&m.id)).collect();
         let n = picked.len();
-        let item = |label: String, hotkey, msg: Option<UiMessage>| {
-            (menu_item(p, None, label, hotkey, msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m))))), MENU_ITEM)
+        let key = |name| hotkey_text(st.settings.hotkey_keys(name));
+        let item = |label: String, hotkey: &str, msg: Option<UiMessage>| {
+            (
+                menu_item(p, None, label, hotkey.to_string(), msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m))))),
+                MENU_ITEM,
+            )
         };
         let stamp = st.settings.on("copyTimestamps");
         let earliest = picked.first().filter(|m| unread_from(&st, m));
         let mut rows = vec![item(
             trn("Quote reply %d message…", "Quote reply %d messages…", n, &[&n]),
-            "Ctrl R",
+            &key("Message: Quote & Reply"),
             Some(UiMessage::Message(Msg::QuoteSelected)),
         )];
         rows.extend(earliest.map(|m| {
@@ -899,14 +904,22 @@ impl BeeperGuiApp {
         ));
         // Desktop's `canOpen` of the forward menu: no view-once media.
         if !picked.iter().any(|m| m.view_once()) {
-            rows.push(item(tr("Forward…").into(), "Ctrl Shift F", Some(UiMessage::RunHotkey("Message: Forward"))));
+            rows.push(item(
+                tr("Forward…").into(),
+                &key("Message: Forward"),
+                Some(UiMessage::RunHotkey("Message: Forward")),
+            ));
         }
         let ids: Vec<String> = picked.iter().map(|m| m.id.clone()).collect();
         if delete_dialog(&st, &picked).is_some() {
             rows.push(item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(ids)))));
         }
         rows.push((menu_rule(p), 11.0));
-        rows.push(item(tr("Report a Problem").into(), "Ctrl Shift P", Some(UiMessage::OpenUrl(ISSUES_URL.into()))));
+        rows.push(item(
+            tr("Report a Problem").into(),
+            &key("Report a Problem"),
+            Some(UiMessage::OpenUrl(ISSUES_URL.into())),
+        ));
         let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
         let col = Column::with_children(rows.into_iter().map(|r| r.0));
         let menu =
@@ -937,8 +950,12 @@ impl BeeperGuiApp {
         let link = clicked.filter(|h| h.starts_with("https://")).map(str::to_string);
         let entire = link.is_some();
         let rule = || (menu_rule(p), 11.0);
-        let item = |label: String, hotkey, msg: Option<UiMessage>| {
-            (menu_item(p, None, label, hotkey, msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m))))), MENU_ITEM)
+        let key = |name| hotkey_text(st.settings.hotkey_keys(name));
+        let item = |label: String, hotkey: &str, msg: Option<UiMessage>| {
+            (
+                menu_item(p, None, label, hotkey.to_string(), msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m))))),
+                MENU_ITEM,
+            )
         };
         let bookmark = tr(if m.is_bookmarked == Some(true) { "Remove Bookmark" } else { "Bookmark" });
         let at = trf(if mine { "Sent at %s" } else { "Received at %s" }, &[&locale_string(&m.timestamp)]);
@@ -1006,18 +1023,18 @@ impl BeeperGuiApp {
             (editable(m, chat) && !editing).then(|| {
                 let edit =
                     edit_open(m, rules).then(|| UiMessage::Composer(composer::Msg::StartEdit(mid.clone(), text)));
-                vec![item(tr("Edit…").into(), "Ctrl T", edit)]
+                vec![item(tr("Edit…").into(), &key("Message: Edit"), edit)]
             }),
             (rules.reply && live && !editing).then(|| {
                 vec![item(
                     tr("Reply…").into(),
-                    "Ctrl R",
+                    &key("Message: Quote & Reply"),
                     Some(UiMessage::Composer(composer::Msg::StartReply(mid.clone()))),
                 )]
             }),
             (self.pane().thread_root.is_none() && !editing && can_thread(&st, chat, m)).then(|| {
                 let label = tr("Reply in thread…").into();
-                vec![item(label, "Ctrl ↓", Some(UiMessage::Thread(threads::Msg::Show(mid.clone()))))]
+                vec![item(label, &key("Show Replies"), Some(UiMessage::Thread(threads::Msg::Show(mid.clone()))))]
             }),
             (self.pane().thread_root.is_none()
                 && live
@@ -1140,12 +1157,17 @@ impl BeeperGuiApp {
             (!m.view_once()).then(|| {
                 vec![item(
                     tr("Forward…").into(),
-                    "Ctrl Shift F",
+                    &key("Message: Forward"),
                     Some(UiMessage::Forward(forward::Msg::Open(vec![mid.clone()]))),
                 )]
             }),
-            (files > 0)
-                .then(|| vec![item(download, "Ctrl D", Some(UiMessage::Message(Msg::Download(mid.clone(), None))))]),
+            (files > 0).then(|| {
+                vec![item(
+                    download,
+                    &key("Download Attachments"),
+                    Some(UiMessage::Message(Msg::Download(mid.clone(), None))),
+                )]
+            }),
             // Desktop opens the first PDF of the message in the carousel.
             m.attachments.iter().position(crate::pdf::is_pdf).map(|ai| {
                 let open = UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, false));
@@ -1155,7 +1177,11 @@ impl BeeperGuiApp {
             timer.map(|t| vec![item(t, "", None)]),
             Some(vec![
                 rule(),
-                item(tr("Report a Problem").into(), "Ctrl Shift P", Some(UiMessage::OpenUrl(ISSUES_URL.into()))),
+                item(
+                    tr("Report a Problem").into(),
+                    &key("Report a Problem"),
+                    Some(UiMessage::OpenUrl(ISSUES_URL.into())),
+                ),
             ]),
         ]
         .into_iter()
@@ -1184,9 +1210,7 @@ impl BeeperGuiApp {
             svg(crate::INFO_CIRCLE.clone()).width(20).height(20).style(move |_, _| svg::Style { color: Some(muted) });
         let toggle =
             button(icon).padding(4).style(btn_style([bg; 3], [p.muted; 3], 8.0)).on_press(UiMessage::ToggleRightPanel);
-        let keys = st.settings.hotkey_keys("Toggle Chat Info").to_string();
-        let keys = prefs::hotkey_label(keys.split(", ").next().unwrap_or_default());
-        let caps = keys.split_whitespace().map(String::from).collect();
+        let caps = hotkey_caps(st.settings.hotkey_keys("Toggle Chat Info"));
         let toggle = self.tip_caps(toggle.into(), tr("Chat Info"), caps, tooltip::Position::Bottom);
         container(toggle).align_right(Fill).padding(Padding::ZERO.top(8.0).right(8.0)).into()
     }
@@ -1287,7 +1311,8 @@ impl BeeperGuiApp {
             let link = button(semi(tr("Mark as Read"), 11.0).color(p.accent))
                 .bare(p.accent)
                 .on_press(UiMessage::ChatList(chat_list::Msg::MarkRead(chat.id.clone())));
-            let tip = self.tip(link.into(), tr("Mark as Read"), vec!["Ctrl", "Shift", "U"], tooltip::Position::Top);
+            let keys = hotkey_caps(st.settings.hotkey_keys("Chat: Toggle Mark As Read"));
+            let tip = self.tip_caps(link.into(), tr("Mark as Read"), keys, tooltip::Position::Top);
             container(tip).center_x(Fill).padding(Padding::new(10.0).bottom(6.5).left(0.0).right(0.0)).into()
         })
     }
@@ -1429,9 +1454,7 @@ impl BeeperGuiApp {
             // `button.btn-icon`: 4 px around the icon inside a 1 px transparent border, radius 6.
             let show =
                 button(icon).padding(5).style(crate::ghost(p, 6.0)).on_press(UiMessage::RunHotkey("Toggle Sidebar"));
-            let keys = st.settings.hotkey_keys("Toggle Sidebar").to_string();
-            let caps = prefs::hotkey_label(keys.split(", ").next().unwrap_or_default());
-            let caps = caps.split_whitespace().map(String::from).collect();
+            let caps = hotkey_caps(st.settings.hotkey_keys("Toggle Sidebar"));
             container(self.tip_caps(show.into(), tr("Show Sidebar"), caps, tooltip::Position::Bottom))
                 .padding(Padding::ZERO.top(3.0))
         });
