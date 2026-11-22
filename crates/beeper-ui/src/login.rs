@@ -1383,9 +1383,11 @@ impl BeeperGuiApp {
                 ]
                 .on_link_click(move |m: UiMessage| if l.busy { UiMessage::Noop } else { m })
                 .size(11)
-                .line_height(iced::Pixels(14.0))
-                .width(Fill)
-                .center();
+                .line_height(iced::Pixels(14.0));
+                // iced finds the link of a rich text as if its line started at the left of the text, so the line takes
+                // its own width and the container centers it: a wider centered text would take the clicks on
+                // "Resend" somewhere left of it.
+                let foot = container(foot).center_x(Fill);
                 // Desktop's floating `small` error, 8 px over the form.
                 let error = l.error.as_deref().map(|e| txt(e, 10.4).color(p.text_danger).center().width(Fill));
                 let error =
@@ -1805,6 +1807,37 @@ mod tests {
         while let Some(m) = queue.pop() {
             queue.extend(task_messages(app.update(m)).await);
         }
+    }
+
+    /// A click on "Resend", in the middle of the line under the code, asks for a new code, and a click on "Didn't
+    /// get a code?" does not.
+    #[test]
+    fn resend_takes_the_clicks_on_its_word() {
+        let mut app = signed_out_app("resend-click");
+        let _ = app.update(LoginMsg::Email("alex@example.com".into()).into());
+        let _ = app.update(LoginMsg::Done(Ok(Outcome::Requested("req_1".into()))).into());
+        let size = iced::Size::new(330.0, 620.0);
+        // The x of the middle of "Resend" and of "Didn't", on the line centered in the window.
+        let width = |s: &str| crate::style::text_width(s, 11.0, iced::font::Weight::Normal);
+        let line = width("Didn't get a code? Resend");
+        let (resend, didnt) = ((size.width + line) / 2.0 - width("Resend") / 2.0, (size.width - line) / 2.0 + 10.0);
+        let open_email = {
+            let mut sim = iced_test::Simulator::with_size(Default::default(), size, app.view_login());
+            sim.find("Open Email").expect("the Open Email button").bounds()
+        };
+        // Whether a click at `x` on some height under Open Email sends Resend.
+        let resends = |x: f32| {
+            (0..40).step_by(2).any(|dy| {
+                let at = iced::Point::new(x, open_email.y + open_email.height + dy as f32);
+                let mut sim = iced_test::Simulator::with_size(Default::default(), size, app.view_login());
+                sim.point_at(at);
+                let _ = sim.simulate([iced::Event::Mouse(iced::mouse::Event::CursorMoved { position: at })]);
+                let _ = sim.simulate(iced_test::simulator::click());
+                sim.into_messages().any(|m| matches!(m, UiMessage::Login(LoginMsg::Resend)))
+            })
+        };
+        assert!(resends(resend), "a click on Resend");
+        assert!(!resends(didnt), "a click on the words before it");
     }
 
     /// Desktop's six slot inputs of the code: the focus starts on the first empty slot, a digit takes the place of
