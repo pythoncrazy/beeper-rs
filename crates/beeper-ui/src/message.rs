@@ -2078,6 +2078,8 @@ impl BeeperGuiApp {
     ) -> El<'a> {
         let (p, m) = (&self.pal, ms[0]);
         let (sent, sent_fg, sent_meta) = self.sent_colors(st, Some(&chat.id));
+        let bubble =
+            chat_theme::resolve(&st.settings.chat_appearance, Some(&chat.id), self.dark, &st.config.data_dir).1;
         let on_wall = self.wallpaper_fg(st, chat, thread);
         let muted = on_wall.unwrap_or(p.muted);
         let mine = m.is_sender == Some(true);
@@ -2189,7 +2191,7 @@ impl BeeperGuiApp {
                 return ((!chain.prev).then(|| quote_row(pill.into(), None)), false);
             };
             let q_mine = q.is_sender == Some(true);
-            let col = self.linked_message(chat, q, group, on_wall, sent).filter(|_| !chain.prev);
+            let col = self.linked_message(chat, q, group, on_wall, bubble).filter(|_| !chain.prev);
             let quote = col.map(|c| {
                 mouse_area(c)
                     .on_press(UiMessage::Message(Msg::ShowReplies(q.id.clone())))
@@ -3110,7 +3112,7 @@ impl BeeperGuiApp {
         q: &Message,
         group: bool,
         on_wall: Option<Color>,
-        sent: Color,
+        bubble: Option<chat_theme::Pair>,
     ) -> Option<Column<'a, UiMessage>> {
         let p = &self.pal;
         let deleted = q.is_deleted == Some(true);
@@ -3118,7 +3120,18 @@ impl BeeperGuiApp {
             return None;
         }
         let q_mine = q.is_sender == Some(true);
-        let (edge, fill) = if q_mine { (sent, mix(p.card, sent, 0.3)) } else { (p.received, p.card) };
+        // Desktop's quote of your own message has the border of your bubbles, and its text in `--bubble-out-quote-fg`:
+        // the primary color, or the text color under a chat bubble color. Its box is the timeline's own color, mixed
+        // with 30% of the bubble color in the dark theme or under a chat bubble color (`has-bubble-color`).
+        let sent = bubble.map_or(p.sent, |b| b.0);
+        let (edge, fill, fg) = match q_mine {
+            true => {
+                let fill = if bubble.is_some() || self.dark { mix(p.card, sent, 0.3) } else { p.card };
+                (sent, fill, if bubble.is_some() { p.strong } else { p.accent })
+            }
+            false => (p.received, p.card, p.text),
+        };
+        let name_fg = if q_mine { fg } else { p.strong };
         let max = 0.45 * self.pane().size.width;
         // Desktop's `isDeleted` box has a dashed border.
         let boxed = move |c: El<'a>, dashed: bool| -> El<'a> {
@@ -3134,11 +3147,11 @@ impl BeeperGuiApp {
         let name = || semi(sender_label(chat, q), 12.0).line_height(Pixels(16.0));
         let items: Vec<El<'a>> = match view {
             true => vec![self.view_once_indicator(q, view_once::Variant::Quote, (fill, p.text))],
-            false => q.attachments.iter().map(|a| self.linked_attachment(a)).collect(),
+            false => q.attachments.iter().map(|a| self.linked_attachment(a, fg)).collect(),
         };
         let media = (!items.is_empty() || deleted).then(|| {
             let gone = tr(if q.removed { "Removed from Beeper" } else { "Message Deleted" });
-            let gone = (deleted && !view).then(|| med(gone, 13.0).color(p.text));
+            let gone = (deleted && !view).then(|| med(gone, 13.0).color(fg));
             boxed(Row::with_children(items).push(gone).spacing(4).align_y(Center).into(), deleted && !view)
         });
         let text = q.text.as_deref().filter(|_| !deleted).map(|t| match view_once::preview(q) {
@@ -3149,11 +3162,10 @@ impl BeeperGuiApp {
             true => format!("{}...", t.chars().take(125).collect::<String>()),
             false => t,
         });
-        let within = (group && !visual).then(|| name().color(p.strong));
-        let text =
-            text.map(|t| boxed(column![].push(within).push(med(t, 13.0).color(p.text)).spacing(2).into(), false));
+        let within = (group && !visual).then(|| name().color(name_fg));
+        let text = text.map(|t| boxed(column![].push(within).push(med(t, 13.0).color(fg)).spacing(2).into(), false));
         let above = (group && visual).then(|| {
-            container(name().color(on_wall.unwrap_or(p.strong))).padding(Padding::new(0.0).left(11.0).right(11.0))
+            container(name().color(on_wall.unwrap_or(name_fg))).padding(Padding::new(0.0).left(11.0).right(11.0))
         });
         let shown = media.is_some() || text.is_some();
         let col = column![].push(above).push(media).push(text).spacing(8);
@@ -3161,8 +3173,9 @@ impl BeeperGuiApp {
     }
 
     /// An attachment in Desktop's `bfe`: a 100 px tile of an image or a video at half opacity, a tag of a sticker, a
-    /// GIF, a voice note, an audio file or a contact card, or the file row of Desktop's `FileAttachment`.
-    fn linked_attachment<'a>(&'a self, a: &Attachment) -> El<'a> {
+    /// GIF, a voice note, an audio file or a contact card, or the file row of Desktop's `FileAttachment` at 0.6, in
+    /// the `fg` of the quote.
+    fn linked_attachment<'a>(&'a self, a: &Attachment, fg: Color) -> El<'a> {
         let p = &self.pal;
         if quote_tile(a) {
             let tile = a.poster_img.as_ref().or(a.src_url.as_ref()).and_then(|u| self.cover_tile(u, (100, 100)));
@@ -3183,12 +3196,13 @@ impl BeeperGuiApp {
             _ => None,
         };
         if let Some(tag) = tag {
-            return med(tag, 13.0).color(p.text).into();
+            return med(tag, 13.0).color(fg).into();
         }
         let meta = file_label(a).into_iter().chain(a.file_size.map(human_size)).collect::<Vec<_>>();
-        let info = column![med(name.to_string(), 13.0).color(p.text)]
-            .push((!meta.is_empty()).then(|| txt(meta.join(" ・ "), 11.0).color(p.sub)));
-        row![tinted(file_icon(a), 20.0, p.text), info].spacing(8).align_y(Center).into()
+        let (text, sub) = (p.text.scale_alpha(0.6), p.sub.scale_alpha(0.6));
+        let info = column![med(name.to_string(), 13.0).color(text)]
+            .push((!meta.is_empty()).then(|| txt(meta.join(" ・ "), 11.0).color(sub)));
+        row![tinted(file_icon(a), 20.0, text), info].spacing(8).align_y(Center).into()
     }
 
     /// Desktop's `TimelineNote`: a centered line of the timeline.
@@ -4530,6 +4544,47 @@ mod tests {
             st.update_chat(i, |c| c.chat_type = "single".into());
         }
         assert!(alone(&app, &reply).find("Z").is_err(), "a DM has no reply avatar");
+    }
+
+    /// Desktop's quote of your own message in the light theme is a white box with the border of your bubbles and its
+    /// text in the primary color, so it does not look like your message again. The dark theme and a chat bubble color
+    /// mix 30% of the bubble color into the box, and a bubble color draws the text in the text color.
+    #[test]
+    fn own_quotes_like_desktop() {
+        let mut app = crate::fuzz::demo_app("own-quotes");
+        // Eric's reply quotes your message with a file and a text.
+        let reply = "msg_1001";
+        let text = app.store.read().message("msg_1000b").text.clone().expect("a text");
+        assert_eq!(app.store.read().message(reply).linked_message_id.as_deref(), Some("msg_1000b"));
+        // The box beside the quoted text and the color of its text that differs the most from the box.
+        let look = |app: &BeeperGuiApp| {
+            let mut sim = alone(app, reply);
+            let b = sim.find(text.as_str()).expect("the quoted text").bounds();
+            let shot = pixels(&mut sim);
+            let fill = shot.get_pixel((2.0 * (b.x - 3.0)) as u32, (2.0 * b.center_y()) as u32).0;
+            let off = |px: &[u8; 4]| (0..3).map(|i| u32::from(px[i].abs_diff(fill[i]))).sum::<u32>();
+            let ink = (2 * b.y as u32..2 * (b.y + b.height) as u32)
+                .flat_map(|y| (2 * b.x as u32..2 * (b.x + 60.0) as u32).map(move |x| (x, y)))
+                .map(|(x, y)| shot.get_pixel(x, y).0)
+                .max_by_key(off)
+                .expect("the text");
+            (fill, ink)
+        };
+        let (fill, ink) = look(&app);
+        assert!(near(fill, app.pal.card), "a white box: {fill:?}");
+        assert!(near(ink, app.pal.accent), "the text in the primary color: {ink:?}");
+        app.dark = true;
+        app.pal = crate::style::palette(true);
+        let (fill, ink) = look(&app);
+        assert!(near(fill, mix(app.pal.card, app.pal.sent, 0.3)), "the dark theme mixes the box: {fill:?}");
+        assert!(near(ink, app.pal.accent), "{ink:?}");
+        app.dark = false;
+        app.pal = crate::style::palette(false);
+        let swatch = Some(beeper_core::models::Bubble::Swatch { id: "blue".into() });
+        let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Bubble(None, swatch)));
+        let (fill, ink) = look(&app);
+        assert!(near(fill, mix(app.pal.card, crate::style::hex(0x3478f6), 0.3)), "a bubble color mixes it: {fill:?}");
+        assert!(near(ink, app.pal.strong), "{ink:?}");
     }
 
     /// A received message of a DM, as plain text.
