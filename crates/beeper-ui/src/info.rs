@@ -339,7 +339,13 @@ impl BeeperGuiApp {
                     Some(u) => trf("Open @%1$s on %2$s", &[&u.trim_start_matches('@'), &network]),
                     None => trf("Open in %s", &[&network]),
                 };
-                self.tip(open.into(), tip, vec!["Ctrl", "Shift", "O"], tooltip::Position::Bottom).into()
+                self.tip_caps(
+                    open.into(),
+                    tip,
+                    hotkey_caps(st.settings.hotkey_keys("Open User Profile")),
+                    tooltip::Position::Bottom,
+                )
+                .into()
             }
             None => meta(network.to_string()).into(),
         };
@@ -451,7 +457,7 @@ impl BeeperGuiApp {
                 ..Default::default()
             };
             let btn = button(container(ic(glyph, 20.0)).center_x(Fill)).padding(6).width(Fill).style(style);
-            let tip = self.tip(btn.on_press_maybe(msg).into(), label, keys, tooltip::Position::Top);
+            let tip = self.tip_caps(btn.on_press_maybe(msg).into(), label, keys, tooltip::Position::Top);
             container(tip).center_x(Fill).into()
         };
         let toolbar = row![
@@ -463,7 +469,7 @@ impl BeeperGuiApp {
                     (false, true) => trx("Unarchive", "button label to unarchive chat"),
                     (false, false) => trx("Archive", "button label to archive chat"),
                 },
-                vec!["Ctrl", "E"],
+                hotkey_caps(st.settings.hotkey_keys("Chat: Toggle Archive")),
                 (!pinned && !locked).then(|| flag(ChatFlag::Archived)),
             ),
             // Desktop's `hasReminder` and `dismissThreadReminder`: the soonest of the message reminders and the chat
@@ -473,21 +479,21 @@ impl BeeperGuiApp {
                     icon::SCHEDULE,
                     ORANGE,
                     tr("Dismiss Reminder"),
-                    vec!["Ctrl", "L"],
+                    hotkey_caps(st.settings.hotkey_keys("Remind Later")),
                     Some(UiMessage::Reminders(reminders::Msg::Message(mid, None))),
                 ),
                 (None, true) => tool(
                     icon::SCHEDULE,
                     ORANGE,
                     tr("Dismiss Reminder"),
-                    vec!["Ctrl", "L"],
+                    hotkey_caps(st.settings.hotkey_keys("Remind Later")),
                     Some(UiMessage::Reminders(reminders::Msg::Set(cid.clone(), None))),
                 ),
                 (None, false) => tool(
                     icon::SCHEDULE,
                     p.strong,
                     tr("Remind Me"),
-                    vec!["Ctrl", "L"],
+                    hotkey_caps(st.settings.hotkey_keys("Remind Later")),
                     Some(UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.clone()))),
                 ),
             },
@@ -512,7 +518,7 @@ impl BeeperGuiApp {
                 icon::SEARCH,
                 p.strong,
                 tr("Search"),
-                vec!["Ctrl", "F"],
+                hotkey_caps(st.settings.hotkey_keys("Search: Room")),
                 Some(UiMessage::CommandBar(commands::Msg::SearchRoom(cid.clone())))
             ),
             tool(

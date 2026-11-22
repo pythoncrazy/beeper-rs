@@ -6158,6 +6158,25 @@ fn chat_menu_acts_on_the_selection_like_desktop() {
     assert!(app.list.chat_menu.is_none() && app.selection.is_empty());
 }
 
+/// Desktop's menus and tooltips show the `humanized` keys of a hotkey that you reassigned or turned off.
+#[test]
+fn menus_show_the_reassigned_hotkeys_like_desktop() {
+    let mut app = demo_app("menu-hotkeys");
+    let id = app.visible_chats(&app.store.read()).iter().find(|c| c.is_pinned != Some(true)).unwrap().id.clone();
+    app.patch_settings(|s| {
+        s.keybindings.insert("Chat: Toggle Archive".into(), "ctrl+alt+e, e".into());
+        s.keybindings.insert("Chat: Toggle Pin".into(), "disabled".into());
+    });
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(id.clone())));
+    let mut sim = simulator(app.view_chat_menu(&id, false, 900.0));
+    assert!(sim.find("Ctrl Alt E").is_ok() && sim.find("Ctrl E").is_err(), "the reassigned Archive keys");
+    assert!(sim.find("Ctrl P").is_err(), "no keys for the disabled Pin");
+    assert!(sim.find("Ctrl Shift M").is_ok(), "the default Mute keys");
+    assert_eq!(hotkey_caps("ctrl+shift+]"), ["Ctrl", "Shift", "]"]);
+    assert_eq!(hotkey_caps("ctrl+alt+3"), ["Ctrl", "Alt", "3"]);
+    assert!(hotkey_caps("disabled").is_empty());
+}
+
 #[test]
 fn label_inbox_rules_like_desktop() {
     let mut app = demo_app("label-inbox");

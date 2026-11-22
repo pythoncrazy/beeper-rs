@@ -625,6 +625,16 @@ fn copy_text(m: &Message, stamp: bool, many: bool) -> String {
 
 /// `dir/name`, or `dir/stem (n).ext` with the first free `n`.
 /// Desktop's `downloadsDirPath`: the chosen folder, or the downloads folder of the OS.
+/// Desktop's `humanized` of a hotkey: the label of the first combination of its `keys`, empty when it is disabled.
+pub(crate) fn hotkey_text(keys: &str) -> String {
+    prefs::hotkey_label(keys.split(", ").next().unwrap_or_default())
+}
+
+/// The key caps of [`hotkey_text`].
+pub(crate) fn hotkey_caps(keys: &str) -> Vec<String> {
+    hotkey_text(keys).split_whitespace().map(String::from).collect()
+}
+
 fn downloads_dir(s: &BeeperSettings) -> std::path::PathBuf {
     match s.downloads_dir.as_str() {
         "" => beeper_core::platform::resolve_home_dir(&std::env::vars().collect()).join("Downloads"),
@@ -6401,20 +6411,20 @@ impl BeeperGuiApp {
         self.hover_at.as_ref().is_some_and(fading) || self.unhovered.as_ref().is_some_and(|(_, at)| fading(at))
     }
 
-    fn row_action<'a>(&self, c: &Chat, pref: u8, t: f32) -> Option<El<'a>> {
+    fn row_action<'a>(&self, s: &BeeperSettings, c: &Chat, pref: u8, t: f32) -> Option<El<'a>> {
         let unread = c.is_unread();
         let archived = c.flags & CHAT_ARCHIVED != 0;
-        let (glyph, size, label, keys, msg) = match pref {
+        let (glyph, size, label, hotkey, msg) = match pref {
             _ if self.list().active_tab == InboxTab::Reminders => {
-                (6, 20.0, tr("Dismiss Reminder"), vec![], UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), None)))
+                (6, 20.0, tr("Dismiss Reminder"), None, UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), None)))
             }
             _ if c.draft.is_some() => {
-                (5, 20.0, tr("Delete draft"), vec![], UiMessage::ChatList(chat_list::Msg::DeleteDraft(c.id.clone())))
+                (5, 20.0, tr("Delete draft"), None, UiMessage::ChatList(chat_list::Msg::DeleteDraft(c.id.clone())))
             }
             0 if archived || c.flags & CHAT_PINNED == 0 => {
                 let msg = UiMessage::ChatList(chat_list::Msg::ToggleFlag(c.id.clone(), ChatFlag::Archived));
                 let label = if archived { tr("Unarchive") } else { trx("Archive", "button label to archive chat") };
-                (usize::from(archived), 14.0, label, vec!["Ctrl", "E"], msg)
+                (usize::from(archived), 14.0, label, Some("Chat: Toggle Archive"), msg)
             }
             1 => {
                 let label = tr(if unread { "Mark Read" } else { "Mark Unread" });
@@ -6422,15 +6432,14 @@ impl BeeperGuiApp {
                     2 + usize::from(!unread),
                     20.0,
                     label,
-                    vec!["Ctrl", "Shift", "U"],
+                    Some("Chat: Toggle Mark As Read"),
                     UiMessage::ChatList(chat_list::Msg::ToggleRead(c.id.clone())),
                 )
             }
-            2 => {
-                (4, 20.0, tr("Open Context Menu"), vec![], UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone())))
-            }
+            2 => (4, 20.0, tr("Open Context Menu"), None, UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone()))),
             _ => return None,
         };
+        let keys = hotkey.map_or_else(Vec::new, |h| hotkey_caps(s.hotkey_keys(h)));
         Some(self.hover_btn(glyph, size, label, keys, msg, t))
     }
 
@@ -6440,14 +6449,14 @@ impl BeeperGuiApp {
         glyph: usize,
         size: f32,
         label: &'a str,
-        keys: Vec<&'static str>,
+        keys: Vec<String>,
         msg: UiMessage,
         t: f32,
     ) -> El<'a> {
         let p = &self.pal;
         let icon = tinted(&ROW_ACTIONS[glyph], size * (0.3 + 0.7 * t), p.strong.scale_alpha(t));
         let btn = button(container(icon).center(size)).padding(6).style(btn_style([CLEAR; 3], [p.strong; 3], 0.0));
-        let tip = self.tip(btn.on_press(msg).into(), label, keys, tooltip::Position::Right);
+        let tip = self.tip_caps(btn.on_press(msg).into(), label, keys, tooltip::Position::Right);
         let top = 22f32.min(51.0 - 12.0 - size);
         container(tip.delay(std::time::Duration::from_secs(1)))
             .align_right(Fill)

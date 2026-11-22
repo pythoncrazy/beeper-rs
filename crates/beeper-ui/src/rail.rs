@@ -404,11 +404,14 @@ impl BeeperGuiApp {
             self.target(window, key, b, Keys::press(msg), Look::Hidden)
         };
         let quiet = self.list().chat_menu.is_some() || drag.is_some();
-        let tip = |btn, label, keys| self.tip(btn, label, keys, tooltip::Position::Right);
-        let hotkey = |n: usize| -> Vec<&'static str> {
-            ["1", "2", "3", "4", "5", "6", "7", "8", "9"].get(n).map_or(vec![], |d| vec!["Ctrl", "Alt", d])
-        };
+        let tip = |btn, label, keys| self.tip_caps(btn, label, keys, tooltip::Position::Right);
         let st = self.store.read();
+        // Desktop's `${SWITCH_FIRST_9_ACCOUNTS.key}+${n}` of the first nine spaces.
+        let modifier = st.settings.hotkey_keys("Switch First 9 Spaces Modifier");
+        let hotkey = |n: usize| match n < 9 {
+            true => hotkey_caps(&format!("{modifier}+{}", n + 1)),
+            false => vec![],
+        };
         let numbers = st.settings.on("showUnreadCount");
         let badge = |btn: El<'static>, n: usize, number: bool| -> El<'static> {
             let dot = match number && numbers {
@@ -487,7 +490,7 @@ impl BeeperGuiApp {
             if quiet {
                 btn
             } else {
-                self.tip(btn, label, hotkey(i), tooltip::Position::Right).into()
+                self.tip_caps(btn, label, hotkey(i), tooltip::Position::Right).into()
             }
         };
         let labels = st.feature("labels-v2");
@@ -509,7 +512,7 @@ impl BeeperGuiApp {
             if quiet {
                 btn
             } else {
-                self.tip(btn, l.name, hotkey(i), tooltip::Position::Right).into()
+                self.tip_caps(btn, l.name, hotkey(i), tooltip::Position::Right).into()
             }
         };
         let ids = match drag.and_then(|d| d.order.clone()) {
@@ -608,7 +611,7 @@ impl BeeperGuiApp {
                 tr("Add an account"),
                 vec![]
             ),
-            tip(me_btn, tr("Settings"), vec!["Ctrl", ","]),
+            tip(me_btn, tr("Settings"), hotkey_caps(st.settings.hotkey_keys("Settings"))),
         ]
         .spacing(8)
         .align_x(Center)

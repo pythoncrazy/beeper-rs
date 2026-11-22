@@ -627,21 +627,21 @@ impl BeeperGuiApp {
                 [trx("Archive", "button label to archive selected chats"), tr("Unarchive")],
                 [trx("Archive", "button label to archive selected chats"), tr("Unarchive")],
                 [&SELECTION_ICONS[0], &SELECTION_ICONS[1]],
-                vec!["Ctrl", "E"],
+                hotkey_caps(st.settings.hotkey_keys("Chat: Toggle Archive")),
             ),
             (
                 ChatFlag::MarkedUnread,
                 [tr("Mark Unread"), tr("Mark Read")],
                 [tr("Mark as Unread"), tr("Mark as Read")],
                 [&ROW_ACTIONS[3], &ROW_ACTIONS[2]],
-                vec!["Ctrl", "Shift", "U"],
+                hotkey_caps(st.settings.hotkey_keys("Chat: Toggle Mark As Read")),
             ),
             (
                 ChatFlag::Muted,
                 [trx("Mute", "thread context menu action"), trx("Unmute", "thread context menu action")],
                 [trx("Mute", "thread context menu action"), trx("Unmute", "thread context menu action")],
                 [&SELECTION_ICONS[2], &SELECTION_ICONS[3]],
-                vec!["Ctrl", "Shift", "M"],
+                hotkey_caps(st.settings.hotkey_keys("Chat: Toggle Mute")),
             ),
             (
                 ChatFlag::LowPriority,
@@ -677,7 +677,7 @@ impl BeeperGuiApp {
             let btn = btn.on_press(msg).into();
             match self.selection_menu {
                 Some(_) => btn,
-                None => self.tip(btn, tip, keys, tooltip::Position::Top).into(),
+                None => self.tip_caps(btn, tip, keys, tooltip::Position::Top).into(),
             }
         });
         let bar = container(Row::with_children(buttons).align_y(Center))
@@ -735,22 +735,28 @@ impl BeeperGuiApp {
             let n = chats.len();
             let count = |f: ChatFlag| chats.iter().filter(|c| has_flag(c, f)).count();
             let some = |f: ChatFlag| (1..n).contains(&count(f));
-            let entry = |label: &str, keys: &str, f: ChatFlag, on: bool| {
-                item(label.into(), keys.into(), Some(UiMessage::ChatList(chat_list::Msg::SelectionSet(f, on))))
+            let entry = |label: &str, f: ChatFlag, on: bool| {
+                let hotkey = match f {
+                    ChatFlag::Archived => Some("Chat: Toggle Archive"),
+                    ChatFlag::MarkedUnread => Some("Chat: Toggle Mark As Read"),
+                    ChatFlag::Muted => Some("Chat: Toggle Mute"),
+                    ChatFlag::Pinned => Some("Chat: Toggle Pin"),
+                    _ => None,
+                };
+                let keys = hotkey.map(|h| hotkey_text(st.settings.hotkey_keys(h))).unwrap_or_default();
+                item(label.into(), keys, Some(UiMessage::ChatList(chat_list::Msg::SelectionSet(f, on))))
             };
             let pinned = count(ChatFlag::Pinned);
             [Some(item(trn("%d chat selected", "%d chats selected", n, &[&n]), String::new(), None))]
                 .into_iter()
                 .chain([
-                    some(ChatFlag::Archived).then(|| entry(tr("Unarchive"), "Ctrl E", ChatFlag::Archived, false)),
-                    some(ChatFlag::MarkedUnread)
-                        .then(|| entry(tr("Mark as Read"), "Ctrl Shift U", ChatFlag::MarkedUnread, false)),
-                    some(ChatFlag::Muted).then(|| {
-                        entry(trx("Unmute", "thread context menu action"), "Ctrl Shift M", ChatFlag::Muted, false)
-                    }),
-                    some(ChatFlag::LowPriority).then(|| entry(tr("Move to Inbox"), "", ChatFlag::LowPriority, false)),
-                    (pinned < n).then(|| entry(tr("Pin"), "Ctrl P", ChatFlag::Pinned, true)),
-                    (pinned > 0).then(|| entry(tr("Unpin"), "Ctrl P", ChatFlag::Pinned, false)),
+                    some(ChatFlag::Archived).then(|| entry(tr("Unarchive"), ChatFlag::Archived, false)),
+                    some(ChatFlag::MarkedUnread).then(|| entry(tr("Mark as Read"), ChatFlag::MarkedUnread, false)),
+                    some(ChatFlag::Muted)
+                        .then(|| entry(trx("Unmute", "thread context menu action"), ChatFlag::Muted, false)),
+                    some(ChatFlag::LowPriority).then(|| entry(tr("Move to Inbox"), ChatFlag::LowPriority, false)),
+                    (pinned < n).then(|| entry(tr("Pin"), ChatFlag::Pinned, true)),
+                    (pinned > 0).then(|| entry(tr("Unpin"), ChatFlag::Pinned, false)),
                 ])
                 .flatten()
                 .collect()
@@ -938,7 +944,8 @@ impl BeeperGuiApp {
         let close_sub = |items: Column<'static, UiMessage>| {
             mouse_area(items).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)))
         };
-        let item = |label: &str, key: &'static str, msg| menu_item(p, None, label.into(), key, msg);
+        let key = |name| hotkey_text(st.settings.hotkey_keys(name));
+        let item = |label: &str, key: &str, msg| menu_item(p, None, label.into(), key.to_string(), msg);
         let open_sub = |i: u8, label: &str| {
             mouse_area(menu_item(
                 p,
@@ -971,7 +978,7 @@ impl BeeperGuiApp {
                     trx("Unarchive", "thread context menu action"),
                     trx("Archive", "thread context menu action"),
                 ),
-                "Ctrl E",
+                &key("Chat: Toggle Archive"),
                 flag(ChatFlag::Archived).filter(|_| can_archive),
             ),
             _ => item(
@@ -979,15 +986,17 @@ impl BeeperGuiApp {
                     true => trx("Unarchive", "button label to unarchive selected chats"),
                     false => trx("Archive", "button label to archive selected chats"),
                 },
-                "Ctrl E",
+                &key("Chat: Toggle Archive"),
                 set(ChatFlag::Archived, !every(ChatFlag::Archived)).filter(|_| can_archive),
             ),
         };
         let mute = match (n, st.notifications_muted(c)) {
-            (0, false) => item(trx("Mute", "thread context menu action"), "Ctrl Shift M", flag(ChatFlag::Muted)),
+            (0, false) => {
+                item(trx("Mute", "thread context menu action"), &key("Chat: Toggle Mute"), flag(ChatFlag::Muted))
+            }
             (0, true) => item(
                 trx("Unmute", "thread context menu action"),
-                "Ctrl Shift M",
+                &key("Chat: Toggle Mute"),
                 flag(ChatFlag::Muted).filter(|_| c.flag(ChatFlag::Muted) && reason.is_none()),
             ),
             _ => item(
@@ -996,18 +1005,18 @@ impl BeeperGuiApp {
                     trx("Unmute", "thread context menu action"),
                     trx("Mute", "thread context menu action"),
                 ),
-                "Ctrl Shift M",
+                &key("Chat: Toggle Mute"),
                 set(ChatFlag::Muted, !every(ChatFlag::Muted)),
             ),
         };
         let read = |all: bool| match all {
-            true => item(tr("Mark as Read"), "Ctrl Shift U", set(ChatFlag::MarkedUnread, false)),
-            false => item(tr("Mark as Unread"), "Ctrl Shift U", set(ChatFlag::MarkedUnread, true)),
+            true => item(tr("Mark as Read"), &key("Chat: Toggle Mark As Read"), set(ChatFlag::MarkedUnread, false)),
+            false => item(tr("Mark as Unread"), &key("Chat: Toggle Mark As Read"), set(ChatFlag::MarkedUnread, true)),
         };
         let reads: Vec<El> = match n {
             0 => vec![item(
                 tr(pick(unread, "Mark as Read", "Mark as Unread")),
-                "Ctrl Shift U",
+                &key("Chat: Toggle Mark As Read"),
                 Some(UiMessage::ChatList(chat_list::Msg::ToggleRead(c.id.clone()))),
             )],
             1 => vec![read(every(ChatFlag::MarkedUnread))],
@@ -1063,7 +1072,7 @@ impl BeeperGuiApp {
                             trx("Unpin", "thread context menu action"),
                             trx("Pin", "thread context menu action")
                         ),
-                        "Ctrl P",
+                        &key("Chat: Toggle Pin"),
                         pin
                     ))
                     .push((n <= 1 && st.threaded(c)).then(|| {
@@ -1079,7 +1088,11 @@ impl BeeperGuiApp {
             open_sub(0, tr("Copy")),
             close_sub(column![
                 menu_rule(p),
-                item(tr("Search…"), "Ctrl F", Some(UiMessage::CommandBar(commands::Msg::SearchRoom(c.id.clone())))),
+                item(
+                    tr("Search…"),
+                    &key("Search: Room"),
+                    Some(UiMessage::CommandBar(commands::Msg::SearchRoom(c.id.clone())))
+                ),
                 menu_rule(p),
                 low,
             ]),
@@ -1128,7 +1141,11 @@ impl BeeperGuiApp {
                         )
                     }))
                     .push(menu_rule(p))
-                    .push(item(tr("Report a Problem"), "Ctrl Shift P", Some(UiMessage::OpenUrl(ISSUES_URL.into()))))
+                    .push(item(
+                        tr("Report a Problem"),
+                        &key("Report a Problem"),
+                        Some(UiMessage::OpenUrl(ISSUES_URL.into())),
+                    ))
             }),
         ];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -1302,7 +1319,7 @@ impl BeeperGuiApp {
                 .on_right_press(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
             self.tip(plain("list-filter", el.into(), press), tr("Filter"), vec![], tooltip::Position::Bottom)
         });
-        let below = |el: El<'static>, label, keys| self.tip(el, label, keys, tooltip::Position::Bottom);
+        let below = |el: El<'static>, label, keys| self.tip_caps(el, label, keys, tooltip::Position::Bottom);
         let options = (self.list().active_tab == InboxTab::Reminders).then(|| {
             let menu = UiMessage::Reminders(reminders::Msg::Menu);
             let btn = button(container(tinted(&TUNE, 18.0, p.strong)).center_x(30).center_y(26))
@@ -1322,7 +1339,7 @@ impl BeeperGuiApp {
                     UiMessage::CommandBar(commands::Msg::TogglePalette),
                 ),
                 tr("Search Chats"),
-                vec!["Ctrl", "K"],
+                hotkey_caps(st.settings.hotkey_keys("Search")),
             ))
             .push(below(
                 plain(
@@ -1331,7 +1348,7 @@ impl BeeperGuiApp {
                     UiMessage::NewChat(new_chat::Msg::Open),
                 ),
                 tr("New Chat"),
-                vec!["Ctrl", "N"],
+                hotkey_caps(st.settings.hotkey_keys("Chat: Start New")),
             ))
             .align_y(Center)
             .height(52)
@@ -1445,52 +1462,55 @@ impl BeeperGuiApp {
             Some(d) => std::borrow::Cow::Borrowed(rest[lead + d - drafts].id.as_str()),
             None => std::borrow::Cow::Borrowed(rest[i].id.as_str()),
         });
-        let frame = |key: String,
-                     dot: Option<El<'static>>,
-                     face: El<'static>,
-                     lines: [El<'static>; 2],
-                     on: bool,
-                     select| {
-            let [top, preview] = lines;
-            let item = row![]
-                .push(dot)
-                .push(container(face).width(av + 10.0))
-                .push(column![top, preview].width(Fill))
-                .align_y(Center)
-                .padding(Padding::new(8.0).top(9.0).bottom(11.0).left(if selecting { 0.0 } else { 8.0 }));
-            // Desktop's Play button takes the place of the hover actions.
-            let plays = st.resolve_chat_idx(&key).is_some_and(|i| self.plays(&st.chats[i]));
-            let hover = !selecting && !plays;
-            let action = self.hover_progress(&key).filter(|_| hover).map(|t| match key.strip_prefix("draft:") {
-                Some(n) => Some(self.hover_btn(
-                    5,
-                    20.0,
-                    tr("Delete Chat"),
-                    vec![],
-                    UiMessage::NewChat(new_chat::Msg::Delete(n.parse().unwrap())),
-                    t,
-                )),
-                None => self.row_action(&st.chats[st.resolve_chat_idx(&key).expect("listed chat")], hover_action, t),
-            });
-            let rule = (!on && above.as_deref() != Some(key.as_str()))
-                .then(|| container(divider(p.divider, av + 18.0)).align_bottom(Fill));
-            let row = mouse_area(
-                button(stack![item].push(action.flatten()).push(rule))
-                    .padding(0)
-                    .width(Fill)
-                    .style(btn_style([if on { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
-                    .on_press(select),
-            )
-            .on_enter(UiMessage::ChatList(chat_list::Msg::Hover(key.clone(), true)))
-            .on_exit(UiMessage::ChatList(chat_list::Msg::Hover(key.clone(), false)));
-            let inbox = st.resolve_chat_idx(&key).is_some_and(|i| st.chats[i].flags & CHAT_ARCHIVED == 0);
-            match inbox {
-                true => row
-                    .on_middle_press(UiMessage::ChatList(chat_list::Msg::ToggleFlag(key.clone(), ChatFlag::Archived))),
-                false => row,
-            }
-            .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(key)))
-        };
+        let frame =
+            |key: String, dot: Option<El<'static>>, face: El<'static>, lines: [El<'static>; 2], on: bool, select| {
+                let [top, preview] = lines;
+                let item = row![]
+                    .push(dot)
+                    .push(container(face).width(av + 10.0))
+                    .push(column![top, preview].width(Fill))
+                    .align_y(Center)
+                    .padding(Padding::new(8.0).top(9.0).bottom(11.0).left(if selecting { 0.0 } else { 8.0 }));
+                // Desktop's Play button takes the place of the hover actions.
+                let plays = st.resolve_chat_idx(&key).is_some_and(|i| self.plays(&st.chats[i]));
+                let hover = !selecting && !plays;
+                let action = self.hover_progress(&key).filter(|_| hover).map(|t| match key.strip_prefix("draft:") {
+                    Some(n) => Some(self.hover_btn(
+                        5,
+                        20.0,
+                        tr("Delete Chat"),
+                        vec![],
+                        UiMessage::NewChat(new_chat::Msg::Delete(n.parse().unwrap())),
+                        t,
+                    )),
+                    None => self.row_action(
+                        &st.settings,
+                        &st.chats[st.resolve_chat_idx(&key).expect("listed chat")],
+                        hover_action,
+                        t,
+                    ),
+                });
+                let rule = (!on && above.as_deref() != Some(key.as_str()))
+                    .then(|| container(divider(p.divider, av + 18.0)).align_bottom(Fill));
+                let row = mouse_area(
+                    button(stack![item].push(action.flatten()).push(rule))
+                        .padding(0)
+                        .width(Fill)
+                        .style(btn_style([if on { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
+                        .on_press(select),
+                )
+                .on_enter(UiMessage::ChatList(chat_list::Msg::Hover(key.clone(), true)))
+                .on_exit(UiMessage::ChatList(chat_list::Msg::Hover(key.clone(), false)));
+                let inbox = st.resolve_chat_idx(&key).is_some_and(|i| st.chats[i].flags & CHAT_ARCHIVED == 0);
+                match inbox {
+                    true => row.on_middle_press(UiMessage::ChatList(chat_list::Msg::ToggleFlag(
+                        key.clone(),
+                        ChatFlag::Archived,
+                    ))),
+                    false => row,
+                }
+                .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(key)))
+            };
         let draft_row = |d: &NewChat| {
             let n = d.id;
             let dot = (!counts).then(|| container(Space::new()).width(12).into());
@@ -1631,7 +1651,8 @@ impl BeeperGuiApp {
                 container(column![].push(unread.then(|| dot(dot_bg))).push(errored).spacing(4)).width(12)
             });
             let count = count.filter(|_| {
-                self.hovered_chat.as_ref() != Some(&c.id) || self.row_action(c, hover_action, 1.0).is_none()
+                self.hovered_chat.as_ref() != Some(&c.id)
+                    || self.row_action(&st.settings, c, hover_action, 1.0).is_none()
             });
             let count = match plays {
                 true => Some(self.view_once_play(&c.id)),
