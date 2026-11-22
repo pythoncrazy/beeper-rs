@@ -149,16 +149,29 @@ async fn tag(room: &Room, name: TagName, on: bool) -> matrix_sdk::Result<()> {
 /// Adds a pinned room to the end of the `com.beeper.favourites_order` inbox list, or removes it.
 async fn edit_pins(client: &Client, id: &str, add: bool) -> matrix_sdk::Result<()> {
     let (account, kind) = (client.account(), GlobalAccountDataEventType::from("com.beeper.favourites_order"));
-    let raw = account.account_data_raw(kind.clone()).await?;
-    let mut v = raw.map_or(Value::Null, |r| r.deserialize_as::<Value>().expect("account data JSON"));
+    let stored = account.account_data_raw(kind.clone()).await?;
+    let mut v = stored.map_or(Value::Null, |r| r.deserialize_as::<Value>().expect("account data JSON"));
     let mut ids = v["Inbox"].as_array().cloned().unwrap_or_default();
     ids.retain(|x| x != id);
     if add {
         ids.push(id.into());
     }
     v["Inbox"] = ids.into();
-    let raw = Raw::from_json(serde_json::value::to_raw_value(&v).expect("account data JSON"));
-    account.set_account_data_raw(kind, raw).await.map(drop)
+    account.set_account_data_raw(kind, raw(&v)).await.map(drop)
+}
+
+/// A JSON value as the raw content of an event or of account data.
+fn raw<T>(v: &Value) -> Raw<T> {
+    Raw::from_json(serde_json::value::to_raw_value(v).expect("a JSON value"))
+}
+
+/// The content of an `m.space.child` state event that adds a room to a space, or removes it.
+fn space_child(add: bool) -> Value {
+    if add {
+        serde_json::json!({ "via": ["beeper.com"] })
+    } else {
+        serde_json::json!({})
+    }
 }
 
 /// Desktop's `findMatchingBridgeAccount`: the login of the room's receiver, the one Slack login of the room's
@@ -1192,13 +1205,10 @@ async fn create_union(
 /// Desktop's `createLabel` and `addRoomToLabel`.
 async fn create_label(store: &SharedStore, client: &Client, label: Label) -> Result<(), String> {
     use matrix_sdk::ruma::api::client::room::create_room::v3::{Request, RoomPreset};
-    fn raw<T>(v: Value) -> Raw<T> {
-        Raw::from_json(serde_json::value::to_raw_value(&v).expect("label JSON"))
-    }
     let event =
-        |kind: &str, content: Value| raw(serde_json::json!({ "type": kind, "state_key": "", "content": content }));
+        |kind: &str, content: Value| raw(&serde_json::json!({ "type": kind, "state_key": "", "content": content }));
     let mut request = Request::new();
-    request.creation_content = Some(raw(serde_json::json!({ "type": "m.space", "com.beeper.label": true })));
+    request.creation_content = Some(raw(&serde_json::json!({ "type": "m.space", "com.beeper.label": true })));
     request.initial_state = std::iter::once(event("m.room.name", serde_json::json!({ "name": label.name })))
         .chain(label.color.map(|c| event("com.beeper.label.color", serde_json::json!({ "color_index": c }))))
         .chain(label.icon.as_ref().map(|i| event("com.beeper.label.icon", serde_json::json!({ "icon": i }))))
@@ -1206,8 +1216,7 @@ async fn create_label(store: &SharedStore, client: &Client, label: Label) -> Res
     request.preset = Some(RoomPreset::PrivateChat);
     let room = client.create_room(request).await.map_err(|e| e.to_string())?;
     for chat in &label.rooms {
-        let via = serde_json::json!({ "via": ["beeper.com"] });
-        room.send_state_event_raw("m.space.child", chat, via).await.map_err(|e| e.to_string())?;
+        room.send_state_event_raw("m.space.child", chat, space_child(true)).await.map_err(|e| e.to_string())?;
     }
     store.write().created_label(&label.id, room.room_id().as_str());
     Ok(())
@@ -2605,7 +2614,6 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         OwnedEventId::try_from(id).map_err(|e| e.to_string())
     };
     let e = PushError::from;
-    let sent = |txn: String, id: OwnedEventId| store.write().sent.insert(txn, id.to_string());
     match out {
         Outgoing::Send { txn, text, reply_to, preview, mentions, thread, links } => {
             // Desktop mentions the sender of the quoted message, but not of the fallback reply of a thread reply.
@@ -2647,8 +2655,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             if let Some(timer) = timer_for_messages(&room).await {
                 content[DISAPPEARING_TIMER] = timer;
             }
-            let id = room.send_raw("m.room.message", content).with_transaction_id(txn.as_str().into());
-            sent(txn, id.await.map_err(e)?.response.event_id);
+            send_txn(store, &room, "m.room.message", content, txn).await?;
         }
         Outgoing::Edit { target, text, mentions, caption } => {
             let target = event(target)?;
@@ -2667,12 +2674,12 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 "m.relates_to": { "rel_type": "m.annotation", "event_id": event(target)?, "key": img },
                 "com.beeper.reaction.shortcode": format!(":{key}:"),
             });
-            let id = room.send_raw("m.reaction", content).with_transaction_id(txn.as_str().into());
-            sent(txn, id.await.map_err(e)?.response.event_id);
+            send_txn(store, &room, "m.reaction", content, txn).await?;
         }
         Outgoing::React { txn, target, key, img_url: None } => {
             let content = ReactionEventContent::new(Annotation::new(event(target)?, key));
-            sent(txn.clone(), room.send(content).with_transaction_id(txn.into()).await.map_err(e)?.response.event_id);
+            let id = room.send(content).with_transaction_id(txn.as_str().into()).await.map_err(e)?.response.event_id;
+            store.write().sent.insert(txn, id.to_string());
         }
         Outgoing::Poll { txn, poll } => {
             let text = "org.matrix.msc1767.text";
@@ -2688,8 +2695,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                     "question": { text: poll.question },
                 },
             });
-            let id = room.send_raw("org.matrix.msc3381.poll.start", content).with_transaction_id(txn.as_str().into());
-            sent(txn, id.await.map_err(e)?.response.event_id);
+            send_txn(store, &room, "org.matrix.msc3381.poll.start", content, txn).await?;
         }
         Outgoing::EndPoll { target } => {
             let content = serde_json::json!({
@@ -2724,8 +2730,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                     last.map_or(MIN_SAFE_INTEGER, |k| order_of(&k))
                 });
                 let done = inbox_done(order, now_unix_millis());
-                let raw = Raw::from_json(serde_json::value::to_raw_value(&done).expect("inbox done JSON"));
-                room.set_account_data_raw("com.beeper.inbox.done".into(), raw).await.map_err(e)?;
+                room.set_account_data_raw("com.beeper.inbox.done".into(), raw(&done)).await.map_err(e)?;
             }
             ChatFlag::Pinned => {
                 tag(&room, TagName::Favorite, on).await.map_err(e)?;
@@ -2761,15 +2766,13 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         Outgoing::ThreadFollows(follows) => {
             let mut v = serde_json::to_value(follows).expect("thread follows JSON");
             v["com.beeper.revision_id"] = matrix_sdk::ruma::TransactionId::new().to_string().into();
-            let raw = Raw::from_json(serde_json::value::to_raw_value(&v).expect("thread follows JSON"));
-            room.set_account_data_raw(THREAD_FOLLOWS.into(), raw).await.map_err(e)?;
+            room.set_account_data_raw(THREAD_FOLLOWS.into(), raw(&v)).await.map_err(e)?;
         }
         Outgoing::Reminder(at) => {
             let v = at.map_or(serde_json::json!({}), |r| {
                 serde_json::json!({ "remind_at_ms": r.remind_at_ms, "dismiss_on_incoming_message": r.dismiss_on_incoming_message })
             });
-            let raw = Raw::from_json(serde_json::value::to_raw_value(&v).expect("reminder JSON"));
-            room.set_account_data_raw(REMINDER.into(), raw).await.map_err(e)?;
+            room.set_account_data_raw(REMINDER.into(), raw(&v)).await.map_err(e)?;
         }
         // Desktop accepts an invite of a Matrix chat by a join, and other requests with the bridge's event.
         Outgoing::AcceptRequest if room.state() == RoomState::Invited => room.join().await.map_err(e)?,
@@ -2809,8 +2812,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                     c.insert("formatted_body".into(), h.into());
                 }
             }
-            let sent_id = room.send_raw(&kind, ev["content"].take()).with_transaction_id(txn.as_str().into());
-            sent(txn, sent_id.await.map_err(e)?.response.event_id);
+            send_txn(store, &room, &kind, ev["content"].take(), txn).await?;
         }
         Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to, thread, gif, sticker } => {
             // Desktop's `Kf`: a sticker goes as `m.sticker` when the room features take its type, else as an image.
@@ -2826,7 +2828,6 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 MediaInfo::Image(w, h) | MediaInfo::Video(w, h, _) => Some((w, h)),
                 _ => None,
             };
-            use matrix_sdk::attachment::{AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo};
             use matrix_sdk::room::reply::{EnforceThread, Reply};
             use matrix_sdk::ruma::events::room::message::{AddMentions, ReplyWithinThread, RoomMessageEventContent};
             // The thread relation of the SDK is Desktop's `buildThreadRelation`, and "Also send to chat" adds its flag.
@@ -2839,34 +2840,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             let reply = reply_to
                 .map(|r| event(r).map(|event_id| Reply { event_id, enforce_thread, add_mentions }))
                 .transpose()?;
-            let size = Some(matrix_sdk::ruma::UInt::try_from(data.len()).expect("the media size fits"));
-            let info = match info {
-                MediaInfo::Image(w, h) => AttachmentInfo::Image(BaseImageInfo {
-                    width: Some(w.into()),
-                    height: Some(h.into()),
-                    size,
-                    is_animated: Some(mime == "image/gif"),
-                    ..Default::default()
-                }),
-                MediaInfo::Voice { ms, wave } => AttachmentInfo::Voice(BaseAudioInfo {
-                    duration: Some(std::time::Duration::from_millis(ms)),
-                    size,
-                    waveform: Some(wave),
-                }),
-                MediaInfo::Video(w, h, ms) => AttachmentInfo::Video(BaseVideoInfo {
-                    duration: Some(std::time::Duration::from_millis(ms)),
-                    width: Some(w.into()),
-                    height: Some(h.into()),
-                    size,
-                    blurhash: None,
-                }),
-                MediaInfo::Audio(ms) => AttachmentInfo::Audio(BaseAudioInfo {
-                    duration: Some(std::time::Duration::from_millis(ms)),
-                    size,
-                    waveform: None,
-                }),
-                MediaInfo::File => AttachmentInfo::File(BaseFileInfo { size }),
-            };
+            let info = attachment_info(info, data.len(), &mime);
             let mime: mime::Mime = mime.parse().expect("valid media mime");
             let source = match room.latest_encryption_state().await.map_err(e)?.is_encrypted() {
                 true => MediaSource::Encrypted(Box::new(
@@ -2898,8 +2872,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 }
                 None => "m.room.message",
             };
-            let id = room.send_raw(kind, content).with_transaction_id(txn.as_str().into());
-            sent(txn, id.await.map_err(e)?.response.event_id);
+            send_txn(store, &room, kind, content, txn).await?;
         }
         Outgoing::CreateLabel(_) => unreachable!("a label has no room before it is created"),
         Outgoing::CreateUnion { .. } => unreachable!("a merged chat has no room before it is created"),
@@ -2909,8 +2882,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             state("com.beeper.label.color", serde_json::json!({ "color_index": label.color })).await.map_err(e)?;
             state("com.beeper.label.icon", serde_json::json!({ "icon": label.icon })).await.map_err(e)?;
             for (chat, add) in changes {
-                let content = if add { serde_json::json!({ "via": ["beeper.com"] }) } else { serde_json::json!({}) };
-                room.send_state_event_raw("m.space.child", &chat, content).await.map_err(e)?;
+                room.send_state_event_raw("m.space.child", &chat, space_child(add)).await.map_err(e)?;
             }
         }
         Outgoing::State(kind, content) => drop(room.send_state_event_raw(&kind, "", content).await.map_err(e)?),
@@ -2996,8 +2968,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             room.send_state_event_raw("m.room.avatar", "", content).await.map_err(e)?;
         }
         Outgoing::RoomData(kind, content) => {
-            let raw = Raw::from_json(serde_json::value::to_raw_value(&content).expect("room account data JSON"));
-            room.set_account_data_raw(kind.into(), raw).await.map_err(e)?;
+            room.set_account_data_raw(kind.into(), raw(&content)).await.map_err(e)?;
         }
         Outgoing::PersonalAvatar(image) => {
             let content = match image {
@@ -3014,12 +2985,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 }
                 None => serde_json::json!({}),
             };
-            let raw = Raw::from_json(serde_json::value::to_raw_value(&content).expect("personal avatar JSON"));
-            room.set_account_data_raw(PERSONAL_AVATAR.into(), raw).await.map_err(e)?;
+            room.set_account_data_raw(PERSONAL_AVATAR.into(), raw(&content)).await.map_err(e)?;
         }
         Outgoing::LabelChild(chat, add) => {
-            let content = if add { serde_json::json!({ "via": ["beeper.com"] }) } else { serde_json::json!({}) };
-            room.send_state_event_raw("m.space.child", &chat, content).await.map_err(e)?;
+            room.send_state_event_raw("m.space.child", &chat, space_child(add)).await.map_err(e)?;
         }
         Outgoing::Leave(forget) => {
             room.leave().await.map_err(e)?;
@@ -3029,6 +2998,41 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         }
     }
     Ok(())
+}
+
+/// Sends the event `content` with the transaction ID `txn`, and keeps the event ID that the homeserver gives it.
+async fn send_txn(store: &SharedStore, room: &Room, kind: &str, content: Value, txn: String) -> Result<(), PushError> {
+    let id = room.send_raw(kind, content).with_transaction_id(txn.as_str().into()).await?.response.event_id;
+    store.write().sent.insert(txn, id.to_string());
+    Ok(())
+}
+
+/// The SDK's info of a media of `len` bytes: its size, and the dimensions and length of its kind.
+fn attachment_info(info: MediaInfo, len: usize, mime: &str) -> matrix_sdk::attachment::AttachmentInfo {
+    use matrix_sdk::attachment::{AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo};
+    let size = Some(matrix_sdk::ruma::UInt::try_from(len).expect("the media size fits"));
+    let duration = |ms| Some(std::time::Duration::from_millis(ms));
+    match info {
+        MediaInfo::Image(w, h) => AttachmentInfo::Image(BaseImageInfo {
+            width: Some(w.into()),
+            height: Some(h.into()),
+            size,
+            is_animated: Some(mime == "image/gif"),
+            ..Default::default()
+        }),
+        MediaInfo::Voice { ms, wave } => {
+            AttachmentInfo::Voice(BaseAudioInfo { duration: duration(ms), size, waveform: Some(wave) })
+        }
+        MediaInfo::Video(w, h, ms) => AttachmentInfo::Video(BaseVideoInfo {
+            duration: duration(ms),
+            width: Some(w.into()),
+            height: Some(h.into()),
+            size,
+            blurhash: None,
+        }),
+        MediaInfo::Audio(ms) => AttachmentInfo::Audio(BaseAudioInfo { duration: duration(ms), size, waveform: None }),
+        MediaInfo::File => AttachmentInfo::File(BaseFileInfo { size }),
+    }
 }
 
 const ENCRYPTED_FILE: &str = "encryptedFileInfoJSON";
@@ -4040,9 +4044,8 @@ fn synced_write(st: &mut BeeperStore, kind: &'static str, field: &str, value: Va
 }
 
 pub async fn set_global(client: Client, kind: &'static str, content: Value) -> Result<(), String> {
-    let raw = Raw::from_json(serde_json::value::to_raw_value(&content).expect("account data JSON"));
     let kind = GlobalAccountDataEventType::from(kind);
-    client.account().set_account_data_raw(kind, raw).await.map(drop).map_err(|e| e.to_string())
+    client.account().set_account_data_raw(kind, raw(&content)).await.map(drop).map_err(|e| e.to_string())
 }
 
 /// A request of the client-server API at `/_matrix/client/v3/{path}` with the session of the client, for the Matrix
@@ -4543,8 +4546,7 @@ async fn update_device_metadata(client: Client) {
     let kind = format!("com.beeper.device_metadata.{id}");
     let meta = device_metadata(&id);
     if global(&client, &kind).await != meta {
-        let raw = Raw::from_json(serde_json::value::to_raw_value(&meta).expect("account data JSON"));
-        if let Err(e) = client.account().set_account_data_raw(kind.into(), raw).await {
+        if let Err(e) = client.account().set_account_data_raw(kind.into(), raw(&meta)).await {
             eprintln!("Could not set the device metadata: {e}");
         }
     }
