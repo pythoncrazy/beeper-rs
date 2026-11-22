@@ -1,8 +1,7 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
-    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, MessageTimer, Older, Reaction,
-    SpaceOrder, ThemeChoice, ThreadFollows, Transcription, User, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS,
-    CHAT_SOUNDS,
+    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, MessageTimer, Reaction, SpaceOrder,
+    ThemeChoice, ThreadFollows, Transcription, User, CHAT_SOUNDS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -237,7 +236,6 @@ fn read_participants(db: &Connection) -> rusqlite::Result<HashMap<String, Vec<Us
             custom_nickname: nickname,
             is_network_bot: Some(r.get::<_, Option<i64>>(7)? == Some(1)),
             is_admin: Some(r.get::<_, Option<i64>>(8)? == Some(1)),
-            manage: 0,
             ..Default::default()
         };
         Ok((r.get::<_, String>(0)?, user))
@@ -272,49 +270,13 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         false => group.then(|| sender_name.as_deref().unwrap_or(sender_id.as_str())),
     };
     let target = plm.get("linkedMessage").map(|l| Message {
-        id: String::new(),
-        account_id: String::new(),
-        chat_id: String::new(),
-        sender_id: String::new(),
-        sender_name: None,
-        sort_key: String::new(),
-        timestamp: String::new(),
         attachments: l
             .get("attachments")
             .and_then(Value::as_array)
             .map_or_else(Vec::new, |a| a.iter().map(read_attachment).collect()),
         is_sender: Some(flag(l, "isSender")),
-        is_unread: None,
-        is_bookmarked: None,
-        is_deleted: None,
-        removed: false,
-        linked_message_id: None,
-        reactions: Vec::new(),
         text: str_field(l, "text"),
-        html: None,
-        message_type: None,
-        poll: None,
-        unresolved_media: None,
-        edit_history: Vec::new(),
-        is_edited: None,
-        links: Vec::new(),
-        seen: Default::default(),
-        timer: None,
-        send_error: None,
-        is_delivered: false,
-        thread_root: None,
-        broadcast: false,
-        fallback: false,
-        mentions: None,
-        send_status: None,
-        call: None,
-        disappearing: None,
-        view_limit: None,
-        views_left: None,
-        view_expired: false,
-        view_kind: None,
-        buttons: Vec::new(),
-        flags: 0,
+        ..Default::default()
     });
     let text = Some(crate::matrix::reaction_text(&key, target.as_ref(), who));
     Some(Message {
@@ -325,39 +287,13 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         sender_name,
         sort_key: crate::store::sort_key(plm.get("sortKey")?.as_i64()?),
         timestamp: str_field(plm, "timestamp")?,
-        attachments: Vec::new(),
         is_sender: Some(is_sender),
         is_unread: Some(false),
         is_bookmarked: Some(false),
-        is_deleted: None,
-        removed: false,
         linked_message_id: str_field(plm, "linkedMessageID").or_else(|| str_field(plm.get("linkedMessage")?, "id")),
-        reactions: Vec::new(),
         text,
-        html: None,
         message_type: Some("REACTION".into()),
-        poll: None,
-        unresolved_media: None,
-        edit_history: Vec::new(),
-        is_edited: None,
-        links: Vec::new(),
-        seen: Default::default(),
-        timer: None,
-        send_error: None,
-        is_delivered: false,
-        thread_root: None,
-        broadcast: false,
-        fallback: false,
-        mentions: None,
-        send_status: None,
-        call: None,
-        disappearing: None,
-        view_limit: None,
-        views_left: None,
-        view_expired: false,
-        view_kind: None,
-        buttons: Vec::new(),
-        flags: 0,
+        ..Default::default()
     })
 }
 
@@ -473,7 +409,6 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 unread_count: count("unreadCount"),
                 unread_mentions: count("unreadMentionsCount"),
                 description: str_field(&t, "description"),
-                draft: None,
                 // Desktop keeps the archive in `com.beeper.inbox.done`; some data also stores `isArchived`.
                 is_archived: Some(match t.get("isArchived") {
                     Some(_) => flag(&t, "isArchived"),
@@ -483,54 +418,32 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 is_muted: Some(flag(&t, "mutedUntil")),
                 is_pinned: Some(flag(&t, "isPinned")),
                 is_low_priority: Some(flag(&t, "isLowPriority")),
-                label_ids: Vec::new(),
                 last_activity,
                 last_read_message_sort_key: t
                     .get("lastReadMessageSortKey")
                     .and_then(Value::as_i64)
                     .map(crate::store::sort_key),
-                local_chat_id: None,
-                merge: None,
-                merged_into_chat_id: None,
                 preview,
-                reminder: None,
-                snoozed_until_ms: None,
-                chat_theme: None,
                 note: note.filter(|n| !n.is_empty()),
-                notifiable: None,
                 is_request: Some(flag(&t, "isMessageRequest")),
                 created_at: t.get("createdAt").and_then(Value::as_str).and_then(crate::config::millis_from_rfc3339),
                 network_name: str_field(&t, "networkName")
                     .or_else(|| bridge.get("network").and_then(|n| str_field(n, "displayname"))),
                 network_id: bridge.get("network").and_then(|n| str_field(n, "id")),
                 img_url: str_field(&t, "imgURL"),
-                delete_modes: 0,
-                can_accept_request: false,
-                block: 0,
                 edits: 0,
                 member_actions: 0,
-                formatting: ALL_FORMATS,
                 file,
                 room_features,
                 features: t.get("features").filter(|f| !f.is_null()).cloned().map(Box::new),
-                polls: Some(BEEPER_POLLS),
-                messages: BEEPER_MESSAGES,
-                allowed_reactions: Vec::new(),
                 custom_emoji: crate::models::custom_emoji(t.get("features"), bridge),
                 disappearing: t.pointer("/disappearingTimer/timer").and_then(Value::as_u64).filter(|&t| t > 0),
-                timers: None,
-                older: Older::Unknown,
-                is_read_only: false,
-                replacement_room: None,
-                can_mention_room: false,
                 threads: t.pointer("/features/thread").and_then(Value::as_i64) > Some(0),
                 follows: ThreadFollows { follow_all, ..Default::default() },
-                thread_reads: Default::default(),
-                personal: None,
                 notification_sound: str_field(&t, "chatNotificationSound")
                     .filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
-                flags: 0,
                 id,
+                ..Default::default()
             })
         })
         .collect()
@@ -741,13 +654,11 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             is_unread: Some(is_unread),
             is_bookmarked: Some(false),
             is_deleted: deleted.then_some(true),
-            removed: false,
             linked_message_id: str_field(&m, "linkedMessageID"),
             reactions: listed,
             text: str_field(&m, "text").filter(|_| !deleted),
             html: m.get("extra").and_then(|e| str_field(e, "sanitizedFormattedBody")).filter(|_| !deleted),
             message_type: Some(message_type.into()),
-            poll: None,
             unresolved_media: m
                 .pointer("/extra/lastEditionID")
                 .and_then(Value::as_str)
@@ -755,10 +666,6 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 .then(|| m.pointer("/extra/unresolvedMedia").and_then(Value::as_str).map(str::to_string))
                 .flatten()
                 .filter(|_| !deleted),
-            edit_history: Vec::new(),
-            timer: None,
-            send_error: None,
-            is_delivered: false,
             is_edited: flag(&m, "editedTimestamp").then_some(true),
             links: m
                 .get("links")
@@ -795,12 +702,11 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 .and_then(Value::as_str)
                 .and_then(|l| serde_json::from_str(l).ok())
                 .filter(|_| !deleted),
-            views_left: None,
             view_expired: m.pointer("/extra/viewLimitedMediaExpired") == Some(&Value::Bool(true)),
             view_kind: m.pointer("/extra/viewLimitedMediaKind").and_then(Value::as_str).map(str::to_string),
             buttons,
-            flags: 0,
             id,
+            ..Default::default()
         });
     }
     for m in &mut out {

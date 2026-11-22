@@ -56,7 +56,6 @@ pub mod icon {
     pub const INFO: char = '\u{e0f9}';
     pub const PLAY: char = '\u{e13c}';
     pub const HISTORY: char = '\u{e1f5}';
-    pub const BOOKMARK: char = '\u{e060}';
 }
 
 macro_rules! font {

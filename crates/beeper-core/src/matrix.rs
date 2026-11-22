@@ -372,7 +372,6 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
                 img_url: m.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
                 is_self: Some(m.user_id() == me),
                 cannot_message: Some(false),
-                custom_nickname: None,
                 is_network_bot: Some(contents.get(id).is_some_and(|c| c["com.beeper.bridge.is_network_bot"] == true)),
                 is_admin: Some(m.power_level() > UserPowerLevel::Int(users_default)),
                 is_pending: (*m.membership() == matrix_sdk::ruma::events::room::member::MembershipState::Invite)
@@ -438,7 +437,6 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         unread_count: u32::try_from(room.unread_notification_counts().notification_count).expect("unread count"),
         unread_mentions: u32::try_from(room.unread_notification_counts().highlight_count).expect("mention count"),
         description: room.topic(),
-        draft: None,
         is_archived: Some(false),
         is_marked_unread: Some(room.is_marked_unread()),
         is_muted: Some(
@@ -455,13 +453,6 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         ),
         is_pinned: Some(tags.contains_key(&TagName::Favorite)),
         is_low_priority: Some(tags.contains_key(&TagName::LowPriority)),
-        label_ids: Vec::new(),
-        last_activity: None,
-        last_read_message_sort_key: None,
-        local_chat_id: None,
-        merge: None,
-        merged_into_chat_id: None,
-        preview: None,
         reminder: account_data(room, REMINDER).await.and_then(|r| {
             Some(ChatReminder {
                 remind_at_ms: r["remind_at_ms"].as_i64().filter(|&ms| ms > 0)?,
@@ -473,9 +464,6 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             .await
             .and_then(|s| s["snoozed_until_ms"].as_i64())
             .filter(|&ms| ms > now_unix_millis()),
-        chat_theme: None,
-        note: None,
-        notifiable: None,
         delete_modes: features.as_ref().map_or(0, |f| {
             (u8::from(f["delete_chat"] == true) * DELETE_FOR_ME)
                 | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
@@ -500,21 +488,18 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         custom_emoji: crate::models::custom_emoji(features.as_ref(), &bridge),
         disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
         timers: timers(features.as_ref(), &levels, me.as_str()),
-        older: Older::Unknown,
         is_read_only: tombstone.is_some() || read_only(&levels, me.as_str()),
         replacement_room: tombstone.and_then(|t| s(&t["replacement_room"])),
         can_mention_room: features.as_ref().is_none_or(|f| f["formatting"]["at_room_mention"].as_i64() >= Some(1))
             && power(&levels, me.as_str()) >= levels["notifications"]["room"].as_i64().unwrap_or(50),
         threads: features.as_ref().is_some_and(|f| f["thread"].as_i64() > Some(0)),
         follows: account_data(room, THREAD_FOLLOWS).await.and_then(|f| ThreadFollows::parse(&f)).unwrap_or_default(),
-        thread_reads: BTreeMap::new(),
-        personal: None,
         // Desktop's `Up`: a sound it knows, else the Default sound.
         notification_sound: account_data(room, NOTIFICATION_SOUND)
             .await
             .and_then(|d| s(&d["sound"]))
             .filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
-        flags: 0,
+        ..Default::default()
     };
     let name = account_data(room, PERSONAL_NAME).await.and_then(|n| s(&n["name"])).filter(|n| !n.is_empty());
     let photo = account_data(room, PERSONAL_AVATAR).await.and_then(|a| url_field(&a["url"], &a["file"]));
@@ -756,21 +741,14 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         is_unread: Some(false),
         is_bookmarked: Some(false),
         is_deleted: deleted.then_some(true),
-        removed: false,
         linked_message_id: s(&rel["m.in_reply_to"]["event_id"]).or(reaction.as_ref().and(s(&rel["event_id"]))),
-        reactions: Vec::new(),
         text,
         html: html(c),
         message_type: Some(message_type.into()),
         poll,
         unresolved_media: unresolved_media(c).filter(|_| !deleted),
-        edit_history: Vec::new(),
-        is_edited: None,
         links: links(c),
-        seen: Default::default(),
         timer: (message_type == "DISAPPEARING_TIMER").then(|| c["timer"].as_u64().unwrap_or(0)),
-        send_error: None,
-        is_delivered: false,
         // Desktop's `threadFields`.
         thread_root: s(&rel["event_id"]).filter(|_| rel["rel_type"] == "m.thread"),
         broadcast: rel["rel_type"] == "m.thread" && c["com.beeper.broadcast_outside_thread"] == true,
@@ -781,18 +759,16 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
             let room = (c["m.mentions"]["room"] == true).then_some(ROOM_MENTION);
             ids.filter(|&u| u != ROOM_MENTION).chain(room).map(String::from).collect()
         }),
-        send_status: None,
         call: crate::models::CallAction::of(c),
         disappearing: MessageTimer::of(&c[DISAPPEARING_TIMER], order),
         view_limit: c.get("com.beeper.view_limited").filter(|l| l.is_object() && !deleted).cloned(),
-        views_left: None,
         view_expired: deleted && e["unsigned"]["redacted_because"]["content"]["com.beeper.view_limited"] == true,
-        view_kind: None,
         buttons,
         flags: match c["m.mentions"]["user_ids"].as_array() {
             Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
             _ => 0,
         },
+        ..Default::default()
     });
     match reaction {
         Some(r) => Some(Op::React(msg.linked_message_id.clone()?, r, msg)),

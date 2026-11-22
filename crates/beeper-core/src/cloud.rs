@@ -331,11 +331,7 @@ impl Cloud {
                     email: ids.iter().find_map(|s| s.strip_prefix("mailto:")).map(String::from),
                     mxid,
                     img_url: field(c, "avatar_url"),
-                    username: None,
                     is_self: Some(false),
-                    cannot_message: None,
-                    custom_nickname: None,
-                    is_network_bot: None,
                     ..Default::default()
                 });
             }

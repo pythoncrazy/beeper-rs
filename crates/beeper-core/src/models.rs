@@ -645,13 +645,6 @@ pub struct ChatReminder {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatThemeCustom {
-    pub bubble_self_rgb: [u8; 3],
-    pub bubble_other_rgb: [u8; 3],
-    pub wallpaper_tint_rgb: Option<[u8; 3]>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chat {
     pub id: String,
     #[serde(rename = "accountID")]
@@ -697,8 +690,6 @@ pub struct Chat {
     /// Desktop's `snooze.snoozeUntilMs` of `com.beeper.chats.snoozed`.
     #[serde(rename = "snoozedUntilMs", default, skip_serializing_if = "Option::is_none")]
     pub snoozed_until_ms: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub chat_theme: Option<ChatThemeCustom>,
     /// Desktop's local `note` thread prop, the Notes of the Chat Info panel.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -798,6 +789,18 @@ pub struct Chat {
     pub notification_sound: Option<String>,
     #[serde(skip)]
     pub flags: u16,
+}
+
+impl Default for Chat {
+    /// The chat that a JSON with only the required fields reads as, so it has the defaults of the store: the
+    /// formats, files, polls and messages of Beeper's own network, and every edit and member action.
+    fn default() -> Self {
+        let empty = serde_json::json!({
+            "id": "", "accountID": "", "participants": { "hasMore": false, "items": [], "total": 0 },
+            "title": "", "type": "", "unreadCount": 0,
+        });
+        serde_json::from_value(empty).expect("an empty chat")
+    }
 }
 
 /// A flag of a chat that the user sets here and on the homeserver.
@@ -1280,7 +1283,7 @@ pub struct EditHistoryEntry {
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
     #[serde(rename = "accountID")]
