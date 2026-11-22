@@ -64,29 +64,7 @@ impl BeeperGuiApp {
                 return window::screenshot(id).map(move |s| UiMessage::Window(Msg::ScreenshotCaptured(id, s)));
             }
             Msg::Drawn(_) => {}
-            Msg::Resized(id, size) => {
-                // Desktop's `KeyboardSensor` cancels on a resize of the window.
-                self.key_sort.take_if(|s| s.window == id);
-                if self.main_window == Some(id) {
-                    let narrow = |s: Size| s.width / self.zoom < 600.0;
-                    if narrow(self.pane.size) != narrow(size) {
-                        self.set_sidebar_hidden(narrow(size));
-                    }
-                    self.pane.size = size;
-                    if let Some(t) = self.pane.thread.as_mut() {
-                        t.size = size;
-                    }
-                }
-                if let Some(w) = self.chat_windows.iter_mut().find(|w| w.0 == id) {
-                    w.1.size = size;
-                }
-                if let Some(w) = self.media_window.as_mut().filter(|w| w.id == id) {
-                    w.size = size;
-                }
-                if self.settings_window == Some(id) {
-                    self.settings_size = size;
-                }
-            }
+            Msg::Resized(id, size) => self.resized(id, size),
             Msg::Tray(Ok(tray::Event::Up)) => self.tray_sent = (None, true),
             // Electron cannot pop up the tray menu on Linux, so Desktop's click on a focused window does nothing.
             Msg::Tray(Ok(tray::Event::Activate)) if !self.hidden && self.focused => {}
@@ -132,7 +110,7 @@ impl BeeperGuiApp {
                 }
                 // Desktop's `windowStateKeeper("pop-out-thread")` keeps the size of the last chat window.
                 let size = self.saved_window_settings(POP_OUT, Size::new(800.0, 600.0)).size;
-                let (id, open) = window::open(Self::window_settings(size));
+                let (id, open) = self.open_window(Self::window_settings(size));
                 self.chat_windows.push((id, Pane { size, ..Pane::default() }));
                 let near = self.cascade(id);
                 let select = self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(cid))));
@@ -147,7 +125,7 @@ impl BeeperGuiApp {
                 // Desktop's space window is 1200 by 800 in the middle of the screen, and keeps no window state.
                 let settings =
                     window::Settings { position: window::Position::Centered, ..Self::window_settings(MAIN_SIZE) };
-                let (id, open) = window::open(settings);
+                let (id, open) = self.open_window(settings);
                 self.chat_windows.push((id, Pane { size: MAIN_SIZE, ..Pane::default() }));
                 let list = chat_list::ListState::space(&entry);
                 self.space_windows.push((id, entry, list));
@@ -156,7 +134,7 @@ impl BeeperGuiApp {
                 self.swap_window(id);
                 let chat = {
                     let st = self.store.read();
-                    let chats = self.visible_chats(&st);
+                    let chats = self.listed_chats(&st);
                     let first = chats.first().map(|c| c.id.clone());
                     from.filter(|c| chats.iter().any(|v| v.id == *c)).or(first)
                 };
@@ -324,13 +302,59 @@ pub(crate) fn grown(at: Point, old: Size, size: Size, screen: Size) -> (Point, S
 }
 
 impl BeeperGuiApp {
+    /// Opens a window of `settings.size` screen pixels, like Desktop's windows, whose size does not follow the zoom.
+    /// iced opens a window at its size times the scale factor, which is the zoom.
+    pub(crate) fn open_window(&self, settings: window::Settings) -> (window::Id, Task<window::Id>) {
+        window::open(window::Settings { size: settings.size * (1.0 / self.zoom), ..settings })
+    }
+
+    /// The size of a window in iced's logical pixels, which the zoom scales like Desktop's CSS pixels.
+    fn resized(&mut self, id: window::Id, size: Size) {
+        // Desktop's `KeyboardSensor` cancels on a resize of the window.
+        self.key_sort.take_if(|s| s.window == id);
+        if self.main_window == Some(id) {
+            // Desktop's sidebar hides when the viewport gets narrower than 600 CSS pixels, and shows again when it
+            // gets wider.
+            let narrow = |s: Size| s.width < 600.0;
+            if narrow(self.pane.size) != narrow(size) {
+                self.set_sidebar_hidden(narrow(size));
+            }
+            self.pane.size = size;
+            if let Some(t) = self.pane.thread.as_mut() {
+                t.size = size;
+            }
+        }
+        if let Some(w) = self.chat_windows.iter_mut().find(|w| w.0 == id) {
+            w.1.size = size;
+        }
+        if let Some(w) = self.media_window.as_mut().filter(|w| w.id == id) {
+            w.size = size;
+        }
+        if self.settings_window == Some(id) {
+            self.settings_size = size;
+        }
+    }
+
+    /// iced sends no resize when the zoom changes, but Desktop's viewport follows the zoom: each window takes its
+    /// size at the new zoom, `k` times its size at the old one.
+    pub(crate) fn rezoom(&mut self, k: f32) {
+        let main = self.main_window.map(|id| (id, self.pane.size));
+        let chats = self.chat_windows.iter().map(|w| (w.0, w.1.size));
+        let media = self.media_window.as_ref().map(|w| (w.id, w.size));
+        let settings = self.settings_window.map(|id| (id, self.settings_size));
+        let all: Vec<_> = main.into_iter().chain(chats).chain(media).chain(settings).collect();
+        for (id, size) in all {
+            self.resized(id, size * k);
+        }
+    }
+
     /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.
     pub(crate) fn open_child(&self, size: Size) -> (window::Id, Task<UiMessage>) {
         let (id, open) =
-            window::open(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
+            self.open_window(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
         // The main window, or the sign-in window of the onboarding.
         let (parent, around) = match self.main_window {
-            Some(main) => (main, self.pane.size),
+            Some(main) => (main, self.pane.size * self.zoom),
             None => (self.login_window.expect("the main or the sign-in window is open"), login::SIZE),
         };
         (id, open.then(move |_| center_over(id, parent, around, size)))
@@ -380,9 +404,10 @@ impl BeeperGuiApp {
             pane.carousel = Some(carousel);
             return window::gain_focus(id);
         }
-        let around = self.chat_windows.iter().find(|w| w.0 == opener).expect("an open thread window").1.size;
+        let around =
+            self.chat_windows.iter().find(|w| w.0 == opener).expect("an open thread window").1.size * self.zoom;
         let size = Size::new(around.width.max(800.0), around.height.max(600.0));
-        let (id, open) = window::open(Self::window_settings(size));
+        let (id, open) = self.open_window(Self::window_settings(size));
         self.chat_windows.push((id, Pane { carousel: Some(carousel), size, ..Pane::default() }));
         self.carousel_windows.push((id, opener));
         open.then(move |_| center_over(id, opener, around, size))

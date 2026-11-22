@@ -493,11 +493,64 @@ fn answer(store: &SharedStore, cloud: &Cloud, tools: &[Value], caps: Caps, m: &V
     }
 }
 
-/// A path or query value.
-fn param(v: &Value) -> String {
+/// The Stainless client's `path` (`VE`) of a tool's route: each parameter as JavaScript's `String`, encoded like its
+/// `pv`, or its error for a missing value, `null`, an object, or a `.` or `..` segment.
+fn tool_path(template: &str, args: &mut serde_json::Map<String, Value>) -> Result<String, String> {
+    let pv = |s: &str| {
+        let safe = |c: char| c.is_ascii_alphanumeric() || "-._~!$&'()*+,;=:@".contains(c);
+        s.chars().map(|c| if safe(c) { c.to_string() } else { url_encode(&c.to_string()) }).collect::<String>()
+    };
+    let (mut path, mut errors, mut rest) = (String::new(), Vec::new(), template);
+    while let Some(start) = rest.find('{') {
+        let end = start + rest[start..].find('}').expect("a closed path parameter");
+        path.push_str(&rest[..start]);
+        let value = args.remove(&rest[start + 1..end]);
+        let kind = match &value {
+            None => Some("Undefined"),
+            Some(Value::Null) => Some("Null"),
+            Some(Value::Object(_)) => Some("Object"),
+            _ => None,
+        };
+        let text = super::js_string(value.as_ref());
+        let text = match kind {
+            Some(kind) => {
+                errors.push((path.len(), text.len(), format!("Value of type {kind} is not a valid path parameter")));
+                text
+            }
+            None => pv(&text),
+        };
+        path.push_str(&text);
+        rest = &rest[end + 1..];
+    }
+    path.push_str(rest);
+    let mut at = 0;
+    for segment in path.split('/') {
+        if [".", ".."].contains(&segment) {
+            errors.push((at, segment.len(), format!("Value \"{segment}\" can't be safely passed as a path parameter")));
+        }
+        at += segment.len() + 1;
+    }
+    if errors.is_empty() {
+        return Ok(path);
+    }
+    errors.sort_by_key(|e| e.0);
+    let mut marks = String::new();
+    for (start, len, _) in &errors {
+        marks.push_str(&" ".repeat(start - marks.len()));
+        marks.push_str(&"^".repeat(*len));
+    }
+    let errors: Vec<&str> = errors.iter().map(|e| e.2.as_str()).collect();
+    Err(format!("Path parameters result in path with invalid segments:\n{}\n{path}\n{marks}", errors.join("\n")))
+}
+
+/// The pairs of a query value, like `qs` with the `repeat` array format of the Stainless client: `k=a&k=b`,
+/// `k[a]=b`, and `k=` for `null`.
+fn query_pairs(key: &str, v: &Value, out: &mut Vec<String>) {
     match v {
-        Value::String(s) => s.clone(),
-        v => v.to_string(),
+        Value::Array(items) => items.iter().for_each(|i| query_pairs(key, i, out)),
+        Value::Object(o) => o.iter().for_each(|(k, v)| query_pairs(&format!("{key}[{k}]"), v, out)),
+        Value::Null => out.push(format!("{}=", url_encode(key))),
+        v => out.push(format!("{}={}", url_encode(key), url_encode(&super::js_string(Some(v))))),
     }
 }
 
@@ -516,22 +569,10 @@ fn call(
     if !caps.valid_json {
         parse_json_args(&mut args);
     }
-    let mut path = t["path"].as_str().expect("a tool path").to_string();
-    while let Some(start) = path.find('{') {
-        let end = start + path[start..].find('}').expect("a closed path parameter");
-        let value = args.remove(&path[start + 1..end]).map(|v| param(&v)).unwrap_or_default();
-        path.replace_range(start..=end, &url_encode(&value));
-    }
+    let path = tool_path(t["path"].as_str().expect("a tool path"), &mut args)?;
     let method = t["method"].as_str().expect("a tool method");
-    // The `repeat` array format of the Stainless client: `k=a&k=b`.
-    let pair = |k: &String, v: &Value| format!("{}={}", url_encode(k), url_encode(&param(v)));
-    let query: Vec<String> = args
-        .iter()
-        .flat_map(|(k, v)| match v {
-            Value::Array(items) => items.iter().map(|i| pair(k, i)).collect(),
-            v => vec![pair(k, v)],
-        })
-        .collect();
+    let mut query = Vec::new();
+    args.iter().for_each(|(k, v)| query_pairs(k, v, &mut query));
     let (target, body) = match method {
         "GET" | "DELETE" if query.is_empty() => (path, Vec::new()),
         "GET" | "DELETE" => (format!("{path}?{}", query.join("&")), Vec::new()),
@@ -614,6 +655,31 @@ mod tests {
         );
         let caps = at("no_capability=valid-json&no_capability=refs").unwrap().2;
         assert!(!caps.valid_json && !caps.refs && caps.unions);
+    }
+
+    /// The Stainless client's `path` and `qs` query: a missing chat ID is an error, not the chat list.
+    #[test]
+    fn tool_arguments_make_the_path_and_query_of_stainless() {
+        let path = |args: Value| tool_path("/v1/chats/{chatID}/messages", &mut args.as_object().unwrap().clone());
+        assert_eq!(path(json!({ "chatID": "!a b:x.y" })).unwrap(), "/v1/chats/!a%20b:x.y/messages");
+        assert_eq!(path(json!({ "chatID": 7 })).unwrap(), "/v1/chats/7/messages");
+        let invalid = "Path parameters result in path with invalid segments:\n";
+        assert_eq!(
+            path(json!({})).unwrap_err(),
+            format!("{invalid}Value of type Undefined is not a valid path parameter\n/v1/chats/undefined/messages\n          ^^^^^^^^^")
+        );
+        assert!(path(json!({ "chatID": null })).unwrap_err().contains("Value of type Null"));
+        assert!(path(json!({ "chatID": {} })).unwrap_err().contains("/v1/chats/[object Object]/messages"));
+        assert_eq!(
+            path(json!({ "chatID": ".." })).unwrap_err(),
+            format!(
+                "{invalid}Value \"..\" can't be safely passed as a path parameter\n/v1/chats/../messages\n          ^^"
+            )
+        );
+        let mut query = Vec::new();
+        let args = json!({ "a": null, "ids": ["x", "y z"], "o": { "k": true }, "n": 1.0, "e": [] });
+        args.as_object().unwrap().iter().for_each(|(k, v)| query_pairs(k, v, &mut query));
+        assert_eq!(query, ["a=", "ids=x", "ids=y%20z", "o%5Bk%5D=true", "n=1"]);
     }
 
     /// Desktop's `ux`: short tool names, inline unions and formats in descriptions for a client without them.

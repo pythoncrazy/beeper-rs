@@ -410,6 +410,17 @@ fn composer_enter_follows_the_hotkeys() {
     assert_eq!(text(&app), "`b`", "a backtick formats the selection as code");
     press(&mut app, true, [tick()]);
     assert_eq!(text(&app), "`b``", "a backtick without a selection is a backtick");
+    let tilde = iced::Event::Keyboard(keyboard::Event::KeyPressed {
+        key: Key::Character("`".into()),
+        modified_key: Key::Character("~".into()),
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Backquote),
+        location: keyboard::Location::Standard,
+        modifiers: Modifiers::SHIFT,
+        repeat: false,
+        text: Some("~".into()),
+    });
+    press(&mut app, true, [tilde]);
+    assert_eq!(text(&app), "`b``~", "Shift and the backtick key type a tilde");
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed("b".into())));
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(note.into(), ChatFlag::Pinned)));
     press(&mut app, true, [key(Named::Enter, Modifiers::CTRL)]);
@@ -621,6 +632,24 @@ fn gif_picker_like_desktop() {
     app.pane.picker = Some(Picker::Gif);
     key(&mut app, Named::Escape);
     assert_eq!(app.pane.picker, None);
+}
+
+/// Desktop keeps the chat list filters in `threadsFilters`, and a later launch shows them again.
+#[test]
+fn chat_list_filters_stay_after_a_relaunch_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("filters-relaunch");
+    let relaunch = |app: &BeeperGuiApp| BeeperGuiApp::new(app.store.clone()).list.filters;
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::PickFilter(1 << 1)));
+    assert_eq!(relaunch(&app), 1 << 1, "Drafts");
+    let path = app.store.read().config.data_dir.join("threadsFilters");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"["drafts"]"#, "Desktop's value");
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("y".into()), Modifiers::CTRL | Modifiers::SHIFT));
+    assert_eq!(relaunch(&app), 1 | 1 << 1, "Filter: Unread adds Unread");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ClearFilters));
+    assert_eq!(relaunch(&app), 0);
+    std::fs::write(&path, r#"["unread","default","nope"]"#).unwrap();
+    assert_eq!(relaunch(&app), 1, "without unknown values");
 }
 
 #[test]
@@ -1098,8 +1127,20 @@ fn drafts_keep_the_composer_like_desktop() {
     let upload = saved(&app).attachments[0].upload_id.clone();
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(None)));
     let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
-    let _ = app.update(UiMessage::SaveDrafts);
+    let draft = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.chats[st.resolve_chat_idx(note).unwrap()].draft.clone()
+    };
+    assert_eq!(draft(&app), None, "a send clears the draft at once");
     assert!(!app.store.read().assets.contains_key(&upload), "the upload of the sent draft goes away");
+    // A restored draft that is sent as it is goes too, with no change to save it.
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("again".into())));
+    let other = app.visible_chats(&app.store.read()).into_iter().find(|c| c.id != note).unwrap().id.clone();
+    let _ = app.update(UiMessage::SelectChat(other));
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    assert!(!app.pane.draft_due && draft(&app).is_some(), "the draft is back, with nothing to save");
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    assert_eq!(draft(&app), None, "a send of a restored draft clears it");
 }
 
 #[test]
@@ -1143,6 +1184,26 @@ fn show_replies_like_desktop() {
     assert!(simulator(app.view_main()).find("Jump to Message").is_ok());
 }
 
+/// Desktop keeps the width of the thread pane in `threaded-replies-pane-fraction`, like the sidebar width.
+#[test]
+fn the_thread_pane_keeps_its_width_after_a_relaunch_like_desktop() {
+    let mut app = demo_app("thread-fraction");
+    let relaunch = |app: &BeeperGuiApp| BeeperGuiApp::new(app.store.clone()).thread_fraction;
+    assert_eq!(relaunch(&app), threads::THREAD_FRACTION);
+    app.pane.size = Size::new(1208.0, 800.0);
+    app.thread_area.set(808.0);
+    let _ = app.update(UiMessage::Thread(threads::Msg::Drag(None)));
+    let _ = app.update(UiMessage::Thread(threads::Msg::Drag(Some(Point::new(900.0, 400.0)))));
+    let _ = app.update(UiMessage::Thread(threads::Msg::Drag(None)));
+    assert_eq!(app.thread_fraction, 0.375);
+    assert_eq!(relaunch(&app), 0.375, "the dragged width");
+    let _ = app.update(UiMessage::Thread(threads::Msg::ResetWidth));
+    assert_eq!(relaunch(&app), threads::THREAD_FRACTION, "a double click resets it");
+    let path = app.store.read().config.data_dir.join("threaded-replies-pane-fraction");
+    std::fs::write(&path, "0.95").unwrap();
+    assert_eq!(relaunch(&app), 0.9, "at most 0.9");
+}
+
 /// Desktop's threaded replies: the replies button and the root line in the chat, the thread pane with its divider and
 /// its composer, which sends a thread reply with "Also send to chat", and "Reply in thread…".
 #[test]
@@ -1170,6 +1231,8 @@ fn threads_like_desktop() {
     }
     let in_thread = |m: UiMessage| UiMessage::InThread(Box::new(m));
     assert!(simulator(app.view_main()).find("Also send to chat").is_err(), "an empty composer hides the toggle");
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("main draft".into())));
+    let _ = app.update(UiMessage::SaveDrafts);
     let edit = text_editor::Edit::Paste(Arc::new("done".into()));
     let _ = app.update(in_thread(UiMessage::Composer(composer::Msg::Edit(text_editor::Action::Edit(edit)))));
     assert!(simulator(app.view_main()).find("Also send to chat").is_ok(), "a draft shows the toggle in Slack");
@@ -1182,6 +1245,8 @@ fn threads_like_desktop() {
         assert_eq!(m.linked_message_id.as_deref(), Some("msg_1011"), "the reply falls back to the newest reply");
         let c = st.chat(chat);
         assert_eq!(c.preview.as_ref().map(|p| p.id.as_str()), Some(m.id.as_str()), "it is also sent to the chat");
+        let draft = c.draft.as_ref().and_then(|d| d.text.as_deref());
+        assert_eq!(draft, Some("main draft"), "a send in the thread keeps the draft of the chat");
     }
     let thread = app.pane.thread.as_ref().unwrap();
     assert!(thread.composer.text().trim().is_empty() && !thread.broadcast, "a send clears the thread composer");
@@ -1612,6 +1677,33 @@ fn composer_actions_follow_the_chat_like_desktop() {
     assert_eq!(composer_action(&st, &chat, 7, false), (format!("Add a sticker (Unavailable for {net})"), None, false));
 }
 
+/// Desktop's chat keys follow the list (`chatListItems`): the pinned tiles in their order, then the rows. Select
+/// Next and Previous Chat stop at the ends.
+#[test]
+fn chat_keys_follow_the_list_order_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("list-order-keys");
+    let list = app.list_ids(&app.store.read());
+    let by_activity: Vec<String> = app.visible_chats(&app.store.read()).iter().map(|c| c.id.clone()).collect();
+    assert_ne!(list[..9], by_activity[..9], "the pinned tiles are not the most recent chats");
+    let key = |app: &mut BeeperGuiApp, k: &str| {
+        let _ = app.update(UiMessage::KeyPressed(Key::Character(k.into()), Modifiers::CTRL));
+        app.pane.selected_chat_id.clone().expect("a selected chat")
+    };
+    for (i, id) in list.iter().take(9).enumerate() {
+        assert_eq!(&key(&mut app, &(i + 1).to_string()), id, "Ctrl {}", i + 1);
+    }
+    let _ = key(&mut app, "1");
+    assert_eq!(key(&mut app, "]"), list[1], "Select Next Chat");
+    let _ = key(&mut app, "[");
+    assert_eq!(key(&mut app, "["), list[0], "no chat before the first");
+    let last = list.last().expect("a chat").clone();
+    let _ = app.update(UiMessage::SelectChat(last.clone()));
+    assert_eq!(key(&mut app, "]"), last, "no chat after the last");
+    let unread = app.listed_chats(&app.store.read()).iter().find(|c| c.is_unread()).map(|c| c.id.clone());
+    assert_eq!(Some(key(&mut app, "u")), unread, "Select Next Unread Chat takes the first in the list");
+}
+
 #[test]
 fn history_and_folder_submenus_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
@@ -1644,6 +1736,26 @@ fn history_and_folder_submenus_like_desktop() {
         let c = app.commands(&app.store.read(), query).into_iter().next().unwrap();
         assert!(c.title == title && matches!(c.msg, Some(UiMessage::OpenUrl(u)) if u == to), "{query}");
     }
+}
+
+/// Desktop's `thread-history`: the opened chats, which the command bar shows as its recent chats, stay after a
+/// relaunch.
+#[test]
+fn opened_chats_are_the_recent_chats_after_a_relaunch_like_desktop() {
+    let mut app = demo_app("history-relaunch");
+    let ids: Vec<String> = app.visible_chats(&app.store.read()).iter().rev().take(2).map(|c| c.id.clone()).collect();
+    for id in &ids {
+        let _ = app.update(UiMessage::SelectChat(id.clone()));
+    }
+    let _ = app.update(UiMessage::SelectChat(ids[0].clone()));
+    let config = app.store.read().config.clone();
+    let st = beeper_core::store::BeeperStore::from_config(config);
+    assert_eq!(st.recent_chat_ids[..2], [&*ids[0], &*ids[1]], "the most recent first, once each");
+    let mut app = BeeperGuiApp::new(beeper_core::store::StoreLock::shared(st));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::History)));
+    let rows = app.commands(&app.store.read(), "");
+    let chats: Vec<&str> = rows.iter().filter_map(|c| c.chat.as_deref()).collect();
+    assert!(chats[1..].starts_with(&[&*ids[0], &*ids[1]]), "the History menu after the restart: {chats:?}");
 }
 
 #[test]
@@ -2958,6 +3070,9 @@ fn a_hover_builds_as_many_widgets_with_2000_chats_as_with_200() {
 fn forward_rows_open_the_chat_menu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("fwd-menu");
+    // The forward picker lists the recent chats.
+    let other = app.visible_chats(&app.store.read())[3].id.clone();
+    let _ = app.update(UiMessage::SelectChat(other));
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::ArrowUp), Modifiers::empty()));
     let _ = app.update(UiMessage::KeyPressed(Key::Character("f".into()), Modifiers::CTRL | Modifiers::SHIFT));
@@ -4203,6 +4318,56 @@ fn zoom_keys_like_desktop() {
     }
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 0)));
     assert_eq!(app.zoom, 0.75, "the font size 9 is a root font of 12 px, as in Desktop");
+}
+
+/// Desktop's windows open at their size in screen pixels whatever the zoom and the font size, and iced opens a
+/// window at its size times the scale factor.
+#[test]
+fn windows_open_at_their_size_at_any_zoom_like_desktop() {
+    use iced::futures::StreamExt;
+    let mut app = demo_app("zoomed-windows");
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 8)));
+    assert_eq!(app.zoom, 1.25, "the font size 17 is a root font of 20 px");
+    let task = app.open_settings(SettingsTab::General);
+    let actions = iced_runtime::task::into_stream(task).expect("a window opens");
+    let size = iced::futures::executor::block_on(
+        actions
+            .filter_map(|a| async move {
+                match a {
+                    iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s.size),
+                    _ => None,
+                }
+            })
+            .boxed()
+            .next(),
+    );
+    assert_eq!(size, Some(SETTINGS_SIZE * 0.8), "800 by 740 screen pixels");
+}
+
+/// The sizes of the windows are in iced's logical pixels, which the zoom scales like Desktop's CSS pixels: the
+/// sidebar hides under 600 of them, and a zoom resizes the viewport.
+#[test]
+fn the_zoom_resizes_the_viewport_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("zoom-viewport");
+    let main = app.main_window.expect("the main window");
+    let zoom = |app: &mut BeeperGuiApp, key: &str| {
+        let _ = app.update(UiMessage::KeyPressed(Key::Character(key.into()), Modifiers::CTRL));
+    };
+    zoom(&mut app, "=");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(640.0, 500.0))));
+    assert!(!app.sidebar_hidden, "640 CSS pixels at 110% keep the sidebar");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(590.0, 500.0))));
+    assert!(app.sidebar_hidden, "590 CSS pixels hide it");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(640.0, 500.0))));
+    assert!(!app.sidebar_hidden, "and 640 show it again");
+    zoom(&mut app, "0");
+    assert_eq!((app.pane.size.width.round(), app.sidebar_hidden), (704.0, false), "a reset widens the viewport");
+    zoom(&mut app, "=");
+    zoom(&mut app, "=");
+    assert!(app.pane.size.width < 600.0 && app.sidebar_hidden, "a zoom in narrows it, at {}", app.zoom);
+    zoom(&mut app, "0");
+    assert_eq!((app.pane.size.width.round(), app.sidebar_hidden), (704.0, false));
 }
 
 #[test]
@@ -6156,6 +6321,31 @@ fn chat_menu_acts_on_the_selection_like_desktop() {
     let is_unread = |id: &str| has_flag(&st.chats[st.resolve_chat_idx(id).unwrap()], ChatFlag::MarkedUnread);
     assert!(!is_unread(&unread) && !is_unread(&read));
     assert!(app.list.chat_menu.is_none() && app.selection.is_empty());
+}
+
+/// Desktop's menus and tooltips show the `humanized` keys of a hotkey that you reassigned or turned off.
+#[test]
+fn menus_show_the_reassigned_hotkeys_like_desktop() {
+    let mut app = demo_app("menu-hotkeys");
+    let id = app.visible_chats(&app.store.read()).iter().find(|c| c.is_pinned != Some(true)).unwrap().id.clone();
+    app.patch_settings(|s| {
+        s.keybindings.insert("Chat: Toggle Archive".into(), "ctrl+alt+e, e".into());
+        s.keybindings.insert("Chat: Toggle Pin".into(), "disabled".into());
+    });
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(id.clone())));
+    let mut sim = simulator(app.view_chat_menu(&id, false, 900.0));
+    assert!(sim.find("Ctrl Alt E").is_ok() && sim.find("Ctrl E").is_err(), "the reassigned Archive keys");
+    assert!(sim.find("Ctrl P").is_err(), "no keys for the disabled Pin");
+    assert!(sim.find("Ctrl Shift M").is_ok(), "the default Mute keys");
+    drop(sim);
+    assert_eq!(hotkey_caps("ctrl+shift+]"), ["Ctrl", "Shift", "]"]);
+    assert_eq!(hotkey_caps("ctrl+alt+3"), ["Ctrl", "Alt", "3"]);
+    assert!(hotkey_caps("disabled").is_empty());
+    // The texts of the settings name the keys of the hotkeys, like Desktop's `MTt` with `TOGGLE_THREAD_READ`.
+    app.patch_settings(|s| drop(s.keybindings.insert("Chat: Toggle Mark As Read".into(), "ctrl+alt+u".into())));
+    let hits = search_settings(&app.store.read(), "hit Ctrl Alt U to mark");
+    assert!(hits.iter().any(|h| matches!(h, SettingsHit::Pref(_, r) if r.key == "incognito")), "{hits:?}");
+    assert!(search_settings(&app.store.read(), "hit Ctrl Shift U").iter().all(|h| !matches!(h, SettingsHit::Pref(..))));
 }
 
 #[test]

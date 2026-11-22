@@ -377,7 +377,7 @@ impl BeeperGuiApp {
                 .collect(),
             SubMenu::History => {
                 let chats: Vec<&Chat> =
-                    self.chat_history.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect();
+                    st.recent_chat_ids.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect();
                 let at = self.pane.selected_chat_id.as_ref().and_then(|id| chats.iter().position(|c| &c.id == id));
                 let mut v: Vec<Command> = chats
                     .iter()
@@ -591,16 +591,12 @@ impl BeeperGuiApp {
         );
         let merge = UiMessage::Merged(crate::merged::Msg::Open(None, Vec::new()));
         v.push(cmd(CHATS, tr("Merge chats"), Some(merge)).keys(&["combine"]));
-        let list = self.visible_chats(st);
-        let at = self.pane.selected_chat_id.as_ref().and_then(|id| list.iter().position(|c| &c.id == id));
-        let step =
-            |by: isize| list.get((at.unwrap_or(0) as isize + by).rem_euclid(list.len().max(1) as isize) as usize);
         let steps = [
             ("Next Chat", "Select Next Chat", tr("Select next: %1$s %2$s"), 1),
             ("Previous Chat", "Select Previous Chat", tr("Select previous: %1$s %2$s"), -1),
         ];
         for (category, name, template, by) in steps {
-            if let Some(n) = step(by).filter(|_| at.is_some() || by == 1) {
+            if let Some(n) = self.chat_by(st, by) {
                 let title = template.replacen("%1$s", network_name(&n.account_id), 1);
                 let title = title.replacen("%2$s", &n.title, 1);
                 v.push(Command { chat: Some(n.id.clone()), ..cmd(category, title, hot(name)).hotkey(name) });

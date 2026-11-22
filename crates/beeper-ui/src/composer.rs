@@ -17,10 +17,10 @@ use crate::units::human_size;
 use crate::vcard::parse_vcard;
 use crate::{
     account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, clipboard_paste, contact_card,
-    dashed, default_account_user, emoji, format, has_flag, hotkey_key, icon_btn, images, locate, menu_item, menu_rule,
-    network_name, portal, record, removable, several_accounts, spell, switch_targets, text_urls, tinted, toasts,
-    truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, Toast,
-    UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
+    dashed, default_account_user, emoji, format, has_flag, hotkey_caps, hotkey_key, icon_btn, images, locate,
+    menu_item, menu_rule, network_name, portal, record, removable, several_accounts, spell, switch_targets, text_urls,
+    tinted, toasts, truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker,
+    Queued, Toast, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
 };
 use beeper_core::codec::Emoticon;
 use beeper_core::config::{account_network, now_unix_millis};
@@ -543,7 +543,7 @@ impl BeeperGuiApp {
         let text = self.pane().composer.text();
         let line = &text[text[..trigger].rfind('\n').map_or(0, |i| i + 1)..trigger];
         let x = 8.0 + plus + 8.0 + 14.0 + 2.0 + text_width(line, 13.0, Weight::Normal);
-        let x = x.min(self.pane().size.width / self.zoom - self.left_width() - width - 36.0);
+        let x = x.min(self.pane().size.width - self.left_width() - width - 36.0);
         Some(container(list).align_bottom(Fill).padding(Padding::ZERO.left(x).bottom(34.0)).into())
     }
 
@@ -717,6 +717,12 @@ impl BeeperGuiApp {
         } else {
             (self.pane.composer, self.pane.broadcast) = (composer_with(""), false);
             self.pane.composer_links.clear();
+            // The sent draft goes now, else a restored draft that is sent as it is stays, also after a restart. A
+            // thread pane has no draft of its own.
+            if self.pane.thread_root.is_none() {
+                save_draft(&mut st, &self.pane);
+                self.pane.draft_due = false;
+            }
         }
         drop(st);
         self.refresh_theme_and_tray();
@@ -865,7 +871,7 @@ impl BeeperGuiApp {
                 true => (p.sent, mix(p.card, p.sent, 0.3)),
                 false => (p.received, p.card),
             };
-            let pill = container(body).max_width(self.pane().size.width / self.zoom / 2.0).padding(8);
+            let pill = container(body).max_width(self.pane().size.width / 2.0).padding(8);
             removable(p, pill.style(bordered_box(fill, edge, 2.0, 17.0)), UiMessage::Composer(Msg::CancelMode))
         });
         let gif_picker = (self.pane().picker == Some(Picker::Gif)).then(|| {
@@ -948,9 +954,7 @@ impl BeeperGuiApp {
                 .padding(0)
                 .style(btn_style([bg, p.hover, p.selected], [p.text; 3], 14.0))
                 .on_press_maybe(msg);
-            let caps = hotkey
-                .map(|h| prefs::hotkey_label(st.settings.hotkey_keys(h).split(", ").next().expect("a combination")));
-            let caps = caps.map_or_else(Vec::new, |c| c.split_whitespace().map(String::from).collect());
+            let caps = hotkey.map_or_else(Vec::new, |h| hotkey_caps(st.settings.hotkey_keys(h)));
             match id {
                 // Desktop shows "Add Emoji" when the picker does not open on hover.
                 0 => {
@@ -1007,7 +1011,8 @@ impl BeeperGuiApp {
                         _ => Some(text_editor::Binding::Enter),
                     }
                 }
-                Key::Character("`") if !k.modifiers.command() => {
+                // The typed backtick, not the key under "~" on a US layout.
+                _ if k.modified_key.as_ref() == Key::Character("`") && !k.modifiers.command() => {
                     Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Format(format::CODE))))
                 }
                 Key::Named(key @ (Named::Backspace | Named::Delete))

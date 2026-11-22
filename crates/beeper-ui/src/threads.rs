@@ -17,12 +17,21 @@ use beeper_core::models::*;
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, stack, svg, tooltip, Column, Row, Space};
-use iced::{mouse, window, Center, Color, Element, Fill, Padding, Pixels, Point, Right, Size, Task};
+use iced::{mouse, Center, Color, Element, Fill, Padding, Pixels, Point, Right, Size, Task};
 use std::collections::HashSet;
 use std::rc::Rc;
 
 /// Desktop's default `threadedRepliesPaneFraction`.
 pub(crate) const THREAD_FRACTION: f32 = 0.5;
+
+/// The file of Desktop's `threaded-replies-pane-fraction`.
+const THREAD_FRACTION_FILE: &str = "threaded-replies-pane-fraction";
+
+/// Desktop's saved `threadedRepliesPaneFraction`, between 0.1 and 0.9, or the default.
+pub(crate) fn saved_thread_fraction(data_dir: &std::path::Path) -> f32 {
+    let saved = std::fs::read_to_string(data_dir.join(THREAD_FRACTION_FILE)).ok().and_then(|f| f.parse::<f32>().ok());
+    saved.filter(|f| *f > 0.0).map_or(THREAD_FRACTION, |f| f.clamp(0.1, 0.9))
+}
 
 /// Desktop's width of the edge that resizes the thread pane.
 const THREAD_GRIP: f32 = 8.0;
@@ -105,7 +114,7 @@ impl BeeperGuiApp {
     /// Desktop's `ThreadedRepliesBrowserWindow`: a window of 380 by 700 with the thread of `root` in `chat`.
     pub(crate) fn open_thread_window(&mut self, chat: String, root: String) -> Task<UiMessage> {
         let size = Size::new(380.0, 700.0);
-        let (id, open) = window::open(Self::window_settings(size));
+        let (id, open) = self.open_window(Self::window_settings(size));
         let pane = Pane { selected_chat_id: Some(chat), thread_root: Some(root), size, ..Pane::default() };
         self.chat_windows.push((id, pane));
         // `ThreadedRepliesBrowserWindow` keeps the place of `ao.windowFeatures`.
@@ -177,10 +186,23 @@ impl BeeperGuiApp {
     /// Desktop's `useResizeHandle` of the thread pane: a press or a release toggles the drag, and the edge follows the
     /// pointer, which leaves at least `MIN_PANE_W` to the pane and to the chat.
     pub(crate) fn drag_thread(&mut self, at: Option<Point>) {
-        let Some(at) = at else { return self.thread_drag = !self.thread_drag };
+        let Some(at) = at else {
+            self.thread_drag = !self.thread_drag;
+            if !self.thread_drag {
+                self.set_thread_fraction(self.thread_fraction);
+            }
+            return;
+        };
         let area = self.thread_area.get() - THREAD_GRIP;
-        let w = self.pane.size.width / self.zoom - 8.0 - at.x;
+        let w = self.pane.size.width - 8.0 - at.x;
         self.thread_fraction = w.min(area - MIN_PANE_W).max(MIN_PANE_W) / area;
+    }
+
+    /// Desktop's `setThreadedRepliesPaneFraction`, which the next launch restores.
+    fn set_thread_fraction(&mut self, fraction: f32) {
+        self.thread_fraction = fraction;
+        let path = self.store.read().config.data_dir.join(THREAD_FRACTION_FILE);
+        std::fs::write(path, fraction.to_string()).expect("write the thread pane fraction");
     }
 
     /// The chat and Desktop's `ThreadedRepliesPane` at its right, which takes `thread_fraction` of the `area`.
@@ -508,7 +530,7 @@ impl BeeperGuiApp {
             Msg::Hide => (self.pane.thread, self.pane.thread_menu) = (None, None),
             Msg::SetBroadcast(on) => self.pane.broadcast = on,
             Msg::Drag(at) => self.drag_thread(at),
-            Msg::ResetWidth => self.thread_fraction = THREAD_FRACTION,
+            Msg::ResetWidth => self.set_thread_fraction(THREAD_FRACTION),
             Msg::Menu => self.pane.thread_menu = Some(self.cursor.get()),
             Msg::MarkRead => self.mark_thread_read(),
             Msg::ShowUnread => self.show_unread_threads(),

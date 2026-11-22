@@ -253,12 +253,12 @@ impl WsConn {
     pub async fn next(&mut self) -> Result<String, (u16, String)> {
         loop {
             match read_ws_frame(&mut self.read, usize::MAX).await {
-                Ok((0x1, text)) => return Ok(String::from_utf8_lossy(&text).into_owned()),
-                Ok((0x8, close)) => {
+                Ok((_, 0x1, text)) => return Ok(String::from_utf8_lossy(&text).into_owned()),
+                Ok((_, 0x8, close)) => {
                     let code = close.get(..2).map_or(1005, |c| u16::from_be_bytes([c[0], c[1]]));
                     return Err((code, String::from_utf8_lossy(close.get(2..).unwrap_or_default()).into_owned()));
                 }
-                Ok((0x9, ping)) => drop(write_ws_frame(&mut self.write, 0xA, &ping, true).await),
+                Ok((_, 0x9, ping)) => drop(write_ws_frame(&mut self.write, 0xA, &ping, true).await),
                 Ok(_) => {}
                 Err(_) => return Err((1006, String::new())),
             }

@@ -144,7 +144,7 @@ impl BeeperGuiApp {
         }
         self.store.write().load_chat(&chat);
         let size = Size::new(330.0, 560.0);
-        let (id, open) = window::open(Self::window_settings(size));
+        let (id, open) = self.open_window(Self::window_settings(size));
         self.chat_windows.push((id, Pane { selected_chat_id: Some(chat), info: true, size, ..Pane::default() }));
         let Some(main) = self.main_window else { return open.discard() };
         open.then(move |_| window::position(main))

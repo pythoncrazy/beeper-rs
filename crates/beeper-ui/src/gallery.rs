@@ -8,7 +8,7 @@ use crate::message;
 use crate::style::{bordered_box, btn_style, fill_box, semi, shadow_box, Palette};
 use crate::time::iso_millis;
 use crate::{deletable, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, UiMessage};
-use crate::{MENU_ITEM, MESSAGE_MENU_W};
+use crate::{hotkey_text, MENU_ITEM, MESSAGE_MENU_W};
 use beeper_core::models::{AttachmentSize, Message};
 use beeper_core::store::BeeperStore;
 use iced::widget::{button, container, image, mouse_area, stack, Column, Space, Stack};
@@ -240,8 +240,18 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let ms: Vec<&Message> = ids.iter().map(|i| st.message(i)).collect();
         let at = self.pane().message_menu.as_ref().expect("the menu is open").1;
-        let item = |label: String, hotkey, msg| {
-            (menu_item(p, None, label, hotkey, Some(UiMessage::Message(message::Msg::Menu(Box::new(msg))))), MENU_ITEM)
+        let key = |name| hotkey_text(st.settings.hotkey_keys(name));
+        let item = |label: String, hotkey: &str, msg| {
+            (
+                menu_item(
+                    p,
+                    None,
+                    label,
+                    hotkey.to_string(),
+                    Some(UiMessage::Message(message::Msg::Menu(Box::new(msg)))),
+                ),
+                MENU_ITEM,
+            )
         };
         let action = |s| trx(s, "gallery menu action").to_string();
         let download = UiMessage::Commands(
@@ -252,8 +262,12 @@ impl BeeperGuiApp {
                 .any(|m| !m.reactions.is_empty())
                 .then(|| vec![item(action("Reactions"), "", UiMessage::Gallery(Msg::Reactions(ids.clone(), at)))]),
             Some(vec![
-                item(action("Download All"), "Ctrl D", download),
-                item(action("Forward All…"), "Ctrl Shift F", UiMessage::Forward(forward::Msg::Open(ids.clone()))),
+                item(action("Download All"), &key("Download Attachments"), download),
+                item(
+                    action("Forward All…"),
+                    &key("Message: Forward"),
+                    UiMessage::Forward(forward::Msg::Open(ids.clone())),
+                ),
             ]),
             ms.iter().all(|m| deletable(&st, m)).then(|| {
                 let delete = UiMessage::Message(message::Msg::AskDelete(ids.clone()));

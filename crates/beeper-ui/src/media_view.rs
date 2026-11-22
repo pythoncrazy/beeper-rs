@@ -1415,7 +1415,7 @@ impl BeeperGuiApp {
                 }
                 // Desktop's `media-viewer` window state.
                 let settings = self.saved_window_settings("media-viewer", Size::new(1000.0, 720.0));
-                let (size, (id, open)) = (settings.size, window::open(settings));
+                let (size, (id, open)) = (settings.size, self.open_window(settings));
                 self.media_window = Some(MediaWindow::new(id, size));
                 return Task::batch([open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0))), self.media_more()]);
             }

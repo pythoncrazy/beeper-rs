@@ -272,6 +272,17 @@ pub(crate) fn shown(st: &BeeperStore, r: &prefs::Pref) -> bool {
     r.feature.is_none_or(|f| st.feature(f).show) && control
 }
 
+/// A text of the settings with the values of its `%s` placeholders, where the name of a hotkey stands for its keys,
+/// like Desktop's `humanized` of a reassigned hotkey.
+fn pref_text(s: &BeeperSettings, text: &'static str, args: &[&str]) -> String {
+    let value = |a: &&str| match prefs::HOTKEYS.iter().any(|h| h.0 == *a) {
+        true => crate::hotkey_text(s.hotkey_keys(a)),
+        false => a.to_string(),
+    };
+    let args: Vec<String> = args.iter().map(value).collect();
+    trs(text, &args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
 /// Desktop's `EmojiPickerButton` of a quick reaction in Settings, which opens the emoji picker for `slot`.
 fn emoji_button<'a>(p: &Palette, glyph: El<'a>, slot: u8) -> El<'a> {
     button(glyph)
@@ -301,7 +312,9 @@ pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
                 .filter(|(_, r)| {
                     let (label, desc) = r.split_args();
                     let name = r.name.map_or_else(|| trs(r.label, label), |n| tr(n).into());
-                    has(&r.desc.map_or_else(|| name.clone(), |d| format!("{name} {}", trs(d, desc))))
+                    has(&r
+                        .desc
+                        .map_or_else(|| name.clone(), |d| format!("{name} {}", pref_text(&st.settings, d, desc))))
                 })
                 .map(|(_, r)| SettingsHit::Pref(tab, r))
                 .chain(
@@ -476,7 +489,7 @@ impl BeeperGuiApp {
         // Desktop's `openInNewWindow` of "prefs": in the middle of the screen.
         let centered =
             window::Settings { position: window::Position::Centered, ..Self::window_settings(SETTINGS_SIZE) };
-        let (id, open) = window::open(centered);
+        let (id, open) = self.open_window(centered);
         self.settings_window = Some(id);
         self.save_subwindows();
         Task::batch([load, open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0)))])
@@ -1942,7 +1955,7 @@ impl BeeperGuiApp {
                     out.push(group(p, heading.take(), vec![self.view_time_suggestions(st)]))
                 }
                 prefs::Item::Zoom(t, args) => {
-                    out.push(group(p, heading.take(), vec![self.zoom_slider(s.zoom_percent, trs(t, args))]))
+                    out.push(group(p, heading.take(), vec![self.zoom_slider(s.zoom_percent, pref_text(s, t, args))]))
                 }
             }
             if let Some(name) = custom {
@@ -2222,7 +2235,9 @@ impl BeeperGuiApp {
         };
         let paid = locked.then(|| tr("Requires a paid subscription."));
         let (label, args) = r.split_args();
-        let desc = r.desc.map(|d| [trs(d, args).as_str()].into_iter().chain(paid).collect::<Vec<_>>().join("\n\n"));
+        let desc = r.desc.map(|d| {
+            [pref_text(&st.settings, d, args).as_str()].into_iter().chain(paid).collect::<Vec<_>>().join("\n\n")
+        });
         let row = pref_row(p, trs(r.label, label), desc.as_deref(), r.badge.map(|b| badge(p, b)), control);
         // Desktop's `label-wrapper` toggles the checkbox on a click anywhere in the row.
         let row = match press.clone() {
