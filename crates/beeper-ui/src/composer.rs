@@ -717,6 +717,12 @@ impl BeeperGuiApp {
         } else {
             (self.pane.composer, self.pane.broadcast) = (composer_with(""), false);
             self.pane.composer_links.clear();
+            // The sent draft goes now, else a restored draft that is sent as it is stays, also after a restart. A
+            // thread pane has no draft of its own.
+            if self.pane.thread_root.is_none() {
+                save_draft(&mut st, &self.pane);
+                self.pane.draft_due = false;
+            }
         }
         drop(st);
         self.refresh_theme_and_tray();
