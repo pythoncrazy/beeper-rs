@@ -1170,6 +1170,17 @@ impl BeeperStore {
         self.exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)", params![key, value]);
     }
 
+    /// Desktop's `pushThreadHistory`: chat `id` goes first in the saved history of the opened chats, which keeps 50.
+    pub fn push_recent_chat(&mut self, id: &str) {
+        if self.recent_chat_ids.first().is_some_and(|c| c == id) {
+            return;
+        }
+        self.recent_chat_ids.retain(|c| c != id);
+        self.recent_chat_ids.insert(0, id.to_string());
+        self.recent_chat_ids.truncate(50);
+        self.put_kv(KEY_RECENT_CHATS, &serde_json::to_string(&self.recent_chat_ids).expect("JSON of the chat IDs"));
+    }
+
     pub fn persist_connect(&mut self) {
         let tokens = self.connect.tokens_json();
         self.put_kv(crate::connect::KEY_TOKENS, &tokens);
@@ -2891,9 +2902,13 @@ impl BeeperStore {
     pub fn delete_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let removed = self.messages[m_idx].removed;
+        // Desktop's `handleRedaction` stores a new message without the reply and the mentions, as a redacted event
+        // from a sync has none.
         self.update_message(m_idx, |m| {
             removed_from_beeper(m);
             (m.removed, m.is_edited) = (false, Some(true));
+            (m.linked_message_id, m.mentions) = (None, None);
+            m.flags &= !MSG_MENTION;
         });
         if removed {
             self.clean_up_removals(message_id);
@@ -3642,6 +3657,28 @@ mod tests {
         drop(st);
         let st = super::BeeperStore::from_config(config);
         assert_eq!(st.settings.pref("appLanguage"), 1, "a signed-in app without a language takes English");
+    }
+
+    /// Desktop's `handleRedaction`: a deleted reply leaves its reply line and its mentions, as a redacted event has
+    /// neither.
+    #[test]
+    fn a_deleted_reply_drops_its_reply_like_desktop() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("deleted-reply"));
+        let chat = st.chats.iter().map(|c| c.id.clone()).find(|c| st.timeline_indices(c).len() > 2).expect("a chat");
+        st.load_chat(&chat);
+        let ids: Vec<String> = st.chat_msg_indices[&chat].iter().map(|&i| st.messages[i].id.clone()).collect();
+        let (root, reply) = (ids[0].clone(), ids[1].clone());
+        let i = st.find_message(&reply).expect("the reply");
+        st.update_message(i, |m| {
+            (m.linked_message_id, m.mentions) = (Some(root), Some(vec!["@me:beeper.com".into()]));
+            m.flags |= super::MSG_MENTION;
+        });
+        st.delete_message(&chat, &reply).unwrap();
+        let stored = st.stored("id = ?1", [&reply]).pop().expect("the stored reply");
+        for m in [st.message(&reply), &stored] {
+            assert_eq!((&m.linked_message_id, &m.mentions), (&None, &None), "a deleted message replies to nothing");
+            assert_eq!(m.flags & super::MSG_MENTION, 0, "and mentions no one");
+        }
     }
 
     /// The IDs of the stored messages that a message search finds.

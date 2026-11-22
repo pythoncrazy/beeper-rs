@@ -163,7 +163,7 @@ async fn websocket_drops_events_that_repeat_within_250_ms() {
     while !head.ends_with(b"\r\n\r\n") {
         head.push(ws.read_u8().await.unwrap());
     }
-    let (_, ready) = timeout(Duration::from_secs(5), read_ws_frame(&mut ws, 1 << 20)).await.unwrap().unwrap();
+    let (_, _, ready) = timeout(Duration::from_secs(5), read_ws_frame(&mut ws, 1 << 20)).await.unwrap().unwrap();
     assert!(String::from_utf8_lossy(&ready).contains("\"ready\""));
     write_ws_frame(&mut ws, 0x1, br#"{"type":"subscriptions.set","chatIDs":["*"]}"#, true).await.unwrap();
     let mute = |on: bool| {
@@ -171,7 +171,7 @@ async fn websocket_drops_events_that_repeat_within_250_ms() {
         let request = format!("PATCH /v1/chats/!wa_family:beeper.com HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
         async move { text(port, &request).await }
     };
-    let (_, ack) = timeout(Duration::from_secs(5), read_ws_frame(&mut ws, 1 << 20)).await.unwrap().unwrap();
+    let (_, _, ack) = timeout(Duration::from_secs(5), read_ws_frame(&mut ws, 1 << 20)).await.unwrap().unwrap();
     assert!(String::from_utf8_lossy(&ack).contains("subscriptions.updated"));
     mute(true).await;
     mute(true).await;
@@ -179,7 +179,7 @@ async fn websocket_drops_events_that_repeat_within_250_ms() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     mute(false).await;
     let mut frames = Vec::new();
-    while let Ok(Ok((_, payload))) = timeout(Duration::from_millis(500), read_ws_frame(&mut ws, 1 << 20)).await {
+    while let Ok(Ok((_, _, payload))) = timeout(Duration::from_millis(500), read_ws_frame(&mut ws, 1 << 20)).await {
         let v: serde_json::Value = serde_json::from_slice(&payload).unwrap();
         frames.push((v["seq"].as_u64().unwrap(), v["type"].as_str().unwrap().to_string()));
     }
@@ -870,7 +870,7 @@ async fn websocket_sends_the_app_state_like_desktop() {
     }
     async fn next(ws: &mut TcpStream) -> Option<serde_json::Value> {
         let frame = timeout(Duration::from_millis(500), read_ws_frame(ws, 1 << 20)).await.ok()?.ok()?;
-        Some(serde_json::from_slice(&frame.1).unwrap())
+        Some(serde_json::from_slice(&frame.2).unwrap())
     }
     assert_eq!(next(&mut ws).await.unwrap()["type"], "ready");
     write_ws_frame(&mut ws, 0x1, br#"{"type":"subscriptions.set","chatIDs":["*"],"app":{"state":true}}"#, true)
@@ -891,6 +891,44 @@ async fn websocket_sends_the_app_state_like_desktop() {
     assert_eq!((changed["type"].as_str(), changed["seq"].as_u64()), (Some("app.state.updated"), Some(2)));
     let keys: Vec<&String> = changed.as_object().unwrap().keys().collect();
     assert_eq!(keys, ["type", "seq", "ts", "appState"], "Desktop's key order");
+}
+
+/// The `ws` package of Desktop: a ping gets a pong, a binary or fragmented message counts like a text one, and a
+/// close gets the same close back.
+#[tokio::test]
+async fn websocket_control_frames_and_fragments_follow_ws() {
+    use beeper_api::http::{read_ws_frame, write_ws_frame};
+    let (port, token) = server("ws-frames").await;
+    let upgrade = format!("GET /v1/ws HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {token}\r\n\r\n");
+    let mut ws = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    ws.write_all(upgrade.as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        head.push(ws.read_u8().await.unwrap());
+    }
+    async fn next(ws: &mut TcpStream) -> (u8, Vec<u8>) {
+        let (_, opcode, payload) = timeout(Duration::from_secs(5), read_ws_frame(ws, 1 << 20)).await.unwrap().unwrap();
+        (opcode, payload)
+    }
+    assert!(next(&mut ws).await.1.starts_with(br#"{"type":"ready""#));
+    write_ws_frame(&mut ws, 0x9, b"hi", true).await.unwrap();
+    assert_eq!(next(&mut ws).await, (0xA, b"hi".to_vec()), "the pong carries the payload of the ping");
+
+    let set = br#"{"type":"subscriptions.set","chatIDs":[" !b ","","!a","B","a","!a"]}"#;
+    let ack = br#"{"type":"subscriptions.updated","chatIDs":["!a","!b","a","B"],"app":{"state":false}}"#.to_vec();
+    write_ws_frame(&mut ws, 0x2, set, true).await.unwrap();
+    assert_eq!(next(&mut ws).await, (0x1, ack.clone()), "a binary message, with Desktop's `Sf` of the IDs");
+    // A text frame without FIN, then its continuation.
+    let mut first = Vec::new();
+    write_ws_frame(&mut first, 0x1, &set[..10], true).await.unwrap();
+    first[0] &= 0x7F;
+    ws.write_all(&first).await.unwrap();
+    write_ws_frame(&mut ws, 0x0, &set[10..], true).await.unwrap();
+    assert_eq!(next(&mut ws).await, (0x1, ack), "the fragments make one message");
+
+    let close = [&1000u16.to_be_bytes()[..], b"bye"].concat();
+    write_ws_frame(&mut ws, 0x8, &close, true).await.unwrap();
+    assert_eq!(next(&mut ws).await, (0x8, close), "the close is echoed");
 }
 
 /// Sends a request with the token and a JSON body, and returns the status and the JSON of the response.

@@ -143,22 +143,23 @@ impl BeeperGuiApp {
                 chat.map(|id| UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(id))))
             }
             "Cycle Filters" => {
-                self.list.filters = match self.list().filters {
+                self.set_filters(match self.list().filters {
                     f if f == 1 << 4 => 0,
                     f if f.count_ones() == 1 && f < 1 << 4 => f << 1,
                     _ => 1,
-                };
+                });
                 None
             }
             "Keyboard Shortcuts" => {
                 Some(UiMessage::Hotkeys(hotkeys::Msg::Modal(self.hotkeys_modal.is_none().then(String::new))))
             }
             "Filter: All" => {
-                self.list.filters = 0;
+                self.set_filters(0);
                 None
             }
             f if FILTER_HOTKEYS.contains(&f) => {
-                self.list.filters ^= 1 << FILTER_HOTKEYS.iter().position(|h| *h == f).expect("a filter hotkey");
+                let bit = 1 << FILTER_HOTKEYS.iter().position(|h| *h == f).expect("a filter hotkey");
+                self.set_filters(self.list.filters ^ bit);
                 None
             }
             "Chat: Send File" => chat.map(|_| UiMessage::Composer(composer::Msg::PickFiles)),

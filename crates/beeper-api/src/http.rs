@@ -274,9 +274,9 @@ pub fn query_string(path: &str, params: &[(&str, &str)]) -> String {
 /// The close code of a frame larger than the `max` of [`read_ws_frame`], like the `ws` package.
 const WS_TOO_BIG: u16 = 1009;
 
-/// Reads one frame as `(opcode, payload)`. `Err(Some(code))` means that the reader must close the connection with
-/// this code.
-pub async fn read_ws_frame<R: AsyncRead + Unpin>(r: &mut R, max: usize) -> Result<(u8, Vec<u8>), Option<u16>> {
+/// Reads one frame as `(fin, opcode, payload)`. `Err(Some(code))` means that the reader must close the connection
+/// with this code.
+pub async fn read_ws_frame<R: AsyncRead + Unpin>(r: &mut R, max: usize) -> Result<(bool, u8, Vec<u8>), Option<u16>> {
     let [b0, b1] = r.read_u16().await.map_err(|_| None)?.to_be_bytes();
     let len = match b1 & 0x7F {
         126 => r.read_u16().await.map_err(|_| None)? as u64,
@@ -290,7 +290,7 @@ pub async fn read_ws_frame<R: AsyncRead + Unpin>(r: &mut R, max: usize) -> Resul
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload).await.map_err(|_| None)?;
     payload.iter_mut().enumerate().for_each(|(i, b)| *b ^= mask[i & 3]);
-    Ok((b0 & 0x0F, payload))
+    Ok((b0 & 0x80 != 0, b0 & 0x0F, payload))
 }
 
 /// Writes one final frame with `opcode`: 0x1 for text, 0x8 for close.
