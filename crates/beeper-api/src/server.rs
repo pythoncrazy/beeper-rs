@@ -686,9 +686,15 @@ pub fn serve_http(listener: TcpListener, store: SharedStore) -> impl std::future
     let config = Arc::new(store.read().config.clone());
     let cloud = Arc::new(Cloud::new(&config.api_url, &config.homeserver));
     async move {
+        // The connections end with the server: when the API turns off, Desktop closes its clients too.
+        let mut connections = tokio::task::JoinSet::new();
         loop {
+            let accepted = tokio::select! {
+                accepted = listener.accept() => accepted,
+                Some(_) = connections.join_next() => continue,
+            };
             // A failed accept, such as one past the limit of open files, refuses that connection only, like Node.
-            let stream = match listener.accept().await {
+            let stream = match accepted {
                 Ok((stream, _)) => stream,
                 Err(e) => {
                     eprintln!("accept a Desktop API connection: {e}");
@@ -696,7 +702,7 @@ pub fn serve_http(listener: TcpListener, store: SharedStore) -> impl std::future
                     continue;
                 }
             };
-            tokio::spawn(handle_connection(stream, store.clone(), cloud.clone(), config.clone()));
+            connections.spawn(handle_connection(stream, store.clone(), cloud.clone(), config.clone()));
         }
     }
 }
