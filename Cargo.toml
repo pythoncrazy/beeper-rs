@@ -54,6 +54,7 @@ serde.workspace = true
 
 [patch.crates-io]
 iced_tiny_skia = { path = "vendor/iced_tiny_skia" }
+iced_wgpu = { path = "vendor/iced_wgpu" }
 sctk-adwaita = { path = "vendor/sctk-adwaita" }
 
 [profile.dev]
