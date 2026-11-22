@@ -3512,8 +3512,9 @@ pub enum Msg {
     GoTo(String, String),
     /// Save the attachments of a message, or only one of them, to the downloads folder.
     Download(String, Option<usize>),
-    /// The name of the last saved file, or the URL of the file that failed and why.
-    Downloaded(Result<String, (String, String)>),
+    /// The text of the "Downloading" toast, and the path of the last saved file, none when the user cancelled the
+    /// save dialog, or the URL of the file that failed and why.
+    Downloaded(String, Result<Option<std::path::PathBuf>, (String, String)>),
     /// Desktop's "Delete message?" dialog of the messages.
     AskDelete(Vec<String>),
     /// Desktop's `retryErroredMessage` and `removeErroredMessage` of a failed send.
@@ -3861,12 +3862,13 @@ impl BeeperGuiApp {
                     })
                     .collect();
                 let client = st.matrix.clone();
-                self.status_banner = trf("Downloading %s", &[&files[0].1]);
-                self.sticky_banner = Some(self.status_banner.clone());
+                let busy = trf("Downloading %s", &[&files[0].1]);
+                self.status_banner = busy.clone();
+                self.sticky_banner = Some(busy.clone());
                 let (dir, ask) = (downloads_dir(&st.settings), st.settings.on("alwaysAskDownload"));
                 return Task::perform(
                     async move {
-                        let mut last = String::new();
+                        let mut last = None;
                         for (url, name) in files {
                             let save = async {
                                 let name = safe_file_name(&name);
@@ -3890,26 +3892,37 @@ impl BeeperGuiApp {
                                 };
                                 let bytes = beeper_core::matrix::media(client.clone(), url.clone()).await?;
                                 std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-                                Ok(Some(path.file_name().expect("a file path").to_string_lossy().into_owned()))
+                                Ok(Some(path))
                             };
-                            if let Some(name) = save.await.map_err(|e| (url.clone(), e))? {
-                                last = name;
+                            if let Some(path) = save.await.map_err(|e| (url.clone(), e))? {
+                                last = Some(path);
                             }
                         }
                         Ok(last)
                     },
-                    |a0| UiMessage::Message(Msg::Downloaded(a0)),
+                    move |r| UiMessage::Message(Msg::Downloaded(busy.clone(), r)),
                 );
             }
-            // Like Desktop's media manager, a file that the bridge only loads when the user asks needs a download.
-            Msg::Downloaded(r) => {
-                self.status_banner = match r {
-                    Ok(name) => trf("Downloaded %s", &[&name]),
+            // Desktop's `downloadFile` removes its "Downloading" toast, then shows the saved file, or why it failed.
+            Msg::Downloaded(busy, r) => {
+                if self.sticky_banner.take_if(|t| *t == busy).is_some() && self.status_banner == busy {
+                    self.status_banner.clear();
+                }
+                match r {
+                    Ok(None) => {}
+                    Ok(Some(path)) => {
+                        let text = trf("Downloaded %s", &[&path.file_name().expect("a file path").to_string_lossy()]);
+                        let open = UiMessage::OpenUrl(path.to_string_lossy().into_owned());
+                        let buttons = vec![(tr("Open"), open), ("Show in folder", UiMessage::ShowInFolder(path))];
+                        self.show(Toast { buttons, ..Toast::new(text) });
+                    }
                     Err((url, e)) => {
+                        // Like Desktop's media manager, a file that the bridge only loads when the user asks needs a
+                        // download.
                         if beeper_core::matrix::reload_needed(&e) {
                             self.needs_download.insert(url);
                         }
-                        trf("Download failed: %s", &[&e])
+                        self.fail(Toast::new(trf("Download failed: %s", &[&e])));
                     }
                 }
             }
@@ -4153,6 +4166,38 @@ mod tests {
         app.pane.selected_msgs = ids[..2].to_vec();
         let _ = app.update(UiMessage::Message(Msg::QuoteSelected));
         assert!(app.pane.composer.text().starts_with("> "), "the selection is quoted in the composer");
+    }
+
+    /// Desktop's `downloadFile`: the "Downloading" toast goes when the file is saved, and the "Downloaded" toast opens
+    /// the file or shows it in its folder. A cancelled save dialog shows nothing, and a failure is an error toast.
+    #[test]
+    fn download_toasts_like_desktop() {
+        let mut app = crate::fuzz::demo_app("download-toasts");
+        let busy = "Downloading a.png".to_string();
+        let start =
+            |app: &mut BeeperGuiApp| (app.status_banner, app.sticky_banner) = (busy.clone(), Some(busy.clone()));
+        let path = std::path::PathBuf::from("/tmp/saved/a (1).png");
+        start(&mut app);
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy.clone(), Ok(Some(path.clone())))));
+        assert_eq!(app.sticky_banner, None, "the Downloading toast is gone, and New Chat can start a chat again");
+        let t = app.shown_toast().expect("the Downloaded toast");
+        assert_eq!(t.text, "Downloaded a (1).png");
+        assert!(
+            matches!(&t.buttons[..], [("Open", UiMessage::OpenUrl(o)), ("Show in folder", UiMessage::ShowInFolder(s))]
+            if o == "/tmp/saved/a (1).png" && *s == path)
+        );
+        start(&mut app);
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy.clone(), Ok(None))));
+        assert_eq!((app.status_banner.as_str(), app.sticky_banner.as_deref()), ("", None), "a cancel says nothing");
+        start(&mut app);
+        let failed = Err(("mxc://x/y".into(), "boom".into()));
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy.clone(), failed)));
+        let t = app.shown_toast().expect("the failure toast");
+        assert!(t.error && t.text == "Download failed: boom");
+        // A toast that waits for an answer, like a verification request, stays.
+        (app.status_banner, app.sticky_banner) = ("Verification request from Pixel".into(), Some("Pixel".into()));
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy, Ok(Some(path)))));
+        assert_eq!(app.sticky_banner.as_deref(), Some("Pixel"));
     }
 
     /// Desktop's `.reply-thread` fades in over 0.2 s while its messages rise 10 px into place over 0.6 s, both on
