@@ -310,18 +310,40 @@ pub fn balanced_width(s: &str, max: f32, size: f32) -> f32 {
     })
 }
 
-/// Whether `s` at `size` takes more than one line at `max` width.
+/// Whether `s` is one line that is surely narrower than `max` without shaping it: printable ASCII, whose glyphs in
+/// Inter are narrower than 1.2 em, and word joiners, which have no width.
+fn surely_fits(s: &str, max: f32, size: f32) -> bool {
+    let chars = s.chars().filter(|&c| c != '\u{2060}');
+    let mut n = 0.0;
+    for c in chars {
+        if !c.is_ascii_graphic() && c != ' ' {
+            return false;
+        }
+        n += 1.2 * size;
+    }
+    n <= max
+}
+
+/// Whether `s` at `size` takes more than one line at `max` width: a line of the text makes more than one layout run.
 pub fn wraps(s: &str, max: f32, size: f32) -> bool {
     thread_local!(static MEMO: Memo<(String, u32, u32), bool> = RefCell::default());
+    if surely_fits(s, max, size) {
+        return false;
+    }
     memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || {
-        let lines = |w| shape(s, size, Weight::Normal, w, |b| b.layout_runs().count());
-        lines(Some(max)) > lines(None)
+        shape(s, size, Weight::Normal, Some(max), |b| {
+            let mut last = None;
+            b.layout_runs().any(|r| last.replace(r.line_i) == Some(r.line_i))
+        })
     })
 }
 
 /// The lines of `s` wrapped at `max`, as the text widgets lay it out.
 pub fn line_count(s: &str, max: f32, size: f32) -> usize {
     thread_local!(static MEMO: Memo<(String, u32, u32), usize> = RefCell::default());
+    if surely_fits(s, max, size) {
+        return 1;
+    }
     memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || {
         shape(s, size, Weight::Normal, Some(max), |b| b.layout_runs().count())
     })
@@ -1057,6 +1079,35 @@ pub fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
 mod tests {
     use super::*;
 
+    /// The lines that the widgets lay out, which [`surely_fits`] may skip only when they are one.
+    fn shaped_lines(s: &str, max: f32, size: f32) -> usize {
+        shape(s, size, Weight::Normal, Some(max), |b| b.layout_runs().count())
+    }
+
+    /// A text that `surely_fits` lets skip the shaping is one line at that width, for each ASCII glyph, even the
+    /// widest, repeated up to the bound, and the shaped measurements agree on it.
+    #[test]
+    fn a_text_that_surely_fits_takes_one_line() {
+        for size in [11.0, 13.0, 16.0, 24.0] {
+            for c in (b' '..=b'~').map(char::from) {
+                for max in [40.0, 200.0, 480.0] {
+                    let s: String = std::iter::repeat_n(c, (max / (1.2 * size)) as usize).collect();
+                    assert!(surely_fits(&s, max, size), "{s:?} at {max}");
+                    assert_eq!(shaped_lines(&s, max, size).max(1), 1, "{s:?} at {max} and {size} px");
+                    let w = format!("{s}\u{2060}");
+                    assert!(!wraps(&w, max, size) && line_count(&w, max, size) == 1);
+                }
+            }
+        }
+        assert!(!surely_fits("caf\u{e9}", 400.0, 13.0), "only ASCII");
+        assert!(!surely_fits("a\nb", 400.0, 13.0), "one line");
+        let long = "word ".repeat(40);
+        assert!(!surely_fits(&long, 400.0, 13.0));
+        assert_eq!(wraps(&long, 400.0, 13.0), shaped_lines(&long, 400.0, 13.0) > 1);
+        assert_eq!(line_count(&long, 400.0, 13.0), shaped_lines(&long, 400.0, 13.0));
+        assert!(!wraps("two\nlines", 400.0, 13.0), "a line break is no wrap");
+    }
+
     /// CSS `grayscale(100%)` of a logo: each color becomes its luminance, and the tile keeps its shapes.
     #[test]
     fn blocked_logos_are_gray_like_desktop() {
@@ -1145,6 +1196,34 @@ mod tests {
             (67..133).flat_map(|y| p.data()[(y * 200 + 67) * 4..(y * 200 + 133) * 4].to_vec()).collect()
         };
         assert_eq!(middle(&tiled), middle(&full), "the middle tile fills the same pixels");
+    }
+
+    /// The software renderer draws a turned icon, like the Next Attachment arrow of the carousel and the open
+    /// chevrons, which it left out.
+    #[test]
+    fn turned_icons_draw_in_the_software_renderer() {
+        use iced::advanced::svg::{Renderer as _, Svg};
+        use iced::{Point, Rectangle, Size};
+        let left =
+            br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect width="10" height="20"/></svg>"#;
+        let left = svg::Handle::from_memory(left.as_slice());
+        let dark = |turn: f32| {
+            let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, 16.into());
+            let bounds = Rectangle::new(Point::new(10.0, 10.0), Size::new(20.0, 20.0));
+            renderer.draw_svg(Svg::new(left.clone()).color(Color::BLACK).rotation(turn), bounds, bounds);
+            let (mut pixmap, mut mask) =
+                (tiny_skia::Pixmap::new(40, 40).unwrap(), tiny_skia::Mask::new(40, 40).unwrap());
+            let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(Size::new(40, 40), 1.0);
+            let screen = Rectangle::with_size(Size::new(40.0, 40.0));
+            renderer.draw(&mut pixmap.as_mut(), &mut mask, &viewport, &[screen], Color::WHITE);
+            move |x, y| pixmap.pixel(x, y).expect("a pixel in the pixmap").red() < 128
+        };
+        let still = dark(0.0);
+        assert!(still(14, 20) && !still(26, 20), "the icon fills its left half");
+        let half = dark(std::f32::consts::PI);
+        assert!(!half(14, 20) && half(26, 20), "a half turn fills the right half");
+        let quarter = dark(std::f32::consts::FRAC_PI_2);
+        assert!(quarter(20, 14) && !quarter(20, 26), "a quarter turn clockwise fills the top half");
     }
 
     #[test]

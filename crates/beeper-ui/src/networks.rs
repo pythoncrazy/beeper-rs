@@ -309,7 +309,8 @@ impl BeeperGuiApp {
             let open = UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus));
             button(txt(trf("Upgrade to %s for more", &[&plan]), 12.0).color(p.accent)).bare(p.accent).on_press(open)
         });
-        let foot = row![txt(text, 12.0).color(p.muted)].push(upgrade).spacing(4).align_y(Center);
+        // `flex-wrap: wrap` and `justify-content: center`: the upgrade goes under the count when both do not fit.
+        let foot = row![txt(text, 12.0).color(p.muted)].push(upgrade).spacing(4).align_y(Center).wrap().align_x(Center);
         Some(container(foot).center_x(Fill).padding(Padding::new(8.0).bottom(2.0)).into())
     }
 
@@ -500,5 +501,20 @@ mod tests {
         assert!(finds(&["8 accounts remaining."]) && !finds(&["Upgrade to Beeper Plus Plus for more"]));
         app.store.write().features.summary["max"]["num_accounts_against_limit"] = json!(-1);
         assert!(!finds(&["accounts remaining."]), "an unlimited plan shows no footer");
+    }
+
+    /// Desktop's footer wraps (`flex-wrap: wrap`): in the 330 px sign-in window the upgrade goes whole under the
+    /// count, and the footer takes the room of both lines.
+    #[test]
+    fn the_footer_wraps_in_the_sign_in_window_like_desktop() {
+        let mut app = planned("network-footer-wrap");
+        app.login.screen = crate::login::Screen::Accounts;
+        let size = Size::new(330.0, 620.0);
+        let mut sim = iced_test::Simulator::with_size(Default::default(), size, app.view_login());
+        let count = sim.find("8 free accounts remaining.").expect("the count").bounds();
+        let upgrade = sim.find("Upgrade to Beeper Plus for more").expect("the upgrade").bounds();
+        assert!(upgrade.y >= count.y + count.height, "the upgrade goes under the count: {count:?} {upgrade:?}");
+        assert!(upgrade.height < 20.0, "on one line: {upgrade:?}");
+        assert!(upgrade.y + upgrade.height <= size.height, "inside the window: {upgrade:?}");
     }
 }

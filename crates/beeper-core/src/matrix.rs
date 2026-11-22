@@ -59,8 +59,10 @@ const THREAD_FOLLOWS: &str = "com.beeper.thread_follows";
 enum Op {
     Upsert(Box<Message>),
     React(String, Reaction, Box<Message>),
+    /// An `m.replace` edit, which applies only to a message of its own sender.
     Edit {
         target: String,
+        sender: String,
         text: Option<String>,
         html: Option<String>,
         links: Vec<MessageLink>,
@@ -72,8 +74,8 @@ enum Op {
         /// The buttons of an edit by the system user, which replace those of its own message.
         buttons: Option<Vec<ActionButton>>,
     },
-    /// The `com.beeper.disappearing_timer` of an edit without content.
-    Timer(String, MessageTimer),
+    /// The `com.beeper.disappearing_timer` of an edit without content, and the sender of the edit.
+    Timer(String, String, MessageTimer),
     /// A redaction, and whether the bridge redacted view-once media after its last view.
     Redact(String, bool),
     Remove(String),
@@ -81,7 +83,9 @@ enum Op {
     ViewsLeft(String, u64),
     /// A poll response: the poll, the voter and the answers.
     Vote(String, String, Vec<String>),
-    EndPoll(String),
+    /// A poll end, and whether its sender may end the poll of another sender: MSC3381 takes an end only from the
+    /// sender of the poll or a member who may redact the events of others.
+    EndPoll(String, String, bool),
     /// A `com.beeper.message_send_status`: the message, whether it reached a user, the error, the status, and the
     /// disappearing timer of the bridge.
     SendStatus(String, bool, Option<SendError>, Box<crate::models::SendStatus>, Option<MessageTimer>),
@@ -326,6 +330,19 @@ fn timers(features: Option<&Value>, levels: &Value, me: &str) -> Option<Timers> 
     })
 }
 
+/// `m.room.power_levels` of the room, where the creators of a room version that privileges them (12 and up) outrank
+/// everyone: they have no level in it, and the user who made a group could not rename it or remove a member.
+async fn power_levels(room: &Room) -> Value {
+    let mut levels = state(room, "m.room.power_levels").await.unwrap_or(Value::Null);
+    let rules = room.version().and_then(|v| v.rules());
+    if rules.is_some_and(|r| r.authorization.explicitly_privilege_room_creators) {
+        for creator in room.creators().into_iter().flatten() {
+            levels["users"][creator.as_str()] = i64::MAX.into();
+        }
+    }
+    levels
+}
+
 async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Chat {
     let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
     let service = room.service_members().unwrap_or_default();
@@ -334,7 +351,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     // Desktop lists the invited members too, as pending (`isPending`).
     let members =
         room.members_no_sync(RoomMemberships::JOIN | RoomMemberships::INVITE).await.expect("read room members");
-    let levels = state(room, "m.room.power_levels").await.unwrap_or(Value::Null);
+    let levels = power_levels(room).await;
     let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
     let features = state(room, "com.beeper.room_features").await;
     let (file, room_features) = file_features(features.as_ref(), &bridge);
@@ -666,11 +683,13 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
             // Desktop's `saveMessageTimer` of an edit.
             let (target, timer) = (s(&rel["event_id"])?, MessageTimer::of(&new[DISAPPEARING_TIMER], order));
             if text.is_none() && attachments.is_empty() {
-                return Some(Op::Timer(target, timer?));
+                return Some(Op::Timer(target, sender, timer?));
             }
             let timestamp = (c["com.beeper.dont_render_edited"] != true).then(|| rfc3339_from_millis(ts));
+            let buttons = system_user(&sender).then(|| ActionButton::list(&new["com.beeper.buttons"]));
             return Some(Op::Edit {
                 target,
+                sender,
                 text,
                 html: html(new),
                 links: links(new),
@@ -679,7 +698,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
                 unresolved_media: unresolved_media(new),
                 timestamp,
                 timer,
-                buttons: system_user(&sender).then(|| ActionButton::list(&new["com.beeper.buttons"])),
+                buttons,
             });
         }
         "m.room.encrypted" => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
@@ -708,7 +727,11 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         "org.matrix.msc3381.poll.response" | "m.poll.response" => {
             return Some(Op::Vote(s(&rel["event_id"])?, sender, poll_answers(c)));
         }
-        "org.matrix.msc3381.poll.end" | "m.poll.end" => return Some(Op::EndPoll(s(&rel["event_id"])?)),
+        "org.matrix.msc3381.poll.end" | "m.poll.end" => {
+            let levels = state(room, "m.room.power_levels").await.unwrap_or(Value::Null);
+            let moderator = power(&levels, &sender) >= levels["redact"].as_i64().unwrap_or(50);
+            return Some(Op::EndPoll(s(&rel["event_id"])?, sender, moderator));
+        }
         _ if poll.is_some() => (poll.as_ref().map(|p| p.question.clone()), Vec::new(), "POLL"),
         "m.room.member" => membership(room, e).await.map(|t| (Some(t), Vec::new(), "MEMBERSHIP")).or_else(hide)?,
         DISAPPEARING_TIMER if c["com.beeper.exclude_from_timeline"] == true => hide()?,
@@ -1577,6 +1600,9 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
             st.load_chat(&chat_id);
             // Desktop finds the target of an event only in the room of the event.
             let here = |st: &BeeperStore, id: &str| st.loaded_idx(id).filter(|&i| st.messages[i].chat_id == chat_id);
+            // The Matrix spec ignores an edit whose sender is not the sender of the message.
+            let mine =
+                |st: &BeeperStore, id: &str, sender: &str| here(st, id).filter(|&i| st.messages[i].sender_id == sender);
             // A placeholder that decrypted to an edit, a reaction or a hidden event was no message, so its order does not
             // count, like a redacted one: Desktop's `countsAsUnread` row of an edit is the edited message.
             let mut stale = redacted;
@@ -1592,8 +1618,12 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                     Op::Vote(target, voter, answers) if here(st, &target).is_some() => {
                         st.update_poll(&target, |p| p.respond(&voter, &answers));
                     }
-                    Op::EndPoll(target) if here(st, &target).is_some() => st.update_poll(&target, |p| p.ended = true),
-                    Op::Vote(..) | Op::EndPoll(_) => {}
+                    Op::EndPoll(target, sender, moderator)
+                        if here(st, &target).is_some() && (moderator || mine(st, &target, &sender).is_some()) =>
+                    {
+                        st.update_poll(&target, |p| p.ended = true);
+                    }
+                    Op::Vote(..) | Op::EndPoll(..) => {}
                     Op::SendStatus(target, delivered, error, status, timer) => {
                         let i = here(st, &target);
                         if let Some((i, timer)) = i.zip(timer) {
@@ -1638,13 +1668,14 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                             });
                         }
                     }
-                    Op::Timer(target, timer) => {
-                        if let Some(i) = here(st, &target) {
+                    Op::Timer(target, sender, timer) => {
+                        if let Some(i) = mine(st, &target, &sender) {
                             apply_timer(st, i, timer);
                         }
                     }
                     Op::Edit {
                         target,
+                        sender,
                         text,
                         html,
                         links,
@@ -1655,7 +1686,7 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                         timer,
                         buttons,
                     } => {
-                        if let Some(i) = here(st, &target) {
+                        if let Some(i) = mine(st, &target, &sender) {
                             if let Some(timer) = timer {
                                 apply_timer(st, i, timer);
                             }
@@ -1676,8 +1707,7 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                                 m.unresolved_media = unresolved_media;
                                 m.links = links;
                                 m.html = html;
-                                // Desktop takes the buttons of an edit only from the sender of a system user message.
-                                if let Some(buttons) = buttons.filter(|_| system_user(&m.sender_id)) {
+                                if let Some(buttons) = buttons {
                                     m.buttons = buttons;
                                 }
                             });
@@ -5614,6 +5644,53 @@ mod tests {
         assert_eq!(m.poll.as_ref().map(|p| p.voters()), Some(0));
     }
 
+    /// The Matrix spec ignores an edit whose sender is not the sender of the message, and MSC3381 a poll end from
+    /// another member who may not redact the events of others.
+    #[tokio::test]
+    async fn edits_and_poll_ends_of_another_sender_are_ignored() {
+        let from = |sender: &str, mut e: Value| {
+            e["sender"] = json!(sender);
+            e
+        };
+        let edit = |id: &str, body: &str, target: &str| {
+            let new = json!({ "msgtype": "m.text", "body": body, "com.beeper.disappearing_timer": { "type": "after_send", "timer": 60_000 } });
+            let rel = json!({ "rel_type": "m.replace", "event_id": target });
+            stub_event(
+                id,
+                "m.room.message",
+                json!({ "msgtype": "m.text", "body": "* x", "m.new_content": new, "m.relates_to": rel }),
+            )
+        };
+        let end = |id: &str, target: &str| {
+            let rel = json!({ "rel_type": "m.reference", "event_id": target });
+            stub_event(id, "org.matrix.msc3381.poll.end", json!({ "m.relates_to": rel }))
+        };
+        let answer = json!({ "id": "1", "org.matrix.msc1767.text": "A" });
+        let poll = json!({ "org.matrix.msc3381.poll.start": { "question": { "body": "Q" }, "answers": [answer] } });
+        let events = vec![
+            stub_event("$mine", "m.room.message", json!({ "msgtype": "m.text", "body": "mine" })),
+            from("@vic:x", stub_event("$vic", "m.room.message", json!({ "msgtype": "m.text", "body": "vic's" }))),
+            stub_event("$p1", "org.matrix.msc3381.poll.start", poll.clone()),
+            stub_event("$p2", "org.matrix.msc3381.poll.start", poll),
+            from("@vic:x", edit("$e1", "spoofed", "$mine")),
+            edit("$e2", "spoofed", "$vic"),
+            from("@vic:x", edit("$e3", "fixed", "$vic")),
+            from("@vic:x", end("$x1", "$p1")),
+            end("$x2", "$p2"),
+        ];
+        let store = stub_history("edit-senders", events, ("!other:x", Vec::new())).await;
+        sync_stub_room(&store, "!room:x").await;
+        let st = store.read();
+        let mine = st.message("$mine");
+        assert_eq!(mine.text.as_deref(), Some("mine"), "vic's edit of my message is ignored");
+        assert!(mine.edit_history.is_empty() && mine.disappearing.is_none());
+        let vic = st.message("$vic");
+        assert_eq!(vic.text.as_deref(), Some("fixed"), "only vic's own edit applies");
+        assert_eq!(vic.edit_history.len(), 1);
+        let ended = |id: &str| st.message(id).poll.as_ref().map(|p| p.ended);
+        assert_eq!((ended("$p1"), ended("$p2")), (Some(false), Some(true)));
+    }
+
     /// Desktop's view-limited media: the limit of `com.beeper.view_limited`, the views left that only a bridge bot
     /// reports, and the bridge's redaction after the last view, which keeps the message as expired media of its kind.
     #[tokio::test]
@@ -6785,6 +6862,44 @@ mod tests {
         let peers = json!({ "users_default": 100, "kick": 50, "state_default": 50 });
         assert_eq!(manage(&peers, ALL_MEMBER_ACTIONS, "@me:x", "@other:x", false), 0, "equal power in Matrix rooms");
         assert_eq!(manage(&peers, ALL_MEMBER_ACTIONS, "@me:x", "@other:x", true), MANAGE_ROLE, "any power in bridges");
+    }
+
+    /// In room version 12 the creators have no level in `m.room.power_levels` and outrank everyone, so the user who
+    /// made a group edits it and removes its members. In older versions the creator has only the level of the event.
+    #[tokio::test]
+    async fn room_creators_outrank_everyone_in_room_version_12() {
+        use crate::models::{Chat, ALL_EDITS, MANAGE_KICK, MANAGE_ROLE};
+        let state = |kind: &str, key: &str, content: Value| {
+            json!({ "type": kind, "state_key": key, "sender": "@me:x", "event_id": format!("${kind}{key}"),
+                "origin_server_ts": 1, "content": content })
+        };
+        let room = |version: &str| {
+            let levels = json!({ "users": { "@vic:x": 50 }, "users_default": 0, "kick": 50, "state_default": 50 });
+            let events = [
+                state("m.room.create", "", json!({ "room_version": version })),
+                state("m.room.member", "@me:x", json!({ "membership": "join" })),
+                state("m.room.member", "@vic:x", json!({ "membership": "join" })),
+                state("m.room.name", "", json!({ "name": "Group" })),
+                state("m.room.power_levels", "", levels),
+            ];
+            json!({ "state": { "events": events }, "timeline": { "events": [] } })
+        };
+        let sync = json!({ "next_batch": "s1", "rooms": { "join": { "!v12:x": room("12"), "!v10:x": room("10") } } });
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("room-creators"), &url).await;
+        sync_stub_room(&store, "!v12:x").await;
+        sync_stub_room(&store, "!v10:x").await;
+        let st = store.read();
+        let vic = |c: &Chat| c.participants.items.iter().find(|u| u.id == "@vic:x").expect("vic").manage;
+        let (v12, v10) = (st.chat("!v12:x"), st.chat("!v10:x"));
+        assert_eq!((v12.edits, vic(v12)), (ALL_EDITS, MANAGE_KICK | MANAGE_ROLE), "the creator manages the group");
+        assert_eq!((v10.edits, vic(v10)), (0, 0), "a version 10 creator has the level of power_levels");
     }
 
     /// Desktop finds the bookmarks room by its room ID, reads all of it, and does not show it as a chat.

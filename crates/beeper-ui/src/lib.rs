@@ -425,6 +425,8 @@ pub enum UiMessage {
     OpenUrl(String),
     /// The result of opening a URL in the browser.
     Opened(Result<(), String>),
+    /// Electron's `showItemInFolder` of a saved file.
+    ShowInFolder(std::path::PathBuf),
     CloseModals,
     /// The pointer came onto (true) or left the header card of the chat, or its member list.
     HeaderHover(bool),
@@ -3797,6 +3799,13 @@ impl BeeperGuiApp {
         self.refresh_theme_and_tray();
     }
 
+    /// Desktop's `isCreatingThread`: a chat that New Chat or Reply Privately asked for is being made. Other toasts
+    /// that stay, like a verification request or a download, do not count.
+    pub(crate) fn creating_thread(&self) -> bool {
+        let busy = [tr("Composing chat..."), tr("Creating group chat...")];
+        self.sticky_banner.as_deref().is_some_and(|t| busy.contains(&t))
+    }
+
     /// Desktop's `createThread`: selects the most recent direct chat with the user on the account, or asks the
     /// bridge to make one.
     pub(crate) fn open_dm(
@@ -3806,7 +3815,7 @@ impl BeeperGuiApp {
         draft: Option<u32>,
         quote: Option<String>,
     ) -> Task<UiMessage> {
-        if self.sticky_banner.is_some() {
+        if self.creating_thread() {
             return Task::none();
         }
         // Desktop's `identifierForUser` tries the Matrix ID before the phone number.
@@ -4704,6 +4713,14 @@ impl BeeperGuiApp {
                 if let Err(e) = r {
                     self.status_banner = e;
                 }
+            }
+            // Without a file manager that selects the file, the folder opens.
+            UiMessage::ShowInFolder(path) => {
+                let folder = path.parent().expect("a saved file is in a folder").to_string_lossy().into_owned();
+                return Task::perform(portal::show_item(path), move |r| match r {
+                    Ok(()) => UiMessage::Noop,
+                    Err(_) => UiMessage::OpenUrl(folder.clone()),
+                });
             }
             UiMessage::ToggleIncognito => {
                 let on = !self.store.read().settings.on("incognito");
