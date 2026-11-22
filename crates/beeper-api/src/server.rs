@@ -3020,11 +3020,18 @@ fn subscribe(subs: &RwLock<Vec<String>>, app_on: &std::sync::atomic::AtomicBool,
     if let Some(message) = subscription_issue(command) {
         return error("INVALID_PAYLOAD", &message, v.get("requestID"));
     }
-    let mut ids: Vec<String> = serde_json::from_value(v.get("chatIDs").cloned().unwrap_or(json!([])))
+    let ids: Vec<String> = serde_json::from_value(v.get("chatIDs").cloned().unwrap_or(json!([])))
         .expect("the chat IDs passed their schema");
     let app = v["app"]["state"] == true;
-    ids.sort_unstable();
-    ids.dedup();
+    // Desktop's `Sf`: the trimmed IDs that are not empty, in locale order, or `*` alone.
+    let mut ids: Vec<String> = ids.iter().map(|id| id.trim()).filter(|id| !id.is_empty()).map(Into::into).collect();
+    match ids.iter().any(|id| id == "*") {
+        true => ids = vec!["*".into()],
+        false => {
+            ids.sort_by(|a, b| beeper_core::models::locale_cmp(a, b));
+            ids.dedup();
+        }
+    }
     let mut ack = json!({ "type": "subscriptions.updated" });
     if let Some(r) = v.get("requestID").filter(|r| truthy(r)) {
         ack["requestID"] = r.clone();
@@ -3033,6 +3040,11 @@ fn subscribe(subs: &RwLock<Vec<String>>, app_on: &std::sync::atomic::AtomicBool,
     *subs.write().unwrap() = ids;
     app_on.store(app, std::sync::atomic::Ordering::Relaxed);
     ack
+}
+
+/// The payload of a close frame.
+fn close_payload(code: u16, reason: &str) -> Vec<u8> {
+    [&code.to_be_bytes()[..], reason.as_bytes()].concat()
 }
 
 /// Desktop's `maxPayload` of the WebSocket server.
@@ -3051,35 +3063,47 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
     let (reader, mut writer) = stream.into_split();
     let subs = Arc::new(RwLock::new(Vec::<String>::new()));
     let app_on = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // The frames to send, and `None` for Desktop's `sendAppStateSnapshot` when the `app.state` subscription starts.
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Option<Vec<u8>>>();
-    let frame = |v: &Value| serde_json::to_vec(v).expect("serialize a WebSocket frame");
-    out_tx.send(Some(frame(&json!({ "type": "ready", "version": 1, "chatIDs": [] })))).expect("the writer runs");
+    // The frames to send as `(opcode, payload)`, and `None` for Desktop's `sendAppStateSnapshot` when the
+    // `app.state` subscription starts.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Option<(u8, Vec<u8>)>>();
+    let frame = |v: &Value| Some((0x1, serde_json::to_vec(v).expect("serialize a WebSocket frame")));
+    out_tx.send(frame(&json!({ "type": "ready", "version": 1, "chatIDs": [] }))).expect("the writer runs");
     let (reader_subs, reader_app) = (subs.clone(), app_on.clone());
+    // The reader ends with the payload of the close frame to send, if any.
     let mut reader_task = tokio::spawn(async move {
         let mut reader = std::io::Cursor::new(leftover).chain(reader);
+        // Like the `ws` package, a message can come in fragments, and its whole size counts for `maxPayload`.
+        let mut message = Vec::new();
         loop {
-            let (opcode, payload) = match read_ws_frame(&mut reader, WS_MAX_PAYLOAD).await {
+            let (fin, opcode, payload) = match read_ws_frame(&mut reader, WS_MAX_PAYLOAD - message.len()).await {
                 Ok(frame) => frame,
-                Err(close) => return (close, reader),
+                Err(close) => return (close.map(|code| close_payload(code, "")), reader),
             };
             match opcode {
-                0x1 => {
+                // Desktop reads a binary message as UTF-8 text too.
+                0x0..=0x2 => {
+                    message.extend(payload);
+                    if !fin {
+                        continue;
+                    }
                     let before = reader_app.load(std::sync::atomic::Ordering::Relaxed);
-                    let reply = subscribe(&reader_subs, &reader_app, &payload);
+                    let reply = subscribe(&reader_subs, &reader_app, &std::mem::take(&mut message));
                     // Desktop's `applySubscriptionUpdate` sends the app state snapshot before its acknowledgement.
                     if !before && reader_app.load(std::sync::atomic::Ordering::Relaxed) {
                         out_tx.send(None).ok();
                     }
-                    out_tx.send(Some(frame(&reply))).ok();
+                    out_tx.send(frame(&reply)).ok();
                 }
-                0x9 | 0xA => {}
-                _ => return (None, reader),
+                // The `ws` package answers a ping with its payload, and a close with its code and reason.
+                0x9 => drop(out_tx.send(Some((0xA, payload)))),
+                0xA => {}
+                0x8 => return (Some(payload), reader),
+                _ => return (Some(close_payload(1002, "")), reader),
             }
         }
     });
     let token = auth::access_token(&msg).expect("the upgrade has a token").to_string();
-    // The close code and reason when the server ends the connection.
+    // The payload of the close frame, a code and a reason, when the server ends the connection.
     let send_events = async {
         let (mut seq, mut recent) = (0, HashMap::<String, tokio::time::Instant>::new());
         // Desktop's `lastAppStateFingerprint`, and the verification of the last snapshot.
@@ -3093,7 +3117,7 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
                     let ev = match ev {
                         Ok(ev) => ev,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            return Some((1008, "Client is too slow".into()));
+                            return Some(close_payload(1008, "Client is too slow"));
                         }
                         Err(_) => return None,
                     };
@@ -3134,7 +3158,7 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
                     }
                 }
                 Some(out) = out_rx.recv() => match out {
-                    Some(bytes) => (0x1, bytes),
+                    Some(frame) => frame,
                     None => {
                         let frames = app_state_frames(&store, &mut last, &mut seq, true);
                         (0x1, frames.into_iter().next().expect("a snapshot"))
@@ -3145,7 +3169,7 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
                     let (st, token) = (store.clone(), token.clone());
                     let check = tokio::task::spawn_blocking(move || auth::authorize(&st.read(), Some(&token), &[]).err());
                     if let Some((401, reason)) = check.await.expect("the token check panicked") {
-                        return Some((1008, reason));
+                        return Some(close_payload(1008, &reason));
                     }
                     (0x9, Vec::new())
                 }
@@ -3157,14 +3181,14 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
     };
     let close = tokio::select! {
         r = &mut reader_task => {
-            let (code, reader) = r.expect("WS reader task panicked");
-            code.map(|code| (code, String::new(), Some(reader)))
+            let (close, reader) = r.expect("WS reader task panicked");
+            close.map(|close| (close, Some(reader)))
         }
-        closed = send_events => closed.map(|(code, reason)| (code, reason, None)),
+        closed = send_events => closed.map(|close| (close, None)),
     };
     reader_task.abort();
-    if let Some((code, reason, reader)) = close {
-        write_ws_frame(&mut writer, 0x8, &[&code.to_be_bytes()[..], reason.as_bytes()].concat(), false).await.ok();
+    if let Some((close, reader)) = close {
+        write_ws_frame(&mut writer, 0x8, &close, false).await.ok();
         match reader {
             Some(mut reader) => linger(&mut writer, &mut reader).await,
             None => drop(writer.shutdown().await),
