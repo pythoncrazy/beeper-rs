@@ -511,6 +511,9 @@ pub struct BeeperStore {
     pub accounts: Vec<Account>,
     pub labels: Vec<Label>,
     pub chats: Vec<Chat>,
+    /// Counts the chats added and removed and the changes of `update_chat`, but not the previews of new messages, so
+    /// that a view can keep what it finds from the people and kinds of the chats over the writes of a sync.
+    pub chat_changes: u64,
     pub(crate) chat_idx_by_id: HashMap<String, usize>,
     /// The `activity_key` of each chat, for Desktop's chat order `ORDER BY timestamp DESC`.
     chat_order: BTreeSet<(i64, String)>,
@@ -715,6 +718,7 @@ impl BeeperStore {
             accounts: Vec::new(),
             labels: Vec::new(),
             chats: Vec::new(),
+            chat_changes: 0,
             chat_idx_by_id: HashMap::new(),
             chat_order: BTreeSet::new(),
             local_chat_idx_by_id: HashMap::new(),
@@ -1773,6 +1777,7 @@ impl BeeperStore {
         chat.participants.items.shrink_to_fit();
         chat.flags = self.label_flags(&chat);
         let idx = self.chats.len();
+        self.chat_changes += 1;
         assert!(self.chat_idx_by_id.insert(chat.id.clone(), idx).is_none(), "duplicate chat {}", chat.id);
         self.chat_order.insert(activity_key(&chat));
         if let Some(loc) = &chat.local_chat_id {
@@ -2063,7 +2068,8 @@ impl BeeperStore {
             self.emit_ws("chat.upserted", &c.id, None, Some(c.clone()), None);
             return self.sync_parent(idx);
         };
-        self.update_chat(idx, |c| {
+        let mut new = self.chats[idx].clone();
+        let merge = |c: &mut Chat| {
             *c = Chat {
                 draft: c.draft.take(),
                 label_ids: std::mem::take(&mut c.label_ids),
@@ -2084,7 +2090,13 @@ impl BeeperStore {
                     .max(chat.last_read_message_sort_key.clone()),
                 ..chat
             }
-        });
+        };
+        merge(&mut new);
+        // Each sync upserts its rooms, mostly unchanged: those write nothing, and the views keep what they found.
+        let json = |c: &Chat| serde_json::to_string(c).expect("chat JSON");
+        if json(&new) != json(&self.chats[idx]) {
+            self.update_chat(idx, |c| *c = new);
+        }
     }
 
     /// The new title, description and avatar URL of a group here, which the homeserver took.
@@ -2115,6 +2127,7 @@ impl BeeperStore {
         }
         let idx = self.chat_idx_by_id.remove(id).expect("the chat is here");
         let chat = self.chats.remove(idx);
+        self.chat_changes += 1;
         assert!(self.chat_order.remove(&activity_key(&chat)), "chat {id} is in the chat order");
         if let Some(local) = chat.local_chat_id {
             self.local_chat_idx_by_id.remove(&local);
@@ -2225,6 +2238,7 @@ impl BeeperStore {
 
     pub fn update_chat(&mut self, idx: usize, f: impl FnOnce(&mut Chat)) -> Chat {
         let old_key = activity_key(&self.chats[idx]);
+        self.chat_changes += 1;
         f(&mut self.chats[idx]);
         if let Some(row) = self.union_row(idx) {
             let c = &mut self.chats[idx];
@@ -4076,6 +4090,22 @@ mod tests {
         st.upsert_chat(later);
         assert_eq!(st.chat("!later:x").merged_into_chat_id.as_deref(), Some(chat.id.as_str()));
         assert_eq!(st.members(idx).len(), 3);
+    }
+
+    /// A sync upserts each of its rooms: an unchanged room writes nothing, so it sends no event and keeps what the
+    /// views found from the chats, and a changed one is written.
+    #[test]
+    fn an_unchanged_chat_upsert_writes_nothing() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("unchanged-upsert"));
+        let mut rx = st.ws_tx.subscribe();
+        let chat = st.chats[0].clone();
+        let changes = st.chat_changes;
+        st.upsert_chat(chat.clone());
+        assert_eq!(st.chat_changes, changes, "the same chat changes nothing");
+        assert!(rx.try_recv().is_err(), "and sends no event");
+        st.upsert_chat(super::Chat { title: "Renamed".into(), ..chat.clone() });
+        assert_eq!((st.chat_changes, st.chat(&chat.id).title.as_str()), (changes + 1, "Renamed"));
+        assert_eq!(rx.try_recv().expect("an event").event_type, "chat.upserted");
     }
 
     /// Desktop's `activeUnionIds`: past `max-merge-chats` (1 by default), the newer merged chats hide and their member

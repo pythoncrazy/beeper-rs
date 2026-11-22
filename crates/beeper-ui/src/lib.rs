@@ -131,10 +131,11 @@ use integrations::TokenAsk;
 use labels::{label_fill, label_glyph, label_rows};
 use new_chat::{account_display_name, phone_digits, NewChat};
 use pins::{bubble_text, pin_bubble, PinDrag};
-use rail::{all_spaces, RailDrag, LABEL_NUDGE, RAIL_MENU};
 use rail::{
-    in_rail_entry, network_space, rail_accounts, rail_label, rail_owner, rail_spaces, SpaceMenu, RAIL_MORE, RAIL_VIEWS,
+    account_ids, in_rail_entry, network_space, rail_accounts, rail_label, rail_owner, rail_spaces, SpaceMenu,
+    RAIL_MORE, RAIL_VIEWS,
 };
+use rail::{all_spaces, RailDrag, LABEL_NUDGE, RAIL_MENU};
 use rail::{SpacesDraft, SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
 use reminders::{remind_label, reminder_day};
 use scheduled::next_send;
@@ -1745,13 +1746,16 @@ fn space_name(st: &BeeperStore, id: &str) -> String {
         "low_priority" => tr("Low Priority").into(),
         "scheduled" => tr("Send Later").into(),
         LABEL_NUDGE => tr("Create Label").into(),
-        _ => match (rail_label(st, id), network_space(st, id)) {
-            (Some(l), _) if l.name.is_empty() => trx("Label", "fallback label space name").into(),
-            (Some(l), _) => l.name.clone(),
-            (None, Some(n)) => format!("{} ({})", n.name, account_display_name(st, &n.account_id, &rail_accounts(st))),
-            // Desktop's `accountDisplayName`: "<user> · <network>" when the bridge has more than one account.
-            (None, None) => account_display_name(st, id, &rail_accounts(st)),
-        },
+        _ => {
+            let accounts = || account_ids(st).map(String::from).collect::<Vec<_>>();
+            match (rail_label(st, id), network_space(st, id)) {
+                (Some(l), _) if l.name.is_empty() => trx("Label", "fallback label space name").into(),
+                (Some(l), _) => l.name.clone(),
+                (None, Some(n)) => format!("{} ({})", n.name, account_display_name(st, &n.account_id, &accounts())),
+                // Desktop's `accountDisplayName`: "<user> · <network>" when the bridge has more than one account.
+                (None, None) => account_display_name(st, id, &accounts()),
+            }
+        }
     }
 }
 
@@ -2600,11 +2604,15 @@ struct Memo {
     hits: std::cell::RefCell<Option<(HitsKey, Hits)>>,
     /// The unread threads of all chats, as the chat index and the root.
     threads: std::cell::RefCell<Option<Threads>>,
-    /// The merge suggestion of each chat that a view showed.
-    suggestions: std::cell::RefCell<HashMap<String, Option<merge_suggest::Suggestion>>>,
+    /// The merge suggestion of each chat that a view showed, kept until the chats change (`chat_changes`) or
+    /// blocking turns on or off.
+    suggestions: std::cell::RefCell<Suggestions>,
     /// The chats that the space bar counts: unread, not archived nor requests, listed, and notifying.
     counted: std::cell::RefCell<Option<Rc<[usize]>>>,
 }
+
+/// The `chat_changes` and blocking that the merge suggestions of each chat were found with.
+type Suggestions = ((u64, bool), HashMap<String, Option<merge_suggest::Suggestion>>);
 
 /// The query, the filters, the room and the partial matches of a command bar search.
 type HitsKey = (String, SearchFilters, Option<String>, bool);
@@ -3618,7 +3626,6 @@ impl BeeperGuiApp {
             self.memo.words.take();
             self.memo.hits.take();
             self.memo.threads.take();
-            self.memo.suggestions.borrow_mut().clear();
             self.memo.counted.take();
         }
         Some(&self.memo)
@@ -3643,13 +3650,14 @@ impl BeeperGuiApp {
         let snoozed = |i: usize| st.chats[i].snoozed_until_ms.unwrap_or(i64::MAX);
         // Desktop's `activityTimestamp`: the newer of the activity and the draft.
         let activity = |i: usize| beeper_core::store::activity_ms(&st.chats[i]);
+        // Each key once: the activity parses a timestamp.
         match (self.list().active_tab, st.settings.reminders_order) {
-            (InboxTab::Reminders, 0) => list.sort_by_key(|&i| (remind_at(i), i)),
-            (InboxTab::Reminders, 1) => list.sort_by_key(|&i| (std::cmp::Reverse(remind_at(i)), i)),
-            (InboxTab::Reminders, 2) => list.sort_by_key(|&i| (activity(i), i)),
-            (InboxTab::SendLater, _) => list.sort_by_key(|&i| (next_send(st, &st.chats[i].id), i)),
-            (InboxTab::Snoozed, _) => list.sort_by_key(|&i| (snoozed(i), i)),
-            _ => list.sort_by_key(|&i| (std::cmp::Reverse(activity(i)), i)),
+            (InboxTab::Reminders, 0) => list.sort_by_cached_key(|&i| (remind_at(i), i)),
+            (InboxTab::Reminders, 1) => list.sort_by_cached_key(|&i| (std::cmp::Reverse(remind_at(i)), i)),
+            (InboxTab::Reminders, 2) => list.sort_by_cached_key(|&i| (activity(i), i)),
+            (InboxTab::SendLater, _) => list.sort_by_cached_key(|&i| (next_send(st, &st.chats[i].id), i)),
+            (InboxTab::Snoozed, _) => list.sort_by_cached_key(|&i| (snoozed(i), i)),
+            _ => list.sort_by_cached_key(|&i| (std::cmp::Reverse(activity(i)), i)),
         }
         list
     }
@@ -4122,13 +4130,17 @@ impl BeeperGuiApp {
                 && c.flags & CHAT_UNREAD != 0
                 && (c.unread_mentions > 0 || !st.notifications_muted(c))
         };
+        // The count is kept until the store or the list changes, because each update of a sync sends it.
         let n = match st.settings.pref("badgeCount") {
             0 => return 0,
-            1 => st.chats.iter().filter(|c| counts(c)).count(),
-            _ => self.visible_chats(&st).into_iter().filter(|c| counts(c)).count(),
+            1 => self.count("badge", || st.chats.iter().filter(|c| counts(c)).count()),
+            _ => self.count(&format!("badge {:?}", self.list_key(self.list().filters)), || {
+                self.visible_chats(&st).into_iter().filter(|c| counts(c)).count()
+            }),
         };
         // Desktop counts one more with unread threads.
-        n as u32 + u32::from(!self.unread_threads(&st, false).is_empty())
+        let n = n + usize::from(!self.unread_threads(&st, false).is_empty());
+        u32::try_from(n).unwrap_or(u32::MAX)
     }
 
     fn handle(&mut self, msg: UiMessage) -> Task<UiMessage> {

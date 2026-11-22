@@ -70,85 +70,120 @@ pub(crate) fn merge_suggestions(st: &BeeperStore) -> Vec<Suggestion> {
     let keyed = keyed_chats(st);
     let (keys_of, by_key) = key_index(st, &keyed);
     let mut seen = vec![false; st.chats.len()];
-    let mut groups: Vec<(Vec<usize>, BTreeSet<&str>)> = Vec::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
     for &(start, _) in &keyed {
-        if seen[start] {
-            continue;
-        }
-        let (rooms, keys) = sharing(start, &keys_of, &by_key, &mut seen);
-        if rooms.len() >= 2 {
-            groups.push((rooms, keys));
+        if !seen[start] {
+            groups.push(sharing(start, &keys_of, &by_key, &mut seen));
         }
     }
+    groups.retain(|rooms| rooms.len() >= 2);
     let newest = |rooms: &[usize]| rooms.iter().map(|&i| beeper_core::store::activity_ms(&st.chats[i])).max();
-    groups.sort_by_cached_key(|g| std::cmp::Reverse((g.0.len(), newest(&g.0))));
-    groups.into_iter().map(|(rooms, keys)| suggestion(st, rooms, keys)).collect()
+    groups.sort_by_cached_key(|g| std::cmp::Reverse((g.len(), newest(g))));
+    groups.into_iter().map(|rooms| suggestion(st, rooms)).collect()
 }
 
 /// Desktop's `suggestionByRoom` of the chat `id`, which Chat Info shows (`getChatInfoSuggestion`): the group of
 /// `merge_suggestions` with the chat, found from the chat without the other groups.
 pub(crate) fn suggestion_of(st: &BeeperStore, id: &str) -> Option<Suggestion> {
     let chat = st.resolve_chat_idx(id).filter(|&i| st.chats[i].id == id)?;
-    if !suggestable(st, &st.chats[chat]) || merge_keys(&st.chats[chat]).is_empty() {
+    if !suggestable(st, &st.chats[chat]) || key_hashes(&st.chats[chat]).is_empty() {
         return None;
     }
     let keyed = keyed_chats(st);
     // The chats that share a key with the chat, also through each other: each pass adds the chats with a key of the
     // chats before, until a pass adds none.
     let mut group: Vec<bool> = keyed.iter().map(|k| k.0 == chat).collect();
-    let mut keys: HashSet<&str> = keyed.iter().filter(|k| k.0 == chat).flat_map(|k| &k.1).map(String::as_str).collect();
+    let mut keys: HashSet<u64> = keyed.iter().filter(|k| k.0 == chat).flat_map(|k| k.1.iter()).collect();
     let mut grew = true;
     while std::mem::take(&mut grew) {
         for (n, (_, ks)) in keyed.iter().enumerate() {
-            if !group[n] && ks.iter().any(|k| keys.contains(k.as_str())) {
+            if !group[n] && ks.iter().any(|k| keys.contains(&k)) {
                 (group[n], grew) = (true, true);
-                keys.extend(ks.iter().map(String::as_str));
+                keys.extend(ks.iter());
             }
         }
     }
-    let group: Vec<(usize, Vec<String>)> = keyed.into_iter().zip(group).filter(|g| g.1).map(|g| g.0).collect();
+    let group: Vec<(usize, Keys)> = keyed.into_iter().zip(group).filter(|g| g.1).map(|g| g.0).collect();
     // `merge_suggestions` finds the group from its first chat, which gives the order of its chats. No other chat has
     // a key of the group, so the index of the group finds the same order.
     let (keys_of, by_key) = key_index(st, &group);
-    let (rooms, keys) = sharing(group[0].0, &keys_of, &by_key, &mut vec![false; st.chats.len()]);
-    (rooms.len() >= 2).then(|| suggestion(st, rooms, keys))
+    let rooms = sharing(group[0].0, &keys_of, &by_key, &mut vec![false; st.chats.len()]);
+    (rooms.len() >= 2).then(|| suggestion(st, rooms))
+}
+
+/// The hashes of the `merge_keys` of a chat, up to three, which find the chats with the same person without making
+/// the keys of every chat.
+#[derive(Clone, Copy, Default)]
+struct Keys([u64; 3], usize);
+
+impl Keys {
+    fn iter(&self) -> impl Iterator<Item = u64> + '_ {
+        self.0[..self.1].iter().copied()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.1 == 0
+    }
+}
+
+/// [`merge_keys`] as 64-bit FNV-1a hashes: two chats share a key when they share a hash, but for collisions.
+fn key_hashes(c: &Chat) -> Keys {
+    let Some(u) = other(c) else { return Keys::default() };
+    let mut keys = Keys::default();
+    let mut add = |kind: u8, bytes: &mut dyn Iterator<Item = u8>| {
+        let fnv = |h: u64, b: u8| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        let h = bytes.fold(fnv(0xcbf2_9ce4_8422_2325, kind), fnv);
+        (keys.0[keys.1], keys.1) = (h, keys.1 + 1);
+    };
+    // Lowercased like `str::to_lowercase`, which differs from each byte lowercased only outside ASCII.
+    fn lower(s: &str) -> Box<dyn Iterator<Item = u8> + '_> {
+        match s.is_ascii() {
+            true => Box::new(s.bytes().map(|b| b.to_ascii_lowercase())),
+            false => Box::new(s.to_lowercase().into_bytes().into_iter()),
+        }
+    }
+    if let Some(n) = &u.phone_number {
+        add(0, &mut n.bytes().filter(|b| b.is_ascii_digit() || *b == b'+'));
+    }
+    if let Some(e) = &u.email {
+        add(1, &mut lower(e.trim()));
+    }
+    if let Some(n) = u.full_name.as_deref().filter(|n| n.split_whitespace().nth(1).is_some()) {
+        let words = n.split_whitespace().enumerate();
+        add(2, &mut words.flat_map(|(i, w)| (i > 0).then_some(b' ').into_iter().chain(lower(w))));
+    }
+    keys
 }
 
 /// The suggestable chats with merge keys, as indices of `chats`, with their keys.
-fn keyed_chats(st: &BeeperStore) -> Vec<(usize, Vec<String>)> {
+fn keyed_chats(st: &BeeperStore) -> Vec<(usize, Keys)> {
     let keyed = st.chats.iter().enumerate().filter(|(_, c)| suggestable(st, c));
-    keyed.map(|(i, c)| (i, merge_keys(c))).filter(|(_, k)| !k.is_empty()).collect()
+    keyed.map(|(i, c)| (i, key_hashes(c))).filter(|(_, k)| !k.is_empty()).collect()
 }
 
 /// The keys of each chat by its index in `chats`, and the chats of each key.
-type KeyIndex<'a> = (Vec<&'a [String]>, HashMap<&'a str, Vec<usize>>);
+type KeyIndex = (Vec<Keys>, HashMap<u64, Vec<usize>>);
 
-fn key_index<'a>(st: &BeeperStore, keyed: &'a [(usize, Vec<String>)]) -> KeyIndex<'a> {
-    let mut keys_of: Vec<&[String]> = vec![&[]; st.chats.len()];
-    let mut by_key: HashMap<&str, Vec<usize>> = HashMap::with_capacity(keyed.len() * 3);
-    for (i, keys) in keyed {
-        keys_of[*i] = keys;
-        for k in keys {
-            by_key.entry(k).or_default().push(*i);
+fn key_index(st: &BeeperStore, keyed: &[(usize, Keys)]) -> KeyIndex {
+    let mut keys_of = vec![Keys::default(); st.chats.len()];
+    let mut by_key: HashMap<u64, Vec<usize>> = HashMap::with_capacity(keyed.len() * 3);
+    for &(i, keys) in keyed {
+        keys_of[i] = keys;
+        for k in keys.iter() {
+            by_key.entry(k).or_default().push(i);
         }
     }
     (keys_of, by_key)
 }
 
-/// The chats that share a key with the chat `start`, also through each other, in the order that finds them, and
-/// their keys. It marks them `seen`, and skips the chats that are seen already.
-fn sharing<'a>(
-    start: usize,
-    keys_of: &[&'a [String]],
-    by_key: &HashMap<&str, Vec<usize>>,
-    seen: &mut [bool],
-) -> (Vec<usize>, BTreeSet<&'a str>) {
+/// The chats that share a key with the chat `start`, also through each other, in the order that finds them. It marks
+/// them `seen`, and skips the chats that are seen already.
+fn sharing(start: usize, keys_of: &[Keys], by_key: &HashMap<u64, Vec<usize>>, seen: &mut [bool]) -> Vec<usize> {
     seen[start] = true;
-    let (mut rooms, mut keys, mut todo) = (vec![start], BTreeSet::new(), vec![start]);
+    let (mut rooms, mut todo) = (vec![start], vec![start]);
     while let Some(d) = todo.pop() {
-        for k in keys_of[d] {
-            keys.insert(k.as_str());
-            for &l in &by_key[k.as_str()] {
+        for k in keys_of[d].iter() {
+            for &l in &by_key[&k] {
                 if !std::mem::replace(&mut seen[l], true) {
                     rooms.push(l);
                     todo.push(l);
@@ -156,29 +191,30 @@ fn sharing<'a>(
             }
         }
     }
-    (rooms, keys)
+    rooms
 }
 
-/// The suggestion of the chats `rooms` with the keys `keys`.
-fn suggestion(st: &BeeperStore, rooms: Vec<usize>, keys: BTreeSet<&str>) -> Suggestion {
+/// The suggestion of the chats `rooms`, with their keys.
+fn suggestion(st: &BeeperStore, rooms: Vec<usize>) -> Suggestion {
     let full_name = |i: &usize| other(&st.chats[*i]).and_then(|u| u.full_name.clone()).filter(|n| !n.is_empty());
+    let keys: BTreeSet<String> = rooms.iter().flat_map(|&i| merge_keys(&st.chats[i])).collect();
     Suggestion {
         title: rooms.iter().find_map(full_name).unwrap_or_else(|| st.chats[rooms[0]].title.clone()),
         rooms: rooms.into_iter().map(|i| st.chats[i].id.clone()).collect(),
-        keys: keys.into_iter().map(String::from).collect(),
+        keys: keys.into_iter().collect(),
     }
 }
 
 impl BeeperGuiApp {
-    /// [`suggestion_of`], computed once for each chat and store generation.
+    /// [`suggestion_of`], computed once for each chat until the chats change.
     pub(crate) fn suggestion_of(&self, st: &BeeperStore, id: &str) -> Option<Suggestion> {
         let Some(memo) = self.memo() else { return suggestion_of(st, id) };
-        let known = memo.suggestions.borrow().get(id).cloned();
-        known.unwrap_or_else(|| {
-            let s = suggestion_of(st, id);
-            memo.suggestions.borrow_mut().insert(id.to_string(), s.clone());
-            s
-        })
+        let mut known = memo.suggestions.borrow_mut();
+        let now = (st.chat_changes, st.feature("block-users").on);
+        if std::mem::replace(&mut known.0, now) != now {
+            known.1.clear();
+        }
+        known.1.entry(id.to_string()).or_insert_with(|| suggestion_of(st, id)).clone()
     }
 
     /// Desktop's `getMergeSuggestionForThread`, which the banner shows: the suggestion of the chat unless one of its

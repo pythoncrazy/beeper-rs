@@ -167,13 +167,27 @@ pub(crate) fn rail_owner(st: &BeeperStore, id: &str) -> String {
     network_space(st, id).map_or(id, |n| n.account_id.as_str()).to_string()
 }
 
+/// The accounts: Beeper's, then those of the bridges.
+pub(crate) fn account_ids(st: &BeeperStore) -> impl Iterator<Item = &str> {
+    std::iter::once("hungryserv").chain(st.accounts.iter().map(|a| a.account_id.as_str()))
+}
+
 /// The account, network and label spaces in the default order.
 pub(crate) fn rail_accounts(st: &BeeperStore) -> Vec<String> {
-    let mut accounts: Vec<String> =
-        std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone())).collect();
-    accounts.sort_by_cached_key(|a| {
-        (a != "hungryserv", st.chats.iter().position(|c| &c.account_id == a).unwrap_or(usize::MAX))
-    });
+    let mut accounts: Vec<&str> = account_ids(st).collect();
+    // The first chat of each account, from one pass over the chats that ends once each account has one.
+    let mut first: HashMap<&str, usize> = accounts.iter().map(|&a| (a, usize::MAX)).collect();
+    let mut left = first.len();
+    for (i, c) in st.chats.iter().enumerate() {
+        if left == 0 {
+            break;
+        }
+        if let Some(f) = first.get_mut(c.account_id.as_str()).filter(|f| **f == usize::MAX) {
+            (*f, left) = (i, left - 1);
+        }
+    }
+    accounts.sort_by_key(|&a| (a != "hungryserv", first[a]));
+    let mut accounts: Vec<String> = accounts.into_iter().map(String::from).collect();
     let spaces = st.network_spaces.iter().filter(|n| accounts.contains(&n.account_id) && space_shown(st, n));
     accounts.extend(spaces.map(|n| n.id.clone()).collect::<Vec<_>>());
     if st.feature("labels-v2").on {
