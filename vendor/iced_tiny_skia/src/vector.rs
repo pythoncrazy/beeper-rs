@@ -87,12 +87,10 @@ impl Cache {
     fn load(&mut self, handle: &Handle) -> Option<&usvg::Tree> {
         let id = handle.id();
 
-        // TODO: Reuse `cosmic-text` font database
+        // The SVGs of the app have no text, so they need no fonts: loading the system fonts for each renderer, which
+        // is each window, took a scan of every font file.
         if self.fontdb.is_none() {
-            let mut fontdb = usvg::fontdb::Database::new();
-            fontdb.load_system_fonts();
-
-            self.fontdb = Some(Arc::new(fontdb));
+            self.fontdb = Some(Arc::new(usvg::fontdb::Database::new()));
         }
 
         let options = usvg::Options {
