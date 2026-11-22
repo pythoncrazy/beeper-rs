@@ -1147,6 +1147,34 @@ mod tests {
         assert_eq!(middle(&tiled), middle(&full), "the middle tile fills the same pixels");
     }
 
+    /// The software renderer draws a turned icon, like the Next Attachment arrow of the carousel and the open
+    /// chevrons, which it left out.
+    #[test]
+    fn turned_icons_draw_in_the_software_renderer() {
+        use iced::advanced::svg::{Renderer as _, Svg};
+        use iced::{Point, Rectangle, Size};
+        let left =
+            br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect width="10" height="20"/></svg>"#;
+        let left = svg::Handle::from_memory(left.as_slice());
+        let dark = |turn: f32| {
+            let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, 16.into());
+            let bounds = Rectangle::new(Point::new(10.0, 10.0), Size::new(20.0, 20.0));
+            renderer.draw_svg(Svg::new(left.clone()).color(Color::BLACK).rotation(turn), bounds, bounds);
+            let (mut pixmap, mut mask) =
+                (tiny_skia::Pixmap::new(40, 40).unwrap(), tiny_skia::Mask::new(40, 40).unwrap());
+            let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(Size::new(40, 40), 1.0);
+            let screen = Rectangle::with_size(Size::new(40.0, 40.0));
+            renderer.draw(&mut pixmap.as_mut(), &mut mask, &viewport, &[screen], Color::WHITE);
+            move |x, y| pixmap.pixel(x, y).expect("a pixel in the pixmap").red() < 128
+        };
+        let still = dark(0.0);
+        assert!(still(14, 20) && !still(26, 20), "the icon fills its left half");
+        let half = dark(std::f32::consts::PI);
+        assert!(!half(14, 20) && half(26, 20), "a half turn fills the right half");
+        let quarter = dark(std::f32::consts::FRAC_PI_2);
+        assert!(quarter(20, 14) && !quarter(20, 26), "a quarter turn clockwise fills the top half");
+    }
+
     #[test]
     fn palette_matches_desktop_tokens() {
         let rows: [(&str, Token, Color, Color); 10] = [

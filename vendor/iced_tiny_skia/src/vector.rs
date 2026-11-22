@@ -40,23 +40,36 @@ impl Pipeline {
         transform: Transform,
         clip_mask: Option<&tiny_skia::Mask>,
     ) {
+        // The scale of `transform` without its rotation: `sx` and `sy` are the
+        // scale only without a rotation, and are 0 or negative with a quarter
+        // or a half turn, which drew nothing.
+        let scale = transform.sx.hypot(transform.ky);
+
         if let Some(image) = self.cache.borrow_mut().draw(
             handle,
             color,
             Size::new(
-                (bounds.width * transform.sx) as u32,
-                (bounds.height * transform.sy) as u32,
+                (bounds.width * scale) as u32,
+                (bounds.height * scale) as u32,
             ),
         ) {
+            // The rotation of `transform` about the center of the image.
+            let rotation = transform.pre_scale(1.0 / scale, 1.0 / scale);
+
             pixels.draw_pixmap(
-                (bounds.x * transform.sx) as i32,
-                (bounds.y * transform.sy) as i32,
+                (bounds.x * scale) as i32,
+                (bounds.y * scale) as i32,
                 image,
                 &tiny_skia::PixmapPaint {
                     opacity,
+                    quality: if rotation.has_skew() {
+                        tiny_skia::FilterQuality::Bilinear
+                    } else {
+                        tiny_skia::FilterQuality::Nearest
+                    },
                     ..tiny_skia::PixmapPaint::default()
                 },
-                Transform::default(),
+                rotation,
                 clip_mask,
             );
         }
