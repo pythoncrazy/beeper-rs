@@ -687,7 +687,15 @@ pub fn serve_http(listener: TcpListener, store: SharedStore) -> impl std::future
     let cloud = Arc::new(Cloud::new(&config.api_url, &config.homeserver));
     async move {
         loop {
-            let (stream, _) = listener.accept().await.expect("accept TCP connection");
+            // A failed accept, such as one past the limit of open files, refuses that connection only, like Node.
+            let stream = match listener.accept().await {
+                Ok((stream, _)) => stream,
+                Err(e) => {
+                    eprintln!("accept a Desktop API connection: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
             tokio::spawn(handle_connection(stream, store.clone(), cloud.clone(), config.clone()));
         }
     }
