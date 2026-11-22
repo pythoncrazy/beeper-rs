@@ -18,8 +18,8 @@
 - `beeper-rs` sends the sign-in requests to the Beeper cloud API (`https://api.beeper.com`) and then signs in to the Matrix homeserver (`https://matrix.beeper.com`) with the returned JWT. Set `BEEPER_API_URL` and `BEEPER_MATRIX_URL` to use different servers.
 - The Desktop API routes `POST /v1/app/setup/start`, `/email`, `/response`, and `/register` use the same cloud flow and return the same response shapes as Beeper Desktop.
 - "Continue with Google" is not available. Use email.
-- After sign-in, the "Connect Chat Accounts" window shows the networks and your cloud chat accounts. `beeper-rs` reads the cloud accounts from the Beeper `whoami` response (`user.bridges`) at sign-in and at each start. It skips local bridges and self-hosted bridges. To add a new account, use the Beeper mobile app. The account then shows in `beeper-rs`.
-- `beeper-rs` does not sync Matrix chats yet. After sign-in, the inbox shows only "Note to self" and the chats copied from Beeper Desktop.
+- After sign-in, the "Connect Chat Accounts" window shows the networks and your cloud chat accounts. `beeper-rs` reads the cloud accounts from the Beeper `whoami` response (`user.bridges`) at sign-in and at each start. Settings > Accounts > Add an account connects a new account of a network, like Desktop.
+- `beeper-rs` syncs your chats from the Matrix homeserver, with end-to-end encryption, and keeps them in its own database.
 - Use `--demo` to start with the bundled demo account and demo chats.
 - `CentralConfig` and `BeeperStore` enforce an assertion that aborts if the configured working directory points to `BeeperTexts`.
 
@@ -35,6 +35,24 @@
 - **SQLite WAL and inverted search index**: Persists state in `beeper-rs/beeper-rs.db` using SQLite Write-Ahead Logging (WAL) and indexes chats, messages, and settings in an in-memory inverted index.
 - **System colour scheme**: Settings > Appearance > Theme has the Light, Dark, and System choices. System is the default and follows the light or dark mode of the device live (the XDG desktop portal on Linux, the native setting on macOS and Windows).
 - **Window frame**: The windows use the native title bar and border. Like Desktop's Electron, beeper-rs runs on Wayland whenever there is a Wayland compositor, and draws its own title bar where the compositor draws none (for example GNOME). On a compositor without the cursor-shape protocol (GNOME before 48), it takes the cursor theme and size from the desktop settings. Like Chromium, `--ozone-platform=x11` keeps it on X11 (XWayland on a Wayland desktop, with the frame of the window manager), and the app ignores other Chromium and Electron switches.
+
+## Build and Install
+
+Install the build tools first: `.cargo/config.toml` uses `sccache` on all platforms and the `mold` linker on Linux, so the build fails without them. On Ubuntu or Debian:
+
+```bash
+sudo apt-get install -y mold pkg-config libxkbcommon-dev libwayland-dev ffmpeg
+cargo install --locked sccache
+```
+
+Then build the release binary, which takes some minutes because of the fat LTO, and install it on your `PATH`:
+
+```bash
+cargo build --release
+install -Dm755 target/release/beeper-rs ~/.local/bin/beeper-rs
+```
+
+`cargo install --path . --locked` does both and puts the binary in `~/.cargo/bin`. Run `beeper-rs` to sign in, `beeper-rs --demo` for the demo account, or `beeper-rs serve` for the headless API server. For spellcheck, install the Hunspell dictionary of your locale, for example `hunspell-en-us`.
 
 ## Local Testing Guide
 
