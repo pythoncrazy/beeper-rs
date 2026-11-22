@@ -1007,7 +1007,8 @@ impl BeeperGuiApp {
                         _ => Some(text_editor::Binding::Enter),
                     }
                 }
-                Key::Character("`") if !k.modifiers.command() => {
+                // The typed backtick, not the key under "~" on a US layout.
+                _ if k.modified_key.as_ref() == Key::Character("`") && !k.modifiers.command() => {
                     Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Format(format::CODE))))
                 }
                 Key::Named(key @ (Named::Backspace | Named::Delete))

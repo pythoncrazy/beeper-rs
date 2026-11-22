@@ -410,6 +410,17 @@ fn composer_enter_follows_the_hotkeys() {
     assert_eq!(text(&app), "`b`", "a backtick formats the selection as code");
     press(&mut app, true, [tick()]);
     assert_eq!(text(&app), "`b``", "a backtick without a selection is a backtick");
+    let tilde = iced::Event::Keyboard(keyboard::Event::KeyPressed {
+        key: Key::Character("`".into()),
+        modified_key: Key::Character("~".into()),
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Backquote),
+        location: keyboard::Location::Standard,
+        modifiers: Modifiers::SHIFT,
+        repeat: false,
+        text: Some("~".into()),
+    });
+    press(&mut app, true, [tilde]);
+    assert_eq!(text(&app), "`b``~", "Shift and the backtick key type a tilde");
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed("b".into())));
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(note.into(), ChatFlag::Pinned)));
     press(&mut app, true, [key(Named::Enter, Modifiers::CTRL)]);
