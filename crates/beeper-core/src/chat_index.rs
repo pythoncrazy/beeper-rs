@@ -2,8 +2,8 @@
 //! words of a query match the search fields of a chat as substrings, and words of four or more characters also as the
 //! fuzzy matches of Fuse.js 7.1.0.
 
-use beeper_core::config::account_network;
-use beeper_core::models::{member_order, Chat};
+use crate::config::account_network;
+use crate::models::{member_order, Chat, User};
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -33,7 +33,7 @@ fn js_space(c: char) -> bool {
 }
 
 /// JavaScript's `String.prototype.trim`.
-pub(super) fn js_trim(s: &str) -> &str {
+pub fn js_trim(s: &str) -> &str {
     s.trim_matches(js_space)
 }
 
@@ -91,7 +91,7 @@ impl Fields {
         if members.len() > 50 {
             members.sort_by(|a, b| member_order(a, b));
         }
-        let person = |u: &beeper_core::models::User| {
+        let person = |u: &User| {
             let digits = u.phone_number.as_ref().map(|p| p.chars().filter(char::is_ascii_digit).collect::<String>());
             let names = [&u.full_name, &u.custom_nickname, &u.username, &u.email, &digits];
             let names: Vec<&str> = names.into_iter().flatten().filter(|n| !n.is_empty()).map(String::as_str).collect();
@@ -258,8 +258,14 @@ fn bitap(text: &[u16], pattern: &[u16], location: usize) -> bool {
 
 /// Desktop's `Rd.search`, through `searchTitlesOrNetworkDetailed` (the title and the network) or, with `people`,
 /// `searchParticipantsDetailed`: the chats that match the query, each with the number of its title matches
-/// (`score.title.hits`).
-pub(super) fn search<'a>(chats: impl Iterator<Item = &'a Chat>, query: &str, people: bool) -> Vec<(&'a Chat, usize)> {
+/// (`score.title.hits`). Without `fuzzy`, like the index of the command bar (`fuzzy: false`), a word matches only as
+/// a substring.
+pub fn search<'a>(
+    chats: impl Iterator<Item = &'a Chat>,
+    query: &str,
+    people: bool,
+    fuzzy: bool,
+) -> Vec<(&'a Chat, usize)> {
     let fields: &[Field] = if people { &[Field::Participants] } else { &[Field::Title, Field::Network] };
     let chats = Fields::all(chats);
     let whole = phrase(query);
@@ -283,9 +289,13 @@ pub(super) fn search<'a>(chats: impl Iterator<Item = &'a Chat>, query: &str, peo
         for &(term, ref pattern) in &patterns {
             for &k in fields {
                 let values = f.values(k);
-                let fuzzy = || term.encode_utf16().count() >= 4;
-                let fuse = values.iter().any(|v| v.fuse.as_ref().is_some_and(|text| fuse_match(pattern, text)));
-                if fuse && (contains(values, term) || fuzzy()) {
+                let long = || term.encode_utf16().count() >= 4;
+                let fuse = || values.iter().any(|v| v.fuse.as_ref().is_some_and(|text| fuse_match(pattern, text)));
+                let hit = match fuzzy {
+                    true => fuse() && (contains(values, term) || long()),
+                    false => contains(values, term),
+                };
+                if hit {
                     matched.insert(term);
                     hits += (k == Field::Title) as usize;
                 }
@@ -302,7 +312,6 @@ pub(super) fn search<'a>(chats: impl Iterator<Item = &'a Chat>, query: &str, peo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use beeper_core::models::User;
 
     #[test]
     fn words_and_phrases_are_latin_and_lowercase() {
@@ -361,7 +370,7 @@ mod tests {
 
     #[test]
     fn the_index_matches_and_counts_title_hits_like_desktop() {
-        let st = beeper_core::store::BeeperStore::from_config(beeper_core::testing::demo_config("chat-index"));
+        let st = crate::store::BeeperStore::from_config(crate::testing::demo_config("chat-index"));
         let person = |name: &str| User { full_name: Some(name.into()), ..User::default() };
         let chat = |id: &str, title: &str, network: &str, people: Vec<User>| {
             let mut c = st.chats[0].clone();
@@ -426,7 +435,7 @@ mod tests {
         ];
         for (query, people, want) in cases {
             let mut found: Vec<(&str, usize)> =
-                search(chats.iter(), query, people).into_iter().map(|(c, hits)| (c.id.as_str(), hits)).collect();
+                search(chats.iter(), query, people, true).into_iter().map(|(c, hits)| (c.id.as_str(), hits)).collect();
             found.sort();
             assert_eq!(found, want, "{query} {people}");
         }
@@ -436,17 +445,50 @@ mod tests {
     /// in Desktop's order.
     #[test]
     fn the_index_follows_changed_chats() {
-        let st = beeper_core::store::BeeperStore::from_config(beeper_core::testing::demo_config("chat-index-cache"));
+        let st = crate::store::BeeperStore::from_config(crate::testing::demo_config("chat-index-cache"));
         let person = |name: String| User { full_name: Some(name), ..User::default() };
         let mut c = st.chats[0].clone();
         (c.id, c.title) = ("!cache:x".into(), "Old Title".into());
         c.participants.items = (0..60).map(|i| person(format!("Member {i:02}"))).collect();
-        let found = |c: &Chat, q: &str, people: bool| search(std::iter::once(c), q, people).len();
+        let found = |c: &Chat, q: &str, people: bool| search(std::iter::once(c), q, people, true).len();
         assert_eq!((found(&c, "old", false), found(&c, "member 49", true), found(&c, "member 50", true)), (1, 1, 0));
         c.title = "New Title".into();
         c.participants.items[0].full_name = Some("Ann".into());
         let found =
             [found(&c, "old", false), found(&c, "new", false), found(&c, "member 00", true), found(&c, "ann", true)];
         assert_eq!(found, [0, 1, 0, 1]);
+    }
+
+    /// The command bar's index (`fuzzy: false`): a word matches only as a substring, in any order, every word but
+    /// "and" matches, and a member that left does not count.
+    #[test]
+    fn the_command_bar_index_takes_substrings_only() {
+        let st = crate::store::BeeperStore::from_config(crate::testing::demo_config("chat-index-exact"));
+        let user = |name: &str, phone: Option<&str>, left: bool| User {
+            full_name: Some(name.into()),
+            phone_number: phone.map(Into::into),
+            has_exited: left.then_some(true),
+            ..Default::default()
+        };
+        let mut c = st.chats[0].clone();
+        (c.id, c.title, c.network_name) = ("!team:x".into(), "Beeper Rust Café".into(), Some("Telegram".into()));
+        c.participants.items = vec![
+            user("Alice Smith", Some("+1 (415) 555-0100"), false),
+            user("Bob Jones", None, false),
+            user("Carol Left", None, true),
+        ];
+        let found = |q: &str, people: bool| search(std::iter::once(&c), q, people, false).first().map(|f| f.1);
+        assert_eq!(found("rust beeper", false), Some(2), "the words in any order");
+        assert_eq!(found("cafe", false), Some(1), "in Latin letters");
+        assert_eq!(found("telegram", false), Some(0), "by the network only");
+        assert_eq!(found("rsut", false), None, "no fuzzy match");
+        assert_eq!(found("alice", true), Some(0));
+        assert_eq!(found("ali jon", true), Some(0), "the words can match different members");
+        assert_eq!(found("smith and bob", true), Some(0), "\"and\" is not a word to match");
+        assert_eq!(found("4155550100", true), Some(0), "a phone number matches by its digits");
+        assert_eq!(found("carol", true), None, "a member that left does not match");
+        assert_eq!(found("alice zed", true), None, "every word matches");
+        assert_eq!(found("and", true), None, "\"and\" alone needs a member with it");
+        assert_eq!(found(" , ", true), None);
     }
 }

@@ -235,7 +235,7 @@ impl BeeperGuiApp {
         let recent: Vec<&Chat> = match (blank, st.recent_chat_ids.is_empty()) {
             (false, _) => Vec::new(),
             (true, false) => st.recent_chat_ids.iter().filter_map(|id| st.find_chat(id)).collect(),
-            (true, true) => self.chat_words(&st).0.iter().map(|&i| &st.chats[i]).collect(),
+            (true, true) => self.chats_by_activity(&st).iter().map(|&i| &st.chats[i]).collect(),
         };
         let mut recent: Vec<&Chat> = recent.into_iter().filter(|c| c.flags & CHAT_HIDDEN == 0).collect();
         if recent.len() > 1 {

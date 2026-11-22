@@ -2900,6 +2900,11 @@ fn search_sections_like_desktop() {
     let groups: Vec<String> = eric.in_groups.iter().map(|&i| title(&app, i)).collect();
     assert_eq!(eric.chats.iter().map(|&i| title(&app, i)).collect::<Vec<_>>(), ["Eric Migicovsky"]);
     assert!(groups.contains(&"#desktop-release".to_string()), "a group with Eric: {groups:?}");
+    // Desktop's command bar index: the words in any order, and the network of a chat.
+    let titles = |q: &str| hits(&app, q).chats.iter().map(|&i| title(&app, i)).collect::<Vec<_>>();
+    assert_eq!(titles("rust beeper"), ["Beeper Rust Core Team"]);
+    let whatsapp = titles("whatsapp");
+    assert!(whatsapp.contains(&"Eric Migicovsky".to_string()), "a chat by its network: {whatsapp:?}");
     let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("eric".into())));
     assert!(in_order(&app, &["Chats", "In Groups", "#desktop-release"]));
     let beeper = hits(&app, "beeper");

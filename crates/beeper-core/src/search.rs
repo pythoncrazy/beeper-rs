@@ -1,8 +1,7 @@
 //! Desktop's search operators (`vs` and `Zs`): `has:`, `from:`, `in:`, `before:`, `after:` and `network:` in the
-//! text of a message search, which `Hct` reads, and Desktop's `searchByParticipants` chat search.
+//! text of a message search, which `Hct` reads.
 
 use crate::config::local_millis;
-use crate::models::Chat;
 use crate::store::{BeeperStore, Query};
 
 /// The `has:` kinds of Desktop's media filter (`epe`) with the attachment type of each, in the filter's order.
@@ -125,44 +124,6 @@ pub fn date(key: &str, now: i64) -> Option<i64> {
     })
 }
 
-/// Desktop's `searchByParticipants` match: each word of `q` but "and" is in the name, nickname, username, email or
-/// phone digits of one of the first 50 members that did not leave. A query of only "and" needs one of its words.
-pub fn participants_match(c: &Chat, q: &str) -> bool {
-    let words: Vec<String> = q
-        .to_lowercase()
-        .split(|ch: char| ch.is_whitespace() || "|!'^=,;?(){}[]\"`~#$%&*+<>\\".contains(ch))
-        .filter(|w| !w.is_empty())
-        .map(String::from)
-        .collect();
-    if words.is_empty() {
-        return false;
-    }
-    let people: Vec<String> = c
-        .participants
-        .items
-        .iter()
-        .filter(|u| u.has_exited != Some(true))
-        .take(50)
-        .map(|u| {
-            let phone = u.phone_number.as_ref().map(|p| p.chars().filter(char::is_ascii_digit).collect::<String>());
-            [&u.full_name, &u.custom_nickname, &u.username, &u.email, &phone]
-                .into_iter()
-                .flatten()
-                .filter(|s| !s.is_empty())
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(" ")
-                .to_lowercase()
-        })
-        .collect();
-    let hit = |w: &String| people.iter().any(|p| p.contains(w.as_str()));
-    let required: Vec<&String> = words.iter().filter(|w| *w != "and").collect();
-    match required.is_empty() {
-        true => words.iter().any(hit),
-        false => required.into_iter().all(hit),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Media, Search};
@@ -254,32 +215,5 @@ mod tests {
             true
         });
         assert_eq!(marked, ["z3"]);
-    }
-
-    /// Desktop's `searchByParticipants`: every word is in some member, a member that left does not count.
-    #[test]
-    fn participants_match_like_desktop() {
-        use crate::models::User;
-        let mut c: crate::models::Chat =
-            serde_json::from_value(serde_json::json!({ "id": "c", "accountID": "a", "title": "Team", "type": "group",
-                "unreadCount": 0, "participants": { "items": [], "hasMore": false, "total": 0 } }))
-            .expect("a chat");
-        let user = |name: &str, phone: Option<&str>, left: bool| User {
-            full_name: Some(name.into()),
-            phone_number: phone.map(Into::into),
-            has_exited: left.then_some(true),
-            ..Default::default()
-        };
-        c.participants.items =
-            vec![user("Alice Smith", Some("+1 (415) 555-0100"), false), user("Bob Jones", None, false)];
-        c.participants.items.push(user("Carol Left", None, true));
-        assert!(super::participants_match(&c, "alice"));
-        assert!(super::participants_match(&c, "ali jon"), "the words can match different members");
-        assert!(super::participants_match(&c, "smith and bob"), "\"and\" is not a word to match");
-        assert!(super::participants_match(&c, "4155550100"), "a phone number matches by its digits");
-        assert!(!super::participants_match(&c, "carol"), "a member that left does not match");
-        assert!(!super::participants_match(&c, "alice zed"), "every word matches");
-        assert!(!super::participants_match(&c, "and"), "\"and\" alone needs a member with it");
-        assert!(!super::participants_match(&c, " , "));
     }
 }

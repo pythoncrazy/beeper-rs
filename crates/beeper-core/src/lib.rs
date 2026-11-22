@@ -2,6 +2,7 @@ pub mod bridge_login;
 #[cfg(any(test, feature = "stub"))]
 pub mod bridge_stub;
 pub mod browser_login;
+pub mod chat_index;
 pub mod cloud;
 pub mod codec;
 pub mod config;
