@@ -9336,3 +9336,17 @@ fn failed_sends_show_their_icon_in_the_chat_list_like_desktop() {
     });
     assert!(red(&app) > before + 20, "the row shows the red icon");
 }
+
+/// Like Electron's native menus, the chat menu fits its longest row: a long hotkey, or a longer translation such as
+/// German's "Als ungelesen markieren  Ctrl Shift U", widens it past Desktop's 233 px instead of wrapping the row.
+#[test]
+fn the_chat_menu_fits_its_rows() {
+    let app = demo_app("chat-menu-width");
+    assert_eq!(chat_list::chat_menu_w(&app.store.read()), 233.0);
+    let keys = ("Chat: Toggle Mark As Read".to_string(), "ctrl+shift+alt+backspace".to_string());
+    app.store.write().settings.keybindings.extend([keys]);
+    let w = |s: &str| style::text_width(s, 13.0, iced::font::Weight::Normal);
+    let row = 26.0 + w("Mark as Unread") + 16.0 + w("Ctrl Shift Alt Backspace");
+    let menu = chat_list::chat_menu_w(&app.store.read());
+    assert!(row > 233.0 && menu >= row, "{menu} fits {row}");
+}

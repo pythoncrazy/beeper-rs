@@ -1181,7 +1181,8 @@ impl BeeperGuiApp {
                     ))
             }),
         ];
-        let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu =
+            container(col.padding([4, 0])).width(chat_menu_w(&st)).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         let sub = self.chat_sub.map(|i| {
             let item = |label: &str, at: String, msg| menu_item(p, None, label.into(), at, msg);
             let (items, rules): (Vec<El>, f32) = match i {
@@ -1898,4 +1899,50 @@ pub(crate) fn takes_requests(st: &BeeperStore, id: &str) -> bool {
     }
     let network = beeper_core::config::find_network(&rail_owner(st, id));
     network.is_some_and(|n| matches!(n.kind, NetworkKind::Beeper | NetworkKind::Signal | NetworkKind::TwitterX))
+}
+
+/// The width of the chat menu: Desktop's 233 px, or more when a label and its hotkey in the app language need it,
+/// like the native menus of Electron, which fit their items. Each row has 13 px of padding on each side, and the
+/// hotkey keeps 16 px from the label.
+pub(crate) fn chat_menu_w(st: &BeeperStore) -> f32 {
+    let key = |name| hotkey_text(st.settings.hotkey_keys(name));
+    let action = |label| trx(label, "thread context menu action");
+    let rows = [
+        (action("Unarchive"), key("Chat: Toggle Archive")),
+        (action("Archive"), key("Chat: Toggle Archive")),
+        (action("Unmute"), key("Chat: Toggle Mute")),
+        (action("Mute"), key("Chat: Toggle Mute")),
+        (tr("Mark as Unread"), key("Chat: Toggle Mark As Read")),
+        (tr("Mark as Read"), key("Chat: Toggle Mark As Read")),
+        (action("Unpin"), key("Chat: Toggle Pin")),
+        (action("Pin"), key("Chat: Toggle Pin")),
+        (tr("Search…"), key("Search: Room")),
+        (tr("Report a Problem"), key("Report a Problem")),
+        (tr("Copy"), "›".into()),
+        (tr("Remind Me"), "›".into()),
+        (trx("Label", "thread context menu submenu label"), "›".into()),
+        (trx("Snooze", "thread context menu submenu label"), "›".into()),
+    ];
+    let plain = [
+        "Mark All as Read",
+        "Mark All as Unread",
+        "Stop Following All Threads",
+        "Follow All Threads",
+        "Edit Group...",
+        "Move to Inbox",
+        "Move to Low Priority",
+        "Delete Chat",
+        "Open in New Window",
+        "Begin Selecting",
+        "Accept group invitation",
+        "Accept message request",
+        "Decline group invitation",
+        "Decline message request",
+    ];
+    let width = |label: &str, key: &str| {
+        let key = if key.is_empty() { 0.0 } else { 16.0 + text_width(key, 13.0, Weight::Normal) };
+        26.0 + text_width(label, 13.0, Weight::Normal) + key
+    };
+    let rows = rows.iter().map(|(label, key)| width(label, key));
+    rows.chain(plain.iter().map(|label| width(tr(label), ""))).fold(233.0, f32::max).ceil()
 }

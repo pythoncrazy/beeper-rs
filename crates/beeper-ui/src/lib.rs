@@ -5669,7 +5669,7 @@ impl BeeperGuiApp {
             } else {
                 let st = self.store.read();
                 (
-                    233.0,
+                    chat_list::chat_menu_w(&st),
                     8.0 + 10.0 * MENU_ITEM
                         + 44.0
                         + if self.selection.is_empty() { 2.0 * MENU_ITEM + 11.0 } else { 0.0 }
