@@ -1913,6 +1913,10 @@ fn js_string(v: Option<&Value>) -> String {
             a.iter().map(item).collect::<Vec<_>>().join(",")
         }
         Some(Value::Object(_)) => "[object Object]".into(),
+        // JavaScript writes a whole float without its `.0`.
+        Some(Value::Number(n)) if n.as_f64().is_some_and(|f| n.is_f64() && f.fract() == 0.0 && f.abs() < 1e21) => {
+            format!("{:.0}", n.as_f64().expect("a float") + 0.0)
+        }
         Some(v) => v.to_string(),
     }
 }
