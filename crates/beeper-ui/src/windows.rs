@@ -156,7 +156,7 @@ impl BeeperGuiApp {
                 self.swap_window(id);
                 let chat = {
                     let st = self.store.read();
-                    let chats = self.visible_chats(&st);
+                    let chats = self.listed_chats(&st);
                     let first = chats.first().map(|c| c.id.clone());
                     from.filter(|c| chats.iter().any(|v| v.id == *c)).or(first)
                 };

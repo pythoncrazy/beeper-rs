@@ -120,13 +120,13 @@ impl BeeperGuiApp {
             "Select Next Unread Chat" => {
                 let st = self.store.read();
                 let next = self
-                    .visible_chats(&st)
+                    .listed_chats(&st)
                     .into_iter()
                     .find(|c| c.flags & CHAT_UNREAD != 0 && Some(&c.id) != chat.as_ref());
                 next.map(|c| UiMessage::SelectChat(c.id.clone()))
             }
             "Switch First 9 Chats Modifier" => {
-                let id = self.visible_chats(&self.store.read()).get(digit).map(|c| c.id.clone());
+                let id = self.listed_chats(&self.store.read()).get(digit).map(|c| c.id.clone());
                 id.map(UiMessage::SelectChat)
             }
             "Toggle Chat Info" => Some(UiMessage::ToggleRightPanel),
