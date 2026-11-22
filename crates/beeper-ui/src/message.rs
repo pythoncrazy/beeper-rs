@@ -2559,8 +2559,6 @@ impl BeeperGuiApp {
             let code_lines = blocks.iter().filter(|b| b.6).flat_map(|b| b.2.lines());
             let code_w =
                 code_lines.map(|l| l.chars().count() as f32 * 0.6 * 13.0 * 0.9 + 2.0 * code_pad).fold(0.0, f32::max);
-            let text_w = blocks.iter().filter(|b| !b.6).flat_map(|b| b.2.lines());
-            let text_w = text_w.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
             let last_pre = blocks.last().is_some_and(|b| b.6);
             let (room, time, footer_time) = match clamp {
                 Some(_) => (0.0, None, time),
@@ -2585,8 +2583,12 @@ impl BeeperGuiApp {
             let padded = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
             let blocks_html =
                 m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
-            let width = match crate::style::wraps(&padded, max, 13.0) {
-                _ if code_w > 0.0 => Length::Fixed(code_w.max(text_w).min(max)),
+            let width = match code_w > 0.0 || crate::style::wraps(&padded, max, 13.0) {
+                _ if code_w > 0.0 => {
+                    let lines = blocks.iter().filter(|b| !b.6).flat_map(|b| b.2.lines());
+                    let text_w = lines.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
+                    Length::Fixed(code_w.max(text_w).min(max))
+                }
                 false => Length::Shrink,
                 true if st.settings.on("balanceText") && !blocks_html => {
                     Length::Fixed(crate::style::balanced_width(&padded, max, 13.0))
