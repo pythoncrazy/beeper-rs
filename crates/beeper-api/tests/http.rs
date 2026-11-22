@@ -92,6 +92,39 @@ async fn the_info_and_the_spec_answer_while_the_chats_load() {
     loader.join().unwrap();
 }
 
+/// Turning the API off drops the server, and with it its open connections, so a client that kept one has no access.
+#[tokio::test]
+async fn the_connections_end_with_the_server() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let cfg = CentralConfig { port, ..demo_config("http-off") };
+    let store = StoreLock::shared(BeeperStore::from_config(cfg));
+    let token = store.read().beeper_state.access_token.clone();
+    let server = tokio::spawn(serve_http(listener, store));
+    let info = b"GET /v1/info HTTP/1.1\r\nhost: x\r\n\r\n";
+    let mut http = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    http.write_all(info).await.unwrap();
+    let mut head = [0; 15];
+    http.read_exact(&mut head).await.unwrap();
+    assert_eq!(&head, b"HTTP/1.1 200 OK");
+    let upgrade = format!("GET /v1/ws HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {token}\r\n\r\n");
+    let mut ws = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    ws.write_all(upgrade.as_bytes()).await.unwrap();
+    let mut head = [0; 12];
+    ws.read_exact(&mut head).await.unwrap();
+    assert_eq!(&head, b"HTTP/1.1 101");
+
+    server.abort();
+    let _ = server.await;
+    // The rest of the first answer, then the end of the connection without an answer to the second request.
+    http.write_all(info).await.ok();
+    let mut rest = Vec::new();
+    timeout(Duration::from_secs(5), http.read_to_end(&mut rest)).await.expect("the connection ends").ok();
+    assert_eq!(String::from_utf8_lossy(&rest).matches("HTTP/1.1").count(), 0, "no second answer");
+    let mut rest = Vec::new();
+    timeout(Duration::from_secs(5), ws.read_to_end(&mut rest)).await.expect("the WebSocket ends").ok();
+}
+
 #[tokio::test]
 async fn bodies_over_the_limit_of_the_route_get_413() {
     let (port, token) = server("limits").await;
