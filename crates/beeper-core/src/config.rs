@@ -220,10 +220,11 @@ pub fn account_network(account_id: &str) -> &'static NetworkSpec {
 
 /// The network of an account ID or a bridge name, if it is a known network.
 pub fn find_network(account_id: &str) -> Option<&'static NetworkSpec> {
-    let id = account_id.to_ascii_lowercase();
-    let id = ["acc_", "local-", "bridge-"].iter().fold(id.as_str(), |s, p| s.strip_prefix(p).unwrap_or(s));
-    let id = NETWORK_ALIASES.iter().find(|(alias, _)| id.starts_with(alias)).map_or(id, |(_, bridge)| bridge);
-    NETWORK_SPECS.iter().find(|n| id.starts_with(n.bridge_id))
+    // The prefixes are lowercase ASCII, so the IDs compare in any case without a lowercase copy.
+    let starts = |s: &str, p: &str| s.as_bytes().get(..p.len()).is_some_and(|b| b.eq_ignore_ascii_case(p.as_bytes()));
+    let id = ["acc_", "local-", "bridge-"].iter().fold(account_id, |s, p| if starts(s, p) { &s[p.len()..] } else { s });
+    let id = NETWORK_ALIASES.iter().find(|(alias, _)| starts(id, alias)).map_or(id, |(_, bridge)| bridge);
+    NETWORK_SPECS.iter().find(|n| starts(id, n.bridge_id))
 }
 
 pub fn is_original_beeper_dir(path: &Path) -> bool {

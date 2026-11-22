@@ -125,6 +125,47 @@ async fn the_connections_end_with_the_server() {
     timeout(Duration::from_secs(5), ws.read_to_end(&mut rest)).await.expect("the WebSocket ends").ok();
 }
 
+/// A WebSocket upgrade waits for the load on a blocking thread too, so more upgrades than workers block no request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_upgrades_wait_for_the_load_off_the_workers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let cfg = CentralConfig { port, ..demo_config("http-ws-loading") };
+    let store = StoreLock::shared(BeeperStore::open(cfg));
+    let token = store.read().beeper_state.access_token.clone();
+    tokio::spawn(serve_http(listener, store.clone()));
+    let (locked, load) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+    let loader = std::thread::spawn(move || {
+        let mut st = store.write();
+        locked.0.send(()).unwrap();
+        load.1.recv().unwrap();
+        st.load_chats();
+    });
+    locked.1.recv().unwrap();
+    // Blocking sockets with timeouts, since blocked workers would also stop the IO and the timers of tokio.
+    use std::io::{Read, Write};
+    let send = |request: &str| {
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        s.write_all(request.as_bytes()).unwrap();
+        s
+    };
+    let head = |mut s: std::net::TcpStream| {
+        let mut head = [0; 12];
+        s.read_exact(&mut head).map(|_| String::from_utf8_lossy(&head).into_owned())
+    };
+    let upgrade = format!("GET /v1/ws HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {token}\r\n\r\n");
+    let upgrades: Vec<_> = (0..4).map(|_| send(&upgrade)).collect();
+    std::thread::sleep(Duration::from_millis(200));
+    let info = head(send("GET /v1/info HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n"));
+    load.0.send(()).unwrap();
+    loader.join().unwrap();
+    assert_eq!(info.expect("the info answers while the upgrades wait"), "HTTP/1.1 200");
+    for ws in upgrades {
+        assert_eq!(head(ws).unwrap(), "HTTP/1.1 101", "the upgrade goes on after the load");
+    }
+}
+
 #[tokio::test]
 async fn bodies_over_the_limit_of_the_route_get_413() {
     let (port, token) = server("limits").await;
@@ -1328,6 +1369,16 @@ async fn mcp_errors_come_from_the_layer_of_desktop() {
     let accept = text(port, &request("POST", "/v0/mcp", "content-type: application/json\r\n")).await;
     assert!(accept.starts_with("HTTP/1.1 406 ") && !accept.to_lowercase().contains("content-type:"), "{accept}");
     assert!(accept.ends_with(r#""id":null}"#), "{accept}");
+
+    // The Stainless client of a tool refuses a missing path parameter, so `get_chat` without a chat is no chat list.
+    let call = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_chat","arguments":{}}}"#;
+    let headers = format!(
+        "content-type: application/json\r\naccept: application/json, text/event-stream\r\ncontent-length: {}\r\n",
+        call.len()
+    );
+    let out = text(port, &format!("POST /v0/mcp HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\n{headers}connection: close\r\n\r\n{call}")).await;
+    let message = r"Path parameters result in path with invalid segments:\nValue of type Undefined is not a valid path parameter\n/v1/chats/undefined\n          ^^^^^^^^^";
+    assert!(out.contains(&format!(r#""error":{{"code":-32603,"message":"{message}"}}"#)), "{out}");
 }
 
 /// Desktop's `listBridges` leaves out the Beeper and iMessage bridges and names each network by its ID, and its

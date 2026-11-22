@@ -122,7 +122,7 @@ use crate::settings::{
     SETTINGS_DIALOGS, STORAGE_DAYS,
 };
 pub use crate::settings::{search_settings, Expiry, HotkeyRec, SettingsHit, SettingsTab, TabIcon};
-use crate::threads::{can_thread, Threads, THREAD_FRACTION};
+use crate::threads::{can_thread, Threads};
 use blocking::block_action;
 use chat_list::{filter_hit, FILTERS, F_ARCHIVED, F_LOW_PRIORITY, F_REQUESTS};
 use forward::Forward;
@@ -131,10 +131,11 @@ use integrations::TokenAsk;
 use labels::{label_fill, label_glyph, label_rows};
 use new_chat::{account_display_name, phone_digits, NewChat};
 use pins::{bubble_text, pin_bubble, PinDrag};
-use rail::{all_spaces, RailDrag, LABEL_NUDGE, RAIL_MENU};
 use rail::{
-    in_rail_entry, network_space, rail_accounts, rail_label, rail_owner, rail_spaces, SpaceMenu, RAIL_MORE, RAIL_VIEWS,
+    account_ids, in_rail_entry, network_space, rail_accounts, rail_label, rail_owner, rail_spaces, SpaceMenu,
+    RAIL_MORE, RAIL_VIEWS,
 };
+use rail::{all_spaces, RailDrag, LABEL_NUDGE, RAIL_MENU};
 use rail::{SpacesDraft, SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
 use reminders::{remind_label, reminder_day};
 use scheduled::next_send;
@@ -1755,13 +1756,16 @@ fn space_name(st: &BeeperStore, id: &str) -> String {
         "low_priority" => tr("Low Priority").into(),
         "scheduled" => tr("Send Later").into(),
         LABEL_NUDGE => tr("Create Label").into(),
-        _ => match (rail_label(st, id), network_space(st, id)) {
-            (Some(l), _) if l.name.is_empty() => trx("Label", "fallback label space name").into(),
-            (Some(l), _) => l.name.clone(),
-            (None, Some(n)) => format!("{} ({})", n.name, account_display_name(st, &n.account_id, &rail_accounts(st))),
-            // Desktop's `accountDisplayName`: "<user> · <network>" when the bridge has more than one account.
-            (None, None) => account_display_name(st, id, &rail_accounts(st)),
-        },
+        _ => {
+            let accounts = || account_ids(st).map(String::from).collect::<Vec<_>>();
+            match (rail_label(st, id), network_space(st, id)) {
+                (Some(l), _) if l.name.is_empty() => trx("Label", "fallback label space name").into(),
+                (Some(l), _) => l.name.clone(),
+                (None, Some(n)) => format!("{} ({})", n.name, account_display_name(st, &n.account_id, &accounts())),
+                // Desktop's `accountDisplayName`: "<user> · <network>" when the bridge has more than one account.
+                (None, None) => account_display_name(st, id, &accounts()),
+            }
+        }
     }
 }
 
@@ -2610,11 +2614,15 @@ struct Memo {
     hits: std::cell::RefCell<Option<(HitsKey, Hits)>>,
     /// The unread threads of all chats, as the chat index and the root.
     threads: std::cell::RefCell<Option<Threads>>,
-    /// The merge suggestion of each chat that a view showed.
-    suggestions: std::cell::RefCell<HashMap<String, Option<merge_suggest::Suggestion>>>,
+    /// The merge suggestion of each chat that a view showed, kept until the chats change (`chat_changes`) or
+    /// blocking turns on or off.
+    suggestions: std::cell::RefCell<Suggestions>,
     /// The chats that the space bar counts: unread, not archived nor requests, listed, and notifying.
     counted: std::cell::RefCell<Option<Rc<[usize]>>>,
 }
+
+/// The `chat_changes` and blocking that the merge suggestions of each chat were found with.
+type Suggestions = ((u64, bool), HashMap<String, Option<merge_suggest::Suggestion>>);
 
 /// The query, the filters, the room and the partial matches of a command bar search.
 type HitsKey = (String, SearchFilters, Option<String>, bool);
@@ -2984,6 +2992,7 @@ impl BeeperGuiApp {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => SIDEBAR_WIDTH,
             Err(e) => panic!("read the sidebar width: {e}"),
         };
+        let thread_fraction = threads::saved_thread_fraction(&store.read().config.data_dir);
         let filters = chat_list::saved_filters(&store.read().config.data_dir);
         let audio = voice::Player::new(&store.read().config.data_dir);
         let sidebar_hidden = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-hidden")) {
@@ -2998,7 +3007,7 @@ impl BeeperGuiApp {
             carousel_windows: Vec::new(),
             drawing: Default::default(),
             drawing_thread: Default::default(),
-            thread_fraction: THREAD_FRACTION,
+            thread_fraction,
             open_threads: HashMap::new(),
             thread_area: Default::default(),
             thread_drag: false,
@@ -3214,13 +3223,15 @@ impl BeeperGuiApp {
 
     pub fn boot(store: SharedStore) -> (Self, Task<UiMessage>) {
         let mut app = Self::new(store);
+        // The zoom, which the windows open at.
+        app.refresh_theme_and_tray();
         let signed_in = app.pane.selected_chat_id.is_some();
         let mut settings = if signed_in { app.main_window_settings() } else { Self::login_window_settings() };
         let st = app.store.read();
         app.hidden = signed_in && st.settings.on("startMinimized");
         drop(st);
         settings.visible = !app.hidden;
-        let (id, open) = window::open(settings);
+        let (id, open) = app.open_window(settings);
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
         let open = open.then(move |id| Task::done(id).chain(Self::keep_on_screen(id)));
         let cloud = (signed_in && !app.store.read().config.demo).then(|| app.refresh_cloud_accounts());
@@ -3420,7 +3431,9 @@ impl BeeperGuiApp {
     /// Saves the state of window `id` under `key` in `window.json`. A maximized window keeps the bounds from before.
     fn save_window(&self, id: window::Id, key: &'static str) -> Task<UiMessage> {
         let path = self.store.read().config.data_dir.join("window.json");
-        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size)));
+        // Desktop keeps the bounds in screen pixels, and iced gives the size in pixels of the zoom.
+        let zoom = self.zoom;
+        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size * zoom)));
         let state = state.then(move |(max, size)| window::position(id).map(move |at| (max, size, at)));
         state.map(move |(max, size, at)| write_window_state(&path, key, max, size, at)).discard()
     }
@@ -3633,7 +3646,6 @@ impl BeeperGuiApp {
             self.memo.words.take();
             self.memo.hits.take();
             self.memo.threads.take();
-            self.memo.suggestions.borrow_mut().clear();
             self.memo.counted.take();
         }
         Some(&self.memo)
@@ -3658,13 +3670,14 @@ impl BeeperGuiApp {
         let snoozed = |i: usize| st.chats[i].snoozed_until_ms.unwrap_or(i64::MAX);
         // Desktop's `activityTimestamp`: the newer of the activity and the draft.
         let activity = |i: usize| beeper_core::store::activity_ms(&st.chats[i]);
+        // Each key once: the activity parses a timestamp.
         match (self.list().active_tab, st.settings.reminders_order) {
-            (InboxTab::Reminders, 0) => list.sort_by_key(|&i| (remind_at(i), i)),
-            (InboxTab::Reminders, 1) => list.sort_by_key(|&i| (std::cmp::Reverse(remind_at(i)), i)),
-            (InboxTab::Reminders, 2) => list.sort_by_key(|&i| (activity(i), i)),
-            (InboxTab::SendLater, _) => list.sort_by_key(|&i| (next_send(st, &st.chats[i].id), i)),
-            (InboxTab::Snoozed, _) => list.sort_by_key(|&i| (snoozed(i), i)),
-            _ => list.sort_by_key(|&i| (std::cmp::Reverse(activity(i)), i)),
+            (InboxTab::Reminders, 0) => list.sort_by_cached_key(|&i| (remind_at(i), i)),
+            (InboxTab::Reminders, 1) => list.sort_by_cached_key(|&i| (std::cmp::Reverse(remind_at(i)), i)),
+            (InboxTab::Reminders, 2) => list.sort_by_cached_key(|&i| (activity(i), i)),
+            (InboxTab::SendLater, _) => list.sort_by_cached_key(|&i| (next_send(st, &st.chats[i].id), i)),
+            (InboxTab::Snoozed, _) => list.sort_by_cached_key(|&i| (snoozed(i), i)),
+            _ => list.sort_by_cached_key(|&i| (std::cmp::Reverse(activity(i)), i)),
         }
         list
     }
@@ -4060,16 +4073,10 @@ impl BeeperGuiApp {
     }
 
     pub fn step_chat(&mut self, delta: isize) {
-        let next = {
-            let st = self.store.read();
-            let chats = self.visible_chats(&st);
-            if chats.is_empty() {
-                return;
-            }
-            let cur = self.pane.selected_chat_id.as_ref().and_then(|id| chats.iter().position(|c| &c.id == id));
-            chats[(cur.unwrap_or(0) as isize + delta).rem_euclid(chats.len() as isize) as usize].id.clone()
-        };
-        self.select_chat(&next);
+        let next = self.chat_by(&self.store.read(), delta).map(|c| c.id.clone());
+        if let Some(next) = next {
+            self.select_chat(&next);
+        }
     }
 
     /// The chat list of the space window that `view` draws, else that of the main window; in `update`, the list of
@@ -4136,13 +4143,17 @@ impl BeeperGuiApp {
                 && c.flags & CHAT_UNREAD != 0
                 && (c.unread_mentions > 0 || !st.notifications_muted(c))
         };
+        // The count is kept until the store or the list changes, because each update of a sync sends it.
         let n = match st.settings.pref("badgeCount") {
             0 => return 0,
-            1 => st.chats.iter().filter(|c| counts(c)).count(),
-            _ => self.visible_chats(&st).into_iter().filter(|c| counts(c)).count(),
+            1 => self.count("badge", || st.chats.iter().filter(|c| counts(c)).count()),
+            _ => self.count(&format!("badge {:?}", self.list_key(self.list().filters)), || {
+                self.visible_chats(&st).into_iter().filter(|c| counts(c)).count()
+            }),
         };
         // Desktop counts one more with unread threads.
-        n as u32 + u32::from(!self.unread_threads(&st, false).is_empty())
+        let n = n + usize::from(!self.unread_threads(&st, false).is_empty());
+        u32::try_from(n).unwrap_or(u32::MAX)
     }
 
     fn handle(&mut self, msg: UiMessage) -> Task<UiMessage> {
@@ -6343,10 +6354,23 @@ impl BeeperGuiApp {
         moved
     }
 
+    /// Desktop's `chatListItems`: the chats in list order, the pinned tiles and then the rows.
+    pub(crate) fn listed_chats<'a>(&self, st: &'a BeeperStore) -> Vec<&'a Chat> {
+        let (pins, rows) = self.pins_and_rows(st);
+        pins.into_iter().chain(rows).collect()
+    }
+
     /// The chat IDs in list order: the pinned tiles, then the rows.
     fn list_ids(&self, st: &BeeperStore) -> Vec<String> {
-        let (pins, rows) = self.pins_and_rows(st);
-        pins.into_iter().chain(rows).map(|c| c.id.clone()).collect()
+        self.listed_chats(st).iter().map(|c| c.id.clone()).collect()
+    }
+
+    /// Desktop's `nextChatListItem` and `prevChatListItem`: the chat `by` places after the open chat in the list, or
+    /// after the start when the list does not show it, and none past either end.
+    pub(crate) fn chat_by<'a>(&self, st: &'a BeeperStore, by: isize) -> Option<&'a Chat> {
+        let chats = self.listed_chats(st);
+        let at = self.pane().selected_chat_id.as_ref().and_then(|id| chats.iter().position(|c| &c.id == id));
+        usize::try_from(at.map_or(-1, |a| a as isize) + by).ok().and_then(|i| chats.get(i).copied())
     }
 
     /// Desktop's `afterToggleArchive` and `afterToggleRead`: select a chat next to list position `at` by the `key`

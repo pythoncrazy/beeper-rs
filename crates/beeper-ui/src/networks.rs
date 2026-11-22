@@ -124,7 +124,7 @@ impl BeeperGuiApp {
                 if let Some(id) = self.networks.window {
                     return window::gain_focus(id);
                 }
-                let (id, open) = window::open(window::Settings {
+                let (id, open) = self.open_window(window::Settings {
                     resizable: false,
                     min_size: None,
                     position: window::Position::Centered,

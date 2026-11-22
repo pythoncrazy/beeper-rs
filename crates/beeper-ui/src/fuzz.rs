@@ -1184,6 +1184,26 @@ fn show_replies_like_desktop() {
     assert!(simulator(app.view_main()).find("Jump to Message").is_ok());
 }
 
+/// Desktop keeps the width of the thread pane in `threaded-replies-pane-fraction`, like the sidebar width.
+#[test]
+fn the_thread_pane_keeps_its_width_after_a_relaunch_like_desktop() {
+    let mut app = demo_app("thread-fraction");
+    let relaunch = |app: &BeeperGuiApp| BeeperGuiApp::new(app.store.clone()).thread_fraction;
+    assert_eq!(relaunch(&app), threads::THREAD_FRACTION);
+    app.pane.size = Size::new(1208.0, 800.0);
+    app.thread_area.set(808.0);
+    let _ = app.update(UiMessage::Thread(threads::Msg::Drag(None)));
+    let _ = app.update(UiMessage::Thread(threads::Msg::Drag(Some(Point::new(900.0, 400.0)))));
+    let _ = app.update(UiMessage::Thread(threads::Msg::Drag(None)));
+    assert_eq!(app.thread_fraction, 0.375);
+    assert_eq!(relaunch(&app), 0.375, "the dragged width");
+    let _ = app.update(UiMessage::Thread(threads::Msg::ResetWidth));
+    assert_eq!(relaunch(&app), threads::THREAD_FRACTION, "a double click resets it");
+    let path = app.store.read().config.data_dir.join("threaded-replies-pane-fraction");
+    std::fs::write(&path, "0.95").unwrap();
+    assert_eq!(relaunch(&app), 0.9, "at most 0.9");
+}
+
 /// Desktop's threaded replies: the replies button and the root line in the chat, the thread pane with its divider and
 /// its composer, which sends a thread reply with "Also send to chat", and "Reply in thread…".
 #[test]
@@ -1655,6 +1675,33 @@ fn composer_actions_follow_the_chat_like_desktop() {
     assert!(!composer_action(&st, &chat, 5, false).2, "the chat takes no voice notes");
     assert_eq!(composer_action(&st, &chat, 6, false), (format!("Create Poll (Unavailable for {net})"), None, false));
     assert_eq!(composer_action(&st, &chat, 7, false), (format!("Add a sticker (Unavailable for {net})"), None, false));
+}
+
+/// Desktop's chat keys follow the list (`chatListItems`): the pinned tiles in their order, then the rows. Select
+/// Next and Previous Chat stop at the ends.
+#[test]
+fn chat_keys_follow_the_list_order_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("list-order-keys");
+    let list = app.list_ids(&app.store.read());
+    let by_activity: Vec<String> = app.visible_chats(&app.store.read()).iter().map(|c| c.id.clone()).collect();
+    assert_ne!(list[..9], by_activity[..9], "the pinned tiles are not the most recent chats");
+    let key = |app: &mut BeeperGuiApp, k: &str| {
+        let _ = app.update(UiMessage::KeyPressed(Key::Character(k.into()), Modifiers::CTRL));
+        app.pane.selected_chat_id.clone().expect("a selected chat")
+    };
+    for (i, id) in list.iter().take(9).enumerate() {
+        assert_eq!(&key(&mut app, &(i + 1).to_string()), id, "Ctrl {}", i + 1);
+    }
+    let _ = key(&mut app, "1");
+    assert_eq!(key(&mut app, "]"), list[1], "Select Next Chat");
+    let _ = key(&mut app, "[");
+    assert_eq!(key(&mut app, "["), list[0], "no chat before the first");
+    let last = list.last().expect("a chat").clone();
+    let _ = app.update(UiMessage::SelectChat(last.clone()));
+    assert_eq!(key(&mut app, "]"), last, "no chat after the last");
+    let unread = app.listed_chats(&app.store.read()).iter().find(|c| c.is_unread()).map(|c| c.id.clone());
+    assert_eq!(Some(key(&mut app, "u")), unread, "Select Next Unread Chat takes the first in the list");
 }
 
 #[test]
@@ -4271,6 +4318,30 @@ fn zoom_keys_like_desktop() {
     }
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 0)));
     assert_eq!(app.zoom, 0.75, "the font size 9 is a root font of 12 px, as in Desktop");
+}
+
+/// Desktop's windows open at their size in screen pixels whatever the zoom and the font size, and iced opens a
+/// window at its size times the scale factor.
+#[test]
+fn windows_open_at_their_size_at_any_zoom_like_desktop() {
+    use iced::futures::StreamExt;
+    let mut app = demo_app("zoomed-windows");
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 8)));
+    assert_eq!(app.zoom, 1.25, "the font size 17 is a root font of 20 px");
+    let task = app.open_settings(SettingsTab::General);
+    let actions = iced_runtime::task::into_stream(task).expect("a window opens");
+    let size = iced::futures::executor::block_on(
+        actions
+            .filter_map(|a| async move {
+                match a {
+                    iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s.size),
+                    _ => None,
+                }
+            })
+            .boxed()
+            .next(),
+    );
+    assert_eq!(size, Some(SETTINGS_SIZE * 0.8), "800 by 740 screen pixels");
 }
 
 /// The sizes of the windows are in iced's logical pixels, which the zoom scales like Desktop's CSS pixels: the
