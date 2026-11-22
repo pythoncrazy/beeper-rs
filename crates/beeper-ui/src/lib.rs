@@ -2808,8 +2808,7 @@ pub struct BeeperGuiApp {
     /// Desktop's `BrandTypingIndicator` of each chat as it shows (`true`) or hides: who types, and since when.
     typing_shown: HashMap<String, (Vec<String>, bool, std::time::Instant)>,
     last_click: Option<(String, std::time::Instant)>,
-    /// The opened chats, the most recent first. While `cycling`, a selection does not reorder them.
-    chat_history: Vec<String>,
+    /// While `cycling`, a selection does not reorder the history of the opened chats.
     cycling: bool,
     pub status_banner: String,
     /// The text of Desktop's toast with a "Relaunch app" button, after a change that needs a relaunch.
@@ -3187,7 +3186,6 @@ impl BeeperGuiApp {
             view_once: Default::default(),
             started: std::time::Instant::now(),
             last_click: None,
-            chat_history: Vec::new(),
             cycling: false,
         };
         app.store.write().load_recent();
@@ -4022,16 +4020,15 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's `pushThreadHistory`, which the command bar, the History menu and the next launch show.
     fn push_history(&mut self, chat_id: &str) {
-        self.chat_history.retain(|c| c != chat_id);
-        self.chat_history.insert(0, chat_id.to_string());
-        self.chat_history.truncate(50);
+        self.store.write().push_recent_chat(chat_id);
     }
 
     /// Selects the chat `by` steps older in the history, or the most recent chat when no chat is open.
     fn step_history(&mut self, by: isize) -> Task<UiMessage> {
         let st = self.store.read();
-        let list: Vec<&String> = self.chat_history.iter().filter(|c| st.resolve_chat_idx(c).is_some()).collect();
+        let list: Vec<&String> = st.recent_chat_ids.iter().filter(|c| st.resolve_chat_idx(c).is_some()).collect();
         let at = self.pane.selected_chat_id.as_ref().map(|s| list.iter().position(|c| *c == s));
         let to = match at {
             Some(at) => (at.map_or(-1, |a| a as isize) + by).rem_euclid(list.len().max(1) as isize) as usize,

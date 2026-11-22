@@ -1646,6 +1646,26 @@ fn history_and_folder_submenus_like_desktop() {
     }
 }
 
+/// Desktop's `thread-history`: the opened chats, which the command bar shows as its recent chats, stay after a
+/// relaunch.
+#[test]
+fn opened_chats_are_the_recent_chats_after_a_relaunch_like_desktop() {
+    let mut app = demo_app("history-relaunch");
+    let ids: Vec<String> = app.visible_chats(&app.store.read()).iter().rev().take(2).map(|c| c.id.clone()).collect();
+    for id in &ids {
+        let _ = app.update(UiMessage::SelectChat(id.clone()));
+    }
+    let _ = app.update(UiMessage::SelectChat(ids[0].clone()));
+    let config = app.store.read().config.clone();
+    let st = beeper_core::store::BeeperStore::from_config(config);
+    assert_eq!(st.recent_chat_ids[..2], [&*ids[0], &*ids[1]], "the most recent first, once each");
+    let mut app = BeeperGuiApp::new(beeper_core::store::StoreLock::shared(st));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::History)));
+    let rows = app.commands(&app.store.read(), "");
+    let chats: Vec<&str> = rows.iter().filter_map(|c| c.chat.as_deref()).collect();
+    assert!(chats[1..].starts_with(&[&*ids[0], &*ids[1]]), "the History menu after the restart: {chats:?}");
+}
+
 #[test]
 fn the_composer_pill_quotes_like_desktop() {
     let note = "!note_self:beeper.com";
@@ -2958,6 +2978,9 @@ fn a_hover_builds_as_many_widgets_with_2000_chats_as_with_200() {
 fn forward_rows_open_the_chat_menu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("fwd-menu");
+    // The forward picker lists the recent chats.
+    let other = app.visible_chats(&app.store.read())[3].id.clone();
+    let _ = app.update(UiMessage::SelectChat(other));
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::ArrowUp), Modifiers::empty()));
     let _ = app.update(UiMessage::KeyPressed(Key::Character("f".into()), Modifiers::CTRL | Modifiers::SHIFT));

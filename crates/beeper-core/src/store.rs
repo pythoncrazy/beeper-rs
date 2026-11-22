@@ -1170,6 +1170,17 @@ impl BeeperStore {
         self.exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)", params![key, value]);
     }
 
+    /// Desktop's `pushThreadHistory`: chat `id` goes first in the saved history of the opened chats, which keeps 50.
+    pub fn push_recent_chat(&mut self, id: &str) {
+        if self.recent_chat_ids.first().is_some_and(|c| c == id) {
+            return;
+        }
+        self.recent_chat_ids.retain(|c| c != id);
+        self.recent_chat_ids.insert(0, id.to_string());
+        self.recent_chat_ids.truncate(50);
+        self.put_kv(KEY_RECENT_CHATS, &serde_json::to_string(&self.recent_chat_ids).expect("JSON of the chat IDs"));
+    }
+
     pub fn persist_connect(&mut self) {
         let tokens = self.connect.tokens_json();
         self.put_kv(crate::connect::KEY_TOKENS, &tokens);
