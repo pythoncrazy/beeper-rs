@@ -813,7 +813,7 @@ pub(crate) mod tests {
             name: "image.png".into(),
             mime: "image/png".into(),
             size: (1, 1),
-            frames: png,
+            frames: png.into(),
             bytes: vec![0; 8],
             ..Default::default()
         };
