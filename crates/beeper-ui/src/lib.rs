@@ -5042,6 +5042,35 @@ impl BeeperGuiApp {
     }
 
     pub fn subscription(&self) -> Subscription<UiMessage> {
+        let system = iced::system::theme_changes().map(|a0| UiMessage::Settings(settings::Msg::SystemTheme(a0)));
+        let shot = self.shot.map(|_| {
+            iced::event::listen_raw(|e, _, id| {
+                matches!(e, Event::Window(window::Event::RedrawRequested(_)))
+                    .then_some(UiMessage::Window(windows::Msg::Drawn(id)))
+            })
+        });
+        Subscription::batch(
+            self.store_feeds()
+                .into_iter()
+                .chain([window_events(), system])
+                .chain(shot)
+                .chain(self.key_events())
+                .chain(self.press_events())
+                .chain(self.drag_events())
+                .chain(self.clocks())
+                .chain(self.desktop_events())
+                .chain(self.audio_ticks())
+                .chain(self.transcribe_ticks())
+                .chain(self.audio_drag())
+                .chain(self.record_events())
+                .chain(self.video_ticks())
+                .chain(self.view_once_ticks())
+                .chain(self.idle_events()),
+        )
+    }
+
+    /// The feeds of the store and the frames of GTK's title bars.
+    fn store_feeds(&self) -> [Subscription<UiMessage>; 5] {
         let frame_ready = Subscription::run(|| {
             iced::futures::stream::unfold((), |()| async {
                 FRAME_READY.notified().await;
@@ -5067,62 +5096,11 @@ impl BeeperGuiApp {
         let launches = Subscription::run_with(StoreFeed(self.store.clone(), 3), |f| {
             feed(f.0.read().launch_tx.subscribe(), |a0| UiMessage::Window(windows::Msg::SecondInstance(a0)))
         });
-        let keys = iced::event::listen_with(|e, status, id| match e {
-            Event::Window(window::Event::Closed) => Some(UiMessage::Window(windows::Msg::Closed(id))),
-            Event::Window(window::Event::CloseRequested) => Some(UiMessage::Window(windows::Msg::CloseRequested(id))),
-            Event::Window(window::Event::Resized(size)) => Some(UiMessage::Window(windows::Msg::Resized(id, size))),
-            Event::Window(window::Event::Moved(_)) => Some(UiMessage::Window(windows::Msg::Moved(id))),
-            Event::Window(window::Event::Focused) => Some(UiMessage::Window(windows::Msg::Focused(true))),
-            Event::Window(window::Event::Unfocused) => Some(UiMessage::Window(windows::Msg::Focused(false))),
-            Event::Window(window::Event::FileHovered(_)) => {
-                Some(UiMessage::Composer(composer::Msg::FileHover(id, true)))
-            }
-            Event::Window(window::Event::FilesHoveredLeft) => {
-                Some(UiMessage::Composer(composer::Msg::FileHover(id, false)))
-            }
-            Event::Window(window::Event::FileDropped(path)) => {
-                Some(UiMessage::Composer(composer::Msg::FileDropped(id, path)))
-            }
-            Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => Some(UiMessage::Modifiers(m)),
-            Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), modifiers, .. })
-                if status == iced::event::Status::Captured && modifiers.is_empty() =>
-            {
-                Some(UiMessage::InputEscape(id))
-            }
-            // A text field pastes itself. The composer sends `Paste` for Desktop's file paste.
-            Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(c), modifiers, .. })
-                if status == iced::event::Status::Captured && modifiers.command() && c.eq_ignore_ascii_case("v") =>
-            {
-                None
-            }
-            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
-                if modifiers.command()
-                    || modifiers.control()
-                    || modifiers.alt()
-                    || matches!(
-                        key,
-                        Key::Named(
-                            Named::Escape
-                                | Named::ArrowUp
-                                | Named::ArrowDown
-                                | Named::ArrowLeft
-                                | Named::ArrowRight
-                                | Named::Enter
-                                | Named::Tab
-                                | Named::Backspace
-                        )
-                    ) =>
-            {
-                Some(UiMessage::WindowKey(id, key, modifiers))
-            }
-            Event::Keyboard(keyboard::Event::KeyPressed { text: Some(text), .. })
-                if status == iced::event::Status::Ignored && !text.chars().any(char::is_control) =>
-            {
-                Some(UiMessage::WindowText(id, text.to_string()))
-            }
-            _ => None,
-        });
-        let system = iced::system::theme_changes().map(|a0| UiMessage::Settings(settings::Msg::SystemTheme(a0)));
+        [changes, focus, tokens, launches, frame_ready]
+    }
+
+    /// The keys that [`window_events`] leaves to the focused control, while a view takes them.
+    fn key_events(&self) -> impl Iterator<Item = Subscription<UiMessage>> {
         let viewer = self.media_window.as_ref().is_some_and(|w| w.viewer.is_some());
         let carousel = (viewer || self.panes().any(|p| p.carousel.is_some())).then(|| {
             iced::event::listen_with(|e, _, id| match e {
@@ -5134,7 +5112,7 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
-        // The Page Up and Page Down of the open dropdown of a phone field, which `keys` does not send.
+        // The Page Up and Page Down of the open dropdown of a phone field, which [`window_events`] does not send.
         let dropdown = self.add_accounts.iter().any(|a| self.add_account_dropdown(a.id)).then(|| {
             iced::event::listen_with(|e, _, id| match e {
                 Event::Keyboard(keyboard::Event::KeyPressed {
@@ -5144,7 +5122,7 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
-        // Delete in the slots of the sign-in code, which `keys` does not send.
+        // Delete in the slots of the sign-in code, which [`window_events`] does not send.
         let code_delete = (self.login.screen == login::Screen::Code).then(|| {
             iced::event::listen_with(|e, _, id| match e {
                 Event::Keyboard(keyboard::Event::KeyPressed {
@@ -5155,24 +5133,11 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
-        let drag = self.dragging.then(|| {
-            iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                    Some(UiMessage::Rail(rail::Msg::ResizeMoved(position)))
-                }
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Rail(rail::Msg::ResizeEnd)),
-                _ => None,
-            })
-        });
-        let thread_drag = self.thread_drag.then(|| {
-            iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                    Some(UiMessage::Thread(threads::Msg::Drag(Some(position))))
-                }
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Thread(threads::Msg::Drag(None))),
-                _ => None,
-            })
-        });
+        carousel.into_iter().chain(dropdown).chain(code_delete)
+    }
+
+    /// The presses of the mouse while they do something.
+    fn press_events(&self) -> impl Iterator<Item = Subscription<UiMessage>> {
         let rail_press = (self.rail_hover.is_some() && self.rail_drag.is_none()).then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -5193,6 +5158,29 @@ impl BeeperGuiApp {
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                     Some(UiMessage::Pins(pins::Msg::Press))
                 }
+                _ => None,
+            })
+        });
+        rail_press.into_iter().chain(focus_press).chain(pin_press)
+    }
+
+    /// The moves and releases of the mouse while something drags.
+    fn drag_events(&self) -> impl Iterator<Item = Subscription<UiMessage>> {
+        let drag = self.dragging.then(|| {
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(UiMessage::Rail(rail::Msg::ResizeMoved(position)))
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Rail(rail::Msg::ResizeEnd)),
+                _ => None,
+            })
+        });
+        let thread_drag = self.thread_drag.then(|| {
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(UiMessage::Thread(threads::Msg::Drag(Some(position))))
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Thread(threads::Msg::Drag(None))),
                 _ => None,
             })
         });
@@ -5228,10 +5216,14 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
-        let (rising, due) = {
+        let drags = drag.into_iter().chain(thread_drag).chain(pin_drag).chain(rail_drag);
+        drags.chain(poll_drag).chain(time_drag)
+    }
+
+    /// The clocks of the timers that are due, and of the animations that go on.
+    fn clocks(&self) -> impl Iterator<Item = Subscription<UiMessage>> {
+        let due = {
             let st = self.store.read();
-            let last = self.pane().selected_chat_id.as_ref().and_then(|c| st.chat_timeline(c).last().copied());
-            let rising = last.is_some_and(|m| send_rise(&st, m).is_some());
             let pending = st.chats.iter().filter(|c| !self.expired(c));
             let send = st.scheduled.iter().filter(|s| !s.canceled).map(|s| s.send_on);
             let send = send.chain(self.pane.send_later.map(|c| c.0)).min();
@@ -5242,7 +5234,7 @@ impl BeeperGuiApp {
                 })
                 .map(|(_, r)| r.remind_at_ms);
             let snoozes = st.chats.iter().filter_map(|c| c.snoozed_until_ms).filter(|&at| at > self.snooze_clock);
-            (rising, (chats.chain(messages).chain(snoozes).min(), send))
+            (chats.chain(messages).chain(snoozes).min(), send)
         };
         let wait = |at: i64| std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
         let late = {
@@ -5276,12 +5268,30 @@ impl BeeperGuiApp {
         let queued = self.queued.iter().map(|q| q.due).min();
         let queued =
             queued.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Composer(composer::Msg::SendQueued(None))));
+        let toast =
+            self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::Toast(toasts::Msg::Tick)));
+        let tick = self
+            .animated()
+            .then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
+        let due = self.panes().any(|p| p.draft_due);
+        let drafts = due.then(|| iced::time::every(std::time::Duration::from_secs(5)).map(|_| UiMessage::SaveDrafts));
+        let timers = remind.into_iter().chain(late).chain(expiry).chain(send).chain(queued).chain(typing);
+        timers.chain(drafts).chain(toast).chain(tick)
+    }
+
+    /// An animation goes on, which redraws at 50 frames a second.
+    fn animated(&self) -> bool {
         // The loading of older messages and the fade of the scroll button, in each chat window too.
         let moving =
             |p: &Pane| p.top.loading.is_some() || p.scrolled_up.is_some_and(|s| s.1.elapsed().as_secs_f32() < 0.2);
         // The fade-in of the reply chain, in the thread panes too.
         let replies =
             |p: &Pane| p.reply_thread.is_some() && p.reply_opened.is_some_and(|t| t.elapsed() < message::REPLIES_RISE);
+        let rising = {
+            let st = self.store.read();
+            let last = self.pane().selected_chat_id.as_ref().and_then(|c| st.chat_timeline(c).last().copied());
+            last.is_some_and(|m| send_rise(&st, m).is_some())
+        };
         let animated = rising
             || self.panes().any(moving)
             || self.panes().flat_map(|p| std::iter::once(p).chain(p.thread.as_deref())).any(replies)
@@ -5306,7 +5316,11 @@ impl BeeperGuiApp {
         let media = self.media_window.as_ref().is_some_and(|w| {
             w.loading.is_some() || w.tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE)
         });
-        let animated = animated || media;
+        animated || media
+    }
+
+    /// The tray, the network portal and the notifications of the desktop.
+    fn desktop_events(&self) -> impl Iterator<Item = Subscription<UiMessage>> {
         // Desktop's tray menu takes the keys of the Minimize To Tray and Quit App hotkeys.
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon")).then(|| {
             let keys = tray_hotkeys(&self.store.read().settings);
@@ -5315,54 +5329,7 @@ impl BeeperGuiApp {
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
         let notes = (!self.notifications.is_empty() || self.verify.note.is_some())
             .then(|| Subscription::run(notify::events).map(UiMessage::Notify));
-        let toast =
-            self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::Toast(toasts::Msg::Tick)));
-        let tick =
-            animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
-        let due = self.panes().any(|p| p.draft_due);
-        let drafts = due.then(|| iced::time::every(std::time::Duration::from_secs(5)).map(|_| UiMessage::SaveDrafts));
-        let shot = self.shot.map(|_| {
-            iced::event::listen_raw(|e, _, id| {
-                matches!(e, Event::Window(window::Event::RedrawRequested(_)))
-                    .then_some(UiMessage::Window(windows::Msg::Drawn(id)))
-            })
-        });
-        Subscription::batch(
-            [changes, focus, tokens, launches, keys, system, frame_ready]
-                .into_iter()
-                .chain(drag)
-                .chain(thread_drag)
-                .chain(rail_press)
-                .chain(focus_press)
-                .chain(rail_drag)
-                .chain(pin_press)
-                .chain(pin_drag)
-                .chain(poll_drag)
-                .chain(time_drag)
-                .chain(carousel)
-                .chain(dropdown)
-                .chain(code_delete)
-                .chain(tick)
-                .chain(toast)
-                .chain(shot)
-                .chain(remind)
-                .chain(late)
-                .chain(expiry)
-                .chain(send)
-                .chain(queued)
-                .chain(typing)
-                .chain(drafts)
-                .chain(notes)
-                .chain(tray)
-                .chain(online)
-                .chain(self.audio_ticks())
-                .chain(self.transcribe_ticks())
-                .chain(self.audio_drag())
-                .chain(self.record_events())
-                .chain(self.video_ticks())
-                .chain(self.view_once_ticks())
-                .chain(self.idle_events()),
-        )
+        tray.into_iter().chain(online).chain(notes)
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {
@@ -6936,6 +6903,63 @@ pub fn set_text_scale(scale: f32) {
     if scale.is_finite() && scale > 0.0 {
         TEXT_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// The window events and the keys that the windows handle themselves.
+fn window_events() -> Subscription<UiMessage> {
+    iced::event::listen_with(|e, status, id| match e {
+        Event::Window(window::Event::Closed) => Some(UiMessage::Window(windows::Msg::Closed(id))),
+        Event::Window(window::Event::CloseRequested) => Some(UiMessage::Window(windows::Msg::CloseRequested(id))),
+        Event::Window(window::Event::Resized(size)) => Some(UiMessage::Window(windows::Msg::Resized(id, size))),
+        Event::Window(window::Event::Moved(_)) => Some(UiMessage::Window(windows::Msg::Moved(id))),
+        Event::Window(window::Event::Focused) => Some(UiMessage::Window(windows::Msg::Focused(true))),
+        Event::Window(window::Event::Unfocused) => Some(UiMessage::Window(windows::Msg::Focused(false))),
+        Event::Window(window::Event::FileHovered(_)) => Some(UiMessage::Composer(composer::Msg::FileHover(id, true))),
+        Event::Window(window::Event::FilesHoveredLeft) => {
+            Some(UiMessage::Composer(composer::Msg::FileHover(id, false)))
+        }
+        Event::Window(window::Event::FileDropped(path)) => {
+            Some(UiMessage::Composer(composer::Msg::FileDropped(id, path)))
+        }
+        Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => Some(UiMessage::Modifiers(m)),
+        Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), modifiers, .. })
+            if status == iced::event::Status::Captured && modifiers.is_empty() =>
+        {
+            Some(UiMessage::InputEscape(id))
+        }
+        // A text field pastes itself. The composer sends `Paste` for Desktop's file paste.
+        Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(c), modifiers, .. })
+            if status == iced::event::Status::Captured && modifiers.command() && c.eq_ignore_ascii_case("v") =>
+        {
+            None
+        }
+        Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
+            if modifiers.command()
+                || modifiers.control()
+                || modifiers.alt()
+                || matches!(
+                    key,
+                    Key::Named(
+                        Named::Escape
+                            | Named::ArrowUp
+                            | Named::ArrowDown
+                            | Named::ArrowLeft
+                            | Named::ArrowRight
+                            | Named::Enter
+                            | Named::Tab
+                            | Named::Backspace
+                    )
+                ) =>
+        {
+            Some(UiMessage::WindowKey(id, key, modifiers))
+        }
+        Event::Keyboard(keyboard::Event::KeyPressed { text: Some(text), .. })
+            if status == iced::event::Status::Ignored && !text.chars().any(char::is_control) =>
+        {
+            Some(UiMessage::WindowText(id, text.to_string()))
+        }
+        _ => None,
+    })
 }
 
 /// [`TEXT_SCALE`].
