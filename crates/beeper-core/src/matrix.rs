@@ -359,8 +359,25 @@ async fn power_levels(room: &Room) -> Value {
     levels
 }
 
-async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Chat {
-    let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
+/// What a chat keeps from the members of its room while their state does not change: the participants, the title and
+/// whether it is a DM. Reading thousands of members for each message of a big group took most of its sync.
+pub(crate) struct Known {
+    participants: Vec<User>,
+    title: String,
+    dm: bool,
+}
+
+/// The `MEMBER_ACTIONS` bits that the room features allow, all of them without room features.
+fn member_actions(features: Option<&Value>) -> u8 {
+    features.map_or(ALL_MEMBER_ACTIONS, |f| {
+        let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
+        MEMBER_ACTIONS.iter().enumerate().filter(|(_, k)| on(k)).fold(0, |m, (i, _)| m | 1 << i)
+    })
+}
+
+/// The participants of a room from its members, its title and whether it is a DM, like Desktop's `buildTitle` and
+/// thread type.
+async fn members(room: &Room, bridge: &Value) -> (Vec<User>, String, bool) {
     let service = room.service_members().unwrap_or_default();
     let bot = s(&bridge["bridgebot"]);
     let me = room.own_user_id();
@@ -370,12 +387,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let levels = power_levels(room).await;
     let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
     let features = state(room, "com.beeper.room_features").await;
-    let (file, room_features) = file_features(features.as_ref(), &bridge);
-    let tombstone = state(room, "m.room.tombstone").await;
-    let member_actions = features.as_ref().map_or(ALL_MEMBER_ACTIONS, |f| {
-        let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
-        MEMBER_ACTIONS.iter().enumerate().filter(|(_, k)| on(k)).fold(0, |m, (i, _)| m | 1 << i)
-    });
+    let member_actions = member_actions(features.as_ref());
     let contents: HashMap<String, Value> = states(room, StateEventType::RoomMember)
         .await
         .into_iter()
@@ -415,7 +427,6 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         })
         .collect();
     items.sort_by(crate::models::member_order);
-    let tags = room.tags().await.expect("read room tags").unwrap_or_default();
     // Desktop's thread type (`rT`): a note to self is single, a declared DM is single up to two people, and a room
     // with a name or a declared group DM is a group.
     let note = state(room, "com.beeper.rooms.note_to_self").await.is_some();
@@ -449,6 +460,22 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             .expect("a chat with other members")
         }
     });
+    (items, title, dm)
+}
+
+async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value, known: Option<Known>) -> Chat {
+    let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
+    let (mut items, title, dm) = match known {
+        Some(k) => (k.participants, k.title, k.dm),
+        None => members(room, &bridge).await,
+    };
+    let me = room.own_user_id();
+    let features = state(room, "com.beeper.room_features").await;
+    let (file, room_features) = file_features(features.as_ref(), &bridge);
+    let tombstone = state(room, "m.room.tombstone").await;
+    let levels = power_levels(room).await;
+    let member_actions = member_actions(features.as_ref());
+    let tags = room.tags().await.expect("read room tags").unwrap_or_default();
     let account_id = account_id(&bridge, accounts);
     // Desktop's `hasExited`: in a room that the user left, the own member stays, exited, and does not count above.
     if room.state() == RoomState::Left {
@@ -1081,16 +1108,20 @@ async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
     }
 }
 
-async fn sync_receipts(store: &SharedStore, room: &Room) {
+async fn sync_receipts(store: &SharedStore, room: &Room, only: Option<&HashSet<String>>) {
     let chat = chat_id(room).await;
+    let me = room.own_user_id().to_string();
+    // Each receipt is a read of the state store, so a receipt event reads only the receipts of its users, not those of
+    // the thousands of members of a big group.
+    let wanted = |u: &String| only.is_none_or(|o| o.contains(u));
     let peers: Vec<String> = {
         let st = store.read();
         let Some(&idx) = st.chat_idx_by_id.get(&chat) else { return };
-        st.chats[idx].participants.items.iter().filter(|u| u.is_self != Some(true)).map(|u| u.id.clone()).collect()
+        let peers = st.chats[idx].participants.items.iter().filter(|u| u.is_self != Some(true));
+        peers.map(|u| u.id.clone()).chain([me.clone()]).filter(wanted).collect()
     };
     let mut updates = Vec::new();
-    let me = room.own_user_id().to_string();
-    for uid in peers.into_iter().chain([me.clone()]) {
+    for uid in peers {
         let Ok(parsed) = matrix_sdk::ruma::UserId::parse(&uid) else { continue };
         let receipt = room.load_user_receipt(ReceiptType::Read, &ReceiptThread::Unthreaded, &parsed).await;
         if let Some((ev, r)) = receipt.expect("read receipt") {
@@ -1440,7 +1471,7 @@ async fn sync_invite(store: &SharedStore, room: &Room) {
         let st = store.read();
         (st.bridge_accounts.clone(), st.inbox_rules.clone())
     };
-    let mut chat = chat(room, &accounts, &rules).await;
+    let mut chat = chat(room, &accounts, &rules, None).await;
     // Desktop lists the own invite as a pending member that the inviter added.
     if let Ok(invite) = room.invite_details().await {
         let me = invite.invitee;
@@ -1494,9 +1525,19 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, events: Vec<Time
     sync_room_after(store, room, events, None).await;
 }
 
-/// [`sync_room`] with `prev_batch`, the token of the events before `events` that a sync gives, so that a new room
-/// loads only the older events that its first page needs, not the newest ones again.
-async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, prev_batch: Option<String>) {
+/// What a sync gives with the events of a room.
+struct Update {
+    /// The token of the events before those of the sync, so that a new room loads only the older events that its
+    /// first page needs, not the newest ones again.
+    prev_batch: Option<String>,
+    /// Whether the sync changed a state of the room. Without a change, a chat keeps what it found from the members.
+    state_changed: bool,
+}
+
+/// [`sync_room`] with the `update` of a sync, which reads the receipts of its receipt events after it.
+async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, update: Option<Update>) {
+    let from_sync = update.is_some();
+    let (prev_batch, state_changed) = update.map_or((None, true), |u| (u.prev_batch, u.state_changed));
     match room.room_id().as_str() {
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
         TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
@@ -1527,7 +1568,13 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
     let rules = store.read().inbox_rules.clone();
     let pins = global(&room.client(), "com.beeper.favourites_order").await;
     let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
-    let mut chat = chat(room, &accounts, &rules).await;
+    let known = (!state_changed && union.is_none() && room.state() == RoomState::Joined).then(|| {
+        let st = store.read();
+        // A chat that no sync made yet, like one copied from Desktop, reads its members.
+        let c = st.chat_idx_by_id.get(&chat_id).map(|&i| &st.chats[i]).filter(|c| c.notifiable.is_some())?;
+        Some(Known { participants: c.participants.items.clone(), title: c.title.clone(), dm: c.chat_type == "single" })
+    });
+    let mut chat = chat(room, &accounts, &rules, known.flatten()).await;
     // Desktop's `rT`: a merged chat is single.
     if union.is_some() {
         chat.chat_type = "single".into();
@@ -1796,7 +1843,9 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
         });
     }
     sync_thread_reads(store, room, roots).await;
-    sync_receipts(store, room).await;
+    if !from_sync {
+        sync_receipts(store, room, None).await;
+    }
 }
 
 /// Desktop's `applyDisappearingTimer`: the timer of a later event replaces the one of the message.
@@ -4991,7 +5040,14 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 if gap.is_some() && !synced_before(store, &room).await {
                     gap = None;
                 }
-                sync_room_after(store, &room, update.timeline.events, update.timeline.prev_batch).await;
+                // A state event in the state of the update or in its timeline can change the members.
+                let state = match &update.state {
+                    matrix_sdk::sync::State::Before(e) | matrix_sdk::sync::State::After(e) => !e.is_empty(),
+                };
+                let state_key = |e: &TimelineEvent| e.raw().get_field::<String>("state_key").ok().flatten().is_some();
+                let state_changed = state || update.timeline.events.iter().any(state_key);
+                let prev_batch = update.timeline.prev_batch;
+                sync_room_after(store, &room, update.timeline.events, Some(Update { prev_batch, state_changed })).await;
                 if let Some(from) = gap {
                     tokio::spawn(fill_gap(store.clone(), room.clone(), from));
                 }
@@ -5000,7 +5056,10 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                     if v["type"] == "m.typing" {
                         set_typing(store, &room, &v["content"]["user_ids"]).await;
                     } else if v["type"] == "m.receipt" {
-                        sync_receipts(store, &room).await;
+                        let receipts = v["content"].as_object().into_iter().flatten();
+                        let users = receipts.flat_map(|(_, r)| r["m.read"].as_object().into_iter().flatten());
+                        let users: HashSet<String> = users.map(|(u, _)| u.clone()).collect();
+                        sync_receipts(store, &room, Some(&users)).await;
                         let me = room.own_user_id().as_str();
                         let receipts = v["content"].as_object().into_iter().flatten();
                         if receipts.into_iter().any(|(_, r)| r["m.read"].get(me).is_some()) {
@@ -5333,6 +5392,48 @@ mod tests {
         let texts: Vec<_> = st.chat_timeline("!room:x").iter().filter_map(|m| m.text.clone()).collect();
         assert_eq!(texts, (41..=70).map(|i| format!("m{i}")).collect::<Vec<_>>());
         assert_eq!(st.chat("!room:x").older, crate::models::Older::From("t40".into()));
+    }
+
+    /// A sync that changes no state of a room keeps the members that its chat found, without reading them and their
+    /// receipts again, and a member that joins in a later sync shows.
+    #[tokio::test]
+    async fn a_sync_without_state_keeps_the_members() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let syncs = AtomicUsize::new(0);
+        let member = |u: &str| {
+            json!({ "type": "m.room.member", "state_key": u, "sender": u, "event_id": format!("$join{u}"),
+                "origin_server_ts": 1, "content": { "membership": "join", "displayname": format!("{u} name") } })
+        };
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => {
+                let n = syncs.fetch_add(1, Relaxed) + 1;
+                let mut sync = stub_sync();
+                sync["next_batch"] = json!(format!("s{n}"));
+                let room = &mut sync["rooms"]["join"]["!room:x"];
+                // The sync of `stub_store`, then one with Ann, one without a state, and one with Bob.
+                match n {
+                    1 | 2 => room["state"]["events"].as_array_mut().expect("state events").push(member("@ann:x")),
+                    3 => room["state"] = json!({ "events": [] }),
+                    _ => room["state"] = json!({ "events": [member("@bob:x")] }),
+                }
+                room["timeline"] = json!({ "events": [stub_message(i64::try_from(n).unwrap())], "prev_batch": "t0" });
+                (200, sync)
+            }
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("keep-members"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        for want in [vec!["@ann:x", "@me:x"], vec!["@ann:x", "@me:x"], vec!["@ann:x", "@bob:x", "@me:x"]] {
+            assert!(super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await);
+            let st = store.read();
+            let mut got: Vec<&str> = st.chat("!room:x").participants.items.iter().map(|u| u.id.as_str()).collect();
+            got.sort_unstable();
+            assert_eq!(got, want);
+        }
     }
 
     /// Desktop's `lastReadMessageSortKey` of a room: the order of the event of your own read receipt, which a read
