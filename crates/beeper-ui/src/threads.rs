@@ -285,8 +285,8 @@ impl BeeperGuiApp {
             .collect();
         let (menu, h) = crate::menu_rows(p, rows, 233);
         let menu = menu;
-        let x = if at.x + 233.0 > self.pane().size.width { at.x - 233.0 } else { at.x };
-        (menu.into(), x, at.y.min(self.pane().size.height - h - 8.0))
+        let (x, y) = crate::menu_spot(at, 233.0, h, self.pane().size);
+        (menu.into(), x, y)
     }
 
     /// Desktop's "Unread threads" pill at the top of the chat list: the count, with "@" for a mention.

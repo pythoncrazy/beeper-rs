@@ -762,6 +762,18 @@ const MESSAGE_MENU_W: f32 = 270.0;
 const MIN_PANE_W: f32 = 240.0;
 /// Desktop's `.menu-item` line: 13 px text at the 1.4 line height of `html`.
 const MENU_LINE: f32 = 13.0 * 1.4;
+/// Where Chromium's `MenuController::CalculateMenuBounds` puts a native context menu of `w` x `h` that opens at the
+/// cursor `at`, with the window as the screen: below the cursor when it fits, else above it when that fits, and moved
+/// back inside the edges. Electron's menus on Linux are Chromium's, which do not flip to the left of the cursor.
+fn menu_spot(at: Point, w: f32, h: f32, area: Size) -> (f32, f32) {
+    let y = match at.y + h <= area.height {
+        true => at.y,
+        false if at.y - h >= 0.0 => at.y - h,
+        false => at.y,
+    };
+    (at.x.clamp(0.0, (area.width - w).max(0.0)), y.clamp(0.0, (area.height - h).max(0.0)))
+}
+
 /// The pitch of Desktop's `.menu-item`: the line in rem, 3 px of padding on each side, and a collapsed 2 px margin.
 fn menu_pitch() -> f32 {
     rem(MENU_LINE) + 8.0
@@ -5650,7 +5662,7 @@ impl BeeperGuiApp {
                         },
                 )
             };
-            let x = if at.x + w > self.pane().size.width { at.x - w } else { at.x };
+            let (x, y) = menu_spot(*at, w, h, self.pane().size);
             let sub_w = self
                 .chat_sub
                 .filter(|_| {
@@ -5658,8 +5670,7 @@ impl BeeperGuiApp {
                 })
                 .map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
             let left = x + w + sub_w > self.pane().size.width;
-            let y = at.y.min(self.pane().size.height - h - 8.0);
-            (self.view_chat_menu(cid, left, self.pane().size.height - 8.0 - y), if left { x - sub_w } else { x }, y)
+            (self.view_chat_menu(cid, left, self.pane().size.height - y), if left { x - sub_w } else { x }, y)
         });
         let selection_menu = self.selection_menu.map(|(i, x)| {
             let (menu, h) = self.view_selection_menu(i);
@@ -5744,8 +5755,7 @@ impl BeeperGuiApp {
     fn pane_menu(&self) -> Option<(El<'_>, f32, f32)> {
         let message_menu = self.pane().message_menu.as_ref().map(|(mid, at)| {
             let (menu, h, top) = self.view_message_menu(mid);
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            let y = at.y.min(self.pane().size.height - h - 8.0);
+            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
             let (sub, sub_w) = match self.view_speed_menu(mid) {
                 // Level with its row, under Fullscreen, Open in PiP, Download and Mute.
                 Some(sub) => (Some(column![Space::new().height(4.0 * menu_pitch()), sub].into()), video::SPEED_MENU_W),
@@ -5759,7 +5769,7 @@ impl BeeperGuiApp {
                 }
                 None => {
                     let st = self.store.read();
-                    let room = self.pane().size.height - y - 8.0;
+                    let room = self.pane().size.height - y;
                     self.view_voice_sub(&st, &stored(&st, mid), top, room).map_or((None, 0.0), |(e, w)| (Some(e), w))
                 }
             };
@@ -5768,18 +5778,18 @@ impl BeeperGuiApp {
                 true => (x - sub_w, row![].push(sub).push(menu).into()),
                 false => (x, row![menu].push(sub).into()),
             };
-            (menu, x, at.y.min(self.pane().size.height - h - 8.0))
+            (menu, x, y)
         });
         let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| {
             let (menu, h) = self.view_edit_menu(word.as_ref());
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            (menu, x, at.y.min(self.pane().size.height - h - 8.0))
+            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
+            (menu, x, y)
         });
         let edit_menu = edit_menu.or_else(|| {
             let (ids, items, at) = self.pane().sched_menu.as_ref()?;
             let (menu, h) = self.view_scheduled_menu(ids, *items);
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            Some((menu, x, at.y.min(self.pane().size.height - h - 8.0)))
+            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
+            Some((menu, x, y))
         });
         let react = self.pane().emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
             let x = if at.x + 352.0 > self.pane().size.width { at.x - 352.0 } else { at.x };
@@ -6933,6 +6943,21 @@ mod tests {
             tx.send(tokio::runtime::Handle::current().metrics().num_workers()).expect("the test waits");
         });
         assert_eq!(rx.recv().expect("the task runs"), 1);
+    }
+
+    /// Chromium's `CalculateMenuBounds` of a root context menu: below the cursor, else above it, and back inside at the
+    /// right edge rather than to the left of the cursor.
+    #[test]
+    fn context_menus_open_like_chromium() {
+        let area = Size::new(1200.0, 800.0);
+        assert_eq!(menu_spot(Point::new(100.0, 100.0), 233.0, 400.0, area), (100.0, 100.0), "below the cursor");
+        assert_eq!(menu_spot(Point::new(100.0, 590.0), 233.0, 400.0, area), (100.0, 190.0), "above, ending at it");
+        assert_eq!(
+            menu_spot(Point::new(100.0, 300.0), 233.0, 700.0, area),
+            (100.0, 100.0),
+            "moved up when neither fits"
+        );
+        assert_eq!(menu_spot(Point::new(1100.0, 100.0), 233.0, 400.0, area), (967.0, 100.0), "kept at the right edge");
     }
 
     #[test]
