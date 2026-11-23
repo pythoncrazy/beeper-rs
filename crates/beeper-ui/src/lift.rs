@@ -9,6 +9,7 @@ use iced::{Element, Event, Rectangle, Renderer, Theme, Transformation};
 /// button that went down on it stays down, like a CSS `:active` transform.
 pub struct Lift<'a, Message> {
     content: Element<'a, Message>,
+    dx: f32,
     dy: f32,
     scale: f32,
     tight: bool,
@@ -16,17 +17,24 @@ pub struct Lift<'a, Message> {
 }
 
 pub fn lift<'a, Message>(content: impl Into<Element<'a, Message>>, dy: f32, scale: f32) -> Lift<'a, Message> {
-    Lift { content: content.into(), dy, scale, tight: false, press: false }
+    Lift { content: content.into(), dx: 0.0, dy, scale, tight: false, press: false }
 }
 
 /// Gives a scrollable its viewport as the minimum size of its content, like a CSS `min-height: 100%`.
 pub fn tight<'a, Message>(content: impl Into<Element<'a, Message>>) -> Lift<'a, Message> {
-    Lift { content: content.into(), dy: 0.0, scale: 1.0, tight: true, press: false }
+    Lift { content: content.into(), dx: 0.0, dy: 0.0, scale: 1.0, tight: true, press: false }
 }
 
 /// Draws `content` at `scale` while it is pressed, like Desktop's `:active { transform: scale(...) }`.
 pub fn press<'a, Message>(content: impl Into<Element<'a, Message>>, scale: f32) -> Lift<'a, Message> {
-    Lift { content: content.into(), dy: 0.0, scale, tight: false, press: true }
+    Lift { content: content.into(), dx: 0.0, dy: 0.0, scale, tight: false, press: true }
+}
+
+impl<Message> Lift<'_, Message> {
+    /// Draws the content moved by `dx` and `dy` too, like a CSS `translate`.
+    pub fn shift(self, dx: f32, dy: f32) -> Self {
+        Lift { dx, dy: self.dy + dy, ..self }
+    }
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
@@ -88,7 +96,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
             true => (b.center_x(), b.center_y(), if *tree.state.downcast_ref::<bool>() { self.scale } else { 1.0 }),
             false => (b.x + b.width, b.y + b.height, self.scale),
         };
-        let t = Transformation::translate(x, y + self.dy)
+        let t = Transformation::translate(x + self.dx, y + self.dy)
             * Transformation::scale(scale)
             * Transformation::translate(-x, -y);
         renderer.with_transformation(t, |r| {

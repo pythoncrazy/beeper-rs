@@ -3,7 +3,6 @@
 //! composer switcher of a merged chat.
 
 use super::*;
-use crate::composer::hidden_actions;
 use crate::merge_editor::{merge_keys, mergeable, other, MERGE_HELP};
 use crate::message::raised;
 use iced::widget::{column, rich_text, span};
@@ -497,7 +496,7 @@ impl BeeperGuiApp {
             });
         // The switcher avatar: 20 px in the 36 px line of the composer pill, 14 px into the pill after the attach
         // button, and 8 px from the bottom of the pane. The bubble is 16 px over it, its tail 32 px into it.
-        let unveiled = hidden_actions(st).len() as f32;
+        let unveiled = self.pane_actions(st).len() as f32;
         let plus = if self.pane().show_attach_menu { 36.0 + 6.0 + 2.0 + unveiled * 30.0 - 2.0 } else { 36.0 };
         let center = 8.0 + plus + 8.0 + 14.0 + 10.0;
         let left = (center - 32.0).max(8.0);

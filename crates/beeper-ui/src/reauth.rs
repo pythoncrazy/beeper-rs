@@ -52,7 +52,7 @@ impl BeeperGuiApp {
     /// Opens Desktop's `ReauthRequiredModal`, and asks the Beeper cloud to email a sign-in code. The code runs `retry`.
     pub(crate) fn open_reauth(&mut self, retry: UiMessage) -> Task<UiMessage> {
         if let Some(id) = self.reauth.window {
-            return window::gain_focus(id);
+            return self.raise(id);
         }
         let (id, open) = self.open_child(SIZE);
         self.reauth = Reauth { window: Some(id), retry: Some(retry), ..Reauth::default() };

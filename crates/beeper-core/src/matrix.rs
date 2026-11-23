@@ -8,9 +8,9 @@ use crate::models::{
     VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS,
     BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS,
     DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE,
-    MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, MSG_MENTION, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR,
-    PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION,
-    TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, MSG_MENTION, MSG_NUDGE, NOTIFICATION_SOUND, NO_UNBLOCK,
+    PERSONAL_AVATAR, PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED,
+    TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -92,6 +92,25 @@ enum Op {
     /// A `com.beeper.message_send_status`: the message, whether it reached a user, the error, the status, and the
     /// disappearing timer of the bridge.
     SendStatus(String, bool, Option<SendError>, Box<crate::models::SendStatus>, Option<MessageTimer>),
+}
+
+impl Op {
+    /// The message that the event changes, other than one that it upserts.
+    fn target(&self) -> Option<&str> {
+        match self {
+            Op::Upsert(_) => None,
+            Op::React(t, ..)
+            | Op::Edit { target: t, .. }
+            | Op::PollEdit(t, ..)
+            | Op::Timer(t, ..)
+            | Op::Redact(t, _)
+            | Op::Remove(t)
+            | Op::ViewsLeft(t, _)
+            | Op::Vote(t, ..)
+            | Op::EndPoll(t, ..)
+            | Op::SendStatus(t, ..) => Some(t),
+        }
+    }
 }
 
 fn s(v: &Value) -> Option<String> {
@@ -463,7 +482,37 @@ async fn members(room: &Room, bridge: &Value) -> (Vec<User>, String, bool) {
     (items, title, dm)
 }
 
-async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value, known: Option<Known>) -> Chat {
+/// The global account data that the chats read: the inbox order of the pinned chats (`com.beeper.favourites_order`),
+/// the muted rooms of `com.beeper.muted` and the push rules. The SDK saves all of a sync response before
+/// [`on_sync`], so the rooms of a response, or a pass over all the rooms, read it once instead of once per room.
+pub(crate) struct Globals {
+    pins: Value,
+    muted: Vec<String>,
+    notifications: matrix_sdk::notification_settings::NotificationSettings,
+}
+
+impl Globals {
+    pub(crate) async fn read(client: &Client) -> Self {
+        Self {
+            pins: global(client, "com.beeper.favourites_order").await,
+            muted: muted_rooms(client).await,
+            notifications: client.notification_settings().await,
+        }
+    }
+
+    /// The place of `room` in the inbox order of the pinned chats.
+    fn pin_rank(&self, room: &str) -> Option<usize> {
+        self.pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room))
+    }
+}
+
+async fn chat(
+    room: &Room,
+    accounts: &[BridgeAccountInfo],
+    rules: &Value,
+    known: Option<Known>,
+    globals: &Globals,
+) -> Chat {
     let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
     let (mut items, title, dm) = match known {
         Some(k) => (k.participants, k.title, k.dm),
@@ -506,13 +555,8 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value, known:
         is_muted: Some(
             // Desktop's `mutedRoomIDs` of `com.beeper.muted`, or the room's push rule. The SDK's
             // `Room::user_defined_notification_mode` is empty for a room the user left, but its rule still mutes it.
-            muted_rooms(&room.client()).await.iter().any(|r| r == room.room_id().as_str())
-                || room
-                    .client()
-                    .notification_settings()
-                    .await
-                    .get_user_defined_room_notification_mode(room.room_id())
-                    .await
+            globals.muted.iter().any(|r| r == room.room_id().as_str())
+                || globals.notifications.get_user_defined_room_notification_mode(room.room_id()).await
                     == Some(RoomNotificationMode::MentionsAndKeywordsOnly),
         ),
         is_pinned: Some(tags.contains_key(&TagName::Favorite)),
@@ -864,7 +908,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         flags: match c["m.mentions"]["user_ids"].as_array() {
             Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
             _ => 0,
-        },
+        } | if c["com.beeper.nudge"] == true { MSG_NUDGE } else { 0 },
         ..Default::default()
     });
     match reaction {
@@ -1079,7 +1123,6 @@ async fn synced_before(store: &SharedStore, room: &Room) -> bool {
 /// A limited sync timeline leaves a gap between the last sync and `from`: loads pages back from it until a page
 /// reaches a message that the chat has, so that the timeline has no hole.
 async fn fill_gap(store: SharedStore, room: Room, from: String) {
-    let chat = chat_id(&room).await;
     let mut from = Some(from);
     for _ in 0..GAP_PAGES {
         let Some(token) = from.take() else { return };
@@ -1088,9 +1131,8 @@ async fn fill_gap(store: SharedStore, room: Room, from: String) {
             Err(e) => return eprintln!("Could not fill a gap in {}: {e}", room.room_id()),
         };
         let reached = {
-            let mut st = store.write();
-            st.load_chat(&chat);
-            events.iter().filter_map(TimelineEvent::event_id).any(|id| st.find_message(id.as_str()).is_some())
+            let st = store.read();
+            events.iter().filter_map(TimelineEvent::event_id).any(|id| st.has_message(id.as_str()))
         };
         sync_room(&store, &room, events).await;
         if reached {
@@ -1137,47 +1179,50 @@ async fn sync_receipts(store: &SharedStore, room: &Room, only: Option<&HashSet<S
         return;
     }
     let mut st = store.write();
-    st.load_chat(&chat);
-    let indices = st.timeline_indices(&chat).to_vec();
-    for (uid, ev, at) in updates {
-        let target = indices.iter().copied().find(|&i| {
-            let m = &st.messages[i];
-            m.id == ev || m.reactions.iter().any(|r| r.id == ev)
-        });
-        let Some(target) = target else { continue };
-        // Desktop's `seenByMeAt` and `recipientReadTimerStartedAt`: the read starts the timers of the messages
-        // that it reads, your own ones for a read of the recipient.
-        let read = st.messages[target].sort_key.clone();
-        for &i in &indices {
-            let m = &st.messages[i];
-            let sender = m.is_sender == Some(true);
-            let waits = m.disappearing.as_ref().is_some_and(|t| t.waits_for_read(sender));
-            if waits && sender != (uid == me) && m.sort_key <= read {
-                st.update_message(i, |m| m.disappearing.as_mut().expect("a timer").read_at = Some(at));
+    // A chat that is not loaded reads only the stored messages that the receipts can change.
+    let events: Vec<String> = updates.iter().map(|u| u.1.clone()).collect();
+    st.with_chat(&chat, &[], |st| {
+        let indices = st.receipt_messages(&chat, &events.iter().map(String::as_str).collect::<Vec<_>>());
+        for (uid, ev, at) in updates {
+            let target = indices.iter().copied().find(|&i| {
+                let m = &st.messages[i];
+                m.id == ev || m.reactions.iter().any(|r| r.id == ev)
+            });
+            let Some(target) = target else { continue };
+            // Desktop's `seenByMeAt` and `recipientReadTimerStartedAt`: the read starts the timers of the messages
+            // that it reads, your own ones for a read of the recipient.
+            let read = st.messages[target].sort_key.clone();
+            for &i in &indices {
+                let m = &st.messages[i];
+                let sender = m.is_sender == Some(true);
+                let waits = m.disappearing.as_ref().is_some_and(|t| t.waits_for_read(sender));
+                if waits && sender != (uid == me) && m.sort_key <= read {
+                    st.update_message(i, |m| m.disappearing.as_mut().expect("a timer").read_at = Some(at));
+                }
             }
-        }
-        // Desktop's `lastReadMessageSortKey`: the order of the event of your own receipt.
-        if uid == me {
-            let idx = st.chat_idx(&chat);
-            if st.chats[idx].last_read_message_sort_key.as_ref().is_none_or(|k| *k < read) {
-                st.update_chat(idx, |c| c.last_read_message_sort_key = Some(read));
+            // Desktop's `lastReadMessageSortKey`: the order of the event of your own receipt.
+            if uid == me {
+                let idx = st.chat_idx(&chat);
+                if st.chats[idx].last_read_message_sort_key.as_ref().is_none_or(|k| *k < read) {
+                    st.update_chat(idx, |c| c.last_read_message_sort_key = Some(read));
+                }
+                continue;
             }
-            continue;
-        }
-        let ts = rfc3339_from_millis(at);
-        for &i in &indices {
-            if i != target && st.messages[i].seen.contains_key(&uid) {
-                st.update_message(i, |m| {
-                    m.seen.remove(&uid);
+            let ts = rfc3339_from_millis(at);
+            for &i in &indices {
+                if i != target && st.messages[i].seen.contains_key(&uid) {
+                    st.update_message(i, |m| {
+                        m.seen.remove(&uid);
+                    });
+                }
+            }
+            if st.messages[target].seen.get(&uid) != Some(&ts) {
+                st.update_message(target, |m| {
+                    m.seen.insert(uid, ts);
                 });
             }
         }
-        if st.messages[target].seen.get(&uid) != Some(&ts) {
-            st.update_message(target, |m| {
-                m.seen.insert(uid, ts);
-            });
-        }
-    }
+    });
 }
 
 /// Desktop's label rooms: the name, the `com.beeper.label.*` state and the `m.space.child` chats.
@@ -1470,12 +1515,12 @@ async fn sync_space(store: &SharedStore, room: &Room) {
 
 /// Desktop's `createThreadFromInvite`: an invite to a room is a read-only message request, from the stripped state
 /// of the room, at the time it came.
-async fn sync_invite(store: &SharedStore, room: &Room) {
+async fn sync_invite(store: &SharedStore, room: &Room, globals: &Globals) {
     let (accounts, rules) = {
         let st = store.read();
         (st.bridge_accounts.clone(), st.inbox_rules.clone())
     };
-    let mut chat = chat(room, &accounts, &rules, None).await;
+    let mut chat = chat(room, &accounts, &rules, None, globals).await;
     // Desktop lists the own invite as a pending member that the inviter added.
     if let Ok(invite) = room.invite_details().await {
         let me = invite.invitee;
@@ -1506,7 +1551,7 @@ async fn sync_invite(store: &SharedStore, room: &Room) {
 
 /// Desktop keeps a chat that the user left or was removed from (its own member `hasExited`, see `chat`), and the
 /// message of that leave previews it (`shouldPreview`). A chat that is gone here, as after Delete Chat, stays gone.
-async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
+async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>, globals: &Globals) {
     let chat = chat_id(room).await;
     if store.read().resolve_chat_idx(&chat).is_none() {
         return;
@@ -1516,17 +1561,23 @@ async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>)
         let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
         (v["type"] == "m.room.member" && v["state_key"] == me.as_str()).then(|| s(&v["event_id"])).flatten()
     });
-    sync_room(store, room, events).await;
+    sync_room_after(store, room, events, None, Some(globals)).await;
     let mut st = store.write();
     // A merged chat that the user left is gone (`UNION_REMOVED`).
     let Some(idx) = st.resolve_chat_idx(&chat) else { return };
-    if let Some(m) = exit.and_then(|id| st.loaded(&id).cloned()) {
+    // The sync leaves a chat that is not loaded so, with the message in SQLite.
+    if let Some(m) = exit.and_then(|id| st.loaded(&id).cloned().or_else(|| st.stored_message(&id))) {
         st.update_chat(idx, |c| (c.last_activity, c.preview) = (Some(m.timestamp.clone()), Some(m)));
     }
 }
 
 pub(crate) async fn sync_room(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
-    sync_room_after(store, room, events, None).await;
+    sync_room_after(store, room, events, None, None).await;
+}
+
+/// [`sync_room`] with the global account data of a pass over many rooms.
+async fn sync_room_with(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>, globals: &Globals) {
+    sync_room_after(store, room, events, None, Some(globals)).await;
 }
 
 /// What a sync gives with the events of a room.
@@ -1538,8 +1589,15 @@ struct Update {
     state_changed: bool,
 }
 
-/// [`sync_room`] with the `update` of a sync, which reads the receipts of its receipt events after it.
-async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, update: Option<Update>) {
+/// [`sync_room`] with the `update` of a sync, which reads the receipts of its receipt events after it, and the global
+/// account data that the caller read, else read here.
+async fn sync_room_after(
+    store: &SharedStore,
+    room: &Room,
+    mut events: Vec<TimelineEvent>,
+    update: Option<Update>,
+    globals: Option<&Globals>,
+) {
     let from_sync = update.is_some();
     let (prev_batch, state_changed) = update.map_or((None, true), |u| (u.prev_batch, u.state_changed));
     match room.room_id().as_str() {
@@ -1570,15 +1628,22 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
     let note = chat_id == NOTE_CHAT_ID;
     let accounts = store.read().bridge_accounts.clone();
     let rules = store.read().inbox_rules.clone();
-    let pins = global(&room.client(), "com.beeper.favourites_order").await;
-    let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
+    let read;
+    let globals = match globals {
+        Some(g) => g,
+        None => {
+            read = Globals::read(&room.client()).await;
+            &read
+        }
+    };
+    let rank = globals.pin_rank(room.room_id().as_str());
     let known = (!state_changed && union.is_none() && room.state() == RoomState::Joined).then(|| {
         let st = store.read();
         // A chat that no sync made yet, like one copied from Desktop, reads its members.
         let c = st.chat_idx_by_id.get(&chat_id).map(|&i| &st.chats[i]).filter(|c| c.notifiable.is_some())?;
         Some(Known { participants: c.participants.items.clone(), title: c.title.clone(), dm: c.chat_type == "single" })
     });
-    let mut chat = chat(room, &accounts, &rules, known.flatten()).await;
+    let mut chat = chat(room, &accounts, &rules, known.flatten(), globals).await;
     // Desktop's `rT`: a merged chat is single.
     if union.is_some() {
         chat.chat_type = "single".into();
@@ -1598,7 +1663,8 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
     } else if !seen {
         let known: HashSet<String> = events.iter().filter_map(|e| Some(e.event_id()?.to_string())).collect();
         // Without the page, `older` stays unknown and the next load of older messages tries again.
-        if let Ok((page, end)) = page(room, prev_batch, wanted).await.inspect_err(|e| drop(no_history(room, e))) {
+        let page = outside_sync_tx(store, page(room, prev_batch, wanted)).await;
+        if let Ok((page, end)) = page.inspect_err(|e| drop(no_history(room, e))) {
             older = Some(end.map_or(Older::Start, Older::From));
             let page = page.into_iter().filter(|e| e.event_id().is_some_and(|id| !known.contains(id.as_str())));
             events = page.chain(events).collect();
@@ -1625,6 +1691,9 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
     let reacted =
         ops.iter().filter_map(|o| if let Op::React(_, _, m) = o { Some(m.sort_key.clone()) } else { None }).max();
     let redacted = ops.iter().any(|o| matches!(o, Op::Redact(..)));
+    // The stored messages that the events change, besides those that they upsert.
+    let targets: Vec<String> =
+        ops.iter().filter_map(Op::target).map(str::to_string).chain(non_messages.clone()).collect();
     let (members, group) = (chat.participants.total, chat.chat_type == "group");
     {
         let mut st = store.write();
@@ -1677,173 +1746,171 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
                     });
                 }
             }
-            st.load_chat(&chat_id);
-            // Desktop finds the target of an event only in the room of the event.
-            let here = |st: &BeeperStore, id: &str| st.loaded_idx(id).filter(|&i| st.messages[i].chat_id == chat_id);
-            // The Matrix spec ignores an edit whose sender is not the sender of the message.
-            let mine =
-                |st: &BeeperStore, id: &str, sender: &str| here(st, id).filter(|&i| st.messages[i].sender_id == sender);
-            // A placeholder that decrypted to an edit, a reaction or a hidden event was no message, so its order does not
-            // count, like a redacted one: Desktop's `countsAsUnread` row of an edit is the edited message.
-            let mut stale = redacted;
-            for id in non_messages {
-                if here(st, &id).is_some() {
-                    st.remove_message(&chat_id, &id).expect("remove a decrypted placeholder");
-                    stale = true;
+            let targets: Vec<&str> = targets.iter().map(String::as_str).collect();
+            // A chat that is not loaded stays so: its new messages go to SQLite.
+            st.with_chat(&chat_id, &targets, |st| {
+                // Desktop finds the target of an event only in the room of the event.
+                let here =
+                    |st: &BeeperStore, id: &str| st.loaded_idx(id).filter(|&i| st.messages[i].chat_id == chat_id);
+                // The Matrix spec ignores an edit whose sender is not the sender of the message.
+                let mine = |st: &BeeperStore, id: &str, sender: &str| {
+                    here(st, id).filter(|&i| st.messages[i].sender_id == sender)
+                };
+                // A placeholder that decrypted to an edit, a reaction or a hidden event was no message, so its order does not
+                // count, like a redacted one: Desktop's `countsAsUnread` row of an edit is the edited message.
+                let mut stale = redacted;
+                for id in non_messages {
+                    if here(st, &id).is_some() {
+                        st.remove_message(&chat_id, &id).expect("remove a decrypted placeholder");
+                        stale = true;
+                    }
                 }
-            }
-            for op in ops {
-                match op {
-                    Op::Upsert(m) => st.upsert_message(*m),
-                    Op::Vote(target, voter, answers) if here(st, &target).is_some() => {
-                        st.update_poll(&target, |p| p.respond(&voter, &answers));
-                    }
-                    Op::EndPoll(target, sender, moderator)
-                        if here(st, &target).is_some() && (moderator || mine(st, &target, &sender).is_some()) =>
-                    {
-                        st.update_poll(&target, |p| p.ended = true);
-                    }
-                    Op::Vote(..) | Op::EndPoll(..) => {}
-                    Op::PollEdit(target, sender, poll, timestamp) => {
-                        if let Some(i) = mine(st, &target, &sender).filter(|&i| st.messages[i].poll.is_some()) {
-                            st.update_message(i, |m| edit_poll(m, *poll, timestamp));
+                for op in ops {
+                    match op {
+                        Op::Upsert(m) => st.upsert_message(*m),
+                        Op::Vote(target, voter, answers) if here(st, &target).is_some() => {
+                            st.update_poll(&target, |p| p.respond(&voter, &answers));
                         }
-                    }
-                    Op::SendStatus(target, delivered, error, status, timer) => {
-                        let i = here(st, &target);
-                        if let Some((i, timer)) = i.zip(timer) {
-                            apply_timer(st, i, timer);
+                        Op::EndPoll(target, sender, moderator)
+                            if here(st, &target).is_some() && (moderator || mine(st, &target, &sender).is_some()) =>
+                        {
+                            st.update_poll(&target, |p| p.ended = true);
                         }
-                        let m = |i: usize| &st.messages[i];
-                        let changed = |i| {
-                            (m(i).is_delivered, &m(i).send_error, m(i).send_status.as_ref())
-                                != (delivered, &error, Some(&*status))
-                        };
-                        if let Some(i) = i.filter(|&i| changed(i)) {
-                            st.update_message(i, |m| {
-                                (m.is_delivered, m.send_error, m.send_status) = (delivered, error, Some(*status))
-                            });
+                        Op::Vote(..) | Op::EndPoll(..) => {}
+                        Op::PollEdit(target, sender, poll, timestamp) => {
+                            if let Some(i) = mine(st, &target, &sender).filter(|&i| st.messages[i].poll.is_some()) {
+                                st.update_message(i, |m| edit_poll(m, *poll, timestamp));
+                            }
                         }
-                    }
-                    Op::React(target, r, mut preview) => {
-                        let target_idx = here(st, &target);
-                        let target_msg = target_idx.map(|i| &st.messages[i]);
-                        let target_mine = target_msg.is_some_and(|m| m.is_sender == Some(true));
-                        let who = match preview.is_sender == Some(true) {
-                            true => Some("You"),
-                            false => group.then(|| preview.sender_name.as_deref().expect("sender name")),
-                        };
-                        preview.text = Some(reaction_text(&r.reaction_key, target_msg, who));
-                        if let Some(i) = target_idx {
-                            st.update_message(i, |m| {
-                                m.reactions.retain(|x| x.id != r.id);
-                                m.reactions.push(r);
-                            });
-                        }
-                        let idx = st.chat_idx(&chat_id);
-                        let shown = preview.is_sender == Some(true) || (members <= 20 && (!group || target_mine));
-                        let newer = st.chats[idx]
-                            .preview
-                            .as_ref()
-                            .is_none_or(|p| p.sort_key < preview.sort_key || p.id == preview.id);
-                        if shown && newer {
-                            st.update_chat(idx, |c| {
-                                c.last_activity = Some(preview.timestamp.clone());
-                                c.preview = Some(*preview);
-                            });
-                        }
-                    }
-                    Op::Timer(target, sender, timer) => {
-                        if let Some(i) = mine(st, &target, &sender) {
-                            apply_timer(st, i, timer);
-                        }
-                    }
-                    Op::Edit {
-                        target,
-                        sender,
-                        text,
-                        html,
-                        links,
-                        attachments,
-                        message_type,
-                        unresolved_media,
-                        timestamp,
-                        timer,
-                        buttons,
-                    } => {
-                        if let Some(i) = mine(st, &target, &sender) {
-                            if let Some(timer) = timer {
+                        Op::SendStatus(target, delivered, error, status, timer) => {
+                            let i = here(st, &target);
+                            if let Some((i, timer)) = i.zip(timer) {
                                 apply_timer(st, i, timer);
                             }
-                            st.update_message(i, |m| {
-                                let prev = match text {
-                                    Some(t) => m.text.replace(t).unwrap_or_default(),
-                                    None => m.text.take().unwrap_or_default(),
-                                };
-                                if let Some(timestamp) =
-                                    timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t))
-                                {
-                                    m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
-                                }
-                                if !attachments.is_empty() {
-                                    m.attachments = attachments;
-                                    m.message_type = Some(message_type.into());
-                                }
-                                m.unresolved_media = unresolved_media;
-                                m.links = links;
-                                m.html = html;
-                                if let Some(buttons) = buttons {
-                                    m.buttons = buttons;
-                                }
-                            });
+                            let m = |i: usize| &st.messages[i];
+                            let changed = |i| {
+                                (m(i).is_delivered, &m(i).send_error, m(i).send_status.as_ref())
+                                    != (delivered, &error, Some(&*status))
+                            };
+                            if let Some(i) = i.filter(|&i| changed(i)) {
+                                st.update_message(i, |m| {
+                                    (m.is_delivered, m.send_error, m.send_status) = (delivered, error, Some(*status))
+                                });
+                            }
                         }
-                    }
-                    Op::Remove(id) if here(st, &id).is_some() => {
-                        st.remove_message(&chat_id, &id).expect("remove a local echo");
-                    }
-                    Op::Redact(target, expired) if here(st, &target).is_some() => {
-                        match expired {
-                            true => st.expire_message(&chat_id, &target),
-                            false => st.delete_message(&chat_id, &target),
+                        Op::React(target, r, mut preview) => {
+                            let target_idx = here(st, &target);
+                            let target_msg = target_idx.map(|i| &st.messages[i]);
+                            let target_mine = target_msg.is_some_and(|m| m.is_sender == Some(true));
+                            let who = match preview.is_sender == Some(true) {
+                                true => Some("You"),
+                                false => group.then(|| preview.sender_name.as_deref().expect("sender name")),
+                            };
+                            preview.text = Some(reaction_text(&r.reaction_key, target_msg, who));
+                            if let Some(i) = target_idx {
+                                st.update_message(i, |m| {
+                                    m.reactions.retain(|x| x.id != r.id);
+                                    m.reactions.push(r);
+                                });
+                            }
+                            let idx = st.chat_idx(&chat_id);
+                            let shown = preview.is_sender == Some(true) || (members <= 20 && (!group || target_mine));
+                            let newer = st.chats[idx]
+                                .preview
+                                .as_ref()
+                                .is_none_or(|p| p.sort_key < preview.sort_key || p.id == preview.id);
+                            if shown && newer {
+                                st.update_chat(idx, |c| {
+                                    c.last_activity = Some(preview.timestamp.clone());
+                                    c.preview = Some(*preview);
+                                });
+                            }
                         }
-                        .expect("redact a known message");
-                    }
-                    // Desktop's `MIN(remainingCount)` of the updates of a message.
-                    Op::ViewsLeft(target, left) => {
-                        let i = here(st, &target).filter(|&i| st.messages[i].view_limit.is_some());
-                        if let Some(i) = i.filter(|&i| st.messages[i].views_left.is_none_or(|n| left < n)) {
-                            st.update_message(i, |m| m.views_left = Some(left));
+                        Op::Timer(target, sender, timer) => {
+                            if let Some(i) = mine(st, &target, &sender) {
+                                apply_timer(st, i, timer);
+                            }
                         }
-                    }
-                    Op::Remove(id) | Op::Redact(id, _) => {
-                        let reacted = st
-                            .timeline_indices(&chat_id)
-                            .iter()
-                            .copied()
-                            .find(|&i| st.messages[i].reactions.iter().any(|r| r.id == id));
-                        if let Some(i) = reacted {
-                            st.update_message(i, |m| m.reactions.retain(|r| r.id != id));
+                        Op::Edit {
+                            target,
+                            sender,
+                            text,
+                            html,
+                            links,
+                            attachments,
+                            message_type,
+                            unresolved_media,
+                            timestamp,
+                            timer,
+                            buttons,
+                        } => {
+                            if let Some(i) = mine(st, &target, &sender) {
+                                if let Some(timer) = timer {
+                                    apply_timer(st, i, timer);
+                                }
+                                st.update_message(i, |m| {
+                                    let prev = match text {
+                                        Some(t) => m.text.replace(t).unwrap_or_default(),
+                                        None => m.text.take().unwrap_or_default(),
+                                    };
+                                    if let Some(timestamp) =
+                                        timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t))
+                                    {
+                                        m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
+                                    }
+                                    if !attachments.is_empty() {
+                                        m.attachments = attachments;
+                                        m.message_type = Some(message_type.into());
+                                    }
+                                    m.unresolved_media = unresolved_media;
+                                    m.links = links;
+                                    m.html = html;
+                                    if let Some(buttons) = buttons {
+                                        m.buttons = buttons;
+                                    }
+                                });
+                            }
+                        }
+                        Op::Remove(id) if here(st, &id).is_some() => {
+                            st.remove_message(&chat_id, &id).expect("remove a local echo");
+                        }
+                        Op::Redact(target, expired) if here(st, &target).is_some() => {
+                            match expired {
+                                true => st.expire_message(&chat_id, &target),
+                                false => st.delete_message(&chat_id, &target),
+                            }
+                            .expect("redact a known message");
+                        }
+                        // Desktop's `MIN(remainingCount)` of the updates of a message.
+                        Op::ViewsLeft(target, left) => {
+                            let i = here(st, &target).filter(|&i| st.messages[i].view_limit.is_some());
+                            if let Some(i) = i.filter(|&i| st.messages[i].views_left.is_none_or(|n| left < n)) {
+                                st.update_message(i, |m| m.views_left = Some(left));
+                            }
+                        }
+                        Op::Remove(id) | Op::Redact(id, _) => {
+                            if let Some(i) = st.reacted_message(&chat_id, &id) {
+                                st.update_message(i, |m| m.reactions.retain(|r| r.id != id));
+                            }
                         }
                     }
                 }
-            }
-            let idx = st.chat_idx(&chat_id);
-            if let Some(older) = older {
-                st.update_chat(idx, |c| c.older = older);
-            }
-            let msgs = st.timeline(&chat_id);
-            let last =
-                msgs.clone().rev().find(|m| m.message_type.as_deref() != Some("MEMBERSHIP")).map(|m| &m.sort_key);
-            let stored = msgs.flat_map(|m| &m.reactions).map(|r| &r.sort_key).max();
-            let old = st.chats[idx].notifiable.as_ref().filter(|_| !stale);
-            let notifiable = [old, last, reacted.as_ref(), stored].into_iter().flatten().max().cloned();
-            let notifiable = Some(notifiable.unwrap_or_else(|| sort_key(MIN_SAFE_INTEGER)));
-            let archived = st.local_flag(&chat_id, ChatFlag::Archived).unwrap_or_else(|| {
-                archived_upto(&st.chats[idx], done, notifiable.as_deref().expect("a notifiable order"))
+                let idx = st.chat_idx(&chat_id);
+                if let Some(older) = older {
+                    st.update_chat(idx, |c| c.older = older);
+                }
+                let (last, stored) = st.newest_orders(&chat_id);
+                let old = st.chats[idx].notifiable.as_ref().filter(|_| !stale);
+                let notifiable =
+                    [old, last.as_ref(), reacted.as_ref(), stored.as_ref()].into_iter().flatten().max().cloned();
+                let notifiable = Some(notifiable.unwrap_or_else(|| sort_key(MIN_SAFE_INTEGER)));
+                let archived = st.local_flag(&chat_id, ChatFlag::Archived).unwrap_or_else(|| {
+                    archived_upto(&st.chats[idx], done, notifiable.as_deref().expect("a notifiable order"))
+                });
+                if (st.chats[idx].is_archived, &st.chats[idx].notifiable) != (Some(archived), &notifiable) {
+                    st.update_chat(idx, |c| (c.is_archived, c.notifiable) = (Some(archived), notifiable));
+                }
             });
-            if (st.chats[idx].is_archived, &st.chats[idx].notifiable) != (Some(archived), &notifiable) {
-                st.update_chat(idx, |c| (c.is_archived, c.notifiable) = (Some(archived), notifiable));
-            }
         });
     }
     sync_thread_reads(store, room, roots).await;
@@ -2004,6 +2071,8 @@ pub enum Outgoing {
     },
     /// Leaves the room, and forgets it for Desktop's `deleteLabel`.
     Leave(bool),
+    /// Desktop's `sendNudge`: an `m.notice` with `com.beeper.nudge` and the body, without a local echo.
+    Nudge(String),
     /// A state event with an empty state key.
     State(String, Value),
     /// Desktop's `removeParticipant`: a leave membership for the user.
@@ -2765,6 +2834,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         Outgoing::Poll { txn, poll } => {
             send_txn(store, &room, "org.matrix.msc3381.poll.start", poll_start(&poll), txn).await?
         }
+        Outgoing::Nudge(body) => {
+            let content = serde_json::json!({ "msgtype": "m.notice", "body": body, "com.beeper.nudge": true });
+            room.send_raw("m.room.message", content).await.map_err(|_| "Failed to send nudge".to_string())?;
+        }
         Outgoing::EndPoll { target } => {
             let content = serde_json::json!({
                 "m.relates_to": { "rel_type": "m.reference", "event_id": event(target)?.to_string() },
@@ -3263,12 +3336,12 @@ pub fn logged(src: &str) -> String {
 }
 
 /// Desktop's `getAsset`: the media of `source` from the cache, or else downloaded like Desktop's SDK and cached.
-async fn fetch(client: &Client, source: MediaSource, interactive: bool) -> Result<Vec<u8>, String> {
-    let request = MediaRequestParameters { source, format: MediaFormat::File };
-    let uri = crate::download::uri(&request.source).to_string();
-    let shown = match &request.source {
-        MediaSource::Encrypted(_) => format!("{uri} (encrypted)"),
-        MediaSource::Plain(_) => uri,
+async fn fetch(client: &Client, source: crate::download::Source, interactive: bool) -> Result<Vec<u8>, String> {
+    let request = MediaRequestParameters { source: source.cache_key(), format: MediaFormat::File };
+    let uri = source.uri().to_string();
+    let shown = match source.encrypted() {
+        true => format!("{uri} (encrypted)"),
+        false => uri,
     };
     let cache = client.media_store();
     if let Ok(cache) = cache.lock().await {
@@ -3278,7 +3351,7 @@ async fn fetch(client: &Client, source: MediaSource, interactive: bool) -> Resul
     }
     let token = client.access_token().ok_or("Not signed in to Matrix")?;
     let tried = |n, e: &str| eprintln!("media load {n}/{} failed, trying again: {shown}: {e}", crate::download::TRIES);
-    let bytes = crate::download::download(&client.homeserver(), &token, &request.source, interactive, tried)
+    let bytes = crate::download::download(&client.homeserver(), &token, &source, interactive, tried)
         .await
         .inspect_err(|e| eprintln!("media load failed: {shown}: {e}"))?;
     let keep = matrix_sdk::media::store::IgnoreMediaRetentionPolicy::No;
@@ -3308,7 +3381,8 @@ pub async fn media_interactive(client: Option<Client>, src: String) -> Result<()
 }
 
 /// The Matrix media of a source URL, with the encrypted file info of its `encryptedFileInfoJSON` query.
-fn media_source(src: String) -> Result<MediaSource, String> {
+fn media_source(src: String) -> Result<crate::download::Source, String> {
+    use crate::download::Source;
     Ok(match src.split_once(&format!("?{ENCRYPTED_FILE}=")) {
         Some((_, json)) => {
             let json = crate::codec::url_decode(json).ok_or("bad encrypted file info")?;
@@ -3317,14 +3391,20 @@ fn media_source(src: String) -> Result<MediaSource, String> {
                 false => vodozemac::base64_decode(json.trim_end_matches('=').replace('-', "+").replace('_', "/"))
                     .map_err(|e| e.to_string())?,
             };
-            // The files of other encryptions, like the `com.beeper.floe.v1` of the WhatsApp bridge, say so.
             let v: Value = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
-            if let Some(other) = v["v"].as_str().filter(|v| *v != "v2") {
-                return Err(format!("unsupported file encryption {other}"));
+            match v["v"].as_str() {
+                // The SDK's `FLOEFile`, for the files of bridges like WhatsApp's.
+                Some(crate::floe::VERSION) => {
+                    let url = s(&v["url"]).ok_or("no URL in the encrypted file info")?;
+                    Source::Floe(url.into(), crate::floe::File::parse(&v)?)
+                }
+                Some(other) if other != "v2" => return Err(format!("unsupported file encryption {other}")),
+                _ => Source::Matrix(MediaSource::Encrypted(Box::new(
+                    serde_json::from_value(v).map_err(|e| e.to_string())?,
+                ))),
             }
-            MediaSource::Encrypted(Box::new(serde_json::from_value(v).map_err(|e| e.to_string())?))
         }
-        None => MediaSource::Plain(src.into()),
+        None => Source::Matrix(MediaSource::Plain(src.into())),
     })
 }
 
@@ -4162,11 +4242,13 @@ pub fn with_custom_emoji(pack: &Value, name: &str, url: &str) -> Result<Value, S
 }
 
 /// Applies a change of the inbox rules to every room.
-async fn sync_rules(client: &Client, store: &SharedStore) {
+async fn sync_rules(client: &Client, store: &SharedStore, globals: &Globals) {
     let rules = global(client, RULES).await;
     if std::mem::replace(&mut store.write().inbox_rules, rules.clone()) != rules {
         let rooms = futures_util::stream::iter(client.joined_rooms());
-        rooms.for_each_concurrent(8, |room| async move { sync_room(store, &room, Vec::new()).await }).await;
+        rooms
+            .for_each_concurrent(8, |room| async move { sync_room_with(store, &room, Vec::new(), globals).await })
+            .await;
     }
 }
 
@@ -5167,14 +5249,16 @@ pub async fn run(store: SharedStore) {
     sync_prefs(&client, &store).await;
     sync_profile(&client, &store).await;
     store.write().inbox_rules = global(&client, RULES).await;
+    // Nothing saves a sync before the loop below, so the passes over the rooms read the global account data once.
+    let globals = Globals::read(&client).await;
     for room in client.invited_rooms() {
-        sync_invite(&store, &room).await;
+        sync_invite(&store, &room, &globals).await;
     }
     // The chats that stay after a leave or a removal, without history to load again.
     for room in client.left_rooms() {
         let chat = chat_id(&room).await;
         if store.read().resolve_chat_idx(&chat).is_some() {
-            sync_room(&store, &room, Vec::new()).await;
+            sync_room_with(&store, &room, Vec::new(), &globals).await;
         }
     }
     let first = !store.read().beeper_state.first_sync_done;
@@ -5182,10 +5266,10 @@ pub async fn run(store: SharedStore) {
     store.write().initial_sync = (0, rooms.len());
     futures_util::stream::iter(rooms)
         .for_each_concurrent(8, |room| {
-            let store = store.clone();
+            let (store, globals) = (store.clone(), &globals);
             async move {
                 let events = if first || has_utd(&store, &room).await { history(&room).await } else { Vec::new() };
-                sync_room(&store, &room, events).await;
+                sync_room_with(&store, &room, events, globals).await;
                 store.write().initial_sync.0 += 1;
             }
         })
@@ -5214,6 +5298,37 @@ pub async fn run(store: SharedStore) {
         })
         .await
         .expect("Matrix sync loop");
+}
+
+/// The SQLite transaction of the rooms of a sync response ([`BeeperStore::begin_sync`]). It commits when it ends,
+/// also when the sync stops with a panic or its task is canceled, so that the writes after it do not stay in it.
+struct SyncTx<'a>(&'a SharedStore);
+
+impl<'a> SyncTx<'a> {
+    fn begin(store: &'a SharedStore) -> Self {
+        store.write().begin_sync();
+        Self(store)
+    }
+}
+
+impl Drop for SyncTx<'_> {
+    fn drop(&mut self) {
+        // A panic with the store locked leaves the store unusable, and SQLite drops the transaction at the exit.
+        if !self.0.poisoned() {
+            self.0.write().commit_sync();
+        }
+    }
+}
+
+/// Runs `f`, which waits for the homeserver, outside the transaction of a sync response, which then goes on: the
+/// writes of the windows meanwhile commit at once.
+async fn outside_sync_tx<T>(store: &SharedStore, f: impl std::future::Future<Output = T>) -> T {
+    let open = store.write().commit_sync();
+    let r = f.await;
+    if open {
+        store.write().begin_sync();
+    }
+    r
 }
 
 /// Applies a response of the Matrix sync loop: the account data, the rooms, the invites, and the left rooms. False
@@ -5256,14 +5371,18 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             refresh_e2ee(client, store).await;
             sync_account_data(client, store).await;
             sync_prefs(client, store).await;
-            sync_rules(client, store).await;
+            // The SDK saved the response before this, and nothing in it changes the global account data.
+            let globals = Globals::read(client).await;
+            sync_rules(client, store, &globals).await;
+            // The writes of the rooms make one SQLite commit.
+            let tx = SyncTx::begin(store);
             for id in resp.rooms.invited.keys() {
-                sync_invite(store, &client.get_room(id).expect("an invited room is known")).await;
+                sync_invite(store, &client.get_room(id).expect("an invited room is known"), &globals).await;
             }
             for (id, update) in resp.rooms.left {
                 match client.get_room(&id) {
                     Some(room) if room.state() == RoomState::Left => {
-                        sync_left(store, &room, update.timeline.events).await
+                        sync_left(store, &room, update.timeline.events, &globals).await
                     }
                     // A forgotten room, like a deleted label, is gone from the client, and from its merged chats.
                     _ => store.write().remove_deleted_chat(id.as_str()),
@@ -5283,7 +5402,8 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 let state_key = |e: &TimelineEvent| e.raw().get_field::<String>("state_key").ok().flatten().is_some();
                 let state_changed = state || update.timeline.events.iter().any(state_key);
                 let prev_batch = update.timeline.prev_batch;
-                sync_room_after(store, &room, update.timeline.events, Some(Update { prev_batch, state_changed })).await;
+                let u = Some(Update { prev_batch, state_changed });
+                sync_room_after(store, &room, update.timeline.events, u, Some(&globals)).await;
                 for e in &update.account_data {
                     let v: Value = e.deserialize_as().expect("room account data JSON");
                     if v["type"] == crate::drafts::DRAFT {
@@ -5316,6 +5436,7 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                     }
                 }
             }
+            drop(tx);
             retry_drafts(client, store).await;
             let mut st = store.write();
             st.replay_drafts();
@@ -5354,6 +5475,114 @@ mod tests {
         assert!(!unanswered(Some(&shown("$b")), "$a", &waiting), "another verification shows");
         assert!(!unanswered(None, "$a", &waiting), "no verification shows");
         assert!(!unanswered(Some(&shown("$a")), "$a", &S::Done), "the verification ended");
+    }
+
+    /// The events of a sync after the five messages and the reaction `$k` to `$e1` of [`unloaded_history`]: a new
+    /// message, an edit, a reaction and a redaction of stored messages, and a redaction of the stored reaction.
+    fn unloaded_sync() -> Vec<Value> {
+        let rel = |kind: &str, target: &str| json!({ "rel_type": kind, "event_id": target });
+        let new = json!({ "msgtype": "m.text", "body": "edited" });
+        let edit = json!({ "msgtype": "m.text", "body": "* edited", "m.new_content": new,
+            "m.relates_to": rel("m.replace", "$e2") });
+        let mut reaction = rel("m.annotation", "$e3");
+        reaction["key"] = json!("👍");
+        let events = [
+            stub_message(7),
+            stub_event("$x8", "m.room.message", edit),
+            stub_event("$x9", "m.reaction", json!({ "m.relates_to": reaction })),
+            unloaded_redaction("$x10", "$e4"),
+            unloaded_redaction("$x11", "$k"),
+        ];
+        events.into_iter().zip(7..).map(|(e, i)| unloaded_order(e, i)).collect()
+    }
+
+    /// The event at the order `i` of the stub room.
+    fn unloaded_order(mut e: Value, i: i64) -> Value {
+        (e["unsigned"]["com.beeper.hs.order"], e["origin_server_ts"]) = (json!(i), json!(1_700_000_000_000 + i * 1000));
+        e
+    }
+
+    fn unloaded_redaction(id: &str, target: &str) -> Value {
+        let mut e = stub_event(id, "m.room.redaction", json!({ "redacts": target }));
+        e["redacts"] = json!(target);
+        e
+    }
+
+    /// The history of the stub room: five messages, and the reaction `$k` to `$e1`.
+    fn unloaded_history() -> Vec<Value> {
+        let reaction = json!({ "rel_type": "m.annotation", "event_id": "$e1", "key": "👋" });
+        let k = unloaded_order(stub_event("$k", "m.reaction", json!({ "m.relates_to": reaction })), 6);
+        (1..=5).map(stub_message).chain([k]).collect()
+    }
+
+    /// The stub room after its history and then the `events` of a sync, with the chat unloaded before the sync when
+    /// `unload`, and the stored messages and the chat as JSON.
+    async fn sync_unloaded(name: &str, unload: bool, events: Vec<Value>) -> (crate::store::SharedStore, Value, Value) {
+        use matrix_sdk::deserialized_responses::TimelineEvent;
+        // Vic is in the room, and the read receipts are of events of the sync: your own of the new message, and
+        // Vic's of the new reaction, which reads its message.
+        let mut sync = stub_sync();
+        let room = &mut sync["rooms"]["join"]["!room:x"];
+        let vic = json!({ "type": "m.room.member", "state_key": "@vic:x", "sender": "@vic:x", "event_id": "$vic",
+            "origin_server_ts": 1, "content": { "membership": "join", "displayname": "Vic" } });
+        room["state"]["events"].as_array_mut().unwrap().push(vic);
+        let read = |user: &str, ts: i64| json!({ "m.read": { user: { "ts": ts } } });
+        let receipts = json!({ "$e7": read("@me:x", 1_700_000_100_000), "$x9": read("@vic:x", 1_700_000_200_000) });
+        room["ephemeral"] = json!({ "events": [{ "type": "m.receipt", "content": receipts }] });
+        let history = unloaded_history();
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => {
+                (200, json!({ "start": "t", "chunk": history.iter().rev().collect::<Vec<_>>() }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir(name), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        if unload {
+            store.write().unload_chat("!room:x");
+        }
+        let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
+        let events = events.iter().map(|e| TimelineEvent::from_plaintext(super::raw(e))).collect();
+        super::sync_room(&store, &room, events).await;
+        let st = store.read();
+        let rows = st.stored("chat_id = ?1 ORDER BY sort_key", ["!room:x"]);
+        let json = (json!(rows), json!(st.chat("!room:x")));
+        drop(st);
+        (store, json.0, json.1)
+    }
+
+    /// A sync writes into a chat that is not loaded without loading it, and stores the same messages and the same
+    /// chat as one that writes into the loaded chat. The chat then loads with all of them.
+    #[tokio::test]
+    async fn a_sync_writes_into_a_chat_that_is_not_loaded() {
+        let (loaded, rows, chat) = sync_unloaded("sync-loaded", false, unloaded_sync()).await;
+        let (store, unloaded_rows, unloaded_chat) = sync_unloaded("sync-unloaded", true, unloaded_sync()).await;
+        assert_eq!(unloaded_rows, rows, "the stored messages are the same");
+        assert_eq!(unloaded_chat, chat, "the chat, its preview and its order are the same");
+        assert_eq!(chat["preview"]["id"], "$x9", "your newest reaction previews the chat");
+        let mut st = store.write();
+        assert!(!st.messages.iter().any(|m| m.chat_id == "!room:x"), "the chat stays unloaded");
+        assert!(st.timeline_indices("!room:x").is_empty() && st.loaded("$e2").is_none());
+        st.load_chat("!room:x");
+        let timeline: Vec<Value> = st.timeline("!room:x").map(|m| json!(m)).collect();
+        let m = |id: &str| st.loaded(id).unwrap_or_else(|| panic!("{id} loads"));
+        assert_eq!(m("$e7").text.as_deref(), Some("m7"), "the new message");
+        assert_eq!((m("$e2").text.as_deref(), m("$e2").edit_history.len()), (Some("edited"), 1), "the edit");
+        assert_eq!(m("$e3").reactions.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["$x9"], "the reaction");
+        assert_eq!(m("$e4").is_deleted, Some(true), "the redaction");
+        assert!(m("$e1").reactions.is_empty(), "the redacted reaction");
+        assert!(m("$e3").seen.contains_key("@vic:x"), "Vic's receipt of the reaction reads its message");
+        let read = st.chat("!room:x").last_read_message_sort_key.clone();
+        assert_eq!(read.as_ref(), Some(&m("$e7").sort_key), "your receipt of the new message");
+        drop(st);
+        let mut st = loaded.write();
+        st.load_chat("!room:x");
+        let loaded_timeline: Vec<Value> = st.timeline("!room:x").map(|m| json!(m)).collect();
+        assert_eq!(timeline, loaded_timeline, "the chat loads like the chat that stayed loaded");
     }
 
     /// Desktop keeps a chat that the user was removed from: its own member has exited, the removal previews it, and
@@ -5397,7 +5626,7 @@ mod tests {
         }
         super::load_older(store.clone(), "!room:x".into()).await.expect("its history still loads");
         store.write().remove_chat("!room:x");
-        super::sync_left(&store, &room, Vec::new()).await;
+        super::sync_left(&store, &room, Vec::new(), &super::Globals::read(&client).await).await;
         assert!(store.read().resolve_chat_idx("!room:x").is_none(), "a deleted chat stays deleted");
     }
 
@@ -5447,10 +5676,13 @@ mod tests {
             std::io::Read::read_to_end(&mut enc, &mut secret).expect("encrypt");
             (secret, serde_json::to_value(enc.finish()).expect("the encryption info"))
         };
+        // A FLOE body of 3 segments, whose last is shorter.
+        let floe_plain: Vec<u8> = (0..10_000u32).map(|i| (i % 253) as u8).collect();
+        let (floe_header, floe_body) = crate::floe::tests::encrypt(&[5; 32], &[6; 32], &floe_plain);
         let me: Arc<OnceLock<String>> = Arc::default();
         let (seen, tries) = (Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(AtomicUsize::new(0)));
         let (me2, seen2, tries2) = (me.clone(), seen.clone(), tries.clone());
-        let (photo2, secret2) = (photo.clone(), secret.clone());
+        let (photo2, secret2, floe_body2) = (photo.clone(), secret.clone(), floe_body.clone());
         let url = crate::bridge_stub::serve_raw(move |_, path, headers: &HashMap<String, String>, _| {
             let json = |code, v: Value| {
                 (code, vec![("content-type".into(), b"application/json".to_vec())], v.to_string().into_bytes())
@@ -5479,6 +5711,7 @@ mod tests {
                     )
                 }
                 "/_matrix/client/v1/media/download/x/secret" if ok => (200, Vec::new(), secret2.clone()),
+                "/_matrix/client/v1/media/download/x/floe" if ok => (200, Vec::new(), floe_body2.clone()),
                 "/_matrix/client/v1/media/download/x/flaky" if ok && tries2.fetch_add(1, Relaxed) < 2 => {
                     json(502, json!({ "errcode": "M_UNKNOWN", "error": "bad gateway" }))
                 }
@@ -5498,10 +5731,23 @@ mod tests {
         file["url"] = json!("mxc://x/secret");
         let src = format!("mxc://x/secret?encryptedFileInfoJSON={}", crate::codec::url_encode(&file.to_string()));
         assert_eq!(load(&src).await.expect("the decrypted media"), b"the secret photo");
-        let floe = json!({ "url": "mxc://x/floe", "v": "com.beeper.floe.v1", "floe_key": "k", "floe_header": "h" });
-        let floe = format!("mxc://x/floe?encryptedFileInfoJSON={}", crate::codec::url_encode(&floe.to_string()));
-        let e = load(&floe).await.expect_err("another encryption");
-        assert_eq!(e, "unsupported file encryption com.beeper.floe.v1");
+        let b64 = |b: &[u8]| vodozemac::base64_encode(b);
+        let floe = |key: &[u8], sha256: &[u8]| {
+            let file = json!({
+                "url": "mxc://x/floe", "v": "com.beeper.floe.v1", "floe_key": b64(key), "floe_header": b64(&floe_header),
+                "hashes": { "sha256": b64(sha256) },
+            });
+            format!("mxc://x/floe?encryptedFileInfoJSON={}", crate::codec::url_encode(&file.to_string()))
+        };
+        let sha256 = ring::digest::digest(&ring::digest::SHA256, &floe_body);
+        seen.lock().expect("the requests").clear();
+        let e = load(&floe(&[4; 32], sha256.as_ref())).await.expect_err("another key");
+        assert_eq!(e, "decrypt: invalid header tag");
+        assert!(seen.lock().expect("the requests").is_empty(), "a wrong key downloads nothing");
+        assert_eq!(load(&floe(&[5; 32], sha256.as_ref())).await.expect("the FLOE media"), floe_plain);
+        let other = json!({ "url": "mxc://x/other", "v": "v9" });
+        let other = format!("mxc://x/other?encryptedFileInfoJSON={}", crate::codec::url_encode(&other.to_string()));
+        assert_eq!(load(&other).await.expect_err("another encryption"), "unsupported file encryption v9");
         assert_eq!(load("mxc://x/flaky").await.expect("the third try"), b"at last");
         assert_eq!(tries.load(Relaxed), 3, "two failures and the success");
         seen.lock().expect("the requests").clear();
@@ -7468,7 +7714,7 @@ mod tests {
             let client = store.read().matrix.clone().expect("a Matrix client");
             client.get_room(matrix_sdk::ruma::room_id!("!team:x")).expect("the invited room")
         };
-        super::sync_invite(&store, &room).await;
+        super::sync_invite(&store, &room, &super::Globals::read(&room.client()).await).await;
         {
             let st = store.read();
             let c = st.chat("!team:x");

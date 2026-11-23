@@ -989,6 +989,8 @@ pub enum Msg {
     LastTime(String),
     ChatSub(Option<u8>),
     Highlight(usize),
+    /// Highlights a row of the search.
+    HighlightResult(usize),
     TogglePalette,
     SearchRoom(String),
     ToggleMode,
@@ -1030,7 +1032,7 @@ impl BeeperGuiApp {
                 }
                 self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
                 (self.cmd_bar_commands_mode, self.cmd_index, self.cmd_submenu) = (false, 0, None);
-                self.search_expanded.clear();
+                (self.search_expanded, self.search_index) = (std::collections::HashSet::new(), None);
                 self.search_partial = true;
                 if self.show_command_palette {
                     return operation::focus("cmd-palette-input");
@@ -1046,18 +1048,19 @@ impl BeeperGuiApp {
                     self.command_palette_query.clear();
                 }
                 (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, false, None);
-                (self.search_room, self.list.chat_menu) = (Some(cid), None);
+                (self.search_room, self.list.chat_menu, self.search_index) = (Some(cid), None, None);
                 self.search_filters.accounts.clear();
                 return operation::focus("cmd-palette-input");
             }
             Msg::ToggleMode => {
-                (self.cmd_bar_commands_mode, self.cmd_index) = (!self.cmd_bar_commands_mode, 0);
+                (self.cmd_bar_commands_mode, self.cmd_index, self.search_index) =
+                    (!self.cmd_bar_commands_mode, 0, None);
                 return operation::focus("cmd-palette-input");
             }
             Msg::RestoreSearch(i) => {
                 let Some((term, filters)) = self.recent_searches.get(i).cloned() else { return Task::none() };
                 (self.command_palette_query, self.search_filters) = (term, filters);
-                self.search_expanded.clear();
+                (self.search_expanded, self.search_index) = (Default::default(), None);
                 return operation::focus("cmd-palette-input");
             }
             Msg::NoReply(on) => self.cmd_no_reply = on,
@@ -1087,7 +1090,8 @@ impl BeeperGuiApp {
             }
             Msg::TogglePartialMatches => self.search_partial = !self.search_partial,
             Msg::Query(q) => {
-                (self.command_palette_query, self.cmd_index) = (q.clone(), 0);
+                // Downshift's `changeInput` highlights the default row again.
+                (self.command_palette_query, self.cmd_index, self.search_index) = (q.clone(), 0, None);
                 if self.cmd_submenu == Some(SubMenu::AddMembers) {
                     self.new_chat_search = None;
                     let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
@@ -1095,6 +1099,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::Highlight(i) => self.cmd_index = i,
+            Msg::HighlightResult(i) => self.search_index = Some(i),
             Msg::JumpTo(cid, mid) => return self.jump_to(cid, mid),
             Msg::ExecuteChat(cid) => {
                 self.search_closed();
@@ -1109,6 +1114,7 @@ impl BeeperGuiApp {
             }
             Msg::SearchSelect(open) => self.search_select = open,
             Msg::PickSearchFilter(pick) => {
+                self.search_index = None;
                 let f = &mut self.search_filters;
                 match pick {
                     SearchPick::Account(a) => match f.accounts.iter().position(|x| *x == a) {
