@@ -356,6 +356,8 @@ pub struct Stash {
     pub(crate) links: Vec<(String, LinkState)>,
     pub(crate) send_later: Option<(i64, bool)>,
     pub(crate) mentions: Vec<Mention>,
+    /// When the edit started, which fades in the backdrop of the timeline.
+    pub(crate) since: std::time::Instant,
 }
 
 /// The composer text of a stored text with Desktop's `#[name](url)` custom emoji, and the emoji, as its nodes.
@@ -1825,6 +1827,8 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let html = st.loaded(&mid).and_then(|m| m.html.clone());
                 drop(st);
+                // Desktop's `startEditMessageCommon` unselects the messages, the one a right click selected too.
+                self.pane.selected_msgs.clear();
                 // Desktop scrolls the edited message into view with the least scroll (`align: "nearest"`).
                 self.pane.timeline.reveal(vlist::key(&mid));
                 let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Nearest);

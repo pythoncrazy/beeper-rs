@@ -1452,7 +1452,15 @@ impl BeeperGuiApp {
         let up = self.pane().scrolled_up.is_some_and(|s| s.0);
         let held = timeline::hold(scroller(col).id(self.pane().scroll_id()), up).glide(self.pane().glide);
         // Chromium scrolls the timeline while a drag that selects its text holds the pointer past its top or bottom.
-        let list = lift::tight(crate::selectable::autoscroll(held, self.pane().scroll_id(), true)).shift(dx, dy);
+        let list: El<'_> =
+            lift::tight(crate::selectable::autoscroll(held, self.pane().scroll_id(), true)).shift(dx, dy).into();
+        let list = match (&self.pane().editing_message_id, self.pane().stash.as_ref().map(|s| s.since)) {
+            (Some(mid), Some(since)) => {
+                let cancel = UiMessage::Composer(composer::Msg::CancelMode);
+                timeline::veil(list, iced::widget::Id::from(format!("msg-{mid}")), since, p.card, cancel).into()
+            }
+            _ => list,
+        };
         let opened = self.pane().reply_opened.map_or(1.0, |at| at.elapsed().as_secs_f32());
         let (shown, below) = replies_reveal(opened);
         let replies = self.pane().reply_thread.as_ref().map(|id| {
@@ -5790,6 +5798,38 @@ pub(crate) mod tests {
         let shown = simulator(app.view_main()).find(iced::widget::Id::from(format!("msg-{mid}"))).expect("the message");
         let at = shown.visible_bounds().expect("the message is on screen").position();
         assert!(at.x < 400.0, "the row of the message starts at the left of the timeline: {at:?}");
+    }
+
+    /// Desktop's `editing-message` backdrop: while you edit a message, which unselects the messages, a click on the
+    /// timeline under the backdrop ends the edit (`clearEditingMessage`) and one on the edited message does not.
+    #[test]
+    fn edit_backdrop_like_desktop() {
+        let note = "!note_self:beeper.com";
+        let mut app = crate::fuzz::demo_app("edit-backdrop");
+        let _ = app.update(UiMessage::SelectChat(note.into()));
+        let mid = newest(&app, |m| m.is_sender == Some(true) && m.attachments.is_empty() && m.poll.is_none());
+        let id = iced::widget::Id::from(format!("msg-{mid}"));
+        let ends = |app: &BeeperGuiApp, at: Point| {
+            let mut sim = simulator(app.view_main());
+            sim.point_at(at);
+            let press = mouse::Event::ButtonPressed(mouse::Button::Left);
+            let _ = sim.simulate([
+                iced::Event::Mouse(press),
+                iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            ]);
+            sim.into_messages().any(|m| matches!(m, UiMessage::Composer(composer::Msg::CancelMode)))
+        };
+        let b = simulator(app.view_main()).find(id.clone()).expect("the message").visible_bounds().expect("on screen");
+        let above = Point::new(b.center_x(), b.y - 20.0);
+        assert!(!ends(&app, above), "no backdrop before the edit");
+        let _ = app.update(UiMessage::Message(Msg::Select(vec![mid.clone()])));
+        let _ = app.update(UiMessage::Composer(composer::Msg::StartEdit(mid.clone(), "old".into())));
+        assert!(app.pane.selected_msgs.is_empty(), "the edit unselects the messages");
+        let b = simulator(app.view_main()).find(id).expect("the message").visible_bounds().expect("on screen");
+        assert!(!ends(&app, b.center()), "a click on the edited message keeps the edit");
+        assert!(ends(&app, Point::new(b.center_x(), b.y - 20.0)), "one on the backdrop ends it");
+        let _ = app.update(UiMessage::Composer(composer::Msg::CancelMode));
+        assert!(app.pane.editing_message_id.is_none() && app.pane.stash.is_none());
     }
 
     /// Desktop's `D`: Edit…, Reply… and React… hide for the message that you edit, and `canStartEditMessage` offers
