@@ -127,7 +127,7 @@ use crate::settings::{
     hotkey_key, mcp_value, shown, AddToken, IntegrationsPage, StoragePage, EXPIRIES, HOTKEYS_RELAUNCH,
     SETTINGS_DIALOGS, STORAGE_DAYS,
 };
-pub use crate::settings::{search_settings, Expiry, HotkeyRec, SettingsHit, SettingsTab, TabIcon};
+pub use crate::settings::{search_settings, Expiry, HotkeyRec, SettingsHit, SettingsTab};
 use crate::threads::{can_thread, Threads};
 use blocking::block_action;
 use chat_list::{filter_hit, FILTERS, F_ARCHIVED, F_LOW_PRIORITY, F_REQUESTS};
@@ -403,7 +403,6 @@ pub enum UiMessage {
     /// The networks of the Add an Account window and of the onboarding, and their accounts menu.
     Networks(networks::Msg),
     ToggleRightPanel,
-    ToggleDnd,
     /// Settings > Hotkeys: the hotkey switches, the shortcut recorder, and the Keyboard Shortcuts list.
     Hotkeys(hotkeys::Msg),
     /// Desktop's zoom.
@@ -3086,7 +3085,6 @@ pub struct BeeperGuiApp {
     sticky_banner: Option<String>,
     /// Desktop's `DownloadMobileApps` toast after the onboarding, which stays until it is closed.
     pub mobile_apps_toast: bool,
-    pub dnd_muted: bool,
     pub sidebar_width: f32,
     /// Whether the hidden space bar floats over the chat list, like Desktop's `account-switcher--floating`.
     rail_float: bool,
@@ -3399,7 +3397,6 @@ impl BeeperGuiApp {
             pill_hover: false,
             sticky_banner: None,
             mobile_apps_toast: false,
-            dnd_muted: false,
             sidebar_width,
             rail_float: false,
             sidebar_hidden,
@@ -4764,10 +4761,6 @@ impl BeeperGuiApp {
                 self.show_right_panel = closed || !self.show_right_panel;
                 let retry = self.retry_bookmarks();
                 return Task::batch([retry, self.settle()]);
-            }
-            UiMessage::ToggleDnd => {
-                self.dnd_muted = !self.dnd_muted;
-                self.refresh_theme_and_tray();
             }
             UiMessage::Capabilities(account, r) => match r {
                 Ok(v) => drop(self.caps.insert(account, v)),

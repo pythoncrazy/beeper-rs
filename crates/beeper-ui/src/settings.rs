@@ -2364,7 +2364,6 @@ pub enum Msg {
     SearchFocus(bool),
     /// Desktop's suggestion of the empty search at this index.
     Suggest(usize),
-    CycleTheme,
     SelectTheme(ThemeChoice),
     SystemTheme(iced::theme::Mode),
     SetPref(&'static str, u8),
@@ -2453,11 +2452,6 @@ impl BeeperGuiApp {
             Msg::AnalyticsSaved(was, Err(e)) => {
                 self.store.write().whoami.analytics_disabled = was;
                 self.fail(Toast::new(trf("Something went wrong: %s", &[&e])));
-            }
-            Msg::CycleTheme => {
-                let cur = self.store.read().settings.theme;
-                let next = ThemeChoice::ALL[(ThemeChoice::ALL.iter().position(|t| *t == cur).expect("listed") + 1) % 3];
-                return self.update(UiMessage::Settings(Msg::SelectTheme(next)));
             }
             Msg::SystemTheme(mode) => {
                 self.system_dark = mode == iced::theme::Mode::Dark;

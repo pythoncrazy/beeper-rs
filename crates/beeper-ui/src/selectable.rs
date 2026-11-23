@@ -91,11 +91,8 @@ pub fn selectable<'a, Link: Clone + 'static, Message>(
 ) -> Selectable<'a, Link, Message> {
     Selectable {
         spans: Box::new(spans),
-        size: None,
         line_height: LineHeight::default(),
-        width: Length::Shrink,
         wrapping: Wrapping::default(),
-        color: None,
         on_link_click: None,
         on_link_menu: None,
         on_image_menu: None,
@@ -109,11 +106,8 @@ pub fn selectable<'a, Link: Clone + 'static, Message>(
 
 pub struct Selectable<'a, Link: Clone + 'static, Message> {
     spans: Box<dyn AsRef<[Span<'a, Link, Font>]> + 'a>,
-    size: Option<Pixels>,
     line_height: LineHeight,
-    width: Length,
     wrapping: Wrapping,
-    color: Option<Color>,
     on_link_click: Option<Box<dyn Fn(Link) -> Message + 'a>>,
     on_link_menu: Option<Box<dyn Fn(Link) -> Message + 'a>>,
     on_image_menu: Option<Box<dyn Fn(usize) -> Message + 'a>>,
@@ -128,28 +122,13 @@ pub struct Selectable<'a, Link: Clone + 'static, Message> {
 }
 
 impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
-    pub fn size(mut self, size: impl Into<Pixels>) -> Self {
-        self.size = Some(size.into());
-        self
-    }
-
     pub fn line_height(mut self, line_height: impl Into<LineHeight>) -> Self {
         self.line_height = line_height.into();
         self
     }
 
-    pub fn width(mut self, width: impl Into<Length>) -> Self {
-        self.width = width.into();
-        self
-    }
-
     pub fn wrapping(mut self, wrapping: Wrapping) -> Self {
         self.wrapping = wrapping;
-        self
-    }
-
-    pub fn color(mut self, color: impl Into<Color>) -> Self {
-        self.color = Some(color.into());
         self
     }
 
@@ -277,16 +256,16 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
     }
 
     fn size(&self) -> Size<Length> {
-        Size { width: self.width, height: Length::Shrink }
+        Size { width: Length::Shrink, height: Length::Shrink }
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
         let state = tree.state.downcast_mut::<State<Link>>();
-        let size = self.size.unwrap_or_else(|| renderer.default_size());
+        let size = renderer.default_size();
         let font = renderer.default_font();
         let (line_height, wrapping) = (self.line_height, self.wrapping);
         let spans = self.spans.as_ref().as_ref();
-        layout::sized(limits, self.width, Length::Shrink, |limits| {
+        layout::sized(limits, Length::Shrink, Length::Shrink, |limits| {
             let bounds = limits.max();
             let text = |content| styled(content, bounds, size, line_height, font, wrapping);
             let shape = || styled((), bounds, size, line_height, font, wrapping);
@@ -336,8 +315,8 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
             return;
         }
         let translation = bounds.position() - Point::ORIGIN;
-        let color = self.color.unwrap_or(defaults.text_color);
-        let size = self.size.unwrap_or_else(|| renderer.default_size());
+        let color = defaults.text_color;
+        let size = renderer.default_size();
 
         // Highlights, underlines and strikethroughs of the spans, as iced's `Rich` draws them.
         for (index, span) in self.spans().iter().enumerate() {
