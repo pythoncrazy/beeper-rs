@@ -867,6 +867,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fuzz::clicks;
     use iced::Size;
     use iced_test::simulator::Simulator;
 
@@ -959,11 +960,7 @@ mod tests {
         app.store.write().features = beeper_core::features::Flags::free_plan();
         untranscribed(&mut app);
         let _ = app.update(UiMessage::SelectChat("!wa_eric:beeper.com".into()));
-        let click = |app: &mut BeeperGuiApp, label: &str| -> Vec<UiMessage> {
-            let mut sim = iced_test::simulator(app.view_main());
-            let _ = sim.click(label).unwrap_or_else(|e| panic!("{label}: {e:?}"));
-            sim.into_messages().collect()
-        };
+        let click = |app: &mut BeeperGuiApp, label: &str| -> Vec<UiMessage> { clicks(app.view_main(), label) };
         let has = |app: &BeeperGuiApp, s: &str| iced_test::simulator(app.view_main()).find(s).is_ok();
         for m in click(&mut app, "Try Transcribe") {
             let _ = app.update(m);

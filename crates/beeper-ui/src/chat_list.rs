@@ -1280,8 +1280,7 @@ impl BeeperGuiApp {
             let b = button(
                 container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26),
             )
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
+            .bare(p.strong)
             .on_press(msg.clone());
             self.header_target(key, b, msg)
         };
@@ -1289,8 +1288,7 @@ impl BeeperGuiApp {
         let options = (self.list().active_tab == InboxTab::Reminders).then(|| {
             let menu = UiMessage::Reminders(reminders::Msg::Menu);
             let btn = button(container(tinted(&TUNE, 18.0, p.strong)).center_x(30).center_y(26))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
+                .bare(p.strong)
                 .on_press(menu.clone());
             below(self.header_target("list-options", btn, menu), tr("Display Options"), vec![])
         });
@@ -1364,9 +1362,8 @@ impl BeeperGuiApp {
                 n => crate::style::fixed(n.to_string(), 11.0, Weight::Normal).line_height(1.0).color(fg).into(),
             };
             let trigger = button(container(trigger).padding(Padding::ZERO.left(6.0)).center_y(20))
-                .padding(0)
+                .bare(fg)
                 .width(if active { 16 } else { 0 })
-                .style(btn_style([CLEAR; 3], [fg; 3], 0.0))
                 .on_press(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
             let pill = row![trigger, container(ic(icon::FILTER_LIST, 16.8).color(fg)).center_x(27).center_y(20)];
             let ring = if active { p.accent } else { CLEAR };

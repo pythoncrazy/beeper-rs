@@ -1,9 +1,19 @@
 /// The `Widget` methods of a wrapper widget that only pass the call to its `content`, the first child of its tree.
-/// `delegate!(children, diff, size)` in an `impl Widget` writes them, and `overlay` takes the message type, as in
-/// `delegate!(overlay(Message))`. The widget writes the methods that do more itself.
+/// `delegate!(children, diff, size)` in an `impl Widget` writes them, and `update` and `overlay` take the message
+/// type, as in `delegate!(overlay(Message))`. `state(T)` writes `tag` and `state` for a tree state of `T::default()`.
+/// The widget writes the methods that do more itself.
 macro_rules! delegate {
     ($($method:ident $(($msg:ty))?),* $(,)?) => {
         $($crate::delegate::delegate!(@ $method $(($msg))?);)*
+    };
+    (@ state($state:ty)) => {
+        fn tag(&self) -> iced::advanced::widget::tree::Tag {
+            iced::advanced::widget::tree::Tag::of::<$state>()
+        }
+
+        fn state(&self) -> iced::advanced::widget::tree::State {
+            iced::advanced::widget::tree::State::new(<$state>::default())
+        }
     };
     (@ children) => {
         fn children(&self) -> Vec<iced::advanced::widget::Tree> {
@@ -39,6 +49,22 @@ macro_rules! delegate {
             operation: &mut dyn iced::advanced::widget::Operation,
         ) {
             self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
+        }
+    };
+    (@ update($msg:ty)) => {
+        fn update(
+            &mut self,
+            tree: &mut iced::advanced::widget::Tree,
+            event: &iced::Event,
+            layout: iced::advanced::Layout<'_>,
+            cursor: iced::advanced::mouse::Cursor,
+            renderer: &iced::Renderer,
+            clipboard: &mut dyn iced::advanced::Clipboard,
+            shell: &mut iced::advanced::Shell<'_, $msg>,
+            viewport: &iced::Rectangle,
+        ) {
+            let tree = &mut tree.children[0];
+            self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
         }
     };
     (@ mouse_interaction) => {
