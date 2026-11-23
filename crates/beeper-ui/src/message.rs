@@ -1426,7 +1426,9 @@ impl BeeperGuiApp {
                 .on_show(|_| UiMessage::Timeline(timeline::Msg::Scrolled(false)))
                 .on_hide(UiMessage::Timeline(timeline::Msg::Scrolled(true))),
         );
-        let list = lift::tight(scroller(col).id(self.pane().scroll_id()));
+        let up = self.pane().scrolled_up.is_some_and(|s| s.0);
+        let held = timeline::hold(scroller(col).id(self.pane().scroll_id()), up).glide(self.pane().glide);
+        let list = lift::tight(held);
         let opened = self.pane().reply_opened.map_or(1.0, |at| at.elapsed().as_secs_f32());
         let (shown, below) = replies_reveal(opened);
         let replies = self.pane().reply_thread.as_ref().map(|id| {
@@ -1676,9 +1678,17 @@ impl BeeperGuiApp {
             .into()
     }
 
-    /// Desktop's `jumpToMessage` and `revealMessage`: shows message `mid` of chat `cid` in the timeline of the pane,
-    /// and a reply only in a thread in the thread pane. The thread pane jumps in its own thread.
+    /// Desktop's `jumpToMessage` and `revealMessage`: shows message `mid` of chat `cid` 80 px under the top of the
+    /// timeline of the pane (`scrollToSortKey`), and a reply only in a thread in the thread pane. The thread pane
+    /// jumps in its own thread. It selects the message unless one is being edited (`selectOnlyMessage`), and flashes
+    /// it when `highlight`: Desktop's `selectMessage` jumps from search, notifications, links, bookmarks, reminders
+    /// and the "Jump to Message" item flash it, and its `jumpToMessage` from the media viewer does not.
     pub(crate) fn jump_to(&mut self, cid: String, mid: String) -> Task<UiMessage> {
+        self.reveal(cid, mid, true)
+    }
+
+    /// [`Self::jump_to`], with the flash only when `highlight`.
+    pub(crate) fn reveal(&mut self, cid: String, mid: String, highlight: bool) -> Task<UiMessage> {
         (self.show_command_palette, self.command_palette_query, self.list.chat_menu) = (false, String::new(), None);
         if self.pane.thread_root.is_none() {
             self.select_chat(&cid);
@@ -1695,8 +1705,16 @@ impl BeeperGuiApp {
         }
         let msg = format!("msg-{mid}");
         self.pane.timeline.reveal(vlist::key(&mid));
-        self.flash = Some((mid, std::time::Instant::now()));
-        locate(msg, self.pane.scroll_id(), crate::Align::Center)
+        if self.pane.editing_message_id.is_none() {
+            self.pane.selected_msgs = vec![mid.clone()];
+        }
+        if highlight {
+            self.flash = Some((mid, std::time::Instant::now()));
+        }
+        // Desktop's `scrollToPending` unpins the list from its bottom (`unpinAndSetScroll`), so the view stays on the
+        // message while the rows around it load and measure.
+        self.pane.scrolled_up = Some((true, std::time::Instant::now()));
+        locate(msg, self.pane.scroll_id(), crate::Align::Start(80.0))
     }
 
     /// Desktop's `scrollToUnreadDivider` when a chat opens: the unread divider 80 px under the top of the timeline,
@@ -3997,7 +4015,8 @@ impl BeeperGuiApp {
             }
             Msg::GoTo(chat, mid) => {
                 let main = window::gain_focus(self.main_window.expect("the main window is open"));
-                return Task::batch([self.update(UiMessage::CommandBar(commands::Msg::JumpTo(chat, mid))), main]);
+                // Desktop's `jumpToMessage` of the media viewer selects the message and does not flash it.
+                return Task::batch([self.reveal(chat, mid, false), main]);
             }
             Msg::Download(mid, only) => {
                 let st = self.store.read();

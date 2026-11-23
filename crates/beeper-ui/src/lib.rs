@@ -2694,6 +2694,8 @@ pub struct Pane {
     pub draft_due: bool,
     /// Desktop's `ScrollToBottom`: whether you scrolled up from the bottom of the timeline, and since when.
     pub scrolled_up: Option<(bool, std::time::Instant)>,
+    /// When the last smooth scroll to the bottom of the timeline started (see [`timeline::Hold`]).
+    pub glide: Option<std::time::Instant>,
     /// Desktop's `unreadDividerMessageSortKey`: the message after the read position of the chat when it opened,
     /// which keeps the "New" divider in place while the chat is read.
     pub unread_divider: Option<String>,
