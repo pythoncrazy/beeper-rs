@@ -2638,6 +2638,8 @@ pub struct Pane {
     pub spoilers: HashSet<String>,
     /// The GIFs that their play button started while "Autoplay GIFs" is off, by message and attachment, from when.
     pub played_gifs: HashMap<(String, usize), std::time::Instant>,
+    /// The link preview images that their play button started, by message and image URL, from when.
+    pub played_links: HashMap<(String, String), std::time::Instant>,
     pub hovered_msg: Option<String>,
     /// When `hovered_msg` began, and when the pointer entered its flyover, for the flyover's staggered reveal.
     pub hover_msg_at: Option<std::time::Instant>,

@@ -108,7 +108,7 @@ fn dimmed<'a>(content: El<'a>, selected: bool) -> El<'a> {
 /// Desktop's `EnhancedImg` button on an animation that does not autoplay: play, or pause while it plays, which shows
 /// only while the pointer is on the image (`.video-idle-play-button`, a 36 px `#efeff0` circle with a `#202124`
 /// icon in the middle).
-fn gif_toggle<'a>(gif: El<'a>, playing: bool, toggle: Msg) -> El<'a> {
+pub(crate) fn gif_toggle<'a>(gif: El<'a>, playing: bool, toggle: Msg) -> El<'a> {
     let (bg, fg) = (hex(0xefeff0), hex(0x202124));
     let glyph = tinted(&crate::voice::ICONS[usize::from(playing)], 20.0, fg);
     let button = button(container(glyph).center(36))
@@ -2290,7 +2290,12 @@ impl BeeperGuiApp {
         let (segments, face) = chain.segments(linked.is_some(), shown, mine, group, last);
         // Desktop's `pM`: a link with a title, an image or a summary has a preview.
         for link in m.links.iter().filter(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some()) {
-            parts = parts.push(self.view_link(&m.id, link, 0.45 * self.pane().size.width, dim));
+            parts = parts.push(self.view_link(
+                (&m.id, st.settings.on("autoplayGifs")),
+                link,
+                0.45 * self.pane().size.width,
+                dim,
+            ));
         }
         if ms.len() > 1 {
             parts = parts.push(self.view_gallery(ms));
@@ -3667,6 +3672,8 @@ pub enum Msg {
     ToggleEditHistory(String),
     /// The play or pause button of a GIF of a message, by its attachment, while "Autoplay GIFs" is off.
     ToggleGif(String, usize),
+    /// The play or pause button of the image of a link preview of a message, by its URL.
+    ToggleLinkGif(String, String),
     /// "Show more" or "Show less" of a message over 40 lines.
     ToggleClamp(String),
     /// A press of an action button, by its message and its ID.
@@ -4104,6 +4111,11 @@ impl BeeperGuiApp {
             Msg::ToggleGif(mid, ai) => {
                 if self.pane.played_gifs.remove(&(mid.clone(), ai)).is_none() {
                     self.pane.played_gifs.insert((mid, ai), std::time::Instant::now());
+                }
+            }
+            Msg::ToggleLinkGif(mid, url) => {
+                if self.pane.played_links.remove(&(mid.clone(), url.clone())).is_none() {
+                    self.pane.played_links.insert((mid, url), std::time::Instant::now());
                 }
             }
             Msg::ToggleEditHistory(mid) => {
@@ -4938,6 +4950,57 @@ pub(crate) mod tests {
         let see_through = mix(Color::WHITE, app.pal.link_card, 0.5);
         assert!(close((6, 16), see_through) && close((6, 50), see_through), "Desktop's half gray-40 bubbles");
         assert!(close((6, 84), app.pal.received));
+    }
+
+    /// Desktop's link preview image (`LinkPreview.Image`), an `EnhancedImg playable`: a GIF plays with "Autoplay
+    /// GIFs", and without it shows its first frame with the play button, which plays it and opens no link.
+    #[test]
+    fn link_preview_gifs_follow_autoplay_like_desktop() {
+        let mut app = crate::fuzz::demo_app("link-gif");
+        app.pane.size = Size::new(900.0, 700.0);
+        let mid = plain_received(&app, "look");
+        let url = "mxc://x/link-gif".to_string();
+        change(&app, &mid, |m| {
+            m.links = vec![MessageLink {
+                url: "https://example.com/a".into(),
+                title: "A GIF".into(),
+                img: Some(url.clone()),
+                img_size: Some(AttachmentSize { width: Some(300), height: Some(160) }),
+                summary: None,
+            }];
+        });
+        let fill = |c: [u8; 4]| image::Handle::from_rgba(300, 160, c.repeat(300 * 160));
+        let frames = crate::Frames::from([(fill([255, 0, 0, 255]), 1000), (fill([0, 0, 255, 255]), 1000)]);
+        app.media.insert(url.clone(), Some(Ok(frames)));
+        let (red, blue, button) = (0xff0000, 0x0000ff, 0xefeff0);
+        let at = |app: &mut BeeperGuiApp, ms: u64| {
+            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            pixels(&mut alone(app, &mid))
+        };
+        let first = at(&mut app, 0);
+        let image = spots(&first, red);
+        assert!(image.len() > 50_000 && count(&first, &image, button) == 0, "the GIF plays by itself");
+        assert_eq!(count(&at(&mut app, 1100), &image, blue), image.len(), "its second frame");
+        app.store.write().settings.set_pref("autoplayGifs", 0);
+        let still = at(&mut app, 1100);
+        assert!(count(&still, &image, red) * 10 > image.len() * 9, "the first frame");
+        assert!(count(&still, &image, button) > 1000, "the play button");
+        let (x, y) = (image.iter().map(|p| p.0).sum::<u32>(), image.iter().map(|p| p.1).sum::<u32>());
+        let middle = Point::new(x as f32 / image.len() as f32 / 2.0, y as f32 / image.len() as f32 / 2.0);
+        let mut sim = alone(&app, &mid);
+        sim.point_at(middle);
+        let _ = sim.simulate(iced_test::simulator::click());
+        let clicks: Vec<UiMessage> = sim.into_messages().collect();
+        let toggle =
+            |m: &UiMessage| matches!(m, UiMessage::Message(Msg::ToggleLinkGif(m, u)) if *m == mid && *u == url);
+        assert!(matches!(&clicks[..], [m] if toggle(m)), "the button plays it, without opening the link");
+        let _ = app.update(clicks.into_iter().next().unwrap());
+        app.pane
+            .played_links
+            .insert((mid.clone(), url.clone()), std::time::Instant::now() - std::time::Duration::from_millis(1100));
+        let played = at(&mut app, 0);
+        assert!(count(&played, &image, blue) * 10 > image.len() * 8, "it plays from the click");
+        assert_eq!(count(&played, &image, button), 0, "the pause button shows only under the pointer");
     }
 
     /// Desktop's `EnhancedImg` with "Autoplay GIFs" off: a GIF shows its first frame with a play button, and once it
