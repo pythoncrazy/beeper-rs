@@ -3766,6 +3766,47 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     assert!(st.loaded(&id).is_none() && st.outbox.is_empty(), "Remove drops the echo and its send");
 }
 
+/// Desktop's local echo of a video plays the local file in a `<video>`, so it shows the first frame on its way and
+/// after it failed, in place of a grey placeholder.
+#[test]
+fn local_videos_show_their_first_frame_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("failed-video");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let frame = vec![(image::Handle::from_rgba(2, 2, vec![255; 16]), 0)];
+    let video = PendingMedia {
+        bytes: vec![0; 8],
+        name: "clip.mp4".into(),
+        mime: "video/mp4".into(),
+        size: (2, 2),
+        frames: frame,
+        duration: Some(2.0),
+        ..Default::default()
+    };
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(vec![Ok(video)])));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
+    let poster = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        let id = st.outbox.first().and_then(|o| o.2.message().map(str::to_string));
+        let m = st.messages.iter().rev().find(|m| m.chat_id == note && m.attachments.len() == 1).unwrap();
+        let a = &m.attachments[0];
+        assert_eq!((a.attachment_type.as_str(), a.src_url.as_ref()), ("video", None), "no file to play yet");
+        let url = a.poster_img.clone().expect("the poster of the local echo");
+        (id, matches!(app.media_at(&url), Some(Ok(f)) if f.len() == 1))
+    };
+    let (id, shown) = poster(&app);
+    assert!(shown, "the video on its way shows its first frame");
+    {
+        let mut st = app.store.write();
+        let (row, _, _) = st.outbox.remove(0);
+        st.pushed(row, id.as_deref(), Some(("M_TOO_LARGE: too big".into(), true)));
+    }
+    assert!(poster(&app).1, "and so does the failed video");
+    assert!(simulator(app.view_main()).find("Not sent").is_ok());
+}
+
 /// Desktop's `message-attachment-failed`: a failed send of a file without text shows "Not sent" under the file.
 #[test]
 fn failed_files_show_not_sent_like_desktop() {

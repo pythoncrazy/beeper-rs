@@ -458,6 +458,8 @@ pub struct OutFile {
     pub voice: Option<Vec<f32>>,
     /// The URL that the local echo shows until the homeserver has the file.
     pub echo_url: Option<String>,
+    /// The URL of the first frame that the local echo of a video shows until the homeserver has the file.
+    pub echo_poster: Option<String>,
 }
 
 impl OutFile {
@@ -489,6 +491,7 @@ impl OutFile {
             mime_type: Some(self.mime.clone()),
             size: self.size.map(|(w, h)| AttachmentSize { width: Some(w), height: Some(h) }),
             src_url: self.echo_url.clone(),
+            poster_img: self.echo_poster.clone(),
             ..Attachment::default()
         }
     }

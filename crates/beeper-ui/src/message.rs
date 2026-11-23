@@ -2327,7 +2327,12 @@ impl BeeperGuiApp {
                     // Desktop plays a video with `isGif` inline like a GIF, without sound, again and again.
                     let looped = is_video && a.is_gif == Some(true) && m.unresolved_media.is_none();
                     let thumb_url = match looped {
-                        true => a.src_url.as_ref().map(|u| format!("{u}{}", crate::media_view::LOOP)),
+                        // The local echo of a GIF plays the frames of its poster until the homeserver has it.
+                        true => a
+                            .src_url
+                            .as_ref()
+                            .map(|u| format!("{u}{}", crate::media_view::LOOP))
+                            .or_else(|| a.poster_img.clone()),
                         false => a.poster_img.clone().or_else(|| a.src_url.clone()),
                     };
                     let pill = |label: &'a str, alpha: f32| -> El<'a> {
