@@ -3669,20 +3669,12 @@ impl BeeperGuiApp {
     /// Opens the windows of the last session, like Desktop's `setupSubwindowRestoreHandler`.
     fn restore_subwindows(&mut self) -> Task<UiMessage> {
         let path = self.store.read().config.data_dir.join("subwindow-state.json");
-        let json = match std::fs::read_to_string(path) {
-            Ok(json) => json,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Task::none(),
-            Err(e) => panic!("read the subwindow state: {e}"),
-        };
-        let state: serde_json::Value = serde_json::from_str(&json).expect("a valid subwindow state");
-        let open = state["openSubwindows"].as_array().expect("a list of subwindows").clone();
-        let tasks = open.into_iter().filter_map(|w| match w["type"].as_str().expect("a subwindow type") {
-            "thread" => {
-                let id = w["threadId"].as_str().expect("a thread window has a chat").to_owned();
+        let tasks = windows::read_subwindows(&path).into_iter().filter_map(|w| match w {
+            windows::Subwindow::Thread(id) => {
                 let known = self.store.read().resolve_chat_idx(&id).is_some();
                 known.then(|| self.update(UiMessage::Window(windows::Msg::OpenChat(id))))
             }
-            _ => Some(self.open_settings(self.active_settings_tab)),
+            windows::Subwindow::Prefs => Some(self.open_settings(self.active_settings_tab)),
         });
         Task::batch(tasks.collect::<Vec<_>>())
     }
