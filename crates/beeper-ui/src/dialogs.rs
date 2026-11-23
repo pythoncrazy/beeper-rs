@@ -408,7 +408,7 @@ impl BeeperGuiApp {
                     ),
                 };
                 let title = match &chats[..] {
-                    [one] => trf("Delete %s", &[&one.title]),
+                    [one] => trf("Delete %s", &[&one.combined_title()]),
                     _ => tr("Delete Chats").into(),
                 };
                 (title, body.into(), actions)
@@ -1123,7 +1123,7 @@ impl BeeperGuiApp {
             });
             let ring = if on { (CLEAR, p.accent) } else { (shade, CLEAR) };
             let dot = container(dot).center(32).style(bordered_box(ring.0, ring.1, 2.0, 16.0));
-            let b = button(dot).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 16.0));
+            let b = button(dot).bare(p.strong);
             focused(usize::from(c), b.on_press(edit(LabelEdit::Color(c))).into(), 16.0)
         });
         let icons = LABEL_ICONS.iter().enumerate().map(|(i, (id, h))| -> El<'a> {
@@ -1513,9 +1513,9 @@ impl BeeperGuiApp {
                     .align_y(Center);
                     let open = UiMessage::Blocking(blocking::Msg::OpenUser(c.id.clone()));
                     let row = button(container(line).center_y(24))
+                        .bare(p.strong)
                         .padding(8)
                         .width(Fill)
-                        .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
                         .on_press(open.clone());
                     // Desktop's rows are plain `<button>`s, whose focus does not show.
                     let row = self.target(
@@ -1721,9 +1721,9 @@ impl BeeperGuiApp {
             let add =
                 row![txt("+", 18.0).line_height(1.0), txt(tr("Add an option"), 14.0).line_height(Pixels(rem(18.0)))];
             let add = button(add.spacing(6).align_y(Center))
+                .bare(p.accent)
                 .padding(10)
                 .width(Fill)
-                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
                 .on_press(edit(PollEdit::Add));
             let add = self.target(Some(id), "add", add, Keys::press(edit(PollEdit::Add)), ring(-2.0, 0.0));
             options = options.push(rule()).push(add);

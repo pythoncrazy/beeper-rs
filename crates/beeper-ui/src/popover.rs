@@ -32,15 +32,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
         tree.diff_children(&[self.content.as_widget(), self.popup.as_widget()]);
     }
 
-    fn state(&self) -> widget::tree::State {
-        widget::tree::State::new(Hover::default())
-    }
-
-    fn tag(&self) -> widget::tree::Tag {
-        widget::tree::Tag::of::<Hover>()
-    }
-
-    crate::delegate::delegate!(size, layout, mouse_interaction, draw);
+    crate::delegate::delegate!(state(Hover), size, layout, mouse_interaction, draw);
 
     fn update(
         &mut self,
@@ -62,16 +54,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
                 shell.request_redraw();
             }
         }
-        self.content.as_widget_mut().update(
-            &mut tree.children[0],
-            event,
-            layout,
-            cursor,
-            renderer,
-            clipboard,
-            shell,
-            viewport,
-        );
+        let tree = &mut tree.children[0];
+        self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
     }
 
     fn overlay<'b>(
@@ -165,7 +149,7 @@ impl<'a, Message> Above<'a, Message> {
     }
 }
 
-impl<Message> Widget<Message, Theme, Renderer> for Above<'_, Message> {
+impl<Message: Clone> Widget<Message, Theme, Renderer> for Above<'_, Message> {
     fn children(&self) -> Vec<widget::Tree> {
         std::iter::once(&self.content).chain(&self.popup).map(widget::Tree::new).collect()
     }
@@ -232,27 +216,34 @@ impl<Message> Widget<Message, Theme, Renderer> for Above<'_, Message> {
         let at = layout.position() + (self.anchor)(layout.bounds().size()) + translation;
         let popup = self.popup.as_mut().map(|popup| {
             let tree = rest.first_mut().expect("the popup has a tree");
-            overlay::Element::new(Box::new(Bubble { popup, tree, at }))
+            overlay::Element::new(Box::new(Bubble { popup, tree, at, below: false, blur: None }))
         });
         let all: Vec<_> = inner.into_iter().chain(popup).collect();
         (!all.is_empty()).then(|| overlay::Group::with_children(all).overlay())
     }
 }
 
-struct Bubble<'a, 'b, Message> {
-    popup: &'b mut Element<'a, Message>,
-    tree: &'b mut widget::Tree,
-    at: Point,
+/// A popup over the window: its bottom center at `at`, or its top-left corner `below` it. With `blur`, a press
+/// outside the popup and the rectangle publishes the message and goes on to what is under it, like a blur.
+pub(crate) struct Bubble<'a, 'b, Message> {
+    pub popup: &'b mut Element<'a, Message>,
+    pub tree: &'b mut widget::Tree,
+    pub at: Point,
+    pub below: bool,
+    pub blur: Option<(Rectangle, Message)>,
 }
 
-impl<Message> overlay::Overlay<Message, Theme, Renderer> for Bubble<'_, '_, Message> {
+impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Bubble<'_, '_, Message> {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
         let node = self.popup.as_widget_mut().layout(self.tree, renderer, &layout::Limits::new(Size::ZERO, bounds));
         let size = node.size();
-        node.move_to(Point::new(
-            (self.at.x - size.width / 2.0).clamp(0.0, bounds.width - size.width),
-            self.at.y - size.height,
-        ))
+        match self.below {
+            true => node.move_to(self.at),
+            false => node.move_to(Point::new(
+                (self.at.x - size.width / 2.0).clamp(0.0, bounds.width - size.width),
+                self.at.y - size.height,
+            )),
+        }
     }
 
     fn draw(
@@ -279,6 +270,11 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Bubble<'_, '_, Mess
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
     ) {
+        if let (Event::Mouse(mouse::Event::ButtonPressed(_)), Some((keep, blur))) = (event, &self.blur) {
+            if !cursor.is_over(layout.bounds()) && !cursor.is_over(*keep) {
+                shell.publish(blur.clone());
+            }
+        }
         let viewport = layout.bounds();
         self.popup.as_widget_mut().update(self.tree, event, layout, cursor, renderer, clipboard, shell, &viewport);
     }
@@ -296,7 +292,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Bubble<'_, '_, Mess
     }
 }
 
-impl<'a, Message: 'a> From<Above<'a, Message>> for Element<'a, Message> {
+impl<'a, Message: Clone + 'a> From<Above<'a, Message>> for Element<'a, Message> {
     fn from(a: Above<'a, Message>) -> Self {
         Element::new(a)
     }

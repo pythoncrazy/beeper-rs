@@ -238,8 +238,9 @@ pub(crate) fn chat_brand(c: &Chat) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::fuzz::clicks;
     use crate::fuzz::demo_app;
     use beeper_core::models::{BLOCK_USER, USER_BLOCKED};
     use iced_test::simulator::simulator;
@@ -248,7 +249,7 @@ mod tests {
     const LENA: &str = "!sg_lena:beeper.com";
 
     /// A demo app with a merged chat of Kai on Instagram and Lena on Signal, open.
-    fn merged_app(name: &str) -> (BeeperGuiApp, String) {
+    pub(crate) fn merged_app(name: &str) -> (BeeperGuiApp, String) {
         let mut app = demo_app(name);
         let members = Some(vec![KAI.to_string(), LENA.to_string()]);
         let title = Some("Friends".to_string());
@@ -357,11 +358,7 @@ mod tests {
         app.show_right_panel = true;
         let lena = app.store.read().chat_idx(LENA);
         app.store.write().update_chat(lena, |c| c.unread_count = 2);
-        let picked: Vec<UiMessage> = {
-            let mut sim = simulator(app.view_main());
-            let _ = sim.click("Lena Fischer").expect("the member row");
-            sim.into_messages().collect()
-        };
+        let picked: Vec<UiMessage> = { clicks(app.view_main(), "Lena Fischer") };
         assert!(matches!(&picked[..], [UiMessage::Merged(Msg::Info(c))] if c == LENA), "{picked:?}");
         let _ = app.update(UiMessage::Merged(Msg::Info(LENA.into())));
         let _ = app.update(UiMessage::Merged(Msg::Info(LENA.into())));

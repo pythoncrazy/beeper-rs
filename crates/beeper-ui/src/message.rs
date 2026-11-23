@@ -1559,8 +1559,7 @@ impl BeeperGuiApp {
             // Desktop's `thread-header-reminder` button opens the Remind Me command bar. A chat with a reminder can
             // always change it.
             let pill = button(self.tip(pill.into(), tip, vec![], tooltip::Position::Bottom))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [ORANGE; 3], 30.0))
+                .bare(ORANGE)
                 .on_press(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(cid.into()))));
             container(pill).padding(Padding::ZERO.top(9.0))
         });
@@ -1632,10 +1631,7 @@ impl BeeperGuiApp {
             let part = |t: String, c: Color| txt(t, 13.0).color(c);
             let link = row![].push(leading).push(part(lead, p.sub)).push(part(link.into(), p.text));
             let link = link.push(part(end.into(), p.sub)).align_y(Center);
-            let link = button(container(link).center_x(Fill).center_y(36))
-                .padding(8)
-                .style(btn_style([CLEAR; 3], [p.sub; 3], 0.0))
-                .on_press(msg);
+            let link = button(container(link).center_x(Fill).center_y(36)).bare(p.sub).padding(8).on_press(msg);
             container(link).style(fill_box(p.card, 0.0)).into()
         };
         let upgraded = chat.replacement_room.as_deref().and_then(|r| st.resolve_chat_idx(r)).map(|i| {
@@ -2500,7 +2496,7 @@ impl BeeperGuiApp {
                         } else {
                             (base, UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)))
                         };
-                    let slot = button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press);
+                    let slot = button(slot).bare(p.text).on_press(press);
                     match img {
                         true => {
                             mouse_area(slot).on_right_press(UiMessage::Message(Msg::ImageMenu(m.id.clone()))).into()
@@ -3148,11 +3144,7 @@ impl BeeperGuiApp {
                     },
                     false => txt(e, 20.0 * (0.85 + 0.15 * v)).font(EMOJI_FONT).color(p.text.scale_alpha(v)).into(),
                 };
-                button(container(glyph).center(32))
-                    .padding(0)
-                    .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
-                    .on_press_maybe(ready.then_some(msg))
-                    .into()
+                button(container(glyph).center(32)).bare(p.text).on_press_maybe(ready.then_some(msg)).into()
             });
             // `@container messageContainer (max-width: 24rem)`: a narrow chat shows the first two items only. The
             // `.message-container` is as wide as the chat less 8 px.
@@ -3454,8 +3446,8 @@ impl BeeperGuiApp {
         let small = |s: String, c: Color| semi(s, 11.0).color(c);
         let change = last.then(|| {
             button(small(tr("Change Setting").into(), p.accent))
+                .bare(p.accent)
                 .padding(Padding::ZERO.left(4.0))
-                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
                 .on_press(UiMessage::ToggleRightPanel)
         });
         let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0));
@@ -3561,7 +3553,7 @@ impl BeeperGuiApp {
             };
             let text = crate::style::fixed(label, 12.0, Weight::Normal).line_height(Pixels(rem(16.0)));
             let text = text.color(if reach { fg } else { p.link });
-            button(text).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(msg).into()
+            button(text).bare(fg).on_press(msg).into()
         };
         let body = crate::contact_card(p, card, fg, 10, &entry);
         let glyph: El<'a> = ic(icon::DOWNLOAD, 16.0).color(fg).into();
@@ -4374,12 +4366,7 @@ impl BeeperGuiApp {
             let vote =
                 (!poll.ended && !(full && !voted)).then(|| UiMessage::Message(Msg::VotePoll(m.id.clone(), answers)));
             let body = container(line).padding([8.0, if spread { 8.0 } else { 4.0 }]);
-            button(stack![body].push_under(bar))
-                .padding(0)
-                .width(Fill)
-                .style(btn_style([CLEAR; 3], [fg; 3], 16.0))
-                .on_press_maybe(vote)
-                .into()
+            button(stack![body].push_under(bar)).bare(fg).width(Fill).on_press_maybe(vote).into()
         });
         let options = Column::with_children(options).spacing(if spread { 6 } else { 2 });
         let foot: El<'a> = match shown {
@@ -4403,6 +4390,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::fuzz::clicks;
     use iced::window;
     use iced_test::simulator::simulator;
 
@@ -4602,9 +4590,7 @@ pub(crate) mod tests {
         assert!(shown(&app, "Label tips") && shown(&app, "Label email"));
         assert!(!shown(&app, "Label elsewhere") && !shown(&app, "Label plain"), "only the usable buttons");
         assert!(!shown(&app, "Label fake"), "only the system user's messages have buttons");
-        let mut sim = simulator(app.view_conversation());
-        sim.click("Label tips").expect("the link button");
-        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        let msgs: Vec<UiMessage> = clicks(app.view_conversation(), "Label tips");
         let press =
             |m: &UiMessage| matches!(m, UiMessage::Message(Msg::PressButton(mid, id)) if mid == "$tip" && id == "tips");
         assert!(msgs.iter().any(press), "a press of the button");
@@ -5821,9 +5807,7 @@ pub(crate) mod tests {
         let _ = app.update(UiMessage::SelectChat(note.into()));
         let mid = newest(&app, |m| m.reactable());
         let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
-        let mut sim = simulator(app.view_message_menu(&mid).0);
-        let _ = sim.click("React…").expect("React…");
-        let picked: Vec<UiMessage> = sim.into_messages().collect();
+        let picked: Vec<UiMessage> = clicks(app.view_message_menu(&mid).0, "React…");
         let on = |m: &UiMessage| matches!(m, UiMessage::Message(Msg::ReactOn(m)) if *m == mid);
         assert!(matches!(&picked[..], [UiMessage::Message(Msg::Menu(m))] if on(m)), "React… opens it on the message");
         let _ = app.update(UiMessage::CloseModals);
