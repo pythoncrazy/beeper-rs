@@ -773,7 +773,7 @@ async fn lifecycle() {
         .map(|m| m["attachments"].clone())
         .collect();
     let wanted = |a: &Value| a.as_array().unwrap().iter().any(|a| a["type"] == "img" || a["type"] == "unknown");
-    assert!(kinds.len() == 6 && kinds.iter().all(wanted), "{kinds:?}");
+    assert!(kinds.len() == 8 && kinds.iter().all(wanted), "{kinds:?}");
     let (_, muted) = pager.request("GET", "/v1/messages/search?accountIDs=acc_imessage&includeMuted=false", None).await;
     assert!(muted["items"].as_array().unwrap().iter().all(|m| m["chatID"] != "!im_sarah:beeper.com"));
     let (_, late) = pager.request("GET", "/v1/messages/search?dateAfter=2100-01-01T00:00:00%2B02:00", None).await;
