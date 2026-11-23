@@ -1,21 +1,11 @@
 //! Desktop's Beeper Profile page of Settings (`ProfileSubView`), with its menu and prompts.
 
 use crate::i18n::{tr, trf, trx, trxf};
+use crate::portal;
+use crate::prelude::*;
 use crate::settings;
-use crate::style::rem;
-use crate::style::{bold, bordered_box, btn_style, fill_box, fw, ic, icon, lh, med, semi, shadow_box, txt, Bare, Palette, CLEAR};
-use crate::{
-    menu_item, menu_rule, outline_input, pill_style, plan_pill, portal, round_avatar, tinted, BeeperGuiApp, El, PendingMedia, SettingsTab,
-    Toast, UiMessage, CHEVRON_DOWN,
-};
-use beeper_core::cloud::{Cloud, CloudError};
-use beeper_core::config::now_unix_millis;
-use beeper_core::models::{Plan, User};
-use beeper_core::store::BeeperStore;
-use iced::font::Weight;
-use iced::widget::{button, column, container, hover, image, mouse_area, rich_text, row, span, text_editor, text_input, Column, Space};
-use iced::{Center, Color, Fill, Padding, Task, Theme};
-use std::path::PathBuf;
+use beeper_core::models::Plan;
+use iced::widget::column;
 
 /// The edits and the open prompts of the Beeper Profile page.
 #[derive(Default)]

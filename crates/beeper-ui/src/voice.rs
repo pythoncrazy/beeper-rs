@@ -1,18 +1,10 @@
 //! Desktop's audio player (`Audio.tsx`): decoding, the waveform, playback speed, and autoplay of the next
 //! voice note.
+use crate::prelude::*;
 use crate::settings;
-use crate::style::{btn_style, clamped, fill_box, hidden_slider, ic, icon, lh, semi, shadow_box, text_width, txt, Bare};
-use crate::{menu_item, menu_pitch, sound, tinted, tr, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS};
-use beeper_core::models::{Attachment, Message, Transcription};
-use beeper_core::store::BeeperStore;
-use iced::font::Weight;
-use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, mouse_area, row, slider, stack, svg, Column, Row, Space};
-use iced::{Center, Color, Fill, Padding, Point, Subscription, Task};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use crate::tr;
+use beeper_core::models::Transcription;
+use iced::widget::column;
 
 /// `PlaybackControl`'s speeds.
 pub(crate) const RATES: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];

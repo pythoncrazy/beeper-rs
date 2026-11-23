@@ -17,6 +17,8 @@ mod dashed;
 mod deeplink;
 pub use deeplink::ACTIVATION_TOKEN_ARG;
 mod delegate;
+mod prelude;
+use crate::prelude::*;
 use style::cubic_bezier;
 mod dialogs;
 pub mod emoji;
@@ -122,7 +124,6 @@ pub use crate::composer::{LinkState, Stash, Suggestion};
 pub use crate::dialogs::{GroupDraft, GroupEdit, LabelDraft, LabelEdit, LabelPane, LabelSettings, LabelStep, PollDraft, PollEdit};
 use crate::dialogs::{DEFAULT_LABEL_ICON, GROUP_SIZE, LABEL_SETTINGS_SIZE};
 use crate::i18n::{tr, trf, trn, trs, trx};
-use crate::login::{Login, LoginMsg};
 use crate::media_view::{decode_media, run_ffmpeg, Carousel, MediaWindow, TAB_SLIDE};
 use crate::message::Rows;
 pub use crate::message::TopOfThread;
@@ -153,40 +154,20 @@ use user_card::UserHover;
 use vcard::VCard;
 use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZE};
 
-use crate::style::{
-    bar, bordered_box, bordered_btn, brand_gray, brand_svg, btn_style, clamp, clamped, done_btn, editor_style, ell, ensure_fonts_loaded,
-    fill_box, fw, glow_box, hex, ic, icon, initials, input_style, lh, med, pad, pick, pick_menu_style, pick_style, rem, scroll_style, semi,
-    shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER, SOLID_BARS,
-};
-use beeper_core::cloud::{Cloud, KlipyGif};
-use beeper_core::config::{
-    account_network, civil_from_days, local_millis, millis_from_rfc3339, now_unix_millis, now_unix_secs, parse_when_millis,
-    rfc3339_from_millis,
-};
+use crate::style::{brand_gray, ensure_fonts_loaded, initials, pick_menu_style, pick_style, AVATAR_GRADIENTS, SOLID_BARS};
+use beeper_core::cloud::KlipyGif;
+use beeper_core::config::{local_millis, parse_when_millis, rfc3339_from_millis};
 use beeper_core::import::has_beeper_data;
-use beeper_core::matrix::{DeviceInfo, Mention, Outgoing};
+use beeper_core::matrix::Outgoing;
 use beeper_core::models::*;
 use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind};
 use beeper_core::prefs;
 use beeper_core::search::{self, Search};
-use beeper_core::store::{BeeperStore, NetworkSpace, Query, SharedStore, NOTE_CHAT_ID};
+use beeper_core::store::NetworkSpace;
 use beeper_core::with_defaults;
-use iced::font::Weight;
-use iced::gradient::Linear;
-use iced::keyboard::{self, key::Named, Key, Modifiers};
-use iced::widget::scrollable::{Direction, Scrollbar};
-use iced::widget::{
-    button, column, container, grid, image, mouse_area, operation, pick_list, pin, rich_text, row, scrollable, slider, span, stack, svg,
-    text_editor, text_input, tooltip, Column, Grid, Row, Space, Stack,
-};
-use iced::{
-    border, mouse, window, Background, Center, Color, Element, Event, Fill, Gradient, Length, Padding, Pixels, Point, Radians, Right,
-    Shadow, Shrink, Size, Subscription, Task, Theme, Vector,
-};
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
+use iced::keyboard::{self, key::Named};
+use iced::widget::{column, grid, operation, Grid};
+use iced::{border, mouse, window};
 use tokio::sync::{broadcast, Semaphore};
 
 static AVATAR_SLOTS: Semaphore = Semaphore::const_new(8);

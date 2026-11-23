@@ -1,7 +1,6 @@
-use iced::advanced::layout::Layout;
-use iced::advanced::widget::{self, Widget};
-use iced::advanced::{mouse, Clipboard, Shell};
-use iced::{Element, Event, Rectangle, Renderer, Theme};
+use crate::prelude::*;
+use iced::advanced::mouse;
+use iced::advanced::widget::{self};
 
 /// A DOM `click` on `content`: `message` when the left button goes down and up over it, unless something inside it
 /// (a link, a button, a card) took the press. Desktop selects a message on `click`, so pressing a link card in a

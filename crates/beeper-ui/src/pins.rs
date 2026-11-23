@@ -1,8 +1,7 @@
 //! Desktop's pinned chats grid: the hover of a tile, and the drag that orders the pins.
 
 use super::*;
-use crate::chat_list::{message_tag, preview_body};
-use std::time::{Duration, Instant};
+use crate::prelude::*;
 
 /// `dnd-kit`'s `transform 250ms ease` of a sortable item that moves to another place.
 pub(crate) const SLIDE: Duration = Duration::from_millis(250);

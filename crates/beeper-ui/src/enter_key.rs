@@ -1,12 +1,10 @@
 //! Desktop's `ENTER_RECOVERY_CODE` modal: verifies this device with the recovery key from the main window.
 use crate::i18n::{tr, trx};
-use crate::login::{actions, heading};
-use crate::style::{fill_box, txt};
-use crate::verify::{brand_btn_maybe, clipboard_key, edit_recovery_key, format_recovery_key, key_input, Brand};
-use crate::{BeeperGuiApp, El, UiMessage};
-use iced::keyboard::{key::Named, Key};
-use iced::widget::{column, container, text_editor, Space};
-use iced::{window, Fill, Size, Task};
+use crate::prelude::*;
+use crate::verify::{clipboard_key, edit_recovery_key, format_recovery_key, key_input};
+use iced::keyboard::key::Named;
+use iced::widget::column;
+use iced::window;
 
 /// The size of Desktop's modal windows.
 const SIZE: Size = Size::new(500.0, 450.0);

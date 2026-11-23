@@ -1,14 +1,11 @@
 //! Desktop's carousel zoom (`react-zoom-pan-pinch` in `AttachmentCarousel.tsx`): scale 1 to 8, Ctrl + wheel (the
 //! touchpad pinch of Chromium) zooms at the cursor, a double click zooms in or out, `+`, `=` and `-` zoom at the
 //! middle, and a drag pans inside the bounds of the zoomed area. A click outside the content publishes `outside`.
-use crate::{BeeperGuiApp, UiMessage};
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{tree, Operation, Tree, Widget};
-use iced::advanced::{mouse, renderer, Clipboard, Shell};
-use iced::keyboard::{self, Key};
-use iced::Task;
-use iced::{window, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Transformation, Vector};
-use std::time::Instant;
+use crate::prelude::*;
+use iced::advanced::layout::{self};
+use iced::advanced::{mouse, renderer};
+use iced::keyboard::{self};
+use iced::window;
 
 /// `minScale` and `maxScale`.
 const MIN: f32 = 1.0;

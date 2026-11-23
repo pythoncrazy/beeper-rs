@@ -1,7 +1,7 @@
 //! Desktop's command bar view: the palette of chats, commands and messages, and the search filter chips.
 
 use super::*;
-use crate::time::list_ts;
+use crate::prelude::*;
 use iced::widget::column;
 
 impl BeeperGuiApp {

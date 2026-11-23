@@ -1,31 +1,18 @@
 //! Desktop's command bar commands (`Efe`): the categories, the titles, the search keywords and the hotkeys.
-use crate::accounts;
-use crate::blocking;
 use crate::chat_list;
 use crate::composer;
 use crate::i18n::{tr, trf, trx};
 use crate::media_view;
-use crate::members;
 use crate::message;
-use crate::new_chat;
-use crate::rail;
-use crate::reminders;
-use crate::scheduled;
+use crate::prelude::*;
 use crate::settings;
-use crate::style::{bar, brand_svg, ell, fill_box, lh, scroll_style, semi, text_width, txt, Palette, CLEAR};
-use crate::threads;
 use crate::windows;
-use crate::{has_flag, network_name, shown, BeeperGuiApp, El, InboxTab, SettingsHit, SettingsTab, UiMessage, ASK_LOGOUT};
-use crate::{Find, SearchPick, ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
-use beeper_core::models::{
-    AccountProps, Chat, ChatFlag, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE, MEMBER_KICK,
-    MEMBER_LEAVE,
-};
+use crate::{shown, SettingsHit};
+use crate::{Find, SearchPick};
+use beeper_core::models::{AccountProps, ThemeChoice, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE, MEMBER_KICK, MEMBER_LEAVE};
 use beeper_core::prefs;
-use beeper_core::store::BeeperStore;
+use iced::widget::column;
 use iced::widget::operation;
-use iced::widget::{column, container, mouse_area, row, scrollable, svg, Row, Space};
-use iced::{Center, Fill, Padding, Task};
 
 /// A command: Desktop shows a disabled command, which has no message, at 70% opacity.
 #[derive(Default)]

@@ -1,9 +1,6 @@
 //! Desktop's links in text: linkifyjs (`Epe`) with its default options, which links URLs with a scheme and bare
 //! domains on a known top-level domain (with `http://`), and leaves out the punctuation around a link.
-
-use std::collections::HashSet;
-use std::ops::Range;
-use std::sync::LazyLock;
+use crate::prelude::*;
 
 /// linkifyjs's top-level domains, ASCII then international, in its own packed form: letters push onto a word, and a
 /// number ends the word and pops that many letters.

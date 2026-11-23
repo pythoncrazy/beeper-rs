@@ -1,17 +1,11 @@
 //! Desktop's device verification: the toast of a request from another device, the `VerificationModal` window, and the
 //! onboarding screens of encrypted messaging after the sign-in.
-use crate::emoji::EMOJI_FONT;
 use crate::i18n::{tr, trn_named, trx};
-use crate::login::{actions, art, brand_gradient, heading, Login, LoginMsg, Screen, H3};
-use crate::style::rem;
-use crate::style::{bold, btn_style, fill_box, fw, ic, icon, lh, semi, shadow_box, t, txt, Bare, Palette, CLEAR};
-use crate::{BeeperGuiApp, El, Toast, UiMessage};
-use beeper_core::matrix::E2eeSetup;
-use beeper_core::store::SharedStore;
-use iced::font::Weight;
-use iced::widget::{button, column, container, mouse_area, rich_text, row, span, svg, text_editor, tooltip, Column, Space};
-use iced::{border, window, Center, Color, Fill, Padding, Size, Task, Theme};
-use std::sync::LazyLock;
+use crate::login::{art, brand_gradient, Screen, H3};
+use crate::prelude::*;
+use crate::style::t;
+use iced::widget::column;
+use iced::{border, window};
 
 /// The size of Desktop's `VERIFICATION` modal window.
 const SIZE: Size = Size::new(330.0, 480.0);

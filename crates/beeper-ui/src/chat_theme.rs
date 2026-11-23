@@ -1,15 +1,9 @@
 //! Desktop's chat themes: the bubble colors and the wallpapers of `chatAppearanceStore`.
 use crate::i18n::tr;
-use crate::style::hex;
+use crate::portal;
+use crate::prelude::*;
 use crate::toasts::Toast;
-use crate::{portal, BeeperGuiApp, UiMessage};
 use beeper_core::models::{Bubble, ChatAppearance, Wallpaper};
-use iced::gradient::Linear;
-use iced::widget::{container, image, stack, svg, Space};
-use iced::{Background, Border, Color, ContentFit, Element, Fill, Gradient, Radians, Size, Task, Theme};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
 
 /// Desktop's `mde`: the id and the color of each bubble color.
 pub const BUBBLES: [(&str, u32); 9] = [

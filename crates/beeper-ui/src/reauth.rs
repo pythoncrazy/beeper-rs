@@ -1,15 +1,11 @@
 //! Desktop's `ReauthRequiredModal`: a sign-in code from the email of the account gives a new Beeper JWT, which
 //! answers the user-interactive auth of the homeserver (`updateAuthToken`).
 use crate::i18n::{tr, trx};
-use crate::login::{actions, field, heading};
-use crate::style::{fill_box, txt};
-use crate::verify::{brand_btn_maybe, Brand};
-use crate::{BeeperGuiApp, El, UiMessage};
-use beeper_core::cloud::{Cloud, CodeResult};
-use iced::keyboard::{key::Named, Key};
-use iced::widget::{column, container, operation, Space};
-use iced::{window, Fill, Padding, Size, Task};
-use std::sync::Arc;
+use crate::login::field;
+use crate::prelude::*;
+use iced::keyboard::key::Named;
+use iced::widget::{column, operation};
+use iced::window;
 
 /// The size of Desktop's modal windows.
 const SIZE: Size = Size::new(500.0, 450.0);

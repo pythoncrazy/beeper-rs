@@ -6,11 +6,9 @@
 //! text fields of the window in their layout order, which is Desktop's DOM order.
 
 use super::*;
-use iced::advanced::layout::Layout;
+use crate::prelude::*;
 use iced::advanced::widget::operation::{Focusable, Operation, Outcome, Scrollable};
-use iced::advanced::widget::{self as advanced, Widget};
-use iced::advanced::{Clipboard, Shell};
-use iced::{Rectangle, Renderer};
+use iced::advanced::widget::{self as advanced};
 
 /// Tells when the text field inside `content` takes or loses the keyboard focus, like the DOM's `focus` and `blur`
 /// events: `on_change` gets whether it has the focus now.

@@ -3,11 +3,10 @@
 //!
 //! The pieces move like canvas-confetti's `updateFetti`, one step per animation frame of 60 Hz. iced draws no rotated
 //! shapes, so each square is the box around canvas-confetti's four corners and each circle the pill of its ellipse.
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{self, Widget};
+use crate::prelude::*;
+use iced::advanced::layout::{self};
+use iced::advanced::widget::{self};
 use iced::advanced::{mouse, renderer};
-use iced::{Color, Element, Length, Rectangle, Size, Theme};
-use std::time::{Duration, Instant};
 
 /// Desktop's confetti window closes 250 ms after it opens plus 10 s.
 pub(crate) const LIFE: Duration = Duration::from_millis(10_250);

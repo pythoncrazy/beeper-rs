@@ -2,12 +2,11 @@
 //! shows it: the Beeper, File, Edit, View, Window and Help menus over the main window.
 use crate::composer;
 use crate::i18n::{tr, trf, trx};
+use crate::prelude::*;
 use crate::settings;
-use crate::style::{fill_box, text_width, txt};
 use crate::windows;
-use crate::{menu_item, menu_rule, BeeperGuiApp, El, SettingsTab, UiMessage, ASK_LOGOUT};
-use iced::widget::{column, container, mouse_area, row, text_editor, Column};
-use iced::{font::Weight, Fill, Padding, Task};
+use iced::font::Weight;
+use iced::widget::column;
 
 /// The height of the menu bar.
 pub(crate) const BAR_H: f32 = 26.0;

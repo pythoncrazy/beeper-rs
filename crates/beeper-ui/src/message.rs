@@ -1,52 +1,31 @@
 //! The timeline of a chat: the rows of its messages, a message with its bubble, quote and reactions, the message
 //! menu, and the dividers and the scroll button of the timeline.
 
-use crate::blocking;
 use crate::chat_list;
 use crate::composer;
-use crate::emoji::{with_emoji_font, EMOJI_FONT};
-use crate::forward;
+use crate::emoji::with_emoji_font;
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
-use crate::loads;
 use crate::media_view;
-use crate::members;
-use crate::merged;
+use crate::prelude::*;
 use crate::reminders::reminder_day;
 use crate::reply_line::{reply_line, Segment, Shape};
-use crate::style::rem;
-use crate::style::{
-    bold, bordered_box, bordered_btn, btn_style, clamp, fill_box, fw, hex, ic, icon, lh, med, mix, pad, pane_card, pick, scroll_style,
-    semi, stable_bar, text_width, txt, Bare, CLEAR, GUTTER,
-};
-use crate::threads;
-use crate::time::{clock, day_label, day_num, day_of, format_short_ts, locale_string, today};
+use crate::style::pane_card;
+use crate::time::{clock, day_label, day_of, locale_string};
 use crate::timeline;
 use crate::toasts::Toast;
-use crate::units::human_size;
-use crate::view_once;
 use crate::windows;
 use crate::{
-    anim, badged, brightness, can_thread, chat_theme, commands, copy_text, delete_dialog, distance, downloads_dir, ease_out, edit_open,
-    editable, enter_key, feedback_btn, file_icon, fmt_phone, gallery, handle, has_older, hotkey_caps, hotkey_text, lift, locate,
-    member_name, membership, menu_item, menu_pitch, menu_rule, network_bot, pending, pill_btn, portal, profile_link, reply_root,
-    reply_root_with, safe_file_name, send_rise, sender_label, short_title, still_sending_at, stored, tinted, unavailable, unused_path,
-    video, vlist, BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, BUBBLE_PAD_Y,
-    CHEVRON_DOWN, CHEVRON_FORWARD, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK,
+    anim, badged, brightness, can_thread, chat_theme, copy_text, edit_open, editable, enter_key, file_icon, gallery, handle, has_older,
+    lift, network_bot, portal, profile_link, reply_root, reply_root_with, safe_file_name, send_rise, sender_label, short_title,
+    still_sending_at, unavailable, unused_path, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_Y, CHEVRON_RIGHT, ERROR_OUTLINE, OUTLINE_CLOCK,
     POLL_CHECK, POLL_ENDED, TIMER, TRASH,
 };
-use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
-use beeper_core::matrix::{Pressed, ROOM_MENTION};
+use beeper_core::matrix::Pressed;
 use beeper_core::models::*;
 use beeper_core::prefs;
-use beeper_core::store::BeeperStore;
-use iced::font::Weight;
+use iced::widget::column;
 use iced::widget::operation;
-use iced::widget::{
-    button, column, container, image, mouse_area, pin, rich_text, row, scrollable, span, stack, svg, tooltip, Column, Row, Space, Stack,
-};
-use iced::{border, mouse, Bottom, Center, Color, Fill, Length, Padding, Pixels, Point, Right, Shadow, Size, Task, Theme, Vector};
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use iced::{border, mouse};
 
 /// The name of an attachment, or Desktop's "Attachment" for one that a bridge sent without a file name or body.
 pub(crate) fn attachment_name(a: &Attachment) -> String {

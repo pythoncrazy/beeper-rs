@@ -9,22 +9,16 @@
 //! It is iced's `Rich` text with the selection added, so links still work and the layout is the same. A hovered link
 //! can show a tooltip above it ([`Selectable::link_tip`]).
 
-use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
-
+use crate::prelude::*;
 use iced::advanced::graphics::text::cosmic_text::{Affinity, Buffer, Cursor};
 use iced::advanced::image::{self as core_image, Renderer as _};
-use iced::advanced::layout::{self, Layout};
+use iced::advanced::layout::{self};
 use iced::advanced::overlay;
-use iced::advanced::renderer::{self, Quad, Renderer as _};
+use iced::advanced::renderer::{self, Renderer as _};
 use iced::advanced::text::{self as core_text, Paragraph as _, Renderer as _, Span};
-use iced::advanced::widget::{tree, Tree, Widget};
-use iced::advanced::{Clipboard, Shell};
 use iced::alignment;
 use iced::mouse;
-use iced::widget::text::{Alignment, LineHeight, Shaping, Wrapping};
-use iced::{Color, Element, Event, Length, Pixels, Point, Rectangle, Size, Theme, Vector};
+use iced::widget::text::{Alignment, LineHeight, Shaping};
 
 type Renderer = iced::Renderer;
 type Paragraph = <Renderer as core_text::Renderer>::Paragraph;

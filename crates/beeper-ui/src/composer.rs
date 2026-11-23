@@ -1,43 +1,24 @@
 //! The composer: its drafts, the autocomplete, the attachments and link previews, the composer buttons, and the send
 //! of a message.
 
-use crate::chat_list::{message_tag, preview_body};
 use crate::focus::Caret;
 use crate::gifs;
 use crate::gifs::gif_width;
 use crate::i18n::{tr, trf};
-use crate::scheduled;
+use crate::prelude::*;
 use crate::scheduled::send_day;
-use crate::style::rem;
-use crate::style::{
-    bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, lh, mix, pad, scroll_style, semi, text_width, txt,
-    Bare, CLEAR,
-};
-use crate::threads;
-use crate::units::human_size;
 use crate::vcard::parse_vcard;
 use crate::{
-    account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, clipboard_paste, contact_card, dashed,
-    default_account_user, emoji, format, has_flag, hotkey_caps, hotkey_key, icon_btn, images, locate, menu_item, menu_pitch, menu_rule,
-    network_name, portal, record, removable, several_accounts, spell, switch_targets, text_urls, tinted, toasts, truncate, vlist, voice,
-    BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS,
-    MESSAGE_MENU_W, SEND_ARROW,
+    account_display_name, account_user, anim, can_broadcast, clipboard_paste, contact_card, dashed, default_account_user, emoji, format,
+    hotkey_key, images, portal, removable, several_accounts, switch_targets, text_urls, toasts, truncate, Clip, MenuEdit, Picker, Queued,
+    FILE_ICONS, SEND_ARROW,
 };
-use beeper_core::codec::Emoticon;
-use beeper_core::config::{account_network, now_unix_millis};
-use beeper_core::matrix::{Mention, ROOM_MENTION};
 use beeper_core::models::*;
 use beeper_core::prefs;
-use beeper_core::store::{BeeperStore, Draft, OutFile};
-use iced::font::Weight;
-use iced::keyboard::{key::Named, Key};
+use iced::keyboard::key::Named;
+use iced::widget::column;
 use iced::widget::operation;
-use iced::widget::scrollable::{Direction, Scrollbar};
-use iced::widget::{
-    button, column, container, image, mouse_area, row, scrollable, stack, svg, text_editor, text_input, tooltip, Column, Row, Space,
-};
-use iced::{window, Bottom, Center, Color, Fill, Length, Padding, Shrink, Task};
-use std::collections::HashSet;
+use iced::window;
 
 /// Composer content with `text` and the cursor at the end.
 pub(crate) fn composer_with(text: &str) -> text_editor::Content {

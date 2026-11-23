@@ -4,20 +4,16 @@
 //! computes from the overridden ones keep Desktop's own colors, as CSS custom properties resolve where they are
 //! declared.
 use crate::delegate::delegate;
-use crate::focus::{Keys, Look};
 use crate::i18n::tr;
-use crate::style::{btn_style, fill_box, fixed, hex, lh, rem, txt, Palette, CLEAR};
-use crate::{settings, BeeperGuiApp, El, UiMessage};
+use crate::prelude::*;
+use crate::settings;
+use crate::style::fixed;
 use beeper_core::models::UiTheme;
-use iced::advanced::layout::Layout;
 use iced::advanced::mouse;
-use iced::advanced::renderer::{self, Quad, Renderer as _};
-use iced::advanced::widget::{self, Widget};
-use iced::font::Weight;
-use iced::gradient::Linear;
-use iced::widget::{button, column, container, row, tooltip, Row, Space};
-use iced::{border, Background, Center, Color, Element, Padding, Radians, Rectangle, Renderer, Size, Subscription, Theme};
-use std::time::Duration;
+use iced::advanced::renderer::{self, Renderer as _};
+use iced::advanced::widget::{self};
+use iced::border;
+use iced::widget::column;
 
 /// Desktop's `f`: the rich gradient moves by its 200% in 2 hours.
 const RICH_PERIOD_MS: i64 = 7_200_000;

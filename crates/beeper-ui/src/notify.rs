@@ -1,15 +1,9 @@
 //! Desktop's message notifications (`maybeSendNotification` and `sendNotification`).
 use crate::chat_list;
-use crate::commands;
 use crate::message;
-use crate::reminders;
+use crate::prelude::*;
 use crate::windows;
-use crate::{BeeperGuiApp, UiMessage};
-use beeper_core::config::{account_network, millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::NetworkKind::*;
-use beeper_core::models::{Attachment, Chat, ChatFlag, Message};
-use iced::Task;
-use std::collections::{HashMap, HashSet};
 
 /// Desktop's attachment text: the verbose form when the message has no text.
 pub(crate) fn attachment_text(all: &[Attachment], verbose: bool) -> Option<String> {

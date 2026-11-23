@@ -2,7 +2,7 @@
 //! `beeper-nudge-shake` of the timeline of the open chat.
 
 use super::*;
-use std::time::Instant;
+use crate::prelude::*;
 
 #[derive(Debug, Clone)]
 pub enum Msg {

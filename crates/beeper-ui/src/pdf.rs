@@ -3,16 +3,9 @@
 //! place of pdf.js: a worker reads the file once, and another draws only the page that the carousel shows, as media.
 
 use crate::i18n::tr;
-use crate::style::{fill_box, lh, text_width, txt, Bare};
-use crate::{anim, loads, media_view, BeeperGuiApp, El, Frames, UiMessage};
-use beeper_core::models::Attachment;
+use crate::prelude::*;
+use crate::{anim, media_view};
 use hayro::hayro_syntax::Pdf;
-use iced::font::Weight;
-use iced::widget::{button, container, image, mouse_area, row, svg, Space};
-use iced::{Center, Color, Fill, Padding, Size, Task};
-use std::collections::BTreeSet;
-use std::sync::{Arc, LazyLock};
-use std::time::Instant;
 
 /// A read PDF, which the renders of its pages share.
 pub(crate) type Doc = Arc<Pdf>;

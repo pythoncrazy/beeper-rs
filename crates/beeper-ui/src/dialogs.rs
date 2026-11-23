@@ -1,47 +1,22 @@
 //! The confirmation dialogs, and the Label, Edit Labels, Edit Group, Blocked users and New Poll windows.
 
-use crate::accounts;
-use crate::blocking;
-use crate::blocking::blocked_chats;
 use crate::chat_list;
-use crate::focus::{self, Keys, Look};
+use crate::focus::{self};
 use crate::i18n::{tr, trf, trn, trx};
 use crate::info;
-use crate::integrations;
 use crate::labels;
 use crate::labels::label_fill;
-use crate::members;
-use crate::merged;
-use crate::rail;
-use crate::reminders;
+use crate::prelude::*;
 use crate::settings;
-use crate::style::rem;
-use crate::style::{
-    bar, bold, bordered_box, btn_style, done_btn, editor_style, ell, fill_box, fw, ic, icon, input_style, lh, med, mix, pad, scroll_style,
-    semi, shadow_box, text_width, txt, Bare, CLEAR,
-};
-use crate::units::human_size;
 use crate::{
-    badge, chat_search_subtitle, checkbox, checkbox_plus, delete_dialog, grouped_rows, icon_btn, inbox_label, label_icon, label_tile,
-    login, member_name, menu_item, network_name, pill_btn, portal, reconnect, round_avatar, spread, stored, tinted, toggle, voice,
-    BeeperGuiApp, El, PendingMedia, Toast, UiMessage, ACCOUNT_SUB_W, ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_BLOCK,
-    ASK_BLOCK_OFFLINE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE,
-    ASK_DISCONNECT_SERVER, ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ,
-    ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REMOVE_MEMBER, ASK_REMOVE_PACK, ASK_REVOKE_CONNECTION, ASK_ROOM_ENCRYPTION, ASK_TRANSCRIBE,
-    ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE, ASK_UNMERGE, DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
+    chat_search_subtitle, checkbox_plus, grouped_rows, label_icon, label_tile, login, portal, spread, ASK_BLOCK, ASK_BLOCK_OFFLINE,
+    ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT, ASK_MAKE_ADMIN, ASK_REMOVE_MEMBER, ASK_ROOM_ENCRYPTION,
+    ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE, ASK_UNMERGE, DELETE, DRAG_HANDLE, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
-use beeper_core::store::BeeperStore;
-use iced::font::Weight;
-use iced::gradient::Linear;
-use iced::keyboard::key::Named;
-use iced::widget::scrollable::{Direction, Scrollbar};
-use iced::widget::{
-    button, column, container, image, mouse_area, operation, row, scrollable, stack, text_editor, text_input, Column, Space, Stack,
-};
-use iced::{border, mouse, window, Background, Center, Color, Fill, Gradient, Padding, Radians, Size, Task, Theme};
-use std::collections::HashSet;
+use iced::widget::{column, operation};
+use iced::{border, mouse, window};
 
 /// Desktop's `cR`: the icon of a new label.
 pub(crate) const DEFAULT_LABEL_ICON: &str = "3257-5964";

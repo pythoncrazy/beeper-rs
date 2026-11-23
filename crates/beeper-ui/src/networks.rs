@@ -3,10 +3,9 @@
 //! (`AddAccountsBrowserWindow`).
 
 use super::*;
-use beeper_core::config::{cloud_bridge, NETWORK_SPECS};
+use crate::prelude::*;
 use beeper_core::features::Flags;
-use beeper_core::models::NetworkKind;
-use iced::widget::{column, row, stack};
+use iced::widget::column;
 
 /// Desktop's Add an Account window size (`Ds` and `Us` of sentry-common).
 pub const SIZE: Size = Size::new(400.0, 505.0);

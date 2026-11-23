@@ -1,8 +1,8 @@
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{self, Widget};
+use crate::prelude::*;
+use iced::advanced::layout::{self};
+use iced::advanced::widget::{self};
 use iced::advanced::Renderer as _;
-use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
-use iced::{Color, Element, Event, Point, Rectangle, Renderer, Size, Theme, Vector};
+use iced::advanced::{mouse, overlay, renderer};
 
 /// Shows `popup` with its top-left corner at the cursor while the cursor is over `content`,
 /// or at the top-left corner of `content` while `open` is set, like Desktop's "right-start" popover.

@@ -1,22 +1,16 @@
 //! Desktop's `AudioBar`: record a voice note from the microphone, pause to play it back, and send it as Ogg Opus.
 use crate::composer;
+use crate::prelude::*;
 use crate::settings;
-use crate::style::{bordered_box, fill_box, hex, hidden_slider, txt, Bare, CLEAR};
 use crate::voice::{self, Clip, HZ, ICONS};
-use crate::{tinted, BeeperGuiApp, El, UiMessage};
-use beeper_core::store::{Draft, OutFile};
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{self, Widget};
-use iced::advanced::{mouse, renderer, Clipboard, Renderer as _, Shell};
-use iced::keyboard::key::Named;
-use iced::widget::{button, container, responsive, row, slider, stack, svg, text_editor, tooltip, Row, Space};
-use iced::{window, Center, Color, Element, Event, Fill, Length, Padding, Rectangle, Renderer, Size, Subscription, Task};
+use iced::advanced::layout::{self};
+use iced::advanced::widget::{self};
+use iced::advanced::{mouse, renderer, Renderer as _};
+use iced::widget::responsive;
+use iced::window;
 use rodio::microphone::{available_inputs, MicrophoneBuilder};
 use std::io::Write;
-use std::num::NonZero;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
+use std::sync::atomic::Ordering::Relaxed;
 
 /// The voice player's key for the paused take.
 pub(crate) const TAKE: &str = "recording";

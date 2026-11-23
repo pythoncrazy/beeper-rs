@@ -2,15 +2,12 @@
 use crate::composer;
 use crate::i18n::tr;
 use crate::popover::above;
-use crate::style::rem;
-use crate::style::{bordered_box, btn_style, carets, fill_box, fw, lh, semi, shadow_box, txt, CLEAR};
-use crate::{spell, BeeperGuiApp, El, UiMessage};
+use crate::prelude::*;
+use crate::style::carets;
 use iced::advanced::text::highlighter::{Format, Highlighter};
-use iced::font::Weight;
+use iced::widget::column;
 use iced::widget::text_editor::{Content, Cursor, Position};
-use iced::widget::{button, column, container, row, svg, text_input, tooltip, Row, Space};
-use iced::{Border, Center, Color, Fill, Font, Padding, Point, Vector};
-use std::ops::Range;
+use iced::Font;
 
 pub const LINK: usize = 3;
 pub const CODE: usize = 7;

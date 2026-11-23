@@ -2,13 +2,10 @@
 //! publishes a message, and `update` starts the loads. So a load costs work for the shown rows only, and an update
 //! does not scan every chat and every message.
 
-use iced::advanced::layout::Layout;
-use iced::advanced::widget::{Tree, Widget};
-use iced::advanced::{mouse, Clipboard, Shell};
-use iced::{window, Element, Event, Rectangle, Renderer, Theme};
+use crate::prelude::*;
+use iced::advanced::mouse;
+use iced::window;
 use std::borrow::Borrow;
-use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
 
 #[derive(Default)]
 pub struct Wants {

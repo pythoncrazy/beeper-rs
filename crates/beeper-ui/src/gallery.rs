@@ -1,19 +1,11 @@
 //! Desktop's `GalleryGrouper` and `GalleryAttachments`: the photos and videos that one sender sends in a short time
 //! show as one gallery of up to four tiles.
-use crate::forward;
 use crate::i18n::{tr, trx};
-use crate::loads;
 use crate::media_view;
 use crate::message;
-use crate::style::rem;
-use crate::style::{bordered_box, btn_style, fill_box, semi, Palette};
-use crate::time::iso_millis;
-use crate::{deletable, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, Frames, UiMessage};
-use crate::{hotkey_text, menu_pitch, MESSAGE_MENU_W};
-use beeper_core::models::{AttachmentSize, Message};
-use beeper_core::store::BeeperStore;
-use iced::widget::{button, container, image, mouse_area, stack, Space, Stack};
-use iced::{mouse, Color, Fill, Padding, Pixels, Point, Task};
+use crate::prelude::*;
+use beeper_core::models::AttachmentSize;
+use iced::mouse;
 
 /// Desktop's `rbt`, `obt` and `ibt`: at most 20 messages, at most 2 minutes after the first, at most 60 seconds apart.
 const MAX: usize = 20;
