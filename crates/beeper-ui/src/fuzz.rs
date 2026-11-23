@@ -2522,12 +2522,7 @@ fn carousel_tooltips_like_desktop() {
     sim.point_at(close);
     let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: close })]);
     // The simulator does not find the text of overlays, so the test reads the pixels of the tooltip.
-    let dir = std::env::temp_dir().join(format!("beeper-rs-tip-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("tip"));
-    let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-    let shot = ::image::open(&png).unwrap().into_rgba8();
-    std::fs::remove_dir_all(&dir).unwrap();
+    let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "tip");
     let k = shot.width() / 1000;
     assert_eq!(shot.get_pixel(887 * k, 45 * k).0, [255; 4], "the Close tooltip shows under the button");
 }
@@ -9020,13 +9015,7 @@ pub(crate) fn signed_out_app(name: &str) -> BeeperGuiApp {
 /// The pixels of the sign-in window at points of its 330x620 layout.
 fn login_pixels(app: &BeeperGuiApp, points: &[(u32, u32)]) -> Vec<Color> {
     let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 620.0), app.view_login());
-    let dir =
-        std::env::temp_dir().join(format!("beeper-rs-login-{}-{:?}", std::process::id(), std::thread::current().id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let _ = sim.snapshot(&app.iced_theme()).unwrap().matches_image(dir.join("login"));
-    let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-    let shot = ::image::open(&png).unwrap().into_rgba8();
-    std::fs::remove_dir_all(&dir).unwrap();
+    let shot = crate::focus::tests::pixels(&mut sim, &app.iced_theme(), "login");
     let k = shot.width() / 330;
     points
         .iter()
@@ -9334,12 +9323,7 @@ fn brand_buttons_shrink_while_pressed_like_desktop() {
         if press {
             let _ = sim.simulate([iced::Event::Mouse(iced::mouse::Event::ButtonPressed(Button::Left))]);
         }
-        let dir = std::env::temp_dir().join(format!("beeper-rs-press-{}-{press}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let _ = sim.snapshot(&app.iced_theme()).unwrap().matches_image(dir.join("press"));
-        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-        let shot = ::image::open(&png).unwrap().into_rgba8();
-        std::fs::remove_dir_all(&dir).unwrap();
+        let shot = crate::focus::tests::pixels(&mut sim, &app.iced_theme(), "press");
         let k = shot.width() / 330;
         let [r, g, b, _] = shot[(28 * k, 570 * k)].0;
         Color::from_rgb8(r, g, b)
@@ -9679,12 +9663,7 @@ fn no_tooltip_over_an_open_menu_like_desktop() {
         let at = Point::new(235.0, 26.0);
         sim.point_at(at);
         let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
-        let dir = std::env::temp_dir().join(format!("beeper-rs-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("tip"));
-        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-        let shot = ::image::open(&png).unwrap().into_rgba8();
-        std::fs::remove_dir_all(&dir).unwrap();
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, name);
         let k = shot.width() / 1200;
         shot.get_pixel(214 * k, 57 * k).0
     };
@@ -9887,12 +9866,7 @@ fn the_header_shows_the_disappearing_timer_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
     let header = |app: &BeeperGuiApp| {
         let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_conversation());
-        let dir = std::env::temp_dir().join(format!("beeper-rs-header-timer-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("header"));
-        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-        let shot = ::image::open(&png).unwrap().into_rgba8();
-        std::fs::remove_dir_all(&dir).unwrap();
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "header-timer");
         // The row of the name pill, under the avatar.
         let k = shot.width() / 1200;
         (0..shot.width()).filter(|&x| shot.get_pixel(x, 62 * k).0 != shot.get_pixel(0, 62 * k).0).count()
@@ -9981,14 +9955,7 @@ fn custom_emoji_chat(app: &mut BeeperGuiApp, takes: bool) -> (String, String) {
 
 /// The pixels of a frame of `sim`, at its scale of 2.
 fn custom_emoji_pixels(sim: &mut Simulator<'_, UiMessage>) -> ::image::RgbaImage {
-    let thread = std::thread::current().id();
-    let dir = std::env::temp_dir().join(format!("beeper-rs-custom-emoji-{}-{thread:?}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("shot"));
-    let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-    let shot = ::image::open(&png).unwrap().into_rgba8();
-    std::fs::remove_dir_all(&dir).unwrap();
-    shot
+    crate::focus::tests::pixels(sim, &iced::Theme::Light, "custom-emoji")
 }
 
 /// Desktop's emoji picker with `customEmojisForReactions`: the own pack's images in emoji-mart's "Custom" category
