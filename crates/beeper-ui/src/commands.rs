@@ -129,6 +129,8 @@ pub enum SubMenu {
     AddMembers,
     /// Desktop's `THREAD_FILTERS`: the chat filters.
     Filters,
+    /// Desktop's `SET_MESSAGE_EXPIRY`: the disappearing timers to set on the chat.
+    Expiry(String),
 }
 
 pub const MEMBERS_KICK: u8 = 0;
@@ -151,12 +153,15 @@ impl SubMenu {
             SubMenu::Members(MEMBERS_ADMIN) => tr("Make group admin"),
             SubMenu::Members(_) => tr("Dismiss group admin"),
             SubMenu::AddMembers => tr("Add members to chat"),
+            SubMenu::Expiry(_) => tr("Set message expiry timer"),
         }
     }
 
     pub(crate) fn placeholder(&self) -> String {
         match self {
-            SubMenu::FilterAccount | SubMenu::Folders | SubMenu::Filters | SubMenu::Links(_) => String::new(),
+            SubMenu::FilterAccount | SubMenu::Folders | SubMenu::Filters | SubMenu::Links(_) | SubMenu::Expiry(_) => {
+                String::new()
+            }
             SubMenu::History => tr("Search chats...").into(),
             SubMenu::Members(_) | SubMenu::AddMembers => tr("Search users...").into(),
             SubMenu::Remind(_) | SubMenu::RemindMessage(_) => {
@@ -357,6 +362,25 @@ impl BeeperGuiApp {
                 search(listed.collect())
             }
             SubMenu::AddMembers => self.add_member_commands(st, query),
+            // Desktop's `Sit`: No expiry, a day, a week, 4 weeks and 90 days, and a typed number as seconds, minutes,
+            // days, weeks and 30 days, each once and under 10 years, shortest first. The query does not filter them.
+            SubMenu::Expiry(id) => {
+                let typed = query.trim().parse::<f64>().ok().filter(|n| n.is_finite()).map(|n| n.max(0.0) as u64);
+                let typed = typed
+                    .into_iter()
+                    .flat_map(|n| [1, 60, 86_400, 7 * 86_400, 30 * 86_400].map(|s| n.saturating_mul(s)));
+                let mut secs: Vec<u64> =
+                    [0, 86_400, 7 * 86_400, 28 * 86_400, 90 * 86_400].into_iter().chain(typed).collect();
+                secs.retain(|s| *s < 10 * 365 * 86_400);
+                secs.sort_unstable();
+                secs.dedup();
+                let title = |s: u64| match s {
+                    0 => tr("No expiry").to_string(),
+                    s => beeper_core::models::timer_distance(s * 1000),
+                };
+                let set = |s: u64| Some(UiMessage::Info(crate::info::Msg::SetDisappearing(id.clone(), s * 1000)));
+                secs.into_iter().map(|s| cmd("", title(s), set(s))).collect()
+            }
             SubMenu::Links(links) => links
                 .iter()
                 .map(|(url, title)| {
@@ -633,9 +657,22 @@ impl BeeperGuiApp {
                 let open = cmd("User", title, Some(UiMessage::OpenUrl(url))).keys(&["user", "profile"]);
                 v.push(open.hotkey("Open User Profile"));
             }
+            // Desktop's "Message Other Account": the chats with the same person on your other accounts.
+            if let Some(c) = chat {
+                v.extend(crate::alt_chats(st, c, other).into_iter().map(|alt| {
+                    let title = trf("Message on %s", &[&network_name(&alt.account_id)]);
+                    let pick = cmd("Message Other Account", title, Some(UiMessage::SelectChat(alt.id.clone())));
+                    Command { chat: Some(alt.id.clone()), ..pick }
+                }));
+            }
         }
         if let Some(c) = chat {
             let e = "Chat";
+            // Desktop's `supportsChangingDisappearingTime`; the timer also needs the power level to send it.
+            if c.timers.as_ref().is_some_and(|t| t.can_set) {
+                let expiry = UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Expiry(c.id.clone())));
+                v.push(cmd(e, tr("Change message expiry timer"), Some(expiry)).keys(&["set", "disappearing"]));
+            }
             let members = |kind| Some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Members(kind))));
             let can = |bit| c.participants.items.iter().any(|u| u.manage & bit != 0);
             if c.member_actions & MEMBER_INVITE != 0 {
@@ -663,6 +700,10 @@ impl BeeperGuiApp {
             }
             let info = if self.show_right_panel { tr("Hide chat info") } else { tr("Show chat info") };
             v.push(cmd(e, info, Some(UiMessage::ToggleRightPanel)).hotkey("Toggle Chat Info"));
+            // Desktop's `refreshMessages`, which waits for a load of messages to end.
+            let loading = self.pane.top.loading.is_some();
+            let refresh = (!loading).then(|| UiMessage::Timeline(crate::timeline::Msg::Refresh(c.id.clone())));
+            v.push(cmd(e, tr("Refresh chat"), refresh));
             let file = self.pane.editing_message_id.is_none().then_some(UiMessage::Composer(composer::Msg::PickFiles));
             let file_keys = &["attachment", "image", "gif", "video", "document", "pdf"];
             v.push(cmd(e, tr("Send file"), file).keys(file_keys).hotkey("Chat: Send File"));

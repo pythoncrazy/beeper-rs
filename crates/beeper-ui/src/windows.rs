@@ -729,7 +729,7 @@ impl BeeperGuiApp {
             .into(),
         };
         let body = row![self.view_sidebar(), right];
-        container(body).width(Fill).height(Fill).style(fill_box(self.pal.window, 0.0)).into()
+        crate::ui_theme::window_bg(container(body).width(Fill).height(Fill), self.pal.backdrop, self.pal.window).into()
     }
 
     /// The windows besides the main window, Desktop's `subWindows`.

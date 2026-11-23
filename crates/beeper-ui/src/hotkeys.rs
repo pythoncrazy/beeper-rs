@@ -12,6 +12,8 @@ pub enum Msg {
     /// The Revert button of a hotkey with keys other than the default.
     Revert(&'static str),
     RevertAll,
+    /// Desktop's "Switch to Texts.app keybindings".
+    TextsKeys,
     Query(String),
     /// Opens Desktop's Keyboard Shortcuts list with the search text, or closes it.
     Modal(Option<String>),
@@ -47,6 +49,13 @@ impl BeeperGuiApp {
             Msg::RevertAll => {
                 self.patch_settings(|s| s.keybindings.clear());
                 return self.update(UiMessage::Window(windows::Msg::Relaunch));
+            }
+            Msg::TextsKeys => {
+                self.patch_settings(|s| {
+                    let keys = prefs::TEXTS_KEYBINDINGS.iter().map(|(n, k)| (n.to_string(), k.to_string()));
+                    s.keybindings.extend(keys);
+                });
+                (self.hotkey_rec, self.relaunch_toast) = (None, Some(HOTKEYS_RELAUNCH));
             }
             Msg::Query(q) => self.hotkey_query = q,
             Msg::Modal(q) => {
@@ -133,6 +142,15 @@ impl BeeperGuiApp {
                 id.map(UiMessage::SelectChat)
             }
             "Toggle Chat Info" => Some(UiMessage::ToggleRightPanel),
+            // Desktop's `showMainWindow`, and with the command bar, `cmdBarViewStore.setVisible(true)` first.
+            "Focus App" => Some(UiMessage::Window(windows::Msg::FocusRequested(None))),
+            "Focus App and Command Bar" => {
+                let bar = match self.show_command_palette {
+                    true => Task::none(),
+                    false => self.update(UiMessage::RunHotkey("Command Bar")),
+                };
+                return Task::batch([bar, self.update(UiMessage::Window(windows::Msg::FocusRequested(None)))]);
+            }
             "Command Bar" if self.show_command_palette => Some(UiMessage::CommandBar(commands::Msg::ToggleMode)),
             "Command Bar" => {
                 let open = self.update(UiMessage::CommandBar(commands::Msg::TogglePalette));

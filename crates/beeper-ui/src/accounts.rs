@@ -18,7 +18,29 @@ pub enum Msg {
     AskRemove(String),
     Remove(String),
     Removed(String, Result<(), String>),
+    /// Desktop's `fetchSubAccounts` of an account: its "Refresh List", and the servers that the bridge sent.
+    FetchServers(String),
+    Servers(String, Result<Vec<beeper_core::matrix::SubAccount>, String>),
+    /// Desktop's `toggleSubAccountConnection`: the switch of a server, which asks before it disconnects a Discord
+    /// server, then the change and its reply.
+    ToggleServer(String, String),
+    SetServer(String, String),
+    ServerSet(String, String, bool, Result<(), String>),
+    /// A frame of the spinning Refresh List.
+    Spin,
 }
+
+/// Desktop's `SUPPORTS_SUB_ACCOUNTS`, which only the Discord platform has, and its cloud bridge's `getSubAccounts`.
+pub(crate) fn has_servers(st: &BeeperStore, account_id: &str) -> bool {
+    let b = st.bridge_accounts.iter().find(|b| b.account_id == account_id);
+    b.is_some_and(|b| {
+        b.mode == BridgeMode::Cloud
+            && beeper_core::config::find_network(&b.bridge_id).is_some_and(|n| n.kind == NetworkKind::Discord)
+    })
+}
+
+/// How long the demo's Discord bridge takes to answer, so that the demo shows the spinning Refresh List.
+const DEMO_BRIDGE_DELAY: Duration = Duration::from_millis(700);
 
 impl BeeperGuiApp {
     pub(crate) fn accounts(&mut self, msg: Msg) -> Task<UiMessage> {
@@ -40,6 +62,15 @@ impl BeeperGuiApp {
                 };
                 if !demo {
                     let connected = accounts.iter().filter(|a| a.state == "CONNECTED");
+                    // Desktop's `fetchSubAccounts` when the remote of an account connects.
+                    let st = self.store.read();
+                    let servers: Vec<String> = connected
+                        .clone()
+                        .filter(|a| has_servers(&st, &a.account_id))
+                        .map(|a| a.account_id.clone())
+                        .collect();
+                    drop(st);
+                    let servers: Vec<_> = servers.iter().map(|a| self.fetch_servers(a)).collect();
                     let caps: Vec<_> = connected
                         .map(|a| {
                             let id = a.account_id.clone();
@@ -57,7 +88,7 @@ impl BeeperGuiApp {
                         },
                         |a0| UiMessage::NewChat(new_chat::Msg::ContactsLoaded(a0)),
                     );
-                    return Task::batch(caps).chain(contacts);
+                    return Task::batch(caps.into_iter().chain(servers)).chain(contacts);
                 }
             }
             Msg::Cloud(Err(e)) => self.fail(Toast::new(format!("Could not load your chat accounts: {e}"))),
@@ -66,12 +97,15 @@ impl BeeperGuiApp {
             Msg::OpenSettings(id) => {
                 self.list.chat_menu = None;
                 let open = self.open_settings(SettingsTab::Accounts);
+                let servers = self.page_servers(&id);
                 self.account_page = Some(id);
-                return open;
+                return open.chain(servers);
             }
             Msg::Open(id) => {
+                let servers = id.as_deref().map_or_else(Task::none, |id| self.page_servers(id));
                 self.account_page = id;
-                return operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
+                let top = operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
+                return top.chain(servers);
             }
             Msg::AskRemove(id) => {
                 (self.list.chat_menu, self.delete_target, self.confirm) = (None, Some(id), Some(ASK_REMOVE_ACCOUNT));
@@ -103,9 +137,99 @@ impl BeeperGuiApp {
                     s.accounts.insert(id, props);
                 })
             }
+            Msg::FetchServers(id) => return self.fetch_servers(&id),
+            Msg::Servers(id, result) => {
+                self.servers_loading.remove(&id);
+                match result {
+                    Ok(servers) => self.store.write().set_sub_accounts(&id, servers),
+                    // Desktop's `fetchSubAccounts` only logs the error, and keeps the servers that it had.
+                    Err(e) => eprintln!("servers of {id}: {e}"),
+                }
+            }
+            Msg::ToggleServer(id, server) => {
+                let st = self.store.read();
+                let found = st.sub_accounts.get(&id).and_then(|l| l.iter().find(|s| s.id == server));
+                // The bridge may have sent a list without the server since the switch showed.
+                let Some(connected) = found.map(|s| s.connected) else {
+                    drop(st);
+                    return self.settle();
+                };
+                let discord = st.bridge_accounts.iter().any(|b| b.account_id == id && b.bridge_type == "discordgo");
+                drop(st);
+                if connected && discord {
+                    (self.server_target, self.confirm) = (Some((id, server)), Some(ASK_DISCONNECT_SERVER));
+                    return self.settle();
+                }
+                return self.accounts(Msg::SetServer(id, server));
+            }
+            Msg::SetServer(id, server) => {
+                self.confirm = None;
+                let mut st = self.store.write();
+                let mut servers = st.sub_accounts.get(&id).cloned().unwrap_or_default();
+                let Some(s) = servers.iter_mut().find(|s| s.id == server) else {
+                    drop(st);
+                    return self.settle();
+                };
+                let (connect, name) = (!s.connected, s.name.clone());
+                // Desktop turns the switch at once, so the space comes and goes before the bridge answers.
+                s.connected = connect;
+                st.set_sub_accounts(&id, servers);
+                let demo = st.config.demo;
+                if demo {
+                    let i = st.demo_servers.iter().position(|s| s.id == server).expect("a demo server");
+                    let s = &mut st.demo_servers[i];
+                    (s.connected, s.mxid) = (connect, connect.then(|| format!("!{server}:beeper.local")));
+                }
+                drop(st);
+                let text = match connect {
+                    true => trf("Connecting %s...", &[&name]),
+                    false => trf("Disconnecting %s...", &[&name]),
+                };
+                self.show(Toast { stays: true, id: Some(format!("server-{server}")), ..Toast::new(text) });
+                let (p, sent) = (self.provision(&id), server.clone());
+                let change = async move {
+                    match demo {
+                        true => {
+                            tokio::time::sleep(DEMO_BRIDGE_DELAY).await;
+                            Ok(())
+                        }
+                        false => beeper_core::matrix::connect_sub_account(p, sent, connect).await,
+                    }
+                };
+                let done = move |r| UiMessage::Accounts(Msg::ServerSet(id.clone(), server.clone(), connect, r));
+                return Task::perform(change, done);
+            }
+            Msg::ServerSet(id, server, connect, result) => {
+                let name = self
+                    .store
+                    .read()
+                    .sub_accounts
+                    .get(&id)
+                    .and_then(|l| l.iter().find(|s| s.id == server))
+                    .map(|s| s.name.clone());
+                let name = name.unwrap_or_default();
+                let text = match (&result, connect) {
+                    (Ok(()), true) => trf("Connected %s", &[&name]),
+                    (Ok(()), false) => trf("Disconnected %s", &[&name]),
+                    (Err(e), _) => trf("Something went wrong: %s", &[e]),
+                };
+                // Desktop's `addToast` with the ID of the "Connecting %s..." toast replaces it.
+                let toast = format!("server-{server}");
+                self.remove_toast(&toast);
+                self.show(Toast { id: Some(toast), ..Toast::new(text) });
+                return self.fetch_servers(&id);
+            }
+            Msg::Spin => {}
             Msg::SetInboxVisibility(key, option) => {
                 self.list.chat_menu = None;
-                let st = self.store.read();
+                let mut st = self.store.write();
+                // The demo has no account data to write: its rules change in the store.
+                if st.config.demo {
+                    st.inbox_rules = beeper_core::matrix::with_inbox_visibility(st.inbox_rules.clone(), &key, option);
+                    st.chat_changes += 1;
+                    drop(st);
+                    return self.settle();
+                }
                 let client = st.matrix.clone().expect("Show in Inbox needs a Matrix client");
                 let rules = beeper_core::matrix::with_inbox_visibility(st.inbox_rules.clone(), &key, option);
                 return Task::perform(
@@ -115,5 +239,46 @@ impl BeeperGuiApp {
             }
         }
         self.settle()
+    }
+
+    /// Desktop's `RemoteSubView` fetches the servers when the account page shows them. An account whose servers
+    /// were not fetched yet, like the demo's, fetches them too.
+    fn page_servers(&mut self, id: &str) -> Task<UiMessage> {
+        let st = self.store.read();
+        let connected = st.bridge_accounts.iter().any(|b| b.account_id == id && b.state == "CONNECTED");
+        let shown = st.sub_accounts.get(id).is_none_or(|l| !l.is_empty());
+        let fetch = connected && has_servers(&st, id) && shown;
+        drop(st);
+        if fetch {
+            self.fetch_servers(id)
+        } else {
+            Task::none()
+        }
+    }
+
+    /// Desktop's `fetchSubAccounts`: the servers of an account from its bridge, or from the demo's Discord bridge.
+    pub(crate) fn fetch_servers(&mut self, id: &str) -> Task<UiMessage> {
+        self.servers_loading.insert(id.into(), std::time::Instant::now());
+        let mut st = self.store.write();
+        let id = id.to_string();
+        if st.config.demo {
+            if st.demo_servers.is_empty() {
+                st.demo_servers = beeper_core::matrix::demo_sub_accounts();
+            }
+            let servers = st.demo_servers.clone();
+            let later = async move {
+                tokio::time::sleep(DEMO_BRIDGE_DELAY).await;
+                Ok(servers)
+            };
+            return Task::perform(later, move |r| UiMessage::Accounts(Msg::Servers(id.clone(), r)));
+        }
+        let p = st.provision(&id);
+        Task::perform(beeper_core::matrix::sub_accounts(p), move |r| UiMessage::Accounts(Msg::Servers(id.clone(), r)))
+    }
+
+    /// The frames of the spinning Refresh List while the servers of the shown account page load.
+    pub(crate) fn server_ticks(&self) -> Option<Subscription<UiMessage>> {
+        let page = self.account_page.as_ref().filter(|a| self.servers_loading.contains_key(*a));
+        page.map(|_| iced::time::every(Duration::from_millis(16)).map(|_| UiMessage::Accounts(Msg::Spin)))
     }
 }

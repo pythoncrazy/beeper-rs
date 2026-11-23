@@ -954,10 +954,16 @@ impl BeeperGuiApp {
         if !can || st.settings.on("noOutgoingLinkPreviews") {
             return Task::none();
         }
+        let demo = st.config.demo;
         drop(st);
         let mut tasks = Vec::new();
         for url in urls {
             if self.pane.composer_links.iter().all(|(u, _)| *u != url) {
+                // The demo loads no page: its links are like pages without a preview.
+                if demo {
+                    self.pane.composer_links.push((url, LinkState::Discarded));
+                    continue;
+                }
                 self.pane.composer_links.push((url.clone(), LinkState::Loading));
                 let load = beeper_core::cloud::link_preview(url.clone());
                 tasks.push(Task::perform(load, move |r| UiMessage::Composer(Msg::LinkPreviewLoaded(url, r))));
@@ -1219,6 +1225,7 @@ impl BeeperGuiApp {
             at_start: cursor.selection.is_none() && (cursor.position.line, cursor.position.column) == (0, 0),
             empty: self.pane().composer.text().trim_end_matches('\n').is_empty(),
             formats: chat.formatting,
+            italic: st.settings.hotkey_keys("Italicize Text Selection") != "disabled",
         };
         let marks = format::MarkStyle {
             mentions: self.pane().mentions.iter().map(|(label, _)| label.clone()).collect(),
@@ -1418,6 +1425,8 @@ struct ComposerKeys {
     at_start: bool,
     empty: bool,
     formats: u16,
+    /// Italicize Text Selection has its keys, which Desktop's Texts.app keybindings take away.
+    italic: bool,
 }
 
 impl ComposerKeys {
@@ -1482,7 +1491,7 @@ impl ComposerKeys {
             (Some('y'), false) => return custom(Msg::Undo(true)),
             (Some('v'), false) => return custom(Msg::Paste),
             (Some('b'), false) => 0,
-            (Some('i'), false) => 1,
+            (Some('i'), false) if self.italic => 1,
             (Some('x'), true) => 2,
             // Tiptap's `Mod-Shift-b` of the quote and `Mod-Alt-c` of the code block, whose extensions Desktop's
             // composer loads only where the chat supports them (`Lx`). `Mod-Shift-7` and `Mod-Shift-8` of the lists

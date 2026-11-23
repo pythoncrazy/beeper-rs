@@ -415,6 +415,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "unicode-normalization",
  "unicode-properties",
  "vodozemac",
@@ -475,6 +476,7 @@ dependencies = [
  "wgpu",
  "windows 0.62.2",
  "windows-registry",
+ "x11rb",
  "zbus",
 ]
 

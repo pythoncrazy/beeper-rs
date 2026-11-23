@@ -3071,7 +3071,8 @@ impl BeeperGuiApp {
             let list = self.reaction_list(chat, ms);
             let look = PillLook {
                 group,
-                own: if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) },
+                own: p.highlight,
+                own_bg: p.backdrop.filter(|b| !b.rich),
                 other: p.received,
                 hover: Some(p.selected),
                 fg: (p.text, p.on_secondary),
@@ -3239,7 +3240,7 @@ impl BeeperGuiApp {
                     None => trx("Download", "message attachment action").into(),
                 };
                 let button = button(ic(icon::DOWNLOAD, 20.0))
-                    .bare(p.accent)
+                    .bare(p.action)
                     .on_press(UiMessage::Message(Msg::Download(m.id.clone(), Some(0))));
                 let gap = if mine { Padding::ZERO.right(12.0) } else { Padding::ZERO.left(12.0) };
                 container(self.tip(button.into(), tip, vec![], tooltip::Position::Top)).padding(gap).into()
@@ -3396,10 +3397,15 @@ impl BeeperGuiApp {
         // the primary color, or the text color under a chat bubble color. Its box is the timeline's own color, mixed
         // with 30% of the bubble color in the dark theme or under a chat bubble color (`has-bubble-color`).
         let sent = bubble.map_or(p.sent, |b| b.0);
+        // A rich theme color gives its text and border `--linked-message-bg`, or the text color without one.
         let (edge, fill, fg) = match q_mine {
             true => {
                 let fill = if bubble.is_some() || self.dark { mix(p.card, sent, 0.3) } else { p.card };
-                (sent, fill, if bubble.is_some() { p.strong } else { p.accent })
+                let fg = if bubble.is_some() { p.strong } else { p.accent };
+                match p.quote {
+                    Some(q) => (q, fill, q),
+                    None => (sent, fill, fg),
+                }
             }
             false => (p.received, p.card, p.text),
         };
@@ -3716,11 +3722,20 @@ impl BeeperGuiApp {
                     pill = pill.push(count.color(look.fg.1));
                 }
             }
-            let fill = if own { look.own } else { look.other };
+            let gradient = look.own_bg.filter(|_| own);
+            let fill = match (own, gradient) {
+                (true, Some(_)) => CLEAR,
+                (true, None) => look.own,
+                (false, _) => look.other,
+            };
             let hover = look.hover.unwrap_or(fill);
             let style = bordered_btn([fill, hover, hover], [look.fg.0; 3], look.ring.0, look.ring.1, 14.0);
             let pill = button(pill).padding([4.0 + look.ring.1, 5.0 + look.ring.1]).style(style);
             let pill = pill.on_press(toggle_reaction(st, chat, ms, &group));
+            let pill: El<'a> = match gradient {
+                Some(b) => crate::ui_theme::window_bg(pill, Some(b), CLEAR).radius(14.0).into(),
+                None => pill.into(),
+            };
             // Desktop's `.message-reaction-container` of a custom emoji: its right click has the item that adds it.
             let custom = keys.first().and_then(|x| Some((x.reaction_key.clone(), x.img_url.clone()?)));
             match (custom.filter(|(_, u)| crate::emoji::is_mxc(u)), ms.first()) {
@@ -4988,12 +5003,12 @@ pub(crate) mod tests {
         assert!(near(fill, app.pal.card), "a white box: {fill:?}");
         assert!(near(ink, app.pal.accent), "the text in the primary color: {ink:?}");
         app.dark = true;
-        app.pal = crate::style::palette(true);
+        app.pal = crate::style::palette(true, None, 0);
         let (fill, ink) = look(&app);
         assert!(near(fill, mix(app.pal.card, app.pal.sent, 0.3)), "the dark theme mixes the box: {fill:?}");
         assert!(near(ink, app.pal.accent), "{ink:?}");
         app.dark = false;
-        app.pal = crate::style::palette(false);
+        app.pal = crate::style::palette(false, None, 0);
         let swatch = Some(beeper_core::models::Bubble::Swatch { id: "blue".into() });
         let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Bubble(None, swatch)));
         let (fill, ink) = look(&app);
@@ -5724,6 +5739,7 @@ pub(crate) mod tests {
         let look = PillLook {
             group: true,
             own: p.card,
+            own_bg: None,
             other: p.received,
             hover: None,
             fg: (p.text, p.on_secondary),

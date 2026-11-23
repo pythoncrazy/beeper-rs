@@ -37,14 +37,10 @@ impl Failure {
 fn client() -> &'static reqwest::Client {
     static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     HTTP.get_or_init(|| {
-        crate::cloud::install_tls();
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(20))
-            .read_timeout(STALL)
-            .user_agent("matrix-rust-sdk")
-            .build()
-            .expect("build the media HTTP client")
+        let builder = crate::net::builder().redirect(reqwest::redirect::Policy::none());
+        crate::net::client(
+            builder.connect_timeout(Duration::from_secs(20)).read_timeout(STALL).user_agent("matrix-rust-sdk"),
+        )
     })
 }
 
