@@ -758,6 +758,8 @@ const ASK_LOGOUT_DEVICE: u8 = 23;
 const ASK_ROOM_ENCRYPTION: u8 = 24;
 /// Desktop's `confirmUnmergeUnion` of a merged chat.
 const ASK_UNMERGE: u8 = 25;
+/// Desktop's "Remove %s?" of an installed sticker pack that a bridge imported.
+const ASK_REMOVE_PACK: u8 = 27;
 /// Desktop opens its `prefs` window at 800 x 740, in the middle of the screen.
 const SETTINGS_SIZE: Size = Size::new(800.0, 740.0);
 /// Desktop's default "Quick reaction emoji".
@@ -3236,6 +3238,11 @@ pub struct BeeperGuiApp {
     pub(crate) quotes: HashMap<String, Option<Result<Message, String>>>,
     /// Desktop's `dismissError`: the accounts whose disconnected banner was dismissed this session.
     dismissed_errors: HashSet<String>,
+    /// Desktop's `StickerPacksPreference`: the installed sticker packs once they load, the parts (room and state key)
+    /// that "Use in all chats" turned off, and the pack that Remove removes.
+    installed_packs: Option<Vec<InstalledPack>>,
+    packs_off: HashSet<(String, String)>,
+    pack_removing: Option<String>,
     pub resolving_media: HashMap<String, bool>,
     /// Desktop's `mediaDownloadStore`: the media URLs that a bridge loads only when the user asks (`needsDownload`),
     /// and those whose interactive download runs (`fetching`).
@@ -3366,7 +3373,7 @@ impl BeeperGuiApp {
             labels_windows, label_settings, delete_in, poll_windows, label_window, group_window, blocked_window,
             how_window, nickname_windows, add_accounts, info_desc, info_more, info_all, info_bookmarks, hydrating,
             restoring_bookmarks, info_media, info_zoom, info_query, spaces_window, merge_window, vote_windows, shot,
-            verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, resolving_media, needs_download,
+            verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, installed_packs, packs_off, pack_removing, resolving_media, needs_download,
             fetching, video, view_once, minimized, state_changes, last_click, cycling, timers);
         app.store.write().load_recent();
         if let Some(id) = first_chat {

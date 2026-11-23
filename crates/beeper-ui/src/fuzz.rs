@@ -63,6 +63,7 @@ fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
                     | prefs::Control::BlockedUsers
                     | prefs::Control::ReactionEmoji { .. }
                     | prefs::Control::QuickReactions(_)
+                    | prefs::Control::StickerPacks
             )
         })
         .filter(|(_, p)| p.key != "appLanguage")

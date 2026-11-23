@@ -641,6 +641,8 @@ pub struct BeeperStore {
     pub recent_emoji: Vec<(String, u64)>,
     /// Desktop's `accountDataStore.imagePack`: the own `m.image_pack`, whose images are the custom emoji, or null.
     pub image_pack: serde_json::Value,
+    /// Desktop's `accountDataStore.data["m.image_pack.rooms"]`: the packs of rooms that show in every chat.
+    pub image_pack_rooms: serde_json::Value,
     pub scheduled: Vec<Scheduled>,
     /// The last synced global account data of each event in [`crate::prefs::SYNCED`].
     pub synced_prefs: BTreeMap<&'static str, serde_json::Value>,
@@ -778,6 +780,7 @@ impl BeeperStore {
             api_on: tokio::sync::watch::channel(false).0,
             initial_sync: (0, 0),
             image_pack: serde_json::Value::Null,
+            image_pack_rooms: serde_json::Value::Null,
             inbox_rules: serde_json::Value::Null,
             account_overrides_synced: serde_json::Value::Null,
             account_overrides: serde_json::Value::Null,
