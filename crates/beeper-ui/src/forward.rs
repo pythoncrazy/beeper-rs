@@ -122,13 +122,7 @@ impl BeeperGuiApp {
                 .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
         });
         let rows = chats.iter().enumerate().fold(Column::new().push(cat), |col, (i, c)| {
-            let sub = chat_search_subtitle(c);
-            let title = row![
-                ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
-                ell(&sub, 220.0, 13.0, Weight::Normal).color(p.sub),
-            ]
-            .spacing(4)
-            .align_y(Center);
+            let title = crate::chat_search_title(p, c);
             let line = row![self.chat_avatar(c, 32.0, 0.0), title, Space::new().width(Fill)]
                 .push(svg(brand_svg(brand_key(&c.account_id))).width(16).height(16))
                 .spacing(8)

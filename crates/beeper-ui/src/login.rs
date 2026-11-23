@@ -1565,7 +1565,7 @@ impl BeeperGuiApp {
                 .push(back.map(|s| item("Go Back", String::new(), LoginMsg::Show(s).into())))
                 .push(item("Report a Problem", report, UiMessage::OpenUrl(crate::ISSUES_URL.into())))
                 .push(last.map(|(label, msg)| item(label, String::new(), msg)));
-            let items = container(items.padding([4, 0])).width(240).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let items = crate::menu_card(p, items, 240);
             let at = Padding::ZERO.top(34.0 + pad).right(6.0 + pad);
             mouse_area(container(items).align_right(Fill).height(Fill).padding(at)).on_press(LoginMsg::Menu.into())
         });

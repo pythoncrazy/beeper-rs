@@ -16,7 +16,7 @@ use crate::reply_line::{reply_line, Segment, Shape};
 use crate::style::rem;
 use crate::style::{
     bold, bordered_box, bordered_btn, btn_style, clamp, fill_box, fw, hex, ic, icon, med, mix, pane_card, pick,
-    scroll_style, semi, shadow_box, stable_bar, text_width, txt, Bare, CLEAR, GUTTER,
+    scroll_style, semi, stable_bar, text_width, txt, Bare, CLEAR, GUTTER,
 };
 use crate::threads;
 use crate::time::{clock, day_label, day_num, day_of, format_short_ts, locale_string, today};
@@ -881,8 +881,7 @@ impl BeeperGuiApp {
             menu_rule(p),
             item(tr("Copy").into(), UiMessage::Message(Msg::CopyText(selection.to_string()))),
         ];
-        let menu =
-            container(items.padding([4, 0])).width(MESSAGE_MENU_W).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_card(p, items, MESSAGE_MENU_W);
         (menu.into(), 8.0 + 2.0 * menu_pitch() + 11.0, 0.0)
     }
 
@@ -940,10 +939,7 @@ impl BeeperGuiApp {
             &key("Report a Problem"),
             Some(UiMessage::OpenUrl(ISSUES_URL.into())),
         ));
-        let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
-        let col = Column::with_children(rows.into_iter().map(|r| r.0));
-        let menu =
-            container(col.padding([4, 0])).width(MESSAGE_MENU_W).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let (menu, h) = crate::menu_rows(p, rows, MESSAGE_MENU_W);
         (menu.into(), h, 0.0)
     }
 
@@ -1003,10 +999,8 @@ impl BeeperGuiApp {
                 [rule(), item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone()))))]
             });
             let rows: Vec<(El, f32)> = rows.into_iter().chain(mark.into_iter().flatten()).collect();
-            let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
-            let col = Column::with_children(rows.into_iter().map(|r| r.0));
-            let menu = container(col.padding([4, 0])).width(MESSAGE_MENU_W);
-            return (menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into(), h, 0.0);
+            let (menu, h) = crate::menu_rows(p, rows, MESSAGE_MENU_W);
+            return (menu.into(), h, 0.0);
         }
         let chat = st.chat(&cid);
         let (rules, live) = (chat.messages, m.is_deleted != Some(true));
@@ -1208,16 +1202,8 @@ impl BeeperGuiApp {
         .flatten()
         .flatten()
         .collect();
-        let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
-        let col = Column::with_children(rows.into_iter().map(|r| r.0));
-        (
-            container(col.padding([4, 0]))
-                .width(MESSAGE_MENU_W)
-                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-                .into(),
-            h,
-            top,
-        )
+        let (menu, h) = crate::menu_rows(p, rows, MESSAGE_MENU_W);
+        (menu.into(), h, top)
     }
 
     /// Desktop's `Nmt`: the Chat Info toggle, a 20 px info icon in 4 px of padding, shaded while Chat Info is open.

@@ -148,10 +148,10 @@ use vcard::VCard;
 use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZE};
 
 use crate::style::{
-    bar, bordered_box, bordered_btn, brand_gray, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded,
-    fill_box, fw, glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style, pick_style, rem,
-    scroll_style, semi, shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER,
-    SOLID_BARS,
+    bar, bordered_box, bordered_btn, brand_gray, brand_svg, btn_style, clamp, clamped, done_btn, editor_style, ell,
+    ensure_fonts_loaded, fill_box, fw, glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style,
+    pick_style, rem, scroll_style, semi, shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS,
+    CLEAR, GUTTER, SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -805,6 +805,25 @@ fn checkbox_plus<'a>(p: &Palette, on: bool) -> El<'a> {
             container(ic(icon::PLUS, 10.0).color(p.sub)).center(16).style(bordered_box(CLEAR, p.sub, 1.5, 8.0)).into()
         }
     }
+}
+
+/// Desktop's context menu: `items` with 4 px above and below them, in a shadowed card `w` wide.
+fn menu_card<'a>(
+    p: &Palette,
+    items: Column<'a, UiMessage>,
+    w: impl Into<Length>,
+) -> iced::widget::Container<'a, UiMessage> {
+    container(items.padding([4, 0])).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
+}
+
+/// [`menu_card`] of rows with their heights, and the height of the menu.
+fn menu_rows<'a>(
+    p: &Palette,
+    rows: Vec<(El<'a>, f32)>,
+    w: impl Into<Length>,
+) -> (iced::widget::Container<'a, UiMessage>, f32) {
+    let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
+    (menu_card(p, Column::with_children(rows.into_iter().map(|r| r.0)), w), h)
 }
 
 fn menu_rule<'a>(p: &Palette) -> El<'a> {
@@ -1872,6 +1891,16 @@ fn network_label(account_id: &str) -> &'static str {
 fn chat_network(c: &Chat) -> String {
     let plat = if c.merge.is_some() { merged::chat_platform(c) } else { network_label(&c.account_id) };
     c.network_name.as_deref().map_or_else(|| plat.to_string(), |n| format!("{n} • {plat}"))
+}
+
+/// The title of a chat in the search results: its name, then its handle or network in the secondary color.
+fn chat_search_title<'a>(p: &Palette, c: &Chat) -> iced::widget::Row<'a, UiMessage> {
+    row![
+        ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
+        ell(&chat_search_subtitle(c), 220.0, 13.0, Weight::Normal).color(p.sub),
+    ]
+    .spacing(4)
+    .align_y(Center)
 }
 
 fn chat_search_subtitle(c: &Chat) -> String {

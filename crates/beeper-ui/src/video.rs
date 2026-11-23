@@ -792,8 +792,8 @@ impl BeeperGuiApp {
             let label = if r == 1.0 { tr("Normal").into() } else { format!("{r}x") };
             menu_item(p, lead(v.rate == r), label, "", Some(UiMessage::Video(Msg::Rate(r))))
         });
-        let list = container(Column::with_children(rates).padding([4, 0])).width(SPEED_MENU_W);
-        Some(list.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into())
+        let list = crate::menu_card(p, Column::with_children(rates), SPEED_MENU_W);
+        Some(list.into())
     }
 }
 

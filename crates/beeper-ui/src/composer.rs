@@ -818,9 +818,7 @@ impl BeeperGuiApp {
         ]);
         let rules = word.map_or(0, |_| 2) + usize::from(has);
         let h = 8.0 + (items.len() - rules) as f32 * menu_pitch() + rules as f32 * 11.0;
-        let menu = container(Column::with_children(items.into_iter().flatten()).padding([4, 0]))
-            .width(MESSAGE_MENU_W)
-            .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_card(p, Column::with_children(items.into_iter().flatten()), MESSAGE_MENU_W);
         (menu.into(), h)
     }
 
