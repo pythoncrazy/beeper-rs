@@ -621,6 +621,8 @@ pub struct BeeperStore {
     pub inbox_rules: serde_json::Value,
     /// Desktop's `mutedRoomIDs`: the `room_ids` of the global `com.beeper.muted` account data.
     pub muted_rooms: Vec<String>,
+    /// The state events and the room account data that the chats of the rooms read from the SDK, between syncs.
+    pub(crate) room_reads: crate::matrix::RoomReadsCache,
     /// The last synced [`crate::matrix::ACCOUNT_OVERRIDES`], encrypted with MSC4483.
     pub account_overrides_synced: serde_json::Value,
     /// Desktop SDK's decrypted `com.beeper.bridge_account_overrides`: the account nicknames by bridge and login, or
@@ -803,6 +805,7 @@ impl BeeperStore {
             skin_tone: 0,
             inbox_rules: serde_json::Value::Null,
             muted_rooms: Vec::new(),
+            room_reads: Default::default(),
             account_overrides_synced: serde_json::Value::Null,
             account_overrides: serde_json::Value::Null,
             account_data_key: None,
