@@ -132,9 +132,20 @@ impl Serialize for Files {
     }
 }
 
+/// The rules of the JSON text of the rules, for the chats whose stored JSON has the same text, which most chats of a
+/// network do: they take the shared copy without a parse.
 impl<'de> Deserialize<'de> for Files {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Files, D::Error> {
-        FileRules::deserialize(d).map(Files::new)
+        type Parsed = std::sync::Mutex<Option<std::collections::HashMap<Box<str>, Files>>>;
+        static PARSED: Parsed = std::sync::Mutex::new(None);
+        let raw = Box::<serde_json::value::RawValue>::deserialize(d)?;
+        if let Some(files) = PARSED.lock().expect("the parsed file rules").as_ref().and_then(|p| p.get(raw.get())) {
+            return Ok(files.clone());
+        }
+        let files = Files::new(serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?);
+        let mut parsed = PARSED.lock().expect("the parsed file rules");
+        parsed.get_or_insert_default().insert(raw.get().into(), files.clone());
+        Ok(files)
     }
 }
 
@@ -2250,6 +2261,26 @@ mod tests {
         let generic = files(serde_json::json!({ "com.beeper.bridge_name": "gmessages" }));
         assert_eq!(generic[FILE_IMAGE].max_size, Some(20 * 1024 * 1024), "Desktop leaves Google Messages out");
         assert!(files(serde_json::json!({ "com.beeper.bridge_name": "groupme" })).is_empty());
+    }
+
+    /// The stored rules of a chat parse to the shared copy of their rules, from the same text, another text of them,
+    /// or a JSON value, and other rules parse on their own.
+    #[test]
+    fn file_rules_parse_to_their_shared_copy() {
+        let whatsapp = default_files(&serde_json::json!({ "com.beeper.bridge_name": "whatsapp" }));
+        let text = serde_json::to_string(&whatsapp).unwrap();
+        let parse = |text: &str| serde_json::from_str::<Files>(text).unwrap();
+        let (a, b) = (parse(&text), parse(&text));
+        assert!(std::sync::Arc::ptr_eq(&a.0, &b.0) && *a == *whatsapp, "the same text");
+        let pretty = parse(&serde_json::to_string_pretty(&whatsapp).unwrap());
+        assert!(std::sync::Arc::ptr_eq(&pretty.0, &a.0), "another text of the same rules");
+        let value = serde_json::from_value::<Files>(serde_json::from_str(&text).unwrap()).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&value.0, &a.0), "a JSON value");
+        let mut other: FileRules = (*whatsapp).clone();
+        other.remove(FILE_GIF);
+        let other = parse(&serde_json::to_string(&other).unwrap());
+        assert!(!other.contains_key(FILE_GIF) && other.len() + 1 == whatsapp.len(), "other rules");
+        assert!(serde_json::from_str::<Files>(r#"{"m.image": 1}"#).is_err(), "rules that do not parse");
     }
 
     /// Desktop's `tD` and `eD`: trimmed fields, a known action, the first button of each ID, 10 at most, and a
