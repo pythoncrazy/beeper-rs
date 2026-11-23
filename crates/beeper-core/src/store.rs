@@ -545,7 +545,11 @@ pub struct BeeperStore {
     /// Whether the Desktop API server should listen.
     pub api_on: tokio::sync::watch::Sender<bool>,
     pub matrix: Option<matrix_sdk::Client>,
+    /// An error for the toast of the main window.
     pub matrix_error: Option<String>,
+    /// The last sync of the Matrix sync loop failed, so the homeserver may not be reachable. Like Desktop's SDK, the
+    /// loop tries again quietly, and the outbox goes again when a sync works.
+    pub sync_failing: bool,
     /// The homeserver ended this device's session (signed out elsewhere); the app starts over at sign-in.
     pub session_ended: bool,
     /// Desktop's `isSyncing`: the app is connected to Matrix and waits for its first sync.
@@ -745,6 +749,7 @@ impl BeeperStore {
             api_on: tokio::sync::watch::channel(false).0,
             matrix: None,
             matrix_error: None,
+            sync_failing: false,
             session_ended: false,
             syncing: false,
             sas_confirm: None,

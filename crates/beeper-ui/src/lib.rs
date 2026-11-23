@@ -4287,7 +4287,7 @@ impl BeeperGuiApp {
                     panes.filter_map(|p| p.typing.take_if(|t| t.1.elapsed() >= TYPING_STOP)).map(|t| t.0).collect();
                 let notices = ended.into_iter().filter_map(|chat| {
                     let stop = beeper_core::matrix::typing(client.clone()?, chat, false);
-                    Some(Task::perform(stop, UiMessage::Pushed))
+                    Some(Task::future(stop).discard())
                 });
                 return Task::batch(notices);
             }
