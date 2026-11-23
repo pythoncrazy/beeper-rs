@@ -4,11 +4,23 @@ use crate::store::{BeeperStore, SharedStore, StoreLock};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-/// An empty folder for the test `name`. The path holds a hash of this checkout, so that tests in several checkouts
-/// do not delete the folders of each other, and the next run of the test deletes the folder of the last run.
+/// An empty folder for the test `name`. The path holds a hash of this checkout and the name of the test binary, so
+/// that tests in several checkouts, or of several crates at once, do not delete the folders of each other, and the
+/// next run of the test deletes the folder of the last run.
+///
+/// Each name serves one call in a test binary. Tests run at once on their own threads, and two tests with one name
+/// deleted each other's folder and wrote into each other's SQLite files, so a second call with a name fails at once.
 pub fn temp_dir(name: &str) -> PathBuf {
+    static TAKEN: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let first = TAKEN.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string());
+    assert!(first, "the test folder {name:?} is taken: give each test, and each folder of a test, its own name");
     let checkout = env!("CARGO_MANIFEST_DIR").bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b.into()));
-    let dir = std::env::temp_dir().join(format!("beeper-rs-test-{checkout:x}")).join(name);
+    // Cargo names a test binary `<crate>-<hash>`, and the hash changes with each build.
+    let exe = std::env::current_exe().expect("the test binary");
+    let stem = exe.file_stem().and_then(|s| s.to_str()).expect("a test binary name");
+    let binary = stem.rsplit_once('-').map_or(stem, |(crate_name, _)| crate_name);
+    let dir = std::env::temp_dir().join(format!("beeper-rs-test-{checkout:x}")).join(binary).join(name);
     if let Err(e) = std::fs::remove_dir_all(&dir) {
         assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "delete the test folder {dir:?}: {e}");
     }
@@ -262,4 +274,15 @@ fn large_data(
     };
     let messages = (0..messages).map(message).collect();
     (chats, messages)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Two tests with one folder name delete each other's folder, so the second use of a name fails at once.
+    #[test]
+    #[should_panic(expected = "the test folder \"taken-twice\" is taken")]
+    fn a_test_folder_name_serves_one_call() {
+        super::temp_dir("taken-twice");
+        super::temp_dir("taken-twice");
+    }
 }
