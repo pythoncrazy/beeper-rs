@@ -422,9 +422,13 @@ pub(crate) fn hidden_actions(st: &BeeperStore, nudge: bool) -> Vec<u8> {
     ATTACH_BUTTONS.into_iter().filter(|&x| Some(x) != pri && Some(x) != sec && shown(x)).collect()
 }
 
-/// The composer buttons in the pill by "Primary composer action" and "Secondary composer action".
+/// The composer buttons in the pill by "Primary composer action" and "Secondary composer action". The Sticker Picker
+/// has no button without sticker packs, as Desktop's `Bme` has no config for it then.
 fn composer_buttons(st: &BeeperStore) -> (Option<u8>, Option<u8>) {
-    let action = |key| [Some(0), Some(1), Some(5), Some(2), Some(3), Some(4), None][usize::from(st.settings.pref(key))];
+    let stickers = st.settings.on("stickerPacks").then_some(7);
+    let action = |key| {
+        [Some(0), Some(1), Some(5), Some(2), Some(3), Some(4), None, stickers][usize::from(st.settings.pref(key))]
+    };
     let pri = action("primaryComposerButton");
     (pri, action("secondaryComposerButton").filter(|&x| Some(x) != pri))
 }

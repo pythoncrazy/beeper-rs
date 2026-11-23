@@ -60,9 +60,13 @@ pub(crate) fn attachment_name(a: &Attachment) -> String {
 
 /// The `host` of a URL (`Xp`), with its port when it is not the default one. A URL without a host has none.
 fn url_host(url: &str) -> Option<String> {
-    let url = url::Url::parse(url).ok()?;
-    let host = url.host_str().filter(|h| !h.is_empty())?;
-    Some(url.port().map_or_else(|| host.to_string(), |port| format!("{host}:{port}")))
+    // The views ask for the hosts of the links in view each time they draw.
+    thread_local!(static MEMO: crate::style::Memo<String, Option<String>> = Default::default());
+    crate::style::memo(&MEMO, url.to_owned(), || {
+        let url = url::Url::parse(url).ok()?;
+        let host = url.host_str().filter(|h| !h.is_empty())?;
+        Some(url.port().map_or_else(|| host.to_string(), |port| format!("{host}:{port}")))
+    })
 }
 
 /// The links of a block's spans that show their host in a tooltip, like Desktop's `ExtLink` with `showHostOnHover`:
@@ -628,6 +632,30 @@ pub(crate) fn replies_reveal(t: f32) -> (f32, f32) {
     (curve(0.2), 10.0 * (1.0 - curve(REPLIES_RISE.as_secs_f32())))
 }
 
+/// How long Desktop's `ScrollToBottom` waits after you scroll up before it fades in, and how long it fades in or out.
+const SCROLL_WAIT: f32 = 0.05;
+const SCROLL_FADE: f32 = 0.15;
+
+/// The fade of the scroll-to-bottom button of `p`: whether it fades in (else out), and the seconds since it began.
+fn scroll_fade(p: &crate::Pane) -> Option<(bool, f32)> {
+    let (up, since) = p.scrolled_up?;
+    Some((up && p.editing_message_id.is_none(), since.elapsed().as_secs_f32()))
+}
+
+/// When the scroll-to-bottom button of `p` changes next: since its fade began while it fades, or after the wait before
+/// it fades in, at the tick of the animation clock that would draw it first, or `None` once it is in or out. The wait
+/// needs no frames, as the button shows nothing in it.
+pub(crate) fn scroll_fade_due(p: &crate::Pane) -> Option<std::time::Instant> {
+    let (shown, t) = scroll_fade(p)?;
+    let since = p.scrolled_up?.1;
+    let ticks = (SCROLL_WAIT / crate::FRAME.as_secs_f32()).ceil() as u32;
+    match shown {
+        true if t < SCROLL_WAIT => Some(since + crate::FRAME * ticks),
+        true => (t < SCROLL_WAIT + SCROLL_FADE).then_some(since),
+        false => (t < SCROLL_FADE).then_some(since),
+    }
+}
+
 /// The time from one flyover item to the next: the item's ease-out is a quarter in after 32 ms of its 0.2 s.
 const FLYOVER_STAGGER: f32 = 0.032;
 
@@ -636,10 +664,18 @@ const FLYOVER_STAGGER: f32 = 0.032;
 /// clicks 120 ms after the last one is in. A message that the pointer left has no flyover.
 pub(crate) fn flyover_revealing(p: &crate::Pane) -> bool {
     let Some(at) = p.hover_msg_at.filter(|_| p.hovered_msg.is_some()) else { return false };
+    // Once the view drew the flyover, it knows its items; before, it has three.
+    if let Some((_, end)) = p.flyover_end.get().filter(|(key, _)| *key == (p.hover_msg_at, p.flyover_at)) {
+        return end.is_some_and(|end| end > std::time::Instant::now());
+    }
     let items = at.elapsed().as_secs_f32() < 2.0 * FLYOVER_STAGGER + 0.2;
     let after = at + std::time::Duration::from_secs_f32(3.0 * FLYOVER_STAGGER);
     items || p.flyover_at.is_some_and(|f| f.max(after).elapsed() < QUICK_REVEAL)
 }
+
+/// The `hover_msg_at` and `flyover_at` of a flyover that the view drew, and when its last item is in and its quick
+/// reactions take clicks.
+pub(crate) type FlyoverEnd = ((Option<std::time::Instant>, Option<std::time::Instant>), Option<std::time::Instant>);
 
 /// How long the quick reactions of a flyover take to come in and take clicks.
 const QUICK_REVEAL: std::time::Duration = std::time::Duration::from_millis(500);
@@ -1853,10 +1889,11 @@ impl BeeperGuiApp {
     /// the count of unread messages with the hotkey. It fades in 50 ms after you scroll up, over 0.15 s.
     fn view_scroll_to_bottom<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         let p = &self.pal;
-        let (up, since) = self.pane().scrolled_up?;
-        let t = since.elapsed().as_secs_f32();
-        let shown = up && self.pane().editing_message_id.is_none();
-        let alpha = if shown { ((t - 0.05) / 0.15).clamp(0.0, 1.0) } else { 1.0 - (t / 0.15).clamp(0.0, 1.0) };
+        let (shown, t) = scroll_fade(self.pane())?;
+        let alpha = match shown {
+            true => ((t - SCROLL_WAIT) / SCROLL_FADE).clamp(0.0, 1.0),
+            false => 1.0 - (t / SCROLL_FADE).clamp(0.0, 1.0),
+        };
         if alpha == 0.0 {
             return None;
         }
@@ -3148,6 +3185,13 @@ impl BeeperGuiApp {
             let ready = start.is_none_or(|t| {
                 t.elapsed().as_secs_f32() > (quick.len().saturating_sub(1) as f32 * FLYOVER_STAGGER) + 0.2 + 0.12
             });
+            // The animation clock runs until the last item is in and the quick reactions take clicks.
+            let last = |at: Option<std::time::Instant>, n: usize, then: f32| {
+                let span = |n: usize| (n - 1) as f32 * FLYOVER_STAGGER + 0.2 + then;
+                at.filter(|_| n > 0).map(|t| t + std::time::Duration::from_secs_f32(span(n)))
+            };
+            let end = last(hover_at, base.len(), 0.0).max(last(start, quick.len(), 0.12));
+            self.pane().flyover_end.set(Some(((hover_at, self.pane().flyover_at), end)));
             let quick = quick.into_iter().enumerate().map(|(j, e)| -> El<'a> {
                 let v = shown(start, j);
                 let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
@@ -4571,6 +4615,47 @@ pub(crate) mod tests {
         app.pane.hover_msg_at = Some(ago(10));
         let _ = app.update(UiMessage::Message(Msg::HoverExit("m".into())));
         assert!(!flyover_revealing(&app.pane), "a message that the pointer left has no flyover");
+    }
+
+    /// Once the view drew a flyover, its clock stops when its own items are in: two items are in after 232 ms, before
+    /// the 264 ms of three.
+    #[test]
+    fn the_flyover_clock_stops_with_its_last_item() {
+        let note = "!note_self:beeper.com";
+        let mut app = crate::fuzz::demo_app("flyover-end");
+        let _ = app.update(UiMessage::SelectChat(note.into()));
+        app.pane.size = Size::new(900.0, 700.0);
+        let (_, sent, _) = app.store.write().send_message(note, Some("hi".into()), None, None).expect("a send");
+        let _ = app.update(UiMessage::Message(Msg::HoverEnter(sent)));
+        let ago = |ms| std::time::Instant::now() - std::time::Duration::from_millis(ms);
+        app.pane.hover_msg_at = Some(ago(240));
+        assert!(flyover_revealing(&app.pane), "before the view, as for three items");
+        drop(app.view_conversation());
+        let ((at, quick), end) = app.pane.flyover_end.get().expect("the view drew the flyover");
+        assert_eq!((at, quick), (app.pane.hover_msg_at, None));
+        let end = end.expect("its items") - at.expect("the hover");
+        assert_eq!(end, std::time::Duration::from_secs_f32(FLYOVER_STAGGER + 0.2), "reply and react");
+        assert!(!flyover_revealing(&app.pane), "then not after its two items are in");
+        app.pane.hover_msg_at = Some(ago(10));
+        assert!(flyover_revealing(&app.pane), "and again for a new hover");
+    }
+
+    /// The scroll-to-bottom button wakes the animation clock at the end of its 50 ms wait, on the tick that would
+    /// draw it first, and needs its frames while it fades in or out.
+    #[test]
+    fn the_scroll_button_waits_without_frames() {
+        let mut app = crate::fuzz::demo_app("scroll-wait");
+        let ago = |ms| std::time::Instant::now() - std::time::Duration::from_millis(ms);
+        let at = ago(10);
+        app.pane.scrolled_up = Some((true, at));
+        assert_eq!(scroll_fade_due(&app.pane), Some(at + std::time::Duration::from_millis(60)), "the wait");
+        for (up, ms, fades) in [(true, 55, true), (true, 199, true), (true, 201, false), (false, 100, true)] {
+            app.pane.scrolled_up = Some((up, ago(ms)));
+            let now = std::time::Instant::now();
+            assert_eq!(scroll_fade_due(&app.pane).is_some_and(|due| due <= now), fades, "{up} after {ms} ms");
+        }
+        app.pane.scrolled_up = Some((false, ago(151)));
+        assert_eq!(scroll_fade_due(&app.pane), None, "a faded-out button");
     }
 
     /// Desktop's `ActionButtons` under a message of the system user: the buttons that can open their link or post to

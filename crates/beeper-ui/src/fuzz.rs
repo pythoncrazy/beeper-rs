@@ -1863,6 +1863,33 @@ fn texts_keybindings_like_desktop() {
     assert_eq!(edit, Some("Message: Edit"));
 }
 
+/// Desktop's composer button selects (`Aee` of `sFt`): each leaves out the pick of the other button unless it is None,
+/// and offers the Sticker Picker before None only with sticker packs on, which puts "Add a sticker" in the pill.
+#[test]
+fn composer_button_options_like_desktop() {
+    use beeper_core::prefs::{COMPOSER_ACTIONS, COMPOSER_NONE, COMPOSER_STICKERS};
+    let mut app = demo_app("composer-options");
+    let names = |app: &BeeperGuiApp, key| -> Vec<&str> {
+        let values = settings::select_values(key, &app.store.read().settings);
+        values.into_iter().map(|v| COMPOSER_ACTIONS[usize::from(v)]).collect()
+    };
+    let set = |app: &mut BeeperGuiApp, key, v| drop(app.update(UiMessage::Settings(settings::Msg::SetPref(key, v))));
+    let all = ["Emoji Picker", "Talk to Type", "Record Audio", "GIF Picker", "Add Attachment", "Send Later", "None"];
+    let without = |left: &str| all.iter().copied().filter(|o| *o != left).collect::<Vec<_>>();
+    assert_eq!(names(&app, "primaryComposerButton"), without("Record Audio"), "the secondary's pick is left out");
+    assert_eq!(names(&app, "secondaryComposerButton"), without("Emoji Picker"));
+    set(&mut app, "stickerPacks", 1);
+    assert_eq!(names(&app, "primaryComposerButton")[4..], ["Send Later", "Sticker Picker", "None"]);
+    set(&mut app, "secondaryComposerButton", COMPOSER_STICKERS);
+    assert!(!names(&app, "primaryComposerButton").contains(&"Sticker Picker"));
+    assert!(!hidden_actions(&app.store.read(), false).contains(&7), "Add a sticker is in the pill");
+    set(&mut app, "primaryComposerButton", COMPOSER_NONE);
+    assert_eq!(names(&app, "secondaryComposerButton").last(), Some(&"None"), "both buttons can be None");
+    set(&mut app, "stickerPacks", 0);
+    assert!(!hidden_actions(&app.store.read(), false).contains(&7), "no sticker button without sticker packs");
+    assert_eq!(app.store.read().settings.pref("secondaryComposerButton"), COMPOSER_STICKERS, "the value stays");
+}
+
 #[test]
 fn pickers_check_the_network_like_desktop() {
     let mut app = demo_app("pickers");
@@ -5425,6 +5452,36 @@ fn px_text_keeps_its_size_like_desktop() {
     }
 }
 
+/// Desktop's settings search reads a row's `description` and `searchKeywords`, but a row shows only its `footer`:
+/// "Enable nudges" has no text under it, and "placeholder" finds "Hide deleted messages".
+#[test]
+fn search_reads_descriptions_and_keywords_like_desktop() {
+    let mut app = demo_app("search-about");
+    app.store.write().features.flags["features"]["*"]["nudge"] = true.into();
+    let rows = |q: &str| -> Vec<&str> {
+        let hits = search_settings(&app.store.read(), q).into_iter();
+        hits.filter_map(|h| if let SettingsHit::Pref(_, r) = h { Some(r.key) } else { None }).collect()
+    };
+    assert_eq!(rows("placeholder"), ["hideDeleted"]);
+    assert_eq!(rows("even message bubbles"), ["balanceText"]);
+    assert_eq!(rows("who reacted"), ["reactionsOnSelect"]);
+    assert_eq!(rows("join or leave"), ["membershipEvents"]);
+    assert_eq!(rows("shake the conversation"), ["enableNudges"]);
+    assert_eq!(rows("localization"), ["appLanguage"], "a keyword");
+    let _ = app.open_settings(SettingsTab::Appearance);
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1024.0, 6000.0), app.view_settings());
+    assert!(
+        sim.find("Enable nudges").is_ok() && sim.find("Shake the conversation when someone sends you a nudge").is_err()
+    );
+    assert!(sim.find("Hide deleted messages from conversations instead of showing a placeholder").is_err());
+    drop(sim);
+    let _ = app.open_settings(SettingsTab::General);
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1024.0, 6000.0), app.view_settings());
+    let n = app.store.read().stale_inbox_chats().len();
+    let label = if n == 1 { "Archive 1 chat".to_string() } else { format!("Archive {n} chats") };
+    assert!(sim.find(label.as_str()).is_ok(), "Desktop's Archive All button counts the chats, none too");
+}
+
 #[test]
 fn search_finds_custom_items_like_desktop() {
     let mut app = demo_app("search-custom");
@@ -8871,6 +8928,44 @@ fn reply_privately_like_desktop() {
         app.update(UiMessage::NewChat(new_chat::Msg::DmCreated(None, account, Some(quote.clone()), Ok(room.clone()))));
     assert_eq!(app.pane.selected_chat_id.as_deref(), Some(room.as_str()));
     assert!(app.pane.composer.text().starts_with(&quote), "the composer quotes the message");
+}
+
+/// Desktop's command bar: "Reply privately" for a picked group message from someone else, and the developer links of
+/// the chat.
+#[test]
+fn reply_privately_and_chat_links_in_the_command_bar_like_desktop() {
+    let mut app = demo_app("reply-privately-cmd");
+    let group = "!tg_rust:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(group.into()));
+    let (theirs, mine) = {
+        let st = app.store.read();
+        let c = st.chat(group);
+        let msgs = st.timeline(group).filter(|m| m.text.is_some() && m.is_deleted != Some(true));
+        let from = |m: &&Message| c.participants.items.iter().any(|u| u.id == m.sender_id);
+        let theirs = msgs.clone().find(|m| m.is_sender != Some(true) && from(m)).expect("a message from someone");
+        let mine = msgs.clone().find(|m| m.is_sender == Some(true)).map(|m| m.id.clone());
+        (theirs.id.clone(), mine)
+    };
+    let titles = |app: &BeeperGuiApp| -> Vec<String> {
+        let cmds = app.commands(&app.store.read(), "");
+        let has = |t: &str| cmds.iter().any(|c| c.title == t);
+        ["Reply privately", "Copy chat deep link"].into_iter().filter(|t| has(t)).map(String::from).collect()
+    };
+    let _ = app.update(UiMessage::Message(message::Msg::Select(vec![theirs.clone()])));
+    assert_eq!(titles(&app), ["Reply privately", "Copy chat deep link"]);
+    let reply = app.commands(&app.store.read(), "").into_iter().find(|c| c.title == "Reply privately");
+    let msg = reply.and_then(|c| c.msg).expect("the command works");
+    assert!(matches!(msg, UiMessage::ChatList(chat_list::Msg::ReplyPrivately(ref m)) if *m == theirs));
+    let found = app.commands(&app.store.read(), "reply priv");
+    assert!(simulator(app.view_commands(&app.store.read(), &found)).find("Reply privately").is_ok());
+    if let Some(mine) = mine {
+        let _ = app.update(UiMessage::Message(message::Msg::Select(vec![mine])));
+        assert_eq!(titles(&app), ["Copy chat deep link"], "not for your own messages");
+    }
+    let link = app.commands(&app.store.read(), "").into_iter().find(|c| c.title == "Copy chat deep link");
+    let account = app.store.read().chat(group).account_id.clone();
+    let want = format!("beeper://select-thread/bridge-telegram/{group}?accountID={account}");
+    assert!(matches!(link.and_then(|c| c.msg), Some(UiMessage::Message(message::Msg::CopyText(t))) if t == want));
 }
 
 #[test]
