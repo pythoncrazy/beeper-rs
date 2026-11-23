@@ -571,9 +571,8 @@ impl BeeperGuiApp {
             return Task::none();
         }
         self.state_changes += 1;
-        let n = self.state_changes;
-        let wait = async { tokio::time::sleep(std::time::Duration::from_secs(1)).await };
-        Task::perform(wait, move |()| UiMessage::Window(Msg::SaveState(id, n)))
+        let save = UiMessage::Window(Msg::SaveState(id, self.state_changes));
+        self.timers.window_state.after(std::time::Duration::from_secs(1), save)
     }
 
     fn resized(&mut self, id: window::Id, size: Size) {

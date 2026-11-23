@@ -855,12 +855,12 @@ impl BeeperGuiApp {
         l.check += 1;
         if l.username.len() < 3 {
             (l.checking, l.available) = (false, None);
+            self.timers.username.cancel();
             return Task::none();
         }
         l.checking = true;
-        let n = l.check;
-        let later = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
-        Task::perform(later, move |()| LoginMsg::CheckUsername(n).into())
+        let check = LoginMsg::CheckUsername(l.check).into();
+        self.timers.username.after(std::time::Duration::from_millis(300), check)
     }
 
     pub fn update_login(&mut self, msg: LoginMsg) -> Task<UiMessage> {
