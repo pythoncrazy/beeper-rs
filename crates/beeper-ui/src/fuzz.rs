@@ -4387,6 +4387,8 @@ fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
     let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(true)));
     let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
     assert!(app.pane.scrolled_up.is_none(), "another chat opens at its bottom");
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(false)));
+    assert!(app.pane.scrolled_up.is_none(), "with no button that fades out");
 }
 
 /// Desktop's timeline effect: a message that comes into the open chat reads it while the window is focused and the

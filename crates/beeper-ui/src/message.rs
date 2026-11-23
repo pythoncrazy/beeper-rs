@@ -1826,7 +1826,12 @@ impl BeeperGuiApp {
 
     /// Starts the fade of Desktop's `ScrollToBottom` when the timeline leaves its bottom (`up`) or comes back to it.
     pub(crate) fn timeline_scrolled(&mut self, up: bool) {
-        if self.pane.scrolled_up.is_none_or(|s| s.0 != up) {
+        // A chat that opens at its bottom has no scroll-to-bottom button to fade out, like Desktop's.
+        let fade = match self.pane.scrolled_up {
+            None => up,
+            Some((was, _)) => was != up,
+        };
+        if fade {
             self.pane.scrolled_up = Some((up, std::time::Instant::now()));
         }
     }
