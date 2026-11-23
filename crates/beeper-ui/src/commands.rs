@@ -75,20 +75,6 @@ impl Command {
 const CHATS: &str = "Chats";
 pub(crate) const COMMANDS: &str = "commands";
 const SPACES: &str = "Switch First 9 Spaces Modifier";
-/// Desktop's `searchKeywords` of the Integrations section, after its `Preferences`.
-const INTEGRATIONS: &[&str] = &[
-    "Preferences",
-    "beeper desktop api",
-    "mcp",
-    "openapi",
-    "access token",
-    "approved connections",
-    "remote access",
-    "claude",
-    "raycast",
-    "cursor",
-    "codex",
-];
 
 /// A command bar submenu of Desktop (`showWithSubMenu`).
 #[derive(Debug, Clone, PartialEq)]
@@ -711,9 +697,13 @@ impl BeeperGuiApp {
         use SettingsTab as T;
         let tabs = [T::Accounts, T::BeeperPlus, T::General, T::Ai, T::Appearance, T::Notifications, T::Hotkeys];
         for tab in tabs.into_iter().chain([T::Storage, T::Devices, T::About, T::Help, T::Integrations]) {
-            let keys = if tab == T::Integrations { INTEGRATIONS } else { prefs };
+            // Desktop's `searchKeywords` of the Integrations section come after its `Preferences`.
+            let keys: Vec<_> = match tab {
+                T::Integrations => std::iter::once("Preferences").chain(tab.keywords().iter().copied()).collect(),
+                _ => prefs.to_vec(),
+            };
             let section = open(tab, UiMessage::Settings(settings::Msg::Pick(SettingsHit::Section(tab, true))));
-            v.push(cmd(settings, tab.name(), section).keys(keys));
+            v.push(cmd(settings, tab.name(), section).keys(&keys));
             let rows = prefs::rows().filter(|(page, r)| *page == tab.meta().0 && !r.label.is_empty() && shown(st, r));
             v.extend(rows.map(|(_, r)| {
                 let title = format!("{} → {}", tab.name(), crate::trs(r.label, r.split_args().0));

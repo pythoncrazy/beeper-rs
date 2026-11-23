@@ -10,7 +10,7 @@ use iced::advanced::{mouse, renderer};
 
 /// A row of a menu, whose message is its action, or none when it is greyed out.
 pub fn row<'a>(content: impl Into<El<'a>>, msg: Option<UiMessage>) -> El<'a> {
-    El::new(Row { content: content.into(), msg })
+    crate::delegate::marked(content, None, Mark(msg))
 }
 
 /// A menu whose rows the keyboard selects and runs.
@@ -18,22 +18,9 @@ pub fn menu<'a>(content: impl Into<El<'a>>) -> El<'a> {
     El::new(Menu { content: content.into() })
 }
 
-struct Row<'a> {
-    content: El<'a>,
-    msg: Option<UiMessage>,
-}
-
-/// The mark of a [`Row`] for the operations.
+/// The mark of a [`row`] for the operations.
+#[derive(Clone)]
 struct Mark(Option<UiMessage>);
-
-impl Widget<UiMessage, Theme, Renderer> for Row<'_> {
-    crate::delegate::delegate!(children, diff, size, layout, update(UiMessage), mouse_interaction, draw, overlay(UiMessage));
-
-    fn operate(&mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
-        operation.custom(None, layout.bounds(), &mut Mark(self.msg.clone()));
-        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
-    }
-}
 
 /// The operation that collects the rows of a menu in their order, with their bounds and actions.
 #[derive(Default)]

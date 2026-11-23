@@ -876,14 +876,13 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
             origin => {
                 let if_none_match = (msg.method() == "GET").then(|| msg.header("if-none-match")).flatten();
                 let if_none_match = if_none_match.map(String::from);
-                let resp = match config_route(&config, &msg) {
-                    Some(resp) => resp,
-                    None => {
-                        let (store, cloud) = (store.clone(), cloud.clone());
-                        tokio::task::spawn_blocking(move || respond(&store, &cloud, msg).unwrap_or_else(|e| e))
-                            .await
-                            .expect("request handler panicked")
-                    }
+                let resp = if let Some(resp) = config_route(&config, &msg) {
+                    resp
+                } else {
+                    let (store, cloud) = (store.clone(), cloud.clone());
+                    tokio::task::spawn_blocking(move || respond(&store, &cloud, msg).unwrap_or_else(|e| e))
+                        .await
+                        .expect("request handler panicked")
                 };
                 express(resp, origin, if_none_match.as_deref())
             }
@@ -2802,15 +2801,12 @@ fn serve_asset(path: std::path::PathBuf, r: &Req) -> Reply {
     let Some(range) = r.msg.header("range").filter(|_| total > 0) else {
         return Ok(Response { status: StatusCode::OK, headers, body: bytes });
     };
-    match parse_range(range, total) {
-        Some((start, end)) => {
-            headers.push(("Content-Range", format!("bytes {start}-{end}/{total}")));
-            Ok(Response { status: StatusCode::PARTIAL_CONTENT, headers, body: bytes[start..=end].to_vec() })
-        }
-        None => {
-            headers.push(("Content-Range", format!("bytes */{total}")));
-            Ok(Response { status: StatusCode::RANGE_NOT_SATISFIABLE, headers, body: Vec::new() })
-        }
+    if let Some((start, end)) = parse_range(range, total) {
+        headers.push(("Content-Range", format!("bytes {start}-{end}/{total}")));
+        Ok(Response { status: StatusCode::PARTIAL_CONTENT, headers, body: bytes[start..=end].to_vec() })
+    } else {
+        headers.push(("Content-Range", format!("bytes */{total}")));
+        Ok(Response { status: StatusCode::RANGE_NOT_SATISFIABLE, headers, body: Vec::new() })
     }
 }
 
@@ -2947,12 +2943,11 @@ fn subscribe(subs: &RwLock<Vec<String>>, app_on: &std::sync::atomic::AtomicBool,
     let app = v["app"]["state"] == true;
     // Desktop's `Sf`: the trimmed IDs that are not empty, in locale order, or `*` alone.
     let mut ids: Vec<String> = ids.iter().map(|id| id.trim()).filter(|id| !id.is_empty()).map(Into::into).collect();
-    match ids.iter().any(|id| id == "*") {
-        true => ids = vec!["*".into()],
-        false => {
-            ids.sort_by(|a, b| beeper_core::models::locale_cmp(a, b));
-            ids.dedup();
-        }
+    if ids.iter().any(|id| id == "*") {
+        ids = vec!["*".into()]
+    } else {
+        ids.sort_by(|a, b| beeper_core::models::locale_cmp(a, b));
+        ids.dedup();
     }
     let mut ack = json!({ "type": "subscriptions.updated" });
     if let Some(r) = v.get("requestID").filter(|r| truthy(r)) {
@@ -3079,12 +3074,9 @@ async fn serve_ws(
                     (0x1, serde_json::to_vec(&WsFrame::new(&ev, seq)).expect("serialize a WebSocket event"))
                     }
                 }
-                Some(out) = out_rx.recv() => match out {
-                    Some(frame) => frame,
-                    None => {
-                        let frames = app_state_frames(&store, &mut last, &mut seq, true);
-                        (0x1, frames.into_iter().next().expect("a snapshot"))
-                    }
+                Some(out) = out_rx.recv() => if let Some(frame) = out { frame } else {
+                    let frames = app_state_frames(&store, &mut last, &mut seq, true);
+                    (0x1, frames.into_iter().next().expect("a snapshot"))
                 },
                 // Desktop pings each client every 30 s, and closes the clients whose token it revoked.
                 _ = keepalive.tick() => {

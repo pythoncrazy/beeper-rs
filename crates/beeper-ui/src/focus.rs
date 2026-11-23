@@ -240,44 +240,18 @@ impl Look {
 /// Chromium's `-webkit-focus-ring-color` on Linux, which Desktop's sign-in links and sortables show.
 pub const CHROMIUM_RING: Color = Color::from_rgb(229.0 / 255.0, 151.0 / 255.0, 0.0);
 
-/// A control that Tab reaches: the content, and its mark for [`survey`].
-struct Target<'a> {
-    content: El<'a>,
-    id: iced::widget::Id,
-    keys: Keys,
-}
-
-/// The mark of a [`Target`] for the operations.
+/// The mark of a control that Tab reaches, for [`survey`].
+#[derive(Clone)]
 struct Mark(Keys);
 
 /// The mark of a dialog in a window, which keeps the focus inside it like Desktop's `react-focus-lock`: the controls
 /// before it do not count.
+#[derive(Clone)]
 struct Trap;
-
-impl Widget<UiMessage, Theme, Renderer> for Target<'_> {
-    crate::delegate::delegate!(children, diff, size, layout, update(UiMessage), mouse_interaction, draw, overlay(UiMessage));
-
-    fn operate(&mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn advanced::Operation) {
-        operation.container(Some(&self.id), layout.bounds());
-        operation.custom(Some(&self.id), layout.bounds(), &mut Mark(self.keys.clone()));
-        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
-    }
-}
 
 /// A dialog in a window that keeps the focus inside it (see [`Trap`]).
 pub fn trap<'a>(content: impl Into<El<'a>>) -> El<'a> {
-    struct Trapped<'a> {
-        content: El<'a>,
-    }
-    impl Widget<UiMessage, Theme, Renderer> for Trapped<'_> {
-        crate::delegate::delegate!(children, diff, size, layout, update(UiMessage), mouse_interaction, draw, overlay(UiMessage));
-
-        fn operate(&mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn advanced::Operation) {
-            operation.custom(None, layout.bounds(), &mut Trap);
-            self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
-        }
-    }
-    Element::new(Trapped { content: content.into() })
+    crate::delegate::marked(content, None, Trap)
 }
 
 /// A stop of a window: a text field, or a control with its keys.
@@ -511,7 +485,7 @@ impl BeeperGuiApp {
                 stack![content.into()].push(on.then_some(line)).into()
             }
         };
-        Element::new(Target { content, id, keys })
+        crate::delegate::marked(content, Some(id), Mark(keys))
     }
 
     /// Whether a control of a window has the keyboard focus, which the next mouse press takes.

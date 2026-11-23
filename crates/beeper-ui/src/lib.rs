@@ -17,6 +17,9 @@ mod dashed;
 mod deeplink;
 pub use deeplink::ACTIVATION_TOKEN_ARG;
 mod delegate;
+mod prelude;
+use crate::prelude::*;
+use style::cubic_bezier;
 mod dialogs;
 pub mod emoji;
 mod enter_key;
@@ -59,7 +62,6 @@ mod phone;
 mod pins;
 mod popover;
 mod portal;
-mod prelude;
 mod profile;
 pub mod rail;
 mod reauth;
@@ -125,7 +127,6 @@ use crate::i18n::{tr, trf, trn, trs, trx};
 use crate::media_view::{decode_media, run_ffmpeg, Carousel, MediaWindow, TAB_SLIDE};
 use crate::message::Rows;
 pub use crate::message::TopOfThread;
-use crate::prelude::*;
 use crate::settings::{
     hotkey_key, mcp_value, shown, AddToken, IntegrationsPage, StoragePage, EXPIRIES, HOTKEYS_RELAUNCH, SETTINGS_DIALOGS, STORAGE_DAYS,
 };
@@ -2071,21 +2072,6 @@ fn ease_out(x: f32) -> f32 {
 /// CSS `cubic-bezier(.22, 1, .36, 1)`.
 fn ease_out_quint(x: f32) -> f32 {
     cubic_bezier(x, [0.22, 1.0, 0.36, 1.0])
-}
-
-/// CSS `cubic-bezier(x1, y1, x2, y2)` at `x`.
-fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
-    let bezier = |t: f32, p1: f32, p2: f32| 3.0 * (1.0 - t) * (1.0 - t) * t * p1 + 3.0 * (1.0 - t) * t * t * p2 + t.powi(3);
-    let (mut lo, mut hi) = (0.0, 1.0);
-    for _ in 0..20 {
-        let mid = (lo + hi) / 2.0;
-        if bezier(mid, x1, x2) < x {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    bezier((lo + hi) / 2.0, y1, y2)
 }
 
 /// Desktop's `IJ`: when a pending message shows "Still sending...", 5 s after it, or 12 s with attachments.
