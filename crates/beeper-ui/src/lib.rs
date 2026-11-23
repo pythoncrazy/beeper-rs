@@ -5058,6 +5058,10 @@ impl BeeperGuiApp {
                                 self.pane.key_focus.set(None);
                                 return self.update(press);
                             }
+                            if !self.popup_menu_open() && self.pane.picker.is_none() {
+                                return focus::caret(window, self.composer_id())
+                                    .map(|at| UiMessage::Composer(composer::Msg::Enter(at)));
+                            }
                         }
                         _ => {}
                     }
@@ -6746,6 +6750,12 @@ impl BeeperGuiApp {
 
     /// Whether one of the main window's menus is open.
     fn menu_open(&self) -> bool {
+        self.popup_menu_open() || self.pane.show_attach_menu
+    }
+
+    /// Whether one of the main window's menus is open, other than the unveiled actions of the composer, which are
+    /// part of Desktop's composer row.
+    fn popup_menu_open(&self) -> bool {
         self.list().show_filter_menu
             || self.list().chat_menu.is_some()
             || self.pane.message_menu.is_some()
@@ -6756,7 +6766,6 @@ impl BeeperGuiApp {
             || self.list().reminder_menu.is_some()
             || self.audio.menu.is_some()
             || self.selection_menu.is_some()
-            || self.pane.show_attach_menu
     }
 
     fn tip<'a>(

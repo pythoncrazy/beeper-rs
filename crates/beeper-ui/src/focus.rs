@@ -767,6 +767,82 @@ pub(crate) mod tests {
         assert_eq!(app.composer_stops().last(), Some(&C::Send), "and a draft turns Send on");
     }
 
+    /// The actions of `task` that are ready at once; its timers and sends never end here.
+    fn ready_actions(task: Task<UiMessage>) -> Vec<iced_runtime::Action<UiMessage>> {
+        use iced::futures::{FutureExt, StreamExt};
+        let Some(mut stream) = iced_runtime::task::into_stream(task) else { return Vec::new() };
+        let runtime = tokio::runtime::Builder::new_current_thread().build().expect("a runtime");
+        let _in = runtime.enter();
+        std::iter::from_fn(|| stream.next().now_or_never().flatten()).collect()
+    }
+
+    /// Whether the actions of `task` focus the text field `id`.
+    fn focuses(task: Task<UiMessage>, id: &'static str) -> bool {
+        use iced::advanced::widget::operation::Focusable;
+        struct Field(bool);
+        impl Focusable for Field {
+            fn is_focused(&self) -> bool {
+                self.0
+            }
+            fn focus(&mut self) {
+                self.0 = true;
+            }
+            fn unfocus(&mut self) {
+                self.0 = false;
+            }
+        }
+        let mut field = Field(false);
+        for a in ready_actions(task) {
+            if let iced_runtime::Action::Widget(mut op) = a {
+                op.focusable(Some(&iced::widget::Id::new(id)), Rectangle::default(), &mut field);
+            }
+        }
+        field.0
+    }
+
+    /// After a click on the attachment button or on a sticker no text field has the keyboard. Desktop's
+    /// `KeyboardHandlers` give Enter there to the composer, whose Enter sends. A drop of files focuses the composer
+    /// (`focusComposerFor`) before they attach.
+    #[test]
+    fn enter_after_attaching_sends_like_desktop() {
+        let mut app = demo_app("focus-enter");
+        let main = app.main_window.expect("the main window");
+        let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+        let png = vec![(iced::widget::image::Handle::from_rgba(1, 1, vec![255; 4]), 0)];
+        let file = PendingMedia {
+            name: "image.png".into(),
+            mime: "image/png".into(),
+            size: (1, 1),
+            frames: png,
+            bytes: vec![0; 8],
+            ..Default::default()
+        };
+        let attach = |app: &mut BeeperGuiApp| {
+            let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(vec![Ok(file.clone())])));
+            assert_eq!(app.pane.attachments.len(), 1);
+        };
+        let count = |app: &BeeperGuiApp| app.store.read().messages.iter().filter(|m| m.chat_id == NOTE_CHAT_ID).count();
+        attach(&mut app);
+        let before = count(&app);
+        // The attachment button is among the unveiled actions of the composer row.
+        let _ = app.update(UiMessage::Composer(composer::Msg::ToggleAttachMenu));
+        assert!(app.pane.show_attach_menu);
+        let task = app.update(UiMessage::WindowKey(main, Key::Named(Named::Enter), Modifiers::empty()));
+        let looks = ready_actions(task);
+        assert!(looks.iter().any(|a| matches!(a, iced_runtime::Action::Widget(_))), "Enter looks for the caret");
+        let _ = app.update(UiMessage::Composer(composer::Msg::Enter(Caret::Other)));
+        assert_eq!(app.pane.attachments.len(), 1, "Enter in another text field is its own");
+        let _ = app.update(UiMessage::Composer(composer::Msg::Enter(Caret::Field)));
+        assert_eq!(app.pane.attachments.len(), 1, "the composer sends its own Enter");
+        let task = app.update(UiMessage::Composer(composer::Msg::Enter(Caret::None)));
+        assert!(focuses(task, "composer-input"), "Enter outside a text field focuses the composer");
+        assert!(app.pane.attachments.is_empty() && count(&app) == before + 1, "and sends the attachment");
+        let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(main, true)));
+        let _ = app.update(UiMessage::Composer(composer::Msg::FileDropped(main, "/a".into())));
+        let task = app.update(UiMessage::Composer(composer::Msg::DropEnded));
+        assert!(focuses(task, "composer-input"), "a drop focuses the composer");
+    }
+
     /// Desktop's Settings window: Tab goes from the search field to the controls of the pane in their order. A
     /// `label-wrapper` row takes 10 % of the text color, and Space and Enter flip its switch, or offer Beeper Plus for
     /// a locked feature. The arrows of a select pick the option after or before it. Shift+Tab goes back.
