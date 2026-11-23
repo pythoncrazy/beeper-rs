@@ -3199,6 +3199,8 @@ pub struct BeeperGuiApp {
     animate: std::cell::Cell<bool>,
     /// The main window is minimized, so its animations wait, like Chromium's in a minimized window.
     minimized: bool,
+    /// The scale factor of the screen of the windows.
+    screen_scale: f32,
     /// The changes of the windows' sizes and places, so that only the last one saves them.
     state_changes: u64,
 }
@@ -3471,6 +3473,7 @@ impl BeeperGuiApp {
             started: std::time::Instant::now(),
             animate: std::cell::Cell::new(true),
             minimized: false,
+            screen_scale: 2.0,
             state_changes: 0,
             last_click: None,
             cycling: false,
@@ -5337,6 +5340,7 @@ impl BeeperGuiApp {
         let arrow = !st.settings.on("pointerCursor");
         self.animate.set(st.settings.on("animateAvatars") && self.shows());
         drop(st);
+        crate::lottie::set_scale(self.screen_scale * self.zoom * text_scale());
         self.drawing.set(self.chat_windows.iter().any(|w| w.0 == id).then_some(id));
         self.in_media.set(self.media_window.as_ref().is_some_and(|w| w.id == id));
         let el = cursor::root(self.view_window(id), arrow, &self.cursor, id);
@@ -6912,6 +6916,7 @@ fn window_events() -> Subscription<UiMessage> {
         Event::Window(window::Event::CloseRequested) => Some(UiMessage::Window(windows::Msg::CloseRequested(id))),
         Event::Window(window::Event::Resized(size)) => Some(UiMessage::Window(windows::Msg::Resized(id, size))),
         Event::Window(window::Event::Moved(_)) => Some(UiMessage::Window(windows::Msg::Moved(id))),
+        Event::Window(window::Event::Rescaled(scale)) => Some(UiMessage::Window(windows::Msg::Scale(scale))),
         Event::Window(window::Event::Focused) => Some(UiMessage::Window(windows::Msg::Focused(true))),
         Event::Window(window::Event::Unfocused) => Some(UiMessage::Window(windows::Msg::Focused(false))),
         Event::Window(window::Event::FileHovered(_)) => Some(UiMessage::Composer(composer::Msg::FileHover(id, true))),
