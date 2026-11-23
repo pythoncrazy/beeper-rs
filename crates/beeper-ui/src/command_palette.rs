@@ -106,8 +106,15 @@ impl BeeperGuiApp {
         let chats: Vec<&Chat> = hits.chats.iter().map(|&i| &st.chats[i]).collect();
         let in_groups: Vec<&Chat> = hits.in_groups.iter().map(|&i| &st.chats[i]).collect();
         let (bookmarks, media, found) = (&hits.bookmarks, &hits.media, &hits.messages);
+        // Desktop's `Bqt`: the recent searches lead the results while the input is empty.
+        let searches = (q.is_empty() && !self.recent_searches.is_empty()).then(|| {
+            let rows =
+                self.recent_searches.iter().enumerate().map(|(i, (term, f))| self.palette_recent_search(i, term, f));
+            column![self.palette_heading("Recent searches", None)].extend(rows)
+        });
         let any = [&recent, &archived, &chats, &in_groups].iter().any(|l| !l.is_empty())
-            || !(bookmarks.is_empty() && media.is_empty() && found.is_empty());
+            || !(bookmarks.is_empty() && media.is_empty() && found.is_empty())
+            || searches.is_some();
         let none = !any && (raw.chars().count() > 1 || !f.media.is_empty());
         let needle = q.to_ascii_lowercase();
         let message = |m: &Message| self.palette_message(&st, m, &needle);
@@ -126,7 +133,7 @@ impl BeeperGuiApp {
         // Desktop's `Jqt` order of the chat sections, before the bookmarks, the media and the messages.
         let sections =
             [("Recent chats", &recent), ("Last archived", &archived), ("Chats", &chats), ("In Groups", &in_groups)];
-        let lead = sections.iter().find(|s| !s.1.is_empty()).map(|s| s.0);
+        let lead = sections.iter().find(|s| !s.1.is_empty() && searches.is_none()).map(|s| s.0);
         let results = sections.into_iter().filter(|s| !s.1.is_empty()).fold(Column::new(), |col, (label, list)| {
             let (n, has_more) = match label {
                 "Last archived" => (1, false),
@@ -138,6 +145,7 @@ impl BeeperGuiApp {
                 list.iter().take(n).enumerate().map(|(i, c)| self.palette_chat(c, lead == Some(label) && i == 0)),
             )
         });
+        let results = column![].push(searches).push(results);
         let results = results.push(bookmarks).push(media_grid).push(messages);
         self.palette_frame(
             column![inputs]
@@ -185,6 +193,20 @@ impl BeeperGuiApp {
     fn palette_more(&self, s: &'static str, more: bool) -> Option<(&'static str, commands::Msg)> {
         let label = if self.search_expanded.contains(s) { tr("Show less") } else { tr("Show more") };
         more.then_some((label, commands::Msg::ToggleSearchExpanded(s)))
+    }
+
+    /// Desktop's `SelectRecentSearchCommand`: the `schedule` icon in `--color-on-surface-variant`, then the text of
+    /// the search and its count of filters. The first row has the highlight of the first result.
+    fn palette_recent_search(&self, i: usize, term: &str, f: &SearchFilters) -> El<'_> {
+        let p = &self.pal;
+        let n = f.count();
+        let filters = if n > 0 { trn(" (%d filter)", " (%d filters)", n, &[&n]) } else { String::new() };
+        let line = row![tinted(&COMPOSER_ICONS[6], 20.0, p.sub), txt(format!("{term}{filters}"), 13.0).color(p.text)];
+        let bg = if i == 0 { p.chip } else { CLEAR };
+        let b =
+            button(container(line.spacing(8).align_y(Center)).center_y(Fill)).height(36).padding([0, 6]).width(Fill);
+        let b = b.style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0));
+        container(b.on_press(UiMessage::CommandBar(commands::Msg::RestoreSearch(i)))).padding([0, 6]).into()
     }
 
     /// The card of the command palette.

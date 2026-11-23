@@ -1086,6 +1086,45 @@ fn command_bar_opens_empty_like_desktop() {
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
 }
 
+/// Desktop's `onSearchClosed` and `recentSearches`: a search with a text and filters that the bar closes on leads the
+/// empty bar as a recent search, with the count of its filters, and picking it restores the search in the open bar.
+/// Filters without a text stay for the next search.
+#[test]
+fn recent_searches_like_desktop() {
+    let mut app = demo_app("recent-searches");
+    let search = |app: &mut BeeperGuiApp, text: &str, group: bool| {
+        let _ = app.update(UiMessage::RunHotkey("Search"));
+        assert!(app.show_command_palette);
+        let _ = app.update(UiMessage::CommandBar(commands::Msg::Query(text.into())));
+        if group {
+            let _ = app.update(UiMessage::CommandBar(commands::Msg::PickSearchFilter(SearchPick::Group(true))));
+        }
+        let _ = app.update(UiMessage::CloseModals);
+        assert!(!app.show_command_palette);
+    };
+    search(&mut app, "lena", true);
+    search(&mut app, "pebble", false);
+    let _ = app.update(UiMessage::RunHotkey("Search"));
+    let group = SearchFilters { group: Some(true), ..Default::default() };
+    assert_eq!(app.recent_searches, [("lena".to_string(), group.clone())], "only a search with filters is kept");
+    assert_eq!(app.search_filters, SearchFilters::default(), "its filters ended with it");
+    {
+        let mut ui = simulator(app.view_main());
+        assert!(ui.find("Recent searches").is_ok() && ui.find("lena (1 filter)").is_ok());
+    }
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("l".into())));
+    assert!(simulator(app.view_main()).find("Recent searches").is_err(), "only while the input is empty");
+    let _ = app.update(UiMessage::CloseModals);
+    search(&mut app, "lena", true);
+    search(&mut app, "", true);
+    let _ = app.update(UiMessage::RunHotkey("Search"));
+    assert_eq!(app.recent_searches.len(), 1, "the same search moves to the top");
+    assert_eq!(app.search_filters, group, "filters without a text stay");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::RestoreSearch(0)));
+    assert!(app.show_command_palette, "the bar stays open");
+    assert_eq!((app.command_palette_query.as_str(), &app.search_filters), ("lena", &group));
+}
+
 /// Desktop's chat hotkeys take `selectedOrCursorThread`, so Ctrl E and E archive the chat of the cursor while no chat
 /// is open. `toggleThreadArchive` first moves the cursor to the next chat, and a pinned chat stays with the toast
 /// "Pinned chats can't be archived".
