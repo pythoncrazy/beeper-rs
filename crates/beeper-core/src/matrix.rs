@@ -1841,7 +1841,12 @@ struct Update {
     prev_batch: Option<String>,
     /// Whether the sync changed a state of the room. Without a change, a chat keeps what it found from the members.
     state_changed: bool,
+    /// The history page of a new room, which [`first_page`] started before the rooms of the sync applied.
+    page: Option<PageTask>,
 }
+
+/// A history page that loads on its own task.
+type PageTask = tokio::task::JoinHandle<matrix_sdk::Result<(Vec<TimelineEvent>, Option<String>)>>;
 
 /// Where the members of a chat come from when they are not read again.
 enum Kept {
@@ -1865,6 +1870,48 @@ enum Pass {
 
 /// [`sync_room`] with the `pass` of a sync or of the start, which reads the receipts of its receipt events after it,
 /// and the global account data that the caller read, else read here.
+/// The page of history that [`sync_room_after`] loads for a room of a sync that has no chat yet: the events before
+/// those of the sync, up to `HISTORY` with them. None for a room that has a chat, or that is not a chat.
+async fn first_page(
+    store: &SharedStore,
+    room: &Room,
+    events: usize,
+    prev_batch: &Option<String>,
+) -> Option<(Option<String>, u32)> {
+    let id = room.room_id().as_str();
+    let seen = |chat: &str| {
+        let st = store.read();
+        st.chat_idx_by_id.get(chat).is_some_and(|&i| st.chats[i].notifiable.is_some())
+    };
+    let special = [BOOKMARKS_ROOM, TRANSCRIPTIONS_ROOM, REMOVED_MESSAGES_ROOM, REMINDERS_ROOM].contains(&id);
+    let wanted = match prev_batch {
+        Some(_) => HISTORY.saturating_sub(u32::try_from(events).unwrap_or(u32::MAX)),
+        None => HISTORY,
+    };
+    if special || MANAGED_ROOMS.contains(&id) || seen(id) || wanted == 0 {
+        return None;
+    }
+    let cached = store.read().room_reads.rooms.get(id).map(|r| r.create.clone());
+    let create = match cached {
+        Some(c) => c,
+        None => RoomReads::create(room).await?,
+    };
+    let create = &create["content"];
+    let chat = matches!(create["type"].as_str(), None | Some("com.beeper.local" | UNION));
+    (chat && create["com.beeper.label"] != true && !seen(&chat_id(room).await)).then(|| (prev_batch.clone(), wanted))
+}
+
+/// Aborts the task of a page that nothing awaited when it drops.
+struct AbortPage(Option<PageTask>);
+
+impl Drop for AbortPage {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
 async fn sync_room_after(
     store: &SharedStore,
     room: &Room,
@@ -1884,11 +1931,13 @@ async fn sync_room_after(
     // The events of a sync are new, unlike those of a page of history or of the start pass.
     let live = matches!(pass, Pass::Sync(_));
     // The members that the start pass kept, or whether a sync kept those of the chat.
-    let (prev_batch, cache, known) = match pass {
-        Pass::Fresh => (None, false, Kept::None),
-        Pass::Sync(u) => (u.prev_batch, true, if u.state_changed { Kept::None } else { Kept::Chat }),
-        Pass::Start(k) => (None, true, k.map_or(Kept::None, Kept::Start)),
+    let (prev_batch, cache, known, prefetched) = match pass {
+        Pass::Fresh => (None, false, Kept::None, None),
+        Pass::Sync(u) => (u.prev_batch, true, if u.state_changed { Kept::None } else { Kept::Chat }, u.page),
+        Pass::Start(k) => (None, true, k.map_or(Kept::None, Kept::Start), None),
     };
+    // A page that this pass does not take does not load.
+    let mut prefetched = AbortPage(prefetched);
     match room.room_id().as_str() {
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
         TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
@@ -1991,7 +2040,13 @@ async fn sync_room_after(
     } else if !seen {
         let known: HashSet<String> = events.iter().filter_map(|e| Some(e.event_id()?.to_string())).collect();
         // Without the page, `older` stays unknown and the next load of older messages tries again.
-        let page = outside_sync_tx(store, page(room, prev_batch, wanted)).await;
+        let fetch = async {
+            match prefetched.0.take() {
+                Some(task) => task.await.expect("the task of a history page does not panic"),
+                None => page(room, prev_batch, wanted).await,
+            }
+        };
+        let page = outside_sync_tx(store, fetch).await;
         if let Ok((page, end)) = page.inspect_err(|e| drop(no_history(room, e))) {
             older = Some(end.map_or(Older::Start, Older::From));
             let page = page.into_iter().filter(|e| e.event_id().is_some_and(|id| !known.contains(id.as_str())));
@@ -2781,6 +2836,23 @@ async fn push_loop(store: SharedStore) {
 /// Whether the homeserver cannot be reached now. Some calls of a push, like a redaction or the push rules of a mute,
 /// lose the kind of their error, so a failed push asks the homeserver again: a change that failed while it is offline
 /// waits for it like a send, instead of being dropped.
+/// Desktop's `resetNetworkConnections`, which its app calls on the window's `online` event: its SDK closes the
+/// connections of the old network. The connections to the homeserver shut down, so the sync that waits on one (for up
+/// to a minute when the network changed under it) fails at once, and the sync loop connects again.
+pub async fn reset_network_connections(store: SharedStore) {
+    let Some(client) = store.read().matrix.clone() else { return };
+    let homeserver = client.homeserver();
+    let (Some(host), Some(port)) = (homeserver.host_str(), homeserver.port_or_known_default()) else { return };
+    let peers = match tokio::net::lookup_host((host, port)).await {
+        Ok(addrs) => addrs.collect(),
+        Err(e) => return eprintln!("reset the connections to {host}: {e}"),
+    };
+    #[cfg(target_os = "linux")]
+    crate::platform::shutdown_tcp_to(&peers);
+    #[cfg(not(target_os = "linux"))]
+    let _: std::collections::HashSet<std::net::SocketAddr> = peers;
+}
+
 async fn unreachable(store: &SharedStore) -> bool {
     let client = store.read().matrix.clone().expect("flush checks the Matrix client");
     // One try: the push loop tries the change again later.
@@ -3993,11 +4065,14 @@ pub fn bridge_user(v: &Value) -> User {
 pub enum ChatBridge {
     Matrix(SharedStore),
     Cloud(Provision),
+    /// The demo's stand-in for the bridges of an account: it makes local chats and asks no server.
+    Demo(SharedStore, String),
 }
 
 impl ChatBridge {
     pub fn of(store: &SharedStore, account_id: &str) -> Self {
         match account_id {
+            _ if store.read().config.demo => ChatBridge::Demo(store.clone(), account_id.into()),
             "hungryserv" => ChatBridge::Matrix(store.clone()),
             _ => ChatBridge::Cloud(store.read().provision(account_id)),
         }
@@ -4008,40 +4083,73 @@ impl ChatBridge {
         match self {
             ChatBridge::Matrix(_) => Ok(matrix_capabilities()),
             ChatBridge::Cloud(p) => capabilities(p).await,
+            ChatBridge::Demo(_, account) if account == "hungryserv" => Ok(matrix_capabilities()),
+            ChatBridge::Demo(..) => Ok(demo_capabilities()),
         }
     }
 
-    /// The users that match a name: the homeserver's user directory, or the bridge's `search_users`.
+    /// The users that match a name: the homeserver's user directory, or the bridge's `search_users`. The demo finds
+    /// no one, like a bridge that does not answer.
     pub async fn search_users(self, query: String) -> Result<Vec<User>, String> {
         match self {
             ChatBridge::Matrix(store) => search_matrix_users(store, query).await,
             ChatBridge::Cloud(p) => Ok(search_users(p, query).await?.iter().map(bridge_user).collect()),
+            ChatBridge::Demo(..) => Ok(Vec::new()),
         }
     }
 
-    /// The user of a phone number, email, username or user ID, as a bridge reply.
+    /// The user of a phone number, email, username or user ID, as a bridge reply. The demo knows no one.
     pub async fn resolve_identifier(self, identifier: String) -> Result<Option<Value>, String> {
         match self {
             ChatBridge::Matrix(store) => resolve_matrix_user(store, identifier).await,
             ChatBridge::Cloud(p) => resolve_identifier(p, identifier).await,
+            ChatBridge::Demo(..) => Ok(None),
         }
     }
 
-    /// The room of a direct chat with `identifier`.
+    /// The room of a direct chat with `identifier`. The demo makes a local chat with the person, whom another chat
+    /// of the account can know.
     pub async fn create_dm(self, identifier: String) -> Result<String, String> {
         match self {
             ChatBridge::Matrix(store) => create_matrix_dm(store, identifier).await,
             ChatBridge::Cloud(p) => create_dm(p, identifier).await,
+            ChatBridge::Demo(store, account) => {
+                let mut st = store.write();
+                let mut people =
+                    st.chats.iter().filter(|c| c.account_id == account).flat_map(|c| &c.participants.items);
+                let known = people.find(|u| u.id == identifier).cloned();
+                let name = known.as_ref().and_then(|u| u.full_name.clone());
+                let id = st.create_or_start_chat(&account, "single", name, vec![identifier], None, None, None).0.id;
+                if let Some(user) = known {
+                    let idx = st.resolve_chat_idx(&id).expect("the new chat");
+                    st.update_chat(idx, |c| c.participants.items[0] = user);
+                }
+                Ok(id)
+            }
         }
     }
 
-    /// The room of a new group of `kind` with the users, named when `name` is not empty.
+    /// The room of a new group of `kind` with the users, named when `name` is not empty. The demo makes a local
+    /// group.
     pub async fn create_group(self, kind: String, name: String, users: Vec<String>) -> Result<String, String> {
         match self {
             ChatBridge::Matrix(store) => create_matrix_group(store, kind, name, users).await,
             ChatBridge::Cloud(p) => create_group(p, kind, name, users).await,
+            ChatBridge::Demo(store, account) => {
+                let title = Some(name).filter(|n| !n.is_empty());
+                Ok(store.write().create_or_start_chat(&account, "group", title, users, None, None, None).0.id)
+            }
         }
     }
+}
+
+/// The provisioning capabilities of the demo's accounts: direct chats with any phone number, and named groups of
+/// two people or more.
+pub fn demo_capabilities() -> Value {
+    serde_json::json!({
+        "resolve_identifier": { "create_dm": true, "any_phone": true },
+        "group_creation": { "group": { "name": { "allowed": true }, "participants": { "min_length": 2 } } },
+    })
 }
 
 /// Desktop SDK's `GetProvisioningCapabilities` of its `matrix` pseudo-bridge, which Desktop's
@@ -4235,7 +4343,7 @@ pub(crate) async fn connect(store: &SharedStore) -> Result<Client, String> {
         backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
         auto_enable_backups: true,
     };
-    let builder = Client::builder().homeserver_url(&s.homeserver).sqlite_store(dir, None);
+    let builder = crate::net::matrix_client()?.homeserver_url(&s.homeserver).sqlite_store(dir, None);
     let builder = builder.with_encryption_settings(encryption);
     #[cfg(any(test, feature = "stub"))]
     let builder = match STUB_CLIENTS.load(std::sync::atomic::Ordering::Relaxed) {
@@ -5920,42 +6028,50 @@ pub async fn run(store: SharedStore) {
     tokio::spawn(update_device_metadata(client.clone()));
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
-    // Like Desktop's SDK, the state is `initialized` when the device knows the identity of the account. When the
-    // query fails, the first sync reads the state.
-    client.encryption().wait_for_e2ee_initialization_tasks().await;
-    let me = client.user_id().expect("signed-in client has a user ID").to_owned();
-    match client.encryption().request_user_identity(&me).await {
-        Ok(_) => refresh_e2ee(&client, &store).await,
-        Err(e) => eprintln!("Could not query the own identity, the first sync reads it: {e}"),
-    }
     client.add_event_handler_context(store.clone());
     client.add_event_handler(verification_requested);
-    sync_account_data(&client, &store).await;
-    sync_prefs(&client, &store).await;
-    sync_profile(&client, &store).await;
-    store.write().inbox_rules = global(&client, RULES).await;
-    // Nothing saves a sync before the loop below, so the passes over the rooms read the global account data once.
-    let globals = Globals::read(&client).await;
-    for room in client.invited_rooms() {
-        sync_invite(&store, &room, &globals).await;
-    }
-    // The chats that stay after a leave or a removal, without history to load again.
-    for room in client.left_rooms() {
-        let chat = chat_id(&room).await;
-        if store.read().resolve_chat_idx(&chat).is_some() {
-            sync_room_with(&store, &room, Vec::new(), &globals).await;
+    // Like Desktop's SDK, the state is `initialized` when the device knows the identity of the account. When the
+    // query fails, the first sync reads the state.
+    let identity = async {
+        let (encryption, me) = (client.encryption(), client.user_id().expect("signed-in client has a user ID"));
+        let ((), identity) =
+            tokio::join!(encryption.wait_for_e2ee_initialization_tasks(), encryption.request_user_identity(me));
+        match identity {
+            Ok(_) => refresh_e2ee(&client, &store).await,
+            Err(e) => eprintln!("Could not query the own identity, the first sync reads it: {e}"),
         }
-    }
-    let first = !store.read().beeper_state.first_sync_done;
-    start_pass(&client, &store, &globals, first).await;
-    if first {
-        let mut st = store.write();
-        st.beeper_state.first_sync_done = true;
-        st.persist_state_to_sqlite();
-    }
-    // Desktop's SDK catches up at once at the start, so "Syncing..." ends without waiting for a long poll.
-    let now = SyncSettings::default().timeout(std::time::Duration::ZERO);
-    if !on_sync(&client, &store, client.sync_once(now).await).await {
+    };
+    let first_sync = async {
+        sync_account_data(&client, &store).await;
+        sync_prefs(&client, &store).await;
+        store.write().inbox_rules = global(&client, RULES).await;
+        // Nothing saves a sync before the first one below, so the passes over the rooms read the global account data
+        // once.
+        let globals = Globals::read(&client).await;
+        for room in client.invited_rooms() {
+            sync_invite(&store, &room, &globals).await;
+        }
+        // The chats that stay after a leave or a removal, without history to load again.
+        for room in client.left_rooms() {
+            let chat = chat_id(&room).await;
+            if store.read().resolve_chat_idx(&chat).is_some() {
+                sync_room_with(&store, &room, Vec::new(), &globals).await;
+            }
+        }
+        let first = !store.read().beeper_state.first_sync_done;
+        start_pass(&client, &store, &globals, first).await;
+        if first {
+            let mut st = store.write();
+            st.beeper_state.first_sync_done = true;
+            st.persist_state_to_sqlite();
+        }
+        // Desktop's SDK catches up at once at the start, so "Syncing..." ends without waiting for a long poll.
+        client.sync_once(SyncSettings::default().timeout(std::time::Duration::ZERO)).await
+    };
+    // The identity query, the profile and the first sync wait for the homeserver at the same time, not one after the
+    // other. The first sync applies once all three are done.
+    let ((), (), synced) = tokio::join!(identity, sync_profile(&client, &store), first_sync);
+    if !on_sync(&client, &store, synced).await {
         return;
     }
     let settings = SyncSettings::default().timeout(std::time::Duration::from_secs(30));
@@ -6083,6 +6199,21 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                     _ => store.write().remove_deleted_chat(id.as_str()),
                 }
             }
+            // The history pages of the new rooms load 8 at once while the rooms apply one after the other.
+            let slots = Arc::new(tokio::sync::Semaphore::new(8));
+            let mut pages = HashMap::new();
+            for (id, update) in &resp.rooms.joined {
+                let room = client.get_room(id).expect("synced room is known");
+                let (events, prev_batch) = (update.timeline.events.len(), &update.timeline.prev_batch);
+                if let Some((from, wanted)) = first_page(store, &room, events, prev_batch).await {
+                    let slots = slots.clone();
+                    let load = async move {
+                        let _slot = slots.acquire_owned().await.expect("the page semaphore stays open");
+                        page(&room, from, wanted).await
+                    };
+                    pages.insert(id.clone(), tokio::spawn(load));
+                }
+            }
             for (id, update) in resp.rooms.joined {
                 let room = client.get_room(&id).expect("synced room is known");
                 // A limited timeline of a room that synced before leaves out the events since the last sync.
@@ -6092,7 +6223,7 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 }
                 let state_changed = stateful.contains(id.as_str());
                 let prev_batch = update.timeline.prev_batch;
-                let u = Pass::Sync(Update { prev_batch, state_changed });
+                let u = Pass::Sync(Update { prev_batch, state_changed, page: pages.remove(&id) });
                 sync_room_after(store, &room, update.timeline.events, u, Some(&globals)).await;
                 for e in &update.account_data {
                     let v: Value = e.deserialize_as().expect("room account data JSON");

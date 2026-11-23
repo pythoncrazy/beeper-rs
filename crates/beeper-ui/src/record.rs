@@ -330,8 +330,14 @@ impl BeeperGuiApp {
         let (base, token) =
             (beeper_core::cloud::ai_services(&st.beeper_state.homeserver), st.beeper_state.access_token.clone());
         drop(st);
-        let file = beeper_core::cloud::TALK_FILE;
-        let run = async move { beeper_core::cloud::transcribe(&base, &token, (wav(&samples), file), None).await };
+        let (file, offline) = (beeper_core::cloud::TALK_FILE, self.cloud.offline);
+        let run = async move {
+            // The demo has no Whisper: Beeper's AI services would get its made-up token.
+            if offline {
+                return Err(beeper_core::net::OFFLINE_ERROR.to_string());
+            }
+            beeper_core::cloud::transcribe(&base, &token, (wav(&samples), file), None).await
+        };
         Task::perform(run, |r| UiMessage::Record(Msg::Typed(r)))
     }
 

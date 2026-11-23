@@ -27,6 +27,39 @@ pub enum Item {
     },
 }
 
+impl Item {
+    /// Whether the item draws the same meshes as `other`.
+    pub fn same(&self, other: &Item) -> bool {
+        match (self, other) {
+            (
+                Item::Group {
+                    transformation,
+                    meshes,
+                },
+                Item::Group {
+                    transformation: t,
+                    meshes: m,
+                },
+            ) => transformation == t && meshes == m,
+            (
+                Item::Cached {
+                    transformation,
+                    cache,
+                },
+                Item::Cached {
+                    transformation: t,
+                    cache: c,
+                },
+            ) => {
+                transformation == t
+                    && cache.id() == c.id()
+                    && cache.version() == c.version()
+            }
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Upload {
     layer: Layer,

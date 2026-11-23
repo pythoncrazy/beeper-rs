@@ -197,7 +197,7 @@ impl BeeperGuiApp {
                 if draft.group {
                     let asked = self.confirm.take_if(|d| *d == ASK_ROOM_ENCRYPTION).is_some();
                     let bridge = self.bridge(&account);
-                    let matrix = matches!(bridge, beeper_core::matrix::ChatBridge::Matrix(_));
+                    let matrix = account == "hungryserv";
                     if matrix && draft.users.len() > 1 && !asked {
                         self.confirm = Some(ASK_ROOM_ENCRYPTION);
                         return Task::none();

@@ -679,7 +679,7 @@ fn parse_body(msg: &HttpMessage) -> Result<Value, Response> {
 /// locked to load its chats.
 pub fn serve_http(listener: TcpListener, store: SharedStore) -> impl std::future::Future<Output = ()> {
     let config = Arc::new(store.read().config.clone());
-    let cloud = Arc::new(Cloud::new(&config.api_url, &config.homeserver));
+    let cloud = Arc::new(Cloud::of(&config));
     async move {
         // The connections end with the server: when the API turns off, Desktop closes its clients too.
         let mut connections = tokio::task::JoinSet::new();

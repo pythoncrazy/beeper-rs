@@ -305,6 +305,15 @@ impl Batch {
         self.order.clear();
     }
 
+    /// Whether the batch draws the same quads, in the same order, as `other`.
+    pub fn same(&self, other: &Batch) -> bool {
+        self.order == other.order
+            && bytemuck::cast_slice::<Solid, u8>(&self.solids)
+                == bytemuck::cast_slice::<Solid, u8>(&other.solids)
+            && bytemuck::cast_slice::<Gradient, u8>(&self.gradients)
+                == bytemuck::cast_slice::<Gradient, u8>(&other.gradients)
+    }
+
     pub fn append(&mut self, batch: &mut Batch) {
         self.solids.append(&mut batch.solids);
         self.gradients.append(&mut batch.gradients);

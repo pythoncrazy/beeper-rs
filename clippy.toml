@@ -1,0 +1,8 @@
+# The demo must not reach the network: every HTTP client comes from `beeper_core::net`, which closes it in the demo.
+disallowed-methods = [
+    { path = "reqwest::Client::new", reason = "build HTTP clients with beeper_core::net, which the demo closes" },
+    { path = "reqwest::Client::builder", reason = "build HTTP clients with beeper_core::net, which the demo closes" },
+    { path = "reqwest::ClientBuilder::new", reason = "build HTTP clients with beeper_core::net, which the demo closes" },
+    { path = "reqwest::get", reason = "build HTTP clients with beeper_core::net, which the demo closes" },
+    { path = "matrix_sdk::Client::builder", reason = "build the Matrix client with beeper_core::net, which the demo closes" },
+]

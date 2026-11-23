@@ -13,6 +13,8 @@ stub = []
 [dependencies]
 reqwest = { version = "0.13.5", default-features = false, features = ["brotli", "gzip", "rustls-no-provider"] }
 tokio = { workspace = true, features = ["process"] }
+# The gate of `net`, which closes the connector of every HTTP client in the demo.
+tower = { version = "0.5.3", default-features = false, features = ["filter"] }
 serde.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
