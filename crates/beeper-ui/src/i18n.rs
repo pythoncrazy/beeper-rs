@@ -22,14 +22,9 @@ static CURRENT: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// Uses the language of the "App language" option `choice`, where 0 is the system language and 1 is English.
 pub fn set(choice: u8) {
-    let locale = ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"]
-        .iter()
-        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()));
+    let locale = ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"].iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()));
     let index = match choice {
-        0 => locale
-            .as_deref()
-            .and_then(language)
-            .map(|c| LANGS.iter().position(|l| l.0 == c).expect("a listed language")),
+        0 => locale.as_deref().and_then(language).map(|c| LANGS.iter().position(|l| l.0 == c).expect("a listed language")),
         1 => None,
         i => Some(usize::from(i) - 2),
     };
@@ -99,18 +94,7 @@ const DATES: [[&str; 10]; 6] = [
         "{h}:{mm} PM",
         "{HH}:{mm}",
     ],
-    [
-        "",
-        "",
-        "{M}月{d}日",
-        "{y}年{M}月{d}日",
-        "{M}月",
-        "{y}年{M}月",
-        "{y}/{MM}/{dd}",
-        "午前{h}:{mm}",
-        "午後{h}:{mm}",
-        "{H}:{mm}",
-    ],
+    ["", "", "{M}月{d}日", "{y}年{M}月{d}日", "{M}月", "{y}年{M}月", "{y}/{MM}/{dd}", "午前{h}:{mm}", "午後{h}:{mm}", "{H}:{mm}"],
     [
         "janeiro fevereiro março abril maio junho julho agosto setembro outubro novembro dezembro",
         "jan. fev. mar. abr. mai. jun. jul. ago. set. out. nov. dez.",
@@ -310,28 +294,8 @@ mod tests {
     fn dates_match_intl() {
         use super::Date::*;
         let expected = [
-            [
-                "October 10",
-                "Oct 10, 2025",
-                "October",
-                "October 2025",
-                "10/10/2025",
-                "9:05 AM",
-                "09:05",
-                "9:45 PM",
-                "May 3, 2025",
-            ],
-            [
-                "10. Oktober",
-                "10. Okt. 2025",
-                "Oktober",
-                "Oktober 2025",
-                "10.10.2025",
-                "9:05 AM",
-                "09:05",
-                "9:45 PM",
-                "3. Mai 2025",
-            ],
+            ["October 10", "Oct 10, 2025", "October", "October 2025", "10/10/2025", "9:05 AM", "09:05", "9:45 PM", "May 3, 2025"],
+            ["10. Oktober", "10. Okt. 2025", "Oktober", "Oktober 2025", "10.10.2025", "9:05 AM", "09:05", "9:45 PM", "3. Mai 2025"],
             [
                 "10 de octubre",
                 "10 oct 2025",
@@ -343,28 +307,8 @@ mod tests {
                 "9:45 p.\u{a0}m.",
                 "3 may 2025",
             ],
-            [
-                "10 octobre",
-                "10 oct. 2025",
-                "octobre",
-                "octobre 2025",
-                "10/10/2025",
-                "9:05 AM",
-                "09:05",
-                "9:45 PM",
-                "3 mai 2025",
-            ],
-            [
-                "10月10日",
-                "2025年10月10日",
-                "10月",
-                "2025年10月",
-                "2025/10/10",
-                "午前9:05",
-                "9:05",
-                "午後9:45",
-                "2025年5月3日",
-            ],
+            ["10 octobre", "10 oct. 2025", "octobre", "octobre 2025", "10/10/2025", "9:05 AM", "09:05", "9:45 PM", "3 mai 2025"],
+            ["10月10日", "2025年10月10日", "10月", "2025年10月", "2025/10/10", "午前9:05", "9:05", "午後9:45", "2025年5月3日"],
             [
                 "10 de outubro",
                 "10 de out. de 2025",
@@ -379,8 +323,7 @@ mod tests {
         ];
         for (lang, want) in super::DATES.iter().zip(expected) {
             let (oct, may) = (((2025, 10, 10), (9, 5)), ((2025, 5, 3), (21, 45)));
-            let got =
-                [MonthDay, Medium, Month, MonthYear, Numeric, Am, Clock24].map(|f| super::fill(lang, f, oct.0, oct.1));
+            let got = [MonthDay, Medium, Month, MonthYear, Numeric, Am, Clock24].map(|f| super::fill(lang, f, oct.0, oct.1));
             assert_eq!(got[..], want[..7]);
             assert_eq!([super::fill(lang, Pm, may.0, may.1), super::fill(lang, Medium, may.0, may.1)], want[7..]);
         }

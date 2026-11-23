@@ -1,9 +1,7 @@
 //! Desktop's audio player (`Audio.tsx`): decoding, the waveform, playback speed, and autoplay of the next
 //! voice note.
 use crate::settings;
-use crate::style::{
-    btn_style, clamped, fill_box, hidden_slider, ic, icon, lh, semi, shadow_box, text_width, txt, Bare,
-};
+use crate::style::{btn_style, clamped, fill_box, hidden_slider, ic, icon, lh, semi, shadow_box, text_width, txt, Bare};
 use crate::{menu_item, menu_pitch, sound, tinted, tr, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS};
 use beeper_core::models::{Attachment, Message, Transcription};
 use beeper_core::store::BeeperStore;
@@ -49,8 +47,7 @@ pub struct Clip {
 
 impl Clip {
     pub(crate) fn new(samples: Vec<f32>) -> Self {
-        let peaks: Vec<f32> =
-            samples.chunks(samples.len().div_ceil(PEAKS)).map(|c| c.iter().fold(0f32, |m, s| m.max(s.abs()))).collect();
+        let peaks: Vec<f32> = samples.chunks(samples.len().div_ceil(PEAKS)).map(|c| c.iter().fold(0f32, |m, s| m.max(s.abs()))).collect();
         let top = peaks.iter().copied().fold(f32::EPSILON, f32::max);
         Clip { samples: samples.into(), peaks: peaks.iter().map(|p| p / top).collect() }
     }
@@ -259,8 +256,7 @@ impl BeeperGuiApp {
             Msg::Transcribe(mid, again, language) => return self.transcribe(mid, again, language, false),
             Msg::Transcribed(mid, language, Ok(text)) => {
                 self.audio.transcribing.remove(&mid);
-                let t =
-                    Transcription { transcription: text, engine: "openai-whisper".into(), language: Some(language) };
+                let t = Transcription { transcription: text, engine: "openai-whisper".into(), language: Some(language) };
                 self.store.write().transcribed(&mid, t);
                 return Task::none();
             }
@@ -273,8 +269,7 @@ impl BeeperGuiApp {
                 self.confirm = None;
                 // Without a voice note, the notice asks for Talk to Type.
                 let asked = self.audio.asked.take();
-                let set =
-                    self.handle(UiMessage::Settings(settings::Msg::SetPref("transcribeWithOpenai", u8::from(on))));
+                let set = self.handle(UiMessage::Settings(settings::Msg::SetPref("transcribeWithOpenai", u8::from(on))));
                 let next = match asked {
                     _ if !on => Task::none(),
                     Some((mid, again, language)) => self.transcribe(mid, again, language, false),
@@ -311,8 +306,7 @@ impl BeeperGuiApp {
                 }
             },
             Msg::Skip(forward) => {
-                let (chat, id, url) =
-                    self.neighbor(&self.store.read(), forward).expect("only a present neighbor skips");
+                let (chat, id, url) = self.neighbor(&self.store.read(), forward).expect("only a present neighbor skips");
                 return self.voice(Msg::Toggle(chat, id, url));
             }
             Msg::Close => {
@@ -392,9 +386,7 @@ impl BeeperGuiApp {
                 drop(st);
                 return match next {
                     Some((chat, id, url)) => self.voice(Msg::Toggle(chat, id, url)),
-                    None => {
-                        Task::perform(async { tokio::time::sleep(HIDE_AFTER).await }, |()| UiMessage::Voice(Msg::Hide))
-                    }
+                    None => Task::perform(async { tokio::time::sleep(HIDE_AFTER).await }, |()| UiMessage::Voice(Msg::Hide)),
                 };
             }
         }
@@ -447,9 +439,7 @@ impl BeeperGuiApp {
     /// The cursor moves and the release while the global player is pressed.
     pub(crate) fn audio_drag(&self) -> Option<Subscription<UiMessage>> {
         self.audio.grab.map(|_| {
-            iced::event::listen_with(|e, _, _| {
-                Some(UiMessage::Voice(crate::drag_event(&e)?.map_or(Msg::Drop, |p| Msg::Drag(p.y))))
-            })
+            iced::event::listen_with(|e, _, _| Some(UiMessage::Voice(crate::drag_event(&e)?.map_or(Msg::Drop, |p| Msg::Drag(p.y)))))
         })
     }
 
@@ -463,8 +453,7 @@ impl BeeperGuiApp {
 
     /// Whether `a` shows as an audio player: audio that is not known to fail decoding.
     pub(crate) fn playable(&self, a: &Attachment) -> bool {
-        a.attachment_type == "audio"
-            && a.src_url.as_ref().is_some_and(|u| !matches!(self.audio.clips.get(u), Some(Some(Err(_)))))
+        a.attachment_type == "audio" && a.src_url.as_ref().is_some_and(|u| !matches!(self.audio.clips.get(u), Some(Some(Err(_)))))
     }
 
     /// Desktop's `.audio-player`, in the bubble colors, with the time `ts` in its color.
@@ -500,15 +489,12 @@ impl BeeperGuiApp {
             None => (None, contents + ts.as_ref().map_or(0.0, |_| 8.0 + ts_w)),
             Some(t) => {
                 let q = format!("\"{}\"", t.transcription);
-                let (all, shown) = (
-                    clamped(&q, QUOTE_W, usize::MAX, 13.0, Weight::Normal),
-                    clamped(&q, QUOTE_W, QUOTE_LINES, 13.0, Weight::Normal),
-                );
+                let (all, shown) =
+                    (clamped(&q, QUOTE_W, usize::MAX, 13.0, Weight::Normal), clamped(&q, QUOTE_W, QUOTE_LINES, 13.0, Weight::Normal));
                 let (over, open) = (all != shown, self.audio.more.contains(&m.id));
                 let float = ts.clone().filter(|_| !over || open);
                 let nbsp = text_width("\u{a0}", 13.0, Weight::Normal);
-                let pad =
-                    float.as_ref().map_or(String::new(), |_| "\u{a0}".repeat(((ts_w + 4.0) / nbsp).ceil() as usize));
+                let pad = float.as_ref().map_or(String::new(), |_| "\u{a0}".repeat(((ts_w + 4.0) / nbsp).ceil() as usize));
                 let body = format!("{}{pad}", if over && !open { &shown } else { &all });
                 let w = text_width(&body, 13.0, Weight::Normal).min(QUOTE_W);
                 let body = txt(body, 13.0).color(quote_fg).wrapping(Wrapping::WordOrGlyph);
@@ -525,8 +511,7 @@ impl BeeperGuiApp {
             }
         };
         let ts = ts.filter(|_| quote.is_none()).map(stamp);
-        let wave_w = (WAVE_W + inner - contents - ts.as_ref().map_or(0.0, |_| 8.0 + ts_w)
-            + text_width(&total, 11.0, Weight::Normal)
+        let wave_w = (WAVE_W + inner - contents - ts.as_ref().map_or(0.0, |_| 8.0 + ts_w) + text_width(&total, 11.0, Weight::Normal)
             - text_width(&time, 11.0, Weight::Normal)
             - rate_w)
             .max(0.0);
@@ -556,9 +541,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_rate_menu(&self) -> El<'_> {
         let p = &self.pal;
         let lead = |on: bool| Some(container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into());
-        let items = RATES.map(|r| {
-            menu_item(p, lead(self.audio.rate == r), format!("{r}x"), "", Some(UiMessage::Voice(Msg::Rate(r))))
-        });
+        let items = RATES.map(|r| menu_item(p, lead(self.audio.rate == r), format!("{r}x"), "", Some(UiMessage::Voice(Msg::Rate(r)))));
         crate::menu_card(p, Column::with_children(items), rate_menu_w()).into()
     }
 
@@ -637,8 +620,7 @@ impl BeeperGuiApp {
             b.on_press(UiMessage::SelectChat(c.id.clone()))
         });
         let wave_w = w - 16.0 - avatar.as_ref().map_or(0.0, |_| 28.0) - if w > 101.0 { 60.0 } else { 20.0 } - time_w;
-        let wave = (w > 249.0)
-            .then(|| waveform([&t.chat, &t.mid, &t.url], clip, pos, wave_w.max(35.0), (p.on_secondary, p.strong)));
+        let wave = (w > 249.0).then(|| waveform([&t.chat, &t.mid, &t.url], clip, pos, wave_w.max(35.0), (p.on_secondary, p.strong)));
         let gap = || Space::new().width(Fill);
         let line = row![].push(avatar).push(gap()).push(buttons).push(gap()).push(wave).push(gap()).push(time);
         let pill = container(line.align_y(Center)).width(w).padding([6, 8]).style(fill_box(p.card, 24.0));
@@ -656,9 +638,7 @@ impl BeeperGuiApp {
 }
 
 /// WaveSurfer's bars of `c` at `pos` seconds, `width` wide in the wave and progress colors, with a hidden scrubber.
-fn waveform<'a>(
-    [chat, mid, url]: [&str; 3], c: &Clip, pos: f32, width: f32, (wave, progress): (Color, Color),
-) -> El<'a> {
+fn waveform<'a>([chat, mid, url]: [&str; 3], c: &Clip, pos: f32, width: f32, (wave, progress): (Color, Color)) -> El<'a> {
     let heights = bars(&c.peaks, width, BUBBLE_BARS);
     let done = pos / c.secs() * heights.len() as f32;
     let bars = heights.iter().enumerate().fold(Row::new().spacing(2).align_y(Center), |r, (k, &h)| {
@@ -666,13 +646,11 @@ fn waveform<'a>(
         r.push(container(Space::new()).width(2).height(h).style(fill_box(color, 2.0)))
     });
     let [chat, mid, url] = [chat, mid, url].map(str::to_string);
-    let seek = slider(0.0..=1.0, pos / c.secs(), move |v| {
-        UiMessage::Voice(Msg::Seek(chat.clone(), mid.clone(), url.clone(), v))
-    })
-    .step(0.001_f32)
-    .height(20)
-    .on_release(UiMessage::Voice(Msg::SeekEnd))
-    .style(hidden_slider);
+    let seek = slider(0.0..=1.0, pos / c.secs(), move |v| UiMessage::Voice(Msg::Seek(chat.clone(), mid.clone(), url.clone(), v)))
+        .step(0.001_f32)
+        .height(20)
+        .on_release(UiMessage::Voice(Msg::SeekEnd))
+        .style(hidden_slider);
     stack![container(bars).center_y(20), seek].width(width).into()
 }
 
@@ -781,8 +759,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         // A shown message can get a transcription or leave the store before this frame.
         let open = |mid: &String| st.loaded(mid).is_some_and(|m| m.attachments[0].transcription.is_none());
-        let asked: Vec<_> =
-            asked.into_iter().filter(|mid| !self.audio.transcribing.contains_key(mid) && open(mid)).collect();
+        let asked: Vec<_> = asked.into_iter().filter(|mid| !self.audio.transcribing.contains_key(mid) && open(mid)).collect();
         drop(st);
         Task::batch(asked.into_iter().map(|mid| self.transcribe(mid, false, None, true)).collect::<Vec<_>>())
     }
@@ -802,12 +779,7 @@ impl BeeperGuiApp {
         let can = st.feature("voice-transcription").on && sent && !done && state.is_none_or(|s| s.1);
         // Desktop's `autoTranscribeVoiceNote` runs when a voice note shows.
         let s = &st.settings;
-        if can
-            && state.is_none()
-            && a.is_voice_note == Some(true)
-            && s.on("autoTranscribe")
-            && s.on("transcribeWithOpenai")
-        {
+        if can && state.is_none() && a.is_voice_note == Some(true) && s.on("autoTranscribe") && s.on("transcribeWithOpenai") {
             self.wants.ask(&self.wants.transcribe, m.id.as_str());
         }
         let free = st.features.free_uses("voice-transcription");
@@ -912,9 +884,8 @@ mod tests {
     fn transcripts_like_desktop() {
         use beeper_core::models::Transcription;
         use iced_test::selector::{Candidate, Target};
-        let quote = |c: Candidate<'_>| {
-            Some(Target::from(c)).filter(|t| matches!(t, Target::Text { content, .. } if content.starts_with('"')))
-        };
+        let quote =
+            |c: Candidate<'_>| Some(Target::from(c)).filter(|t| matches!(t, Target::Text { content, .. } if content.starts_with('"')));
         let content = |t: Target| match t {
             Target::Text { content, .. } => content,
             _ => unreachable!("the selector finds texts"),
@@ -923,13 +894,11 @@ mod tests {
         let _ = app.update(UiMessage::SelectChat("!wa_eric:beeper.com".into()));
         let mut sim = iced_test::simulator(app.view_main());
         let text = content(sim.click(quote).expect("the transcript shows in quotes"));
-        let want =
-            "\"Native Rust + Iced GPU rendering makes Beeper feel instantaneous across Linux, macOS, and Windows.\"";
+        let want = "\"Native Rust + Iced GPU rendering makes Beeper feel instantaneous across Linux, macOS, and Windows.\"";
         assert!(text.strip_prefix(want).is_some_and(|pad| pad.chars().all(|c| c == '\u{a0}') && !pad.is_empty()));
         assert!(sim.into_messages().all(|m| !matches!(m, UiMessage::Voice(_))), "the click does nothing");
 
-        let long =
-            Transcription { transcription: ["word"; 600].join(" "), engine: "openai-whisper".into(), language: None };
+        let long = Transcription { transcription: ["word"; 600].join(" "), engine: "openai-whisper".into(), language: None };
         app.store.write().set_transcription("msg_1000c", long);
         let mut sim = iced_test::simulator(app.view_main());
         assert!(content(sim.find(quote).unwrap()).ends_with('…'), "the transcript is clamped");
@@ -976,11 +945,7 @@ mod tests {
         let _ = app.update(UiMessage::Voice(Msg::Transcribed(id.clone(), "de".into(), Ok("Hallo".into()))));
         let mut st = app.store.write();
         let i = st.find_message(&id).unwrap();
-        let want = Transcription {
-            transcription: "Hallo".into(),
-            engine: "openai-whisper".into(),
-            language: Some("de".into()),
-        };
+        let want = Transcription { transcription: "Hallo".into(), engine: "openai-whisper".into(), language: Some("de".into()) };
         assert_eq!(st.messages[i].attachments[0].transcription, Some(want));
         drop(st);
         assert!(!has(&app, "Error transcribing audio") && !has(&app, "Transcribe"));
@@ -1039,11 +1004,7 @@ mod tests {
     #[test]
     fn whisper_files_like_desktop() {
         let ext = |mime: Option<&str>, name: Option<&str>| {
-            let a = Attachment {
-                mime_type: mime.map(str::to_string),
-                file_name: name.map(str::to_string),
-                ..Default::default()
-            };
+            let a = Attachment { mime_type: mime.map(str::to_string), file_name: name.map(str::to_string), ..Default::default() };
             audio_ext(&a)
         };
         assert_eq!(ext(Some("audio/ogg; codecs=opus"), Some("a.bin")), ".ogg");
@@ -1051,8 +1012,7 @@ mod tests {
         assert_eq!(ext(Some("audio/amr"), None), ".amr");
         assert_eq!(ext(None, None), "");
         assert_eq!(whisper_audio(b"OggS".to_vec(), ".ogg"), Ok(b"OggS".to_vec()));
-        let toast =
-            "Unsupported file extension (.amr) for OpenAI Whisper, and this audio can't be transcribed another way.";
+        let toast = "Unsupported file extension (.amr) for OpenAI Whisper, and this audio can't be transcribed another way.";
         assert_eq!(whisper_audio(Vec::new(), ".amr"), Err(toast.into()));
         let big = whisper_audio(vec![0; WHISPER_MAX + 1], "").unwrap_err();
         assert!(

@@ -49,8 +49,7 @@ const BRIDGE_TINTS: [(&str, &str); 23] = [
     ("matrix", "#0eb3ef"),
 ];
 
-const SENDER_COLORS: [&str; 8] =
-    ["#63c174", "#f1a10d", "#f76190", "#bf7af0", "#00c2d7", "#f65cb6", "#849dff", "#0ac5b3"];
+const SENDER_COLORS: [&str; 8] = ["#63c174", "#f1a10d", "#f76190", "#bf7af0", "#00c2d7", "#f65cb6", "#849dff", "#0ac5b3"];
 
 const RAIL: &str = "▎";
 
@@ -759,26 +758,19 @@ pub fn chat_detail(chat: &Value) -> El {
         chat_rail_color(chat, unread, mentions),
         &js_string(&chat["title"]),
         vec![
-            network
-                .map_or(El::Empty, |n| t(format!("  {}", n.to_lowercase()), bridge_color(Some(n)).unwrap_or(SUBTLE))),
+            network.map_or(El::Empty, |n| t(format!("  {}", n.to_lowercase()), bridge_color(Some(n)).unwrap_or(SUBTLE))),
             mark(flag(chat, "isPinned", "pinned"), "★ pinned", WARN),
             mark(flag(chat, "isMuted", "muted"), "◐ muted", MAGENTA),
             mark(flag(chat, "isArchived", "archived"), "◇ archived", SUBTLE),
             mark(flag(chat, "isLowPriority", "lowPriority"), "◌ low-priority", SUBTLE),
         ],
     );
-    let unread_text = format!(
-        "{}{}",
-        js_num(unread),
-        if mentions > 0.0 { format!(" ({} @)", js_num(mentions)) } else { String::new() }
-    );
+    let unread_text = format!("{}{}", js_num(unread), if mentions > 0.0 { format!(" ({} @)", js_num(mentions)) } else { String::new() });
     let people = participants_summary(participants).unwrap_or_else(|| items.len().to_string());
     let list = when(!items.is_empty(), || {
         let rows = items.iter().take(20).map(|p| {
             let id = sv(&p["id"]);
-            let name = sv(&p["fullName"])
-                .or(sv(&p["username"]))
-                .map_or_else(|| short_id(&js_string(&p["id"])), str::to_string);
+            let name = sv(&p["fullName"]).or(sv(&p["username"])).map_or_else(|| short_id(&js_string(&p["id"])), str::to_string);
             let you = when(truthy(&p["isSelf"]), || t("  you", MINE));
             row(vec![t("·", sender_color(id)), plain("  "), t(name, TEXT), you]).ml(2)
         });
@@ -797,24 +789,19 @@ pub fn chat_detail(chat: &Value) -> El {
         list,
         row(vec![t("id    ", SUBTLE), t(js_string(&chat["id"]), TEXT)]).ml(2).mt(1),
         local_id(chat).map_or(El::Empty, |l| row(vec![t("local ", SUBTLE), t(l, TEXT)]).ml(2)),
-        when(truthy(&chat["accountID"]), || {
-            row(vec![t("acct  ", SUBTLE), t(js_string(&chat["accountID"]), MUTED)]).ml(2)
-        }),
+        when(truthy(&chat["accountID"]), || row(vec![t("acct  ", SUBTLE), t(js_string(&chat["accountID"]), MUTED)]).ml(2)),
     ])
 }
 
 pub fn message_row(m: &Value) -> El {
     let mine = truthy(&m["isSender"]);
     let sender_id = sv(&m["senderID"]);
-    let sender =
-        sv(&m["senderName"]).map(str::to_string).or(sender_id.map(short_id)).unwrap_or_else(|| "unknown".into());
+    let sender = sv(&m["senderName"]).map(str::to_string).or(sender_id.map(short_id)).unwrap_or_else(|| "unknown".into());
     let status = if m["sendStatus"].is_object() { &m["sendStatus"] } else { &Value::Null };
     let failure = truthy(&status["status"]) && status["status"] != "SUCCESS";
     let (attachments, reactions) = (arr(&m["attachments"]), arr(&m["reactions"]));
     let rail_color = if mine { MINE } else { sender_color(sender_id) };
-    let kind = when(!m["type"].is_null() && m["type"] != "TEXT", || {
-        t(format!("  {}", js_string(&m["type"]).to_lowercase()), MAGENTA)
-    });
+    let kind = when(!m["type"].is_null() && m["type"] != "TEXT", || t(format!("  {}", js_string(&m["type"]).to_lowercase()), MAGENTA));
     let head = row(vec![
         rail(rail_color),
         plain(" "),
@@ -897,10 +884,8 @@ fn account_row(a: &Value) -> El {
     } else {
         "○"
     };
-    let handles = compact(&[
-        truthy(&a["username"]).then(|| format!("@{}", js_string(&a["username"]))),
-        sv(&a["userID"]).map(str::to_string),
-    ]);
+    let handles =
+        compact(&[truthy(&a["username"]).then(|| format!("@{}", js_string(&a["username"]))), sv(&a["userID"]).map(str::to_string)]);
     col(vec![
         head(
             tint.unwrap_or(PRIMARY),
@@ -967,9 +952,7 @@ fn bridge_row(b: &Value) -> El {
             tone,
             sv(&b["displayName"]).unwrap_or(&id),
             vec![
-                network.map_or(El::Empty, |n| {
-                    t(format!("  {}", n.to_lowercase()), bridge_color(Some(n)).unwrap_or(MUTED))
-                }),
+                network.map_or(El::Empty, |n| t(format!("  {}", n.to_lowercase()), bridge_color(Some(n)).unwrap_or(MUTED))),
                 sv(&b["provider"]).map_or(El::Empty, |p| t(format!("  {p}"), SUBTLE)),
                 status.map_or(El::Empty, |s| t(format!("  {}", s.replace('_', " ")), tone)),
             ],
@@ -1025,8 +1008,7 @@ fn asset_row(a: &Value) -> El {
     let title = ["fileName", "uploadID", "srcURL"].iter().find_map(|k| sv(&a[*k])).unwrap_or("asset");
     let meta = compact(&[
         a["fileSize"].as_f64().map(format_bytes),
-        (truthy(&a["width"]) && truthy(&a["height"]))
-            .then(|| format!("{}×{}", js_string(&a["width"]), js_string(&a["height"]))),
+        (truthy(&a["width"]) && truthy(&a["height"])).then(|| format!("{}×{}", js_string(&a["width"]), js_string(&a["height"]))),
         a["duration"].as_f64().map(format_duration),
     ]);
     let error = truthy(&a["error"]);
@@ -1071,10 +1053,9 @@ fn info_card(info: &Value) -> El {
 
 fn doctor_card(record: &Map<String, Value>) -> El {
     let checks: Vec<(bool, String, String)> = match &record["checks"] {
-        Value::Array(list) => list
-            .iter()
-            .map(|c| (truthy(&c["ok"]), js_string(&c["name"]), sv(&c["detail"]).unwrap_or("").into()))
-            .collect(),
+        Value::Array(list) => {
+            list.iter().map(|c| (truthy(&c["ok"]), js_string(&c["name"]), sv(&c["detail"]).unwrap_or("").into())).collect()
+        }
         Value::Object(map) => map
             .iter()
             .map(|(name, v)| {
@@ -1097,8 +1078,7 @@ fn doctor_card(record: &Map<String, Value>) -> El {
         row(vec![t(glyph, color), plain("  "), t(format!("{name:<w$}", w = longest + 2), TEXT), detail]).ml(2)
     });
     let badge = if ok { t("✓ healthy", MINE) } else { t("✗ attention needed", DANGER) };
-    let tips = [("setup", "continue target setup"), ("status", "verify the API endpoint")]
-        .map(|(c, h)| (format!("{BIN} {c}"), h));
+    let tips = [("setup", "continue target setup"), ("status", "verify the API endpoint")].map(|(c, h)| (format!("{BIN} {c}"), h));
     col(vec![
         head(if ok { MINE } else { DANGER }, "Doctor", vec![plain("  "), badge]),
         col(rows.collect()).mt(1),
@@ -1132,19 +1112,12 @@ fn readiness_card(data: &Value) -> El {
     let actions: Vec<String> = arr(&readiness["actions"]).iter().map(js_string).collect();
     let target_rows = target.map_or(vec![], |tg| {
         let name = ["id", "name"].iter().map(|k| &tg[*k]).find(|v| !v.is_null()).map_or("selected".into(), js_string);
-        vec![
-            kv("target", &name, TEXT),
-            when(truthy(&tg["baseURL"]), || kv("endpoint", &js_string(&tg["baseURL"]), LINK)),
-        ]
+        vec![kv("target", &name, TEXT), when(truthy(&tg["baseURL"]), || kv("endpoint", &js_string(&tg["baseURL"]), LINK))]
     });
     let tips: Vec<(String, &str)> = actions.iter().take(4).map(|c| (format!("{BIN} {c}"), "")).collect();
     let state_color = if ready { MINE } else { WARN };
     col([
-        vec![head(
-            state_color,
-            if ready { "Ready" } else { "Not ready" },
-            vec![t(format!("  {}", state.replace('-', " ")), state_color)],
-        )],
+        vec![head(state_color, if ready { "Ready" } else { "Not ready" }, vec![t(format!("  {}", state.replace('-', " ")), state_color)])],
         target_rows,
         vec![
             sv(&readiness["message"]).map_or(El::Empty, |m| kv("next", m, if ready { MUTED } else { TEXT })),
@@ -1195,8 +1168,7 @@ fn config_value(key: &str, value: &Value) -> El {
 pub fn config_view(data: &Map<String, Value>) -> El {
     let entries: Vec<(&String, &Value)> = data.iter().filter(|(_, v)| !v.is_null()).collect();
     if entries.is_empty() {
-        let e = Empty::new("No config set", "The CLI is using defaults.")
-            .try_("config set baseURL <url>", "override the API endpoint");
+        let e = Empty::new("No config set", "The CLI is using defaults.").try_("config set baseURL <url>", "override the API endpoint");
         return empty_state(&e);
     }
     let w = entries.iter().map(|(k, _)| k.len()).max().expect("a config entry") + 2;
@@ -1208,13 +1180,10 @@ pub fn config_view(data: &Map<String, Value>) -> El {
 }
 
 fn generic_row(item: &Map<String, Value>) -> El {
-    let title =
-        ["title", "displayName", "name", "id", "messageID"].iter().find_map(|k| item.get(*k).filter(|v| !v.is_null()));
+    let title = ["title", "displayName", "name", "id", "messageID"].iter().find_map(|k| item.get(*k).filter(|v| !v.is_null()));
     let scalars: Vec<(&String, &Value)> = item
         .iter()
-        .filter(|(k, v)| {
-            !v.is_null() && !["title", "displayName", "name"].contains(&k.as_str()) && !v.is_object() && !v.is_array()
-        })
+        .filter(|(k, v)| !v.is_null() && !["title", "displayName", "name"].contains(&k.as_str()) && !v.is_object() && !v.is_array())
         .collect();
     let w = scalars.iter().map(|(k, _)| k.chars().count()).max().map_or(0, |n| n + 2);
     let rows = scalars.iter().map(|(k, v)| row(vec![t(format!("{k:<w$}"), SUBTLE), t(js_string(v), TEXT)]).ml(2));
@@ -1293,25 +1262,14 @@ fn kind(r: &Map<String, Value>) -> &'static str {
     let obj = |k: &str| r.get(k).is_some_and(|v| v.is_object() || v.is_array());
     let has = |k: &str| r.get(k).is_some_and(truthy);
     match () {
-        _ if is("id") && is("accountID") && is("title") && n("unreadCount") => {
-            match has("participants") && obj("participants") {
-                true => "chatDetail",
-                false => "chat",
-            }
-        }
+        _ if is("id") && is("accountID") && is("title") && n("unreadCount") => match has("participants") && obj("participants") {
+            true => "chatDetail",
+            false => "chat",
+        },
         _ if is("id") && is("chatID") && is("senderID") && is("timestamp") => "message",
-        _ if is("chatID")
-            && is("pendingMessageID")
-            && (r.get("accepted") == Some(&Value::Bool(true)) || is("state")) =>
-        {
-            "sendResult"
-        }
+        _ if is("chatID") && is("pendingMessageID") && (r.get("accepted") == Some(&Value::Bool(true)) || is("state")) => "sendResult",
         _ if is("id") && ["fullName", "username", "email", "phoneNumber"].iter().any(|k| is(k)) => "user",
-        _ if is("id")
-            && is("provider")
-            && is("status")
-            && (is("displayName") || r.get("accounts").is_some_and(Value::is_array)) =>
-        {
+        _ if is("id") && is("provider") && is("status") && (is("displayName") || r.get("accounts").is_some_and(Value::is_array)) => {
             "bridge"
         }
         _ if r.get("accountID").filter(|v| !v.is_null()).or(r.get("id")).is_some_and(Value::is_string)
@@ -1358,9 +1316,7 @@ fn oauth_card(user: &Value) -> El {
     col(vec![
         head(PRIMARY, &name.map_or_else(|| js_string(&user["sub"]), str::to_string), vec![t("  you", SUBTLE)]),
         when(truthy(&user["email"]), || kv("email", &js_string(&user["email"]), TEXT)),
-        when(truthy(&user["preferred_username"]), || {
-            kv("username", &format!("@{}", js_string(&user["preferred_username"])), MUTED)
-        }),
+        when(truthy(&user["preferred_username"]), || kv("username", &format!("@{}", js_string(&user["preferred_username"])), MUTED)),
         when(truthy(&user["sub"]), || kv("sub", &js_string(&user["sub"]), SUBTLE)),
     ])
 }
@@ -1396,14 +1352,10 @@ mod tests {
             wrap_hard(&format!("Warning: messages list {id} is not a beeper command."), 74),
             [format!("Warning: messages list {id} is not"), " a beeper command.".into()]
         );
-        let words =
-            "Warning: chats show one two three four five six seven eight nine ten eleven is not a beeper command.";
+        let words = "Warning: chats show one two three four five six seven eight nine ten eleven is not a beeper command.";
         assert_eq!(
             wrap_hard(words, 74),
-            [
-                "Warning: chats show one two three four five six seven eight nine ten ",
-                "eleven is not a beeper command."
-            ]
+            ["Warning: chats show one two three four five six seven eight nine ten ", "eleven is not a beeper command."]
         );
         let a = "a".repeat(85);
         assert_eq!(
@@ -1437,13 +1389,12 @@ mod tests {
     #[test]
     fn rows_shrink_and_round_like_yoga() {
         // The doctor row of upstream: the long detail shrinks the glyph to nothing and cuts the name.
-        let detail = "{\"reachable\":true,\"version\":\"4.3.308\",\"bundleID\":\"com.automattic.beeper.desktop\",\"actualType\":\"desktop\"}".to_string();
+        let detail =
+            "{\"reachable\":true,\"version\":\"4.3.308\",\"bundleID\":\"com.automattic.beeper.desktop\",\"actualType\":\"desktop\"}"
+                .to_string();
         let el = row(vec![t("✓", MINE), plain("  "), t("target     ", TEXT), t(detail, MUTED)]).ml(2);
         let out = text(&el);
-        assert_eq!(
-            out.lines().next(),
-            Some("    target   {\"reachable\":true,\"version\":\"4.3.308\",\"bundleID\":\"com.automattic.be")
-        );
+        assert_eq!(out.lines().next(), Some("    target   {\"reachable\":true,\"version\":\"4.3.308\",\"bundleID\":\"com.automattic.be"));
         assert_eq!(out.lines().nth(1), Some("             eper.desktop\",\"actualType\":\"desktop\"}"));
     }
 
@@ -1464,11 +1415,12 @@ mod tests {
     fn generic_rows_and_empty_states_match_upstream() {
         let version = json!({ "name": "@beeper/cli", "version": "0.6.2" });
         assert_eq!(text(&value(&version)), "▎ @beeper/cli\n  version  0.6.2\n");
-        let e = Empty::new("No config set", "The CLI is using defaults.")
-            .try_("config set baseURL <url>", "override the API endpoint");
+        let e = Empty::new("No config set", "The CLI is using defaults.").try_("config set baseURL <url>", "override the API endpoint");
         assert_eq!(
             text(&empty_state(&e)),
-            format!("▎ No config set\n  The CLI is using defaults.\n\nTry\n  › {BIN} config set baseURL <url>  — override the API endpoint")
+            format!(
+                "▎ No config set\n  The CLI is using defaults.\n\nTry\n  › {BIN} config set baseURL <url>  — override the API endpoint"
+            )
         );
     }
 }

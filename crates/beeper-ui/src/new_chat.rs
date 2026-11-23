@@ -90,17 +90,11 @@ impl BeeperGuiApp {
                 }
                 let st = self.store.read();
                 let c = st.contacts.iter().find(|u| u.id == id).expect("a listed contact").clone();
-                let accounts: Vec<String> =
-                    rail_accounts(&st).into_iter().filter(|a| self.can(a, "create_dm")).collect();
+                let accounts: Vec<String> = rail_accounts(&st).into_iter().filter(|a| self.can(a, "create_dm")).collect();
                 drop(st);
                 let ids = (c.phone_number.as_deref(), c.email.as_deref(), c.username.as_deref());
                 let known = c.mxid.as_ref().zip(beeper_core::cloud::contact_account(&id)).map(|(mxid, account)| {
-                    let user = User {
-                        id: mxid.clone(),
-                        full_name: c.full_name.clone(),
-                        img_url: c.img_url.clone(),
-                        ..Default::default()
-                    };
+                    let user = User { id: mxid.clone(), full_name: c.full_name.clone(), img_url: c.img_url.clone(), ..Default::default() };
                     (account, user)
                 });
                 let (nets, tasks) = self.resolve_identifiers(&id, &accounts, ids, known);
@@ -112,8 +106,7 @@ impl BeeperGuiApp {
                 if q != self.new_chat_query.trim() || q.is_empty() {
                     return Task::none();
                 }
-                let only =
-                    self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).and_then(|d| d.users.first());
+                let only = self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).and_then(|d| d.users.first());
                 let only = only.map(|(a, _)| a.clone()).or_else(|| self.new_chat_account.clone());
                 let search = self.search_users(q, only);
                 let phone = typed_phone(q).then(|| fmt_phone(&phone_digits(q)));
@@ -124,15 +117,13 @@ impl BeeperGuiApp {
                     return search;
                 }
                 let st = self.store.read();
-                let only =
-                    self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).and_then(|d| d.users.first());
+                let only = self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).and_then(|d| d.users.first());
                 let only = only.map(|(a, _)| a.clone()).or_else(|| self.new_chat_account.clone());
                 let listed = rail_accounts(&st).into_iter().filter(|a| self.can(a, "create_dm"));
                 let accounts: Vec<String> = listed.filter(|a| only.as_ref().is_none_or(|o| o == a)).collect();
                 drop(st);
                 let key = format!("lookup:{q}");
-                let (nets, tasks) =
-                    self.resolve_identifiers(&key, &accounts, (phone.as_deref(), email, username), None);
+                let (nets, tasks) = self.resolve_identifiers(&key, &accounts, (phone.as_deref(), email, username), None);
                 self.new_chat_lookup = Some((key, nets));
                 return Task::batch([search, tasks]);
             }
@@ -156,10 +147,7 @@ impl BeeperGuiApp {
             Msg::PickUser(account, user) => {
                 let n = self.creating_chat.expect("an open draft");
                 let group = self.can_group(&account);
-                let max = self
-                    .caps
-                    .get(&account)
-                    .and_then(|c| c["group_creation"]["group"]["participants"]["max_length"].as_u64());
+                let max = self.caps.get(&account).and_then(|c| c["group_creation"]["group"]["participants"]["max_length"].as_u64());
                 let draft = self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft");
                 if !group {
                     draft.users = vec![(account, *user)];
@@ -168,8 +156,7 @@ impl BeeperGuiApp {
                 } else if let Some(max) = max.filter(|&m| m > 0 && draft.users.len() as u64 >= m) {
                     // Desktop's `C$t` toast.
                     let max = usize::try_from(max).expect("a participant limit fits in usize");
-                    let (one, many) =
-                        ("%1$s groups can have up to %2$d person", "%1$s groups can have up to %2$d people");
+                    let (one, many) = ("%1$s groups can have up to %2$d person", "%1$s groups can have up to %2$d people");
                     self.show(Toast::new(trn(one, many, max, &[&network_label(&account), &max])));
                     return Task::none();
                 } else {
@@ -206,8 +193,7 @@ impl BeeperGuiApp {
                     // Desktop's `createChatFromDraft` sends the name and the avatar only when the bridge allows a name.
                     let named = self.caps[&account]["group_creation"]["group"]["name"]["allowed"] == true;
                     let title = if named { draft.title.clone() } else { String::new() };
-                    let photo =
-                        draft.photo.as_ref().filter(|_| named).map(|(bytes, mime, _)| (bytes.clone(), mime.clone()));
+                    let photo = draft.photo.as_ref().filter(|_| named).map(|(bytes, mime, _)| (bytes.clone(), mime.clone()));
                     self.status_banner = tr("Creating group chat...").into();
                     self.sticky_banner = Some(self.status_banner.clone());
                     let store = self.store.clone();
@@ -221,9 +207,7 @@ impl BeeperGuiApp {
                         }
                         Ok(room)
                     };
-                    return Task::perform(create, move |r| {
-                        UiMessage::NewChat(Msg::GroupCreated(n, account.clone(), r))
-                    });
+                    return Task::perform(create, move |r| UiMessage::NewChat(Msg::GroupCreated(n, account.clone(), r)));
                 }
                 return self.open_dm(account, user, Some(n), None);
             }
@@ -234,9 +218,7 @@ impl BeeperGuiApp {
             }
             Msg::AvatarPicked(n, Ok(paths)) => {
                 let Some(path) = paths.into_iter().next() else { return Task::none() };
-                return Task::perform(portal::load_off_thread(path), move |r| {
-                    UiMessage::NewChat(Msg::AvatarLoaded(n, r))
-                });
+                return Task::perform(portal::load_off_thread(path), move |r| UiMessage::NewChat(Msg::AvatarLoaded(n, r)));
             }
             Msg::AvatarPicked(_, Err(e)) | Msg::AvatarLoaded(_, Err(e)) => self.fail(Toast::new(e)),
             Msg::AvatarLoaded(n, Ok(m)) => match round_avatar(&m.bytes) {
@@ -261,8 +243,7 @@ impl BeeperGuiApp {
                 self.creating_chat = None;
                 let st = self.store.read();
                 let rest = self.pins_and_rows(&st).1.into_iter().map(|c| UiMessage::SelectChat(c.id.clone()));
-                let items: Vec<_> =
-                    self.new_chats.iter().map(|d| UiMessage::NewChat(Msg::Select(d.id))).chain(rest).collect();
+                let items: Vec<_> = self.new_chats.iter().map(|d| UiMessage::NewChat(Msg::Select(d.id))).chain(rest).collect();
                 drop(st);
                 if let Some(next) = items.get(i).or(i.checked_sub(1).and_then(|j| items.get(j))) {
                     return self.update(next.clone());
@@ -312,10 +293,7 @@ pub(crate) fn person_key(account_id: &str, u: &User) -> String {
 
 /// Desktop's `pb`: the name that sorts a person.
 pub(crate) fn person_name(u: &User) -> &str {
-    [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email]
-        .into_iter()
-        .find_map(|s| s.as_deref())
-        .unwrap_or(&u.id)
+    [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email].into_iter().find_map(|s| s.as_deref()).unwrap_or(&u.id)
 }
 
 /// Desktop's `Chats` category of New Chat: the people of the chats of the accounts, once per bridge and
@@ -331,10 +309,8 @@ pub(crate) fn chat_people(st: &BeeperStore, accounts: &[String], only: Option<&s
             }
         }
     }
-    let fields =
-        |u: &User| [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email].map(Clone::clone);
-    let matches =
-        |u: &User| fields(u).into_iter().flatten().chain([u.id.clone()]).any(|f| f.to_lowercase().contains(q));
+    let fields = |u: &User| [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email].map(Clone::clone);
+    let matches = |u: &User| fields(u).into_iter().flatten().chain([u.id.clone()]).any(|f| f.to_lowercase().contains(q));
     let mut people: Vec<(String, User)> =
         found.into_values().filter(|(_, u)| matches(u)).map(|(c, u)| (c.account_id.clone(), u.clone())).collect();
     let rank = |u: &User| {
@@ -416,9 +392,7 @@ impl BeeperGuiApp {
             (false, _) => users.len() == 1,
             (true, None) => false,
             (true, Some(g)) => {
-                let fewest = g["participants"]["min_length"]
-                    .as_u64()
-                    .unwrap_or(u64::from(g["participants"]["required"] == true));
+                let fewest = g["participants"]["min_length"].as_u64().unwrap_or(u64::from(g["participants"]["required"] == true));
                 let most = g["participants"]["max_length"].as_u64().filter(|&m| m > 0).unwrap_or(u64::MAX);
                 let named = g["name"]["required"] != true || draft.is_some_and(|d| !d.title.trim().is_empty());
                 let pictured = g["avatar"]["required"] != true || draft.is_some_and(|d| d.photo.is_some());
@@ -441,19 +415,14 @@ impl BeeperGuiApp {
     /// Desktop's "Join a Matrix room" view of New Chat: the room address, its error, and Join.
     fn view_join_matrix(&self) -> El<'_> {
         let p = &self.pal;
-        let back = button(
-            row![tinted(&SYS_ARROW_BACK, 18.0, p.strong), txt(tr("Back"), 12.0).color(p.strong)]
-                .spacing(4)
-                .align_y(Center),
-        )
-        .padding([4, 6])
-        .style(ghost(p, 6.0))
-        .on_press(UiMessage::NewChat(new_chat::Msg::ToggleJoinMatrix));
-        let head =
-            container(row![back, txt(tr("Join a Matrix room"), 13.0).color(p.strong)].spacing(12).align_y(Center))
-                .width(Fill)
-                .padding([8, 13])
-                .style(fill_box(p.chip, 0.0));
+        let back = button(row![tinted(&SYS_ARROW_BACK, 18.0, p.strong), txt(tr("Back"), 12.0).color(p.strong)].spacing(4).align_y(Center))
+            .padding([4, 6])
+            .style(ghost(p, 6.0))
+            .on_press(UiMessage::NewChat(new_chat::Msg::ToggleJoinMatrix));
+        let head = container(row![back, txt(tr("Join a Matrix room"), 13.0).color(p.strong)].spacing(12).align_y(Center))
+            .width(Fill)
+            .padding([8, 13])
+            .style(fill_box(p.chip, 0.0));
         let (joining, error) = (self.join_room.0, self.join_room.1.as_deref());
         // `.joinInputs .joinInput input`: 32 px tall on the secondary container, body-md text, radius 8.
         let input = text_input(tr("Room address or Matrix link"), &self.new_chat_query)
@@ -465,16 +434,12 @@ impl BeeperGuiApp {
             .style(input_style(p.chip, p.strong, p.sub, p.accent, 8.0));
         let input = if joining { input } else { input.on_submit(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)) };
         // `.joinError`: under the input, 4 px above and 10 px below.
-        let error = error
-            .map(|e| container(txt(e.to_string(), 12.0).color(p.text_danger)).padding(Padding::ZERO.top(4).bottom(10)));
+        let error = error.map(|e| container(txt(e.to_string(), 12.0).color(p.text_danger)).padding(Padding::ZERO.top(4).bottom(10)));
         let link = container(tinted(&MAT_LINK, 18.0, p.sub)).padding(Padding::ZERO.top(7));
-        let inputs = row![link, column![input].push(error).width(Fill)]
-            .spacing(8)
-            .padding(Padding::new(6.0).left(13.0).right(8.0));
+        let inputs = row![link, column![input].push(error).width(Fill)].spacing(8).padding(Padding::new(6.0).left(13.0).right(8.0));
         let ready = !joining && !self.new_chat_query.trim().is_empty();
         let label = if joining { tr("Joining...") } else { tr("Join") };
-        let join =
-            new_chat_footer(p, label, "ENTER", ready.then_some(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)));
+        let join = new_chat_footer(p, label, "ENTER", ready.then_some(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)));
         let body = column![head, inputs].push(Space::new().height(Fill)).push(join);
         container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into()
     }
@@ -499,12 +464,8 @@ impl BeeperGuiApp {
         let shade = Color { a: 0.1, ..p.strong };
         let pills = users.iter().map(|(_, u)| -> El<'_> {
             let name = u.full_name.as_deref().unwrap_or(&u.id);
-            let pill =
-                row![self.face(u.img_url.as_deref(), name, 16.0, 0.0), semi(name.to_string(), 13.0).color(p.strong)];
-            container(pill.spacing(4).align_y(Center))
-                .padding(Padding::new(2.0).right(8.0))
-                .style(fill_box(shade, 20.0))
-                .into()
+            let pill = row![self.face(u.img_url.as_deref(), name, 16.0, 0.0), semi(name.to_string(), 13.0).color(p.strong)];
+            container(pill.spacing(4).align_y(Center)).padding(Padding::new(2.0).right(8.0)).style(fill_box(shade, 20.0)).into()
         });
         let placeholder = if users.is_empty() { tr("Search contacts") } else { "" };
         let field = text_input(placeholder, &self.new_chat_query)
@@ -544,11 +505,9 @@ impl BeeperGuiApp {
                 .into()
         });
         let menu = scrollable(Column::with_children(options.collect::<Vec<_>>())).height(Shrink);
-        let menu =
-            container(menu).width(216).max_height(300).padding(5).style(shadow_box(p.menu, p.menu_border, 6.0, 22.0));
+        let menu = container(menu).width(216).max_height(300).padding(5).style(shadow_box(p.menu, p.menu_border, 6.0, 22.0));
         stack![
-            mouse_area(Space::new().width(Fill).height(Fill))
-                .on_press(UiMessage::NewChat(new_chat::Msg::ToggleAccounts)),
+            mouse_area(Space::new().width(Fill).height(Fill)).on_press(UiMessage::NewChat(new_chat::Msg::ToggleAccounts)),
             container(menu).align_right(Fill).padding(Padding::new(8.0).top(38.0)),
         ]
         .into()
@@ -569,9 +528,7 @@ impl BeeperGuiApp {
         let lookups: Vec<(&String, &User)> = self
             .new_chat_lookup
             .iter()
-            .filter(|(k, nets)| {
-                k.strip_prefix("lookup:") == Some(self.new_chat_query.trim()) && nets.iter().all(|n| n.1.is_some())
-            })
+            .filter(|(k, nets)| k.strip_prefix("lookup:") == Some(self.new_chat_query.trim()) && nets.iter().all(|n| n.1.is_some()))
             .flat_map(|(_, nets)| nets.iter().filter_map(|(a, n)| Some((a, n.as_ref()?.as_ref()?))))
             .collect();
         for (a, u) in &lookups {
@@ -595,17 +552,9 @@ impl BeeperGuiApp {
             col = self.push_connections(col, *pending, found);
         }
         let any = listed.iter().any(|a| self.can(a, "contact_list") || self.can(a, "any_phone"));
-        let contacts: Vec<&User> = st
-            .contacts
-            .iter()
-            .filter(|_| any)
-            .filter(|u| u.full_name.as_deref().unwrap_or_default().to_lowercase().contains(&q))
-            .collect();
-        if lookups.is_empty()
-            && people.is_empty()
-            && search.is_none_or(|(_, n, f)| *n == 0 && f.is_empty())
-            && contacts.is_empty()
-        {
+        let contacts: Vec<&User> =
+            st.contacts.iter().filter(|_| any).filter(|u| u.full_name.as_deref().unwrap_or_default().to_lowercase().contains(&q)).collect();
+        if lookups.is_empty() && people.is_empty() && search.is_none_or(|(_, n, f)| *n == 0 && f.is_empty()) && contacts.is_empty() {
             // Desktop's "No results found" is only for a query, in a DM draft.
             match group {
                 true => col = col.push(new_chat_heading(p, tr("Start typing to search for people to add"))),
@@ -630,10 +579,8 @@ impl BeeperGuiApp {
                 .style(btn_style([bg, p.chip, p.selected], [p.strong; 3], 6.0))
                 .on_press(UiMessage::NewChat(msg))
         };
-        let group_btn =
-            action(ic(icon::GROUP, 20.0).color(p.accent).into(), tr("New Group"), p.chip, new_chat::Msg::NewGroup);
-        let join_btn =
-            action(tinted(&MAT_LINK, 20.0, p.accent), tr("Join a Matrix room"), CLEAR, new_chat::Msg::ToggleJoinMatrix);
+        let group_btn = action(ic(icon::GROUP, 20.0).color(p.accent).into(), tr("New Group"), p.chip, new_chat::Msg::NewGroup);
+        let join_btn = action(tinted(&MAT_LINK, 20.0, p.accent), tr("Join a Matrix room"), CLEAR, new_chat::Msg::ToggleJoinMatrix);
         let group_btn = listed.iter().any(|a| self.can_group(a)).then(|| container(group_btn).padding([0, 8]).into());
         (group_btn, container(join_btn).padding([0, 8]).into())
     }
@@ -653,17 +600,11 @@ impl BeeperGuiApp {
             .push(svg(crate::style::brand_svg(brand_key(a))).width(16).height(16))
             .spacing(6)
             .align_y(Center);
-        new_chat_item(
-            p,
-            line.into(),
-            Some(UiMessage::NewChat(new_chat::Msg::PickUser(a.to_string(), Box::new(u.clone())))),
-        )
+        new_chat_item(p, line.into(), Some(UiMessage::NewChat(new_chat::Msg::PickUser(a.to_string(), Box::new(u.clone())))))
     }
 
     /// The Connections that the accounts found for the query, in the order of their names.
-    fn push_connections<'a>(
-        &'a self, col: Column<'a, UiMessage>, pending: usize, found: &People,
-    ) -> Column<'a, UiMessage> {
+    fn push_connections<'a>(&'a self, col: Column<'a, UiMessage>, pending: usize, found: &People) -> Column<'a, UiMessage> {
         let p = &self.pal;
         let mut col = col.push(new_chat_heading(p, tr("Connections")));
         let mut seen = HashSet::new();
@@ -688,8 +629,7 @@ impl BeeperGuiApp {
 
     /// The contacts, under the headings of their initials, with the networks of the contact that a click opened.
     fn push_contacts<'a>(
-        &'a self, mut col: Column<'a, UiMessage>, st: &BeeperStore, contacts: &[&User], all: &[String],
-        account: Option<&str>, blank: bool,
+        &'a self, mut col: Column<'a, UiMessage>, st: &BeeperStore, contacts: &[&User], all: &[String], account: Option<&str>, blank: bool,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
         col = col.push(new_chat_heading(p, tr("In your contacts")));
@@ -740,21 +680,16 @@ impl BeeperGuiApp {
 
     /// The networks of an opened contact: skeletons while they resolve, then each account that has the contact.
     fn push_contact_networks<'a>(
-        &'a self, mut col: Column<'a, UiMessage>, st: &BeeperStore, nets: &Networks, all: &[String],
-        account: Option<&str>,
+        &'a self, mut col: Column<'a, UiMessage>, st: &BeeperStore, nets: &Networks, all: &[String], account: Option<&str>,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
         if nets.iter().any(|(_, n)| n.is_none()) {
             let bone = |w: f32, r: f32| container(Space::new().width(w).height(if r > 8.0 { w } else { 16.0 }));
-            let skeleton =
-                row![bone(22.0, 11.0).style(fill_box(p.chip, 11.0)), bone(100.0, 5.0).style(fill_box(p.chip, 5.0))];
+            let skeleton = row![bone(22.0, 11.0).style(fill_box(p.chip, 11.0)), bone(100.0, 5.0).style(fill_box(p.chip, 5.0))];
             return col.push(new_chat_item(p, skeleton.spacing(8).align_y(Center).into(), None));
         }
-        let found: Vec<(&String, &User)> = nets
-            .iter()
-            .filter_map(|(a, n)| Some((a, n.as_ref()?.as_ref()?)))
-            .filter(|(a, _)| account.is_none_or(|b| *a == b))
-            .collect();
+        let found: Vec<(&String, &User)> =
+            nets.iter().filter_map(|(a, n)| Some((a, n.as_ref()?.as_ref()?))).filter(|(a, _)| account.is_none_or(|b| *a == b)).collect();
         if found.is_empty() {
             let none = semi(tr("No networks found"), 13.0).color(p.strong).width(Fill).align_x(Center);
             col = col.push(new_chat_item(p, none.into(), None));
@@ -787,9 +722,7 @@ impl BeeperGuiApp {
             ..Default::default()
         });
         let picker = stack![face, container(plus).padding(Padding::ZERO.top(12).left(17))].width(33).height(28);
-        let picker = mouse_area(picker)
-            .on_press(UiMessage::NewChat(new_chat::Msg::PickAvatar))
-            .interaction(mouse::Interaction::Pointer);
+        let picker = mouse_area(picker).on_press(UiMessage::NewChat(new_chat::Msg::PickAvatar)).interaction(mouse::Interaction::Pointer);
         let name = text_input(tr("New Group Chat"), &d.title)
             .on_input(|a0| UiMessage::NewChat(new_chat::Msg::GroupTitle(a0)))
             .width(200)
@@ -798,17 +731,11 @@ impl BeeperGuiApp {
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let bg = if self.dark { Color::BLACK } else { Color::WHITE };
         // The badge sticks out 5px of the 8px gap.
-        container(row![picker, name].spacing(3).align_y(Center)).center_x(Fill).center_y(38).style(move |_| {
-            container::Style {
-                background: Some(bg.into()),
-                border: iced::border::rounded(10),
-                shadow: iced::Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.12),
-                    blur_radius: 10.0,
-                    ..Default::default()
-                },
-                ..Default::default()
-            }
+        container(row![picker, name].spacing(3).align_y(Center)).center_x(Fill).center_y(38).style(move |_| container::Style {
+            background: Some(bg.into()),
+            border: iced::border::rounded(10),
+            shadow: iced::Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.12), blur_radius: 10.0, ..Default::default() },
+            ..Default::default()
         })
     }
 }
@@ -819,9 +746,7 @@ fn network_logo<'a>(a: &str) -> El<'a> {
 }
 
 /// The footer of New Chat: its Start or Join pill, with the key that presses it, faded while it is off.
-fn new_chat_footer<'a>(
-    p: &Palette, label: &'static str, key: &'static str, press: Option<UiMessage>,
-) -> Row<'a, UiMessage> {
+fn new_chat_footer<'a>(p: &Palette, label: &'static str, key: &'static str, press: Option<UiMessage>) -> Row<'a, UiMessage> {
     let a = if press.is_some() { 1.0 } else { 0.4 };
     let label = row![med(label, 13.0), txt(key, 10.0).color(Color { a: 0.8 * a, ..Color::WHITE })];
     let pill = button(label.spacing(4).align_y(Center))

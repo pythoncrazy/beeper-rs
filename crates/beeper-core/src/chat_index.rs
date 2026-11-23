@@ -41,8 +41,7 @@ pub fn js_trim(s: &str) -> &str {
 /// Desktop's `Id`: the words of a query, without its punctuation.
 fn words(query: &str) -> Vec<String> {
     let lower = latin(query).to_lowercase();
-    let spaced: String =
-        lower.chars().map(|c| if "|!'^=,;?(){}[]\"`~#$%&*+<>\\".contains(c) { ' ' } else { c }).collect();
+    let spaced: String = lower.chars().map(|c| if "|!'^=,;?(){}[]\"`~#$%&*+<>\\".contains(c) { ' ' } else { c }).collect();
     spaced.split(js_space).filter(|w| !w.is_empty()).map(str::to_string).collect()
 }
 
@@ -56,9 +55,7 @@ fn phrase(query: &str) -> String {
 fn has_symbol(phrase: &str) -> bool {
     phrase.chars().any(|c| {
         let group = c.general_category_group();
-        !(group == GeneralCategoryGroup::Letter || group == GeneralCategoryGroup::Number)
-            && !matches!(c, '_' | '-')
-            && !js_space(c)
+        !(group == GeneralCategoryGroup::Letter || group == GeneralCategoryGroup::Number) && !matches!(c, '_' | '-') && !js_space(c)
     })
 }
 
@@ -185,10 +182,7 @@ fn fuse_match(pattern: &[u16], text: &[u16]) -> bool {
     let starts: Vec<usize> = match len {
         0 => Vec::new(),
         1..=MAX_BITS => vec![0],
-        _ => (0..len - len % MAX_BITS)
-            .step_by(MAX_BITS)
-            .chain((!len.is_multiple_of(MAX_BITS)).then_some(len - MAX_BITS))
-            .collect(),
+        _ => (0..len - len % MAX_BITS).step_by(MAX_BITS).chain((!len.is_multiple_of(MAX_BITS)).then_some(len - MAX_BITS)).collect(),
     };
     starts.into_iter().any(|at| bitap(text, &pattern[at..len.min(at + MAX_BITS)], at))
 }
@@ -261,18 +255,14 @@ fn bitap(text: &[u16], pattern: &[u16], location: usize) -> bool {
 /// `searchParticipantsDetailed`: the chats that match the query, each with the number of its title matches
 /// (`score.title.hits`). Without `fuzzy`, like the index of the command bar (`fuzzy: false`), a word matches only as
 /// a substring.
-pub fn search<'a>(
-    chats: impl Iterator<Item = &'a Chat>, query: &str, people: bool, fuzzy: bool,
-) -> Vec<(&'a Chat, usize)> {
+pub fn search<'a>(chats: impl Iterator<Item = &'a Chat>, query: &str, people: bool, fuzzy: bool) -> Vec<(&'a Chat, usize)> {
     let chats = Fields::all(chats);
     matches(chats.iter().map(|(c, f)| (*c, &**f)).collect(), query, people, fuzzy)
 }
 
 /// [`search`] of the chats of the store `st` that `keep` takes. The fields of its chats hold while its chats stay the
 /// same (`chat_changes`), so a key of the command bar only matches them.
-pub fn search_in<'a>(
-    st: &'a BeeperStore, keep: impl Fn(&Chat) -> bool, query: &str, people: bool, fuzzy: bool,
-) -> Vec<(&'a Chat, usize)> {
+pub fn search_in<'a>(st: &'a BeeperStore, keep: impl Fn(&Chat) -> bool, query: &str, people: bool, fuzzy: bool) -> Vec<(&'a Chat, usize)> {
     type ByChat = (Option<(u64, u64)>, Vec<Arc<Fields>>);
     static FIELDS: OnceLock<Mutex<ByChat>> = OnceLock::new();
     let mut fields = FIELDS.get_or_init(Default::default).lock().expect("the chat search fields");
@@ -341,11 +331,7 @@ mod tests {
             ("x|y=z^w", &["x", "y", "z", "w"], "x|y=z^w"),
         ];
         for (query, want, whole) in cases {
-            assert_eq!(
-                (words(query), phrase(query)),
-                (want.iter().map(|w| w.to_string()).collect(), whole.into()),
-                "{query}"
-            );
+            assert_eq!((words(query), phrase(query)), (want.iter().map(|w| w.to_string()).collect(), whole.into()), "{query}");
         }
         assert!(has_symbol("a.b") && has_symbol("x@y") && !has_symbol("über_alles-2 ok"));
     }
@@ -414,10 +400,7 @@ mod tests {
                 "release",
                 "#desktop-release",
                 "Slack",
-                vec![
-                    person("Devon Brooks"),
-                    User { email: Some("eric@example.com".into()), ..person("Eric Migicovsky") },
-                ],
+                vec![person("Devon Brooks"), User { email: Some("eric@example.com".into()), ..person("Eric Migicovsky") }],
             ),
             chat("design", "#design-review", "Slack", vec![person("Priya")]),
             chat("security", "Signal Security Ops", "Signal", vec![person("SecOps Lead")]),
@@ -472,8 +455,7 @@ mod tests {
         assert_eq!((found(&c, "old", false), found(&c, "member 49", true), found(&c, "member 50", true)), (1, 1, 0));
         c.title = "New Title".into();
         c.participants.items[0].full_name = Some("Ann".into());
-        let found =
-            [found(&c, "old", false), found(&c, "new", false), found(&c, "member 00", true), found(&c, "ann", true)];
+        let found = [found(&c, "old", false), found(&c, "new", false), found(&c, "member 00", true), found(&c, "ann", true)];
         assert_eq!(found, [0, 1, 0, 1]);
     }
 
@@ -490,11 +472,8 @@ mod tests {
         };
         let mut c = st.chats[0].clone();
         (c.id, c.title, c.network_name) = ("!team:x".into(), "Beeper Rust Café".into(), Some("Telegram".into()));
-        c.participants.items = vec![
-            user("Alice Smith", Some("+1 (415) 555-0100"), false),
-            user("Bob Jones", None, false),
-            user("Carol Left", None, true),
-        ];
+        c.participants.items =
+            vec![user("Alice Smith", Some("+1 (415) 555-0100"), false), user("Bob Jones", None, false), user("Carol Left", None, true)];
         let found = |q: &str, people: bool| search(std::iter::once(&c), q, people, false).first().map(|f| f.1);
         assert_eq!(found("rust beeper", false), Some(2), "the words in any order");
         assert_eq!(found("cafe", false), Some(1), "in Latin letters");

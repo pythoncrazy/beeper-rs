@@ -36,11 +36,7 @@ pub(super) fn authorize(st: &BeeperStore, token: Option<&str>, scopes: &[&str]) 
     let found = st.connect.validate(token, &session.access_token, &session.user_id).map_err(|m| (401, m.into()))?;
     let missing: Vec<&str> = scopes.iter().copied().filter(|s| !found.scopes.iter().any(|h| h == s)).collect();
     if !missing.is_empty() {
-        let message = format!(
-            "Insufficient permissions. Required scopes: {}, missing: {}",
-            scopes.join(", "),
-            missing.join(", ")
-        );
+        let message = format!("Insufficient permissions. Required scopes: {}, missing: {}", scopes.join(", "), missing.join(", "));
         return Err((403, message));
     }
     Ok(found)
@@ -54,13 +50,9 @@ pub(super) fn refusal((status, message): (u16, String)) -> Response {
 pub(super) fn mcp_refusal(st: &BeeperStore, msg: &HttpMessage) -> Response {
     let base = base_url(&st.config, msg);
     let id = serde_json::from_slice::<Value>(&msg.body).ok().and_then(|b| b.get("id").cloned()).unwrap_or(Value::Null);
-    let mut resp = json_with(
-        StatusCode(401),
-        &json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": "Unauthorized" } }),
-    );
-    let challenge = format!(
-        "Bearer realm=\"{base}/v0/mcp\", resource_metadata=\"{base}/.well-known/oauth-protected-resource/v0/mcp\""
-    );
+    let mut resp =
+        json_with(StatusCode(401), &json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": "Unauthorized" } }));
+    let challenge = format!("Bearer realm=\"{base}/v0/mcp\", resource_metadata=\"{base}/.well-known/oauth-protected-resource/v0/mcp\"");
     resp.headers.push(("www-authenticate", challenge));
     resp
 }
@@ -82,8 +74,7 @@ fn same_origin(st: &BeeperStore, msg: &HttpMessage) -> Result<(), Response> {
     let Some(origin) = msg.header("origin") else { return Ok(()) };
     let base = Url::parse(&base_url(&st.config, msg)).expect("parse the base URL");
     let same = Url::parse(origin).is_ok_and(|o| {
-        o.origin() == base.origin()
-            || (o.scheme() == base.scheme() && o.port() == base.port() && loopback(&o) && loopback(&base))
+        o.origin() == base.origin() || (o.scheme() == base.scheme() && o.port() == base.port() && loopback(&o) && loopback(&base))
     });
     same.then_some(()).ok_or_else(|| api_error(403, "This endpoint must be called same-origin", "invalid_request"))
 }
@@ -110,11 +101,7 @@ fn redirect_ok(uri: &str) -> bool {
 fn redirect_matches(registered: &str, uri: &str) -> bool {
     registered == uri
         || Url::parse(registered).ok().zip(Url::parse(uri).ok()).is_some_and(|(r, u)| {
-            r.scheme() == u.scheme()
-                && r.path() == u.path()
-                && r.query() == u.query()
-                && loopback(&r)
-                && r.host() == u.host()
+            r.scheme() == u.scheme() && r.path() == u.path() && r.query() == u.query() && loopback(&r) && r.host() == u.host()
         })
 }
 
@@ -155,8 +142,7 @@ fn validate(
         return Err("Requested scope is not supported.");
     }
     let Some(c) = st.connect.clients.get(client_id) else {
-        let client_name =
-            if redirect.starts_with("cursor://") { format!("Cursor ({client_id})") } else { client_id.into() };
+        let client_name = if redirect.starts_with("cursor://") { format!("Cursor ({client_id})") } else { client_id.into() };
         return Ok(Valid { client_id: client_id.into(), client_name, client_uri: None, scopes });
     };
     if !c.redirect_uris.iter().any(|r| redirect_matches(r, redirect)) {
@@ -165,12 +151,7 @@ fn validate(
     if scopes.iter().any(|s| !c.scope.split(' ').any(|r| r == s)) {
         return Err("Requested scope exceeds registered scope for this client.");
     }
-    Ok(Valid {
-        client_id: client_id.into(),
-        client_name: c.client_name.clone(),
-        client_uri: c.client_uri.clone(),
-        scopes,
-    })
+    Ok(Valid { client_id: client_id.into(), client_name: c.client_name.clone(), client_uri: c.client_uri.clone(), scopes })
 }
 
 /// Fills the `{{key}}` holes of a template in one pass, so that a value is never filled again.
@@ -190,17 +171,13 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
 
 /// A JavaScript literal that is safe in a `<script>`.
 fn js(v: Option<&str>) -> String {
-    serde_json::to_string(&v)
-        .unwrap()
-        .replace('<', "\\u003c")
-        .replace('\u{2028}', "\\u2028")
-        .replace('\u{2029}', "\\u2029")
+    serde_json::to_string(&v).unwrap().replace('<', "\\u003c").replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029")
 }
 
 /// Desktop's `rejectBrowserRequest`: the routes for other programs refuse the requests of a browser.
 pub(super) fn reject_browser(msg: &HttpMessage) -> Result<(), Response> {
-    let browser = msg.header("user-agent").is_some_and(|a| a.contains("Mozilla/"))
-        && msg.header("accept").is_some_and(|a| a.contains("text/html"));
+    let browser =
+        msg.header("user-agent").is_some_and(|a| a.contains("Mozilla/")) && msg.header("accept").is_some_and(|a| a.contains("text/html"));
     let fetch = ["origin", "referer", "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest"];
     match browser || fetch.iter().any(|h| msg.header(h).is_some()) {
         true => Err(api_error(403, "Browser requests are not allowed for this route", "browser_forbidden")),
@@ -331,12 +308,7 @@ fn authorize_page(st: &BeeperStore, r: &Req) -> Reply {
         ],
     );
     let csp = format!("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; connect-src 'self' http://localhost:* http://127.0.0.1:* http://[::1]:* https://localhost:* https://127.0.0.1:* https://[::1]:*; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
-    html(
-        200,
-        &format!("Beeper Client API Authorization - {}", v.client_name),
-        &body,
-        vec![("content-security-policy", csp)],
-    )
+    html(200, &format!("Beeper Client API Authorization - {}", v.client_name), &body, vec![("content-security-policy", csp)])
 }
 
 /// The page asks for a token, which waits for the "Approve connection" dialog, and gets an authorization code.
@@ -442,13 +414,10 @@ fn introspect(st: &BeeperStore, r: &Req) -> Reply {
 /// Desktop's `registerOAuth2Client`, for dynamic client registration.
 fn register(st: &mut BeeperStore, r: &Req) -> Reply {
     let b = &r.body;
-    let fail = |m: &str| {
-        Ok(json_with(StatusCode::BAD_REQUEST, &json!({ "error": "invalid_client_metadata", "error_description": m })))
-    };
+    let fail = |m: &str| Ok(json_with(StatusCode::BAD_REQUEST, &json!({ "error": "invalid_client_metadata", "error_description": m })));
     let or = |k: &str, default: &'static str| b[k].as_str().filter(|v| !v.is_empty()).unwrap_or(default).to_string();
-    let uris: Option<Vec<String>> = b["redirect_uris"]
-        .as_array()
-        .and_then(|a| a.iter().map(|u| u.as_str().filter(|u| redirect_ok(u)).map(String::from)).collect());
+    let uris: Option<Vec<String>> =
+        b["redirect_uris"].as_array().and_then(|a| a.iter().map(|u| u.as_str().filter(|u| redirect_ok(u)).map(String::from)).collect());
     let Some(uris) = uris.filter(|u| !u.is_empty()) else {
         return fail("redirect_uris must contain at least one loopback HTTP/HTTPS or private-use URI scheme redirect");
     };
@@ -500,12 +469,8 @@ mod tests {
 
     #[test]
     fn redirects_like_desktop() {
-        assert!(
-            redirect_ok("http://127.0.0.1:3000/cb") && redirect_ok("http://[::1]/cb") && redirect_ok("cursor://x/cb")
-        );
-        assert!(
-            !redirect_ok("https://example.com/cb") && !redirect_ok("javascript:alert(1)") && !redirect_ok("web+x:y")
-        );
+        assert!(redirect_ok("http://127.0.0.1:3000/cb") && redirect_ok("http://[::1]/cb") && redirect_ok("cursor://x/cb"));
+        assert!(!redirect_ok("https://example.com/cb") && !redirect_ok("javascript:alert(1)") && !redirect_ok("web+x:y"));
         assert!(redirect_matches("http://127.0.0.1:1/cb", "http://127.0.0.1:2/cb"));
         assert!(!redirect_matches("http://127.0.0.1/cb", "http://127.0.0.1/other"));
         assert_eq!(fill("{{a}}-{{b}}", &[("a", "{{b}}"), ("b", "x")]), "{{b}}-x", "a value is not filled again");

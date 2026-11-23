@@ -117,8 +117,7 @@ impl Step {
 
     /// Desktop's `canCancelStep`: the bridge allows "Back" from this step.
     pub fn can_cancel(&self) -> bool {
-        self.user_input.as_ref().is_some_and(|u| u.can_cancel)
-            || self.display_and_wait.as_ref().is_some_and(|d| d.can_cancel)
+        self.user_input.as_ref().is_some_and(|u| u.can_cancel) || self.display_and_wait.as_ref().is_some_and(|d| d.can_cancel)
     }
 }
 
@@ -236,8 +235,7 @@ mod tests {
         let code = submit(p.clone(), process.clone(), phone.clone(), json!({ field(&phone): "+15550100" })).await;
         let code = code.expect("the code step");
         assert!(code.can_cancel());
-        let wrong =
-            submit(p.clone(), process.clone(), code.clone(), json!({ field(&code): crate::bridge_stub::WRONG_CODE }));
+        let wrong = submit(p.clone(), process.clone(), code.clone(), json!({ field(&code): crate::bridge_stub::WRONG_CODE }));
         assert_eq!(wrong.await.unwrap_err(), "Invalid phone code");
         let back = cancel_step(p.clone(), process.clone(), code.step_id.clone()).await.expect("go back");
         assert_eq!(back.step_id, phone.step_id);

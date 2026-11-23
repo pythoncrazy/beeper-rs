@@ -1,7 +1,5 @@
 use beeper_core::config::CentralConfig;
-use beeper_core::models::{
-    AppVerification, ThemeChoice, VerificationDevice, VerificationQr, VerificationSas, VerificationSasEmoji,
-};
+use beeper_core::models::{AppVerification, ThemeChoice, VerificationDevice, VerificationQr, VerificationSas, VerificationSasEmoji};
 use beeper_core::store::{BeeperStore, StoreLock};
 use beeper_ui::{
     login::{Login, LoginMsg, Screen},
@@ -52,8 +50,7 @@ fn main() {
     let _ = app.update(UiMessage::NewChat(beeper_ui::new_chat::Msg::Delete(0)));
     let dm = {
         let mut st = app.store.write();
-        let peer =
-            |c: &beeper_core::models::Chat| c.participants.items.iter().find(|u| u.is_self != Some(true)).cloned();
+        let peer = |c: &beeper_core::models::Chat| c.participants.items.iter().find(|u| u.is_self != Some(true)).cloned();
         let c = st.chats.iter().find(|c| c.chat_type == "single" && peer(c).is_some()).expect("a DM");
         let (id, user) = (c.id.clone(), peer(c).expect("a peer").id);
         st.typing.insert(id.clone(), vec![user]);
@@ -79,8 +76,7 @@ fn main() {
     shot(&out, "main_threads", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::Thread(beeper_ui::threads::Msg::ShowUnread));
     shot(&out, "main_unread_threads", (1200.0, 800.0), &theme, app.view_main());
-    let _ =
-        app.update(UiMessage::Thread(beeper_ui::threads::Msg::Open("!sl_infra:beeper.com".into(), "msg_1007".into())));
+    let _ = app.update(UiMessage::Thread(beeper_ui::threads::Msg::Open("!sl_infra:beeper.com".into(), "msg_1007".into())));
     shot(&out, "main_unread_thread", (1200.0, 800.0), &theme, app.view_main());
     app.select_chat("!sl_infra:beeper.com");
     let _ = app.update(UiMessage::Thread(beeper_ui::threads::Msg::Show("msg_1007".into())));
@@ -96,15 +92,7 @@ fn main() {
     let _ = app.update(UiMessage::Ask(None));
     {
         let mut st = app.store.write();
-        let emojis = [
-            ("🐶", "Dog"),
-            ("🔑", "Key"),
-            ("🎸", "Guitar"),
-            ("🚀", "Rocket"),
-            ("🌵", "Cactus"),
-            ("⏰", "Clock"),
-            ("🍕", "Pizza"),
-        ];
+        let emojis = [("🐶", "Dog"), ("🔑", "Key"), ("🎸", "Guitar"), ("🚀", "Rocket"), ("🌵", "Cactus"), ("⏰", "Clock"), ("🍕", "Pizza")];
         let emojis = emojis.map(|(e, d)| VerificationSasEmoji { emoji: e.into(), description: d.into() }).to_vec();
         st.verification = Some(AppVerification {
             id: "shot".into(),
@@ -140,12 +128,8 @@ fn main() {
     let _ = app.update(UiMessage::Login(LoginMsg::Code("12".into())));
     shot(&out, "login_code_typed", (330.0, 620.0), &theme, app.view_login());
     let _ = app.update(UiMessage::Login(LoginMsg::Code("123456".into())));
-    let refused = beeper_core::cloud::CloudError {
-        status: 401,
-        message: "Invalid code. Please try again.".into(),
-        errcode: None,
-        body: None,
-    };
+    let refused =
+        beeper_core::cloud::CloudError { status: 401, message: "Invalid code. Please try again.".into(), errcode: None, body: None };
     let _ = app.update(UiMessage::Login(LoginMsg::Done(Err(refused))));
     shot(&out, "login_code_error", (330.0, 620.0), &theme, app.view_login());
     let lead = beeper_ui::login::Outcome::Lead("lead".into(), vec!["alex-rs".into(), "alex2".into()]);

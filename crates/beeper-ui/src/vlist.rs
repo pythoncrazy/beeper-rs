@@ -349,8 +349,8 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
             next_clear && (scrolling || top(inner.sections[k]).is_some_and(|y| y >= -IDLE))
         });
         let (covered, sticky) = (covered.map(|k| inner.sections[k]), sticky.map(|k| inner.sections[k]));
-        let sticky_changed = (std::mem::replace(&mut inner.sticky, sticky) != sticky)
-            | (std::mem::replace(&mut inner.covered, covered) != covered);
+        let sticky_changed =
+            (std::mem::replace(&mut inner.sticky, sticky) != sticky) | (std::mem::replace(&mut inner.covered, covered) != covered);
         // `virtua`'s `onRangeChange` once the scroll stops, for the timeline to read through its last row in view.
         let settled = !scrolling && inner.moved.take().is_some();
         if changed || sticky_changed || settled || at < inner.safe.0 || at + viewport.height > inner.safe.1 {
@@ -362,16 +362,14 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
         &self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle, renderer: &Renderer,
     ) -> mouse::Interaction {
         (self.children.iter().zip(&tree.children).zip(rows(layout)))
-            .map(|((child, state), layout)| {
-                child.as_widget().mouse_interaction(state, layout, cursor, viewport, renderer)
-            })
+            .map(|((child, state), layout)| child.as_widget().mouse_interaction(state, layout, cursor, viewport, renderer))
             .max()
             .unwrap_or_default()
     }
 
     fn draw(
-        &self, tree: &Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
-        cursor: mouse::Cursor, viewport: &Rectangle,
+        &self, tree: &Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>, cursor: mouse::Cursor,
+        viewport: &Rectangle,
     ) {
         for ((child, state), layout) in self.children.iter().zip(&tree.children).zip(rows(layout)) {
             if layout.bounds().intersects(viewport) {
@@ -381,8 +379,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
     }
 
     fn overlay<'b>(
-        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle,
-        translation: Vector,
+        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle, translation: Vector,
     ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
         let rows = layout.children().next().expect("the rows node");
         overlay::from_children(&mut self.children, tree, rows, renderer, viewport, translation)

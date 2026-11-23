@@ -17,9 +17,8 @@ static SERVED: Mutex<Vec<(String, mpsc::UnboundedSender<Message>)>> = Mutex::new
 static BUS: OnceLock<Connection> = OnceLock::new();
 
 /// The runtime of both ends, which outlives the runtime of any one test.
-static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
-    tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().expect("a tokio runtime")
-});
+static RUNTIME: LazyLock<tokio::runtime::Runtime> =
+    LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().expect("a tokio runtime"));
 
 /// Connects the app to the bus: a socket pair whose other end answers `org.freedesktop.DBus` like a bus daemon, and
 /// `ServiceUnknown` to the calls to names that nothing serves.

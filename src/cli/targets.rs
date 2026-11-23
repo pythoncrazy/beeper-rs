@@ -4,8 +4,8 @@
 use super::commands::{cmd, live_status};
 use super::profiles;
 use super::{
-    arg, config, config_dir, js_string, list_targets, obj, opt_arg, read_target, target_path, truthy, update_config,
-    write_json, CliError, Cmd, Ctx, Flag, Res, BIN,
+    arg, config, config_dir, js_string, list_targets, obj, opt_arg, read_target, target_path, truthy, update_config, write_json, CliError,
+    Cmd, Ctx, Flag, Res, BIN,
 };
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -13,9 +13,8 @@ use std::path::{Path, PathBuf};
 const NAME: &str = "Target name. Defaults to the selected target.";
 const NAME_ARG: &[super::Arg] = &[opt_arg("name", NAME)];
 const DEFAULT: Flag = Flag::b("default", "Set this target as the default after creation");
-pub const SERVER_ENV: Flag = Flag::s("server-env", "Server environment. Staging forces nightly.")
-    .opts(&["production", "staging"])
-    .def("production");
+pub const SERVER_ENV: Flag =
+    Flag::s("server-env", "Server environment. Staging forces nightly.").opts(&["production", "staging"]).def("production");
 
 pub const COMMANDS: &[Cmd] = &[
     cmd("auth logout", "Clear stored authentication", logout),
@@ -73,9 +72,9 @@ pub fn create_profile_target(kind: &str, id: &str, server_env: &str, port: Optio
     let used: Vec<i64> = list_targets()?.iter().filter_map(|t| t.get("port").and_then(Value::as_i64)).collect();
     let port = match port {
         Some(port) => port,
-        None => (23374..23573)
-            .find(|p| !used.contains(p))
-            .ok_or_else(|| CliError::bug("No available default port for a new Beeper target."))?,
+        None => {
+            (23374..23573).find(|p| !used.contains(p)).ok_or_else(|| CliError::bug("No available default port for a new Beeper target."))?
+        }
     };
     let dir = config_dir().join("profiles").join(kind).join(id);
     std::fs::create_dir_all(&dir).map_err(|e| CliError::bug(format!("{}: {e}", dir.display())))?;
@@ -221,15 +220,8 @@ fn list(c: &mut Ctx) -> Res {
     let config = config()?;
     let mut targets = list_targets()?;
     if targets.is_empty() {
-        let desktop =
-            [("id", "desktop"), ("type", "desktop"), ("name", "Beeper Desktop"), ("baseURL", "http://127.0.0.1:23373")];
-        targets.push(
-            desktop
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), json!(v)))
-                .chain([("managed".into(), json!(false))])
-                .collect(),
-        );
+        let desktop = [("id", "desktop"), ("type", "desktop"), ("name", "Beeper Desktop"), ("baseURL", "http://127.0.0.1:23373")];
+        targets.push(desktop.into_iter().map(|(k, v)| (k.to_string(), json!(v))).chain([("managed".into(), json!(false))]).collect());
     }
     let mut rows = Vec::new();
     for t in targets {
@@ -307,13 +299,8 @@ fn add_remote(c: &mut Ctx) -> Res {
     if read_target(&name)?.is_some() {
         return Err(CliError::bug(format!("Target \"{name}\" already exists.")));
     }
-    let target = obj([
-        ("id", json!(name)),
-        ("name", json!(name)),
-        ("type", json!("remote")),
-        ("baseURL", json!(url)),
-        ("managed", json!(false)),
-    ]);
+    let target =
+        obj([("id", json!(name)), ("name", json!(name)), ("type", json!("remote")), ("baseURL", json!(url)), ("managed", json!(false))]);
     write_json(&target_path(&name), &target)?;
     if c.on("default") {
         update_config(|config| drop(config.insert("defaultTarget".into(), json!(name))))?;

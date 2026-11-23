@@ -122,12 +122,7 @@ fn login_step(raw: &Value) -> Value {
         Some("user_input") => {
             let fields = raw["user_input"]["fields"].as_array().into_iter().flatten().map(|f| {
                 let mut field = json!({ "id": f["id"].as_str().unwrap_or_default() });
-                for (k, from) in [
-                    ("type", "type"),
-                    ("label", "label"),
-                    ("placeholder", "placeholder"),
-                    ("initialValue", "initial_value"),
-                ] {
+                for (k, from) in [("type", "type"), ("label", "label"), ("placeholder", "placeholder"), ("initialValue", "initial_value")] {
                     set(&mut field, k, text(&f[from]));
                 }
                 set(&mut field, "optional", f["optional"].as_bool().map(Value::from));
@@ -364,11 +359,7 @@ fn file_kind(c: &Value) -> Option<Value> {
     let kind = |t: &Value| t.as_str().filter(|t| ["time", "count"].contains(t)).map(Value::from);
     let limit = |t: &Value| {
         let t = plain(Some(t))?;
-        shape(&[
-            ("type", t.get("type"), &kind, true),
-            ("count", t.get("count"), &int, false),
-            ("time", t.get("time"), &int, false),
-        ])
+        shape(&[("type", t.get("type"), &kind, true), ("count", t.get("count"), &int, false), ("time", t.get("time"), &int, false)])
     };
     shape(&[
         ("mimeTypes", c.get("mime_types"), &|v| record(v, &level), true),
@@ -415,13 +406,7 @@ pub(super) fn capabilities(f: &Value) -> Option<Value> {
         ])
     });
     let members = plain(g("member_actions")).map(|m| {
-        let fields = [
-            ("ban", "ban"),
-            ("invite", "invite"),
-            ("kick", "kick"),
-            ("leave", "leave"),
-            ("revokeInvite", "revoke_invite"),
-        ];
+        let fields = [("ban", "ban"), ("invite", "invite"), ("kick", "kick"), ("leave", "leave"), ("revokeInvite", "revoke_invite")];
         shape(&fields.map(|(k, from)| (k, m.get(from), &level as Check, false)))
     });
     let state = plain(g("state")).map(|s| {
@@ -434,8 +419,7 @@ pub(super) fn capabilities(f: &Value) -> Option<Value> {
         ];
         shape(&fields.map(|(k, from)| (k, s.get(from), &one as Check, false)))
     });
-    let [attachments, request, timer, members, state] =
-        [attachments, request, timer, members, state].map(built).map(Result::ok);
+    let [attachments, request, timer, members, state] = [attachments, request, timer, members, state].map(built).map(Result::ok);
     let id = |v: &Value| Some(v.clone());
     let strings = |v: &Value| array(v, &|s| s.is_string().then(|| s.clone()));
     let fields: [(&str, Option<&Value>, Check); 27] = [
@@ -481,9 +465,7 @@ pub(super) fn chat_type(c: &Chat) -> &'static str {
 
 /// Desktop's `mapChat`: `participants` keeps at most `max_participants` members (all for `None`), and `preview` adds
 /// the newest message like `listChats`.
-pub(super) fn chat<'a>(
-    st: &'a BeeperStore, c: &'a Chat, max_participants: Option<usize>, preview: bool,
-) -> ApiChat<'a> {
+pub(super) fn chat<'a>(st: &'a BeeperStore, c: &'a Chat, max_participants: Option<usize>, preview: bool) -> ApiChat<'a> {
     let members = &c.participants.items;
     let shown = &members[..max_participants.map_or(members.len(), |n| n.min(members.len()))];
     let participant = |u: &'a User| Participant {
@@ -654,8 +636,7 @@ struct ApiAttachment<'a> {
 }
 
 /// Desktop's message types (`Qd`). The API omits the other types.
-const MESSAGE_TYPES: [&str; 10] =
-    ["TEXT", "NOTICE", "IMAGE", "VIDEO", "VOICE", "AUDIO", "FILE", "STICKER", "LOCATION", "REACTION"];
+const MESSAGE_TYPES: [&str; 10] = ["TEXT", "NOTICE", "IMAGE", "VIDEO", "VOICE", "AUDIO", "FILE", "STICKER", "LOCATION", "REACTION"];
 
 fn attachment(a: &Attachment) -> ApiAttachment<'_> {
     ApiAttachment {

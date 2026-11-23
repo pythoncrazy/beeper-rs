@@ -61,8 +61,7 @@ impl BeeperGuiApp {
         let mut st = self.store.write();
         let c = st.chat(id);
         if st.bridge_accounts.iter().any(|b| b.account_id == c.account_id && b.state == "BAD_CREDENTIALS") {
-            (self.confirm, self.delete_target) =
-                (Some(if block { ASK_BLOCK_OFFLINE } else { ASK_UNBLOCK_OFFLINE }), Some(id.into()));
+            (self.confirm, self.delete_target) = (Some(if block { ASK_BLOCK_OFFLINE } else { ASK_UNBLOCK_OFFLINE }), Some(id.into()));
             return Task::none();
         }
         let (title, request) = (c.title.clone(), block && c.is_request == Some(true));

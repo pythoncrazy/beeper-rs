@@ -16,9 +16,7 @@ use iced::advanced::widget::{self, Widget};
 use iced::font::Weight;
 use iced::gradient::Linear;
 use iced::widget::{button, column, container, row, tooltip, Row, Space};
-use iced::{
-    border, Background, Center, Color, Element, Padding, Radians, Rectangle, Renderer, Size, Subscription, Theme,
-};
+use iced::{border, Background, Center, Color, Element, Padding, Radians, Rectangle, Renderer, Size, Subscription, Theme};
 use std::time::Duration;
 
 /// Desktop's `f`: the rich gradient moves by its 200% in 2 hours.
@@ -106,17 +104,8 @@ pub fn apply(p: &mut Palette, theme: UiTheme, dark: bool, now_ms: i64) {
             let g = |l: f32| hsl(h, 10.0, l);
             // `body.theme-monochrome` and its `prefers-color-scheme: dark`.
             let (primary, strong, muted, received, from, to) = match dark {
-                false => (
-                    hsl(h, 50.0, 45.0),
-                    hsl(h, 69.0, 10.0),
-                    g(52.0),
-                    hsl(h, 10.0, 96.0),
-                    hsl(h, 87.0, 96.0),
-                    hsl(h, 100.0, 92.0),
-                ),
-                true => {
-                    (hsl(h, 50.0, 40.0), hsl(h, 69.0, 96.0), g(49.0), g(16.0), hsl(h, 40.0, 16.0), hsl(h, 40.0, 10.0))
-                }
+                false => (hsl(h, 50.0, 45.0), hsl(h, 69.0, 10.0), g(52.0), hsl(h, 10.0, 96.0), hsl(h, 87.0, 96.0), hsl(h, 100.0, 92.0)),
+                true => (hsl(h, 50.0, 40.0), hsl(h, 69.0, 96.0), g(49.0), g(16.0), hsl(h, 40.0, 16.0), hsl(h, 40.0, 10.0)),
             };
             p.strong = strong;
             p.divider = strong.scale_alpha(0.2);
@@ -251,9 +240,7 @@ pub struct WindowBg<'a, Message> {
 }
 
 /// `content` over the theme's backdrop, or over `fill` without a theme color.
-pub fn window_bg<'a, Message>(
-    content: impl Into<Element<'a, Message>>, backdrop: Option<Backdrop>, fill: Color,
-) -> WindowBg<'a, Message> {
+pub fn window_bg<'a, Message>(content: impl Into<Element<'a, Message>>, backdrop: Option<Backdrop>, fill: Color) -> WindowBg<'a, Message> {
     WindowBg { content: content.into(), backdrop, fill, radius: 0.0, frame: None }
 }
 
@@ -272,8 +259,8 @@ impl<Message> Widget<Message, Theme, Renderer> for WindowBg<'_, Message> {
     delegate!(children, diff, size, layout, operate, update(Message), mouse_interaction, overlay(Message));
 
     fn draw(
-        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
-        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
         let border = border::rounded(self.radius);
@@ -293,9 +280,8 @@ impl<Message> Widget<Message, Theme, Renderer> for WindowBg<'_, Message> {
                     r.fill_quad(quad, b.gradient(area.size(), true));
                 });
                 let content = &self.content;
-                return renderer.with_layer(*viewport, |r| {
-                    content.as_widget().draw(&tree.children[0], r, theme, style, layout, cursor, viewport)
-                });
+                return renderer
+                    .with_layer(*viewport, |r| content.as_widget().draw(&tree.children[0], r, theme, style, layout, cursor, viewport));
             }
         }
         self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
@@ -312,8 +298,7 @@ impl<'a, Message: 'a> From<WindowBg<'a, Message>> for Element<'a, Message> {
 fn swatch<'a>(a: Color, b: Color) -> El<'a> {
     let split = Linear::new(Radians(135f32.to_radians())).add_stop(0.5, a).add_stop(0.5001, b);
     let fill = Background::Gradient(split.into());
-    let style =
-        move |_: &Theme| container::Style { background: Some(fill), border: border::rounded(20), ..Default::default() };
+    let style = move |_: &Theme| container::Style { background: Some(fill), border: border::rounded(20), ..Default::default() };
     container(Space::new()).width(40).height(40).style(style).into()
 }
 
@@ -455,13 +440,11 @@ mod tests {
     #[test]
     fn the_palette_of_each_theme_color_follows_desktops_css() {
         for (theme, modes) in DESKTOP {
-            for (dark, [primary, strong, muted, received, link_card, from, to]) in [(false, modes[0]), (true, modes[1])]
-            {
+            for (dark, [primary, strong, muted, received, link_card, from, to]) in [(false, modes[0]), (true, modes[1])] {
                 let at = format!("{theme:?} dark={dark}");
                 let p = crate::style::palette(dark, Some(theme), 0);
                 let base = crate::style::palette(dark, None, 0);
-                let close =
-                    |a: u32, b: u32| a.to_be_bytes().iter().zip(b.to_be_bytes()).all(|(x, y)| x.abs_diff(y) <= 1);
+                let close = |a: u32, b: u32| a.to_be_bytes().iter().zip(b.to_be_bytes()).all(|(x, y)| x.abs_diff(y) <= 1);
                 for (name, c) in [
                     ("accent", p.accent),
                     ("sent", p.sent),
@@ -525,10 +508,7 @@ mod tests {
         assert_eq!(RICH_STEP, Duration::from_secs(36));
         let p = crate::style::palette(false, Some(UiTheme::RichBlue), 1_800_000);
         assert_eq!(p.backdrop.map(|b| b.offset), Some(50.0));
-        assert_eq!(
-            crate::style::palette(false, Some(UiTheme::MonochromeBlue), 1_800_000).backdrop.unwrap().offset,
-            0.0
-        );
+        assert_eq!(crate::style::palette(false, Some(UiTheme::MonochromeBlue), 1_800_000).backdrop.unwrap().offset, 0.0);
     }
 
     /// Desktop's CSS color of the gradient at `at` in a box of `size`: the position on the line through the middle
@@ -563,8 +543,7 @@ mod tests {
         ] {
             let p = crate::style::palette(dark, Some(theme), now);
             let b = p.backdrop.expect("a backdrop");
-            let view: El<'_> =
-                window_bg(Space::new().width(iced::Fill).height(iced::Fill), p.backdrop, p.window).into();
+            let view: El<'_> = window_bg(Space::new().width(iced::Fill).height(iced::Fill), p.backdrop, p.window).into();
             let shot = crate::focus::tests::shot(view, size, "theme-backdrop");
             let points = [(2.0, 2.0), (998.0, 598.0), (500.0, 300.0), (150.0, 450.0), (800.0, 100.0), (640.0, 520.0)];
             let off: Vec<_> = points
@@ -642,11 +621,7 @@ mod tests {
             let p = crate::style::palette(dark, Some(UiTheme::MonochromeGreen), 0);
             app.pal = p;
             let size = Size::new(900.0, 2400.0);
-            let mut sim = iced_test::Simulator::with_size(
-                Default::default(),
-                size,
-                app.theme_colors(Some(UiTheme::MonochromeGreen)),
-            );
+            let mut sim = iced_test::Simulator::with_size(Default::default(), size, app.theme_colors(Some(UiTheme::MonochromeGreen)));
             let boxes: Vec<_> = std::iter::once(None)
                 .chain(UiTheme::ALL.map(Some))
                 .map(|t| (t, sim.find(iced::widget::Id::from(swatch_id(t))).expect("a swatch").bounds()))

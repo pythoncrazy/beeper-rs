@@ -14,20 +14,12 @@ pub const COMMANDS: &[Cmd] = &[
         flags: &[Flag::s("user", "User ID to verify against (defaults to your own account)")],
         ..cmd("verify", "Finish setup verification or verify another device", drive)
     },
-    Cmd {
-        flags: &[ID],
-        ..cmd("verify approve", "Approve a pending device verification request", |c| action(c, "accept", None))
-    },
-    Cmd {
-        flags: &[ID],
-        ..cmd("verify cancel", "Cancel an in-progress device verification", |c| action(c, "cancel", Some(json!({}))))
-    },
+    Cmd { flags: &[ID], ..cmd("verify approve", "Approve a pending device verification request", |c| action(c, "accept", None)) },
+    Cmd { flags: &[ID], ..cmd("verify cancel", "Cancel an in-progress device verification", |c| action(c, "cancel", Some(json!({})))) },
     cmd("verify list", "List active verification work", list),
     Cmd {
         flags: &[ID],
-        ..cmd("verify qr-confirm", "Confirm that the other device scanned your QR code", |c| {
-            action(c, "qr/confirm-scanned", None)
-        })
+        ..cmd("verify qr-confirm", "Confirm that the other device scanned your QR code", |c| action(c, "qr/confirm-scanned", None))
     },
     Cmd {
         flags: &[ID, Flag::s("payload", "Raw QR-code data scanned from the other device").req()],
@@ -39,10 +31,7 @@ pub const COMMANDS: &[Cmd] = &[
     },
     cmd("verify reset-recovery-key", "Create a new encrypted-messages recovery key", reset_recovery_key),
     Cmd { flags: &[ID], ..cmd("verify sas", "Start emoji verification", |c| action(c, "sas/start", None)) },
-    Cmd {
-        flags: &[ID],
-        ..cmd("verify sas-confirm", "Confirm matching emoji verification", |c| action(c, "sas/confirm", None))
-    },
+    Cmd { flags: &[ID], ..cmd("verify sas-confirm", "Confirm matching emoji verification", |c| action(c, "sas/confirm", None)) },
     cmd("verify show", "Show the current active verification request", show),
     Cmd {
         flags: &[Flag::s("user", "User ID to verify with (defaults to your own account)")],
@@ -172,9 +161,7 @@ pub fn drive_verification(c: &mut Ctx, user: Option<String>) -> Res<Value> {
                 }
                 step(c, format!("{SETUP}/verifications/{id}/sas/confirm"), None)?
             }
-            Some(id) if has("qr.confirmScanned") => {
-                step(c, format!("{SETUP}/verifications/{id}/qr/confirm-scanned"), None)?
-            }
+            Some(id) if has("qr.confirmScanned") => step(c, format!("{SETUP}/verifications/{id}/qr/confirm-scanned"), None)?,
             _ => return Ok(state),
         };
     }

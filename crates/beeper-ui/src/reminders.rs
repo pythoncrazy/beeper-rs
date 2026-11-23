@@ -77,8 +77,7 @@ impl BeeperGuiApp {
                     }
                 }
                 let on = message_reminders_on(&st);
-                let messages: Vec<(String, String)> =
-                    st.message_reminders.iter().map(|(id, r)| (r.room_id.clone(), id.clone())).collect();
+                let messages: Vec<(String, String)> = st.message_reminders.iter().map(|(id, r)| (r.room_id.clone(), id.clone())).collect();
                 for (chat, id) in messages.into_iter().filter(|_| on) {
                     st.set_message_reminder(&chat, &id, None);
                 }
@@ -225,8 +224,7 @@ impl BeeperGuiApp {
         let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
         let can = st.feature("remind-later").on;
         let close = |msg: UiMessage| UiMessage::Message(message::Msg::Menu(Box::new(msg)));
-        let item =
-            |label: String, at: String, msg: Option<UiMessage>| (menu_item(p, None, label, at, msg), menu_pitch());
+        let item = |label: String, at: String, msg: Option<UiMessage>| (menu_item(p, None, label, at, msg), menu_pitch());
         let set = |at: i64| can.then(|| close(UiMessage::Reminders(Msg::Message(mid.into(), Some(at)))));
         let upgrade = (!can).then(|| {
             let open = close(UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus)));
@@ -234,20 +232,14 @@ impl BeeperGuiApp {
         });
         let done = st.message_reminders.contains_key(mid).then(|| {
             let done = close(UiMessage::Reminders(Msg::Message(mid.into(), None)));
-            [
-                item(trx("Mark as Done", "message reminder menu action").into(), String::new(), Some(done)),
-                (menu_rule(p), 11.0),
-            ]
+            [item(trx("Mark as Done", "message reminder menu action").into(), String::new(), Some(done)), (menu_rule(p), 11.0)]
         });
         let last = last_used(st, now).map(|at| item(tr("Last Used").into(), last_used_label(at, h24), set(at)));
         let presets = remind_presets(&st.settings, now).into_iter().map(|(label, at)| {
-            let msg = set(at).map(|set| {
-                UiMessage::Commands(vec![UiMessage::CommandBar(commands::Msg::LastTime(label.clone())), set])
-            });
+            let msg = set(at).map(|set| UiMessage::Commands(vec![UiMessage::CommandBar(commands::Msg::LastTime(label.clone())), set]));
             item(label, remind_label(at, h24), msg)
         });
-        let custom =
-            close(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::RemindMessage(mid.into()))));
+        let custom = close(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::RemindMessage(mid.into()))));
         let custom = item(tr("Custom…").into(), String::new(), can.then_some(custom));
         (upgrade.into_iter().flatten().chain(done.into_iter().flatten()).chain(last).chain(presets))
             .chain([(menu_rule(p), 11.0), custom])
@@ -261,8 +253,7 @@ impl BeeperGuiApp {
         let chats: Vec<&Chat> = ids.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect();
         let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
         let can = can_snooze(st, &chats);
-        let item =
-            |label: String, at: String, msg: Option<UiMessage>| (menu_item(p, None, label, at, msg), menu_pitch());
+        let item = |label: String, at: String, msg: Option<UiMessage>| (menu_item(p, None, label, at, msg), menu_pitch());
         let snooze = |at: Option<i64>| UiMessage::Reminders(Msg::Snooze(ids.to_vec(), at));
         let upgrade = snooze_upgrade(st, &chats).then(|| {
             let open = UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus));
@@ -285,12 +276,8 @@ impl BeeperGuiApp {
     }
 }
 
-pub(crate) const REMINDER_ORDERS: [&str; 4] = [
-    "Order by Least Time Remaining",
-    "Order by Most Time Remaining",
-    "Order by Oldest Message",
-    "Order by Newest Message",
-];
+pub(crate) const REMINDER_ORDERS: [&str; 4] =
+    ["Order by Least Time Remaining", "Order by Most Time Remaining", "Order by Oldest Message", "Order by Newest Message"];
 
 pub(crate) fn remind_label(at: i64, h24: bool) -> String {
     let wd = WEEKDAYS[(day_of(at) + 4).rem_euclid(7) as usize];
@@ -314,13 +301,13 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let order = self.store.read().settings.reminders_order;
         let lead = |on: bool| Some(container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into());
-        let orders = REMINDER_ORDERS.iter().zip(0..).map(|(label, i)| {
-            menu_item(p, lead(order == i), tr(label).into(), "", Some(UiMessage::Reminders(reminders::Msg::Order(i))))
-        });
+        let orders = REMINDER_ORDERS
+            .iter()
+            .zip(0..)
+            .map(|(label, i)| menu_item(p, lead(order == i), tr(label).into(), "", Some(UiMessage::Reminders(reminders::Msg::Order(i)))));
         let ask = Some(UiMessage::Ask(Some(ASK_DISMISS_REMINDERS)));
-        let col = Column::with_children(
-            orders.chain([menu_rule(p), menu_item(p, lead(false), tr("Dismiss All Reminders").into(), "", ask)]),
-        );
+        let col =
+            Column::with_children(orders.chain([menu_rule(p), menu_item(p, lead(false), tr("Dismiss All Reminders").into(), "", ask)]));
         crate::menu_card(p, col, 291).into()
     }
 
@@ -558,8 +545,7 @@ mod tests {
     #[test]
     fn snooze_command_bar_like_desktop() {
         let (mut app, chat, _) = internal_app("snooze-commands");
-        let _ = app
-            .update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Snooze(vec![chat.clone()]))));
+        let _ = app.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Snooze(vec![chat.clone()]))));
         let footer = "Snoozed chats leave your inbox and stay quiet until the time you pick";
         assert!(simulator(app.view_main()).find(footer).is_ok());
         let labels = |app: &BeeperGuiApp| -> Vec<String> {

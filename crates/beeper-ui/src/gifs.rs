@@ -154,9 +154,7 @@ impl BeeperGuiApp {
             (Key::Named(Named::ArrowDown), None) if n > 0 => select(self, 0),
             (Key::Named(Named::ArrowLeft), Some(i)) => select(self, i.saturating_sub(1).min(n - 1)),
             (Key::Named(Named::ArrowRight), Some(i)) => select(self, (i + 1).min(n - 1)),
-            (Key::Named(Named::Enter), Some(i)) if i < n => {
-                self.update(UiMessage::Gifs(gifs::Msg::PickGif(self.gifs[i].clone())))
-            }
+            (Key::Named(Named::Enter), Some(i)) if i < n => self.update(UiMessage::Gifs(gifs::Msg::PickGif(self.gifs[i].clone()))),
             (Key::Named(Named::Escape), _) => {
                 self.pane.picker = None;
                 operation::focus("composer-input")
@@ -169,8 +167,7 @@ impl BeeperGuiApp {
     /// picked video.
     pub(crate) fn download_gif(&self, g: KlipyGif) -> Task<UiMessage> {
         let st = self.store.read();
-        let chat = &st.chats
-            [st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
+        let chat = &st.chats[st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
         let Some((url, size, mp4)) = portal::gif_format(&g, &chat.file) else { return Task::none() };
         let (url, name) = (url.to_string(), format!("{}.{}", g.id, if mp4 { "mp4" } else { "gif" }));
         let load = async move {
@@ -198,9 +195,7 @@ impl BeeperGuiApp {
     pub(crate) fn load_sticker_packs(&mut self) -> Task<UiMessage> {
         (self.pane.stickers, self.pane.sticker_tab) = (None, None);
         let room = self.pane.selected_chat_id.clone().expect("an open chat");
-        Task::perform(beeper_core::matrix::sticker_packs(self.store.clone(), room), |a0| {
-            UiMessage::Gifs(gifs::Msg::StickerPacks(a0))
-        })
+        Task::perform(beeper_core::matrix::sticker_packs(self.store.clone(), room), |a0| UiMessage::Gifs(gifs::Msg::StickerPacks(a0)))
     }
 
     /// Desktop's `onSelect` of the sticker picker: an animated sticker needs a chat that takes it, and the image
@@ -209,8 +204,7 @@ impl BeeperGuiApp {
         use beeper_core::media::{animated, takes_sticker};
         self.pane.picker = None;
         let st = self.store.read();
-        let chat = &st.chats
-            [st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
+        let chat = &st.chats[st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
         let mime = s.info["mimetype"].as_str().map(str::to_string);
         if mime.as_deref().is_some_and(|m| animated(m) && !takes_sticker(&chat.file, m)) {
             drop(st);
@@ -231,8 +225,7 @@ impl BeeperGuiApp {
                     None => reader.format().map(|f| f.to_mime_type().to_string()),
                 };
                 let mime = mime.or(sniffed).ok_or("The sticker has no image type")?;
-                let ext =
-                    mime.split_once('/').map(|(_, t)| t.replace("x-tgsticker", "tgs").replace("lottie+json", "json"));
+                let ext = mime.split_once('/').map(|(_, t)| t.replace("x-tgsticker", "tgs").replace("lottie+json", "json"));
                 let code = Some(s.shortcodes[0].as_str()).filter(|c| !c.is_empty()).unwrap_or("sticker");
                 let name = format!("{code}.{}", ext.unwrap_or_else(|| "webp".into()));
                 // An animated sticker has the size of its composition.
@@ -279,12 +272,8 @@ impl BeeperGuiApp {
         };
         // Desktop's grid: 4 columns in 393 px, less the padding of 6 and 8 px and the gaps of 8 px.
         let cell = (393.0 - 12.0 - 16.0 - 24.0) / 4.0;
-        let body: El<'a> = match (self.pane().stickers.as_ref().is_some_and(|_| packs.is_empty()) || failed)
-            && recent.is_empty()
-        {
-            true => {
-                container(txt(tr("No sticker packs yet."), 13.0).color(p.muted)).padding([16, 12]).center_x(Fill).into()
-            }
+        let body: El<'a> = match (self.pane().stickers.as_ref().is_some_and(|_| packs.is_empty()) || failed) && recent.is_empty() {
+            true => container(txt(tr("No sticker packs yet."), 13.0).color(p.muted)).padding([16, 12]).center_x(Fill).into(),
             false => {
                 let rows = shown.chunks(4).map(|row| {
                     let cells = row.iter().map(|x| {
@@ -311,17 +300,12 @@ impl BeeperGuiApp {
                 .on_press(msg)
                 .into()
         };
-        let recent_tab = (!recent.is_empty()).then(|| {
-            tab_btn(tinted(&TIMER, 20.0, p.muted), tab == Some(None), UiMessage::Gifs(gifs::Msg::StickerTab(None)))
-        });
+        let recent_tab = (!recent.is_empty())
+            .then(|| tab_btn(tinted(&TIMER, 20.0, p.muted), tab == Some(None), UiMessage::Gifs(gifs::Msg::StickerTab(None))));
         let pack_tabs = packs.iter().map(|x| {
             let avatar = x.avatar.as_deref().unwrap_or(&x.stickers[0].url);
             let on = tab.as_ref().is_some_and(|t| t.as_ref() == Some(&x.id));
-            tab_btn(
-                picture(avatar, Length::Fixed(32.0), 32.0),
-                on,
-                UiMessage::Gifs(gifs::Msg::StickerTab(Some(x.id.clone()))),
-            )
+            tab_btn(picture(avatar, Length::Fixed(32.0), 32.0), on, UiMessage::Gifs(gifs::Msg::StickerTab(Some(x.id.clone()))))
         });
         let tabs = Row::new().push(recent_tab).extend(pack_tabs).spacing(4).padding([4, 6]);
         let rule = container(Space::new().width(Fill).height(1)).style(fill_box(p.border_weak, 0.0));

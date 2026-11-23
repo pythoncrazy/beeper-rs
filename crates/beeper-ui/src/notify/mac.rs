@@ -31,9 +31,7 @@ pub(super) fn show(id: u32, t: Toast) -> Result<(), String> {
             }
             let action = match n.send() {
                 Ok(NotificationResponse::Click) => Some("default".to_string()),
-                Ok(NotificationResponse::ActionButton(label)) => {
-                    t.buttons.iter().find(|b| b.1 == label).map(|b| b.0.clone())
-                }
+                Ok(NotificationResponse::ActionButton(label)) => t.buttons.iter().find(|b| b.1 == label).map(|b| b.0.clone()),
                 Ok(NotificationResponse::Reply(text)) => Some(format!("{}{text}", super::REPLY)),
                 Ok(_) => None,
                 Err(e) => return eprintln!("show a notification: {e}"),

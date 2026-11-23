@@ -42,21 +42,11 @@ impl Operation for HasFocus {
 }
 
 impl Widget<UiMessage, Theme, Renderer> for Watch<'_> {
-    crate::delegate::delegate!(
-        state(Watched),
-        children,
-        diff,
-        size,
-        layout,
-        operate,
-        mouse_interaction,
-        draw,
-        overlay(UiMessage)
-    );
+    crate::delegate::delegate!(state(Watched), children, diff, size, layout, operate, mouse_interaction, draw, overlay(UiMessage));
 
     fn update(
-        &mut self, tree: &mut advanced::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
-        renderer: &Renderer, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, UiMessage>, viewport: &Rectangle,
+        &mut self, tree: &mut advanced::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, UiMessage>, viewport: &Rectangle,
     ) {
         let content = &mut tree.children[0];
         self.content.as_widget_mut().update(content, event, layout, cursor, renderer, clipboard, shell, viewport);
@@ -267,21 +257,9 @@ struct Mark(Keys);
 struct Trap;
 
 impl Widget<UiMessage, Theme, Renderer> for Target<'_> {
-    crate::delegate::delegate!(
-        children,
-        diff,
-        size,
-        layout,
-        update(UiMessage),
-        mouse_interaction,
-        draw,
-        overlay(UiMessage)
-    );
+    crate::delegate::delegate!(children, diff, size, layout, update(UiMessage), mouse_interaction, draw, overlay(UiMessage));
 
-    fn operate(
-        &mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer,
-        operation: &mut dyn advanced::Operation,
-    ) {
+    fn operate(&mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn advanced::Operation) {
         operation.container(Some(&self.id), layout.bounds());
         operation.custom(Some(&self.id), layout.bounds(), &mut Mark(self.keys.clone()));
         self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
@@ -294,21 +272,9 @@ pub fn trap<'a>(content: impl Into<El<'a>>) -> El<'a> {
         content: El<'a>,
     }
     impl Widget<UiMessage, Theme, Renderer> for Trapped<'_> {
-        crate::delegate::delegate!(
-            children,
-            diff,
-            size,
-            layout,
-            update(UiMessage),
-            mouse_interaction,
-            draw,
-            overlay(UiMessage)
-        );
+        crate::delegate::delegate!(children, diff, size, layout, update(UiMessage), mouse_interaction, draw, overlay(UiMessage));
 
-        fn operate(
-            &mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer,
-            operation: &mut dyn advanced::Operation,
-        ) {
+        fn operate(&mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn advanced::Operation) {
             operation.custom(None, layout.bounds(), &mut Trap);
             self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
         }
@@ -414,10 +380,7 @@ impl Operation<Survey> for Surveying {
         }
     }
 
-    fn scrollable(
-        &mut self, id: Option<&iced::widget::Id>, bounds: Rectangle, content: Rectangle, at: Vector,
-        _: &mut dyn Scrollable,
-    ) {
+    fn scrollable(&mut self, id: Option<&iced::widget::Id>, bounds: Rectangle, content: Rectangle, at: Vector, _: &mut dyn Scrollable) {
         if let (true, Some(id)) = (self.inside, id) {
             self.survey.scrolls.push(Scroll(id.clone(), bounds, content, at.y));
         }
@@ -503,9 +466,7 @@ impl BeeperGuiApp {
 
     /// Chromium's keys of the focus in `window`: Tab and Shift+Tab, and Enter and the arrows on the focused control,
     /// or on the control with the focus when the window opens with `defaults`. Other keys are not the focus's.
-    pub(crate) fn focus_key(
-        &self, window: window::Id, key: &Key, mods: Modifiers, defaults: bool,
-    ) -> Option<Task<UiMessage>> {
+    pub(crate) fn focus_key(&self, window: window::Id, key: &Key, mods: Modifiers, defaults: bool) -> Option<Task<UiMessage>> {
         let held = defaults || self.key_targets.contains_key(&window);
         let ask = match key.as_ref() {
             Key::Named(Named::Tab) if (mods - Modifiers::SHIFT).is_empty() => Ask::Tab(mods.shift()),
@@ -546,9 +507,7 @@ impl BeeperGuiApp {
                 let (edge, halo) = if on { (CHROMIUM_RING, Color::WHITE) } else { (CLEAR, CLEAR) };
                 ring::ring(ring::ring(content, edge, 2.0, 2.0).offset(-1.0), halo, 1.0, 2.0).offset(1.0).into()
             }
-            Look::Fill(color, radius) => {
-                container(content).style(fill_box(if on { color } else { CLEAR }, radius)).into()
-            }
+            Look::Fill(color, radius) => container(content).style(fill_box(if on { color } else { CLEAR }, radius)).into(),
             Look::Dashed(color) => {
                 let line = container(crate::dashed::dashes(color.scale_alpha(0.3), 2.0, 1.0)).padding(3);
                 stack![content.into()].push(on.then_some(line)).into()
@@ -676,11 +635,8 @@ pub(crate) mod tests {
     fn snapshots_of_one_name_do_not_collide() {
         let size = Size::new(40.0, 20.0);
         let widths: Vec<u32> = std::thread::scope(|s| {
-            let runs: Vec<_> = (0..8)
-                .map(|_| {
-                    s.spawn(move || (0..4).map(|_| shot(iced::widget::text("x").into(), size, "same").width()).sum())
-                })
-                .collect();
+            let runs: Vec<_> =
+                (0..8).map(|_| s.spawn(move || (0..4).map(|_| shot(iced::widget::text("x").into(), size, "same").width()).sum())).collect();
             runs.into_iter().map(|r| r.join().expect("a snapshot of its own")).collect()
         });
         assert!(widths.iter().all(|&w| w >= 4 * 40), "{widths:?}");

@@ -1,16 +1,14 @@
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
-    system_user, timer_distance, ActionButton, AppVerification, Attachment, AttachmentSize, Bookmark,
-    BridgeAccountInfo, Chat, ChatFlag, ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, InstalledPack,
-    Label, Message, MessageLink, MessageReminder, MessageRules, MessageTimer, Older, PollData, PollOption, PollRules,
-    Reaction, SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers, Transcription, User,
-    VerificationDevice, VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS,
-    ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS,
-    DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK,
-    MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR,
-    PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION,
-    TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    system_user, timer_distance, ActionButton, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatFlag,
+    ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, InstalledPack, Label, Message, MessageLink, MessageReminder, MessageRules,
+    MessageTimer, Older, PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers,
+    Transcription, User, VerificationDevice, VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS,
+    ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS,
+    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS,
+    MEMBER_KICK, MESSAGE_REMINDER, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE,
+    REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID, TYPING_DURATION};
@@ -22,8 +20,7 @@ use matrix_sdk::encryption::backups::BackupState;
 use matrix_sdk::encryption::recovery::{RecoveryError, RecoveryState};
 use matrix_sdk::encryption::secret_storage::SecretStorageError;
 use matrix_sdk::encryption::verification::{
-    CancelInfo, QrVerificationData, QrVerificationState, SasState, Verification, VerificationRequest,
-    VerificationRequestState,
+    CancelInfo, QrVerificationData, QrVerificationState, SasState, Verification, VerificationRequest, VerificationRequestState,
 };
 use matrix_sdk::encryption::{BackupDownloadStrategy, CrossSigningResetAuthType, EncryptionSettings};
 use matrix_sdk::event_handler::Ctx;
@@ -126,9 +123,7 @@ fn body(c: &Value) -> Option<String> {
 }
 
 fn caption(c: &Value) -> Option<String> {
-    (unresolved_media(c).is_some() || s(&c["filename"]).is_some_and(|f| c["body"] != f.as_str()))
-        .then(|| body(c))
-        .flatten()
+    (unresolved_media(c).is_some() || s(&c["filename"]).is_some_and(|f| c["body"] != f.as_str())).then(|| body(c)).flatten()
 }
 
 fn html(c: &Value) -> Option<String> {
@@ -204,9 +199,9 @@ fn account_id(bridge: &Value, accounts: &[BridgeAccountInfo]) -> String {
     let logins: Vec<&BridgeAccountInfo> = accounts.iter().filter(|a| a.bridge_id == name).collect();
     let receiver = s(&bridge["channel"]["fi.mau.receiver"]).filter(|r| *r != name && r != "unknown");
     let one = |v: Vec<&&BridgeAccountInfo>| (v.len() == 1).then(|| v[0].account_id.clone());
-    let workspace = s(&bridge["network"]["id"]).filter(|_| name == "slackgo").and_then(|n| {
-        one(logins.iter().filter(|a| a.login_id == n || a.login_id.starts_with(&format!("{n}-"))).collect())
-    });
+    let workspace = s(&bridge["network"]["id"])
+        .filter(|_| name == "slackgo")
+        .and_then(|n| one(logins.iter().filter(|a| a.login_id == n || a.login_id.starts_with(&format!("{n}-"))).collect()));
     let by_receiver = receiver.as_ref().and_then(|r| logins.iter().find(|a| a.login_id == *r));
     let only = receiver.is_none().then(|| one(logins.iter().collect())).flatten();
     by_receiver.map(|a| a.account_id.clone()).or(workspace).or(only).unwrap_or(name)
@@ -267,11 +262,7 @@ pub fn network_key(account_id: &str, network: &str) -> String {
             _ => Some(network.to_string()),
         };
         let parts = [Some(bridge.to_string()), Some(login.to_string()), network].into_iter().flatten();
-        return ["v2".to_string(), "cloud".into()]
-            .into_iter()
-            .chain(parts.map(|p| key_part(&p)))
-            .collect::<Vec<_>>()
-            .join(":");
+        return ["v2".to_string(), "cloud".into()].into_iter().chain(parts.map(|p| key_part(&p))).collect::<Vec<_>>().join(":");
     }
     let owner = if bridge != account_id && bridge != "slackgo" { bridge } else { account_id };
     format!("{owner}.{network}")
@@ -313,8 +304,7 @@ fn visibility<'a>(rules: &'a Value, key: &str) -> Option<&'a str> {
     let known = |v: &'a Value| v.as_str().filter(|v| matches!(*v, "all" | "dmOnly" | "none"));
     let versioned = |k: &str| {
         k.is_empty()
-            || (k.starts_with('v')
-                && k[1..].split_once(':').is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+            || (k.starts_with('v') && k[1..].split_once(':').is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
     };
     let key = match older_key(key) {
         Some(_) if table.get(key).and_then(known).is_some() => return table.get(key).and_then(known),
@@ -340,9 +330,7 @@ pub fn with_inbox_visibility(mut rules: Value, key: &str, option: &str) -> Value
 pub fn hidden_from_inbox(rules: &Value, account_id: &str, bridge: &Value, group: bool) -> bool {
     let name = bridge["com.beeper.bridge_name"].as_str().unwrap_or_default();
     let scoped = match s(&bridge["network"]["id"]) {
-        Some(n) if !matches!(name, "slackgo" | "whatsapp" | "telegram") => {
-            visibility(rules, &network_key(account_id, &n))
-        }
+        Some(n) if !matches!(name, "slackgo" | "whatsapp" | "telegram") => visibility(rules, &network_key(account_id, &n)),
         _ => None,
     };
     match scoped.unwrap_or(inbox_rule(rules, account_id, name, None).1) {
@@ -429,8 +417,7 @@ fn manage(levels: &Value, actions: u8, me: &str, id: &str, bridged: bool) -> u8 
     let power = |id: &str| levels["users"][id].as_i64().or(levels["users_default"].as_i64()).unwrap_or(0);
     let (mine, below) = (power(me), power(id) < power(me));
     let kick = actions & MEMBER_KICK != 0 && mine >= levels["kick"].as_i64().unwrap_or(50) && below;
-    let roles =
-        mine >= levels["events"]["m.room.power_levels"].as_i64().or(levels["state_default"].as_i64()).unwrap_or(50);
+    let roles = mine >= levels["events"]["m.room.power_levels"].as_i64().or(levels["state_default"].as_i64()).unwrap_or(50);
     let role = roles && id != me && (bridged || below);
     (u8::from(kick) * MANAGE_KICK) | (u8::from(role) * MANAGE_ROLE)
 }
@@ -440,9 +427,7 @@ fn timers(features: Option<&Value>, levels: &Value, me: &str) -> Option<Timers> 
     let t = features.map_or(Some(&Value::Null), |f| f.get("disappearing_timer").filter(|t| t.is_object()))?;
     Some(Timers {
         kind: t["types"][0].as_str().unwrap_or("after_send").into(),
-        timers: t["timers"]
-            .as_array()
-            .map_or(DEFAULT_TIMERS.to_vec(), |a| a.iter().filter_map(Value::as_u64).collect()),
+        timers: t["timers"].as_array().map_or(DEFAULT_TIMERS.to_vec(), |a| a.iter().filter_map(Value::as_u64).collect()),
         can_set: can_send(features, levels, me, DISAPPEARING_TIMER),
     })
 }
@@ -617,8 +602,7 @@ async fn members(room: &Room, reads: &RoomReads) -> (Vec<User>, String, bool) {
     let bot = s(&bridge["bridgebot"]);
     let me = room.own_user_id();
     // Desktop lists the invited members too, as pending (`isPending`).
-    let members =
-        room.members_no_sync(RoomMemberships::JOIN | RoomMemberships::INVITE).await.expect("read room members");
+    let members = room.members_no_sync(RoomMemberships::JOIN | RoomMemberships::INVITE).await.expect("read room members");
     let levels = power_levels(room, reads);
     let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
     let member_actions = member_actions(reads.features.as_ref());
@@ -635,8 +619,7 @@ async fn members(room: &Room, reads: &RoomReads) -> (Vec<User>, String, bool) {
             .map(|(_, v)| v.to_string())
     };
     // Desktop names a member without a display name by its user ID.
-    let unnamed: HashSet<String> =
-        members.iter().filter(|m| m.display_name().is_none()).map(|m| m.user_id().to_string()).collect();
+    let unnamed: HashSet<String> = members.iter().filter(|m| m.display_name().is_none()).map(|m| m.user_id().to_string()).collect();
     let mut items: Vec<User> = members
         .iter()
         .filter(|m| !service.contains(m.user_id()) && bot.as_deref() != Some(m.user_id().as_str()))
@@ -653,8 +636,7 @@ async fn members(room: &Room, reads: &RoomReads) -> (Vec<User>, String, bool) {
                 cannot_message: Some(false),
                 is_network_bot: Some(contents.get(id).is_some_and(|c| c["com.beeper.bridge.is_network_bot"] == true)),
                 is_admin: Some(m.power_level() > UserPowerLevel::Int(users_default)),
-                is_pending: (*m.membership() == matrix_sdk::ruma::events::room::member::MembershipState::Invite)
-                    .then_some(true),
+                is_pending: (*m.membership() == matrix_sdk::ruma::events::room::member::MembershipState::Invite).then_some(true),
                 manage: manage(&levels, member_actions, me.as_str(), id, !bridge.is_null()),
                 ..Default::default()
             }
@@ -684,8 +666,7 @@ async fn members(room: &Room, reads: &RoomReads) -> (Vec<User>, String, bool) {
         } else {
             // Desktop's `tIe`: a group is named by its members, a direct chat by the name of the other member.
             let anonymous = |u: &User| User { full_name: None, ..u.clone() };
-            let titled: Vec<User> =
-                items.iter().map(|u| if unnamed.contains(&u.id) { anonymous(u) } else { u.clone() }).collect();
+            let titled: Vec<User> = items.iter().map(|u| if unnamed.contains(&u.id) { anonymous(u) } else { u.clone() }).collect();
             match dm {
                 true => titled.iter().find(|u| u.is_self != Some(true)).map(|u| u.sort_name().to_string()),
                 false => Some(crate::models::group_title(&titled)),
@@ -720,9 +701,7 @@ impl Globals {
     }
 }
 
-async fn chat(
-    room: &Room, reads: &RoomReads, accounts: &[BridgeAccountInfo], rules: &Value, known: Known, globals: &Globals,
-) -> Chat {
+async fn chat(room: &Room, reads: &RoomReads, accounts: &[BridgeAccountInfo], rules: &Value, known: Known, globals: &Globals) -> Chat {
     let bridge = &reads.bridge;
     let Known { participants: mut items, title, dm } = known;
     let me = room.own_user_id();
@@ -773,20 +752,17 @@ async fn chat(
             Some(ChatReminder::new(at, r["dismiss_on_incoming_message"] == true))
         }),
         // Desktop's `com.beeper.chats.snoozed` handler keeps a snooze that ends in the future.
-        snoozed_until_ms: (reads.snoozed.as_ref())
-            .and_then(|s| s["snoozed_until_ms"].as_i64())
-            .filter(|&ms| ms > now_unix_millis()),
+        snoozed_until_ms: (reads.snoozed.as_ref()).and_then(|s| s["snoozed_until_ms"].as_i64()).filter(|&ms| ms > now_unix_millis()),
         delete_modes: features.as_ref().map_or(0, |f| {
-            (u8::from(f["delete_chat"] == true) * DELETE_FOR_ME)
-                | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
+            (u8::from(f["delete_chat"] == true) * DELETE_FOR_ME) | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
         }),
         can_accept_request: features.as_ref().is_some_and(|f| f["message_request"]["accept_with_button"] == 2),
         block: block_bits(features.as_ref(), bridge),
         edits: edit_bits(features.as_ref(), &levels, me.as_str()),
         member_actions,
-        formatting: features.as_ref().map_or(ALL_FORMATS, |f| {
-            FORMATS.iter().enumerate().filter(|(_, k)| f["formatting"][**k] == 2).fold(0, |m, (i, _)| m | 1 << i)
-        }),
+        formatting: features
+            .as_ref()
+            .map_or(ALL_FORMATS, |f| FORMATS.iter().enumerate().filter(|(_, k)| f["formatting"][**k] == 2).fold(0, |m, (i, _)| m | 1 << i)),
         file,
         room_features,
         features: features.clone().map(Box::new),
@@ -807,9 +783,7 @@ async fn chat(
         threads: features.as_ref().is_some_and(|f| f["thread"].as_i64() > Some(0)),
         follows: reads.follows.as_ref().and_then(ThreadFollows::parse).unwrap_or_default(),
         // Desktop's `Up`: a sound it knows, else the Default sound.
-        notification_sound: (reads.sound.as_ref())
-            .and_then(|d| s(&d["sound"]))
-            .filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
+        notification_sound: (reads.sound.as_ref()).and_then(|d| s(&d["sound"])).filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
         ..Default::default()
     };
     let name = reads.personal_name.as_ref().and_then(|n| s(&n["name"])).filter(|n| !n.is_empty());
@@ -830,11 +804,9 @@ fn power(levels: &Value, user: &str) -> i64 {
 
 fn url_field(url: &Value, file: &Value) -> Option<String> {
     match file.as_object() {
-        Some(f) => Some(format!(
-            "{}?{ENCRYPTED_FILE}={}",
-            s(&file["url"])?,
-            crate::codec::url_encode(&Value::Object(f.clone()).to_string())
-        )),
+        Some(f) => {
+            Some(format!("{}?{ENCRYPTED_FILE}={}", s(&file["url"])?, crate::codec::url_encode(&Value::Object(f.clone()).to_string())))
+        }
         None => s(url),
     }
 }
@@ -848,11 +820,7 @@ fn attachment(c: &Value, kind: &str) -> Attachment {
         duration: info["duration"].as_f64().map(|ms| ms / 1000.0),
         file_name: s(&c["filename"]).or(s(&c["body"])),
         file_size: info["size"].as_u64(),
-        is_gif: Some(
-            info["fi.mau.gif"] == true
-                || info["org.matrix.msc4230.is_animated"] == true
-                || info["mimetype"] == "image/gif",
-        ),
+        is_gif: Some(info["fi.mau.gif"] == true || info["org.matrix.msc4230.is_animated"] == true || info["mimetype"] == "image/gif"),
         is_sticker: Some(false),
         is_voice_note: Some(voice),
         mime_type: s(&info["mimetype"]),
@@ -865,9 +833,7 @@ fn attachment(c: &Value, kind: &str) -> Attachment {
 
 fn content(kind: &str, c: &Value) -> Option<(Option<String>, Vec<Attachment>, &'static str)> {
     match (kind, c["msgtype"].as_str()) {
-        ("m.sticker", _) => {
-            Some((None, vec![Attachment { is_sticker: Some(true), ..attachment(c, "img") }], "STICKER"))
-        }
+        ("m.sticker", _) => Some((None, vec![Attachment { is_sticker: Some(true), ..attachment(c, "img") }], "STICKER")),
         ("m.room.message", Some("m.image")) => Some((caption(c), vec![attachment(c, "img")], "IMAGE")),
         ("m.room.message", Some("m.video")) => Some((caption(c), vec![attachment(c, "video")], "VIDEO")),
         ("m.room.message", Some("m.audio")) if c.get("org.matrix.msc3245.voice").is_some() => {
@@ -898,8 +864,7 @@ fn poll_text(v: &Value) -> String {
 
 /// Desktop's `handlePollStart`.
 fn poll(c: &Value) -> Option<PollData> {
-    let p =
-        [&c["org.matrix.msc3381.poll.start"], &c["m.poll.start"], &c["m.poll"]].into_iter().find(|p| p.is_object())?;
+    let p = [&c["org.matrix.msc3381.poll.start"], &c["m.poll.start"], &c["m.poll"]].into_iter().find(|p| p.is_object())?;
     let answers = p["answers"].as_array().map(Vec::as_slice).unwrap_or_default();
     let options = answers.iter().map(|a| PollOption {
         id: s(&a["m.id"]).or(s(&a["id"])).unwrap_or_default(),
@@ -934,8 +899,7 @@ fn edit_poll(m: &mut Message, mut poll: PollData, timestamp: Option<String>) {
 
 /// Desktop's poll response answers.
 fn poll_answers(c: &Value) -> Vec<String> {
-    let answers =
-        [&c["org.matrix.msc3381.poll.response"]["answers"], &c["m.poll.response"]["answers"], &c["m.selections"]];
+    let answers = [&c["org.matrix.msc3381.poll.response"]["answers"], &c["m.poll.response"]["answers"], &c["m.selections"]];
     let list = answers.into_iter().find_map(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     list.iter().filter_map(|a| a.as_str().map(str::to_string)).collect()
 }
@@ -944,9 +908,8 @@ fn poll_answers(c: &Value) -> Vec<String> {
 fn bridge_bot(user: &str) -> bool {
     let local = user.ends_with(":beeper.local") || user.ends_with(".localhost");
     let bot = user.strip_prefix('@').and_then(|u| u.strip_suffix("bot:beeper.local"));
-    bot.is_some_and(|b| {
-        (1..=32).contains(&b.len()) && b.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-    }) || (user.starts_with("@_bridgebot:") && local)
+    bot.is_some_and(|b| (1..=32).contains(&b.len()) && b.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'))
+        || (user.starts_with("@_bridgebot:") && local)
 }
 
 fn unresolved_media(c: &Value) -> Option<String> {
@@ -1026,12 +989,7 @@ async fn op(
         "org.matrix.msc3381.poll.start" | "m.poll.start" if rel["rel_type"] == "m.replace" => {
             let ts = e["origin_server_ts"].as_i64().expect("event timestamp");
             let timestamp = (c["com.beeper.dont_render_edited"] != true).then(|| rfc3339_from_millis(ts));
-            return Some(Op::PollEdit(
-                s(&rel["event_id"])?,
-                sender,
-                Box::new(self::poll(&c["m.new_content"])?),
-                timestamp,
-            ));
+            return Some(Op::PollEdit(s(&rel["event_id"])?, sender, Box::new(self::poll(&c["m.new_content"])?), timestamp));
         }
         "org.matrix.msc3381.poll.response" | "m.poll.response" => {
             return Some(Op::Vote(s(&rel["event_id"])?, sender, poll_answers(c)));
@@ -1172,8 +1130,7 @@ fn membership_text(now: &str, before: &str, (name, me): (&str, bool), by: Option
     let n = if me { "You" } else { name };
     let (a, was, is) = if me { ("you", "were", "are") } else { (n, "was", "is") };
     let r = by.flatten();
-    let removed =
-        r.map_or_else(|| format!("{n} {was} removed from the chat"), |r| format!("{r} removed {a} from the chat"));
+    let removed = r.map_or_else(|| format!("{n} {was} removed from the chat"), |r| format!("{r} removed {a} from the chat"));
     match (now, before) {
         ("join", _) => format!("{n} joined the chat"),
         ("leave", "ban") => r.map_or_else(|| format!("{n} {was} unbanned"), |r| format!("{r} unbanned {a}")),
@@ -1190,9 +1147,7 @@ fn membership_text(now: &str, before: &str, (name, me): (&str, bool), by: Option
         ("leave" | "ban", "join") => removed,
         ("leave", _) => format!("{n} {is} no longer in the chat"),
         ("ban", _) => r.map_or_else(|| format!("{n} {was} banned"), |r| format!("{r} banned {a}")),
-        ("invite", _) => {
-            r.map_or_else(|| format!("{n} {was} invited to the chat"), |r| format!("{r} invited {a} to the chat"))
-        }
+        ("invite", _) => r.map_or_else(|| format!("{n} {was} invited to the chat"), |r| format!("{r} invited {a} to the chat")),
         _ => unreachable!("membership {now}"),
     }
 }
@@ -1212,9 +1167,8 @@ pub fn link(p: &Value) -> Option<MessageLink> {
 
 pub fn reaction_text(key: &str, target: Option<&Message>, who: Option<&str>) -> String {
     let whose = if target.is_some_and(|t| t.is_sender == Some(true)) { "your" } else { "a" };
-    let plain = |t: &Message| {
-        t.html.as_deref().map(crate::codec::html_text).or_else(|| t.text.as_deref().map(crate::codec::markdown_links))
-    };
+    let plain =
+        |t: &Message| t.html.as_deref().map(crate::codec::html_text).or_else(|| t.text.as_deref().map(crate::codec::markdown_links));
     let object = match target.map(|t| (plain(t).filter(|x| !x.is_empty()), t.attachments.first())) {
         Some((Some(text), _)) => format!("\"{text}\""),
         Some((None, Some(a))) => match a.attachment_type.as_str() {
@@ -1248,9 +1202,7 @@ const MIN_SAFE_INTEGER: i64 = -9_007_199_254_740_991;
 
 /// One page of the room timeline back from `from`, oldest first, and the token of the page before it, or `None`
 /// at the start of the room.
-async fn page(
-    room: &Room, from: Option<String>, limit: u32,
-) -> matrix_sdk::Result<(Vec<TimelineEvent>, Option<String>)> {
+async fn page(room: &Room, from: Option<String>, limit: u32) -> matrix_sdk::Result<(Vec<TimelineEvent>, Option<String>)> {
     let mut opts = MessagesOptions::backward();
     (opts.from, opts.limit) = (from, limit.into());
     let page = room.messages(opts).await?;
@@ -1501,14 +1453,11 @@ async fn union_rooms(room: &Room) -> Vec<String> {
 /// Desktop's `createUnion`: a private `com.beeper.union` room with the name and the member rooms as `m.space.child`
 /// state, then its photo (`setUnionAvatarMxc`).
 async fn create_union(
-    store: &SharedStore, client: &Client, draft: &str, title: Option<String>, rooms: Vec<String>,
-    avatar: Option<String>,
+    store: &SharedStore, client: &Client, draft: &str, title: Option<String>, rooms: Vec<String>, avatar: Option<String>,
 ) -> Result<(), String> {
-    let name =
-        title.map(|name| serde_json::json!({ "type": "m.room.name", "state_key": "", "content": { "name": name } }));
-    let children = rooms
-        .iter()
-        .map(|r| serde_json::json!({ "type": "m.space.child", "state_key": r, "content": { "via": ["beeper.com"] } }));
+    let name = title.map(|name| serde_json::json!({ "type": "m.room.name", "state_key": "", "content": { "name": name } }));
+    let children =
+        rooms.iter().map(|r| serde_json::json!({ "type": "m.space.child", "state_key": r, "content": { "via": ["beeper.com"] } }));
     let request = serde_json::json!({
         "creation_content": { "type": UNION, "com.beeper.union": true },
         "initial_state": name.into_iter().chain(children).collect::<Vec<_>>(),
@@ -1527,8 +1476,7 @@ async fn create_union(
 /// Desktop's `createLabel` and `addRoomToLabel`.
 async fn create_label(store: &SharedStore, client: &Client, label: Label) -> Result<(), String> {
     use matrix_sdk::ruma::api::client::room::create_room::v3::{Request, RoomPreset};
-    let event =
-        |kind: &str, content: Value| raw(&serde_json::json!({ "type": kind, "state_key": "", "content": content }));
+    let event = |kind: &str, content: Value| raw(&serde_json::json!({ "type": kind, "state_key": "", "content": content }));
     let mut request = Request::new();
     request.creation_content = Some(raw(&serde_json::json!({ "type": "m.space", "com.beeper.label": true })));
     request.initial_state = std::iter::once(event("m.room.name", serde_json::json!({ "name": label.name })))
@@ -1591,9 +1539,7 @@ async fn sync_message_reminders(store: &SharedStore, room: &Room, events: Vec<Ti
     let me = room.own_user_id().as_str();
     let changes = events
         .iter()
-        .filter_map(|e| {
-            message_reminder_change(&serde_json::from_str(e.raw().json().get()).expect("timeline event JSON"), me)
-        })
+        .filter_map(|e| message_reminder_change(&serde_json::from_str(e.raw().json().get()).expect("timeline event JSON"), me))
         .collect();
     store.write().apply_message_reminders(room.room_id().as_str(), changes);
 }
@@ -1621,10 +1567,8 @@ fn message_reminder_change(e: &Value, me: &str) -> Option<(String, Option<(Strin
 async fn sync_removals(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
     let events = if store.read().removals.is_none() { all_history(room).await } else { events };
     let me = room.own_user_id().as_str();
-    let removals = events
-        .iter()
-        .filter_map(|e| removal(&serde_json::from_str(e.raw().json().get()).expect("timeline event JSON"), me))
-        .collect();
+    let removals =
+        events.iter().filter_map(|e| removal(&serde_json::from_str(e.raw().json().get()).expect("timeline event JSON"), me)).collect();
     store.write().apply_removals(removals);
 }
 
@@ -1856,9 +1800,7 @@ enum Pass {
 /// and the global account data that the caller read, else read here.
 /// The page of history that [`sync_room_after`] loads for a room of a sync that has no chat yet: the events before
 /// those of the sync, up to `HISTORY` with them. None for a room that has a chat, or that is not a chat.
-async fn first_page(
-    store: &SharedStore, room: &Room, events: usize, prev_batch: &Option<String>,
-) -> Option<(Option<String>, u32)> {
+async fn first_page(store: &SharedStore, room: &Room, events: usize, prev_batch: &Option<String>) -> Option<(Option<String>, u32)> {
     let id = room.room_id().as_str();
     let seen = |chat: &str| {
         let st = store.read();
@@ -1893,9 +1835,7 @@ impl Drop for AbortPage {
     }
 }
 
-async fn sync_room_after(
-    store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, pass: Pass, globals: Option<&Globals>,
-) {
+async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, pass: Pass, globals: Option<&Globals>) {
     let joined = room.state() == RoomState::Joined;
     // A sync reads the receipts of its receipt events after it. Those that the SDK's store holds at the start are of
     // the syncs that the last run applied, after the messages that they read, so the start pass reads them only for
@@ -1980,11 +1920,7 @@ async fn sync_room_after(
             // A chat that no sync made yet, like one copied from Desktop, reads its members. A personal name shows
             // instead of the title, which stays under it.
             let c = st.chat_idx_by_id.get(&chat_id).map(|&i| &st.chats[i]).filter(|c| c.notifiable.is_some());
-            c.map(|c| Known {
-                participants: c.participants.items.clone(),
-                title: c.room_title().to_string(),
-                dm: c.chat_type == "single",
-            })
+            c.map(|c| Known { participants: c.participants.items.clone(), title: c.room_title().to_string(), dm: c.chat_type == "single" })
         }
     };
     let keeps_members = union.is_none() && joined;
@@ -2055,8 +1991,7 @@ async fn sync_room_after(
     }
     let keep_reads = keep_reads.then(|| serde_json::to_string(&*reads).expect("room reads JSON"));
     let done = reads.done.as_ref().map(|d| (d["at_order"].as_i64(), d["updated_ts"].as_i64()));
-    let reacted =
-        ops.iter().filter_map(|o| if let Op::React(_, _, m) = o { Some(m.sort_key.clone()) } else { None }).max();
+    let reacted = ops.iter().filter_map(|o| if let Op::React(_, _, m) = o { Some(m.sort_key.clone()) } else { None }).max();
     let redacted = ops.iter().any(|o| matches!(o, Op::Redact(..)));
     // The senders of the new messages of a sync, who stop typing.
     let senders: Vec<String> = ops
@@ -2067,8 +2002,7 @@ async fn sync_room_after(
         })
         .collect();
     // The stored messages that the events change, besides those that they upsert.
-    let targets: Vec<String> =
-        ops.iter().filter_map(Op::target).map(str::to_string).chain(non_messages.clone()).collect();
+    let targets: Vec<String> = ops.iter().filter_map(Op::target).map(str::to_string).chain(non_messages.clone()).collect();
     let (members, group) = (chat.participants.total, chat.chat_type == "group");
     {
         let mut st = store.write();
@@ -2128,12 +2062,9 @@ async fn sync_room_after(
             // A chat that is not loaded stays so: its new messages go to SQLite.
             st.with_chat(&chat_id, &targets, |st| {
                 // Desktop finds the target of an event only in the room of the event.
-                let here =
-                    |st: &BeeperStore, id: &str| st.loaded_idx(id).filter(|&i| st.messages[i].chat_id == chat_id);
+                let here = |st: &BeeperStore, id: &str| st.loaded_idx(id).filter(|&i| st.messages[i].chat_id == chat_id);
                 // The Matrix spec ignores an edit whose sender is not the sender of the message.
-                let mine = |st: &BeeperStore, id: &str, sender: &str| {
-                    here(st, id).filter(|&i| st.messages[i].sender_id == sender)
-                };
+                let mine = |st: &BeeperStore, id: &str, sender: &str| here(st, id).filter(|&i| st.messages[i].sender_id == sender);
                 // A placeholder that decrypted to an edit, a reaction or a hidden event was no message, so its order does not
                 // count, like a redacted one: Desktop's `countsAsUnread` row of an edit is the edited message.
                 let mut stale = redacted;
@@ -2166,14 +2097,10 @@ async fn sync_room_after(
                                 apply_timer(st, i, timer);
                             }
                             let m = |i: usize| &st.messages[i];
-                            let changed = |i| {
-                                (m(i).is_delivered, &m(i).send_error, m(i).send_status.as_ref())
-                                    != (delivered, &error, Some(&*status))
-                            };
+                            let changed =
+                                |i| (m(i).is_delivered, &m(i).send_error, m(i).send_status.as_ref()) != (delivered, &error, Some(&*status));
                             if let Some(i) = i.filter(|&i| changed(i)) {
-                                st.update_message(i, |m| {
-                                    (m.is_delivered, m.send_error, m.send_status) = (delivered, error, Some(*status))
-                                });
+                                st.update_message(i, |m| (m.is_delivered, m.send_error, m.send_status) = (delivered, error, Some(*status)));
                             }
                         }
                         Op::React(target, r, mut preview) => {
@@ -2193,10 +2120,7 @@ async fn sync_room_after(
                             }
                             let idx = st.chat_idx(&chat_id);
                             let shown = preview.is_sender == Some(true) || (members <= 20 && (!group || target_mine));
-                            let newer = st.chats[idx]
-                                .preview
-                                .as_ref()
-                                .is_none_or(|p| p.sort_key < preview.sort_key || p.id == preview.id);
+                            let newer = st.chats[idx].preview.as_ref().is_none_or(|p| p.sort_key < preview.sort_key || p.id == preview.id);
                             if shown && newer {
                                 st.update_chat(idx, |c| {
                                     c.last_activity = Some(preview.timestamp.clone());
@@ -2231,9 +2155,7 @@ async fn sync_room_after(
                                         Some(t) => m.text.replace(t).unwrap_or_default(),
                                         None => m.text.take().unwrap_or_default(),
                                     };
-                                    if let Some(timestamp) =
-                                        timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t))
-                                    {
+                                    if let Some(timestamp) = timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t)) {
                                         m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
                                     }
                                     if !attachments.is_empty() {
@@ -2279,12 +2201,11 @@ async fn sync_room_after(
                 }
                 let (last, stored) = st.newest_orders(&chat_id);
                 let old = st.chats[idx].notifiable.as_ref().filter(|_| !stale);
-                let notifiable =
-                    [old, last.as_ref(), reacted.as_ref(), stored.as_ref()].into_iter().flatten().max().cloned();
+                let notifiable = [old, last.as_ref(), reacted.as_ref(), stored.as_ref()].into_iter().flatten().max().cloned();
                 let notifiable = Some(notifiable.unwrap_or_else(|| sort_key(MIN_SAFE_INTEGER)));
-                let archived = st.local_flag(&chat_id, ChatFlag::Archived).unwrap_or_else(|| {
-                    archived_upto(&st.chats[idx], done, notifiable.as_deref().expect("a notifiable order"))
-                });
+                let archived = st
+                    .local_flag(&chat_id, ChatFlag::Archived)
+                    .unwrap_or_else(|| archived_upto(&st.chats[idx], done, notifiable.as_deref().expect("a notifiable order")));
                 if (st.chats[idx].is_archived, &st.chats[idx].notifiable) != (Some(archived), &notifiable) {
                     st.update_chat(idx, |c| (c.is_archived, c.notifiable) = (Some(archived), notifiable));
                 }
@@ -2589,10 +2510,9 @@ impl Outgoing {
     /// The local echo that the change sends, or the message that it edits.
     pub fn message(&self) -> Option<&str> {
         match self {
-            Outgoing::Send { txn, .. }
-            | Outgoing::Poll { txn, .. }
-            | Outgoing::Forward { txn, .. }
-            | Outgoing::Media { txn, .. } => Some(txn),
+            Outgoing::Send { txn, .. } | Outgoing::Poll { txn, .. } | Outgoing::Forward { txn, .. } | Outgoing::Media { txn, .. } => {
+                Some(txn)
+            }
             Outgoing::Edit { target, .. } => Some(target),
             _ => None,
         }
@@ -2601,8 +2521,7 @@ impl Outgoing {
 
 /// matrix-sdk's `make_media_type` without a thumbnail: the message of an uploaded file, with the caption as the body.
 fn media_type(
-    mime: &mime::Mime, name: String, source: MediaSource, caption: Option<String>,
-    info: matrix_sdk::attachment::AttachmentInfo,
+    mime: &mime::Mime, name: String, source: MediaSource, caption: Option<String>, info: matrix_sdk::attachment::AttachmentInfo,
 ) -> matrix_sdk::ruma::events::room::message::MessageType {
     use matrix_sdk::attachment::AttachmentInfo;
     use matrix_sdk::ruma::events::room::message::*;
@@ -2657,8 +2576,7 @@ fn media_type(
 
 /// Desktop's `prepareOutgoingMedia` for a room with room features, on a worker thread: the file to upload and its info.
 async fn prepare_media(
-    store: &SharedStore, chat: &str, txn: &str, data: Vec<u8>, (name, mime): (String, String), info: MediaInfo,
-    sticker: bool,
+    store: &SharedStore, chat: &str, txn: &str, data: Vec<u8>, (name, mime): (String, String), info: MediaInfo, sticker: bool,
 ) -> Result<(Vec<u8>, String, String, MediaInfo), String> {
     use crate::media::Sent;
     let (rules, dir) = {
@@ -2711,22 +2629,14 @@ fn sticker_content(content: &mut Value, s: Box<Sticker>, caption: bool, dims: Op
         info.insert("h".into(), h.into());
     }
     info.insert("size".into(), c["info"]["size"].clone());
-    let same = ["mimetype", "w", "h"].iter().all(|k| s.info[k] == info[*k])
-        && (s.info["size"].is_null() || s.info["size"] == info["size"]);
-    for k in ["thumbnail_url", "thumbnail_info", "thumbnail_file"].into_iter().filter(|k| same && !s.info[k].is_null())
-    {
+    let same = ["mimetype", "w", "h"].iter().all(|k| s.info[k] == info[*k]) && (s.info["size"].is_null() || s.info["size"] == info["size"]);
+    for k in ["thumbnail_url", "thumbnail_info", "thumbnail_file"].into_iter().filter(|k| same && !s.info[k].is_null()) {
         info.insert(k.into(), s.info[k].clone());
     }
     c.insert("info".into(), info.into());
-    let url = c
-        .get("url")
-        .or(c.get("file").map(|f| &f["url"]))
-        .and_then(Value::as_str)
-        .expect("an uploaded file")
-        .to_string();
+    let url = c.get("url").or(c.get("file").map(|f| &f["url"])).and_then(Value::as_str).expect("an uploaded file").to_string();
     if let Some(x) = s.source {
-        let source =
-            serde_json::json!({ url: { "room_id": x.room_id, "state_key": x.state_key, "shortcode": x.shortcode } });
+        let source = serde_json::json!({ url: { "room_id": x.room_id, "state_key": x.state_key, "shortcode": x.shortcode } });
         c.insert("com.beeper.msc4459.image_source_packs".into(), source);
     }
 }
@@ -2882,8 +2792,7 @@ async fn joined_room(client: &matrix_sdk::Client, chat: &str) -> Result<Room, St
 pub async fn fetch_message(store: SharedStore, chat: String, id: String) -> Result<Message, String> {
     let client = store.read().matrix.clone().ok_or("Matrix is not connected")?;
     let room = chat_room(&client, &chat).await?;
-    let event =
-        room.event(&OwnedEventId::try_from(id).map_err(|e| e.to_string())?, None).await.map_err(|e| e.to_string())?;
+    let event = room.event(&OwnedEventId::try_from(id).map_err(|e| e.to_string())?, None).await.map_err(|e| e.to_string())?;
     let v: Value = serde_json::from_str(event.raw().json().get()).map_err(|e| e.to_string())?;
     let (account, hidden) = {
         let st = store.read();
@@ -2936,9 +2845,7 @@ pub fn room_address(input: &str) -> Result<(String, Vec<String>), BadAddress> {
     fn server(s: &str) -> bool {
         let (host_ok, port) = match s.strip_prefix('[') {
             Some(rest) => match rest.split_once(']') {
-                Some((ip, after)) => {
-                    (!ip.is_empty() && ip.chars().all(|c| c.is_ascii_hexdigit() || ":.".contains(c)), after)
-                }
+                Some((ip, after)) => (!ip.is_empty() && ip.chars().all(|c| c.is_ascii_hexdigit() || ":.".contains(c)), after),
                 None => return false,
             },
             None => {
@@ -2947,11 +2854,7 @@ pub fn room_address(input: &str) -> Result<(String, Vec<String>), BadAddress> {
             }
         };
         let port_ok = match port.strip_prefix(':') {
-            Some(p) => {
-                (1..=5).contains(&p.len())
-                    && p.bytes().all(|b| b.is_ascii_digit())
-                    && p.parse::<u32>().is_ok_and(|n| n <= 65535)
-            }
+            Some(p) => (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u32>().is_ok_and(|n| n <= 65535),
             None => port.is_empty(),
         };
         host_ok && port_ok
@@ -3045,9 +2948,7 @@ pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) {
 /// Desktop's `formatMessage`: the text, its HTML with a `matrix.to` link for each user mention, and `m.mentions` with
 /// the mentioned users, the sender of `reply_to`, and "@room".
 /// Uploads the image of a link preview: the key of the preview that names it, and its value.
-async fn preview_image(
-    client: &Client, room: &Room, p: &Value, bytes: Vec<u8>,
-) -> Result<(&'static str, Value), String> {
+async fn preview_image(client: &Client, room: &Room, p: &Value, bytes: Vec<u8>) -> Result<(&'static str, Value), String> {
     let e = |x: &dyn std::fmt::Display| x.to_string();
     if room.latest_encryption_state().await.map_err(|x| e(&x))?.is_encrypted() {
         let file = client.upload_encrypted_file(&mut bytes.as_slice()).await.map_err(|x| e(&x))?;
@@ -3060,9 +2961,7 @@ async fn preview_image(
 
 /// Desktop's `getCaptionEditableAttachmentContent`: the media fields of the attachment message `target` (as last
 /// edited), which an edit of its caption keeps.
-async fn caption_attachment(
-    room: &Room, target: &matrix_sdk::ruma::EventId,
-) -> Result<serde_json::Map<String, Value>, String> {
+async fn caption_attachment(room: &Room, target: &matrix_sdk::ruma::EventId) -> Result<serde_json::Map<String, Value>, String> {
     let unavailable = || "Attachment event content is unavailable".to_string();
     let event = room.event(target, None).await.map_err(|_| unavailable())?;
     let event: Value = serde_json::from_str(event.raw().json().get()).map_err(|e| e.to_string())?;
@@ -3084,8 +2983,7 @@ async fn caption_attachment(
 /// Desktop's `editMessage` content: the new text in `m.new_content`, with the media of an attachment whose caption
 /// it is (an empty caption leaves the file name), and the plain text as the fallback, without a `* ` prefix.
 fn edit_content(
-    target: &matrix_sdk::ruma::EventId, text: String, mentions: &[Mention],
-    attachment: Option<serde_json::Map<String, Value>>,
+    target: &matrix_sdk::ruma::EventId, text: String, mentions: &[Mention], attachment: Option<serde_json::Map<String, Value>>,
 ) -> Result<Value, String> {
     let caption = text.trim().is_empty().then(|| attachment.as_ref().map(|a| a["filename"].clone())).flatten();
     let content = text_content(text, mentions, None)?;
@@ -3115,8 +3013,7 @@ fn edit_content(
 
 fn text_content(text: String, mentions: &[Mention], reply_to: Option<&str>) -> Result<RoomMessageEventContent, String> {
     let users: Vec<&Mention> = mentions.iter().filter(|m| m.1 != ROOM_MENTION).collect();
-    let ids: Result<BTreeSet<OwnedUserId>, _> =
-        users.iter().map(|m| m.1.as_str()).chain(reply_to).map(OwnedUserId::try_from).collect();
+    let ids: Result<BTreeSet<OwnedUserId>, _> = users.iter().map(|m| m.1.as_str()).chain(reply_to).map(OwnedUserId::try_from).collect();
     let mut m = Mentions::with_user_ids(ids.map_err(|e| e.to_string())?);
     m.room = mentions.iter().any(|m| m.1 == ROOM_MENTION);
     let mut content = match crate::codec::markdown_html(&mention_links(&text, &users)) {
@@ -3136,8 +3033,7 @@ pub(crate) fn mention_links(text: &str, users: &[&Mention]) -> String {
         rest = &rest[i + 1..];
         match users.iter().filter(|m| rest.starts_with(m.0.as_str())).max_by_key(|m| m.0.len()) {
             Some((label, id)) => {
-                let escaped: String =
-                    label.chars().flat_map(|c| "\\[]*_`~".contains(c).then_some('\\').into_iter().chain([c])).collect();
+                let escaped: String = label.chars().flat_map(|c| "\\[]*_`~".contains(c).then_some('\\').into_iter().chain([c])).collect();
                 md.push_str(&format!("[@{escaped}](https://matrix.to/#/{id})"));
                 rest = &rest[label.len()..];
             }
@@ -3159,8 +3055,7 @@ async fn timer_for_messages(room: &Room) -> Option<Value> {
 /// Desktop's `updateGroup` from the Edit Group window: the name, the topic and the avatar of a group sent now, so the
 /// window learns whether the homeserver took them.
 pub async fn update_group(
-    store: SharedStore, chat: String, title: Option<String>, topic: Option<String>,
-    avatar: Option<Option<(Vec<u8>, String)>>,
+    store: SharedStore, chat: String, title: Option<String>, topic: Option<String>, avatar: Option<Option<(Vec<u8>, String)>>,
 ) -> Result<(), String> {
     let name = title.map(|name| Outgoing::State("m.room.name".into(), serde_json::json!({ "name": name })));
     let topic = topic.map(|topic| Outgoing::State("m.room.topic".into(), serde_json::json!({ "topic": topic })));
@@ -3222,9 +3117,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             let id = room.send(content).with_transaction_id(txn.as_str().into()).await?.response.event_id;
             store.write().sent.insert(txn, id.to_string());
         }
-        Outgoing::Poll { txn, poll } => {
-            send_txn(store, &room, "org.matrix.msc3381.poll.start", poll_start(&poll), txn).await?
-        }
+        Outgoing::Poll { txn, poll } => send_txn(store, &room, "org.matrix.msc3381.poll.start", poll_start(&poll), txn).await?,
         Outgoing::Nudge(body) => {
             let content = serde_json::json!({ "msgtype": "m.notice", "body": body, "com.beeper.nudge": true });
             room.send_raw("m.room.message", content).await.map_err(|_| "Failed to send nudge".to_string())?;
@@ -3258,9 +3151,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             room.set_account_data_raw(THREAD_FOLLOWS.into(), raw(&v)).await?;
         }
         Outgoing::Reminder(at) => {
-            let v = at.map_or(serde_json::json!({}), |r| {
-                serde_json::json!({ "remind_at_ms": r.remind_at_ms, "dismiss_on_incoming_message": r.dismiss_on_incoming_message })
-            });
+            let v = at.map_or(
+                serde_json::json!({}),
+                |r| serde_json::json!({ "remind_at_ms": r.remind_at_ms, "dismiss_on_incoming_message": r.dismiss_on_incoming_message }),
+            );
             room.set_account_data_raw(REMINDER.into(), raw(&v)).await?;
         }
         // Desktop accepts an invite of a Matrix chat by a join, and other requests with the bridge's event.
@@ -3412,8 +3306,7 @@ impl Push<'_> {
         });
         let mut content = text_content(text, mentions, sender.as_deref())?;
         if thread.is_none() {
-            content.relates_to =
-                reply_to.map(|r| self.event(r).map(|id| Relation::Reply(Reply::with_event_id(id)))).transpose()?;
+            content.relates_to = reply_to.map(|r| self.event(r).map(|id| Relation::Reply(Reply::with_event_id(id)))).transpose()?;
         }
         let mut content = serde_json::to_value(content).expect("message JSON");
         if let Some(t) = thread {
@@ -3450,8 +3343,8 @@ impl Push<'_> {
     /// Sends a file, a GIF or a sticker, with its caption, and as a reply or in a thread.
     #[allow(clippy::too_many_arguments)]
     async fn media(
-        &self, txn: String, data: Vec<u8>, name: String, mime: String, info: MediaInfo, caption: Option<String>,
-        reply_to: Option<String>, thread: Option<ThreadSend>, gif: bool, sticker: Option<Box<Sticker>>,
+        &self, txn: String, data: Vec<u8>, name: String, mime: String, info: MediaInfo, caption: Option<String>, reply_to: Option<String>,
+        thread: Option<ThreadSend>, gif: bool, sticker: Option<Box<Sticker>>,
     ) -> Result<(), PushError> {
         let (store, room) = (self.store, self.room);
         // Desktop's `Kf`: a sticker goes as `m.sticker` when the room features take its type, else as an image.
@@ -3460,8 +3353,7 @@ impl Push<'_> {
             let c = &st.chats[st.resolve_chat_idx(self.chat).expect("the chat of a send exists")];
             c.room_features && crate::media::takes_sticker(&c.file, &mime)
         });
-        let (data, name, mime, info) =
-            prepare_media(store, self.chat, &txn, data, (name, mime), info, sticker.is_some()).await?;
+        let (data, name, mime, info) = prepare_media(store, self.chat, &txn, data, (name, mime), info, sticker.is_some()).await?;
         converted(store, &txn, &name, &mime);
         let dims = match info {
             MediaInfo::Image(w, h) | MediaInfo::Video(w, h, _) => Some((w, h)),
@@ -3476,9 +3368,7 @@ impl Push<'_> {
             Some(false) => (EnforceThread::Threaded(ReplyWithinThread::No), AddMentions::No),
             None => (EnforceThread::MaybeThreaded, AddMentions::Yes),
         };
-        let reply = reply_to
-            .map(|r| self.event(r).map(|event_id| Reply { event_id, enforce_thread, add_mentions }))
-            .transpose()?;
+        let reply = reply_to.map(|r| self.event(r).map(|event_id| Reply { event_id, enforce_thread, add_mentions })).transpose()?;
         let info = attachment_info(info, data.len(), &mime);
         let mime: mime::Mime = mime.parse().expect("valid media mime");
         let source = self.upload(data, mime.as_ref()).await?;
@@ -3510,9 +3400,7 @@ impl Push<'_> {
     }
 
     /// Sends the content of the event `id` of the chat `from` again, with the current text and HTML of a text message.
-    async fn forward(
-        &self, txn: String, from: &str, id: String, text: Option<String>, html: Option<String>,
-    ) -> Result<(), PushError> {
+    async fn forward(&self, txn: String, from: &str, id: String, text: Option<String>, html: Option<String>) -> Result<(), PushError> {
         let source = joined_room(self.client, from).await?.event(&self.event(id)?, None).await?;
         let mut ev: Value = source.raw().deserialize_as().map_err(|x| x.to_string())?;
         let kind = ev["type"].as_str().expect("an event type").to_string();
@@ -3663,9 +3551,7 @@ fn attachment_info(info: MediaInfo, len: usize, mime: &str) -> matrix_sdk::attac
             is_animated: Some(mime == "image/gif"),
             ..Default::default()
         }),
-        MediaInfo::Voice { ms, wave } => {
-            AttachmentInfo::Voice(BaseAudioInfo { duration: duration(ms), size, waveform: Some(wave) })
-        }
+        MediaInfo::Voice { ms, wave } => AttachmentInfo::Voice(BaseAudioInfo { duration: duration(ms), size, waveform: Some(wave) }),
         MediaInfo::Video(w, h, ms) => AttachmentInfo::Video(BaseVideoInfo {
             duration: duration(ms),
             width: Some(w.into()),
@@ -3761,8 +3647,9 @@ fn media_source(src: String) -> Result<crate::download::Source, String> {
             let json = crate::codec::url_decode(json).ok_or("bad encrypted file info")?;
             let json = match json.starts_with('{') {
                 true => json.into_bytes(),
-                false => vodozemac::base64_decode(json.trim_end_matches('=').replace('-', "+").replace('_', "/"))
-                    .map_err(|e| e.to_string())?,
+                false => {
+                    vodozemac::base64_decode(json.trim_end_matches('=').replace('-', "+").replace('_', "/")).map_err(|e| e.to_string())?
+                }
             };
             let v: Value = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
             match v["v"].as_str() {
@@ -3772,9 +3659,7 @@ fn media_source(src: String) -> Result<crate::download::Source, String> {
                     Source::Floe(url.into(), crate::floe::File::parse(&v)?)
                 }
                 Some(other) if other != "v2" => return Err(format!("unsupported file encryption {other}")),
-                _ => Source::Matrix(MediaSource::Encrypted(Box::new(
-                    serde_json::from_value(v).map_err(|e| e.to_string())?,
-                ))),
+                _ => Source::Matrix(MediaSource::Encrypted(Box::new(serde_json::from_value(v).map_err(|e| e.to_string())?))),
             }
         }
         None => Source::Matrix(MediaSource::Plain(src.into())),
@@ -3828,8 +3713,7 @@ impl Provision {
 
     /// A request to the bridge at `path` with a JSON body, and the JSON reply.
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
-        let mut req =
-            crate::cloud::http_client().request(method, self.bridge_url(path)).bearer_auth(&self.access_token);
+        let mut req = crate::cloud::http_client().request(method, self.bridge_url(path)).bearer_auth(&self.access_token);
         if let Some(b) = body {
             req = req.header("content-type", "application/json").body(b.to_string());
         }
@@ -4057,8 +3941,7 @@ impl ChatBridge {
             ChatBridge::Cloud(p) => create_dm(p, identifier).await,
             ChatBridge::Demo(store, account) => {
                 let mut st = store.write();
-                let mut people =
-                    st.chats.iter().filter(|c| c.account_id == account).flat_map(|c| &c.participants.items);
+                let mut people = st.chats.iter().filter(|c| c.account_id == account).flat_map(|c| &c.participants.items);
                 let known = people.find(|u| u.id == identifier).cloned();
                 let name = known.as_ref().and_then(|u| u.full_name.clone());
                 let id = st.create_or_start_chat(&account, "single", name, vec![identifier], None, None, None).0.id;
@@ -4140,11 +4023,8 @@ pub async fn search_matrix_users(store: SharedStore, query: String) -> Result<Ve
         img_url: avatar,
         ..Default::default()
     };
-    let mut users: Vec<User> = found
-        .results
-        .into_iter()
-        .map(|u| user(u.user_id.to_string(), u.display_name, u.avatar_url.map(|a| a.to_string())))
-        .collect();
+    let mut users: Vec<User> =
+        found.results.into_iter().map(|u| user(u.user_id.to_string(), u.display_name, u.avatar_url.map(|a| a.to_string()))).collect();
     if let Some(id) = typed_matrix_id(&query).filter(|id| users.iter().all(|u| &u.id != id)) {
         users.push(user(id.clone(), Some(id), None));
     }
@@ -4167,8 +4047,7 @@ fn typed_matrix_id(query: &str) -> Option<String> {
 /// Matrix ID as a bridge reply, or `None` when the homeserver has no such user.
 pub async fn resolve_matrix_user(store: SharedStore, identifier: String) -> Result<Option<Value>, String> {
     let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
-    let id = matrix_sdk::ruma::UserId::parse(&identifier)
-        .map_err(|e| format!("user ID {identifier:?} is not valid: {e}"))?;
+    let id = matrix_sdk::ruma::UserId::parse(&identifier).map_err(|e| format!("user ID {identifier:?} is not valid: {e}"))?;
     let profile = match client.account().fetch_user_profile_of(&id).await {
         Ok(p) => p,
         Err(e) if e.client_api_error_kind() == Some(&ErrorKind::NotFound) => return Ok(None),
@@ -4193,9 +4072,7 @@ fn megolm_state() -> Value {
 /// user, encrypted when the user has devices. Like the SDK, a user that the homeserver does not know still gets the
 /// room, it makes a new room each time, and it leaves `m.direct` alone. It returns the room ID.
 pub async fn create_matrix_dm(store: SharedStore, identifier: String) -> Result<String, String> {
-    resolve_matrix_user(store.clone(), identifier.clone())
-        .await
-        .map_err(|e| format!("failed to resolve identifier: {e}"))?;
+    resolve_matrix_user(store.clone(), identifier.clone()).await.map_err(|e| format!("failed to resolve identifier: {e}"))?;
     let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
     let user = matrix_sdk::ruma::UserId::parse(&identifier).map_err(|e| e.to_string())?;
     let cached = client.encryption().get_user_devices(&user).await.map_err(|e| e.to_string())?;
@@ -4221,9 +4098,7 @@ pub async fn create_matrix_dm(store: SharedStore, identifier: String) -> Result<
 /// Desktop SDK's `convertGroupCreateToMatrix` for a `group` or an `unencrypted_group` of its `matrix` pseudo-bridge:
 /// a new private room with the users, encrypted unless it is an `unencrypted_group`, and named when `name` is not
 /// empty. It returns the room ID.
-pub async fn create_matrix_group(
-    store: SharedStore, kind: String, name: String, users: Vec<String>,
-) -> Result<String, String> {
+pub async fn create_matrix_group(store: SharedStore, kind: String, name: String, users: Vec<String>) -> Result<String, String> {
     let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
     for (i, u) in users.iter().enumerate() {
         matrix_sdk::ruma::UserId::parse(u).map_err(|e| format!("user ID {} ({u:?}) is not valid: {e}", i + 1))?;
@@ -4321,8 +4196,7 @@ async fn retry_undecrypted(client: Client, store: SharedStore) {
             }
             batch = tokio::time::timeout(window, keys.next()).await.ok().flatten();
         }
-        let rooms =
-            if lagged { client.joined_rooms() } else { rooms.iter().filter_map(|id| client.get_room(id)).collect() };
+        let rooms = if lagged { client.joined_rooms() } else { rooms.iter().filter_map(|id| client.get_room(id)).collect() };
         refetch_undecrypted(&store, rooms).await;
     }
 }
@@ -4359,8 +4233,7 @@ async fn muted_rooms(client: &Client) -> Vec<String> {
 }
 
 async fn global(client: &Client, kind: &str) -> Value {
-    let raw =
-        client.account().account_data_raw(GlobalAccountDataEventType::from(kind)).await.expect("read account data");
+    let raw = client.account().account_data_raw(GlobalAccountDataEventType::from(kind)).await.expect("read account data");
     raw.map_or(Value::Null, |r| r.deserialize_as().expect("account data JSON"))
 }
 
@@ -4402,13 +4275,7 @@ pub fn with_account_name(content: &Value, bridge: &str, account: &str, name: &st
                 }
             }
         }
-        _ => {
-            _ = o
-                .accounts
-                .entry(bridge.into())
-                .or_default()
-                .insert(account.into(), AccountOverride { name: name.into() })
-        }
+        _ => _ = o.accounts.entry(bridge.into()).or_default().insert(account.into(), AccountOverride { name: name.into() }),
     }
     o.revision_id = matrix_sdk::ruma::TransactionId::new().to_string();
     Ok(serde_json::to_value(o).expect("overrides JSON"))
@@ -4428,8 +4295,7 @@ async fn account_data_key(client: &Client, store: &SharedStore, create: bool) ->
         return Err("encrypted account data key unavailable: no stored recovery code to access SSSS".into());
     }
     let storage = client.encryption().secret_storage();
-    let secrets =
-        storage.open_secret_store(&code).await.map_err(|e| format!("failed to load default SSSS key: {e}"))?;
+    let secrets = storage.open_secret_store(&code).await.map_err(|e| format!("failed to load default SSSS key: {e}"))?;
     let found = secrets.get_secret(crate::msc4483::KEY_SECRET).await;
     let key = match found.map_err(|e| format!("cannot look up encrypted account data key in SSSS: {e}"))? {
         Some(secret) => crate::msc4483::key_from_secret(&secret)?,
@@ -4453,9 +4319,7 @@ async fn sync_account_overrides(client: &Client, store: &SharedStore) {
         return;
     }
     let decrypted = match crate::msc4483::is_encrypted(&synced) {
-        true => account_data_key(client, store, false)
-            .await
-            .and_then(|key| crate::msc4483::decrypt(&key, ACCOUNT_OVERRIDES, &synced)),
+        true => account_data_key(client, store, false).await.and_then(|key| crate::msc4483::decrypt(&key, ACCOUNT_OVERRIDES, &synced)),
         false => Ok(synced.clone()),
     };
     let content = decrypted.unwrap_or_else(|e| {
@@ -4470,9 +4334,7 @@ async fn sync_account_overrides(client: &Client, store: &SharedStore) {
 /// Desktop SDK's `setBridgeAccountName`: the nickname of the login `account` of `bridge`, or none for an empty `name`,
 /// in the encrypted overrides. The write expects the revision that it read. When another device wrote first, the
 /// homeserver answers with the current content, and the name goes on that, up to 5 tries.
-pub async fn set_bridge_account_name(
-    store: SharedStore, bridge: String, account: String, name: String,
-) -> Result<(), String> {
+pub async fn set_bridge_account_name(store: SharedStore, bridge: String, account: String, name: String) -> Result<(), String> {
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     let mut current = store.read().account_overrides.clone();
     if crate::msc4483::is_encrypted(&current) {
@@ -4493,9 +4355,7 @@ pub async fn set_bridge_account_name(
         }
         let v: Value = serde_json::from_str(&text).unwrap_or_default();
         current = match (v["errcode"].as_str(), v.get("com.beeper.current_content")) {
-            (Some(REVISION_MISMATCH), Some(c)) if crate::msc4483::is_encrypted(c) => {
-                crate::msc4483::decrypt(&key, ACCOUNT_OVERRIDES, c)?
-            }
+            (Some(REVISION_MISMATCH), Some(c)) if crate::msc4483::is_encrypted(c) => crate::msc4483::decrypt(&key, ACCOUNT_OVERRIDES, c)?,
             (Some(REVISION_MISMATCH), Some(c)) => c.clone(),
             _ => return Err(format!("failed to set bridge account overrides: {}", matrix_error(status, &v))),
         };
@@ -4628,16 +4488,13 @@ pub async fn sticker_packs(store: SharedStore, room: String) -> Result<Vec<Stick
     for (r, keys) in global_rooms["rooms"].as_object().into_iter().flatten() {
         let keys = keys.as_object();
         for p in room_packs(&client, r).await {
-            if keys.is_some_and(|k| k.contains_key(&p.2))
-                && !packs.iter().any(|q| (&q.0, &q.1, &q.2) == (&p.0, &p.1, &p.2))
-            {
+            if keys.is_some_and(|k| k.contains_key(&p.2)) && !packs.iter().any(|q| (&q.0, &q.1, &q.2) == (&p.0, &p.1, &p.2)) {
                 packs.push(p);
             }
         }
     }
     let stable = |p: &(String, &str, String, Value)| p.1 == PACK_TYPES[0];
-    let replaced: HashSet<(String, String)> =
-        packs.iter().filter(|p| stable(p)).map(|p| (p.0.clone(), p.2.clone())).collect();
+    let replaced: HashSet<(String, String)> = packs.iter().filter(|p| stable(p)).map(|p| (p.0.clone(), p.2.clone())).collect();
     packs.retain(|p| stable(p) || !replaced.contains(&(p.0.clone(), p.2.clone())));
     let mut packs: Vec<StickerPack> = packs
         .into_iter()
@@ -4679,8 +4536,7 @@ fn sticker_pack(content: &Value, id: String, key: &str, source: Option<(&str, &s
     let sticker = |usage: &Value| usage.as_array().is_none_or(|u| u.is_empty() || u.iter().any(|x| x == "sticker"));
     let mut stickers: Vec<Sticker> = Vec::new();
     let images = content["images"].as_object().into_iter().flatten();
-    let images =
-        images.filter(|(_, i)| sticker(if i["usage"].is_null() { &content["pack"]["usage"] } else { &i["usage"] }));
+    let images = images.filter(|(_, i)| sticker(if i["usage"].is_null() { &content["pack"]["usage"] } else { &i["usage"] }));
     for (code, (url, i)) in images.filter_map(|(c, i)| Some((c, (s(&i["url"]).filter(|u| !u.is_empty())?, i)))) {
         match stickers.iter_mut().find(|x| x.url == url) {
             Some(x) => x.shortcodes.push(code.clone()),
@@ -4770,10 +4626,8 @@ pub async fn installed_packs(store: SharedStore) -> Result<Vec<InstalledPack>, S
 /// The installed packs of the pack events, like Desktop's `qCt`, `BCt` and its filter of packs with stickers.
 fn group_packs(events: &[PackEvent]) -> Vec<InstalledPack> {
     let stable = |p: &PackEvent| p.1 == PACK_TYPES[0];
-    let replaced: HashSet<(&str, &str)> =
-        events.iter().filter(|p| stable(p)).map(|p| (p.0.as_str(), p.2.as_str())).collect();
-    let packs: Vec<&PackEvent> =
-        events.iter().filter(|p| stable(p) || !replaced.contains(&(p.0.as_str(), p.2.as_str()))).collect();
+    let replaced: HashSet<(&str, &str)> = events.iter().filter(|p| stable(p)).map(|p| (p.0.as_str(), p.2.as_str())).collect();
+    let packs: Vec<&PackEvent> = events.iter().filter(|p| stable(p) || !replaced.contains(&(p.0.as_str(), p.2.as_str()))).collect();
     // Desktop's `pX`: the combined pack of a part, by its room, event type and `fi.mau.combined_pack_key`.
     let combined = |p: &PackEvent| s(&p.3["fi.mau.combined_pack_key"]).map(|k| format!("{}|{}|{k}", p.0, p.1));
     let index = |p: &PackEvent| p.3["fi.mau.combined_pack_index"].as_i64();
@@ -4816,8 +4670,7 @@ fn group_packs(events: &[PackEvent]) -> Vec<InstalledPack> {
             true => name.map(|n| strip_part_one(&n)),
             false => name,
         };
-        let stickers: Vec<Sticker> =
-            parts.iter().flat_map(|p| sticker_pack(&p.3, String::new(), "", None).stickers).collect();
+        let stickers: Vec<Sticker> = parts.iter().flat_map(|p| sticker_pack(&p.3, String::new(), "", None).stickers).collect();
         if stickers.is_empty() {
             continue;
         }
@@ -4911,9 +4764,7 @@ async fn sync_rules(client: &Client, store: &SharedStore, globals: &Globals) {
     let rules = global(client, RULES).await;
     if std::mem::replace(&mut store.write().inbox_rules, rules.clone()) != rules {
         let rooms = futures_util::stream::iter(client.joined_rooms());
-        rooms
-            .for_each_concurrent(8, |room| async move { sync_room_with(store, &room, Vec::new(), globals).await })
-            .await;
+        rooms.for_each_concurrent(8, |room| async move { sync_room_with(store, &room, Vec::new(), globals).await }).await;
     }
 }
 
@@ -4921,11 +4772,7 @@ async fn sync_rules(client: &Client, store: &SharedStore, globals: &Globals) {
 async fn sync_account_data(client: &Client, store: &SharedStore) {
     let recent = global(client, "io.element.recent_emoji").await;
     // Other clients write this list too, so an entry that is not an emoji and a count is skipped.
-    let recent = recent["recent_emoji"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|e| Some((e[0].as_str()?.into(), e[1].as_u64()?)));
+    let recent = recent["recent_emoji"].as_array().into_iter().flatten().filter_map(|e| Some((e[0].as_str()?.into(), e[1].as_u64()?)));
     let recent = recent.collect();
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
     let pack = global(client, IMAGE_PACK).await;
@@ -5009,9 +4856,7 @@ async fn sync_profile(client: &Client, store: &SharedStore) {
 
 /// Desktop's `userProfileStore.setAvatar` and `setFullName`: uploads the avatar image with its MIME type, sets the
 /// name, and reads the profile again.
-pub async fn set_profile(
-    store: SharedStore, name: Option<String>, avatar: Option<(Vec<u8>, String)>,
-) -> Result<(), String> {
+pub async fn set_profile(store: SharedStore, name: Option<String>, avatar: Option<(Vec<u8>, String)>) -> Result<(), String> {
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     let e = |e: &dyn std::fmt::Display| e.to_string();
     if let Some((bytes, mime)) = avatar {
@@ -5154,8 +4999,7 @@ pub async fn press_button(url: reqwest::Url, token: String) -> Pressed {
     if token.is_empty() {
         return Pressed::Failed;
     }
-    let req =
-        crate::cloud::no_redirect_client().post(url).bearer_auth(token).timeout(std::time::Duration::from_secs(15));
+    let req = crate::cloud::no_redirect_client().post(url).bearer_auth(token).timeout(std::time::Duration::from_secs(15));
     match req.send().await.map(|r| r.status()) {
         Ok(s) if s.is_success() => Pressed::Ok,
         Ok(reqwest::StatusCode::TOO_MANY_REQUESTS) => Pressed::RateLimited,
@@ -5300,8 +5144,7 @@ async fn refresh_e2ee(client: &Client, store: &SharedStore) {
     let mut st = store.write();
     let old = st.beeper_state.clone();
     let s = &mut st.beeper_state;
-    (s.initialized, s.cross_signing, s.verified, s.secret_storage, s.key_backup) =
-        (true, identity, verified, storage, backup);
+    (s.initialized, s.cross_signing, s.verified, s.secret_storage, s.key_backup) = (true, identity, verified, storage, backup);
     let secrets = &mut s.secrets;
     (secrets.master_key, secrets.self_signing_key, secrets.user_signing_key, secrets.megolm_backup_key) =
         (keys.has_master, keys.has_self_signing, keys.has_user_signing, backup);
@@ -5315,8 +5158,7 @@ const DESKTOP_PICKLE_KEY: &[u8] = b"pickle";
 
 fn unpickle_secret(pickle: &str) -> Result<String, String> {
     let raw = vodozemac::base64_decode(pickle).map_err(|e| e.to_string())?;
-    let plain =
-        vodozemac::hazmat::Cipher::new_pickle(DESKTOP_PICKLE_KEY).decrypt_pickle(&raw).map_err(|e| e.to_string())?;
+    let plain = vodozemac::hazmat::Cipher::new_pickle(DESKTOP_PICKLE_KEY).decrypt_pickle(&raw).map_err(|e| e.to_string())?;
     String::from_utf8(plain).map_err(|e| e.to_string())
 }
 
@@ -5356,15 +5198,9 @@ pub async fn import_crypto(dir: &std::path::Path, c: &DesktopCrypto) -> Result<(
     let secret = |name: &str| c.secrets.iter().find(|(n, _)| n == name).map(|(_, v)| unpickle_secret(v)).transpose();
     let user: OwnedUserId = c.user_id.parse().map_err(|x| e(&x))?;
     let identity = PrivateCrossSigningIdentity::empty(&user);
-    let (master, self_signing, user_signing) = (
-        secret("m.cross_signing.master")?,
-        secret("m.cross_signing.self_signing")?,
-        secret("m.cross_signing.user_signing")?,
-    );
-    identity
-        .import_secrets_unchecked(master.as_deref(), self_signing.as_deref(), user_signing.as_deref())
-        .await
-        .map_err(|x| e(&x))?;
+    let (master, self_signing, user_signing) =
+        (secret("m.cross_signing.master")?, secret("m.cross_signing.self_signing")?, secret("m.cross_signing.user_signing")?);
+    identity.import_secrets_unchecked(master.as_deref(), self_signing.as_deref(), user_signing.as_deref()).await.map_err(|x| e(&x))?;
     let backup = secret("m.megolm_backup.v1")?.map(|k| BackupDecryptionKey::from_base64(&k)).transpose();
     let store = matrix_sdk::SqliteCryptoStore::open(dir, None).await.map_err(|x| e(&x))?;
     let changes = Changes {
@@ -5639,12 +5475,8 @@ pub async fn logout(store: SharedStore) -> Result<(), String> {
 }
 
 /// The verification methods of this device: emojis, and QR codes that it shows, or that an API client scans for it.
-const METHODS: [VerificationMethod; 4] = [
-    VerificationMethod::SasV1,
-    VerificationMethod::QrCodeShowV1,
-    VerificationMethod::QrCodeScanV1,
-    VerificationMethod::ReciprocateV1,
-];
+const METHODS: [VerificationMethod; 4] =
+    [VerificationMethod::SasV1, VerificationMethod::QrCodeShowV1, VerificationMethod::QrCodeScanV1, VerificationMethod::ReciprocateV1];
 
 /// How long this device waits for an answer to its verification request before it sends the request again.
 ///
@@ -5738,9 +5570,7 @@ fn begin(store: &SharedStore, request: VerificationRequest, purpose: &'static st
 }
 
 /// Runs a verification to its end. `confirm` carries the answer of the user to the emojis.
-async fn run_verification(
-    store: &SharedStore, request: VerificationRequest, confirm: oneshot::Receiver<bool>,
-) -> Result<(), String> {
+async fn run_verification(store: &SharedStore, request: VerificationRequest, confirm: oneshot::Receiver<bool>) -> Result<(), String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let id = request.flow_id().to_string();
     let cancelled = |info: CancelInfo| {
@@ -5958,8 +5788,7 @@ pub async fn run(store: SharedStore) {
     // query fails, the first sync reads the state.
     let identity = async {
         let (encryption, me) = (client.encryption(), client.user_id().expect("signed-in client has a user ID"));
-        let ((), identity) =
-            tokio::join!(encryption.wait_for_e2ee_initialization_tasks(), encryption.request_user_identity(me));
+        let ((), identity) = tokio::join!(encryption.wait_for_e2ee_initialization_tasks(), encryption.request_user_identity(me));
         match identity {
             Ok(_) => refresh_e2ee(&client, &store).await,
             Err(e) => eprintln!("Could not query the own identity, the first sync reads it: {e}"),
@@ -6116,9 +5945,7 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             }
             for (id, update) in resp.rooms.left {
                 match client.get_room(&id) {
-                    Some(room) if room.state() == RoomState::Left => {
-                        sync_left(store, &room, update.timeline.events, &globals).await
-                    }
+                    Some(room) if room.state() == RoomState::Left => sync_left(store, &room, update.timeline.events, &globals).await,
                     // A forgotten room, like a deleted label, is gone from the client, and from its merged chats.
                     _ => store.write().remove_deleted_chat(id.as_str()),
                 }
@@ -6281,9 +6108,7 @@ mod tests {
             "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
             "/_matrix/client/v3/sync" => (200, sync.clone()),
             "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-            p if p.ends_with("/messages") => {
-                (200, json!({ "start": "t", "chunk": history.iter().rev().collect::<Vec<_>>() }))
-            }
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": history.iter().rev().collect::<Vec<_>>() })),
             _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
         .await;
@@ -6385,9 +6210,7 @@ mod tests {
             ("/_matrix/client/versions", _) => (200, json!({ "versions": ["v1.11"] })),
             ("/_matrix/client/v3/keys/upload", _) => (200, json!({ "one_time_key_counts": {} })),
             ("/_matrix/client/v3/sync", _) => (200, crate::testing::stub_sync()),
-            ("/_matrix/client/v1/media/download/x/phone", "com.beeper.interactive_download_request=true") => {
-                (200, json!("the photo"))
-            }
+            ("/_matrix/client/v1/media/download/x/phone", "com.beeper.interactive_download_request=true") => (200, json!("the photo")),
             // Like Desktop, the code counts and not the status (the SDK sends a server error again for 15 minutes).
             ("/_matrix/client/v1/media/download/x/phone", _) => {
                 (400, json!({ "errcode": super::MEDIA_RELOAD_NEEDED, "error": "the phone has the media" }))
@@ -6413,18 +6236,17 @@ mod tests {
         use std::sync::{Arc, Mutex};
         let sent = Arc::new(Mutex::new(Vec::<Value>::new()));
         let sent2 = sent.clone();
-        let url =
-            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').unwrap_or((path, "")) {
-                ("/_matrix/client/versions", _) => (200, json!({ "versions": ["v1.11"] })),
-                ("/_matrix/client/v3/keys/upload", _) => (200, json!({ "one_time_key_counts": {} })),
-                ("/_matrix/client/v3/sync", _) => (200, crate::testing::stub_sync()),
-                ("/_matrix/client/v3/rooms/!room:x/typing/@me:x", _) if method == "PUT" => {
-                    sent2.lock().expect("the notices").push(body);
-                    (200, json!({}))
-                }
-                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
-            })
-            .await;
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').unwrap_or((path, "")) {
+            ("/_matrix/client/versions", _) => (200, json!({ "versions": ["v1.11"] })),
+            ("/_matrix/client/v3/keys/upload", _) => (200, json!({ "one_time_key_counts": {} })),
+            ("/_matrix/client/v3/sync", _) => (200, crate::testing::stub_sync()),
+            ("/_matrix/client/v3/rooms/!room:x/typing/@me:x", _) if method == "PUT" => {
+                sent2.lock().expect("the notices").push(body);
+                (200, json!({}))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
         let store = stub_store(&crate::testing::temp_dir("typing-notices"), &url).await;
         let client = store.read().matrix.clone().expect("a Matrix client");
         for on in [true, false, true, true, false] {
@@ -6460,9 +6282,7 @@ mod tests {
         let (me2, seen2, tries2) = (me.clone(), seen.clone(), tries.clone());
         let (photo2, secret2, floe_body2) = (photo.clone(), secret.clone(), floe_body.clone());
         let url = crate::bridge_stub::serve_raw(move |_, path, headers: &HashMap<String, String>, _| {
-            let json = |code, v: Value| {
-                (code, vec![("content-type".into(), b"application/json".to_vec())], v.to_string().into_bytes())
-            };
+            let json = |code, v: Value| (code, vec![("content-type".into(), b"application/json".to_vec())], v.to_string().into_bytes());
             let auth = headers.get("authorization").is_some_and(|a| a == "Bearer token");
             let (path, query) = path.split_once('?').unwrap_or((path, ""));
             if path.contains("/media/") || path.starts_with("/blob") {
@@ -6480,11 +6300,7 @@ mod tests {
                 }
                 "/blob" => {
                     let name = "inline; filename=\"café ü.jpg\"".as_bytes().to_vec();
-                    (
-                        200,
-                        vec![("content-type".into(), b"image/jpeg".to_vec()), ("content-disposition".into(), name)],
-                        photo2.clone(),
-                    )
+                    (200, vec![("content-type".into(), b"image/jpeg".to_vec()), ("content-disposition".into(), name)], photo2.clone())
                 }
                 "/_matrix/client/v1/media/download/x/secret" if ok => (200, Vec::new(), secret2.clone()),
                 "/_matrix/client/v1/media/download/x/floe" if ok => (200, Vec::new(), floe_body2.clone()),
@@ -6549,28 +6365,27 @@ mod tests {
         let stored = Arc::new(Mutex::new(Value::Null));
         let (sent, next) = (Arc::new(Mutex::new(Vec::new())), stored.clone());
         let (log, syncs) = (sent.clone(), AtomicUsize::new(0));
-        let url =
-            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
-                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                "/_matrix/client/v3/sync" => {
-                    let content = next.lock().unwrap().clone();
-                    let mut sync = stub_sync();
-                    // A new batch each time, since the client skips a batch that it has.
-                    sync["next_batch"] = json!(format!("s{}", syncs.fetch_add(1, Relaxed)));
-                    if !content.is_null() {
-                        let event = json!({ "type": "com.beeper.device_metadata.DEV", "content": content });
-                        sync["account_data"] = json!({ "events": [event] });
-                    }
-                    (200, sync)
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => {
+                let content = next.lock().unwrap().clone();
+                let mut sync = stub_sync();
+                // A new batch each time, since the client skips a batch that it has.
+                sync["next_batch"] = json!(format!("s{}", syncs.fetch_add(1, Relaxed)));
+                if !content.is_null() {
+                    let event = json!({ "type": "com.beeper.device_metadata.DEV", "content": content });
+                    sync["account_data"] = json!({ "events": [event] });
                 }
-                p if p.contains("device_metadata") => {
-                    log.lock().unwrap().push((method.to_string(), p.to_string(), body));
-                    (200, json!({}))
-                }
-                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
-            })
-            .await;
+                (200, sync)
+            }
+            p if p.contains("device_metadata") => {
+                log.lock().unwrap().push((method.to_string(), p.to_string(), body));
+                (200, json!({}))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
         let store = stub_store(&crate::testing::temp_dir("device-metadata"), &url).await;
         let client = store.read().matrix.clone().expect("a Matrix client");
         super::update_device_metadata(client.clone()).await;
@@ -6598,10 +6413,9 @@ mod tests {
             "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
             "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
             "/_matrix/client/v3/sync" if syncs.fetch_add(1, Relaxed) == 0 => (200, stub_sync()),
-            "/_matrix/client/v3/sync" => (
-                401,
-                json!({ "errcode": "M_UNKNOWN_TOKEN", "error": "Unrecognised access token", "soft_logout": false }),
-            ),
+            "/_matrix/client/v3/sync" => {
+                (401, json!({ "errcode": "M_UNKNOWN_TOKEN", "error": "Unrecognised access token", "soft_logout": false }))
+            }
             _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
         .await;
@@ -6673,9 +6487,7 @@ mod tests {
 
     /// A store with the stub rooms `!room:x`, whose history is `events`, and `other.0`, whose history is `other.1`.
     /// The stub also gives each event of `events` and sends any event.
-    async fn stub_history(
-        name: &str, events: Vec<Value>, other: (&'static str, Vec<Value>),
-    ) -> crate::store::SharedStore {
+    async fn stub_history(name: &str, events: Vec<Value>, other: (&'static str, Vec<Value>)) -> crate::store::SharedStore {
         let mut sync = stub_sync();
         sync["rooms"]["join"][other.0] = sync["rooms"]["join"]["!room:x"].clone();
         let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
@@ -6710,15 +6522,12 @@ mod tests {
         let mut sync = stub_sync();
         let events: Vec<Value> = (61..=70).map(stub_message).collect();
         sync["next_batch"] = json!("s2");
-        sync["rooms"]["join"]["!room:x"]["timeline"] =
-            json!({ "events": events, "limited": true, "prev_batch": "t60" });
+        sync["rooms"]["join"]["!room:x"]["timeline"] = json!({ "events": events, "limited": true, "prev_batch": "t60" });
         let url = crate::bridge_stub::serve(move |_, path, _| {
             let (path, query) = path.split_once('?').unwrap_or((path, ""));
             match path {
                 "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/sync" if syncs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 => {
-                    (200, stub_sync())
-                }
+                "/_matrix/client/v3/sync" if syncs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 => (200, stub_sync()),
                 "/_matrix/client/v3/sync" => (200, sync.clone()),
                 "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
                 p if p.ends_with("/messages") => {
@@ -6928,11 +6737,8 @@ mod tests {
         let store = crate::testing::stub_room_store(&crate::testing::temp_dir("kept-title"), &url).await;
         let client = store.read().matrix.clone().expect("a Matrix client");
         // A personal name, a message, and the personal name gone.
-        let personal =
-            |content: Value| json!({ "events": [{ "type": crate::models::PERSONAL_NAME, "content": content }] });
-        for (n, data, want) in
-            [(2, Some(json!({ "name": "Pal" })), "Pal"), (3, None, "Pal"), (4, Some(json!({})), "Vic")]
-        {
+        let personal = |content: Value| json!({ "events": [{ "type": crate::models::PERSONAL_NAME, "content": content }] });
+        for (n, data, want) in [(2, Some(json!({ "name": "Pal" })), "Pal"), (3, None, "Pal"), (4, Some(json!({})), "Vic")] {
             let mut room = json!({ "timeline": { "events": [stub_message(n)], "prev_batch": "t0" } });
             if let Some(d) = data {
                 room["account_data"] = personal(d);
@@ -6974,9 +6780,7 @@ mod tests {
             json!({ "type": kind, "state_key": key, "sender": "@me:x", "event_id": format!("${id}"),
                 "origin_server_ts": 1, "content": content })
         };
-        let vic = move |id: &str, name: &str| {
-            state("m.room.member", "@vic:x", id, json!({ "membership": "join", "displayname": name }))
-        };
+        let vic = move |id: &str, name: &str| state("m.room.member", "@vic:x", id, json!({ "membership": "join", "displayname": name }));
         let response = |batch: &str, rooms: Value, data: Value| {
             let data = json!({ "events": data });
             json!({ "next_batch": batch, "rooms": { "join": rooms }, "account_data": data })
@@ -6984,10 +6788,8 @@ mod tests {
         let rooms = ["!a:x", "!b:x", "!c:x", "!d:x"];
         let mut joined = json!({});
         for (i, id) in rooms.iter().enumerate() {
-            let create =
-                state("m.room.create", "", &format!("c{i}"), json!({ "creator": "@me:x", "room_version": "10" }));
-            let me =
-                state("m.room.member", "@me:x", &format!("m{i}"), json!({ "membership": "join", "displayname": "Me" }));
+            let create = state("m.room.create", "", &format!("c{i}"), json!({ "creator": "@me:x", "room_version": "10" }));
+            let me = state("m.room.member", "@me:x", &format!("m{i}"), json!({ "membership": "join", "displayname": "Me" }));
             let events = json!([create, me, vic(&format!("v{i}"), "Vic")]);
             joined[*id] = json!({ "state": { "events": events }, "timeline": { "events": [] } });
         }
@@ -7022,8 +6824,7 @@ mod tests {
                 "timeline": { "events": [] } },
         });
         let mute = json!({ "rule_id": "!d:x", "default": false, "enabled": true, "actions": [] });
-        let rules =
-            json!({ "global": { "override": [], "content": [], "sender": [], "underride": [], "room": [mute] } });
+        let rules = json!({ "global": { "override": [], "content": [], "sender": [], "underride": [], "room": [mute] } });
         *next.lock().unwrap() = response("s3", changes, json!([{ "type": "m.push_rules", "content": rules }]));
         let store = reopen().await;
         assert_eq!(start(&store).await, 4, "the last run applied its last sync");
@@ -7074,10 +6875,7 @@ mod tests {
     fn resolve_media_wraps_the_unresolved_media_like_desktop() {
         let raw = r#"{"kind":"permanent","fi.mau.instagram.full_title":"t"}"#;
         let body: Value = serde_json::from_str(&super::resolve_body(raw).unwrap()).unwrap();
-        assert_eq!(
-            body,
-            json!({ "com.beeper.unresolved_media": { "kind": "permanent", "fi.mau.instagram.full_title": "t" } })
-        );
+        assert_eq!(body, json!({ "com.beeper.unresolved_media": { "kind": "permanent", "fi.mau.instagram.full_title": "t" } }));
         assert!(super::resolve_body("not json").is_err());
     }
 
@@ -7088,14 +6886,11 @@ mod tests {
             "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
             "/_matrix/client/v3/sync" => {
                 let mut sync = stub_sync();
-                let receipt =
-                    json!({ "type": "m.receipt", "content": { "$e2": { "m.read": { "@me:x": { "ts": 1 } } } } });
+                let receipt = json!({ "type": "m.receipt", "content": { "$e2": { "m.read": { "@me:x": { "ts": 1 } } } } });
                 sync["rooms"]["join"]["!room:x"]["ephemeral"] = json!({ "events": [receipt] });
                 (200, sync)
             }
-            p if p.ends_with("/messages") => {
-                (200, json!({ "start": "t3", "chunk": [stub_message(3), stub_message(2), stub_message(1)] }))
-            }
+            p if p.ends_with("/messages") => (200, json!({ "start": "t3", "chunk": [stub_message(3), stub_message(2), stub_message(1)] })),
             _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
         .await;
@@ -7119,8 +6914,7 @@ mod tests {
             "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
             "/_matrix/client/v3/sync" => {
                 let mut sync = stub_sync();
-                let receipt =
-                    json!({ "type": "m.receipt", "content": { "$k": { "m.read": { "@me:x": { "ts": 1 } } } } });
+                let receipt = json!({ "type": "m.receipt", "content": { "$k": { "m.read": { "@me:x": { "ts": 1 } } } } });
                 sync["rooms"]["join"]["!room:x"]["ephemeral"] = json!({ "events": [receipt] });
                 (200, sync)
             }
@@ -7198,8 +6992,7 @@ mod tests {
     #[tokio::test]
     async fn waiting_messages_decrypt_by_event() {
         let at = 1_700_000_000_000_i64;
-        let megolm =
-            json!({ "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x", "sender_key": "k", "session_id": "s" });
+        let megolm = json!({ "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x", "sender_key": "k", "session_id": "s" });
         let enc = json!({ "type": "m.room.encrypted", "event_id": "$utd", "sender": "@vic:x", "origin_server_ts": at,
             "content": megolm });
         let plain = json!({ "type": "m.room.message", "event_id": "$utd", "sender": "@vic:x", "origin_server_ts": at,
@@ -7228,8 +7021,7 @@ mod tests {
     #[tokio::test]
     async fn a_decrypted_edit_keeps_the_archive_like_desktop() {
         let msg = stub_message(5);
-        let megolm =
-            json!({ "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x", "sender_key": "k", "session_id": "s" });
+        let megolm = json!({ "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x", "sender_key": "k", "session_id": "s" });
         let enc = json!({ "type": "m.room.encrypted", "event_id": "$edit", "sender": "@me:x", "origin_server_ts": 2,
             "content": megolm, "unsigned": { "com.beeper.hs.order": 9 } });
         let edit = json!({ "type": "m.room.message", "event_id": "$edit", "sender": "@me:x", "origin_server_ts": 2,
@@ -7274,26 +7066,24 @@ mod tests {
     async fn mutes_go_through_beeper_muted_like_desktop() {
         let written = std::sync::Arc::new(std::sync::Mutex::new(None));
         let w = written.clone();
-        let url =
-            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
-                "/_matrix/client/v3/versions" | "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                "/_matrix/client/v3/sync" => {
-                    let muted =
-                        json!({ "type": "com.beeper.muted", "content": { "room_ids": ["!room:x"], "other": 1 } });
-                    let mut sync = stub_sync();
-                    sync["account_data"] = json!({ "events": [muted] });
-                    (200, sync)
-                }
-                p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
-                p if method == "PUT" && p.ends_with("/account_data/com.beeper.muted") => {
-                    *w.lock().unwrap() = Some(body);
-                    (200, json!({}))
-                }
-                p if p.contains("/pushrules/") || p.contains("/account_data/") => (200, json!({})),
-                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
-            })
-            .await;
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/v3/versions" | "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => {
+                let muted = json!({ "type": "com.beeper.muted", "content": { "room_ids": ["!room:x"], "other": 1 } });
+                let mut sync = stub_sync();
+                sync["account_data"] = json!({ "events": [muted] });
+                (200, sync)
+            }
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            p if method == "PUT" && p.ends_with("/account_data/com.beeper.muted") => {
+                *w.lock().unwrap() = Some(body);
+                (200, json!({}))
+            }
+            p if p.contains("/pushrules/") || p.contains("/account_data/") => (200, json!({})),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
         let store = stub_store(&crate::testing::temp_dir("beeper-muted"), &url).await;
         sync_stub_room(&store, "!room:x").await;
         assert_eq!(store.read().chat("!room:x").is_muted, Some(true), "the list mutes it");
@@ -7463,9 +7253,7 @@ mod tests {
         let store = stub_history("msgtypes", events, ("!other:x", Vec::new())).await;
         sync_stub_room(&store, "!room:x").await;
         let st = store.read();
-        let kind = |id: &str| {
-            st.messages.iter().find(|m| m.id == id).and_then(|m| m.message_type.clone()).filter(|t| t != "HIDDEN")
-        };
+        let kind = |id: &str| st.messages.iter().find(|m| m.id == id).and_then(|m| m.message_type.clone()).filter(|t| t != "HIDDEN");
         assert_eq!((kind("$t").as_deref(), kind("$e").as_deref()), (Some("TEXT"), Some("TEXT")));
         assert!(["$g", "$c", "$v"].iter().all(|id| kind(id).is_none()), "no text rows for the other msgtypes");
     }
@@ -7493,8 +7281,7 @@ mod tests {
         }
         let poll = json!({ "org.matrix.msc3381.poll.start": { "question": { "body": "Q" }, "answers": [] } });
         let sticker = json!({ "body": "s", "url": "mxc://x/s", "info": {} });
-        let events =
-            vec![stub_event("$p", "org.matrix.msc3381.poll.start", poll), stub_event("$s", "m.sticker", sticker)];
+        let events = vec![stub_event("$p", "org.matrix.msc3381.poll.start", poll), stub_event("$s", "m.sticker", sticker)];
         let store = stub_history("forward", events, ("!other:x", Vec::new())).await;
         let forward = |event: &str| super::Outgoing::Forward {
             txn: format!("txn{event}"),
@@ -7505,10 +7292,7 @@ mod tests {
         };
         store.write().queue("!room:x", forward("$p"));
         let err = super::flush(store.clone()).await.expect_err("a poll has no content to forward");
-        assert_eq!(
-            (err.message.as_str(), err.transient),
-            ("Cannot forward a org.matrix.msc3381.poll.start event", false)
-        );
+        assert_eq!((err.message.as_str(), err.transient), ("Cannot forward a org.matrix.msc3381.poll.start event", false));
         store.write().queue("!room:x", forward("$s"));
         super::flush(store.clone()).await.expect("a sticker has no msgtype and forwards");
         assert_eq!(store.read().sent.get("txn$s").map(String::as_str), Some("$sent"));
@@ -7522,12 +7306,10 @@ mod tests {
         let mut redaction = stub_event("$r", "m.room.redaction", json!({}));
         redaction["redacts"] = json!("$note");
         let new = json!({ "msgtype": "m.text", "body": "spoofed" });
-        let edit =
-            json!({ "msgtype": "m.text", "body": "* spoofed", "m.new_content": new, "m.relates_to": rel("m.replace") });
+        let edit = json!({ "msgtype": "m.text", "body": "* spoofed", "m.new_content": new, "m.relates_to": rel("m.replace") });
         let mut reaction = rel("m.annotation");
         reaction["key"] = json!("👍");
-        let vote =
-            json!({ "m.relates_to": rel("m.reference"), "org.matrix.msc3381.poll.response": { "answers": ["1"] } });
+        let vote = json!({ "m.relates_to": rel("m.reference"), "org.matrix.msc3381.poll.response": { "answers": ["1"] } });
         let events = vec![
             redaction,
             stub_event("$e", "m.room.message", edit),
@@ -7604,13 +7386,10 @@ mod tests {
             e
         };
         let edit = |id: &str, body: &str, target: &str| {
-            let new = json!({ "msgtype": "m.text", "body": body, "com.beeper.disappearing_timer": { "type": "after_send", "timer": 60_000 } });
+            let new =
+                json!({ "msgtype": "m.text", "body": body, "com.beeper.disappearing_timer": { "type": "after_send", "timer": 60_000 } });
             let rel = json!({ "rel_type": "m.replace", "event_id": target });
-            stub_event(
-                id,
-                "m.room.message",
-                json!({ "msgtype": "m.text", "body": "* x", "m.new_content": new, "m.relates_to": rel }),
-            )
+            stub_event(id, "m.room.message", json!({ "msgtype": "m.text", "body": "* x", "m.new_content": new, "m.relates_to": rel }))
         };
         let end = |id: &str, target: &str| {
             let rel = json!({ "rel_type": "m.reference", "event_id": target });
@@ -7872,34 +7651,28 @@ mod tests {
         let features = json!({ "type": "com.beeper.room_features", "state_key": "", "sender": "@me:x",
             "event_id": "$features", "origin_server_ts": 1, "content": { "thread": 1 } });
         room["state"]["events"].as_array_mut().unwrap().push(features);
-        let follows =
-            json!({ "follow_all": false, "followed": [], "unfollowed": ["$e1"], "com.beeper.revision_id": "r" });
+        let follows = json!({ "follow_all": false, "followed": [], "unfollowed": ["$e1"], "com.beeper.revision_id": "r" });
         room["account_data"] = json!({ "events": [{ "type": "com.beeper.thread_follows", "content": follows }] });
         let receipt = json!({ "$e2": { "m.read": { "@me:x": { "ts": 1, "thread_id": "$e1" } } } });
         room["ephemeral"] = json!({ "events": [{ "type": "m.receipt", "content": receipt }] });
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = sent.clone();
-        let url =
-            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
-                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/sync" => (200, sync.clone()),
-                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                p if p.ends_with("/messages") => {
-                    (200, json!({ "start": "t", "chunk": events.iter().rev().collect::<Vec<_>>() }))
-                }
-                p if p.contains("/event/") => {
-                    (200, events.iter().find(|e| p.ends_with(e["event_id"].as_str().unwrap())).unwrap().clone())
-                }
-                "/_matrix/client/v1/media/config" => (200, json!({ "m.upload.size": 1_000_000 })),
-                "/_matrix/media/v3/upload" => (200, json!({ "content_uri": "mxc://x/f" })),
-                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
-                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
-                p => {
-                    log.lock().unwrap().push((p.to_string(), body));
-                    (200, json!({ "event_id": "$sent" }))
-                }
-            })
-            .await;
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": events.iter().rev().collect::<Vec<_>>() })),
+            p if p.contains("/event/") => (200, events.iter().find(|e| p.ends_with(e["event_id"].as_str().unwrap())).unwrap().clone()),
+            "/_matrix/client/v1/media/config" => (200, json!({ "m.upload.size": 1_000_000 })),
+            "/_matrix/media/v3/upload" => (200, json!({ "content_uri": "mxc://x/f" })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            p => {
+                log.lock().unwrap().push((p.to_string(), body));
+                (200, json!({ "event_id": "$sent" }))
+            }
+        })
+        .await;
         let store = stub_store(&crate::testing::temp_dir("threads"), &url).await;
         store.write().features = crate::features::Flags::free_plan();
         sync_stub_room(&store, "!room:x").await;
@@ -7912,22 +7685,12 @@ mod tests {
             let st = store.read();
             assert!(c.threads && st.threaded(&c), "the thread room feature and the threads flag");
             let m = |id: &str| st.message(id).clone();
-            assert_eq!(
-                (m("$e2").thread_root.as_deref(), m("$e2").fallback, m("$e2").broadcast),
-                (Some("$e1"), true, false)
-            );
-            assert_eq!(
-                (m("$e3").fallback, m("$e3").broadcast, m("$e3").linked_message_id),
-                (false, true, Some("$e2".into()))
-            );
+            assert_eq!((m("$e2").thread_root.as_deref(), m("$e2").fallback, m("$e2").broadcast), (Some("$e1"), true, false));
+            assert_eq!((m("$e3").fallback, m("$e3").broadcast, m("$e3").linked_message_id), (false, true, Some("$e2".into())));
             assert_eq!(m("$e4").thread_root, None);
             let replies: Vec<&str> = st.thread_replies("$e1").map(|m| m.id.as_str()).collect();
             assert_eq!(replies, ["$e2", "$e3", "$e5"]);
-            assert_eq!(
-                c.preview.as_ref().map(|p| p.id.as_str()),
-                Some("$e4"),
-                "a reply only in the thread does not preview"
-            );
+            assert_eq!(c.preview.as_ref().map(|p| p.id.as_str()), Some("$e4"), "a reply only in the thread does not preview");
             assert_eq!(c.follows.unfollowed, ["$e1"]);
             assert!(!st.follows_thread(&c, "$e1"), "an explicit unfollow beats the own root");
             let joined = crate::models::Chat { follows: Default::default(), ..c.clone() };
@@ -7989,19 +7752,13 @@ mod tests {
         assert_eq!((&body["m.relates_to"], &body["com.beeper.broadcast_outside_thread"]), (&rel, &json!(true)));
         assert_eq!(body["m.mentions"], json!({}), "Desktop does not mention the sender of the fallback reply");
         assert_eq!(body["com.beeper.linkpreviews"], json!([]), "links without a preview get none from the bridge");
-        let (_, body) =
-            sent.iter().find(|(p, b)| p.contains("/send/m.room.message/") && b["msgtype"] == "m.file").expect("a file");
+        let (_, body) = sent.iter().find(|(p, b)| p.contains("/send/m.room.message/") && b["msgtype"] == "m.file").expect("a file");
         assert_eq!(body["com.beeper.broadcast_outside_thread"], json!(true), "a file has \"Also send to chat\" too");
-        let (_, body) =
-            sent.iter().find(|(p, b)| p.contains("/send/m.room.message/") && b["msgtype"] == "m.video").unwrap();
+        let (_, body) = sent.iter().find(|(p, b)| p.contains("/send/m.room.message/") && b["msgtype"] == "m.video").unwrap();
         let info = json!({ "mimetype": "video/mp4", "size": 9, "w": 3, "h": 2, "duration": 1500, "fi.mau.gif": true });
         assert_eq!((&body["info"], &body["body"], &body["filename"]), (&info, &json!("hi"), &json!("g.mp4")));
-        let (_, body) =
-            sent.iter().find(|(p, _)| p.ends_with("/account_data/com.beeper.thread_follows")).expect("a follow");
-        assert_eq!(
-            (&body["followed"], &body["unfollowed"], &body["follow_all"]),
-            (&json!(["$e1"]), &json!([]), &json!(false))
-        );
+        let (_, body) = sent.iter().find(|(p, _)| p.ends_with("/account_data/com.beeper.thread_follows")).expect("a follow");
+        assert_eq!((&body["followed"], &body["unfollowed"], &body["follow_all"]), (&json!(["$e1"]), &json!([]), &json!(false)));
         assert!(body["com.beeper.revision_id"].is_string(), "Desktop writes a new revision");
     }
 
@@ -8115,8 +7872,7 @@ mod tests {
         let store = stub_store(&crate::testing::temp_dir("union-create"), &url).await;
         let (a, b) = ("!a:x", "!b:x");
         for id in [a, b] {
-            let room =
-                super::Chat { id: id.into(), local_chat_id: None, ..store.read().chat(super::NOTE_CHAT_ID).clone() };
+            let room = super::Chat { id: id.into(), local_chat_id: None, ..store.read().chat(super::NOTE_CHAT_ID).clone() };
             store.write().upsert_chat(room);
         }
         let draft = store.write().create_union("Lena", vec![a.into(), b.into()], None, None);
@@ -8152,9 +7908,7 @@ mod tests {
         let outs: Vec<(&str, &super::Outgoing)> = st.outbox.iter().map(|(_, c, o)| (c.as_str(), o)).collect();
         let deleted = |o: &super::Outgoing| matches!(o, super::Outgoing::DeleteChat { .. });
         let left = |o: &super::Outgoing| matches!(o, super::Outgoing::Leave(true));
-        assert!(
-            matches!(&outs[..], [(x, d1), (y, d2), ("!union:x", l)] if (*x, *y) == (a, b) && deleted(d1) && deleted(d2) && left(l))
-        );
+        assert!(matches!(&outs[..], [(x, d1), (y, d2), ("!union:x", l)] if (*x, *y) == (a, b) && deleted(d1) && deleted(d2) && left(l)));
     }
 
     /// Desktop's "Installed sticker packs": the packs with stickers of the personal spaces of the bridges and of
@@ -8183,11 +7937,7 @@ mod tests {
             state("m.room.image_pack", "cats", part(0, "Cats (part 1)", "mxc://x/c0")),
             state("m.room.image_pack", "cats-1", part(1, "Cats (part 2)", "mxc://x/c1")),
             state("im.ponies.room_emotes", "cats", json!({ "images": { "old": img("mxc://x/old") } })),
-            state(
-                "m.room.image_pack",
-                "emoji",
-                json!({ "pack": { "usage": ["emoticon"] }, "images": { "e": img("mxc://x/e") } }),
-            ),
+            state("m.room.image_pack", "emoji", json!({ "pack": { "usage": ["emoticon"] }, "images": { "e": img("mxc://x/e") } })),
         ]);
         sync["rooms"]["join"]["!space:x"] = joined(vec![
             state("m.room.create", "", space),
@@ -8211,19 +7961,18 @@ mod tests {
         ] });
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = sent.clone();
-        let url =
-            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
-                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/sync" => (200, sync.clone()),
-                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
-                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
-                p => {
-                    log.lock().unwrap().push((method.to_string(), p.to_string(), body));
-                    (200, json!({ "event_id": "$sent" }))
-                }
-            })
-            .await;
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            p => {
+                log.lock().unwrap().push((method.to_string(), p.to_string(), body));
+                (200, json!({ "event_id": "$sent" }))
+            }
+        })
+        .await;
         let store = stub_store(&crate::testing::temp_dir("installed-stickers"), &url).await;
         let packs = super::installed_packs(store.clone()).await.expect("the packs");
         let names: Vec<(&str, &str)> = packs.iter().map(|p| (p.id.as_str(), p.name.as_str())).collect();
@@ -8234,19 +7983,13 @@ mod tests {
         assert_eq!(cats.icon, Some(("mxc://x/c0".into(), Some("image/webp".into()))), "the first sticker");
         assert!(cats.bridged && !packs[1].bridged);
         assert_eq!(cats.events.len(), 3, "both parts, and the older event of the first part");
-        assert_eq!(
-            (packs[1].icon.clone(), packs[1].attribution.as_deref()),
-            (Some(("mxc://x/av".into(), None)), Some("by Owl"))
-        );
+        assert_eq!((packs[1].icon.clone(), packs[1].attribution.as_deref()), (Some(("mxc://x/av".into(), None)), Some("by Owl")));
         // "Use in all chats".
         let client = store.read().matrix.clone().unwrap();
         let rooms = super::global(&client, super::IMAGE_PACK_ROOMS).await;
         store.write().image_pack_rooms = rooms;
         let rooms = store.read().image_pack_rooms.clone();
-        assert!(
-            super::pack_in_all_chats(&rooms, "!other:x", "g")
-                && !super::pack_in_all_chats(&rooms, "!personal:x", "cats")
-        );
+        assert!(super::pack_in_all_chats(&rooms, "!other:x", "g") && !super::pack_in_all_chats(&rooms, "!personal:x", "cats"));
         let on = super::with_pack_rooms(rooms.clone(), &cats.parts, true);
         assert_eq!(on["rooms"]["!personal:x"], json!({ "cats": {}, "cats-1": {} }));
         assert_eq!(on["other"], 1, "the rest of the account data stays");
@@ -8255,13 +7998,7 @@ mod tests {
         // Remove: the pack leaves the list of all chats, then each event of the pack is emptied.
         store.write().image_pack_rooms = on;
         super::remove_pack(store.clone(), cats.clone()).await.expect("the pack goes");
-        let sent: Vec<_> = sent
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|s| s.1.contains("image_pack") || s.1.contains("emotes"))
-            .cloned()
-            .collect();
+        let sent: Vec<_> = sent.lock().unwrap().iter().filter(|s| s.1.contains("image_pack") || s.1.contains("emotes")).cloned().collect();
         let paths: Vec<(&str, &str)> = sent.iter().map(|(m, p, _)| (m.as_str(), p.as_str())).collect();
         assert_eq!(paths[0], ("PUT", "/_matrix/client/v3/user/@me:x/account_data/m.image_pack.rooms"));
         assert_eq!(sent[0].2, json!({ "rooms": { "!other:x": { "g": {} } }, "other": 1 }));
@@ -8328,22 +8065,21 @@ mod tests {
         ] });
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = sent.clone();
-        let url =
-            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
-                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/sync" => (200, sync.clone()),
-                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                "/_matrix/client/v1/media/config" => (200, json!({ "m.upload.size": 1_000_000 })),
-                "/_matrix/media/v3/upload" => (200, json!({ "content_uri": "mxc://x/f" })),
-                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
-                p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
-                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
-                p => {
-                    log.lock().unwrap().push((p.to_string(), body));
-                    (200, json!({ "event_id": "$sent" }))
-                }
-            })
-            .await;
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v1/media/config" => (200, json!({ "m.upload.size": 1_000_000 })),
+            "/_matrix/media/v3/upload" => (200, json!({ "content_uri": "mxc://x/f" })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
+            _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            p => {
+                log.lock().unwrap().push((p.to_string(), body));
+                (200, json!({ "event_id": "$sent" }))
+            }
+        })
+        .await;
         let store = stub_store(&crate::testing::temp_dir("stickers"), &url).await;
         sync_stub_room(&store, "!room:x").await;
         let packs = super::sticker_packs(store.clone(), "!room:x".into()).await.expect("the packs");
@@ -8358,10 +8094,7 @@ mod tests {
         assert_eq!(ids, want, "the room, its space, the global rooms and the account, and the stable type wins");
         let cat = packs[0].stickers.clone();
         assert_eq!(cat.len(), 1, "one sticker for each URL, and no emoticons");
-        assert_eq!(
-            (cat[0].shortcodes.clone(), packs[4].stickers[0].source.clone()),
-            (vec!["cat".into(), "kitty".into()], None)
-        );
+        assert_eq!((cat[0].shortcodes.clone(), packs[4].stickers[0].source.clone()), (vec!["cat".into(), "kitty".into()], None));
         let mut png = Vec::new();
         ::image::RgbaImage::new(2, 2).write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).unwrap();
         let sticker = super::Outgoing::Media {
@@ -8390,11 +8123,7 @@ mod tests {
         // The local echo of a converted file takes the name and the type of the conversion.
         let mut jpg = Vec::new();
         ::image::RgbImage::new(2, 2).write_to(&mut std::io::Cursor::new(&mut jpg), ::image::ImageFormat::Jpeg).unwrap();
-        let att = crate::models::Attachment {
-            file_name: Some("a.jpg".into()),
-            mime_type: Some("image/jpeg".into()),
-            ..Default::default()
-        };
+        let att = crate::models::Attachment { file_name: Some("a.jpg".into()), mime_type: Some("image/jpeg".into()), ..Default::default() };
         let (_, txn, _) = store.write().send_message("!room:x", None, None, Some(att)).expect("a local echo");
         let file = super::Outgoing::Media {
             txn: txn.clone(),
@@ -8423,25 +8152,22 @@ mod tests {
         let log = sent.clone();
         let refuse = Arc::new(Mutex::new(false));
         let refused = refuse.clone();
-        let url =
-            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
-                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/sync" => (200, stub_sync()),
-                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                p if method == "PUT" && p.contains("/state/") => match *refused.lock().unwrap() {
-                    true => (403, json!({ "errcode": "M_FORBIDDEN", "error": "not allowed" })),
-                    false => {
-                        log.lock().unwrap().push((p.rsplit("/state/").next().unwrap().to_string(), body));
-                        (200, json!({ "event_id": "$state" }))
-                    }
-                },
-                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
-            })
-            .await;
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if method == "PUT" && p.contains("/state/") => match *refused.lock().unwrap() {
+                true => (403, json!({ "errcode": "M_FORBIDDEN", "error": "not allowed" })),
+                false => {
+                    log.lock().unwrap().push((p.rsplit("/state/").next().unwrap().to_string(), body));
+                    (200, json!({ "event_id": "$state" }))
+                }
+            },
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
         let store = stub_store(&crate::testing::temp_dir("group-update"), &url).await;
-        let update = |name: &str| {
-            super::update_group(store.clone(), "!room:x".into(), Some(name.into()), Some("Topic".into()), None)
-        };
+        let update = |name: &str| super::update_group(store.clone(), "!room:x".into(), Some(name.into()), Some("Topic".into()), None);
         update("Core").await.expect("the homeserver takes the changes");
         let sent = sent.lock().unwrap().clone();
         let kinds: Vec<&str> = sent.iter().map(|(k, _)| k.trim_end_matches('/')).collect();
@@ -8495,20 +8221,19 @@ mod tests {
         events.extend([features, state("m.bridge", bridge)]);
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = sent.clone();
-        let url =
-            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
-                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/sync" => (200, sync.clone()),
-                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
-                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
-                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
-                p => {
-                    log.lock().unwrap().push((p.to_string(), body));
-                    (200, json!({ "event_id": "$sent" }))
-                }
-            })
-            .await;
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            p => {
+                log.lock().unwrap().push((p.to_string(), body));
+                (200, json!({ "event_id": "$sent" }))
+            }
+        })
+        .await;
         let store = stub_store(&crate::testing::temp_dir("block"), &url).await;
         sync_stub_room(&store, "!room:x").await;
         let chat = || {
@@ -8526,8 +8251,7 @@ mod tests {
         store.write().set_user_blocked("!room:x", true, true);
         super::flush(store.clone()).await.expect("send the block events");
         let sent = sent.lock().unwrap();
-        let bodies: Vec<&Value> =
-            sent.iter().filter(|(p, _)| p.contains("/send/com.beeper.block_user/")).map(|(_, b)| b).collect();
+        let bodies: Vec<&Value> = sent.iter().filter(|(p, _)| p.contains("/send/com.beeper.block_user/")).map(|(_, b)| b).collect();
         let want = [json!({ "block": false, "report_spam": false }), json!({ "block": true, "report_spam": true })];
         assert_eq!(bodies, [&want[0], &want[1]]);
     }
@@ -8567,8 +8291,7 @@ mod tests {
         let event = json!({ "type": "com.beeper.bridge_state", "content": { "bridges": bridges } });
         let flags = json!({ "features": { "*": { "enable-polls": true } } });
         let flags = json!({ "type": crate::features::FLAGS, "content": flags });
-        let limits =
-            json!({ "current": { "num_accounts_against_limit": 1 }, "max": { "num_accounts_against_limit": 5 } });
+        let limits = json!({ "current": { "num_accounts_against_limit": 1 }, "max": { "num_accounts_against_limit": 5 } });
         let summary = json!({ "type": crate::features::SUMMARY, "content": limits });
         sync["account_data"] = json!({ "events": [event, flags, summary] });
         let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
@@ -8611,8 +8334,7 @@ mod tests {
         let key_path = format!("/_matrix/client/v3/user/@me:x/account_data/m.secret_storage.key.{}", ssss.key_id());
         let kind = super::ACCOUNT_OVERRIDES;
         let synced = json!({ "accounts": { "whatsapp": { "a": { "name": "Work" } } }, "com.beeper.revision_id": "r1" });
-        let theirs =
-            json!({ "accounts": { "telegram": { "t": { "name": "Phone" } } }, "com.beeper.revision_id": "r2" });
+        let theirs = json!({ "accounts": { "telegram": { "t": { "name": "Phone" } } }, "com.beeper.revision_id": "r2" });
         let mut sync = stub_sync();
         let event = json!({ "type": kind, "content": crate::msc4483::encrypt(&key, kind, &synced) });
         sync["account_data"] = json!({ "events": [event] });
@@ -8620,42 +8342,34 @@ mod tests {
             "com.beeper.current_content": crate::msc4483::encrypt(&key, kind, &theirs) });
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = sent.clone();
-        let url = crate::bridge_stub::serve(move |method, path, body| {
-            match (method, path.split_once('?').map_or(path, |p| p.0)) {
-                (_, "/_matrix/client/versions") => (200, json!({ "versions": ["v1.11"] })),
-                (_, "/_matrix/client/v3/sync") => (200, sync.clone()),
-                (_, "/_matrix/client/v3/keys/upload") => (200, json!({ "one_time_key_counts": {} })),
-                ("GET", "/_matrix/client/v3/user/@me:x/account_data/m.secret_storage.default_key") => {
-                    (200, default_key.clone())
+        let url = crate::bridge_stub::serve(move |method, path, body| match (method, path.split_once('?').map_or(path, |p| p.0)) {
+            (_, "/_matrix/client/versions") => (200, json!({ "versions": ["v1.11"] })),
+            (_, "/_matrix/client/v3/sync") => (200, sync.clone()),
+            (_, "/_matrix/client/v3/keys/upload") => (200, json!({ "one_time_key_counts": {} })),
+            ("GET", "/_matrix/client/v3/user/@me:x/account_data/m.secret_storage.default_key") => (200, default_key.clone()),
+            ("GET", p) if p == key_path => (200, key_info.clone()),
+            ("GET", "/_matrix/client/v3/user/@me:x/account_data/dev.zirco.msc4483.account_data.key") => (200, secret.clone()),
+            ("PUT", "/_matrix/client/v3/user/@me:x/account_data/com.beeper.bridge_account_overrides") => {
+                let mut log = log.lock().unwrap();
+                log.push((path.to_string(), body));
+                match log.len() {
+                    1 => (409, conflict.clone()),
+                    _ => (200, json!({})),
                 }
-                ("GET", p) if p == key_path => (200, key_info.clone()),
-                ("GET", "/_matrix/client/v3/user/@me:x/account_data/dev.zirco.msc4483.account_data.key") => {
-                    (200, secret.clone())
-                }
-                ("PUT", "/_matrix/client/v3/user/@me:x/account_data/com.beeper.bridge_account_overrides") => {
-                    let mut log = log.lock().unwrap();
-                    log.push((path.to_string(), body));
-                    match log.len() {
-                        1 => (409, conflict.clone()),
-                        _ => (200, json!({})),
-                    }
-                }
-                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
             }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
         .await;
         let store = stub_store(&crate::testing::temp_dir("account-nicknames"), &url).await;
         let on = json!({ "state_event": "CONNECTED" });
-        let bridges =
-            json!({ "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "a": on } } });
+        let bridges = json!({ "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "a": on } } });
         let accounts = crate::cloud::cloud_accounts(&bridges).expect("valid bridge states");
         store.write().set_cloud_accounts(accounts);
         store.write().beeper_state.secrets.recovery_code = ssss.to_base58();
         let client = store.read().matrix.clone().expect("a client");
         super::sync_account_data(&client, &store).await;
         assert_eq!(store.read().custom_name("whatsapp"), Some("Work"), "the synced nickname is decrypted");
-        let set =
-            |name: &str| super::set_bridge_account_name(store.clone(), "whatsapp".into(), "a".into(), name.into());
+        let set = |name: &str| super::set_bridge_account_name(store.clone(), "whatsapp".into(), "a".into(), name.into());
         set("  Personal ").await.expect("the second try writes the name");
         let puts = sent.lock().unwrap().clone();
         let expected: Vec<&str> = puts.iter().map(|(p, _)| p.split_once('?').expect("a query").1).collect();
@@ -8719,13 +8433,9 @@ mod tests {
                     _ => (200, sync.clone()),
                 },
                 (_, "/_matrix/client/v3/keys/upload") => (200, json!({ "one_time_key_counts": {} })),
-                ("GET", "/_matrix/client/v3/user/@me:x/account_data/m.secret_storage.default_key") => {
-                    (200, default_key.clone())
-                }
+                ("GET", "/_matrix/client/v3/user/@me:x/account_data/m.secret_storage.default_key") => (200, default_key.clone()),
                 ("GET", p) if p == key_path => (200, key_info.clone()),
-                ("GET", "/_matrix/client/v3/user/@me:x/account_data/dev.zirco.msc4483.account_data.key") => {
-                    (200, secret.clone())
-                }
+                ("GET", "/_matrix/client/v3/user/@me:x/account_data/dev.zirco.msc4483.account_data.key") => (200, secret.clone()),
                 ("PUT", "/_matrix/client/v3/user/@me:x/rooms/!room:x/account_data/com.beeper.draft") => {
                     let mut log = log.lock().unwrap();
                     log.push((path.to_string(), body));
@@ -8802,12 +8512,8 @@ mod tests {
         let client = store.read().matrix.clone().expect("a client");
         super::refresh_e2ee(&client, &store).await;
         let state = store.read().app_state();
-        assert_eq!(
-            (state.state, state.e2ee.initialized, state.e2ee.cross_signing),
-            ("needs-cross-signing-setup", true, false)
-        );
-        let e2ee =
-            |store: &crate::store::SharedStore| serde_json::to_value(store.read().app_state()).unwrap()["e2ee"].clone();
+        assert_eq!((state.state, state.e2ee.initialized, state.e2ee.cross_signing), ("needs-cross-signing-setup", true, false));
+        let e2ee = |store: &crate::store::SharedStore| serde_json::to_value(store.read().app_state()).unwrap()["e2ee"].clone();
         assert!(e2ee(&store).get("recoveryKeyGeneratedAt").is_none(), "Desktop leaves out a time of 0");
         store.write().beeper_state.recovery_code_generated_at = 1_763_200_000_000;
         assert_eq!(e2ee(&store)["recoveryKeyGeneratedAt"], 1_763_200_000_000_i64);
@@ -8868,12 +8574,8 @@ mod tests {
         let accounts = crate::cloud::cloud_accounts(&bridges).expect("valid logins");
         let cloud = crate::cloud::Cloud::new(&url, &url);
         let users = tokio::task::spawn_blocking(move || cloud.contacts("token", "@me:x", &accounts)).await.unwrap();
-        let users: Vec<_> =
-            users.iter().map(|u| (u.full_name.as_deref(), u.phone_number.as_deref(), u.mxid.as_deref())).collect();
-        assert_eq!(
-            users,
-            [(Some("Ann"), None, Some("@discord_2:beeper.local")), (Some("Sam"), Some("+15550100"), None)]
-        );
+        let users: Vec<_> = users.iter().map(|u| (u.full_name.as_deref(), u.phone_number.as_deref(), u.mxid.as_deref())).collect();
+        assert_eq!(users, [(Some("Ann"), None, Some("@discord_2:beeper.local")), (Some("Sam"), Some("+15550100"), None)]);
         assert_eq!(crate::cloud::contact_account("contact:discordgo_d:2"), Some("discordgo_d"));
     }
 
@@ -8900,9 +8602,7 @@ mod tests {
         let pushes = tokio::spawn(super::push_loop(store.clone()));
         let draft = crate::store::Draft { text: Some("hi".into()), ..Default::default() };
         let txn = store.write().send("!room:x", draft).expect("a local echo").1.remove(0);
-        let error = |st: &crate::store::BeeperStore| {
-            (st.stored_message(&txn).expect("the local echo").send_error, st.outbox.len())
-        };
+        let error = |st: &crate::store::BeeperStore| (st.stored_message(&txn).expect("the local echo").send_error, st.outbox.len());
         pushed_until(&store, |st| error(st).0.is_some()).await;
         super::flush(store.clone()).await.expect("a failed message is not a flush error");
         let (e, queued) = error(&store.read());
@@ -9285,18 +8985,12 @@ mod tests {
         use crate::models::REMINDERS_ROOM;
         let rel = |id: &str| json!({ "event_id": id, "room_id": "!room:x", "rel_type": "com.beeper.message_reminder" });
         let remind = |id: &str, target: &str, at: i64| {
-            stub_event(
-                id,
-                "com.beeper.message_reminder",
-                json!({ "com.beeper.relates_to": rel(target), "remind_at_ms": at }),
-            )
+            stub_event(id, "com.beeper.message_reminder", json!({ "com.beeper.relates_to": rel(target), "remind_at_ms": at }))
         };
         let mut foreign = remind("$r3", "$c", 9);
         foreign["sender"] = "@other:x".into();
-        let redaction =
-            stub_event("$r5", "m.room.redaction", json!({ "redacts": "$r4", "com.beeper.relates_to": rel("$b") }));
-        let reminders =
-            vec![remind("$r1", "$a", 5), remind("$r2", "$a", 7), foreign, remind("$r4", "$b", 8), redaction];
+        let redaction = stub_event("$r5", "m.room.redaction", json!({ "redacts": "$r4", "com.beeper.relates_to": rel("$b") }));
+        let reminders = vec![remind("$r1", "$a", 5), remind("$r2", "$a", 7), foreign, remind("$r4", "$b", 8), redaction];
         let mut sync = stub_sync();
         sync["rooms"]["join"][REMINDERS_ROOM] = sync["rooms"]["join"]["!room:x"].clone();
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -9326,13 +9020,8 @@ mod tests {
         {
             let st = store.read();
             assert_eq!(st.reminders_room.as_deref(), Some(REMINDERS_ROOM));
-            let active: Vec<(&str, i64)> =
-                st.message_reminders_of("!room:x").iter().map(|(id, r)| (*id, r.remind_at_ms)).collect();
-            assert_eq!(
-                active,
-                [("$a", 7)],
-                "the latest event wins, others' reminders are skipped, a redaction ends one"
-            );
+            let active: Vec<(&str, i64)> = st.message_reminders_of("!room:x").iter().map(|(id, r)| (*id, r.remind_at_ms)).collect();
+            assert_eq!(active, [("$a", 7)], "the latest event wins, others' reminders are skipped, a redaction ends one");
             assert!(!st.chat_idx_by_id.contains_key(REMINDERS_ROOM), "the reminders room is not a chat");
         }
         let at = super::now_unix_millis() + 60_000;
@@ -9341,12 +9030,8 @@ mod tests {
         store.write().set_message_reminder("!room:x", "$m", None);
         super::flush(store.clone()).await.expect("the reminder is redacted");
         let room = format!("/_matrix/client/v3/rooms/{REMINDERS_ROOM}/");
-        let sent: Vec<(String, Value)> = sent
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|(p, b)| Some((p.strip_prefix(&room)?.to_string(), b.clone())))
-            .collect();
+        let sent: Vec<(String, Value)> =
+            sent.lock().unwrap().iter().filter_map(|(p, b)| Some((p.strip_prefix(&room)?.to_string(), b.clone()))).collect();
         assert!(sent[0].0.starts_with("send/com.beeper.message_reminder/"), "{}", sent[0].0);
         assert_eq!(sent[0].1, json!({ "com.beeper.relates_to": rel("$m"), "remind_at_ms": at }));
         assert!(sent[1].0.starts_with("redact/$sent/"), "{}", sent[1].0);
@@ -9375,8 +9060,7 @@ mod tests {
         ];
         let mut sync = stub_sync();
         sync["rooms"]["join"][REMOVED_MESSAGES_ROOM] = sync["rooms"]["join"]["!room:x"].clone();
-        let (failing, sent) =
-            (std::sync::Arc::new(AtomicBool::new(true)), std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let (failing, sent) = (std::sync::Arc::new(AtomicBool::new(true)), std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
         let (fail_now, sent_log) = (failing.clone(), sent.clone());
         let url = crate::bridge_stub::serve(move |method, path, body| {
             let path = crate::codec::url_decode(path.split('?').next().expect("a path")).expect("an encoded path");
@@ -9585,21 +9269,15 @@ mod tests {
         use crate::models::Transcription;
         use serde_json::json;
         let rel = json!({ "room_id": "!r", "event_id": "$m", "rel_type": "com.beeper.transcription" });
-        let texts = json!([{ "body": "one" }, { "body": "<b>two</b>", "mimetype": "text/html" }, { "body": "three", "mimetype": "text/plain" }]);
+        let texts =
+            json!([{ "body": "one" }, { "body": "<b>two</b>", "mimetype": "text/html" }, { "body": "three", "mimetype": "text/plain" }]);
         let ev = |content: serde_json::Value| json!({ "type": "com.beeper.transcription", "content": content });
         let full = ev(json!({ "com.beeper.relates_to": rel, "m.text": texts,
             "com.beeper.transcription.model": "openai-whisper", "com.beeper.transcription.language": "fr" }));
-        let want = Transcription {
-            transcription: "three".into(),
-            engine: "openai-whisper".into(),
-            language: Some("fr".into()),
-        };
+        let want = Transcription { transcription: "three".into(), engine: "openai-whisper".into(), language: Some("fr".into()) };
         assert_eq!(transcription(&full), Some(("$m".into(), want)));
         let bare = transcription(&ev(json!({ "com.beeper.relates_to": rel, "m.text": [{ "body": "hi" }] })));
-        assert_eq!(
-            bare,
-            Some(("$m".into(), Transcription { transcription: "hi".into(), engine: "unknown".into(), language: None }))
-        );
+        assert_eq!(bare, Some(("$m".into(), Transcription { transcription: "hi".into(), engine: "unknown".into(), language: None })));
         assert!(transcription(&ev(json!({ "com.beeper.relates_to": rel, "m.text": [{ "body": "" }] }))).is_none());
         assert!(transcription(&ev(json!({ "com.beeper.relates_to": { "event_id": "$m" }, "m.text": texts }))).is_none());
         let other = json!({ "type": "m.room.message", "content": { "com.beeper.relates_to": rel, "m.text": texts } });
@@ -9613,10 +9291,7 @@ mod tests {
         use serde_json::json;
         let levels = json!({ "users": { "@me:x": 50 }, "events": { DISAPPEARING_TIMER: 100 } });
         let beeper = timers(None, &levels, "@me:x").expect("the Beeper defaults have timers");
-        assert!(
-            beeper.kind == "after_send" && beeper.timers == DEFAULT_TIMERS && !beeper.can_set,
-            "the event needs 100"
-        );
+        assert!(beeper.kind == "after_send" && beeper.timers == DEFAULT_TIMERS && !beeper.can_set, "the event needs 100");
         assert!(timers(Some(&json!({})), &levels, "@me:x").is_none(), "features without disappearing_timer");
         let f = json!({
             "disappearing_timer": { "types": ["after_read"], "timers": [3_600_000, 86_400_000] },
@@ -9645,8 +9320,7 @@ mod tests {
                 "m.relates_to": { "rel_type": "m.reference", "event_id": target } });
             event(i, sender, "com.beeper.message_send_status", content)
         };
-        let new =
-            json!({ "msgtype": "m.text", "body": "", DISAPPEARING_TIMER: { "type": "after_read", "timer": 120_000 } });
+        let new = json!({ "msgtype": "m.text", "body": "", DISAPPEARING_TIMER: { "type": "after_read", "timer": 120_000 } });
         let edit = json!({ "msgtype": "m.text", "body": "* ", "m.new_content": new,
             "m.relates_to": { "rel_type": "m.replace", "event_id": "$e4" } });
         let events = [
@@ -9674,22 +9348,19 @@ mod tests {
         room["ephemeral"] = json!({ "events": [{ "type": "m.receipt", "content": receipts }] });
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = sent.clone();
-        let url =
-            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
-                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/sync" => (200, sync.clone()),
-                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                p if p.ends_with("/messages") => {
-                    (200, json!({ "start": "t", "chunk": events.iter().rev().collect::<Vec<_>>() }))
-                }
-                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
-                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
-                p => {
-                    log.lock().unwrap().push((p.to_string(), body));
-                    (200, json!({ "event_id": "$sent" }))
-                }
-            })
-            .await;
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": events.iter().rev().collect::<Vec<_>>() })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            p => {
+                log.lock().unwrap().push((p.to_string(), body));
+                (200, json!({ "event_id": "$sent" }))
+            }
+        })
+        .await;
         let store = stub_store(&crate::testing::temp_dir("disappearing"), &url).await;
         sync_stub_room(&store, "!room:x").await;
         {
@@ -9763,10 +9434,7 @@ mod tests {
         );
         let next = super::with_custom_emoji(&pack, "owl", "mxc://x/owl").unwrap();
         assert_eq!(super::pack_emojis(&next).last(), Some(&emoji("owl")));
-        assert_eq!(
-            super::with_custom_emoji(&pack, "cat", "mxc://y/cat"),
-            Err("You already have a custom emoji named cat".into())
-        );
+        assert_eq!(super::with_custom_emoji(&pack, "cat", "mxc://y/cat"), Err("You already have a custom emoji named cat".into()));
         // Beeper's defaults take custom emoji, a bridge's room features say so, and other defaults do not.
         let beeper = json!({ "com.beeper.bridge_name": "hungryserv" });
         let slack = json!({ "com.beeper.bridge_name": "slackgo", "protocol": { "id": "slackgo" } });
@@ -9818,13 +9486,9 @@ mod tests {
         });
         let mut p = super::poll(&start).expect("a poll start");
         assert_eq!((p.question.as_str(), p.max_selections, p.undisclosed), ("Lunch?", 2, true));
-        assert_eq!(
-            p.options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(),
-            [("1", "Pizza"), ("2", "Soup")]
-        );
+        assert_eq!(p.options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(), [("1", "Pizza"), ("2", "Soup")]);
         assert_eq!(p.fallback, "Lunch?\n1. Pizza\n2. Soup");
-        let single =
-            super::poll(&json!({ "m.poll": { "question": { "m.text": "Q" }, "answers": [] } })).expect("a poll");
+        let single = super::poll(&json!({ "m.poll": { "question": { "m.text": "Q" }, "answers": [] } })).expect("a poll");
         assert_eq!((single.max_selections, single.undisclosed), (1, false));
         assert!(super::poll(&json!({ "body": "no poll" })).is_none());
         let answers = |c| super::poll_answers(&c);
@@ -9843,8 +9507,7 @@ mod tests {
         assert_eq!(c(serde_json::json!({"body": "a.jpg"})), None);
         assert_eq!(c(serde_json::json!({"body": "look", "filename": "a.jpg"})).as_deref(), Some("look"));
         assert_eq!(
-            c(serde_json::json!({"body": "https://www.instagram.com/reel/x/", "com.beeper.unresolved_media": {}}))
-                .as_deref(),
+            c(serde_json::json!({"body": "https://www.instagram.com/reel/x/", "com.beeper.unresolved_media": {}})).as_deref(),
             Some("https://www.instagram.com/reel/x/")
         );
     }
@@ -9933,8 +9596,7 @@ mod tests {
         let bad = super::create_matrix_dm(store.clone(), "ghost".into()).await.expect_err("not a Matrix ID");
         assert!(bad.starts_with("failed to resolve identifier: user ID"), "{bad}");
         let users = vec!["@vic:x".to_string(), "@ghost:x".to_string()];
-        let group =
-            |kind: &str, name: &str| super::create_matrix_group(store.clone(), kind.into(), name.into(), users.clone());
+        let group = |kind: &str, name: &str| super::create_matrix_group(store.clone(), kind.into(), name.into(), users.clone());
         assert_eq!(group("group", "Team").await, Ok("!new:x".into()));
         let room = json!({ "name": "Team", "invite": users, "preset": "private_chat", "initial_state": [encryption] });
         assert_eq!(take(), [request("createRoom", room)]);
@@ -9995,8 +9657,7 @@ mod tests {
     /// saved with them.
     #[tokio::test]
     async fn quick_replies_sync_like_desktop() {
-        let attachment =
-            json!({ "id": "a1", "filePath": "/home/x/quick_reply_attachments/cat.png", "fileName": "cat.png" });
+        let attachment = json!({ "id": "a1", "filePath": "/home/x/quick_reply_attachments/cat.png", "fileName": "cat.png" });
         let replies = json!([
             { "id": "q1", "title": "Thanks", "text": "Thank you {first_name}!" },
             { "id": "q2", "title": "Cat", "text": "Here", "attachments": [attachment] },
@@ -10036,24 +9697,23 @@ mod tests {
         let stored = Arc::new(Mutex::new(json!({ "time_suggestion_options": options, "sticker_packs": true })));
         let (sent, next, syncs) = (Arc::new(Mutex::new(Vec::new())), stored.clone(), AtomicUsize::new(0));
         let log = sent.clone();
-        let url =
-            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
-                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                "/_matrix/client/v3/sync" => {
-                    let mut sync = stub_sync();
-                    sync["next_batch"] = json!(format!("s{}", syncs.fetch_add(1, Relaxed)));
-                    let event = json!({ "type": "com.beeper.desktop.prefs", "content": next.lock().unwrap().clone() });
-                    sync["account_data"] = json!({ "events": [event] });
-                    (200, sync)
-                }
-                p if p.ends_with("/account_data/com.beeper.desktop.prefs") => {
-                    log.lock().unwrap().push((method.to_string(), body));
-                    (200, json!({}))
-                }
-                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
-            })
-            .await;
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => {
+                let mut sync = stub_sync();
+                sync["next_batch"] = json!(format!("s{}", syncs.fetch_add(1, Relaxed)));
+                let event = json!({ "type": "com.beeper.desktop.prefs", "content": next.lock().unwrap().clone() });
+                sync["account_data"] = json!({ "events": [event] });
+                (200, sync)
+            }
+            p if p.ends_with("/account_data/com.beeper.desktop.prefs") => {
+                log.lock().unwrap().push((method.to_string(), body));
+                (200, json!({}))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
         let store = stub_store(&crate::testing::temp_dir("time-suggestions"), &url).await;
         let client = store.read().matrix.clone().expect("a Matrix client");
         super::sync_prefs(&client, &store).await;
@@ -10081,9 +9741,7 @@ mod tests {
 
     #[test]
     fn reaction_verbs_ignore_variation_selectors() {
-        for (key, verb) in
-            [("👍\u{fe0f}", "liked"), ("\u{2764}", "loved"), ("\u{2764}\u{fe0f}", "loved"), ("🎉", "reacted 🎉 to")]
-        {
+        for (key, verb) in [("👍\u{fe0f}", "liked"), ("\u{2764}", "loved"), ("\u{2764}\u{fe0f}", "loved"), ("🎉", "reacted 🎉 to")] {
             assert_eq!(super::reaction_verb(key), verb, "{key:?}");
         }
     }
@@ -10098,10 +9756,6 @@ mod tests {
         .unwrap();
         assert_eq!(super::reaction_text("\u{2764}", Some(&m), None), "loved \"https://x.io\"");
         let m = crate::models::Message { html: None, ..m };
-        assert_eq!(
-            super::reaction_text("\u{2764}", Some(&m), None),
-            "loved \"https://x.io\"",
-            "markdown links lose the URL"
-        );
+        assert_eq!(super::reaction_text("\u{2764}", Some(&m), None), "loved \"https://x.io\"", "markdown links lose the URL");
     }
 }

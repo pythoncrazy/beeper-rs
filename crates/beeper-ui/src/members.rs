@@ -37,8 +37,7 @@ impl BeeperGuiApp {
                 return self.search_users(q, account);
             }
             Msg::OpenAdd(q) => {
-                let open =
-                    self.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::AddMembers)));
+                let open = self.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::AddMembers)));
                 return Task::batch([open, self.update(UiMessage::CommandBar(commands::Msg::Query(q)))]);
             }
             Msg::Add(chat, user) => {
@@ -59,8 +58,7 @@ impl BeeperGuiApp {
                 return self.open_dm(account, user, None, None);
             }
             Msg::Ask(ask, cid, uid) => {
-                (self.list.chat_menu, self.confirm, self.delete_target) =
-                    (None, Some(ask), Some(format!("{cid} {uid}")));
+                (self.list.chat_menu, self.confirm, self.delete_target) = (None, Some(ask), Some(format!("{cid} {uid}")));
             }
             Msg::SetAdmin(cid, uid, admin) => {
                 self.confirm = None;
@@ -81,8 +79,7 @@ impl BeeperGuiApp {
                 let (msgs, _) = self.timeline(&st);
                 let runs = message::member_runs(&msgs);
                 let start = msgs.iter().position(|m| m.id == id);
-                let group = start
-                    .map_or(0..0, |s| s..s + msgs[s..].iter().zip(&runs[s..]).take_while(|(_, &r)| r == s).count());
+                let group = start.map_or(0..0, |s| s..s + msgs[s..].iter().zip(&runs[s..]).take_while(|(_, &r)| r == s).count());
                 let ids: Vec<String> = msgs[group].iter().map(|m| m.id.clone()).collect();
                 drop(st);
                 self.pane.selected_msgs.retain(|m| !ids.contains(m));
@@ -102,14 +99,11 @@ impl BeeperGuiApp {
             u.custom_nickname.is_some()
                 || u.username.is_some()
                 || full.is_some_and(|f| {
-                    !u.phone_number.as_deref().is_some_and(|n| phone_digits(f) == phone_digits(n))
-                        && u.email.as_deref() != Some(f)
+                    !u.phone_number.as_deref().is_some_and(|n| phone_digits(f) == phone_digits(n)) && u.email.as_deref() != Some(f)
                 })
         };
         let mut all: Vec<&User> = chat.participants.items.iter().collect();
-        all.sort_by_cached_key(|u| {
-            (u.is_self != Some(true), u.is_admin != Some(true), !named(u), member_name(u).to_lowercase())
-        });
+        all.sort_by_cached_key(|u| (u.is_self != Some(true), u.is_admin != Some(true), !named(u), member_name(u).to_lowercase()));
         let q = self.info_query.trim().to_lowercase();
         let hit = |u: &&User| {
             let fields = [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email];
@@ -129,8 +123,8 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::Members(members::Msg::OpenAdd(self.info_query.clone())))
         });
         let row = |u: &User| -> El<'a> {
-            let you = (u.is_self == Some(true))
-                .then(|| format!(" {}", trx("(You)", "tag shown next to the current user in participant list")));
+            let you =
+                (u.is_self == Some(true)).then(|| format!(" {}", trx("(You)", "tag shown next to the current user in participant list")));
             // Desktop's tags: Exited, Invited and Admin, and an invited member's name at half opacity.
             let tags: Vec<&str> = [
                 (u.has_exited == Some(true)).then(|| trx("Exited", "group participant status tag")),
@@ -145,9 +139,8 @@ impl BeeperGuiApp {
             let you_w = you.as_deref().map_or(0.0, |y| crate::style::text_width(y, 13.0, Weight::Normal));
             let name = member_name(u);
             let strong = p.strong.scale_alpha(fade);
-            let label =
-                row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold).line_height(lh(16.0)).color(strong)]
-                    .push(you.map(|y| txt(y, 13.0).color(strong)));
+            let label = row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold).line_height(lh(16.0)).color(strong)]
+                .push(you.map(|y| txt(y, 13.0).color(strong)));
             let tags = tags.into_iter().map(|t| -> El<'a> {
                 container(crate::style::t(t, 10.0, Weight::Semibold).line_height(lh(12.0)).color(p.strong))
                     .padding([2, 4])
@@ -167,18 +160,14 @@ impl BeeperGuiApp {
         };
         let search = searchable.then(|| {
             let n = all.len();
-            let input =
-                text_input(&trn("Search %d group member", "Search %d group members", n, &[&n]), &self.info_query)
-                    .on_input(|a0| UiMessage::Info(info::Msg::Query(a0)))
-                    .size(rem(13.0))
-                    .line_height(lh(16.0))
-                    .padding([10, 12])
-                    .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
-            let clear = (!self.info_query.is_empty()).then(|| {
-                button(ic(icon::CLOSE, 20.0).color(p.sub))
-                    .bare(p.sub)
-                    .on_press(UiMessage::Info(info::Msg::Query(String::new())))
-            });
+            let input = text_input(&trn("Search %d group member", "Search %d group members", n, &[&n]), &self.info_query)
+                .on_input(|a0| UiMessage::Info(info::Msg::Query(a0)))
+                .size(rem(13.0))
+                .line_height(lh(16.0))
+                .padding([10, 12])
+                .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
+            let clear = (!self.info_query.is_empty())
+                .then(|| button(ic(icon::CLOSE, 20.0).color(p.sub)).bare(p.sub).on_press(UiMessage::Info(info::Msg::Query(String::new()))));
             let bar = row![ic(icon::SEARCH, 20.0).color(p.sub), input].push(clear).align_y(Center).padding([0, 8]);
             container(bar).padding(Padding::ZERO.top(8.0))
         });
@@ -198,13 +187,9 @@ impl BeeperGuiApp {
             .push(toggle)
             .spacing(6)
             .padding(if searchable { Padding::new(8.0).top(0.0) } else { Padding::new(8.0) });
-        let less = (expandable && self.info_all).then(|| {
-            button(semi(tr("Show less"), 11.0).color(p.accent)).bare(p.accent).on_press(UiMessage::Info(info::Msg::All))
-        });
-        let head = row![txt(tr("Members"), 11.0).color(p.strong), Space::new().width(Fill)]
-            .push(less)
-            .align_y(Center)
-            .padding(8);
+        let less = (expandable && self.info_all)
+            .then(|| button(semi(tr("Show less"), 11.0).color(p.accent)).bare(p.accent).on_press(UiMessage::Info(info::Msg::All)));
+        let head = row![txt(tr("Members"), 11.0).color(p.strong), Space::new().width(Fill)].push(less).align_y(Center).padding(8);
         let head: El = match expandable {
             true => mouse_area(head).on_press(UiMessage::Info(info::Msg::All)).into(),
             false => head.into(),

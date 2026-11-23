@@ -52,9 +52,8 @@ impl BeeperGuiApp {
                             continue;
                         }
                         let m = stored(&st, mid);
-                        let (_, txn, _) = st
-                            .send_message(cid, m.text.clone(), None, m.attachments.first().cloned())
-                            .expect("forward message");
+                        let (_, txn, _) =
+                            st.send_message(cid, m.text.clone(), None, m.attachments.first().cloned()).expect("forward message");
                         let (from, event, text, html) = (m.chat_id, m.id, m.text, m.html);
                         st.queue(cid, Outgoing::Forward { txn, from, event, text, html });
                     }
@@ -83,8 +82,7 @@ pub(crate) fn forward_chats<'s>(st: &'s BeeperStore, f: &Forward) -> Vec<&'s Cha
     let mut v: Vec<&Chat> = match q.is_empty() && !st.recent_chat_ids.is_empty() {
         true => st.recent_chat_ids.iter().filter_map(|id| st.find_chat(id)).collect(),
         false => {
-            let hit =
-                |c: &&Chat| c.title.to_lowercase().contains(&q) || chat_search_subtitle(c).to_lowercase().contains(&q);
+            let hit = |c: &&Chat| c.title.to_lowercase().contains(&q) || chat_search_subtitle(c).to_lowercase().contains(&q);
             let mut v: Vec<&Chat> = st.chats.iter().filter(hit).collect();
             v.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
             v
@@ -117,10 +115,8 @@ impl BeeperGuiApp {
         let inputs = Row::with_children(pills).push(input).spacing(4).align_y(Center).height(24);
         let inputs = container(inputs).padding(Padding::new(18.0).left(13.0).right(20.0));
         let chats = forward_chats(&st, f);
-        let cat = (f.query.trim().is_empty() && !chats.is_empty()).then(|| {
-            container(txt(tr("Recent chats"), 12.0).color(p.sub))
-                .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
-        });
+        let cat = (f.query.trim().is_empty() && !chats.is_empty())
+            .then(|| container(txt(tr("Recent chats"), 12.0).color(p.sub)).padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0)));
         let rows = chats.iter().enumerate().fold(Column::new().push(cat), |col, (i, c)| {
             let title = crate::chat_search_title(p, c);
             let line = row![self.chat_avatar(c, 32.0, 0.0), title, Space::new().width(Fill)]
@@ -131,10 +127,7 @@ impl BeeperGuiApp {
             let pick = button(line).height(36).padding([0, 6]).width(Fill);
             let pick = pick.style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0));
             let pick = mouse_area(pick.on_press(UiMessage::Forward(forward::Msg::Pick(c.id.clone()))));
-            col.push(
-                container(pick.on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone()))))
-                    .padding([0, 6]),
-            )
+            col.push(container(pick.on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone())))).padding([0, 6]))
         });
         let ready = !f.picked.is_empty();
         let label = row![semi(tr("Forward"), 12.0), txt("CTRL ENTER", 11.0).color(Color { a: 0.8, ..Color::WHITE })];

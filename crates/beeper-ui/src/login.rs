@@ -3,8 +3,7 @@ use crate::focus::Focus;
 use crate::i18n::{tr, trx, trxf};
 use crate::style::rem;
 use crate::style::{
-    bold, bordered_box, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi, shadow_box, txt, Bare,
-    Palette, CLEAR,
+    bold, bordered_box, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi, shadow_box, txt, Bare, Palette, CLEAR,
 };
 use crate::verify::Brand;
 use crate::{BeeperGuiApp, El, UiMessage};
@@ -16,8 +15,7 @@ use beeper_core::store::{Setup, NOTE_CHAT_ID};
 use iced::gradient::Linear;
 use iced::keyboard::{key::Named, Key, Modifiers};
 use iced::widget::{
-    button, column, container, mouse_area, operation, rich_text, row, scrollable, span, stack, svg, text_editor,
-    text_input, Space,
+    button, column, container, mouse_area, operation, rich_text, row, scrollable, span, stack, svg, text_editor, text_input, Space,
 };
 use iced::{border, window, Background, Center, Color, Degrees, Fill, Gradient, Padding, Size, Task, Theme};
 use std::path::PathBuf;
@@ -132,9 +130,7 @@ fn welcome_scene<'a>() -> El<'a> {
     // The pager photo is the third floating layer.
     let floating = svgs[1..3].iter().map(fit).chain([pager]).chain(svgs[3..].iter().map(fit));
     let layers = std::iter::once(fit(&svgs[0])).chain(floating.enumerate().map(|(n, el)| layer(n, el)));
-    container(iced::widget::Stack::with_children(layers).width(SCENE_SIZE.width).height(SCENE_SIZE.height))
-        .center(Fill)
-        .into()
+    container(iced::widget::Stack::with_children(layers).width(SCENE_SIZE.width).height(SCENE_SIZE.height)).center(Fill).into()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -573,11 +569,7 @@ fn password_session(cloud: &Cloud, user: &str, password: &str) -> Result<Outcome
 }
 
 fn card_style(bg: Color) -> impl Fn(&Theme) -> container::Style {
-    let shadow = iced::Shadow {
-        color: Color::from_rgba(0.0, 0.0, 0.0, 0.03),
-        offset: iced::Vector::new(0.0, 2.0),
-        blur_radius: 4.0,
-    };
+    let shadow = iced::Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.03), offset: iced::Vector::new(0.0, 2.0), blur_radius: 4.0 };
     move |_| container::Style { background: Some(bg.into()), border: border::rounded(12), shadow, ..Default::default() }
 }
 
@@ -588,8 +580,7 @@ fn toast<'a>(p: &Palette, text: &'a str, error: bool) -> El<'a> {
     let text = txt(text, 13.0).line_height(iced::Pixels(rem(16.0))).color(fg).width(Fill);
     let line: El<'a> = match error {
         true => {
-            let close =
-                button(ic(icon::CLOSE, 14.0).color(fg)).bare(fg).padding(3).on_press(LoginMsg::CloseToast.into());
+            let close = button(ic(icon::CLOSE, 14.0).color(fg)).bare(fg).padding(3).on_press(LoginMsg::CloseToast.into());
             row![ic(icon::INFO, 20.0).color(fg), text, close].spacing(6).align_y(Center).into()
         }
         false => text.center().into(),
@@ -600,16 +591,9 @@ fn toast<'a>(p: &Palette, text: &'a str, error: bool) -> El<'a> {
 
 /// Chromium's validation bubble over the email field, with its orange "!" icon and its arrow.
 fn bubble(text: &str) -> El<'_> {
-    let mark =
-        container(bold("!", 15.0).color(Color::WHITE)).center(22).style(fill_box(Color::from_rgb8(232, 89, 12), 2.0));
-    let line =
-        row![mark, txt(text, 14.0).line_height(iced::Pixels(rem(16.0))).color(Color::BLACK).width(Fill)].spacing(8);
-    let card = container(line).padding(8).width(162).style(shadow_box(
-        Color::WHITE,
-        Color::from_rgb8(160, 160, 160),
-        2.0,
-        4.0,
-    ));
+    let mark = container(bold("!", 15.0).color(Color::WHITE)).center(22).style(fill_box(Color::from_rgb8(232, 89, 12), 2.0));
+    let line = row![mark, txt(text, 14.0).line_height(iced::Pixels(rem(16.0))).color(Color::BLACK).width(Fill)].spacing(8);
+    let card = container(line).padding(8).width(162).style(shadow_box(Color::WHITE, Color::from_rgb8(160, 160, 160), 2.0, 4.0));
     let arrow = svg(BUBBLE_ARROW.clone()).width(16).height(9);
     let tip = container(column![card, container(arrow).padding(Padding::ZERO.left(8))]);
     container(tip).align_bottom(Fill).padding(Padding::ZERO.left(85).bottom(112)).into()
@@ -636,9 +620,7 @@ fn lit_gradient(p: &Palette, k: f32) -> Background {
 
 /// Desktop's `BrandButton` in `size: "small"`: a full-width pill around `content`, 8 px above and below it. Without
 /// a message it is disabled. While `loading` it is disabled and shows three bouncing dots over its hidden content.
-pub(crate) fn brand_button<'a>(
-    p: &Palette, content: El<'a>, variant: Brand, msg: Option<UiMessage>, loading: bool,
-) -> El<'a> {
+pub(crate) fn brand_button<'a>(p: &Palette, content: El<'a>, variant: Brand, msg: Option<UiMessage>, loading: bool) -> El<'a> {
     let msg = msg.filter(|_| !loading);
     let (bg, fg, edge) = match (msg.is_some(), variant) {
         (false, _) => (Some(p.chip), p.on_secondary, CLEAR),
@@ -725,9 +707,8 @@ fn field_with_icons<'a, M: Into<UiMessage> + 'a>(
 ) -> El<'a> {
     let room = if icons.is_empty() { 12.0 } else { 8.0 + 22.0 * icons.len() as f32 };
     let input = brand_input(p, id, hint, value, on).padding(Padding::new(10.0).left(12.0).right(room));
-    let icons = (!icons.is_empty()).then(|| {
-        container(row(icons).spacing(2).align_y(Center)).align_right(Fill).center_y(38).padding(Padding::ZERO.right(8))
-    });
+    let icons = (!icons.is_empty())
+        .then(|| container(row(icons).spacing(2).align_y(Center)).align_right(Fill).center_y(38).padding(Padding::ZERO.right(8)));
     let input = stack![input].push(icons);
     // `translate(26px, -60%) scale(0.6875)` of the label, with its origin at the left middle of the field.
     let chip = (!value.is_empty()).then(|| {
@@ -759,10 +740,9 @@ impl BeeperGuiApp {
 
     pub fn refresh_cloud_accounts(&self) -> Task<UiMessage> {
         let (cloud, token) = (self.cloud.clone(), self.store.read().beeper_state.access_token.clone());
-        Task::perform(
-            async move { tokio::task::spawn_blocking(move || cloud.whoami(&token)).await.expect("whoami worker thread") },
-            |r| UiMessage::Accounts(accounts::Msg::Cloud(r.map_err(|e| e.message))),
-        )
+        Task::perform(async move { tokio::task::spawn_blocking(move || cloud.whoami(&token)).await.expect("whoami worker thread") }, |r| {
+            UiMessage::Accounts(accounts::Msg::Cloud(r.map_err(|e| e.message)))
+        })
     }
 
     /// Desktop's `showHomePage` after the onboarding: the same window becomes the main window, resizable, at
@@ -791,16 +771,13 @@ impl BeeperGuiApp {
         self.check_e2ee()
     }
 
-    fn background(
-        &mut self, f: impl FnOnce(&Cloud) -> Result<Outcome, CloudError> + Send + 'static,
-    ) -> Task<UiMessage> {
+    fn background(&mut self, f: impl FnOnce(&Cloud) -> Result<Outcome, CloudError> + Send + 'static) -> Task<UiMessage> {
         self.login.busy = true;
         (self.login.error, self.login.toast) = (None, None);
         let cloud = self.cloud.clone();
-        Task::perform(
-            async move { tokio::task::spawn_blocking(move || f(&cloud)).await.expect("login window worker thread") },
-            |r| LoginMsg::Done(r).into(),
-        )
+        Task::perform(async move { tokio::task::spawn_blocking(move || f(&cloud)).await.expect("login window worker thread") }, |r| {
+            LoginMsg::Done(r).into()
+        })
     }
 
     /// Shows `screen` with its text field focused, like Desktop's `autoFocus`.
@@ -855,9 +832,7 @@ impl BeeperGuiApp {
         match msg {
             LoginMsg::Import => {
                 let dir = l.source.clone().expect("import screen has a Beeper Desktop dir");
-                return self.background(move |_| {
-                    read_beeper_data(&dir).map(|d| Outcome::Read(Arc::new(d))).map_err(local_error)
-                });
+                return self.background(move |_| read_beeper_data(&dir).map(|d| Outcome::Read(Arc::new(d))).map_err(local_error));
             }
             LoginMsg::Fresh => {
                 self.store.write().finish_setup(Setup::Fresh);
@@ -955,9 +930,7 @@ impl BeeperGuiApp {
                 l.tried_codes.push(code.clone());
                 return self.background(move |c| match c.send_login_code(&request, &code).map_err(code_error)? {
                     CodeResult::Token(jwt) => session(c, &jwt),
-                    CodeResult::Registration { lead_token, username_suggestions } => {
-                        Ok(Outcome::Lead(lead_token, username_suggestions))
-                    }
+                    CodeResult::Registration { lead_token, username_suggestions } => Ok(Outcome::Lead(lead_token, username_suggestions)),
                 });
             }
             LoginMsg::Username(v) => {
@@ -977,9 +950,7 @@ impl BeeperGuiApp {
                 }
                 let (cloud, name) = (self.cloud.clone(), l.username.clone());
                 let ask = async move {
-                    tokio::task::spawn_blocking(move || cloud.username_available(&name))
-                        .await
-                        .expect("username check worker thread")
+                    tokio::task::spawn_blocking(move || cloud.username_available(&name)).await.expect("username check worker thread")
                 };
                 return Task::perform(ask, move |r| LoginMsg::UsernameChecked(n, r).into());
             }
@@ -1024,8 +995,7 @@ impl BeeperGuiApp {
             // toast of the mobile apps.
             LoginMsg::Continue => {
                 self.login = Login::default();
-                let first_read =
-                    self.listed_chats(&self.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
+                let first_read = self.listed_chats(&self.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
                 let enter = self.enter_app(first_read.as_deref().unwrap_or(NOTE_CHAT_ID));
                 let later = async { tokio::time::sleep(std::time::Duration::from_secs(1)).await };
                 let toast = Task::perform(later, |()| UiMessage::Toast(crate::toasts::Msg::MobileApps(true)));
@@ -1040,8 +1010,7 @@ impl BeeperGuiApp {
             }
             LoginMsg::PasteKey => return iced::clipboard::read().map(|t| LoginMsg::Pasted(t).into()),
             LoginMsg::Pasted(text) => {
-                l.key_input =
-                    text_editor::Content::with_text(&crate::verify::format_recovery_key(&text.unwrap_or_default()));
+                l.key_input = text_editor::Content::with_text(&crate::verify::format_recovery_key(&text.unwrap_or_default()));
                 l.error = None;
             }
             LoginMsg::KeyOnFocus(text) if l.screen == Screen::Code => {
@@ -1102,12 +1071,10 @@ impl BeeperGuiApp {
                 return iced::clipboard::write(l.new_key.clone().expect("a shown key"));
             }
             LoginMsg::KeyNext => (l.screen, l.key_input, l.error) = (Screen::ConfirmKey, Default::default(), None),
-            LoginMsg::SubmitConfirmKey => {
-                match beeper_core::matrix::confirm_recovery_key(&self.store, &l.key_input.text()) {
-                    Ok(()) => return self.advance_onboarding(),
-                    Err(e) => l.error = Some(e),
-                }
-            }
+            LoginMsg::SubmitConfirmKey => match beeper_core::matrix::confirm_recovery_key(&self.store, &l.key_input.text()) {
+                Ok(()) => return self.advance_onboarding(),
+                Err(e) => l.error = Some(e),
+            },
             LoginMsg::LostKey => return self.lost_key(),
             LoginMsg::KeysLate => l.late = true,
             LoginMsg::Recovered(r) => {
@@ -1203,9 +1170,7 @@ impl BeeperGuiApp {
         // Desktop's menu is a native menu, over the toast.
         let menu = l.menu.then(|| {
             let (back, last) = l.screen.menu();
-            let item = |label: &'static str, hotkey: String, msg| {
-                crate::menu_item(p, None, tr(label).into(), hotkey, Some(msg))
-            };
+            let item = |label: &'static str, hotkey: String, msg| crate::menu_item(p, None, tr(label).into(), hotkey, Some(msg));
             let report = crate::menubar::accelerator(self.store.read().settings.hotkey_keys("Report a Problem"));
             let items = column![]
                 .push(back.map(|s| item("Go Back", String::new(), LoginMsg::Show(s).into())))
@@ -1242,17 +1207,9 @@ impl BeeperGuiApp {
             container(welcome_scene()).height(Fill),
             actions(
                 vec![
-                    container(txt(info, 12.0).color(p.on_secondary).center().width(Fill))
-                        .padding(Padding::ZERO.bottom(8))
-                        .into(),
+                    container(txt(info, 12.0).color(p.on_secondary).center().width(Fill)).padding(Padding::ZERO.bottom(8)).into(),
                     brand_button(p, label("Start Fresh", None), Brand::Muted, self.login_act(Stop::Fresh), false),
-                    brand_button(
-                        p,
-                        label("Copy from Beeper Desktop", None),
-                        Brand::Primary,
-                        self.login_act(Stop::Import),
-                        l.busy
-                    ),
+                    brand_button(p, label("Copy from Beeper Desktop", None), Brand::Primary, self.login_act(Stop::Import), l.busy),
                 ],
                 24.0
             ),
@@ -1272,13 +1229,7 @@ impl BeeperGuiApp {
             actions(
                 vec![
                     container(self.view_login_terms()).padding(Padding::ZERO.bottom(8)).into(),
-                    brand_button(
-                        p,
-                        label(google_label, Some(google.into())),
-                        Brand::Muted,
-                        self.login_act(Stop::Google),
-                        false
-                    ),
+                    brand_button(p, label(google_label, Some(google.into())), Brand::Muted, self.login_act(Stop::Google), false),
                     brand_button(
                         p,
                         label(tr("Continue with Email"), Some(mail.into())),
@@ -1299,8 +1250,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let link = |s: &'static str, m: UiMessage| span(s).color(p.accent).link(m);
         // Chromium's focus ring of a link: a 1 px orange outline.
-        let ring = (self.login.stop() == Some(Stop::Terms))
-            .then(|| border::rounded(2).color(Color::from_rgb8(229, 151, 0)).width(1));
+        let ring = (self.login.stop() == Some(Stop::Terms)).then(|| border::rounded(2).color(Color::from_rgb8(229, 151, 0)).width(1));
         let sentence = tr("By continuing, you agree to our %1$s and have read our %2$s.");
         let legal = |s| trx(s, "onboarding legal link label");
         let (terms_label, privacy_label) = (legal("terms of use"), legal("privacy policy"));
@@ -1330,9 +1280,7 @@ impl BeeperGuiApp {
         let (l, p) = (&self.login, &self.pal);
         let free = !l.busy;
         let first = match l.password_login {
-            true => {
-                field(p, EMAIL_INPUT, trx("Username", "input placeholder"), &l.user, free.then_some(LoginMsg::User))
-            }
+            true => field(p, EMAIL_INPUT, trx("Username", "input placeholder"), &l.user, free.then_some(LoginMsg::User)),
             false => field(p, EMAIL_INPUT, tr("Email"), &l.email, free.then_some(LoginMsg::Email)),
         };
         // Desktop's password field has no floating label.
@@ -1340,13 +1288,7 @@ impl BeeperGuiApp {
             let hint = trx("Enter Password", "input placeholder");
             brand_input(p, PASSWORD_INPUT, hint, &l.password, free.then_some(LoginMsg::Password)).secure(true).into()
         });
-        let next = brand_button(
-            p,
-            label(trx("Next", "button label"), None),
-            Brand::Primary,
-            self.login_act(Stop::Next),
-            l.busy,
-        );
+        let next = brand_button(p, label(trx("Next", "button label"), None), Brand::Primary, self.login_act(Stop::Next), l.busy);
         let toggle = l.password_link.then(|| {
             let text = match l.password_login {
                 true => trx("Use magic code", "button label"),
@@ -1361,14 +1303,8 @@ impl BeeperGuiApp {
             false => column![Space::new().height(Fill), art(1, 314.0), Space::new().height(Fill)].into(),
         };
         let form = [Some(first), password, Some(next), toggle].into_iter().flatten().collect();
-        column![
-            Space::new().height(40),
-            heading(tr("Enter your Email"), 36.0),
-            Space::new().height(FLOAT_LABEL),
-            art,
-            actions(form, 24.0),
-        ]
-        .into()
+        column![Space::new().height(40), heading(tr("Enter your Email"), 36.0), Space::new().height(FLOAT_LABEL), art, actions(form, 24.0),]
+            .into()
     }
 
     /// Desktop's `OTPInput`: six 41.3x56 slots 8 px apart, with a 2 px ring outside the focused slot, and red digits
@@ -1379,14 +1315,10 @@ impl BeeperGuiApp {
         let focused = l.stop() == Some(Stop::Field);
         let slots = row((0..6).map(|i| {
             let ink = if error { ERROR_RED } else { p.strong };
-            let digit: Option<El<'_>> = l
-                .code
-                .chars()
-                .nth(i)
-                .map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(rem(36.0))).color(ink).into());
+            let digit: Option<El<'_>> =
+                l.code.chars().nth(i).map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(rem(36.0))).color(ink).into());
             let at = focused && i == l.slot;
-            let caret = (at && i >= l.code.len())
-                .then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
+            let caret = (at && i >= l.code.len()).then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
             let edge = match (error, at) {
                 (true, _) => ERROR_RED,
                 (false, true) => p.accent,
@@ -1447,18 +1379,10 @@ impl BeeperGuiApp {
             Space::new().height(8),
             actions(
                 vec![
-                    container(
-                        txt(info, 13.0).line_height(iced::Pixels(rem(16.0))).color(p.on_secondary).center().width(Fill)
-                    )
-                    .padding(Padding::ZERO.bottom(8))
-                    .into(),
-                    brand_button(
-                        p,
-                        label(tr("Open Email"), None),
-                        Brand::Primary,
-                        self.login_act(Stop::OpenEmail),
-                        l.busy
-                    ),
+                    container(txt(info, 13.0).line_height(iced::Pixels(rem(16.0))).color(p.on_secondary).center().width(Fill))
+                        .padding(Padding::ZERO.bottom(8))
+                        .into(),
+                    brand_button(p, label(tr("Open Email"), None), Brand::Primary, self.login_act(Stop::OpenEmail), l.busy),
                     container(foot).padding(Padding::ZERO.top(8)).height(36).center_y(36).into(),
                 ],
                 24.0
@@ -1477,12 +1401,8 @@ impl BeeperGuiApp {
         let grid = scrollable(self.view_networks(&st, &l.query)).height(Fill);
         // Desktop's continue bar shows once a network account is connected (`hasConnectedNetwork`).
         let go_on = st.has_connected_network().then(|| {
-            let go_on =
-                brand_button(p, label(tr("Continue"), None), Brand::Primary, Some(LoginMsg::Continue.into()), false);
-            column![
-                container(Space::new()).width(Fill).height(1).style(fill_box(p.border_weak, 0.0)),
-                container(go_on).padding(12)
-            ]
+            let go_on = brand_button(p, label(tr("Continue"), None), Brand::Primary, Some(LoginMsg::Continue.into()), false);
+            column![container(Space::new()).width(Fill).height(1).style(fill_box(p.border_weak, 0.0)), container(go_on).padding(12)]
         });
         // One line of the footer takes 31 px, and a wrapped footer takes more.
         let foot = self.view_accounts_footer(&st).map(|f| container(f).padding([3, 0]));
@@ -1505,8 +1425,7 @@ impl BeeperGuiApp {
     fn username_icons(&self) -> Vec<El<'_>> {
         let (l, p) = (&self.login, &self.pal);
         let icon = |i: usize, size: f32, color: Color, msg: Option<UiMessage>| -> El<'_> {
-            let glyph =
-                svg(ICONS[i].clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) });
+            let glyph = svg(ICONS[i].clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) });
             match msg {
                 Some(m) => button(container(glyph).center(20)).bare(color).on_press(m).into(),
                 None => container(glyph).center(20).into(),
@@ -1544,8 +1463,7 @@ impl BeeperGuiApp {
         // Desktop's floating `small` error, 20 px over the field: a layer, so that it moves nothing.
         let error = l.error.as_deref().or(refused).map(|e| txt(e, 10.4).color(p.text_danger).center().width(Fill));
         let over_form = 20.0 + 38.0 + 8.0 + 33.0 + 52.0;
-        let error =
-            column![Space::new().height(Fill), column![].push(error).padding([0, 18]), Space::new().height(over_form)];
+        let error = column![Space::new().height(Fill), column![].push(error).padding([0, 18]), Space::new().height(over_form)];
         let screen = column![
             Space::new().height(34),
             heading(tr("Pick a Username"), 32.0),
@@ -1555,16 +1473,7 @@ impl BeeperGuiApp {
             art(0, 314.0),
             Space::new().height(Fill),
             actions(
-                vec![
-                    name,
-                    brand_button(
-                        p,
-                        label(trx("Next", "button label"), None),
-                        Brand::Primary,
-                        self.login_act(Stop::Next),
-                        l.busy
-                    ),
-                ],
+                vec![name, brand_button(p, label(trx("Next", "button label"), None), Brand::Primary, self.login_act(Stop::Next), l.busy),],
                 52.0
             ),
         ];
@@ -1585,9 +1494,7 @@ impl BeeperGuiApp {
             (Stop::Field | Stop::Password | Stop::Next, Screen::Email) => LoginMsg::SubmitEmail.into(),
             (Stop::Toggle, _) => LoginMsg::TogglePassword.into(),
             // Desktop disables Next until the check of the name allows it.
-            (Stop::Field | Stop::Next, Screen::Username) if self.login.available == Some(true) => {
-                LoginMsg::SubmitUsername.into()
-            }
+            (Stop::Field | Stop::Next, Screen::Username) if self.login.available == Some(true) => LoginMsg::SubmitUsername.into(),
             (Stop::Field | Stop::Next, Screen::Username) => return None,
             (Stop::Field, Screen::Code) => LoginMsg::SubmitCode.into(),
             (stop, screen) => unreachable!("{screen:?} has no {stop:?}"),
@@ -1625,9 +1532,7 @@ impl BeeperGuiApp {
             // Desktop's Enter hotkey of the forms of `AwaitRecoveryCode`, `AwaitNewRecoveryCode` and
             // `ConfirmResetRecoveryCode` (`o1`), which `mousetrap` runs in the key box too, without its newline: it
             // submits the key as it is, compares the confirmed key, or resets.
-            Key::Named(Named::Enter)
-                if mods.is_empty() && matches!(l.screen, Screen::RecoveryKey | Screen::ConfirmKey | Screen::Reset) =>
-            {
+            Key::Named(Named::Enter) if mods.is_empty() && matches!(l.screen, Screen::RecoveryKey | Screen::ConfirmKey | Screen::Reset) => {
                 return match (l.busy, l.screen) {
                     (true, _) => Task::none(),
                     (_, Screen::RecoveryKey) => self.update_login(LoginMsg::SubmitRecoveryKey),
@@ -1822,18 +1727,11 @@ mod tests {
         use beeper_core::models::{MatrixSession, Profile};
         use beeper_core::store::Setup;
         let mut app = signed_out_app("import-account");
-        let chat =
-            beeper_core::models::Chat { id: "!desk:x".into(), title: "From Desktop".into(), ..Default::default() };
-        let data =
-            beeper_core::import::BeeperData { user_id: Some("@ann:x".into()), chats: vec![chat], ..Default::default() };
+        let chat = beeper_core::models::Chat { id: "!desk:x".into(), title: "From Desktop".into(), ..Default::default() };
+        let data = beeper_core::import::BeeperData { user_id: Some("@ann:x".into()), chats: vec![chat], ..Default::default() };
         let _ = app.update(LoginMsg::Done(Ok(Outcome::Read(Arc::new(data)))).into());
         let session = |user: &str| {
-            let s = MatrixSession {
-                user_id: user.into(),
-                access_token: "token".into(),
-                device_id: "NEW".into(),
-                jwt: None,
-            };
+            let s = MatrixSession { user_id: user.into(), access_token: "token".into(), device_id: "NEW".into(), jwt: None };
             LoginMsg::Done(Ok(Outcome::Session(s, Profile::default(), Vec::new()))).into()
         };
         let _ = app.update(session("@bob:x"));
@@ -1921,11 +1819,7 @@ mod tests {
         app.login.focus.set(Some(Stop::Resend));
         assert_eq!(key(&mut app, Named::Tab, none), ("2".into(), 0));
         assert_eq!(app.login.focus.get(), Some(Stop::Resend), "the window keeps Tab before the last slot");
-        assert_eq!(
-            key(&mut app, Named::Backspace, none),
-            ("2".into(), 0),
-            "Backspace goes back from the first empty slot"
-        );
+        assert_eq!(key(&mut app, Named::Backspace, none), ("2".into(), 0), "Backspace goes back from the first empty slot");
         assert_eq!(app.login.focus.get(), Some(Stop::Field), "and takes the focus into the code");
         app.login.focus.set(Some(Stop::Resend));
         let _ = app.update(UiMessage::WindowText(id, "7".into()));
@@ -2018,9 +1912,7 @@ mod tests {
             ("POST", "/_matrix/client/v3/login") if body["password"] == "right" => {
                 (200, json!({ "user_id": "@alex:beeper.com", "access_token": "token", "device_id": "DEV" }))
             }
-            ("POST", "/_matrix/client/v3/login") => {
-                (403, json!({ "errcode": "M_FORBIDDEN", "error": "Invalid username or password" }))
-            }
+            ("POST", "/_matrix/client/v3/login") => (403, json!({ "errcode": "M_FORBIDDEN", "error": "Invalid username or password" })),
             ("GET", "/whoami") => (200, json!({ "userInfo": { "username": "alex" }, "user": { "bridges": {} } })),
             _ => (404, json!({ "errcode": "M_UNRECOGNIZED" })),
         })

@@ -5,8 +5,7 @@ use crate::config::local_millis;
 use crate::store::{BeeperStore, Query};
 
 /// The `has:` kinds of Desktop's media filter (`epe`) with the attachment type of each, in the filter's order.
-pub const HAS: [(&str, &str); 5] =
-    [("image", "img"), ("video", "video"), ("audio", "audio"), ("link", "link"), ("file", "unknown")];
+pub const HAS: [(&str, &str); 5] = [("image", "img"), ("video", "video"), ("audio", "audio"), ("link", "link"), ("file", "unknown")];
 
 /// The `before:` and `after:` dates of Desktop's `Q5`, in the order of its time periods (`Xhe`).
 pub const DATES: [&str; 6] = ["hour", "today", "yesterday", "week", "month", "year"];

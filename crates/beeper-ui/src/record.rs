@@ -10,9 +10,7 @@ use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, renderer, Clipboard, Renderer as _, Shell};
 use iced::keyboard::key::Named;
 use iced::widget::{button, container, responsive, row, slider, stack, svg, text_editor, tooltip, Row, Space};
-use iced::{
-    window, Center, Color, Element, Event, Fill, Length, Padding, Rectangle, Renderer, Size, Subscription, Task,
-};
+use iced::{window, Center, Color, Element, Event, Fill, Length, Padding, Rectangle, Renderer, Size, Subscription, Task};
 use rodio::microphone::{available_inputs, MicrophoneBuilder};
 use std::io::Write;
 use std::num::NonZero;
@@ -76,8 +74,7 @@ pub enum Msg {
 /// Desktop's `enumerateDevices`: the system default and the other inputs, by name.
 pub(crate) fn inputs() -> Result<(String, Vec<String>), String> {
     use rodio::cpal::traits::{DeviceTrait, HostTrait};
-    let system =
-        rodio::cpal::default_host().default_input_device().and_then(|d| Some(d.description().ok()?.name().to_string()));
+    let system = rodio::cpal::default_host().default_input_device().and_then(|d| Some(d.description().ok()?.name().to_string()));
     let mut names: Vec<String> = available_inputs().map_err(|e| e.to_string())?.iter().map(|i| i.to_string()).collect();
     names.retain(|n| Some(n) != system.as_ref());
     Ok((system.unwrap_or_default(), names))
@@ -87,8 +84,7 @@ pub(crate) fn inputs() -> Result<(String, Vec<String>), String> {
 /// microphone records from the system default.
 fn capture(take: &Take, name: &str) -> Result<(), String> {
     let b = MicrophoneBuilder::new();
-    let chosen =
-        available_inputs().map_err(|e| e.to_string())?.into_iter().find(|i| !name.is_empty() && i.to_string() == name);
+    let chosen = available_inputs().map_err(|e| e.to_string())?.into_iter().find(|i| !name.is_empty() && i.to_string() == name);
     if chosen.is_none() && !name.is_empty() {
         eprintln!("Selected audio input {name:?} unavailable, falling back to system default");
     }
@@ -144,8 +140,7 @@ fn wav(samples: &[f32]) -> Vec<u8> {
     let format = [1u16, 1].map(u16::to_le_bytes).concat();
     let rate = [n(HZ), n(HZ * 2)].concat();
     let block = [2u16, 16].map(u16::to_le_bytes).concat();
-    [&b"RIFF"[..], &n(36 + data.len()), b"WAVEfmt ", &n(16), &format, &rate, &block, b"data", &n(data.len()), &data]
-        .concat()
+    [&b"RIFF"[..], &n(36 + data.len()), b"WAVEfmt ", &n(16), &format, &rate, &block, b"data", &n(data.len()), &data].concat()
 }
 
 /// `toWaveform`: at most 100 of the live levels.
@@ -167,8 +162,8 @@ impl<M> Widget<M, iced::Theme, Renderer> for Live<'_> {
     }
 
     fn update(
-        &mut self, _: &mut widget::Tree, event: &Event, _: Layout<'_>, _: mouse::Cursor, _: &Renderer,
-        _: &mut dyn Clipboard, shell: &mut Shell<'_, M>, _: &Rectangle,
+        &mut self, _: &mut widget::Tree, event: &Event, _: Layout<'_>, _: mouse::Cursor, _: &Renderer, _: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>, _: &Rectangle,
     ) {
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
             shell.request_redraw_at(*now + Duration::from_millis(75));
@@ -176,8 +171,8 @@ impl<M> Widget<M, iced::Theme, Renderer> for Live<'_> {
     }
 
     fn draw(
-        &self, _: &widget::Tree, renderer: &mut Renderer, _: &iced::Theme, _: &renderer::Style, layout: Layout<'_>,
-        _: mouse::Cursor, _: &Rectangle,
+        &self, _: &widget::Tree, renderer: &mut Renderer, _: &iced::Theme, _: &renderer::Style, layout: Layout<'_>, _: mouse::Cursor,
+        _: &Rectangle,
     ) {
         let b = layout.bounds();
         let levels = self.0.levels.lock().unwrap();
@@ -228,9 +223,7 @@ impl BeeperGuiApp {
                 drop(st);
                 let take = Arc::new(Take::default());
                 self.talk = Some(Talk { take: Recorder(take.clone()), typing: false });
-                let run = async move {
-                    tokio::task::spawn_blocking(move || capture(&take, &name)).await.expect("capture runs")
-                };
+                let run = async move { tokio::task::spawn_blocking(move || capture(&take, &name)).await.expect("capture runs") };
                 return Task::perform(run, |r| UiMessage::Record(Msg::Ended(r)));
             }
             Msg::Typed(Ok(text)) => {
@@ -248,9 +241,7 @@ impl BeeperGuiApp {
                 let take = Arc::new(Take::default());
                 self.recorder = Some(Recorder(take.clone()));
                 let name = self.store.read().settings.microphone.clone();
-                let run = async move {
-                    tokio::task::spawn_blocking(move || capture(&take, &name)).await.expect("capture runs")
-                };
+                let run = async move { tokio::task::spawn_blocking(move || capture(&take, &name)).await.expect("capture runs") };
                 return Task::perform(run, |r| UiMessage::Record(Msg::Ended(r)));
             }
             Msg::Ended(Ok(())) => {}
@@ -314,8 +305,7 @@ impl BeeperGuiApp {
         t.take.0.stop.store(true, Relaxed);
         let samples = std::mem::take(&mut *t.take.0.samples.lock().unwrap());
         let st = self.store.read();
-        let (base, token) =
-            (beeper_core::cloud::ai_services(&st.beeper_state.homeserver), st.beeper_state.access_token.clone());
+        let (base, token) = (beeper_core::cloud::ai_services(&st.beeper_state.homeserver), st.beeper_state.access_token.clone());
         drop(st);
         let (file, offline) = (beeper_core::cloud::TALK_FILE, self.cloud.offline);
         let run = async move {
@@ -348,9 +338,7 @@ impl BeeperGuiApp {
     pub(crate) fn record_events(&self) -> Option<Subscription<UiMessage>> {
         use iced::keyboard::{Event::KeyPressed, Key};
         let space = iced::event::listen_with(|e, _, _| match e {
-            Event::Keyboard(KeyPressed { key: Key::Named(Named::Space), .. }) => {
-                Some(UiMessage::Record(Msg::Key(Named::Space)))
-            }
+            Event::Keyboard(KeyPressed { key: Key::Named(Named::Space), .. }) => Some(UiMessage::Record(Msg::Key(Named::Space))),
             _ => None,
         });
         if self.talk.is_some() {
@@ -390,13 +378,11 @@ impl BeeperGuiApp {
                     });
                     container(row).center_y(24).into()
                 });
-                let seek = slider(0.0..=1.0, frac, |v| {
-                    UiMessage::Voice(voice::Msg::Seek(String::new(), TAKE.into(), TAKE.into(), v))
-                })
-                .step(0.001_f32)
-                .height(24)
-                .on_release(UiMessage::Voice(voice::Msg::SeekEnd))
-                .style(hidden_slider);
+                let seek = slider(0.0..=1.0, frac, |v| UiMessage::Voice(voice::Msg::Seek(String::new(), TAKE.into(), TAKE.into(), v)))
+                    .step(0.001_f32)
+                    .height(24)
+                    .on_release(UiMessage::Voice(voice::Msg::SeekEnd))
+                    .style(hidden_slider);
                 let wave = stack![bars, seek].width(Fill).height(24);
                 (format!("{}/{}", voice::clock(pos), voice::clock(c.secs())), wave.into(), Some(play.into()))
             }

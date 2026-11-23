@@ -52,8 +52,7 @@ impl BeeperGuiApp {
             };
             plain(trf("Logout of %s...", &[&"Beeper"]), msg)
         };
-        let mut beeper =
-            vec![plain(trf("About %s", &[&"Beeper"]), UiMessage::Settings(settings::Msg::Open(SettingsTab::About)))];
+        let mut beeper = vec![plain(trf("About %s", &[&"Beeper"]), UiMessage::Settings(settings::Msg::Open(SettingsTab::About)))];
         if signed_in {
             beeper.extend([
                 None,
@@ -79,10 +78,7 @@ impl BeeperGuiApp {
             // Desktop's `openChatInNewWindow` opens the open chat, and does nothing without one.
             plain(
                 tr("Open Chat in New Window").into(),
-                self.pane
-                    .selected_chat_id
-                    .clone()
-                    .map_or(UiMessage::Noop, |c| UiMessage::Window(windows::Msg::OpenChat(c))),
+                self.pane.selected_chat_id.clone().map_or(UiMessage::Noop, |c| UiMessage::Window(windows::Msg::OpenChat(c))),
             ),
         ];
         let edit = vec![
@@ -96,8 +92,7 @@ impl BeeperGuiApp {
         let view = vec![hotkey(bar, "Toggle Space Bar"), hotkey(sidebar, "Toggle Sidebar")];
         let window = vec![
             main.map(|id| (tr("Minimize").to_string(), "", UiMessage::Window(windows::Msg::Minimize(id)))),
-            self.main_window
-                .map(|id| (tr("Zoom").to_string(), "", UiMessage::Window(windows::Msg::ToggleMaximize(Some(id))))),
+            self.main_window.map(|id| (tr("Zoom").to_string(), "", UiMessage::Window(windows::Msg::ToggleMaximize(Some(id))))),
         ];
         let mut help = vec![
             hotkey(tr("Report a Problem"), "Report a Problem"),
@@ -158,8 +153,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_menu_dropdown(&self, open: usize) -> (El<'_>, f32) {
         let p = &self.pal;
         let mut menus = self.menus();
-        let x = BAR_PAD
-            + menus[..open].iter().map(|(t, _)| text_width(t, 13.0, Weight::Normal) + 2.0 * TITLE_PAD).sum::<f32>();
+        let x = BAR_PAD + menus[..open].iter().map(|(t, _)| text_width(t, 13.0, Weight::Normal) + 2.0 * TITLE_PAD).sum::<f32>();
         let st = self.store.read();
         let rows = menus.swap_remove(open).1.into_iter().map(|item| match item {
             Some((label, hotkey, msg)) => {

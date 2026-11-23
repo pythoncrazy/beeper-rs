@@ -81,8 +81,7 @@ async fn the_info_and_the_spec_answer_while_the_chats_load() {
         let out = text(port, &format!("GET {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")).await;
         assert!(out.starts_with("HTTP/1.1 200 "), "{path}: {out}");
     }
-    let chats =
-        format!("GET /v1/chats HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n\r\n");
+    let chats = format!("GET /v1/chats HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n\r\n");
     let chats = tokio::spawn(async move { text(port, &chats).await });
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(!chats.is_finished(), "the chats wait for the load");
@@ -178,28 +177,21 @@ async fn bodies_over_the_limit_of_the_route_get_413() {
         ("/v1/assets/upload", "application/json", 100 * 1024 * 1024 + 1),
         ("/v1/assets/upload", "multipart/form-data; boundary=b", 500 * 1024 * 1024 + 1),
     ] {
-        let head =
-            format!("POST {path} HTTP/1.1\r\nhost: x\r\n{auth}content-type: {ct}\r\ncontent-length: {len}\r\n\r\n");
+        let head = format!("POST {path} HTTP/1.1\r\nhost: x\r\n{auth}content-type: {ct}\r\ncontent-length: {len}\r\n\r\n");
         let out = text(port, &head).await;
         let closes = out.contains("\r\nConnection: close\r\n");
         assert!(out.starts_with("HTTP/1.1 413 ") && closes && out.ends_with(too_large), "{path}: {out}");
     }
     // Desktop checks the route and the token before it reads the body.
     for (path, refusal) in [("/v1/chats", "401 Unauthorized"), ("/v1/nope", "404 Not Found")] {
-        let head = format!(
-            "POST {path} HTTP/1.1\r\nhost: x\r\ncontent-type: application/json\r\ncontent-length: 20000000\r\n\r\n"
-        );
+        let head = format!("POST {path} HTTP/1.1\r\nhost: x\r\ncontent-type: application/json\r\ncontent-length: 20000000\r\n\r\n");
         let out = text(port, &head).await;
         assert!(out.starts_with(&format!("HTTP/1.1 {refusal}\r\n")), "{path}: {out}");
     }
     let big_chunk = post("/oauth/revoke", "transfer-encoding: chunked\r\n", "10001\r\n");
     assert!(text(port, &big_chunk).await.starts_with("HTTP/1.1 413 "));
     let body = format!("{{\"token\":\"{}\"}}", "x".repeat(60_000));
-    let out = text(
-        port,
-        &post("/oauth/introspect", &format!("content-length: {}\r\nconnection: close\r\n", body.len()), &body),
-    )
-    .await;
+    let out = text(port, &post("/oauth/introspect", &format!("content-length: {}\r\nconnection: close\r\n", body.len()), &body)).await;
     assert!(out.ends_with("{\"active\":false}"), "a body under the limit is read: {out}");
 }
 
@@ -259,10 +251,7 @@ async fn websocket_drops_events_that_repeat_within_250_ms() {
     }
     let seqs: Vec<u64> = frames.iter().map(|f| f.0).collect();
     assert_eq!(seqs, (1..=frames.len() as u64).collect::<Vec<_>>(), "seq counts only the sent events");
-    assert!(
-        frames.len() == 2 && frames.iter().all(|f| f.1 == "chat.upserted"),
-        "the repeated mute is dropped: {frames:?}"
-    );
+    assert!(frames.len() == 2 && frames.iter().all(|f| f.1 == "chat.upserted"), "the repeated mute is dropped: {frames:?}");
 }
 
 #[tokio::test]
@@ -273,17 +262,11 @@ async fn repeated_and_bracket_query_keys_are_arrays() {
     assert_eq!(Value::Object(query), json!({ "a": ["1", "2"], "b": ["3", "4"], "c": ["5"], "d": "x", "e": "%zz 1" }));
     let (port, token) = server("query").await;
     let get = |target: String| {
-        let request =
-            format!("GET {target} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n\r\n");
+        let request = format!("GET {target} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n\r\n");
         async move {
             let out = text(port, &request).await;
             let body: Value = serde_json::from_str(out.split_once("\r\n\r\n").unwrap().1).expect("a JSON body");
-            body["items"]
-                .as_array()
-                .expect("items")
-                .iter()
-                .map(|i| (i["accountID"].clone(), i["chatID"].clone()))
-                .collect::<Vec<_>>()
+            body["items"].as_array().expect("items").iter().map(|i| (i["accountID"].clone(), i["chatID"].clone())).collect::<Vec<_>>()
         }
     };
     let all = get("/v1/chats".into()).await;
@@ -297,10 +280,7 @@ async fn repeated_and_bracket_query_keys_are_arrays() {
     for form in [format!("accountIDs={a}&accountIDs={b}"), format!("accountIDs[]={a}&accountIDs[]={b}")] {
         assert_eq!(get(format!("/v1/chats?{form}")).await.len(), both, "{form}");
     }
-    assert_eq!(
-        get(format!("/v1/chats?accountIDs[]={a}")).await.len(),
-        all.iter().filter(|(x, _)| x == accounts[0]).count()
-    );
+    assert_eq!(get(format!("/v1/chats?accountIDs[]={a}")).await.len(), all.iter().filter(|(x, _)| x == accounts[0]).count());
 
     let found = get("/v1/messages/search?limit=20".into()).await;
     let mut chats: Vec<&str> = found.iter().map(|(_, c)| c.as_str().unwrap()).collect();
@@ -324,8 +304,7 @@ async fn list_chats_pages_and_validates_like_desktop() {
     use serde_json::{json, Value};
     let (port, token) = server("list-chats").await;
     let get = |target: String| {
-        let request =
-            format!("GET {target} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n\r\n");
+        let request = format!("GET {target} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n\r\n");
         async move {
             let out = text(port, &request).await;
             let (head, body) = out.split_once("\r\n\r\n").unwrap();
@@ -335,8 +314,7 @@ async fn list_chats_pages_and_validates_like_desktop() {
     let page = |query: String| async move {
         let (status, body) = get(format!("/v1/chats?{query}")).await;
         assert_eq!(status, 200, "{query}: {body}");
-        let ids: Vec<String> =
-            body["items"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().into()).collect();
+        let ids: Vec<String> = body["items"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().into()).collect();
         let cursor = |k: &str| body[k].as_str().map(str::to_string);
         (ids, body["hasMore"].as_bool().unwrap(), cursor("oldestCursor"), cursor("newestCursor"))
     };
@@ -409,10 +387,7 @@ async fn list_chats_pages_and_validates_like_desktop() {
                 small,
             ])),
         ),
-        (
-            "/v1/messages/search?limit=0",
-            invalid(json!([bound("too_small", "minimum", 0, false, "Number must be greater than 0")])),
-        ),
+        ("/v1/messages/search?limit=0", invalid(json!([bound("too_small", "minimum", 0, false, "Number must be greater than 0")]))),
     ];
     for (target, want) in cases {
         let (status, body) = get(target.into()).await;
@@ -433,14 +408,10 @@ fn without_date(out: &str) -> (String, &str) {
 async fn cors_and_default_headers_match_desktop() {
     use beeper_api::http::{http_date, weak_etag};
     assert_eq!(http_date(784_111_777), "Sun, 06 Nov 1994 08:49:37 GMT");
-    assert_eq!(
-        weak_etag(b"{\"message\":\"Not found\",\"code\":\"not_found\"}"),
-        "W/\"2a-ffPysxnJrBrRRKnu/lKR4M9M4Rc\""
-    );
+    assert_eq!(weak_etag(b"{\"message\":\"Not found\",\"code\":\"not_found\"}"), "W/\"2a-ffPysxnJrBrRRKnu/lKR4M9M4Rc\"");
     let (port, _) = server("cors").await;
-    let request = |method: &str, path: &str, headers: &str| {
-        format!("{method} {path} HTTP/1.1\r\nhost: x\r\n{headers}connection: close\r\n\r\n")
-    };
+    let request =
+        |method: &str, path: &str, headers: &str| format!("{method} {path} HTTP/1.1\r\nhost: x\r\n{headers}connection: close\r\n\r\n");
 
     let out = text(port, &request("OPTIONS", "/v1/accounts", "origin: http://example.com\r\n")).await;
     let preflight = "HTTP/1.1 204 No Content\r\nX-Powered-By: Express\r\nAccess-Control-Allow-Origin: http://example.com\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET,POST,PUT,PATCH,DELETE,OPTIONS\r\nAccess-Control-Allow-Headers: Authorization,Content-Type,MCP-Protocol-Version,X-Beeper-Access-Token,X-Stainless-MCP\r\nAccess-Control-Max-Age: 600\r\nAccess-Control-Expose-Headers: WWW-Authenticate,X-Beeper-Desktop-Version\r\nContent-Length: 0\r\nConnection: close";
@@ -539,10 +510,7 @@ async fn routes_match_like_express() {
     let out = text(port, &format!("GET /v1/chats/%zz HTTP/1.1\r\nhost: x\r\n{auth}connection: close\r\n\r\n")).await;
     assert!(out.ends_with("{\"message\":\"Failed to decode param '%zz'\",\"code\":\"UNKNOWN_ERROR\"}"), "{out}");
     let out = text(port, &format!("GET /v1/chats/a%2Fb HTTP/1.1\r\nhost: x\r\n{auth}connection: close\r\n\r\n")).await;
-    assert!(
-        out.ends_with("{\"message\":\"Chat not found\",\"code\":\"NOT_FOUND\"}"),
-        "a parameter can hold a slash: {out}"
-    );
+    assert!(out.ends_with("{\"message\":\"Chat not found\",\"code\":\"NOT_FOUND\"}"), "a parameter can hold a slash: {out}");
 
     let redirect = "HTTP/1.1 302 Found\r\nX-Powered-By: Express\r\nX-Beeper-Desktop-Version: ";
     for (accept, kind, body) in [
@@ -554,10 +522,7 @@ async fn routes_match_like_express() {
         let out = text(port, &format!("GET / HTTP/1.1\r\nhost: x\r\n{accept}connection: close\r\n\r\n")).await;
         let (head, got) = without_date(&out);
         let kind = kind.map_or(String::new(), |k| format!("\r\ncontent-type: {k}; charset=utf-8"));
-        let tail = format!(
-            "\r\nlocation: /v1/info\r\nvary: Accept{kind}\r\nContent-Length: {}\r\nConnection: close",
-            body.len()
-        );
+        let tail = format!("\r\nlocation: /v1/info\r\nvary: Accept{kind}\r\nContent-Length: {}\r\nConnection: close", body.len());
         assert!(head.starts_with(redirect) && head.ends_with(&tail) && got == body, "{accept}: {out}");
     }
 
@@ -565,7 +530,8 @@ async fn routes_match_like_express() {
         let out = text(port, &format!("GET /v1/spec HTTP/1.1\r\nhost: {host}\r\nconnection: close\r\n\r\n")).await;
         let (head, body) = out.split_once("\r\n\r\n").expect("a response head");
         assert!(head.contains("\r\ncache-control: public, max-age=3600\r\n"), "{head}");
-        assert!(body.starts_with("{\n  \"openapi\": \"3.1.0\",\n  \"info\": {\n    \"title\": \"Beeper Client API\",\n    \"version\": \"5.0.0\""));
+        assert!(body
+            .starts_with("{\n  \"openapi\": \"3.1.0\",\n  \"info\": {\n    \"title\": \"Beeper Client API\",\n    \"version\": \"5.0.0\""));
         serde_json::from_str::<serde_json::Value>(body).expect("a JSON document")
     };
     for (host, base) in [
@@ -608,8 +574,7 @@ async fn assets_upload_and_serve_like_desktop() {
     let body = |out: &str| serde_json::from_str::<Value>(out.split_once("\r\n\r\n").unwrap().1).unwrap();
     let json = "content-type: application/json\r\n";
     // A PNG of 2 x 3 pixels without a name and a type.
-    let png =
-        beeper_api::codec::base64_encode_standard(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x02\0\0\0\x03\x08\x02\0\0\0");
+    let png = beeper_api::codec::base64_encode_standard(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x02\0\0\0\x03\x08\x02\0\0\0");
     let up = body(&send("POST", "/v1/assets/upload/base64", json, &json!({ "content": png }).to_string()).await);
     let keys: Vec<&str> = up.as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(keys, ["uploadID", "srcURL", "fileName", "mimeType", "fileSize", "width", "height"]);
@@ -620,9 +585,7 @@ async fn assets_upload_and_serve_like_desktop() {
     let src = up["srcURL"].as_str().unwrap();
     assert!(src.starts_with("file://") && src.ends_with("file.png"), "{src}");
     for name in [".env", "con", "LPT1", "a~b"] {
-        let out =
-            send("POST", "/v1/assets/upload/base64", json, &json!({ "content": png, "fileName": name }).to_string())
-                .await;
+        let out = send("POST", "/v1/assets/upload/base64", json, &json!({ "content": png, "fileName": name }).to_string()).await;
         assert_eq!(body(&out)["code"], "INVALID_FILENAME", "{name}");
     }
     let multipart = "content-type: multipart/form-data; boundary=b\r\n";
@@ -638,22 +601,14 @@ async fn assets_upload_and_serve_like_desktop() {
     let (head, _) = without_date(&out);
     let etag = head.lines().find_map(|l| l.strip_prefix("ETag: ")).expect("an ETag").to_string();
     assert!(etag.starts_with("\"29-") && head.contains("\r\nCache-Control: private, max-age=3600\r\n"), "{head}");
-    assert!(
-        head.contains("\r\nContent-Type: image/png\r\nAccept-Ranges: bytes\r\n") && head.contains("Last-Modified: ")
-    );
+    assert!(head.contains("\r\nContent-Type: image/png\r\nAccept-Ranges: bytes\r\n") && head.contains("Last-Modified: "));
     let fresh = send("GET", &serve, &format!("if-none-match: {etag}\r\n"), "").await;
     assert!(fresh.starts_with("HTTP/1.1 304 ") && fresh.ends_with("\r\n\r\n"), "{fresh}");
     let ranged = send("GET", &serve, "range: bytes=1-3,5-6\r\n", "").await;
-    assert!(
-        ranged.starts_with("HTTP/1.1 206 ")
-            && ranged.contains("Content-Range: bytes 1-3/29\r\n")
-            && ranged.ends_with("PNG")
-    );
+    assert!(ranged.starts_with("HTTP/1.1 206 ") && ranged.contains("Content-Range: bytes 1-3/29\r\n") && ranged.ends_with("PNG"));
     let refused = send("GET", &serve, "range: bytes=40-50\r\n", "").await;
     assert!(
-        refused.starts_with("HTTP/1.1 416 ")
-            && refused.contains("Content-Range: bytes */29\r\n")
-            && refused.ends_with("\r\n\r\n"),
+        refused.starts_with("HTTP/1.1 416 ") && refused.contains("Content-Range: bytes */29\r\n") && refused.ends_with("\r\n\r\n"),
         "{refused}"
     );
 
@@ -662,10 +617,7 @@ async fn assets_upload_and_serve_like_desktop() {
     let id = sent["pendingMessageID"].as_str().unwrap();
     let shown = body(&send("GET", &format!("/v1/chats/!wa_eric:beeper.com/messages/{id}"), "", "").await);
     let attachment = &shown["attachments"][0];
-    assert!(
-        attachment["id"].as_str().unwrap().starts_with("mxc://") && attachment["id"] == attachment["srcURL"],
-        "{attachment}"
-    );
+    assert!(attachment["id"].as_str().unwrap().starts_with("mxc://") && attachment["id"] == attachment["srcURL"], "{attachment}");
 
     // The attachment `type` of the request marks stickers, voice notes and GIFs.
     let chat = "/v1/chats/!wa_eric:beeper.com/messages";
@@ -691,12 +643,10 @@ async fn assets_upload_and_serve_like_desktop() {
     );
 
     // A sent message has the user of the account as its sender, and an edit returns the message.
-    let id =
-        body(&send("POST", chat, json, r#"{"text":"hello"}"#).await)["pendingMessageID"].as_str().unwrap().to_string();
+    let id = body(&send("POST", chat, json, r#"{"text":"hello"}"#).await)["pendingMessageID"].as_str().unwrap().to_string();
     let edited = body(&send("PUT", &format!("{chat}/{id}"), json, r#"{"text":"hello again"}"#).await);
     let accounts = body(&send("GET", "/v1/accounts", "", "").await);
-    let me =
-        accounts.as_array().unwrap().iter().find(|a| a["accountID"] == "acc_whatsapp").unwrap()["user"]["id"].clone();
+    let me = accounts.as_array().unwrap().iter().find(|a| a["accountID"] == "acc_whatsapp").unwrap()["user"]["id"].clone();
     assert_eq!(
         (&edited["id"], &edited["messageID"], &edited["success"], &edited["text"], &edited["senderID"]),
         (&json!(id), &json!(id), &json!(true), &json!("hello again"), &me)
@@ -706,11 +656,7 @@ async fn assets_upload_and_serve_like_desktop() {
     let kept = send("DELETE", &format!("{chat}/{id}?forEveryone=false"), "", "").await;
     assert!(kept.starts_with("HTTP/1.1 204 "), "{kept}");
     let message = body(&send("GET", &format!("{chat}/{id}"), "", "").await);
-    assert_eq!(
-        (&message["text"], &message["isDeleted"]),
-        (&json!("hello again"), &serde_json::Value::Null),
-        "{message}"
-    );
+    assert_eq!((&message["text"], &message["isDeleted"]), (&json!("hello again"), &serde_json::Value::Null), "{message}");
 }
 
 #[tokio::test]
@@ -773,26 +719,20 @@ async fn chats_are_created_and_started_like_desktop() {
     };
     let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
 
-    let (status, dm) = post(
-        "/v1/chats",
-        json!({ "accountID": "acc_whatsapp", "type": "single", "participantIDs": ["@pat:x"], "title": "Ignored" }),
-    )
-    .await;
+    let (status, dm) =
+        post("/v1/chats", json!({ "accountID": "acc_whatsapp", "type": "single", "participantIDs": ["@pat:x"], "title": "Ignored" })).await;
     assert_eq!((status, &dm["chatID"], &dm["title"], &dm["type"]), (200, &dm["id"], &json!("pat"), &json!("single")));
     assert_eq!(keys(&dm).last().unwrap(), "chatID", "{dm}");
     let (_, shown) = call(port, &token, "GET", &format!("/v1/chats/{}", dm["id"].as_str().unwrap()), "").await;
     let mut like_get = shown.clone();
     like_get["chatID"] = dm["id"].clone();
     assert_eq!(dm, like_get, "the chat of getChat, then chatID");
-    let (_, group) = post(
-        "/v1/chats",
-        json!({ "accountID": "acc_whatsapp", "type": "group", "participantIDs": ["@a:x", "@b:x"], "title": "Team" }),
-    )
-    .await;
+    let (_, group) =
+        post("/v1/chats", json!({ "accountID": "acc_whatsapp", "type": "group", "participantIDs": ["@a:x", "@b:x"], "title": "Team" }))
+            .await;
     assert_eq!((&group["title"], &group["type"], group.get("status")), (&json!("Team"), &json!("group"), None));
 
-    let start =
-        json!({ "accountID": "acc_whatsapp", "user": { "phoneNumber": "+1 (555) 010-0999", "fullName": "Pat" } });
+    let start = json!({ "accountID": "acc_whatsapp", "user": { "phoneNumber": "+1 (555) 010-0999", "fullName": "Pat" } });
     let (status, started) = post("/v1/chats/start", start).await;
     assert_eq!((status, &started["status"], &started["title"]), (200, &json!("created"), &json!("Pat")));
     assert_eq!(keys(&started)[keys(&started).len() - 2..], ["chatID", "status"]);
@@ -826,8 +766,7 @@ async fn chats_are_created_and_started_like_desktop() {
         assert_eq!((status, refused.to_string()), (400, invalid(issues)), "{body}");
     }
     for (query, issue) in [("", required("query", "string")), ("?query=", zod::small("query", 1, "string"))] {
-        let (status, refused) =
-            call(port, &token, "GET", &format!("/v1/accounts/acc_telegram/contacts{query}"), "").await;
+        let (status, refused) = call(port, &token, "GET", &format!("/v1/accounts/acc_telegram/contacts{query}"), "").await;
         assert_eq!((status, refused.to_string()), (400, invalid(json!([issue]))), "{query}");
     }
 }
@@ -855,7 +794,9 @@ async fn message_pages_load_back_from_the_homeserver_like_desktop() {
     let (mut texts, mut cursor, mut more) = (Vec::new(), None::<String>, Vec::new());
     loop {
         let after = cursor.as_ref().map_or(String::new(), |c| format!("?cursor={c}"));
-        let get = format!("GET /v1/chats/!room:x/messages{after} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer token\r\nconnection: close\r\n\r\n");
+        let get = format!(
+            "GET /v1/chats/!room:x/messages{after} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer token\r\nconnection: close\r\n\r\n"
+        );
         let out = text(port, &get).await;
         let page: serde_json::Value = serde_json::from_str(out.split_once("\r\n\r\n").unwrap().1).unwrap();
         texts.extend(page["items"].as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap().to_string()));
@@ -905,8 +846,7 @@ async fn messages_carry_send_status_mentions_and_emoji_like_desktop() {
         (st.beeper_state.access_token.clone(), m.chat_id.clone(), m.id.clone())
     };
     tokio::spawn(serve_http(listener, store));
-    let path =
-        format!("/v1/chats/{}/messages/{}", beeper_api::codec::url_encode(&chat), beeper_api::codec::url_encode(&mid));
+    let path = format!("/v1/chats/{}/messages/{}", beeper_api::codec::url_encode(&chat), beeper_api::codec::url_encode(&mid));
     let get = format!("GET {path} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n\r\n");
     let out = text(port, &get).await;
     let body = out.split_once("\r\n\r\n").unwrap().1;
@@ -947,9 +887,7 @@ async fn websocket_sends_the_app_state_like_desktop() {
         Some(serde_json::from_slice(&frame.2).unwrap())
     }
     assert_eq!(next(&mut ws).await.unwrap()["type"], "ready");
-    write_ws_frame(&mut ws, 0x1, br#"{"type":"subscriptions.set","chatIDs":["*"],"app":{"state":true}}"#, true)
-        .await
-        .unwrap();
+    write_ws_frame(&mut ws, 0x1, br#"{"type":"subscriptions.set","chatIDs":["*"],"app":{"state":true}}"#, true).await.unwrap();
     let snapshot = next(&mut ws).await.unwrap();
     assert_eq!((snapshot["type"].as_str(), snapshot["seq"].as_u64()), (Some("app.state.updated"), Some(1)));
     assert_eq!(next(&mut ws).await.unwrap()["type"], "subscriptions.updated", "after the snapshot, like Desktop");
@@ -1018,8 +956,7 @@ async fn call(port: u16, token: &str, method: &str, target: &str, body: &str) ->
 
 /// Desktop's `Invalid input` answer with zod's issues.
 fn invalid(issues: serde_json::Value) -> String {
-    serde_json::json!({ "message": "Invalid input", "code": "VALIDATION_ERROR", "details": { "issues": issues } })
-        .to_string()
+    serde_json::json!({ "message": "Invalid input", "code": "VALIDATION_ERROR", "details": { "issues": issues } }).to_string()
 }
 
 /// zod's issues of a bad enum value, a bad boolean `received`, a bad `datetime()` and a value below `minimum`.
@@ -1090,9 +1027,7 @@ async fn search_chats_filters_orders_and_pages_like_desktop() {
         let (token, target, body) = (token.clone(), format!("/v1/chats/{id}"), body.to_string());
         async move { assert_eq!(call(port, &token, "PATCH", &target, &body).await.0, 200, "{target} {body}") }
     };
-    let key = |cursor: &Value| -> Value {
-        serde_json::from_slice(&base64_decode(cursor.as_str().unwrap()).unwrap()).unwrap()
-    };
+    let key = |cursor: &Value| -> Value { serde_json::from_slice(&base64_decode(cursor.as_str().unwrap()).unwrap()).unwrap() };
     let ms = |c: &Value| beeper_core::config::millis_from_rfc3339(c["lastActivity"].as_str().unwrap()).unwrap();
 
     let (_, listed) = call(port, &token, "GET", "/v1/chats?limit=200", "").await;
@@ -1163,8 +1098,7 @@ async fn search_chats_filters_orders_and_pages_like_desktop() {
     }
     assert!(found("inbox=primary").await.contains(&"!wa_sam:beeper.com".to_string()));
 
-    let merge =
-        r#"{"mode":"merge","title":"Friends","merge":{"chatIDs":["!sg_lena:beeper.com","!ig_kai:beeper.com"]}}"#;
+    let merge = r#"{"mode":"merge","title":"Friends","merge":{"chatIDs":["!sg_lena:beeper.com","!ig_kai:beeper.com"]}}"#;
     let (_, merged) = call(port, &token, "POST", "/v1/chats", merge).await;
     let merged = merged["chatID"].as_str().unwrap();
     let (members, now) = (["!sg_lena:beeper.com", "!ig_kai:beeper.com"], found("limit=200").await);
@@ -1236,19 +1170,12 @@ async fn search_messages_filters_orders_and_pages_like_desktop() {
     let page = search("limit=7").await;
     let fields: Vec<&str> = page.as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(fields, ["items", "chats", "hasMore", "oldestCursor", "newestCursor"]);
-    assert_eq!(
-        keys(&page),
-        ["1004", "1003", "1002", "1001", "0999", "0998", "0997"],
-        "the newest by time, by sort key"
-    );
+    assert_eq!(keys(&page), ["1004", "1003", "1002", "1001", "0999", "0998", "0997"], "the newest by time, by sort key");
     let chats: Vec<&str> = page["chats"].as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(chats, ["!tg_rust:beeper.com", "!im_sarah:beeper.com", "!wa_eric:beeper.com"]);
     assert_eq!(page["chats"]["!tg_rust:beeper.com"]["participants"]["items"].as_array().unwrap().len(), 3);
     let cursor = |k: &str| page[k].as_str().unwrap().split_once(':').unwrap().0.to_string();
-    assert_eq!(
-        (cursor("oldestCursor"), cursor("newestCursor")),
-        (time("2026-10-14T08:10:00Z"), time("2026-10-14T08:20:00Z"))
-    );
+    assert_eq!((cursor("oldestCursor"), cursor("newestCursor")), (time("2026-10-14T08:10:00Z"), time("2026-10-14T08:20:00Z")));
     let oldest = url_encode(page["oldestCursor"].as_str().unwrap());
     assert_eq!(found(&format!("limit=2&cursor={oldest}")).await, ["1006", "1005"]);
     let newer = search(&format!("limit=3&direction=after&cursor={oldest}")).await;
@@ -1278,14 +1205,10 @@ async fn search_messages_filters_orders_and_pages_like_desktop() {
     assert_eq!(found("query=ship").await, ["1011", "1002"], "a prefix of a word, in sort order");
     assert_eq!(found("query=Ship%20i").await, ["1011"]);
     let (status, blank) = get("/v1/messages/search", "query=%20".into()).await;
-    let failed =
-        json!({ "message": "Failed to execute tool: searchMessages", "code": "TOOL_EXECUTION_ERROR", "details": {} });
+    let failed = json!({ "message": "Failed to execute tool: searchMessages", "code": "TOOL_EXECUTION_ERROR", "details": {} });
     assert_eq!((status, blank), (500, failed), "Desktop's full-text query of a blank query fails");
     assert_eq!(found("chatIDs=!sl_infra:beeper.com").await, ["1011", "1010", "1009", "1008", "1007"]);
-    assert_eq!(
-        found("chatIDs[]=!sl_design:beeper.com&chatIDs[]=!tg_pebble:beeper.com").await,
-        ["2007", "2005", "1999"]
-    );
+    assert_eq!(found("chatIDs[]=!sl_design:beeper.com&chatIDs[]=!tg_pebble:beeper.com").await, ["2007", "2005", "1999"]);
     assert_eq!(get("/v1/messages/search", "chatIDs=nope".into()).await.0, 404);
     assert_eq!(found("accountIDs=acc_slack").await, ["2005", "1011", "1010", "1009", "1008", "1007"]);
     assert_eq!(found("chatType=group").await.len(), 12);
@@ -1363,10 +1286,7 @@ async fn mcp_errors_come_from_the_layer_of_desktop() {
     let filters = text(port, &request("POST", "/v0/mcp?operation=x", "")).await;
     let message = "Invalid request: Validation error: Invalid enum value. Expected 'read' | 'write', received 'x' at \\\"operation[0]\\\"";
     assert!(filters.starts_with("HTTP/1.1 400 ") && filters.contains(json), "{filters}");
-    assert!(
-        filters.ends_with(&format!(r#"{{"jsonrpc":"2.0","error":{{"code":-32000,"message":"{message}"}}}}"#)),
-        "{filters}"
-    );
+    assert!(filters.ends_with(&format!(r#"{{"jsonrpc":"2.0","error":{{"code":-32000,"message":"{message}"}}}}"#)), "{filters}");
     let get = text(port, &request("GET", "/v0/mcp", "")).await;
     assert!(get.ends_with(r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"Method not supported"}}"#), "{get}");
     let accept = text(port, &request("POST", "/v0/mcp", "content-type: application/json\r\n")).await;
@@ -1375,11 +1295,13 @@ async fn mcp_errors_come_from_the_layer_of_desktop() {
 
     // The Stainless client of a tool refuses a missing path parameter, so `get_chat` without a chat is no chat list.
     let call = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_chat","arguments":{}}}"#;
-    let headers = format!(
-        "content-type: application/json\r\naccept: application/json, text/event-stream\r\ncontent-length: {}\r\n",
-        call.len()
-    );
-    let out = text(port, &format!("POST /v0/mcp HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\n{headers}connection: close\r\n\r\n{call}")).await;
+    let headers =
+        format!("content-type: application/json\r\naccept: application/json, text/event-stream\r\ncontent-length: {}\r\n", call.len());
+    let out = text(
+        port,
+        &format!("POST /v0/mcp HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\n{headers}connection: close\r\n\r\n{call}"),
+    )
+    .await;
     let message = r"Path parameters result in path with invalid segments:\nValue of type Undefined is not a valid path parameter\n/v1/chats/undefined\n          ^^^^^^^^^";
     assert!(out.contains(&format!(r#""error":{{"code":-32603,"message":"{message}"}}"#)), "{out}");
 }
@@ -1413,29 +1335,20 @@ async fn bodies_and_unknown_chats_get_the_errors_of_desktop() {
     let out_port = listener.local_addr().unwrap().port();
     let dir = beeper_core::testing::temp_dir("http-setup-bodies");
     // No request reaches the cloud: each body fails its schema first.
-    let cfg = CentralConfig {
-        api_url: "http://127.0.0.1:9".into(),
-        ..CentralConfig::new(dir, "127.0.0.1".into(), out_port, None)
-    };
+    let cfg = CentralConfig { api_url: "http://127.0.0.1:9".into(), ..CentralConfig::new(dir, "127.0.0.1".into(), out_port, None) };
     tokio::spawn(serve_http(listener, StoreLock::shared(BeeperStore::from_config(cfg))));
     let refused = |message: &str, issues: serde_json::Value| json!({ "message": message, "code": "VALIDATION_ERROR", "details": { "issues": issues } });
-    let required = |k: &str| json!({ "code": "invalid_type", "expected": "string", "received": "undefined", "path": [k], "message": "Required" });
-    let email =
-        json!({ "validation": "email", "code": "invalid_string", "message": "Invalid email", "path": ["email"] });
-    let extra = json!({ "code": "unrecognized_keys", "keys": ["x", "y"], "path": [], "message": "Unrecognized key(s) in object: 'x', 'y'" });
-    let terms = json!({ "code": "invalid_literal", "expected": true, "path": ["acceptTerms"], "message": "Invalid literal value, expected true" });
+    let required =
+        |k: &str| json!({ "code": "invalid_type", "expected": "string", "received": "undefined", "path": [k], "message": "Required" });
+    let email = json!({ "validation": "email", "code": "invalid_string", "message": "Invalid email", "path": ["email"] });
+    let extra =
+        json!({ "code": "unrecognized_keys", "keys": ["x", "y"], "path": [], "message": "Unrecognized key(s) in object: 'x', 'y'" });
+    let terms =
+        json!({ "code": "invalid_literal", "expected": true, "path": ["acceptTerms"], "message": "Invalid literal value, expected true" });
     let no_body = json!({ "code": "invalid_type", "expected": "object", "received": "undefined", "path": [], "message": "Required" });
     let cases = [
-        (
-            "/v1/app/setup/email",
-            r#"{"setupRequestID":"r","email":"notanemail"}"#,
-            refused("Invalid email", json!([email])),
-        ),
-        (
-            "/v1/app/setup/email",
-            r#"{"email":"a@b.co","x":1,"y":2}"#,
-            refused("Required", json!([required("setupRequestID"), extra])),
-        ),
+        ("/v1/app/setup/email", r#"{"setupRequestID":"r","email":"notanemail"}"#, refused("Invalid email", json!([email]))),
+        ("/v1/app/setup/email", r#"{"email":"a@b.co","x":1,"y":2}"#, refused("Required", json!([required("setupRequestID"), extra]))),
         ("/v1/app/setup/response", r#"{"setupRequestID":"r"}"#, refused("Required", json!([required("response")]))),
         (
             "/v1/app/setup/register",
@@ -1458,11 +1371,7 @@ async fn bodies_and_unknown_chats_get_the_errors_of_desktop() {
     let start = call(port, &token, "POST", "/v1/chats/start", "{x").await;
     assert_eq!(start, malformed("Expected property name or '}' in JSON at position 1 (line 1 column 2)"));
     let read = call(port, &token, "POST", "/v1/chats/!wa_eric:beeper.com/read", "\"text\"").await;
-    assert_eq!(
-        read,
-        malformed("Unexpected token '\"', \"\"text\"\" is not valid JSON"),
-        "a body must be an object or an array"
-    );
+    assert_eq!(read, malformed("Unexpected token '\"', \"\"text\"\" is not valid JSON"), "a body must be an object or an array");
     let mcp = call(port, &token, "POST", "/v0/mcp", "[1,]").await;
     assert_eq!(mcp, malformed("Unexpected token ']', \"[1,]\" is not valid JSON"), "before the MCP transport");
     let no_chat = |message: &str| (404, json!({ "message": message, "code": "NOT_FOUND" }));
@@ -1473,11 +1382,7 @@ async fn bodies_and_unknown_chats_get_the_errors_of_desktop() {
         ("PATCH", "/v1/chats/!nope"),
         ("GET", "/v1/messages/search?chatIDs=!nope"),
     ] {
-        assert_eq!(
-            call(port, &token, method, target, "{}").await,
-            no_chat("Chat not found: !nope"),
-            "{method} {target}"
-        );
+        assert_eq!(call(port, &token, method, target, "{}").await, no_chat("Chat not found: !nope"), "{method} {target}");
     }
 }
 
@@ -1494,12 +1399,7 @@ async fn tool_inputs_are_checked_like_desktop() {
     let chat = "/v1/chats/!wa_eric:beeper.com";
     let cases = [
         ("PUT", "/v1/chats/!nope/messages/msg_1001".to_string(), r#"{"text":""}"#, json!([short(json!(["text"]))])),
-        (
-            "POST",
-            format!("{chat}/messages/msg_1001/reactions"),
-            "{}",
-            json!([required(json!(["reactionKey"]), "string")]),
-        ),
+        ("POST", format!("{chat}/messages/msg_1001/reactions"), "{}", json!([required(json!(["reactionKey"]), "string")])),
         ("POST", format!("{chat}/reminders"), "{}", json!([required(json!(["reminder"]), "object")])),
         (
             "POST",
@@ -1510,18 +1410,8 @@ async fn tool_inputs_are_checked_like_desktop() {
                 wrong(json!(["reminder", "dismissOnIncomingMessage"]), "boolean", "number"),
             ]),
         ),
-        (
-            "POST",
-            format!("{chat}/archive"),
-            r#"{"archived":"yes"}"#,
-            json!([wrong(json!(["archived"]), "boolean", "string")]),
-        ),
-        (
-            "POST",
-            format!("{chat}/messages"),
-            "{}",
-            json!([custom(json!([]), "Either text or attachment is required.")]),
-        ),
+        ("POST", format!("{chat}/archive"), r#"{"archived":"yes"}"#, json!([wrong(json!(["archived"]), "boolean", "string")])),
+        ("POST", format!("{chat}/messages"), "{}", json!([custom(json!([]), "Either text or attachment is required.")])),
         (
             "POST",
             format!("{chat}/messages"),
@@ -1542,36 +1432,21 @@ async fn tool_inputs_are_checked_like_desktop() {
                 { "code": "too_small", "minimum": 0, "type": "number", "inclusive": true, "exact": false, "message": "Number must be greater than or equal to 0", "path": ["messageExpirySeconds"] },
             ]),
         ),
-        (
-            "DELETE",
-            format!("{chat}/messages/msg_1001?forEveryone=yes"),
-            "",
-            json!([wrong(json!(["forEveryone"]), "boolean", "string")]),
-        ),
+        ("DELETE", format!("{chat}/messages/msg_1001?forEveryone=yes"), "", json!([wrong(json!(["forEveryone"]), "boolean", "string")])),
         (
             "POST",
             "/v1/assets/download".to_string(),
             r#"{"url":""}"#,
             json!([short(json!(["url"])), custom(json!(["url"]), "URL must start with mxc:// or localmxc://")]),
         ),
-        (
-            "POST",
-            "/v1/focus".to_string(),
-            r#"{"draftText":1}"#,
-            json!([wrong(json!(["draftText"]), "string", "number")]),
-        ),
+        ("POST", "/v1/focus".to_string(), r#"{"draftText":1}"#, json!([wrong(json!(["draftText"]), "string", "number")])),
         (
             "GET",
             "/v1/bridges/bad!id".to_string(),
             "",
             json!([{ "validation": "regex", "code": "invalid_string", "message": "Bridge ID may only contain letters, numbers, underscores, and hyphens", "path": ["bridgeID"] }]),
         ),
-        (
-            "GET",
-            format!("{chat}?maxParticipantCount=x"),
-            "",
-            json!([wrong(json!(["maxParticipantCount"]), "number", "nan")]),
-        ),
+        ("GET", format!("{chat}?maxParticipantCount=x"), "", json!([wrong(json!(["maxParticipantCount"]), "number", "nan")])),
         ("GET", "/v1/search?query=".to_string(), "", json!([short(json!(["query"]))])),
     ];
     for (method, target, body, issues) in cases {
@@ -1589,8 +1464,7 @@ async fn tool_inputs_are_checked_like_desktop() {
     assert!(text(port, &request).await.starts_with("HTTP/1.1 204 "), "the older remindAtMs");
     let edited = call(port, &token, "PUT", &format!("{chat}/messages/msg_1001"), r#"{"text":" "}"#).await;
     assert_eq!((edited.0, &edited.1["text"]), (200, &json!(" ")), "zod's min(1) takes a blank text");
-    let (_, added) =
-        call(port, &token, "POST", &format!("{chat}/messages/msg_1001/reactions"), r#"{"reactionKey":"👍"}"#).await;
+    let (_, added) = call(port, &token, "POST", &format!("{chat}/messages/msg_1001/reactions"), r#"{"reactionKey":"👍"}"#).await;
     let keys: Vec<&String> = added.as_object().unwrap().keys().collect();
     assert_eq!(keys, ["success", "chatID", "messageID", "reactionKey", "transactionID"], "Desktop's key order");
     let removed = call(port, &token, "DELETE", &format!("{chat}/messages/msg_1001/reactions?reactionKey="), "").await;

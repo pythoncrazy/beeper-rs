@@ -67,8 +67,7 @@ impl BeeperGuiApp {
                     }
                     Err(e) => {
                         eprintln!("interactive download failed: {e}");
-                        let text =
-                            "Could not download this file. Check that the app is running on your phone and try again.";
+                        let text = "Could not download this file. Check that the app is running on your phone and try again.";
                         self.fail(Toast::new(tr(text).into()));
                     }
                 }
@@ -86,19 +85,14 @@ impl BeeperGuiApp {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     Ok(())
                 };
-                return Task::perform(resolve, move |r| {
-                    UiMessage::Loaded(Msg::MediaResolved(again.0, event_id, again.1, r))
-                });
+                return Task::perform(resolve, move |r| UiMessage::Loaded(Msg::MediaResolved(again.0, event_id, again.1, r)));
             }
             Msg::MediaResolved(account_id, event_id, raw, r) => {
                 self.resolving_media.insert(event_id.clone(), false);
                 if let Err(e) = r {
                     eprintln!("resolve media failed: {e}");
                     let again = UiMessage::Loaded(Msg::ResolveMedia(account_id, event_id, raw));
-                    self.fail(Toast {
-                        buttons: vec![(tr("Try again"), again)],
-                        ..Toast::new(tr("Could not load this media.").into())
-                    });
+                    self.fail(Toast { buttons: vec![(tr("Try again"), again)], ..Toast::new(tr("Could not load this media.").into()) });
                 }
             }
             Msg::Quote(id, r) => _ = self.quotes.insert(id, Some(r.map(|m| *m))),

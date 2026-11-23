@@ -40,8 +40,7 @@ pub enum Msg {
 pub(crate) fn has_servers(st: &BeeperStore, account_id: &str) -> bool {
     let b = st.bridge_accounts.iter().find(|b| b.account_id == account_id);
     b.is_some_and(|b| {
-        b.mode == BridgeMode::Cloud
-            && beeper_core::config::find_network(&b.bridge_id).is_some_and(|n| n.kind == NetworkKind::Discord)
+        b.mode == BridgeMode::Cloud && beeper_core::config::find_network(&b.bridge_id).is_some_and(|n| n.kind == NetworkKind::Discord)
     })
 }
 
@@ -70,11 +69,8 @@ impl BeeperGuiApp {
                     let connected = accounts.iter().filter(|a| a.state == "CONNECTED");
                     // Desktop's `fetchSubAccounts` when the remote of an account connects.
                     let st = self.store.read();
-                    let servers: Vec<String> = connected
-                        .clone()
-                        .filter(|a| has_servers(&st, &a.account_id))
-                        .map(|a| a.account_id.clone())
-                        .collect();
+                    let servers: Vec<String> =
+                        connected.clone().filter(|a| has_servers(&st, &a.account_id)).map(|a| a.account_id.clone()).collect();
                     drop(st);
                     let servers: Vec<_> = servers.iter().map(|a| self.fetch_servers(a)).collect();
                     let caps: Vec<_> = connected
@@ -104,8 +100,7 @@ impl BeeperGuiApp {
                 self.link_pick = (Some(account.clone()), false);
                 let send = self.message_self(account, true);
                 // Desktop's "Link sent to %s" goes back to "Send a link to %s" after 3 s.
-                let back =
-                    Task::perform(async { tokio::time::sleep(Duration::from_secs(3)).await }, |()| UiMessage::Noop);
+                let back = Task::perform(async { tokio::time::sleep(Duration::from_secs(3)).await }, |()| UiMessage::Noop);
                 return Task::batch([send, back]);
             }
             Msg::ToggleLinkMenu => self.link_pick.1 ^= true,
@@ -135,8 +130,7 @@ impl BeeperGuiApp {
                     let left = st.bridge_accounts.iter().filter(|b| b.account_id != id).cloned().collect();
                     st.set_cloud_accounts(left);
                 } else {
-                    let sole =
-                        st.bridge_accounts.iter().filter(|b| b.bridge_id == p.bridge_id).all(|b| b.account_id == id);
+                    let sole = st.bridge_accounts.iter().filter(|b| b.bridge_id == p.bridge_id).all(|b| b.account_id == id);
                     let removing = beeper_core::matrix::remove_account(p, st.config.api_url.clone(), sole);
                     return Task::perform(removing, move |r| UiMessage::Accounts(Msg::Removed(id.clone(), r)));
                 }
@@ -216,13 +210,7 @@ impl BeeperGuiApp {
                 return Task::perform(change, done);
             }
             Msg::ServerSet(id, server, connect, result) => {
-                let name = self
-                    .store
-                    .read()
-                    .sub_accounts
-                    .get(&id)
-                    .and_then(|l| l.iter().find(|s| s.id == server))
-                    .map(|s| s.name.clone());
+                let name = self.store.read().sub_accounts.get(&id).and_then(|l| l.iter().find(|s| s.id == server)).map(|s| s.name.clone());
                 let name = name.unwrap_or_default();
                 let text = match (&result, connect) {
                     (Ok(()), true) => trf("Connected %s", &[&name]),
@@ -248,10 +236,7 @@ impl BeeperGuiApp {
                 }
                 let client = st.matrix.clone().expect("Show in Inbox needs a Matrix client");
                 let rules = beeper_core::matrix::with_inbox_visibility(st.inbox_rules.clone(), &key, option);
-                return Task::perform(
-                    beeper_core::matrix::set_global(client, beeper_core::matrix::RULES, rules),
-                    UiMessage::Pushed,
-                );
+                return Task::perform(beeper_core::matrix::set_global(client, beeper_core::matrix::RULES, rules), UiMessage::Pushed);
             }
         }
         self.settle()

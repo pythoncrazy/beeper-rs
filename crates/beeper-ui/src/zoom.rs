@@ -166,8 +166,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Zoom<'_, M> {
                     mouse::ScrollDelta::Pixels { y, .. } => y,
                 };
                 let (s, at) = state.view();
-                (state.view, state.anim) =
-                    (Some(zoom_at((s, at), s + y.signum() * WHEEL_STEP * y.abs(), local(p), size)), None);
+                (state.view, state.anim) = (Some(zoom_at((s, at), s + y.signum() * WHEEL_STEP * y.abs(), local(p), size)), None);
                 shell.capture_event();
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -188,10 +187,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Zoom<'_, M> {
                 let (s, at) = state.view();
                 let content = layout.children().next().expect("the content").bounds();
                 let shown = Rectangle::new(
-                    Point::new(
-                        bounds.x + at.x + (content.x - bounds.x) * s,
-                        bounds.y + at.y + (content.y - bounds.y) * s,
-                    ),
+                    Point::new(bounds.x + at.x + (content.x - bounds.x) * s, bounds.y + at.y + (content.y - bounds.y) * s),
                     content.size() * s,
                 );
                 if !moved && !shown.contains(state.cursor) {
@@ -211,8 +207,8 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Zoom<'_, M> {
     }
 
     fn draw(
-        &self, tree: &Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
-        _cursor: mouse::Cursor, viewport: &Rectangle,
+        &self, tree: &Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>, _cursor: mouse::Cursor,
+        viewport: &Rectangle,
     ) {
         use iced::advanced::Renderer as _;
         let (s, at) = tree.state.downcast_ref::<State>().view();
@@ -267,11 +263,7 @@ impl BeeperGuiApp {
     pub(crate) fn set_zoom(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
             Msg::Step(step) => self.patch_settings(|s| {
-                s.zoom_percent = if step == 0 {
-                    100
-                } else {
-                    s.zoom_percent.saturating_add_signed(10 * i16::from(step)).clamp(40, 300)
-                };
+                s.zoom_percent = if step == 0 { 100 } else { s.zoom_percent.saturating_add_signed(10 * i16::from(step)).clamp(40, 300) };
             }),
             Msg::Drag(level) => self.zoom_drag = Some(level),
             Msg::Release => {

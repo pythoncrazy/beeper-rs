@@ -117,8 +117,7 @@ pub const GLOBAL: &[Flag] = &[
     Flag::b("events", "Emit NDJSON lifecycle events on stderr (long-running commands)"),
     Flag::b("full", "Disable text-output truncation; print full IDs and bodies"),
     Flag::b("json", "Print machine-readable JSON envelope on stdout"),
-    Flag::b("quiet", "Suppress spinners and success lines (errors still print). Honored with or without --json.")
-        .c('q'),
+    Flag::b("quiet", "Suppress spinners and success lines (errors still print). Honored with or without --json.").c('q'),
     Flag::b("read-only", "Reject commands that would modify Beeper or local CLI state (or set BEEPER_READONLY=1)"),
     Flag::s("timeout", "Maximum time to wait, such as 30s, 2m, or 1h"),
     Flag::b("yes", "Skip interactive confirmation prompts").c('y'),
@@ -182,9 +181,7 @@ pub fn find(words: &[String]) -> Option<(&'static Cmd, usize)> {
         id.sort_unstable();
         given == id
     };
-    (1..=words.len().min(3))
-        .rev()
-        .find_map(|n| ids.clone().find(|(_, id)| id.len() == n && matches(id, n)).map(|(c, _)| (c, n)))
+    (1..=words.len().min(3)).rev().find_map(|n| ids.clone().find(|(_, id)| id.len() == n && matches(id, n)).map(|(c, _)| (c, n)))
 }
 
 /// Whether `word` starts a client command or a topic, so `main` hands the command line to [`run`].
@@ -206,9 +203,9 @@ fn parse(cmd: &'static Cmd, argv: &[String]) -> Res<(HashMap<&'static str, Val>,
     let is_flag = |w: &str| {
         let name = w.split_once('=').map_or(w, |p| p.0);
         name.strip_prefix("--").is_some_and(|n| flag_spec(cmd, |f| f.name == n).is_some())
-            || name.strip_prefix('-').is_some_and(|c| {
-                c.len() == 1 && flag_spec(cmd, |f| f.char.is_some_and(|ch| c.starts_with(ch))).is_some()
-            })
+            || name
+                .strip_prefix('-')
+                .is_some_and(|c| c.len() == 1 && flag_spec(cmd, |f| f.char.is_some_and(|ch| c.starts_with(ch))).is_some())
     };
     while let Some(word) = words.next() {
         if word == "--" {
@@ -221,9 +218,7 @@ fn parse(cmd: &'static Cmd, argv: &[String]) -> Res<(HashMap<&'static str, Val>,
         };
         let spec = match (name.strip_prefix("--"), name.strip_prefix('-')) {
             (Some(long), _) => flag_spec(cmd, |f| f.name == long).map(|f| (f, true)).or_else(|| {
-                long.strip_prefix("no-")
-                    .and_then(|n| flag_spec(cmd, |f| f.name == n && f.kind == Kind::AllowNo))
-                    .map(|f| (f, false))
+                long.strip_prefix("no-").and_then(|n| flag_spec(cmd, |f| f.name == n && f.kind == Kind::AllowNo)).map(|f| (f, false))
             }),
             (None, Some(short)) if !short.is_empty() => {
                 let ch = short.chars().next().expect("a short flag has a char");
@@ -249,24 +244,19 @@ fn parse(cmd: &'static Cmd, argv: &[String]) -> Res<(HashMap<&'static str, Val>,
                 let shown = if name.starts_with("--") { name.clone() } else { format!("--{}", flag.name) };
                 let value = value.ok_or_else(|| match flag.options {
                     [] => CliError::bug(format!("Flag {shown} expects a value")),
-                    options => {
-                        CliError::bug(format!("Flag {shown} expects one of these values: {}", options.join(", ")))
-                    }
+                    options => CliError::bug(format!("Flag {shown} expects one of these values: {}", options.join(", "))),
                 })?;
                 let mut values = vec![value];
                 if flag.kind == Kind::Many {
                     values.extend(std::iter::from_fn(|| words.next_if(|w| !w.starts_with('-'))));
                 }
-                if let Some(bad) =
-                    values.iter().find(|v| !flag.options.is_empty() && !flag.options.contains(&v.as_str()))
-                {
+                if let Some(bad) = values.iter().find(|v| !flag.options.is_empty() && !flag.options.contains(&v.as_str())) {
                     let msg = format!("Expected --{}={bad} to be one of: {}", flag.name, flag.options.join(", "));
                     return Err(CliError::usage(msg));
                 }
                 match flag.kind {
                     Kind::Int => Val::Int(int(&values[0]).ok_or_else(|| {
-                        let msg =
-                            format!("Parsing --{} \n\tExpected an integer but received: {}", flag.name, values[0]);
+                        let msg = format!("Parsing --{} \n\tExpected an integer but received: {}", flag.name, values[0]);
                         CliError::usage(msg)
                     })?),
                     Kind::Many => match vals.remove(flag.name) {
@@ -301,11 +291,7 @@ fn parse(cmd: &'static Cmd, argv: &[String]) -> Res<(HashMap<&'static str, Val>,
                 f.name
             )
         });
-        return Err(CliError::usage(format!(
-            "Missing {} required arg{s}:\n{}\n{note}",
-            missing.len(),
-            lines.join("\n")
-        )));
+        return Err(CliError::usage(format!("Missing {} required arg{s}:\n{}\n{note}", missing.len(), lines.join("\n"))));
     }
     for (a, value) in cmd.args.iter().zip(&args) {
         if !a.options.is_empty() && !a.options.contains(&value.as_str()) {
@@ -484,9 +470,7 @@ impl Ctx {
     }
 
     /// The items of a cursor list like the SDK page iterator, which asks for the next page at `oldestCursor`.
-    pub fn collect(
-        &mut self, path: &str, query: &[(&str, String)], limit: usize, keep: impl Fn(&Value) -> bool,
-    ) -> Res<Vec<Value>> {
+    pub fn collect(&mut self, path: &str, query: &[(&str, String)], limit: usize, keep: impl Fn(&Value) -> bool) -> Res<Vec<Value>> {
         let mut items = Vec::new();
         let mut cursor: Option<String> = None;
         while items.len() < limit {
@@ -506,9 +490,7 @@ impl Ctx {
 
     /// `withSpinner`: runs `run`, then shows its result line on stderr like the last frame of the ink spinner, before
     /// the output of the command, unless `--quiet`.
-    pub fn spinner<T>(
-        &mut self, label: &str, run: impl FnOnce(&mut Self) -> Res<T>, done: impl Fn(&T) -> String,
-    ) -> Res<T> {
+    pub fn spinner<T>(&mut self, label: &str, run: impl FnOnce(&mut Self) -> Res<T>, done: impl Fn(&T) -> String) -> Res<T> {
         let quiet = self.on("quiet");
         let result = run(self);
         match (&result, quiet) {
@@ -577,9 +559,7 @@ pub fn obj<const N: usize>(pairs: [(&str, Value); N]) -> Map<String, Value> {
 pub fn js_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
-        Value::Array(a) => {
-            a.iter().map(|v| if v.is_null() { String::new() } else { js_string(v) }).collect::<Vec<_>>().join(",")
-        }
+        Value::Array(a) => a.iter().map(|v| if v.is_null() { String::new() } else { js_string(v) }).collect::<Vec<_>>().join(","),
         Value::Object(_) => "[object Object]".into(),
         v => v.to_string(),
     }
@@ -610,9 +590,7 @@ pub fn config_dir() -> PathBuf {
 
 pub fn read_json(path: &std::path::Path) -> Res<Option<Map<String, Value>>> {
     match std::fs::read(path) {
-        Ok(bytes) => {
-            serde_json::from_slice(&bytes).map(Some).map_err(|e| CliError::bug(format!("{}: {e}", path.display())))
-        }
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| CliError::bug(format!("{}: {e}", path.display()))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(CliError::bug(format!("{}: {e}", path.display()))),
     }
@@ -672,25 +650,14 @@ pub fn resolve_target(name: Option<&str>) -> Res<Map<String, Value>> {
         let base = std::env::var("BEEPER_DESKTOP_BASE_URL").ok().filter(|b| !b.is_empty()).map(Value::from);
         let base = base.or_else(|| config.get("baseURL").cloned()).unwrap_or_else(|| json!("http://127.0.0.1:23373"));
         let auth = config.get("auth").cloned().unwrap_or(Value::Null);
-        obj([
-            ("id", json!("desktop")),
-            ("type", json!("desktop")),
-            ("name", json!("Beeper Desktop")),
-            ("baseURL", base),
-            ("auth", auth),
-        ])
+        obj([("id", json!("desktop")), ("type", json!("desktop")), ("name", json!("Beeper Desktop")), ("baseURL", base), ("auth", auth)])
     };
-    if let Some(id) = name
-        .map(str::to_string)
-        .or(env)
-        .or_else(|| config.get("defaultTarget").and_then(|v| v.as_str()).map(str::to_string))
+    if let Some(id) = name.map(str::to_string).or(env).or_else(|| config.get("defaultTarget").and_then(|v| v.as_str()).map(str::to_string))
     {
         return match (read_target(&id)?, id == "desktop") {
             (Some(t), _) => Ok(with_auth(t)),
             (None, true) => Ok(builtin()),
-            (None, false) => {
-                Err(CliError::abort(format!("Unknown Beeper target \"{id}\". Run `{BIN} targets list`."), NOT_FOUND))
-            }
+            (None, false) => Err(CliError::abort(format!("Unknown Beeper target \"{id}\". Run `{BIN} targets list`."), NOT_FOUND)),
         };
     }
     let mut all = list_targets()?;
@@ -702,8 +669,7 @@ pub fn resolve_target(name: Option<&str>) -> Res<Map<String, Value>> {
 
 pub fn list_targets() -> Res<Vec<Map<String, Value>>> {
     let dir = config_dir().join("targets");
-    let mut names: Vec<PathBuf> =
-        std::fs::read_dir(&dir).map_or(Vec::new(), |d| d.flatten().map(|e| e.path()).collect());
+    let mut names: Vec<PathBuf> = std::fs::read_dir(&dir).map_or(Vec::new(), |d| d.flatten().map(|e| e.path()).collect());
     names.retain(|p| p.extension().is_some_and(|e| e == "json"));
     let mut all: Vec<_> = names.iter().filter_map(|p| read_json(p).ok().flatten()).map(normalize_target).collect();
     all.sort_by(|a, b| js_string(&a["id"]).cmp(&js_string(&b["id"])));
@@ -745,15 +711,9 @@ pub fn iso_in(ms: i64) -> String {
 /// Prints `err` like `BeeperCommand.catch`, and returns the exit code.
 fn report(err: &CliError, json: bool, events: bool) -> i32 {
     let kind = if err.class.is_none() { "bug" } else { "abort" };
-    let data = obj([
-        ("message", json!(err.msg)),
-        ("exitCode", json!(err.code)),
-        ("kind", json!(kind)),
-        ("tryMessage", json!(err.hint)),
-    ]);
+    let data = obj([("message", json!(err.msg)), ("exitCode", json!(err.code)), ("kind", json!(kind)), ("tryMessage", json!(err.hint))]);
     if events {
-        let ts =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("a time after 1970").as_millis();
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("a time after 1970").as_millis();
         eprintln!("{}", json!({ "event": "error", "data": data, "ts": ts as u64 }));
         return err.code;
     }
@@ -784,8 +744,7 @@ fn report(err: &CliError, json: bool, events: bool) -> i32 {
         (Some(class), None) => {
             // oclif's `prettyPrint`: wrapped at the width of stderr less 6, and indented by 4.
             let text = render::wrap_plain(&format!("{class}: {}", err.msg), render::columns(2) - 6);
-            text.iter()
-                .for_each(|line| eprintln!("{}", if line.is_empty() { String::new() } else { format!("    {line}") }));
+            text.iter().for_each(|line| eprintln!("{}", if line.is_empty() { String::new() } else { format!("    {line}") }));
             1
         }
     }
@@ -807,8 +766,7 @@ pub fn not_a_command(words: &str, topic: Option<&str>) -> i32 {
 pub fn run(argv: &[String]) -> i32 {
     let help = argv.iter().any(|a| a == "--help" || a == "-h");
     let topic = commands::topic_of(argv);
-    let index =
-        topic.and_then(|t| t.2).map(|id| (commands::all().find(|c| c.id == id).expect("a topic index exists"), 1));
+    let index = topic.and_then(|t| t.2).map(|id| (commands::all().find(|c| c.id == id).expect("a topic index exists"), 1));
     // oclif's command lookup: a word after a command without arguments makes the words an unknown command.
     let found = find(argv).or(index);
     let found = found.filter(|(c, n)| help || !c.args.is_empty() || argv.get(*n).is_none_or(|a| a.starts_with('-')));
@@ -860,12 +818,7 @@ mod tests {
         for c in commands::all() {
             for f in c.flags {
                 assert!(!(f.required && f.default.is_some()), "{} --{} is required and has a default", c.id, f.name);
-                assert!(
-                    GLOBAL.iter().all(|g| g.char.is_none() || g.char != f.char),
-                    "{} -{:?} is a global char",
-                    c.id,
-                    f.char
-                );
+                assert!(GLOBAL.iter().all(|g| g.char.is_none() || g.char != f.char), "{} -{:?} is a global char", c.id, f.char);
             }
             let required: Vec<bool> = c.args.iter().map(|a| a.required).collect();
             assert!(required.windows(2).all(|w| w[0] || !w[1]), "{}: a required arg follows an optional arg", c.id);
@@ -879,10 +832,7 @@ mod tests {
         assert_eq!(err("GET /x --bogus"), "Nonexistent flag: --bogus\nSee more help with --help");
         assert_eq!(err("GET /x extra"), "Unexpected argument: extra\nSee more help with --help");
         assert_eq!(err("GET /x --body"), "Flag --body expects a value");
-        assert_eq!(
-            err("BREW /x"),
-            "Expected BREW to be one of: GET, POST, PUT, PATCH, DELETE\nSee more help with --help"
-        );
+        assert_eq!(err("BREW /x"), "Expected BREW to be one of: GET, POST, PUT, PATCH, DELETE\nSee more help with --help");
         assert!(err("GET").starts_with("Missing 1 required arg:\npath  API path, for example /v1/info\n"));
         let (vals, args) = parse(cmd, &words("POST /v1/x --body={} --no-json -t home")).unwrap();
         assert_eq!(args, ["POST", "/v1/x"]);

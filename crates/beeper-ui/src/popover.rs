@@ -33,8 +33,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
     crate::delegate::delegate!(state(Hover), size, layout, mouse_interaction, draw);
 
     fn update(
-        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
-        renderer: &Renderer, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
+        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
     ) {
         if let Event::Mouse(mouse::Event::CursorMoved { .. }) = event {
             let hover = tree.state.downcast_mut::<Hover>();
@@ -50,8 +50,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
     }
 
     fn overlay<'b>(
-        &'b mut self, tree: &'b mut widget::Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle,
-        translation: Vector,
+        &'b mut self, tree: &'b mut widget::Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle, translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let hover = *tree.state.downcast_ref::<Hover>();
         let [content, popup] = tree.children.as_mut_slice() else { unreachable!("a popover has two children") };
@@ -79,10 +78,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Popup<'_, '_, Messa
         node.move_to(Point::new(x, y))
     }
 
-    fn draw(
-        &self, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
-        cursor: mouse::Cursor,
-    ) {
+    fn draw(&self, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>, cursor: mouse::Cursor) {
         let viewport = Rectangle::with_size(Size::INFINITE);
         self.popup.as_widget().draw(self.tree, renderer, theme, style, layout, cursor, &viewport);
     }
@@ -107,13 +103,7 @@ pub struct Above<'a, Message> {
 pub fn above<'a, Message>(
     content: impl Into<Element<'a, Message>>, popup: Option<Element<'a, Message>>, anchor: impl Fn(Size) -> Vector + 'a,
 ) -> Above<'a, Message> {
-    Above {
-        content: content.into(),
-        popup,
-        anchor: Box::new(anchor),
-        squiggles: Box::new(|_| Vec::new()),
-        on_right: None,
-    }
+    Above { content: content.into(), popup, anchor: Box::new(anchor), squiggles: Box::new(|_| Vec::new()), on_right: None }
 }
 
 impl<'a, Message> Above<'a, Message> {
@@ -143,8 +133,8 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Above<'_, Message> {
     crate::delegate::delegate!(size, layout, mouse_interaction, operate);
 
     fn update(
-        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
-        renderer: &Renderer, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
+        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
     ) {
         let b = layout.bounds();
         if let (Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)), Some(f), Some(at)) =
@@ -157,8 +147,8 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Above<'_, Message> {
     }
 
     fn draw(
-        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
-        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
         let b = layout.bounds();
@@ -172,8 +162,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Above<'_, Message> {
     }
 
     fn overlay<'b>(
-        &'b mut self, tree: &'b mut widget::Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle,
-        translation: Vector,
+        &'b mut self, tree: &'b mut widget::Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle, translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let (content, rest) = tree.children.split_first_mut().expect("the content has a tree");
         let inner = self.content.as_widget_mut().overlay(content, layout, renderer, viewport, translation);
@@ -203,17 +192,13 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Bubble<'_, '
         let size = node.size();
         match self.below {
             true => node.move_to(self.at),
-            false => node.move_to(Point::new(
-                (self.at.x - size.width / 2.0).clamp(0.0, bounds.width - size.width),
-                self.at.y - size.height,
-            )),
+            false => {
+                node.move_to(Point::new((self.at.x - size.width / 2.0).clamp(0.0, bounds.width - size.width), self.at.y - size.height))
+            }
         }
     }
 
-    fn draw(
-        &self, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
-        cursor: mouse::Cursor,
-    ) {
+    fn draw(&self, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>, cursor: mouse::Cursor) {
         self.popup.as_widget().draw(self.tree, renderer, theme, style, layout, cursor, &layout.bounds());
     }
 
@@ -222,8 +207,8 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Bubble<'_, '
     }
 
     fn update(
-        &mut self, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
-        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>,
+        &mut self, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer, clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
     ) {
         if let (Event::Mouse(mouse::Event::ButtonPressed(_)), Some((keep, blur))) = (event, &self.blur) {
             if !cursor.is_over(layout.bounds()) && !cursor.is_over(*keep) {
@@ -238,9 +223,7 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Bubble<'_, '
         self.popup.as_widget().mouse_interaction(self.tree, layout, cursor, &layout.bounds(), renderer)
     }
 
-    fn overlay<'c>(
-        &'c mut self, layout: Layout<'c>, renderer: &Renderer,
-    ) -> Option<overlay::Element<'c, Message, Theme, Renderer>> {
+    fn overlay<'c>(&'c mut self, layout: Layout<'c>, renderer: &Renderer) -> Option<overlay::Element<'c, Message, Theme, Renderer>> {
         self.popup.as_widget_mut().overlay(self.tree, layout, renderer, &layout.bounds(), Vector::ZERO)
     }
 }

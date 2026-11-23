@@ -11,8 +11,8 @@ use beeper_core::{
     matrix::Outgoing,
     models::*,
     platform::{
-        file_url_to_path, open_url_or_path_command, path_to_file_url, resolve_desktop_data_dir,
-        resolve_original_beeper_data_dir, DisplayServerKind, OsKind,
+        file_url_to_path, open_url_or_path_command, path_to_file_url, resolve_desktop_data_dir, resolve_original_beeper_data_dir,
+        DisplayServerKind, OsKind,
     },
     store::{BeeperStore, Setup, SharedStore, StoreLock, NOTE_CHAT_ID},
     testing::temp_dir,
@@ -72,17 +72,13 @@ async fn fake_beeper_cloud() -> String {
                     let guest = auth == "Bearer BEEPER-PRIVATE-API-PLEASE-DONT-USE";
                     let (code, reply) = match (path.as_str(), b["response"].as_str()) {
                         ("/user/login", _) if guest => (201, json!({ "request": "req_1", "type": ["email"] })),
-                        ("/user/login/email", _) if guest && b["request"] == "req_1" && b["supportsOTP"] == true => {
-                            (200, json!({}))
-                        }
+                        ("/user/login/email", _) if guest && b["request"] == "req_1" && b["supportsOTP"] == true => (200, json!({})),
                         ("/user/login/response", Some("123456")) if guest => (200, json!({ "token": "jwt_alex" })),
                         ("/user/login/response", Some("654321")) if guest => {
                             (200, json!({ "leadToken": "lead_1", "usernameSuggestions": ["newbie"] }))
                         }
                         ("/user/login/response", _) => (401, json!({ "error": "Invalid code" })),
-                        ("/user/register", _)
-                            if guest && b["leadToken"] == "lead_1" && b["userLoginRequestId"] == "req_1" =>
-                        {
+                        ("/user/register", _) if guest && b["leadToken"] == "lead_1" && b["userLoginRequestId"] == "req_1" => {
                             (200, json!({ "token": format!("jwt_{}", b["username"].as_str().unwrap()) }))
                         }
                         ("/_matrix/client/v3/login", _) if b["type"] == "org.matrix.login.jwt" => {
@@ -97,12 +93,11 @@ async fn fake_beeper_cloud() -> String {
                         {
                             (200, json!({}))
                         }
-                        ("/user", _) if m.start_line.starts_with("DELETE ") && auth.starts_with("Bearer syt_") => {
-                            (200, json!({}))
-                        }
+                        ("/user", _) if m.start_line.starts_with("DELETE ") && auth.starts_with("Bearer syt_") => (200, json!({})),
                         ("/whoami", _) if auth.starts_with("Bearer syt_") => {
                             let user = auth.trim_start_matches("Bearer syt_");
-                            let info = json!({ "fullName": format!("{user} Real"), "username": user, "email": format!("{user}@example.com") });
+                            let info =
+                                json!({ "fullName": format!("{user} Real"), "username": user, "email": format!("{user}@example.com") });
                             let bridges = json!({
                                 "whatsapp": { "bridgeState": { "bridgeType": "whatsapp", "stateEvent": "RUNNING" }, "remoteState": {
                                     "wa1": { "state_event": "CONNECTED", "remote_id": "wa1" } } },
@@ -123,10 +118,7 @@ async fn fake_beeper_cloud() -> String {
                         _ => (404, json!({ "error": format!("unexpected {path}") })),
                     };
                     let body = reply.to_string();
-                    let head = format!(
-                        "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
-                        body.len()
-                    );
+                    let head = format!("HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n", body.len());
                     stream.write_all(format!("{head}{body}").as_bytes()).await.unwrap();
                 }
             });
@@ -135,9 +127,7 @@ async fn fake_beeper_cloud() -> String {
     url
 }
 
-async fn spawn_e2e_beeper_instance(
-    profile_suffix: &str, cloud: Option<&str>,
-) -> (PathBuf, u16, SharedStore, BeeperClient) {
+async fn spawn_e2e_beeper_instance(profile_suffix: &str, cloud: Option<&str>) -> (PathBuf, u16, SharedStore, BeeperClient) {
     let data_dir = temp_dir(&format!("BeeperRs_e2e_{profile_suffix}"));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -160,9 +150,7 @@ async fn spawn_e2e_beeper_instance(
 /// than the 2 MiB of a test thread.
 #[test]
 fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui() {
-    let run = || {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime").block_on(lifecycle())
-    };
+    let run = || tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime").block_on(lifecycle());
     let test = std::thread::Builder::new().stack_size(8 << 20).spawn(run).expect("start the test thread");
     if let Err(panic) = test.join() {
         std::panic::resume_unwind(panic);
@@ -216,12 +204,7 @@ async fn lifecycle() {
     let keys: Vec<String> = [-12, -5, 0, 7, 1_000_000].map(beeper_core::store::sort_key).into();
     assert!(keys.is_sorted(), "sort keys keep numeric order: {keys:?}");
     let blocked_orig = std::panic::catch_unwind(|| {
-        CentralConfig::new(
-            PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts"),
-            "127.0.0.1".to_string(),
-            23373,
-            None,
-        )
+        CentralConfig::new(PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts"), "127.0.0.1".to_string(), 23373, None)
     });
     assert!(blocked_orig.is_err(), "CentralConfig::new must refuse original BeeperTexts path");
 
@@ -255,10 +238,7 @@ async fn lifecycle() {
     assert_eq!(file_url_to_path(&unix_url).unwrap(), PathBuf::from("/home/alex/.config/BeeperRs/media/a.bin"));
     let win_url = path_to_file_url(&PathBuf::from("C:\\Users\\alex\\AppData\\Roaming\\BeeperRs\\media\\a.bin"));
     assert_eq!(win_url, "file:///C:/Users/alex/AppData/Roaming/BeeperRs/media/a.bin");
-    assert_eq!(
-        file_url_to_path(&win_url).unwrap(),
-        PathBuf::from("C:/Users/alex/AppData/Roaming/BeeperRs/media/a.bin")
-    );
+    assert_eq!(file_url_to_path(&win_url).unwrap(), PathBuf::from("C:/Users/alex/AppData/Roaming/BeeperRs/media/a.bin"));
     let (win_cmd, win_args) = open_url_or_path_command(OsKind::Windows, "beeper://chat/123");
     assert_eq!(win_cmd, "cmd");
     assert_eq!(win_args[1], "start");
@@ -303,20 +283,9 @@ async fn lifecycle() {
             )
             .unwrap();
         let thread = |id: &str, acc: &str, ts: i64, label: i64, json: Value| {
-            index
-                .execute(
-                    "INSERT INTO threads VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
-                    params![id, acc, json.to_string(), ts, label],
-                )
-                .unwrap();
+            index.execute("INSERT INTO threads VALUES (?1, ?2, ?3, ?4, ?5, NULL)", params![id, acc, json.to_string(), ts, label]).unwrap();
         };
-        thread(
-            "!wa:beeper.local",
-            "local-whatsapp_ba_Xq9",
-            1_760_000_000_000,
-            0,
-            json!({"type": "single", "unreadCount": 2}),
-        );
+        thread("!wa:beeper.local", "local-whatsapp_ba_Xq9", 1_760_000_000_000, 0, json!({"type": "single", "unreadCount": 2}));
         thread(
             "!dc:beeper.local",
             "discordgo",
@@ -350,13 +319,7 @@ async fn lifecycle() {
                 }
             }),
         );
-        thread(
-            "!zz:beeper.local",
-            "brandnewgo",
-            1_760_000_400_000,
-            0,
-            json!({"title": "Unknown Network", "type": "single"}),
-        );
+        thread("!zz:beeper.local", "brandnewgo", 1_760_000_400_000, 0, json!({"title": "Unknown Network", "type": "single"}));
         thread("label_inbox", "hungryserv", 1_760_000_500_000, 1, json!({"title": "Label"}));
         let person = |room: &str, id: &str, name: Option<&str>, nick: Option<&str>, me: i64, exited: i64| {
             index
@@ -374,9 +337,7 @@ async fn lifecycle() {
         person("!dc:beeper.local", "@dc_gone:beeper.local", Some("Gone"), None, 0, 1);
         person("!sl:beeper.local", "@sl_x:beeper.local", None, None, 0, 0);
         let message = |id: &str, room: &str, ts: i64, json: Value| {
-            index
-                .execute("INSERT INTO messages VALUES (?1, 'acc', ?2, ?3, ?4)", params![id, ts, room, json.to_string()])
-                .unwrap();
+            index.execute("INSERT INTO messages VALUES (?1, 'acc', ?2, ?3, ?4)", params![id, ts, room, json.to_string()]).unwrap();
         };
         message(
             "$m1",
@@ -422,12 +383,7 @@ async fn lifecycle() {
             1_760_000_202_000,
             json!({"senderID": "@sl_x:beeper.local", "text": "hidden", "isHidden": true}),
         );
-        message(
-            "$m7",
-            "label_inbox",
-            1_760_000_501_000,
-            json!({"senderID": "@x:beeper.local", "text": "label message"}),
-        );
+        message("$m7", "label_inbox", 1_760_000_501_000, json!({"senderID": "@x:beeper.local", "text": "label message"}));
     }
     let originals = |d: &PathBuf| std::fs::read(d.join("index.db")).unwrap();
     let before = originals(&orig_dir);
@@ -450,20 +406,15 @@ async fn lifecycle() {
     let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Read(data.clone())))));
     assert_eq!(gui.login.screen, Screen::Welcome, "the import asks to sign in as a new device");
     assert!(shared.read().setup.is_none(), "nothing is imported before the sign-in");
-    let session = MatrixSession {
-        user_id: "@emile:beeper.com".into(),
-        access_token: "syt_emile".into(),
-        device_id: "NEWDEVICE".into(),
-        jwt: None,
-    };
+    let session =
+        MatrixSession { user_id: "@emile:beeper.com".into(), access_token: "syt_emile".into(), device_id: "NEWDEVICE".into(), jwt: None };
     let profile = Profile {
         full_name: Some("Émile Zola".into()),
         username: Some("emile".into()),
         email: Some("emile@example.com".into()),
         ..Profile::default()
     };
-    let _ =
-        gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Imported(data, session, profile.clone(), Vec::new())))));
+    let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Imported(data, session, profile.clone(), Vec::new())))));
     assert_eq!(before, originals(&orig_dir), "Beeper Desktop files must never be modified");
     let none = beeper_core::matrix::E2eeSetup { cross_signing: true, verified: true, devices: Vec::new() };
     let _ = gui.update(UiMessage::Login(LoginMsg::E2ee(Ok(none))));
@@ -477,10 +428,7 @@ async fn lifecycle() {
     let profile = Profile { email: Some("zola@example.com".into()), ..profile };
     let _ = gui.update(UiMessage::Accounts(beeper_ui::accounts::Msg::Cloud(Ok((profile, cloud)))));
     assert_eq!(shared.read().accounts.iter().map(|a| a.account_id.as_str()).collect::<Vec<_>>(), ["signal"]);
-    for bad in [
-        json!([]),
-        json!({ "whatsapp": { "bridgeState": {}, "remoteState": { "w": { "state_event": "CONNECTED" } } } }),
-    ] {
+    for bad in [json!([]), json!({ "whatsapp": { "bridgeState": {}, "remoteState": { "w": { "state_event": "CONNECTED" } } } })] {
         assert_eq!(beeper_core::cloud::cloud_accounts(&bad).unwrap_err().status, 502, "{bad} is rejected");
     }
     let _ = gui.update(UiMessage::Login(LoginMsg::Continue));
@@ -500,18 +448,14 @@ async fn lifecycle() {
         assert!(st.find_chat("label_inbox").is_none(), "label threads are not chats");
         let network = |id: &str| beeper_core::config::account_network(&st.chat(id).account_id).bridge_id;
         assert_eq!(
-            ["!wa:beeper.local", "!dc:beeper.local", "!sl:beeper.local", "!mx:beeper.local", "!zz:beeper.local"]
-                .map(network),
+            ["!wa:beeper.local", "!dc:beeper.local", "!sl:beeper.local", "!mx:beeper.local", "!zz:beeper.local"].map(network),
             ["whatsapp", "discord", "slack", "hungryserv", "hungryserv"]
         );
         let dc = st.chat("!dc:beeper.local");
         assert!(dc.is_pinned == Some(true) && dc.is_muted == Some(true) && dc.participants.items.len() == 2);
         assert_eq!(st.pin_rank.get("!dc:beeper.local"), Some(&0));
         assert_eq!(st.chat("!sl:beeper.local").is_hidden_from_inbox, Some(true));
-        assert_eq!(
-            st.chat("!mx:beeper.local").preview.as_ref().and_then(|p| p.text.as_deref()),
-            Some("loved \"from matrix\"")
-        );
+        assert_eq!(st.chat("!mx:beeper.local").preview.as_ref().and_then(|p| p.text.as_deref()), Some("loved \"from matrix\""));
         let msg = |id: &str| st.message(id);
         assert_eq!(msg("$m3").sender_name.as_deref(), Some("Bo"));
         assert_eq!(msg("$m3").attachments[0].file_name.as_deref(), Some("Voice message"));
@@ -528,10 +472,7 @@ async fn lifecycle() {
         assert_eq!(msg("$x1").text.as_deref(), Some("from matrix"));
         assert_eq!(msg("$x1").reactions[0].reaction_key, "❤️");
         assert!(st.loaded("$x2").is_none(), "reaction events are not messages");
-        assert_eq!(
-            (msg("$x3").thread_root.as_deref(), msg("$x3").fallback, msg("$x3").broadcast),
-            (Some("$x1"), true, false)
-        );
+        assert_eq!((msg("$x3").thread_root.as_deref(), msg("$x3").fallback, msg("$x3").broadcast), (Some("$x1"), true, false));
         let mx = st.chat("!mx:beeper.local");
         assert_eq!(
             (mx.thread_reads["$x1"].as_str(), mx.follows.unfollowed.as_slice()),
@@ -614,9 +555,7 @@ async fn lifecycle() {
     let info = client.info().await;
     let (_, raw) = client.send("GET", "/v1/info", &[], None).await;
     let raw = String::from_utf8(raw).unwrap();
-    assert!(
-        raw.starts_with(r#"{"app":{"name":"Beeper","version":"#) && raw.contains(r#""server":{"status":"running","#)
-    );
+    assert!(raw.starts_with(r#"{"app":{"name":"Beeper","version":"#) && raw.contains(r#""server":{"status":"running","#));
     #[cfg(target_arch = "x86_64")]
     assert_eq!(info.platform.arch, "x64", "Node's process.arch");
     assert_eq!(info.app.bundle_id, APP_BUNDLE_ID);
@@ -642,20 +581,14 @@ async fn lifecycle() {
     pager.send_message("!tg_rust:beeper.com", Some("not subscribed"), None, None).await;
     pager.send_message("!wa_eric:beeper.com", Some("subscribed"), None, None).await;
     let event = ws.recv().await.unwrap();
-    assert_eq!(
-        (&event["type"], &event["chatID"], &event["seq"]),
-        (&json!("message.upserted"), &json!("!wa_eric:beeper.com"), &json!(1))
-    );
+    assert_eq!((&event["type"], &event["chatID"], &event["seq"]), (&json!("message.upserted"), &json!("!wa_eric:beeper.com"), &json!(1)));
     assert_eq!(event["entries"][0]["text"], "subscribed");
     let anon = BeeperClient::new(format!("http://{}", pager.host_port), "");
     let (status, page) = anon.send("GET", "/focus/local_wa_eric?draft=Hi%20there", &[], None).await;
     assert!(status == StatusCode::OK && String::from_utf8(page).unwrap().contains("You can close this window"));
     let eric_draft = pages.read().chats.iter().find(|c| c.id == "!wa_eric:beeper.com").unwrap().draft.clone();
     assert_eq!(eric_draft.unwrap().text.as_deref(), Some("Hi there"));
-    assert_eq!(
-        anon.send("GET", "/focus/local_wa_eric", &[("origin", "https://x.example")], None).await.0,
-        StatusCode(403)
-    );
+    assert_eq!(anon.send("GET", "/focus/local_wa_eric", &[("origin", "https://x.example")], None).await.0, StatusCode(403));
     assert_eq!(anon.send("GET", "/focus?draft=x", &[], None).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(anon.send("GET", "/focus/nope", &[], None).await.0, StatusCode::NOT_FOUND);
     // Desktop's `/deeplink{/*path}` opens `beeper://<path>` in the app, and wants a path.
@@ -677,17 +610,11 @@ async fn lifecycle() {
     assert_eq!((status, &removed["reactionKey"]), (StatusCode::OK, &json!("👍")));
     let (_, bridges) = pager.request("GET", "/v1/bridges", None).await;
     let whatsapp = bridges["items"].as_array().unwrap().iter().find(|b| b["id"] == "whatsapp").unwrap();
-    assert_eq!(
-        (&whatsapp["status"], &whatsapp["accounts"][0]["accountID"]),
-        (&json!("connected"), &json!("acc_whatsapp"))
-    );
+    assert_eq!((&whatsapp["status"], &whatsapp["accounts"][0]["accountID"]), (&json!("connected"), &json!("acc_whatsapp")));
     let (_, logins) = pager.request("GET", "/v1/bridges/whatsapp/logins", None).await;
     assert_eq!(logins["items"][0]["accountIDs"], json!(["acc_whatsapp"]));
     let (_, login) = pager.request("GET", "/v1/bridges/whatsapp/logins/login_whatsapp_01", None).await;
-    assert_eq!(
-        (&login["status"], &login["removeScopes"]),
-        (&json!("connected"), &json!(["current-device", "all-devices"]))
-    );
+    assert_eq!((&login["status"], &login["removeScopes"]), (&json!("connected"), &json!(["current-device", "all-devices"])));
     // A demo account has no Beeper Cloud bridges to log in to.
     let (status, flows) = pager.request("GET", "/v1/bridges/whatsapp/login-flows", None).await;
     assert_eq!((status, &flows["code"]), (StatusCode::CONFLICT, &json!("needs_login")));
@@ -718,18 +645,14 @@ async fn lifecycle() {
     assert!(listed.windows(2).all(|w| w[0].0.as_str() >= w[1].0.as_str()), "newest activity first: {listed:?}");
     let (_, first) = pager.request("GET", "/v1/chats", None).await;
     let eric = &first["items"].as_array().unwrap().iter().find(|c| c["id"] == "!wa_eric:beeper.com").unwrap();
-    assert_eq!(
-        (&eric["network"], &eric["isMuted"], &eric["snooze"]),
-        (&json!("WhatsApp"), &json!(false), &Value::Null)
-    );
+    assert_eq!((&eric["network"], &eric["isMuted"], &eric["snooze"]), (&json!("WhatsApp"), &json!(false), &Value::Null));
     assert!(eric["preview"].is_object() && eric.get("inboxGroup").is_none() && eric.get("labelIDs").is_none());
     let (_, one) = pager.request("GET", "/v1/chats/local_wa_eric?maxParticipantCount=1", None).await;
     assert_eq!((&one["participants"]["hasMore"], &one["participants"]["total"]), (&json!(true), &json!(2)));
     assert!(one.get("preview").is_none() && one["labels"][0]["name"].is_string(), "{one}");
     assert_eq!((first["items"].as_array().unwrap().len(), &first["hasMore"]), (all.len().min(25), &json!(false)));
     let (_, two) = pager.request("GET", "/v1/chats?accountIDs=acc_whatsapp&accountIDs=acc_telegram", None).await;
-    let wanted =
-        pages.read().chats.iter().filter(|c| ["acc_whatsapp", "acc_telegram"].contains(&&*c.account_id)).count();
+    let wanted = pages.read().chats.iter().filter(|c| ["acc_whatsapp", "acc_telegram"].contains(&&*c.account_id)).count();
     assert!(wanted > 0 && two["items"].as_array().unwrap().len() == wanted);
     for bad in ["limit=0", "limit=201", "limit=abc", "direction=up"] {
         assert_eq!(pager.request("GET", &format!("/v1/chats?{bad}"), None).await.0, StatusCode::BAD_REQUEST, "{bad}");
@@ -741,55 +664,42 @@ async fn lifecycle() {
         pager.send_message(weekly, Some(&format!("Page message {n}")), None, None).await;
     }
     let url = |q: &str| format!("/v1/chats/{weekly}/messages?{q}");
-    let keys = |p: &Value| -> Vec<String> {
-        p["items"].as_array().unwrap().iter().map(|m| m["sortKey"].as_str().unwrap().to_string()).collect()
-    };
+    let keys =
+        |p: &Value| -> Vec<String> { p["items"].as_array().unwrap().iter().map(|m| m["sortKey"].as_str().unwrap().to_string()).collect() };
     let (_, newest) = pager.request("GET", &url(""), None).await;
     let newest_keys = keys(&newest);
     assert_eq!((newest_keys.len(), &newest["hasMore"]), (20, &json!(true)));
     assert!(newest_keys.is_sorted_by(|a, b| a > b), "newest first");
     assert_eq!(newest["items"][0]["text"], "Page message 21");
     assert_eq!(newest["oldestCursor"].as_str(), newest_keys.last().map(String::as_str));
-    let (_, older) =
-        pager.request("GET", &url(&format!("cursor={}", newest["oldestCursor"].as_str().unwrap())), None).await;
+    let (_, older) = pager.request("GET", &url(&format!("cursor={}", newest["oldestCursor"].as_str().unwrap())), None).await;
     assert_eq!((keys(&older).len(), &older["hasMore"]), (3, &json!(false)));
     let (_, newer) = pager.request("GET", &url(&format!("cursor={}&direction=after", newest_keys[2])), None).await;
     assert_eq!(keys(&newer), newest_keys[..2]);
     let (_, hits) = pager.request("GET", "/v1/messages/search?query=page&limit=5", None).await;
     assert_eq!((keys(&hits), &hits["hasMore"]), (newest_keys[..5].to_vec(), &json!(true)));
     assert_eq!(hits["chats"][weekly]["id"], weekly, "the chats of the messages");
-    let next =
-        query_string("/v1/messages/search", &[("query", "page"), ("cursor", hits["oldestCursor"].as_str().unwrap())]);
+    let next = query_string("/v1/messages/search", &[("query", "page"), ("cursor", hits["oldestCursor"].as_str().unwrap())]);
     let rest = keys(&pager.request("GET", &next, None).await.1);
     assert_eq!((rest.len(), &rest[..15]), (17, &newest_keys[5..]), "the other 17 page messages");
     let (_, local) = pager.request("GET", "/v1/messages/search?chatIDs=local_x1&limit=20", None).await;
     assert_eq!(keys(&local), newest_keys, "a local chat ID and no query");
     let media = "/v1/messages/search?mediaTypes=image&mediaTypes=file";
-    let kinds: Vec<Value> = pager.request("GET", media, None).await.1["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|m| m["attachments"].clone())
-        .collect();
+    let kinds: Vec<Value> =
+        pager.request("GET", media, None).await.1["items"].as_array().unwrap().iter().map(|m| m["attachments"].clone()).collect();
     let wanted = |a: &Value| a.as_array().unwrap().iter().any(|a| a["type"] == "img" || a["type"] == "unknown");
     assert!(kinds.len() == 8 && kinds.iter().all(wanted), "{kinds:?}");
     let (_, muted) = pager.request("GET", "/v1/messages/search?accountIDs=acc_imessage&includeMuted=false", None).await;
     assert!(muted["items"].as_array().unwrap().iter().all(|m| m["chatID"] != "!im_sarah:beeper.com"));
     let (_, late) = pager.request("GET", "/v1/messages/search?dateAfter=2100-01-01T00:00:00%2B02:00", None).await;
     assert_eq!(late["items"], json!([]));
-    for bad in [
-        "limit=21",
-        "mediaTypes=audio",
-        "chatType=dm",
-        "dateAfter=2026-02-01T00:00:00Z&dateBefore=2026-01-01T00:00:00Z",
-    ] {
+    for bad in ["limit=21", "mediaTypes=audio", "chatType=dm", "dateAfter=2026-02-01T00:00:00Z&dateBefore=2026-01-01T00:00:00Z"] {
         let status = pager.request("GET", &format!("/v1/messages/search?{bad}"), None).await.0;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
     }
     assert_eq!(pager.request("GET", "/v1/messages/search?chatIDs=nope", None).await.0, StatusCode::NOT_FOUND);
-    let titles = |p: &Value| -> Vec<String> {
-        p["items"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap().to_string()).collect()
-    };
+    let titles =
+        |p: &Value| -> Vec<String> { p["items"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap().to_string()).collect() };
     let (_, by_title) = pager.request("GET", "/v1/chats/search?query=eric", None).await;
     assert_eq!(titles(&by_title), ["Eric Migicovsky"], "the default scope matches titles");
     let (_, by_people) = pager.request("GET", "/v1/chats/search?query=migicovsky&scope=participants", None).await;
@@ -797,23 +707,15 @@ async fn lifecycle() {
     let (_, rust) = pager.request("GET", "/v1/chats/search?query=rust&accountIDs=acc_signal", None).await;
     assert_eq!(rust["items"], json!([]));
     let eric = "/v1/chats/!wa_eric:beeper.com";
-    let patch =
-        json!({ "title": "Eric M", "description": null, "isPinned": false, "isMuted": true, "isArchived": true });
+    let patch = json!({ "title": "Eric M", "description": null, "isPinned": false, "isMuted": true, "isArchived": true });
     let (status, patched) = pager.request("PATCH", eric, Some(patch)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!((&patched["title"], &patched["description"]), (&json!("Eric M"), &Value::Null));
-    assert_eq!(
-        (&patched["isPinned"], &patched["isMuted"], &patched["isArchived"]),
-        (&json!(false), &json!(true), &json!(true))
-    );
-    assert_eq!(
-        pager.request("PATCH", eric, Some(json!({ "isMuted": "yes", "title": "x" }))).await.0,
-        StatusCode::BAD_REQUEST
-    );
+    assert_eq!((&patched["isPinned"], &patched["isMuted"], &patched["isArchived"]), (&json!(false), &json!(true), &json!(true)));
+    assert_eq!(pager.request("PATCH", eric, Some(json!({ "isMuted": "yes", "title": "x" }))).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(pager.request("GET", eric, None).await.1["title"], "Eric M", "a bad field changes nothing");
     let upload = pager.upload_asset_base64("a.png", "image/png", b"png").await;
-    let draft =
-        json!({ "draft": { "text": "with file", "attachments": { upload["uploadID"].as_str().unwrap(): {} } } });
+    let draft = json!({ "draft": { "text": "with file", "attachments": { upload["uploadID"].as_str().unwrap(): {} } } });
     let (_, drafted) = pager.request("PATCH", eric, Some(draft)).await;
     assert_eq!(drafted["draft"]["attachments"][upload["uploadID"].as_str().unwrap()]["fileName"], "a.png");
     let (status, read) = pager.request("POST", &format!("{eric}/read"), None).await;
@@ -829,15 +731,13 @@ async fn lifecycle() {
     assert_eq!(status, StatusCode::OK, "{sent}");
 
     let rpc = |id: u32, method: &str, params: Value| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-    let hello =
-        json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "e2e", "version": "1" } });
+    let hello = json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "e2e", "version": "1" } });
     let (status, init) = client.mcp(rpc(1, "initialize", hello)).await;
     assert_eq!((status, &init["result"]["serverInfo"]["name"]), (StatusCode::OK, &json!("beeper_desktop_api_api")));
     let (status, _) = client.mcp(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).await;
     assert_eq!(status, StatusCode(202), "notifications get no reply");
     let (_, list) = client.mcp(rpc(2, "tools/list", json!({}))).await;
-    let names: Vec<&str> =
-        list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert_eq!(names.len(), 12);
     assert!(names.contains(&"send_message") && names.contains(&"search_chats"));
     let (_, only) = client.mcp_at("/v0/mcp?tool=search_chats&tool=get_chat", rpc(2, "tools/list", json!({}))).await;
@@ -871,8 +771,7 @@ async fn lifecycle() {
     });
     let base = format!("http://127.0.0.1:{port}");
     let mut oauth = BeeperClient::new(&base, "");
-    let oauth_token =
-        oauth.oauth_pkce_login("Beeper Raycast E2E", "super_secret_pkce_verifier_2026_beeper_rs").await.unwrap();
+    let oauth_token = oauth.oauth_pkce_login("Beeper Raycast E2E", "super_secret_pkce_verifier_2026_beeper_rs").await.unwrap();
     approve.await.unwrap();
     assert!(oauth_token.starts_with("bdapi_") && store.read().connect.tokens.len() == 1);
     assert!(!store.write().connect.tokens_json().contains(&oauth_token), "only the hash is stored");
@@ -887,8 +786,7 @@ async fn lifecycle() {
     let (status, refused) = anon.mcp(rpc(9, "tools/list", json!({}))).await;
     assert_eq!((status, &refused["id"], &refused["error"]["code"]), (StatusCode(401), &json!(9), &json!(-32000)));
     let reader = BeeperClient::new(&base, store.write().connect.create(vec!["read".into()], 0, None));
-    let (status, refused) =
-        reader.request("POST", &format!("/v1/chats/{chat_id}/messages"), Some(json!({ "text": "x" }))).await;
+    let (status, refused) = reader.request("POST", &format!("/v1/chats/{chat_id}/messages"), Some(json!({ "text": "x" }))).await;
     assert_eq!(
         (status, refused["message"].as_str()),
         (StatusCode(403), Some("Insufficient permissions. Required scopes: write, missing: write"))
@@ -907,15 +805,8 @@ async fn lifecycle() {
         (&seen["active"], &seen["scope"], &seen["client"]["name"]),
         (&json!(true), &json!("read write"), &json!("Beeper Raycast E2E"))
     );
-    assert_eq!(
-        anon.request("POST", "/oauth/revoke", Some(json!({ "token": oauth_token }))).await,
-        (StatusCode::OK, json!({}))
-    );
-    assert_eq!(
-        oauth.request("GET", "/v1/accounts", None).await.1["message"],
-        "Invalid token",
-        "a revoked token is refused"
-    );
+    assert_eq!(anon.request("POST", "/oauth/revoke", Some(json!({ "token": oauth_token }))).await, (StatusCode::OK, json!({})));
+    assert_eq!(oauth.request("GET", "/v1/accounts", None).await.1["message"], "Invalid token", "a revoked token is refused");
 
     assert_eq!(client.setup_step("start", json!({})).await.0, StatusCode::CONFLICT, "demo account is signed in");
     let cloud = fake_beeper_cloud().await;
@@ -940,20 +831,13 @@ async fn lifecycle() {
         assert_eq!((bad, err["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("invalid_sign_in_code")));
         let (_, mut done) = c.setup_step("response", json!({ "setupRequestID": id, "response": code })).await;
         if name == "register" {
-            assert_eq!(
-                (done["registrationRequired"].as_bool(), &done["usernameSuggestions"][0]),
-                (Some(true), &json!(user))
-            );
-            let body =
-                json!({ "setupRequestID": id, "leadToken": done["leadToken"], "username": user, "acceptTerms": true });
+            assert_eq!((done["registrationRequired"].as_bool(), &done["usernameSuggestions"][0]), (Some(true), &json!(user)));
+            let body = json!({ "setupRequestID": id, "leadToken": done["leadToken"], "username": user, "acceptTerms": true });
             done = c.setup_step("register", body).await.1;
         }
         assert_eq!(done["matrix"]["userID"], format!("@{user}:beeper.com"));
         assert_eq!(done["matrix"]["accessToken"], format!("syt_{user}"));
-        assert_eq!(
-            (&done["session"]["state"], &done["session"]["matrix"]["userID"]),
-            (&json!("initializing"), &done["matrix"]["userID"])
-        );
+        assert_eq!((&done["session"]["state"], &done["session"]["matrix"]["userID"]), (&json!("initializing"), &done["matrix"]["userID"]));
         assert_eq!(c.setup_step("start", json!({})).await.0, StatusCode::CONFLICT);
         assert_eq!(st.read().me().full_name.as_deref(), Some(format!("{user} Real").as_str()));
         drop((st, c));
@@ -985,8 +869,7 @@ async fn lifecycle() {
     shows(&login, &["Check alex@example.com for your login code", "Open Email"]);
     let _ = login.update(UiMessage::Login(LoginMsg::Code("12 34 56".into())));
     assert_eq!(login.login.code, "123456");
-    let refused =
-        beeper_core::cloud::CloudError { status: 401, message: "Invalid code".into(), errcode: None, body: None };
+    let refused = beeper_core::cloud::CloudError { status: 401, message: "Invalid code".into(), errcode: None, body: None };
     let _ = login.update(UiMessage::Login(LoginMsg::Done(Err(refused))));
     assert_eq!(login.login.error.as_deref(), Some("Invalid code"), "a refused code shows under the heading");
     shows(&login, &["Invalid code"]);
@@ -1038,10 +921,7 @@ async fn lifecycle() {
     }
     let _ = login.update(UiMessage::Login(LoginMsg::E2ee(Ok(none))));
     assert_eq!(login_store.read().accounts.len(), 4);
-    assert!(
-        login.login_window.is_none() && login.main_window.is_some(),
-        "connected chat accounts skip Connect Chat Accounts"
-    );
+    assert!(login.login_window.is_none() && login.main_window.is_some(), "connected chat accounts skip Connect Chat Accounts");
     assert_eq!(login.pane.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
     assert!(simulator(login.view_main()).find("Note").is_ok());
     let _ = login.update(UiMessage::Settings(beeper_ui::settings::Msg::ShareAnalytics));
@@ -1092,11 +972,7 @@ async fn lifecycle() {
     assert_eq!(client.focus(None, None, None).await, StatusCode::OK);
     assert_eq!(focus_rx.recv().await.unwrap(), None);
     assert_eq!(client.focus(Some("!missing:beeper.com"), None, None).await, StatusCode::NOT_FOUND);
-    assert_eq!(
-        client.focus(None, Some("msg_missing"), None).await,
-        StatusCode::OK,
-        "a message without a chat only focuses"
-    );
+    assert_eq!(client.focus(None, Some("msg_missing"), None).await, StatusCode::OK, "a message without a chat only focuses");
     assert_eq!(focus_rx.recv().await.unwrap(), None);
     assert_eq!(client.focus(None, None, Some("No chat")).await, StatusCode(500));
 
@@ -1122,8 +998,7 @@ async fn lifecycle() {
     assert_eq!((&ws_ev["seq"], ws_ev["ids"].as_array().unwrap().len()), (&json!(1), 1), "{ws_ev}");
     assert!(ws_ev["ts"].is_string() && ws_ev["chatID"].is_string() && ws_ev.get("message").is_none());
 
-    let edit_resp =
-        client.edit_message("!im_sarah:beeper.com", &sent_msg_id, "Routed message via merged chat (edited v2)").await;
+    let edit_resp = client.edit_message("!im_sarah:beeper.com", &sent_msg_id, "Routed message via merged chat (edited v2)").await;
     assert_eq!(edit_resp["success"], true);
 
     let sarah_msgs = client.list_messages(&merged_chat_id).await;
@@ -1150,19 +1025,15 @@ async fn lifecycle() {
 
     let media_res = client.search_messages("", Some("any")).await;
     assert!(!media_res.items.is_empty() && media_res.items.iter().all(|m| m["attachments"].is_array()));
-    let voice =
-        media_res.items.iter().flat_map(|m| m["attachments"].as_array().unwrap()).find(|a| a["isVoiceNote"] == true);
+    let voice = media_res.items.iter().flat_map(|m| m["attachments"].as_array().unwrap()).find(|a| a["isVoiceNote"] == true);
     let voice = voice.unwrap();
     assert_eq!(voice["transcription"]["engine"], "openai-whisper", "Desktop's `Transcription`: {voice}");
     assert!(voice["transcription"]["transcription"].is_string() && voice["transcription"]["language"] == "en");
 
     let unified = client.unified_search("rust").await;
-    assert!(
-        !unified["results"]["chats"].as_array().unwrap().is_empty() && unified["results"]["in_groups"] == json!([])
-    );
+    assert!(!unified["results"]["chats"].as_array().unwrap().is_empty() && unified["results"]["in_groups"] == json!([]));
     let people = client.unified_search("migicovsky").await;
-    let mut titles: Vec<&str> =
-        people["results"]["in_groups"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap()).collect();
+    let mut titles: Vec<&str> = people["results"]["in_groups"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap()).collect();
     titles.sort();
     assert_eq!(titles, ["#desktop-release", "Unified Eric + Sarah"], "chats match by participant, members as merged");
 
@@ -1198,17 +1069,13 @@ async fn lifecycle() {
         ]
     );
     assert_eq!(BeeperSettings::default().theme, ThemeChoice::System);
-    assert_eq!(
-        ThemeChoice::ALL.map(|t| (t.is_dark(false), t.is_dark(true))),
-        [(false, false), (true, true), (false, true)]
-    );
+    assert_eq!(ThemeChoice::ALL.map(|t| (t.is_dark(false), t.is_dark(true))), [(false, false), (true, true), (false, true)]);
 
     {
         let st = store.read();
         for (c, list) in st.chats.iter().map(|c| (&c.id, st.timeline_indices(&c.id))).filter(|(_, l)| !l.is_empty()) {
             let ids: Vec<&str> = list.iter().map(|&i| st.messages[i].id.as_str()).collect();
-            let stored: Vec<String> =
-                st.stored("chat_id = ?1 ORDER BY sort_key", [c]).into_iter().map(|m| m.id).collect();
+            let stored: Vec<String> = st.stored("chat_id = ?1 ORDER BY sort_key", [c]).into_iter().map(|m| m.id).collect();
             assert_eq!(ids, stored, "a loaded chat has the stored messages of the chat");
         }
     }
@@ -1230,9 +1097,7 @@ async fn lifecycle() {
             iced::Event::Keyboard(KeyPressed {
                 key: Key::Named(Named::Enter),
                 modified_key: Key::Named(Named::Enter),
-                physical_key: iced::keyboard::key::Physical::Unidentified(
-                    iced::keyboard::key::NativeCode::Unidentified,
-                ),
+                physical_key: iced::keyboard::key::Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
                 location: Location::Standard,
                 modifiers,
                 repeat: false,
@@ -1262,8 +1127,7 @@ async fn lifecycle() {
         );
     }
     let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed("make it bold".into())));
-    let _ =
-        gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Edit(iced::widget::text_editor::Action::SelectAll)));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Edit(iced::widget::text_editor::Action::SelectAll)));
     let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Format(0)));
     assert_eq!(gui.pane.composer.text(), "**make it bold**", "the formatting menu wraps the selection");
     let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Format(0)));
@@ -1310,17 +1174,13 @@ async fn lifecycle() {
     let _ = gui.update(UiMessage::NewChat(beeper_ui::new_chat::Msg::Delete(1)));
     assert!(gui.new_chats.is_empty() && gui.creating_chat.is_none() && gui.pane.selected_chat_id.is_some());
     let _ = gui.update(UiMessage::SelectChat(prev));
-    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed(
-        "Hello from **Iced** Simulator E2E!".to_string(),
-    )));
+    let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed("Hello from **Iced** Simulator E2E!".to_string())));
     let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Submit));
     let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::Open(SettingsTab::Appearance)));
     assert!(gui.settings_window.is_some());
     {
         let mut sim = simulator(gui.view_settings());
-        for label in
-            ["Settings", "Search Settings", "Accounts", "Beeper Plus", "Chat List", "Show message previews", "Theme"]
-        {
+        for label in ["Settings", "Search Settings", "Accounts", "Beeper Plus", "Chat List", "Show message previews", "Theme"] {
             assert!(sim.find(label).is_ok(), "settings window shows {label}");
         }
         assert!(["Light", "Dark", "System"].iter().all(|t| sim.find(*t).is_ok()), "the theme cards are shown");
@@ -1360,14 +1220,9 @@ async fn lifecycle() {
     for page in [SettingsTab::General, SettingsTab::Notifications] {
         let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTab(page)));
         let mut sim = simulator(gui.view_settings());
-        for label in
-            ["App language", "Time Format", "Share Analytics", "Delay notifications for", "Sound effect volume"]
-        {
-            let tab = if label.starts_with("Delay") || label.starts_with("Sound") {
-                SettingsTab::Notifications
-            } else {
-                SettingsTab::General
-            };
+        for label in ["App language", "Time Format", "Share Analytics", "Delay notifications for", "Sound effect volume"] {
+            let tab =
+                if label.starts_with("Delay") || label.starts_with("Sound") { SettingsTab::Notifications } else { SettingsTab::General };
             assert_eq!(sim.find(label).is_ok(), tab == page, "{label} is on {tab:?}");
         }
     }
@@ -1375,8 +1230,7 @@ async fn lifecycle() {
     {
         let n = store.read().features.accounts_remaining();
         let mut sim = simulator(gui.view_settings());
-        for label in ["Beeper", "+1 415-555-0142", "Beeper · alex@beeper.com", &format!("{n} Free Accounts Remaining")]
-        {
+        for label in ["Beeper", "+1 415-555-0142", "Beeper · alex@beeper.com", &format!("{n} Free Accounts Remaining")] {
             assert!(sim.find(label).is_ok(), "the accounts page shows {label}");
         }
         assert!(sim.find("Facebook").is_err(), "the networks are in their own window");
@@ -1497,10 +1351,7 @@ async fn lifecycle() {
     let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::Select(Some("c1".into()))));
     assert!(simulator(gui.view_main()).find("Community").is_err(), "WhatsApp Communities are not spaces by default");
     let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("whatsappCommunities", 1)));
-    assert!(
-        simulator(gui.view_main()).find("Community (WhatsApp)").is_ok(),
-        "the setting shows WhatsApp Communities as spaces"
-    );
+    assert!(simulator(gui.view_main()).find("Community (WhatsApp)").is_ok(), "the setting shows WhatsApp Communities as spaces");
     let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("whatsappCommunities", 0)));
     let _ = gui.update(UiMessage::Rail(beeper_ui::rail::Msg::Select(Some("g1".into()))));
     {
@@ -1636,10 +1487,7 @@ async fn lifecycle() {
         let _ = gui.update(UiMessage::StoreChanged);
         let st = store.read();
         assert!(st.resolve_chat_idx(&left).is_none() && st.timeline_indices(&left).is_empty());
-        assert!(
-            st.messages.iter().filter(|m| st.loaded(&m.id).is_some()).all(|m| m.chat_id != left),
-            "a left chat loses its messages"
-        );
+        assert!(st.messages.iter().filter(|m| st.loaded(&m.id).is_some()).all(|m| m.chat_id != left), "a left chat loses its messages");
         assert_eq!(gui.pane.selected_chat_id.as_deref(), Some(note), "leaving the open chat opens Note to self");
         drop(st);
         let doomed = {
@@ -1657,8 +1505,7 @@ async fn lifecycle() {
         let mut st = store.write();
         let sent = matches!(take_outbox(&mut st).as_slice(), [(c, Outgoing::DeleteChat { for_everyone: true })] if *c == doomed);
         assert!(sent && st.resolve_chat_idx(&doomed).is_none(), "Delete Chat asks the bridge and drops the chat");
-        let picks: Vec<String> =
-            st.chats.iter().filter(|c| c.is_muted != Some(true)).take(2).map(|c| c.id.clone()).collect();
+        let picks: Vec<String> = st.chats.iter().filter(|c| c.is_muted != Some(true)).take(2).map(|c| c.id.clone()).collect();
         drop(st);
         let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::BeginSelecting(picks[0].clone())));
         let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleSelected(picks[1].clone())));
@@ -1693,10 +1540,7 @@ async fn lifecycle() {
     let _ = gui.update(UiMessage::CloseModals);
 
     let final_wa_msgs = client.list_messages("!wa_eric:beeper.com").await;
-    assert!(final_wa_msgs
-        .items
-        .iter()
-        .any(|m| m["text"] == "Hello from **Iced** Simulator E2E!" && m.get("html").is_none()));
+    assert!(final_wa_msgs.items.iter().any(|m| m["text"] == "Hello from **Iced** Simulator E2E!" && m.get("html").is_none()));
     let html = Some("Hello from <strong>Iced</strong> Simulator E2E!");
     assert!(store.read().messages.iter().any(|m| m.html.as_deref() == html));
 
@@ -1756,10 +1600,7 @@ async fn lifecycle() {
         };
         let spawn_quiet = |cmd: &str, args: &[&str], envs: &[(&str, &str)]| {
             let mut c = std::process::Command::new(cmd);
-            c.args(args)
-                .envs(envs.iter().copied())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
+            c.args(args).envs(envs.iter().copied()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
             c.spawn().unwrap_or_else(|e| panic!("spawn {cmd}: {e}"))
         };
         let stop = |mut child: std::process::Child| {
@@ -1773,14 +1614,7 @@ async fn lifecycle() {
             std::fs::set_permissions(&wl_runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let xdg = ("XDG_RUNTIME_DIR", wl_runtime.to_str().unwrap());
-        let weston_args = [
-            "--backend=headless",
-            "--shell=kiosk",
-            "--socket=beeper-wl-e2e",
-            "--width=1440",
-            "--height=900",
-            "--no-config",
-        ];
+        let weston_args = ["--backend=headless", "--shell=kiosk", "--socket=beeper-wl-e2e", "--width=1440", "--height=900", "--no-config"];
         let weston = spawn_quiet("weston", &weston_args, &[xdg]);
         wait_for(&wl_runtime.join("beeper-wl-e2e")).await;
         let wl_status = run_gui(
@@ -1848,27 +1682,9 @@ async fn e2e_api_rejects_bad_input_and_keeps_serving() {
                 "message": "Required"
             }])),
         ),
-        (
-            "DELETE",
-            "/v1/chats/!tg_rust:beeper.com/messages/nope/reactions/x".to_string(),
-            None,
-            404,
-            not_found("Message not found"),
-        ),
-        (
-            "DELETE",
-            "/v1/chats/!tg_pebble:beeper.com/messages/msg_1004".to_string(),
-            None,
-            404,
-            not_found("Message not found"),
-        ),
-        (
-            "GET",
-            "/v1/chats/!tg_pebble:beeper.com/messages/msg_1004".to_string(),
-            None,
-            404,
-            not_found("Message not found"),
-        ),
+        ("DELETE", "/v1/chats/!tg_rust:beeper.com/messages/nope/reactions/x".to_string(), None, 404, not_found("Message not found")),
+        ("DELETE", "/v1/chats/!tg_pebble:beeper.com/messages/msg_1004".to_string(), None, 404, not_found("Message not found")),
+        ("GET", "/v1/chats/!tg_pebble:beeper.com/messages/msg_1004".to_string(), None, 404, not_found("Message not found")),
         (
             "PATCH",
             "/v1/chats/!tg_rust:beeper.com".to_string(),
@@ -1898,11 +1714,7 @@ async fn e2e_api_rejects_bad_input_and_keeps_serving() {
     let merged = client.merge_chats("Merged", vec!["!tg_rust:beeper.com".into()], None).await;
     let path = format!("/v1/chats/{}/messages/msg_1004", merged["chatID"].as_str().unwrap());
     let (status, msg) = client.request("GET", &path, None).await;
-    assert_eq!(
-        (status, &msg["chatID"]),
-        (StatusCode::OK, &json!("!tg_rust:beeper.com")),
-        "a merged chat has the messages of its members"
-    );
+    assert_eq!((status, &msg["chatID"]), (StatusCode::OK, &json!("!tg_rust:beeper.com")), "a merged chat has the messages of its members");
 
     let outside = std::env::temp_dir().join("beeper_bad_input_outside.txt");
     std::fs::write(&outside, b"secret").unwrap();

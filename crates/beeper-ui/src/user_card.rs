@@ -18,9 +18,7 @@ impl BeeperGuiApp {
             Msg::Hover(key) => {
                 let h = &mut self.user_hover;
                 match key {
-                    Some(k) if h.key != k => {
-                        *h = UserHover { key: k, trigger: true, r#gen: h.r#gen, ..UserHover::default() }
-                    }
+                    Some(k) if h.key != k => *h = UserHover { key: k, trigger: true, r#gen: h.r#gen, ..UserHover::default() },
                     Some(_) => h.trigger = true,
                     None => h.trigger = false,
                 }

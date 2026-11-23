@@ -1,7 +1,7 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
-    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, MessageTimer, Reaction, SpaceOrder,
-    ThemeChoice, ThreadFollows, Transcription, UiTheme, User, CHAT_SOUNDS,
+    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, MessageTimer, Reaction, SpaceOrder, ThemeChoice,
+    ThreadFollows, Transcription, UiTheme, User, CHAT_SOUNDS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -59,12 +59,8 @@ pub fn read_beeper_data(dir: &Path) -> Result<BeeperData, String> {
         .iter()
         .map(|f| (dir.join(f), tmp.join(f)))
         .filter(|(src, _)| src.is_file())
-        .try_for_each(|(src, dst)| {
-            std::fs::copy(&src, dst).map(drop).map_err(|e| format!("copy {}: {e}", src.display()))
-        })
-        .and_then(|()| {
-            read_snapshot(&tmp, dir).map_err(|e| format!("read Beeper Desktop data in {}: {e}", dir.display()))
-        });
+        .try_for_each(|(src, dst)| std::fs::copy(&src, dst).map(drop).map_err(|e| format!("copy {}: {e}", src.display())))
+        .and_then(|()| read_snapshot(&tmp, dir).map_err(|e| format!("read Beeper Desktop data in {}: {e}", dir.display())));
     std::fs::remove_dir_all(&tmp).unwrap_or_else(|e| panic!("remove import snapshot {}: {e}", tmp.display()));
     out
 }
@@ -113,11 +109,7 @@ fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
     let state = read_kv_json(&db, "beeperState")?;
     let user_id = crypto.as_ref().map(|c| c.user_id.clone()).or_else(|| str_field(&state, "user_id"));
     let note_id: Option<String> = db
-        .query_row(
-            "SELECT threadID FROM threads WHERE json_extract(CAST(thread AS TEXT), '$.extra.isNoteToSelf') = 1",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT threadID FROM threads WHERE json_extract(CAST(thread AS TEXT), '$.extra.isNoteToSelf') = 1", [], |r| r.get(0))
         .optional()
         .map_err(e)?;
     let remap = |s: &str| match note_id.as_deref() == Some(s) {
@@ -126,13 +118,7 @@ fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
     };
     let rules = read_kv_json(&db, "ad:com.beeper.chat_list_rules")?;
     let pins = read_kv_json(&db, "ad:com.beeper.favourites_order")?;
-    let pin_rank = pins["Inbox"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .filter_map(|(i, v)| Some((remap(v.as_str()?), i)))
-        .collect();
+    let pin_rank = pins["Inbox"].as_array().into_iter().flatten().enumerate().filter_map(|(i, v)| Some((remap(v.as_str()?), i))).collect();
     let recent_chat_ids = read_recent_chats(src_dir, &remap);
     let mut people = read_participants(&db).map_err(e)?;
     let mut chats = read_chats(&db, &mut people, &rules)?;
@@ -143,25 +129,12 @@ fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
     let theme = prefs.as_ref().map(read_theme).transpose()?;
     let ever_labeled = prefs.as_ref().is_some_and(|p| p["has_ever_created_label"] == true);
     let ui_theme = prefs.as_ref().and_then(read_ui_theme);
-    Ok(BeeperData {
-        user_id,
-        crypto,
-        chats,
-        messages,
-        pin_rank,
-        recent_chat_ids,
-        theme,
-        ui_theme,
-        spaces_order,
-        ever_labeled,
-    })
+    Ok(BeeperData { user_id, crypto, chats, messages, pin_rank, recent_chat_ids, theme, ui_theme, spaces_order, ever_labeled })
 }
 
 fn read_local_prefs(db: &Connection) -> Result<Option<Value>, String> {
-    let prefs: Option<String> = db
-        .query_row("SELECT value FROM key_values WHERE key = 'localPrefs'", [], |r| r.get(0))
-        .optional()
-        .map_err(|e| e.to_string())?;
+    let prefs: Option<String> =
+        db.query_row("SELECT value FROM key_values WHERE key = 'localPrefs'", [], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
     prefs.map(|p| serde_json::from_str(&p).map_err(|e| format!("localPrefs JSON: {e}"))).transpose()
 }
 
@@ -193,11 +166,8 @@ fn read_crypto(db: &Connection) -> rusqlite::Result<Option<DesktopCrypto>> {
     };
     let account = format!("{user_id}/{device_id}");
     let text = |b: Vec<u8>| String::from_utf8(b).expect("libolm pickles are base64 text");
-    let backup_version = db.query_row(
-        "SELECT NULLIF(key_backup_version, '') FROM crypto_account WHERE account_id = ?1",
-        [&account],
-        |r| r.get(0),
-    )?;
+    let backup_version =
+        db.query_row("SELECT NULLIF(key_backup_version, '') FROM crypto_account WHERE account_id = ?1", [&account], |r| r.get(0))?;
     let group_sessions = db
         .prepare(
             "SELECT room_id, sender_key, signing_key, session, shared_history IS 1
@@ -290,10 +260,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         false => group.then(|| sender_name.as_deref().unwrap_or(sender_id.as_str())),
     };
     let target = plm.get("linkedMessage").map(|l| Message {
-        attachments: l
-            .get("attachments")
-            .and_then(Value::as_array)
-            .map_or_else(Vec::new, |a| a.iter().map(read_attachment).collect()),
+        attachments: l.get("attachments").and_then(Value::as_array).map_or_else(Vec::new, |a| a.iter().map(read_attachment).collect()),
         is_sender: Some(flag(l, "isSender")),
         text: str_field(l, "text"),
         ..Default::default()
@@ -325,9 +292,8 @@ fn read_threads(db: &Connection, chats: &mut [Chat]) -> Result<(), String> {
         return Ok(());
     }
     let idx: HashMap<String, usize> = chats.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
-    let mut q = db
-        .prepare("SELECT roomID, rootEventID, following, lastReadHsOrder FROM mx_threads ORDER BY rowid")
-        .map_err(|e| e.to_string())?;
+    let mut q =
+        db.prepare("SELECT roomID, rootEventID, following, lastReadHsOrder FROM mx_threads ORDER BY rowid").map_err(|e| e.to_string())?;
     let rows = q.query_map([], |r| <(String, String, Option<bool>, i64)>::try_from(r));
     for row in rows.map_err(|e| e.to_string())? {
         let (room, root, following, read) = row.map_err(|e| e.to_string())?;
@@ -428,16 +394,12 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 is_pinned: Some(flag(&t, "isPinned")),
                 is_low_priority: Some(flag(&t, "isLowPriority")),
                 last_activity,
-                last_read_message_sort_key: t
-                    .get("lastReadMessageSortKey")
-                    .and_then(Value::as_i64)
-                    .map(crate::store::sort_key),
+                last_read_message_sort_key: t.get("lastReadMessageSortKey").and_then(Value::as_i64).map(crate::store::sort_key),
                 preview,
                 note: note.filter(|n| !n.is_empty()),
                 is_request: Some(flag(&t, "isMessageRequest")),
                 created_at: t.get("createdAt").and_then(Value::as_str).and_then(crate::config::millis_from_rfc3339),
-                network_name: str_field(&t, "networkName")
-                    .or_else(|| bridge.get("network").and_then(|n| str_field(n, "displayname"))),
+                network_name: str_field(&t, "networkName").or_else(|| bridge.get("network").and_then(|n| str_field(n, "displayname"))),
                 network_id: bridge.get("network").and_then(|n| str_field(n, "id")),
                 img_url: str_field(&t, "imgURL"),
                 edits: 0,
@@ -449,8 +411,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 disappearing: t.pointer("/disappearingTimer/timer").and_then(Value::as_u64).filter(|&t| t > 0),
                 threads: t.pointer("/features/thread").and_then(Value::as_i64) > Some(0),
                 follows: ThreadFollows { follow_all, ..Default::default() },
-                notification_sound: str_field(&t, "chatNotificationSound")
-                    .filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
+                notification_sound: str_field(&t, "chatNotificationSound").filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
                 id,
                 ..Default::default()
             })
@@ -505,30 +466,23 @@ fn read_attachment(a: &Value) -> Attachment {
 }
 
 fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String> {
-    let names: HashMap<(&str, &str), &str> = chats
-        .iter()
-        .flat_map(|c| c.participants.items.iter().map(move |u| ((c.id.as_str(), u.id.as_str()), display_name(u))))
-        .collect();
+    let names: HashMap<(&str, &str), &str> =
+        chats.iter().flat_map(|c| c.participants.items.iter().map(move |u| ((c.id.as_str(), u.id.as_str()), display_name(u)))).collect();
     let accounts: HashMap<&str, &str> = chats.iter().map(|c| (c.id.as_str(), c.account_id.as_str())).collect();
-    let unread_chats: HashMap<&str, Option<&str>> = chats
-        .iter()
-        .filter(|c| c.is_unread())
-        .map(|c| (c.id.as_str(), c.last_read_message_sort_key.as_deref()))
-        .collect();
+    let unread_chats: HashMap<&str, Option<&str>> =
+        chats.iter().filter(|c| c.is_unread()).map(|c| (c.id.as_str(), c.last_read_message_sort_key.as_deref())).collect();
     let mut receipts: HashMap<(String, String), BTreeMap<String, String>> = HashMap::new();
-    db.prepare(
-        "SELECT roomID, COALESCE(NULLIF(lastVisibleEventID, ''), relatesToID), userID, timestamp FROM mx_read_receipts",
-    )
-    .and_then(|mut q| {
-        q.query_map([], |r| <(String, Option<String>, String, Option<i64>)>::try_from(r))?.try_for_each(|x| {
-            let (room, ev, user, ts) = x?;
-            if let Some(ev) = ev.filter(|e| !e.is_empty()) {
-                receipts.entry((room, ev)).or_default().insert(user, rfc3339_from_millis(ts.unwrap_or(0)));
-            }
-            Ok(())
+    db.prepare("SELECT roomID, COALESCE(NULLIF(lastVisibleEventID, ''), relatesToID), userID, timestamp FROM mx_read_receipts")
+        .and_then(|mut q| {
+            q.query_map([], |r| <(String, Option<String>, String, Option<i64>)>::try_from(r))?.try_for_each(|x| {
+                let (room, ev, user, ts) = x?;
+                if let Some(ev) = ev.filter(|e| !e.is_empty()) {
+                    receipts.entry((room, ev)).or_default().insert(user, rfc3339_from_millis(ts.unwrap_or(0)));
+                }
+                Ok(())
+            })
         })
-    })
-    .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
     // A Desktop or Server before `threadRootEventID` keeps the thread root in `replyThreadRootID`.
     let has = |col: &str| {
         let q = "SELECT 1 FROM pragma_table_info('mx_room_messages') WHERE name = ?1";
@@ -553,24 +507,22 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
         .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
         .map_err(|e| e.to_string())?;
     let mut reactions: HashMap<String, Vec<Reaction>> = HashMap::new();
-    db.prepare(
-        "SELECT eventID, reactionID, senderID, description, \"order\" FROM mx_reactions WHERE isDeleted = 0 ORDER BY \"order\"",
-    )
-    .and_then(|mut q| {
-        q.query_map([], |r| {
-            let reaction = Reaction {
-                id: r.get(1)?,
-                participant_id: r.get(2)?,
-                reaction_key: r.get(3)?,
-                animated: None,
-                img_url: None,
-                sort_key: crate::store::sort_key(r.get(4)?),
-            };
-            Ok((r.get::<_, String>(0)?, reaction))
-        })?
-        .try_for_each(|x| x.map(|(target, r)| reactions.entry(target).or_default().push(r)))
-    })
-    .map_err(|e| e.to_string())?;
+    db.prepare("SELECT eventID, reactionID, senderID, description, \"order\" FROM mx_reactions WHERE isDeleted = 0 ORDER BY \"order\"")
+        .and_then(|mut q| {
+            q.query_map([], |r| {
+                let reaction = Reaction {
+                    id: r.get(1)?,
+                    participant_id: r.get(2)?,
+                    reaction_key: r.get(3)?,
+                    animated: None,
+                    img_url: None,
+                    sort_key: crate::store::sort_key(r.get(4)?),
+                };
+                Ok((r.get::<_, String>(0)?, reaction))
+            })?
+            .try_for_each(|x| x.map(|(target, r)| reactions.entry(target).or_default().push(r)))
+        })
+        .map_err(|e| e.to_string())?;
     let mut seen = HashSet::new();
     let mut out = Vec::with_capacity(rows.len());
     for (id, chat_id, ts, json, order, deleted, thread_root) in rows {
@@ -580,8 +532,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             continue;
         }
         let deleted = deleted || flag(&m, "isDeleted");
-        let sender_id =
-            m.get("senderID").map_or_else(String::new, |s| s.as_str().map_or_else(|| s.to_string(), str::to_string));
+        let sender_id = m.get("senderID").map_or_else(String::new, |s| s.as_str().map_or_else(|| s.to_string(), str::to_string));
         let sender_name = m
             .pointer("/extra/impersonator/fullName")
             .and_then(Value::as_str)
@@ -590,10 +541,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             .unwrap_or_else(|| sender_id.clone());
         let attachments: Vec<Attachment> = match deleted {
             true => Vec::new(),
-            false => m
-                .get("attachments")
-                .and_then(Value::as_array)
-                .map_or_else(Vec::new, |a| a.iter().map(read_attachment).collect()),
+            false => m.get("attachments").and_then(Value::as_array).map_or_else(Vec::new, |a| a.iter().map(read_attachment).collect()),
         };
         let mut listed = m.get("reactions").and_then(Value::as_array).map_or_else(Vec::new, |rs| {
             rs.iter()
@@ -625,9 +573,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
         let is_sender = flag(&m, "isSender");
         let is_unread = !is_sender
             && !deleted
-            && unread_chats
-                .get(chat_id.as_str())
-                .is_some_and(|last| last.is_some_and(|k| !sort_key.is_empty() && sort_key.as_str() > k));
+            && unread_chats.get(chat_id.as_str()).is_some_and(|last| last.is_some_and(|k| !sort_key.is_empty() && sort_key.as_str() > k));
         let seen_by = receipts.remove(&(chat_id.clone(), id.clone())).unwrap_or_default();
         let buttons = match crate::models::system_user(&sender_id) {
             true => crate::models::ActionButton::list(&m["actionButtons"]),
@@ -685,9 +631,9 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 .map(|ids| ids.iter().filter_map(|u| u.as_str().map(String::from)).collect()),
             send_status: m.get("sendStatus").cloned().and_then(|v| serde_json::from_value(v).ok()),
             call: m.pointer("/extra/callAction").cloned().and_then(|v| serde_json::from_value(v).ok()),
-            disappearing: m.get("disappearingTimer").and_then(|t| {
-                MessageTimer::of(t, m.pointer("/extra/disappearingTimerOrder").and_then(Value::as_i64).unwrap_or(0))
-            }),
+            disappearing: m
+                .get("disappearingTimer")
+                .and_then(|t| MessageTimer::of(t, m.pointer("/extra/disappearingTimerOrder").and_then(Value::as_i64).unwrap_or(0))),
             // Desktop keeps the limit as its JSON text.
             view_limit: m
                 .pointer("/extra/viewLimitedMedia")
@@ -722,10 +668,7 @@ mod tests {
         let prefs = read_local_prefs(&db).expect("localPrefs").expect("a value");
         assert!(matches!(read_theme(&prefs), Ok(ThemeChoice::Dark)));
         let order = read_spaces_order(&prefs).expect("spaces_order");
-        assert_eq!(
-            order,
-            [SpaceOrder { id: "inbox".into(), visible: true }, SpaceOrder { id: "archive".into(), visible: false }]
-        );
+        assert_eq!(order, [SpaceOrder { id: "inbox".into(), visible: true }, SpaceOrder { id: "archive".into(), visible: false }]);
         assert_eq!(read_spaces_order(&serde_json::json!({})), Ok(Vec::new()));
         let unchanged = serde_json::json!({ "app_locale": "en" });
         assert!(matches!(read_theme(&unchanged), Ok(ThemeChoice::System)), "Desktop's default theme is system");
@@ -742,8 +685,7 @@ mod tests {
             let stored = serde_json::to_value(Some(theme)).expect("the setting");
             assert_eq!(stored, theme.id(), "beeper-rs keeps Desktop's id");
         }
-        let unset =
-            [serde_json::json!({}), serde_json::json!({ "ui_theme": null }), serde_json::json!({ "ui_theme": "x" })];
+        let unset = [serde_json::json!({}), serde_json::json!({ "ui_theme": null }), serde_json::json!({ "ui_theme": "x" })];
         for prefs in unset {
             assert_eq!(read_ui_theme(&prefs), None, "{prefs}");
         }
@@ -776,8 +718,7 @@ mod tests {
     fn transcriptions_import() {
         let t = |v| read_attachment(&serde_json::json!({ "type": "audio", "transcription": v })).transcription;
         let full = t(serde_json::json!({ "transcription": "Hi", "engine": "openai-whisper", "language": "de" }));
-        let want =
-            Transcription { transcription: "Hi".into(), engine: "openai-whisper".into(), language: Some("de".into()) };
+        let want = Transcription { transcription: "Hi".into(), engine: "openai-whisper".into(), language: Some("de".into()) };
         assert_eq!(full, Some(want));
         assert_eq!(t(serde_json::json!({ "transcription": null, "engine": "openai-whisper" })), None);
         assert_eq!(t(serde_json::Value::Null), None);

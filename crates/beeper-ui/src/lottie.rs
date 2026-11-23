@@ -93,9 +93,7 @@ impl Animation {
     pub fn parse(json: &[u8]) -> Result<Self, String> {
         let comp = Composition::from_slice(json).map_err(|e| format!("Could not read the Lottie animation: {e}"))?;
         let v: serde_json::Value = serde_json::from_slice(json).map_err(|e| e.to_string())?;
-        let subtract = (masks(&v).into_iter())
-            .map(|(name, masks)| (name, masks.iter().map(|m| m["mode"] == "s").collect()))
-            .collect();
+        let subtract = (masks(&v).into_iter()).map(|(name, masks)| (name, masks.iter().map(|m| m["mode"] == "s").collect())).collect();
         let (first, last, rate) = (comp.frames.start, comp.frames.end, comp.frame_rate);
         let size = (comp.width as f64, comp.height as f64);
         if !(last >= first && rate > 0.0 && size.0 >= 1.0 && size.1 >= 1.0) {
@@ -358,8 +356,8 @@ impl<M> Widget<M, Theme, Renderer> for Lottie<'_> {
     }
 
     fn update(
-        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer,
-        _: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
+        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer, _: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         let Event::Window(window::Event::RedrawRequested(now)) = event else { return };
         if layout.bounds().intersects(viewport) {
@@ -372,8 +370,8 @@ impl<M> Widget<M, Theme, Renderer> for Lottie<'_> {
     }
 
     fn draw(
-        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
-        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         // Nothing shows until a worker drew the first frame, like an animation that loads.
         let Some((_, frame)) = self.animation.drawn(self.pixels(layout.bounds(), scale())) else { return };

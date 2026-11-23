@@ -144,19 +144,7 @@ const fn t(key: &'static str, label: &'static str, on: bool) -> Pref {
 
 /// A row with its own control and no value.
 const fn custom(key: &'static str, label: &'static str, control: Control) -> Pref {
-    Pref {
-        key,
-        label,
-        desc: None,
-        args: &[],
-        badge: None,
-        feature: None,
-        requires: None,
-        name: None,
-        about: None,
-        keywords: &[],
-        control,
-    }
+    Pref { key, label, desc: None, args: &[], badge: None, feature: None, requires: None, name: None, about: None, keywords: &[], control }
 }
 
 const fn s(key: &'static str, label: &'static str, options: &'static [&'static str], default: u8) -> Pref {
@@ -172,16 +160,8 @@ macro_rules! cmd {
 
 const AFTER: &[&str] = &["Select next chat", "Select previous chat", "Close chat", "Do nothing"];
 /// The values of the composer buttons. Sticker Picker came later, so it follows None to keep the stored values.
-pub const COMPOSER_ACTIONS: &[&str] = &[
-    "Emoji Picker",
-    "Talk to Type",
-    "Record Audio",
-    "GIF Picker",
-    "Add Attachment",
-    "Send Later",
-    "None",
-    "Sticker Picker",
-];
+pub const COMPOSER_ACTIONS: &[&str] =
+    &["Emoji Picker", "Talk to Type", "Record Audio", "GIF Picker", "Add Attachment", "Send Later", "None", "Sticker Picker"];
 /// The index of None in [`COMPOSER_ACTIONS`].
 pub const COMPOSER_NONE: u8 = 6;
 /// The index of Sticker Picker in [`COMPOSER_ACTIONS`].
@@ -190,17 +170,15 @@ pub const COMPOSER_STICKERS: u8 = 7;
 pub const COMPOSER_ORDER: [u8; 8] = [0, 1, 2, 3, 4, 5, COMPOSER_STICKERS, COMPOSER_NONE];
 /// The values of "Allow undo send", in milliseconds.
 pub const UNDO_SEND_MS: &[i64] = &[0, 750, 1000, 2000, 3000, 5000, 10000];
-const UNDO_SEND_DELAYS: &[&str] =
-    &["0 ms (disabled)", "750 ms", "1 second", "2 seconds", "3 seconds", "5 seconds", "10 seconds"];
+const UNDO_SEND_DELAYS: &[&str] = &["0 ms (disabled)", "750 ms", "1 second", "2 seconds", "3 seconds", "5 seconds", "10 seconds"];
 const SOUND: &[&str] = &["Default", "None"];
 
 /// Desktop's `font_size` options. The root font size is the value plus 3 px, so the default 13 is 16 px.
 pub const FONT_SIZES: &[&str] = &[
-    "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27",
-    "28", "29", "30", "31", "32", "33", "34", "35", "36",
+    "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30",
+    "31", "32", "33", "34", "35", "36",
 ];
-pub const LANGUAGES: &[&str] =
-    &["System", "English", "Deutsch", "Español", "Français", "日本語", "Português do Brasil"];
+pub const LANGUAGES: &[&str] = &["System", "English", "Deutsch", "Español", "Français", "日本語", "Português do Brasil"];
 pub const ARCHIVE_AGE_DAYS: [i64; 6] = [3, 7, 14, 28, 90, 365];
 /// Desktop's `quick_reactions_customized`: the quick reactions are the custom emoji.
 pub const QUICK_REACTIONS_CUSTOMIZED: Pref = t("quickReactionsCustomized", "", false);
@@ -314,11 +292,8 @@ pub const APPEARANCE: &[Item] = &[
     Item::Heading("Conversation View"),
     Item::Group(&[
         t("showTimestamps", "Show message timestamps", true),
-        t("hideDeleted", "Hide deleted messages", false)
-            .about("Hide deleted messages from conversations instead of showing a placeholder"),
-        t("enableNudges", "Enable nudges", true)
-            .about("Shake the conversation when someone sends you a nudge")
-            .gated("nudge"),
+        t("hideDeleted", "Hide deleted messages", false).about("Hide deleted messages from conversations instead of showing a placeholder"),
+        t("enableNudges", "Enable nudges", true).about("Shake the conversation when someone sends you a nudge").gated("nudge"),
         t("messageAnimations", "Enable message animations", true),
         t("autoplayGifs", "Autoplay GIFs", true),
         t("animateAvatars", "Animate avatars and emoji", true),
@@ -499,8 +474,7 @@ const fn transcription_column(i: usize) -> [&'static str; 58] {
 pub const TRANSCRIPTION_CODES: [&str; 58] = transcription_column(0);
 const TRANSCRIPTION_NAMES: [&str; 58] = transcription_column(1);
 
-pub const PAGES: [(&str, &[Item]); 4] =
-    [("General", GENERAL), ("Appearance", APPEARANCE), ("Notifications", NOTIFICATIONS), ("AI", AI)];
+pub const PAGES: [(&str, &[Item]); 4] = [("General", GENERAL), ("Appearance", APPEARANCE), ("Notifications", NOTIFICATIONS), ("AI", AI)];
 
 /// The rows of the settings pages, with the page of each.
 impl Item {
@@ -523,9 +497,9 @@ pub fn customs() -> impl Iterator<Item = (&'static str, &'static str, &'static [
 }
 
 pub fn rows() -> impl Iterator<Item = (&'static str, &'static Pref)> {
-    PAGES.iter().flat_map(|(page, items)| {
-        items.iter().flat_map(|i| if let Item::Group(prefs) = i { *prefs } else { &[] }).map(move |p| (*page, p))
-    })
+    PAGES
+        .iter()
+        .flat_map(|(page, items)| items.iter().flat_map(|i| if let Item::Group(prefs) = i { *prefs } else { &[] }).map(move |p| (*page, p)))
 }
 
 pub fn all() -> impl Iterator<Item = (&'static str, &'static Pref)> {
@@ -733,9 +707,7 @@ pub fn match_sort_keys<T>(items: impl IntoIterator<Item = T>, query: &str, keys:
         ranked.max_by(|a, b| a.0.total_cmp(&b.0).then_with(|| b.1.cmp(&a.1)))
     };
     let mut ranked: Vec<_> = items.into_iter().filter_map(|i| Some((best(&i)?, i))).collect();
-    ranked.sort_by(|(a, _), (b, _)| {
-        b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)).then_with(|| a.2.to_lowercase().cmp(&b.2.to_lowercase()))
-    });
+    ranked.sort_by(|(a, _), (b, _)| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)).then_with(|| a.2.to_lowercase().cmp(&b.2.to_lowercase())));
     ranked.into_iter().map(|r| r.1).collect()
 }
 
@@ -774,8 +746,7 @@ pub fn hotkey_has(keys: &str, mods: [bool; 3], key: &str) -> bool {
 
 /// The preference `key`. The views look up their preferences each time they draw, so the first lookup indexes them.
 pub fn find(key: &str) -> &'static Pref {
-    static BY_KEY: std::sync::OnceLock<std::collections::HashMap<&'static str, &'static Pref>> =
-        std::sync::OnceLock::new();
+    static BY_KEY: std::sync::OnceLock<std::collections::HashMap<&'static str, &'static Pref>> = std::sync::OnceLock::new();
     let by_key = BY_KEY.get_or_init(|| {
         let mut by_key = std::collections::HashMap::new();
         for (_, p) in all() {
@@ -795,8 +766,7 @@ pub const QUICK_REPLIES: &str = "quick_replies";
 /// Desktop's `y0`: the most time suggestions.
 pub const TIME_SUGGESTIONS_MAX: usize = 8;
 /// Desktop's `Odt`: the time suggestions when there are none.
-pub const TIME_SUGGESTIONS: [&str; 6] =
-    ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "This Weekend", "Next Week"];
+pub const TIME_SUGGESTIONS: [&str; 6] = ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "This Weekend", "Next Week"];
 
 /// Desktop's `xpe`: the strings of a list, trimmed, without empty or repeated ones, and at most
 /// [`TIME_SUGGESTIONS_MAX`].
@@ -887,10 +857,7 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ("markReadOnArchive", Ad::Event("com.beeper.mark_read_when_archive", "enabled")),
     ("afterArchive", v("after_archive", AFTER_VALUES)),
     ("afterMarkRead", v("after_toggle_read", AFTER_VALUES)),
-    (
-        "messageDoubleClick",
-        v("message_double_click_action", &["do_nothing", "react", "reply", "forward", "show_menu", "react_with"]),
-    ),
+    ("messageDoubleClick", v("message_double_click_action", &["do_nothing", "react", "reply", "forward", "show_menu", "react_with"])),
     ("undoSendDelay", Ad::Desktop("undo_send_delay_ms", Values::Secs(UNDO_SEND_MS))),
     ("undoOnPendingClick", b("undo_send_on_pending_click")),
     ("copyTimestamps", b("copy_message_timestamps")),
@@ -910,10 +877,7 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ("compactChatList", b("compact_chat_list")),
     ("showNetworkIcons", b("network_icons")),
     ("colorizeNetworkIcons", b("colorize_network_icons_in_chat_list")),
-    (
-        "chatActionButton",
-        v("primary_thread_action", &["archive_unarchive", "mark_read_unread", "open_context_menu", "none"]),
-    ),
+    ("chatActionButton", v("primary_thread_action", &["archive_unarchive", "mark_read_unread", "open_context_menu", "none"])),
     (
         "chatDoubleClick",
         v(

@@ -112,8 +112,7 @@ fn times(name: &str) -> Vec<(&'static str, Duration, u64)> {
         frame(&app);
     });
     time("type in the composer + frame", 10, typed);
-    let layout =
-        median(11, || drop(Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view_main())));
+    let layout = median(11, || drop(Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view_main())));
     time("layout of the main window from a new widget tree", 100, layout);
     let scrolled = median(11, || {
         simulate(&mut app, Point::new(900.0, 450.0), wheel(300.0));
@@ -283,11 +282,9 @@ fn the_rows_of_the_open_chat_follow_its_messages() {
     let mut app = BeeperGuiApp::boot(sized_store("perf-rows", 200, 1_000)).0;
     let _ = app.update(UiMessage::SelectChat(LARGE_OPEN.into()));
     let other = large_id(7);
-    let upsert =
-        |id: &'static str, chat: String| move |st: &mut BeeperStore| st.upsert_message(new_message(st, id, &chat));
-    let edit = |id: &'static str| {
-        move |st: &mut BeeperStore| drop(st.update_message(st.message_idx(id), |m| m.text = Some("edited".into())))
-    };
+    let upsert = |id: &'static str, chat: String| move |st: &mut BeeperStore| st.upsert_message(new_message(st, id, &chat));
+    let edit =
+        |id: &'static str| move |st: &mut BeeperStore| drop(st.update_message(st.message_idx(id), |m| m.text = Some("edited".into())));
     let flip = |key: &'static str| move |st: &mut BeeperStore| st.settings.set_pref(key, (!st.settings.on(key)).into());
     let threads = |chat: String| {
         move |st: &mut BeeperStore| {

@@ -216,18 +216,12 @@ impl BeeperGuiApp {
             let style = move |_: &Theme| container::Style {
                 background: Some(p.card.into()),
                 border: border::rounded(17.0),
-                shadow: Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.15),
-                    offset: Vector::ZERO,
-                    blur_radius: 20.0,
-                },
+                shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.15), offset: Vector::ZERO, blur_radius: 20.0 },
                 ..container::Style::default()
             };
             let pill = mouse_area(container(body).padding([4, 8]).style(style));
             match kind {
-                Pill::Connecting => {
-                    pill.on_enter(UiMessage::PillHover(true)).on_exit(UiMessage::PillHover(false)).into()
-                }
+                Pill::Connecting => pill.on_enter(UiMessage::PillHover(true)).on_exit(UiMessage::PillHover(false)).into(),
                 Pill::Offline | Pill::Syncing => pill.into(),
             }
         };
@@ -259,22 +253,18 @@ impl BeeperGuiApp {
             let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::Toast(toasts::Msg::DismissBanner));
             if let Some(what) = self.undo_note.as_ref().filter(|_| self.shown_note()) {
                 let glyph = container(tinted(&TOAST_ICONS[3], 16.0, p.strong)).center_x(16).center_y(20);
-                let text = rich_text![span::<(), _>(tr("Undo:")).font(fw(Weight::Bold)), span(format!(" {what}"))]
-                    .size(rem(13.0))
-                    .color(p.strong);
+                let text =
+                    rich_text![span::<(), _>(tr("Undo:")).font(fw(Weight::Bold)), span(format!(" {what}"))].size(rem(13.0)).color(p.strong);
                 let card = row![glyph, text, close].spacing(8).align_y(Center);
                 return container(card).padding([6, 8]).style(toast_box(p.card, p)).into();
             }
             if let Some(t) = self.shown_toast() {
                 return self.toast_card(t, None);
             }
-            let pill_w =
-                self.relaunch_toast.map_or(0.0, |_| text_width(tr("Relaunch app"), 13.0, Weight::Normal) + 20.0);
-            let text =
-                txt(banner.to_string(), 13.0).color(p.strong).wrapping(iced::widget::text::Wrapping::WordOrGlyph);
+            let pill_w = self.relaunch_toast.map_or(0.0, |_| text_width(tr("Relaunch app"), 13.0, Weight::Normal) + 20.0);
+            let text = txt(banner.to_string(), 13.0).color(p.strong).wrapping(iced::widget::text::Wrapping::WordOrGlyph);
             let text = container(text).max_width(self.toast_width() - 40.0 - pill_w);
-            let relaunch =
-                self.relaunch_toast.map(|_| pill_btn(p, tr("Relaunch app"), UiMessage::Window(windows::Msg::Relaunch)));
+            let relaunch = self.relaunch_toast.map(|_| pill_btn(p, tr("Relaunch app"), UiMessage::Window(windows::Msg::Relaunch)));
             let card = row![text].push(relaunch).push(close);
             let card = card.spacing(8).align_y(Center);
             container(card).padding(8).style(toast_box(p.card, p)).into()
@@ -342,9 +332,7 @@ impl BeeperGuiApp {
         let right = t.right.as_ref().map(|b| btn(b, p.accent));
         let dismiss = match &t.dismiss {
             Some(m) => m.clone(),
-            None => older.map_or(UiMessage::Toast(toasts::Msg::DismissBanner), |a0| {
-                UiMessage::Toast(toasts::Msg::DismissOlder(a0))
-            }),
+            None => older.map_or(UiMessage::Toast(toasts::Msg::DismissBanner), |a0| UiMessage::Toast(toasts::Msg::DismissOlder(a0))),
         };
         let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, if t.error { fg } else { p.sub }, dismiss);
         let pad = if glyph.is_some() { Padding::new(6.0).right(8.0) } else { Padding::new(8.0) };

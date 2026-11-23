@@ -87,9 +87,7 @@ impl BeeperGuiApp {
                 let code = r.code.clone();
                 let check = cloud(self.cloud.clone(), move |c| match c.send_login_code(&request, &code) {
                     Ok(CodeResult::Token(jwt)) => Ok(jwt),
-                    Ok(CodeResult::Registration { .. }) => {
-                        Err(tr("Something went wrong. Please try again or contact support.").into())
-                    }
+                    Ok(CodeResult::Registration { .. }) => Err(tr("Something went wrong. Please try again or contact support.").into()),
                     Err(e) => Err(e.message),
                 });
                 return Task::perform(check, |r| ReauthMsg::Done(r).into());
@@ -122,15 +120,8 @@ impl BeeperGuiApp {
         let email = self.store.read().whoami.email.clone().unwrap_or_default();
         let hint = tr("This action requires re-authentication. Please check %(email)s for your sign in code.");
         let hint = txt(hint.replace("%(email)s", &email), 13.0).color(p.strong).center().width(Fill);
-        let input = field(
-            p,
-            CODE_INPUT,
-            trx("6-digit code", "input placeholder"),
-            &r.code,
-            (!r.busy).then_some(ReauthMsg::Code),
-        );
-        let next =
-            brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, Some(ReauthMsg::Submit.into()), r.busy);
+        let input = field(p, CODE_INPUT, trx("6-digit code", "input placeholder"), &r.code, (!r.busy).then_some(ReauthMsg::Code));
+        let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, Some(ReauthMsg::Submit.into()), r.busy);
         let error = r.error.as_deref().map(|e| txt(e, 12.0).color(p.text_danger).center().width(Fill).into());
         let body = column![Space::new().height(40), heading(tr("Check your email"), 36.0)]
             .push(container(hint).padding(Padding::new(16.0).left(24.0).right(24.0)))

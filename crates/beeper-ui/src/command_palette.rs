@@ -13,8 +13,7 @@ impl BeeperGuiApp {
             let lead = container(on.then(|| ic(icon::CHECK, 14.0))).center_x(14).padding(Padding::ZERO.right(6.0));
             menu_item(p, Some(lead.into()), label.into(), "", pick(m))
         };
-        let menu =
-            |items: Vec<El<'static>>| -> El<'static> { crate::menu_card(p, Column::with_children(items), 233).into() };
+        let menu = |items: Vec<El<'static>>| -> El<'static> { crate::menu_card(p, Column::with_children(items), 233).into() };
         let brand = |options: Vec<(String, bool, SearchPick)>| -> El<'static> {
             let any = options.iter().any(|o| o.1);
             let widest = options.iter().map(|o| crate::style::text_width(&o.0, 11.0, Weight::Semibold));
@@ -22,13 +21,10 @@ impl BeeperGuiApp {
             let hover = Color { a: 0.1, ..p.text };
             let options = options.into_iter().map(|(label, on, m)| {
                 let fg = if on || !any { p.text } else { p.sub };
-                let line = row![
-                    semi(label, 11.0).color(fg),
-                    Space::new().width(Fill),
-                    ic(icon::CHECK, 16.0).color(if on { fg } else { CLEAR })
-                ]
-                .spacing(8)
-                .align_y(Center);
+                let line =
+                    row![semi(label, 11.0).color(fg), Space::new().width(Fill), ic(icon::CHECK, 16.0).color(if on { fg } else { CLEAR })]
+                        .spacing(8)
+                        .align_y(Center);
                 let style = btn_style([CLEAR, hover, hover], [fg; 3], 4.0);
                 button(line)
                     .padding([6, 4])
@@ -51,9 +47,8 @@ impl BeeperGuiApp {
         match chip {
             0 => {
                 let st = self.store.read();
-                let mut accounts: Vec<String> = std::iter::once("hungryserv".into())
-                    .chain(st.accounts.iter().map(|a| a.account_id.clone()))
-                    .collect();
+                let mut accounts: Vec<String> =
+                    std::iter::once("hungryserv".into()).chain(st.accounts.iter().map(|a| a.account_id.clone())).collect();
                 accounts.sort_by_key(|a| network_label(a));
                 brand(
                     accounts
@@ -69,19 +64,9 @@ impl BeeperGuiApp {
                 radio(f.group == Some(true), trx("Group", "general search chat type filter"), SearchPick::Group(true)),
                 radio(f.group == Some(false), tr("Direct message"), SearchPick::Group(false)),
             ]),
-            2 => menu(
-                PERIODS
-                    .iter()
-                    .enumerate()
-                    .map(|(i, l)| radio(f.period == Some(i), tr(l), SearchPick::Period(i)))
-                    .collect(),
-            ),
+            2 => menu(PERIODS.iter().enumerate().map(|(i, l)| radio(f.period == Some(i), tr(l), SearchPick::Period(i))).collect()),
             3 => brand(
-                MEDIA_KINDS
-                    .iter()
-                    .enumerate()
-                    .map(|(i, l)| (tr(l).to_string(), f.media.contains(&i), SearchPick::Media(i)))
-                    .collect(),
+                MEDIA_KINDS.iter().enumerate().map(|(i, l)| (tr(l).to_string(), f.media.contains(&i), SearchPick::Media(i))).collect(),
             ),
             _ => unreachable!("chip {chip} has no menu"),
         }
@@ -117,9 +102,13 @@ impl BeeperGuiApp {
             results = results.push(media_grid(std::mem::take(&mut tiles))).push(row);
         }
         let results = results.push(media_grid(tiles));
-        self.palette_frame(column![inputs].push(hint).push(chips).push(empty).push(
-            (!none).then(|| scrollable(results).id(SEARCH).direction(bar()).height(Fill).style(scroll_style(p.scroll))),
-        ))
+        self.palette_frame(
+            column![inputs]
+                .push(hint)
+                .push(chips)
+                .push(empty)
+                .push((!none).then(|| scrollable(results).id(SEARCH).direction(bar()).height(Fill).style(scroll_style(p.scroll)))),
+        )
     }
 
     /// Desktop's `results` without a query or filters (`blank`): the recent chats but the open one, and the chat
@@ -140,9 +129,7 @@ impl BeeperGuiApp {
             .and_then(|id| st.find_chat(&id))
             .filter(|c| {
                 let recents = recent.iter().take(self.palette_rows("Recent chats", recent.len()).0);
-                c.flags & CHAT_HIDDEN == 0
-                    && selected != Some(c.id.as_str())
-                    && !recents.into_iter().any(|r| r.id == c.id)
+                c.flags & CHAT_HIDDEN == 0 && selected != Some(c.id.as_str()) && !recents.into_iter().any(|r| r.id == c.id)
             })
             .into_iter()
             .collect();
@@ -164,8 +151,7 @@ impl BeeperGuiApp {
         let filters = if n > 0 { trn(" (%d filter)", " (%d filters)", n, &[&n]) } else { String::new() };
         let line = row![tinted(&COMPOSER_ICONS[6], 20.0, p.sub), txt(format!("{term}{filters}"), 13.0).color(p.text)];
         let bg = if lit == Some(i) { p.chip } else { CLEAR };
-        let b =
-            button(container(line.spacing(8).align_y(Center)).center_y(Fill)).height(36).padding([0, 6]).width(Fill);
+        let b = button(container(line.spacing(8).align_y(Center)).center_y(Fill)).height(36).padding([0, 6]).width(Fill);
         let b = b.style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0));
         let row = mouse_area(b.on_press(UiMessage::CommandBar(commands::Msg::RestoreSearch(search))));
         container(row.on_enter(search_hover(i))).padding([0, 6]).id(format!("search-{i}")).into()
@@ -174,11 +160,7 @@ impl BeeperGuiApp {
     /// The card of the command palette.
     fn palette_frame<'a>(&self, body: Column<'a, UiMessage>) -> El<'a> {
         let p = &self.pal;
-        container(body)
-            .width(602)
-            .height(360)
-            .style(glow_box(p.card, Color { a: 0.18, ..p.strong }, 18.0, 4.0, 84.0))
-            .into()
+        container(body).width(602).height(360).style(glow_box(p.card, Color { a: 0.18, ..p.strong }, 18.0, 4.0, 84.0)).into()
     }
 
     /// The input row of the command palette: the query, with the search icon and the Commands or Chat button, or
@@ -253,10 +235,7 @@ impl BeeperGuiApp {
         let footer = noted.then(|| {
             let note = match (schedule, self.cmd_no_reply) {
                 _ if snooze => tr("Snoozed chats leave your inbox and stay quiet until the time you pick").into(),
-                (true, _) => trf(
-                    "Send Later messages can only send if %s app is running (and your computer is awake)",
-                    &[&"Beeper"],
-                ),
+                (true, _) => trf("Send Later messages can only send if %s app is running (and your computer is awake)", &[&"Beeper"]),
                 (_, true) => tr("Remind Me marks this chat as new at the scheduled time, if there is no reply.").into(),
                 (_, false) => tr("Remind Me marks this chat as new at the scheduled time").into(),
             };
@@ -271,8 +250,7 @@ impl BeeperGuiApp {
     /// The hint of the command palette over an open chat: the hotkey that searches the chat, or all the chats.
     fn palette_hint(&self, st: &BeeperStore) -> Option<El<'_>> {
         let p = &self.pal;
-        let c =
-            self.pane().selected_chat_id.as_deref().and_then(|cid| st.resolve_chat_idx(cid).map(|i| &st.chats[i]))?;
+        let c = self.pane().selected_chat_id.as_deref().and_then(|cid| st.resolve_chat_idx(cid).map(|i| &st.chats[i]))?;
         let key = |name| prefs::hotkey_label(st.settings.hotkey_keys(name).split(", ").next().unwrap_or(""));
         let label = match (self.search_room.as_deref(), c.chat_type == "group") {
             (Some(_), _) => trf("Press %s to search all of your conversations", &[&key("Search")]),
@@ -296,19 +274,14 @@ impl BeeperGuiApp {
                 Some(_) => bordered_box(CLEAR, p.text, 1.0, 20.0),
                 None => bordered_box(p.chip, CLEAR, 1.0, 20.0),
             };
-            let body = row![
-                semi(label.unwrap_or_else(|| tr(placeholder).into()), 13.0).color(fg),
-                ic(icon::EXPAND_MORE, 14.0).color(fg)
-            ]
-            .spacing(4)
-            .align_y(Center);
+            let body = row![semi(label.unwrap_or_else(|| tr(placeholder).into()), 13.0).color(fg), ic(icon::EXPAND_MORE, 14.0).color(fg)]
+                .spacing(4)
+                .align_y(Center);
             let chip = button(body).bare(fg).padding([4, 13]);
-            container(
-                chip.on_press_maybe((!disabled).then_some(UiMessage::CommandBar(commands::Msg::OpenSearchSelect(i)))),
-            )
-            .id(format!("search-chip-{i}"))
-            .style(style)
-            .into()
+            container(chip.on_press_maybe((!disabled).then_some(UiMessage::CommandBar(commands::Msg::OpenSearchSelect(i)))))
+                .id(format!("search-chip-{i}"))
+                .style(style)
+                .into()
         }))
         .spacing(12)
         .padding(Padding::new(6.0).left(13.0).right(13.0))
@@ -317,9 +290,7 @@ impl BeeperGuiApp {
 
     /// The heading of a section of the search results (row `i`), with its action on the right: Desktop's
     /// `.category`, whose action button fades while the heading is highlighted (`lit`).
-    fn palette_heading(
-        &self, i: usize, label: &'static str, action: &Option<commands::Msg>, reach: bool, lit: Option<usize>,
-    ) -> El<'_> {
+    fn palette_heading(&self, i: usize, label: &'static str, action: &Option<commands::Msg>, reach: bool, lit: Option<usize>) -> El<'_> {
         let p = &self.pal;
         let title = match label {
             "Chats" | "Messages" | "Media" => trx(label, "command bar category"),
@@ -334,9 +305,11 @@ impl BeeperGuiApp {
         };
         let fg = if lit == Some(i) { p.accent.scale_alpha(0.5) } else { p.accent };
         let line = row![txt(title, 12.0).color(p.sub), Space::new().width(Fill)]
-            .push(action.clone().map(|m| {
-                button(semi(text, 11.0).color(fg)).padding(0).style(ghost(p, 4.0)).on_press(UiMessage::CommandBar(m))
-            }))
+            .push(
+                action
+                    .clone()
+                    .map(|m| button(semi(text, 11.0).color(fg)).padding(0).style(ghost(p, 4.0)).on_press(UiMessage::CommandBar(m))),
+            )
             .align_y(Center)
             .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0));
         let line = container(line).id(format!("search-{i}"));
@@ -381,9 +354,11 @@ impl BeeperGuiApp {
         let bubble = rich_text(spans)
             .line_height(iced::widget::text::LineHeight::Absolute(rem(16.0).into()))
             .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
-        let bubble = container(container(bubble).padding([8, 11]).style(fill_box(bg, 17.0)))
-            .width(Fill)
-            .align_x(if mine { Right } else { iced::Left });
+        let bubble = container(container(bubble).padding([8, 11]).style(fill_box(bg, 17.0))).width(Fill).align_x(if mine {
+            Right
+        } else {
+            iced::Left
+        });
         let row = button(column![head, bubble].spacing(6))
             .bare(p.text)
             .padding([4, 13])
@@ -416,8 +391,7 @@ impl BeeperGuiApp {
             },
             (None, Some(l), _) => {
                 let title = crate::links::shown_title(l);
-                let sub =
-                    row![ic(icon::LINK, 12.0).color(p.text), ell(&l.url, 77.0, 10.0, Weight::Semibold).color(p.text)];
+                let sub = row![ic(icon::LINK, 12.0).color(p.text), ell(&l.url, 77.0, 10.0, Weight::Semibold).color(p.text)];
                 card(title, sub.spacing(4).align_y(Center).into())
             }
             (None, None, Some(a)) => {
@@ -430,14 +404,10 @@ impl BeeperGuiApp {
                 card(text, Space::new().into())
             }
         };
-        let face =
-            container(self.chat_avatar(c, 24.0, 0.0)).padding(2).style(bordered_box(CLEAR, Color::WHITE, 2.0, 14.0));
-        let tile = stack![container(body).width(Fill).height(Fill).style(fill_box(p.chip, 8.0))]
-            .push(container(face).padding(6));
+        let face = container(self.chat_avatar(c, 24.0, 0.0)).padding(2).style(bordered_box(CLEAR, Color::WHITE, 2.0, 14.0));
+        let tile = stack![container(body).width(Fill).height(Fill).style(fill_box(p.chip, 8.0))].push(container(face).padding(6));
         let tile = container(tile).width(110).height(110).padding(ring).style(fill_box(p.rule, 8.0));
-        let tile = button(tile)
-            .bare(p.text)
-            .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone())));
+        let tile = button(tile).bare(p.text).on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone())));
         container(tile).id(format!("search-{i}")).into()
     }
 
@@ -516,8 +486,7 @@ impl BeeperGuiApp {
         let toggle = |label: &'static str, more: bool| more.then_some(commands::Msg::ToggleSearchExpanded(label));
         // Desktop's `Jqt` order of the chat sections, before the bookmarks, the media and the messages. The arrow
         // keys reach the headings of the sections with an action (`qct`), also without "Show more".
-        let sections =
-            [("Recent chats", recent), ("Last archived", archived), ("Chats", chats), ("In Groups", in_groups)];
+        let sections = [("Recent chats", recent), ("Last archived", archived), ("Chats", chats), ("In Groups", in_groups)];
         for (label, chats) in sections.into_iter().filter(|s| !s.1.is_empty()) {
             let (n, more) = match label {
                 "Last archived" => (1, false),
@@ -624,9 +593,7 @@ impl Hit<'_> {
             Hit::Heading(_, action, _) => action.clone(),
             Hit::Chat(c) => Some(commands::Msg::ExecuteChat(c.id.clone())),
             Hit::RecentSearch(i) => Some(commands::Msg::RestoreSearch(*i)),
-            Hit::Message(m) | Hit::Media(m) => {
-                Some(commands::Msg::JumpTo(st.chat(&m.chat_id).id.clone(), m.id.clone()))
-            }
+            Hit::Message(m) | Hit::Media(m) => Some(commands::Msg::JumpTo(st.chat(&m.chat_id).id.clone(), m.id.clone())),
         }
     }
 }

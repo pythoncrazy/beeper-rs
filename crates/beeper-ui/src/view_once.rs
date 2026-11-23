@@ -158,10 +158,7 @@ fn heic(m: &Message) -> bool {
     m.attachments.first().is_some_and(|a| {
         let mime = a.mime_type.as_deref().unwrap_or_default();
         let name = a.file_name.as_deref().unwrap_or_default().to_ascii_lowercase();
-        mime.starts_with("image/heic")
-            || mime.starts_with("image/heif")
-            || name.ends_with(".heic")
-            || name.ends_with(".heif")
+        mime.starts_with("image/heic") || mime.starts_with("image/heif") || name.ends_with(".heic") || name.ends_with(".heif")
     })
 }
 
@@ -405,9 +402,7 @@ impl BeeperGuiApp {
         }
         let p = self.provision(&account);
         let eid = mid.clone();
-        Task::perform(beeper_core::matrix::view_limited_media(p, eid, limit), move |r| {
-            UiMessage::ViewOnce(Msg::Counted(mid, r))
-        })
+        Task::perform(beeper_core::matrix::view_limited_media(p, eid, limit), move |r| UiMessage::ViewOnce(Msg::Counted(mid, r)))
     }
 
     /// Desktop's `close`: the viewer closes, and the queue goes on with `next`, else it stops.
@@ -494,10 +489,7 @@ impl BeeperGuiApp {
 
     /// The countdown, the end of a voice note and the spinner while the viewer is open.
     pub(crate) fn view_once_ticks(&self) -> Option<Subscription<UiMessage>> {
-        self.view_once
-            .viewer
-            .as_ref()
-            .map(|_| iced::time::every(Duration::from_millis(50)).map(|_| UiMessage::ViewOnce(Msg::Tick)))
+        self.view_once.viewer.as_ref().map(|_| iced::time::every(Duration::from_millis(50)).map(|_| UiMessage::ViewOnce(Msg::Tick)))
     }
 
     /// The size of a video in the viewer: at most its own size, `min(90vw, 720px)` wide and `100vh - 150px` high.
@@ -515,8 +507,7 @@ impl BeeperGuiApp {
         let lead: El<'a> = match m.view_once_time() {
             Some(t) => {
                 let chip = if variant == Variant::Filled { fg.scale_alpha(0.4) } else { p.chip };
-                let clock =
-                    med(crate::units::seconds(t), 12.0).color(if variant == Variant::Filled { fg } else { p.sub });
+                let clock = med(crate::units::seconds(t), 12.0).color(if variant == Variant::Filled { fg } else { p.sub });
                 container(clock).center_y(20).padding([0, 6]).style(fill_box(chip, 10.0)).into()
             }
             None => tinted(&GLYPHS[usize::from(m.view_once_replay())], 16.0, fg),
@@ -605,17 +596,12 @@ impl BeeperGuiApp {
         let shade = Linear::new(iced::Radians(std::f32::consts::PI))
             .add_stop(0.0, Color::BLACK.scale_alpha(0.45))
             .add_stop(1.0, Color::TRANSPARENT);
-        let top =
-            container(row![].push(progress).push(Space::new().width(Fill)).push(limit).spacing(12).align_y(Center))
-                .padding(16)
-                .width(Fill)
-                .style(move |_| container::Style {
-                    background: Some(Background::Gradient(shade.into())),
-                    ..Default::default()
-                });
-        let square = |inner: El<'static>| -> El<'static> {
-            container(inner).center(240).style(fill_box(white.scale_alpha(0.08), 24.0)).into()
-        };
+        let top = container(row![].push(progress).push(Space::new().width(Fill)).push(limit).spacing(12).align_y(Center))
+            .padding(16)
+            .width(Fill)
+            .style(move |_| container::Style { background: Some(Background::Gradient(shade.into())), ..Default::default() });
+        let square =
+            |inner: El<'static>| -> El<'static> { container(inner).center(240).style(fill_box(white.scale_alpha(0.08), 24.0)).into() };
         let media: El<'_> = match (&v.shown, video) {
             (None, _) => square(crate::verify::spinner(32.0, white)),
             (Some(Shown::Video(_)), Some(_)) => {

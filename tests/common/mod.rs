@@ -11,9 +11,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 pub trait TestClient {
     fn api(&self) -> &BeeperClient;
 
-    async fn send(
-        &self, method: &str, path: &str, headers: &[(&str, &str)], body: Option<&Value>,
-    ) -> (StatusCode, Vec<u8>) {
+    async fn send(&self, method: &str, path: &str, headers: &[(&str, &str)], body: Option<&Value>) -> (StatusCode, Vec<u8>) {
         let body = body.map(|v| ("application/json".into(), serde_json::to_vec(v).expect("JSON values serialize")));
         let sent = self.api().request_raw(method, path, headers, body).await;
         let (status, bytes) = sent.expect("send the HTTP request to the Beeper server");
@@ -84,9 +82,7 @@ pub trait TestClient {
         self.json("GET", &chat_path(chat_id, "/messages"), None).await
     }
 
-    async fn send_message(
-        &self, chat_id: &str, text: Option<&str>, reply_to: Option<&str>, upload_id: Option<&str>,
-    ) -> Value {
+    async fn send_message(&self, chat_id: &str, text: Option<&str>, reply_to: Option<&str>, upload_id: Option<&str>) -> Value {
         let body = defined([
             ("text", text.map(|t| json!(t))),
             ("replyToMessageID", reply_to.map(|r| json!(r))),
@@ -124,10 +120,8 @@ pub trait TestClient {
     }
 
     async fn search_messages(&self, query: &str, media_types: Option<&str>) -> CursorPage<Value> {
-        let params: Vec<(&str, &str)> = [("query", Some(query)), ("mediaTypes", media_types)]
-            .into_iter()
-            .filter_map(|(k, v)| Some((k, v?)))
-            .collect();
+        let params: Vec<(&str, &str)> =
+            [("query", Some(query)), ("mediaTypes", media_types)].into_iter().filter_map(|(k, v)| Some((k, v?))).collect();
         self.json("GET", &query_string("/v1/messages/search", &params), None).await
     }
 

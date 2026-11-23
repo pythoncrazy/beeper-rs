@@ -20,21 +20,11 @@ pub fn click<'a, Message>(content: impl Into<Element<'a, Message>>, message: Mes
 struct Pressed(bool);
 
 impl<Message: Clone> Widget<Message, Theme, Renderer> for Click<'_, Message> {
-    crate::delegate::delegate!(
-        state(Pressed),
-        children,
-        diff,
-        size,
-        layout,
-        operate,
-        mouse_interaction,
-        draw,
-        overlay(Message)
-    );
+    crate::delegate::delegate!(state(Pressed), children, diff, size, layout, operate, mouse_interaction, draw, overlay(Message));
 
     fn update(
-        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
-        renderer: &Renderer, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
+        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
     ) {
         let content = &mut tree.children[0];
         self.content.as_widget_mut().update(content, event, layout, cursor, renderer, clipboard, shell, viewport);

@@ -119,15 +119,11 @@ pub fn open_url_or_path_command(os: OsKind, target: &str) -> (String, Vec<String
     match os {
         OsKind::MacOs => ("open".to_string(), vec![target.to_string()]),
         OsKind::Linux => ("xdg-open".to_string(), vec![target.to_string()]),
-        OsKind::Windows => {
-            ("cmd".to_string(), vec!["/C".to_string(), "start".to_string(), String::new(), target.to_string()])
-        }
+        OsKind::Windows => ("cmd".to_string(), vec!["/C".to_string(), "start".to_string(), String::new(), target.to_string()]),
     }
 }
 
-pub fn resolve_original_beeper_data_dir(
-    os: OsKind, profile: Option<&str>, env_vars: &HashMap<String, String>, home_dir: &Path,
-) -> PathBuf {
+pub fn resolve_original_beeper_data_dir(os: OsKind, profile: Option<&str>, env_vars: &HashMap<String, String>, home_dir: &Path) -> PathBuf {
     resolve_original_data_dir_for_os(os.node_platform_str(), profile, env_vars, home_dir)
 }
 
@@ -136,9 +132,7 @@ pub fn current_original_beeper_data_dir(profile: Option<&str>) -> PathBuf {
     resolve_original_beeper_data_dir(OsKind::current(), profile, &env_map, &resolve_home_dir(&env_map))
 }
 
-pub fn resolve_desktop_data_dir(
-    os: OsKind, profile: Option<&str>, env_vars: &HashMap<String, String>, home_dir: &Path,
-) -> PathBuf {
+pub fn resolve_desktop_data_dir(os: OsKind, profile: Option<&str>, env_vars: &HashMap<String, String>, home_dir: &Path) -> PathBuf {
     resolve_data_dir_for_os(os.node_platform_str(), profile, env_vars, home_dir)
 }
 
@@ -253,8 +247,7 @@ mod tests {
     #[test]
     fn the_connections_to_the_peers_shut_down() {
         use std::io::{Read, Write};
-        let (reset, other) =
-            (std::net::TcpListener::bind("127.0.0.1:0").unwrap(), std::net::TcpListener::bind("[::1]:0"));
+        let (reset, other) = (std::net::TcpListener::bind("127.0.0.1:0").unwrap(), std::net::TcpListener::bind("[::1]:0"));
         let mut client = std::net::TcpStream::connect(reset.local_addr().unwrap()).unwrap();
         let mut server = reset.accept().unwrap().0;
         let other = other.expect("an IPv6 loopback");
@@ -274,11 +267,9 @@ mod tests {
     #[test]
     fn tcp_rows_give_the_remote_address_and_the_inode() {
         let v4 = "   3: 0100007F:A1B2 0100007F:5CF3 01 00000000:00000000 00:00000000 00000000  1000        0 4242 1 0";
-        let mapped =
-            "   0: 0000000000000000FFFF00000100007F:A1B2 0000000000000000FFFF00000200A8C0:01BB 01 00000000:00000000 \
+        let mapped = "   0: 0000000000000000FFFF00000100007F:A1B2 0000000000000000FFFF00000200A8C0:01BB 01 00000000:00000000 \
                       00:00000000 00000000  1000        0 77 1 0";
-        let v6 =
-            "   1: 00000000000000000000000001000000:A1B2 B80D0120000000000000000001000000:01BB 01 0:0 0:0 0 1000 0 9";
+        let v6 = "   1: 00000000000000000000000001000000:A1B2 B80D0120000000000000000001000000:01BB 01 0:0 0:0 0 1000 0 9";
         assert_eq!(super::tcp_row(v4), Some(("127.0.0.1:23795".parse().unwrap(), 4242)));
         assert_eq!(super::tcp_row(mapped), Some(("192.168.0.2:443".parse().unwrap(), 77)));
         assert_eq!(super::tcp_row(v6), Some(("[2001:db8::1]:443".parse().unwrap(), 9)));

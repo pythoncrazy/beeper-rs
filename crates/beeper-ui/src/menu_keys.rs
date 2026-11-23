@@ -28,20 +28,9 @@ struct Row<'a> {
 struct Mark(Option<UiMessage>);
 
 impl Widget<UiMessage, Theme, Renderer> for Row<'_> {
-    crate::delegate::delegate!(
-        children,
-        diff,
-        size,
-        layout,
-        update(UiMessage),
-        mouse_interaction,
-        draw,
-        overlay(UiMessage)
-    );
+    crate::delegate::delegate!(children, diff, size, layout, update(UiMessage), mouse_interaction, draw, overlay(UiMessage));
 
-    fn operate(
-        &mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation,
-    ) {
+    fn operate(&mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
         operation.custom(None, layout.bounds(), &mut Mark(self.msg.clone()));
         self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
     }
@@ -98,25 +87,15 @@ impl Menu<'_> {
 }
 
 impl Widget<UiMessage, Theme, Renderer> for Menu<'_> {
-    crate::delegate::delegate!(
-        state(Selection),
-        children,
-        diff,
-        size,
-        layout,
-        operate,
-        mouse_interaction,
-        overlay(UiMessage)
-    );
+    crate::delegate::delegate!(state(Selection), children, diff, size, layout, operate, mouse_interaction, overlay(UiMessage));
 
     fn update(
-        &mut self, tree: &mut advanced::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
-        renderer: &Renderer, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, UiMessage>, viewport: &Rectangle,
+        &mut self, tree: &mut advanced::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, UiMessage>, viewport: &Rectangle,
     ) {
         match event {
             Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(k), modifiers, .. })
-                if modifiers.is_empty()
-                    && matches!(k, Named::ArrowDown | Named::ArrowUp | Named::Home | Named::End | Named::Enter) =>
+                if modifiers.is_empty() && matches!(k, Named::ArrowDown | Named::ArrowUp | Named::Home | Named::End | Named::Enter) =>
             {
                 let rows = self.rows(tree, layout, renderer).0;
                 if rows.is_empty() {
@@ -159,8 +138,8 @@ impl Widget<UiMessage, Theme, Renderer> for Menu<'_> {
     }
 
     fn draw(
-        &self, tree: &advanced::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
-        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
+        &self, tree: &advanced::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         // A row that the keyboard selected draws as the pointer over it draws it.
         let keyed = tree.state.downcast_ref::<Selection>().keyed;

@@ -69,10 +69,7 @@ pub(crate) fn starts(st: &BeeperStore, msgs: &[&Message], replies: &[usize]) -> 
     let mut starts: Vec<usize> = (0..msgs.len()).collect();
     for i in 1..msgs.len() {
         let s = starts[i - 1];
-        if member(st, msgs[i - 1], replies[i - 1])
-            && member(st, msgs[i], replies[i])
-            && joins(msgs[s], msgs[i - 1], msgs[i], i - s)
-        {
+        if member(st, msgs[i - 1], replies[i - 1]) && member(st, msgs[i], replies[i]) && joins(msgs[s], msgs[i - 1], msgs[i], i - s) {
             starts[i] = s;
         }
     }
@@ -146,9 +143,7 @@ fn turned((w, h): (f32, f32), turn: f32) -> (f32, f32) {
 /// A tile image: `src` cut to cover a `w` by `h` tile, at `scale` times its size, with the round corners and the
 /// `ring` of Desktop's `.tile`: its half pixel border, or the 2 px outline of a selected tile. iced can turn an image,
 /// but it cuts and rounds an image only along the screen axes, so the tile has its corners in its pixels.
-fn bake(
-    src: &image::Handle, (w, h): (u32, u32), (border, thick): (Color, f32), radius: f32, scale: f32,
-) -> image::Handle {
+fn bake(src: &image::Handle, (w, h): (u32, u32), (border, thick): (Color, f32), radius: f32, scale: f32) -> image::Handle {
     let image::Handle::Rgba { width, height, pixels, .. } = src else { unreachable!("decoded media is RGBA") };
     let full = ::image::RgbaImage::from_raw(*width, *height, pixels.to_vec()).expect("RGBA pixels fill the image");
     let (tw, th) = (((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1));
@@ -187,8 +182,7 @@ pub(crate) fn dim_frames(frames: &Frames, k: f32) -> Frames {
     let dim = |h: &image::Handle| match h {
         image::Handle::Rgba { width, height, pixels, .. } => {
             let c = |c: u8| (f32::from(c) * k).round() as u8;
-            let px: Vec<u8> =
-                pixels.as_chunks::<4>().0.iter().flat_map(|&[r, g, b, a]| [c(r), c(g), c(b), a]).collect();
+            let px: Vec<u8> = pixels.as_chunks::<4>().0.iter().flat_map(|&[r, g, b, a]| [c(r), c(g), c(b), a]).collect();
             image::Handle::from_rgba(*width, *height, px)
         }
         _ => unreachable!("decoded media is RGBA"),
@@ -227,9 +221,7 @@ impl BeeperGuiApp {
             // selects only the gallery. Both unselect a selected gallery.
             Msg::Click(ids) => {
                 let task = match self.mods.shift() {
-                    true => self.update(UiMessage::Message(message::Msg::Click(
-                        ids.last().expect("a gallery has messages").clone(),
-                    ))),
+                    true => self.update(UiMessage::Message(message::Msg::Click(ids.last().expect("a gallery has messages").clone()))),
                     false => {
                         let sel = &mut self.pane.selected_msgs;
                         match (ids.iter().all(|i| sel.contains(i)), self.mods.command()) {
@@ -271,10 +263,7 @@ impl BeeperGuiApp {
     /// "Forward All…" and "Delete…", as the menu, its height and the top of its voice rows.
     pub(crate) fn view_gallery_menu(&self, mid: &str) -> Option<(El<'_>, f32, f32)> {
         let (ids, sel) = (&self.pane().gallery_menu, &self.pane().selected_msgs);
-        if ids.first().is_none_or(|first| first != mid)
-            || sel.len() != ids.len()
-            || !ids.iter().all(|i| sel.contains(i))
-        {
+        if ids.first().is_none_or(|first| first != mid) || sel.len() != ids.len() || !ids.iter().all(|i| sel.contains(i)) {
             return None;
         }
         let p = &self.pal;
@@ -283,32 +272,17 @@ impl BeeperGuiApp {
         let at = self.pane().message_menu.as_ref().expect("the menu is open").1;
         let key = |name| hotkey_text(st.settings.hotkey_keys(name));
         let item = |label: String, hotkey: &str, msg| {
-            (
-                menu_item(
-                    p,
-                    None,
-                    label,
-                    hotkey.to_string(),
-                    Some(UiMessage::Message(message::Msg::Menu(Box::new(msg)))),
-                ),
-                menu_pitch(),
-            )
+            (menu_item(p, None, label, hotkey.to_string(), Some(UiMessage::Message(message::Msg::Menu(Box::new(msg))))), menu_pitch())
         };
         let action = |s| trx(s, "gallery menu action").to_string();
-        let download = UiMessage::Commands(
-            ids.iter().map(|i| UiMessage::Message(message::Msg::Download(i.clone(), None))).collect(),
-        );
+        let download = UiMessage::Commands(ids.iter().map(|i| UiMessage::Message(message::Msg::Download(i.clone(), None))).collect());
         let rows: Vec<(El, f32)> = [
             ms.iter()
                 .any(|m| !m.reactions.is_empty())
                 .then(|| vec![item(action("Reactions"), "", UiMessage::Gallery(Msg::Reactions(ids.clone(), at)))]),
             Some(vec![
                 item(action("Download All"), &key("Download Attachments"), download),
-                item(
-                    action("Forward All…"),
-                    &key("Message: Forward"),
-                    UiMessage::Forward(forward::Msg::Open(ids.clone())),
-                ),
+                item(action("Forward All…"), &key("Message: Forward"), UiMessage::Forward(forward::Msg::Open(ids.clone()))),
             ]),
             ms.iter().all(|m| deletable(&st, m)).then(|| {
                 let delete = UiMessage::Message(message::Msg::AskDelete(ids.clone()));
@@ -397,11 +371,7 @@ impl BeeperGuiApp {
             })
             .collect();
         self.cuts.extend(tasks.iter().map(|(k, _)| (k.clone(), None)));
-        Task::batch(
-            tasks
-                .into_iter()
-                .map(|(k, task)| Task::perform(task, move |f| UiMessage::Loaded(loads::Msg::Cut(k.clone(), f)))),
-        )
+        Task::batch(tasks.into_iter().map(|(k, task)| Task::perform(task, move |f| UiMessage::Loaded(loads::Msg::Cut(k.clone(), f)))))
     }
 
     /// Bakes the tiles that a view asked for, on worker threads.
@@ -428,11 +398,7 @@ impl BeeperGuiApp {
             })
             .collect();
         self.tiles.extend(tasks.iter().map(|(k, _)| (k.clone(), None)));
-        Task::batch(
-            tasks
-                .into_iter()
-                .map(|(k, task)| Task::perform(task, move |h| UiMessage::Loaded(loads::Msg::Tile(k.clone(), h)))),
-        )
+        Task::batch(tasks.into_iter().map(|(k, task)| Task::perform(task, move |h| UiMessage::Loaded(loads::Msg::Tile(k.clone(), h)))))
     }
 
     /// Desktop's `GalleryAttachments` of the messages of a gallery: each tile opens its item in the carousel, and a
@@ -454,9 +420,8 @@ impl BeeperGuiApp {
                 let pill = label(format!("+{hidden}"), 12.0, 15.0, [4.0, 10.0], 100.0);
                 container(pill).align_right(Fill).align_bottom(Fill).padding(6)
             });
-            let at = |tile: El<'a>| -> El<'a> {
-                container(tile).padding(Padding::ZERO.left(x - (bw - w) / 2.0).top(y - (bh - h) / 2.0)).into()
-            };
+            let at =
+                |tile: El<'a>| -> El<'a> { container(tile).padding(Padding::ZERO.left(x - (bw - w) / 2.0).top(y - (bh - h) / 2.0)).into() };
             // Desktop's placeholder of media that a bridge loads only when the user asks: a round download button in
             // the brand color, with a spinner while it downloads, when it is disabled but keeps its colors.
             if let Some(src) = self.needs_download(a) {
@@ -486,20 +451,14 @@ impl BeeperGuiApp {
                 // Desktop's `MediaImg` of the tile is the `ImageError` of a media that failed to load.
                 None if !video && matches!(url.and_then(|u| self.media.get(u)), Some(Some(Err(_)))) => {
                     let error = container(self.image_error(w, h, RADIUS));
-                    container(error.style(bordered_box(p.chip, p.prefs_border, 0.5, RADIUS)))
-                        .center(bw)
-                        .center_y(bh)
-                        .into()
+                    container(error.style(bordered_box(p.chip, p.prefs_border, 0.5, RADIUS))).center(bw).center_y(bh).into()
                 }
                 None => {
                     let fill = if video { Color::BLACK } else { p.chip };
                     // Desktop's `img.loading` of the image of a tile: the shimmering `--skeleton-bg` over the tile.
                     let loading = (!video).then(|| crate::anim::skeleton(Fill, Fill, RADIUS, p.skeleton, self.started));
                     let tile = container(loading).width(w).height(h);
-                    container(tile.style(bordered_box(fill, p.prefs_border, 0.5, RADIUS)))
-                        .center(bw)
-                        .center_y(bh)
-                        .into()
+                    container(tile.style(bordered_box(fill, p.prefs_border, 0.5, RADIUS))).center(bw).center_y(bh).into()
                 }
             };
             let play = video.then(|| container(tinted(&crate::voice::ICONS[0], 32.0, Color::WHITE)).center(Fill));
@@ -550,8 +509,7 @@ mod tests {
     #[test]
     fn baked_tiles_have_round_corners() {
         let src = image::Handle::from_rgba(40, 20, vec![255; 40 * 20 * 4]);
-        let image::Handle::Rgba { width, height, pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 0.5), RADIUS, BAKE)
-        else {
+        let image::Handle::Rgba { width, height, pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 0.5), RADIUS, BAKE) else {
             unreachable!()
         };
         assert_eq!((width, height), (60, 60), "a tile bakes at twice its size");
@@ -560,13 +518,7 @@ mod tests {
         assert_eq!(at(30, 30), [255; 4], "the middle keeps the image");
         assert_eq!(at(30, 0), [0, 0, 0, 255], "the edge has the border");
         assert_eq!(at(30, 2), [255; 4], "the half pixel border is thin");
-        let image::Handle::Rgba { pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 2.0), RADIUS, BAKE) else {
-            unreachable!()
-        };
-        assert_eq!(
-            pixels[((2 * width + 30) * 4) as usize..][..4],
-            [0, 0, 0, 255],
-            "a selected tile has a 2 px outline"
-        );
+        let image::Handle::Rgba { pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 2.0), RADIUS, BAKE) else { unreachable!() };
+        assert_eq!(pixels[((2 * width + 30) * 4) as usize..][..4], [0, 0, 0, 255], "a selected tile has a 2 px outline");
     }
 }

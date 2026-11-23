@@ -93,11 +93,7 @@ pub fn launch_desktop(t: Option<&Target>) -> Res<Value> {
     }
     if let Some((t, dir)) = t.and_then(|t| Some((t, text(t, "dataDir")?))) {
         let profile = text(t, "profile").map_or_else(|| id(t), str::to_string);
-        command.envs([
-            ("ALLOW_MULTIPLE_INSTANCES", "true"),
-            ("BEEPER_PROFILE", &profile),
-            ("BEEPER_USER_DATA_DIR", dir),
-        ]);
+        command.envs([("ALLOW_MULTIPLE_INSTANCES", "true"), ("BEEPER_PROFILE", &profile), ("BEEPER_USER_DATA_DIR", dir)]);
     }
     command.spawn().map_err(|e| CliError::bug(e.to_string()))?;
     Ok(json!({ "id": t.map_or("desktop".into(), id), "startedAt": iso_in(0) }))
@@ -109,10 +105,10 @@ fn read_run(id: &str) -> Res<Option<Map<String, Value>>> {
 
 /// Beeper Server's flags of a managed target (`serverArgs`).
 fn server_args(t: &Target) -> Vec<String> {
-    let port = t.get("port").filter(|p| truthy(p)).map_or_else(
-        || js_string(&t["baseURL"]).rsplit(':').next().unwrap_or_default().trim_end_matches('/').to_string(),
-        js_string,
-    );
+    let port = t
+        .get("port")
+        .filter(|p| truthy(p))
+        .map_or_else(|| js_string(&t["baseURL"]).rsplit(':').next().unwrap_or_default().trim_end_matches('/').to_string(), js_string);
     let mut args = vec!["--host=127.0.0.1".to_string(), format!("--port={port}")];
     args.push(format!("--data-dir={}", text(t, "dataDir").unwrap_or_default()));
     args.extend(text(t, "serverEnv").map(|e| format!("--server-env={e}")));
@@ -123,8 +119,7 @@ fn server_args(t: &Target) -> Vec<String> {
 fn reachable(t: &Target) -> bool {
     let Ok(client) = beeper_api::client::BeeperClient::try_new(&js_string(&t["baseURL"]), "") else { return false };
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build the tokio runtime");
-    let reply = rt
-        .block_on(async { tokio::time::timeout(Duration::from_secs(1), client.fetch("GET", "/v1/info", None)).await });
+    let reply = rt.block_on(async { tokio::time::timeout(Duration::from_secs(1), client.fetch("GET", "/v1/info", None)).await });
     matches!(reply, Ok(Ok((200..=299, _))))
 }
 

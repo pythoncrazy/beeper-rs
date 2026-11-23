@@ -35,9 +35,8 @@ fn since_input() -> Duration {
 fn is_input(e: &Event) -> bool {
     matches!(
         e,
-        Event::Mouse(
-            mouse::Event::ButtonPressed(_) | mouse::Event::CursorMoved { .. } | mouse::Event::WheelScrolled { .. }
-        ) | Event::Keyboard(keyboard::Event::KeyPressed { .. })
+        Event::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::CursorMoved { .. } | mouse::Event::WheelScrolled { .. })
+            | Event::Keyboard(keyboard::Event::KeyPressed { .. })
             | Event::Touch(_)
     )
 }
@@ -85,9 +84,7 @@ impl BeeperGuiApp {
             None
         });
         let check = iced::time::every(CHECK_EVERY).map(|_| UiMessage::Idle(Msg::Check));
-        let back = self
-            .idle
-            .then(|| iced::event::listen_with(|e, _, _| is_input(&e).then_some(UiMessage::Idle(Msg::Returned))));
+        let back = self.idle.then(|| iced::event::listen_with(|e, _, _| is_input(&e).then_some(UiMessage::Idle(Msg::Returned))));
         [clock, check].into_iter().chain(back)
     }
 }

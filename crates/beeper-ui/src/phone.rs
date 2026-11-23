@@ -80,18 +80,14 @@ impl Pattern {
 }
 
 pub(crate) static COUNTRIES: LazyLock<Vec<Country>> = LazyLock::new(|| {
-    let all: Vec<serde_json::Value> =
-        serde_json::from_str(include_str!("../assets/countries.json")).expect("the country list is JSON");
+    let all: Vec<serde_json::Value> = serde_json::from_str(include_str!("../assets/countries.json")).expect("the country list is JSON");
     let s = |v: &serde_json::Value| v.as_str().expect("a country string").to_string();
     all.iter()
         .map(|c| {
             let format = match &c[3] {
                 serde_json::Value::String(m) => Format::Mask(m.clone()),
                 serde_json::Value::Object(o) => Format::Rules(
-                    o.iter()
-                        .filter(|(k, _)| *k != "default")
-                        .map(|(k, v)| (Pattern::new(k.trim_matches('/')), s(v)))
-                        .collect(),
+                    o.iter().filter(|(k, _)| *k != "default").map(|(k, v)| (Pattern::new(k.trim_matches('/')), s(v))).collect(),
                     o.get("default").map(s),
                 ),
                 _ => Format::Default,
@@ -226,11 +222,7 @@ fn guess(phone: &str, current: Option<usize>) -> (Option<usize>, bool) {
                 set(&mut best, i, true);
             }
         }
-        if !best.1
-            && r.len() < c.dial.len()
-            && c.dial.starts_with(&r)
-            && best.0.is_none_or(|b| num(&c.dial) <= num(&COUNTRIES[b].dial))
-        {
+        if !best.1 && r.len() < c.dial.len() && c.dial.starts_with(&r) && best.0.is_none_or(|b| num(&c.dial) <= num(&COUNTRIES[b].dial)) {
             set(&mut best, i, false);
         }
     }
@@ -345,15 +337,7 @@ impl Phone {
     /// form's reset of its values comes after the field's first `onChange`.
     pub fn new(value: &str, country: usize) -> (Self, String) {
         let (phone, input, country) = derive(value, country, false);
-        let mut p = Phone {
-            country,
-            input,
-            phone: phone.clone(),
-            focus: country,
-            shown: usize::MAX,
-            scroll: 0.0,
-            ..Default::default()
-        };
+        let mut p = Phone { country, input, phone: phone.clone(), focus: country, shown: usize::MAX, scroll: 0.0, ..Default::default() };
         p.show(country);
         (p, if value.is_empty() { String::new() } else { phone })
     }
@@ -509,17 +493,15 @@ impl BeeperGuiApp {
     /// The selector is a 32 px `--color-bg-fill-primary` button with the 14 px flag 9 px in and the dial code 27 px in,
     /// and the input is the login form's field.
     pub(crate) fn view_phone<'a>(
-        &'a self, phone: &'a Phone, ids: (String, String), placeholder: &str,
-        go: impl Fn(PhoneMsg) -> UiMessage + Clone + 'a, submit: UiMessage,
+        &'a self, phone: &'a Phone, ids: (String, String), placeholder: &str, go: impl Fn(PhoneMsg) -> UiMessage + Clone + 'a,
+        submit: UiMessage,
     ) -> El<'a> {
         let p = &self.pal;
         let c = &COUNTRIES[phone.country];
         let flag = |c: &Country, size: f32| -> El<'a> {
-            container(
-                crate::style::fixed(flag(&c.iso2), size, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT),
-            )
-            .center(size)
-            .into()
+            container(crate::style::fixed(flag(&c.iso2), size, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT))
+                .center(size)
+                .into()
         };
         let preview = txt(format!("+{}", c.dial), 12.0).line_height(iced::Pixels(rem(15.0))).color(p.fg);
         let selector = button(container(row![flag(c, 14.0), preview].spacing(4).align_y(Center)).center_y(32))
@@ -568,10 +550,8 @@ impl BeeperGuiApp {
             let room = LIST_WIDTH - GUTTER - 16.0 - 16.0 - 8.0 - 8.0;
             let room = room - crate::style::text_width(&dial, 14.0, Weight::Normal);
             let name = ell(&c.name, room, 14.0, Weight::Normal).color(LIST_TEXT);
-            let flag = container(
-                crate::style::fixed(flag(&c.iso2), 16.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT),
-            )
-            .center(16);
+            let flag = container(crate::style::fixed(flag(&c.iso2), 16.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT))
+                .center(16);
             let content = row![flag, name, txt(dial, 14.0).color(LIST_DIAL)].spacing(8).align_y(Center);
             let bg = if i == phone.country || i == phone.focus { LIST_SELECTED } else { CLEAR };
             button(container(content).center_y(ITEM).padding([0, 8]))
@@ -622,8 +602,7 @@ impl Widget<UiMessage, Theme, Renderer> for Anchored<'_> {
     crate::delegate::delegate!(size, layout, update(UiMessage), mouse_interaction, draw, operate);
 
     fn overlay<'b>(
-        &'b mut self, tree: &'b mut widget::Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle,
-        translation: Vector,
+        &'b mut self, tree: &'b mut widget::Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle, translation: Vector,
     ) -> Option<overlay::Element<'b, UiMessage, Theme, Renderer>> {
         let (content, rest) = tree.children.split_first_mut().expect("the field has a tree");
         let selector = layout.children().next().map_or(layout.bounds(), |l| l.bounds()) + translation;

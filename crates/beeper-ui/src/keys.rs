@@ -13,11 +13,7 @@ impl BeeperGuiApp {
             return self.sortable(sortable::Msg::Drop);
         }
         // Chromium's Space on a focused control of the main window, when the composer does not take the keys.
-        if text == " "
-            && Some(id) == self.main_window
-            && self.key_targets.contains_key(&id)
-            && !self.composer_takes_keys()
-        {
+        if text == " " && Some(id) == self.main_window && self.key_targets.contains_key(&id) && !self.composer_takes_keys() {
             return self.focus_space(id, false).unwrap_or_else(Task::none);
         }
         // Desktop's `handleThreadSelection`: J and K move or grow the selection of chats like ↓ and ↑ in the
@@ -39,9 +35,7 @@ impl BeeperGuiApp {
             return self.update(UiMessage::WindowKey(id, arrow, Modifiers::empty()));
         }
         // Desktop's hotkeys without a modifier, like the "e" of Chat: Toggle Archive, while no chat is open.
-        if self.find_hotkey(&Key::Character(text.as_str().into()), Modifiers::empty()).is_some()
-            && self.window_points_chats(id)
-        {
+        if self.find_hotkey(&Key::Character(text.as_str().into()), Modifiers::empty()).is_some() && self.window_points_chats(id) {
             return self.update(UiMessage::WindowKey(id, Key::Character(text.into()), Modifiers::empty()));
         }
         if self.chat_windows.iter().any(|w| w.0 == id) {
@@ -293,10 +287,7 @@ impl BeeperGuiApp {
     /// Tab and Shift+Tab move and Enter presses the focused button.
     fn focus_keys(&mut self, key: &Key, mods: Modifiers) -> Option<Task<UiMessage>> {
         let window = self.swapped.or(self.main_window);
-        let modal = self.show_command_palette
-            || self.forward.is_some()
-            || self.creating_chat.is_some()
-            || self.pane.carousel.is_some();
+        let modal = self.show_command_palette || self.forward.is_some() || self.creating_chat.is_some() || self.pane.carousel.is_some();
         let free = self.pane.selected_chat_id.is_none() && !modal;
         // New Chat's own Enter starts the group from its encryption prompt.
         let asking = window.is_some_and(|w| self.asking(w));
@@ -328,9 +319,8 @@ impl BeeperGuiApp {
                     self.pane.key_focus.set(None);
                     return Some(self.update(press));
                 }
-                (!self.popup_menu_open() && self.pane.picker.is_none()).then(|| {
-                    focus::caret(window, self.composer_id()).map(|at| UiMessage::Composer(composer::Msg::Enter(at)))
-                })
+                (!self.popup_menu_open() && self.pane.picker.is_none())
+                    .then(|| focus::caret(window, self.composer_id()).map(|at| UiMessage::Composer(composer::Msg::Enter(at))))
             }
             _ => None,
         }
@@ -399,8 +389,7 @@ impl BeeperGuiApp {
             }
             Key::Named(Named::ArrowUp | Named::ArrowDown) if plain && self.can_select_messages() => {
                 let down = *key == Key::Named(Named::ArrowDown);
-                let edit =
-                    !down && self.pane.selected_msgs.is_empty() && self.store.read().settings.pref("upArrow") == 1;
+                let edit = !down && self.pane.selected_msgs.is_empty() && self.store.read().settings.pref("upArrow") == 1;
                 let step = self.update(UiMessage::Message(message::Msg::Step(down, mods.shift())));
                 let Some(m) = edit.then(|| self.last_own_message()).flatten() else { return Some(step) };
                 self.pane.selected_msgs = vec![m.id.clone()];
@@ -427,9 +416,7 @@ impl BeeperGuiApp {
                 self.forward.as_mut().expect("forward").picked.pop();
                 Some(Task::none())
             }
-            Key::Named(Named::Enter) if mods.is_empty() && drafting => {
-                Some(self.update(UiMessage::NewChat(new_chat::Msg::Start)))
-            }
+            Key::Named(Named::Enter) if mods.is_empty() && drafting => Some(self.update(UiMessage::NewChat(new_chat::Msg::Start))),
             Key::Named(Named::Backspace) if drafting && self.new_chat_query.is_empty() => {
                 let n = self.creating_chat.expect("an open draft");
                 self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").users.pop();
@@ -444,15 +431,11 @@ impl BeeperGuiApp {
     fn selection_key(&mut self, key: &Key, mods: Modifiers) -> Option<Task<UiMessage>> {
         let cmd = mods.command() && !mods.shift();
         match key.as_ref() {
-            Key::Named(Named::ArrowRight)
-                if mods.is_empty() && self.single_msg().is_some() && self.can_select_messages() =>
-            {
+            Key::Named(Named::ArrowRight) if mods.is_empty() && self.single_msg().is_some() && self.can_select_messages() => {
                 let mid = self.single_msg().cloned().expect("a selected message");
                 Some(self.update(UiMessage::Message(message::Msg::ReactOn(mid))))
             }
-            Key::Character("c") if cmd && selectable::has_selection() => {
-                Some(iced::clipboard::write(selectable::text()))
-            }
+            Key::Character("c") if cmd && selectable::has_selection() => Some(iced::clipboard::write(selectable::text())),
             Key::Character("c") if cmd && !self.pane.selected_msgs.is_empty() => {
                 let stamp = self.store.read().settings.on("copyTimestamps");
                 Some(self.update(UiMessage::Message(message::Msg::CopySelected(stamp))))

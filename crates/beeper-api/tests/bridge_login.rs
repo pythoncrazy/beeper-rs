@@ -22,12 +22,7 @@ async fn server_with(name: &str, accounts: Vec<BridgeAccountInfo>) -> (u16, Brid
     let mut cfg = CentralConfig::new(dir, "127.0.0.1".into(), port, None);
     (cfg.api_url, cfg.homeserver) = (url.clone(), url.clone());
     let store = StoreLock::shared(BeeperStore::from_config(cfg));
-    let session = MatrixSession {
-        user_id: "@me:beeper.com".into(),
-        access_token: "tok".into(),
-        device_id: "D".into(),
-        jwt: None,
-    };
+    let session = MatrixSession { user_id: "@me:beeper.com".into(), access_token: "tok".into(), device_id: "D".into(), jwt: None };
     store.write().sign_in(session, url, &Profile::default(), accounts);
     tokio::spawn(serve_http(listener, store));
     (port, bridges)
@@ -58,8 +53,7 @@ async fn login_sessions_drive_the_bridge_steps() {
     let call = |m: &'static str, p: String, b: Value| call(port, m, p, b);
     let base = "/v1/bridges/telegram";
     let (status, flows) = call("GET", format!("{base}/login-flows"), Value::Null).await;
-    let first =
-        json!({ "id": "phone", "name": "Phone Number", "description": "Login using your Telegram phone number" });
+    let first = json!({ "id": "phone", "name": "Phone Number", "description": "Login using your Telegram phone number" });
     assert_eq!((status, &flows["items"][0]), (200, &first));
     let (status, s) = call("POST", format!("{base}/login-sessions"), json!({})).await;
     assert_eq!(status, 200, "{s}");
@@ -67,10 +61,7 @@ async fn login_sessions_drive_the_bridge_steps() {
     let field = json!({ "id": "fi.mau.telegram.login.phone_number", "type": "phone_number" });
     let step = json!({ "type": "user_input", "stepID": "fi.mau.telegram.login.phone_number",
                        "instructions": "Please enter your phone number", "fields": [field] });
-    assert_eq!(
-        s,
-        json!({ "loginSessionID": sid, "bridgeID": "telegram", "status": "waiting_for_input", "currentStep": step })
-    );
+    assert_eq!(s, json!({ "loginSessionID": sid, "bridgeID": "telegram", "status": "waiting_for_input", "currentStep": step }));
     assert_eq!(call("GET", format!("{base}/login-sessions/{sid}"), Value::Null).await.1, s);
     let steps = format!("{base}/login-sessions/{sid}/steps");
     let wrong = call("POST", format!("{steps}/other"), json!({ "type": "user_input" })).await;
@@ -107,10 +98,7 @@ async fn sessions_show_qr_and_cookie_steps_and_cancel() {
     assert_eq!(call("GET", path, Value::Null).await.0, 404);
     let (_, x) = call("POST", "/v1/bridges/twitter/login-sessions".into(), json!({})).await;
     let fields = json!([{ "id": "ct0" }, { "id": "auth_token" }]);
-    assert_eq!(
-        (&x["status"], &x["currentStep"]["url"]),
-        (&json!("waiting_for_cookies"), &json!("https://x.com/i/flow/login"))
-    );
+    assert_eq!((&x["status"], &x["currentStep"]["url"]), (&json!("waiting_for_cookies"), &json!("https://x.com/i/flow/login")));
     assert_eq!((&x["currentStep"]["fields"], &x["currentStep"]["userAgent"]), (&fields, &json!("Mozilla/5.0")));
     assert_eq!(call("GET", "/v1/bridges/nope/login-flows".into(), Value::Null).await.0, 400);
     let other = call("POST", "/v1/bridges/signal/login-sessions".into(), json!({ "accountID": "missing" })).await;
@@ -149,8 +137,7 @@ async fn bridges_use_cloud_ids_and_remove_logins() {
     assert_eq!(call("POST", remove, json!({ "scope": "all-devices" })).await.0, 404);
     let last = call("POST", "/v1/bridges/slackgo/logins/T2-U2/remove", json!({ "scope": "all-devices" })).await;
     assert_eq!(last.0, 200);
-    let sent: Vec<String> =
-        bridges.requests().into_iter().filter(|r| r.contains("logout") || r.starts_with("DELETE")).collect();
+    let sent: Vec<String> = bridges.requests().into_iter().filter(|r| r.contains("logout") || r.starts_with("DELETE")).collect();
     let logout = "POST /_matrix/client/unstable/com.beeper.bridge/slackgo/_matrix/provision/v3/logout/T1-U1";
     assert_eq!(sent, [logout, "DELETE /bridge/slackgo"]);
     assert_eq!(call("GET", "/v1/accounts", Value::Null).await.1, json!([]));

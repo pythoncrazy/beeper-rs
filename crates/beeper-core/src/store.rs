@@ -1,7 +1,7 @@
 use crate::config::{
-    assert_not_original_beeper_dir, millis_from_rfc3339, now_rfc3339_millis, now_unix_millis, now_unix_secs,
-    rfc3339_from_millis, CentralConfig, DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN,
-    DEFAULT_USER_ID, SEED_JSON, WS_CHANNEL_CAPACITY,
+    assert_not_original_beeper_dir, millis_from_rfc3339, now_rfc3339_millis, now_unix_millis, now_unix_secs, rfc3339_from_millis,
+    CentralConfig, DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEED_JSON,
+    WS_CHANNEL_CAPACITY,
 };
 use crate::matrix::{MediaInfo, Mention, Outgoing, ThreadSend};
 use crate::models::*;
@@ -183,8 +183,7 @@ fn transcriptions() -> String {
     )
 }
 /// Schema 6 adds the outbox: the JSON of each `Outgoing`, and the file of a media message.
-const OUTBOX: &str =
-    "CREATE TABLE outbox (id INTEGER PRIMARY KEY, chat_id TEXT NOT NULL, json TEXT NOT NULL, bytes BLOB) STRICT;";
+const OUTBOX: &str = "CREATE TABLE outbox (id INTEGER PRIMARY KEY, chat_id TEXT NOT NULL, json TEXT NOT NULL, bytes BLOB) STRICT;";
 /// Schema 7 changes the cross-signing and backup secrets of the state from texts to flags, like Desktop's.
 fn secret_flags() -> String {
     let flag = |k: &str| format!("'$.secrets.{k}', json(iif(value ->> '$.secrets.{k}' IN ('', 0), 'false', 'true'))");
@@ -756,19 +755,16 @@ impl BeeperStore {
                 }
             }
             SCHEMA_VERSION => {}
-            other => panic!(
-                "{} has schema version {other}, and this beeper-rs build reads version {SCHEMA_VERSION}",
-                config.db_path.display()
-            ),
+            other => {
+                panic!("{} has schema version {other}, and this beeper-rs build reads version {SCHEMA_VERSION}", config.db_path.display())
+            }
         }
         let stored_token = "SELECT value ->> '$.access_token' FROM kv WHERE key = ?1";
-        let token: Option<String> =
-            conn.query_row(stored_token, [KEY_STATE], |r| r.get(0)).optional().expect("read the stored token");
+        let token: Option<String> = conn.query_row(stored_token, [KEY_STATE], |r| r.get(0)).optional().expect("read the stored token");
         // A data folder from `--demo` holds the demo account, which must never reach the network.
         config.demo |= token.as_deref() == Some(DEFAULT_TOKEN);
         let beeper_state = if config.demo { demo_state() } else { BeeperStateRecord::default() };
-        let features =
-            if config.demo { crate::features::Flags::free_plan() } else { crate::features::Flags::default() };
+        let features = if config.demo { crate::features::Flags::free_plan() } else { crate::features::Flags::default() };
         let mut store = crate::with_defaults!(Self {
             config,
             db: Mutex::new(conn),
@@ -889,12 +885,10 @@ impl BeeperStore {
     /// [`Self::scan_stored`] with the row `n` of each message.
     fn scan_rows(&self, filter: &str, args: impl rusqlite::Params, mut f: impl FnMut(i64, Message) -> bool) {
         let db = self.db.lock().unwrap();
-        let mut q =
-            db.prepare_cached(&format!("SELECT n, json FROM messages WHERE {filter}")).expect("prepare a message read");
+        let mut q = db.prepare_cached(&format!("SELECT n, json FROM messages WHERE {filter}")).expect("prepare a message read");
         let mut rows = q.query(args).expect("read messages");
         while let Some(row) = rows.next().expect("read a message row") {
-            let mut m: Message =
-                serde_json::from_str(row.get_ref(1).unwrap().as_str().unwrap()).expect("parse a stored message");
+            let mut m: Message = serde_json::from_str(row.get_ref(1).unwrap().as_str().unwrap()).expect("parse a stored message");
             m.sync_flags();
             if !f(row.get(0).expect("a message row"), m) {
                 break;
@@ -1090,8 +1084,7 @@ impl BeeperStore {
             return;
         }
         let shown = self.shown.iter().filter_map(|c| self.chat_idx_by_id.get(c));
-        let shown: HashSet<&str> =
-            shown.flat_map(|&i| self.members(i).into_iter().chain([i])).map(|i| self.chats[i].id.as_str()).collect();
+        let shown: HashSet<&str> = shown.flat_map(|&i| self.members(i).into_iter().chain([i])).map(|i| self.chats[i].id.as_str()).collect();
         let old = self.loaded[..self.loaded.len() - 1].iter().filter(|c| {
             let drop = live > LOADED_MESSAGES / 2 && !shown.contains(c.as_str());
             live -= if drop { self.chat_msg_indices[*c].len() } else { 0 };
@@ -1259,8 +1252,7 @@ impl BeeperStore {
         if let Some(state) = self.kv_json(KEY_STATE) {
             self.beeper_state = state;
         }
-        self.connect =
-            crate::connect::Connect::load(self.kv(crate::connect::KEY_TOKENS), self.kv(crate::connect::KEY_CLIENTS));
+        self.connect = crate::connect::Connect::load(self.kv(crate::connect::KEY_TOKENS), self.kv(crate::connect::KEY_CLIENTS));
         if let Some(scheduled) = self.kv_json(KEY_SCHEDULED) {
             self.scheduled = scheduled;
         }
@@ -1378,9 +1370,7 @@ impl BeeperStore {
     }
 
     /// Desktop's `createToken` of Settings > Integrations: a token without a request.
-    pub fn create_token(
-        &mut self, scopes: Vec<String>, expires_secs: i64, client: Option<crate::connect::ClientInfo>,
-    ) -> String {
+    pub fn create_token(&mut self, scopes: Vec<String>, expires_secs: i64, client: Option<crate::connect::ClientInfo>) -> String {
         let token = self.connect.create(scopes, expires_secs, client);
         self.persist_connect();
         token
@@ -1396,24 +1386,12 @@ impl BeeperStore {
     }
 
     /// Desktop's `scheduleMessages` for one content part: a text, or a stored upload with `text` as its caption.
-    pub fn schedule(
-        &mut self, chat_id: &str, text: String, reply_to: Option<String>, at: (i64, bool), upload: Option<String>,
-    ) {
+    pub fn schedule(&mut self, chat_id: &str, text: String, reply_to: Option<String>, at: (i64, bool), upload: Option<String>) {
         let (send_on, no_reply) = at;
         let chat_id = self.resolve_canonical_chat_id(chat_id).expect("schedule in a known chat");
         let id = self.next_id("pending");
         let added_on = crate::config::now_unix_millis();
-        let s = Scheduled {
-            id,
-            chat_id,
-            text,
-            reply_to,
-            added_on,
-            send_on,
-            send_only_on_no_response: no_reply,
-            canceled: false,
-            upload,
-        };
+        let s = Scheduled { id, chat_id, text, reply_to, added_on, send_on, send_only_on_no_response: no_reply, canceled: false, upload };
         self.scheduled.push(s);
         self.persist_scheduled();
     }
@@ -1446,8 +1424,7 @@ impl BeeperStore {
             })
             .collect();
         cancel.iter().for_each(|&i| self.scheduled[i].canceled = true);
-        let (due, rest) =
-            std::mem::take(&mut self.scheduled).into_iter().partition(|s| !s.canceled && s.send_on <= now);
+        let (due, rest) = std::mem::take(&mut self.scheduled).into_iter().partition(|s| !s.canceled && s.send_on <= now);
         self.scheduled = rest;
         let due: Vec<Scheduled> = due;
         if !cancel.is_empty() || !due.is_empty() {
@@ -1458,8 +1435,7 @@ impl BeeperStore {
 
     /// Answers a token request from the "Approve connection" dialog.
     pub fn answer_token_request(&mut self, id: &str, grant: Option<(Vec<String>, i64)>) {
-        let outcome =
-            if grant.is_some() { crate::connect::Outcome::Approved } else { crate::connect::Outcome::Rejected };
+        let outcome = if grant.is_some() { crate::connect::Outcome::Approved } else { crate::connect::Outcome::Rejected };
         if self.connect.answer(id, grant) {
             self.persist_connect();
             self.connect_tx.send((id.to_string(), Some(outcome))).ok();
@@ -1679,9 +1655,7 @@ impl BeeperStore {
         self.persist_state_to_sqlite();
     }
 
-    pub fn sign_in(
-        &mut self, session: MatrixSession, homeserver: String, profile: &Profile, accounts: Vec<BridgeAccountInfo>,
-    ) {
+    pub fn sign_in(&mut self, session: MatrixSession, homeserver: String, profile: &Profile, accounts: Vec<BridgeAccountInfo>) {
         assert!(!self.signed_in(), "sign in while already signed in as {}", self.beeper_state.user_id);
         if self.setup.is_none() {
             self.finish_setup(Setup::Fresh);
@@ -1699,13 +1673,7 @@ impl BeeperStore {
         self.whoami = profile.clone();
         self.ensure_note_chat(profile);
         self.set_cloud_accounts(accounts);
-        self.emit_ws(
-            "chat.upserted",
-            NOTE_CHAT_ID,
-            None,
-            Some(self.chats[self.chat_idx_by_id[NOTE_CHAT_ID]].clone()),
-            None,
-        );
+        self.emit_ws("chat.upserted", NOTE_CHAT_ID, None, Some(self.chats[self.chat_idx_by_id[NOTE_CHAT_ID]].clone()), None);
     }
 
     fn ensure_note_chat(&mut self, profile: &Profile) {
@@ -1760,9 +1728,9 @@ impl BeeperStore {
         for c in &self.chats {
             for u in &c.participants.items {
                 if u.is_self != Some(true)
-                    && u.full_name.as_deref().is_some_and(|n| {
-                        !n.is_empty() && !self.contacts.iter().any(|x| x.full_name.as_deref() == Some(n))
-                    })
+                    && u.full_name
+                        .as_deref()
+                        .is_some_and(|n| !n.is_empty() && !self.contacts.iter().any(|x| x.full_name.as_deref() == Some(n)))
                 {
                     self.contacts.push(User { id: format!("contact:{}:{}", c.account_id, u.id), ..u.clone() });
                 }
@@ -1796,8 +1764,7 @@ impl BeeperStore {
     /// The outbox row `id`, or all rows in order.
     fn outbox_rows(&self, id: Option<i64>) -> Vec<(i64, String, Outgoing)> {
         let db = self.db.lock().unwrap();
-        let mut q =
-            db.prepare_cached("SELECT id, chat_id, json, bytes FROM outbox WHERE ?1 IN (id, 0) ORDER BY id").unwrap();
+        let mut q = db.prepare_cached("SELECT id, chat_id, json, bytes FROM outbox WHERE ?1 IN (id, 0) ORDER BY id").unwrap();
         let rows = q.query_map([id.unwrap_or(0)], |r| {
             let mut out: Outgoing = serde_json::from_str(&r.get::<_, String>(2)?).expect("parse a stored change");
             if let Outgoing::Media { bytes, .. } = &mut out {
@@ -2106,8 +2073,7 @@ impl BeeperStore {
     /// Desktop's `createLabel`: adds the label here at once and creates its label space on the homeserver.
     pub fn create_label(&mut self, name: &str, color: Option<u8>, icon: Option<String>, rooms: Vec<String>) -> String {
         assert!(!name.trim().is_empty(), "a label has a name");
-        let label =
-            Label { id: self.next_id("label"), name: name.trim().into(), color, icon, rooms, ..Label::default() };
+        let label = Label { id: self.next_id("label"), name: name.trim().into(), color, icon, rooms, ..Label::default() };
         let id = label.id.clone();
         self.set_label(label.clone());
         self.queue(&id, Outgoing::CreateLabel(label));
@@ -2127,8 +2093,7 @@ impl BeeperStore {
         assert!(!name.trim().is_empty(), "a label has a name");
         let old = self.labels.iter().find(|l| l.id == id).expect("an edited label").clone();
         let removed = old.rooms.iter().filter(|r| !rooms.contains(r)).map(|r| (r.clone(), false));
-        let changes =
-            rooms.iter().filter(|r| !old.rooms.contains(r)).map(|r| (r.clone(), true)).chain(removed).collect();
+        let changes = rooms.iter().filter(|r| !old.rooms.contains(r)).map(|r| (r.clone(), true)).chain(removed).collect();
         let label = Label { name: name.trim().into(), color, icon, rooms, ..old };
         self.set_label(label.clone());
         self.queue(id, Outgoing::EditLabel(label, changes));
@@ -2148,8 +2113,7 @@ impl BeeperStore {
         let idx = self.chat_idx_by_id[id];
         let kind = self.chats[idx].timers.as_ref().expect("the room has disappearing timers").kind.clone();
         self.update_chat(idx, |c| c.disappearing = Some(timer).filter(|&t| t > 0));
-        let content =
-            if timer == 0 { serde_json::json!({}) } else { serde_json::json!({ "type": kind, "timer": timer }) };
+        let content = if timer == 0 { serde_json::json!({}) } else { serde_json::json!({ "type": kind, "timer": timer }) };
         self.queue(id, Outgoing::State(DISAPPEARING_TIMER.into(), content));
     }
 
@@ -2188,15 +2152,9 @@ impl BeeperStore {
     /// Desktop's `updateGroup` from the Edit Group window: the changed title and description of a group, and its new
     /// avatar (a local URL of the image, the image and its MIME type) or `Some(None)` to remove the avatar.
     pub fn update_group(
-        &mut self, id: &str, title: Option<String>, topic: Option<String>,
-        avatar: Option<Option<(String, Vec<u8>, String)>>,
+        &mut self, id: &str, title: Option<String>, topic: Option<String>, avatar: Option<Option<(String, Vec<u8>, String)>>,
     ) {
-        self.apply_group(
-            id,
-            title.as_deref(),
-            topic.as_deref(),
-            avatar.as_ref().map(|a| a.as_ref().map(|a| a.0.as_str())),
-        );
+        self.apply_group(id, title.as_deref(), topic.as_deref(), avatar.as_ref().map(|a| a.as_ref().map(|a| a.0.as_str())));
         if let Some(name) = title {
             self.queue(id, Outgoing::State("m.room.name".into(), serde_json::json!({ "name": name })));
         }
@@ -2209,9 +2167,7 @@ impl BeeperStore {
     }
 
     /// Desktop's `setPersonalRoomName` and `setPersonalRoomAvatar`: `Some(None)` removes the name or the photo.
-    pub fn set_personal(
-        &mut self, id: &str, title: Option<Option<String>>, avatar: Option<Option<(String, Vec<u8>, String)>>,
-    ) {
+    pub fn set_personal(&mut self, id: &str, title: Option<Option<String>>, avatar: Option<Option<(String, Vec<u8>, String)>>) {
         let idx = self.chat_idx_by_id[id];
         self.update_chat(idx, |c| {
             let (old_title, old_img) = c.personal_parts();
@@ -2292,9 +2248,8 @@ impl BeeperStore {
     pub fn upsert_chat(&mut self, mut chat: Chat) {
         let Some(&idx) = self.chat_idx_by_id.get(&chat.id) else {
             chat.label_ids = self.labels.iter().filter(|l| l.rooms.contains(&chat.id)).map(|l| l.id.clone()).collect();
-            let in_union = |c: &&Chat| {
-                c.flags & CHAT_INACTIVE_UNION == 0 && c.merge.as_ref().is_some_and(|m| m.chat_ids.contains(&chat.id))
-            };
+            let in_union =
+                |c: &&Chat| c.flags & CHAT_INACTIVE_UNION == 0 && c.merge.as_ref().is_some_and(|m| m.chat_ids.contains(&chat.id));
             chat.merged_into_chat_id = self.chats.iter().find(in_union).map(|c| c.id.clone());
             let idx = self.push_chat(chat, true);
             let c = self.chats[idx].clone();
@@ -2318,10 +2273,7 @@ impl BeeperStore {
                 older: std::mem::take(&mut c.older),
                 thread_reads: std::mem::take(&mut c.thread_reads),
                 // A read here goes ahead of the receipt that the homeserver shows later.
-                last_read_message_sort_key: c
-                    .last_read_message_sort_key
-                    .take()
-                    .max(chat.last_read_message_sort_key.clone()),
+                last_read_message_sort_key: c.last_read_message_sort_key.take().max(chat.last_read_message_sort_key.clone()),
                 ..chat
             }
         };
@@ -2455,9 +2407,7 @@ impl BeeperStore {
             let m = self.messages[idx].clone();
             return self.emit_ws("message.upserted", &m.chat_id, Some(&m.id), None, Some(m.clone()));
         };
-        if msg.text.as_deref() == Some(crate::matrix::UTD_TEXT)
-            && self.messages[idx].text.as_deref() != Some(crate::matrix::UTD_TEXT)
-        {
+        if msg.text.as_deref() == Some(crate::matrix::UTD_TEXT) && self.messages[idx].text.as_deref() != Some(crate::matrix::UTD_TEXT) {
             return;
         }
         self.update_message(idx, |m| {
@@ -2617,8 +2567,7 @@ impl BeeperStore {
         let members = self.members(idx);
         let default = self.chats[idx].merge.as_ref().and_then(|m| m.default_chat_id.as_deref());
         let default = default.and_then(|d| members.iter().copied().find(|&i| self.chats[i].id == d));
-        let newest =
-            || members.iter().copied().max_by(|&a, &b| self.chats[a].last_activity.cmp(&self.chats[b].last_activity));
+        let newest = || members.iter().copied().max_by(|&a, &b| self.chats[a].last_activity.cmp(&self.chats[b].last_activity));
         default.or_else(newest).unwrap_or(idx)
     }
 
@@ -2676,9 +2625,7 @@ impl BeeperStore {
         self.set_typing(chat, ids);
     }
 
-    pub fn emit_ws(
-        &self, event_type: &str, chat_id: &str, message_id: Option<&str>, chat: Option<Chat>, message: Option<Message>,
-    ) {
+    pub fn emit_ws(&self, event_type: &str, chat_id: &str, message_id: Option<&str>, chat: Option<Chat>, message: Option<Message>) {
         self.ws_tx
             .send(WsEvent {
                 event_type: event_type.to_string(),
@@ -2755,19 +2702,9 @@ impl BeeperStore {
     /// Desktop's `createUnion`: a merged chat of `rooms` here at once, and a `com.beeper.union` room with their
     /// `m.space.child` state, the title and the photo `avatar` (an `mxc://` URL) on the homeserver. Returns the ID of
     /// the merged chat, which stays its local ID once the room exists ([`Self::created_union`]).
-    pub fn create_union(
-        &mut self, title: &str, rooms: Vec<String>, default: Option<String>, avatar: Option<String>,
-    ) -> String {
+    pub fn create_union(&mut self, title: &str, rooms: Vec<String>, default: Option<String>, avatar: Option<String>) -> String {
         let title = Some(title.to_string()).filter(|t| !t.is_empty());
-        let (chat, _) = self.create_or_start_chat(
-            "hungryserv",
-            "single",
-            title.clone(),
-            Vec::new(),
-            None,
-            Some(rooms.clone()),
-            default,
-        );
+        let (chat, _) = self.create_or_start_chat("hungryserv", "single", title.clone(), Vec::new(), None, Some(rooms.clone()), default);
         if avatar.is_some() {
             let idx = self.chat_idx(&chat.id);
             self.update_chat(idx, |c| c.img_url.clone_from(&avatar));
@@ -2800,8 +2737,7 @@ impl BeeperStore {
         let id = self.chats[idx].id.clone();
         let old = self.chats[idx].merge.as_ref().map(|m| m.chat_ids.clone()).unwrap_or_default();
         let added = rooms.iter().filter(|r| !old.contains(r)).map(|r| (r.clone(), true));
-        let changes: Vec<(String, bool)> =
-            added.chain(old.iter().filter(|r| !rooms.contains(r)).map(|r| (r.clone(), false))).collect();
+        let changes: Vec<(String, bool)> = added.chain(old.iter().filter(|r| !rooms.contains(r)).map(|r| (r.clone(), false))).collect();
         self.set_merge(idx, Some(ChatMergeInfo { chat_ids: rooms, default_chat_id: default }));
         for (room, add) in changes {
             self.queue(&id, Outgoing::LabelChild(room, add));
@@ -2820,8 +2756,8 @@ impl BeeperStore {
 
     #[allow(clippy::too_many_arguments)]
     pub fn create_or_start_chat(
-        &mut self, account_id: &str, chat_type: &str, title: Option<String>, participant_ids: Vec<String>,
-        message_text: Option<String>, merge_chat_ids: Option<Vec<String>>, default_chat_id: Option<String>,
+        &mut self, account_id: &str, chat_type: &str, title: Option<String>, participant_ids: Vec<String>, message_text: Option<String>,
+        merge_chat_ids: Option<Vec<String>>, default_chat_id: Option<String>,
     ) -> (Chat, String) {
         let id = self.next_id("!chat");
         let items: Vec<User> = participant_ids
@@ -2876,16 +2812,13 @@ impl BeeperStore {
 
     /// Desktop's chat update: the draft and the merge of a chat. Returns the changed chat.
     pub fn patch_chat(
-        &mut self, chat_or_local_id: &str, clear_draft: bool, new_draft: Option<ChatDraft>,
-        new_merge: Option<Option<ChatMergeInfo>>,
+        &mut self, chat_or_local_id: &str, clear_draft: bool, new_draft: Option<ChatDraft>, new_merge: Option<Option<ChatMergeInfo>>,
     ) -> Result<Chat, Error> {
         let idx = self.resolve_chat_idx(chat_or_local_id).ok_or(Error::ChatNotFound)?;
         let has_content = |d: &ChatDraft| d.text.as_deref().is_some_and(|s| !s.is_empty()) || !d.attachments.is_empty();
         let draft = match new_draft {
             _ if clear_draft => None,
-            Some(d) if has_content(&d) && self.chats[idx].draft.as_ref().is_some_and(has_content) => {
-                return Err(Error::DraftNotEmpty)
-            }
+            Some(d) if has_content(&d) && self.chats[idx].draft.as_ref().is_some_and(has_content) => return Err(Error::DraftNotEmpty),
             Some(d) => Some(d).filter(has_content),
             None => self.chats[idx].draft.clone(),
         };
@@ -2911,23 +2844,12 @@ impl BeeperStore {
         let Draft { text, mut reply_to, mentions, preview, thread, files, links } = draft;
         assert!(text.is_some() || !files.is_empty(), "a draft has text or files");
         let rules = self.resolve_chat_idx(chat_or_local_id).map(|i| self.chats[self.send_target(i)].file.clone());
-        let captioned = |f: &OutFile| {
-            rules.as_ref().is_some_and(|r| crate::media::takes_caption(r, &f.mime, f.gif, f.voice.is_some()))
-        };
+        let captioned = |f: &OutFile| rules.as_ref().is_some_and(|r| crate::media::takes_caption(r, &f.mime, f.gif, f.voice.is_some()));
         let caption = text.clone().filter(|_| matches!(&files[..], [f] if captioned(f)));
         let (mut chat_id, mut sends) = (String::new(), Vec::new());
         if let Some(text) = text.filter(|_| caption.is_none()) {
-            let send = |txn, reply_to, thread| Outgoing::Send {
-                txn,
-                text: text.clone(),
-                reply_to,
-                preview,
-                mentions,
-                thread,
-                links,
-            };
-            let (cid, out) =
-                self.echo_part(chat_or_local_id, Some(text.clone()), reply_to.take(), None, &thread, send)?;
+            let send = |txn, reply_to, thread| Outgoing::Send { txn, text: text.clone(), reply_to, preview, mentions, thread, links };
+            let (cid, out) = self.echo_part(chat_or_local_id, Some(text.clone()), reply_to.take(), None, &thread, send)?;
             if let Outgoing::Send { txn, preview: Some((v, _)), .. } = &out {
                 if let Some(link) = crate::matrix::link(v) {
                     let i = self.msg_idx_by_id[txn];
@@ -2971,8 +2893,7 @@ impl BeeperStore {
 
     /// Adds the local echo of a sent message. Returns the chat ID, the message ID (also the transaction ID) and the echo.
     pub fn send_message(
-        &mut self, chat_or_local_id: &str, text: Option<String>, reply_to_message_id: Option<String>,
-        attachment: Option<Attachment>,
+        &mut self, chat_or_local_id: &str, text: Option<String>, reply_to_message_id: Option<String>, attachment: Option<Attachment>,
     ) -> Result<(String, String, Message), Error> {
         self.compose(chat_or_local_id, text, reply_to_message_id, attachment, None)
     }
@@ -2993,8 +2914,8 @@ impl BeeperStore {
     }
 
     fn compose(
-        &mut self, chat_or_local_id: &str, text: Option<String>, reply_to_message_id: Option<String>,
-        attachment: Option<Attachment>, thread: Option<&ThreadSend>,
+        &mut self, chat_or_local_id: &str, text: Option<String>, reply_to_message_id: Option<String>, attachment: Option<Attachment>,
+        thread: Option<&ThreadSend>,
     ) -> Result<(String, String, Message), Error> {
         let idx = self.resolve_chat_idx(chat_or_local_id).ok_or(Error::ChatNotFound)?;
         // Desktop's `targetComposerAtMessage`: a reply in a merged chat goes to the chat of the message.
@@ -3130,9 +3051,7 @@ impl BeeperStore {
         for (target, removal) in removals {
             self.removals.as_mut().expect("read above").entry(target.clone()).or_default().push(removal);
             match self.find_message(&target) {
-                Some(i) if self.messages[i].is_deleted != Some(true) => {
-                    drop(self.update_message(i, removed_from_beeper))
-                }
+                Some(i) if self.messages[i].is_deleted != Some(true) => drop(self.update_message(i, removed_from_beeper)),
                 Some(i) if !self.messages[i].removed => self.clean_up_removals(&target),
                 _ => {}
             }
@@ -3241,12 +3160,7 @@ impl BeeperStore {
                 let mine = m.is_sender == Some(true);
                 let kept = small && (chat.chat_type != "group" || mine);
                 let reactions: Vec<ThreadRow> = (m.reactions.iter().filter(|_| kept))
-                    .map(|r| ThreadRow {
-                        key: r.sort_key.clone(),
-                        id: r.id.clone(),
-                        mine: self.is_me(&r.participant_id),
-                        mention: false,
-                    })
+                    .map(|r| ThreadRow { key: r.sort_key.clone(), id: r.id.clone(), mine: self.is_me(&r.participant_id), mention: false })
                     .collect();
                 let mention = self.mentions_me(&m);
                 std::iter::once(ThreadRow { key: m.sort_key, id: m.id, mine, mention }).chain(reactions)
@@ -3384,8 +3298,7 @@ impl BeeperStore {
     /// Adds the reaction of the user here, and queues it for the homeserver. Returns the chat ID of the message and the
     /// transaction ID of the reaction.
     pub fn add_reaction(
-        &mut self, chat_or_local_id: &str, message_id: &str, reaction_key: &str, img_url: Option<String>,
-        transaction_id: Option<String>,
+        &mut self, chat_or_local_id: &str, message_id: &str, reaction_key: &str, img_url: Option<String>, transaction_id: Option<String>,
     ) -> Result<(String, String), Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let tx_id = transaction_id.unwrap_or_else(|| self.next_id("tx_rx"));
@@ -3409,13 +3322,10 @@ impl BeeperStore {
 
     /// Removes the reactions of the user with the key here, and queues the redaction of the first one for the
     /// homeserver. Returns the chat ID of the message.
-    pub fn remove_reaction(
-        &mut self, chat_or_local_id: &str, message_id: &str, reaction_key: &str,
-    ) -> Result<String, Error> {
+    pub fn remove_reaction(&mut self, chat_or_local_id: &str, message_id: &str, reaction_key: &str) -> Result<String, Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let mine = |r: &Reaction| r.reaction_key == reaction_key && self.is_me(&r.participant_id);
-        let ids: Vec<String> =
-            self.messages[m_idx].reactions.iter().filter(|r| mine(r)).map(|r| r.id.clone()).collect();
+        let ids: Vec<String> = self.messages[m_idx].reactions.iter().filter(|r| mine(r)).map(|r| r.id.clone()).collect();
         let first = ids.first().ok_or(Error::ReactionNotFound)?.clone();
         self.update_message(m_idx, |m| m.reactions.retain(|r| !ids.contains(&r.id)));
         self.queue(&chat_id, Outgoing::Redact { target: first });
@@ -3503,13 +3413,9 @@ impl BeeperStore {
     /// soonest first, with the event ID of their message.
     pub fn message_reminders_of(&self, chat: &str) -> Vec<(&str, &MessageReminder)> {
         let of = |room: &str| {
-            room == chat
-                || self
-                    .resolve_chat_idx(room)
-                    .is_some_and(|i| self.chats[i].merged_into_chat_id.as_deref() == Some(chat))
+            room == chat || self.resolve_chat_idx(room).is_some_and(|i| self.chats[i].merged_into_chat_id.as_deref() == Some(chat))
         };
-        let mut v: Vec<_> =
-            self.message_reminders.iter().filter(|(_, r)| of(&r.room_id)).map(|(id, r)| (id.as_str(), r)).collect();
+        let mut v: Vec<_> = self.message_reminders.iter().filter(|(_, r)| of(&r.room_id)).map(|(id, r)| (id.as_str(), r)).collect();
         v.sort_by_key(|(id, r)| (r.remind_at_ms, *id));
         v
     }
@@ -3555,8 +3461,7 @@ impl BeeperStore {
         let options: Vec<PollOption> =
             options.map(|(i, label)| PollOption { id: (i + 1).to_string(), label, voter_ids: Vec::new() }).collect();
         let max_selections = if multiple { options.len().max(2) as u32 } else { 1 };
-        let poll =
-            PollData { fallback: question.clone(), question, options, max_selections, undisclosed, ended: false };
+        let poll = PollData { fallback: question.clone(), question, options, max_selections, undisclosed, ended: false };
         let (chat_id, txn, _) = self.send_message(chat, Some(poll.question.clone()), None, None).expect("send a poll");
         self.update_message(self.msg_idx_by_id[&txn], |m| {
             m.html = None;
@@ -3603,8 +3508,7 @@ impl BeeperStore {
     pub fn mark_unread_from_message(&mut self, chat_or_local_id: &str, message_id: &str) {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id).expect("chat message exists");
         let from = self.messages[m_idx].sort_key.clone();
-        let later: Vec<usize> =
-            self.chat_msg_indices[&chat_id].iter().copied().filter(|&i| self.messages[i].sort_key >= from).collect();
+        let later: Vec<usize> = self.chat_msg_indices[&chat_id].iter().copied().filter(|&i| self.messages[i].sort_key >= from).collect();
         for &i in &later {
             self.update_message(i, |m| m.is_unread = Some(true));
         }
@@ -3628,8 +3532,7 @@ impl BeeperStore {
         // A Matrix room keeps no unread mark on its messages, only a count: the messages of others after this one are
         // left of it, until the homeserver counts again from the receipt.
         let marked = indices.iter().filter(|&&i| self.messages[i].is_unread == Some(true)).count();
-        let after =
-            indices.iter().map(|&i| &self.messages[i]).filter(|m| m.sort_key > key && m.is_sender != Some(true));
+        let after = indices.iter().map(|&i| &self.messages[i]).filter(|m| m.sort_key > key && m.is_sender != Some(true));
         let left = u32::try_from(marked)
             .expect("unread count")
             .max(u32::try_from(after.count()).expect("unread count").min(self.chats[idx].unread_count));
@@ -3732,8 +3635,7 @@ impl BeeperStore {
     pub fn store_uploaded_asset(&mut self, file_name: String, mime_type: String, bytes: &[u8]) -> StoredAsset {
         assert!(!bytes.is_empty(), "uploaded asset bytes cannot be empty");
         let upload_id = self.next_id("upl");
-        let safe_name: String =
-            file_name.chars().map(|c| if c.is_alphanumeric() || ".-_".contains(c) { c } else { '_' }).collect();
+        let safe_name: String = file_name.chars().map(|c| if c.is_alphanumeric() || ".-_".contains(c) { c } else { '_' }).collect();
         let disk_name = format!("{upload_id}_{safe_name}");
         std::fs::write(self.config.assets_dir.join(&disk_name), bytes).expect("write uploaded asset to disk");
         // Desktop's `extractMediaDimensions` reads the size of an image.
@@ -3764,9 +3666,7 @@ impl BeeperStore {
         let id = self.assets_by_mxc.get(url).map_or(url, String::as_str);
         match self.assets.get(id) {
             Some(a) => Some((self.config.assets_dir.join(&a.disk_name), a.mime_type.clone())),
-            None => crate::platform::file_url_to_path(url)
-                .filter(|p| p.exists())
-                .map(|p| (p, "application/octet-stream".to_string())),
+            None => crate::platform::file_url_to_path(url).filter(|p| p.exists()).map(|p| (p, "application/octet-stream".to_string())),
         }
     }
 
@@ -3787,9 +3687,8 @@ impl BeeperStore {
     /// The id, chat, Unix seconds and stored bytes of each message.
     pub fn message_sizes(&self) -> Vec<(String, String, i64, u64)> {
         let db = self.db.lock().unwrap();
-        let mut q = db
-            .prepare("SELECT id, chat_id, json_extract(json, '$.timestamp'), length(json) FROM messages")
-            .expect("prepare message sizes");
+        let mut q =
+            db.prepare("SELECT id, chat_id, json_extract(json, '$.timestamp'), length(json) FROM messages").expect("prepare message sizes");
         let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)?, r.get(3)?))).expect("sizes");
         rows.map(|r| {
             let (id, chat, ts, bytes) = r.expect("read a message size");
@@ -3801,12 +3700,9 @@ impl BeeperStore {
     /// Desktop's `deletePendingMessage`: removes the uploads `ids` that no draft and no Send Later entry keep.
     pub fn drop_unused_uploads(&mut self, ids: &[String]) {
         let drafts = self.chats.iter().flat_map(|c| c.draft.iter().flat_map(|d| &d.attachments));
-        let kept: HashSet<&str> = drafts
-            .map(|a| a.upload_id.as_str())
-            .chain(self.scheduled.iter().filter_map(|s| s.upload.as_deref()))
-            .collect();
-        let unused: HashSet<&String> =
-            ids.iter().filter(|id| !kept.contains(id.as_str()) && self.assets.contains_key(*id)).collect();
+        let kept: HashSet<&str> =
+            drafts.map(|a| a.upload_id.as_str()).chain(self.scheduled.iter().filter_map(|s| s.upload.as_deref())).collect();
+        let unused: HashSet<&String> = ids.iter().filter(|id| !kept.contains(id.as_str()) && self.assets.contains_key(*id)).collect();
         let unused: Vec<String> = unused.into_iter().cloned().collect();
         self.forget(&HashSet::new(), &unused);
     }
@@ -3959,15 +3855,13 @@ mod tests {
         let seqs = [-5, -1, 0, 7, 123_456_789];
         for seq in seqs {
             let (key, json) = (old(seq), serde_json::json!({ "sortKey": old(seq) }).to_string());
-            db.execute("INSERT INTO messages (id, chat_id, sort_key, json) VALUES (?1, 'c', ?1, ?2)", [&key, &json])
-                .unwrap();
+            db.execute("INSERT INTO messages (id, chat_id, sort_key, json) VALUES (?1, 'c', ?1, ?2)", [&key, &json]).unwrap();
             let chat = serde_json::json!({ "preview": { "sortKey": key }, "lastReadMessageSortKey": key });
             db.execute("INSERT INTO chats VALUES (?1, ?2)", [&key, &chat.to_string()]).unwrap();
         }
         db.execute_batch(&super::widen_sort_keys().repeat(2)).unwrap();
-        let rows = |sql: &str| -> Vec<String> {
-            db.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
-        };
+        let rows =
+            |sql: &str| -> Vec<String> { db.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect() };
         let want: Vec<String> = seqs.iter().map(|&s| super::sort_key(s)).collect();
         for sql in [
             "SELECT sort_key FROM messages ORDER BY sort_key",
@@ -4019,8 +3913,7 @@ mod tests {
     #[test]
     fn waiting_messages_are_found_by_their_index() {
         let mut st = super::BeeperStore::from_config(crate::testing::demo_config("waiting-index"));
-        let sql =
-            format!("EXPLAIN QUERY PLAN SELECT 1 FROM messages WHERE chat_id = ?1 AND {} LIMIT 1", super::waiting());
+        let sql = format!("EXPLAIN QUERY PLAN SELECT 1 FROM messages WHERE chat_id = ?1 AND {} LIMIT 1", super::waiting());
         let plan: String = st.db.lock().unwrap().query_row(&sql, ["!a:x"], |r| r.get(3)).unwrap();
         assert!(plan.contains("messages_waiting"), "the plan {plan}");
         let m = st.stored("1 LIMIT 1", []).remove(0);
@@ -4175,10 +4068,7 @@ mod tests {
             .unwrap();
         let st = super::BeeperStore::from_config(config);
         let s = &st.beeper_state.secrets;
-        assert_eq!(
-            [s.master_key, s.self_signing_key, s.user_signing_key, s.megolm_backup_key],
-            [true, false, true, false]
-        );
+        assert_eq!([s.master_key, s.self_signing_key, s.user_signing_key, s.megolm_backup_key], [true, false, true, false]);
     }
 
     #[test]
@@ -4263,10 +4153,7 @@ mod tests {
         let t = st.thread_send(root, None, false);
         assert_eq!((t.quoted.as_str(), t.chosen), ("msg_1011", false), "the reply goes to the newest reply");
         let (_, id, msg) = st.send_in_thread(chat, Some("ok".into()), None, &t).unwrap();
-        assert_eq!(
-            (msg.thread_root.as_deref(), msg.fallback, msg.linked_message_id.as_deref()),
-            (Some(root), true, Some("msg_1011"))
-        );
+        assert_eq!((msg.thread_root.as_deref(), msg.fallback, msg.linked_message_id.as_deref()), (Some(root), true, Some("msg_1011")));
         let c = &st.chats[st.chat_idx_by_id[chat]];
         assert_eq!((st.thread_unread(c, root), c.preview.as_ref().unwrap().id.as_str()), ((0, 0), "msg_1010"));
         // Desktop's hidden reaction rows: a reaction to your reply counts as unread in the thread.
@@ -4302,8 +4189,7 @@ mod tests {
         let mut plain = st.chats.iter().filter(|c| c.label_ids.is_empty()).map(|c| c.id.clone());
         let (a, b) = (plain.next().unwrap(), plain.next().unwrap());
         let ids = |st: &super::BeeperStore, c: &str| st.chats[st.chat_idx_by_id[c]].label_ids.clone();
-        let label =
-            super::Label { id: "!work".into(), name: "Work".into(), rooms: vec![a.clone()], ..Default::default() };
+        let label = super::Label { id: "!work".into(), name: "Work".into(), rooms: vec![a.clone()], ..Default::default() };
         st.set_label(label.clone());
         assert_eq!((ids(&st, &a), ids(&st, &b)), (vec!["!work".to_string()], vec![]));
         st.set_label(super::Label { rooms: vec![b.clone()], ..label });
@@ -4318,37 +4204,20 @@ mod tests {
         use super::{Draft, MediaInfo, OutFile, Outgoing};
         let mut st = super::BeeperStore::from_config(crate::testing::demo_config("send-files"));
         let chat = "!tg_rust:beeper.com";
-        let file = |name: &str, mime: &str| OutFile {
-            bytes: vec![1, 2],
-            name: name.into(),
-            mime: mime.into(),
-            ..OutFile::default()
-        };
+        let file = |name: &str, mime: &str| OutFile { bytes: vec![1, 2], name: name.into(), mime: mime.into(), ..OutFile::default() };
         let video = OutFile { size: Some((3, 2)), duration: Some(1.5), ..file("v.mp4", "video/mp4") };
         let draft = Draft { text: Some("look".into()), files: vec![video], ..Draft::default() };
         let (cid, txns) = st.send(chat, draft).unwrap();
         let i = st.find_message(&txns[0]).unwrap();
         let (m, a) = (&st.messages[i], &st.messages[i].attachments[0]);
-        assert_eq!(
-            (cid.as_str(), txns.len(), m.text.as_deref(), a.attachment_type.as_str()),
-            (chat, 1, Some("look"), "video")
-        );
-        assert!(
-            matches!(&st.outbox[..], [(_, c, Outgoing::Media { info: MediaInfo::Video(3, 2, 1500), caption: Some(t), .. })]
-            if c == chat && t == "look")
-        );
-        let draft =
-            Draft { text: Some("two".into()), files: vec![file("a.zip", "application/zip"); 2], ..Draft::default() };
+        assert_eq!((cid.as_str(), txns.len(), m.text.as_deref(), a.attachment_type.as_str()), (chat, 1, Some("look"), "video"));
+        assert!(matches!(&st.outbox[..], [(_, c, Outgoing::Media { info: MediaInfo::Video(3, 2, 1500), caption: Some(t), .. })]
+            if c == chat && t == "look"));
+        let draft = Draft { text: Some("two".into()), files: vec![file("a.zip", "application/zip"); 2], ..Draft::default() };
         let (_, txns) = st.send(chat, draft).unwrap();
-        let kinds: Vec<_> = txns
-            .iter()
-            .map(|t| st.messages[st.msg_idx_by_id[t]].attachments.first().map(|a| a.attachment_type.clone()))
-            .collect();
-        assert_eq!(
-            kinds,
-            [None, Some("unknown".into()), Some("unknown".into())],
-            "the text and each file go as one message each"
-        );
+        let kinds: Vec<_> =
+            txns.iter().map(|t| st.messages[st.msg_idx_by_id[t]].attachments.first().map(|a| a.attachment_type.clone())).collect();
+        assert_eq!(kinds, [None, Some("unknown".into()), Some("unknown".into())], "the text and each file go as one message each");
         assert_eq!(st.outbox.len(), 4);
     }
     /// Desktop's `setSnooze` and `clearSnooze`: `com.beeper.chats.snoozed` room account data with the end of the
@@ -4375,8 +4244,7 @@ mod tests {
         let mut st = super::BeeperStore::from_config(crate::testing::demo_config("merged-members"));
         let (kai, lena) = ("!ig_kai:beeper.com", "!sg_lena:beeper.com");
         let members = Some(vec![kai.to_string(), lena.to_string(), "!later:x".to_string()]);
-        let (chat, _) =
-            st.create_or_start_chat("hungryserv", "single", Some("Friends".into()), vec![], None, members, None);
+        let (chat, _) = st.create_or_start_chat("hungryserv", "single", Some("Friends".into()), vec![], None, members, None);
         let idx = st.chat_idx(&chat.id);
         assert_eq!(st.members(idx).len(), 2, "a member room that is not here yet is left out");
         for id in [kai, lena] {
@@ -4394,12 +4262,7 @@ mod tests {
         st.load_chat(&chat.id);
         let (to, _, _) = st.send_message(&chat.id, Some("hi".into()), Some("msg_x4".into()), None).unwrap();
         assert_eq!(to, kai, "a reply goes to the chat of its message");
-        let later = super::Chat {
-            id: "!later:x".into(),
-            local_chat_id: None,
-            merged_into_chat_id: None,
-            ..st.chat(lena).clone()
-        };
+        let later = super::Chat { id: "!later:x".into(), local_chat_id: None, merged_into_chat_id: None, ..st.chat(lena).clone() };
         st.upsert_chat(later);
         assert_eq!(st.chat("!later:x").merged_into_chat_id.as_deref(), Some(chat.id.as_str()));
         assert_eq!(st.members(idx).len(), 3);
@@ -4486,9 +4349,8 @@ mod tests {
         st.remove_deleted_chat("!wa_sam:beeper.com");
         let rooms = st.chat(&new).merge.as_ref().map(|m| m.chat_ids.clone());
         assert_eq!(rooms, Some(vec!["!im_jordan:beeper.com".to_string()]));
-        let out = st.outbox.last().map(|(_, c, o)| {
-            (c.clone(), matches!(o, super::Outgoing::LabelChild(r, false) if r == "!wa_sam:beeper.com"))
-        });
+        let out =
+            st.outbox.last().map(|(_, c, o)| (c.clone(), matches!(o, super::Outgoing::LabelChild(r, false) if r == "!wa_sam:beeper.com")));
         assert_eq!(out, Some((new.clone(), true)));
     }
 
@@ -4554,23 +4416,15 @@ mod tests {
         let c = chat(&st);
         assert_eq!((c.title.as_str(), c.img_url.as_deref()), ("Mine", Some("file:///me.png")));
         assert_eq!((c.room_title(), c.room_img_url()), (room.as_str(), img.as_deref()));
-        assert!(
-            matches!(&st.outbox[..], [(_, r, super::Outgoing::RoomData(k, v)), (_, _, super::Outgoing::PersonalAvatar(Some((b, m))))]
-            if r == id && k == super::PERSONAL_NAME && *v == serde_json::json!({ "name": "Mine" }) && *b == [1, 2] && m == "image/png")
-        );
+        assert!(matches!(&st.outbox[..], [(_, r, super::Outgoing::RoomData(k, v)), (_, _, super::Outgoing::PersonalAvatar(Some((b, m))))]
+            if r == id && k == super::PERSONAL_NAME && *v == serde_json::json!({ "name": "Mine" }) && *b == [1, 2] && m == "image/png"));
         st.update_group(id, Some("Team".into()), None, None);
         let c = chat(&st);
-        assert_eq!(
-            (c.title.as_str(), c.room_title()),
-            ("Mine", "Team"),
-            "the personal name stays over a new room name"
-        );
+        assert_eq!((c.title.as_str(), c.room_title()), ("Mine", "Team"), "the personal name stays over a new room name");
         st.set_personal(id, Some(None), Some(None));
         let c = chat(&st);
         assert_eq!((c.title.as_str(), c.img_url.as_deref(), c.personal.is_none()), ("Team", img.as_deref(), true));
-        assert!(
-            matches!(&st.outbox[3..], [(_, _, super::Outgoing::RoomData(k, v)), (_, _, super::Outgoing::PersonalAvatar(None))]
-            if k == super::PERSONAL_NAME && *v == serde_json::json!({}))
-        );
+        assert!(matches!(&st.outbox[3..], [(_, _, super::Outgoing::RoomData(k, v)), (_, _, super::Outgoing::PersonalAvatar(None))]
+            if k == super::PERSONAL_NAME && *v == serde_json::json!({})));
     }
 }

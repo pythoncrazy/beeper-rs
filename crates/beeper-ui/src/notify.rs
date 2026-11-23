@@ -82,9 +82,7 @@ pub(crate) fn otp_code(text: &str) -> Option<&str> {
     let free = |p: usize| {
         let c = at(p);
         let more = b.get(p + 1..).unwrap_or_default().iter().find(|c| !c.is_ascii_whitespace());
-        !(c.is_ascii_alphanumeric()
-            || b"-'".contains(&c)
-            || b",.;:".contains(&c) && more.is_some_and(u8::is_ascii_digit))
+        !(c.is_ascii_alphanumeric() || b"-'".contains(&c) || b",.;:".contains(&c) && more.is_some_and(u8::is_ascii_digit))
     };
     let ends = |e: usize| (!word(at(e)) && free(e)) || (at(e) == b'.' && free(e + 1));
     let found = (0..b.len()).find_map(|i| {
@@ -93,10 +91,7 @@ pub(crate) fn otp_code(text: &str) -> Option<&str> {
             return None;
         }
         let split = run <= 4 && (at(i + run) == b'-' || at(i + run).is_ascii_whitespace()) && digits(i + run + 1) == 3;
-        [(split, i + run + 4), ((4..=8).contains(&run), i + run)]
-            .into_iter()
-            .find(|&(ok, e)| ok && ends(e))
-            .map(|(_, e)| &text[i..e])
+        [(split, i + run + 4), ((4..=8).contains(&run), i + run)].into_iter().find(|&(ok, e)| ok && ends(e)).map(|(_, e)| &text[i..e])
     })?;
     let lower = text.to_ascii_lowercase();
     let handle = lower.match_indices('@').any(|(p, _)| {
@@ -163,20 +158,12 @@ impl BeeperGuiApp {
         let hour_old = now_unix_millis() - millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp") > 3_600_000;
         let sound = match (mine, st.settings.pref("soundEffects")) {
             (true, 1 | 3) if m.id.starts_with("msg_") => Sound::Send,
-            (false, 2 | 3)
-                if !hour_old
-                    && m.timestamp > self.booted
-                    && !m.silent()
-                    && m.message_type.as_deref() != Some("REACTION") =>
-            {
+            (false, 2 | 3) if !hour_old && m.timestamp > self.booted && !m.silent() && m.message_type.as_deref() != Some("REACTION") => {
                 Sound::Receive
             }
             _ => return,
         };
-        if self.focused
-            && self.pane().selected_chat_id.as_ref() == Some(&m.chat_id)
-            && !st.chats[i].flag(ChatFlag::Muted)
-        {
+        if self.focused && self.pane().selected_chat_id.as_ref() == Some(&m.chat_id) && !st.chats[i].flag(ChatFlag::Muted) {
             play(sound, st.settings.pref("soundVolume") as f32 / 100.0);
         }
     }
@@ -257,9 +244,7 @@ impl BeeperGuiApp {
             self.pending.repeat.insert(chat.clone(), (self.pending.timer, note.clone()));
             wait(secs, UiMessage::Notify(Msg::Timer(chat.clone(), self.pending.timer)))
         });
-        let show = Task::perform(show(note.toast), move |r| {
-            UiMessage::Notify(Msg::Notified(r.map(|id| (id, (chat, message)))))
-        });
+        let show = Task::perform(show(note.toast), move |r| UiMessage::Notify(Msg::Notified(r.map(|id| (id, (chat, message))))));
         Task::batch([show].into_iter().chain(again))
     }
 
@@ -273,10 +258,7 @@ impl BeeperGuiApp {
     pub(crate) fn notify_timer(&mut self, chat: String, timer: u64) -> Task<UiMessage> {
         let st = self.store.read();
         let unread = st.find_chat(&chat).is_some_and(|c| {
-            c.unread_count > 0
-                && !st.notifications_muted(c)
-                && c.is_hidden_from_inbox != Some(true)
-                && c.is_request != Some(true)
+            c.unread_count > 0 && !st.notifications_muted(c) && c.is_hidden_from_inbox != Some(true) && c.is_request != Some(true)
         });
         let (notes, repeat) = match (self.pending.queued.get(&chat), self.pending.repeat.get(&chat)) {
             (Some(q), _) if q.0 == timer => (self.pending.queued.remove(&chat).expect("queued").1, true),
@@ -354,10 +336,7 @@ impl BeeperGuiApp {
         let group = chat.chat_type == "group";
         let prefs = &st.settings;
         let otp_network = matches!(account_network(&chat.account_id).kind, IMessage | GoogleMessages | GoogleVoice);
-        let otp = (m.text.as_deref())
-            .filter(|_| otp_network && prefs.on("autoCopyOtp"))
-            .and_then(otp_code)
-            .map(str::to_string);
+        let otp = (m.text.as_deref()).filter(|_| otp_network && prefs.on("autoCopyOtp")).and_then(otp_code).map(str::to_string);
         let shown = m.is_sender != Some(true)
             && !m.silent()
             && m.timestamp > self.booted
@@ -397,9 +376,8 @@ impl BeeperGuiApp {
         // reminders, or none with a code, and a reply field where the chat takes replies and previews show.
         let (mut buttons, mut reply) = (Vec::new(), None);
         if cfg!(target_os = "macos") && otp.is_none() {
-            let action = |key: &str, label: &'static str| {
-                (key.to_string(), crate::i18n::trx(label, "notification action button").to_string())
-            };
+            let action =
+                |key: &str, label: &'static str| (key.to_string(), crate::i18n::trx(label, "notification action button").to_string());
             buttons.push(action("markRead", "Mark as Read"));
             if st.feature("remind-later").on {
                 buttons.extend([action("remind1h", "Remind in 1 Hour"), action("remind8h", "Remind in 8 Hours")]);
@@ -418,8 +396,7 @@ impl BeeperGuiApp {
         }
         let Some((chat, msg)) = self.notifications.remove(&id) else { return Task::none() };
         // Desktop's `markRead`, `remind1h` and `remind8h` actions, and its reply from the notification.
-        let hours =
-            |h: i64| UiMessage::Reminders(reminders::Msg::Set(chat.clone(), Some(now_unix_millis() + h * 3_600_000)));
+        let hours = |h: i64| UiMessage::Reminders(reminders::Msg::Set(chat.clone(), Some(now_unix_millis() + h * 3_600_000)));
         match action.as_deref() {
             Some("markRead") if msg.is_empty() => self.update(UiMessage::ChatList(chat_list::Msg::MarkRead(chat))),
             Some("markRead") => self.update(UiMessage::Message(message::Msg::MarkReadThrough(chat, msg))),
@@ -441,8 +418,7 @@ impl BeeperGuiApp {
             }
             Some("default") => {
                 let focus = self.update(UiMessage::Window(windows::Msg::FocusRequested(Some(chat.clone()))));
-                let jump =
-                    (!msg.is_empty()).then(|| self.update(UiMessage::CommandBar(commands::Msg::JumpTo(chat, msg))));
+                let jump = (!msg.is_empty()).then(|| self.update(UiMessage::CommandBar(commands::Msg::JumpTo(chat, msg))));
                 Task::batch([focus, self.set_hidden(false)].into_iter().chain(jump))
             }
             _ => Task::none(),
@@ -459,8 +435,7 @@ impl BeeperGuiApp {
                     let c = &st.chats[i];
                     !c.is_unread() && c.reminder.is_none()
                 };
-                (self.focused && self.pane.selected_chat_id.as_ref() == Some(c))
-                    || st.resolve_chat_idx(c).is_none_or(read)
+                (self.focused && self.pane.selected_chat_id.as_ref() == Some(c)) || st.resolve_chat_idx(c).is_none_or(read)
             })
             .map(|(&id, _)| id)
             .collect();
@@ -469,9 +444,7 @@ impl BeeperGuiApp {
             return iced::Task::none();
         }
         stale.iter().for_each(|id| _ = self.notifications.remove(id));
-        iced::Task::future(close(stale))
-            .map(Result::err)
-            .and_then(|e| iced::Task::done(crate::UiMessage::Notify(Msg::Notified(Err(e)))))
+        iced::Task::future(close(stale)).map(Result::err).and_then(|e| iced::Task::done(crate::UiMessage::Notify(Msg::Notified(Err(e)))))
     }
 }
 
@@ -543,8 +516,7 @@ pub(crate) async fn show(t: Toast) -> Result<u32, String> {
         ("desktop-entry", zbus::zvariant::Value::from(INSTALL_ID)),
     ]);
     let buttons = t.buttons.iter().map(|(key, label)| (key.as_str(), label.as_str()));
-    let actions: Vec<&str> =
-        [("default", "")].into_iter().chain(buttons).flat_map(|(key, label)| [key, label]).collect();
+    let actions: Vec<&str> = [("default", "")].into_iter().chain(buttons).flat_map(|(key, label)| [key, label]).collect();
     let args = (INSTALL_NAME, 0u32, "", &t.title, &t.body, actions, hints, -1i32);
     let path = "/org/freedesktop/Notifications";
     let iface = Some("org.freedesktop.Notifications");
@@ -604,17 +576,14 @@ pub fn events() -> impl iced::futures::Stream<Item = Msg> {
         let body = m.body();
         match m.header().member().expect("signals have a member").as_str() {
             "ActionInvoked" => {
-                let (id, action): (u32, String) =
-                    body.deserialize().expect("ActionInvoked carries an id and an action");
+                let (id, action): (u32, String) = body.deserialize().expect("ActionInvoked carries an id and an action");
                 Some(Msg::Event(id, Some(action)))
             }
             "ActivationToken" => {
                 let (id, token): (u32, String) = body.deserialize().expect("ActivationToken carries an id and a token");
                 Some(Msg::Token(id, token))
             }
-            "NotificationClosed" => {
-                Some(Msg::Event(body.deserialize::<(u32, u32)>().expect("NotificationClosed carries an id").0, None))
-            }
+            "NotificationClosed" => Some(Msg::Event(body.deserialize::<(u32, u32)>().expect("NotificationClosed carries an id").0, None)),
             _ => None,
         }
     })
@@ -639,10 +608,7 @@ mod tests {
         let mut app = crate::fuzz::demo_app("account-notes");
         let (chat, mut m) = {
             let st = app.store.read();
-            let c = st
-                .chats
-                .iter()
-                .find(|c| c.chat_type == "single" && c.account_id != "hungryserv" && c.label_ids.is_empty());
+            let c = st.chats.iter().find(|c| c.chat_type == "single" && c.account_id != "hungryserv" && c.label_ids.is_empty());
             let c = c.expect("a demo DM without labels").clone();
             let m = st.timeline(&c.id).find(|m| m.is_sender != Some(true));
             (c, m.expect("a received message").clone())
@@ -775,9 +741,7 @@ impl BeeperGuiApp {
             Msg::Notified(Err(e)) => eprintln!("notification: {e}"),
             Msg::Event(id, action) => return self.notification_event(id, action),
             // The token comes before the action, which shows the window with it.
-            Msg::Token(id, token)
-                if self.notifications.contains_key(&id) || self.verify.note.as_ref().is_some_and(|n| n.0 == id) =>
-            {
+            Msg::Token(id, token) if self.notifications.contains_key(&id) || self.verify.note.as_ref().is_some_and(|n| n.0 == id) => {
                 self.activation_token = Some(token).filter(|t| !t.is_empty());
             }
             Msg::Token(..) => {}

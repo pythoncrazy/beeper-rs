@@ -246,13 +246,11 @@ pub fn markdown_html(md: &str) -> Option<String> {
         last = r.end;
     }
     text.push_str(&md[last..]);
-    let restore =
-        |t: &str| found.iter().enumerate().fold(t.to_string(), |t, (i, (r, _))| t.replace(&mark(i), &md[r.clone()]));
+    let restore = |t: &str| found.iter().enumerate().fold(t.to_string(), |t, (i, (r, _))| t.replace(&mark(i), &md[r.clone()]));
     let images = |t: &str| {
         let (mut out, mut rest) = (Vec::new(), t);
         while let Some((a, b)) = rest.find(MARK_OPEN).and_then(|a| Some((a, a + rest[a..].find(MARK_CLOSE)?))) {
-            let Some((_, e)) = rest[a + MARK_OPEN.len_utf8()..b].parse::<usize>().ok().and_then(|k| found.get(k))
-            else {
+            let Some((_, e)) = rest[a + MARK_OPEN.len_utf8()..b].parse::<usize>().ok().and_then(|k| found.get(k)) else {
                 break;
             };
             if a > 0 {
@@ -285,11 +283,13 @@ pub fn markdown_html(md: &str) -> Option<String> {
         e => vec![e],
     }));
     let rich = rich.trim_end();
-    let rich =
-        rich.strip_prefix("<p>").and_then(|r| r.strip_suffix("</p>")).filter(|r| !r.contains("<p>")).unwrap_or(rich);
-    let plain = render(&mut md.split('\n').enumerate().flat_map(|(i, line)| {
-        (i > 0).then_some(Event::HardBreak).into_iter().chain([Event::Text(CowStr::Borrowed(line))])
-    }));
+    let rich = rich.strip_prefix("<p>").and_then(|r| r.strip_suffix("</p>")).filter(|r| !r.contains("<p>")).unwrap_or(rich);
+    let plain = render(
+        &mut md
+            .split('\n')
+            .enumerate()
+            .flat_map(|(i, line)| (i > 0).then_some(Event::HardBreak).into_iter().chain([Event::Text(CowStr::Borrowed(line))])),
+    );
     (rich != plain.trim_end()).then(|| rich.to_owned())
 }
 
@@ -418,8 +418,7 @@ mod tests {
     /// formatting, but not in code.
     #[test]
     fn markdown_custom_emoji_like_desktop() {
-        let img =
-            |n: &str| format!(r#"<img data-mx-emoticon src="mxc://x/{n}" alt=":{n}:" title=":{n}:" height="32" />"#);
+        let img = |n: &str| format!(r#"<img data-mx-emoticon src="mxc://x/{n}" alt=":{n}:" title=":{n}:" height="32" />"#);
         assert_eq!(markdown_html("#[cat](mxc://x/cat)"), Some(img("cat")));
         assert_eq!(markdown_html("hi #[ cat ](mxc://x/cat ) & you"), Some(format!("hi {} &amp; you", img("cat"))));
         assert_eq!(
@@ -431,10 +430,7 @@ mod tests {
             Some(format!("<code>#[cat](mxc://x/cat)</code> {}", img("cat")))
         );
         let quoted = Emoticon { name: "a\"<b".into(), url: "mxc://x/y&z".into() }.html();
-        assert_eq!(
-            quoted,
-            r#"<img data-mx-emoticon src="mxc://x/y&amp;z" alt=":a&quot;&lt;b:" title=":a&quot;&lt;b:" height="32" />"#
-        );
+        assert_eq!(quoted, r#"<img data-mx-emoticon src="mxc://x/y&amp;z" alt=":a&quot;&lt;b:" title=":a&quot;&lt;b:" height="32" />"#);
         let found = |md: &str| emoticons(md).into_iter().map(|(r, e)| (r, e.name, e.url)).collect::<Vec<_>>();
         assert_eq!(found("#[a #[b](mxc://x/b)"), [(4..19, "b".into(), "mxc://x/b".into())]);
         assert_eq!(found("#[l](localmxc://x/l)"), [(0..20, "l".into(), "localmxc://x/l".into())]);
@@ -489,18 +485,14 @@ mod tests {
         let runs = &blocks[3].runs;
         let color = |text: &str| runs.iter().find(|r| r.text == text).and_then(|r| r.color.clone());
         assert!(runs.iter().any(|r| r.text == "under" && r.underline));
-        assert_eq!(
-            (color("red"), color("blue"), color("green")),
-            (Some("#ff0000".into()), Some("blue".into()), Some("#00ff00".into()))
-        );
+        assert_eq!((color("red"), color("blue"), color("green")), (Some("#ff0000".into()), Some("blue".into()), Some("#00ff00".into())));
         assert_eq!(blocks[3].quote, 0, "the quote ends");
     }
 
     #[test]
     fn html_blocks_mark_code_blocks() {
         let blocks = html_blocks("<p>see</p><pre><code>fn main() {\n}</code></pre><p>after</p>");
-        let shape: Vec<(bool, String)> =
-            blocks.iter().map(|b| (b.pre, b.runs.iter().map(|r| r.text.as_str()).collect())).collect();
+        let shape: Vec<(bool, String)> = blocks.iter().map(|b| (b.pre, b.runs.iter().map(|r| r.text.as_str()).collect())).collect();
         assert_eq!(shape, [(false, "see".into()), (true, "fn main() {\n}".into()), (false, "after".into())]);
     }
 

@@ -9,9 +9,7 @@ use beeper_core::store::BeeperStore;
 use iced::gradient::Linear;
 use iced::keyboard::{key::Named, Key};
 use iced::widget::scrollable::{Direction, Scrollbar};
-use iced::widget::{
-    button, column, container, image, mouse_area, operation, row, scrollable, stack, svg, text_input, Space,
-};
+use iced::widget::{button, column, container, image, mouse_area, operation, row, scrollable, stack, svg, text_input, Space};
 use iced::{border, Background, Border, Center, Color, Degrees, Fill, Gradient, Padding, Shadow, Task, Vector};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -101,9 +99,7 @@ static DATA: LazyLock<Data> = LazyLock::new(|| {
             d.categories.push(d.emojis.len()..d.emojis.len());
             continue;
         }
-        let [native, name, search, skin] = line.split('\t').collect::<Vec<_>>()[..] else {
-            panic!("emoji.tsv row: {line}")
-        };
+        let [native, name, search, skin] = line.split('\t').collect::<Vec<_>>()[..] else { panic!("emoji.tsv row: {line}") };
         let mut e = Emoji { native, name, search: format!(",{search}"), skin: skin.parse().expect("emoji skin kind") };
         let tones = if e.skin == 0 { 0..1 } else { 0..6 };
         for t in tones {
@@ -163,8 +159,7 @@ fn search(q: &str, custom: &[Emoticon]) -> Vec<Item> {
         Item::Custom(i) => (custom[i].url.as_str(), searches[i].as_str()),
     };
     let mut q = q.to_lowercase();
-    let dash =
-        q.char_indices().zip(q.chars().skip(1)).find(|((_, c), n)| (c.is_alphanumeric() || *c == '_') && *n == '-');
+    let dash = q.char_indices().zip(q.chars().skip(1)).find(|((_, c), n)| (c.is_alphanumeric() || *c == '_') && *n == '-');
     if let Some(((i, c), _)) = dash {
         q.replace_range(i + c.len_utf8()..i + c.len_utf8() + 1, " ");
     }
@@ -175,8 +170,7 @@ fn search(q: &str, custom: &[Emoticon]) -> Vec<Item> {
         }
     }
     let natives = (0..DATA.emojis.len()).map(Item::Native);
-    let mut pool: Vec<(Item, usize)> =
-        natives.chain(by_url.iter().map(|&(_, i)| Item::Custom(i))).map(|i| (i, 0)).collect();
+    let mut pool: Vec<(Item, usize)> = natives.chain(by_url.iter().map(|&(_, i)| Item::Custom(i))).map(|i| (i, 0)).collect();
     for w in &words {
         let needle = format!(",{w}");
         pool = pool
@@ -434,20 +428,14 @@ impl BeeperGuiApp {
             EmojiMsg::Pick(i) => {
                 let tone = self.store.read().skin_tone;
                 if let Some(slot) = self.pane.emoji.take_if(|pk| pk.pref.is_some()).and_then(|pk| pk.pref) {
-                    return self
-                        .update(UiMessage::Settings(settings::Msg::SetQuickEmoji(slot, DATA.emojis[i].skinned(tone))));
+                    return self.update(UiMessage::Settings(settings::Msg::SetQuickEmoji(slot, DATA.emojis[i].skinned(tone))));
                 }
                 if let Some((mid, _)) = self.pane.emoji.take_if(|pk| pk.react.is_some()).and_then(|pk| pk.react) {
                     let cid = self.chat_of(&mid);
-                    return self.update(UiMessage::Message(message::Msg::ToggleReaction(
-                        cid,
-                        mid,
-                        DATA.emojis[i].skinned(tone),
-                    )));
+                    return self.update(UiMessage::Message(message::Msg::ToggleReaction(cid, mid, DATA.emojis[i].skinned(tone))));
                 }
                 let paste = iced::widget::text_editor::Edit::Paste(DATA.emojis[i].skinned(tone).into());
-                return self
-                    .update(UiMessage::Composer(composer::Msg::Edit(iced::widget::text_editor::Action::Edit(paste))));
+                return self.update(UiMessage::Composer(composer::Msg::Edit(iced::widget::text_editor::Action::Edit(paste))));
             }
             // Desktop's `onEmojiSelect` of a custom emoji: its URL as the quick reaction or the reaction, or Desktop's
             // `#[name](url)` in the composer.
@@ -479,12 +467,8 @@ impl BeeperGuiApp {
                 (pk.query, pk.pos) = (String::new(), None);
                 let pk = self.pane.emoji.as_ref().expect("the picker is open");
                 let st = self.store.read();
-                let y = self
-                    .emoji_sections(pk, &st, &self.picker_custom(pk, &st))
-                    .iter()
-                    .take(k)
-                    .map(|(_, v)| section_height(v.len()))
-                    .sum();
+                let y =
+                    self.emoji_sections(pk, &st, &self.picker_custom(pk, &st)).iter().take(k).map(|(_, v)| section_height(v.len())).sum();
                 return operation::scroll_to(GRID, operation::AbsoluteOffset { x: 0.0, y });
             }
             m => {
@@ -584,8 +568,7 @@ impl BeeperGuiApp {
     fn view_allowed_reactions<'a>(&self, allowed: &[String]) -> El<'a> {
         let c = self.emoji_colors();
         let buttons = allowed.iter().map(|r| -> El<'a> {
-            let glyph =
-                crate::style::fixed(r.clone(), 16.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT);
+            let glyph = crate::style::fixed(r.clone(), 16.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT);
             let style = crate::style::btn_style([CLEAR, c.input, c.input], [c.fg; 3], 4.0);
             button(glyph).padding(6).style(style).on_press(UiMessage::Emoji(EmojiMsg::React(r.clone()))).into()
         });
@@ -595,11 +578,7 @@ impl BeeperGuiApp {
             .style(move |_| container::Style {
                 background: Some(c.bg.into()),
                 border: border::rounded(6).color(edge).width(1),
-                shadow: Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.1),
-                    offset: Vector::new(0.0, 4.0),
-                    blur_radius: 16.0,
-                },
+                shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.1), offset: Vector::new(0.0, 4.0), blur_radius: 16.0 },
                 ..Default::default()
             })
             .into()
@@ -679,8 +658,7 @@ impl BeeperGuiApp {
                 }
             });
         let faint = mix(c.input, c.fg, 0.7);
-        let icon =
-            |h: &svg::Handle| svg(h.clone()).width(14).height(14).style(move |_, _| svg::Style { color: Some(faint) });
+        let icon = |h: &svg::Handle| svg(h.clone()).width(14).height(14).style(move |_, _| svg::Style { color: Some(faint) });
         let loupe = container(icon(&SEARCH_ICONS[0])).center_y(Fill).padding(Padding::ZERO.left(9.8));
         let clear = (!pk.query.is_empty()).then(|| {
             let x = button(icon(&SEARCH_ICONS[1])).padding(0).style(|_, _| button::Style::default());
@@ -689,18 +667,18 @@ impl BeeperGuiApp {
                 .align_right(Fill)
                 .padding(Padding::ZERO.right(9.8))
         });
-        let search = container(stack![input, loupe].push(clear).height(37))
-            .padding(Padding::new(0.0).left(12.0).right(12.0).top(10.0));
+        let search = container(stack![input, loupe].push(clear).height(37)).padding(Padding::new(0.0).left(12.0).right(12.0).top(10.0));
         let search = stack![search, fade(true, edge)];
         // Only the lines in and next to the view are built, each at its place in the grid in the slot of its index
         // modulo `SLOTS`: a scroll keeps the widgets, and so the laid out glyphs, of the lines that stay in view.
         let mut slots: Vec<Option<El<'static>>> = (0..SLOTS).map(|_| None).collect();
         let (mut y, mut n) = (0.0, 0);
         let header = |title: &'static str| {
-            container(med(title, 15.0).color(fg)).padding(6).width(Fill).height(HEAD).style(move |_| container::Style {
-                background: Some(c.bg.scale_alpha(0.9).into()),
-                ..Default::default()
-            })
+            container(med(title, 15.0).color(fg))
+                .padding(6)
+                .width(Fill)
+                .height(HEAD)
+                .style(move |_| container::Style { background: Some(c.bg.scale_alpha(0.9).into()), ..Default::default() })
         };
         let mut push = |el: &mut dyn FnMut() -> El<'static>, h: f32| {
             if y + h > pk.scroll - CELL && y < pk.scroll + GRID_H + CELL {
@@ -727,8 +705,9 @@ impl BeeperGuiApp {
             .style(move |_, s| {
                 let thumb = match s {
                     scrollable::Status::Active { .. } => CLEAR,
-                    scrollable::Status::Hovered { is_vertical_scrollbar_hovered: true, .. }
-                    | scrollable::Status::Dragged { .. } => edge.scale_alpha(2.0),
+                    scrollable::Status::Hovered { is_vertical_scrollbar_hovered: true, .. } | scrollable::Status::Dragged { .. } => {
+                        edge.scale_alpha(2.0)
+                    }
                     scrollable::Status::Hovered { .. } => edge,
                 };
                 crate::style::rail_style(CLEAR, thumb)
@@ -744,11 +723,7 @@ impl BeeperGuiApp {
         let body = container(col).width(352).height(435).style(move |_| container::Style {
             background: Some(c.bg.into()),
             border: border::rounded(10),
-            shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.14),
-                offset: Vector::new(0.3, 0.5),
-                blur_radius: 2.7,
-            },
+            shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.14), offset: Vector::new(0.3, 0.5), blur_radius: 2.7 },
             ..Default::default()
         });
         let skins = pk.skins_open.then(|| self.emoji_skin_menu(tone, &c));
@@ -773,13 +748,10 @@ impl BeeperGuiApp {
                 EmojiMsg::Pick(i),
             ),
             // emoji-mart's own `<img>`, which plays whatever the settings.
-            Item::Custom(i) => {
-                (self.custom_image(&custom[i].url, 24.0, self.shows()), EmojiMsg::PickCustom(custom[i].clone()))
-            }
+            Item::Custom(i) => (self.custom_image(&custom[i].url, 24.0, self.shows()), EmojiMsg::PickCustom(custom[i].clone())),
         };
         let b = button(container(glyph).center(CELL)).padding(0).style(move |_, s| button::Style {
-            background: (selected || matches!(s, button::Status::Hovered | button::Status::Pressed))
-                .then(|| hover.into()),
+            background: (selected || matches!(s, button::Status::Hovered | button::Status::Pressed)).then(|| hover.into()),
             border: border::rounded(CELL / 2.0),
             ..Default::default()
         });
@@ -800,42 +772,30 @@ impl BeeperGuiApp {
     /// A custom emoji's image in a `size` box once it has loaded, its shape kept, playing when `play`.
     pub(crate) fn custom_image(&self, url: &str, size: f32, play: bool) -> El<'static> {
         match self.frames(url) {
-            Some(f) => crate::anim::gif(&f, play, self.started, move |h| {
-                image(h).width(size).height(size).content_fit(iced::ContentFit::Contain)
-            }),
+            Some(f) => {
+                crate::anim::gif(&f, play, self.started, move |h| image(h).width(size).height(size).content_fit(iced::ContentFit::Contain))
+            }
             None => Space::new().width(size).height(size).into(),
         }
     }
 
     /// emoji-mart's preview of the hovered emoji: a custom emoji shows its image, its name, and its id (the URL) as
     /// the shortcode.
-    fn emoji_preview(
-        &self, pk: &Picker, sections: &[(&str, Vec<Item>)], custom: &[Emoticon], tone: u8, c: &Colors,
-    ) -> El<'static> {
+    fn emoji_preview(&self, pk: &Picker, sections: &[(&str, Vec<Item>)], custom: &[Emoticon], tone: u8, c: &Colors) -> El<'static> {
         let none = sections.iter().all(|(_, v)| v.is_empty());
         let selected = pk.hover.or_else(|| {
             let (r, c) = pk.pos?;
             sections.iter().flat_map(|(_, v)| v.chunks(PER_LINE)).nth(r)?.get(c).copied()
         });
         let shown = selected.and_then(|it| match it {
-            Item::Native(i) => Some((
-                DATA.emojis[i].skinned(tone),
-                DATA.emojis[i].name.to_string(),
-                format!(":{}:", DATA.emojis[i].id()),
-            )),
+            Item::Native(i) => Some((DATA.emojis[i].skinned(tone), DATA.emojis[i].name.to_string(), format!(":{}:", DATA.emojis[i].id()))),
             Item::Custom(i) => custom.get(i).map(|e| (e.url.clone(), e.name.clone(), format!(":{}:", e.url))),
         });
         let (glyph, text): (String, El<'static>) = match (shown, none) {
-            (Some((g, name, code)), _) => {
-                (g, column![txt(name, 16.5).color(c.fg), txt(code, 13.5).color(c.fg.scale_alpha(0.45))].into())
-            }
+            (Some((g, name, code)), _) => (g, column![txt(name, 16.5).color(c.fg), txt(code, 13.5).color(c.fg.scale_alpha(0.45))].into()),
             (None, true) => (
                 "😢".into(),
-                column![
-                    txt("Oh no!", 16.5).color(c.fg),
-                    txt("That emoji couldn’t be found", 13.5).color(c.fg.scale_alpha(0.45))
-                ]
-                .into(),
+                column![txt("Oh no!", 16.5).color(c.fg), txt("That emoji couldn’t be found", 13.5).color(c.fg.scale_alpha(0.45))].into(),
             ),
             (None, false) => ("☝️".into(), txt("Pick an emoji…", 21.0).color(c.fg.scale_alpha(0.45)).into()),
         };
@@ -857,9 +817,7 @@ impl BeeperGuiApp {
         });
         let glyph: El<'static> = match is_mxc(&glyph) {
             true => self.custom_image(&glyph, 36.0, self.shows()),
-            false => {
-                crate::style::fixed(glyph, 36.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT).into()
-            }
+            false => crate::style::fixed(glyph, 36.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT).into(),
         };
         let emoji = container(glyph).center(CELL);
         container(row![emoji, container(text).padding(Padding::ZERO.left(12.0)).width(Fill)].push(skin).align_y(Center))
@@ -870,10 +828,7 @@ impl BeeperGuiApp {
 
     fn emoji_skin_menu(&self, tone: u8, c: &Colors) -> El<'static> {
         let (fg, accent, edge) = (c.fg, c.accent, c.border);
-        let widest = SKINS
-            .iter()
-            .map(|(l, _)| crate::style::text_width(l, 15.0, iced::font::Weight::Normal))
-            .fold(0.0, f32::max);
+        let widest = SKINS.iter().map(|(l, _)| crate::style::text_width(l, 15.0, iced::font::Weight::Normal)).fold(0.0, f32::max);
         let options = SKINS.iter().enumerate().map(|(t, (label, _))| {
             let t = t as u8;
             let picked = t == tone;
@@ -896,11 +851,7 @@ impl BeeperGuiApp {
         let menu = container(column(options)).padding(4).style(move |_| container::Style {
             background: Some(bg.into()),
             border: Border { color: edge, width: 1.0, radius: 10.0.into() },
-            shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.05),
-                offset: Vector::new(1.0, 1.0),
-                blur_radius: 5.0,
-            },
+            shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.05), offset: Vector::new(1.0, 1.0), blur_radius: 5.0 },
             ..Default::default()
         });
         container(menu).align_right(352).align_bottom(435).padding(Padding::ZERO.right(19.0).bottom(52.0)).into()
@@ -1109,8 +1060,7 @@ mod tests {
         assert!(app.pane.emoji.is_none(), "Enter picks");
         let second = &search("heart", &[])[1];
         let Item::Native(i) = second else { panic!("a native emoji") };
-        let keys: Vec<String> =
-            app.store.read().message(&mid).reactions.iter().map(|r| r.reaction_key.clone()).collect();
+        let keys: Vec<String> = app.store.read().message(&mid).reactions.iter().map(|r| r.reaction_key.clone()).collect();
         assert!(keys.contains(&DATA.emojis[*i].native.to_string()), "{keys:?} has the second heart");
     }
 
@@ -1130,17 +1080,14 @@ mod tests {
         let md = emoticon_markdown("a :owl: :ow: :owl :x:", &[ow.clone(), owl.clone()]);
         assert_eq!(md, "a #[owl](mxc://x/owl) #[ow](mxc://x/ow) :owl :x:");
         assert_eq!(emoticon_text(&md), ("a :owl: :ow: :owl :x:".into(), vec![owl, ow]));
-        let html =
-            r#"<img data-mx-emoticon src="mxc://x/a" alt=":a:"><img data-mx-emoticon src="mxc://x/b" title=":b:">"#;
+        let html = r#"<img data-mx-emoticon src="mxc://x/a" alt=":a:"><img data-mx-emoticon src="mxc://x/b" title=":b:">"#;
         assert_eq!(html_emoticons(html), [e("a", "mxc://x/a"), e("b", "mxc://x/b")]);
     }
 
     /// emoji-mart hides the emoji that the font cannot draw, so each one is a single Twemoji glyph.
     #[test]
     fn every_picker_emoji_is_one_twemoji_glyph() {
-        use iced::advanced::graphics::text::cosmic_text::{
-            fontdb, Attrs, Buffer, Family, FontSystem, Metrics, Shaping,
-        };
+        use iced::advanced::graphics::text::cosmic_text::{fontdb, Attrs, Buffer, Family, FontSystem, Metrics, Shaping};
         let mut db = fontdb::Database::new();
         db.load_font_data(crate::style::FONT_EMOJI.to_vec());
         let mut fs = FontSystem::new_with_locale_and_db(String::new(), db);
@@ -1220,9 +1167,7 @@ pub(crate) fn emoji_runs(s: &str) -> Vec<(&str, bool)> {
 }
 
 /// Splits the spans at their emoji presentation sequences, which take the emoji font (see [`emoji_runs`]).
-pub(crate) fn with_emoji_font<'a, L: Clone>(
-    spans: Vec<iced::widget::text::Span<'a, L>>,
-) -> Vec<iced::widget::text::Span<'a, L>> {
+pub(crate) fn with_emoji_font<'a, L: Clone>(spans: Vec<iced::widget::text::Span<'a, L>>) -> Vec<iced::widget::text::Span<'a, L>> {
     spans
         .into_iter()
         .flat_map(|s| match s.text.contains('\u{fe0f}') {

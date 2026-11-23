@@ -24,8 +24,7 @@ fn register() {
             eprintln!("register the toast app ID: {e}");
         }
         // SAFETY: the call reads the string for its duration only.
-        let set =
-            unsafe { windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(INSTALL_ID)) };
+        let set = unsafe { windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(INSTALL_ID)) };
         if let Err(e) = set {
             eprintln!("set the app ID of the process: {e}");
         }
@@ -35,9 +34,8 @@ fn register() {
 /// The toast XML: the title and the text, silent or with the default sound, and the buttons with their action keys.
 pub(super) fn xml(t: &Toast) -> String {
     let audio = if t.silent { r#"<audio silent="true"/>"# } else { "" };
-    let actions: String = (t.buttons.iter())
-        .map(|(key, label)| format!(r#"<action content="{}" arguments="{}"/>"#, escape(label), escape(key)))
-        .collect();
+    let actions: String =
+        (t.buttons.iter()).map(|(key, label)| format!(r#"<action content="{}" arguments="{}"/>"#, escape(label), escape(key))).collect();
     format!(
         r#"<toast launch="default"><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual>{audio}<actions>{actions}</actions></toast>"#,
         escape(&t.title),

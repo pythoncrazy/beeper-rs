@@ -85,13 +85,7 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
                 2 => ((b & c) | (b & d) | (c & d), 0x8f1bbcdc),
                 _ => (b ^ c ^ d, 0xca62c1d6),
             };
-            v = [
-                a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(wi),
-                a,
-                b.rotate_left(30),
-                c,
-                d,
-            ];
+            v = [a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(wi), a, b.rotate_left(30), c, d];
         }
         for (s, x) in state.iter_mut().zip(v) {
             *s = s.wrapping_add(x);

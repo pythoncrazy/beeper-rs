@@ -115,9 +115,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_nickname<'a>(&'a self, d: &'a NicknameDraft) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
-        let title = container(semi(tr("Account Nickname"), 14.0).line_height(lh(18.0)).color(p.strong))
-            .center_x(Fill)
-            .padding([8, 0]);
+        let title = container(semi(tr("Account Nickname"), 14.0).line_height(lh(18.0)).color(p.strong)).center_x(Fill).padding([8, 0]);
         let found = st.bridge_accounts.iter().find(|b| b.account_id == d.account);
         let account: El<'a> = match found {
             Some(b) => {
@@ -138,12 +136,8 @@ impl BeeperGuiApp {
                     .padding(0)
                     .style(input_style(CLEAR, p.strong, p.muted, p.accent, 0.0));
                 let pill = row![input, tinted(&EDIT, 14.0, p.muted)].spacing(4).align_y(Center);
-                let pill = container(pill).padding(Padding::new(6.0).left(14.0).right(8.0)).style(bordered_box(
-                    p.card,
-                    p.menu_border,
-                    0.5,
-                    999.0,
-                ));
+                let pill =
+                    container(pill).padding(Padding::new(6.0).left(14.0).right(8.0)).style(bordered_box(p.card, p.menu_border, 0.5, 999.0));
                 let r = b.remote_profile.clone().unwrap_or_default();
                 let full = r.name.clone().or_else(|| b.remote_name.clone());
                 let id = r.phone.as_deref().map(fmt_phone).or_else(|| r.username.as_ref().map(|u| format!("@{u}")));
@@ -194,9 +188,7 @@ impl BeeperGuiApp {
 
 /// Desktop's `Button` in its `md` size with `rounded`: the `primary` fill or the `secondary` tint, disabled at half
 /// opacity, and a spinner over the hidden label while `loading`.
-pub(crate) fn main_button<'a>(
-    p: &Palette, label: &'a str, primary: bool, msg: Option<UiMessage>, loading: bool,
-) -> El<'a> {
+pub(crate) fn main_button<'a>(p: &Palette, label: &'a str, primary: bool, msg: Option<UiMessage>, loading: bool) -> El<'a> {
     let (bg, fg) = if primary { (p.main, Color::WHITE) } else { (p.main_muted, p.main_text) };
     let alpha = if msg.is_some() { 1.0 } else { 0.5 };
     let label = txt(label, 13.0).line_height(1.0).color(if loading { CLEAR } else { fg.scale_alpha(alpha) });

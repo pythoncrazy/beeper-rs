@@ -25,12 +25,17 @@ static TAIL_UP: LazyLock<svg::Handle> = LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 11"><path d="M0,11 C6,11 10.5,0 15,0 C19.5,0 24,11 30,11 Z"/></svg>"##[..])
 });
 static TAIL_DOWN: LazyLock<svg::Handle> = LazyLock::new(|| {
-    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 11"><path d="M0,0 C6,0 10.5,11 15,11 C19.5,11 24,0 30,0 Z"/></svg>"##[..])
+    svg::Handle::from_memory(
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 11"><path d="M0,0 C6,0 10.5,11 15,11 C19.5,11 24,0 30,0 Z"/></svg>"##
+            [..],
+    )
 });
 /// Desktop's `su` cutout of a network icon under the next one: a 2 px wider box of radius 10, here in the 20 px rows
 /// of the icons.
 static CUTOUT: LazyLock<svg::Handle> = LazyLock::new(|| {
-    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 2 24 20"><rect width="24" height="24" rx="10"/></svg>"##[..])
+    svg::Handle::from_memory(
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 2 24 20"><rect width="24" height="24" rx="10"/></svg>"##[..],
+    )
 });
 
 #[derive(Debug, Clone)]
@@ -243,11 +248,7 @@ fn bold_pill<'a>(p: &Palette) -> El<'a> {
 fn small_button<'a>(p: &Palette, label: &'static str, msg: UiMessage) -> (El<'a>, f32) {
     let w = text_width(label, 13.0, Weight::Normal) + 20.0;
     let label = txt(label, 13.0).line_height(1.0).color(p.main_text);
-    let b = button(container(label).center_y(24)).padding([0, 10]).style(btn_style(
-        [p.main_muted; 3],
-        [p.main_text; 3],
-        6.0,
-    ));
+    let b = button(container(label).center_y(24)).padding([0, 10]).style(btn_style([p.main_muted; 3], [p.main_text; 3], 6.0));
     (b.on_press(msg).into(), w)
 }
 
@@ -299,13 +300,11 @@ impl BeeperGuiApp {
         let Some(idx) = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)) else { return };
         let (id, s) = (st.chats[idx].id.clone(), &st.settings);
         let rooms = &s.merge_suggestion_seen_rooms;
-        let banner =
-            rooms.len() < BANNER_SHOW_LIMIT && !rooms.contains(&id) && self.banner_suggestion(&st, &id).is_some();
+        let banner = rooms.len() < BANNER_SHOW_LIMIT && !rooms.contains(&id) && self.banner_suggestion(&st, &id).is_some();
         // Desktop's `hasMergedChatSwitcher`: the `chat` switch targets, of 2 member chats or more, by the text composer.
         let switcher = st.members(idx).len() >= 2 && !st.chats[idx].exited();
         let rooms = &s.target_switcher_nudge_seen_rooms;
-        let nudge =
-            switcher && !s.target_switcher_nudge_dismissed && rooms.len() < NUDGE_SHOW_LIMIT && !rooms.contains(&id);
+        let nudge = switcher && !s.target_switcher_nudge_dismissed && rooms.len() < NUDGE_SHOW_LIMIT && !rooms.contains(&id);
         drop(st);
         (self.pane.merge_banner, self.pane.nudge) = (banner, nudge);
         if banner || nudge {
@@ -322,9 +321,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `MergeSuggestionNetworkIcons`: the icon of each network of the chats, `size` px, each over 6 px of
     /// the one before in a cutout of the `ring` color, and past `max` icons a "+N" in the place of the last ones.
-    fn suggestion_networks<'a>(
-        &self, st: &BeeperStore, s: &Suggestion, size: f32, max: Option<usize>, ring: Color,
-    ) -> El<'a> {
+    fn suggestion_networks<'a>(&self, st: &BeeperStore, s: &Suggestion, size: f32, max: Option<usize>, ring: Color) -> El<'a> {
         let p = &self.pal;
         let mut brands: Vec<&'static str> = Vec::new();
         for c in s.rooms.iter().filter_map(|r| st.find_chat(r)) {
@@ -335,16 +332,14 @@ impl BeeperGuiApp {
         }
         let more = max.filter(|&m| brands.len() > m).map_or(0, |m| brands.len() - m + 1);
         brands.truncate(brands.len() - more);
-        let mut slots: Vec<El<'a>> =
-            brands.iter().map(|b| svg(crate::style::brand_svg(b)).width(size).height(size).into()).collect();
+        let mut slots: Vec<El<'a>> = brands.iter().map(|b| svg(crate::style::brand_svg(b)).width(size).height(size).into()).collect();
         if more > 0 {
             let plus = semi(format!("+{more}"), 10.0).line_height(lh(12.0)).color(p.muted);
             slots.push(container(plus).center(size).style(fill_box(p.prefs_group, 8.0)).into());
         }
         let step = size - ICON_OVERLAP;
         let n = slots.len();
-        let mut layers: Vec<El<'a>> =
-            vec![Space::new().width(size + step * n.saturating_sub(1) as f32).height(size).into()];
+        let mut layers: Vec<El<'a>> = vec![Space::new().width(size + step * n.saturating_sub(1) as f32).height(size).into()];
         for (i, slot) in slots.into_iter().enumerate() {
             let x = step * i as f32;
             if i > 0 {
@@ -375,16 +370,10 @@ impl BeeperGuiApp {
         ]
         .spacing(6)
         .width(Fill);
-        let close = button(container(ic(icon::CLOSE, 16.0).color(p.muted)).center(28))
-            .bare(p.muted)
-            .on_press(msg(Msg::Dismiss(s.keys.clone())));
+        let close =
+            button(container(ic(icon::CLOSE, 16.0).color(p.muted)).center(28)).bare(p.muted).on_press(msg(Msg::Dismiss(s.keys.clone())));
         let line = row![body, merge, close].spacing(12).align_y(Center);
-        let card = container(line).padding(pad(16.0, 12.0, 16.0, 16.0)).width(w).style(raised(
-            p.elevated,
-            16.0,
-            None,
-            (2.0, 6.0, 0x14),
-        ));
+        let card = container(line).padding(pad(16.0, 12.0, 16.0, 16.0)).width(w).style(raised(p.elevated, 16.0, None, (2.0, 6.0, 0x14)));
         // The card takes the pointer, so the header shows no members under it.
         let card = mouse_area(card).on_enter(UiMessage::HeaderHover(false));
         Some(column![paint(&TAIL_UP, 30.0, 11.0, p.elevated), card].align_x(Center).into())
@@ -462,18 +451,12 @@ impl BeeperGuiApp {
         let (bg, fg) = (p.elevated, p.strong);
         let label = txt(tr("Click the avatar to change chat."), 13.0).line_height(lh(16.0)).color(fg);
         let bubble =
-            button(label).padding([14, 16]).on_press(UiMessage::MergeSuggest(Msg::DismissNudge)).style(move |_, _| {
-                button::Style {
-                    background: Some(bg.into()),
-                    text_color: fg,
-                    border: border::rounded(16),
-                    shadow: iced::Shadow {
-                        color: Color::from_rgba8(0, 0, 0, 0.08),
-                        offset: iced::Vector::new(0.0, 2.0),
-                        blur_radius: 6.0,
-                    },
-                    ..Default::default()
-                }
+            button(label).padding([14, 16]).on_press(UiMessage::MergeSuggest(Msg::DismissNudge)).style(move |_, _| button::Style {
+                background: Some(bg.into()),
+                text_color: fg,
+                border: border::rounded(16),
+                shadow: iced::Shadow { color: Color::from_rgba8(0, 0, 0, 0.08), offset: iced::Vector::new(0.0, 2.0), blur_radius: 6.0 },
+                ..Default::default()
             });
         // The switcher avatar: 20 px in the 36 px line of the composer pill, 14 px into the pill after the attach
         // button, and 8 px from the bottom of the pane. The bubble is 16 px over it, its tail 32 px into it.
@@ -484,12 +467,7 @@ impl BeeperGuiApp {
         let bubble = container(bubble).max_width((340.0f32).min(self.pane().size.width - 16.0));
         let tail = container(paint(&TAIL_DOWN, 30.0, 11.0, bg)).padding(Padding::ZERO.left(center - left - 15.0));
         let nudge = column![bubble, tail];
-        Some(
-            container(nudge)
-                .align_bottom(Fill)
-                .padding(Padding::ZERO.left(left).bottom(8.0 + 18.0 + 10.0 + 16.0 - 11.0))
-                .into(),
-        )
+        Some(container(nudge).align_bottom(Fill).padding(Padding::ZERO.left(left).bottom(8.0 + 18.0 + 10.0 + 16.0 - 11.0)).into())
     }
 }
 
@@ -558,9 +536,7 @@ mod tests {
         assert_eq!(app.store.read().settings.merge_suggestion_seen_rooms, [KAI]);
         assert!(simulator(app.view_main()).find("2 chats on").is_ok());
         let picked = clicked(&app, "Merge options");
-        let Some(UiMessage::MergeSuggest(Msg::Merge(rooms, keys))) = picked.into_iter().next() else {
-            panic!("Merge options merges")
-        };
+        let Some(UiMessage::MergeSuggest(Msg::Merge(rooms, keys))) = picked.into_iter().next() else { panic!("Merge options merges") };
         let _ = app.update(UiMessage::MergeSuggest(Msg::Merge(rooms.clone(), keys.clone())));
         let d = app.merge_window.as_ref().expect("the merge editor opens");
         assert_eq!(d.chats, rooms, "with the suggested chats");
