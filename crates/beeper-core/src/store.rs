@@ -115,10 +115,29 @@ struct SeedLabel {
     icon: Option<String>,
 }
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
      CREATE TABLE chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
      CREATE TABLE assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;";
+
+/// Schema 11 keeps, for the start pass of the next run, the JSON of the reads and of the members of each joined room
+/// as its last read gave them (`matrix::start_pass`), and indexes the messages that wait for their keys, which the
+/// start pass looks for in each chat.
+fn start_schema() -> String {
+    format!(
+        "CREATE TABLE room_reads (room_id TEXT PRIMARY KEY, reads TEXT, members TEXT) STRICT;
+         CREATE INDEX messages_waiting ON messages (chat_id) WHERE {};",
+        waiting()
+    )
+}
+/// The messages that wait for their keys ([`crate::matrix::UTD_TEXT`]).
+fn waiting() -> String {
+    format!("json ->> '$.text' = '{}'", crate::matrix::UTD_TEXT)
+}
+/// The `kv` key of the mark of the last sync that the chats show (`matrix::sync_mark`).
+const KEY_SYNCED: &str = "synced";
+/// The JSON of the reads and of the members that SQLite keeps of each room, see [`BeeperStore::kept_rooms`].
+pub(crate) type KeptRooms = HashMap<String, (Option<String>, Option<String>)>;
 
 /// The messages table with its chat index and Desktop's full-text search table `mx_room_messages_fts`. The search
 /// text is the message text, file names and voice note transcripts. `n` is the search row: a plain rowid can change
@@ -690,10 +709,11 @@ impl BeeperStore {
         match version {
             0 => conn
                 .execute_batch(&format!(
-                    "BEGIN; {SCHEMA} {} {OUTBOX} {} {} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;",
+                    "BEGIN; {SCHEMA} {} {OUTBOX} {} {} {} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;",
                     messages_schema(),
                     order_schema(),
-                    time_schema()
+                    time_schema(),
+                    start_schema()
                 ))
                 .expect("create beeper-rs schema"),
             1..SCHEMA_VERSION => {
@@ -715,6 +735,7 @@ impl BeeperStore {
                     order_schema(),
                     transcriptions(),
                     time_schema(),
+                    start_schema(),
                 ];
                 for (from, sql) in (version..).zip(&steps[version as usize - 1..]) {
                     conn.execute_batch(&format!("BEGIN; {sql} PRAGMA user_version = {}; COMMIT;", from + 1))
@@ -1498,6 +1519,59 @@ impl BeeperStore {
         assert!(self.setup.is_none(), "setup already finished as {:?}", self.setup);
         self.setup = Some(how);
         self.put_kv(KEY_SETUP, how.key());
+    }
+
+    /// What the last run kept of each room for the start pass (`matrix::start_pass`): the JSON of the reads and of
+    /// the members of the room, when `mark` is the mark of the last sync that the chats show. Else none of it holds,
+    /// and it is dropped.
+    pub(crate) fn kept_rooms(&mut self, mark: Option<&str>) -> Option<KeptRooms> {
+        if mark.is_none() || self.kv(KEY_SYNCED).as_deref() != mark {
+            self.exec("DELETE FROM room_reads", &[]);
+            return None;
+        }
+        let db = self.db.lock().unwrap();
+        let mut q = db.prepare("SELECT room_id, reads, members FROM room_reads").expect("prepare the kept rooms");
+        let rows = q.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?)))).expect("read the kept rooms");
+        Some(rows.collect::<Result<_, _>>().expect("read a kept room"))
+    }
+
+    /// Whether a stored message of `chat` waits for its keys.
+    pub(crate) fn has_waiting(&self, chat: &str) -> bool {
+        let db = self.db.lock().unwrap();
+        let mut q = db
+            .prepare_cached(&format!("SELECT 1 FROM messages WHERE chat_id = ?1 AND {} LIMIT 1", waiting()))
+            .expect("prepare the waiting messages");
+        q.exists([chat]).expect("read the waiting messages")
+    }
+
+    /// Keeps the fresh `reads` or `members` of `room` for the next start, see [`Self::kept_rooms`].
+    pub(crate) fn keep_room(&self, room: &str, reads: Option<&str>, members: Option<&str>) {
+        self.exec(
+            "INSERT INTO room_reads (room_id, reads, members) VALUES (?1, ?2, ?3) ON CONFLICT (room_id) DO UPDATE
+             SET reads = coalesce(excluded.reads, reads), members = coalesce(excluded.members, members)",
+            params![room, reads, members],
+        );
+    }
+
+    /// A sync changes the account data of the rooms `reads` and the state of the rooms `members`, so what was kept of
+    /// their reads, and also of their members, no longer holds.
+    pub(crate) fn drop_kept(&mut self, reads: &[String], members: &[String]) {
+        if reads.is_empty() && members.is_empty() {
+            return;
+        }
+        self.batch(|st| {
+            for r in reads {
+                st.exec("UPDATE room_reads SET reads = NULL WHERE room_id = ?1", params![r]);
+            }
+            for r in members {
+                st.exec("DELETE FROM room_reads WHERE room_id = ?1", params![r]);
+            }
+        });
+    }
+
+    /// The chats show the sync of `mark`, see [`Self::kept_rooms`].
+    pub(crate) fn mark_synced(&self, mark: &str) {
+        self.put_kv(KEY_SYNCED, mark);
     }
 
     /// Runs `f` with its writes to SQLite in one transaction, so that they make one commit, or in the transaction
@@ -3945,6 +4019,24 @@ mod tests {
         assert!(found(&st, "orrow").is_empty(), "only the last word is a prefix");
     }
 
+    /// The start pass looks for the messages that wait for their keys in each chat through their index, not by
+    /// reading the JSON of every stored message.
+    #[test]
+    fn waiting_messages_are_found_by_their_index() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("waiting-index"));
+        let sql =
+            format!("EXPLAIN QUERY PLAN SELECT 1 FROM messages WHERE chat_id = ?1 AND {} LIMIT 1", super::waiting());
+        let plan: String = st.db.lock().unwrap().query_row(&sql, ["!a:x"], |r| r.get(3)).unwrap();
+        assert!(plan.contains("messages_waiting"), "the plan {plan}");
+        let m = st.stored("1 LIMIT 1", []).remove(0);
+        let chat = m.chat_id.clone();
+        assert!(!st.has_waiting(&chat));
+        st.load_chat(&chat);
+        let i = st.find_message(&m.id).expect("the loaded message");
+        st.update_message(i, |m| m.text = Some(crate::matrix::UTD_TEXT.into()));
+        assert!(st.has_waiting(&chat), "a message that waits for its keys");
+    }
+
     #[test]
     fn schema_5_migrates_to_the_outbox() {
         let config = crate::testing::demo_config("schema-5");
@@ -3954,7 +4046,7 @@ mod tests {
         // Schema 5 is schema 8 without the outbox table, the secret flags and the message order indices.
         rusqlite::Connection::open(&config.db_path)
             .unwrap()
-            .execute_batch("DROP TABLE outbox; DROP INDEX messages_by_key; DROP INDEX messages_with_media; DROP INDEX messages_by_thread; DROP INDEX messages_by_time; PRAGMA user_version = 5;")
+            .execute_batch("DROP TABLE outbox; DROP INDEX messages_by_key; DROP INDEX messages_with_media; DROP INDEX messages_by_thread; DROP INDEX messages_by_time; DROP TABLE room_reads; DROP INDEX messages_waiting; PRAGMA user_version = 5;")
             .unwrap();
         let mut st = super::BeeperStore::from_config(config.clone());
         assert_eq!(ids(&st), want, "the message search stays");
@@ -3979,7 +4071,8 @@ mod tests {
             .unwrap()
             .execute_batch(&format!(
                 "UPDATE messages SET json = json_remove(json_set(json, {old}), '$.attachments[0].transcription')
-                     WHERE id = 'msg_1000c'; DROP INDEX messages_by_time; PRAGMA user_version = 8;"
+                     WHERE id = 'msg_1000c'; DROP INDEX messages_by_time; DROP TABLE room_reads;
+                     DROP INDEX messages_waiting; PRAGMA user_version = 8;"
             ))
             .unwrap();
         let mut st = super::BeeperStore::from_config(config);
@@ -4082,7 +4175,7 @@ mod tests {
                 "UPDATE kv SET value = json_set(value, '$.secrets.master_key', 'mk', '$.secrets.self_signing_key', '',
                      '$.secrets.user_signing_key', 'usk', '$.secrets.megolm_backup_key', '') WHERE key = 'state';
                  DROP INDEX messages_by_key; DROP INDEX messages_with_media; DROP INDEX messages_by_thread;
-                 DROP INDEX messages_by_time; PRAGMA user_version = 6;",
+                 DROP INDEX messages_by_time; DROP TABLE room_reads; DROP INDEX messages_waiting; PRAGMA user_version = 6;",
             )
             .unwrap();
         let st = super::BeeperStore::from_config(config);
