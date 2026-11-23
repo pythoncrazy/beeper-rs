@@ -3872,7 +3872,15 @@ pub async fn resolve_identifier(p: Provision, identifier: String) -> Result<Opti
 }
 
 pub async fn resolve_media(p: Provision, event_id: String, raw: String) -> Result<(), String> {
-    p.post(&format!("resolve_media/{}", crate::codec::url_encode(&event_id)), raw).await.map(drop)
+    p.post(&format!("resolve_media/{}", crate::codec::url_encode(&event_id)), resolve_body(&raw)?).await.map(drop)
+}
+
+/// The body of a `resolve_media` request: the SDK's `provisionutil.ReqResolveMedia`, which carries the event's
+/// `com.beeper.unresolved_media` value verbatim under that key. The bridge fails a bare value with "Internal error
+/// resolving media".
+fn resolve_body(raw: &str) -> Result<String, String> {
+    let media: Value = serde_json::from_str(raw).map_err(|e| format!("bad unresolved media: {e}"))?;
+    Ok(serde_json::json!({ "com.beeper.unresolved_media": media }).to_string())
 }
 
 /// The SDK's `ViewLimitedMedia`: tells the bridge that the view-once media of `event_id` was viewed once under
@@ -7007,6 +7015,19 @@ mod tests {
 
     /// Desktop's `lastReadMessageSortKey` of a room: the order of the event of your own read receipt, which a read
     /// here goes ahead of until the receipt catches up.
+    /// Desktop's `resolveMedia` sends the unresolved media of the event under `com.beeper.unresolved_media`, like the
+    /// SDK's `ReqResolveMedia`, not the bare value.
+    #[test]
+    fn resolve_media_wraps_the_unresolved_media_like_desktop() {
+        let raw = r#"{"kind":"permanent","fi.mau.instagram.full_title":"t"}"#;
+        let body: Value = serde_json::from_str(&super::resolve_body(raw).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            json!({ "com.beeper.unresolved_media": { "kind": "permanent", "fi.mau.instagram.full_title": "t" } })
+        );
+        assert!(super::resolve_body("not json").is_err());
+    }
+
     #[tokio::test]
     async fn own_receipts_set_the_read_position_like_desktop() {
         let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
