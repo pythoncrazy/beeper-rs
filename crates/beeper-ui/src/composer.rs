@@ -11,7 +11,7 @@ use crate::scheduled::send_day;
 use crate::style::rem;
 use crate::style::{
     bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, mix, scroll_style, semi,
-    shadow_box, text_width, txt, Bare, CLEAR,
+    text_width, txt, Bare, CLEAR,
 };
 use crate::threads;
 use crate::units::human_size;
@@ -560,15 +560,16 @@ impl BeeperGuiApp {
             Suggestion::Emoji(c, _) if emoji::is_mxc(c) => Some(self.custom_image(c, 13.0, self.animate.get())),
             Suggestion::Emoji(..) => None,
             Suggestion::Mention(_, _, Some(u)) => {
-                Some(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 24.0, 0.0))
+                Some(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 32.0, 0.0))
             }
             Suggestion::Mention(_, _, None) => {
                 let chat = self.pane().selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
-                Some(self.chat_avatar(&st.chats[chat.expect("the open chat")], 24.0, 0.0))
+                Some(self.chat_avatar(&st.chats[chat.expect("the open chat")], 32.0, 0.0))
             }
         };
+        // `.TextAreaAutocomplete-module__item > * .participant-img`: a 32 px avatar with a 4 px margin.
         let faces = match &picks[0] {
-            Suggestion::Mention(..) => 30.0,
+            Suggestion::Mention(..) => 36.0,
             _ if picks.iter().any(|s| matches!(s, Suggestion::Emoji(c, _) if emoji::is_mxc(c))) => 13.0,
             _ => 0.0,
         };
@@ -577,12 +578,23 @@ impl BeeperGuiApp {
         let items = picks.iter().enumerate().map(|(i, s)| {
             let (bg, fg) = if i == at { (p.accent, Color::WHITE) } else { (CLEAR, p.text) };
             let name = txt(label(s), 13.0).wrapping(iced::widget::text::Wrapping::None);
-            let gap = if matches!(s, Suggestion::Mention(..)) { 6.0 } else { 0.0 };
+            let gap = if matches!(s, Suggestion::Mention(..)) { 4.0 } else { 0.0 };
             let b = button(row![].push(face(s)).push(name).spacing(gap).align_y(Center)).padding([4, 6]).width(width);
             b.style(btn_style([bg; 3], [fg; 3], 4.0)).on_press(UiMessage::Composer(Msg::PickSuggestion(i))).into()
         });
-        let list =
-            container(Column::with_children(items).padding([4, 4])).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        // `.TextAreaAutocomplete-module__container`: `--color-background-elevated` in a 1 px border of
+        // `--color-border-neutrals`, with the `--shadows-background-elevated` shadow.
+        let card = move |_: &iced::Theme| container::Style {
+            background: Some(p.elevated.into()),
+            border: iced::Border { color: p.border_neutrals, width: 1.0, radius: 6.0.into() },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.11),
+                offset: iced::Vector::new(0.0, 13.0),
+                blur_radius: 20.0,
+            },
+            ..container::Style::default()
+        };
+        let list = container(Column::with_children(items).padding([4, 4])).style(card);
         let unveiled = hidden_actions(st).len() as f32;
         let plus = if self.pane().show_attach_menu { 36.0 + 6.0 + 2.0 + unveiled * 30.0 - 2.0 } else { 36.0 };
         let text = self.pane().composer.text();
