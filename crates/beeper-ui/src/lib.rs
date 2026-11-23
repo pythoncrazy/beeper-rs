@@ -5202,6 +5202,18 @@ impl BeeperGuiApp {
                 {
                     return task;
                 }
+                // Tiptap's `Mod-Shift-7` and `Mod-Shift-8` of the lists, which `cursor::Root` keeps from the composer
+                // as shortcuts on digits.
+                let list = match key.as_ref() {
+                    Key::Character("7" | "&") => Some(5),
+                    Key::Character("8" | "*") => Some(4),
+                    _ => None,
+                };
+                let shortcut = mods.command() && mods.shift() && !mods.alt() && self.composer_takes_keys();
+                if let Some((window, i)) = window.zip(list).filter(|_| shortcut) {
+                    return focus::caret(window, self.composer_id())
+                        .map(move |at| UiMessage::Composer(composer::Msg::FormatKey(i, at)));
+                }
                 // Desktop's `KeyboardHandlers` and Chromium: Tab and Shift+Tab move through the composer row, and
                 // Enter presses its focused button.
                 let composer = window.filter(|_| self.composer_takes_keys() && (mods - Modifiers::SHIFT).is_empty());

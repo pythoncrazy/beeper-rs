@@ -386,6 +386,39 @@ fn composer_keys_edit_like_desktop() {
     assert_eq!(text(&app), " a b", "an unfocused composer ignores keys");
 }
 
+/// Desktop's format keys: in a chat that supports bold, Ctrl+B turns bold on and then off again for what is typed next
+/// (Tiptap's `toggleBold`), and Ctrl+Shift+8 makes a list in the focused composer. Without that support, Desktop types
+/// the marks as text and has no list key.
+#[test]
+fn format_keys_toggle_like_desktop() {
+    use crate::focus::Caret;
+    use iced_test::simulator::typewrite;
+    let mut app = demo_app("format-keys");
+    let note = "!note_self:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(String::new())));
+    let text = |app: &BeeperGuiApp| app.pane.composer.text();
+    let bold = || vec![key(Key::Character("b".into()), Modifiers::CTRL)];
+    let typed = |s: &str| typewrite(s).collect::<Vec<_>>();
+    let list = |app: &mut BeeperGuiApp, at| drop(app.update(UiMessage::Composer(composer::Msg::FormatKey(4, at))));
+    press(&mut app, true, [bold(), typed("big"), bold(), typed(" deal")].concat());
+    assert_eq!(text(&app), "**big** deal", "the second Ctrl+B ends the bold");
+    list(&mut app, Caret::Other);
+    assert_eq!(text(&app), "**big** deal", "the list key needs the caret in the composer");
+    list(&mut app, Caret::Field);
+    assert_eq!(text(&app), "- **big** deal");
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed(String::new())));
+    {
+        let mut st = app.store.write();
+        let i = st.chat_idx(note);
+        st.update_chat(i, |c| c.formatting = 0);
+    }
+    press(&mut app, true, [bold(), typed("big"), bold()].concat());
+    assert_eq!(text(&app), "**big******", "the marks as text");
+    list(&mut app, Caret::Field);
+    assert_eq!(text(&app), "**big******", "no list key");
+}
+
 #[test]
 fn composer_enter_follows_the_hotkeys() {
     use iced_test::simulator::typewrite;

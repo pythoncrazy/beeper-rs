@@ -105,14 +105,25 @@ fn unprefixed(i: usize, line: &str) -> Option<&str> {
 
 /// Whether button `i` is on for the selection `r`, like Desktop's highlighted buttons.
 pub fn active(i: usize, text: &str, r: &Range<usize>) -> bool {
+    let r = &block(i, text, r.clone());
     match i {
         4..=6 => text[lines(text, r)].split('\n').all(|l| unprefixed(i, l).is_some()),
         _ => text[..r.start].ends_with(MARKS[i].0) && text[r.end..].starts_with(MARKS[i].1),
     }
 }
 
+/// The lines of `r` for the code block, which Tiptap's `toggleCodeBlock` makes of whole paragraphs, and else `r`.
+fn block(i: usize, text: &str, r: Range<usize>) -> Range<usize> {
+    if i == 8 {
+        lines(text, &r)
+    } else {
+        r
+    }
+}
+
 /// Toggles button `i` on the selection `r`; gives the new text and selection.
 pub fn toggle(i: usize, text: &str, r: Range<usize>) -> (String, Range<usize>) {
+    let r = block(i, text, r);
     let on = active(i, text, &r);
     if (4..=6).contains(&i) {
         let l = lines(text, &r);
@@ -136,6 +147,155 @@ pub fn toggle(i: usize, text: &str, r: Range<usize>) -> (String, Range<usize>) {
             (out, r.start + open.len()..r.end + open.len())
         }
     }
+}
+
+/// [`toggle`] of the list, quote or code block button `i` at the caret `at`, which keeps its place in its line, as the
+/// node toggles of Tiptap keep the caret in its text.
+pub fn toggle_line(i: usize, text: &str, at: usize) -> (String, Range<usize>) {
+    let end = lines(text, &(at..at)).end;
+    let (out, r) = toggle(i, text, at..at);
+    let at = r.end.saturating_sub(end - at).max(r.start);
+    (out, at..at)
+}
+
+/// The selection `r` on each of its lines that has more than white space, as the marks stay on one line.
+fn parts(text: &str, r: &Range<usize>) -> Vec<Range<usize>> {
+    let mut parts = Vec::new();
+    let mut start = r.start;
+    for (k, _) in text[r.clone()].match_indices('\n') {
+        parts.push(start..r.start + k);
+        start = r.start + k + 1;
+    }
+    parts.push(start..r.end);
+    parts.into_iter().filter(|p| !text[p.clone()].trim().is_empty()).collect()
+}
+
+/// Whether the inline mark of button `i` covers the selection `r`, like Tiptap's `isMarkActive`.
+pub fn covered(i: usize, text: &str, r: &Range<usize>) -> bool {
+    let parts = parts(text, r);
+    let span = |p: &Range<usize>| spans(i, text, lines(text, p));
+    !parts.is_empty() && parts.iter().all(|p| span(p).iter().any(|s| s[0] <= p.start && p.end <= s[3]))
+}
+
+/// The spans of the inline mark of button `i` on the line `line` of `text`, found like [`Marks`] finds them: the
+/// start of the opening mark, the start and the end of the body, and the end of the closing mark.
+fn spans(i: usize, text: &str, line: Range<usize>) -> Vec<[usize; 4]> {
+    let (open, close) = MARKS[i];
+    let (mut out, mut at) = (Vec::new(), line.start);
+    while at < line.end {
+        let rest = &text[at..line.end];
+        let word_start = !text[..at].ends_with(|c: char| c.is_alphanumeric());
+        let body = rest.strip_prefix(open).filter(|_| word_start || open != "_");
+        match body.and_then(|b| b.find(close)).filter(|&end| end > 0) {
+            Some(end) => {
+                let body = at + open.len()..at + open.len() + end;
+                out.push([at, body.start, body.end, body.end + close.len()]);
+                at = body.end + close.len();
+            }
+            None => at += rest.chars().next().map_or(1, char::len_utf8),
+        }
+    }
+    out
+}
+
+/// `body` in the marks of button `i`, outside the white space at its ends, which CommonMark does not take inside
+/// emphasis; and where the marks start and end in it.
+fn wrapped(i: usize, body: &str) -> (String, usize, usize) {
+    let (open, close) = MARKS[i];
+    let core = body.trim();
+    if core.is_empty() {
+        return (body.into(), 0, body.len());
+    }
+    let lead = body.len() - body.trim_start().len();
+    let out = format!("{}{open}{core}{close}{}", &body[..lead], &body[lead + core.len()..]);
+    (out, lead, lead + open.len() + core.len() + close.len())
+}
+
+/// Desktop's `toggleBold`, `toggleItalic`, `toggleStrike` and `toggleCode` (Tiptap's `toggleMark`) of a format that
+/// the chat supports, on the Markdown marks of button `i`. A selection that the mark covers loses it, keeping the mark
+/// on the rest of each span, and else all of it gets the mark, joined with the spans that it overlaps. With the caret,
+/// the mark turns off or on for what is typed next: in a span the caret leaves it at either end or splits it, an empty
+/// pair goes away, the caret at the edge of a span goes inside, and elsewhere an empty pair opens.
+pub fn toggle_mark(i: usize, text: &str, r: Range<usize>) -> (String, Range<usize>) {
+    let (open, close) = MARKS[i];
+    if r.is_empty() {
+        let c = r.start;
+        if active(i, text, &r) {
+            return toggle(i, text, r);
+        }
+        let found = spans(i, text, lines(text, &r));
+        if let Some(&[start, body, end, stop]) = found.iter().find(|s| (s[1]..=s[2]).contains(&c)) {
+            return match c {
+                _ if c == end => (text.into(), stop..stop),
+                _ if c == body => (text.into(), start..start),
+                _ => (format!("{}{close}{open}{}", &text[..c], &text[c..]), c + close.len()..c + close.len()),
+            };
+        }
+        return match found.iter().find(|s| s[3] == c).map(|s| s[2]).or(found.iter().find(|s| s[0] == c).map(|s| s[1])) {
+            Some(at) => (text.into(), at..at),
+            None => toggle(i, text, r),
+        };
+    }
+    let parts = parts(text, &r);
+    if parts.is_empty() {
+        return (text.into(), r);
+    }
+    let span = |p: &Range<usize>| spans(i, text, lines(text, p));
+    let on = covered(i, text, &r);
+    let (mut out, mut sel, mut shift) = (text.to_string(), r.clone(), 0isize);
+    for (n, p) in parts.iter().enumerate().rev() {
+        let found = span(p);
+        let (from, to, body, lo, hi) = match on {
+            true => {
+                let &[start, body, end, stop] =
+                    found.iter().find(|s| s[0] <= p.start && p.end <= s[3]).expect("covered");
+                let (lo, hi) = (p.start.clamp(body, end), p.end.clamp(body, end));
+                let (left, right) = (wrapped(i, &text[body..lo]).0, wrapped(i, &text[hi..end]).0);
+                let new = format!("{left}{}{right}", &text[lo..hi]);
+                (start, stop, new, start + left.len(), start + left.len() + hi - lo)
+            }
+            false => {
+                let over: Vec<&[usize; 4]> = found.iter().filter(|s| s[0] < p.end && p.start < s[3]).collect();
+                let from = over.iter().map(|s| s[0]).fold(p.start, usize::min);
+                let to = over.iter().map(|s| s[3]).fold(p.end, usize::max);
+                let marks: Vec<Range<usize>> = over.iter().flat_map(|s| [s[0]..s[1], s[2]..s[3]]).collect();
+                let kept = |a: usize, b: usize| (a..b).filter(|x| !marks.iter().any(|m| m.contains(x))).count();
+                let body: String = text[from..to]
+                    .char_indices()
+                    .filter(|(k, _)| !marks.iter().any(|m| m.contains(&(from + k))))
+                    .map(|(_, c)| c)
+                    .collect();
+                let (new, mark_start, mark_end) = wrapped(i, &body);
+                // A place in the old text, in the new one, inside the marks.
+                let core = mark_end - mark_start - open.len() - close.len();
+                let place =
+                    |x: usize| from + open.len() + kept(from, x.clamp(from, to)).clamp(mark_start, mark_start + core);
+                (from, to, new, place(p.start), place(p.end))
+            }
+        };
+        out.replace_range(from..to, &body);
+        let grown = body.len() as isize - (to - from) as isize;
+        if n == parts.len() - 1 {
+            sel.end = hi;
+        }
+        if n == 0 {
+            sel.start = lo;
+        }
+        if n != parts.len() - 1 {
+            shift += grown;
+        }
+    }
+    sel.end = sel.end.saturating_add_signed(shift);
+    (out, sel)
+}
+
+/// Desktop's format key in a chat that does not support the format: the selection between two of the format's
+/// Markdown marks as text, and the caret between them or after them.
+pub fn insert_marks(i: usize, text: &str, r: Range<usize>) -> (String, Range<usize>) {
+    let open = MARKS[i].0;
+    let out = format!("{}{open}{}{open}{}", &text[..r.start], &text[r.clone()], &text[r.end..]);
+    let at = if r.is_empty() { r.start + open.len() } else { r.end + 2 * open.len() };
+    (out, at..at)
 }
 
 /// Replaces the selection `r` with a Markdown link; the caret goes after it like Desktop.
@@ -191,7 +351,10 @@ impl BeeperGuiApp {
                 items = items.push(container(Space::new()).width(1).height(16).style(fill_box(p.prefs_border, 0.0)));
             }
             group = Some(GROUPS[i]);
-            let on = active(i, text, r);
+            let on = match i {
+                0..=2 | CODE => covered(i, text, r),
+                _ => active(i, text, r),
+            };
             let label = tr(if i == LINK && on { "Remove Link" } else { LABELS[i] });
             let (bg, fg) = if on { (p.accent, Color::WHITE) } else { (CLEAR, p.strong) };
             let icon = svg(ICONS[i].clone()).width(16).height(16).style(move |_, _| svg::Style { color: Some(fg) });
@@ -429,6 +592,56 @@ mod tests {
         assert_eq!((t.as_str(), r), ("see [this](https://x.test)", 26..26));
         assert!(active(LINK, &t, &(5..9)));
         assert_eq!(toggle(LINK, &t, 5..9), ("see this".into(), 4..8));
+    }
+
+    /// Tiptap's `toggleMark` of Desktop's format keys on the Markdown marks: the caret turns the mark off or on for
+    /// what comes next, and a selection loses a mark that covers it or else gets it all.
+    #[test]
+    fn format_keys_toggle_marks_like_tiptap() {
+        let t = |i, text: &str, r: Range<usize>| -> (String, Range<usize>) { toggle_mark(i, text, r) };
+        let same = |text: &str, at: usize| (text.to_string(), at..at);
+        // The caret in "**x**": out at its end, back in, and out before it at its start.
+        assert_eq!(t(0, "**x**", 3..3), same("**x**", 5));
+        assert_eq!(t(0, "**x**", 5..5), same("**x**", 3));
+        assert_eq!(t(0, "**x**", 2..2), same("**x**", 0));
+        assert_eq!(t(0, "a **x**", 2..2), same("a **x**", 4), "the caret before a span goes in");
+        // In the middle the span splits, and the next toggle joins it again.
+        let (split, at) = t(0, "**abcd**", 4..4);
+        assert_eq!((split.as_str(), at.clone()), ("**ab****cd**", 6..6));
+        assert_eq!(t(0, &split, at), same("**abcd**", 4));
+        assert_eq!(t(0, "a b", 1..1), same("a**** b", 3), "an empty pair where no mark is");
+        assert_eq!(t(0, "a****", 3..3), same("a", 1), "an empty pair goes away");
+        assert_eq!(t(1, "_it_", 3..3), same("_it_", 4), "italic");
+        assert_eq!(t(2, "~~gone~~ x", 6..6), same("~~gone~~ x", 8), "strikethrough");
+        // A selection that the mark covers loses it, also with the marks selected.
+        assert_eq!(t(0, "**bold**", 3..6), ("**b**old".into(), 5..8));
+        assert_eq!(t(0, "**bold**", 0..8), ("bold".into(), 0..4));
+        assert_eq!(t(0, "**one two**", 6..9), ("**one** two".into(), 8..11), "no space inside the marks");
+        // Else all of it gets the mark, joined with the spans that it overlaps, outside the spaces at its ends.
+        let (bold, r) = t(0, "say hi now", 4..7);
+        assert_eq!((bold.as_str(), r.clone()), ("say **hi** now", 6..8));
+        assert_eq!(t(0, &bold, r), ("say hi now".into(), 4..6));
+        assert_eq!(t(0, "**ab**cd", 3..7), ("**abc**d".into(), 3..5));
+        assert_eq!(t(0, "**a** **b**", 2..9), ("**a b**".into(), 2..5));
+        assert_eq!(t(0, "  ", 0..2), ("  ".into(), 0..2), "nothing to mark");
+        assert!(
+            covered(0, "**bold**", &(3..6)) && !covered(0, "a **b** c", &(0..9)),
+            "the bubble's highlighted button"
+        );
+        // Each line of a selection gets its own marks.
+        let (lines, r) = t(0, "a\nb", 0..3);
+        assert_eq!((lines.as_str(), r.clone()), ("**a**\n**b**", 2..9));
+        assert_eq!(t(0, &lines, r), ("a\nb".into(), 0..3));
+        assert_eq!(t(CODE, "a `b` c", 3..4), ("a b c".into(), 2..3), "inline code");
+        // Without the format, Desktop types the marks as text around the selection.
+        assert_eq!(insert_marks(0, "hi", 0..2), ("**hi**".into(), 6..6));
+        assert_eq!(insert_marks(1, "**x**", 3..3), ("**x__**".into(), 4..4));
+        // Tiptap's `toggleCodeBlock` takes whole lines.
+        assert_eq!(toggle_line(4, "ab", 1), ("- ab".into(), 3..3), "the caret stays in its text");
+        assert_eq!(toggle_line(4, "- ab", 3), ("ab".into(), 1..1));
+        let (code, r) = toggle(8, "x\nab\ny", 3..4);
+        assert_eq!((code.as_str(), r.clone()), ("x\n```\nab\n```\ny", 6..8));
+        assert_eq!(toggle(8, &code, 7..7), ("x\nab\ny".into(), 2..4));
     }
 
     #[test]
