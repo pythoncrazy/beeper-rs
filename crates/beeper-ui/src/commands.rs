@@ -855,6 +855,9 @@ impl BeeperGuiApp {
         let select = (self.list().active_tab != InboxTab::Requests)
             .then_some(UiMessage::ChatList(chat_list::Msg::ToggleSelectMode));
         v.push(cmd("UI", tr("Toggle chat selection mode"), select));
+        v.push(cmd("UI", tr("Confetti"), Some(UiMessage::Confetti)));
+        let redact = if self.redacted { tr("Unredact names and pictures") } else { tr("Redact names and pictures") };
+        v.push(cmd("UI", redact, Some(UiMessage::ToggleRedacted)));
         for theme in ThemeChoice::ALL.into_iter().filter(|t| *t != st.settings.theme) {
             let title = match theme {
                 ThemeChoice::System => tr("Set theme to match system"),

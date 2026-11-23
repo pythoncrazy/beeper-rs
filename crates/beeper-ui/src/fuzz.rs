@@ -9019,6 +9019,33 @@ fn new_group_avatar_and_size_like_desktop() {
     assert!(app.new_chats.iter().any(|d| d.id == m), "Desktop's `isDraftEmpty` keeps a draft with an avatar");
 }
 
+/// Desktop's "Confetti" and "Redact names and pictures" UI commands: the confetti layer shows over the main window,
+/// and the redacted mode draws the names of the chat list, the header and the senders in the redacted font, while the
+/// messages and the dates keep the app font.
+#[test]
+fn confetti_and_redacted_mode_in_the_command_bar_like_desktop() {
+    use crate::style::{redact, redacted_mode, redacting, region};
+    let mut app = demo_app("confetti-redact");
+    let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+    let find = |app: &BeeperGuiApp, t: &str| app.commands(&app.store.read(), "").into_iter().find(|c| c.title == t);
+    let confetti = find(&app, "Confetti").expect("the confetti command");
+    assert_eq!(confetti.category, "UI");
+    let _ = app.update(confetti.msg.expect("an action"));
+    assert!(app.confetti.is_some() && app.animated(), "the layer shows and animates");
+    let toggle = find(&app, "Redact names and pictures").expect("the redact command");
+    let _ = app.update(toggle.msg.expect("an action"));
+    assert!(app.redacted && find(&app, "Unredact names and pictures").is_some());
+    redacted_mode(true);
+    assert!(!redacting(), "outside a region");
+    assert!(region(true, redacting) && !region(true, || region(false, redacting)));
+    assert_eq!(region(true, || redact(fw(Weight::Semibold))).family, iced::font::Family::Name("Redacted"));
+    assert!(simulator(app.view_main()).find("Beeper Rust Core Team").is_ok(), "the text stays, in the redacted font");
+    redacted_mode(false);
+    assert!(!region(true, redacting), "no redaction without the mode");
+    let _ = app.update(UiMessage::ToggleRedacted);
+    assert!(!app.redacted);
+}
+
 /// Desktop's JSON copies of the Developer commands: the chat, the loaded messages as a list of `{ message }`, and one
 /// selected message as an object.
 #[test]
