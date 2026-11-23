@@ -1841,7 +1841,12 @@ struct Update {
     prev_batch: Option<String>,
     /// Whether the sync changed a state of the room. Without a change, a chat keeps what it found from the members.
     state_changed: bool,
+    /// The history page of a new room, which [`first_page`] started before the rooms of the sync applied.
+    page: Option<PageTask>,
 }
+
+/// A history page that loads on its own task.
+type PageTask = tokio::task::JoinHandle<matrix_sdk::Result<(Vec<TimelineEvent>, Option<String>)>>;
 
 /// Where the members of a chat come from when they are not read again.
 enum Kept {
@@ -1865,6 +1870,48 @@ enum Pass {
 
 /// [`sync_room`] with the `pass` of a sync or of the start, which reads the receipts of its receipt events after it,
 /// and the global account data that the caller read, else read here.
+/// The page of history that [`sync_room_after`] loads for a room of a sync that has no chat yet: the events before
+/// those of the sync, up to `HISTORY` with them. None for a room that has a chat, or that is not a chat.
+async fn first_page(
+    store: &SharedStore,
+    room: &Room,
+    events: usize,
+    prev_batch: &Option<String>,
+) -> Option<(Option<String>, u32)> {
+    let id = room.room_id().as_str();
+    let seen = |chat: &str| {
+        let st = store.read();
+        st.chat_idx_by_id.get(chat).is_some_and(|&i| st.chats[i].notifiable.is_some())
+    };
+    let special = [BOOKMARKS_ROOM, TRANSCRIPTIONS_ROOM, REMOVED_MESSAGES_ROOM, REMINDERS_ROOM].contains(&id);
+    let wanted = match prev_batch {
+        Some(_) => HISTORY.saturating_sub(u32::try_from(events).unwrap_or(u32::MAX)),
+        None => HISTORY,
+    };
+    if special || MANAGED_ROOMS.contains(&id) || seen(id) || wanted == 0 {
+        return None;
+    }
+    let cached = store.read().room_reads.rooms.get(id).map(|r| r.create.clone());
+    let create = match cached {
+        Some(c) => c,
+        None => RoomReads::create(room).await?,
+    };
+    let create = &create["content"];
+    let chat = matches!(create["type"].as_str(), None | Some("com.beeper.local" | UNION));
+    (chat && create["com.beeper.label"] != true && !seen(&chat_id(room).await)).then(|| (prev_batch.clone(), wanted))
+}
+
+/// Aborts the task of a page that nothing awaited when it drops.
+struct AbortPage(Option<PageTask>);
+
+impl Drop for AbortPage {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
 async fn sync_room_after(
     store: &SharedStore,
     room: &Room,
@@ -1884,11 +1931,13 @@ async fn sync_room_after(
     // The events of a sync are new, unlike those of a page of history or of the start pass.
     let live = matches!(pass, Pass::Sync(_));
     // The members that the start pass kept, or whether a sync kept those of the chat.
-    let (prev_batch, cache, known) = match pass {
-        Pass::Fresh => (None, false, Kept::None),
-        Pass::Sync(u) => (u.prev_batch, true, if u.state_changed { Kept::None } else { Kept::Chat }),
-        Pass::Start(k) => (None, true, k.map_or(Kept::None, Kept::Start)),
+    let (prev_batch, cache, known, prefetched) = match pass {
+        Pass::Fresh => (None, false, Kept::None, None),
+        Pass::Sync(u) => (u.prev_batch, true, if u.state_changed { Kept::None } else { Kept::Chat }, u.page),
+        Pass::Start(k) => (None, true, k.map_or(Kept::None, Kept::Start), None),
     };
+    // A page that this pass does not take does not load.
+    let mut prefetched = AbortPage(prefetched);
     match room.room_id().as_str() {
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
         TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
@@ -1991,7 +2040,13 @@ async fn sync_room_after(
     } else if !seen {
         let known: HashSet<String> = events.iter().filter_map(|e| Some(e.event_id()?.to_string())).collect();
         // Without the page, `older` stays unknown and the next load of older messages tries again.
-        let page = outside_sync_tx(store, page(room, prev_batch, wanted)).await;
+        let fetch = async {
+            match prefetched.0.take() {
+                Some(task) => task.await.expect("the task of a history page does not panic"),
+                None => page(room, prev_batch, wanted).await,
+            }
+        };
+        let page = outside_sync_tx(store, fetch).await;
         if let Ok((page, end)) = page.inspect_err(|e| drop(no_history(room, e))) {
             older = Some(end.map_or(Older::Start, Older::From));
             let page = page.into_iter().filter(|e| e.event_id().is_some_and(|id| !known.contains(id.as_str())));
@@ -6119,6 +6174,21 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                     _ => store.write().remove_deleted_chat(id.as_str()),
                 }
             }
+            // The history pages of the new rooms load 8 at once while the rooms apply one after the other.
+            let slots = Arc::new(tokio::sync::Semaphore::new(8));
+            let mut pages = HashMap::new();
+            for (id, update) in &resp.rooms.joined {
+                let room = client.get_room(id).expect("synced room is known");
+                let (events, prev_batch) = (update.timeline.events.len(), &update.timeline.prev_batch);
+                if let Some((from, wanted)) = first_page(store, &room, events, prev_batch).await {
+                    let slots = slots.clone();
+                    let load = async move {
+                        let _slot = slots.acquire_owned().await.expect("the page semaphore stays open");
+                        page(&room, from, wanted).await
+                    };
+                    pages.insert(id.clone(), tokio::spawn(load));
+                }
+            }
             for (id, update) in resp.rooms.joined {
                 let room = client.get_room(&id).expect("synced room is known");
                 // A limited timeline of a room that synced before leaves out the events since the last sync.
@@ -6128,7 +6198,7 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 }
                 let state_changed = stateful.contains(id.as_str());
                 let prev_batch = update.timeline.prev_batch;
-                let u = Pass::Sync(Update { prev_batch, state_changed });
+                let u = Pass::Sync(Update { prev_batch, state_changed, page: pages.remove(&id) });
                 sync_room_after(store, &room, update.timeline.events, u, Some(&globals)).await;
                 for e in &update.account_data {
                     let v: Value = e.deserialize_as().expect("room account data JSON");
