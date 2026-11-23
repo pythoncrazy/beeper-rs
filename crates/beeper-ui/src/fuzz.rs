@@ -7155,6 +7155,56 @@ fn chats_select_with_the_keyboard_like_desktop() {
     assert!(app.list.cursor.is_none(), "the selection mode drops the cursor");
 }
 
+/// Desktop's selection mode with a chat open: its `ThreadComposer` is gone (`threadSelectionMode`), so J and K move
+/// the selection like ↓ and ↑ (`handleThreadSelection`) instead of typing, and the open chat reads nothing
+/// (`markAsRead`) until the mode ends.
+#[test]
+fn selection_keys_with_a_chat_open_like_desktop() {
+    let mut app = demo_app("select-open-chat");
+    let main = app.main_window.expect("the main window");
+    let ids = app.list_ids(&app.store.read());
+    let _ = app.update(UiMessage::SelectChat(ids[1].clone()));
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(true)));
+    let composer =
+        |app: &BeeperGuiApp| simulator(app.view_conversation()).find(iced::widget::Id::new("composer-input")).is_ok();
+    assert!(composer(&app), "the composer of the open chat");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::BeginSelecting(ids[1].clone())));
+    assert!(!composer(&app), "no composer in the selection mode");
+    let text = |app: &mut BeeperGuiApp, t: &str| _ = app.update(UiMessage::WindowText(main, t.into()));
+    text(&mut app, "j");
+    assert_eq!(app.selection, [ids[2].clone()], "J selects the next chat");
+    text(&mut app, "k");
+    text(&mut app, "k");
+    assert_eq!(app.selection, [ids[0].clone()], "K selects the chats before");
+    text(&mut app, "J");
+    assert_eq!(app.selection, [ids[0].clone(), ids[1].clone()], "Shift+J grows the selection");
+    assert_eq!(app.pane.composer.text(), "", "nothing is typed");
+    let arrive = |app: &mut BeeperGuiApp| {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&ids[1]).unwrap();
+        st.update_chat(idx, |c| c.unread_count = 1);
+        let m = st.messages.iter().rfind(|m| m.chat_id == ids[1]).unwrap().clone();
+        drop(st);
+        let _ = app.update(UiMessage::Upserted(Box::new(m)));
+    };
+    arrive(&mut app);
+    assert_eq!(app.store.read().chat(&ids[1]).unread_count, 1, "the open chat stays unread while selecting");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleSelected(ids[0].clone())));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleSelected(ids[1].clone())));
+    assert!(!app.selecting_chats(), "unselecting the last chat ends the selection mode");
+    assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&ids[1]));
+    assert!(composer(&app), "the composer is back");
+    arrive(&mut app);
+    assert_eq!(app.store.read().chat(&ids[1]).unread_count, 0, "and the open chat reads again");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::BeginSelecting(ids[1].clone())));
+    let escape = iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape);
+    let _ = app.update(UiMessage::KeyPressed(escape, iced::keyboard::Modifiers::empty()));
+    assert!(!app.selecting_chats(), "Escape ends the selection mode");
+    assert_eq!(app.pane.selected_chat_id, None, "and closes the open chat");
+    text(&mut app, "j");
+    assert!(app.selection.is_empty(), "J selects nothing outside the selection mode");
+}
+
 /// Desktop's thread header (`ij`) returns nothing in `threadSelectionMode`, which selecting chats turns on.
 #[test]
 fn selecting_chats_hides_the_thread_header_like_desktop() {

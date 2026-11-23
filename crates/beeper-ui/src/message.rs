@@ -1618,13 +1618,15 @@ impl BeeperGuiApp {
         });
         // Desktop's `TargetSwitcherNudge` comes with the text composer and its switcher.
         let texting = upgraded.is_none() && blocked.is_none() && !chat.exited() && unavailable(&st, chat).is_none();
+        let texting = texting && !selecting;
         let nudge = self
             .view_switcher_nudge(&st)
             .filter(|_| texting && in_chat && self.pane().thread_root.is_none() && self.drawing.get().is_none())
             .filter(|_| self.recorder.is_none() && self.talk.is_none());
-        // Desktop's `ThreadComposer` draws nothing once the user left the chat or was removed from it.
+        // Desktop's `ThreadComposer` draws nothing once the user left the chat or was removed from it, or in the
+        // selection mode (`threadSelectionMode`).
         let composer = match upgraded.or(blocked) {
-            _ if chat.exited() => None,
+            _ if chat.exited() || selecting => None,
             Some(link) => Some(link),
             None => unavailable(&st, chat).is_none().then(|| self.view_composer(&st, chat)),
         };

@@ -6052,7 +6052,7 @@ impl BeeperGuiApp {
     fn read_open_chat(&self) {
         let at_bottom = self.pane.scrolled_up.is_none_or(|(up, _)| !up);
         let shows = self.focused && self.pane.thread_root.is_none() && !self.pane.info;
-        let shows = shows && !self.idle && !self.pane.keep_unread;
+        let shows = shows && !self.idle && !self.pane.keep_unread && !self.main_selecting();
         let Some(id) = self.pane.selected_chat_id.clone().filter(|_| shows) else {
             return;
         };
