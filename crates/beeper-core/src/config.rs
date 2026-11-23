@@ -138,6 +138,7 @@ impl Default for BeeperSettings {
             quick_reactions: ["👍", "❤️", "😂"].map(String::from).to_vec(),
             recent_stickers: Vec::new(),
             time_suggestions: Vec::new(),
+            quick_replies: Vec::new(),
         }
     }
 }

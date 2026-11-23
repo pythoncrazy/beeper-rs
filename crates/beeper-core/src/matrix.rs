@@ -4316,10 +4316,13 @@ async fn sync_prefs(client: &Client, store: &SharedStore) {
     if let Some(v) = events[crate::prefs::DESKTOP_PREFS].get(crate::prefs::TIME_SUGGESTION_OPTIONS) {
         settings.time_suggestions = crate::prefs::time_suggestion_options(v);
     }
+    if let Some(v) = events[crate::prefs::DESKTOP_PREFS].get(crate::prefs::QUICK_REPLIES) {
+        settings.quick_replies = serde_json::from_value(v.clone()).unwrap_or_default();
+    }
     st.synced_prefs = events;
     let s = &st.settings;
-    if (&settings.prefs, &settings.quick_reaction, &settings.time_suggestions)
-        != (&s.prefs, &s.quick_reaction, &s.time_suggestions)
+    if (&settings.prefs, &settings.quick_reaction, &settings.time_suggestions, &settings.quick_replies)
+        != (&s.prefs, &s.quick_reaction, &s.time_suggestions, &s.quick_replies)
     {
         st.update_settings(|s| *s = settings);
         st.emit_ws("settings.updated", "", None, None, None);
@@ -4346,6 +4349,12 @@ pub fn quick_reaction_write(st: &mut BeeperStore) -> Option<(&'static str, Value
 pub fn time_suggestions_write(st: &mut BeeperStore) -> Option<(&'static str, Value)> {
     let options = st.settings.time_suggestions.clone().into();
     synced_write(st, crate::prefs::DESKTOP_PREFS, crate::prefs::TIME_SUGGESTION_OPTIONS, options)
+}
+
+/// The account data write of Desktop's `prefsStore.set(QUICK_REPLIES)`, which syncs the quick replies.
+pub fn quick_replies_write(st: &mut BeeperStore) -> Option<(&'static str, Value)> {
+    let replies = serde_json::to_value(&st.settings.quick_replies).expect("quick replies JSON");
+    synced_write(st, crate::prefs::DESKTOP_PREFS, crate::prefs::QUICK_REPLIES, replies)
 }
 
 fn synced_write(st: &mut BeeperStore, kind: &'static str, field: &str, value: Value) -> Option<(&'static str, Value)> {
@@ -8447,6 +8456,41 @@ mod tests {
         for q in ["@", "@sam:localhost", "@sam:x.y1", "sam:beeper.com"] {
             assert_eq!(search(q).await, json!([vic, una]), "{q} adds nobody");
         }
+    }
+
+    /// Desktop's `quick_replies` come in from `com.beeper.desktop.prefs`, and a write keeps the attachments that Desktop
+    /// saved with them.
+    #[tokio::test]
+    async fn quick_replies_sync_like_desktop() {
+        let attachment =
+            json!({ "id": "a1", "filePath": "/home/x/quick_reply_attachments/cat.png", "fileName": "cat.png" });
+        let replies = json!([
+            { "id": "q1", "title": "Thanks", "text": "Thank you {first_name}!" },
+            { "id": "q2", "title": "Cat", "text": "Here", "attachments": [attachment] },
+        ]);
+        let prefs = json!({ "quick_replies": replies, "sticker_packs": true });
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => {
+                let mut sync = stub_sync();
+                let event = json!({ "type": "com.beeper.desktop.prefs", "content": prefs.clone() });
+                sync["account_data"] = json!({ "events": [event] });
+                (200, sync)
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("quick-replies"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        super::sync_prefs(&client, &store).await;
+        let titles: Vec<String> = store.read().settings.quick_replies.iter().map(|q| q.title.clone()).collect();
+        assert_eq!(titles, ["Thanks", "Cat"]);
+        let mut st = store.write();
+        st.update_settings(|s| drop(s.quick_replies.remove(0)));
+        let (_, content) = super::quick_replies_write(&mut st).expect("the prefs are synced");
+        let kept = json!([{ "id": "q2", "title": "Cat", "text": "Here", "attachments": [attachment] }]);
+        assert_eq!(content, json!({ "quick_replies": kept, "sticker_packs": true }));
     }
 
     /// Desktop's `time_suggestion_options` comes in normalized from `com.beeper.desktop.prefs`, and

@@ -243,6 +243,8 @@ impl Flags {
                 let free = !on && self.free("labels").is_some();
                 Feature { show: inbox || on || free, on: on || free, upgrade: inbox && !on }
             }
+            // Desktop's `s` of `QUICK_REPLIES`: only for the internal channel.
+            "quick-replies" => Feature { show: self.internal, on: self.internal, upgrade: false },
             // Desktop's `features[SNOOZE]`: only for the internal channel, and open while a free snooze is.
             "snooze" if !self.internal => Feature { show: false, on: false, upgrade: false },
             "snooze" => match (self.flag(key), self.free(key)) {

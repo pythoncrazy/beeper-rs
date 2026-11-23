@@ -53,6 +53,27 @@ pub(crate) type Typo = (std::ops::Range<usize>, Vec<String>);
 pub enum Suggestion {
     Emoji(String, String),
     Mention(String, String, Option<Box<User>>),
+    /// A quick reply, by its index in the quick replies of the settings.
+    QuickReply(usize),
+}
+
+/// Desktop's `command` of the quick reply trigger: the text with the variables of the other person of the chat
+/// (`participants[0]`), and a variable that the person has no value for left as it is.
+pub(crate) fn quick_reply_text(text: &str, other: Option<&User>) -> String {
+    let Some(u) = other else { return text.to_string() };
+    let words: Vec<&str> = u.full_name.as_deref().map(|n| n.split(' ').collect()).unwrap_or_default();
+    let fields = [
+        ("{full_name}", u.full_name.as_deref()),
+        ("{first_name}", words.first().copied()),
+        ("{last_name}", words.last().copied()),
+        ("{username}", u.username.as_deref()),
+        ("{phone_number}", u.phone_number.as_deref()),
+        ("{email}", u.email.as_deref()),
+    ];
+    fields.into_iter().fold(text.to_string(), |t, (var, value)| match value.filter(|v| !v.is_empty()) {
+        Some(v) => t.replace(var, v),
+        None => t,
+    })
 }
 
 /// Where a pasted text goes when it is one link and nothing else, like linkifyjs's `find(...).isLink && value ===
@@ -67,6 +88,17 @@ fn pasted_link(t: &str) -> Option<String> {
         Some(rest) => format!("https://{rest}"),
         None => href,
     })
+}
+
+/// The row of a quick reply in the autocomplete: its whole label for the width, the title, and the text cut like
+/// Desktop's `vL(text, { length: 100 })`.
+fn quick_reply_row(r: &beeper_core::models::QuickReply) -> (String, String, String) {
+    let text: String = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = match text.chars().count() > 100 {
+        true => format!("{}...", text.chars().take(97).collect::<String>()),
+        false => text,
+    };
+    (format!("{} - {text}", r.title), r.title.clone(), text)
 }
 
 /// Desktop's `xk`: the label of a mention of `u`.
@@ -517,12 +549,18 @@ impl BeeperGuiApp {
         let pane = self.pane();
         let text = pane.composer.text();
         let before = &text[..format::offset(&text, pane.composer.cursor().position)];
-        let at = before.rfind(['@', ':', '\n']).filter(|_| pane.suggest_hidden.as_ref() != Some(&text))?;
+        let at = before.rfind(['@', ':', ';', '\n']).filter(|_| pane.suggest_hidden.as_ref() != Some(&text))?;
         let query = &before[at + 1..];
         // Desktop's `findSuggestionMatch` (`[\p{L}\d+\-_]*` after the trigger): ":)" or "@a.b" suggest nothing.
         let word = |c: char| c.is_alphabetic() || c.is_ascii_digit() || "+-_".contains(c);
         let picks: Vec<Suggestion> = match before.as_bytes()[at] {
             _ if !query.chars().all(word) => return None,
+            // Desktop's quick reply trigger: the replies whose title matches, ranked like match-sorter (`ah`).
+            b';' if st.feature("quick-replies").on => {
+                let replies = st.settings.quick_replies.iter().enumerate();
+                let found = prefs::match_sort(replies, query, |(_, r)| r.title.clone()).into_iter();
+                found.map(|(i, _)| Suggestion::QuickReply(i)).collect()
+            }
             b'@' => {
                 let chat = &st.chats[st.resolve_chat_idx(pane.selected_chat_id.as_deref()?).expect("the open chat")];
                 let key =
@@ -555,10 +593,11 @@ impl BeeperGuiApp {
             Suggestion::Emoji(c, name) if emoji::is_mxc(c) => format!(" {name}"),
             Suggestion::Emoji(c, name) => format!("{c} {name}"),
             Suggestion::Mention(label, ..) => format!("@{label}"),
+            Suggestion::QuickReply(i) => quick_reply_row(&st.settings.quick_replies[*i]).0,
         };
         let face = |s: &Suggestion| match s {
             Suggestion::Emoji(c, _) if emoji::is_mxc(c) => Some(self.custom_image(c, 13.0, self.animate.get())),
-            Suggestion::Emoji(..) => None,
+            Suggestion::Emoji(..) | Suggestion::QuickReply(_) => None,
             Suggestion::Mention(_, _, Some(u)) => {
                 Some(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 32.0, 0.0))
             }
@@ -577,6 +616,16 @@ impl BeeperGuiApp {
             picks.iter().map(|s| text_width(&label(s), 13.0, Weight::Normal)).fold(0.0, f32::max) + 12.0 + faces;
         let items = picks.iter().enumerate().map(|(i, s)| {
             let (bg, fg) = if i == at { (p.accent, Color::WHITE) } else { (CLEAR, p.text) };
+            // Desktop's `QuickReplyItem`: the title in 500, a dash, and the text at 0.75, cut at 100 characters.
+            if let Suggestion::QuickReply(q) = s {
+                let (_, title, text) = quick_reply_row(&st.settings.quick_replies[*q]);
+                let line = row![crate::med(title, 13.0).color(fg), txt("-", 13.0).color(fg)]
+                    .push(txt(text, 13.0).color(fg.scale_alpha(0.75)).wrapping(iced::widget::text::Wrapping::None))
+                    .spacing(6)
+                    .align_y(Center);
+                let b = button(line).padding([4, 6]).width(width).style(btn_style([bg; 3], [fg; 3], 4.0));
+                return b.on_press(UiMessage::Composer(Msg::PickSuggestion(i))).into();
+            }
             let name = txt(label(s), 13.0).wrapping(iced::widget::text::Wrapping::None);
             let gap = if matches!(s, Suggestion::Mention(..)) { 4.0 } else { 0.0 };
             let b = button(row![].push(face(s)).push(name).spacing(gap).align_y(Center)).padding([4, 6]).width(width);
@@ -1637,6 +1686,13 @@ impl BeeperGuiApp {
                     Suggestion::Mention(label, id, _) => {
                         self.pane.mentions.push((label.clone(), id.clone()));
                         format!("@{label} ")
+                    }
+                    Suggestion::QuickReply(q) => {
+                        let st = self.store.read();
+                        let chat = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+                        let people = chat.map(|c| st.chats[c].participants.items.as_slice()).unwrap_or_default();
+                        let other = people.iter().find(|u| u.is_self != Some(true));
+                        format!("{} ", quick_reply_text(&st.settings.quick_replies[*q].text, other))
                     }
                 };
                 text.replace_range(at..caret, &pick);

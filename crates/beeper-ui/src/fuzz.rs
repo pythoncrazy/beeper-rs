@@ -1764,6 +1764,55 @@ fn emoticons_and_urls_suggest_nothing_like_desktop() {
     assert_eq!(picks(&mut app, "mail @a.b"), 0);
 }
 
+/// Desktop's quick reply trigger: with `quick-replies` (only the internal channel), `;` and a word list the synced
+/// quick replies whose title matches, and a pick puts the text with the variables of the other person of the chat.
+#[test]
+fn quick_replies_like_desktop() {
+    use crate::composer::{quick_reply_text, Suggestion};
+    use beeper_core::models::QuickReply;
+    let mut app = demo_app("quick-replies");
+    let chat = {
+        let st = app.store.read();
+        let single =
+            |c: &&Chat| c.chat_type == "single" && c.participants.items.iter().any(|u| u.is_self != Some(true));
+        app.visible_chats(&st).into_iter().find(single).unwrap().clone()
+    };
+    let other = chat.participants.items.iter().find(|u| u.is_self != Some(true)).unwrap().clone();
+    let reply = |title: &str, text: &str| QuickReply {
+        id: title.into(),
+        title: title.into(),
+        text: text.into(),
+        ..Default::default()
+    };
+    app.store.write().update_settings(|s| {
+        s.quick_replies = vec![reply("Thanks", "Thank you {first_name}!"), reply("Address", "{full_name}, at {email}")];
+    });
+    let _ = app.update(UiMessage::SelectChat(chat.id.clone()));
+    let titles = |app: &mut BeeperGuiApp, text: &str| {
+        let _ = app.update(UiMessage::Composer(composer::Msg::Changed(text.into())));
+        let st = app.store.read();
+        let rows = app.suggestions(&st).map_or_else(Vec::new, |(_, rows)| rows);
+        let title = |s: Suggestion| match s {
+            Suggestion::QuickReply(i) => Some(st.settings.quick_replies[i].title.clone()),
+            _ => None,
+        };
+        rows.into_iter().filter_map(title).collect::<Vec<_>>()
+    };
+    assert!(titles(&mut app, ";th").is_empty(), "only the internal channel has quick replies");
+    app.store.write().features.internal = true;
+    assert_eq!(titles(&mut app, ";th"), ["Thanks"]);
+    assert_eq!(titles(&mut app, "ok ;"), ["Address", "Thanks"], "an empty query lists them all");
+    assert!(simulator(app.view_main()).find("Thank you {first_name}!").is_ok(), "the row shows the text");
+    let _ = titles(&mut app, "ok ;tha");
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let first = other.full_name.as_deref().and_then(|n| n.split(' ').next()).unwrap_or("{first_name}");
+    assert_eq!(app.pane.composer.text().trim_end_matches('\n'), format!("ok Thank you {first}! "));
+    let nobody = quick_reply_text("Hi {first_name} {last_name} {username}", None);
+    assert_eq!(nobody, "Hi {first_name} {last_name} {username}", "no person, no change");
+    let ann = User { full_name: Some("Ann Lee Smith".into()), ..Default::default() };
+    assert_eq!(quick_reply_text("{first_name} {last_name} {email}", Some(&ann)), "Ann Smith {email}");
+}
+
 #[test]
 fn mentions_like_desktop() {
     let mut app = demo_app("mentions");
@@ -1782,7 +1831,7 @@ fn mentions_like_desktop() {
         rows.into_iter()
             .map(|s| match s {
                 Suggestion::Mention(label, id, _) => (label, id),
-                Suggestion::Emoji(..) => panic!("an emoji row for @"),
+                Suggestion::Emoji(..) | Suggestion::QuickReply(_) => panic!("another row for @"),
             })
             .collect::<Vec<_>>()
     };
@@ -10057,7 +10106,7 @@ fn custom_emoji_composer_like_desktop() {
         let rows = app.suggestions(&st).map_or_else(Vec::new, |(_, rows)| rows);
         let emoji = |s| match s {
             Suggestion::Emoji(c, name) => Some((c, name)),
-            Suggestion::Mention(..) => None,
+            Suggestion::Mention(..) | Suggestion::QuickReply(_) => None,
         };
         rows.into_iter().filter_map(emoji).collect::<Vec<_>>()
     };
