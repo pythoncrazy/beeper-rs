@@ -271,8 +271,8 @@ impl BeeperGuiApp {
             Msg::Query(q) => {
                 (self.new_chat_query, self.join_room.1) = (q.clone(), None);
                 (self.new_chat_lookup, self.new_chat_search) = (None, None);
-                let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
-                return Task::perform(wait, move |()| UiMessage::NewChat(Msg::LookupIdentifier(q.clone())));
+                let lookup = UiMessage::NewChat(Msg::LookupIdentifier(q));
+                return self.timers.lookup.after(std::time::Duration::from_millis(300), lookup);
             }
             Msg::ToggleExpanded => self.new_chat_expanded = !self.new_chat_expanded,
             Msg::ToggleChats => self.new_chat_chats_expanded = !self.new_chat_chats_expanded,

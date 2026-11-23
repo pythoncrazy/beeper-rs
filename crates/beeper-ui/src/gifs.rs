@@ -30,10 +30,10 @@ impl BeeperGuiApp {
                 (self.gif_query, self.gif_loading, self.gif_error) = (q.clone(), true, None);
                 self.gif_next.clear();
                 if q.trim().is_empty() {
+                    self.timers.gifs.cancel();
                     return self.update(UiMessage::Gifs(Msg::Search(q)));
                 }
-                let wait = async { tokio::time::sleep(std::time::Duration::from_millis(500)).await };
-                return Task::perform(wait, move |()| UiMessage::Gifs(Msg::Search(q.clone())));
+                return self.timers.gifs.after(std::time::Duration::from_millis(500), UiMessage::Gifs(Msg::Search(q)));
             }
             Msg::Search(q) if q == self.gif_query => {
                 let reset = operation::scroll_to("gif-carousel", operation::AbsoluteOffset { x: 0.0, y: 0.0 });

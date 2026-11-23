@@ -293,7 +293,10 @@ impl BeeperGuiApp {
     /// Desktop's "Unread threads" pill at the top of the chat list: the count, with "@" for a mention.
     pub(crate) fn unread_threads_pill<'a>(&'a self, st: &BeeperStore, threads: &[(usize, String)]) -> El<'a> {
         let p = &self.pal;
-        let at = threads.iter().any(|(i, r)| st.thread_unread(&st.chats[*i], r).1 > 0);
+        // The mentions of a thread read SQLite, so they are kept until the store changes.
+        let mentions =
+            |i: usize, r: &str| self.count(&format!("thread mentions {i} {r}"), || st.thread_unread(&st.chats[i], r).1);
+        let at = threads.iter().any(|(i, r)| mentions(*i, r) > 0);
         let count = row![]
             .push(at.then(|| semi("@", 10.0).color(Color::WHITE)))
             .push(semi(threads.len().to_string(), 10.0).color(Color::WHITE));

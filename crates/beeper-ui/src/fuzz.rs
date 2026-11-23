@@ -4387,6 +4387,8 @@ fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
     let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(true)));
     let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
     assert!(app.pane.scrolled_up.is_none(), "another chat opens at its bottom");
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(false)));
+    assert!(app.pane.scrolled_up.is_none(), "with no button that fades out");
 }
 
 /// Desktop's timeline effect: a message that comes into the open chat reads it while the window is focused and the
@@ -9365,6 +9367,31 @@ fn window_changes_save_the_state_after_the_last_one_like_desktop() {
     let other = window::Id::unique();
     let task = app.update(UiMessage::Window(windows::Msg::Moved(other)));
     assert_eq!((task.units(), app.state_changes), (0, n), "a window without a state saves nothing");
+}
+
+/// A newer timer of a debounce aborts the one before, whose message would change nothing, so that only the last one
+/// comes.
+#[test]
+fn a_debounce_sends_only_the_last_timer() {
+    use iced::futures::StreamExt;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().expect("a runtime");
+    let out = |task: Task<UiMessage>| {
+        let stream = iced_runtime::task::into_stream(task).expect("a timer");
+        let actions = rt.block_on(stream.collect::<Vec<_>>());
+        let ends = actions.into_iter().filter_map(|a| match a {
+            iced_runtime::Action::Output(UiMessage::HeaderHoverEnd(n)) => Some(n),
+            _ => None,
+        });
+        ends.collect::<Vec<u32>>()
+    };
+    let mut timer = Debounce::default();
+    let first = timer.after(Duration::from_millis(5), UiMessage::HeaderHoverEnd(1));
+    let last = timer.after(Duration::from_millis(5), UiMessage::HeaderHoverEnd(2));
+    assert_eq!(out(first), [] as [u32; 0], "the replaced timer is aborted");
+    assert_eq!(out(last), [2], "the last one comes");
+    let cancelled = timer.after(Duration::from_millis(5), UiMessage::HeaderHoverEnd(3));
+    timer.cancel();
+    assert_eq!(out(cancelled), [] as [u32; 0], "and none after a cancel");
 }
 
 /// The window actions of `task`, run like iced would with windows that are `size`, of which `maximized` are maximized,
