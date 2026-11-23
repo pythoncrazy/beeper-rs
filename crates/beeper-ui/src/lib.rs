@@ -548,6 +548,61 @@ fn several_accounts(st: &BeeperStore, account_id: &str) -> bool {
     kind.is_some_and(|k| st.bridge_accounts.iter().filter(|b| &b.bridge_type == k).count() > 1)
 }
 
+/// Desktop's platforms with `CANNOT_MESSAGE_SELF` or `NO_SUPPORT_SINGLE_THREAD_CREATION`, by network.
+const NO_SELF_CHATS: [&str; 14] = [
+    "twitter",
+    "telegram",
+    "slack",
+    "discord",
+    "facebook",
+    "linkedin",
+    "imessage",
+    "gmessages",
+    "googlechat",
+    "grokbot",
+    "muse",
+    "gvoice",
+    "chatgpt-dots",
+    "tumblr",
+];
+
+/// Desktop's `findSingleThreadWithUserID(user.id)` for the user of an account: the note chat of the Beeper account,
+/// or a direct chat of the account with nobody but you and its bots.
+fn self_chat<'s>(st: &'s BeeperStore, account: &str) -> Option<&'s Chat> {
+    if account == "hungryserv" {
+        return st.find_chat(NOTE_CHAT_ID);
+    }
+    let profile =
+        st.bridge_accounts.iter().find(|b| b.account_id == account)?.remote_profile.clone().unwrap_or_default();
+    let phone = profile.phone.as_deref().map(new_chat::phone_digits);
+    let me = |u: &User| {
+        u.is_self == Some(true)
+            || u.is_network_bot == Some(true)
+            || phone.is_some() && u.phone_number.as_deref().map(new_chat::phone_digits) == phone
+            || profile.username.is_some() && u.username == profile.username
+    };
+    st.chats.iter().find(|c| c.account_id == account && c.chat_type == "single" && c.participants.items.iter().all(me))
+}
+
+/// Desktop's `canMessageSelf`: the account is connected, and its network makes a chat with yourself or it has one.
+fn can_message_self(st: &BeeperStore, account: &str) -> bool {
+    let connected =
+        account == "hungryserv" || st.bridge_accounts.iter().any(|b| b.account_id == account && b.state == "CONNECTED");
+    connected && (!NO_SELF_CHATS.contains(&brand_key(account)) || self_chat(st, account).is_some())
+}
+
+/// Desktop's `FMt` of Settings > Devices: the accounts with a phone number that can message you, and the number.
+fn link_phones(st: &BeeperStore) -> Vec<(String, String)> {
+    let phones = st.bridge_accounts.iter().filter_map(|b| Some((b, b.remote_profile.as_ref()?.phone.clone()?)));
+    phones
+        .filter(|(b, _)| can_message_self(st, &b.account_id))
+        .map(|(b, p)| (b.account_id.clone(), fmt_phone(&p)))
+        .collect()
+}
+
+/// Desktop's `aRt`, the text of "Send a link to %s".
+const INSTALL_LINK: &str = "Install Beeper on your phone: https://www.beeper.com/download";
+
 /// Desktop's `composeSwitchTargets` of the account variant: in a single chat on an account with other accounts of its
 /// bridge, the chat and the chats with the same person on those accounts (`getAltAccountThreads`).
 fn switch_targets(st: &BeeperStore, chat: &Chat) -> Option<Vec<String>> {
@@ -3049,6 +3104,13 @@ pub struct BeeperGuiApp {
     memo: Memo,
     /// The room of a direct chat that the bridge made, to select when it syncs, and the quote for its composer.
     pub pending_dm: Option<(String, Option<String>)>,
+    /// Desktop's "Send a link to %s" of Settings > Devices: the account that sends, and the chat with yourself on it
+    /// once the bridge made it.
+    pub(crate) link_to: Option<(String, Option<String>)>,
+    /// The phone number that the link went to, and when, for Desktop's "Link sent to %s" of 3 s.
+    pub(crate) link_sent: Option<(String, std::time::Instant)>,
+    /// The account of the link that the dropdown picked, and whether the dropdown shows.
+    pub(crate) link_pick: (Option<String>, bool),
     /// The bridge provisioning capabilities of the chat accounts.
     pub caps: HashMap<String, serde_json::Value>,
     /// The expanded New Chat contact and its networks.
@@ -3376,7 +3438,7 @@ impl BeeperGuiApp {
             media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, notifications,
             gif_query, gifs, gif_loading, gif_error, gif_next, gif_sel, gif_view, command_palette_query,
             cmd_bar_commands_mode, cmd_submenu, cmd_index, search_index, search_expanded, recent_searches,
-            last_archived, creating_chat, new_chats, command_list, memo, pending_dm, contact_networks, new_chat_lookup,
+            last_archived, creating_chat, new_chats, command_list, memo, pending_dm, link_to, link_sent, link_pick, contact_networks, new_chat_lookup,
             new_chat_search, new_chat_results_expanded, new_chat_account, new_chat_accounts_open, new_chat_query,
             new_chat_expanded, new_chat_chats_expanded, join_matrix_mode, join_room, devices, mics, confirm,
             delete_target, delete_chats, devices_busy, report_spam, time_edit, recorder, talk, queued, selection,
@@ -4070,6 +4132,52 @@ impl BeeperGuiApp {
         };
         let done = move |r| UiMessage::NewChat(new_chat::Msg::DmCreated(draft, account.clone(), quote.clone(), r));
         Task::perform(bridge.create_dm(id), done)
+    }
+
+    /// Desktop's `createThread(account.user)`: opens the chat with yourself on the account, or has the bridge make it.
+    /// With `link`, Desktop's "Send a link to %s" then sends the install link to it.
+    pub(crate) fn message_self(&mut self, account: String, link: bool) -> Task<UiMessage> {
+        let st = self.store.read();
+        let found = self_chat(&st, &account).map(|c| c.id.clone());
+        let b = st.bridge_accounts.iter().find(|b| b.account_id == account);
+        let profile = b.and_then(|b| b.remote_profile.clone()).unwrap_or_default();
+        let id = b.map(|b| b.login_id.clone()).unwrap_or_default();
+        drop(st);
+        if link {
+            self.link_to = Some((account.clone(), found.clone()));
+        }
+        if let Some(id) = found {
+            self.select_chat(&id);
+            self.send_link();
+            return Task::none();
+        }
+        // Desktop's `identifierForUser`: the ID of the user, else the phone number.
+        let user = User { id, phone_number: profile.phone, username: profile.username, ..Default::default() };
+        self.open_dm(account, user, None, None)
+    }
+
+    /// Sends Desktop's install link to the chat with yourself of a "Send a link to %s" once the chat synced, with
+    /// "Link sent to %s".
+    fn send_link(&mut self) {
+        let Some((account, Some(room))) = self.link_to.clone() else { return };
+        let mut st = self.store.write();
+        if st.resolve_chat_idx(&room).is_none() {
+            return;
+        }
+        self.link_to = None;
+        let draft = beeper_core::store::Draft { text: Some(INSTALL_LINK.into()), ..Default::default() };
+        let sent = st.send(&room, draft);
+        let phone = st.bridge_accounts.iter().find(|b| b.account_id == account).and_then(|b| b.remote_profile.clone());
+        let phone = phone.and_then(|p| p.phone).map(|p| fmt_phone(&p)).unwrap_or_default();
+        let network = network_name(&account);
+        drop(st);
+        match sent {
+            Ok(_) => {
+                self.show(Toast::new(trf("Link sent to %s", &[&phone])));
+                self.link_sent = Some((phone, std::time::Instant::now()));
+            }
+            Err(e) => self.fail(Toast::new(trf("Couldn't send link via %1$s: %2$s", &[&network, &e]))),
+        }
     }
 
     /// Selects a direct chat and puts a quote before its draft, like Desktop's `replyPrivately`.
@@ -4895,6 +5003,7 @@ impl BeeperGuiApp {
                 {
                     self.select_dm(&room, quote);
                 }
+                self.send_link();
                 let st = self.store.read();
                 let left = self.pane.selected_chat_id.as_deref().is_some_and(|c| st.resolve_chat_idx(c).is_none());
                 self.selection.retain(|c| st.resolve_chat_idx(c).is_some());
@@ -6116,6 +6225,12 @@ impl BeeperGuiApp {
         if self.sticky_banner.take().is_some_and(|t| t == self.status_banner) {
             self.status_banner.clear();
         }
+        if let Some(link) = self.link_to.as_mut().filter(|l| l.0 == account) {
+            link.1 = r.as_ref().ok().cloned();
+            if r.is_err() {
+                self.link_to = None;
+            }
+        }
         match r {
             Ok(room) => {
                 self.new_chats.retain(|d| Some(d.id) != n);
@@ -6136,6 +6251,7 @@ impl BeeperGuiApp {
                 });
             }
         }
+        self.send_link();
     }
 
     fn show(&mut self, t: Toast) {
@@ -6797,6 +6913,19 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         std::thread::spawn(|| deeplink::register().unwrap_or_else(|e| eprintln!("register beeper:// links: {e}")));
     }
     drop(st);
+    // A window that the user is not using redraws for a message only when its frame changes, like Chromium's, which
+    // draws nothing without damage.
+    iced_winit::set_frame_check(|renderer, step| {
+        use iced_renderer::fallback::Renderer::{Primary, Secondary};
+        use iced_winit::FrameCheck::{Compare, SetAside};
+        match (renderer.downcast_mut::<iced::Renderer>(), step) {
+            (Some(Primary(wgpu)), SetAside) => wgpu.set_shown_aside(),
+            (Some(Primary(wgpu)), Compare) => wgpu.draws_shown(),
+            (Some(Secondary(tiny_skia)), SetAside) => tiny_skia.set_shown_aside(),
+            (Some(Secondary(tiny_skia)), Compare) => tiny_skia.draws_shown(),
+            (None, _) => false,
+        }
+    });
     let app = iced::daemon(move || BeeperGuiApp::boot(store.clone()), BeeperGuiApp::update, BeeperGuiApp::view)
         .executor::<Executor>()
         .title(BeeperGuiApp::title)

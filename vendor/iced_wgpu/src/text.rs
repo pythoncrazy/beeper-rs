@@ -44,6 +44,28 @@ pub struct Cache {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(u64);
 
+impl Item {
+    /// Whether the item draws the same text as `other`. A paragraph or an editor that changed since `other` was
+    /// drawn is a new allocation, since `other` holds a weak reference to the old one, which then cannot upgrade.
+    pub fn same(&self, other: &Item) -> bool {
+        match (self, other) {
+            (
+                Item::Group { transformation, text },
+                Item::Group { transformation: t, text: x },
+            ) => transformation == t && text == x,
+            (
+                Item::Cached { transformation, cache },
+                Item::Cached { transformation: t, cache: c },
+            ) => {
+                transformation == t
+                    && cache.id == c.id
+                    && cache.version == c.version
+            }
+            _ => false,
+        }
+    }
+}
+
 impl Cache {
     pub fn new(group: cache::Group, text: Vec<Text>) -> Option<Self> {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
