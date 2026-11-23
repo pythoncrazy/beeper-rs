@@ -3806,6 +3806,42 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     assert!(st.loaded(&id).is_none() && st.outbox.is_empty(), "Remove drops the echo and its send");
 }
 
+/// Desktop's message menu of a pending message (`isPending`, a send of `pendingMessages`): on its way or failed, it
+/// has no Edit, Reply, Reply in thread, Delete or Bookmark, and React is off. Copy, Forward and "Sent at" stay. A
+/// message that the homeserver took has them all.
+#[test]
+fn pending_and_failed_messages_menu_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("failed-menu");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
+    let id = app.store.read().outbox[0].2.message().expect("a local echo").to_string();
+    let items = |app: &BeeperGuiApp| {
+        let mut sim = simulator(app.view_message_menu(&id).0);
+        let labels = ["Edit…", "Reply…", "Delete…", "Bookmark", "Copy", "Forward…"];
+        let shown: Vec<&str> = labels.into_iter().filter(|l| sim.find(*l).is_ok()).collect();
+        let at = app.store.read().loaded(&id).expect("the local echo").timestamp.clone();
+        let sent = sim.find(trf("Sent at %s", &[&crate::time::locale_string(&at)]).as_str()).is_ok();
+        let _ = sim.click("React…");
+        let react = sim.into_messages().any(|m| matches!(m, UiMessage::Message(message::Msg::Menu(_))));
+        (shown, sent, react)
+    };
+    let on_its_way = items(&app);
+    assert_eq!(on_its_way, (vec!["Copy", "Forward…"], true, false), "a send on its way");
+    {
+        let mut st = app.store.write();
+        let (row, _, _) = st.outbox.remove(0);
+        st.pushed(row, Some(&id), Some(("M_FORBIDDEN: refused".into(), true)));
+    }
+    assert_eq!(items(&app), on_its_way, "a failed send");
+    let mine = app.store.read().messages.iter().rev().find(|m| m.chat_id == note && m.id != id).unwrap().id.clone();
+    let mut sim = simulator(app.view_message_menu(&mine).0);
+    assert!(["Edit…", "Reply…", "Delete…", "Forward…"].iter().all(|l| sim.find(*l).is_ok()), "a sent message");
+}
+
 /// Desktop's `message-attachment-failed`: a failed send of a file without text shows "Not sent" under the file.
 #[test]
 fn failed_files_show_not_sent_like_desktop() {
