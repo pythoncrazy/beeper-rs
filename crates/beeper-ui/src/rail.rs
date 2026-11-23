@@ -325,7 +325,7 @@ impl BeeperGuiApp {
                 container(on.then(|| ic(icon::CHECK, 14.0))).width(22),
                 glyph,
                 Space::new().width(6),
-                txt(space_name(&st, id), 13.0).line_height(Pixels(MENU_LINE)),
+                txt(space_name(&st, id), 13.0).line_height(Pixels(rem(MENU_LINE))),
                 Space::new().width(4)
             ]
             .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0)))
@@ -348,12 +348,12 @@ impl BeeperGuiApp {
         }
         top.extend(hidden);
         top.push(menu_rule(p));
-        let mut h = (top.len() - rules) as f32 * MENU_ITEM + rules as f32 * 11.0;
+        let mut h = (top.len() - rules) as f32 * menu_pitch() + rules as f32 * 11.0;
         let entry = self.list().selected_account_filter.as_deref();
         let options = match entry.map(|e| (e, rail_label(&st, e))) {
             Some((_, Some(l))) => {
                 let items = self.label_items(l, 22.0);
-                h += items.len() as f32 * MENU_ITEM + 11.0;
+                h += items.len() as f32 * menu_pitch() + 11.0;
                 top.extend(items.into_iter().chain([menu_rule(p)]));
                 None
             }
@@ -392,7 +392,7 @@ impl BeeperGuiApp {
             "",
             Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
         ));
-        h += 8.0 + f32::from(u8::from(options.is_some()) + 4 + u8::from(labels)) * MENU_ITEM + 11.0;
+        h += 8.0 + f32::from(u8::from(options.is_some()) + 4 + u8::from(labels)) * menu_pitch() + 11.0;
         let top = mouse_area(Column::with_children(top)).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
         let rest = mouse_area(rest).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
         let sheet = column![top].push(options_item).push(rest).padding([4, 0]);
@@ -921,8 +921,8 @@ impl BeeperGuiApp {
         let search = text_input(tr("Search Spaces"), &d.search)
             .id("spaces-search")
             .on_input(move |q| edit(SpacesEdit::Search(q)))
-            .size(13)
-            .line_height(Pixels(16.0))
+            .size(rem(13.0))
+            .line_height(Pixels(rem(16.0)))
             .padding([14, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         // Desktop's controls of the sheet: plain `<button>`s whose focus does not show, and the `dnd-kit` handles,
@@ -1075,7 +1075,7 @@ impl BeeperGuiApp {
             drop(st);
             return window.into();
         };
-        let h = 8.0 + MENU_ITEM * rail_label(&st, id).map_or(2.0, label_rows);
+        let h = 8.0 + menu_pitch() * rail_label(&st, id).map_or(2.0, label_rows);
         drop(st);
         let (menu, sub) = self.account_menu(id, SpaceMenu::Gear);
         let x = if at.x + 233.0 > SPACES_SIZE.width { at.x - 233.0 } else { at.x }.max(4.0);

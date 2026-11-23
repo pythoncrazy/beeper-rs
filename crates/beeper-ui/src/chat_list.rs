@@ -619,8 +619,8 @@ impl BeeperGuiApp {
         let unread = picked.iter().filter(|c| has_flag(c, ChatFlag::MarkedUnread)).count();
         match picked.len() {
             0 | 1 => 0.0,
-            n if (1..n).contains(&unread) => 2.0 * MENU_ITEM,
-            _ => MENU_ITEM,
+            n if (1..n).contains(&unread) => 2.0 * menu_pitch(),
+            _ => menu_pitch(),
         }
     }
 
@@ -794,8 +794,8 @@ impl BeeperGuiApp {
                 .flatten()
                 .collect()
         };
-        let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { 11.0 - MENU_ITEM } else { 0.0 };
-        let h = 8.0 + items.len() as f32 * MENU_ITEM + rules;
+        let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { 11.0 - menu_pitch() } else { 0.0 };
+        let h = 8.0 + items.len() as f32 * menu_pitch() + rules;
         let width = if which == 0 { SUB_MENU_W[1] } else { 233.0 };
         let menu = container(Column::with_children(items).padding([4, 0])).width(width).style(shadow_box(
             p.menu,
@@ -1241,19 +1241,19 @@ impl BeeperGuiApp {
                 }
                 _ => {
                     let rows = self.snooze_items(&st, &targets);
-                    let rules = rows.iter().filter(|r| r.1 < MENU_ITEM).count() as f32;
+                    let rules = rows.iter().filter(|r| r.1 < menu_pitch()).count() as f32;
                     (rows.into_iter().map(|r| r.0).collect(), rules)
                 }
             };
-            let h = 8.0 + items.len() as f32 * MENU_ITEM - rules * (MENU_ITEM - 11.0);
+            let h = 8.0 + items.len() as f32 * menu_pitch() - rules * (menu_pitch() - 11.0);
             let top = match i {
-                0 => 4.0 * MENU_ITEM,
-                1 if labels => 8.0 * MENU_ITEM + 22.0,
-                3 if labels => 9.0 * MENU_ITEM + 22.0,
-                3 => 8.0 * MENU_ITEM + 22.0,
-                _ => 7.0 * MENU_ITEM + 22.0,
-            } + if reason.is_some() { MENU_ITEM } else { 0.0 }
-                + if can_edit_group(c) { MENU_ITEM } else { 0.0 }
+                0 => 4.0 * menu_pitch(),
+                1 if labels => 8.0 * menu_pitch() + 22.0,
+                3 if labels => 9.0 * menu_pitch() + 22.0,
+                3 => 8.0 * menu_pitch() + 22.0,
+                _ => 7.0 * menu_pitch() + 22.0,
+            } + if reason.is_some() { menu_pitch() } else { 0.0 }
+                + if can_edit_group(c) { menu_pitch() } else { 0.0 }
                 + self.selection_rows(&st);
             let top = top.min(room - h).max(0.0);
             let body = container(Column::with_children(items).padding([4, 0])).width(SUB_MENU_W[usize::from(i)]);
@@ -1432,7 +1432,7 @@ impl BeeperGuiApp {
                 let title = ell(short_title(c), title_w, 12.0, Weight::Semibold);
                 let label = row![]
                     .push(dot)
-                    .push(title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(15.0.into())))
+                    .push(title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(rem(15.0).into())))
                     .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.strong)))
                     .spacing(3.2)
                     .align_y(Center);
@@ -1551,8 +1551,10 @@ impl BeeperGuiApp {
             let names: Vec<&str> = d.users.iter().map(|(_, u)| u.full_name.as_deref().unwrap_or(&u.id)).collect();
             let title = if names.is_empty() { tr("New Chat").into() } else { names.join(", ") };
             let title = ell(&title, text_w, title_size, if counts { Weight::Medium } else { Weight::Semibold });
-            let rows =
-                [container(title.color(p.strong)).height(16).into(), Space::new().height(16 * lines as u32).into()];
+            let rows = [
+                container(title.color(p.strong)).height(rem(16.0)).into(),
+                Space::new().height(rem(16.0) * lines as f32).into(),
+            ];
             let face = self.face(
                 d.users.first().and_then(|(_, u)| u.img_url.as_deref()),
                 names.first().unwrap_or(&""),
@@ -1629,7 +1631,7 @@ impl BeeperGuiApp {
                 .push(
                     txt(ts, ts_size).color(p.strong.scale_alpha(0.7)).font(iced::Font { style, ..fw(Weight::Normal) }),
                 )
-                .height(16)
+                .height(rem(16.0))
                 .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
             let receipt = m.is_some_and(read_icon);
@@ -1765,7 +1767,12 @@ impl BeeperGuiApp {
                     let shown = crate::style::clamped(&b, text_w - reserve, lines, 13.0, Weight::Normal);
                     if !shown.contains('\u{fe0f}') {
                         let text = clamp(&b, text_w - reserve, lines, 13.0, Weight::Normal);
-                        return text.width(text_w - reserve).line_height(Pixels(16.0)).font(body_font).color(fg).into();
+                        return text
+                            .width(text_w - reserve)
+                            .line_height(Pixels(rem(16.0)))
+                            .font(body_font)
+                            .color(fg)
+                            .into();
                     }
                     let spans = crate::emoji::with_emoji_font(vec![span::<(), _>(shown.to_string()).font(body_font)]);
                     let wrap = if lines == 1 {
@@ -1774,8 +1781,8 @@ impl BeeperGuiApp {
                         iced::widget::text::Wrapping::WordOrGlyph
                     };
                     rich_text(spans)
-                        .size(13)
-                        .line_height(Pixels(16.0))
+                        .size(rem(13.0))
+                        .line_height(Pixels(rem(16.0)))
                         .color(fg)
                         .width(text_w - reserve)
                         .wrapping(wrap)
@@ -1787,8 +1794,8 @@ impl BeeperGuiApp {
                         crate::style::clamped(&format!("{label} {t}"), text_w - reserve, lines, 13.0, Weight::Normal);
                     let rest = s.strip_prefix(label).expect("the draft label fits").to_string();
                     rich_text![span::<(), _>(label).font(fw(Weight::Semibold)).color(p.accent), span(rest).color(fg)]
-                        .size(13)
-                        .line_height(Pixels(16.0))
+                        .size(rem(13.0))
+                        .line_height(Pixels(rem(16.0)))
                         .width(text_w - reserve)
                 }))
                 .push(Space::new().width(Fill))
@@ -1818,7 +1825,14 @@ impl BeeperGuiApp {
                 true => Some(container(checkbox(p, picked(c))).padding(Padding::ZERO.right(8.0)).into()),
                 false => dot.map(El::from),
             };
-            frame(c.id.clone(), dot, face.into(), [top.into(), preview.height(16 * lines as u32).into()], on, pick(c))
+            frame(
+                c.id.clone(),
+                dot,
+                face.into(),
+                [top.into(), preview.height(rem(16.0) * lines as f32).into()],
+                on,
+                pick(c),
+            )
         };
         let list: El<'_> = if chats.is_empty() && self.new_chats.is_empty() {
             let tab =

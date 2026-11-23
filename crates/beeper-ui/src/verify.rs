@@ -3,6 +3,7 @@
 use crate::emoji::EMOJI_FONT;
 use crate::i18n::{tr, trn_named, trx};
 use crate::login::{actions, art, brand_gradient, heading, Login, LoginMsg, Screen, H3};
+use crate::style::rem;
 use crate::style::{bold, btn_style, fill_box, fw, ic, icon, semi, shadow_box, t, txt, Bare, Palette, CLEAR};
 use crate::{BeeperGuiApp, El, Toast, UiMessage};
 use beeper_core::matrix::E2eeSetup;
@@ -257,7 +258,7 @@ impl BeeperGuiApp {
             (None, Some(_)) => tr("QR Verification"),
             (None, None) => trx("Loading...", "verification modal title"),
         };
-        let title = t(title, 28.0, Weight::ExtraBold).line_height(Pixels(38.0)).color(p.strong).center();
+        let title = t(title, 28.0, Weight::ExtraBold).line_height(Pixels(rem(38.0))).color(p.strong).center();
         let code = qr.map(|qr| -> El<'_> {
             let emojis = v.is_some_and(|v| v.methods.contains(&"sas")).then(|| {
                 let label = trx("Confirm using emojis instead", "button label");
@@ -271,7 +272,9 @@ impl BeeperGuiApp {
         let body: Option<El<'_>> = emojis.map(|sas| {
             let name = device_name(v.expect("emojis come from a verification"));
             let glyphs = sas.emojis.iter().map(|e| {
-                let glyph = txt(e.emoji.clone(), 28.0).line_height(1.0).font(EMOJI_FONT);
+                let glyph = crate::style::fixed(e.emoji.clone(), 28.0, iced::font::Weight::Normal)
+                    .line_height(1.0)
+                    .font(EMOJI_FONT);
                 let tip = container(txt(e.description.clone(), 12.0).color(p.strong))
                     .padding([4, 8])
                     .style(fill_box(p.elevated, 6.0));
@@ -282,7 +285,7 @@ impl BeeperGuiApp {
                 .split_once("%(deviceName)s")
                 .expect("the hint names the device");
             let hint = rich_text![span::<(), _>(before), span(name).font(fw(Weight::Semibold)), span(after)]
-                .size(13)
+                .size(rem(13.0))
                 .color(p.muted)
                 .center()
                 .width(Fill);
@@ -331,7 +334,7 @@ pub(crate) fn brand_btn_maybe<'a>(
     msg: Option<UiMessage>,
     loading: bool,
 ) -> El<'a> {
-    let label = t(label, 13.0, Weight::Medium).line_height(Pixels(14.95));
+    let label = t(label, 13.0, Weight::Medium).line_height(Pixels(rem(14.95)));
     crate::login::brand_button(p, label.into(), variant, msg, loading)
 }
 
@@ -493,7 +496,9 @@ impl BeeperGuiApp {
             }
             (false, Some(sas), _) => {
                 let glyphs = sas.emojis.into_iter().map(|e| {
-                    let glyph = txt(e.emoji, 28.0).line_height(1.0).font(EMOJI_FONT);
+                    let glyph = crate::style::fixed(e.emoji, 28.0, iced::font::Weight::Normal)
+                        .line_height(1.0)
+                        .font(EMOJI_FONT);
                     let tip = container(txt(e.description, 12.0).color(p.strong))
                         .padding([4, 8])
                         .style(fill_box(p.elevated, 6.0));
@@ -673,16 +678,19 @@ pub(crate) fn key_input<'a>(
 ) -> El<'a> {
     let p = *p;
     let edge = if error { p.text_danger } else { CLEAR };
-    let editor =
-        text_editor(content).id(KEY_INPUT).on_action(edit).size(17).height(4.0 * 17.0 * 1.3 + 24.0).padding(12).style(
-            move |_: &Theme, _| text_editor::Style {
-                background: p.chip.into(),
-                border: border::rounded(12).color(edge).width(1),
-                placeholder: p.on_secondary,
-                value: p.strong,
-                selection: p.accent.scale_alpha(0.3),
-            },
-        );
+    let editor = text_editor(content)
+        .id(KEY_INPUT)
+        .on_action(edit)
+        .size(rem(17.0))
+        .height(4.0 * 17.0 * 1.3 + 24.0)
+        .padding(12)
+        .style(move |_: &Theme, _| text_editor::Style {
+            background: p.chip.into(),
+            border: border::rounded(12).color(edge).width(1),
+            placeholder: p.on_secondary,
+            value: p.strong,
+            selection: p.accent.scale_alpha(0.3),
+        });
     let paste = txt(trx("Paste from Clipboard", "button label"), 12.0).color(p.on_secondary);
     let paste = button(paste).padding(4).style(btn_style([CLEAR, p.chip, p.chip], [p.on_secondary; 3], 6.0));
     column![editor, paste.on_press(on_paste)].spacing(4).align_x(Center).padding([24, 18]).into()

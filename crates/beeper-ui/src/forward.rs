@@ -104,14 +104,14 @@ impl BeeperGuiApp {
         let head = strip(head.spacing(12).align_y(Center).into(), border::Radius::default().top(18)).center_y(44);
         let pills = f.picked.iter().map(|cid| -> El<'a> {
             let c = st.chat(cid);
-            let label = semi(c.title.clone(), 14.0).line_height(Pixels(16.0)).color(p.strong);
+            let label = semi(c.title.clone(), 14.0).line_height(Pixels(rem(16.0))).color(p.strong);
             let pill = row![self.chat_avatar(c, 16.0, 0.0), label].spacing(4).align_y(Center);
             container(pill).padding(Padding::new(2.0).right(8.0)).style(fill_box(shade, 20.0)).into()
         });
         let input = text_input(tr("Search name, @, or number"), &f.query)
             .id("forward-input")
             .on_input(|a0| UiMessage::Forward(forward::Msg::Query(a0)))
-            .size(14)
+            .size(rem(14.0))
             .padding(0)
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let inputs = Row::with_children(pills).push(input).spacing(4).align_y(Center).height(24);

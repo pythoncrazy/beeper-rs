@@ -5,10 +5,11 @@ use crate::i18n::{tr, trx};
 use crate::loads;
 use crate::media_view;
 use crate::message;
+use crate::style::rem;
 use crate::style::{bordered_box, btn_style, fill_box, semi, shadow_box, Palette};
 use crate::time::iso_millis;
 use crate::{deletable, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, UiMessage};
-use crate::{hotkey_text, MENU_ITEM, MESSAGE_MENU_W};
+use crate::{hotkey_text, menu_pitch, MESSAGE_MENU_W};
 use beeper_core::models::{AttachmentSize, Message};
 use beeper_core::store::BeeperStore;
 use iced::widget::{button, container, image, mouse_area, stack, Column, Space, Stack};
@@ -175,7 +176,7 @@ fn key(url: &str, (w, h): (u32, u32), dark: bool, look: Look) -> String {
 
 /// Desktop's `.duration` and `.more` labels: white text on a dark pill.
 fn label<'a>(text: String, size: f32, line: f32, pad: [f32; 2], radius: f32) -> El<'a> {
-    let t = semi(text, size).line_height(Pixels(line)).color(Color::WHITE);
+    let t = semi(text, size).line_height(Pixels(rem(line))).color(Color::WHITE);
     container(t).padding(pad).style(fill_box(Color::from_rgba8(0, 0, 0, 0x8c as f32 / 255.0), radius)).into()
 }
 
@@ -250,7 +251,7 @@ impl BeeperGuiApp {
                     hotkey.to_string(),
                     Some(UiMessage::Message(message::Msg::Menu(Box::new(msg)))),
                 ),
-                MENU_ITEM,
+                menu_pitch(),
             )
         };
         let action = |s| trx(s, "gallery menu action").to_string();

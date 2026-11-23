@@ -115,7 +115,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_nickname<'a>(&'a self, d: &'a NicknameDraft) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
-        let title = container(semi(tr("Account Nickname"), 14.0).line_height(Pixels(18.0)).color(p.strong))
+        let title = container(semi(tr("Account Nickname"), 14.0).line_height(Pixels(rem(18.0))).color(p.strong))
             .center_x(Fill)
             .padding([8, 0]);
         let found = st.bridge_accounts.iter().find(|b| b.account_id == d.account);
@@ -130,8 +130,8 @@ impl BeeperGuiApp {
                     .on_input_maybe((!d.saving).then_some(move |t| UiMessage::Nickname(Msg::Name(d.id, t))))
                     .on_submit(UiMessage::Nickname(Msg::Save(d.id)))
                     .font(fw(Weight::Semibold))
-                    .size(14)
-                    .line_height(Pixels(18.0))
+                    .size(rem(14.0))
+                    .line_height(Pixels(rem(18.0)))
                     .align_x(Center)
                     // Desktop's `field-sizing: content`, within the pill's 14 px and 26 px of padding.
                     .width((width + 1.0).min(PILL_MAX - 40.0))
@@ -150,8 +150,8 @@ impl BeeperGuiApp {
                 let id = id.or(r.email.clone()).filter(|i| Some(i) != full.as_ref());
                 let face = self.face(r.avatar.as_deref(), full.as_deref().unwrap_or_default(), 24.0, 0.0);
                 let names = column![]
-                    .push(full.map(|n| semi(n, 11.0).line_height(Pixels(14.0)).color(p.strong)))
-                    .push(id.map(|i| txt(i, 10.0).line_height(Pixels(12.0)).color(p.sub)));
+                    .push(full.map(|n| semi(n, 11.0).line_height(Pixels(rem(14.0))).color(p.strong)))
+                    .push(id.map(|i| txt(i, 10.0).line_height(Pixels(rem(12.0))).color(p.sub)));
                 let identity = container(row![face, names].spacing(6).align_y(Center))
                     .padding(Padding::new(4.0).right(10.0))
                     .style(bordered_box(CLEAR, p.border_secondary, 1.0, 999.0));
@@ -161,7 +161,7 @@ impl BeeperGuiApp {
         };
         let hint = found.map(|_| {
             txt(tr("Changes how this account appears in Beeper, on all your devices."), 10.0)
-                .line_height(Pixels(12.0))
+                .line_height(Pixels(rem(12.0)))
                 .color(p.sub)
                 .center()
                 .width(Fill)

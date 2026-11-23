@@ -105,7 +105,7 @@ pub fn search_field<'a>(p: &Palette, query: &str, on: fn(String) -> UiMessage) -
         ic(icon::SEARCH, 16.0).color(p.tertiary),
         text_input(tr("Search..."), query)
             .on_input(on)
-            .size(14)
+            .size(rem(14.0))
             .padding([10, 0])
             .style(input_style(CLEAR, p.fg, p.tertiary, CLEAR, 0.0)),
     ]
