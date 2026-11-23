@@ -517,9 +517,13 @@ fn emit(id: u32, action: Option<String>) {
 #[cfg(target_os = "linux")]
 static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::const_new();
 
-/// Notification servers send the click signals to the connection that showed the notification.
+/// Notification servers send the click signals to the connection that showed the notification. zbus runs on the
+/// tokio runtime that iced drives the tasks on, so a task that runs without one, like in a test, has no bus.
 #[cfg(target_os = "linux")]
 pub(crate) async fn bus() -> Result<&'static zbus::Connection, String> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return Err("D-Bus needs the tokio runtime".into());
+    }
     BUS.get_or_try_init(zbus::Connection::session).await.map_err(|e| e.to_string())
 }
 

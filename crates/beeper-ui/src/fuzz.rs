@@ -73,10 +73,19 @@ pub(crate) fn demo_app(name: &str) -> BeeperGuiApp {
     BeeperGuiApp::boot(beeper_core::testing::demo_store(name)).0
 }
 
+/// The tokio runtime that the tasks of the tests run in, like iced's tasks in the app: zbus runs on it.
+fn task_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("a tokio runtime")
+    });
+    &RUNTIME
+}
+
 /// The messages that a task outputs. The window and clipboard actions of the task do nothing here: each is dropped
 /// as it comes, so that a task that waits for its answer goes on.
 pub(crate) async fn task_messages(task: Task<UiMessage>) -> Vec<UiMessage> {
     use iced::futures::StreamExt;
+    let _runtime = task_runtime().enter();
     let Some(stream) = iced_runtime::task::into_stream(task) else { return Vec::new() };
     let out = stream.filter_map(|a| async move {
         match a {
@@ -90,6 +99,7 @@ pub(crate) async fn task_messages(task: Task<UiMessage>) -> Vec<UiMessage> {
 /// The actions of a task that does not wait for the answer of an action.
 pub(crate) async fn task_actions(task: Task<UiMessage>) -> Vec<iced_runtime::Action<UiMessage>> {
     use iced::futures::StreamExt;
+    let _runtime = task_runtime().enter();
     let Some(stream) = iced_runtime::task::into_stream(task) else { return Vec::new() };
     stream.collect().await
 }
@@ -9351,6 +9361,7 @@ fn run_window_actions(task: Task<UiMessage>, size: Size, maximized: &[window::Id
     use iced_runtime::window::Action as W;
     let Some(mut stream) = iced_runtime::task::into_stream(task) else { return Default::default() };
     let (mut done, mut out) = (Vec::new(), Vec::new());
+    let _runtime = task_runtime().enter();
     iced::futures::executor::block_on(async {
         while let Some(action) = stream.next().await {
             match action {
