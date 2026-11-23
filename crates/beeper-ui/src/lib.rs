@@ -47,6 +47,7 @@ pub mod networks;
 pub mod new_chat;
 mod nickname;
 mod notify;
+mod nudge;
 mod pdf;
 mod phone;
 mod pins;
@@ -382,6 +383,7 @@ pub enum UiMessage {
     Members(members::Msg),
     /// Desktop's block and unblock of a direct chat, with Report spam, and the Blocked users window.
     Blocking(blocking::Msg),
+    Nudge(nudge::Msg),
     /// Desktop's merged chats: Unmerge.
     Merged(merged::Msg),
     /// Desktop's merge suggestions and the nudge of the composer switcher of a merged chat.
@@ -1527,7 +1529,7 @@ static DEVICE_ICONS: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock
 svg_static!(QR_CODE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>"##);
 svg_static!(BELL_OFF, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/></svg>"##);
 
-static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 10]> = std::sync::LazyLock::new(|| {
+static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 11]> = std::sync::LazyLock::new(|| {
     [
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M9.167 10.833h-5V9.166h5v-5h1.666v5h5v1.667h-5v5H9.167z"/></svg>"##[..],
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path transform="rotate(45 10 10)" fill="currentColor" d="M9.167 10.833h-5V9.166h5v-5h1.666v5h5v1.667h-5v5H9.167z"/></svg>"##[..],
@@ -1539,6 +1541,8 @@ static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 10]> = std::sync::LazyL
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M14.167 14.5v-9H12.5v9zm-3.334 3.833V1.667H9.167v16.666zm6.667-6.666V8.333h-1.667v3.333zM7.5 13.5v-7H5.833v7zm-3.333-1.834V8.333H2.5v3.333z"/></svg>"##[..],
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M4.214 8.874q.65 0 1.182.322.536.323.859.86t.322 1.187q0 .645-.322 1.182a2.5 2.5 0 0 1-.86.86 2.24 2.24 0 0 1-1.181.321q-.645 0-1.182-.322a2.5 2.5 0 0 1-.86-.86 2.26 2.26 0 0 1-.321-1.18q0-.646.316-1.182a2.5 2.5 0 0 1 .86-.86 2.24 2.24 0 0 1 1.187-.328m0 .902q-.398 0-.73.204-.334.199-.533.533a1.4 1.4 0 0 0-.198.73q0 .398.198.73.2.334.532.532.333.199.73.2.4-.002.731-.2.333-.2.532-.531.198-.333.199-.73 0-.4-.2-.731-.198-.333-.53-.533a1.37 1.37 0 0 0-.731-.204m9.432.962q.208 0 .354.15.15.146.15.355 0 .205-.15.355a.48.48 0 0 1-.354.144H8.3a.495.495 0 0 1-.499-.499q0-.21.144-.354.145-.15.355-.15zM4.214 2.66q.65 0 1.182.322.536.317.859.854t.322 1.187q0 .645-.322 1.182a2.5 2.5 0 0 1-.86.864 2.24 2.24 0 0 1-1.181.323q-.645 0-1.182-.323a2.5 2.5 0 0 1-.86-.864 2.26 2.26 0 0 1-.321-1.182q0-.65.316-1.187.322-.537.86-.854a2.27 2.27 0 0 1 1.187-.322m.924 1.197q-.156 0-.258.162l-.956 1.536-.414-.52a.4.4 0 0 0-.118-.103.27.27 0 0 0-.14-.033.27.27 0 0 0-.198.086.3.3 0 0 0-.086.215q0 .124.08.215l.601.726a.6.6 0 0 0 .124.112q.07.043.162.043a.33.33 0 0 0 .29-.161l1.143-1.778a.43.43 0 0 0 .07-.225.25.25 0 0 0-.091-.194.3.3 0 0 0-.21-.08m8.508.666q.209.001.354.146.15.146.15.354 0 .21-.15.36a.48.48 0 0 1-.354.15H8.3a.47.47 0 0 1-.355-.15.5.5 0 0 1-.144-.36q0-.21.144-.354a.48.48 0 0 1 .355-.146z"/></svg>"##[..],
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M10.417 2.084A8.333 8.333 0 0 0 9.129 18.65a1.62 1.62 0 0 0 1.39-.464l7.668-7.672c.348-.348.546-.857.463-1.39a8.335 8.335 0 0 0-8.233-7.041M3.75 10.417a6.667 6.667 0 0 1 12.852-2.493 8.333 8.333 0 0 0-8.678 8.678 6.67 6.67 0 0 1-4.174-6.185m5.852 6.33 7.142-7.145a6.667 6.667 0 0 0-7.142 7.146"/></svg>"##[..],
+        // Desktop's `nudge` system icon.
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M7.5 3a1 1 0 1 1 2 0v.65a3.75 3.75 0 0 1 2.75 3.6v2.92l1 1.58v.5h-9.5v-.5l1-1.58V7.25a3.75 3.75 0 0 1 2.75-3.6zM6.25 13.75a2.25 2.25 0 0 0 4.5 0z"/><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" d="M14.5 8.5q.75-1.5 1.5 0t1.5 0 1.5 0"/></svg>"##[..],
     ]
     .map(svg::Handle::from_memory)
 });
@@ -3011,6 +3015,8 @@ pub struct BeeperGuiApp {
     toast: Option<Toast>,
     /// The earlier toasts of Desktop's `toasts-list` that still show above the newest, each with the time it showed.
     older_toasts: Vec<(Toast, Duration)>,
+    /// The nudges that came in and went out, and the shake of the timeline.
+    nudges: nudge::Nudges,
     /// How many times the newest toast was dismissed, so that a dismissed toast does not move up.
     toast_dismissals: u32,
     /// Desktop's action stack `Jv`: what each action did and the message that undoes it.
@@ -3316,6 +3322,7 @@ impl BeeperGuiApp {
             key_banner_closed: false,
             toast: None,
             older_toasts: Vec::new(),
+            nudges: Default::default(),
             toast_dismissals: 0,
             undo_stack: Vec::new(),
             undo_note: None,
@@ -4476,6 +4483,7 @@ impl BeeperGuiApp {
             UiMessage::Accounts(msg) => return self.accounts(msg),
             UiMessage::Networks(msg) => return self.networks(msg),
             UiMessage::Blocking(msg) => return self.blocking(msg),
+            UiMessage::Nudge(msg) => return self.nudge(msg),
             UiMessage::Merged(msg) => return self.merged(msg),
             UiMessage::MergeSuggest(msg) => return self.merge_suggest(msg),
             UiMessage::Nickname(msg) => return self.nickname(msg),
@@ -4718,6 +4726,7 @@ impl BeeperGuiApp {
                 }
                 self.send_scheduled(due);
                 self.message_sound(&m);
+                self.maybe_nudge(&m);
                 let note = self.notify_message(&m);
                 let failed = self.notify_failed(&m);
                 return Task::batch([self.update(UiMessage::StoreChanged), note, failed]);
@@ -5202,6 +5211,7 @@ impl BeeperGuiApp {
             || !self.fetching.is_empty()
             || self.group_window.as_ref().is_some_and(|d| d.saving)
             || self.hover_fading()
+            || self.nudges.shaking()
             || self.sidebar_progress().is_some()
             || self
                 .panes()

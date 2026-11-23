@@ -241,7 +241,9 @@ impl BeeperGuiApp {
                 return Some(task);
             }
         }
-        let n = self.suggestions(&self.store.read()).map_or(0, |(_, picks)| picks.len());
+        let picks = self.suggestions(&self.store.read());
+        let command = picks.as_ref().is_some_and(|(_, p)| matches!(p[0], composer::Suggestion::Command(_)));
+        let n = picks.map_or(0, |(_, picks)| picks.len());
         if n == 0 || !mods.is_empty() {
             return None;
         }
@@ -249,7 +251,12 @@ impl BeeperGuiApp {
         match key.as_ref() {
             Key::Named(Named::ArrowUp | Named::ArrowDown) => {
                 let down = *key == Key::Named(Named::ArrowDown);
-                self.pane.suggest = if down { (at + 1) % n } else { (at + n - 1) % n };
+                // Desktop's ↑ stops at the first slash command, and goes around the other lists.
+                self.pane.suggest = match (down, command) {
+                    (true, _) => (at + 1) % n,
+                    (false, true) => at.saturating_sub(1),
+                    (false, false) => (at + n - 1) % n,
+                };
                 Some(Task::none())
             }
             Key::Named(Named::Tab) => Some(self.update(UiMessage::Composer(composer::Msg::PickSuggestion(at)))),
