@@ -9,7 +9,7 @@ use crate::{composer_with, encode_uri_component, BeeperGuiApp, InboxTab, Setting
 use beeper_core::codec::url_decode;
 use beeper_core::config::{account_network, find_network, NETWORK_SPECS};
 use beeper_core::models::NetworkSpec;
-use iced::{window, Task};
+use iced::Task;
 use std::collections::HashMap;
 
 pub const SCHEME: &str = "beeper://";
@@ -126,11 +126,9 @@ impl BeeperGuiApp {
         Task::batch([link, self.show_main()])
     }
 
+    /// Shows the main window, or the sign-in window while signed out, also after a close hid it.
     fn show_main(&mut self) -> Task<UiMessage> {
-        match self.main_window {
-            Some(_) => self.set_hidden(false),
-            None => window::gain_focus(self.login_window.expect("a window is open")),
-        }
+        self.set_hidden(false)
     }
 
     /// Desktop's `handleDeepLink`.
@@ -273,7 +271,7 @@ impl BeeperGuiApp {
                         .find(|w| w.1.selected_chat_id.as_deref() == thread && !self.is_space_window(w.0))
                         .map(|w| w.0),
                 };
-                return window.map_or_else(Task::none, window::gain_focus);
+                return window.map_or_else(Task::none, |w| self.raise(w));
             }
             "connect" => return self.open_settings(SettingsTab::Integrations),
             "tips" if part(1) == Some("add-account") && parts.len() == 2 => {

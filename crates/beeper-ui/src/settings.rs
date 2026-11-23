@@ -490,7 +490,7 @@ impl BeeperGuiApp {
     pub(crate) fn open_settings(&mut self, tab: SettingsTab) -> Task<UiMessage> {
         let load = self.update(UiMessage::Settings(Msg::SelectTab(tab)));
         if let Some(id) = self.settings_window {
-            return Task::batch([load, window::gain_focus(id)]);
+            return Task::batch([load, self.raise(id)]);
         }
         // Desktop's `openInNewWindow` of "prefs": in the middle of the screen.
         let centered =
@@ -532,7 +532,7 @@ impl BeeperGuiApp {
                 });
             }
             Key::Named(Named::Escape) => {
-                return window::close(self.settings_window.expect("the settings window is open"))
+                return self.close_window(self.settings_window.expect("the settings window is open"))
             }
             Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if n > 0 => {
                 let step = if k == Named::ArrowDown { 1 } else { n - 1 };
@@ -2458,7 +2458,7 @@ impl BeeperGuiApp {
             }
             Msg::JoinCommunity => {
                 if self.store.read().resolve_chat_idx(COMMUNITY_ROOM).is_some() {
-                    let close = window::close(self.settings_window.expect("the settings window is open"));
+                    let close = self.close_window(self.settings_window.expect("the settings window is open"));
                     return Task::batch([self.update(UiMessage::SelectChat(COMMUNITY_ROOM.into())), close]);
                 }
                 if !self.integrations.joining {

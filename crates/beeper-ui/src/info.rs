@@ -73,13 +73,13 @@ impl BeeperGuiApp {
             Msg::HowItWorks(true) => {
                 self.list.chat_menu = None;
                 if let Some(id) = self.how_window {
-                    return window::gain_focus(id);
+                    return self.raise(id);
                 }
                 let (id, open) = self.open_child(behavior::HOW_SIZE);
                 self.how_window = Some(id);
                 return open;
             }
-            Msg::HowItWorks(false) => return window::close(self.how_window.expect("How It Works is open")),
+            Msg::HowItWorks(false) => return self.close_window(self.how_window.expect("How It Works is open")),
             Msg::Note(action) => {
                 let edit = action.is_edit();
                 self.info_note.perform(action);

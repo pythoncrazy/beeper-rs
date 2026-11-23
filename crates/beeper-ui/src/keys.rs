@@ -78,7 +78,7 @@ impl BeeperGuiApp {
         // Desktop's `onEscapePressed` of the Picture in Picture window.
         if escape && self.pip.as_ref().is_some_and(|p| p.0 == id) {
             return match self.pip_menu.take() {
-                None => window::close(id),
+                None => self.close_window(id),
                 Some(_) => self.settle(),
             };
         }
@@ -108,8 +108,8 @@ impl BeeperGuiApp {
     fn child_window_key(&mut self, id: window::Id, key: Key, mods: Modifiers) -> Task<UiMessage> {
         if self.label_settings.iter().any(|w| w.id == id) || Some(id) == self.how_window {
             return match key {
-                Key::Named(Named::Escape) => window::close(id),
-                Key::Named(Named::Enter) if mods.command() => window::close(id),
+                Key::Named(Named::Escape) => self.close_window(id),
+                Key::Named(Named::Enter) if mods.command() => self.close_window(id),
                 _ => Task::none(),
             };
         }
@@ -127,12 +127,12 @@ impl BeeperGuiApp {
             || self.nickname_windows.iter().any(|d| d.id == id)
             || self.add_accounts.iter().any(|a| a.id == id)
         {
-            return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
+            return if key == Key::Named(Named::Escape) { self.close_window(id) } else { Task::none() };
         }
         // Desktop's `onEscapePressed` closes the Add an Account window, after the menu of a network.
         if self.networks.window == Some(id) {
             if key == Key::Named(Named::Escape) && self.networks.menu.take().is_none() {
-                return window::close(id);
+                return self.close_window(id);
             }
             return Task::none();
         }
@@ -144,7 +144,7 @@ impl BeeperGuiApp {
         }
         if self.label_window.as_ref().is_some_and(|d| d.id == id) {
             return match key {
-                Key::Named(Named::Escape) => window::close(id),
+                Key::Named(Named::Escape) => self.close_window(id),
                 Key::Named(Named::Enter) if mods.command() => self.label_edit(LabelEdit::Advance),
                 _ => Task::none(),
             };

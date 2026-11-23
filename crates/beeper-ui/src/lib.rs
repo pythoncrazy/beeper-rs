@@ -2840,6 +2840,15 @@ pub struct BeeperGuiApp {
     pub display_server: DisplayServerKind,
     /// The main window is hidden in the tray.
     pub hidden: bool,
+    /// The windows that hid on Wayland, each with the settings, in screen pixels, to open it again under its ID.
+    /// winit cannot hide a window there, where Electron's `hide` unmaps the window, so the app closes it in iced and
+    /// keeps all its state.
+    pub unmapped: Vec<(window::Id, window::Settings)>,
+    /// The settings, in screen pixels and without the icon, that the open windows opened with on Wayland, to open
+    /// them again after they hide.
+    opened: Vec<(window::Id, window::Settings)>,
+    /// The widget that had the keyboard focus when the main window hid on Wayland, to focus it again in the new one.
+    unmapped_focus: Option<iced::widget::Id>,
     /// The unread count and window state last sent to the tray and the app badge, and whether they can be stale.
     tray_sent: (Option<(u32, bool)>, bool),
     pub system_dark: bool,
@@ -3201,6 +3210,9 @@ impl BeeperGuiApp {
             os,
             display_server,
             hidden: false,
+            unmapped: Vec::new(),
+            opened: Vec::new(),
+            unmapped_focus: None,
             tray_sent: (None, true),
             pal: crate::style::palette(theme),
             system_dark: false,
@@ -3422,7 +3434,16 @@ impl BeeperGuiApp {
         app.hidden = signed_in && st.settings.on("startMinimized");
         drop(st);
         settings.visible = !app.hidden;
-        let (id, open) = app.open_window(settings);
+        let (id, open) = match app.hidden && app.unmaps() {
+            // Electron maps no window that starts hidden on Wayland, where winit would show it: the main window opens
+            // when the app shows.
+            true => {
+                let id = window::Id::unique();
+                app.unmapped.push((id, window::Settings { visible: true, icon: None, ..settings }));
+                (id, Task::none())
+            }
+            false => app.open_window(settings),
+        };
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
         let open = open.then(move |id| Task::done(id).chain(Self::keep_on_screen(id)));
         let cloud = (signed_in && !app.store.read().config.demo).then(|| app.refresh_cloud_accounts());
@@ -4562,7 +4583,7 @@ impl BeeperGuiApp {
             UiMessage::SaveDrafts => self.save_drafts(),
             UiMessage::OpenPollCreator(chat) => {
                 if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
-                    return window::gain_focus(d.id);
+                    return self.raise(d.id);
                 }
                 let (id, open) = self.open_child(Size::new(400.0, 620.0));
                 let question = format!("poll-{chat}");
@@ -4573,7 +4594,7 @@ impl BeeperGuiApp {
             UiMessage::OpenEditSpaces => {
                 self.list.chat_menu = None;
                 if let Some(d) = &self.spaces_window {
-                    return window::gain_focus(d.id);
+                    return self.raise(d.id);
                 }
                 let (id, open) = self.open_child(SPACES_SIZE);
                 let st = self.store.read();
@@ -4588,7 +4609,7 @@ impl BeeperGuiApp {
             UiMessage::OpenEditGroup(chat) => {
                 self.list.chat_menu = None;
                 if let Some(d) = &self.group_window {
-                    return window::gain_focus(d.id);
+                    return self.raise(d.id);
                 }
                 let (id, open) = self.open_child(GROUP_SIZE);
                 let st = self.store.read();
@@ -4667,7 +4688,7 @@ impl BeeperGuiApp {
             UiMessage::LoggedOut(Ok(())) => restart(),
             UiMessage::LoggedOut(Err(e)) => self.fail(Toast::new(format!("Could not log out: {e}"))),
             // Desktop's "Close Chat Info" of a detached Chat Info closes its window.
-            UiMessage::ToggleRightPanel if self.pane.info => return window::close(self.swapped.expect("a window")),
+            UiMessage::ToggleRightPanel if self.pane.info => return self.close_window(self.swapped.expect("a window")),
             UiMessage::ToggleRightPanel => {
                 // Desktop shows Chat Info or the thread pane, not both.
                 let closed = self.pane.thread.take().is_some();
@@ -4845,7 +4866,7 @@ impl BeeperGuiApp {
                     None => pane.selected_chat_id.is_none() && !space,
                 };
                 if close {
-                    return Task::batch([task, window::close(id)]);
+                    return Task::batch([task, self.close_window(id)]);
                 }
                 // Desktop's thread window shows its carousel in its "Media in %s" window.
                 let thread = pane.thread_root.is_some();
@@ -6417,7 +6438,7 @@ impl BeeperGuiApp {
             }
             let id = *id;
             (self.pip, self.pip_manual, self.pip_menu) = (None, false, None);
-            return window::close(id);
+            return self.close_window(id);
         }
         let Some(v) = self.video.as_mut().filter(|_| std::mem::take(&mut self.pip_wanted)) else {
             return Task::none();

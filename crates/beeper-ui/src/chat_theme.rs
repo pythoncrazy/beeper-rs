@@ -6,7 +6,7 @@ use crate::{portal, BeeperGuiApp, UiMessage};
 use beeper_core::models::{Bubble, ChatAppearance, Wallpaper};
 use iced::gradient::Linear;
 use iced::widget::{container, image, stack, svg, Space};
-use iced::{window, Background, Border, Color, ContentFit, Element, Fill, Gradient, Radians, Size, Task, Theme};
+use iced::{Background, Border, Color, ContentFit, Element, Fill, Gradient, Radians, Size, Task, Theme};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
@@ -319,7 +319,7 @@ impl BeeperGuiApp {
             },
             Msg::Open(chat) => {
                 if let Some(&(id, _)) = self.theme_windows.iter().find(|w| w.1 == chat) {
-                    return window::gain_focus(id);
+                    return self.raise(id);
                 }
                 let (id, open) = self.open_child(Size::new(380.0, 620.0));
                 self.theme_windows.push((id, chat));
