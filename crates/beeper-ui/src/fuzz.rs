@@ -5421,6 +5421,36 @@ fn px_text_keeps_its_size_like_desktop() {
     }
 }
 
+/// Desktop's settings search reads a row's `description` and `searchKeywords`, but a row shows only its `footer`:
+/// "Enable nudges" has no text under it, and "placeholder" finds "Hide deleted messages".
+#[test]
+fn search_reads_descriptions_and_keywords_like_desktop() {
+    let mut app = demo_app("search-about");
+    app.store.write().features.flags["features"]["*"]["nudge"] = true.into();
+    let rows = |q: &str| -> Vec<&str> {
+        let hits = search_settings(&app.store.read(), q).into_iter();
+        hits.filter_map(|h| if let SettingsHit::Pref(_, r) = h { Some(r.key) } else { None }).collect()
+    };
+    assert_eq!(rows("placeholder"), ["hideDeleted"]);
+    assert_eq!(rows("even message bubbles"), ["balanceText"]);
+    assert_eq!(rows("who reacted"), ["reactionsOnSelect"]);
+    assert_eq!(rows("join or leave"), ["membershipEvents"]);
+    assert_eq!(rows("shake the conversation"), ["enableNudges"]);
+    assert_eq!(rows("localization"), ["appLanguage"], "a keyword");
+    let _ = app.open_settings(SettingsTab::Appearance);
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1024.0, 6000.0), app.view_settings());
+    assert!(
+        sim.find("Enable nudges").is_ok() && sim.find("Shake the conversation when someone sends you a nudge").is_err()
+    );
+    assert!(sim.find("Hide deleted messages from conversations instead of showing a placeholder").is_err());
+    drop(sim);
+    let _ = app.open_settings(SettingsTab::General);
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1024.0, 6000.0), app.view_settings());
+    let n = app.store.read().stale_inbox_chats().len();
+    let label = if n == 1 { "Archive 1 chat".to_string() } else { format!("Archive {n} chats") };
+    assert!(sim.find(label.as_str()).is_ok(), "Desktop's Archive All button counts the chats, none too");
+}
+
 #[test]
 fn search_finds_custom_items_like_desktop() {
     let mut app = demo_app("search-custom");
