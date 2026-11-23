@@ -2897,8 +2897,6 @@ pub struct BeeperGuiApp {
     notified: HashSet<String>,
     /// The failed sends that Retry sent again: Desktop shows their error again when they fail again.
     retried: HashSet<String>,
-    /// The failed send whose error toast shows, and its text: Desktop's `retryErroredMessage` closes it.
-    send_toast: Option<(String, String)>,
     notifications: HashMap<u32, (String, String)>,
     pending: notify::Pending,
     pub gif_query: String,
@@ -3238,7 +3236,6 @@ impl BeeperGuiApp {
             focused: false,
             notified: HashSet::new(),
             retried: HashSet::new(),
-            send_toast: None,
             notifications: HashMap::new(),
             pending,
             gif_query: String::new(),
@@ -4363,8 +4360,16 @@ impl BeeperGuiApp {
         let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
         let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
-        let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
+        // A toast with the same text replaces the shown one, unless Desktop's toast ID tells them apart.
+        let replaced = |t: &(Toast, Duration)| {
+            let id = self.toast.as_ref().filter(|n| n.text == self.status_banner).and_then(|n| n.id.as_ref());
+            !self.status_banner.is_empty() && (t.0.text != self.status_banner || t.0.id.as_ref() != id)
+        };
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
+            // A toast that stays keeps its place in the stack, under the new one.
+            if t.0.stays && self.sticky_banner.as_ref() == Some(&t.0.text) && self.status_banner != t.0.text {
+                self.sticky_banner = None;
+            }
             // It is older than the toasts that this message stacked.
             self.older_toasts.insert(stacked.min(self.older_toasts.len()), t);
             self.trim_older_toasts();

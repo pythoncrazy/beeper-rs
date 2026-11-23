@@ -3806,6 +3806,56 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     assert!(st.loaded(&id).is_none() && st.outbox.is_empty(), "Remove drops the echo and its send");
 }
 
+/// Desktop's toast of a failed send has the ID of the message and no timeout (`-1`): it stays in `toasts-list` under
+/// newer toasts, one for each failed send, while the toasts with a timeout go. Retry and Remove close the toast of
+/// their send wherever it is (`removeToast`), and Copy Error copies Desktop's `sendMessage:` JSON of the error.
+#[test]
+fn failed_send_toasts_stay_in_the_stack_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("failed-toasts");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let fail = |app: &mut BeeperGuiApp, text: &str, error: &str| {
+        let _ = app.update(UiMessage::Composer(composer::Msg::Changed(text.into())));
+        let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+        let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
+        let failed = {
+            let mut st = app.store.write();
+            // The send of this text, after the failed sends that wait for Retry.
+            let at = st.outbox.len() - 1;
+            let (row, _, out) = st.outbox.remove(at);
+            let id = out.message().expect("a send has a local echo").to_string();
+            st.pushed(row, Some(&id), Some((error.into(), true)));
+            st.loaded(&id).expect("the local echo").clone()
+        };
+        let id = failed.id.clone();
+        let _ = app.update(UiMessage::Upserted(Box::new(failed)));
+        id
+    };
+    let first = fail(&mut app, "a", "M_FORBIDDEN: refused");
+    let copy = app.shown_toast().expect("the toast of the failed send").buttons[0].1.clone();
+    let json = format!(
+        r#"sendMessage:{{"errorName":"Error","errorMessage":"M_FORBIDDEN: refused","appVersion":"{}"}}"#,
+        beeper_core::config::APP_VERSION
+    );
+    assert!(matches!(copy, UiMessage::Message(message::Msg::CopyText(t)) if t == json), "Copy Error");
+    let _ = app.update(UiMessage::Message(message::Msg::CopyLink("https://a".into())));
+    assert_eq!(app.status_banner, "Copied to clipboard!");
+    let older = |app: &BeeperGuiApp| app.older_toasts.iter().map(|t| t.0.text.clone()).collect::<Vec<_>>();
+    let stacked = older(&app);
+    assert!(stacked.len() == 1 && stacked[0].ends_with("\nM_FORBIDDEN: refused"), "a new toast stacks it: {stacked:?}");
+    for _ in 0..(2 * TOAST_TIMEOUT.as_millis() / crate::toasts::TOAST_TICK.as_millis()) {
+        let _ = app.update(UiMessage::Toast(toasts::Msg::Tick));
+    }
+    assert!(app.status_banner.is_empty() && older(&app) == stacked, "the new toast goes, the failed send's stays");
+    let second = fail(&mut app, "b", "M_TOO_LARGE: too big");
+    assert!(app.status_banner.ends_with("\nM_TOO_LARGE: too big") && older(&app) == stacked, "a toast each");
+    let _ = app.update(UiMessage::Message(message::Msg::RetrySend(first)));
+    assert!(older(&app).is_empty() && !app.status_banner.is_empty(), "Retry closes the toast of its send only");
+    let _ = app.update(UiMessage::Message(message::Msg::RemoveUnsent(second)));
+    assert!(app.status_banner.is_empty() && app.sticky_banner.is_none(), "and Remove closes the toast of its send");
+}
+
 /// Desktop's `.thread-info` shares `.subheader-content` with the chat (`flex: 1` both, `max-width: 300px`, an 8 px
 /// gap): Chat Info is 300 px wide in a wide window, and half of the room in a narrow one, where the chat keeps the
 /// other half instead of a sliver. The sidebar hides under 600 px.

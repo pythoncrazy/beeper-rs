@@ -4071,12 +4071,14 @@ impl BeeperGuiApp {
             Msg::RetrySend(id) => {
                 self.store.write().retry_send(&id);
                 // Desktop's `retryErroredMessage` closes the error toast of the send.
-                if self.send_toast.take_if(|(m, _)| *m == id).is_some_and(|(_, t)| t == self.status_banner) {
-                    (self.status_banner, self.sticky_banner) = (String::new(), None);
-                }
+                self.remove_toast(&id);
                 self.retried.insert(id);
             }
-            Msg::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
+            Msg::RemoveUnsent(id) => {
+                self.store.write().remove_unsent(&id);
+                // So does its `removeErroredMessage`.
+                self.remove_toast(&id);
+            }
             Msg::ToggleClamp(mid) => {
                 if !self.pane.unclamped.remove(&mid) {
                     self.pane.unclamped.insert(mid);
