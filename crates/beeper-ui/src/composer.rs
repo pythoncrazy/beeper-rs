@@ -21,7 +21,7 @@ use crate::{
     dashed, default_account_user, emoji, format, has_flag, hotkey_caps, hotkey_key, icon_btn, images, locate,
     menu_item, menu_pitch, menu_rule, network_name, portal, record, removable, several_accounts, spell, switch_targets,
     text_urls, tinted, toasts, truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia,
-    Picker, Queued, Toast, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MESSAGE_MENU_W, SEND_ARROW,
+    Picker, Queued, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MESSAGE_MENU_W, SEND_ARROW,
 };
 use beeper_core::codec::Emoticon;
 use beeper_core::config::{account_network, now_unix_millis};
@@ -190,18 +190,42 @@ pub(crate) fn save_draft(st: &mut BeeperStore, pane: &Pane) {
         mentions,
         ts: None,
         send_room_id,
+        revision_id: None,
     };
     // Desktop's `applyDraftTime`: the draft time changes with the text or the files.
     let old = st.chats[idx].draft.as_ref();
     let same = old.is_some_and(|o| o.text == draft.text && o.attachments == draft.attachments);
     let ts = if same { old.and_then(|o| o.ts) } else { Some(now_unix_millis()) };
-    let draft = (draft.text.is_some() || !draft.attachments.is_empty()).then_some(ChatDraft { ts, ..draft });
+    // The store gives the draft its revision, which stays while what syncs of it does.
+    let revision_id = old.and_then(|o| o.revision_id.clone());
+    let draft =
+        (draft.text.is_some() || !draft.attachments.is_empty()).then_some(ChatDraft { ts, revision_id, ..draft });
     if draft != st.chats[idx].draft {
-        st.patch_chat(chat, true, None, None).expect("clear draft");
-        st.patch_chat(chat, false, draft, None).expect("save draft");
+        st.put_draft(idx, draft);
         // A sent draft or a changed file leaves its upload behind.
         st.drop_unused_uploads(&old_ids);
     }
+}
+
+/// Desktop's `applyRemoteDraft`: the composer of `pane` shows the draft of its chat, which a synced one replaced, when
+/// it has no change of its own since then.
+pub(crate) fn show_synced_draft(st: &BeeperStore, pane: &mut Pane, chat: &str) {
+    let idx = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+    let Some(idx) = idx.filter(|&i| st.chats[i].id == chat) else { return };
+    if pane.draft_due || pane.editing_message_id.is_some() || !pane.attachments.is_empty() {
+        return;
+    }
+    let draft = st.chats[idx].draft.clone().unwrap_or_default();
+    pane.emoticons.clear();
+    let text = stored_text(pane, draft.text.as_deref().unwrap_or_default());
+    pane.composer = composer_with(&text);
+    pane.composer_links = draft.discarded_links.into_iter().map(|u| (u, LinkState::Discarded)).collect();
+    (pane.history, pane.reply_to_message_id, pane.mentions) =
+        (Default::default(), draft.reply_to_message_id, draft.mentions);
+    pane.send_later = draft.send_later.filter(|&(at, _)| at > now_unix_millis());
+    let members = st.members(idx);
+    let seeded = draft.send_room_id.filter(|r| members.iter().any(|&m| st.chats[m].id == *r));
+    pane.compose_target = seeded.map(|r| (r, true));
 }
 
 /// Desktop's `restoreDraftSnapshot`: the attachments of a saved draft. A draft from the API's focus endpoint names its
@@ -438,12 +462,15 @@ impl BeeperGuiApp {
             .map(|f| f.and_then(|f| portal::check(&f, &chat.file, chat.room_features).map(|()| f)))
             .collect();
         drop(st);
+        let mut errors = Vec::new();
         for f in checked {
             match f {
                 Ok(f) => self.pane.attachments.push(f),
-                Err(e) => self.fail(Toast::new(e)),
+                Err(e) => errors.push(e),
             }
         }
+        // Desktop's `attachFiles` shows a toast for each file that does not attach.
+        self.fail_all(errors);
     }
 
     /// Desktop's `addFileBuffers` of a sticker, and `addRecentSticker`: the newest of 24 recent stickers.
@@ -754,7 +781,7 @@ impl BeeperGuiApp {
             st.send(&s.chat_id, draft).expect("send scheduled");
         }
         drop(st);
-        failed.into_iter().for_each(|e| self.fail(Toast::new(e)));
+        self.fail_all(failed);
         self.refresh_theme_and_tray();
     }
 
@@ -1277,6 +1304,8 @@ pub enum Msg {
     /// A file drag enters (true) or leaves a window.
     FileHover(window::Id, bool),
     FileDropped(window::Id, std::path::PathBuf),
+    /// The files dropped so far attach together, in their order.
+    DropEnded,
     LinkPreviewLoaded(String, Result<Option<beeper_core::cloud::PagePreview>, String>),
     RemoveLinkPreview(String),
     /// Picks a row of the composer autocomplete.
@@ -1289,6 +1318,8 @@ pub enum Msg {
     Type(String),
     /// Tab (Shift+Tab with `back`) in the window, after a look for the caret.
     Tab(bool, Caret),
+    /// Enter without a modifier in the window, after a look for the caret.
+    Enter(Caret),
 }
 
 impl BeeperGuiApp {
@@ -1632,6 +1663,25 @@ impl BeeperGuiApp {
                 self.pane.key_focus.set(None);
                 return operation::focus(self.composer_id());
             }
+            // Desktop's `KeyboardHandlers` focus the composer at its end for Enter outside a text field, like after
+            // a click on the attachment button or a sticker. Chromium's keypress then goes to the composer, whose
+            // Enter does what it does there: it sends by default.
+            Msg::Enter(Caret::None) if self.composer_takes_keys() => {
+                self.hold_compose_target();
+                let keys = ["Message: Send Message and Archive", "Send Message", "Insert New Line"]
+                    .map(|h| self.store.read().settings.hotkey_keys(h).to_string());
+                self.pane.composer.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+                let focus = operation::focus(self.composer_id());
+                let enter = match keys.iter().position(|k| prefs::hotkey_has(k, [false; 3], "enter")) {
+                    Some(0) => self.update(UiMessage::Composer(Msg::SendAndArchive)),
+                    Some(1) => self.update(UiMessage::Composer(Msg::Submit)),
+                    _ => {
+                        self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Enter))))
+                    }
+                };
+                return Task::batch([focus, enter]);
+            }
+            Msg::Enter(_) => {}
             Msg::Paste => return Task::perform(clipboard_paste(), |r| UiMessage::Composer(Msg::Pasted(r))),
             // Desktop's `paste` handler: copied files go to the attachments, and a text goes into the composer.
             Msg::Pasted(r) => match r {
@@ -1708,11 +1758,13 @@ impl BeeperGuiApp {
                 Err(e) => self.status_banner = e,
             },
             Msg::FilesLoaded(_) if self.pane.editing_message_id.is_some() => {
+                self.drop_send = false;
                 self.status_banner = tr("Attachments can't be added while editing a message").into();
             }
             Msg::FilesLoaded(files) => {
                 self.attach_files(files);
-                if self.drop_send {
+                // Desktop's `onDrop` sends once, after the files of a drop with Shift attach.
+                if std::mem::take(&mut self.drop_send) {
                     self.submit_composer(false);
                 }
             }
@@ -1723,7 +1775,20 @@ impl BeeperGuiApp {
             Msg::FileDropped(id, path) if Some(id) == self.main_window && self.pane.selected_chat_id.is_some() => {
                 self.dropping = false;
                 self.drop_send |= self.mods.shift();
-                return self.update(UiMessage::Composer(Msg::FilesPicked(Ok(vec![path]))));
+                self.dropped.push(path);
+                // The other files of the drop come in the same batch of events, before this task's message.
+                if self.dropped.len() == 1 {
+                    return Task::done(UiMessage::Composer(Msg::DropEnded));
+                }
+            }
+            Msg::DropEnded => {
+                let paths = std::mem::take(&mut self.dropped);
+                if self.pane.selected_chat_id.is_some() {
+                    // Desktop's `onDrop` focuses the composer (`focusComposerFor`) before the files attach.
+                    let focus = operation::focus(self.composer_id());
+                    return Task::batch([focus, self.update(UiMessage::Composer(Msg::FilesPicked(Ok(paths))))]);
+                }
+                self.drop_send = false;
             }
             // Desktop's Edit Group window takes a dropped image for the avatar.
             Msg::FileHover(id, on) if self.group_window.as_ref().is_some_and(|d| d.id == id) => {

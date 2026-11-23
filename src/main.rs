@@ -200,9 +200,12 @@ mod display {
             let (globals, _) = wayland_client::globals::registry_queue_init::<Probe>(&c).ok()?;
             Some(globals.contents().with_list(|l| l.iter().map(|g| g.interface.clone()).collect::<Vec<_>>()))
         });
+        let x11 = std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty());
         // Chromium's `--ozone-platform=x11` keeps the app on X11, under XWayland on a Wayland desktop.
-        let wayland = wayland.filter(|_| ozone != Some("x11") || std::env::var_os("DISPLAY").is_none());
-        if wayland.is_none() && ozone == Some("x11") {
+        let wayland = wayland.filter(|_| ozone != Some("x11") || !x11);
+        // winit picks Wayland whenever `WAYLAND_DISPLAY` is set, and panics when nothing answers there (a stale
+        // variable in an SSH or tmux session, or a compositor that is gone), where Chromium falls back to X11.
+        if wayland.is_none() && x11 {
             unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
         }
         let has = |interface: &str| wayland.iter().flatten().any(|g| g == interface);
@@ -222,7 +225,24 @@ mod display {
         }
         // Without server-side decorations the window draws its own title bar, with the GTK theme like Electron's.
         if wayland.is_some() && !has("zxdg_decoration_manager_v1") {
+            // GTK only paints the frame off screen, so its accessibility bridge would register on a bus that nothing
+            // pumps.
+            if std::env::var_os("NO_AT_BRIDGE").is_none() {
+                unsafe { std::env::set_var("NO_AT_BRIDGE", "1") };
+            }
+            // The launcher's activation token belongs to the first window, which takes the focus with it, and not
+            // to the GTK that draws the frames.
+            let var = |k: &&str| std::env::var(k).ok().filter(|v| !v.is_empty());
+            let token = ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"].iter().find_map(var);
+            if let Some(token) = token {
+                sctk_adwaita::set_activation_token(token);
+                unsafe { std::env::remove_var("XDG_ACTIVATION_TOKEN") };
+                unsafe { std::env::remove_var("DESKTOP_STARTUP_ID") };
+            }
             sctk_adwaita::preload();
+            // The first frames draw from the cached theme; once GTK opens, and whenever its settings change, the
+            // windows draw again with it.
+            sctk_adwaita::on_ready(|| beeper_ui::FRAME_READY.notify_one());
         }
     }
 

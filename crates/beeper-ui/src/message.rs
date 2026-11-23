@@ -29,11 +29,11 @@ use crate::{
     anim, badged, brightness, can_thread, chat_theme, commands, copy_text, delete_dialog, distance, downloads_dir,
     ease_out, edit_open, editable, enter_key, feedback_btn, file_icon, fmt_phone, gallery, handle, has_older,
     hotkey_caps, hotkey_text, lift, locate, member_name, membership, menu_item, menu_pitch, menu_rule, network_bot,
-    pending, pill_btn, portal, profile_link, reply_root, safe_file_name, send_rise, sender_label, short_title,
-    still_sending_at, stored, tinted, unavailable, unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage,
-    ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, BUBBLE_PAD_Y, CHEVRON_DOWN, CHEVRON_FORWARD,
-    CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK, POLL_CHECK,
-    POLL_ENDED, TIMER, TRASH,
+    pending, pill_btn, portal, profile_link, reply_root, reply_root_with, safe_file_name, send_rise, sender_label,
+    short_title, still_sending_at, stored, tinted, unavailable, unused_path, video, vlist, BeeperGuiApp, El, PillLook,
+    UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, BUBBLE_PAD_Y, CHEVRON_DOWN,
+    CHEVRON_FORWARD, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK,
+    POLL_CHECK, POLL_ENDED, TIMER, TRASH,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::matrix::{Pressed, ROOM_MENTION};
@@ -687,7 +687,7 @@ pub(crate) struct Rows {
     /// The first message of the membership event run of each message.
     run_start: Vec<usize>,
     last_live: Option<usize>,
-    any_pending: bool,
+    pub(crate) any_pending: bool,
     /// For each person other than you and the sender, the newest message that the person saw before a reply of the
     /// person, and the time.
     last_seen: HashMap<String, (usize, String)>,
@@ -701,6 +701,56 @@ pub(crate) struct Rows {
     keys: Vec<u64>,
     /// The messages that start a day, which show its date.
     days: Vec<usize>,
+    /// The message IDs that the reply chains look up outside the chats of the messages.
+    links: Vec<String>,
+}
+
+/// What the rows of a pane read from the store, so that the pane keeps them while it stays the same: the timelines of
+/// the chats of the rows, the lookups of their reply chains, and the values that pick and mark their messages.
+#[derive(PartialEq)]
+pub(crate) struct RowsKey {
+    /// The store, and its count of moves of message indices.
+    store: (u64, u64),
+    /// The chat and the thread root of the pane, and the member chats of a merged chat.
+    pane: (String, Option<String>, Vec<String>),
+    /// The chats of the rows with their timeline revisions, whether they show threads, and where their older messages
+    /// load from.
+    chats: Vec<(String, u64, bool, Older)>,
+    /// Whether the thread root of a thread pane is loaded, and its loaded replies.
+    thread: Option<(bool, usize)>,
+    /// The chat and its timeline revision of each message of `Rows::links`, while it is loaded.
+    links: Vec<(String, Option<(String, u64)>)>,
+    /// `hideDeleted` and `membershipEvents`.
+    settings: (bool, bool),
+    /// The Matrix client and the demo, which pick the messages and their pending state, and the sent local messages.
+    matrix: (bool, bool, usize),
+    /// Your user ID, and the UTC offset of the local time zone, which places the days.
+    me: (String, i64),
+}
+
+impl RowsKey {
+    fn of(st: &BeeperStore, pane: &crate::Pane, chat: &Chat, chats: &[&str], links: &[String]) -> Self {
+        let rev = |c: &str| st.timeline_rev(c);
+        let members = st.members(st.chat_idx(&chat.id)).into_iter().map(|i| st.chats[i].id.clone()).collect();
+        let chats = chats.iter().map(|&c| {
+            let (threads, older) =
+                st.find_chat(c).map_or((false, Older::Unknown), |c| (st.threaded(c), c.older.clone()));
+            (c.to_string(), rev(c), threads, older)
+        });
+        let thread = pane.thread_root.as_deref().map(|r| (st.loaded(r).is_some(), st.thread_replies(r).count()));
+        let link = |r: &String| (r.clone(), st.loaded(r).map(|m| (m.chat_id.clone(), rev(&m.chat_id))));
+        let now = now_unix_millis();
+        Self {
+            store: (st.instance, st.message_moves()),
+            pane: (chat.id.clone(), pane.thread_root.clone(), members),
+            chats: chats.collect(),
+            thread,
+            links: links.iter().map(link).collect(),
+            settings: (st.settings.on("hideDeleted"), st.settings.on("membershipEvents")),
+            matrix: (st.matrix.is_some(), st.config.demo, st.sent.len()),
+            me: (st.me().id.clone(), beeper_core::config::local_millis(now) - now),
+        }
+    }
 }
 
 /// The first message of the membership event run of each message: Desktop's `MembershipGrouper` groups the member
@@ -737,7 +787,16 @@ impl Rows {
                 replied.insert(m.sender_id.as_str());
             }
         }
-        let roots: Vec<&str> = msgs.iter().map(|m| reply_root(st, m)).collect();
+        let chats: HashSet<&str> = msgs.iter().map(|m| m.chat_id.as_str()).collect();
+        let mut links = Vec::new();
+        let mut look = |r: &str, m: Option<&Message>| {
+            if m.is_none_or(|m| !chats.contains(m.chat_id.as_str())) {
+                links.push(r.to_string());
+            }
+        };
+        let roots: Vec<&str> = msgs.iter().map(|m| reply_root_with(st, m, &mut look)).collect();
+        links.sort_unstable();
+        links.dedup();
         let mut later: HashMap<&str, usize> = HashMap::new();
         let mut counts = vec![0; n];
         let day: Vec<i64> = msgs.iter().map(|m| day_num(&m.timestamp)).collect();
@@ -756,6 +815,7 @@ impl Rows {
             counts,
             keys: msgs.iter().map(|m| vlist::key(&m.id)).collect(),
             days: (0..n).filter(|&i| i == 0 || day[i - 1] != day[i]).collect(),
+            links,
         }
     }
 }
@@ -1010,6 +1070,10 @@ impl BeeperGuiApp {
             !mine && sender && others > 1 && m.is_deleted != Some(true) && self.can(&m.account_id, "create_dm");
         // Desktop's `D`: the items that act on a message hide while you edit it.
         let editing = self.pane().editing_message_id.as_ref() == Some(&mid);
+        // Desktop's `isPending` (its `pendingMessages`): a send that the homeserver has not taken yet, or that failed,
+        // has no Edit, Reply, Reply in thread, Bookmark, Mark as Unread, End Poll, Delete or voice items, and its
+        // React is off. Copy, Forward and "Sent at" stay.
+        let queued = pending(&st, m);
         // Desktop's detected-data items (phone, address, date, flight) above these come from the macOS-only
         // TextsSwift `detectData`; on Linux it returns nothing, so they never show (App:48518, 96520).
         let before: Vec<(El, f32)> = [
@@ -1034,19 +1098,19 @@ impl BeeperGuiApp {
                 let load = UiMessage::Loaded(loads::Msg::ResolveMedia(m.account_id.clone(), mid.clone(), raw.clone()));
                 vec![item(label.into(), "", (state != Some(&true)).then_some(load)), rule()]
             }),
-            (editable(m, chat) && !editing).then(|| {
+            (editable(m, chat) && !editing && !queued).then(|| {
                 let edit =
                     edit_open(m, rules).then(|| UiMessage::Composer(composer::Msg::StartEdit(mid.clone(), text)));
                 vec![item(tr("Edit…").into(), &key("Message: Edit"), edit)]
             }),
-            (rules.reply && live && !editing).then(|| {
+            (rules.reply && live && !editing && !queued).then(|| {
                 vec![item(
                     tr("Reply…").into(),
                     &key("Message: Quote & Reply"),
                     Some(UiMessage::Composer(composer::Msg::StartReply(mid.clone()))),
                 )]
             }),
-            (self.pane().thread_root.is_none() && !editing && can_thread(&st, chat, m)).then(|| {
+            (self.pane().thread_root.is_none() && !editing && !queued && can_thread(&st, chat, m)).then(|| {
                 let label = tr("Reply in thread…").into();
                 vec![item(label, &key("Show Replies"), Some(UiMessage::Thread(threads::Msg::Show(mid.clone()))))]
             }),
@@ -1064,7 +1128,7 @@ impl BeeperGuiApp {
                 )]
             }),
             (rules.react && !editing).then(|| {
-                let react = m.reactable().then(|| UiMessage::Message(Msg::ReactOn(mid.clone())));
+                let react = (m.reactable() && !queued).then(|| UiMessage::Message(Msg::ReactOn(mid.clone())));
                 vec![item(tr("React…").into(), "", react)]
             }),
             bookmarkable(&st, m)
@@ -1089,7 +1153,7 @@ impl BeeperGuiApp {
                 let read = UiMessage::Message(Msg::MarkReadThrough(cid.clone(), mid.clone()));
                 vec![item(tr("Mark as Read").into(), "", Some(read))]
             }),
-            (unread_from(&st, m) && !pending(&st, m)).then(|| {
+            (unread_from(&st, m) && !queued).then(|| {
                 vec![item(
                     tr("Mark as Unread").into(),
                     "",
@@ -1100,6 +1164,7 @@ impl BeeperGuiApp {
                 && m.poll.as_ref().is_some_and(|p| !p.ended)
                 && m.is_deleted != Some(true)
                 && !editing
+                && !queued
                 && st.feature("enable-polls").on
                 && st.chat(&cid).polls.is_some_and(|r| r.end))
             .then(|| {
@@ -1131,7 +1196,8 @@ impl BeeperGuiApp {
         // Desktop's `Zit`: no Delete… for the message that you edit.
         let delete = (!editing && delete_dialog(&st, &[m]).is_some())
             .then(|| item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(vec![mid.clone()])))));
-        let tail: Vec<(El, f32)> = self.voice_menu_rows(&st, m).into_iter().chain(delete).collect();
+        let voice = if queued { Vec::new() } else { self.voice_menu_rows(&st, m) };
+        let tail: Vec<(El, f32)> = voice.into_iter().chain(delete.filter(|_| !queued)).collect();
         let rows: Vec<(El, f32)> = [
             Some(head),
             (!tail.is_empty()).then(|| std::iter::once(rule()).chain(tail).collect()),
@@ -1595,6 +1661,18 @@ impl BeeperGuiApp {
         container(pane).width(Fill).height(Fill).clip(true).style(pane_card(p.card)).into()
     }
 
+    /// Desktop's `MessageErrorTooltip`: the label, and the error icon whose tooltip is the error of the send.
+    fn error_tooltip<'a>(&self, e: &beeper_core::models::SendError, label: &'a str) -> El<'a> {
+        let icon = svg(ERROR_OUTLINE.clone()).width(20).height(20);
+        let icon = icon.style(|_, _| svg::Style { color: Some(ON_ERROR_CONTAINER) });
+        let error = e.message.clone().unwrap_or_else(|| tr("Unknown error occurred").into());
+        let tip = self.tip(icon.into(), error, vec![], tooltip::Position::Left);
+        row![crate::style::fixed(label, 11.0, Weight::Normal).color(ON_ERROR_CONTAINER), tip]
+            .spacing(4)
+            .align_y(Center)
+            .into()
+    }
+
     /// Desktop's `jumpToMessage` and `revealMessage`: shows message `mid` of chat `cid` in the timeline of the pane,
     /// and a reply only in a thread in the thread pane. The thread pane jumps in its own thread.
     pub(crate) fn jump_to(&mut self, cid: String, mid: String) -> Task<UiMessage> {
@@ -1732,20 +1810,30 @@ impl BeeperGuiApp {
 
     /// Desktop's `MessageList`: the messages in timeline order. In a reply chain, the quotes, the reply lines,
     /// the replies buttons and the unread divider do not show.
-    /// The rows of the messages of the conversation of the pane. The pane keeps them until the store changes, so that a
-    /// frame of a long chat does not read all its messages.
+    /// The rows of the messages of the conversation of the pane. The pane keeps them until what they are made from
+    /// changes (`RowsKey`), so that a frame of a long chat does not read all its messages, also after a write to
+    /// another chat.
     fn conversation_rows(&self, st: &BeeperStore, chat: &Chat) -> Rc<Rows> {
-        let (memo, generation) = (&self.pane().rows, self.store.generation().expect("a view holds a read lock"));
-        if let Some((_, _, rows)) = memo.borrow().as_ref().filter(|(g, c, _)| *g == generation && *c == chat.id) {
-            return rows.clone();
+        let (pane, memo) = (self.pane(), &self.pane().rows);
+        let kept = memo.borrow().as_ref().and_then(|(key, rows)| {
+            let chats: Vec<&str> = key.chats.iter().map(|c| c.0.as_str()).collect();
+            (*key == RowsKey::of(st, pane, chat, &chats, &rows.links)).then(|| rows.clone())
+        });
+        if let Some(rows) = kept {
+            return rows;
         }
         let (hide, members) = (st.settings.on("hideDeleted"), st.settings.on("membershipEvents"));
         let msgs: Vec<&Message> = self.pane_msgs(st);
+        let mut chats = vec![chat.id.as_str()];
+        chats.extend(st.members(st.chat_idx(&chat.id)).into_iter().map(|i| st.chats[i].id.as_str()));
+        chats.extend(msgs.iter().map(|m| m.chat_id.as_str()));
+        chats.sort_unstable();
+        chats.dedup();
         // Desktop shows expired view-once media even when it hides deleted messages.
         let hidden = |m: &Message| hide && m.is_deleted == Some(true) && !m.view_once_expired();
         let msgs: Vec<&Message> = msgs.into_iter().filter(|m| !hidden(m) && (members || !membership(m))).collect();
         let rows = Rc::new(Rows::of(st, &msgs));
-        *memo.borrow_mut() = Some((generation, chat.id.clone(), rows.clone()));
+        *memo.borrow_mut() = Some((RowsKey::of(st, pane, chat, &chats, &rows.links), rows.clone()));
         rows
     }
 
@@ -2208,6 +2296,25 @@ impl BeeperGuiApp {
         if m.view_once() {
             parts = parts.push(self.view_once_pill(m, (bg, fg)));
         }
+        // Desktop's `message-attachment-failed`: a failed message without text shows "Not sent" at its attachments,
+        // over the bottom right of a lone photo or video, else in a row under them.
+        let attached = ms.len() == 1 && !m.view_once() && !m.attachments.is_empty();
+        let failed_files = failed.filter(|_| attached && m.text.as_deref().is_none_or(str::is_empty));
+        let lone_media = matches!(&m.attachments[..], [a] if a.attachment_type == "img" || a.attachment_type == "video"
+            || a.mime_type.as_deref().is_some_and(|t| t.starts_with("image/")));
+        let not_sent = |content: El<'a>| -> El<'a> {
+            match failed_files.filter(|_| lone_media) {
+                Some(e) => stack![
+                    content,
+                    container(self.error_tooltip(e, tr("Not sent")))
+                        .align_right(Fill)
+                        .align_bottom(Fill)
+                        .padding(Padding::ZERO.right(12.0))
+                ]
+                .into(),
+                None => content,
+            }
+        };
         for (ai, a) in m.attachments.iter().enumerate().filter(|_| ms.len() == 1 && !m.view_once()) {
             let name = attachment_name(a);
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
@@ -2290,7 +2397,7 @@ impl BeeperGuiApp {
                             )
                         } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
                             let video = self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai));
-                            parts = parts.push(dimmed(video, selected));
+                            parts = parts.push(not_sent(dimmed(video, selected)));
                             continue;
                         } else if is_video && a.is_gif != Some(true) {
                             (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
@@ -2320,7 +2427,12 @@ impl BeeperGuiApp {
                     self.view_file_row(m, ai, a, timer)
                 }
             };
-            parts = parts.push(dimmed(content, selected));
+            parts = parts.push(not_sent(dimmed(content, selected)));
+        }
+        if let Some(e) = failed_files.filter(|_| !lone_media) {
+            // The column puts it at the right of an own message.
+            parts =
+                parts.push(container(self.error_tooltip(e, tr("Not sent"))).padding(Padding::ZERO.right(BUBBLE_PAD_X)));
         }
         if let Some(poll) = poll {
             parts = parts.push(self.view_poll(st, chat, m, poll, (bg, fg)));
@@ -2406,18 +2518,7 @@ impl BeeperGuiApp {
             let (room, time) = match failed {
                 Some(e) => {
                     let label = if m.edited() { tr("Failed to edit") } else { tr("Not sent") };
-                    let icon = svg(ERROR_OUTLINE.clone()).width(20).height(20);
-                    let icon = icon.style(|_, _| svg::Style { color: Some(ON_ERROR_CONTAINER) });
-                    let tip = self.tip(
-                        icon.into(),
-                        e.message.clone().unwrap_or_else(|| tr("Unknown error occurred").into()),
-                        vec![],
-                        tooltip::Position::Left,
-                    );
-                    let meta = row![crate::style::fixed(label, 11.0, Weight::Normal).color(ON_ERROR_CONTAINER), tip]
-                        .spacing(4)
-                        .align_y(Center);
-                    (crate::style::fixed_width(label, 11.0, Weight::Normal) + 28.0, Some(meta.into()))
+                    (crate::style::fixed_width(label, 11.0, Weight::Normal) + 28.0, Some(self.error_tooltip(e, label)))
                 }
                 // Desktop's `BookmarkIndicator` and `ReminderIndicator` (`E3`) go before the time.
                 None => {
@@ -3963,7 +4064,14 @@ impl BeeperGuiApp {
             Msg::AskDelete(mids) => {
                 (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mids.join(" ")))
             }
-            Msg::RetrySend(id) => self.store.write().retry_send(&id),
+            Msg::RetrySend(id) => {
+                self.store.write().retry_send(&id);
+                // Desktop's `retryErroredMessage` closes the error toast of the send.
+                if self.send_toast.take_if(|(m, _)| *m == id).is_some_and(|(_, t)| t == self.status_banner) {
+                    (self.status_banner, self.sticky_banner) = (String::new(), None);
+                }
+                self.retried.insert(id);
+            }
             Msg::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
             Msg::ToggleClamp(mid) => {
                 if !self.pane.unclamped.remove(&mid) {
