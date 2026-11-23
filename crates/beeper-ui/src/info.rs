@@ -309,7 +309,7 @@ impl BeeperGuiApp {
         let card = container(column![pane_head, scroll, toolbar]).height(Fill).style(fill_box(p.card, 10.0));
         match detached {
             true => container(card.width(Fill)).padding(8).style(fill_box(p.window, 0.0)).into(),
-            false => container(card.width(300)).padding(Padding::new(8.0).left(0.0)).into(),
+            false => container(card.width(self.info_width())).padding(Padding::new(8.0).left(0.0)).into(),
         }
     }
 
@@ -394,11 +394,27 @@ impl BeeperGuiApp {
         )
         .on_right_press(copy);
         let meta = |s: String| self.info_meta(cid, s);
-        let contact = other.map(|u| {
-            row![]
-                .push(handle(u).map(meta))
-                .push(u.phone_number.as_deref().map(|n| meta(fmt_phone(n))))
-                .push(u.email.clone().map(meta))
+        // Desktop's identity `metadata` of a DM that is not merged: the inline username, then the phone number and
+        // the email in their own `div`s, so each starts a line. A click on either opens its `PhoneNumber` or
+        // `EmailAddress` menu. The `.phone` div is a flex row, so its number starts at the left of the block.
+        let contact = other.filter(|_| chat.merge.is_none()).map(|u| {
+            let lines =
+                [(handle(u), ""), (u.phone_number.as_deref().map(fmt_phone), "phone"), (u.email.clone(), "email")];
+            let lines: Vec<(String, &str)> = lines.into_iter().filter_map(|(s, kind)| Some((s?, kind))).collect();
+            let wide = lines.iter().map(|(s, _)| text_width(s, 11.0, Weight::Normal)).fold(0.0, f32::max).ceil();
+            Column::with_children(lines.into_iter().map(|(s, kind)| -> El<'_> {
+                let line = meta(s);
+                match kind {
+                    "" => line.into(),
+                    _ => {
+                        let menu = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("contact:{cid} {kind}")));
+                        let line = line.on_press(menu).interaction(mouse::Interaction::Pointer);
+                        let left = if kind == "phone" { iced::Alignment::Start } else { Center };
+                        container(line).width(wide).align_x(left).into()
+                    }
+                }
+            }))
+            .align_x(Center)
         });
         let originally = chat
             .personal
@@ -782,8 +798,10 @@ impl BeeperGuiApp {
     /// The tiles of the Media section: the images, videos and files of the messages of the tab, and their links,
     /// with the avatar of the sender.
     fn view_info_media_tiles<'a>(&'a self, chat: &Chat, shown: &[&Message]) -> Vec<El<'a>> {
-        // Desktop's `mediaGrid`: two 124 px columns 8 px apart in the 8 px padding of the 272 px pane.
-        const TILE: f32 = 124.0;
+        // Desktop's `mediaGrid`: two square columns (`repeat(2, minmax(auto, 1fr))`) 8 px apart, 124 px in the 8 px
+        // padding of the 272 px pane, and narrower with Chat Info in a narrow window, down to `--min-media-width`.
+        let narrower = if self.pane().info { 0.0 } else { 300.0 - self.info_width() };
+        let tile = (124.0 - narrower / 2.0).max(40.0);
         let p = &self.pal;
         let kinds: &[&str] = match self.info_media {
             None => &["img", "video", "audio", "unknown"],
@@ -796,25 +814,25 @@ impl BeeperGuiApp {
         };
         let links = matches!(self.info_media, None | Some(3));
         let file = |title: String, sub: El<'a>| -> El<'a> {
-            let title = txt(crate::style::clamped(&title, TILE - 16.0, 3, 10.0, Weight::Normal).to_string(), 10.0)
+            let title = txt(crate::style::clamped(&title, tile - 16.0, 3, 10.0, Weight::Normal).to_string(), 10.0)
                 .color(p.strong);
             let bg = if self.dark { Color::BLACK } else { Color::WHITE };
-            container(column![title, sub]).padding(8).align_bottom(TILE).width(TILE).style(fill_box(bg, 8.0)).into()
+            container(column![title, sub]).padding(8).align_bottom(tile).width(tile).style(fill_box(bg, 8.0)).into()
         };
         shown
             .iter()
             .flat_map(|m| {
                 let atts = m.attachments.iter().filter(|a| kinds.contains(&a.attachment_type.as_str()));
                 let atts = atts.map(|a| match a.attachment_type.as_str() {
-                    "img" => self.thumb(a, TILE, 4.0),
+                    "img" => self.thumb(a, tile, 4.0),
                     // Desktop's `BrandVideo` play button: a 36 px `secondary-container` disc in the middle.
                     "video" => {
                         let play =
                             container(ic(icon::PLAY, 14.0).color(p.strong)).center(36).style(fill_box(p.chip, 18.0));
-                        stack![self.thumb(a, TILE, 4.0), container(play).center(TILE)].into()
+                        stack![self.thumb(a, tile, 4.0), container(play).center(tile)].into()
                     }
                     _ => {
-                        let kind = ell(file_kind(a.mime_type.as_deref()), TILE - 16.0, 10.0, Weight::Semibold);
+                        let kind = ell(file_kind(a.mime_type.as_deref()), tile - 16.0, 10.0, Weight::Semibold);
                         file(
                             a.file_name.clone().unwrap_or_default(),
                             kind.line_height(Pixels(rem(12.0))).color(p.strong).into(),
@@ -824,11 +842,11 @@ impl BeeperGuiApp {
                 let urls = m.links.iter().filter(|_| links).map(|l| {
                     let title = crate::links::shown_title(l);
                     let url =
-                        ell(&l.url, TILE - 29.0, 10.0, Weight::Semibold).line_height(Pixels(rem(12.0))).color(p.strong);
+                        ell(&l.url, tile - 29.0, 10.0, Weight::Semibold).line_height(Pixels(rem(12.0))).color(p.strong);
                     file(title, row![tinted(&MEDIA_ICONS[2], 12.0, p.strong), url].align_y(Center).into())
                 });
-                atts.chain(urls).map(|tile| {
-                    let face = stack![tile].push(self.media_sender(chat, m)).width(TILE).height(TILE);
+                atts.chain(urls).map(|face| {
+                    let face = stack![face].push(self.media_sender(chat, m)).width(tile).height(tile);
                     button(face)
                         .padding(0)
                         .style(btn_style([CLEAR; 3], [p.strong; 3], 4.0))
