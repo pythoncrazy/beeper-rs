@@ -987,6 +987,36 @@ fn remind_submenu_like_desktop() {
     assert!(upgrade, "without free uses only the upgrade works");
 }
 
+/// Desktop's `reset` empties the command bar each time it closes, so a time typed in Remind Me or a search that was
+/// closed does not come back in the next search.
+#[test]
+fn command_bar_opens_empty_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("cmdbarempty");
+    let id = app.visible_chats(&app.store.read())[0].id.clone();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("l".into()), Modifiers::CTRL));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("in 1 minute".into())));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    assert!(!app.show_command_palette, "the time sets the reminder and closes the bar");
+    assert!(app.store.read().find_chat(&id).and_then(|c| c.reminder.clone()).is_some());
+    let _ = app.update(UiMessage::RunHotkey("Search"));
+    assert!(app.show_command_palette);
+    assert_eq!(app.command_palette_query, "", "the search does not start with the time");
+    assert!(simulator(app.view_main()).find("in 1 minute").is_err());
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("lena".into())));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Escape), Modifiers::empty()));
+    assert!(!app.show_command_palette);
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    assert_eq!(app.command_palette_query, "", "Escape emptied the bar");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("pebble".into())));
+    let _ = app.update(UiMessage::RunHotkey("Search: Room"));
+    assert_eq!(app.command_palette_query, "pebble", "an open bar keeps its text for the search of the chat");
+    let _ = app.update(UiMessage::CloseModals);
+    let _ = app.update(UiMessage::RunHotkey("Search: Room"));
+    assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
+}
+
 #[test]
 fn menu_accelerators_work_like_desktop() {
     use iced::keyboard::{Key, Modifiers};
