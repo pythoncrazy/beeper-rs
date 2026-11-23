@@ -4382,6 +4382,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::fuzz::clicks;
     use iced::window;
     use iced_test::simulator::simulator;
 
@@ -4581,9 +4582,7 @@ pub(crate) mod tests {
         assert!(shown(&app, "Label tips") && shown(&app, "Label email"));
         assert!(!shown(&app, "Label elsewhere") && !shown(&app, "Label plain"), "only the usable buttons");
         assert!(!shown(&app, "Label fake"), "only the system user's messages have buttons");
-        let mut sim = simulator(app.view_conversation());
-        sim.click("Label tips").expect("the link button");
-        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        let msgs: Vec<UiMessage> = clicks(app.view_conversation(), "Label tips");
         let press =
             |m: &UiMessage| matches!(m, UiMessage::Message(Msg::PressButton(mid, id)) if mid == "$tip" && id == "tips");
         assert!(msgs.iter().any(press), "a press of the button");
@@ -5778,9 +5777,7 @@ pub(crate) mod tests {
         let _ = app.update(UiMessage::SelectChat(note.into()));
         let mid = newest(&app, |m| m.reactable());
         let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
-        let mut sim = simulator(app.view_message_menu(&mid).0);
-        let _ = sim.click("React…").expect("React…");
-        let picked: Vec<UiMessage> = sim.into_messages().collect();
+        let picked: Vec<UiMessage> = clicks(app.view_message_menu(&mid).0, "React…");
         let on = |m: &UiMessage| matches!(m, UiMessage::Message(Msg::ReactOn(m)) if *m == mid);
         assert!(matches!(&picked[..], [UiMessage::Message(Msg::Menu(m))] if on(m)), "React… opens it on the message");
         let _ = app.update(UiMessage::CloseModals);

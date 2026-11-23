@@ -73,6 +73,17 @@ pub(crate) fn demo_app(name: &str) -> BeeperGuiApp {
     BeeperGuiApp::boot(beeper_core::testing::demo_store(name)).0
 }
 
+/// Clicks `target` in `view`, and returns the messages of the click.
+pub(crate) fn clicks<'a, S>(view: impl Into<El<'a>>, target: S) -> Vec<UiMessage>
+where
+    S: iced_test::selector::Selector + Send,
+    S::Output: iced_test::selector::Bounded + Clone + Send + Sync + 'static,
+{
+    let mut sim = iced_test::simulator(view);
+    sim.click(target).unwrap_or_else(|e| panic!("click: {e:?}"));
+    sim.into_messages().collect()
+}
+
 /// The tokio runtime that the tasks of the tests run in, like iced's tasks in the app: zbus runs on it.
 fn task_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
@@ -1016,11 +1027,7 @@ fn remind_submenu_like_desktop() {
     assert!(r.remind_at_ms == at && !r.dismiss_on_incoming_message, "Always keeps the reminder after a reply");
     drop(st);
     let pill = format!("{} {}", reminder_day(at), clock(at, false));
-    let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_conversation());
-        let _ = sim.click(pill.as_str()).expect("the reminder pill");
-        sim.into_messages().collect()
-    };
+    let picked: Vec<UiMessage> = { clicks(app.view_conversation(), pill.as_str()) };
     let opens = matches!(&picked[..], [UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(c)))] if *c == id);
     assert!(opens, "the header pill opens Remind Me");
     let _ = app.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(id.clone()))));
@@ -1514,11 +1521,7 @@ fn show_replies_like_desktop() {
     let two = send("second answer", Some(&root));
     let chat = st.chats[st.resolve_chat_idx(&id).unwrap()].clone();
     drop(st);
-    let msgs = {
-        let mut sim = simulator(app.view_main());
-        let _ = sim.click("1 Reply").expect("the replies button under the first answer");
-        sim.into_messages().collect::<Vec<_>>()
-    };
+    let msgs = { clicks(app.view_main(), "1 Reply") };
     for m in msgs {
         let _ = app.update(m);
     }
@@ -2812,11 +2815,7 @@ fn space_windows_like_desktop() {
         st.set_chat_flag(idx, ChatFlag::Pinned, Some(false));
     }
     let _ = app.update(UiMessage::SelectChat(chats[1].clone()));
-    let msgs: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_account_menu(&acc));
-        let _ = sim.click("Open in New Window").expect("an Open in New Window item");
-        sim.into_messages().collect()
-    };
+    let msgs: Vec<UiMessage> = { clicks(app.view_account_menu(&acc), "Open in New Window") };
     for m in msgs {
         let _ = app.update(m);
     }
@@ -5341,11 +5340,7 @@ fn settings_search_suggests_like_desktop() {
     let mut app = demo_app("search-suggestions");
     let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Appearance)));
     assert!(simulator(app.view_settings()).find("Suggestions").is_err(), "nothing before the search has the focus");
-    let focused: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_settings());
-        let _ = sim.click(iced::widget::Id::new("settings-search")).expect("the search field");
-        sim.into_messages().collect()
-    };
+    let focused: Vec<UiMessage> = { clicks(app.view_settings(), iced::widget::Id::new("settings-search")) };
     assert!(
         focused.iter().any(|m| matches!(m, UiMessage::Settings(settings::Msg::SearchFocus(true)))),
         "the field tells that it took the focus"
@@ -6260,11 +6255,7 @@ fn archive_and_low_priority_toasts_undo_like_desktop() {
         has_flag(&st.chats[st.resolve_chat_idx(id).unwrap()], f)
     };
     let undo = |app: &mut BeeperGuiApp| {
-        let picked: Vec<UiMessage> = {
-            let mut sim = simulator(app.view_main());
-            let _ = sim.click("Undo").expect("the Undo button of the toast");
-            sim.into_messages().collect()
-        };
+        let picked: Vec<UiMessage> = { clicks(app.view_main(), "Undo") };
         for m in picked {
             let _ = app.update(m);
         }
@@ -6474,11 +6465,7 @@ fn sidebar_menus_open_accounts_like_desktop() {
         assert!(app.list.chat_menu.is_none() && app.settings_window.is_some());
     }
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{account}"))));
-    let open: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_account_menu(&account));
-        let _ = sim.click("Account Settings…").expect("an Account Settings item");
-        sim.into_messages().collect()
-    };
+    let open: Vec<UiMessage> = { clicks(app.view_account_menu(&account), "Account Settings…") };
     for m in open {
         let _ = app.update(m);
     }
@@ -6700,22 +6687,14 @@ fn label_settings_like_desktop() {
     let mut app = demo_app("label-settings");
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("label:lbl_work".into()))));
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(SPACE_SHEET.into())));
-    let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_main());
-        let _ = sim.click("Label Settings").expect("Label Settings");
-        sim.into_messages().collect()
-    };
+    let picked: Vec<UiMessage> = { clicks(app.view_main(), "Label Settings") };
     for m in picked {
         let _ = app.update(m);
     }
     assert_eq!(app.label_settings.len(), 1, "the sheet opens Label Settings");
     let w = app.label_settings[0].id;
     let run = |app: &mut BeeperGuiApp, item: &str| {
-        let picked: Vec<UiMessage> = {
-            let mut sim = simulator(app.view_window(w));
-            let _ = sim.click(item).expect(item);
-            sim.into_messages().collect()
-        };
+        let picked: Vec<UiMessage> = { clicks(app.view_window(w), item) };
         for m in picked {
             let _ = app.update(m);
         }
@@ -7057,11 +7036,7 @@ fn label_menu_labels_the_selection_like_desktop() {
     }
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(ids[0].clone())));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::ChatSub(Some(2))));
-    let picks: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_chat_menu(&ids[0], false, 900.0));
-        let _ = sim.click("Work").expect("the Work label");
-        sim.into_messages().collect()
-    };
+    let picks: Vec<UiMessage> = { clicks(app.view_chat_menu(&ids[0], false, 900.0), "Work") };
     assert!(matches!(&picks[..], [UiMessage::Labels(labels::Msg::Toggle(l, c, true))] if l == "lbl_work" && *c == ids));
     for m in picks {
         let _ = app.update(m);
@@ -7404,11 +7379,7 @@ fn blocked_users_like_desktop() {
     let _ = app.update(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::General)));
     assert!(simulator(app.view_settings()).find("Blocked users").is_err(), "the block-users flag is off");
     app.store.write().features.flags["features"]["*"]["block-users"] = true.into();
-    let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_settings());
-        let _ = sim.click("Blocked users").expect("the Blocked users row");
-        sim.into_messages().collect()
-    };
+    let picked: Vec<UiMessage> = { clicks(app.view_settings(), "Blocked users") };
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::OpenList)]));
     let _ = app.update(UiMessage::Blocking(blocking::Msg::OpenList));
     assert!(app.blocked_window.is_some());
@@ -7419,11 +7390,7 @@ fn blocked_users_like_desktop() {
         st.update_chat(i, |c| c.block = BLOCK_USER | USER_BLOCKED);
         (st.chats[i].id.clone(), st.chats[i].title.clone())
     };
-    let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_blocked_users());
-        let _ = sim.click(title.as_str()).expect("the blocked person");
-        sim.into_messages().collect()
-    };
+    let picked: Vec<UiMessage> = { clicks(app.view_blocked_users(), title.as_str()) };
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::OpenUser(c))] if *c == id));
     let _ = app.update(UiMessage::Blocking(blocking::Msg::OpenUser(id.clone())));
     assert!(app.pane.selected_chat_id.as_deref() == Some(id.as_str()) && app.show_right_panel);
@@ -7510,11 +7477,7 @@ fn label_inbox_rules_like_desktop() {
     let _ = app.update(UiMessage::Labels(labels::Msg::OpenSettings("lbl_work".into())));
     let w = app.label_settings[0].id;
     let _ = app.update(UiMessage::Labels(labels::Msg::Pane(w, LabelPane::Menu(true))));
-    let picks: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_window(w));
-        let _ = sim.click("Only DMs").expect("the Only DMs option");
-        sim.into_messages().collect()
-    };
+    let picks: Vec<UiMessage> = { clicks(app.view_window(w), "Only DMs") };
     assert!(
         matches!(&picks[..], [UiMessage::Commands(m)] if matches!(&m[1], UiMessage::Labels(labels::Msg::SetInbox(id, Some("dmOnly"))) if id == "lbl_work"))
     );
@@ -7958,11 +7921,7 @@ fn new_group_like_desktop() {
     };
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     let click = |app: &mut BeeperGuiApp, label: &str| {
-        let msgs: Vec<UiMessage> = {
-            let mut sim = simulator(app.view_main());
-            let _ = sim.click(label).expect("the button");
-            sim.into_messages().collect()
-        };
+        let msgs: Vec<UiMessage> = { clicks(app.view_main(), label) };
         for m in msgs {
             let _ = app.update(m);
         }
@@ -8420,9 +8379,7 @@ fn email_links_and_media_items_match_desktop() {
             false => message::Msg::OpenMenu(mid.clone()),
         };
         let _ = app.update(UiMessage::Message(open));
-        let mut sim = simulator(app.view_main());
-        let _ = sim.click(label).unwrap_or_else(|_| panic!("{label}"));
-        sim.into_messages().collect::<Vec<_>>()
+        clicks(app.view_main(), label)
     };
     let copy = click(&mut app, "Copy a.b@example.com");
     assert!(
@@ -8691,11 +8648,7 @@ fn new_chat_reaches_matrix_users_like_desktop() {
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
     assert_eq!(app.confirm, Some(ASK_ROOM_ENCRYPTION), "Desktop asks about encryption first");
     assert!(found(&app, "Room encryption") && found(&app, "People invited later cannot see earlier messages."));
-    let msgs: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_main());
-        let _ = sim.click("Encrypted").expect("the toggle row");
-        sim.into_messages().collect()
-    };
+    let msgs: Vec<UiMessage> = { clicks(app.view_main(), "Encrypted") };
     let off = msgs.iter().find(|m| matches!(m, UiMessage::NewChat(new_chat::Msg::Encrypted(false))));
     let _ = app.update(off.expect("a click turns encryption off").clone());
     assert!(found(&app, "People invited later can see earlier messages."));
@@ -8833,11 +8786,7 @@ fn message_actions_follow_room_features_like_desktop() {
     let old = MessageRules { edit_max_age: Some(60), react: false, reply: false, ..BEEPER_MESSAGES };
     set(&mut app, old);
     let _ = app.update(UiMessage::SelectChat(id.clone()));
-    let clicked = |app: &BeeperGuiApp, label: &str| -> Vec<UiMessage> {
-        let mut sim = simulator(app.view_message_menu(&mine).0);
-        let _ = sim.click(label).expect(label);
-        sim.into_messages().collect()
-    };
+    let clicked = |app: &BeeperGuiApp, label: &str| -> Vec<UiMessage> { clicks(app.view_message_menu(&mine).0, label) };
     assert!(simulator(app.view_message_menu(&mine).0).find("Reply…").is_err(), "the network has no replies");
     assert!(clicked(&app, "Edit…").is_empty(), "disabled like Desktop");
     assert!(simulator(app.view_message_menu(&mine).0).find("React…").is_err(), "the network has no reactions");
@@ -8955,17 +8904,9 @@ fn message_menu_speed_and_read_like_desktop() {
         m.expect("a voice message").id.clone()
     };
     let _ = app.update(UiMessage::Message(message::Msg::OpenMenu(voice.clone())));
-    let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_message_menu(&voice).0);
-        let _ = sim.click("Playback Speed").expect("Playback Speed");
-        sim.into_messages().collect()
-    };
+    let picked: Vec<UiMessage> = { clicks(app.view_message_menu(&voice).0, "Playback Speed") };
     apply(&mut app, picked);
-    let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_main());
-        let _ = sim.click("1.5x").expect("the rate submenu");
-        sim.into_messages().collect()
-    };
+    let picked: Vec<UiMessage> = { clicks(app.view_main(), "1.5x") };
     apply(&mut app, picked);
     assert!(app.pane.message_menu.is_none(), "a rate closes the menu");
     let _ = app.update(UiMessage::Message(message::Msg::OpenMenu(voice.clone())));
@@ -8981,11 +8922,7 @@ fn message_menu_speed_and_read_like_desktop() {
     };
     let read = |app: &BeeperGuiApp| simulator(app.view_message_menu(&unread).0).find("Mark as Read").is_ok();
     assert!(read(&app));
-    let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_message_menu(&unread).0);
-        let _ = sim.click("Mark as Read").expect("Mark as Read");
-        sim.into_messages().collect()
-    };
+    let picked: Vec<UiMessage> = { clicks(app.view_message_menu(&unread).0, "Mark as Read") };
     apply(&mut app, picked);
     assert!(!read(&app), "the message is read");
     let st = app.store.read();
@@ -9003,11 +8940,7 @@ fn chat_info_header_like_desktop() {
         let i = st.resolve_chat_idx(&id).expect("the group");
         st.update_chat(i, |c| c.edits = edits);
     };
-    let click = |app: &BeeperGuiApp, label: &str| -> Vec<UiMessage> {
-        let mut sim = simulator(app.view_info());
-        let _ = sim.click(label).expect(label);
-        sim.into_messages().collect()
-    };
+    let click = |app: &BeeperGuiApp, label: &str| -> Vec<UiMessage> { clicks(app.view_info(), label) };
     set_edits(&mut app, 0);
     let menu = format!("info:{id}");
     assert!(
@@ -10352,9 +10285,7 @@ fn view_once_media_like_desktop() {
     assert_eq!(crate::chat_list::preview_body(&once).as_deref(), Some("Sent a photo"));
     assert_eq!(crate::chat_list::message_tag(&once), None, "no media badge");
     app.store.write().upsert_message(once);
-    let mut sim = simulator(app.view_main());
-    let _ = sim.click("View photo").expect("the pill of received media");
-    let open: Vec<UiMessage> = sim.into_messages().collect();
+    let open: Vec<UiMessage> = clicks(app.view_main(), "View photo");
     assert!(matches!(&open[..], [UiMessage::ViewOnce(Msg::Open(m))] if m == "vo_1"));
     assert!(app.plays(app.store.read().chat(&chat.id)), "the Play button of the chat list");
     let _ = app.update(open[0].clone());
