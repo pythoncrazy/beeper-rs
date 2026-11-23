@@ -260,7 +260,20 @@ impl Layer {
             &previous.quads,
             &current.quads,
             |(quad, _)| {
-                quad.bounds
+                // A shadow paints outside its quad, so its pixels are part
+                // of the damage too.
+                let shadow = quad.shadow;
+                let painted = if shadow.color.a > 0.0 {
+                    quad.bounds.union(&Rectangle {
+                        x: quad.bounds.x + shadow.offset.x - shadow.blur_radius,
+                        y: quad.bounds.y + shadow.offset.y - shadow.blur_radius,
+                        width: quad.bounds.width + shadow.blur_radius * 2.0,
+                        height: quad.bounds.height + shadow.blur_radius * 2.0,
+                    })
+                } else {
+                    quad.bounds
+                };
+                painted
                     .expand(1.0)
                     .intersection(&current.bounds)
                     .into_iter()
