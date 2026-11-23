@@ -1551,7 +1551,8 @@ impl BeeperGuiApp {
         let on = l.selected == Some(c.id.as_str());
         let (muted, quiet) = (self.list_muted(st, c), self.list_quiet(st, c));
         let unread = c.is_unread();
-        let (bg, fg) = if quiet { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
+        let loud = p.badge.map_or((p.accent, Color::WHITE), |from| (Color::WHITE, from));
+        let (bg, fg) = if quiet { (p.card, p.strong) } else { loud };
         let dot = (!l.counts && unread).then(|| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0)));
         let title_w = tile - if muted { 35.2 } else { 20.0 } - if dot.is_some() { 9.2 } else { 0.0 };
         let title = ell(short_title(c), title_w, 12.0, Weight::Semibold);
@@ -1578,7 +1579,7 @@ impl BeeperGuiApp {
             .height(pin_av);
         let pad = if l.compact { Padding::new(10.0).top(8.0).bottom(6.0) } else { Padding::new(12.0).bottom(10.0) };
         let item = column![face, label].spacing(if l.compact { 4 } else { 8 }).align_x(Center).width(tile).padding(pad);
-        let colors = if muted { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
+        let colors = if muted { (p.card, p.strong) } else { loud };
         let bubble = bubble.map(|t| pin_bubble(&t, c.unread_mentions > 0, colors, tile, pin_av, l.compact));
         let item = stack![item].push(bubble);
         if let Some(d) = g.held.filter(|d| d.id == c.id) {
@@ -1609,7 +1610,10 @@ impl BeeperGuiApp {
     fn view_held_pin<'a>(&self, g: &PinGrid, item: El<'a>, d: &PinDrag, on: bool) -> El<'a> {
         let p = &self.pal;
         let face = container(item).width(g.tile).style(fill_box(if on { p.selected } else { CLEAR }, 8.0));
-        let veil = container(Space::new()).width(Fill).height(Fill).style(fill_box(p.window.scale_alpha(0.6), 8.0));
+        let veil = container(Space::new())
+            .width(Fill)
+            .height(Fill)
+            .style(fill_box(p.backdrop.map_or(p.window, |b| b.middle()).scale_alpha(0.6), 8.0));
         let by = g.ghost.unwrap_or(Vector::ZERO);
         let face = iced::widget::float(stack![face, veil]).translate(move |b, view| {
             let x = (b.x + by.x).clamp(view.x, (view.x + view.width - b.width).max(view.x));
@@ -1707,7 +1711,9 @@ impl BeeperGuiApp {
     /// `face` with the network icon of `brand` at its corner, ringed in the color of the row.
     fn list_badged<'a>(&self, l: &RowLook, face: El<'a>, brand: &str, on: bool) -> El<'a> {
         let p = &self.pal;
-        let ring = if on { crate::style::flat(p.window, p.selected) } else { p.window };
+        // Over a theme color's backdrop the cutout shows the middle of its gradient.
+        let under = p.backdrop.map_or(p.window, |b| b.middle());
+        let ring = if on { crate::style::flat(under, p.selected) } else { under };
         badged(face, brand, l.av, if l.compact { 12.0 } else { 16.0 }, (!l.colorize).then_some(p), ring)
     }
 
@@ -1722,9 +1728,14 @@ impl BeeperGuiApp {
             .and_then(|d| d.text.as_deref())
             .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
         let top = self.view_chat_top(l, c, draft.is_some());
-        let dot_bg = if self.list_quiet(st, c) { Color { a: 0.3, ..p.strong } } else { p.accent };
+        // A dark rich theme's `unreadCount` is white with the text in `--color-from`.
+        let (dot_bg, dot_fg) = match (self.list_quiet(st, c), p.badge) {
+            (true, _) => (Color { a: 0.3, ..p.strong }, Color::WHITE),
+            (false, Some(from)) => (Color::WHITE, from),
+            (false, None) => (p.accent, Color::WHITE),
+        };
         let count = match l.counts {
-            true => unread.then(|| count_badge(c, dot_bg, Color::WHITE, 12.0)),
+            true => unread.then(|| count_badge(c, dot_bg, dot_fg, 12.0)),
             false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent).into()),
         };
         // Desktop's `indicators`: the unread dot, and a red dot while a send of the chat waits for Retry.

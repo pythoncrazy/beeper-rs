@@ -254,8 +254,49 @@ fn bridge(id: &str) -> Option<Vec<(Value, Vec<Value>)>> {
     })
 }
 
+/// The Discord servers of the stub's Discord bridge, as its `GET /_matrix/provision/v1/guilds` sends them: the first
+/// one is bridged, the second is not.
+pub fn stub_guilds() -> Vec<Value> {
+    vec![
+        json!({ "id": "100", "name": "Beeper Community", "avatar_url": "mxc://discord/beeper", "mxid": "!guild100:beeper.local",
+                "auto_bridge_channels": true, "bridging_mode": "everything", "available": true }),
+        json!({ "id": "200", "name": "Rust", "avatar_url": "", "mxid": "", "auto_bridge_channels": false,
+                "bridging_mode": "nothing", "available": true }),
+    ]
+}
+
+/// The Discord bridge's provisioning API v1 of the servers, like mautrix-discord: the list, and a server's connect
+/// (`POST`, with `auto_create_channels`) and disconnect (`DELETE`).
+fn guilds(st: &mut State, method: &str, path: &str, body: &Value) -> (u16, Value) {
+    let guilds = st.guilds.get_or_insert_with(stub_guilds);
+    let Some(id) = path.strip_prefix("/") else {
+        return match method {
+            "GET" => (200, json!({ "guilds": guilds })),
+            _ => err(405, "M_UNRECOGNIZED", "Unsupported method"),
+        };
+    };
+    let Some(g) = guilds.iter_mut().find(|g| g["id"] == id) else {
+        return err(404, "M_NOT_FOUND", "Guild not found");
+    };
+    match method {
+        "POST" => {
+            g["mxid"] = format!("!guild{id}:beeper.local").into();
+            g["auto_bridge_channels"] = body["auto_create_channels"].clone();
+            g["bridging_mode"] = if body["auto_create_channels"] == true { "everything" } else { "partial" }.into();
+            (201, json!({}))
+        }
+        "DELETE" => {
+            (g["mxid"], g["bridging_mode"]) = ("".into(), "nothing".into());
+            (200, json!({}))
+        }
+        _ => err(405, "M_UNRECOGNIZED", "Unsupported method"),
+    }
+}
+
 #[derive(Default)]
 struct State {
+    /// The servers of the Discord bridge, from [`stub_guilds`] on the first request.
+    guilds: Option<Vec<Value>>,
     started: HashSet<String>,
     /// The login processes: the bridge, the flow and the index of the current step.
     processes: HashMap<String, (String, usize, usize)>,
@@ -313,6 +354,9 @@ fn reply(st: &mut State, method: &str, path: &str, body: &Value) -> (u16, Value)
     let Some(rest) = path.strip_prefix("/_matrix/client/unstable/com.beeper.bridge/") else {
         return err(404, "M_UNRECOGNIZED", "Unrecognized request");
     };
+    if let Some(path) = rest.strip_prefix("discordgo/_matrix/provision/v1/guilds") {
+        return guilds(st, method, path, body);
+    }
     let (b, rest) = rest.split_once("/_matrix/provision/v3/").expect("a provisioning request");
     if let Some(login) = rest.strip_prefix("logout/").filter(|_| method == "POST") {
         st.logins.retain(|l| l != &(b.to_string(), login.to_string()));

@@ -24,10 +24,10 @@ use crate::{
     fmt_phone, group, icon_btn, inbox_label, locate, menu_pitch, outline_input, pill_btn, pill_style, plan_pill,
     portal, pref_row, reconnect, record, select, slider_style, status_text, style, svg_size, theme_cards, tinted,
     toggle, toggle_faded, BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE,
-    ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT,
-    ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_DOWN, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO,
-    DEVICE_ICONS, ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE,
-    TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
+    ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_DISCONNECT_SERVER, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS,
+    ASK_REMOVE_ACCOUNT, ASK_REMOVE_PACK, ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_DOWN, CHEVRON_LEFT, CLAUDE_LOGO,
+    COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, ORANGE, QR_CODE,
+    REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
 };
 use beeper_core::config::{now_unix_millis, now_unix_secs, APP_VERSION};
 use beeper_core::matrix::DeviceInfo;
@@ -267,6 +267,8 @@ pub(crate) fn shown(st: &BeeperStore, r: &prefs::Pref) -> bool {
     let control = match r.control {
         prefs::Control::ReactionEmoji { general: true } => st.settings.choice("messageDoubleClick") == "React with...",
         prefs::Control::QuickReactions(_) => st.settings.on("quickReactions"),
+        // Desktop's `canShow: () => stickerPacksEnabled`.
+        prefs::Control::StickerPacks => st.settings.on("stickerPacks"),
         _ if matches!(r.key, "autoTranscribe" | "transcriptionLanguage") => st.settings.on("transcribeWithOpenai"),
         _ => true,
     };
@@ -342,9 +344,10 @@ pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
                 .filter(|(_, r)| {
                     let (label, desc) = r.split_args();
                     let name = r.name.map_or_else(|| trs(r.label, label), |n| tr(n).into());
-                    has(&r
-                        .desc
-                        .map_or_else(|| name.clone(), |d| format!("{name} {}", pref_text(&st.settings, d, desc))))
+                    // Desktop's `searchText`: the name, the description, and the keywords.
+                    let desc = r.desc.map(|d| pref_text(&st.settings, d, desc));
+                    let text = [Some(name), desc, r.about.map(|a| tr(a).to_string())].into_iter().flatten();
+                    has(&text.chain(r.keywords.iter().map(|k| k.to_string())).collect::<Vec<_>>().join(" "))
                 })
                 .map(|(_, r)| SettingsHit::Pref(tab, r))
                 .chain(
@@ -496,7 +499,7 @@ pub(crate) fn donut(parts: &[(storage::Kind, u64)]) -> svg::Handle {
 }
 
 /// The dialogs over the Settings window.
-pub(crate) const SETTINGS_DIALOGS: [u8; 8] = [
+pub(crate) const SETTINGS_DIALOGS: [u8; 10] = [
     ASK_LOGOUT,
     ASK_LOGOUT_DEVICE,
     ASK_CLEAR_STORAGE,
@@ -505,6 +508,8 @@ pub(crate) const SETTINGS_DIALOGS: [u8; 8] = [
     ASK_REVOKE_CONNECTION,
     ASK_REMOTE_ACCESS,
     ASK_REMOVE_ACCOUNT,
+    ASK_DISCONNECT_SERVER,
+    ASK_REMOVE_PACK,
 ];
 
 /// Desktop's "Clear storage older than" choices, where 0 is any age.
@@ -1780,7 +1785,17 @@ impl BeeperGuiApp {
                     container(buttons.spacing(6).align_y(Center)).align_right(160).center_y(20).padding([0, 2]);
                 container(stack![label, buttons]).style(bordered_box(CLEAR, border, 1.0, 4.0))
             });
-            let line = row![ell(tr(name), 226.0, 13.0, Weight::Normal).color(p.text).width(Fill)]
+            // Desktop's `Global` tag (`.tag`) of a global hotkey, with its tooltip.
+            let global = ["Focus App", "Focus App and Command Bar"].contains(&name).then(|| {
+                let tag = container(txt(trx("Global", "hotkey scope tag"), 12.0).color(p.text))
+                    .padding([1, 4])
+                    .style(fill_box(p.strong.scale_alpha(0.1), 4.0));
+                let tip =
+                    trf("Global hotkeys will work when any app is active, as long as %s is running", &[&"Beeper"]);
+                container(self.tip(tag.into(), tip, vec![], tooltip::Position::Top)).padding(Padding::ZERO.left(6.0))
+            });
+            let title = row![ell(tr(name), 226.0, 13.0, Weight::Normal).color(p.text)].push(global).align_y(Center);
+            let line = row![container(title).width(Fill)]
                 .push(recorder)
                 .push(toggle(p, keys != "disabled", Some(UiMessage::Hotkeys(hotkeys::Msg::Toggle(name)))))
                 .spacing(6)
@@ -1800,7 +1815,14 @@ impl BeeperGuiApp {
         });
         let head = row![search, Space::new().width(Fill), revert].align_y(Center).padding(Padding::ZERO.bottom(10.0));
         let line = container(Space::new()).width(Fill).height(1).style(fill_box(edge, 0.0));
-        let card = column![head, line, Space::new().height(6)].extend(groups);
+        // Desktop's `.footer-row`: a rule 1em below the list, then the button 10 px under it at the left.
+        let texts = button(txt(tr("Switch to Texts.app keybindings"), 13.0).line_height(lh(15.0)))
+            .padding([4, 6])
+            .style(pill_style(p))
+            .on_press(UiMessage::Hotkeys(hotkeys::Msg::TextsKeys));
+        let rule = container(Space::new()).width(Fill).height(1).style(fill_box(edge, 0.0));
+        let foot = column![rule, texts].spacing(10).padding(Padding::ZERO.top(13.0).bottom(13.0));
+        let card = column![head, line, Space::new().height(6)].extend(groups).push(foot);
         container(card).width(Fill).padding(14).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0)).into()
     }
 
@@ -1816,7 +1838,8 @@ impl BeeperGuiApp {
             .iter()
             .filter(|h| !modifier_only(h.2) && hotkey_shown(&st, h.0))
             .map(|h| (h.0, h.1, st.settings.hotkey_keys(h.0)));
-        let all = all.chain(prefs::FIXED_HOTKEYS.iter().copied()).map(|(n, g, k)| (n, g, k.to_string()));
+        let fixed = prefs::FIXED_HOTKEYS.iter().map(|h| (h.0, h.1, st.settings.hotkey_keys(h.0)));
+        let all = all.chain(fixed).map(|(n, g, k)| (n, g, k.to_string()));
         let shown = prefs::match_sort(all, query, |h| tr(h.0).into());
         drop(st);
         let row = |(name, _, keys): &(&'static str, &str, String)| -> El<'_> {
@@ -2002,7 +2025,79 @@ impl BeeperGuiApp {
                 .into()
         });
         let settings = group(p, Some(tr("Settings")), rows.collect());
-        [Some(head.into()), disconnected, Some(card.into()), Some(settings), remove].into_iter().flatten().collect()
+        let servers = bridge.and_then(|b| self.servers_view(st, b));
+        [Some(head.into()), disconnected, Some(card.into()), Some(settings), servers, remove]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    /// Desktop's `RemoteSubView` of an account with servers: the "Servers" heading with Refresh List, and each server
+    /// with its Show in Inbox and its connect switch. It shows once the bridge has sent servers.
+    fn servers_view(&self, st: &BeeperStore, b: &BridgeAccountInfo) -> Option<El<'_>> {
+        let servers =
+            st.sub_accounts.get(&b.account_id).filter(|l| !l.is_empty() && accounts::has_servers(st, &b.account_id))?;
+        let p = &self.pal;
+        let id = b.account_id.clone();
+        // Desktop's `remoteHasError` locks the switches.
+        let broken = b.remote_error.is_some();
+        // `RemoteSubView-module__spin`: a turn back every 1.2 s with `cubic-bezier(0.5, 0, 0.5, 1)`.
+        let turn = self.servers_loading.get(&id).map_or(0.0, |at| {
+            let t = at.elapsed().as_secs_f32() / 1.2 % 1.0;
+            -crate::cubic_bezier(t, [0.5, 0.0, 0.5, 1.0]) * std::f32::consts::TAU
+        });
+        let color = p.text;
+        let icon = svg(crate::MAT_SYNC.clone())
+            .width(20)
+            .height(20)
+            .rotation(iced::Rotation::Solid(iced::Radians(turn)))
+            .style(move |_, _| svg::Style { color: Some(color) });
+        let refresh =
+            button(icon).bare(p.text).padding(0).on_press(UiMessage::Accounts(accounts::Msg::FetchServers(id.clone())));
+        // `.subview-prefs h4` beside the refresh button, in `RemoteSubView-module__header`.
+        let head = row![container(txt(tr("Servers"), 13.0).color(p.muted)).padding([0, 13]).width(Fill), refresh]
+            .align_y(Center);
+        let options = [("all", "All Messages"), ("none", "None")];
+        let labels: Vec<String> = options.iter().map(|&(_, l)| inbox_label(l).to_string()).collect();
+        let widest = labels.iter().map(|l| text_width(l, 11.0, Weight::Semibold)).fold(0.0, f32::max);
+        let rows = servers.iter().map(|s| {
+            let (key, now) = beeper_core::matrix::inbox_rule(&st.inbox_rules, &id, &b.bridge_id, Some(&s.id));
+            let at = options.iter().position(|(o, _)| *o == now).expect("all or none");
+            let pick = match broken || !s.connected {
+                // Chromium's `select:disabled` is 70 % opaque.
+                true => {
+                    let fade = |c: Color| c.scale_alpha(0.7);
+                    let label = semi(labels[at].clone(), 11.0).color(fade(p.strong));
+                    let chevron = tinted(&SELECT_ARROW, 10.0, fade(p.strong));
+                    let body = row![container(label).width(Fill), chevron].align_y(Center);
+                    container(body).width(widest + 34.0).padding([4, 8]).style(fill_box(fade(p.chip), 12.0)).into()
+                }
+                false => {
+                    let labels = labels.clone();
+                    select(p, labels.clone(), labels[at].clone(), move |l| {
+                        let i = labels.iter().position(|x| *x == l).expect("a listed option");
+                        UiMessage::Accounts(accounts::Msg::SetInboxVisibility(key.clone(), options[i].0))
+                    })
+                }
+            };
+            let press = (!broken).then(|| UiMessage::Accounts(accounts::Msg::ToggleServer(id.clone(), s.id.clone())));
+            let switch = toggle_faded(p, s.connected, press, if broken { 0.5 } else { 1.0 });
+            let switch: El<'_> = match broken {
+                true => {
+                    let why = trf("You can't change %s while the connection is broken", &[&"server"]);
+                    self.tip(switch, why, Vec::new(), tooltip::Position::Left).into()
+                }
+                false => switch,
+            };
+            // `RemoteSubView-module__toggle`: 10 px from the right edge of the row.
+            row![container(pref_row(p, s.name.clone(), None, None, pick)).width(Fill), switch]
+                .padding(Padding::ZERO.right(10.0))
+                .align_y(Center)
+                .into()
+        });
+        // `RemoteSubView-module__container` is 4 px further from its heading than a `prefs-group`.
+        let card = container(group(p, None, rows.collect())).padding(Padding::ZERO.top(4.0));
+        Some(column![head, card].spacing(6).into())
     }
 
     /// A settings item with the id that search results scroll to, and the flash of a picked result.
@@ -2046,7 +2141,13 @@ impl BeeperGuiApp {
                         None => g,
                     })
                 }
-                prefs::Item::Theme => out.push(group(p, heading.take(), vec![theme_cards(self, s.theme)])),
+                // Desktop's Theme group has the Theme Selector and the Theme Color Selector, which flash on their own.
+                prefs::Item::Theme => {
+                    let cards = self.flashing("Theme Selector", theme_cards(self, s.theme));
+                    let colors = self.flashing("Theme Color Selector", self.theme_colors(s.ui_theme));
+                    out.push(group(p, heading.take(), vec![cards, colors]))
+                }
+                prefs::Item::ThemeColor => continue,
                 prefs::Item::ChatTheme => out.push(group(p, heading.take(), vec![self.chat_theme_picker(st, None)])),
                 prefs::Item::TimeSuggestions => {
                     out.push(group(p, heading.take(), vec![self.view_time_suggestions(st)]))
@@ -2055,7 +2156,7 @@ impl BeeperGuiApp {
                     out.push(group(p, heading.take(), vec![self.zoom_slider(s.zoom_percent, pref_text(s, t, args))]))
                 }
             }
-            if let Some(name) = custom {
+            if let Some(name) = custom.filter(|_| !matches!(item, prefs::Item::Theme)) {
                 let el = out.pop().expect("a custom item is a group");
                 out.push(self.flashing(name, el));
             }
@@ -2221,6 +2322,7 @@ impl BeeperGuiApp {
                     .padding(Padding::new(13.0).top(0.0))
                     .into();
             }
+            prefs::Control::StickerPacks => return self.view_installed_packs(st),
             prefs::Control::Downloads => {
                 let pick = UiMessage::Settings(Msg::PickDownloads);
                 let change = button(med(tr("Change"), 12.0).color(p.text))
@@ -2318,10 +2420,8 @@ impl BeeperGuiApp {
                     .align_y(Center)
                     .wrap()
                     .vertical_spacing(8);
-                let label = match n {
-                    0 => tr("Archive chats").into(),
-                    n => trnx("Archive %d chat", "Archive %d chats", n, "auto-archive catch-up button", &[&n]),
-                };
+                // Desktop's `ArchiveAllPreference` counts the chats, none too.
+                let label = trnx("Archive %d chat", "Archive %d chats", n, "archive all button", &[&n]);
                 let archive = UiMessage::ChatList(chat_list::Msg::ArchiveStale);
                 let archive = self.target(
                     self.settings_window,
@@ -2379,6 +2479,10 @@ pub enum Msg {
     /// Desktop's suggestion of the empty search at this index.
     Suggest(usize),
     SelectTheme(ThemeChoice),
+    /// Desktop's `localPrefsStore.set(UI_THEME, ...)`: a theme color, or none for Desktop's own colors.
+    SelectUiTheme(Option<beeper_core::models::UiTheme>),
+    /// Desktop's 36 s `setTimeout`, which moves the rich gradient.
+    ThemeTick,
     SystemTheme(iced::theme::Mode),
     SetPref(&'static str, u8),
     /// A slider moves; Desktop saves its value on release (`SlideTo` then `SetPref`).
@@ -2411,6 +2515,15 @@ pub enum Msg {
     StorageCleared(Result<(), String>),
     JoinCommunity,
     CommunityJoined(Result<(), String>),
+    /// Desktop's `getInstalledImagePacks` of "Installed sticker packs", and its reply.
+    LoadPacks,
+    Packs(Result<Vec<InstalledPack>, String>),
+    /// "Use in all chats" of a pack, by its ID.
+    PackInAllChats(String, bool),
+    /// The Remove of a bridged pack, its confirmation, and the end of the removal.
+    AskRemovePack(String),
+    RemovePack(String),
+    PackRemoved(String, Result<(), String>),
 }
 
 impl BeeperGuiApp {
@@ -2433,7 +2546,85 @@ impl BeeperGuiApp {
                 if let Some(w) = self.settings_window {
                     self.key_targets.remove(&w);
                 }
-                return Task::batch([top, self.load_devices()]);
+                // Desktop's `StickerPacksPreference` loads the packs when the General settings show it.
+                let packs = match t == SettingsTab::General && self.store.read().settings.on("stickerPacks") {
+                    true => self.update(UiMessage::Settings(Msg::LoadPacks)),
+                    false => Task::none(),
+                };
+                return Task::batch([top, self.load_devices(), packs]);
+            }
+            Msg::LoadPacks => {
+                return Task::perform(beeper_core::matrix::installed_packs(self.store.clone()), |r| {
+                    UiMessage::Settings(Msg::Packs(r))
+                });
+            }
+            Msg::Packs(Err(e)) => eprintln!("StickerPacksPreference: loading packs failed: {e}"),
+            Msg::Packs(Ok(packs)) => {
+                // Desktop keeps the packs that "Use in all chats" turned off, which leave the installed packs of a
+                // personal space, until the settings show again.
+                let kept = self.installed_packs.take().into_iter().flatten();
+                let kept: Vec<InstalledPack> = kept
+                    .filter(|k| {
+                        k.parts.iter().any(|p| self.packs_off.contains(p)) && !packs.iter().any(|n| n.id == k.id)
+                    })
+                    .collect();
+                self.installed_packs = Some(packs.into_iter().chain(kept).collect());
+            }
+            Msg::PackInAllChats(id, on) => {
+                let Some(pack) = self.installed_packs.iter().flatten().find(|p| p.id == id).cloned() else {
+                    return self.settle();
+                };
+                for part in &pack.parts {
+                    match on {
+                        true => _ = self.packs_off.remove(part),
+                        false => _ = self.packs_off.insert(part.clone()),
+                    }
+                }
+                let mut st = self.store.write();
+                let rooms = beeper_core::matrix::with_pack_rooms(st.image_pack_rooms.clone(), &pack.parts, on);
+                st.image_pack_rooms = rooms.clone();
+                let client = st.matrix.clone();
+                drop(st);
+                // Desktop's `imagePackStore.revision` loads the packs again after the account data changes.
+                let reload = self.update(UiMessage::Settings(Msg::LoadPacks));
+                let Some(c) = client else { return reload };
+                let write = Task::perform(
+                    beeper_core::matrix::set_global(c, beeper_core::matrix::IMAGE_PACK_ROOMS, rooms),
+                    |r| {
+                        if let Err(e) = &r {
+                            eprintln!("StickerPacksPreference: saving failed: {e}");
+                        }
+                        UiMessage::Pushed(r)
+                    },
+                );
+                return write.chain(reload);
+            }
+            Msg::AskRemovePack(id) => (self.confirm, self.delete_target) = (Some(ASK_REMOVE_PACK), Some(id)),
+            Msg::RemovePack(id) => {
+                self.confirm = None;
+                let Some(pack) = self.installed_packs.iter().flatten().find(|p| p.id == id).cloned() else {
+                    return self.settle();
+                };
+                self.pack_removing = Some(id.clone());
+                return Task::perform(beeper_core::matrix::remove_pack(self.store.clone(), pack), move |r| {
+                    UiMessage::Settings(Msg::PackRemoved(id.clone(), r))
+                });
+            }
+            Msg::PackRemoved(id, r) => {
+                self.pack_removing = None;
+                match r {
+                    Ok(()) => {
+                        let parts = self.installed_packs.iter().flatten().find(|p| p.id == id).map(|p| p.parts.clone());
+                        let parts = parts.unwrap_or_default();
+                        if let Some(packs) = &mut self.installed_packs {
+                            packs.retain(|p| !p.parts.iter().any(|x| parts.contains(x)));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("StickerPacksPreference: removing pack failed: {e}");
+                        self.show(Toast::new(tr("Couldn't remove this sticker pack. Try again.").into()));
+                    }
+                }
             }
             Msg::DevicesLoaded(r) => (self.devices, self.devices_busy) = (Some(r), false),
             Msg::AskLogoutDevice(id) => (self.confirm, self.delete_target) = (Some(ASK_LOGOUT_DEVICE), Some(id)),
@@ -2472,6 +2663,12 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             Msg::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
+            Msg::SelectUiTheme(theme) => self.patch_settings(|s| s.ui_theme = theme),
+            Msg::ThemeTick => {
+                if let Some(b) = self.pal.backdrop.as_mut().filter(|b| b.rich) {
+                    b.offset = crate::ui_theme::rich_offset(beeper_core::config::now_unix_millis());
+                }
+            }
             Msg::ToggleSetting(flip) => self.patch_settings(flip),
             Msg::SetQuickEmoji(0, e) => {
                 self.patch_settings(|s| s.quick_reaction = e);
@@ -2648,6 +2845,11 @@ impl BeeperGuiApp {
                     self.act(what.into(), UiMessage::Settings(Msg::SetPref(key, was)), None);
                 }
                 self.patch_settings(|s| s.set_pref(key, v));
+                // Desktop shows `StickerPacksPreference` once the sticker packs are on, which loads the packs.
+                let packs = match (key, v) {
+                    ("stickerPacks", 1) => self.update(UiMessage::Settings(Msg::LoadPacks)),
+                    _ => Task::none(),
+                };
                 self.relaunch_toast = match key {
                     "spellcheck" | "quitOnClose" | "hwAcceleration" | "hiddenEvents" => Some("Preference changed"),
                     "appLanguage" => Some("App language will change after relaunch"),
@@ -2656,11 +2858,60 @@ impl BeeperGuiApp {
                 let mut st = self.store.write();
                 let client = st.matrix.clone();
                 if let Some(((kind, content), c)) = beeper_core::matrix::pref_write(&mut st, key).zip(client) {
-                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
+                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed)
+                        .chain(packs);
                 }
+                return packs;
             }
         }
         self.settle()
+    }
+
+    /// Desktop's `StickerPacksPreference`: a row for each installed pack with its icon, its name and attribution,
+    /// "Use in all chats", and the Remove of a pack that a bridge imported. Nothing shows until the packs load.
+    fn view_installed_packs(&self, st: &BeeperStore) -> El<'_> {
+        let p = &self.pal;
+        let Some(packs) = &self.installed_packs else { return column![].into() };
+        if packs.is_empty() {
+            let empty = txt(tr("Sticker packs you add from a chat show up here."), 13.0).color(p.sub);
+            return container(empty).padding(13).width(Fill).into();
+        }
+        let rows = packs.iter().map(|pack| {
+            let name = match pack.name.as_str() {
+                "" => tr("Sticker pack").to_string(),
+                n => n.to_string(),
+            };
+            // `StickerPacksPreference-module__icon`: Desktop's `StickerImage` in 32 px.
+            let frames = pack.icon.as_ref().and_then(|(url, _)| self.media_at(url));
+            let icon: El<'_> = match frames {
+                Some(Ok(frames)) => crate::anim::gif(frames, self.animate.get(), self.started, |f| {
+                    iced::widget::image(f).width(32).height(32).content_fit(iced::ContentFit::Contain)
+                }),
+                _ => Space::new().width(32).height(32).into(),
+            };
+            let text = column![txt(name.clone(), 13.0).color(p.text).wrapping(iced::widget::text::Wrapping::None)]
+                .push(pack.attribution.as_ref().map(|a| txt(a.clone(), 11.0).color(p.weak)))
+                .width(Fill)
+                .clip(true);
+            let lead = row![container(icon).width(32).height(32), text].spacing(12).align_y(Center).width(Fill);
+            let rooms = &st.image_pack_rooms;
+            let on = pack.parts.iter().all(|(r, k)| beeper_core::matrix::pack_in_all_chats(rooms, r, k));
+            let flip = UiMessage::Settings(Msg::PackInAllChats(pack.id.clone(), !on));
+            let toggle = row![txt(tr("Use in all chats"), 13.0).color(p.weak), toggle(p, on, Some(flip))]
+                .spacing(8)
+                .align_y(Center);
+            let remove = pack.bridged.then(|| {
+                let busy = self.pack_removing.as_ref() == Some(&pack.id);
+                let press = (!busy).then(|| UiMessage::Settings(Msg::AskRemovePack(pack.id.clone())));
+                button(med(tr("Remove"), 12.0).color(if busy { p.sub } else { p.text }))
+                    .padding([4, 10])
+                    .style(pill_style(p))
+                    .on_press_maybe(press)
+            });
+            let actions = row![toggle].push(remove).spacing(16).align_y(Center);
+            row![lead, actions].spacing(6).align_y(Center).padding(13).into()
+        });
+        Column::with_children(rows).into()
     }
 }
 
@@ -2672,6 +2923,54 @@ mod tests {
 
     fn shows(app: &BeeperGuiApp, text: &str) -> bool {
         simulator(app.view_settings()).find(text).is_ok()
+    }
+
+    /// Desktop's "Installed sticker packs" under "Use sticker packs": nothing until the packs load, the empty text,
+    /// each pack with "Use in all chats" and the Remove of a bridged pack, which asks first. A pack that "Use in all
+    /// chats" turned off stays until the settings show again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn installed_sticker_packs_like_desktop() {
+        use beeper_core::models::InstalledPack;
+        let mut app = crate::fuzz::demo_app("settings-sticker-packs");
+        let _ = app.update(UiMessage::Settings(Msg::Open(SettingsTab::General)));
+        assert!(app.installed_packs.is_none(), "the packs load only with sticker packs on");
+        assert!(!shows(&app, "Sticker packs you add from a chat show up here."));
+        let load = app.update(UiMessage::Settings(Msg::SetPref("stickerPacks", 1)));
+        for m in crate::fuzz::task_messages(load).await {
+            let _ = app.update(m);
+        }
+        assert_eq!(app.installed_packs, Some(Vec::new()), "the demo has no packs");
+        assert!(shows(&app, "Sticker packs you add from a chat show up here."));
+        let pack = |id: &str, name: &str, bridged: bool| InstalledPack {
+            id: format!("m.room.image_pack|!r:x|{id}"),
+            name: name.into(),
+            bridged,
+            parts: vec![("!r:x".into(), id.into())],
+            events: vec![("!r:x".into(), "m.room.image_pack".into(), id.into())],
+            attribution: bridged.then(|| "Telegram sticker pack".into()),
+            ..Default::default()
+        };
+        let packs = vec![pack("cats", "Cats", true), pack("owls", "", false)];
+        let _ = app.update(UiMessage::Settings(Msg::Packs(Ok(packs.clone()))));
+        for text in ["Cats", "Telegram sticker pack", "Sticker pack", "Use in all chats", "Remove"] {
+            assert!(shows(&app, text), "{text}");
+        }
+        let _ = app.update(UiMessage::Settings(Msg::PackInAllChats(packs[1].id.clone(), true)));
+        let rooms = app.store.read().image_pack_rooms.clone();
+        assert_eq!(rooms, json!({ "rooms": { "!r:x": { "owls": {} } } }));
+        let _ = app.update(UiMessage::Settings(Msg::PackInAllChats(packs[1].id.clone(), false)));
+        assert_eq!(app.store.read().image_pack_rooms, json!({ "rooms": {} }));
+        let _ = app.update(UiMessage::Settings(Msg::Packs(Ok(vec![packs[0].clone()]))));
+        assert_eq!(app.installed_packs.as_ref().map(Vec::len), Some(2), "the pack turned off stays");
+        let _ = app.update(UiMessage::Settings(Msg::AskRemovePack(packs[0].id.clone())));
+        assert!(shows(&app, "Remove Cats?") && shows(&app, "This removes the pack from your account on every device."));
+        let _ = app.update(UiMessage::Settings(Msg::PackRemoved(packs[0].id.clone(), Err("offline".into()))));
+        assert_eq!(app.status_banner, "Couldn't remove this sticker pack. Try again.");
+        let _ = app.update(UiMessage::Settings(Msg::PackRemoved(packs[0].id.clone(), Ok(()))));
+        assert!(!shows(&app, "Cats"), "the removed pack leaves the list");
+        let st = app.store.read();
+        let mut list = simulator(app.view_installed_packs(&st));
+        assert!(list.find("Sticker pack").is_ok() && list.find("Remove").is_err(), "no Remove without a bridge");
     }
 
     /// A demo account adds no account: a network that it has no account on, picked in the search of the settings or

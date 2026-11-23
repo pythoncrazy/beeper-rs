@@ -230,15 +230,12 @@ fn paint<'a>(handle: &svg::Handle, w: f32, h: f32, color: Color) -> El<'a> {
 }
 
 /// Desktop's `PlusPill` in its `bold` variant: "+ Plus" on the brand gradient.
-fn bold_pill<'a>() -> El<'a> {
+fn bold_pill<'a>(p: &Palette) -> El<'a> {
+    let fill = crate::login::brand_gradient(p);
     let label = row![semi("+", 12.0).line_height(1.0).color(Color::WHITE), semi("Plus", 10.0).color(Color::WHITE)];
     container(label.spacing(2).align_y(Center))
         .padding([4, 6])
-        .style(|_| container::Style {
-            background: Some(crate::login::brand_gradient()),
-            border: border::rounded(25),
-            ..Default::default()
-        })
+        .style(move |_| container::Style { background: Some(fill), border: border::rounded(25), ..Default::default() })
         .into()
 }
 
@@ -406,7 +403,7 @@ impl BeeperGuiApp {
         let close = button(container(ic(icon::CLOSE, 16.0).color(p.muted)).center(34))
             .bare(p.muted)
             .on_press(UiMessage::MergeSuggest(Msg::DismissPromo));
-        let top = row![bold_pill(), Space::new().width(Fill), close].align_y(Center).padding(pad(8.0, 8.0, 0.0, 16.0));
+        let top = row![bold_pill(p), Space::new().width(Fill), close].align_y(Center).padding(pad(8.0, 8.0, 0.0, 16.0));
         let headline = match s.title.is_empty() {
             true => tr("View all your chats with this person as one conversation").to_string(),
             false => trf("View all your chats with %s as one conversation", &[&s.title]),
@@ -434,7 +431,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         // The pill reaches 5 px over and under the 14 px line of the title.
         let head = row![txt(tr("Merged Chats"), 11.0).line_height(lh(14.0)).color(p.strong), Space::new().width(Fill)]
-            .push(bold_pill())
+            .push(bold_pill(p))
             .align_y(Center)
             .padding(pad(9.0, 8.0, 5.0, 8.0));
         let body = column![

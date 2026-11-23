@@ -21,6 +21,8 @@ const PER_LINE: usize = 9;
 const CELL: f32 = 36.0;
 const HEAD: f32 = 30.0;
 const GRID_H: f32 = 278.0;
+/// More than the headers and lines that the grid's view and a line above and below it can show.
+const SLOTS: usize = 16;
 pub(crate) const EMOJI_FAMILY: &str = "Twemoji Mozilla";
 pub(crate) const EMOJI_FONT: iced::Font = iced::Font::with_name(EMOJI_FAMILY);
 const SEARCH_INPUT: &str = "emoji-search";
@@ -690,37 +692,34 @@ impl BeeperGuiApp {
         let search = container(stack![input, loupe].push(clear).height(37))
             .padding(Padding::new(0.0).left(12.0).right(12.0).top(10.0));
         let search = stack![search, fade(true, edge)];
-        let (mut items, mut y, mut skipped): (Vec<El<'static>>, f32, f32) = (Vec::new(), 0.0, 0.0);
+        // Only the lines in and next to the view are built, each at its place in the grid in the slot of its index
+        // modulo `SLOTS`: a scroll keeps the widgets, and so the laid out glyphs, of the lines that stay in view.
+        let mut slots: Vec<Option<El<'static>>> = (0..SLOTS).map(|_| None).collect();
+        let (mut y, mut n) = (0.0, 0);
         let header = |title: &'static str| {
             container(med(title, 15.0).color(fg)).padding(6).width(Fill).height(HEAD).style(move |_| container::Style {
                 background: Some(c.bg.scale_alpha(0.9).into()),
                 ..Default::default()
             })
         };
-        let mut push = |el: El<'static>, h: f32| {
+        let mut push = |el: &mut dyn FnMut() -> El<'static>, h: f32| {
             if y + h > pk.scroll - CELL && y < pk.scroll + GRID_H + CELL {
-                if skipped > 0.0 {
-                    items.push(Space::new().height(skipped).into());
-                    skipped = 0.0;
-                }
-                items.push(el);
-            } else {
-                skipped += h;
+                slots[n % SLOTS] = Some(container(el()).padding(Padding::ZERO.top(y)).into());
             }
-            y += h;
+            (y, n) = (y + h, n + 1);
         };
         let mut r = 0;
         for (title, list) in &sections {
-            push(header(title).into(), HEAD);
+            push(&mut || header(title).into(), HEAD);
             for line in list.chunks(PER_LINE) {
                 let cell = |(k, &i)| self.emoji_cell(i, &custom, tone, edge, pk.pos == Some((r, k)));
-                push(row(line.iter().enumerate().map(cell)).height(CELL).into(), CELL);
+                push(&mut || row(line.iter().enumerate().map(cell)).height(CELL).into(), CELL);
                 r += 1;
             }
         }
         let last = sections.last().map_or(0.0, |(_, v)| section_height(v.len()));
-        items.push(Space::new().height(skipped + (GRID_H + 1.0 - last).max(0.0)).into());
-        let col = column(items);
+        let height = y + (GRID_H + 1.0 - last).max(0.0);
+        let col = stack(slots.into_iter().map(|s| s.unwrap_or_else(|| Space::new().into()))).width(Fill).height(height);
         let grid = scrollable(container(col).padding(Padding::ZERO.left(12.0)).width(12.0 + CELL * PER_LINE as f32))
             .id(GRID)
             .on_scroll(|v| UiMessage::Emoji(EmojiMsg::Scrolled(v.absolute_offset().y)))

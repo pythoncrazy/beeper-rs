@@ -22,6 +22,9 @@ pub enum Control {
     /// Desktop's `QuickReactionsSettings` under "Show quick reactions": the frequent emoji, or the
     /// [`crate::models::BeeperSettings::quick_reactions`] that the toggle picks.
     QuickReactions(&'static Pref),
+    /// Desktop's `StickerPacksPreference` under "Use sticker packs": the installed sticker packs, each with "Use in all
+    /// chats" and the Remove of a bridged pack.
+    StickerPacks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +50,10 @@ pub struct Pref {
     pub requires: Option<&'static str>,
     /// Desktop's `displayName` in search when it is not the label, like "Notification Sound" for "Sound".
     pub name: Option<&'static str>,
+    /// Desktop's `description` of a row without a `footer`, which only the settings search reads.
+    pub about: Option<&'static str>,
+    /// Desktop's `searchKeywords`.
+    pub keywords: &'static [&'static str],
     pub control: Control,
 }
 
@@ -57,6 +64,8 @@ pub enum Item {
     Heading(&'static str),
     Group(&'static [Pref]),
     Theme,
+    /// Desktop's Theme Color Selector (`vFt`), in the group of [`Item::Theme`].
+    ThemeColor,
     /// Desktop's `ChatAppearancePicker` of the default chat theme.
     ChatTheme,
     /// Desktop's zoom slider, with a text below it.
@@ -118,6 +127,15 @@ impl Pref {
     const fn named(self, name: &'static str) -> Self {
         Pref { name: Some(name), ..self }
     }
+
+    /// A description that the settings search finds, but that the row does not show.
+    const fn about(self, about: &'static str) -> Self {
+        Pref { about: Some(about), ..self }
+    }
+
+    const fn keywords(self, keywords: &'static [&'static str]) -> Self {
+        Pref { keywords, ..self }
+    }
 }
 
 const fn t(key: &'static str, label: &'static str, on: bool) -> Pref {
@@ -126,7 +144,19 @@ const fn t(key: &'static str, label: &'static str, on: bool) -> Pref {
 
 /// A row with its own control and no value.
 const fn custom(key: &'static str, label: &'static str, control: Control) -> Pref {
-    Pref { key, label, desc: None, args: &[], badge: None, feature: None, requires: None, name: None, control }
+    Pref {
+        key,
+        label,
+        desc: None,
+        args: &[],
+        badge: None,
+        feature: None,
+        requires: None,
+        name: None,
+        about: None,
+        keywords: &[],
+        control,
+    }
 }
 
 const fn s(key: &'static str, label: &'static str, options: &'static [&'static str], default: u8) -> Pref {
@@ -192,7 +222,7 @@ pub const GENERAL: &[Item] = &[
         t("typingIndicators", "Show recipients I'm typing", true).plus("stealth-mode"),
         custom("blockedUsers", "Blocked users", Control::BlockedUsers).gated("block-users"),
     ]),
-    Item::Group(&[s("appLanguage", "App language", LANGUAGES, 0)]),
+    Item::Group(&[s("appLanguage", "App language", LANGUAGES, 0).keywords(&["locale", "localization", "translation"])]),
     Item::Group(&[
         s("remindLaterDefault", "Default for remind later", &["If no reply", "Always"], 0).plus("remind-later"),
         t("archiveOnReminder", "Archive after setting reminder on chat", false).plus("remind-later"),
@@ -228,9 +258,12 @@ pub const GENERAL: &[Item] = &[
         s("upArrow", "Press ↑ in the composer to:", &["Move focus to the message list", "Edit your last message"], 0),
     ]),
     Item::Heading("Sticker packs"),
-    Item::Group(&[t("stickerPacks", "Use sticker packs", false)
-        .badge(Badge::Labs)
-        .desc("Send stickers from your Telegram, Signal and WhatsApp packs, and from Matrix sticker packs.")]),
+    Item::Group(&[
+        t("stickerPacks", "Use sticker packs", false)
+            .badge(Badge::Labs)
+            .desc("Send stickers from your Telegram, Signal and WhatsApp packs, and from Matrix sticker packs."),
+        custom("installedStickerPacks", "Installed sticker packs", Control::StickerPacks),
+    ]),
     Item::Heading("Time Suggestions"),
     Item::TimeSuggestions,
     Item::Group(&[
@@ -281,14 +314,15 @@ pub const APPEARANCE: &[Item] = &[
     Item::Heading("Conversation View"),
     Item::Group(&[
         t("showTimestamps", "Show message timestamps", true),
-        t("hideDeleted", "Hide deleted messages", false),
+        t("hideDeleted", "Hide deleted messages", false)
+            .about("Hide deleted messages from conversations instead of showing a placeholder"),
         t("enableNudges", "Enable nudges", true)
-            .desc("Shake the conversation when someone sends you a nudge")
+            .about("Shake the conversation when someone sends you a nudge")
             .gated("nudge"),
         t("messageAnimations", "Enable message animations", true),
         t("autoplayGifs", "Autoplay GIFs", true),
         t("animateAvatars", "Animate avatars and emoji", true),
-        t("balanceText", "Balance message text", false),
+        t("balanceText", "Balance message text", false).about("Adjust line breaks to create more even message bubbles"),
         t("loadEmbeds", "Load external embeds automatically", true),
         t("incognitoIndicator", "Show incognito mode indicator", true).plus("stealth-mode").requires("incognito"),
         t("quickReactions", "Show quick reactions", true),
@@ -296,9 +330,10 @@ pub const APPEARANCE: &[Item] = &[
         custom("quickReactionEmoji", "Quick reaction emoji", Control::ReactionEmoji { general: false })
             .desc("Used for quick react keyboard shortcut (%s)")
             .args(&["Message: Quick React"]),
-        t("reactionsOnSelect", "Show reactions when a message is selected", false),
+        t("reactionsOnSelect", "Show reactions when a message is selected", false)
+            .about("Display who reacted to a message when you select it"),
         t("feedbackWidget", "Show feedback widget", true),
-        t("membershipEvents", "Show membership events", true),
+        t("membershipEvents", "Show membership events", true).about("Show when people join or leave a conversation"),
     ]),
     Item::Heading("Composer"),
     Item::Group(&[
@@ -316,6 +351,7 @@ pub const APPEARANCE: &[Item] = &[
     ]),
     Item::Heading("Theme"),
     Item::Theme,
+    Item::ThemeColor,
     Item::Heading("Chat Appearance"),
     Item::ChatTheme,
     Item::Heading("Zoom"),
@@ -367,12 +403,14 @@ pub const AI: &[Item] = &[
     Item::Group(&[
         t("transcribeWithOpenai", "Use OpenAI's Whisper model for Talk to Type and transcribing voice notes", false)
             .plus("talk-to-type")
-            .desc("Privacy: this will send audio clips to OpenAI via our servers."),
+            .desc("Privacy: this will send audio clips to OpenAI via our servers.")
+            .keywords(&["speech to text", "voice to text"]),
         // Desktop shows these two rows only when `transcribeWithOpenai` is on.
         t("autoTranscribe", "Automatically transcribe voice notes when they are received", false).plus("talk-to-type"),
         s("transcriptionLanguage", "Default language", &TRANSCRIPTION_NAMES, 0)
             .plus("voice-transcription")
-            .desc("Improves accuracy."),
+            .desc("Improves accuracy.")
+            .keywords(&["spoken language", "voice note language", "transcription language"]),
     ]),
     Item::Heading("AI Mentions"),
     Item::Group(&[t("mentionLlms", "Mention an AI to get answers and help in chat", false)
@@ -470,6 +508,7 @@ impl Item {
     pub fn custom(&self) -> Option<(&'static str, &'static [&'static str])> {
         match self {
             Item::Theme => Some(("Theme Selector", &["light mode", "dark mode", "system mode"])),
+            Item::ThemeColor => Some(("Theme Color Selector", &[])),
             Item::ChatTheme => Some(("Default chat theme", &["wallpaper", "background", "bubble color", "chat theme"])),
             Item::Zoom(..) => Some(("Zoom Controls", &[])),
             Item::TimeSuggestions => Some(("Time suggestions", &[])),
@@ -530,6 +569,8 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Select Previous Chat", "Chats", "ctrl+[, ctrl+alt+up"),
     ("Switch First 9 Chats Modifier", "Chats", "ctrl"),
     ("Toggle Chat Info", "Chats", "ctrl+shift+i"),
+    ("Focus App", "App", "disabled"),
+    ("Focus App and Command Bar", "App", "disabled"),
     ("Command Bar", "App", "ctrl+j"),
     ("Cycle Filters", "App", "alt+tab"),
     ("Filter: All", "App", "disabled"),
@@ -576,9 +617,26 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Send Message", "Composer", "enter"),
 ];
 
+/// The default keys of a hotkey of either list. A fixed hotkey cannot be reassigned, but Desktop's Texts.app
+/// keybindings turn Italicize Text Selection off.
 pub fn hotkey_default(name: &str) -> &'static str {
-    HOTKEYS.iter().find(|h| h.0 == name).unwrap_or_else(|| panic!("unknown hotkey {name}")).2
+    HOTKEYS.iter().chain(FIXED_HOTKEYS).find(|h| h.0 == name).unwrap_or_else(|| panic!("unknown hotkey {name}")).2
 }
+
+/// Desktop's "Switch to Texts.app keybindings" (`o` of `HotkeysPrefsSubView`): the keys that it gives each hotkey.
+pub const TEXTS_KEYBINDINGS: &[(&str, &str)] = &[
+    ("Message: Edit", "ctrl+i"),
+    ("Italicize Text Selection", "disabled"),
+    ("Select Previous Chat", "ctrl+[, ctrl+shift+tab"),
+    ("Select Next Chat", "ctrl+], ctrl+tab"),
+    ("Chat: Toggle Mark As Read", "ctrl+u"),
+    ("Chat: Toggle Archive", "ctrl+e, ctrl+shift+e"),
+    ("Switch First 9 Chats Modifier", "ctrl+alt"),
+    ("Switch First 9 Spaces Modifier", "ctrl"),
+    ("History: Previous Chat", "ctrl+alt+left"),
+    ("History: Next Chat", "ctrl+alt+right"),
+    ("Chat: Archive All Read", "disabled"),
+];
 
 /// The hotkeys that Desktop's Keyboard Shortcuts list shows, but that you cannot reassign.
 pub const FIXED_HOTKEYS: &[(&str, &str, &str)] = &[

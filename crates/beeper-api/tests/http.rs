@@ -1596,3 +1596,51 @@ async fn tool_inputs_are_checked_like_desktop() {
     let removed = call(port, &token, "DELETE", &format!("{chat}/messages/msg_1001/reactions?reactionKey="), "").await;
     assert_eq!(removed, (400, json!({ "message": "reactionKey is required", "code": "INVALID_INPUT" })));
 }
+
+/// The demo reaches no server: with the homeserver, the Beeper API and the session at a listener that counts its
+/// connections, a contact search, a new direct chat, a new group and the bridge routes make no connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_demo_makes_no_requests() {
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let counter = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", counter.local_addr().unwrap());
+    let connections = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen = connections.clone();
+    tokio::spawn(async move {
+        while counter.accept().await.is_ok() {
+            seen.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let cfg = CentralConfig { port, api_url: url.clone(), homeserver: url.clone(), ..demo_config("http-no-requests") };
+    let store = StoreLock::shared(BeeperStore::from_config(cfg));
+    store.write().beeper_state.homeserver = url.clone();
+    let token = store.read().beeper_state.access_token.clone();
+    tokio::spawn(serve_http(listener, store.clone()));
+    let call = |method: &str, path: &str, body: Value| {
+        let body = if body.is_null() { String::new() } else { body.to_string() };
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        async move {
+            let out = text(port, &request).await;
+            let (head, body) = out.split_once("\r\n\r\n").unwrap();
+            (head[9..12].parse::<u16>().unwrap(), serde_json::from_str::<Value>(body).unwrap_or_default())
+        }
+    };
+    for q in ["%2B15550100", "sam", "sam%40example.com"] {
+        assert_eq!(call("GET", &format!("/v1/accounts/acc_telegram/contacts?query={q}"), Value::Null).await.0, 200);
+    }
+    let start = json!({ "accountID": "acc_telegram", "user": { "phoneNumber": "+15550100" } });
+    let (status, chat) = call("POST", "/v1/chats/start", start).await;
+    assert_eq!((status, chat["status"].clone()), (200, json!("created")), "{chat}");
+    let group = json!({ "accountID": "acc_telegram", "participantIDs": ["a", "b"], "type": "group", "title": "G" });
+    assert_eq!(call("POST", "/v1/chats", group).await.0, 200);
+    for (method, path) in [("GET", "/v1/bridges/telegram/capabilities"), ("GET", "/v1/bridges/telegram/login-flows")] {
+        assert_eq!(call(method, path, Value::Null).await.0, 409, "{path}");
+    }
+    assert_eq!(connections.load(Ordering::SeqCst), 0, "the demo connected to {url}");
+}

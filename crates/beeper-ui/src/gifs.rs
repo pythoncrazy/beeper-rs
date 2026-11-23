@@ -37,7 +37,7 @@ impl BeeperGuiApp {
             }
             Msg::Search(q) if q == self.gif_query => {
                 let reset = operation::scroll_to("gif-carousel", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
-                return Task::batch([reset, gif_page(q, String::new())]);
+                return Task::batch([reset, self.gif_page(q, String::new())]);
             }
             Msg::Search(_) => {}
             Msg::Loaded(q, ..) if q != self.gif_query => {}
@@ -70,7 +70,7 @@ impl BeeperGuiApp {
                 self.gif_view = (x, width);
                 if x >= content - width - 100.0 && !self.gif_next.is_empty() && !self.gif_loading {
                     self.gif_loading = true;
-                    return gif_page(self.gif_query.clone(), self.gif_next.clone());
+                    return self.gif_page(self.gif_query.clone(), self.gif_next.clone());
                 }
             }
             Msg::PickGif(g) => {
@@ -117,15 +117,19 @@ pub(crate) fn gif_width(g: &KlipyGif) -> f32 {
     (215.0 * w as f32 / h.max(1) as f32).round().max(48.0)
 }
 
-/// Loads the page of GIFs at `pos` for the query `q`.
-pub(crate) fn gif_page(q: String, pos: String) -> Task<UiMessage> {
-    let more = !pos.is_empty();
-    Task::perform(beeper_core::cloud::klipy_gifs(q.clone(), pos), move |r| {
-        UiMessage::Gifs(gifs::Msg::Loaded(q.clone(), more, r))
-    })
-}
-
 impl BeeperGuiApp {
+    /// Loads the page of GIFs at `pos` for the query `q`. The demo asks no KLIPY, and fails like Desktop offline.
+    fn gif_page(&self, q: String, pos: String) -> Task<UiMessage> {
+        let more = !pos.is_empty();
+        if self.cloud.offline {
+            let failed = Err(beeper_core::cloud::FAILED_TO_FETCH.to_string());
+            return Task::done(UiMessage::Gifs(gifs::Msg::Loaded(q, more, failed)));
+        }
+        Task::perform(beeper_core::cloud::klipy_gifs(self.cloud.klipy_api.clone(), q.clone(), pos), move |r| {
+            UiMessage::Gifs(gifs::Msg::Loaded(q.clone(), more, r))
+        })
+    }
+
     /// Desktop's `GifPicker` keys: Down selects the first GIF, Left and Right move the selection, Up goes back to the
     /// search, Enter sends the selected GIF, and Escape closes the picker and focuses the composer.
     pub(crate) fn gif_key(&mut self, key: &Key) -> Option<Task<UiMessage>> {
