@@ -305,9 +305,95 @@ impl Pipeline {
 #[derive(Default)]
 pub struct State {
     renderers: Vec<cryoglyph::TextRenderer>,
+    /// What each renderer prepared last.
+    prepared: Vec<Option<Prepared>>,
     prepare_layer: usize,
     cache: BufferCache,
     storage: Storage,
+}
+
+/// The text of a group as one of the `renderers` prepared it. A renderer whose group draws the same text in the same
+/// place the next frame draws it again without preparing it, which is to lay out and look up every glyph and upload
+/// them all, as nearly every frame of a pointer that moves or of a blinking cursor does.
+struct Prepared {
+    text: Vec<Text>,
+    bounds: Rectangle,
+    transformation: Transformation,
+    resolution: cryoglyph::Resolution,
+}
+
+impl Prepared {
+    fn draws(
+        &self,
+        text: &[Text],
+        bounds: Rectangle,
+        transformation: Transformation,
+        resolution: cryoglyph::Resolution,
+    ) -> bool {
+        self.bounds == bounds
+            && self.transformation == transformation
+            && self.resolution == resolution
+            && self.text.len() == text.len()
+            && self.text.iter().zip(text).all(|(a, b)| same(a, b))
+    }
+}
+
+/// Whether two texts draw the same glyphs at the same places. A paragraph or an editor is the same one when both
+/// references reach the same buffer: they change only into a new allocation while a weak reference to the old one is
+/// alive, and the `Prepared` text keeps it alive, so its address is not reused. Raw buffers never compare.
+fn same(a: &Text, b: &Text) -> bool {
+    match (a, b) {
+        (
+            Text::Paragraph {
+                paragraph: p1,
+                position: x1,
+                color: c1,
+                clip_bounds: k1,
+                transformation: t1,
+            },
+            Text::Paragraph {
+                paragraph: p2,
+                position: x2,
+                color: c2,
+                clip_bounds: k2,
+                transformation: t2,
+            },
+        ) => {
+            (x1, c1, k1, t1) == (x2, c2, k2, t2)
+                && match (p1.upgrade(), p2.upgrade()) {
+                    (Some(p1), Some(p2)) => {
+                        std::ptr::eq(p1.buffer(), p2.buffer())
+                    }
+                    _ => false,
+                }
+        }
+        (
+            Text::Editor {
+                editor: e1,
+                position: x1,
+                color: c1,
+                clip_bounds: k1,
+                transformation: t1,
+            },
+            Text::Editor {
+                editor: e2,
+                position: x2,
+                color: c2,
+                clip_bounds: k2,
+                transformation: t2,
+            },
+        ) => {
+            (x1, c1, k1, t1) == (x2, c2, k2, t2)
+                && match (e1.upgrade(), e2.upgrade()) {
+                    (Some(e1), Some(e2)) => {
+                        std::ptr::eq(e1.buffer(), e2.buffer())
+                    }
+                    _ => false,
+                }
+        }
+        (Text::Cached { .. }, Text::Cached { .. }) => a == b,
+        _ => false,
+    }
 }
 
 impl State {
@@ -341,9 +427,23 @@ impl State {
                             wgpu::MultisampleState::default(),
                             None,
                         ));
+                        self.prepared.push(None);
                     }
 
                     let renderer = &mut self.renderers[self.prepare_layer];
+                    let prepared = &mut self.prepared[self.prepare_layer];
+                    let bounds = layer_bounds * layer_transformation;
+                    let transformation = layer_transformation * *transformation;
+                    let resolution = viewport.0.resolution();
+
+                    if prepared.as_ref().is_some_and(|p| {
+                        p.draws(text, bounds, transformation, resolution)
+                    }) && renderer.reuse(&mut atlas)
+                    {
+                        self.prepare_layer += 1;
+                        continue;
+                    }
+
                     let result = prepare(
                         device,
                         queue,
@@ -353,15 +453,22 @@ impl State {
                         &mut atlas,
                         &mut self.cache,
                         text,
-                        layer_bounds * layer_transformation,
-                        layer_transformation * *transformation,
+                        bounds,
+                        transformation,
                     );
 
                     match result {
                         Ok(()) => {
+                            *prepared = Some(Prepared {
+                                text: text.clone(),
+                                bounds,
+                                transformation,
+                                resolution,
+                            });
                             self.prepare_layer += 1;
                         }
                         Err(cryoglyph::PrepareError::AtlasFull) => {
+                            *prepared = None;
                             // If the atlas cannot grow, then all bets are off.
                             // Instead of panicking, we will just pray that the result
                             // will be somewhat readable...
@@ -435,6 +542,11 @@ impl State {
     pub fn trim(&mut self) {
         self.cache.trim();
         self.storage.trim();
+
+        // The renderers that this frame left alone keep no paragraphs alive.
+        for prepared in &mut self.prepared[self.prepare_layer..] {
+            *prepared = None;
+        }
 
         self.prepare_layer = 0;
     }
