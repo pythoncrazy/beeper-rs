@@ -6780,7 +6780,7 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .title(BeeperGuiApp::title)
         .subscription(BeeperGuiApp::subscription)
         .theme(|a: &BeeperGuiApp, _| a.iced_theme())
-        .scale_factor(|a: &BeeperGuiApp, _| a.zoom)
+        .scale_factor(|a: &BeeperGuiApp, _| a.zoom * text_scale())
         .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.window, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
     app.run()
@@ -6789,6 +6789,16 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
 /// Woken once GTK opens to draw the title bars, and whenever GTK's settings change, so that the windows lay out and
 /// draw their frames again with the GTK theme and settings.
 pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// GNOME's `text-scaling-factor` on Wayland, which Chromium applies to the whole of each window like a zoom, the size
+/// of the window included: Desktop's device scale is the screen's times it. On X11 the scale of the window already
+/// has it, from `Xft.dpi`.
+pub static TEXT_SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
+/// [`TEXT_SCALE`], or 1.
+fn text_scale() -> f32 {
+    TEXT_SCALE.get().copied().unwrap_or(1.0)
+}
 
 /// People, each with the account to reach them on.
 pub type People = Vec<(String, User)>;
