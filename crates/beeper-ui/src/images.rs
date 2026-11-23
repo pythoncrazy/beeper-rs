@@ -22,7 +22,7 @@ impl Weigh for Handle {
     }
 }
 
-impl<T> Weigh for Vec<(Handle, T)> {
+impl<T> Weigh for std::sync::Arc<[(Handle, T)]> {
     fn bytes(&self) -> usize {
         self.iter().map(|f| f.0.bytes()).sum()
     }
