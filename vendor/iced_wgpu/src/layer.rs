@@ -28,6 +28,22 @@ pub struct Layer {
 }
 
 impl Layer {
+    /// Whether the layer draws what `other` does. A layer with a custom primitive, which cannot be compared, never
+    /// does.
+    pub fn draws(&self, other: &Layer) -> bool {
+        fn all<T>(a: &[T], b: &[T], same: impl Fn(&T, &T) -> bool) -> bool {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b))
+        }
+
+        self.primitives.is_empty()
+            && other.primitives.is_empty()
+            && self.bounds == other.bounds
+            && self.quads.same(&other.quads)
+            && all(&self.triangles, &other.triangles, triangle::Item::same)
+            && self.images == other.images
+            && all(&self.text, &other.text, text::Item::same)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.quads.is_empty()
             && self.triangles.is_empty()

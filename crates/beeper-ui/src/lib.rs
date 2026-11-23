@@ -6889,6 +6889,19 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         std::thread::spawn(|| deeplink::register().unwrap_or_else(|e| eprintln!("register beeper:// links: {e}")));
     }
     drop(st);
+    // A window that the user is not using redraws for a message only when its frame changes, like Chromium's, which
+    // draws nothing without damage.
+    iced_winit::set_frame_check(|renderer, step| {
+        use iced_renderer::fallback::Renderer::{Primary, Secondary};
+        use iced_winit::FrameCheck::{Compare, SetAside};
+        match (renderer.downcast_mut::<iced::Renderer>(), step) {
+            (Some(Primary(wgpu)), SetAside) => wgpu.set_shown_aside(),
+            (Some(Primary(wgpu)), Compare) => wgpu.draws_shown(),
+            (Some(Secondary(tiny_skia)), SetAside) => tiny_skia.set_shown_aside(),
+            (Some(Secondary(tiny_skia)), Compare) => tiny_skia.draws_shown(),
+            (None, _) => false,
+        }
+    });
     let app = iced::daemon(move || BeeperGuiApp::boot(store.clone()), BeeperGuiApp::update, BeeperGuiApp::view)
         .executor::<Executor>()
         .title(BeeperGuiApp::title)
