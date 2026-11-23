@@ -136,8 +136,7 @@ async fn fake_beeper_cloud() -> String {
 }
 
 async fn spawn_e2e_beeper_instance(
-    profile_suffix: &str,
-    cloud: Option<&str>,
+    profile_suffix: &str, cloud: Option<&str>,
 ) -> (PathBuf, u16, SharedStore, BeeperClient) {
     let data_dir = temp_dir(&format!("BeeperRs_e2e_{profile_suffix}"));
 

@@ -637,11 +637,7 @@ fn lit_gradient(p: &Palette, k: f32) -> Background {
 /// Desktop's `BrandButton` in `size: "small"`: a full-width pill around `content`, 8 px above and below it. Without
 /// a message it is disabled. While `loading` it is disabled and shows three bouncing dots over its hidden content.
 pub(crate) fn brand_button<'a>(
-    p: &Palette,
-    content: El<'a>,
-    variant: Brand,
-    msg: Option<UiMessage>,
-    loading: bool,
+    p: &Palette, content: El<'a>, variant: Brand, msg: Option<UiMessage>, loading: bool,
 ) -> El<'a> {
     let msg = msg.filter(|_| !loading);
     let (bg, fg, edge) = match (msg.is_some(), variant) {
@@ -718,23 +714,14 @@ pub(crate) fn art<'a>(i: usize, height: impl Into<iced::Length>) -> El<'a> {
 /// as a small chip over the top edge once the field has text. Enter submits the form through the key handler of
 /// the window, like Desktop's Enter hotkey.
 pub(crate) fn field<'a, M: Into<UiMessage> + 'a>(
-    p: &Palette,
-    id: &'static str,
-    hint: &'a str,
-    value: &'a str,
-    on: Option<fn(String) -> M>,
+    p: &Palette, id: &'static str, hint: &'a str, value: &'a str, on: Option<fn(String) -> M>,
 ) -> El<'a> {
     field_with_icons(p, id, hint, value, on, Vec::new())
 }
 
 /// A `field` with `BrandInput`'s `rightIcons`: icons 8 px from the right edge, 2 px apart.
 fn field_with_icons<'a, M: Into<UiMessage> + 'a>(
-    p: &Palette,
-    id: &'static str,
-    hint: &'a str,
-    value: &'a str,
-    on: Option<fn(String) -> M>,
-    icons: Vec<El<'a>>,
+    p: &Palette, id: &'static str, hint: &'a str, value: &'a str, on: Option<fn(String) -> M>, icons: Vec<El<'a>>,
 ) -> El<'a> {
     let room = if icons.is_empty() { 12.0 } else { 8.0 + 22.0 * icons.len() as f32 };
     let input = brand_input(p, id, hint, value, on).padding(Padding::new(10.0).left(12.0).right(room));
@@ -753,11 +740,7 @@ fn field_with_icons<'a, M: Into<UiMessage> + 'a>(
 
 /// The text field of Desktop's `BrandInput`, 38 px high.
 fn brand_input<'a, M: Into<UiMessage> + 'a>(
-    p: &Palette,
-    id: &'static str,
-    hint: &'a str,
-    value: &'a str,
-    on: Option<fn(String) -> M>,
+    p: &Palette, id: &'static str, hint: &'a str, value: &'a str, on: Option<fn(String) -> M>,
 ) -> text_input::TextInput<'a, UiMessage, Theme> {
     text_input(hint, value)
         .id(id)
@@ -809,8 +792,7 @@ impl BeeperGuiApp {
     }
 
     fn background(
-        &mut self,
-        f: impl FnOnce(&Cloud) -> Result<Outcome, CloudError> + Send + 'static,
+        &mut self, f: impl FnOnce(&Cloud) -> Result<Outcome, CloudError> + Send + 'static,
     ) -> Task<UiMessage> {
         self.login.busy = true;
         (self.login.error, self.login.toast) = (None, None);

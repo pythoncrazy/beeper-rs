@@ -53,14 +53,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Dashes {
     }
 
     fn draw(
-        &self,
-        _: &widget::Tree,
-        renderer: &mut Renderer,
-        _: &Theme,
-        _: &renderer::Style,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Rectangle,
+        &self, _: &widget::Tree, renderer: &mut Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>,
+        _: mouse::Cursor, _: &Rectangle,
     ) {
         let w = self.width;
         let b = layout.bounds().shrink(w / 2.0);

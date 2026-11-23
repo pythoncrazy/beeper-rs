@@ -1379,10 +1379,7 @@ impl BeeperStore {
 
     /// Desktop's `createToken` of Settings > Integrations: a token without a request.
     pub fn create_token(
-        &mut self,
-        scopes: Vec<String>,
-        expires_secs: i64,
-        client: Option<crate::connect::ClientInfo>,
+        &mut self, scopes: Vec<String>, expires_secs: i64, client: Option<crate::connect::ClientInfo>,
     ) -> String {
         let token = self.connect.create(scopes, expires_secs, client);
         self.persist_connect();
@@ -1400,12 +1397,7 @@ impl BeeperStore {
 
     /// Desktop's `scheduleMessages` for one content part: a text, or a stored upload with `text` as its caption.
     pub fn schedule(
-        &mut self,
-        chat_id: &str,
-        text: String,
-        reply_to: Option<String>,
-        at: (i64, bool),
-        upload: Option<String>,
+        &mut self, chat_id: &str, text: String, reply_to: Option<String>, at: (i64, bool), upload: Option<String>,
     ) {
         let (send_on, no_reply) = at;
         let chat_id = self.resolve_canonical_chat_id(chat_id).expect("schedule in a known chat");
@@ -1688,11 +1680,7 @@ impl BeeperStore {
     }
 
     pub fn sign_in(
-        &mut self,
-        session: MatrixSession,
-        homeserver: String,
-        profile: &Profile,
-        accounts: Vec<BridgeAccountInfo>,
+        &mut self, session: MatrixSession, homeserver: String, profile: &Profile, accounts: Vec<BridgeAccountInfo>,
     ) {
         assert!(!self.signed_in(), "sign in while already signed in as {}", self.beeper_state.user_id);
         if self.setup.is_none() {
@@ -2200,10 +2188,7 @@ impl BeeperStore {
     /// Desktop's `updateGroup` from the Edit Group window: the changed title and description of a group, and its new
     /// avatar (a local URL of the image, the image and its MIME type) or `Some(None)` to remove the avatar.
     pub fn update_group(
-        &mut self,
-        id: &str,
-        title: Option<String>,
-        topic: Option<String>,
+        &mut self, id: &str, title: Option<String>, topic: Option<String>,
         avatar: Option<Option<(String, Vec<u8>, String)>>,
     ) {
         self.apply_group(
@@ -2225,10 +2210,7 @@ impl BeeperStore {
 
     /// Desktop's `setPersonalRoomName` and `setPersonalRoomAvatar`: `Some(None)` removes the name or the photo.
     pub fn set_personal(
-        &mut self,
-        id: &str,
-        title: Option<Option<String>>,
-        avatar: Option<Option<(String, Vec<u8>, String)>>,
+        &mut self, id: &str, title: Option<Option<String>>, avatar: Option<Option<(String, Vec<u8>, String)>>,
     ) {
         let idx = self.chat_idx_by_id[id];
         self.update_chat(idx, |c| {
@@ -2695,12 +2677,7 @@ impl BeeperStore {
     }
 
     pub fn emit_ws(
-        &self,
-        event_type: &str,
-        chat_id: &str,
-        message_id: Option<&str>,
-        chat: Option<Chat>,
-        message: Option<Message>,
+        &self, event_type: &str, chat_id: &str, message_id: Option<&str>, chat: Option<Chat>, message: Option<Message>,
     ) {
         self.ws_tx
             .send(WsEvent {
@@ -2779,11 +2756,7 @@ impl BeeperStore {
     /// `m.space.child` state, the title and the photo `avatar` (an `mxc://` URL) on the homeserver. Returns the ID of
     /// the merged chat, which stays its local ID once the room exists ([`Self::created_union`]).
     pub fn create_union(
-        &mut self,
-        title: &str,
-        rooms: Vec<String>,
-        default: Option<String>,
-        avatar: Option<String>,
+        &mut self, title: &str, rooms: Vec<String>, default: Option<String>, avatar: Option<String>,
     ) -> String {
         let title = Some(title.to_string()).filter(|t| !t.is_empty());
         let (chat, _) = self.create_or_start_chat(
@@ -2847,14 +2820,8 @@ impl BeeperStore {
 
     #[allow(clippy::too_many_arguments)]
     pub fn create_or_start_chat(
-        &mut self,
-        account_id: &str,
-        chat_type: &str,
-        title: Option<String>,
-        participant_ids: Vec<String>,
-        message_text: Option<String>,
-        merge_chat_ids: Option<Vec<String>>,
-        default_chat_id: Option<String>,
+        &mut self, account_id: &str, chat_type: &str, title: Option<String>, participant_ids: Vec<String>,
+        message_text: Option<String>, merge_chat_ids: Option<Vec<String>>, default_chat_id: Option<String>,
     ) -> (Chat, String) {
         let id = self.next_id("!chat");
         let items: Vec<User> = participant_ids
@@ -2909,10 +2876,7 @@ impl BeeperStore {
 
     /// Desktop's chat update: the draft and the merge of a chat. Returns the changed chat.
     pub fn patch_chat(
-        &mut self,
-        chat_or_local_id: &str,
-        clear_draft: bool,
-        new_draft: Option<ChatDraft>,
+        &mut self, chat_or_local_id: &str, clear_draft: bool, new_draft: Option<ChatDraft>,
         new_merge: Option<Option<ChatMergeInfo>>,
     ) -> Result<Chat, Error> {
         let idx = self.resolve_chat_idx(chat_or_local_id).ok_or(Error::ChatNotFound)?;
@@ -2992,13 +2956,8 @@ impl BeeperStore {
     /// The local echo of one message of a draft, and its change from `send`, which takes the transaction ID, the
     /// quoted message and the thread. In a thread the message quotes the chosen reply, else the newest reply.
     fn echo_part(
-        &mut self,
-        chat_or_local_id: &str,
-        text: Option<String>,
-        reply_to: Option<String>,
-        att: Option<Attachment>,
-        thread: &Option<(String, bool)>,
-        send: impl FnOnce(String, Option<String>, Option<ThreadSend>) -> Outgoing,
+        &mut self, chat_or_local_id: &str, text: Option<String>, reply_to: Option<String>, att: Option<Attachment>,
+        thread: &Option<(String, bool)>, send: impl FnOnce(String, Option<String>, Option<ThreadSend>) -> Outgoing,
     ) -> Result<(String, Outgoing), Error> {
         let Some((root, broadcast)) = thread else {
             let (chat_id, txn, _) = self.send_message(chat_or_local_id, text, reply_to.clone(), att)?;
@@ -3012,10 +2971,7 @@ impl BeeperStore {
 
     /// Adds the local echo of a sent message. Returns the chat ID, the message ID (also the transaction ID) and the echo.
     pub fn send_message(
-        &mut self,
-        chat_or_local_id: &str,
-        text: Option<String>,
-        reply_to_message_id: Option<String>,
+        &mut self, chat_or_local_id: &str, text: Option<String>, reply_to_message_id: Option<String>,
         attachment: Option<Attachment>,
     ) -> Result<(String, String, Message), Error> {
         self.compose(chat_or_local_id, text, reply_to_message_id, attachment, None)
@@ -3023,11 +2979,7 @@ impl BeeperStore {
 
     /// Desktop's `sendThreadedReply`: a reply in the thread `t`, which reads the thread through it.
     pub fn send_in_thread(
-        &mut self,
-        chat_or_local_id: &str,
-        text: Option<String>,
-        attachment: Option<Attachment>,
-        t: &ThreadSend,
+        &mut self, chat_or_local_id: &str, text: Option<String>, attachment: Option<Attachment>, t: &ThreadSend,
     ) -> Result<(String, String, Message), Error> {
         let sent = self.compose(chat_or_local_id, text, Some(t.quoted.clone()), attachment, Some(t))?;
         let idx = self.chat_idx_by_id[&sent.0];
@@ -3041,12 +2993,8 @@ impl BeeperStore {
     }
 
     fn compose(
-        &mut self,
-        chat_or_local_id: &str,
-        text: Option<String>,
-        reply_to_message_id: Option<String>,
-        attachment: Option<Attachment>,
-        thread: Option<&ThreadSend>,
+        &mut self, chat_or_local_id: &str, text: Option<String>, reply_to_message_id: Option<String>,
+        attachment: Option<Attachment>, thread: Option<&ThreadSend>,
     ) -> Result<(String, String, Message), Error> {
         let idx = self.resolve_chat_idx(chat_or_local_id).ok_or(Error::ChatNotFound)?;
         // Desktop's `targetComposerAtMessage`: a reply in a merged chat goes to the chat of the message.
@@ -3115,11 +3063,7 @@ impl BeeperStore {
     /// Edits the text of a message here, and queues the edit with its mention pills for the homeserver. Returns the
     /// chat ID of the message and the edited message.
     pub fn edit_message(
-        &mut self,
-        chat_or_local_id: &str,
-        message_id: &str,
-        text: String,
-        mentions: Vec<Mention>,
+        &mut self, chat_or_local_id: &str, message_id: &str, text: String, mentions: Vec<Mention>,
     ) -> Result<(String, Message), Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let msg = self.update_message(m_idx, |m| {
@@ -3440,11 +3384,7 @@ impl BeeperStore {
     /// Adds the reaction of the user here, and queues it for the homeserver. Returns the chat ID of the message and the
     /// transaction ID of the reaction.
     pub fn add_reaction(
-        &mut self,
-        chat_or_local_id: &str,
-        message_id: &str,
-        reaction_key: &str,
-        img_url: Option<String>,
+        &mut self, chat_or_local_id: &str, message_id: &str, reaction_key: &str, img_url: Option<String>,
         transaction_id: Option<String>,
     ) -> Result<(String, String), Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
@@ -3470,10 +3410,7 @@ impl BeeperStore {
     /// Removes the reactions of the user with the key here, and queues the redaction of the first one for the
     /// homeserver. Returns the chat ID of the message.
     pub fn remove_reaction(
-        &mut self,
-        chat_or_local_id: &str,
-        message_id: &str,
-        reaction_key: &str,
+        &mut self, chat_or_local_id: &str, message_id: &str, reaction_key: &str,
     ) -> Result<String, Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let mine = |r: &Reaction| r.reaction_key == reaction_key && self.is_me(&r.participant_id);

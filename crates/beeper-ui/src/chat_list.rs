@@ -1632,13 +1632,8 @@ impl BeeperGuiApp {
 
     /// A row of the chat list, a chat's or a new-chat draft's, with its hover action, divider and menu.
     fn view_list_row<'a>(
-        &'a self,
-        l: &RowLook,
-        (key, on): (String, bool),
-        dot: Option<El<'a>>,
-        face: El<'a>,
-        [top, preview]: [El<'a>; 2],
-        select: UiMessage,
+        &'a self, l: &RowLook, (key, on): (String, bool), dot: Option<El<'a>>, face: El<'a>,
+        [top, preview]: [El<'a>; 2], select: UiMessage,
     ) -> El<'a> {
         let (p, st) = (&self.pal, l.st);
         let item = row![]
@@ -1821,10 +1816,7 @@ impl BeeperGuiApp {
     /// them: the count of the new messages of unopened view-once media, the last message, its media label, or the
     /// invitation of a request.
     fn preview_text(
-        &self,
-        c: &Chat,
-        m: Option<&Message>,
-        tag: Option<&MediaTag>,
+        &self, c: &Chat, m: Option<&Message>, tag: Option<&MediaTag>,
     ) -> (Option<String>, bool, Option<String>) {
         let mine = m.is_some_and(|m| m.is_sender == Some(true));
         let reaction = m.filter(|m| m.message_type.as_deref() == Some("REACTION"));
@@ -1871,11 +1863,7 @@ impl BeeperGuiApp {
     /// The preview line of a chat row: the Reminder badge, the receipt, the sender's face, the media label and the
     /// text of the last message or of the draft, then the unread count.
     fn view_chat_preview<'a>(
-        &'a self,
-        l: &RowLook,
-        c: &Chat,
-        draft: Option<String>,
-        count: Option<El<'a>>,
+        &'a self, l: &RowLook, c: &Chat, draft: Option<String>, count: Option<El<'a>>,
     ) -> Column<'a, UiMessage> {
         let (p, st, lines, text_w) = (&self.pal, l.st, l.lines, l.text_w);
         let m = c.preview.as_ref().filter(|_| l.previews && draft.is_none());

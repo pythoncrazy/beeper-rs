@@ -331,12 +331,7 @@ impl Export {
 
     /// `exportChatMessages`: the pages of a chat into `messages.partial.jsonl`, with the cursor in the state.
     fn messages(
-        &self,
-        c: &mut Ctx,
-        chat: &Value,
-        dir: &Path,
-        state: &mut Value,
-        state_path: &Path,
+        &self, c: &mut Ctx, chat: &Value, dir: &Path, state: &mut Value, state_path: &Path,
     ) -> Res<(Vec<Value>, Vec<Value>, u64)> {
         let id = js_string(&chat["id"]);
         let partial = dir.join("messages.partial.jsonl");

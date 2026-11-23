@@ -485,8 +485,7 @@ impl std::hash::Hash for StoreFeed {
 }
 
 fn feed<T: Clone + Send + 'static>(
-    rx: broadcast::Receiver<T>,
-    f: fn(T) -> UiMessage,
+    rx: broadcast::Receiver<T>, f: fn(T) -> UiMessage,
 ) -> impl iced::futures::Stream<Item = UiMessage> {
     iced::futures::stream::unfold(rx, move |mut rx| async move {
         match rx.recv().await {
@@ -756,10 +755,7 @@ const HOVER_FADE: f32 = 0.1;
 
 /// A row of a dropdown or context menu. Without a message it is greyed out.
 fn menu_item<'a>(
-    p: &Palette,
-    lead: Option<El<'a>>,
-    label: String,
-    hotkey: impl iced::widget::text::IntoFragment<'a>,
+    p: &Palette, lead: Option<El<'a>>, label: String, hotkey: impl iced::widget::text::IntoFragment<'a>,
     msg: Option<UiMessage>,
 ) -> El<'a> {
     let line = row![]
@@ -913,18 +909,14 @@ fn backdrop<'a, M: 'a>(layer: impl Into<Element<'a, M>>) -> iced::widget::MouseA
 
 /// Desktop's context menu: `items` with 4 px above and below them, in a shadowed card `w` wide.
 fn menu_card<'a>(
-    p: &Palette,
-    items: Column<'a, UiMessage>,
-    w: impl Into<Length>,
+    p: &Palette, items: Column<'a, UiMessage>, w: impl Into<Length>,
 ) -> iced::widget::Container<'a, UiMessage> {
     container(items.padding([4, 0])).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
 }
 
 /// [`menu_card`] of rows with their heights, and the height of the menu.
 fn menu_rows<'a>(
-    p: &Palette,
-    rows: Vec<(El<'a>, f32)>,
-    w: impl Into<Length>,
+    p: &Palette, rows: Vec<(El<'a>, f32)>, w: impl Into<Length>,
 ) -> (iced::widget::Container<'a, UiMessage>, f32) {
     let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
     (menu_card(p, Column::with_children(rows.into_iter().map(|r| r.0)), w), h)
@@ -1298,11 +1290,7 @@ fn edit_open(m: &Message, rules: MessageRules) -> bool {
 /// Desktop's `Wfe` contact card of a vCard: the 32 px avatar, the name and the organization, then `limit` of its phone
 /// numbers and of its emails through `entry` (`true` for a phone number), with "+ %d more" after them.
 pub(crate) fn contact_card<'a>(
-    p: &Palette,
-    c: &VCard,
-    fg: Color,
-    limit: usize,
-    entry: &dyn Fn(bool, &str) -> El<'a>,
+    p: &Palette, c: &VCard, fg: Color, limit: usize, entry: &dyn Fn(bool, &str) -> El<'a>,
 ) -> Column<'a, UiMessage> {
     // `.contact-attachment-meta` and `-org` are 12 px, `-name` and `-org.no-name` 14 px, and its `h4` 12 px.
     let line = |s: String| crate::style::fixed(s, 12.0, Weight::Normal).line_height(lh(16.0)).color(fg);
@@ -1401,21 +1389,14 @@ fn toggle_faded<'a>(p: &Palette, on: bool, msg: Option<UiMessage>, alpha: f32) -
 }
 
 fn select<'a, T: ToString + PartialEq + Clone + 'a>(
-    p: &Palette,
-    options: impl std::borrow::Borrow<[T]> + 'a,
-    selected: T,
-    f: impl Fn(T) -> UiMessage + 'a,
+    p: &Palette, options: impl std::borrow::Borrow<[T]> + 'a, selected: T, f: impl Fn(T) -> UiMessage + 'a,
 ) -> El<'a> {
     sized_select(p, options, selected, f, 11.0, Padding::from([4, 8]))
 }
 
 /// A select with the arrow of Chromium's native select over its right side.
 fn sized_select<'a, T: ToString + PartialEq + Clone + 'a>(
-    p: &Palette,
-    options: impl std::borrow::Borrow<[T]> + 'a,
-    selected: T,
-    f: impl Fn(T) -> UiMessage + 'a,
-    size: f32,
+    p: &Palette, options: impl std::borrow::Borrow<[T]> + 'a, selected: T, f: impl Fn(T) -> UiMessage + 'a, size: f32,
     pad: Padding,
 ) -> El<'a> {
     let list = pick_list(options, Some(selected), f)
@@ -1999,9 +1980,7 @@ fn reply_root<'s>(st: &'s BeeperStore, m: &'s Message) -> &'s str {
 
 /// [`reply_root`], which shows `look` each message ID that the chain looks up, and the message when it is loaded.
 fn reply_root_with<'s>(
-    st: &'s BeeperStore,
-    mut m: &'s Message,
-    mut look: impl FnMut(&'s str, Option<&'s Message>),
+    st: &'s BeeperStore, mut m: &'s Message, mut look: impl FnMut(&'s str, Option<&'s Message>),
 ) -> &'s str {
     let mut seen = HashSet::new();
     while m.thread_root.is_none() {
@@ -2263,8 +2242,7 @@ fn window_mark(state: &mut dyn std::any::Any) -> Option<window::Id> {
 
 impl iced::advanced::widget::Operation<(Option<window::Id>, f32)> for Locate {
     fn traverse(
-        &mut self,
-        operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<(Option<window::Id>, f32)>),
+        &mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<(Option<window::Id>, f32)>),
     ) {
         operate(self)
     }
@@ -2282,11 +2260,7 @@ impl iced::advanced::widget::Operation<(Option<window::Id>, f32)> for Locate {
     }
 
     fn scrollable(
-        &mut self,
-        id: Option<&iced::widget::Id>,
-        bounds: iced::Rectangle,
-        content: iced::Rectangle,
-        at: iced::Vector,
+        &mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle, content: iced::Rectangle, at: iced::Vector,
         _: &mut dyn iced::advanced::widget::operation::Scrollable,
     ) {
         if id == Some(&iced::widget::Id::new(self.scroll)) {
@@ -2347,11 +2321,7 @@ impl<T> iced::advanced::widget::Operation<T> for ScrollIn {
     }
 
     fn scrollable(
-        &mut self,
-        id: Option<&iced::widget::Id>,
-        _: iced::Rectangle,
-        _: iced::Rectangle,
-        _: iced::Vector,
+        &mut self, id: Option<&iced::widget::Id>, _: iced::Rectangle, _: iced::Rectangle, _: iced::Vector,
         state: &mut dyn iced::advanced::widget::operation::Scrollable,
     ) {
         // Without window marks (the tests' simulator draws no window root), the only window is the one.
@@ -2636,11 +2606,7 @@ fn duration(n: usize, unit: &str) -> String {
 }
 
 fn pref_row<'a>(
-    p: &Palette,
-    title: impl ToString,
-    desc: Option<&str>,
-    extra: Option<El<'a>>,
-    control: El<'a>,
+    p: &Palette, title: impl ToString, desc: Option<&str>, extra: Option<El<'a>>, control: El<'a>,
 ) -> El<'a> {
     let title = title.to_string();
     let label: El<'a> = match extra {
@@ -3565,9 +3531,7 @@ impl BeeperGuiApp {
     /// An avatar or a custom emoji, as Desktop's still image (`rs`, and `EnhancedImg` with `isEmoji`) draws it: it
     /// plays with "Animate avatars and emoji" while the window shows, and shows its first frame otherwise.
     pub(crate) fn emoji<'a>(
-        &self,
-        frames: &Frames,
-        make: impl Fn(image::Handle) -> iced::widget::Image + 'a,
+        &self, frames: &Frames, make: impl Fn(image::Handle) -> iced::widget::Image + 'a,
     ) -> El<'a> {
         anim::gif(frames, self.animate.get(), self.started, make)
     }
@@ -3599,13 +3563,7 @@ impl BeeperGuiApp {
 
     /// The avatar of a chat with this image and title, or else of its people.
     fn people_avatar<'a>(
-        &self,
-        img: Option<&str>,
-        title: &str,
-        group: bool,
-        users: &[User],
-        size: f32,
-        ls: f32,
+        &self, img: Option<&str>, title: &str, group: bool, users: &[User], size: f32, ls: f32,
     ) -> El<'a> {
         fn user(u: &User) -> (Option<&str>, &str) {
             (u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default())
@@ -4096,11 +4054,7 @@ impl BeeperGuiApp {
     /// Desktop's `createThread`: selects the most recent direct chat with the user on the account, or asks the
     /// bridge to make one.
     pub(crate) fn open_dm(
-        &mut self,
-        account: String,
-        user: User,
-        draft: Option<u32>,
-        quote: Option<String>,
+        &mut self, account: String, user: User, draft: Option<u32>, quote: Option<String>,
     ) -> Task<UiMessage> {
         if self.creating_thread() {
             return Task::none();
@@ -6221,12 +6175,7 @@ impl BeeperGuiApp {
 
     /// The end of Desktop's `createThread` and `createGroupThread`: the new chat opens, or an error toast shows.
     fn chat_created(
-        &mut self,
-        n: Option<u32>,
-        account: &str,
-        quote: Option<String>,
-        r: Result<String, String>,
-        action: &str,
+        &mut self, n: Option<u32>, account: &str, quote: Option<String>, r: Result<String, String>, action: &str,
     ) {
         if self.sticky_banner.take().is_some_and(|t| t == self.status_banner) {
             self.status_banner.clear();
@@ -6292,10 +6241,7 @@ impl BeeperGuiApp {
     /// Desktop's `sit`: on each account, the user of a contact of its contact list (`known`, as its account and user),
     /// a phone number that the network takes as is, and the lookups of the phone number, email and username.
     fn resolve_identifiers(
-        &self,
-        key: &str,
-        accounts: &[String],
-        (phone, email, username): (Option<&str>, Option<&str>, Option<&str>),
+        &self, key: &str, accounts: &[String], (phone, email, username): (Option<&str>, Option<&str>, Option<&str>),
         known: Option<(&str, User)>,
     ) -> (Networks, Task<UiMessage>) {
         let (mut nets, mut tasks) = (Vec::new(), Vec::new());
@@ -6495,13 +6441,7 @@ impl BeeperGuiApp {
 
     /// A hover action `t` of the way into its fade, from 30% of its size and clear to its full size and color.
     fn hover_btn<'a>(
-        &self,
-        glyph: usize,
-        size: f32,
-        label: &'a str,
-        keys: Vec<String>,
-        msg: UiMessage,
-        t: f32,
+        &self, glyph: usize, size: f32, label: &'a str, keys: Vec<String>, msg: UiMessage, t: f32,
     ) -> El<'a> {
         let p = &self.pal;
         let icon = tinted(&ROW_ACTIONS[glyph], size * (0.3 + 0.7 * t), p.strong.scale_alpha(t));
@@ -6598,10 +6538,7 @@ impl BeeperGuiApp {
     }
 
     fn tip<'a>(
-        &self,
-        el: El<'a>,
-        label: impl iced::widget::text::IntoFragment<'a>,
-        keys: Vec<&'static str>,
+        &self, el: El<'a>, label: impl iced::widget::text::IntoFragment<'a>, keys: Vec<&'static str>,
         at: tooltip::Position,
     ) -> iced::widget::Tooltip<'a, UiMessage> {
         self.tip_caps(el, label, keys.into_iter().map(String::from).collect(), at)
@@ -6609,11 +6546,7 @@ impl BeeperGuiApp {
 
     /// [`Self::tip`] with the key caps of a hotkey from the settings.
     fn tip_caps<'a>(
-        &self,
-        el: El<'a>,
-        label: impl iced::widget::text::IntoFragment<'a>,
-        keys: Vec<String>,
-        at: tooltip::Position,
+        &self, el: El<'a>, label: impl iced::widget::text::IntoFragment<'a>, keys: Vec<String>, at: tooltip::Position,
     ) -> iced::widget::Tooltip<'a, UiMessage> {
         let p = &self.pal;
         let kbd = |k: String| -> El<'a> {
@@ -6823,10 +6756,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `BrandSegmentControl`: the segments spread across the width, with the selected one highlighted.
     fn segments<'a>(
-        &self,
-        labels: impl Iterator<Item = String>,
-        at: usize,
-        msg: impl Fn(usize) -> UiMessage,
+        &self, labels: impl Iterator<Item = String>, at: usize, msg: impl Fn(usize) -> UiMessage,
     ) -> container::Container<'a, UiMessage> {
         let p = &self.pal;
         let segments = labels.enumerate().flat_map(|(i, label)| {

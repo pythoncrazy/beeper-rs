@@ -99,14 +99,8 @@ impl<M> Widget<M, Theme, Renderer> for ReplyLine {
     }
 
     fn draw(
-        &self,
-        _: &widget::Tree,
-        renderer: &mut Renderer,
-        _: &Theme,
-        _: &renderer::Style,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, _: &widget::Tree, renderer: &mut Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>,
+        _: mouse::Cursor, viewport: &Rectangle,
     ) {
         let b = layout.bounds();
         let (x, y, h) = (b.x + LEFT, b.y + self.top, b.height - self.top - self.bottom);

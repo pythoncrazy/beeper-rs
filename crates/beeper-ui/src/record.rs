@@ -167,15 +167,8 @@ impl<M> Widget<M, iced::Theme, Renderer> for Live<'_> {
     }
 
     fn update(
-        &mut self,
-        _: &mut widget::Tree,
-        event: &Event,
-        _: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Renderer,
-        _: &mut dyn Clipboard,
-        shell: &mut Shell<'_, M>,
-        _: &Rectangle,
+        &mut self, _: &mut widget::Tree, event: &Event, _: Layout<'_>, _: mouse::Cursor, _: &Renderer,
+        _: &mut dyn Clipboard, shell: &mut Shell<'_, M>, _: &Rectangle,
     ) {
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
             shell.request_redraw_at(*now + Duration::from_millis(75));
@@ -183,14 +176,8 @@ impl<M> Widget<M, iced::Theme, Renderer> for Live<'_> {
     }
 
     fn draw(
-        &self,
-        _: &widget::Tree,
-        renderer: &mut Renderer,
-        _: &iced::Theme,
-        _: &renderer::Style,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Rectangle,
+        &self, _: &widget::Tree, renderer: &mut Renderer, _: &iced::Theme, _: &renderer::Style, layout: Layout<'_>,
+        _: mouse::Cursor, _: &Rectangle,
     ) {
         let b = layout.bounds();
         let levels = self.0.levels.lock().unwrap();

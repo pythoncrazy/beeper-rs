@@ -72,8 +72,7 @@ fn device_name(v: &beeper_core::models::AppVerification) -> String {
 
 /// A Matrix call of the verification. A failure shows the toast `what`, or the error when `what` is empty.
 fn call(
-    what: &'static str,
-    f: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
+    what: &'static str, f: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
 ) -> Task<UiMessage> {
     Task::perform(f, move |r| VerifyMsg::Done(what, r).into())
 }
@@ -330,11 +329,7 @@ pub(crate) fn brand_btn<'a>(p: &Palette, label: &'a str, variant: Brand, msg: Ui
 
 /// `brand_btn`, which is disabled without a message, and shows Desktop's dots while `loading`.
 pub(crate) fn brand_btn_maybe<'a>(
-    p: &Palette,
-    label: &'a str,
-    variant: Brand,
-    msg: Option<UiMessage>,
-    loading: bool,
+    p: &Palette, label: &'a str, variant: Brand, msg: Option<UiMessage>, loading: bool,
 ) -> El<'a> {
     let label = t(label, 13.0, Weight::Medium).line_height(lh(14.95));
     crate::login::brand_button(p, label.into(), variant, msg, loading)
@@ -672,10 +667,7 @@ pub(crate) fn format_recovery_key(key: &str) -> String {
 pub(crate) const KEY_INPUT: &str = "recovery-key-input";
 
 pub(crate) fn key_input<'a>(
-    p: &Palette,
-    content: &'a text_editor::Content,
-    error: bool,
-    edit: fn(text_editor::Action) -> UiMessage,
+    p: &Palette, content: &'a text_editor::Content, error: bool, edit: fn(text_editor::Action) -> UiMessage,
     on_paste: UiMessage,
 ) -> El<'a> {
     let p = *p;

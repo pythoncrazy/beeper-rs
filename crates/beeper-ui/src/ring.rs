@@ -17,10 +17,7 @@ pub struct Ring<'a, Message> {
 
 /// A ring of `width` and `color` around `content`, whose corners have `radius`.
 pub fn ring<'a, Message>(
-    content: impl Into<Element<'a, Message>>,
-    color: Color,
-    width: f32,
-    radius: f32,
+    content: impl Into<Element<'a, Message>>, color: Color, width: f32, radius: f32,
 ) -> Ring<'a, Message> {
     Ring { content: content.into(), color, width, radius, offset: 0.0 }
 }
@@ -45,14 +42,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Ring<'_, Message> {
     );
 
     fn draw(
-        &self,
-        tree: &widget::Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
+        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
         let (w, out) = (self.width, self.width + self.offset);

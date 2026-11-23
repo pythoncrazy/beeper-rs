@@ -3060,10 +3060,7 @@ fn close_payload(code: u16, reason: &str) -> Vec<u8> {
 const WS_MAX_PAYLOAD: usize = 64 * 1024;
 
 async fn serve_ws(
-    mut stream: TcpStream,
-    leftover: Vec<u8>,
-    msg: HttpMessage,
-    store: SharedStore,
+    mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, store: SharedStore,
     mut events: tokio::sync::broadcast::Receiver<WsEvent>,
 ) {
     let Some(key) = msg.header("sec-websocket-key") else { return };
@@ -3214,10 +3211,7 @@ async fn serve_ws(
 /// `sendAppStateSnapshot`), then its `verification.updated` or `verification.removed` frame when the verification
 /// changed.
 fn app_state_frames(
-    store: &SharedStore,
-    last: &mut Option<(String, Option<Value>)>,
-    seq: &mut u64,
-    snapshot: bool,
+    store: &SharedStore, last: &mut Option<(String, Option<Value>)>, seq: &mut u64, snapshot: bool,
 ) -> Vec<Vec<u8>> {
     let state = store.read().app_state();
     let state = serde_json::to_value(&state).expect("serialize the app state");

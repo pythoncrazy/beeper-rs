@@ -289,14 +289,8 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
     }
 
     fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut Renderer,
-        _theme: &Theme,
-        defaults: &renderer::Style,
-        layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, tree: &Tree, renderer: &mut Renderer, _theme: &Theme, defaults: &renderer::Style, layout: Layout<'_>,
+        _cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
         let state = tree.state.downcast_ref::<State<Link>>();
@@ -379,15 +373,8 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
     }
 
     fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
-        viewport: &Rectangle,
+        &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
         // The animated images ask for a redraw at their next frame while the text is on screen.
@@ -502,12 +489,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
     }
 
     fn mouse_interaction(
-        &self,
-        tree: &Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-        _renderer: &Renderer,
+        &self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, _viewport: &Rectangle, _renderer: &Renderer,
     ) -> mouse::Interaction {
         if tree.state.downcast_ref::<State<Link>>().hovered_link.is_some() {
             mouse::Interaction::Pointer
@@ -519,11 +501,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
     }
 
     fn overlay<'b>(
-        &'b mut self,
-        tree: &'b mut Tree,
-        layout: Layout<'b>,
-        _renderer: &Renderer,
-        _viewport: &Rectangle,
+        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, _renderer: &Renderer, _viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let state = tree.state.downcast_mut::<State<Link>>();
@@ -559,11 +537,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for TipOverlay<'_, '_, 
     }
 
     fn draw(
-        &self,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
+        &self, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
         cursor: mouse::Cursor,
     ) {
         let viewport = Rectangle::with_size(Size::INFINITE);
@@ -580,12 +554,7 @@ impl<'a, Link: Clone + 'static, Message: 'a> From<Selectable<'a, Link, Message>>
 }
 
 fn styled<T>(
-    content: T,
-    bounds: Size,
-    size: Pixels,
-    line_height: LineHeight,
-    font: Font,
-    wrapping: Wrapping,
+    content: T, bounds: Size, size: Pixels, line_height: LineHeight, font: Font, wrapping: Wrapping,
 ) -> core_text::Text<T, Font> {
     core_text::Text {
         content,
@@ -704,9 +673,7 @@ const FRAME: Duration = Duration::from_micros(16_667);
 /// point into view to the edge), and the selection follows the pointer, held to the edge (`UpdateSelectionForMouseDrag`).
 /// `end` tells that the scrollable anchors its content at the bottom, where its offset counts up from the bottom.
 pub fn autoscroll<'a, Message: 'a>(
-    content: impl Into<Element<'a, Message>>,
-    id: impl Into<iced::widget::Id>,
-    end: bool,
+    content: impl Into<Element<'a, Message>>, id: impl Into<iced::widget::Id>, end: bool,
 ) -> AutoScroll<'a, Message> {
     AutoScroll { content: content.into(), id: id.into(), end }
 }
@@ -754,15 +721,8 @@ impl<Message> Widget<Message, Theme, Renderer> for AutoScroll<'_, Message> {
     );
 
     fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
-        viewport: &Rectangle,
+        &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
         let auto = tree.state.downcast_mut::<Auto>();
@@ -924,11 +884,7 @@ mod tests {
         }
 
         fn scrollable(
-            &mut self,
-            _: Option<&iced::widget::Id>,
-            _: Rectangle,
-            _: Rectangle,
-            at: Vector,
+            &mut self, _: Option<&iced::widget::Id>, _: Rectangle, _: Rectangle, at: Vector,
             _: &mut dyn iced::advanced::widget::operation::Scrollable,
         ) {
             self.0 = at.y;

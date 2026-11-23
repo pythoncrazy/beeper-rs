@@ -157,10 +157,7 @@ fn network(e: reqwest::Error) -> Failure {
 /// One try of the download of `source`: its bytes, decrypted when it is encrypted. A FLOE body decrypts a segment at
 /// a time as it downloads, like the SDK's `FLOEStream`.
 pub(crate) async fn once(
-    homeserver: &Url,
-    token: &str,
-    source: &Source,
-    interactive: bool,
+    homeserver: &Url, token: &str, source: &Source, interactive: bool,
 ) -> Result<Vec<u8>, Failure> {
     let mut sink = Sink::new(source)?;
     let first = url(homeserver, source.uri(), interactive)?;
@@ -218,11 +215,7 @@ fn refused(status: StatusCode, body: &[u8], via: &str) -> Failure {
 /// `getAsset`: the download of `source`, tried again 1, 2 and 4 seconds after a failure that can pass. `tried`
 /// hears of each failure that is tried again.
 pub(crate) async fn download(
-    homeserver: &Url,
-    token: &str,
-    source: &Source,
-    interactive: bool,
-    mut tried: impl FnMut(u32, &str),
+    homeserver: &Url, token: &str, source: &Source, interactive: bool, mut tried: impl FnMut(u32, &str),
 ) -> Result<Vec<u8>, String> {
     let mut n = 1;
     loop {

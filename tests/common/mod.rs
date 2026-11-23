@@ -12,11 +12,7 @@ pub trait TestClient {
     fn api(&self) -> &BeeperClient;
 
     async fn send(
-        &self,
-        method: &str,
-        path: &str,
-        headers: &[(&str, &str)],
-        body: Option<&Value>,
+        &self, method: &str, path: &str, headers: &[(&str, &str)], body: Option<&Value>,
     ) -> (StatusCode, Vec<u8>) {
         let body = body.map(|v| ("application/json".into(), serde_json::to_vec(v).expect("JSON values serialize")));
         let sent = self.api().request_raw(method, path, headers, body).await;
@@ -89,11 +85,7 @@ pub trait TestClient {
     }
 
     async fn send_message(
-        &self,
-        chat_id: &str,
-        text: Option<&str>,
-        reply_to: Option<&str>,
-        upload_id: Option<&str>,
+        &self, chat_id: &str, text: Option<&str>, reply_to: Option<&str>, upload_id: Option<&str>,
     ) -> Value {
         let body = defined([
             ("text", text.map(|t| json!(t))),

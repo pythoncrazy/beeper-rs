@@ -641,11 +641,7 @@ impl BeeperGuiApp {
 
     /// A confirmation dialog over `window`, with its actions after the cancel button.
     pub(crate) fn dialog<'a>(
-        &'a self,
-        window: Option<window::Id>,
-        title: String,
-        body: String,
-        actions: Vec<(&'static str, UiMessage)>,
+        &'a self, window: Option<window::Id>, title: String, body: String, actions: Vec<(&'static str, UiMessage)>,
         cancel: (&'static str, UiMessage),
     ) -> El<'a> {
         self.dialog_with(window, title, body, None, actions, cancel)
@@ -654,13 +650,8 @@ impl BeeperGuiApp {
     /// A confirmation dialog with `extra` under its text, like the checkbox of Electron's `showMessageBox`. An empty
     /// text leaves only `extra`.
     fn dialog_with<'a>(
-        &'a self,
-        window: Option<window::Id>,
-        title: String,
-        body: String,
-        extra: Option<El<'a>>,
-        actions: Vec<(&'static str, UiMessage)>,
-        (no, cancel): (&'static str, UiMessage),
+        &'a self, window: Option<window::Id>, title: String, body: String, extra: Option<El<'a>>,
+        actions: Vec<(&'static str, UiMessage)>, (no, cancel): (&'static str, UiMessage),
     ) -> El<'a> {
         let p = &self.pal;
         // GTK's buttons of Electron's `showMessageBox`: Tab goes through them with Adwaita's dashed

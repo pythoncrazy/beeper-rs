@@ -318,12 +318,7 @@ impl BeeperGuiApp {
     /// The heading of a section of the search results (row `i`), with its action on the right: Desktop's
     /// `.category`, whose action button fades while the heading is highlighted (`lit`).
     fn palette_heading(
-        &self,
-        i: usize,
-        label: &'static str,
-        action: &Option<commands::Msg>,
-        reach: bool,
-        lit: Option<usize>,
+        &self, i: usize, label: &'static str, action: &Option<commands::Msg>, reach: bool, lit: Option<usize>,
     ) -> El<'_> {
         let p = &self.pal;
         let title = match label {

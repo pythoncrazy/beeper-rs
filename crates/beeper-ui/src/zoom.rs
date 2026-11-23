@@ -109,15 +109,8 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Zoom<'_, M> {
     }
 
     fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, M>,
-        _viewport: &Rectangle,
+        &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, M>, _viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
@@ -212,25 +205,14 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Zoom<'_, M> {
     }
 
     fn mouse_interaction(
-        &self,
-        _tree: &Tree,
-        _layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-        _renderer: &Renderer,
+        &self, _tree: &Tree, _layout: Layout<'_>, _cursor: mouse::Cursor, _viewport: &Rectangle, _renderer: &Renderer,
     ) -> mouse::Interaction {
         mouse::Interaction::None
     }
 
     fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, tree: &Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        _cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         use iced::advanced::Renderer as _;
         let (s, at) = tree.state.downcast_ref::<State>().view();

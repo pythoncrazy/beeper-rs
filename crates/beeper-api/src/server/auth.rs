@@ -127,13 +127,7 @@ struct Valid {
 
 /// Desktop's `validateOAuthAuthorizationRequest`.
 fn validate(
-    st: &BeeperStore,
-    client_id: &str,
-    redirect: &str,
-    scope: &str,
-    response_type: &str,
-    challenge: &str,
-    method: &str,
+    st: &BeeperStore, client_id: &str, redirect: &str, scope: &str, response_type: &str, challenge: &str, method: &str,
 ) -> Result<Valid, &'static str> {
     if response_type != "code" {
         return Err("Invalid or missing response_type parameter. Only \"code\" is supported.");

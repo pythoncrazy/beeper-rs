@@ -268,10 +268,7 @@ fn split_union(t: Value) -> Vec<Value> {
 
 /// Desktop's `Pc`: the `$defs` that a schema refers to, with theirs.
 fn referenced_defs(
-    v: &Value,
-    defs: &serde_json::Map<String, Value>,
-    seen: &mut Vec<String>,
-    out: &mut serde_json::Map<String, Value>,
+    v: &Value, defs: &serde_json::Map<String, Value>, seen: &mut Vec<String>, out: &mut serde_json::Map<String, Value>,
 ) {
     match v {
         Value::Object(o) => {
@@ -412,11 +409,7 @@ fn jsonrpc(m: &Value) -> bool {
 }
 
 pub(super) fn handle(
-    store: &SharedStore,
-    cloud: &Cloud,
-    method: &str,
-    msg: &HttpMessage,
-    token: Option<&str>,
+    store: &SharedStore, cloud: &Cloud, method: &str, msg: &HttpMessage, token: Option<&str>,
 ) -> Reply {
     match method {
         "OPTIONS" => return empty(StatusCode::NO_CONTENT, Vec::new()),
@@ -556,12 +549,7 @@ fn query_pairs(key: &str, v: &Value, out: &mut Vec<String>) {
 
 /// Calls the route with the token of the MCP client, so the route checks its scopes.
 fn call(
-    store: &SharedStore,
-    cloud: &Cloud,
-    tools: &[Value],
-    caps: Caps,
-    params: &Value,
-    token: Option<&str>,
+    store: &SharedStore, cloud: &Cloud, tools: &[Value], caps: Caps, params: &Value, token: Option<&str>,
 ) -> Result<Value, String> {
     let name = params["name"].as_str().unwrap_or_default();
     let t = tools.iter().find(|t| t["tool"]["name"] == name).ok_or_else(|| format!("Unknown tool: {name}"))?;

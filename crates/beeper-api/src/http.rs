@@ -140,10 +140,7 @@ async fn line_end<R: AsyncRead + Unpin>(stream: &mut R, buf: &mut Vec<u8>, from:
 
 /// Decodes a chunked body that starts at `pos`, and returns it with the position after its trailer section.
 async fn read_chunked<R: AsyncRead + Unpin>(
-    stream: &mut R,
-    buf: &mut Vec<u8>,
-    mut pos: usize,
-    limit: usize,
+    stream: &mut R, buf: &mut Vec<u8>, mut pos: usize, limit: usize,
 ) -> Result<(Vec<u8>, usize), Stop> {
     let mut body = Vec::new();
     loop {
@@ -181,9 +178,7 @@ async fn read_chunked<R: AsyncRead + Unpin>(
 
 /// Reads one message. `limit` gives the largest body that the server accepts for the message head.
 pub async fn read_message<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: &mut S,
-    buf: &mut Vec<u8>,
-    limit: impl FnOnce(&HttpMessage) -> usize,
+    stream: &mut S, buf: &mut Vec<u8>, limit: impl FnOnce(&HttpMessage) -> usize,
 ) -> Result<HttpMessage, Stop> {
     let bare_lf = |head: &[u8]| head.iter().enumerate().any(|(i, &b)| b == b'\n' && (i == 0 || head[i - 1] != b'\r'));
     let head_end = loop {
@@ -295,10 +290,7 @@ pub async fn read_ws_frame<R: AsyncRead + Unpin>(r: &mut R, max: usize) -> Resul
 
 /// Writes one final frame with `opcode`: 0x1 for text, 0x8 for close.
 pub async fn write_ws_frame<W: AsyncWrite + Unpin>(
-    w: &mut W,
-    opcode: u8,
-    payload: &[u8],
-    masked: bool,
+    w: &mut W, opcode: u8, payload: &[u8], masked: bool,
 ) -> std::io::Result<()> {
     let (mask_bit, mask) = if masked { (0x80, [0x37, 0xFA, 0x21, 0x3D]) } else { (0, [0; 4]) };
     let mut frame = vec![0x80 | opcode];

@@ -810,12 +810,7 @@ impl BeeperGuiApp {
     /// emoji-mart's preview of the hovered emoji: a custom emoji shows its image, its name, and its id (the URL) as
     /// the shortcode.
     fn emoji_preview(
-        &self,
-        pk: &Picker,
-        sections: &[(&str, Vec<Item>)],
-        custom: &[Emoticon],
-        tone: u8,
-        c: &Colors,
+        &self, pk: &Picker, sections: &[(&str, Vec<Item>)], custom: &[Emoticon], tone: u8, c: &Colors,
     ) -> El<'static> {
         let none = sections.iter().all(|(_, v)| v.is_empty());
         let selected = pk.hover.or_else(|| {

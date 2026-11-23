@@ -124,11 +124,7 @@ fn state_path(rest: &[&str]) -> Result<Option<(String, String)>, Response> {
 /// The routes of the proxy, after `requireAuth`. The router decoded the parameters, which are never empty, so the
 /// `M_UNRECOGNIZED` of Desktop's `ge` for a missing parameter does not happen.
 pub(super) fn handle(
-    store: &SharedStore,
-    method: &str,
-    segs: &[&str],
-    query: &Map<String, Value>,
-    msg: &HttpMessage,
+    store: &SharedStore, method: &str, segs: &[&str], query: &Map<String, Value>, msg: &HttpMessage,
 ) -> Reply {
     let (c, user) = {
         let st = store.read();

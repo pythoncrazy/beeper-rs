@@ -469,13 +469,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `.audio-player`, in the bubble colors, with the time `ts` in its color.
     pub(crate) fn view_audio<'a>(
-        &self,
-        m: &Message,
-        a: &Attachment,
-        mine: bool,
-        ts: Option<(String, Color)>,
-        fg: Color,
-        bg: Color,
+        &self, m: &Message, a: &Attachment, mine: bool, ts: Option<(String, Color)>, fg: Color, bg: Color,
     ) -> El<'a> {
         let url = a.src_url.clone().expect("a playable attachment has a URL");
         // Desktop's player loads its audio when it shows. A message that comes with a sync starts no load, so the
@@ -663,11 +657,7 @@ impl BeeperGuiApp {
 
 /// WaveSurfer's bars of `c` at `pos` seconds, `width` wide in the wave and progress colors, with a hidden scrubber.
 fn waveform<'a>(
-    [chat, mid, url]: [&str; 3],
-    c: &Clip,
-    pos: f32,
-    width: f32,
-    (wave, progress): (Color, Color),
+    [chat, mid, url]: [&str; 3], c: &Clip, pos: f32, width: f32, (wave, progress): (Color, Color),
 ) -> El<'a> {
     let heights = bars(&c.peaks, width, BUBBLE_BARS);
     let done = pos / c.secs() * heights.len() as f32;

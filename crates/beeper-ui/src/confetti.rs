@@ -201,14 +201,8 @@ impl<M> Widget<M, Theme, iced::Renderer> for Layer<'_> {
     }
 
     fn draw(
-        &self,
-        _: &widget::Tree,
-        renderer: &mut iced::Renderer,
-        _: &Theme,
-        _: &renderer::Style,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, _: &widget::Tree, renderer: &mut iced::Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>,
+        _: mouse::Cursor, viewport: &Rectangle,
     ) {
         use iced::advanced::Renderer as _;
         let origin = layout.bounds().position();

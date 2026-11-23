@@ -47,15 +47,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
     }
 
     fn update(
-        &mut self,
-        tree: &mut widget::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
-        viewport: &Rectangle,
+        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
+        renderer: &Renderer, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
     ) {
         if self.press {
             let pressed = tree.state.downcast_mut::<bool>();
@@ -74,14 +67,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
     }
 
     fn draw(
-        &self,
-        tree: &widget::Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
+        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         let b = layout.bounds();
         let (x, y, scale) = match self.press {

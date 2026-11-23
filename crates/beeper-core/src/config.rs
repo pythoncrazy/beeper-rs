@@ -124,10 +124,7 @@ impl Default for BeeperSettings {
 }
 
 const fn net(
-    kind: NetworkKind,
-    bridge_id: &'static str,
-    bridge_type: &'static str,
-    display_name: &'static str,
+    kind: NetworkKind, bridge_id: &'static str, bridge_type: &'static str, display_name: &'static str,
     brand_rgb: [u8; 3],
     [supports_on_device, supports_cloud, supports_sms_mms, supports_e2ee, supports_polls]: [bool; 5],
 ) -> NetworkSpec {
@@ -236,10 +233,7 @@ fn profile_folder(prefix: &str, profile: Option<&str>) -> String {
 }
 
 pub fn resolve_original_data_dir_for_os(
-    os_name: &str,
-    profile: Option<&str>,
-    env_vars: &HashMap<String, String>,
-    home_dir: &Path,
+    os_name: &str, profile: Option<&str>, env_vars: &HashMap<String, String>, home_dir: &Path,
 ) -> PathBuf {
     env_vars.get("BEEPER_ORIGINAL_DATA_DIR").map_or_else(
         || os_base_config_dir(os_name, env_vars, home_dir).join(profile_folder(ORIGINAL_BEEPER_FOLDER_PREFIX, profile)),
@@ -248,10 +242,7 @@ pub fn resolve_original_data_dir_for_os(
 }
 
 pub fn resolve_data_dir_for_os(
-    os_name: &str,
-    profile: Option<&str>,
-    env_vars: &HashMap<String, String>,
-    home_dir: &Path,
+    os_name: &str, profile: Option<&str>, env_vars: &HashMap<String, String>, home_dir: &Path,
 ) -> PathBuf {
     let dir = env_vars.get("BEEPER_RS_DATA_DIR").map_or_else(
         || os_base_config_dir(os_name, env_vars, home_dir).join(profile_folder(DATA_FOLDER_PREFIX, profile)),

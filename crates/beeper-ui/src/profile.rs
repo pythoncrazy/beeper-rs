@@ -105,8 +105,7 @@ fn same_email(a: &str, b: &str) -> bool {
 impl BeeperGuiApp {
     /// A Beeper API call on a worker thread. The demo account answers at once without the network.
     fn cloud_call(
-        &self,
-        call: impl FnOnce(&Cloud, &str) -> Result<(), CloudError> + Send + 'static,
+        &self, call: impl FnOnce(&Cloud, &str) -> Result<(), CloudError> + Send + 'static,
         done: fn(Result<(), String>) -> Msg,
     ) -> Task<UiMessage> {
         let st = self.store.read();

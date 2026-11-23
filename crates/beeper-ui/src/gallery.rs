@@ -147,11 +147,7 @@ fn turned((w, h): (f32, f32), turn: f32) -> (f32, f32) {
 /// `ring` of Desktop's `.tile`: its half pixel border, or the 2 px outline of a selected tile. iced can turn an image,
 /// but it cuts and rounds an image only along the screen axes, so the tile has its corners in its pixels.
 fn bake(
-    src: &image::Handle,
-    (w, h): (u32, u32),
-    (border, thick): (Color, f32),
-    radius: f32,
-    scale: f32,
+    src: &image::Handle, (w, h): (u32, u32), (border, thick): (Color, f32), radius: f32, scale: f32,
 ) -> image::Handle {
     let image::Handle::Rgba { width, height, pixels, .. } = src else { unreachable!("decoded media is RGBA") };
     let full = ::image::RgbaImage::from_raw(*width, *height, pixels.to_vec()).expect("RGBA pixels fill the image");

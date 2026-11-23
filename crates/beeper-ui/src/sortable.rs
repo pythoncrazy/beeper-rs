@@ -165,11 +165,7 @@ impl BeeperGuiApp {
 
     /// The message of Enter and Space on the item `id` of `list` in `window`, whose items show as `items`.
     pub(crate) fn pick(
-        window: Option<window::Id>,
-        list: List,
-        id: &str,
-        items: &Arc<[String]>,
-        cols: usize,
+        window: Option<window::Id>, list: List, id: &str, items: &Arc<[String]>, cols: usize,
     ) -> Option<UiMessage> {
         let (id, items) = (id.to_string(), items.clone());
         window.map(|window| UiMessage::Sort(Msg::Pick(Box::new(Pick { window, list, id, items, cols }))))

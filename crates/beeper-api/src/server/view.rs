@@ -482,10 +482,7 @@ pub(super) fn chat_type(c: &Chat) -> &'static str {
 /// Desktop's `mapChat`: `participants` keeps at most `max_participants` members (all for `None`), and `preview` adds
 /// the newest message like `listChats`.
 pub(super) fn chat<'a>(
-    st: &'a BeeperStore,
-    c: &'a Chat,
-    max_participants: Option<usize>,
-    preview: bool,
+    st: &'a BeeperStore, c: &'a Chat, max_participants: Option<usize>, preview: bool,
 ) -> ApiChat<'a> {
     let members = &c.participants.items;
     let shown = &members[..max_participants.map_or(members.len(), |n| n.min(members.len()))];

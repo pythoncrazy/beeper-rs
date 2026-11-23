@@ -55,15 +55,8 @@ impl Widget<UiMessage, Theme, Renderer> for Watch<'_> {
     );
 
     fn update(
-        &mut self,
-        tree: &mut advanced::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, UiMessage>,
-        viewport: &Rectangle,
+        &mut self, tree: &mut advanced::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
+        renderer: &Renderer, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, UiMessage>, viewport: &Rectangle,
     ) {
         let content = &mut tree.children[0];
         self.content.as_widget_mut().update(content, event, layout, cursor, renderer, clipboard, shell, viewport);
@@ -286,10 +279,7 @@ impl Widget<UiMessage, Theme, Renderer> for Target<'_> {
     );
 
     fn operate(
-        &mut self,
-        tree: &mut advanced::Tree,
-        layout: Layout<'_>,
-        renderer: &Renderer,
+        &mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer,
         operation: &mut dyn advanced::Operation,
     ) {
         operation.container(Some(&self.id), layout.bounds());
@@ -316,10 +306,7 @@ pub fn trap<'a>(content: impl Into<El<'a>>) -> El<'a> {
         );
 
         fn operate(
-            &mut self,
-            tree: &mut advanced::Tree,
-            layout: Layout<'_>,
-            renderer: &Renderer,
+            &mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer,
             operation: &mut dyn advanced::Operation,
         ) {
             operation.custom(None, layout.bounds(), &mut Trap);
@@ -428,11 +415,7 @@ impl Operation<Survey> for Surveying {
     }
 
     fn scrollable(
-        &mut self,
-        id: Option<&iced::widget::Id>,
-        bounds: Rectangle,
-        content: Rectangle,
-        at: Vector,
+        &mut self, id: Option<&iced::widget::Id>, bounds: Rectangle, content: Rectangle, at: Vector,
         _: &mut dyn Scrollable,
     ) {
         if let (true, Some(id)) = (self.inside, id) {
@@ -521,11 +504,7 @@ impl BeeperGuiApp {
     /// Chromium's keys of the focus in `window`: Tab and Shift+Tab, and Enter and the arrows on the focused control,
     /// or on the control with the focus when the window opens with `defaults`. Other keys are not the focus's.
     pub(crate) fn focus_key(
-        &self,
-        window: window::Id,
-        key: &Key,
-        mods: Modifiers,
-        defaults: bool,
+        &self, window: window::Id, key: &Key, mods: Modifiers, defaults: bool,
     ) -> Option<Task<UiMessage>> {
         let held = defaults || self.key_targets.contains_key(&window);
         let ask = match key.as_ref() {
@@ -552,12 +531,7 @@ impl BeeperGuiApp {
 
     /// A control of `window` that Tab reaches as `key`, with what the keys do on it and how it shows the focus.
     pub(crate) fn target<'a>(
-        &self,
-        window: Option<window::Id>,
-        key: impl Into<String>,
-        content: impl Into<El<'a>>,
-        keys: Keys,
-        look: Look,
+        &self, window: Option<window::Id>, key: impl Into<String>, content: impl Into<El<'a>>, keys: Keys, look: Look,
     ) -> El<'a> {
         let key = key.into();
         let lifted = self.key_sort.as_ref().is_some_and(|s| Some(s.window) == window && s.hides(&key));

@@ -287,9 +287,7 @@ pub(crate) type Memo<K, V> = RefCell<[HashMap<K, V>; 2]>;
 
 /// The value of `key` in `memo`, made by `make` once while the key stays in use.
 pub(crate) fn memo<K: std::hash::Hash + Eq, V: Clone>(
-    memo: &'static std::thread::LocalKey<Memo<K, V>>,
-    key: K,
-    make: impl FnOnce() -> V,
+    memo: &'static std::thread::LocalKey<Memo<K, V>>, key: K, make: impl FnOnce() -> V,
 ) -> V {
     let (new, old) = memo.with(|m| {
         let [new, old] = &*m.borrow();
@@ -844,11 +842,7 @@ pub fn btn_style(bgs: [Color; 3], fgs: [Color; 3], r: f32) -> impl Fn(&Theme, bu
 }
 
 pub fn bordered_btn(
-    bgs: [Color; 3],
-    fgs: [Color; 3],
-    border_col: Color,
-    width: f32,
-    r: f32,
+    bgs: [Color; 3], fgs: [Color; 3], border_col: Color, width: f32, r: f32,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
     move |t, s| button::Style {
         border: Border { color: border_col, width, radius: r.into() },
@@ -872,11 +866,7 @@ pub fn done_btn<'a, M: Clone + 'a>(p: &Palette) -> button::Button<'a, M> {
 }
 
 pub fn input_style(
-    bg: Color,
-    text_col: Color,
-    placeholder_col: Color,
-    accent_col: Color,
-    r: f32,
+    bg: Color, text_col: Color, placeholder_col: Color, accent_col: Color, r: f32,
 ) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + Copy {
     move |_, _| text_input::Style {
         background: bg.into(),
@@ -889,10 +879,7 @@ pub fn input_style(
 }
 
 pub fn pick_style(
-    bg: Color,
-    hover_bg: Color,
-    text_col: Color,
-    sub_col: Color,
+    bg: Color, hover_bg: Color, text_col: Color, sub_col: Color,
 ) -> impl Fn(&Theme, pick_list::Status) -> pick_list::Style + Copy {
     move |_, status| pick_list::Style {
         text_color: text_col,
@@ -909,10 +896,7 @@ pub fn pick_style(
 }
 
 pub fn pick_menu_style(
-    bg: Color,
-    hover_bg: Color,
-    text_col: Color,
-    border_col: Color,
+    bg: Color, hover_bg: Color, text_col: Color, border_col: Color,
 ) -> impl Fn(&Theme) -> menu::Style + Copy {
     move |_| menu::Style {
         background: bg.into(),

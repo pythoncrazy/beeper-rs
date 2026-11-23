@@ -358,15 +358,8 @@ impl<M> Widget<M, Theme, Renderer> for Lottie<'_> {
     }
 
     fn update(
-        &mut self,
-        tree: &mut widget::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Renderer,
-        _: &mut dyn Clipboard,
-        shell: &mut Shell<'_, M>,
-        viewport: &Rectangle,
+        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer,
+        _: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         let Event::Window(window::Event::RedrawRequested(now)) = event else { return };
         if layout.bounds().intersects(viewport) {
@@ -379,14 +372,8 @@ impl<M> Widget<M, Theme, Renderer> for Lottie<'_> {
     }
 
     fn draw(
-        &self,
-        tree: &widget::Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
+        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         // Nothing shows until a worker drew the first frame, like an animation that loads.
         let Some((_, frame)) = self.animation.drawn(self.pixels(layout.bounds(), scale())) else { return };

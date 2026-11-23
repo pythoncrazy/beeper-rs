@@ -56,11 +56,7 @@ impl BeeperGuiApp {
     /// of message `mid` is Desktop's `EnhancedImg playable`: an animation plays with "Autoplay GIFs" (`autoplay`), and
     /// without it shows its first frame with the play button.
     fn link_image<'a>(
-        &'a self,
-        mid: Option<(&str, bool)>,
-        url: Option<&str>,
-        (w, h): (f32, f32),
-        radius: border::Radius,
+        &'a self, mid: Option<(&str, bool)>, url: Option<&str>, (w, h): (f32, f32), radius: border::Radius,
     ) -> El<'a> {
         let Some((url, Some(Ok(frames)))) = url.map(|u| (u, self.media_at(u))) else {
             return Space::new().width(w).height(h).into();
@@ -85,11 +81,7 @@ impl BeeperGuiApp {
     /// A right click on the card opens the menu of message `mid` with the link's items. `autoplay` is Desktop's
     /// "Autoplay GIFs".
     pub(crate) fn view_link<'a>(
-        &'a self,
-        (mid, autoplay): (&str, bool),
-        link: &MessageLink,
-        max: f32,
-        dim: impl Fn(Color) -> Color,
+        &'a self, (mid, autoplay): (&str, bool), link: &MessageLink, max: f32, dim: impl Fn(Color) -> Color,
     ) -> El<'a> {
         let p = &self.pal;
         let menu = UiMessage::Message(crate::message::Msg::LinkMenu(mid.to_string(), link.url.clone()));
@@ -154,12 +146,7 @@ impl BeeperGuiApp {
     /// play button. Desktop's title links to the video and its play button starts the player. iced has no web view for
     /// the player, so a click on the card opens the video in the browser.
     fn view_youtube<'a>(
-        &'a self,
-        link: &MessageLink,
-        id: &str,
-        max: f32,
-        dim: impl Fn(Color) -> Color,
-        menu: UiMessage,
+        &'a self, link: &MessageLink, id: &str, max: f32, dim: impl Fn(Color) -> Color, menu: UiMessage,
     ) -> El<'a> {
         let p = &self.pal;
         let w = (0.45 * self.pane().size.width).min(400.0).min(max);

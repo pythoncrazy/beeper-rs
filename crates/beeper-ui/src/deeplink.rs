@@ -183,10 +183,7 @@ impl BeeperGuiApp {
     /// The end of a join of the Join a Matrix room view of the `draft`: Desktop opens the room and drops the draft,
     /// or shows why it could not in the view, or in a toast once the user has left the view.
     pub(crate) fn matrix_room_joined(
-        &mut self,
-        draft: Option<u32>,
-        r: Result<String, String>,
-        unrouted: bool,
+        &mut self, draft: Option<u32>, r: Result<String, String>, unrouted: bool,
     ) -> Task<UiMessage> {
         self.join_room.0 = false;
         let here = self.join_matrix_mode && self.creating_chat == draft;

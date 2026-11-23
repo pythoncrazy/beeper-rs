@@ -557,12 +557,7 @@ impl BeeperGuiApp {
     /// The results of New Chat: New Group and Join a Matrix room, the looked-up user, the people of the chats, the
     /// users that the accounts found, and the contacts.
     fn view_new_chat_results(
-        &self,
-        st: &BeeperStore,
-        all: &[String],
-        listed: &[String],
-        group: bool,
-        account: Option<&str>,
+        &self, st: &BeeperStore, all: &[String], listed: &[String], group: bool, account: Option<&str>,
     ) -> Column<'_, UiMessage> {
         let p = &self.pal;
         let q = self.new_chat_query.trim().to_lowercase();
@@ -667,10 +662,7 @@ impl BeeperGuiApp {
 
     /// The Connections that the accounts found for the query, in the order of their names.
     fn push_connections<'a>(
-        &'a self,
-        col: Column<'a, UiMessage>,
-        pending: usize,
-        found: &People,
+        &'a self, col: Column<'a, UiMessage>, pending: usize, found: &People,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
         let mut col = col.push(new_chat_heading(p, tr("Connections")));
@@ -696,13 +688,8 @@ impl BeeperGuiApp {
 
     /// The contacts, under the headings of their initials, with the networks of the contact that a click opened.
     fn push_contacts<'a>(
-        &'a self,
-        mut col: Column<'a, UiMessage>,
-        st: &BeeperStore,
-        contacts: &[&User],
-        all: &[String],
-        account: Option<&str>,
-        blank: bool,
+        &'a self, mut col: Column<'a, UiMessage>, st: &BeeperStore, contacts: &[&User], all: &[String],
+        account: Option<&str>, blank: bool,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
         col = col.push(new_chat_heading(p, tr("In your contacts")));
@@ -753,11 +740,7 @@ impl BeeperGuiApp {
 
     /// The networks of an opened contact: skeletons while they resolve, then each account that has the contact.
     fn push_contact_networks<'a>(
-        &'a self,
-        mut col: Column<'a, UiMessage>,
-        st: &BeeperStore,
-        nets: &Networks,
-        all: &[String],
+        &'a self, mut col: Column<'a, UiMessage>, st: &BeeperStore, nets: &Networks, all: &[String],
         account: Option<&str>,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
@@ -837,10 +820,7 @@ fn network_logo<'a>(a: &str) -> El<'a> {
 
 /// The footer of New Chat: its Start or Join pill, with the key that presses it, faded while it is off.
 fn new_chat_footer<'a>(
-    p: &Palette,
-    label: &'static str,
-    key: &'static str,
-    press: Option<UiMessage>,
+    p: &Palette, label: &'static str, key: &'static str, press: Option<UiMessage>,
 ) -> Row<'a, UiMessage> {
     let a = if press.is_some() { 1.0 } else { 0.4 };
     let label = row![med(label, 13.0), txt(key, 10.0).color(Color { a: 0.8 * a, ..Color::WHITE })];
