@@ -174,6 +174,11 @@ impl Cache {
                             rgba[0] = color[0];
                             rgba[1] = color[1];
                             rgba[2] = color[2];
+                            // The color's alpha over the coverage, which the
+                            // straight alpha blending of images then applies.
+                            rgba[3] = ((u32::from(rgba[3]) * u32::from(color[3])
+                                + 127)
+                                / 255) as u8;
                         }
                     });
                 }
