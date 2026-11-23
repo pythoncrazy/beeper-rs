@@ -751,15 +751,17 @@ fn held(bounds: Rectangle, p: Point) -> Point {
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for AutoScroll<'_, Message> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Auto>()
-    }
-
-    fn state(&self) -> tree::State {
-        tree::State::new(Auto::default())
-    }
-
-    crate::delegate::delegate!(children, diff, size, layout, operate, mouse_interaction, draw, overlay(Message));
+    crate::delegate::delegate!(
+        state(Auto),
+        children,
+        diff,
+        size,
+        layout,
+        operate,
+        mouse_interaction,
+        draw,
+        overlay(Message)
+    );
 
     fn update(
         &mut self,
