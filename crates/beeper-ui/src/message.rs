@@ -624,7 +624,7 @@ pub(crate) const REPLIES_RISE: std::time::Duration = std::time::Duration::from_m
 /// Desktop's `.reply-thread` fades in over 0.2 s and its messages rise 10 px over 0.6 s, both on
 /// `cubic-bezier(.165, .84, .44, 1)`.
 pub(crate) fn replies_reveal(t: f32) -> (f32, f32) {
-    let curve = |d: f32| crate::style::cubic_bezier((t / d).clamp(0.0, 1.0), [0.165, 0.84, 0.44, 1.0]);
+    let curve = |d: f32| crate::cubic_bezier((t / d).clamp(0.0, 1.0), [0.165, 0.84, 0.44, 1.0]);
     (curve(0.2), 10.0 * (1.0 - curve(REPLIES_RISE.as_secs_f32())))
 }
 
@@ -959,7 +959,7 @@ impl BeeperGuiApp {
         let typing = st.typing.get(chat).filter(|ids| !ids.is_empty());
         let Some((ids, on, at)) = self.typing_shown.get(chat) else { return typing.map(|ids| (&ids[..], 1.0)) };
         let t = at.elapsed().as_secs_f32() / TYPING_FADE.as_secs_f32();
-        let v = if t < 1.0 { crate::style::cubic_bezier(t, [0.42, 0.0, 0.58, 1.0]) } else { 1.0 };
+        let v = if t < 1.0 { crate::cubic_bezier(t, [0.42, 0.0, 0.58, 1.0]) } else { 1.0 };
         let v = if *on { v } else { 1.0 - v };
         (v > 0.0).then(|| (&typing.unwrap_or(ids)[..], v))
     }
@@ -3126,7 +3126,7 @@ impl BeeperGuiApp {
             // once the pointer is on the flyover.
             let shown = |at: Option<std::time::Instant>, k: usize| {
                 let t = at.map_or(1.0, |at| at.elapsed().as_secs_f32() - k as f32 * FLYOVER_STAGGER) / 0.2;
-                crate::style::cubic_bezier(t.clamp(0.0, 1.0), [0.0, 0.0, 0.58, 1.0])
+                crate::cubic_bezier(t.clamp(0.0, 1.0), [0.0, 0.0, 0.58, 1.0])
             };
             let hover_at = self.pane().hover_msg_at;
             // Desktop's flyover buttons: a 20 px Material icon, drawn at its 1.2 scale, in 6 px of padding.
