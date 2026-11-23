@@ -80,6 +80,7 @@ where
                 renderer,
                 mouse_interaction: mouse::Interaction::None,
                 redraw_at: None,
+                resize_due: None,
                 preedit: None,
                 ime_state: None,
             },
@@ -97,13 +98,13 @@ where
     pub fn is_idle(&self) -> bool {
         self.entries
             .values()
-            .all(|window| window.redraw_at.is_none())
+            .all(|window| window.redraw_at.is_none() && window.resize_due.is_none())
     }
 
     pub fn redraw_at(&self) -> Option<Instant> {
         self.entries
             .values()
-            .filter_map(|window| window.redraw_at)
+            .flat_map(|window| window.redraw_at.into_iter().chain(window.resize_due))
             .min()
     }
 
@@ -171,6 +172,8 @@ where
     pub surface_version: u64,
     pub renderer: P::Renderer,
     pub redraw_at: Option<Instant>,
+    /// When a resized window draws if no message has redrawn it by then.
+    pub resize_due: Option<Instant>,
     preedit: Option<Preedit<P::Renderer>>,
     ime_state: Option<(Rectangle, input_method::Purpose)>,
 }

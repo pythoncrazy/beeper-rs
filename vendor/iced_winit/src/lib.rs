@@ -732,6 +732,11 @@ async fn run_instance<P>(
                                 window.raw.request_redraw();
                                 window.redraw_at = None;
                             }
+
+                            if window.resize_due.is_some_and(|at| at <= now) {
+                                window.raw.request_redraw();
+                                window.resize_due = None;
+                            }
                         }
 
                         if let Some(redraw_at) = window_manager.redraw_at() {
@@ -778,6 +783,13 @@ async fn run_instance<P>(
                         else {
                             continue;
                         };
+
+                        // A resize whose messages have not come yet: they redraw the window with the view of
+                        // its new size. On X11 the exposure of the resized window asks for this redraw before
+                        // the program sees the resize, which would draw the view of the old size once more.
+                        if window.resize_due.is_some() {
+                            continue;
+                        }
 
                         let physical_size = window.state.physical_size();
                         let mut logical_size = window.state.logical_size();
@@ -1063,8 +1075,14 @@ async fn run_instance<P>(
                         };
 
                         match window_event {
+                            // The resize goes to the program as an event, whose messages redraw every window
+                            // with the view of the new size. A redraw before them would draw the view of the old
+                            // size at the new one, and the messages would draw the same frame again; the window
+                            // only draws on its own if no message comes.
                             winit::event::WindowEvent::Resized(_) => {
-                                window.raw.request_redraw();
+                                let _ = window
+                                    .resize_due
+                                    .get_or_insert(Instant::now() + RESIZE_WAIT);
                             }
                             winit::event::WindowEvent::ThemeChanged(theme) => {
                                 let mode = conversion::theme_mode(theme);
@@ -1263,6 +1281,7 @@ async fn run_instance<P>(
                             }
 
                             for (_id, window) in window_manager.iter_mut() {
+                                window.resize_due = None;
                                 window.raw.request_redraw();
                             }
                         }
@@ -1287,6 +1306,9 @@ async fn run_instance<P>(
 
     let _ = ManuallyDrop::into_inner(user_interfaces);
 }
+
+/// How long a resized window waits for the messages of its resize before it draws without them.
+const RESIZE_WAIT: crate::core::time::Duration = crate::core::time::Duration::from_millis(32);
 
 /// Builds a window's [`UserInterface`] for the [`Program`].
 fn build_user_interface<'a, P: Program>(
