@@ -151,15 +151,12 @@ impl Decryptor {
         let key = self.key()?;
         let start = out.len();
         out.extend_from_slice(&segment[MARK_LEN + NONCE_LEN..]);
-        match key.open_in_place(nonce, Aad::from(aad), &mut out[start..]) {
-            Ok(plain) => {
-                let n = plain.len();
-                out.truncate(start + n);
-            }
-            Err(_) => {
-                out.truncate(start);
-                return Err(format!("segment {} failed authentication", self.counter));
-            }
+        if let Ok(plain) = key.open_in_place(nonce, Aad::from(aad), &mut out[start..]) {
+            let n = plain.len();
+            out.truncate(start + n);
+        } else {
+            out.truncate(start);
+            return Err(format!("segment {} failed authentication", self.counter));
         }
         self.counter += 1;
         self.done = last;

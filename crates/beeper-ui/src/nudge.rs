@@ -53,7 +53,7 @@ pub(crate) fn shake_offset(t: f32) -> (f32, f32) {
     let at = (t / SHAKE.as_secs_f32()).clamp(0.0, 1.0);
     let i = KEYFRAMES.iter().rposition(|k| k.0 <= at).expect("the first keyframe is at 0").min(KEYFRAMES.len() - 2);
     let ((a, ax, ay), (b, bx, by)) = (KEYFRAMES[i], KEYFRAMES[i + 1]);
-    let e = crate::style::cubic_bezier((at - a) / (b - a), EASE);
+    let e = crate::cubic_bezier((at - a) / (b - a), EASE);
     (ax + (bx - ax) * e, ay + (by - ay) * e)
 }
 

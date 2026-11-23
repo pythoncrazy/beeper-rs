@@ -2376,12 +2376,11 @@ impl BeeperStore {
         let Some(idx) = self.resolve_chat_idx(parent) else { return };
         let Some(mut merge) = self.chats[idx].merge.clone() else { return };
         merge.chat_ids.retain(|r| r != room);
-        match merge.chat_ids.is_empty() {
-            true => self.unmerge(parent),
-            false => {
-                self.set_merge(idx, Some(merge));
-                self.queue(parent, Outgoing::LabelChild(room.into(), false));
-            }
+        if merge.chat_ids.is_empty() {
+            self.unmerge(parent)
+        } else {
+            self.set_merge(idx, Some(merge));
+            self.queue(parent, Outgoing::LabelChild(room.into(), false));
         }
     }
 
@@ -2390,12 +2389,11 @@ impl BeeperStore {
             msg.is_bookmarked = Some(self.bookmarks.contains_key(&msg.id));
         }
         // A chat that `with_chat` writes into without loading it reads only the stored message.
-        let found = match self.is_unloaded(&msg.chat_id) {
-            true => self.loaded_idx(&msg.id).or_else(|| self.chat_message(&msg.chat_id, &msg.id)),
-            false => {
-                self.load_chat(&msg.chat_id);
-                self.loaded_idx(&msg.id)
-            }
+        let found = if self.is_unloaded(&msg.chat_id) {
+            self.loaded_idx(&msg.id).or_else(|| self.chat_message(&msg.chat_id, &msg.id))
+        } else {
+            self.load_chat(&msg.chat_id);
+            self.loaded_idx(&msg.id)
         };
         // Desktop's upsert keeps `isDeleted` when the message has a removal.
         let stored = found.is_some_and(|i| self.messages[i].removed);
@@ -3193,13 +3191,12 @@ impl BeeperStore {
         if self.thread_unread(&self.chats[idx], root).0 == 0 {
             return;
         }
-        let (key, event) = match through {
-            Some(id) => (self.messages[self.msg_idx_by_id[id]].sort_key.clone(), id.to_string()),
-            None => {
-                let rows = self.thread_rows(&self.chats[idx], root);
-                let last = rows.into_iter().max_by(|a, b| a.key.cmp(&b.key)).expect("an unread thread has rows");
-                (last.key, last.id)
-            }
+        let (key, event) = if let Some(id) = through {
+            (self.messages[self.msg_idx_by_id[id]].sort_key.clone(), id.to_string())
+        } else {
+            let rows = self.thread_rows(&self.chats[idx], root);
+            let last = rows.into_iter().max_by(|a, b| a.key.cmp(&b.key)).expect("an unread thread has rows");
+            (last.key, last.id)
         };
         if self.chats[idx].thread_reads[root] >= key {
             return;
@@ -3380,16 +3377,13 @@ impl BeeperStore {
         self.reminders_room = Some(room.into());
         let mut touched = BTreeSet::new();
         for (target, r) in changes {
-            let old = match r {
-                Some((event, r)) => {
-                    self.reminder_events.insert(target.clone(), event);
-                    touched.insert(r.room_id.clone());
-                    self.message_reminders.insert(target, r)
-                }
-                None => {
-                    self.reminder_events.remove(&target);
-                    self.message_reminders.remove(&target)
-                }
+            let old = if let Some((event, r)) = r {
+                self.reminder_events.insert(target.clone(), event);
+                touched.insert(r.room_id.clone());
+                self.message_reminders.insert(target, r)
+            } else {
+                self.reminder_events.remove(&target);
+                self.message_reminders.remove(&target)
             };
             touched.extend(old.map(|r| r.room_id));
         }
