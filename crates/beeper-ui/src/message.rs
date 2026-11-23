@@ -4599,17 +4599,7 @@ pub(crate) mod tests {
 
     /// The pixels of a frame of `sim`, at its scale of 2. The simulator does not find the text of overlays.
     pub(crate) fn pixels(sim: &mut iced_test::Simulator<'_, UiMessage>) -> ::image::RgbaImage {
-        let dir = std::env::temp_dir().join(format!(
-            "beeper-rs-msg-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("shot"));
-        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-        let shot = ::image::open(&png).unwrap().into_rgba8();
-        std::fs::remove_dir_all(&dir).unwrap();
-        shot
+        crate::focus::tests::pixels(sim, &iced::Theme::Light, "msg")
     }
 
     /// Whether the pixel is `c`, give or take antialiasing.
