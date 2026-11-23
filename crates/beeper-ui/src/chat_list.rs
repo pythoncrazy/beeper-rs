@@ -677,6 +677,12 @@ impl BeeperGuiApp {
         self.select_mode || !self.selection.is_empty()
     }
 
+    /// Whether the main window is in Desktop's selection mode (`threadSelectionMode`), outside the chat windows,
+    /// which have their own: its composer is gone and its open chat is not read.
+    pub(crate) fn main_selecting(&self) -> bool {
+        self.swapped.is_none() && self.drawing.get().is_none() && self.selecting_chats()
+    }
+
     /// Whether the keys of the selection mode move the selection: not while the command bar or a dialog is open.
     pub(crate) fn selection_keys(&self) -> bool {
         self.selecting_chats()
