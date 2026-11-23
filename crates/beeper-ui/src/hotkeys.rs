@@ -105,18 +105,19 @@ impl BeeperGuiApp {
                 self.step_chat(if name == "Select Next Chat" { 1 } else { -1 });
                 None
             }
-            // Desktop's `SCROLL_TO_END_OF_CHAT`: unless the caret is in the composer before the end of its text.
+            // Desktop's `SCROLL_TO_END_OF_CHAT`, a smooth scroll unless the caret is in the composer before the end
+            // of its text.
             "Scroll to the bottom of a chat" => {
                 let text = self.pane.composer.text();
                 let end = format::offset(&text, self.pane.composer.cursor().position) == text.len();
-                let bottom = || operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
+                let bottom = UiMessage::Timeline(crate::timeline::Msg::ScrollToBottom);
                 return match (chat.is_some(), end) {
                     (false, _) => Task::none(),
-                    (true, true) => bottom(),
-                    (true, false) => {
-                        operation::is_focused("composer-input")
-                            .then(move |focused| if focused { Task::none() } else { bottom() })
-                    }
+                    (true, true) => self.update(bottom),
+                    (true, false) => operation::is_focused("composer-input").then(move |focused| match focused {
+                        true => Task::none(),
+                        false => Task::done(bottom.clone()),
+                    }),
                 };
             }
             "Select Next Unread Chat" => {

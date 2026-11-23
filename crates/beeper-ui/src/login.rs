@@ -1194,356 +1194,19 @@ impl BeeperGuiApp {
 
     pub fn view_login(&self) -> El<'_> {
         let (l, p) = (&self.login, &self.pal);
-        let link = |s: &'static str, m: UiMessage| span(s).color(p.accent).link(m);
         let body: El<'_> = match l.screen {
-            Screen::Import => {
-                let dir = l.source.as_deref().expect("import screen has a Beeper Desktop dir").display().to_string();
-                let info = format!(
-                    "beeper-rs found Beeper Desktop data in\n{dir}\n\nCopy your account and chats into beeper-rs? Beeper Desktop stays unchanged."
-                );
-                column![
-                    Space::new().height(40),
-                    heading("Your Chats", 36.0),
-                    container(welcome_scene()).height(Fill),
-                    actions(
-                        vec![
-                            container(txt(info, 12.0).color(p.on_secondary).center().width(Fill))
-                                .padding(Padding::ZERO.bottom(8))
-                                .into(),
-                            brand_button(
-                                p,
-                                label("Start Fresh", None),
-                                Brand::Muted,
-                                self.login_act(Stop::Fresh),
-                                false
-                            ),
-                            brand_button(
-                                p,
-                                label("Copy from Beeper Desktop", None),
-                                Brand::Primary,
-                                self.login_act(Stop::Import),
-                                l.busy
-                            ),
-                        ],
-                        24.0
-                    ),
-                ]
-                .into()
-            }
-            Screen::Welcome => {
-                // Chromium's focus ring of a link: a 1 px orange outline.
-                let ring = (l.stop() == Some(Stop::Terms))
-                    .then(|| border::rounded(2).color(Color::from_rgb8(229, 151, 0)).width(1));
-                // Desktop's one sentence with the two links in it, wrapped like `text-wrap: balance`.
-                let sentence = tr("By continuing, you agree to our %1$s and have read our %2$s.");
-                let legal = |s| trx(s, "onboarding legal link label");
-                let (terms_label, privacy_label) = (legal("terms of use"), legal("privacy policy"));
-                let mut spans = Vec::new();
-                let mut rest = sentence;
-                while let Some(at) = rest.find("%1$s").into_iter().chain(rest.find("%2$s")).min() {
-                    spans.push(span(&rest[..at]).color(p.text));
-                    spans.push(match &rest[at..at + 4] {
-                        "%1$s" => link(terms_label, UiMessage::OpenUrl(TERMS_URL.into())).border_maybe(ring),
-                        _ => link(privacy_label, UiMessage::OpenUrl(PRIVACY_URL.into())),
-                    });
-                    rest = &rest[at + 4..];
-                }
-                spans.push(span(rest).color(p.text));
-                let plain = sentence.replace("%1$s", terms_label).replace("%2$s", privacy_label);
-                let terms = rich_text(spans)
-                    .on_link_click(|m: UiMessage| m)
-                    .size(rem(11.0))
-                    .line_height(iced::widget::text::LineHeight::Absolute(rem(14.0).into()))
-                    .width(crate::style::balanced_width(&plain, 278.0, 11.0))
-                    .center();
-                let terms = container(terms).center_x(Fill);
-                let google = svg(GOOGLE.clone()).width(18).height(18);
-                let google_label = trxf("Continue with %s", "button label", &[&"Google"]);
-                let mail =
-                    svg(ICONS[0].clone()).width(18).height(18).style(|_, _| svg::Style { color: Some(Color::WHITE) });
-                column![
-                    container(welcome_scene()).height(Fill),
-                    Space::new().height(24),
-                    actions(
-                        vec![
-                            container(terms).padding(Padding::ZERO.bottom(8)).into(),
-                            brand_button(
-                                p,
-                                label(google_label, Some(google.into())),
-                                Brand::Muted,
-                                self.login_act(Stop::Google),
-                                false
-                            ),
-                            brand_button(
-                                p,
-                                label(tr("Continue with Email"), Some(mail.into())),
-                                Brand::Primary,
-                                self.login_act(Stop::Email),
-                                false
-                            ),
-                        ],
-                        24.0
-                    ),
-                ]
-                .into()
-            }
-            Screen::Email => {
-                let free = !l.busy;
-                let first = match l.password_login {
-                    true => field(
-                        p,
-                        EMAIL_INPUT,
-                        trx("Username", "input placeholder"),
-                        &l.user,
-                        free.then_some(LoginMsg::User),
-                    ),
-                    false => field(p, EMAIL_INPUT, tr("Email"), &l.email, free.then_some(LoginMsg::Email)),
-                };
-                // Desktop's password field has no floating label.
-                let password = l.password_login.then(|| {
-                    let hint = trx("Enter Password", "input placeholder");
-                    brand_input(p, PASSWORD_INPUT, hint, &l.password, free.then_some(LoginMsg::Password))
-                        .secure(true)
-                        .into()
-                });
-                let next = brand_button(
-                    p,
-                    label(trx("Next", "button label"), None),
-                    Brand::Primary,
-                    self.login_act(Stop::Next),
-                    l.busy,
-                );
-                let toggle = l.password_link.then(|| {
-                    let text = match l.password_login {
-                        true => trx("Use magic code", "button label"),
-                        false => trx("Login with password", "button label"),
-                    };
-                    let link = button(txt(text, 13.0).color(p.accent)).bare(p.accent);
-                    container(link.on_press_maybe(self.login_act(Stop::Toggle))).center_x(Fill).into()
-                });
-                // The illustration gives its room to the fields of the password login.
-                let art = match l.password_link {
-                    true => art(1, Fill),
-                    false => column![Space::new().height(Fill), art(1, 314.0), Space::new().height(Fill)].into(),
-                };
-                let form = [Some(first), password, Some(next), toggle].into_iter().flatten().collect();
-                column![
-                    Space::new().height(40),
-                    heading(tr("Enter your Email"), 36.0),
-                    Space::new().height(FLOAT_LABEL),
-                    art,
-                    actions(form, 24.0),
-                ]
-                .into()
-            }
-            Screen::Code => {
-                // Desktop's `OTPInput`: six 41.3x56 slots 8 px apart, with a 2 px ring outside the focused slot, and
-                // red digits and rings on all slots after an error.
-                let error = l.error.is_some();
-                let focused = l.stop() == Some(Stop::Field);
-                let slots = row((0..6).map(|i| {
-                    let ink = if error { ERROR_RED } else { p.strong };
-                    let digit: Option<El<'_>> = l
-                        .code
-                        .chars()
-                        .nth(i)
-                        .map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(rem(36.0))).color(ink).into());
-                    let at = focused && i == l.slot;
-                    let caret = (at && i >= l.code.len())
-                        .then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
-                    let edge = match (error, at) {
-                        (true, _) => ERROR_RED,
-                        (false, true) => p.accent,
-                        (false, false) => CLEAR,
-                    };
-                    let slot = container(digit.or(caret).unwrap_or_else(|| Space::new().into()))
-                        .center_x(41.3)
-                        .center_y(56)
-                        .style(fill_box(if error { CLEAR } else { p.chip }, 12.0));
-                    container(slot).padding(2).style(bordered_box(CLEAR, edge, 2.0, 14.0)).into()
-                }))
-                .spacing(4);
-                // Each slot of Desktop is an input; beeper-rs takes their typing and pastes in one empty input over them,
-                // and its keys in `code_key`. A press focuses the first empty slot.
-                let capture = text_input("", "")
-                    .id(CODE_INPUT)
-                    .on_input(|v| LoginMsg::Slot(v, false).into())
-                    .on_paste(|v| LoginMsg::Slot(v, true).into())
-                    .size(rem(28.0))
-                    .padding(14)
-                    .style(input_style(CLEAR, CLEAR, CLEAR, CLEAR, 0.0));
-                let press = mouse_area(container(Space::new()).width(Fill).height(60))
-                    .interaction(iced::mouse::Interaction::Text)
-                    .on_press(LoginMsg::SlotsPressed.into());
-                let otp = stack![container(slots).center_x(Fill), container(capture).height(60), press].height(60);
-                // `otpContainer`: the lock animation, 70 px over the heading, and the 4 px under its inline box, with the
-                // slots on its bottom edge.
-                let lock =
-                    stack![column![art(2, 314.0), Space::new().height(4 + 2)], container(otp).align_bottom(Fill)];
-                let info = tr("Check %(email)s for your login code").replace("%(email)s", l.email.trim());
-                let foot = rich_text![
-                    span(format!("{} ", tr("Didn't get a code?"))).color(p.on_secondary),
-                    span(trx("Resend", "button label")).color(p.accent).link(UiMessage::Login(LoginMsg::Resend))
-                ]
-                .on_link_click(move |m: UiMessage| if l.busy { UiMessage::Noop } else { m })
-                .size(rem(11.0))
-                .line_height(iced::Pixels(rem(14.0)));
-                // iced finds the link of a rich text as if its line started at the left of the text, so the line takes
-                // its own width and the container centers it: a wider centered text would take the clicks on
-                // "Resend" somewhere left of it.
-                let foot = container(foot).center_x(Fill);
-                // Desktop's floating `small` error, 8 px over the form.
-                let error = l.error.as_deref().map(|e| txt(e, 10.4).color(p.text_danger).center().width(Fill));
-                let error =
-                    container(column![].push(error)).height(ERROR_ROOM - 8.0).align_bottom(Fill).padding([0, 18]);
-                // Desktop's `space-between` column with the 70 px overlap: the lock starts 20 px under the top, and
-                // takes the room of the error and of the 2 px ring there too, so its gaps are Desktop's.
-                let form = column![
-                    Space::new().height(20.0 + 2.0 + ERROR_ROOM),
-                    Space::new().height(Fill),
-                    lock,
-                    Space::new().height(Fill),
-                    error,
-                    Space::new().height(8),
-                    actions(
-                        vec![
-                            container(
-                                txt(info, 13.0)
-                                    .line_height(iced::Pixels(rem(16.0)))
-                                    .color(p.on_secondary)
-                                    .center()
-                                    .width(Fill)
-                            )
-                            .padding(Padding::ZERO.bottom(8))
-                            .into(),
-                            brand_button(
-                                p,
-                                label(tr("Open Email"), None),
-                                Brand::Primary,
-                                self.login_act(Stop::OpenEmail),
-                                l.busy
-                            ),
-                            container(foot).padding(Padding::ZERO.top(8)).height(36).center_y(36).into(),
-                        ],
-                        24.0
-                    ),
-                ];
-                let top = column![Space::new().height(50), heading(tr("Enter Code"), 36.0)].height(Fill);
-                stack![top, form].into()
-            }
-            Screen::Accounts => {
-                let st = self.store.read();
-                let search = crate::networks::search_field(p, &l.query, |q| LoginMsg::Query(q).into());
-                let divider = container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0));
-                let grid = scrollable(self.view_networks(&st, &l.query)).height(Fill);
-                // Desktop's continue bar shows once a network account is connected (`hasConnectedNetwork`).
-                let go_on = st.has_connected_network().then(|| {
-                    let go_on = brand_button(
-                        p,
-                        label(tr("Continue"), None),
-                        Brand::Primary,
-                        Some(LoginMsg::Continue.into()),
-                        false,
-                    );
-                    column![
-                        container(Space::new()).width(Fill).height(1).style(fill_box(p.border_weak, 0.0)),
-                        container(go_on).padding(12)
-                    ]
-                });
-                // One line of the footer takes 31 px, and a wrapped footer takes more.
-                let foot = self.view_accounts_footer(&st).map(|f| container(f).padding([3, 0]));
-                column![
-                    {
-                        let (headline, width) = gradient_text(tr("Connect Chat Accounts"), H3, 48.0);
-                        let headline = mouse_area(svg(headline).width(width).height(48));
-                        container(headline.on_press(LoginMsg::Headline.into())).center_x(Fill)
-                    },
-                    Space::new().height(8),
-                    container(column![search, divider, grid].push(go_on)).height(Fill).style(card_style(p.card)),
-                ]
-                .push(foot)
-                .padding([0, 8])
-                .into()
-            }
+            Screen::Import => self.view_login_import(),
+            Screen::Welcome => self.view_login_welcome(),
+            Screen::Email => self.view_login_email(),
+            Screen::Code => self.view_login_code(),
+            Screen::Accounts => self.view_login_accounts(),
             Screen::Verify => self.view_onboarding_verify(),
             Screen::RecoveryKey => self.view_onboarding_key(),
             Screen::Syncing => self.view_onboarding_syncing(),
             Screen::Preamble => self.view_onboarding_preamble(),
             Screen::NewKey | Screen::ConfirmKey => self.view_onboarding_new_key(),
             Screen::Reset => self.view_onboarding_reset(),
-            Screen::Username => {
-                // Desktop shows the same text for every name that the rules or the server refuse.
-                let refused =
-                    (l.available == Some(false)).then(|| tr("Username is not available. Try something else."));
-                let icon = |i: usize, size: f32, color: Color, msg: Option<UiMessage>| -> El<'_> {
-                    let glyph = svg(ICONS[i].clone())
-                        .width(size)
-                        .height(size)
-                        .style(move |_, _| svg::Style { color: Some(color) });
-                    match msg {
-                        Some(m) => button(container(glyph).center(20))
-                            .padding(0)
-                            .style(btn_style([CLEAR; 3], [color; 3], 4.0))
-                            .on_press(m)
-                            .into(),
-                        None => container(glyph).center(20).into(),
-                    }
-                };
-                // `--color-solids-green` and `--color-on-surface-variant`.
-                let (green, grey) = (Color::from_rgb8(25, 186, 59), p.muted);
-                // Desktop's `basketball-spinner` while the name is checked, else `done` for a free name.
-                let status: Option<El<'_>> = match (l.checking, l.available) {
-                    (true, _) => Some(container(svg(SPINNER.clone()).width(20).height(20)).center(20).into()),
-                    (false, Some(true)) if !l.username.is_empty() => Some(icon(2, 20.0, green, None)),
-                    _ => None,
-                };
-                let icons = [
-                    status,
-                    (!l.suggestions.is_empty()).then(|| icon(3, 18.0, grey, Some(LoginMsg::NextSuggestion.into()))),
-                    (!l.username.is_empty())
-                        .then(|| icon(4, 20.0, grey, Some(LoginMsg::Username(String::new()).into()))),
-                ];
-                let name = field_with_icons(
-                    p,
-                    USERNAME_INPUT,
-                    tr("Username"),
-                    &l.username,
-                    (!l.busy).then_some(LoginMsg::Username),
-                    icons.into_iter().flatten().collect(),
-                );
-                // Desktop's floating `small` error, 20 px over the field: a layer, so that it moves nothing.
-                let error =
-                    l.error.as_deref().or(refused).map(|e| txt(e, 10.4).color(p.text_danger).center().width(Fill));
-                let over_form = 20.0 + 38.0 + 8.0 + 33.0 + 52.0;
-                let error = column![
-                    Space::new().height(Fill),
-                    column![].push(error).padding([0, 18]),
-                    Space::new().height(over_form)
-                ];
-                let screen = column![
-                    Space::new().height(34),
-                    heading(tr("Pick a Username"), 32.0),
-                    // The room of the floating label, so that the gaps are Desktop's.
-                    Space::new().height(FLOAT_LABEL),
-                    Space::new().height(Fill),
-                    art(0, 314.0),
-                    Space::new().height(Fill),
-                    actions(
-                        vec![
-                            name,
-                            brand_button(
-                                p,
-                                label(trx("Next", "button label"), None),
-                                Brand::Primary,
-                                self.login_act(Stop::Next),
-                                l.busy
-                            ),
-                        ],
-                        52.0
-                    ),
-                ];
-                stack![screen, error].into()
-            }
+            Screen::Username => self.view_login_username(),
         };
         let ink = p.text;
         let chevron = svg(ICONS[1].clone()).width(18).height(18).style(move |_, _| svg::Style { color: Some(ink) });
@@ -1581,6 +1244,352 @@ impl BeeperGuiApp {
         let (window, menu_drop) = self.with_menu_bar(window.into());
         let hotkeys = self.hotkeys_modal.as_deref().map(|q| self.view_hotkeys_modal(q, SIZE));
         stack![window].push(menu_drop).push(hotkeys).into()
+    }
+
+    /// The import screen, when Beeper Desktop data was found: Start Fresh, or copy its account and chats.
+    fn view_login_import(&self) -> El<'_> {
+        let (l, p) = (&self.login, &self.pal);
+        let dir = l.source.as_deref().expect("import screen has a Beeper Desktop dir").display().to_string();
+        let info = format!(
+            "beeper-rs found Beeper Desktop data in\n{dir}\n\nCopy your account and chats into beeper-rs? Beeper Desktop stays unchanged."
+        );
+        column![
+            Space::new().height(40),
+            heading("Your Chats", 36.0),
+            container(welcome_scene()).height(Fill),
+            actions(
+                vec![
+                    container(txt(info, 12.0).color(p.on_secondary).center().width(Fill))
+                        .padding(Padding::ZERO.bottom(8))
+                        .into(),
+                    brand_button(p, label("Start Fresh", None), Brand::Muted, self.login_act(Stop::Fresh), false),
+                    brand_button(
+                        p,
+                        label("Copy from Beeper Desktop", None),
+                        Brand::Primary,
+                        self.login_act(Stop::Import),
+                        l.busy
+                    ),
+                ],
+                24.0
+            ),
+        ]
+        .into()
+    }
+
+    /// The welcome screen: the terms, and Continue with Google or with Email.
+    fn view_login_welcome(&self) -> El<'_> {
+        let p = &self.pal;
+        let google = svg(GOOGLE.clone()).width(18).height(18);
+        let google_label = trxf("Continue with %s", "button label", &[&"Google"]);
+        let mail = svg(ICONS[0].clone()).width(18).height(18).style(|_, _| svg::Style { color: Some(Color::WHITE) });
+        column![
+            container(welcome_scene()).height(Fill),
+            Space::new().height(24),
+            actions(
+                vec![
+                    container(self.view_login_terms()).padding(Padding::ZERO.bottom(8)).into(),
+                    brand_button(
+                        p,
+                        label(google_label, Some(google.into())),
+                        Brand::Muted,
+                        self.login_act(Stop::Google),
+                        false
+                    ),
+                    brand_button(
+                        p,
+                        label(tr("Continue with Email"), Some(mail.into())),
+                        Brand::Primary,
+                        self.login_act(Stop::Email),
+                        false
+                    ),
+                ],
+                24.0
+            ),
+        ]
+        .into()
+    }
+
+    /// Desktop's one sentence of the welcome screen with the links to the terms and the privacy policy in it, wrapped
+    /// like `text-wrap: balance`.
+    fn view_login_terms(&self) -> El<'_> {
+        let p = &self.pal;
+        let link = |s: &'static str, m: UiMessage| span(s).color(p.accent).link(m);
+        // Chromium's focus ring of a link: a 1 px orange outline.
+        let ring = (self.login.stop() == Some(Stop::Terms))
+            .then(|| border::rounded(2).color(Color::from_rgb8(229, 151, 0)).width(1));
+        let sentence = tr("By continuing, you agree to our %1$s and have read our %2$s.");
+        let legal = |s| trx(s, "onboarding legal link label");
+        let (terms_label, privacy_label) = (legal("terms of use"), legal("privacy policy"));
+        let mut spans = Vec::new();
+        let mut rest = sentence;
+        while let Some(at) = rest.find("%1$s").into_iter().chain(rest.find("%2$s")).min() {
+            spans.push(span(&rest[..at]).color(p.text));
+            spans.push(match &rest[at..at + 4] {
+                "%1$s" => link(terms_label, UiMessage::OpenUrl(TERMS_URL.into())).border_maybe(ring),
+                _ => link(privacy_label, UiMessage::OpenUrl(PRIVACY_URL.into())),
+            });
+            rest = &rest[at + 4..];
+        }
+        spans.push(span(rest).color(p.text));
+        let plain = sentence.replace("%1$s", terms_label).replace("%2$s", privacy_label);
+        let terms = rich_text(spans)
+            .on_link_click(|m: UiMessage| m)
+            .size(rem(11.0))
+            .line_height(iced::widget::text::LineHeight::Absolute(rem(14.0).into()))
+            .width(crate::style::balanced_width(&plain, 278.0, 11.0))
+            .center();
+        container(terms).center_x(Fill).into()
+    }
+
+    /// The email screen: the email, or the username and the password of a password login, and Next.
+    fn view_login_email(&self) -> El<'_> {
+        let (l, p) = (&self.login, &self.pal);
+        let free = !l.busy;
+        let first = match l.password_login {
+            true => {
+                field(p, EMAIL_INPUT, trx("Username", "input placeholder"), &l.user, free.then_some(LoginMsg::User))
+            }
+            false => field(p, EMAIL_INPUT, tr("Email"), &l.email, free.then_some(LoginMsg::Email)),
+        };
+        // Desktop's password field has no floating label.
+        let password = l.password_login.then(|| {
+            let hint = trx("Enter Password", "input placeholder");
+            brand_input(p, PASSWORD_INPUT, hint, &l.password, free.then_some(LoginMsg::Password)).secure(true).into()
+        });
+        let next = brand_button(
+            p,
+            label(trx("Next", "button label"), None),
+            Brand::Primary,
+            self.login_act(Stop::Next),
+            l.busy,
+        );
+        let toggle = l.password_link.then(|| {
+            let text = match l.password_login {
+                true => trx("Use magic code", "button label"),
+                false => trx("Login with password", "button label"),
+            };
+            let link = button(txt(text, 13.0).color(p.accent)).bare(p.accent);
+            container(link.on_press_maybe(self.login_act(Stop::Toggle))).center_x(Fill).into()
+        });
+        // The illustration gives its room to the fields of the password login.
+        let art = match l.password_link {
+            true => art(1, Fill),
+            false => column![Space::new().height(Fill), art(1, 314.0), Space::new().height(Fill)].into(),
+        };
+        let form = [Some(first), password, Some(next), toggle].into_iter().flatten().collect();
+        column![
+            Space::new().height(40),
+            heading(tr("Enter your Email"), 36.0),
+            Space::new().height(FLOAT_LABEL),
+            art,
+            actions(form, 24.0),
+        ]
+        .into()
+    }
+
+    /// Desktop's `OTPInput`: six 41.3x56 slots 8 px apart, with a 2 px ring outside the focused slot, and red digits
+    /// and rings on all slots after an error.
+    fn view_code_slots(&self) -> El<'_> {
+        let (l, p) = (&self.login, &self.pal);
+        let error = l.error.is_some();
+        let focused = l.stop() == Some(Stop::Field);
+        let slots = row((0..6).map(|i| {
+            let ink = if error { ERROR_RED } else { p.strong };
+            let digit: Option<El<'_>> = l
+                .code
+                .chars()
+                .nth(i)
+                .map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(rem(36.0))).color(ink).into());
+            let at = focused && i == l.slot;
+            let caret = (at && i >= l.code.len())
+                .then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
+            let edge = match (error, at) {
+                (true, _) => ERROR_RED,
+                (false, true) => p.accent,
+                (false, false) => CLEAR,
+            };
+            let slot = container(digit.or(caret).unwrap_or_else(|| Space::new().into()))
+                .center_x(41.3)
+                .center_y(56)
+                .style(fill_box(if error { CLEAR } else { p.chip }, 12.0));
+            container(slot).padding(2).style(bordered_box(CLEAR, edge, 2.0, 14.0)).into()
+        }))
+        .spacing(4);
+        // Each slot of Desktop is an input; beeper-rs takes their typing and pastes in one empty input over them,
+        // and its keys in `code_key`. A press focuses the first empty slot.
+        let capture = text_input("", "")
+            .id(CODE_INPUT)
+            .on_input(|v| LoginMsg::Slot(v, false).into())
+            .on_paste(|v| LoginMsg::Slot(v, true).into())
+            .size(rem(28.0))
+            .padding(14)
+            .style(input_style(CLEAR, CLEAR, CLEAR, CLEAR, 0.0));
+        let press = mouse_area(container(Space::new()).width(Fill).height(60))
+            .interaction(iced::mouse::Interaction::Text)
+            .on_press(LoginMsg::SlotsPressed.into());
+        stack![container(slots).center_x(Fill), container(capture).height(60), press].height(60).into()
+    }
+
+    /// The code screen: Desktop's six slots of the login code over the lock, Open Email and Resend.
+    fn view_login_code(&self) -> El<'_> {
+        let (l, p) = (&self.login, &self.pal);
+        // `otpContainer`: the lock animation, 70 px over the heading, and the 4 px under its inline box, with the
+        // slots on its bottom edge.
+        let otp = container(self.view_code_slots()).align_bottom(Fill);
+        let lock = stack![column![art(2, 314.0), Space::new().height(4 + 2)], otp];
+        let info = tr("Check %(email)s for your login code").replace("%(email)s", l.email.trim());
+        let foot = rich_text![
+            span(format!("{} ", tr("Didn't get a code?"))).color(p.on_secondary),
+            span(trx("Resend", "button label")).color(p.accent).link(UiMessage::Login(LoginMsg::Resend))
+        ]
+        .on_link_click(move |m: UiMessage| if l.busy { UiMessage::Noop } else { m })
+        .size(rem(11.0))
+        .line_height(iced::Pixels(rem(14.0)));
+        // iced finds the link of a rich text as if its line started at the left of the text, so the line takes
+        // its own width and the container centers it: a wider centered text would take the clicks on
+        // "Resend" somewhere left of it.
+        let foot = container(foot).center_x(Fill);
+        // Desktop's floating `small` error, 8 px over the form.
+        let error = l.error.as_deref().map(|e| txt(e, 10.4).color(p.text_danger).center().width(Fill));
+        let error = container(column![].push(error)).height(ERROR_ROOM - 8.0).align_bottom(Fill).padding([0, 18]);
+        // Desktop's `space-between` column with the 70 px overlap: the lock starts 20 px under the top, and
+        // takes the room of the error and of the 2 px ring there too, so its gaps are Desktop's.
+        let form = column![
+            Space::new().height(20.0 + 2.0 + ERROR_ROOM),
+            Space::new().height(Fill),
+            lock,
+            Space::new().height(Fill),
+            error,
+            Space::new().height(8),
+            actions(
+                vec![
+                    container(
+                        txt(info, 13.0).line_height(iced::Pixels(rem(16.0))).color(p.on_secondary).center().width(Fill)
+                    )
+                    .padding(Padding::ZERO.bottom(8))
+                    .into(),
+                    brand_button(
+                        p,
+                        label(tr("Open Email"), None),
+                        Brand::Primary,
+                        self.login_act(Stop::OpenEmail),
+                        l.busy
+                    ),
+                    container(foot).padding(Padding::ZERO.top(8)).height(36).center_y(36).into(),
+                ],
+                24.0
+            ),
+        ];
+        let top = column![Space::new().height(50), heading(tr("Enter Code"), 36.0)].height(Fill);
+        stack![top, form].into()
+    }
+
+    /// The onboarding screen that connects chat accounts: the search, the networks and Continue.
+    fn view_login_accounts(&self) -> El<'_> {
+        let (l, p) = (&self.login, &self.pal);
+        let st = self.store.read();
+        let search = crate::networks::search_field(p, &l.query, |q| LoginMsg::Query(q).into());
+        let divider = container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0));
+        let grid = scrollable(self.view_networks(&st, &l.query)).height(Fill);
+        // Desktop's continue bar shows once a network account is connected (`hasConnectedNetwork`).
+        let go_on = st.has_connected_network().then(|| {
+            let go_on =
+                brand_button(p, label(tr("Continue"), None), Brand::Primary, Some(LoginMsg::Continue.into()), false);
+            column![
+                container(Space::new()).width(Fill).height(1).style(fill_box(p.border_weak, 0.0)),
+                container(go_on).padding(12)
+            ]
+        });
+        // One line of the footer takes 31 px, and a wrapped footer takes more.
+        let foot = self.view_accounts_footer(&st).map(|f| container(f).padding([3, 0]));
+        column![
+            {
+                let (headline, width) = gradient_text(tr("Connect Chat Accounts"), H3, 48.0);
+                let headline = mouse_area(svg(headline).width(width).height(48));
+                container(headline.on_press(LoginMsg::Headline.into())).center_x(Fill)
+            },
+            Space::new().height(8),
+            container(column![search, divider, grid].push(go_on)).height(Fill).style(card_style(p.card)),
+        ]
+        .push(foot)
+        .padding([0, 8])
+        .into()
+    }
+
+    /// The icons of the username field: Desktop's `basketball-spinner` while the name is checked or `done` for a
+    /// free name, the next suggestion, and clear.
+    fn username_icons(&self) -> Vec<El<'_>> {
+        let (l, p) = (&self.login, &self.pal);
+        let icon = |i: usize, size: f32, color: Color, msg: Option<UiMessage>| -> El<'_> {
+            let glyph =
+                svg(ICONS[i].clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) });
+            match msg {
+                Some(m) => button(container(glyph).center(20))
+                    .padding(0)
+                    .style(btn_style([CLEAR; 3], [color; 3], 4.0))
+                    .on_press(m)
+                    .into(),
+                None => container(glyph).center(20).into(),
+            }
+        };
+        // `--color-solids-green` and `--color-on-surface-variant`.
+        let (green, grey) = (Color::from_rgb8(25, 186, 59), p.muted);
+        // Desktop's `basketball-spinner` while the name is checked, else `done` for a free name.
+        let status: Option<El<'_>> = match (l.checking, l.available) {
+            (true, _) => Some(container(svg(SPINNER.clone()).width(20).height(20)).center(20).into()),
+            (false, Some(true)) if !l.username.is_empty() => Some(icon(2, 20.0, green, None)),
+            _ => None,
+        };
+        let icons = [
+            status,
+            (!l.suggestions.is_empty()).then(|| icon(3, 18.0, grey, Some(LoginMsg::NextSuggestion.into()))),
+            (!l.username.is_empty()).then(|| icon(4, 20.0, grey, Some(LoginMsg::Username(String::new()).into()))),
+        ];
+        icons.into_iter().flatten().collect()
+    }
+
+    /// The screen that picks a username, with its status, its suggestions and its error.
+    fn view_login_username(&self) -> El<'_> {
+        let (l, p) = (&self.login, &self.pal);
+        // Desktop shows the same text for every name that the rules or the server refuse.
+        let refused = (l.available == Some(false)).then(|| tr("Username is not available. Try something else."));
+        let name = field_with_icons(
+            p,
+            USERNAME_INPUT,
+            tr("Username"),
+            &l.username,
+            (!l.busy).then_some(LoginMsg::Username),
+            self.username_icons(),
+        );
+        // Desktop's floating `small` error, 20 px over the field: a layer, so that it moves nothing.
+        let error = l.error.as_deref().or(refused).map(|e| txt(e, 10.4).color(p.text_danger).center().width(Fill));
+        let over_form = 20.0 + 38.0 + 8.0 + 33.0 + 52.0;
+        let error =
+            column![Space::new().height(Fill), column![].push(error).padding([0, 18]), Space::new().height(over_form)];
+        let screen = column![
+            Space::new().height(34),
+            heading(tr("Pick a Username"), 32.0),
+            // The room of the floating label, so that the gaps are Desktop's.
+            Space::new().height(FLOAT_LABEL),
+            Space::new().height(Fill),
+            art(0, 314.0),
+            Space::new().height(Fill),
+            actions(
+                vec![
+                    name,
+                    brand_button(
+                        p,
+                        label(trx("Next", "button label"), None),
+                        Brand::Primary,
+                        self.login_act(Stop::Next),
+                        l.busy
+                    ),
+                ],
+                52.0
+            ),
+        ];
+        stack![screen, error].into()
     }
 
     /// What a control does when it is clicked or pressed with the keyboard. A busy screen disables its buttons.
