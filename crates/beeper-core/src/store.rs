@@ -839,16 +839,12 @@ impl BeeperStore {
     }
 
     pub fn persist_state_to_sqlite(&self) {
-        for (k, v) in [
-            (KEY_STATE, serde_json::to_string(&self.beeper_state)),
-            (KEY_BRIDGES, serde_json::to_string(&self.bridge_accounts)),
-            (KEY_SETTINGS, serde_json::to_string(&self.settings)),
-            (KEY_PIN_RANK, serde_json::to_string(&self.pin_rank)),
-            (KEY_RECENT_CHATS, serde_json::to_string(&self.recent_chat_ids)),
-            (KEY_CONTACTS, serde_json::to_string(&self.contacts)),
-        ] {
-            self.exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)", params![k, v.unwrap()]);
-        }
+        self.put_json(KEY_STATE, &self.beeper_state);
+        self.put_json(KEY_BRIDGES, &self.bridge_accounts);
+        self.put_json(KEY_SETTINGS, &self.settings);
+        self.put_json(KEY_PIN_RANK, &self.pin_rank);
+        self.put_json(KEY_RECENT_CHATS, &self.recent_chat_ids);
+        self.put_json(KEY_CONTACTS, &self.contacts);
     }
 
     fn persist_seq(&self) {
@@ -1069,66 +1065,42 @@ impl BeeperStore {
     }
 
     fn load_from_sqlite(&mut self) {
-        let (setup, state, bridges, settings, pin_rank, recents, contacts, assets) = {
-            let conn = self.db.lock().unwrap();
-            let kv = |k: &str| {
-                conn.query_row("SELECT value FROM kv WHERE key = ?1", [k], |r| r.get::<_, String>(0))
-                    .optional()
-                    .expect("read kv")
-            };
-            let rows = |sql: &str| -> Vec<String> {
-                let mut stmt = conn.prepare(sql).expect("prepare row query");
-                stmt.query_map([], |r| r.get(0)).expect("query rows").map(|r| r.expect("read row")).collect()
-            };
-            (
-                kv(KEY_SETUP),
-                kv(KEY_STATE),
-                kv(KEY_BRIDGES),
-                kv(KEY_SETTINGS),
-                kv(KEY_PIN_RANK),
-                kv(KEY_RECENT_CHATS),
-                kv(KEY_CONTACTS),
-                rows("SELECT json FROM assets"),
-            )
-        };
-        self.setup = setup.map(|s| match s.as_str() {
+        self.setup = self.kv(KEY_SETUP).map(|s| match s.as_str() {
             "fresh" => Setup::Fresh,
             "imported" => Setup::Imported,
             other => panic!("unknown setup value {other} in {}", self.config.db_path.display()),
         });
-        if let Some(s) = state {
-            self.beeper_state = serde_json::from_str(&s).expect("parse stored state");
+        if let Some(state) = self.kv_json(KEY_STATE) {
+            self.beeper_state = state;
         }
-        let kv = |k| {
-            self.db
-                .lock()
-                .unwrap()
-                .query_row("SELECT value FROM kv WHERE key = ?1", [k], |r| r.get(0))
-                .optional()
-                .expect("read kv")
-        };
-        self.connect = crate::connect::Connect::load(kv(crate::connect::KEY_TOKENS), kv(crate::connect::KEY_CLIENTS));
-        if let Some(s) = kv(KEY_SCHEDULED) {
-            self.scheduled = serde_json::from_str(&s).expect("parse stored scheduled messages");
+        self.connect =
+            crate::connect::Connect::load(self.kv(crate::connect::KEY_TOKENS), self.kv(crate::connect::KEY_CLIENTS));
+        if let Some(scheduled) = self.kv_json(KEY_SCHEDULED) {
+            self.scheduled = scheduled;
         }
-        if let Some(b) = bridges {
-            self.bridge_accounts = serde_json::from_str(&b).expect("parse stored bridge accounts");
+        if let Some(bridges) = self.kv_json(KEY_BRIDGES) {
+            self.bridge_accounts = bridges;
         }
-        if let Some(p) = pin_rank {
-            self.pin_rank = serde_json::from_str(&p).expect("parse stored pin rank");
+        if let Some(pin_rank) = self.kv_json(KEY_PIN_RANK) {
+            self.pin_rank = pin_rank;
         }
-        if let Some(r) = recents {
-            self.recent_chat_ids = serde_json::from_str(&r).expect("parse stored recent chats");
+        if let Some(recents) = self.kv_json(KEY_RECENT_CHATS) {
+            self.recent_chat_ids = recents;
         }
-        if let Some(c) = contacts {
-            self.contacts = serde_json::from_str(&c).expect("parse stored contacts");
+        if let Some(contacts) = self.kv_json(KEY_CONTACTS) {
+            self.contacts = contacts;
         }
-        if let Some(s) = settings {
-            self.settings = serde_json::from_str(&s).expect("parse stored settings");
+        if let Some(settings) = self.kv_json::<BeeperSettings>(KEY_SETTINGS) {
+            self.settings = settings;
             self.settings.prefs.retain(|k, _| !crate::prefs::RETIRED.contains(&k.as_str()));
             self.settings.assert_valid();
         }
         self.pin_app_locale();
+        let assets: Vec<String> = {
+            let conn = self.db.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT json FROM assets").expect("prepare row query");
+            stmt.query_map([], |r| r.get(0)).expect("query rows").map(|r| r.expect("read row")).collect()
+        };
         for a in assets {
             let asset: StoredAsset = serde_json::from_str(&a).expect("parse stored asset");
             self.assets_by_mxc.insert(asset.mxc_url.clone(), asset.upload_id.clone());
@@ -1136,14 +1108,25 @@ impl BeeperStore {
         }
     }
 
+    /// The stored value of `key` in the `kv` table.
+    fn kv(&self, key: &str) -> Option<String> {
+        let db = self.db.lock().unwrap();
+        db.query_row("SELECT value FROM kv WHERE key = ?1", [key], |r| r.get(0)).optional().expect("read kv")
+    }
+
+    /// The stored JSON value of `key` in the `kv` table.
+    fn kv_json<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
+        let v = self.kv(key)?;
+        Some(serde_json::from_str(&v).unwrap_or_else(|e| panic!("parse the stored {key}: {e}")))
+    }
+
     /// Loads the stored chats, or seeds the chats of a new demo store.
     pub fn load_chats(&mut self) {
-        let (seq, chats, messages) = {
+        let seq = self.kv(KEY_SEQ);
+        let (chats, messages) = {
             let conn = self.db.lock().unwrap();
             let mut chats = conn.prepare("SELECT json FROM chats ORDER BY rowid").expect("prepare the chat query");
-            let seq = "SELECT value FROM kv WHERE key = ?1";
             (
-                conn.query_row(seq, [KEY_SEQ], |r| r.get::<_, String>(0)).optional().expect("read kv"),
                 chats.query_map([], |r| r.get(0)).expect("query chats").collect::<Result<Vec<String>, _>>().unwrap(),
                 conn.query_row("SELECT max(sort_key) FROM messages", [], |r| r.get::<_, Option<String>>(0))
                     .expect("read the last sort key"),
@@ -1186,6 +1169,11 @@ impl BeeperStore {
         self.exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)", params![key, value]);
     }
 
+    /// Stores `value` as the JSON of `key` in the `kv` table.
+    fn put_json(&self, key: &str, value: &impl Serialize) {
+        self.put_kv(key, &serde_json::to_string(value).expect("a stored value as JSON"));
+    }
+
     /// Desktop's `pushThreadHistory`: chat `id` goes first in the saved history of the opened chats, which keeps 50.
     pub fn push_recent_chat(&mut self, id: &str) {
         if self.recent_chat_ids.first().is_some_and(|c| c == id) {
@@ -1194,7 +1182,7 @@ impl BeeperStore {
         self.recent_chat_ids.retain(|c| c != id);
         self.recent_chat_ids.insert(0, id.to_string());
         self.recent_chat_ids.truncate(50);
-        self.put_kv(KEY_RECENT_CHATS, &serde_json::to_string(&self.recent_chat_ids).expect("JSON of the chat IDs"));
+        self.put_json(KEY_RECENT_CHATS, &self.recent_chat_ids);
     }
 
     pub fn persist_connect(&mut self) {
@@ -1221,7 +1209,7 @@ impl BeeperStore {
     }
 
     fn persist_scheduled(&self) {
-        self.put_kv(KEY_SCHEDULED, &serde_json::to_string(&self.scheduled).expect("serialize scheduled messages"));
+        self.put_json(KEY_SCHEDULED, &self.scheduled);
     }
 
     /// Desktop's `scheduleMessages` for one content part: a text, or a stored upload with `text` as its caption.
