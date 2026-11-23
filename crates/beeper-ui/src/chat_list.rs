@@ -7,6 +7,7 @@ use crate::reminders::{last_used, last_used_label, remind_presets};
 use crate::time::list_ts;
 use crate::vcard::contact_name;
 use iced::widget::column;
+use std::borrow::Cow;
 
 /// The chat list and the context menus of a window: the main window's, or a space window's. Desktop keeps them in the
 /// `WindowStateStore` of each window.
@@ -1405,32 +1406,85 @@ impl BeeperGuiApp {
     }
 
     pub(crate) fn view_sidebar(&self) -> El<'_> {
-        let p = &self.pal;
         let st = self.store.read();
         let w = self.list_width(&st);
-        let chats = self.visible_chats(&st);
-        let h24 = st.settings.pref("timeFormat") == 1;
-        let compact = st.settings.on("compactChatList");
-        let (av, lines, title_size, ts_size, pin_av) =
-            if compact { (28.0, 1, 13.0, 10.0, 40.0) } else { (46.0, 2, 14.0, 11.0, 52.0) };
+        let header = self.view_list_header(&st);
+        let list = self.view_list(&st, w);
+        let pill = self.view_global_audio(&st, w - 18.0).map(|pill| {
+            let at = Padding::ZERO.left(8.0).right(10.0).bottom(self.audio.bottom);
+            container(pill).padding(at).height(Fill).align_bottom(Fill)
+        });
+        let status = self.view_network_status(&st);
+        let banner = self.view_key_banner(&st);
+        let sidebar =
+            stack![column![header].push(status).push(banner).push(list).padding(Padding::ZERO.left(8.0))].push(pill);
+        let sidebar = container(sidebar).width(w).height(Fill);
+        mouse_area(sidebar).on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(SIDEBAR_MENU.into()))).into()
+    }
+
+    /// A button of the chat list header, which takes the focus without showing it, like Desktop's
+    /// (`button { outline: 0 }`).
+    fn header_target<'a>(&self, key: &str, b: impl Into<El<'a>>, msg: UiMessage) -> El<'a> {
+        self.target(self.drawing.get().or(self.main_window), key, b, Keys::press(msg), Look::Hidden)
+    }
+
+    /// The header of the chat list: the space's title, then the Filter, Display Options, Search and New Chat buttons.
+    fn view_list_header(&self, st: &BeeperStore) -> El<'_> {
+        let p = &self.pal;
+        let head_btn = |key: &str, c: char, size: f32, [l, r]: [f32; 2], msg: UiMessage| {
+            let b = button(
+                container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26),
+            )
+            .padding(0)
+            .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
+            .on_press(msg.clone());
+            self.header_target(key, b, msg)
+        };
+        let below = |el: El<'static>, label, keys| self.tip_caps(el, label, keys, tooltip::Position::Bottom);
+        let options = (self.list().active_tab == InboxTab::Reminders).then(|| {
+            let menu = UiMessage::Reminders(reminders::Msg::Menu);
+            let btn = button(container(tinted(&TUNE, 18.0, p.strong)).center_x(30).center_y(26))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
+                .on_press(menu.clone());
+            below(self.header_target("list-options", btn, menu), tr("Display Options"), vec![])
+        });
+        let search = UiMessage::CommandBar(commands::Msg::TogglePalette);
+        let search = head_btn("list-search", icon::SEARCH, 23.0, [7.5, 10.0], search);
+        let new_chat =
+            head_btn("list-new-chat", icon::EDIT_SQUARE, 20.0, [0.0, 3.0], UiMessage::NewChat(new_chat::Msg::Open));
+        row![self.view_list_title(st)]
+            .push(self.view_filter_button())
+            .push(options)
+            .push(below(search, tr("Search Chats"), hotkey_caps(st.settings.hotkey_keys("Search"))))
+            .push(below(new_chat, tr("New Chat"), hotkey_caps(st.settings.hotkey_keys("Chat: Start New"))))
+            .align_y(Center)
+            .height(52)
+            .padding(Padding::ZERO.right(8.0))
+            .into()
+    }
+
+    /// The title of the chat list: the space's name and icon, and the names of the filters in use.
+    fn view_list_title(&self, st: &BeeperStore) -> El<'_> {
+        let p = &self.pal;
+        let list = self.list();
         let names: Vec<String> = (0..FILTERS.len())
-            .filter(|i| self.list().filters & 1 << i != 0)
+            .filter(|i| list.filters & 1 << i != 0)
             .map(|i| tr(FILTERS[i].0).to_string())
-            .chain(self.list().space_view_account.as_deref().map(|id| space_name(&st, id)))
+            .chain(list.space_view_account.as_deref().map(|id| space_name(st, id)))
             .collect();
-        let heading = semi(self.list().title(&st), 13.0).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
+        let heading = semi(list.title(st), 13.0).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
         // Desktop's space icon before the title when the space bar is hidden: a label with a color, a network space,
         // or an account with another account on its network.
-        let list = self.list();
         let shown = st.settings.on("showSidebar") && !list.locked;
         let space_icon = list.selected_account_filter.as_deref().filter(|_| !shown).and_then(|id| -> Option<El<'_>> {
-            if let Some(l) = rail_label(&st, id) {
+            if let Some(l) = rail_label(st, id) {
                 return l.color.is_some().then(|| label_icon(l, 16.0, p.strong));
             }
-            let owner = rail_owner(&st, id);
+            let owner = rail_owner(st, id);
             let twins = st.accounts.iter().filter(|a| brand_key(&a.account_id) == brand_key(&owner)).count() > 1;
             let icon = svg(brand_svg(brand_key(&owner))).width(16).height(16);
-            (network_space(&st, id).is_some() || twins).then(|| icon.into())
+            (network_space(st, id).is_some() || twins).then(|| icon.into())
         });
         let line = row![].push(space_icon.map(|i| container(i).padding(Padding::ZERO.right(4.0)))).push(heading);
         // Desktop's header of a space window neither opens the space sheet nor has a menu.
@@ -1438,10 +1492,6 @@ impl BeeperGuiApp {
         let title = column![line.push(chevron).spacing(1.4).align_y(Center)]
             .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))
             .padding([0, 8]);
-        // Desktop's buttons of the chat list header take the focus without showing it (`button { outline: 0 }`).
-        let window = self.drawing.get().or(self.main_window);
-        let plain =
-            |key: &str, b: El<'static>, msg: UiMessage| self.target(window, key, b, Keys::press(msg), Look::Hidden);
         let title: El<'_> = match list.locked {
             true => title.into(),
             false => {
@@ -1449,17 +1499,16 @@ impl BeeperGuiApp {
                 let title = mouse_area(title)
                     .on_press(sheet.clone())
                     .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("head:{}", list.entry()))));
-                self.target(window, "list-title", title, Keys::press(sheet), Look::Hidden)
+                self.header_target("list-title", title, sheet)
             }
         };
-        let title = container(title).width(Fill).clip(true);
-        let head_btn = |c: char, size: f32, [l, r]: [f32; 2], msg: UiMessage| {
-            button(container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
-                .on_press(msg)
-        };
-        let filter = self.list().active_tab.filterable().then(|| {
+        container(title).width(Fill).clip(true).into()
+    }
+
+    /// Desktop's `FilterButton`, with the count of the filters in use, in the tabs that take filters.
+    fn view_filter_button(&self) -> Option<El<'_>> {
+        let p = &self.pal;
+        self.list().active_tab.filterable().then(|| {
             let count = self.list().filters.count_ones() + u32::from(self.list().space_view_account.is_some());
             let active = count > 0;
             let fg = if active { p.accent } else { p.strong };
@@ -1480,46 +1529,138 @@ impl BeeperGuiApp {
             let press = UiMessage::ChatList(chat_list::Msg::FilterButton);
             let el = mouse_area(button(pill).padding(0).style(face).on_press(press.clone()))
                 .on_right_press(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
-            self.tip(plain("list-filter", el.into(), press), tr("Filter"), vec![], tooltip::Position::Bottom)
+            self.tip(self.header_target("list-filter", el, press), tr("Filter"), vec![], tooltip::Position::Bottom)
+                .into()
+        })
+    }
+
+    /// The rows of the chat list: the unread threads pill, the grid of pins, then the chat rows and the new-chat drafts.
+    fn view_list(&self, st: &BeeperStore, w: f32) -> El<'_> {
+        let (pinned, rest) = self.pins_and_rows(st);
+        let bar_pad = if SOLID_BARS { 0.0 } else { 4.0 };
+        let inner = w - 8.0 - bar_pad - GUTTER;
+        let grid = self.pin_grid_of(st, pinned, inner);
+        let look = self.row_look(st, &rest, inner);
+        if self.visible_chats(st).is_empty() && self.new_chats.is_empty() {
+            return self.view_empty_list();
+        }
+        let (cols, pinned) = (grid.cols, &grid.pinned);
+        let tiles = pinned.len().div_ceil(cols);
+        let row_keys = self.row_keys(&rest);
+        let lead = pinned_rows(&rest);
+        let drafts = self.new_chats.len();
+        // Desktop's "Unread threads" pill comes first.
+        let threads = self.unread_threads(st, true);
+        let pre = usize::from(!threads.is_empty());
+        let keys: Vec<u64> = (0..pre)
+            .map(|_| vlist::key("unread-threads"))
+            .chain((0..tiles).map(|i| vlist::key(("pins", i))))
+            .chain(row_keys[..lead].iter().copied())
+            .chain(self.new_chats.iter().map(|d| vlist::key(("draft", d.id))))
+            .chain(row_keys[lead..].iter().copied())
+            .collect();
+        let estimate = if look.compact { 52.0 } else { 68.0 };
+        let rows = self.list().rows.view(&keys, false, estimate, UiMessage::Relist, |i| match i.checked_sub(pre) {
+            None => self.unread_threads_pill(st, &threads),
+            Some(i) if i < tiles => {
+                self.view_pin_row(&look, &grid, &pinned[i * cols..(i * cols + cols).min(pinned.len())])
+            }
+            Some(i) if i < tiles + lead => self.view_chat_row(&look, rest[i - tiles]),
+            Some(i) if i < tiles + lead + drafts => self.view_draft_row(&look, &self.new_chats[i - tiles - lead]),
+            Some(i) => self.view_chat_row(&look, rest[i - tiles - drafts]),
         });
-        let below = |el: El<'static>, label, keys| self.tip_caps(el, label, keys, tooltip::Position::Bottom);
-        let options = (self.list().active_tab == InboxTab::Reminders).then(|| {
-            let menu = UiMessage::Reminders(reminders::Msg::Menu);
-            let btn = button(container(tinted(&TUNE, 18.0, p.strong)).center_x(30).center_y(26))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
-                .on_press(menu.clone());
-            below(plain("list-options", btn.into(), menu), tr("Display Options"), vec![])
+        scrollable(container(rows).padding(Padding::ZERO.right(bar_pad + GUTTER)))
+            .id(self.list().scroll.0.clone())
+            .direction(stable_bar())
+            .height(Fill)
+            .style(scroll_style(self.pal.scroll))
+            .into()
+    }
+
+    /// The text of an empty chat list, with the buttons of the views to look in instead.
+    fn view_empty_list(&self) -> El<'_> {
+        let p = &self.pal;
+        let tab =
+            if self.list().selected_account_filter.is_some() { InboxTab::Requests } else { self.list().active_tab };
+        let (head, hint) = tab.empty();
+        let header = column![semi(head, 16.0).color(p.strong).align_x(Center).line_height(1.25)]
+            .push((!hint.is_empty()).then(|| txt(hint, 13.0).color(p.strong).align_x(Center)))
+            .spacing(12)
+            .align_x(Center);
+        let fallback = self.list().active_tab.fallback().map(|views| {
+            let words = "If you're looking for something, check the".split(' ').map(|w| txt(w, 13.0).into());
+            let pill = |t: InboxTab| -> El<'_> {
+                button(semi(t.label(), 12.0))
+                    .padding([6, 8])
+                    .style(btn_style([p.selected; 3], [p.strong; 3], 999.0))
+                    .on_press(UiMessage::ChatList(chat_list::Msg::SelectTab(t)))
+                    .into()
+            };
+            let line = Row::with_children(words.chain([pill(views[0]), txt(tr("or"), 13.0).into(), pill(views[1])]))
+                .spacing(3.5)
+                .align_y(Center)
+                .wrap()
+                .vertical_spacing(5.5)
+                .align_x(Center);
+            container(line).center_x(Fill).padding([24, 0])
         });
-        let header = row![title]
-            .push(filter)
-            .push(options)
-            .push(below(
-                plain(
-                    "list-search",
-                    head_btn(icon::SEARCH, 23.0, [7.5, 10.0], UiMessage::CommandBar(commands::Msg::TogglePalette))
-                        .into(),
-                    UiMessage::CommandBar(commands::Msg::TogglePalette),
-                ),
-                tr("Search Chats"),
-                hotkey_caps(st.settings.hotkey_keys("Search")),
-            ))
-            .push(below(
-                plain(
-                    "list-new-chat",
-                    head_btn(icon::EDIT_SQUARE, 20.0, [0.0, 3.0], UiMessage::NewChat(new_chat::Msg::Open)).into(),
-                    UiMessage::NewChat(new_chat::Msg::Open),
-                ),
-                tr("New Chat"),
-                hotkey_caps(st.settings.hotkey_keys("Chat: Start New")),
-            ))
-            .align_y(Center)
-            .height(52)
-            .padding(Padding::ZERO.right(8.0));
+        column![Space::new().height(Fill), header, Space::new().height(Fill)]
+            .push(fallback)
+            .padding([0, 22])
+            .width(Fill)
+            .into()
+    }
+
+    /// The settings, sizes and selection that every row of the chat list reads.
+    fn row_look<'s>(&'s self, st: &'s BeeperStore, rest: &[&'s Chat], inner: f32) -> RowLook<'s> {
+        let compact = st.settings.on("compactChatList");
+        let (av, lines, title_size, ts_size) = if compact { (28.0, 1, 13.0, 10.0) } else { (46.0, 2, 14.0, 11.0) };
+        let counts = st.settings.on("showUnreadCount");
+        let selecting = self.select_mode || !self.selection.is_empty();
         // Desktop's `isSelected` row is the open chat, or the chat of the cursor (`threadCursorID`).
         let open = self.pane().selected_chat_id.as_deref();
         let selected = self.creating_chat.is_none().then(|| open.or(self.list().cursor.as_deref())).flatten();
-        let (mut pinned, rest) = self.pins_and_rows(&st);
+        let lead = match (selecting, counts) {
+            (true, _) => 16.0,
+            (false, true) => 0.0,
+            (false, false) => 12.0,
+        };
+        RowLook {
+            st,
+            selected,
+            above: self.row_above(rest, selected),
+            compact,
+            av,
+            lines,
+            title_size,
+            ts_size,
+            text_w: inner - 16.0 - av - 10.0 - lead,
+            counts,
+            network_icons: st.settings.on("showNetworkIcons")
+                && self.list().selected_account_filter.as_deref().is_none_or(|id| rail_label(st, id).is_some()),
+            colorize: st.settings.on("colorizeNetworkIcons"),
+            hover_action: st.settings.pref("chatActionButton"),
+            selecting,
+            previews: st.settings.on("showMessagePreviews"),
+            h24: st.settings.pref("timeFormat") == 1,
+        }
+    }
+
+    /// The key of the row above the selected row or draft, whose divider Desktop hides too.
+    fn row_above<'s>(&'s self, rest: &[&'s Chat], selected: Option<&str>) -> Option<Cow<'s, str>> {
+        let (lead, drafts) = (pinned_rows(rest), self.new_chats.len());
+        let draft = self.creating_chat.and_then(|n| self.new_chats.iter().position(|d| d.id == n)).map(|i| lead + i);
+        let chat =
+            || selected.and_then(|s| rest.iter().position(|c| c.id == s)).map(|i| i + drafts * usize::from(i >= lead));
+        draft.or_else(chat).and_then(|i| i.checked_sub(1)).map(|i| match i.checked_sub(lead) {
+            Some(d) if d < drafts => Cow::Owned(format!("draft:{}", self.new_chats[d].id)),
+            Some(d) => Cow::Borrowed(rest[lead + d - drafts].id.as_str()),
+            None => Cow::Borrowed(rest[i].id.as_str()),
+        })
+    }
+
+    /// The pins in the order that a drag shows, and the sizes of their grid, which the drags read.
+    fn pin_grid_of<'s>(&'s self, st: &BeeperStore, mut pinned: Vec<&'s Chat>, inner: f32) -> PinGrid<'s> {
         // The order of a pin drag, which moves the pins under the pointer.
         let dragged = self.pin_drag.as_ref().filter(|d| d.order.is_some()).map(|d| d.id.as_str());
         if let Some(order) = self.pin_drag.as_ref().and_then(|d| d.order.as_ref()) {
@@ -1527,546 +1668,518 @@ impl BeeperGuiApp {
         }
         // A pin that the keyboard moves shows in the place it drops at, which it marks like a drag of the mouse.
         let items: std::sync::Arc<[String]> = pinned.iter().map(|c| c.id.clone()).collect();
-        let sort = self.key_sort_of(window, sortable::List::Pins);
+        let sort = self.key_sort_of(self.drawing.get().or(self.main_window), sortable::List::Pins);
         let dragged = dragged.or(sort.map(|s| s.id.as_str()));
         if let Some(order) = sort.and_then(|s| s.moved(&items)) {
             pinned.sort_by_key(|c| order.iter().position(|o| *o == c.id).unwrap_or(usize::MAX));
         }
-        let counts = st.settings.on("showUnreadCount");
-        let network_icons = st.settings.on("showNetworkIcons")
-            && self.list().selected_account_filter.as_deref().is_none_or(|id| rail_label(&st, id).is_some());
-        let colorize = st.settings.on("colorizeNetworkIcons");
-        let hover_action = st.settings.pref("chatActionButton");
-        let selecting = self.select_mode || !self.selection.is_empty();
-        let picked = |c: &Chat| self.selection.contains(&c.id);
-        let pick = |c: &Chat| match selecting {
-            true => UiMessage::ChatList(chat_list::Msg::ToggleSelected(c.id.clone())),
-            false => UiMessage::ChatList(chat_list::Msg::Click(c.id.clone())),
-        };
-        let bar_pad = if SOLID_BARS { 0.0 } else { 4.0 };
-        let inner = w - 8.0 - bar_pad - GUTTER;
+        let compact = st.settings.on("compactChatList");
+        let av = if compact { 40.0 } else { 52.0 };
         let cols = pin_columns(inner, pinned.len());
         let cell = inner / cols as f32;
-        let tile = cell.min(120.0);
-        let previews = st.settings.on("showMessagePreviews");
+        // The height of a row of the grid: the padding, the avatar and the title of a pin.
+        let pin_h = if compact { 8.0 + 4.0 + 6.0 } else { 12.0 + 8.0 + 10.0 } + av + rem(15.0);
+        self.pin_grid.set((cols, cell, pin_h));
         let now = now_unix_millis();
         let launched = now - self.started.elapsed().as_millis() as i64;
-        // The height of a row of the grid: the padding, the avatar and the title of a pin.
-        let pin_h = if compact { 8.0 + 4.0 + 6.0 } else { 12.0 + 8.0 + 10.0 } + pin_av + rem(15.0);
-        self.pin_grid.set((cols, cell, pin_h));
-        let mouse_held = self.pin_drag.as_ref().filter(|d| d.order.is_some());
-        let ghost = self.pin_ghost();
-        let pin_row = |chunk: &[&Chat]| {
-            El::from(chunk.iter().fold(Row::new(), |r, c| {
-                let on = selected == Some(c.id.as_str());
-                let (muted, quiet) = (self.list_muted(&st, c), self.list_quiet(&st, c));
-                let unread = c.is_unread();
-                let (bg, fg) = if quiet { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
-                let dot =
-                    (!counts && unread).then(|| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0)));
-                let title_w = tile - if muted { 35.2 } else { 20.0 } - if dot.is_some() { 9.2 } else { 0.0 };
-                let title = ell(short_title(c), title_w, 12.0, Weight::Semibold);
-                let label = row![]
-                    .push(dot)
-                    .push(title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(rem(15.0).into())))
-                    .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.strong)))
-                    .spacing(3.2)
-                    .align_y(Center);
-                let unread = match (st.typing.contains_key(&c.id), counts) {
-                    (true, _) => Some(self.typing_badge()),
-                    (false, true) => unread.then(|| count_badge(c, bg, fg, 14.0)),
-                    (false, false) => (c.unread_mentions > 0).then(|| {
-                        let at = ic(icon::AT_SIGN, 10.0).color(fg);
-                        container(at).padding([0, 4]).center_y(14).style(fill_box(bg, 7.0)).into()
-                    }),
-                };
-                let bubble = bubble_text(c, launched, now).filter(|_| previews && !on && !selecting);
-                let unread = unread.filter(|_| bubble.is_none());
-                let face = stack![container(self.chat_avatar(c, pin_av, 1.25)).center_x(pin_av + 4.0)]
-                    .push((!selecting).then(|| container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)))
-                    .push(selecting.then(|| pin(checkbox(p, picked(c))).x(pin_av - 11.0).y(-5.0)))
-                    .width(pin_av + 4.0)
-                    .height(pin_av);
-                let item =
-                    column![face, label].spacing(if compact { 4 } else { 8 }).align_x(Center).width(tile).padding(
-                        match compact {
-                            true => Padding::new(10.0).top(8.0).bottom(6.0),
-                            false => Padding::new(12.0).bottom(10.0),
-                        },
-                    );
-                let colors = if muted { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
-                let bubble = bubble.map(|t| pin_bubble(&t, c.unread_mentions > 0, colors, tile, pin_av, compact));
-                let item = stack![item].push(bubble);
-                // Desktop's `useDropPlaceholder`: the dragged pin marks the place it would drop at.
-                let held = dragged == Some(c.id.as_str());
-                // A pin that the mouse drags follows the pointer at `opacity: 0.4`, inside the list, over the
-                // `dropPlaceholder` of the cell that it would drop in, unless that is its own cell.
-                if let Some(d) = mouse_held.filter(|d| d.id == c.id) {
-                    let face = container(item).width(tile).style(fill_box(if on { p.selected } else { CLEAR }, 8.0));
-                    let veil = container(Space::new())
-                        .width(Fill)
-                        .height(Fill)
-                        .style(fill_box(p.window.scale_alpha(0.6), 8.0));
-                    let by = ghost.unwrap_or(Vector::ZERO);
-                    let face = iced::widget::float(stack![face, veil]).translate(move |b, view| {
-                        let x = (b.x + by.x).clamp(view.x, (view.x + view.width - b.width).max(view.x));
-                        let y = (b.y + by.y).clamp(view.y, (view.y + view.height - b.height).max(view.y));
-                        Vector::new(x - b.x, y - b.y)
-                    });
-                    let to = pinned.iter().position(|o| o.id == c.id);
-                    let mark = (to != Some(d.start)).then(|| {
-                        container(Space::new())
-                            .width(Fill)
-                            .height(Fill)
-                            .style(fill_box(Color::BLACK.scale_alpha(0.1), 8.0))
-                    });
-                    return r.push(container(stack![face].push(mark)).center_x(cell));
-                }
-                let item = button(item)
-                    .padding(0)
-                    .style(btn_style([if on || held { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
-                    .on_press(pick(c));
-                let item = mouse_area(item)
-                    .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone())))
-                    .on_enter(UiMessage::Pins(pins::Msg::Hover(Some(c.id.clone()))))
-                    .on_exit(UiMessage::Pins(pins::Msg::Hover(None)));
-                // Desktop's pins are `dnd-kit` sortables, which show Chromium's ring, and whose Enter and Space pick
-                // the pin up for the arrows (see `sortable`).
-                let pick = Self::pick(window, sortable::List::Pins, &c.id, &items, cols);
-                let item = self.target(window, format!("pin-{}", c.id), item, Keys::press(pick), Look::Auto);
-                let item: El<'_> = match self.pin_offset(&c.id) {
-                    Some(by) => iced::widget::float(item).translate(move |_, _| by).into(),
-                    None => item,
-                };
-                r.push(container(item).center_x(cell))
-            }))
+        let held = self.pin_drag.as_ref().filter(|d| d.order.is_some());
+        PinGrid {
+            pinned,
+            items,
+            dragged,
+            held,
+            ghost: self.pin_ghost(),
+            cols,
+            cell,
+            tile: cell.min(120.0),
+            av,
+            now,
+            launched,
+        }
+    }
+
+    /// A row of the grid of pins.
+    fn view_pin_row(&self, l: &RowLook, g: &PinGrid, chunk: &[&Chat]) -> El<'_> {
+        El::from(chunk.iter().fold(Row::new(), |r, c| r.push(container(self.view_pin(l, g, c)).center_x(g.cell))))
+    }
+
+    /// A pin: the chat's avatar with its unread badge or the bubble of its last message, over its title.
+    fn view_pin(&self, l: &RowLook, g: &PinGrid, c: &Chat) -> El<'_> {
+        let (p, st, tile, pin_av, window) = (&self.pal, l.st, g.tile, g.av, self.drawing.get().or(self.main_window));
+        let on = l.selected == Some(c.id.as_str());
+        let (muted, quiet) = (self.list_muted(st, c), self.list_quiet(st, c));
+        let unread = c.is_unread();
+        let (bg, fg) = if quiet { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
+        let dot = (!l.counts && unread).then(|| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0)));
+        let title_w = tile - if muted { 35.2 } else { 20.0 } - if dot.is_some() { 9.2 } else { 0.0 };
+        let title = ell(short_title(c), title_w, 12.0, Weight::Semibold);
+        let label = row![]
+            .push(dot)
+            .push(title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(rem(15.0).into())))
+            .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.strong)))
+            .spacing(3.2)
+            .align_y(Center);
+        let unread = match (st.typing.contains_key(&c.id), l.counts) {
+            (true, _) => Some(self.typing_badge()),
+            (false, true) => unread.then(|| count_badge(c, bg, fg, 14.0)),
+            (false, false) => (c.unread_mentions > 0).then(|| {
+                let at = ic(icon::AT_SIGN, 10.0).color(fg);
+                container(at).padding([0, 4]).center_y(14).style(fill_box(bg, 7.0)).into()
+            }),
         };
-        let lead = match (selecting, counts) {
-            (true, _) => 16.0,
-            (false, true) => 0.0,
-            (false, false) => 12.0,
-        };
-        let text_w = inner - 16.0 - av - 10.0 - lead;
-        // Desktop's order: the regular-style pinned rows, then the new-chat drafts, then the other chats.
-        let lead = rest.iter().take_while(|c| c.flags & CHAT_PINNED != 0).count();
-        let drafts = self.new_chats.len();
-        // Desktop hides the divider of the selected row and of the row above it.
-        let draft = self.creating_chat.and_then(|n| self.new_chats.iter().position(|d| d.id == n)).map(|i| lead + i);
-        let chat =
-            || selected.and_then(|s| rest.iter().position(|c| c.id == s)).map(|i| i + drafts * usize::from(i >= lead));
-        let above = draft.or_else(chat).and_then(|i| i.checked_sub(1)).map(|i| match i.checked_sub(lead) {
-            Some(d) if d < drafts => std::borrow::Cow::Owned(format!("draft:{}", self.new_chats[d].id)),
-            Some(d) => std::borrow::Cow::Borrowed(rest[lead + d - drafts].id.as_str()),
-            None => std::borrow::Cow::Borrowed(rest[i].id.as_str()),
+        let bubble = bubble_text(c, g.launched, g.now).filter(|_| l.previews && !on && !l.selecting);
+        let unread = unread.filter(|_| bubble.is_none());
+        let face = stack![container(self.chat_avatar(c, pin_av, 1.25)).center_x(pin_av + 4.0)]
+            .push((!l.selecting).then(|| container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)))
+            .push(l.selecting.then(|| pin(checkbox(p, self.selection.contains(&c.id))).x(pin_av - 11.0).y(-5.0)))
+            .width(pin_av + 4.0)
+            .height(pin_av);
+        let pad = if l.compact { Padding::new(10.0).top(8.0).bottom(6.0) } else { Padding::new(12.0).bottom(10.0) };
+        let item = column![face, label].spacing(if l.compact { 4 } else { 8 }).align_x(Center).width(tile).padding(pad);
+        let colors = if muted { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
+        let bubble = bubble.map(|t| pin_bubble(&t, c.unread_mentions > 0, colors, tile, pin_av, l.compact));
+        let item = stack![item].push(bubble);
+        if let Some(d) = g.held.filter(|d| d.id == c.id) {
+            return self.view_held_pin(g, item.into(), d, on);
+        }
+        // Desktop's `useDropPlaceholder`: the dragged pin marks the place it would drop at.
+        let held = g.dragged == Some(c.id.as_str());
+        let item = button(item)
+            .padding(0)
+            .style(btn_style([if on || held { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
+            .on_press(l.pick(c));
+        let item = mouse_area(item)
+            .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone())))
+            .on_enter(UiMessage::Pins(pins::Msg::Hover(Some(c.id.clone()))))
+            .on_exit(UiMessage::Pins(pins::Msg::Hover(None)));
+        // Desktop's pins are `dnd-kit` sortables, which show Chromium's ring, and whose Enter and Space pick the pin
+        // up for the arrows (see `sortable`).
+        let pick = Self::pick(window, sortable::List::Pins, &c.id, &g.items, g.cols);
+        let item = self.target(window, format!("pin-{}", c.id), item, Keys::press(pick), Look::Auto);
+        match self.pin_offset(&c.id) {
+            Some(by) => iced::widget::float(item).translate(move |_, _| by).into(),
+            None => item,
+        }
+    }
+
+    /// The pin that the mouse drags: it follows the pointer at `opacity: 0.4`, inside the list, over the
+    /// `dropPlaceholder` of the cell that it would drop in, unless that is its own cell.
+    fn view_held_pin<'a>(&self, g: &PinGrid, item: El<'a>, d: &PinDrag, on: bool) -> El<'a> {
+        let p = &self.pal;
+        let face = container(item).width(g.tile).style(fill_box(if on { p.selected } else { CLEAR }, 8.0));
+        let veil = container(Space::new()).width(Fill).height(Fill).style(fill_box(p.window.scale_alpha(0.6), 8.0));
+        let by = g.ghost.unwrap_or(Vector::ZERO);
+        let face = iced::widget::float(stack![face, veil]).translate(move |b, view| {
+            let x = (b.x + by.x).clamp(view.x, (view.x + view.width - b.width).max(view.x));
+            let y = (b.y + by.y).clamp(view.y, (view.y + view.height - b.height).max(view.y));
+            Vector::new(x - b.x, y - b.y)
         });
-        let frame =
-            |key: String, dot: Option<El<'static>>, face: El<'static>, lines: [El<'static>; 2], on: bool, select| {
-                let [top, preview] = lines;
-                let item = row![]
-                    .push(dot)
-                    .push(container(face).width(av + 10.0))
-                    .push(column![top, preview].width(Fill))
-                    .align_y(Center)
-                    .padding(Padding::new(8.0).top(9.0).bottom(11.0).left(if selecting { 0.0 } else { 8.0 }));
-                // Desktop's Play button takes the place of the hover actions.
-                let plays = st.resolve_chat_idx(&key).is_some_and(|i| self.plays(&st.chats[i]));
-                let hover = !selecting && !plays;
-                let action = self.hover_progress(&key).filter(|_| hover).map(|t| match key.strip_prefix("draft:") {
-                    Some(n) => Some(self.hover_btn(
-                        5,
-                        20.0,
-                        tr("Delete Chat"),
-                        vec![],
-                        UiMessage::NewChat(new_chat::Msg::Delete(n.parse().unwrap())),
-                        t,
-                    )),
-                    None => self.row_action(
-                        &st.settings,
-                        &st.chats[st.resolve_chat_idx(&key).expect("listed chat")],
-                        hover_action,
-                        t,
-                    ),
-                });
-                let rule = (!on && above.as_deref() != Some(key.as_str()))
-                    .then(|| container(divider(p.divider, av + 18.0)).align_bottom(Fill));
-                let row = mouse_area(
-                    button(stack![item].push(action.flatten()).push(rule))
-                        .padding(0)
-                        .width(Fill)
-                        .style(btn_style([if on { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
-                        .on_press(select),
-                )
-                .on_enter(UiMessage::ChatList(chat_list::Msg::Hover(key.clone(), true)))
-                .on_exit(UiMessage::ChatList(chat_list::Msg::Hover(key.clone(), false)));
-                let inbox = st.resolve_chat_idx(&key).is_some_and(|i| st.chats[i].flags & CHAT_ARCHIVED == 0);
-                match inbox {
-                    true => row.on_middle_press(UiMessage::ChatList(chat_list::Msg::ToggleFlag(
-                        key.clone(),
-                        ChatFlag::Archived,
-                    ))),
-                    false => row,
-                }
-                .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(key)))
-            };
-        let draft_row = |d: &NewChat| {
-            let n = d.id;
-            let dot = (!counts).then(|| container(Space::new()).width(12).into());
-            let names: Vec<&str> = d.users.iter().map(|(_, u)| u.full_name.as_deref().unwrap_or(&u.id)).collect();
-            let title = if names.is_empty() { tr("New Chat").into() } else { names.join(", ") };
-            let title = ell(&title, text_w, title_size, if counts { Weight::Medium } else { Weight::Semibold });
-            let rows = [
-                container(title.color(p.strong)).height(rem(16.0)).into(),
-                Space::new().height(rem(16.0) * lines as f32).into(),
-            ];
-            let face = self.face(
-                d.users.first().and_then(|(_, u)| u.img_url.as_deref()),
-                names.first().unwrap_or(&""),
-                av,
-                1.25,
-            );
-            let (key, on) = (format!("draft:{n}"), self.creating_chat == Some(n));
-            let picked = self.new_chat_account.as_ref().filter(|_| on);
-            let face = match d.users.first().map(|(a, _)| a).or(picked).filter(|_| network_icons) {
-                Some(account) => {
-                    let ring = if on { crate::style::flat(p.window, p.selected) } else { p.window };
-                    badged(
-                        face,
-                        brand_key(account),
-                        av,
-                        if compact { 12.0 } else { 16.0 },
-                        (!colorize).then_some(p),
-                        ring,
-                    )
-                }
-                None => face,
-            };
-            frame(key, dot, face, rows, on, UiMessage::NewChat(new_chat::Msg::Select(n)))
+        let to = g.pinned.iter().position(|o| o.id == d.id);
+        let mark = (to != Some(d.start)).then(|| {
+            container(Space::new()).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.1), 8.0))
+        });
+        stack![face].push(mark).into()
+    }
+
+    /// A row of the chat list, a chat's or a new-chat draft's, with its hover action, divider and menu.
+    fn view_list_row<'a>(
+        &'a self,
+        l: &RowLook,
+        (key, on): (String, bool),
+        dot: Option<El<'a>>,
+        face: El<'a>,
+        [top, preview]: [El<'a>; 2],
+        select: UiMessage,
+    ) -> El<'a> {
+        let (p, st) = (&self.pal, l.st);
+        let item = row![]
+            .push(dot)
+            .push(container(face).width(l.av + 10.0))
+            .push(column![top, preview].width(Fill))
+            .align_y(Center)
+            .padding(Padding::new(8.0).top(9.0).bottom(11.0).left(if l.selecting { 0.0 } else { 8.0 }));
+        // Desktop's Play button takes the place of the hover actions.
+        let plays = st.resolve_chat_idx(&key).is_some_and(|i| self.plays(&st.chats[i]));
+        let hover = !l.selecting && !plays;
+        let action = self.hover_progress(&key).filter(|_| hover).map(|t| match key.strip_prefix("draft:") {
+            Some(n) => Some(self.hover_btn(
+                5,
+                20.0,
+                tr("Delete Chat"),
+                vec![],
+                UiMessage::NewChat(new_chat::Msg::Delete(n.parse().unwrap())),
+                t,
+            )),
+            None => {
+                let c = &st.chats[st.resolve_chat_idx(&key).expect("listed chat")];
+                self.row_action(&st.settings, c, l.hover_action, t)
+            }
+        });
+        let rule = (!on && l.above.as_deref() != Some(key.as_str()))
+            .then(|| container(divider(p.divider, l.av + 18.0)).align_bottom(Fill));
+        let row = mouse_area(
+            button(stack![item].push(action.flatten()).push(rule))
+                .padding(0)
+                .width(Fill)
+                .style(btn_style([if on { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
+                .on_press(select),
+        )
+        .on_enter(UiMessage::ChatList(chat_list::Msg::Hover(key.clone(), true)))
+        .on_exit(UiMessage::ChatList(chat_list::Msg::Hover(key.clone(), false)));
+        let inbox = st.resolve_chat_idx(&key).is_some_and(|i| st.chats[i].flags & CHAT_ARCHIVED == 0);
+        let row = match inbox {
+            true => {
+                row.on_middle_press(UiMessage::ChatList(chat_list::Msg::ToggleFlag(key.clone(), ChatFlag::Archived)))
+            }
+            false => row,
         };
-        let chat_row = |c: &Chat| {
-            let on = selected == Some(c.id.as_str());
-            let unread = c.is_unread();
-            let muted = self.list_muted(&st, c);
-            let draft = c
-                .draft
-                .as_ref()
-                .and_then(|d| d.text.as_deref())
-                .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
-            let m = c.preview.as_ref().filter(|_| previews && draft.is_none());
-            let reaction = m.filter(|m| m.message_type.as_deref() == Some("REACTION"));
-            let next = next_send(&st, &c.id);
-            // Desktop's `quietReason` "snoozed", and the time of the Reminders, Send Later or Snoozed row.
-            let snoozed = reminders::snoozed_until(&st, c);
-            let remind =
-                c.reminder.as_ref().map(|r| r.remind_at_ms).into_iter().chain(self.message_reminder_at(&st, c));
-            let ts = match (self.list().active_tab, remind.min(), next, snoozed) {
-                (InboxTab::Reminders, Some(at), _, _)
-                | (InboxTab::SendLater, _, Some(at), _)
-                | (InboxTab::Snoozed, _, _, Some(at)) => format!("{} {}", reminder_day(at), clock(at, h24)),
-                _ if draft.is_some() => String::new(),
-                _ => c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default(),
-            };
-            let later = next.is_some()
-                && (draft.is_none() || matches!(self.list().active_tab, InboxTab::Reminders | InboxTab::SendLater));
-            let ts_w = crate::style::text_width(&ts, ts_size, Weight::Normal) + 8.0 + if later { 12.0 } else { 0.0 };
-            let expired = self.expired(c);
-            let reminded_last = c
-                .reminder
-                .as_ref()
-                .zip(c.last_activity.as_deref())
-                .is_some_and(|(r, t)| millis_from_rfc3339(t).expect("RFC 3339 timestamp") <= r.remind_at_ms);
-            let style = match expired && reminded_last {
-                true => iced::font::Style::Italic,
-                false => iced::font::Style::Normal,
-            };
-            let title = c.network_name.as_ref().map_or_else(|| c.title.clone(), |n| format!("{} • {n}", c.title));
-            let weight = if counts && !unread { Weight::Medium } else { Weight::Semibold };
-            let bell = if muted { 16.0 } else { 0.0 } + if snoozed.is_some() { 16.0 } else { 0.0 };
-            let pinned = c.flag(ChatFlag::Pinned);
-            let pin_icon = pinned.then(|| container(tinted(&PIN, 13.0, p.strong)).padding(Padding::ZERO.right(2.0)));
-            let pin_w = if pinned { 15.0 } else { 0.0 };
-            let top = row![]
-                .push(pin_icon)
-                .push(ell(&title, text_w - ts_w - bell - pin_w, title_size, weight).color(p.fg.scale_alpha(0.9)))
-                .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
-                .push(snoozed.map(|_| container(tinted(&MOON_STARS, 12.0, p.strong)).padding([0, 2])))
-                .push(Space::new().width(Fill))
-                .push(later.then(|| tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))))
-                .push(
-                    txt(ts, ts_size).color(p.strong.scale_alpha(0.7)).font(iced::Font { style, ..fw(Weight::Normal) }),
-                )
-                .height(rem(16.0))
-                .align_y(Center);
-            let mine = m.is_some_and(|m| m.is_sender == Some(true));
-            let receipt = m.is_some_and(read_icon);
-            let media_tag = m.and_then(message_tag);
-            let plays = self.plays(c);
-            // Desktop counts the new messages of a chat whose view-once media nobody opened.
-            let fresh = (plays && c.unread_count > 0 && c.preview.as_ref().is_some_and(|m| self.view_once.unopened(m)))
+        row.on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(key))).into()
+    }
+
+    /// The row of a new-chat draft: the names of its people, or "New Chat".
+    fn view_draft_row(&self, l: &RowLook, d: &NewChat) -> El<'_> {
+        let (p, n) = (&self.pal, d.id);
+        let dot = (!l.counts).then(|| container(Space::new()).width(12).into());
+        let names: Vec<&str> = d.users.iter().map(|(_, u)| u.full_name.as_deref().unwrap_or(&u.id)).collect();
+        let title = if names.is_empty() { tr("New Chat").into() } else { names.join(", ") };
+        let title = ell(&title, l.text_w, l.title_size, if l.counts { Weight::Medium } else { Weight::Semibold });
+        let rows = [
+            container(title.color(p.strong)).height(rem(16.0)).into(),
+            Space::new().height(rem(16.0) * l.lines as f32).into(),
+        ];
+        let face = self.face(
+            d.users.first().and_then(|(_, u)| u.img_url.as_deref()),
+            names.first().unwrap_or(&""),
+            l.av,
+            1.25,
+        );
+        let on = self.creating_chat == Some(n);
+        let picked = self.new_chat_account.as_ref().filter(|_| on);
+        let face = match d.users.first().map(|(a, _)| a).or(picked).filter(|_| l.network_icons) {
+            Some(account) => self.list_badged(l, face, brand_key(account), on),
+            None => face,
+        };
+        self.view_list_row(l, (format!("draft:{n}"), on), dot, face, rows, UiMessage::NewChat(new_chat::Msg::Select(n)))
+    }
+
+    /// `face` with the network icon of `brand` at its corner, ringed in the color of the row.
+    fn list_badged<'a>(&self, l: &RowLook, face: El<'a>, brand: &str, on: bool) -> El<'a> {
+        let p = &self.pal;
+        let ring = if on { crate::style::flat(p.window, p.selected) } else { p.window };
+        badged(face, brand, l.av, if l.compact { 12.0 } else { 16.0 }, (!l.colorize).then_some(p), ring)
+    }
+
+    /// The row of a chat: its avatar, its title line, and the preview of its last message or draft.
+    fn view_chat_row(&self, l: &RowLook, c: &Chat) -> El<'_> {
+        let (p, st) = (&self.pal, l.st);
+        let on = l.selected == Some(c.id.as_str());
+        let unread = c.is_unread();
+        let draft = c
+            .draft
+            .as_ref()
+            .and_then(|d| d.text.as_deref())
+            .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+        let top = self.view_chat_top(l, c, draft.is_some());
+        let dot_bg = if self.list_quiet(st, c) { Color { a: 0.3, ..p.strong } } else { p.accent };
+        let count = match l.counts {
+            true => unread.then(|| count_badge(c, dot_bg, Color::WHITE, 12.0)),
+            false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent).into()),
+        };
+        // Desktop's `indicators`: the unread dot, and a red dot while a send of the chat waits for Retry.
+        let dot = (!l.counts).then(|| {
+            let dot = |bg| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0));
+            let errored = st.has_errored(&c.id).then(|| dot(hex(0xf44336)));
+            container(column![].push(unread.then(|| dot(dot_bg))).push(errored).spacing(4)).width(12)
+        });
+        let count = count.filter(|_| {
+            self.hovered_chat.as_ref() != Some(&c.id) || self.row_action(&st.settings, c, l.hover_action, 1.0).is_none()
+        });
+        let count = if self.plays(c) { Some(self.view_once_play(&c.id)) } else { count };
+        let preview = self.view_chat_preview(l, c, draft, count);
+        let avatar = self.chat_avatar(c, l.av, 1.25);
+        let avatar = if l.network_icons { self.list_badged(l, avatar, merged::chat_brand(c), on) } else { avatar };
+        let face =
+            stack![avatar].push(st.typing.contains_key(&c.id).then(|| pin(self.typing_badge()).x(l.av - 14.0).y(-2.0)));
+        let dot = match l.selecting {
+            true => {
+                Some(container(checkbox(p, self.selection.contains(&c.id))).padding(Padding::ZERO.right(8.0)).into())
+            }
+            false => dot.map(El::from),
+        };
+        let lines = [top, preview.height(rem(16.0) * l.lines as f32).into()];
+        self.view_list_row(l, (c.id.clone(), on), dot, face.into(), lines, l.pick(c))
+    }
+
+    /// The title line of a chat row: the pin, title and mute icons, and the time of its last activity, reminder,
+    /// scheduled send or snooze.
+    fn view_chat_top(&self, l: &RowLook, c: &Chat, drafted: bool) -> El<'_> {
+        let (p, st) = (&self.pal, l.st);
+        let muted = self.list_muted(st, c);
+        let next = next_send(st, &c.id);
+        // Desktop's `quietReason` "snoozed", and the time of the Reminders, Send Later or Snoozed row.
+        let snoozed = reminders::snoozed_until(st, c);
+        let remind = c.reminder.as_ref().map(|r| r.remind_at_ms).into_iter().chain(self.message_reminder_at(st, c));
+        let ts = match (self.list().active_tab, remind.min(), next, snoozed) {
+            (InboxTab::Reminders, Some(at), _, _)
+            | (InboxTab::SendLater, _, Some(at), _)
+            | (InboxTab::Snoozed, _, _, Some(at)) => format!("{} {}", reminder_day(at), clock(at, l.h24)),
+            _ if drafted => String::new(),
+            _ => c.last_activity.as_deref().map(|t| list_ts(t, l.h24)).unwrap_or_default(),
+        };
+        let later =
+            next.is_some() && (!drafted || matches!(self.list().active_tab, InboxTab::Reminders | InboxTab::SendLater));
+        let ts_w = crate::style::text_width(&ts, l.ts_size, Weight::Normal) + 8.0 + if later { 12.0 } else { 0.0 };
+        let reminded_last = c
+            .reminder
+            .as_ref()
+            .zip(c.last_activity.as_deref())
+            .is_some_and(|(r, t)| millis_from_rfc3339(t).expect("RFC 3339 timestamp") <= r.remind_at_ms);
+        let style = match self.expired(c) && reminded_last {
+            true => iced::font::Style::Italic,
+            false => iced::font::Style::Normal,
+        };
+        let title = c.network_name.as_ref().map_or_else(|| c.title.clone(), |n| format!("{} • {n}", c.title));
+        let weight = if l.counts && !c.is_unread() { Weight::Medium } else { Weight::Semibold };
+        let bell = if muted { 16.0 } else { 0.0 } + if snoozed.is_some() { 16.0 } else { 0.0 };
+        let pinned = c.flag(ChatFlag::Pinned);
+        let pin_icon = pinned.then(|| container(tinted(&PIN, 13.0, p.strong)).padding(Padding::ZERO.right(2.0)));
+        let pin_w = if pinned { 15.0 } else { 0.0 };
+        row![]
+            .push(pin_icon)
+            .push(ell(&title, l.text_w - ts_w - bell - pin_w, l.title_size, weight).color(p.fg.scale_alpha(0.9)))
+            .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
+            .push(snoozed.map(|_| container(tinted(&MOON_STARS, 12.0, p.strong)).padding([0, 2])))
+            .push(Space::new().width(Fill))
+            .push(later.then(|| tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))))
+            .push(txt(ts, l.ts_size).color(p.strong.scale_alpha(0.7)).font(iced::Font { style, ..fw(Weight::Normal) }))
+            .height(rem(16.0))
+            .align_y(Center)
+            .into()
+    }
+
+    /// The text of a chat row's preview, whether it is italic, and the first name of its sender when the row names
+    /// them: the count of the new messages of unopened view-once media, the last message, its media label, or the
+    /// invitation of a request.
+    fn preview_text(
+        &self,
+        c: &Chat,
+        m: Option<&Message>,
+        tag: Option<&MediaTag>,
+    ) -> (Option<String>, bool, Option<String>) {
+        let mine = m.is_some_and(|m| m.is_sender == Some(true));
+        let reaction = m.filter(|m| m.message_type.as_deref() == Some("REACTION"));
+        // Desktop counts the new messages of a chat whose view-once media nobody opened.
+        let fresh =
+            (self.plays(c) && c.unread_count > 0 && c.preview.as_ref().is_some_and(|m| self.view_once.unopened(m)))
                 .then(|| {
                     let n = c.unread_count as usize;
                     trnx("%d New message", "%d New messages", n, "view-limited media chat list preview", &[&n])
                 });
-            let (body, italic) = match (fresh.clone(), m.and_then(preview_body)) {
-                (Some(t), _) | (None, Some(t)) => (Some(t), false),
-                (None, None) => {
-                    media_tag.as_ref().and_then(|t| t.2.clone()).map_or((None, false), |(d, i)| (Some(d), i))
-                }
-            };
-            let show_sender = fresh.is_none()
-                && !mine
-                && reaction.is_none()
-                && !m.is_some_and(Message::silent)
-                && (media_tag.is_some() || body.is_some())
-                && (c.chat_type == "group" || m.is_some_and(|m| network_bot(c, &m.sender_id)));
-            let first =
-                m.filter(|_| show_sender).map(|m| match c.participants.items.iter().find(|u| u.id == m.sender_id) {
-                    Some(u) => sender_first_name(u),
-                    None => m.sender_name.as_deref().and_then(|n| n.split(' ').next()).unwrap_or(&m.sender_id).into(),
-                });
-            let body = body.map(|t| match (media_tag.is_none(), &first) {
-                (true, Some(s)) => format!("{s}: {t}"),
-                _ => t,
-            });
-            let body = match (c.is_request == Some(true), c.chat_type == "group") {
-                (false, _) => body,
-                (true, false) => body.or_else(|| Some(tr("Message Request").into())),
-                (true, true) => {
-                    let head = match c.inviter() {
-                        Some(u) => trs("Invited by %s", &[&member_name(u)]),
-                        None => tr("Group Invitation").into(),
-                    };
-                    Some(body.map_or(head.clone(), |b| format!("{head}\n{b}")))
-                }
-            };
-            let dot_bg = if self.list_quiet(&st, c) { Color { a: 0.3, ..p.strong } } else { p.accent };
-            let count = match counts {
-                true => unread.then(|| count_badge(c, dot_bg, Color::WHITE, 12.0)),
-                false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent).into()),
-            };
-            // Desktop's `indicators`: the unread dot, and a red dot while a send of the chat waits for Retry.
-            let dot = (!counts).then(|| {
-                let dot = |bg| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0));
-                let errored = st.has_errored(&c.id).then(|| dot(hex(0xf44336)));
-                container(column![].push(unread.then(|| dot(dot_bg))).push(errored).spacing(4)).width(12)
-            });
-            let count = count.filter(|_| {
-                self.hovered_chat.as_ref() != Some(&c.id)
-                    || self.row_action(&st.settings, c, hover_action, 1.0).is_none()
-            });
-            let count = match plays {
-                true => Some(self.view_once_play(&c.id)),
-                false => count,
-            };
-            let sender = show_sender.then(|| preview_sender(c, m?)).flatten();
-            let digits =
-                if counts && c.unread_count > 0 { unread_label(c.unread_count as usize).len() as f32 } else { 0.0 };
-            let at = if c.unread_mentions > 0 { 12.0 } else { 0.0 };
-            let prefix = first.filter(|_| media_tag.is_some()).map(|s| format!("{s}:"));
-            let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal) + 4.0);
-            let base = 16.0 + if counts { 8.0 + 6.0 * digits + at } else { at }.max(18.0);
-            let errored = m.is_some_and(|m| m.send_error.is_some());
-            let indent = match (receipt, errored) {
-                (true, true) => 21.0,
-                (true, false) => 16.0,
-                (false, _) => 0.0,
-            } + if sender.is_some() { 16.0 } else { 0.0 }
-                + match &media_tag {
-                    Some((_, label, _)) if expired => crate::style::text_width(label, 13.0, Weight::Normal) + 4.0,
-                    Some((_, label, _)) => crate::style::text_width(label, 10.0, Weight::Medium) + 24.0,
-                    None => 0.0,
-                }
-                + if expired { crate::style::text_width(tr("Reminder"), 11.0, Weight::Semibold) + 10.0 } else { 0.0 }
-                + prefix_w;
-            let reserve = base + indent;
-            let flowed = lines > 1 && indent > 0.0;
-            let (body, second) = match body {
-                Some(b) if flowed => {
-                    let (first, rest) = crate::style::flow(&b, indent, text_w - base, lines, 13.0, Weight::Normal);
-                    (Some(first), Some(rest).filter(|r| !r.is_empty()))
-                }
-                b => (b, None),
-            };
-            let style = if italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
-            let body_font = iced::Font { style, ..fw(Weight::Normal) };
-            let fg = p.fg.scale_alpha(0.63);
-            let receipt = m.filter(|_| receipt).map(|m| {
-                // Desktop's `ZGe`: a message that failed to send shows `ErroredIcon`, without a tooltip.
-                if m.send_error.is_some() {
-                    // `.messageErroredIcon`: 16 by 11 with a 1 px margin, where the read icons are 12 px wide.
-                    let icon = container(tinted(&ERRORED, 11.0, ERROR_COLOR)).center_x(16);
-                    return container(icon).padding(Padding::ZERO.right(1.0)).into();
-                }
-                let glyph = if pending(&st, m) { &PENDING } else { &SENT[usize::from(seen_by(&st, m) > 0)] };
-                let icon = tinted(glyph, 12.0, fg);
-                match receipt_tip(&st, c, m) {
-                    Some(tip) => self.tip(icon, tip, vec![], tooltip::Position::Top).into(),
-                    None => icon,
-                }
-            });
-            let face =
-                sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0, 0.5));
-            let badge = (expired && previews).then(|| {
-                let label = semi(tr("Reminder"), 11.0).color(Color::WHITE.scale_alpha(0.7));
-                container(label).padding([0, 3]).style(fill_box(ORANGE.scale_alpha(0.7), 4.0))
-            });
-            let preview = row![]
-                .push(badge)
-                .push(receipt)
-                .push(face)
-                .push(prefix.map(|s| txt(s, 13.0).color(fg)))
-                .push(media_tag.map(|(icon, label, _)| -> El<'_> {
-                    if expired {
-                        return txt(label, 13.0).color(fg).into();
-                    }
-                    let glyph = tinted(tag_glyph(icon), 12.0, fg);
-                    let label = med(label, 10.0).color(fg);
-                    container(row![glyph, container(label).padding([0, 2])].align_y(Center))
-                        .padding([1, 2])
-                        .style(fill_box(p.strong.scale_alpha(0.105), 4.0))
-                        .into()
-                }))
-                .push(body.map(|b| -> El<'_> {
-                    let lines = if flowed { 1 } else { lines };
-                    let shown = crate::style::clamped(&b, text_w - reserve, lines, 13.0, Weight::Normal);
-                    if !shown.contains('\u{fe0f}') {
-                        let text = clamp(&b, text_w - reserve, lines, 13.0, Weight::Normal);
-                        return text
-                            .width(text_w - reserve)
-                            .line_height(Pixels(rem(16.0)))
-                            .font(body_font)
-                            .color(fg)
-                            .into();
-                    }
-                    let spans = crate::emoji::with_emoji_font(vec![span::<(), _>(shown.to_string()).font(body_font)]);
-                    let wrap = if lines == 1 {
-                        iced::widget::text::Wrapping::None
-                    } else {
-                        iced::widget::text::Wrapping::WordOrGlyph
-                    };
-                    rich_text(spans)
-                        .size(rem(13.0))
-                        .line_height(Pixels(rem(16.0)))
-                        .color(fg)
-                        .width(text_w - reserve)
-                        .wrapping(wrap)
-                        .into()
-                }))
-                .push(draft.filter(|_| previews).map(|t| {
-                    let label = trx("Draft:", "thread list draft preview prefix");
-                    let s =
-                        crate::style::clamped(&format!("{label} {t}"), text_w - reserve, lines, 13.0, Weight::Normal);
-                    let rest = s.strip_prefix(label).expect("the draft label fits").to_string();
-                    rich_text![span::<(), _>(label).font(fw(Weight::Semibold)).color(p.accent), span(rest).color(fg)]
-                        .size(rem(13.0))
-                        .line_height(Pixels(rem(16.0)))
-                        .width(text_w - reserve)
-                }))
-                .push(Space::new().width(Fill))
-                .push(count)
-                .spacing(4)
-                .align_y(if compact { Center } else { iced::Alignment::Start });
-            let second = second.map(|r| txt(r.to_string(), 13.0).font(body_font).color(fg));
-            let preview = column![preview].push(second);
-            let avatar = self.chat_avatar(c, av, 1.25);
-            let avatar = match network_icons {
-                true => {
-                    let ring = if on { crate::style::flat(p.window, p.selected) } else { p.window };
-                    badged(
-                        avatar,
-                        merged::chat_brand(c),
-                        av,
-                        if compact { 12.0 } else { 16.0 },
-                        (!colorize).then_some(p),
-                        ring,
-                    )
-                }
-                false => avatar,
-            };
-            let face = stack![avatar]
-                .push(st.typing.contains_key(&c.id).then(|| pin(self.typing_badge()).x(av - 14.0).y(-2.0)));
-            let dot = match selecting {
-                true => Some(container(checkbox(p, picked(c))).padding(Padding::ZERO.right(8.0)).into()),
-                false => dot.map(El::from),
-            };
-            frame(
-                c.id.clone(),
-                dot,
-                face.into(),
-                [top.into(), preview.height(rem(16.0) * lines as f32).into()],
-                on,
-                pick(c),
-            )
+        let (body, italic) = match (fresh.clone(), m.and_then(preview_body)) {
+            (Some(t), _) | (None, Some(t)) => (Some(t), false),
+            (None, None) => tag.and_then(|t| t.2.clone()).map_or((None, false), |(d, i)| (Some(d), i)),
         };
-        let list: El<'_> = if chats.is_empty() && self.new_chats.is_empty() {
-            let tab =
-                if self.list().selected_account_filter.is_some() { InboxTab::Requests } else { self.list().active_tab };
-            let (head, hint) = tab.empty();
-            let header = column![semi(head, 16.0).color(p.strong).align_x(Center).line_height(1.25)]
-                .push((!hint.is_empty()).then(|| txt(hint, 13.0).color(p.strong).align_x(Center)))
-                .spacing(12)
-                .align_x(Center);
-            let fallback = self.list().active_tab.fallback().map(|views| {
-                let words = "If you're looking for something, check the".split(' ').map(|w| txt(w, 13.0).into());
-                let pill = |t: InboxTab| -> El<'_> {
-                    button(semi(t.label(), 12.0))
-                        .padding([6, 8])
-                        .style(btn_style([p.selected; 3], [p.strong; 3], 999.0))
-                        .on_press(UiMessage::ChatList(chat_list::Msg::SelectTab(t)))
-                        .into()
-                };
-                let line =
-                    Row::with_children(words.chain([pill(views[0]), txt(tr("or"), 13.0).into(), pill(views[1])]))
-                        .spacing(3.5)
-                        .align_y(Center)
-                        .wrap()
-                        .vertical_spacing(5.5)
-                        .align_x(Center);
-                container(line).center_x(Fill).padding([24, 0])
+        let show_sender = fresh.is_none()
+            && !mine
+            && reaction.is_none()
+            && !m.is_some_and(Message::silent)
+            && (tag.is_some() || body.is_some())
+            && (c.chat_type == "group" || m.is_some_and(|m| network_bot(c, &m.sender_id)));
+        let first =
+            m.filter(|_| show_sender).map(|m| match c.participants.items.iter().find(|u| u.id == m.sender_id) {
+                Some(u) => sender_first_name(u),
+                None => m.sender_name.as_deref().and_then(|n| n.split(' ').next()).unwrap_or(&m.sender_id).into(),
             });
-            column![Space::new().height(Fill), header, Space::new().height(Fill)]
-                .push(fallback)
-                .padding([0, 22])
-                .width(Fill)
-                .into()
-        } else {
-            let tiles = pinned.len().div_ceil(cols);
-            let row_keys = self.row_keys(&rest);
-            // Desktop's "Unread threads" pill comes first.
-            let threads = self.unread_threads(&st, true);
-            let pre = usize::from(!threads.is_empty());
-            let keys: Vec<u64> = (0..pre)
-                .map(|_| vlist::key("unread-threads"))
-                .chain((0..tiles).map(|i| vlist::key(("pins", i))))
-                .chain(row_keys[..lead].iter().copied())
-                .chain(self.new_chats.iter().map(|d| vlist::key(("draft", d.id))))
-                .chain(row_keys[lead..].iter().copied())
-                .collect();
-            let estimate = if compact { 52.0 } else { 68.0 };
-            let rows = self.list().rows.view(&keys, false, estimate, UiMessage::Relist, |i| match i.checked_sub(pre) {
-                None => self.unread_threads_pill(&st, &threads),
-                Some(i) if i < tiles => pin_row(&pinned[i * cols..(i * cols + cols).min(pinned.len())]),
-                Some(i) if i < tiles + lead => chat_row(rest[i - tiles]).into(),
-                Some(i) if i < tiles + lead + drafts => draft_row(&self.new_chats[i - tiles - lead]).into(),
-                Some(i) => chat_row(rest[i - tiles - drafts]).into(),
-            });
-            scrollable(container(rows).padding(Padding::ZERO.right(bar_pad + GUTTER)))
-                .id(self.list().scroll.0.clone())
-                .direction(stable_bar())
-                .height(Fill)
-                .style(scroll_style(p.scroll))
-                .into()
-        };
-        let pill = self.view_global_audio(&st, w - 18.0).map(|pill| {
-            let at = Padding::ZERO.left(8.0).right(10.0).bottom(self.audio.bottom);
-            container(pill).padding(at).height(Fill).align_bottom(Fill)
+        let body = body.map(|t| match (tag.is_none(), &first) {
+            (true, Some(s)) => format!("{s}: {t}"),
+            _ => t,
         });
-        let status = self.view_network_status(&st);
-        let banner = self.view_key_banner(&st);
-        let sidebar =
-            stack![column![header].push(status).push(banner).push(list).padding(Padding::ZERO.left(8.0))].push(pill);
-        let sidebar = container(sidebar).width(w).height(Fill);
-        mouse_area(sidebar).on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(SIDEBAR_MENU.into()))).into()
+        let body = match (c.is_request == Some(true), c.chat_type == "group") {
+            (false, _) => body,
+            (true, false) => body.or_else(|| Some(tr("Message Request").into())),
+            (true, true) => {
+                let head = match c.inviter() {
+                    Some(u) => trs("Invited by %s", &[&member_name(u)]),
+                    None => tr("Group Invitation").into(),
+                };
+                Some(body.map_or(head.clone(), |b| format!("{head}\n{b}")))
+            }
+        };
+        (body, italic, first)
     }
+
+    /// The preview line of a chat row: the Reminder badge, the receipt, the sender's face, the media label and the
+    /// text of the last message or of the draft, then the unread count.
+    fn view_chat_preview<'a>(
+        &'a self,
+        l: &RowLook,
+        c: &Chat,
+        draft: Option<String>,
+        count: Option<El<'a>>,
+    ) -> Column<'a, UiMessage> {
+        let (p, st, lines, text_w) = (&self.pal, l.st, l.lines, l.text_w);
+        let m = c.preview.as_ref().filter(|_| l.previews && draft.is_none());
+        let expired = self.expired(c);
+        let media_tag = m.and_then(message_tag);
+        let (body, italic, first) = self.preview_text(c, m, media_tag.as_ref());
+        let sender = first.is_some().then(|| preview_sender(c, m?)).flatten();
+        let digits =
+            if l.counts && c.unread_count > 0 { unread_label(c.unread_count as usize).len() as f32 } else { 0.0 };
+        let at = if c.unread_mentions > 0 { 12.0 } else { 0.0 };
+        let prefix = first.filter(|_| media_tag.is_some()).map(|s| format!("{s}:"));
+        let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal) + 4.0);
+        let base = 16.0 + if l.counts { 8.0 + 6.0 * digits + at } else { at }.max(18.0);
+        let receipt = m.is_some_and(read_icon);
+        let indent = match (receipt, m.is_some_and(|m| m.send_error.is_some())) {
+            (true, true) => 21.0,
+            (true, false) => 16.0,
+            (false, _) => 0.0,
+        } + if sender.is_some() { 16.0 } else { 0.0 }
+            + match &media_tag {
+                Some((_, label, _)) if expired => crate::style::text_width(label, 13.0, Weight::Normal) + 4.0,
+                Some((_, label, _)) => crate::style::text_width(label, 10.0, Weight::Medium) + 24.0,
+                None => 0.0,
+            }
+            + if expired { crate::style::text_width(tr("Reminder"), 11.0, Weight::Semibold) + 10.0 } else { 0.0 }
+            + prefix_w;
+        let width = text_w - (base + indent);
+        let flowed = lines > 1 && indent > 0.0;
+        let (body, second) = match body {
+            Some(b) if flowed => {
+                let (first, rest) = crate::style::flow(&b, indent, text_w - base, lines, 13.0, Weight::Normal);
+                (Some(first), Some(rest).filter(|r| !r.is_empty()))
+            }
+            b => (b, None),
+        };
+        let style = if italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
+        let font = iced::Font { style, ..fw(Weight::Normal) };
+        let fg = p.fg.scale_alpha(0.63);
+        let receipt = m.filter(|_| receipt).map(|m| self.preview_receipt(st, c, m, fg));
+        let face =
+            sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0, 0.5));
+        let badge = (expired && l.previews).then(|| {
+            let label = semi(tr("Reminder"), 11.0).color(Color::WHITE.scale_alpha(0.7));
+            container(label).padding([0, 3]).style(fill_box(ORANGE.scale_alpha(0.7), 4.0))
+        });
+        let preview = row![]
+            .push(badge)
+            .push(receipt)
+            .push(face)
+            .push(prefix.map(|s| txt(s, 13.0).color(fg)))
+            .push(media_tag.map(|(icon, label, _)| media_chip(p, icon, label, expired, fg)))
+            .push(body.map(|b| preview_line(&b, width, if flowed { 1 } else { lines }, font, fg)))
+            .push(draft.filter(|_| l.previews).map(|t| {
+                let label = trx("Draft:", "thread list draft preview prefix");
+                let s = crate::style::clamped(&format!("{label} {t}"), width, lines, 13.0, Weight::Normal);
+                let rest = s.strip_prefix(label).expect("the draft label fits").to_string();
+                rich_text![span::<(), _>(label).font(fw(Weight::Semibold)).color(p.accent), span(rest).color(fg)]
+                    .size(rem(13.0))
+                    .line_height(Pixels(rem(16.0)))
+                    .width(width)
+            }))
+            .push(Space::new().width(Fill))
+            .push(count)
+            .spacing(4)
+            .align_y(if l.compact { Center } else { iced::Alignment::Start });
+        column![preview].push(second.map(|r| txt(r.to_string(), 13.0).font(font).color(fg)))
+    }
+
+    /// The receipt of a chat's last message when it is the user's: sending, sent, read, or failed.
+    fn preview_receipt<'a>(&self, st: &BeeperStore, c: &Chat, m: &Message, fg: Color) -> El<'a> {
+        // Desktop's `ZGe`: a message that failed to send shows `ErroredIcon`, without a tooltip.
+        if m.send_error.is_some() {
+            // `.messageErroredIcon`: 16 by 11 with a 1 px margin, where the read icons are 12 px wide.
+            let icon = container(tinted(&ERRORED, 11.0, ERROR_COLOR)).center_x(16);
+            return container(icon).padding(Padding::ZERO.right(1.0)).into();
+        }
+        let glyph = if pending(st, m) { &PENDING } else { &SENT[usize::from(seen_by(st, m) > 0)] };
+        let icon = tinted(glyph, 12.0, fg);
+        match receipt_tip(st, c, m) {
+            Some(tip) => self.tip(icon, tip, vec![], tooltip::Position::Top).into(),
+            None => icon,
+        }
+    }
+}
+
+/// The count of the pinned chats at the top of the rows of a list without a grid of pins (`regularPinned`).
+fn pinned_rows(rest: &[&Chat]) -> usize {
+    rest.iter().take_while(|c| c.flags & CHAT_PINNED != 0).count()
+}
+
+/// The media label of a chat row's preview: the icon and label of the attachment, or only its label in italic text
+/// while the chat's reminder is due.
+fn media_chip<'a>(p: &Palette, icon: usize, label: &'a str, expired: bool, fg: Color) -> El<'a> {
+    if expired {
+        return txt(label, 13.0).color(fg).into();
+    }
+    let glyph = tinted(tag_glyph(icon), 12.0, fg);
+    let label = med(label, 10.0).color(fg);
+    container(row![glyph, container(label).padding([0, 2])].align_y(Center))
+        .padding([1, 2])
+        .style(fill_box(p.strong.scale_alpha(0.105), 4.0))
+        .into()
+}
+
+/// The text of a chat row's preview in `lines` lines of `width`, with the emoji font when it has emoji.
+fn preview_line<'a>(b: &str, width: f32, lines: usize, font: iced::Font, fg: Color) -> El<'a> {
+    let shown = crate::style::clamped(b, width, lines, 13.0, Weight::Normal);
+    if !shown.contains('\u{fe0f}') {
+        let text = clamp(b, width, lines, 13.0, Weight::Normal);
+        return text.width(width).line_height(Pixels(rem(16.0))).font(font).color(fg).into();
+    }
+    let spans = crate::emoji::with_emoji_font(vec![span::<(), _>(shown.to_string()).font(font)]);
+    let wrap = if lines == 1 { iced::widget::text::Wrapping::None } else { iced::widget::text::Wrapping::WordOrGlyph };
+    rich_text(spans).size(rem(13.0)).line_height(Pixels(rem(16.0))).color(fg).width(width).wrapping(wrap).into()
+}
+
+/// The settings, sizes and selection that every row of the chat list reads.
+struct RowLook<'s> {
+    st: &'s BeeperStore,
+    /// Desktop's `isSelected` row.
+    selected: Option<&'s str>,
+    /// The row above the selected one.
+    above: Option<Cow<'s, str>>,
+    compact: bool,
+    av: f32,
+    lines: usize,
+    title_size: f32,
+    ts_size: f32,
+    /// The width of the title and preview lines.
+    text_w: f32,
+    counts: bool,
+    network_icons: bool,
+    colorize: bool,
+    hover_action: u8,
+    selecting: bool,
+    previews: bool,
+    h24: bool,
+}
+
+impl RowLook<'_> {
+    /// The message of a click on the row of `c`: it opens the chat, or picks it while chats are selected.
+    fn pick(&self, c: &Chat) -> UiMessage {
+        match self.selecting {
+            true => UiMessage::ChatList(chat_list::Msg::ToggleSelected(c.id.clone())),
+            false => UiMessage::ChatList(chat_list::Msg::Click(c.id.clone())),
+        }
+    }
+}
+
+/// The grid of pins at the top of the chat list.
+struct PinGrid<'s> {
+    pinned: Vec<&'s Chat>,
+    items: std::sync::Arc<[String]>,
+    /// The pin that a drag of the mouse or the keyboard moves.
+    dragged: Option<&'s str>,
+    /// The drag of the mouse, and where its ghost is from the pin's cell.
+    held: Option<&'s PinDrag>,
+    ghost: Option<Vector>,
+    cols: usize,
+    cell: f32,
+    tile: f32,
+    av: f32,
+    now: i64,
+    launched: i64,
 }
 
 /// Desktop's `ope`: whether the bridge of an account or network space takes message requests (the
