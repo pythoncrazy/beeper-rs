@@ -87,12 +87,13 @@ pub(crate) fn pin_bubble<'a>(
     av: f32,
     compact: bool,
 ) -> El<'a> {
-    let max = 80f32.min(cell - 4.0);
+    let max = rem(80.0).min(cell - 4.0);
     let at_w = if mention { 14.0 } else { 0.0 };
     let w = (crate::style::text_width(text, 10.0, Weight::Normal) + at_w + 8.0).clamp(22.0, max);
     let right = (cell + av - 4.0) / 2.0;
     let x = right + 3.0 + ((w - av - 6.0) / 2.0).max(0.0) - w;
-    let (y, h) = if compact { (10.0, 18.56) } else { (17.0, 20.0) };
+    // Its line of `--semantic-typo-line-height-label-xs` in rem, or 0.66rem in the compact list, in 4 px of padding.
+    let (y, h) = if compact { (10.0, 8.0 + rem(10.56)) } else { (17.0, 8.0 + rem(12.0)) };
     let line = row![]
         .push(mention.then(|| ic(icon::AT_SIGN, 10.0).color(fg)))
         .push(ell(text, w - 8.0 - at_w, 10.0, Weight::Normal).color(fg).line_height(Pixels(h - 8.0)))
@@ -104,7 +105,8 @@ pub(crate) fn pin_bubble<'a>(
         border: iced::Border { radius: iced::border::Radius::default().bottom(3.0), ..Default::default() },
         ..Default::default()
     });
-    stack![pin(bubble).x(x).y(y - h / 2.0), pin(nub).x(right - 9.0).y(y + if compact { 9.0 } else { 10.0 })].into()
+    stack![pin(bubble).x(x).y(y - h / 2.0), pin(nub).x(right - 9.0).y(y + h / 2.0 - if compact { 0.28 } else { 0.0 })]
+        .into()
 }
 
 /// A press on a pin of the pinned grid, which Desktop's `Drop` sorts after the cursor moves 5px: the pin, where the

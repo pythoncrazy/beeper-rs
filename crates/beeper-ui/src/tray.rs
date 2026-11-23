@@ -123,25 +123,44 @@ struct Menu {
     tx: tokio::sync::mpsc::UnboundedSender<Event>,
     visible: bool,
     revision: u32,
+    /// The dbusmenu shortcuts of the hotkeys of [`crate::TRAY_HOTKEYS`].
+    shortcuts: [Vec<String>; 2],
 }
 
-/// Desktop's tray menu: "Minimize to Tray" while the window shows, "Show Window" while it hides, then "Quit Beeper".
-const ENTRIES: [(i32, &str, &[&str], Event); 3] = [
-    (1, "Minimize to Tray", &["Control", "Alt", "q"], Event::Hide),
-    (2, "Show Window", &[], Event::Show),
-    (3, "Quit Beeper", &["Control", "q"], Event::Quit),
+/// Desktop's tray menu: "Minimize to Tray" while the window shows, "Show Window" while it hides, then "Quit Beeper",
+/// with the index of its hotkey in [`crate::TRAY_HOTKEYS`].
+const ENTRIES: [(i32, &str, Option<usize>, Event); 3] = [
+    (1, "Minimize to Tray", Some(0), Event::Hide),
+    (2, "Show Window", None, Event::Show),
+    (3, "Quit Beeper", Some(1), Event::Quit),
 ];
 
+/// The dbusmenu shortcut of hotkey keys like "ctrl+alt+q": Chromium's names of the modifiers and the key. Like an
+/// Electron accelerator, a disabled hotkey or one of several combinations has none.
+fn shortcut(keys: &str) -> Vec<String> {
+    if keys == "disabled" || keys.contains(", ") {
+        return Vec::new();
+    }
+    let name = |k: &str| match k {
+        "ctrl" => "Control".to_string(),
+        "alt" => "Alt".to_string(),
+        "shift" => "Shift".to_string(),
+        k => k.to_string(),
+    };
+    keys.split('+').filter(|k| !k.is_empty()).map(name).collect()
+}
+
 impl Menu {
-    fn items(&self) -> impl Iterator<Item = &'static (i32, &'static str, &'static [&'static str], Event)> + '_ {
-        ENTRIES.iter().filter(|e| e.3 != if self.visible { Event::Show } else { Event::Hide })
+    fn items(&self) -> impl Iterator<Item = (i32, &'static str, &[String], Event)> + '_ {
+        let shown = ENTRIES.iter().filter(|e| e.3 != if self.visible { Event::Show } else { Event::Hide });
+        shown.map(|&(id, label, keys, e)| (id, label, keys.map_or(&[][..], |i| &self.shortcuts[i][..]), e))
     }
 }
 
-fn props(label: &str, keys: &[&str]) -> HashMap<String, OwnedValue> {
+fn props(label: &str, keys: &[String]) -> HashMap<String, OwnedValue> {
     let mut p = HashMap::from([("label".to_string(), OwnedValue::from(zbus::zvariant::Str::from(label.to_string())))]);
     if !keys.is_empty() {
-        let keys = vec![keys.iter().map(|k| k.to_string()).collect::<Vec<_>>()];
+        let keys = vec![keys.to_vec()];
         p.insert("shortcut".into(), OwnedValue::try_from(zbus::zvariant::Value::from(keys)).expect("shortcut value"));
     }
     p
@@ -168,7 +187,7 @@ impl Menu {
         Vec::new()
     }
     fn get_layout(&self, parent_id: i32, _depth: i32, _names: Vec<String>) -> (u32, Layout) {
-        let children = (parent_id == 0).then(|| self.items()).into_iter().flatten().map(|&(id, label, m, _)| {
+        let children = (parent_id == 0).then(|| self.items()).into_iter().flatten().map(|(id, label, m, _)| {
             let item: Layout = (id, props(label, m), Vec::new());
             OwnedValue::try_from(Structure::from(item)).expect("menu item value")
         });
@@ -177,11 +196,11 @@ impl Menu {
         (self.revision, (parent_id, root, children.collect()))
     }
     fn get_group_properties(&self, ids: Vec<i32>, _names: Vec<String>) -> Vec<(i32, HashMap<String, OwnedValue>)> {
-        self.items().filter(|e| ids.is_empty() || ids.contains(&e.0)).map(|&(id, l, m, _)| (id, props(l, m))).collect()
+        self.items().filter(|e| ids.is_empty() || ids.contains(&e.0)).map(|(id, l, m, _)| (id, props(l, m))).collect()
     }
     fn get_property(&self, id: i32, name: String) -> zbus::fdo::Result<OwnedValue> {
         let item = self.items().find(|e| e.0 == id);
-        let mut p = item.map(|&(_, l, m, _)| props(l, m)).unwrap_or_default();
+        let mut p = item.map(|(_, l, m, _)| props(l, m)).unwrap_or_default();
         p.remove(&name).ok_or_else(|| zbus::fdo::Error::InvalidArgs(format!("no property {name} on item {id}")))
     }
     fn event(&self, id: i32, event_id: String, _data: OwnedValue, _timestamp: u32) {
@@ -217,7 +236,7 @@ impl Drop for Registered {
     }
 }
 
-async fn register(tx: tokio::sync::mpsc::UnboundedSender<Event>) -> Result<Registered, String> {
+async fn register(tx: tokio::sync::mpsc::UnboundedSender<Event>, keys: [String; 2]) -> Result<Registered, String> {
     let bus = crate::notify::bus().await?.clone();
     let pngs: [&[u8]; 2] = [include_bytes!("../assets/tray/icon.png"), include_bytes!("../assets/tray/unread.png")];
     let icons = match file_icons() {
@@ -232,7 +251,8 @@ async fn register(tx: tokio::sync::mpsc::UnboundedSender<Event>) -> Result<Regis
     };
     let server = bus.object_server();
     server.at(ITEM, Item { tx: tx.clone(), unread: 0, icons }).await.map_err(|e| e.to_string())?;
-    server.at(MENU, Menu { tx, visible: true, revision: 1 }).await.map_err(|e| e.to_string())?;
+    let menu = Menu { tx, visible: true, revision: 1, shortcuts: keys.map(|k| shortcut(&k)) };
+    server.at(MENU, menu).await.map_err(|e| e.to_string())?;
     let name = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
     bus.request_name(name.as_str()).await.map_err(|e| e.to_string())?;
     let registered = Registered(bus.clone(), name.clone());
@@ -248,12 +268,14 @@ async fn register(tx: tokio::sync::mpsc::UnboundedSender<Event>) -> Result<Regis
     Ok(registered)
 }
 
-/// `Up`, then the tray clicks while the tray shows. A failed registration ends the stream with the error.
-pub fn events() -> impl iced::futures::Stream<Item = Result<Event, String>> {
-    iced::stream::channel(8, async |mut out: iced::futures::channel::mpsc::Sender<Result<Event, String>>| {
+/// `Up`, then the tray clicks while the tray shows, with the keys of [`crate::TRAY_HOTKEYS`] as the menu
+/// accelerators. A failed registration ends the stream with the error.
+pub fn events(keys: &[String; 2]) -> impl iced::futures::Stream<Item = Result<Event, String>> {
+    let keys = keys.clone();
+    iced::stream::channel(8, async move |mut out: iced::futures::channel::mpsc::Sender<Result<Event, String>>| {
         use iced::futures::SinkExt;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let _registered = match register(tx).await {
+        let _registered = match register(tx, keys).await {
             Ok(r) => r,
             Err(e) => {
                 _ = out.send(Err(e)).await;
@@ -299,4 +321,24 @@ pub async fn update(unread: u32, visible: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Desktop builds the accelerators of its tray menu from the hotkeys, so a rebound hotkey shows its own keys.
+    #[test]
+    fn the_menu_shows_the_keys_of_the_hotkeys() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let keys = ["ctrl+shift+m".to_string(), "disabled".to_string()];
+        let menu = Menu { tx, visible: true, revision: 1, shortcuts: keys.map(|k| shortcut(&k)) };
+        let items: Vec<_> = menu.items().map(|(id, label, keys, _)| (id, label, keys.to_vec())).collect();
+        assert_eq!(items[0], (1, "Minimize to Tray", vec!["Control".into(), "Shift".into(), "m".into()]));
+        assert_eq!(items[1], (3, "Quit Beeper", Vec::<String>::new()), "a disabled hotkey has no accelerator");
+        let defaults = crate::TRAY_HOTKEYS.map(|h| shortcut(beeper_core::prefs::hotkey_default(h)));
+        assert_eq!(defaults, [vec!["Control", "Alt", "q"], vec!["Control", "q"]]);
+        assert!(shortcut("ctrl+e, e").is_empty(), "several combinations are no accelerator");
+        assert!(shortcut("").is_empty());
+    }
 }

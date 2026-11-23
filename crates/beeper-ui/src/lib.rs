@@ -80,7 +80,7 @@ mod tray {
         Hide,
         Quit,
     }
-    pub fn events() -> iced::futures::stream::Empty<Result<Event, String>> {
+    pub fn events(_: &[String; 2]) -> iced::futures::stream::Empty<Result<Event, String>> {
         unreachable!("only the Linux build shows a tray icon")
     }
 
@@ -149,8 +149,9 @@ use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZ
 
 use crate::style::{
     bar, bordered_box, bordered_btn, brand_gray, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded,
-    fill_box, fw, glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style, pick_style, scroll_style,
-    semi, shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER, SOLID_BARS,
+    fill_box, fw, glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style, pick_style, rem,
+    scroll_style, semi, shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER,
+    SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -639,6 +640,14 @@ pub(crate) fn hotkey_caps(keys: &str) -> Vec<String> {
     hotkey_text(keys).split_whitespace().map(String::from).collect()
 }
 
+/// The hotkeys whose keys are the accelerators of the tray menu (Desktop's `MINIMIZE_TO_TRAY` and `QUIT_APP`).
+pub(crate) const TRAY_HOTKEYS: [&str; 2] = ["Minimize To Tray", "Quit App"];
+
+/// The keys of [`TRAY_HOTKEYS`].
+fn tray_hotkeys(s: &BeeperSettings) -> [String; 2] {
+    TRAY_HOTKEYS.map(|h| s.hotkey_keys(h).to_string())
+}
+
 fn downloads_dir(s: &BeeperSettings) -> std::path::PathBuf {
     match s.downloads_dir.as_str() {
         "" => beeper_core::platform::resolve_home_dir(&std::env::vars().collect()).join("Downloads"),
@@ -675,9 +684,9 @@ fn menu_item<'a>(
 ) -> El<'a> {
     let line = row![]
         .push(lead)
-        .push(txt(label, 13.0).line_height(Pixels(MENU_LINE)))
+        .push(txt(label, 13.0).line_height(Pixels(rem(MENU_LINE))))
         .push(Space::new().width(Fill))
-        .push(txt(hotkey, 13.0).line_height(Pixels(MENU_LINE)).color(Color { a: 0.5, ..p.strong }));
+        .push(txt(hotkey, 13.0).line_height(Pixels(rem(MENU_LINE))).color(Color { a: 0.5, ..p.strong }));
     menu_line(p, line, msg)
 }
 
@@ -688,10 +697,11 @@ fn menu_line<'a>(p: &Palette, line: Row<'a, UiMessage>, msg: Option<UiMessage>) 
     container(button(line).padding([3, 8]).width(Fill).style(style).on_press_maybe(msg)).padding([1, 5]).into()
 }
 
-/// Desktop's `menu-item section-header`: a grey heading row of a menu, as high as a menu row.
+/// Desktop's `menu-item section-header`: a grey heading row of a menu, as high as a menu row, in 11 px text.
 fn menu_heading<'a>(p: &Palette, label: String) -> El<'a> {
-    let label = med(label, 11.0).color(p.weak).wrapping(iced::widget::text::Wrapping::None);
-    container(label).padding([0, 13]).center_y(MENU_ITEM).width(Fill).clip(true).into()
+    let label =
+        crate::style::fixed(label, 11.0, Weight::Medium).color(p.weak).wrapping(iced::widget::text::Wrapping::None);
+    container(label).padding([0, 13]).center_y(menu_pitch()).width(Fill).clip(true).into()
 }
 
 pub(crate) const ISSUES_URL: &str = "https://github.com/pythoncrazy/beeper-rs/issues";
@@ -739,8 +749,10 @@ const MESSAGE_MENU_W: f32 = 270.0;
 const MIN_PANE_W: f32 = 240.0;
 /// Desktop's `.menu-item` line: 13 px text at the 1.4 line height of `html`.
 const MENU_LINE: f32 = 13.0 * 1.4;
-/// The pitch of Desktop's `.menu-item`: the line, 3 px of padding on each side, and a collapsed 2 px margin.
-const MENU_ITEM: f32 = MENU_LINE + 8.0;
+/// The pitch of Desktop's `.menu-item`: the line in rem, 3 px of padding on each side, and a collapsed 2 px margin.
+fn menu_pitch() -> f32 {
+    rem(MENU_LINE) + 8.0
+}
 /// Desktop's `qL` inbox visibility options of an account, with their labels.
 const INBOX_OPTIONS: [(&str, &str); 3] = [("all", "All Messages"), ("dmOnly", "Only DMs"), ("none", "None")];
 const ACCOUNT_SUB_W: f32 = 160.0;
@@ -981,7 +993,7 @@ struct Queued {
     files: Vec<PendingMedia>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct PendingMedia {
     pub bytes: Vec<u8>,
     pub name: String,
@@ -1139,8 +1151,9 @@ pub(crate) fn contact_card<'a>(
     limit: usize,
     entry: &dyn Fn(bool, &str) -> El<'a>,
 ) -> Column<'a, UiMessage> {
-    let line = |s: String| txt(s, 12.0).line_height(Pixels(16.0)).color(fg);
-    let medium = |s: String| txt(s, 14.0).font(fw(Weight::Medium)).color(fg);
+    // `.contact-attachment-meta` and `-org` are 12 px, `-name` and `-org.no-name` 14 px, and its `h4` 12 px.
+    let line = |s: String| crate::style::fixed(s, 12.0, Weight::Normal).line_height(Pixels(rem(16.0))).color(fg);
+    let medium = |s: String| crate::style::fixed(s, 14.0, Weight::Medium).color(fg);
     let mut meta = Column::new().push((!c.name.is_empty()).then(|| medium(c.name.clone())));
     if let Some(org) = &c.org {
         meta = meta.push(match c.name.is_empty() {
@@ -1149,7 +1162,7 @@ pub(crate) fn contact_card<'a>(
         });
     }
     let list = |items: &[String], title: String, more: &'static str, phone: bool| {
-        let head = semi(title, 12.0).line_height(Pixels(16.0)).color(fg);
+        let head = crate::style::fixed(title, 12.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(fg);
         let rest = items.len().saturating_sub(limit);
         let more = (rest > 0).then(|| line(trn(more, more, rest, &[&rest])));
         let col = column![container(head).padding(Padding::ZERO.top(6.0).bottom(4.0))];
@@ -1254,8 +1267,8 @@ fn sized_select<'a, T: ToString + PartialEq + Clone + 'a>(
     pad: Padding,
 ) -> El<'a> {
     let list = pick_list(options, Some(selected), f)
-        .text_size(size)
-        .text_line_height(Pixels(16.0))
+        .text_size(rem(size))
+        .text_line_height(Pixels(rem(16.0)))
         .font(fw(Weight::Semibold))
         .handle(pick_list::Handle::None)
         .padding(pad)
@@ -1332,10 +1345,9 @@ svg_static!(SELECT_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="
 /// Desktop's "Feedback?" button, which opens the feedback form.
 fn feedback_btn<'a>(p: &Palette) -> El<'a> {
     let rim = Color { a: 0.1, ..p.strong };
-    button(container(txt(tr("Feedback?"), 11.0)).center(Fill))
-        .width(74)
-        .height(24)
-        .padding(0)
+    // `.feedback-widget .feedback-btn`: 4 px by 8 px around its text in rem, inside a 1 px border.
+    button(txt(tr("Feedback?"), 11.0))
+        .padding([5, 9])
         .style(bordered_btn([p.card, p.hover, p.card], [Color { a: 0.9, ..rim }; 3], rim, 1.0, 4.0))
         .on_press(UiMessage::OpenQuickLook("Feedback".into(), FEEDBACK.into()))
         .into()
@@ -1395,7 +1407,8 @@ fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
             container(label.spacing(2).align_y(Center).padding([4, 6])).style(fill_box(p.chip, 25.0)).into()
         }
         prefs::Badge::Labs => {
-            let tag = txt("🧪 Labs", 12.0).color(p.strong);
+            // `.tag` is 12 px.
+            let tag = crate::style::fixed("🧪 Labs", 12.0, Weight::Normal).color(p.strong);
             container(tag).padding([1, 4]).style(fill_box(p.strong.scale_alpha(0.1), 4.0)).into()
         }
         prefs::Badge::PlusLabs => {
@@ -2373,7 +2386,8 @@ fn pref_row<'a>(
 ) -> El<'a> {
     let title = title.to_string();
     let label: El<'a> = match extra {
-        None => txt(title, 13.0).color(p.text).into(),
+        // `overflow-wrap: anywhere` and `min-width: 0`: a label that the control squeezes breaks inside its words.
+        None => txt(title, 13.0).color(p.text).wrapping(iced::widget::text::Wrapping::WordOrGlyph).into(),
         Some(extra) => {
             let space = text_width(" ", 13.0, Weight::Normal);
             let words = title.split(' ').map(|w| txt(w.to_string(), 13.0).color(p.text).into());
@@ -2382,10 +2396,12 @@ fn pref_row<'a>(
         }
     };
     let head = row![container(label).width(Fill), control];
-    column![head.spacing(6).align_y(Center).padding(13)]
+    // `.label-wrapper label`: `padding: 1em` of the 13 px body text, in rem.
+    column![head.spacing(6).align_y(Center).padding(rem(13.0))]
         .push(desc.map(|d| {
-            let paras = d.split("\n\n").map(|t| txt(t.to_string(), 13.0).line_height(Pixels(18.0)).color(p.sub).into());
-            Column::with_children(paras).spacing(13).padding(Padding::new(13.0).top(0.0))
+            let paras =
+                d.split("\n\n").map(|t| txt(t.to_string(), 13.0).line_height(Pixels(rem(18.0))).color(p.sub).into());
+            Column::with_children(paras).spacing(13).padding(Padding::new(rem(13.0)).top(0.0))
         }))
         .into()
 }
@@ -2708,7 +2724,7 @@ pub struct BeeperGuiApp {
     /// The open selection bar menu (Remind Me or More) and the x of its button.
     selection_menu: Option<(u8, f32)>,
     chat_sub: Option<u8>,
-    /// The reminder time each chat or message was last reminded of.
+    /// The reminder time each message was last reminded of.
     reminded: HashMap<String, i64>,
     /// Desktop's `snoozeStore.clockMs`: when the ended snoozes were last checked.
     snooze_clock: i64,
@@ -2831,6 +2847,9 @@ pub struct BeeperGuiApp {
     pub status_banner: String,
     /// The text of Desktop's toast with a "Relaunch app" button, after a change that needs a relaunch.
     relaunch_toast: Option<&'static str>,
+    /// "Quit Beeper when closing the main window" as it was at launch: Desktop's main process reads `quit_on_close`
+    /// from the user config once, so a change takes effect after a relaunch.
+    quit_on_close: bool,
     /// Desktop's backup banner of the recovery key was clicked in this session.
     key_banner_closed: bool,
     /// The newest toast with its icon and buttons, shown only while the banner still is the text it was made for.
@@ -3000,6 +3019,7 @@ impl BeeperGuiApp {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => panic!("read sidebar-hidden: {e}"),
         };
+        let quit_on_close = store.read().settings.on("quitOnClose");
         let mut app = Self {
             pane: Pane { size: MAIN_SIZE, ..Pane::default() },
             chat_windows: Vec::new(),
@@ -3127,6 +3147,7 @@ impl BeeperGuiApp {
             typing_shown: HashMap::new(),
             status_banner: String::new(),
             relaunch_toast: None,
+            quit_on_close,
             key_banner_closed: false,
             toast: None,
             older_toasts: Vec::new(),
@@ -3555,9 +3576,10 @@ impl BeeperGuiApp {
         let st = self.store.read();
         self.dark = st.settings.theme.is_dark(self.system_dark);
         self.pal = crate::style::palette(self.dark);
-        // Desktop's `--custom-font-size` is the font size plus 3 px, and 16 px is the default.
-        let font: f32 = st.settings.choice("fontSize").parse().expect("a number option");
-        let zoom = f32::from(st.settings.zoom_percent) / 100.0 * (font + 3.0) / 16.0;
+        // Desktop's Font size sets the root font, which only the sizes in rem follow, and its zoom
+        // (`webFrame.setZoomFactor`) scales everything.
+        crate::style::set_font_size(st.settings.choice("fontSize").parse().expect("a number option"));
+        let zoom = f32::from(st.settings.zoom_percent) / 100.0;
         drop(st);
         if zoom != self.zoom {
             let k = self.zoom / zoom;
@@ -4272,7 +4294,7 @@ impl BeeperGuiApp {
                     panes.filter_map(|p| p.typing.take_if(|t| t.1.elapsed() >= TYPING_STOP)).map(|t| t.0).collect();
                 let notices = ended.into_iter().filter_map(|chat| {
                     let stop = beeper_core::matrix::typing(client.clone()?, chat, false);
-                    Some(Task::perform(stop, UiMessage::Pushed))
+                    Some(Task::future(stop).discard())
                 });
                 return Task::batch(notices);
             }
@@ -5372,8 +5394,11 @@ impl BeeperGuiApp {
             w.loading.is_some() || w.tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE)
         });
         let animated = animated || media;
-        let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
-            .then(|| Subscription::run(tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0))));
+        // Desktop's tray menu takes the keys of the Minimize To Tray and Quit App hotkeys.
+        let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon")).then(|| {
+            let keys = tray_hotkeys(&self.store.read().settings);
+            Subscription::run_with(keys, tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0)))
+        });
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
         let notes = (!self.notifications.is_empty() || self.verify.note.is_some()).then(|| {
             Subscription::run(notify::events).map(|(id, action)| UiMessage::Notify(notify::Msg::Event(id, action)))
@@ -5640,8 +5665,8 @@ impl BeeperGuiApp {
             true => {
                 let size = self.pane().size;
                 let x = at.x.min(size.width - 233.0 - voice::rate_menu_w() - 8.0);
-                let y = at.y.min(size.height - 8.0 - MENU_ITEM - 8.0);
-                let top = if self.audio.sub { y.min(size.height - 8.0 - 8.0 * MENU_ITEM - 8.0) } else { y };
+                let y = at.y.min(size.height - 8.0 - menu_pitch() - 8.0);
+                let top = if self.audio.sub { y.min(size.height - 8.0 - 8.0 * menu_pitch() - 8.0) } else { y };
                 (self.view_pill_menu(y - top), x, top)
             }
             false => (self.view_rate_menu(), at.x, at.y),
@@ -5671,14 +5696,14 @@ impl BeeperGuiApp {
                 (w, 8.0 + rows.iter().map(|r| r.1).sum::<f32>())
             } else if cid == RAIL_MORE {
                 let items = more_menu(&self.store.read());
-                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
+                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { menu_pitch() } else { 11.0 }).sum::<f32>())
             } else if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
                 let items = info_menu(&self.store.read(), cid, |a| self.can(a, "create_dm"));
-                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
+                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { menu_pitch() } else { 11.0 }).sum::<f32>())
             } else if cid == SIDEBAR_MENU || cid == RAIL_MENU {
-                (233.0, 8.0 + 4.0 * MENU_ITEM)
+                (233.0, 8.0 + 4.0 * menu_pitch())
             } else if RAIL_VIEWS.iter().any(|v| cid.strip_prefix("account:") == Some(v.0)) {
-                (233.0, 8.0 + 5.0 * MENU_ITEM)
+                (233.0, 8.0 + 5.0 * menu_pitch())
             } else if let Some(entry) = cid.strip_prefix("head:") {
                 let st = self.store.read();
                 let items = match (RAIL_VIEWS.iter().any(|v| v.0 == entry), rail_label(&st, entry)) {
@@ -5687,29 +5712,29 @@ impl BeeperGuiApp {
                     (false, None) => 4.0,
                 };
                 let rule = if items > 1.0 { 11.0 } else { 0.0 };
-                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + items * MENU_ITEM + rule)
+                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + items * menu_pitch() + rule)
             } else if let Some(n) =
                 cid.strip_prefix("account:").and_then(|e| rail_label(&self.store.read(), e).map(label_rows))
             {
-                (233.0, 8.0 + (n + 3.0) * MENU_ITEM + 11.0)
+                (233.0, 8.0 + (n + 3.0) * menu_pitch() + 11.0)
             } else if let Some(entry) = cid.strip_prefix("account:") {
                 let st = self.store.read();
-                let nick = if nickname::can_nickname(&st, &rail_owner(&st, entry)) { MENU_ITEM } else { 0.0 };
-                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 7.0 * MENU_ITEM + 22.0 + nick)
+                let nick = if nickname::can_nickname(&st, &rail_owner(&st, entry)) { menu_pitch() } else { 0.0 };
+                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 7.0 * menu_pitch() + 22.0 + nick)
             } else {
                 let st = self.store.read();
                 (
                     chat_list::chat_menu_w(&st),
-                    8.0 + 10.0 * MENU_ITEM
+                    8.0 + 10.0 * menu_pitch()
                         + 44.0
-                        + if self.selection.is_empty() { 2.0 * MENU_ITEM + 11.0 } else { 0.0 }
-                        + if st.feature("labels-v2").on { MENU_ITEM } else { 0.0 }
+                        + if self.selection.is_empty() { 2.0 * menu_pitch() + 11.0 } else { 0.0 }
+                        + if st.feature("labels-v2").on { menu_pitch() } else { 0.0 }
                         + if st.resolve_chat_idx(cid).is_some_and(|i| {
                             let targets = self.selected_chats(&st);
                             let targets = if targets.is_empty() { vec![&st.chats[i]] } else { targets };
                             reminders::shows_snooze(&st, &targets)
                         }) {
-                            MENU_ITEM
+                            menu_pitch()
                         } else {
                             0.0
                         }
@@ -5720,25 +5745,25 @@ impl BeeperGuiApp {
                                     && st.notifications_muted(c)
                                     && muted_by(&st, c).is_some() =>
                             {
-                                MENU_ITEM
+                                menu_pitch()
                             }
                             _ => 0.0,
                         }
                         + if st.resolve_chat_idx(cid).is_some_and(|i| can_edit_group(&st.chats[i])) {
-                            MENU_ITEM
+                            menu_pitch()
                         } else {
                             0.0
                         }
                         + if self.selection.len() <= 1
                             && st.resolve_chat_idx(cid).is_some_and(|i| st.threaded(&st.chats[i]))
                         {
-                            MENU_ITEM
+                            menu_pitch()
                         } else {
                             0.0
                         }
                         + match st.resolve_chat_idx(cid).map(|i| request_answers(&st.chats[i])) {
                             Some((false, false)) | None => 0.0,
-                            Some((a, d)) => f32::from(u8::from(a) + u8::from(d)) * MENU_ITEM + 11.0,
+                            Some((a, d)) => f32::from(u8::from(a) + u8::from(d)) * menu_pitch() + 11.0,
                         },
                 )
             };
@@ -5840,7 +5865,7 @@ impl BeeperGuiApp {
             let y = at.y.min(self.pane().size.height - h - 8.0);
             let (sub, sub_w) = match self.view_speed_menu(mid) {
                 // Level with its row, under Fullscreen, Open in PiP, Download and Mute.
-                Some(sub) => (Some(column![Space::new().height(4.0 * MENU_ITEM), sub].into()), video::SPEED_MENU_W),
+                Some(sub) => (Some(column![Space::new().height(4.0 * menu_pitch()), sub].into()), video::SPEED_MENU_W),
                 None if self.pane().remind_sub => {
                     let st = self.store.read();
                     let rows = self.message_remind_items(&st, mid);
@@ -5899,17 +5924,20 @@ impl BeeperGuiApp {
         if let Some((_, hits)) = memo.and_then(|m| m.hits.borrow().clone()).filter(|(k, _)| *k == key) {
             return hits;
         }
-        let shown =
-            |c: &&Chat| c.flags & CHAT_HIDDEN == 0 && (f.accounts.is_empty() || f.accounts.contains(&c.account_id));
-        // Desktop's `computeStatePenalty`: a low priority chat, then a chat that All Chats does not show.
+        // Desktop's `searchableThreads`: the chats that are not `isHidden`, no member of a merged chat and no hidden
+        // merged chat. A chat that All Chats hides stays, further down.
+        let shown = |c: &&Chat| c.listed() && (f.accounts.is_empty() || f.accounts.contains(&c.account_id));
+        // Desktop's `computeStatePenalty`: a low priority chat, then a chat that All Chats does not show
+        // (`!shouldShowInAllChats`): snoozed, or hidden by a label or by the "Show in Inbox" of its account, unless a
+        // message reminder of it is due.
         let penalty = |c: &Chat| {
-            let snoozed = reminders::snoozed_until(st, c).is_some() && !self.due_message_reminder(st, c);
-            (c.flags & CHAT_LOW_PRIORITY != 0, snoozed)
+            let hidden = c.flags & CHAT_HIDDEN != 0 || reminders::snoozed_until(st, c).is_some();
+            (c.flags & CHAT_LOW_PRIORITY != 0, hidden && !self.due_message_reminder(st, c))
         };
         // Desktop's `threadSearcher`, whose index does not take fuzzy matches, and its `sortResults`: a chat that
         // matches by its network only comes last, then by the penalty, newest first.
         let find = |people: bool| -> Vec<usize> {
-            let found = beeper_core::chat_index::search(st.chats.iter().filter(shown), raw, people, false);
+            let found = beeper_core::chat_index::search_in(st, |c| shown(&c), raw, people, false);
             let mut found: Vec<(&Chat, bool)> = found.into_iter().map(|(c, hits)| (c, !people && hits == 0)).collect();
             found.sort_by(|(a, a_net), (b, b_net)| {
                 (a_net, penalty(a))
@@ -6028,7 +6056,9 @@ impl BeeperGuiApp {
             );
             let info = column![
                 txt(network_name(&c.account_id).to_string(), 16.0).color(p.strong),
-                txt(account_user(&st, &c.account_id), 12.0).line_height(Pixels(16.0)).color(p.strong.scale_alpha(0.4)),
+                txt(account_user(&st, &c.account_id), 12.0)
+                    .line_height(Pixels(rem(16.0)))
+                    .color(p.strong.scale_alpha(0.4)),
             ];
             let check = on.then(|| ic(icon::CHECK, 13.0).color(p.strong));
             let row = row![].push(check).push(face).push(info).spacing(8).align_y(Center);
@@ -6121,7 +6151,7 @@ impl BeeperGuiApp {
         let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
         let face = container(self.face(u.img_url.as_deref(), &name, 80.0, 0.0)).padding(4).style(lifted(44.0));
         let high = CARD_H + if id.is_some() { 15.0 } else { 0.0 };
-        let info = column![semi(name, 14.0).line_height(Pixels(18.0)).color(p.strong).width(Fill).align_x(Center)]
+        let info = column![semi(name, 14.0).line_height(Pixels(rem(18.0))).color(p.strong).width(Fill).align_x(Center)]
             .push(id.map(|i| txt(i, 12.0).color(p.sub).width(Fill).align_x(Center)));
         let muted = btn_style([p.chip; 3], [p.strong; 3], 9999.0);
         let actions = (u.is_self != Some(true) && self.can(&c.account_id, "create_dm")).then(|| {
@@ -6453,8 +6483,9 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's `hasExpiredReminder`: the reminder of the chat came due and notified.
     fn expired(&self, c: &Chat) -> bool {
-        c.reminder.as_ref().is_some_and(|r| self.reminded.get(&c.id) == Some(&r.remind_at_ms))
+        c.reminder.as_ref().is_some_and(|r| r.user_reminded_at.is_some())
     }
 
     /// Desktop's `earliestMessageReminder` of the chat, while message reminders are on.
@@ -7004,7 +7035,7 @@ mod tests {
     fn window_and_menu_sizes_match_desktop() {
         let min = BeeperGuiApp::window_settings(Size::new(1200.0, 800.0)).min_size;
         assert_eq!(min, Some(Size::new(330.0, 400.0)), "main-entry `minWidth` and `minHeight`");
-        assert!((MENU_ITEM - 26.2).abs() < 1e-4, "a 24.2 px `.menu-item` and its collapsed 2 px margin");
+        assert!((menu_pitch() - 26.2).abs() < 1e-4, "a 24.2 px `.menu-item` and its collapsed 2 px margin");
     }
 
     #[test]

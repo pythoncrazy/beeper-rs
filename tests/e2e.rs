@@ -447,6 +447,7 @@ async fn lifecycle() {
     }
     let data = Arc::new(read_beeper_data(&orig_dir).expect("read the Beeper Desktop fixture"));
     assert!(data.crypto.is_none(), "a Desktop without an account has no keys");
+    assert_eq!(data.user_id, None, "a signed-out Desktop has an empty user in beeperState");
     let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Read(data.clone())))));
     assert_eq!(gui.login.screen, Screen::Welcome, "the import asks to sign in as a new device");
     assert!(shared.read().setup.is_none(), "nothing is imported before the sign-in");
@@ -1556,7 +1557,7 @@ async fn lifecycle() {
             assert_eq!(sent, [Some(at), None], "a reminder is set and dismissed on the homeserver");
             assert!(st.chats[0].reminder.is_none() && gui.list.chat_menu.is_none());
             for (i, at) in [(0, 2), (1, 1)] {
-                st.set_reminder(i, Some(ChatReminder { remind_at_ms: at, dismiss_on_incoming_message: true }));
+                st.set_reminder(i, Some(ChatReminder::new(at, true)));
             }
         }
         let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::SelectTab(InboxTab::Reminders)));
@@ -1579,7 +1580,7 @@ async fn lifecycle() {
             let mut st = store.write();
             st.chats[1].is_pinned = Some(false);
             assert!(st.set_chat_flag(1, ChatFlag::Archived, Some(true)));
-            st.set_reminder(1, Some(ChatReminder { remind_at_ms: 1, dismiss_on_incoming_message: true }));
+            st.set_reminder(1, Some(ChatReminder::new(1, true)));
         }
         let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Check));
         let other = store.read().chats[1].id.clone();

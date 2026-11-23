@@ -61,7 +61,10 @@ impl BeeperGuiApp {
             mouse_area(el).on_press(msg).into()
         };
         let bubble = |text: &'static str, bg: Color, fg: Color| {
-            container(txt(tr(text), 13.0).color(fg)).padding([8, 12]).style(fill_box(bg, 17.0))
+            // `ChatAppearancePicker`'s bubbles are 13 px, its labels and caption 12 px, and its tiles 11 px.
+            container(crate::style::fixed(tr(text), 13.0, Weight::Normal).color(fg))
+                .padding([8, 12])
+                .style(fill_box(bg, 17.0))
         };
         let lines = column![
             bubble("Pick a wallpaper and bubble color", p.received, p.strong),
@@ -77,7 +80,7 @@ impl BeeperGuiApp {
         };
         let preview =
             container(preview).height(106 + 2).padding(1).style(bordered_box(CLEAR, p.neutral_border, 1.0, 12.0));
-        let label = |text: &'static str| txt(tr(text), 12.0).font(fw(Weight::Medium)).color(p.sub);
+        let label = |text: &'static str| crate::style::fixed(tr(text), 12.0, Weight::Medium).color(p.sub);
         let default = matches!(stored.bubble, None | Some(Bubble::Default));
         let none = if chat.is_some() { Some(Bubble::Default) } else { None };
         let sub = p.sub;
@@ -110,7 +113,10 @@ impl BeeperGuiApp {
             ring(fill.into(), on, 10.0, UiMessage::ChatTheme(chat_theme::Msg::Wallpaper(id.clone(), w)))
         };
         let blank = |label: &'static str| -> El<'static> {
-            container(txt(tr(label), 11.0).color(p.sub)).center(Fill).style(fill_box(p.card, 10.0)).into()
+            container(crate::style::fixed(tr(label), 11.0, Weight::Normal).color(p.sub))
+                .center(Fill)
+                .style(fill_box(p.card, 10.0))
+                .into()
         };
         let photo = matches!(stored.wallpaper, Some(Wallpaper::Photo { .. }));
         let photo_fill = match wallpaper.filter(|_| photo) {
@@ -136,10 +142,13 @@ impl BeeperGuiApp {
                 .per_chat
                 .contains_key(c)
                 .then(|| pill_btn(p, tr("Use app default"), UiMessage::ChatTheme(chat_theme::Msg::Clear(c.into()))));
-            row![txt(tr("Only you see your chat themes."), 12.0).color(p.sub), Space::new().width(Fill)]
-                .push(reset)
-                .spacing(8)
-                .align_y(Center)
+            row![
+                crate::style::fixed(tr("Only you see your chat themes."), 12.0, Weight::Normal).color(p.sub),
+                Space::new().width(Fill)
+            ]
+            .push(reset)
+            .spacing(8)
+            .align_y(Center)
         });
         column![
             preview,
