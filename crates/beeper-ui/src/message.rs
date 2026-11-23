@@ -489,6 +489,16 @@ pub(crate) fn larger(h: &image::Handle, (w, ht): (u32, u32)) -> bool {
     *width as f32 > scale * w as f32 && *height as f32 > scale * ht as f32
 }
 
+/// Desktop's box of a sticker of known size: at most 400 px high and `share` of the window wide, never upscaled, and
+/// never cropped (`object-fit: contain`), however tall or wide it is.
+pub(crate) fn sticker_box(window_w: f32, (w, h): (f32, f32), share: f32) -> (f32, f32, bool) {
+    if w <= 0.0 || h <= 0.0 {
+        return media_box(window_w, None, share);
+    }
+    let k = 1f32.min(400.0 / h).min((share * window_w).max(1.0) / w);
+    (w * k, h * k, false)
+}
+
 /// Desktop's `--cv-avatar-size` and the margin of `.sender-img-container`: the sender avatar of a group message.
 const FACE: f32 = 34.0;
 const FACE_GAP: f32 = 8.0;
@@ -1627,13 +1637,15 @@ impl BeeperGuiApp {
         });
         // Desktop's `TargetSwitcherNudge` comes with the text composer and its switcher.
         let texting = upgraded.is_none() && blocked.is_none() && !chat.exited() && unavailable(&st, chat).is_none();
+        let texting = texting && !selecting;
         let nudge = self
             .view_switcher_nudge(&st)
             .filter(|_| texting && in_chat && self.pane().thread_root.is_none() && self.drawing.get().is_none())
             .filter(|_| self.recorder.is_none() && self.talk.is_none());
-        // Desktop's `ThreadComposer` draws nothing once the user left the chat or was removed from it.
+        // Desktop's `ThreadComposer` draws nothing once the user left the chat or was removed from it, or in the
+        // selection mode (`threadSelectionMode`).
         let composer = match upgraded.or(blocked) {
-            _ if chat.exited() => None,
+            _ if chat.exited() || selecting => None,
             Some(link) => Some(link),
             None => unavailable(&st, chat).is_none().then(|| self.view_composer(&st, chat)),
         };
@@ -2372,7 +2384,10 @@ impl BeeperGuiApp {
                     let is_video = a.attachment_type == "video";
                     let size = a.size.as_ref().and_then(|s| Some((s.width? as f32, s.height? as f32)));
                     let share = if self.sidebar_hidden { 0.85 } else { 0.45 };
-                    let (w, h, cover) = media_box(self.pane().size.width, size, share);
+                    let (w, h, cover) = match size.filter(|_| a.is_sticker == Some(true)) {
+                        Some(size) => sticker_box(self.pane().size.width, size, share),
+                        None => media_box(self.pane().size.width, size, share),
+                    };
                     // Desktop plays a video with `isGif` inline like a GIF, without sound, again and again.
                     let looped = is_video && a.is_gif == Some(true) && m.unresolved_media.is_none();
                     // Desktop's `Lottie` plays an animated sticker itself, not its still thumbnail.
@@ -2437,11 +2452,8 @@ impl BeeperGuiApp {
                             }
                         }
                         Some((_, Err(_))) if m.unresolved_media.is_none() => self.image_error(w, h, 17.0),
-                        _ => container(ic(icon::IMAGE, 28.0).color(p.sub))
-                            .center_x(w)
-                            .center_y(h)
-                            .style(fill_box(p.link_card, 17.0))
-                            .into(),
+                        // Desktop's `img.loading`: the shimmering `--skeleton-bg` in the box of the image.
+                        _ => anim::skeleton(w, h, 17.0, p.skeleton, self.started),
                     };
                     let (slot, press): (El<'_>, _) =
                         if let Some(raw) = m.unresolved_media.as_ref().filter(|_| !is_video) {
@@ -5957,6 +5969,35 @@ pub(crate) mod tests {
         };
         assert!(cut(&mut app, (2400, 1800)), "a photo much larger than its box");
         assert!(!cut(&mut app, (300, 200)), "an image at its own size");
+    }
+
+    /// Desktop's `img.loading`: an image that loads shows the shimmering `--skeleton-bg` in the box of the image,
+    /// which the image takes when it loads.
+    #[test]
+    fn loading_image_like_desktop() {
+        let mut app = crate::fuzz::demo_app("loading-image");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = newest(&app, |m| m.is_deleted != Some(true) && m.attachments.is_empty());
+        let url = "mxc://x/photo".to_string();
+        let size = Some(AttachmentSize { width: Some(300), height: Some(200) });
+        let img = Attachment { attachment_type: "img".into(), src_url: Some(url.clone()), size, ..Default::default() };
+        change(&app, &mid, |m| (m.text, m.attachments) = (None, vec![img]));
+        let loading = |app: &BeeperGuiApp| {
+            let mut sim = alone(app, &mid);
+            sim.find(|c: iced_test::selector::Candidate<'_>| match c {
+                iced_test::selector::Candidate::Custom { bounds, state, .. } if state.is::<anim::Loading>() => {
+                    Some(bounds)
+                }
+                _ => None,
+            })
+            .ok()
+        };
+        let shown = loading(&app).expect("the skeleton");
+        assert_eq!((shown.width, shown.height), (300.0, 200.0), "the box of the image");
+        assert!(alone(&app, &mid).find(icon::IMAGE.to_string()).is_err(), "no image icon");
+        let px = crate::Frames::from([(image::Handle::from_rgba(1, 1, vec![0; 4]), 0)]);
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Media(url, Ok(px))));
+        assert!(loading(&app).is_none(), "the image takes its place");
     }
 
     /// Desktop's `ImageError`: an image that failed to load shows the info icon, not the text of unresolved media,

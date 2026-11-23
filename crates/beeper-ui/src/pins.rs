@@ -2,6 +2,10 @@
 
 use super::*;
 use crate::chat_list::{message_tag, preview_body};
+use std::time::{Duration, Instant};
+
+/// `dnd-kit`'s `transform 250ms ease` of a sortable item that moves to another place.
+pub(crate) const SLIDE: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub enum Msg {
@@ -22,29 +26,43 @@ impl BeeperGuiApp {
                     let d = self.pin_drag.as_mut().filter(|d| d.id != *over)?;
                     Some((over, d.order.as_mut()?, &d.id))
                 });
-                if let Some((over, order, held)) = over {
+                let moved = over.map(|(over, order, held)| {
+                    let before = order.clone();
                     let from = order.iter().position(|o| o == held).expect("the dragged pin");
                     let to = order.iter().position(|o| o == over).expect("a pin of the grid");
                     let pin = order.remove(from);
                     order.insert(to, pin);
+                    (before, order.clone(), held.clone())
+                });
+                if let Some((before, after, held)) = moved {
+                    self.slide_pins(&before, &after, &held);
                 }
                 self.pin_hover = id;
             }
             Msg::Press => {
                 let Some(id) = self.pin_hover.clone() else { return Task::none() };
-                self.pin_drag = Some(PinDrag { id, from: None, order: None });
+                let at = self.cursor.get();
+                self.pin_drag = Some(PinDrag { id, from: Some(at), at, order: None, start: 0 });
             }
             Msg::DragMoved(at) => {
                 let Some(d) = self.pin_drag.as_mut() else { return Task::none() };
+                d.at = at;
                 if d.order.is_none() && at.distance(*d.from.get_or_insert(at)) > 5.0 {
                     let st = self.store.read();
-                    let order = self.pins_and_rows(&st).0.iter().map(|c| c.id.clone()).collect();
+                    let order: Vec<String> = self.pins_and_rows(&st).0.iter().map(|c| c.id.clone()).collect();
                     drop(st);
-                    self.pin_drag.as_mut().expect("a pin drag").order = Some(order);
+                    let d = self.pin_drag.as_mut().expect("a pin drag");
+                    d.start = order.iter().position(|o| *o == d.id).unwrap_or(0);
+                    d.order = Some(order);
                     self.list.chat_menu = None;
                 }
             }
             Msg::DragEnd => {
+                // `useSortable`'s transition: the pin glides from where the pointer left it into its new place.
+                if let Some(ghost) = self.pin_ghost() {
+                    let id = self.pin_drag.as_ref().expect("a pin drag").id.clone();
+                    self.pin_slides.insert(id, (ghost, Instant::now()));
+                }
                 let Some(shown) = self.pin_drag.take().and_then(|d| d.order) else { return Task::none() };
                 let order = self.store.write().set_pin_order(&shown);
                 let Some(client) = self.store.read().matrix.clone() else { return Task::none() };
@@ -110,9 +128,58 @@ pub(crate) fn pin_bubble<'a>(
 }
 
 /// A press on a pin of the pinned grid, which Desktop's `Drop` sorts after the cursor moves 5px: the pin, where the
-/// cursor first moved, and the order of the grid while the pin moves.
+/// press was, where the cursor is, the order of the grid while the pin moves, and the place of the pin before it.
 pub struct PinDrag {
     pub id: String,
     pub from: Option<Point>,
+    pub at: Point,
     pub order: Option<Vec<String>>,
+    pub start: usize,
+}
+
+/// Where the cell `i` of the pinned grid of `cols` columns of `cell` px and rows of `row` px is, from the first cell.
+pub(crate) fn slot(i: usize, (cols, cell, row): (usize, f32, f32)) -> Vector {
+    Vector::new((i % cols.max(1)) as f32 * cell, (i / cols.max(1)) as f32 * row)
+}
+
+impl BeeperGuiApp {
+    /// How far a pin is drawn from its cell while it slides into it: CSS `ease` over [`SLIDE`].
+    pub(crate) fn pin_offset(&self, id: &str) -> Option<Vector> {
+        let (from, at) = self.pin_slides.get(id)?;
+        let t = at.elapsed().as_secs_f32() / SLIDE.as_secs_f32();
+        (t < 1.0).then(|| *from * (1.0 - crate::style::cubic_bezier(t, [0.25, 0.1, 0.25, 1.0])))
+    }
+
+    /// Whether a pin slides.
+    pub(crate) fn pins_sliding(&self) -> bool {
+        self.pin_slides.values().any(|(_, at)| at.elapsed() < SLIDE)
+    }
+
+    /// Where the dragged pin is drawn from the cell it would drop in: `dnd-kit` moves the dragged item with the
+    /// pointer from its own cell.
+    pub(crate) fn pin_ghost(&self) -> Option<Vector> {
+        let d = self.pin_drag.as_ref()?;
+        let order = d.order.as_ref()?;
+        let to = order.iter().position(|o| *o == d.id)?;
+        let grid = self.pin_grid.get();
+        Some(d.at - d.from.unwrap_or(d.at) + slot(d.start, grid) - slot(to, grid))
+    }
+
+    /// `rectSortingStrategy`: the pins between the old and the new place of the dragged pin slide to their new cells.
+    fn slide_pins(&mut self, before: &[String], after: &[String], held: &str) {
+        let grid = self.pin_grid.get();
+        let now = Instant::now();
+        let moved: Vec<(String, Vector)> = after
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| *id != held)
+            .filter_map(|(to, id)| {
+                let from = before.iter().position(|b| b == id)?;
+                let left = self.pin_offset(id).unwrap_or(Vector::ZERO);
+                (from != to).then(|| (id.clone(), left + slot(from, grid) - slot(to, grid)))
+            })
+            .collect();
+        self.pin_slides.retain(|_, (_, at)| at.elapsed() < SLIDE);
+        self.pin_slides.extend(moved.into_iter().map(|(id, v)| (id, (v, now))));
+    }
 }
