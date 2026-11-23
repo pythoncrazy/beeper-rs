@@ -30,6 +30,12 @@ pub enum Msg {
     FocusRequested(Option<String>),
     /// Desktop's `second-instance` event with the arguments of the later launch.
     SecondInstance(Vec<String>),
+    /// A window that hid on Wayland had this size in screen pixels, and was maximized or not, as it closed.
+    Unmapped(window::Id, Size, bool),
+    /// The widget that had the keyboard focus as the main window hid on Wayland.
+    UnmappedFocus(iced::widget::Id),
+    /// The app closed a window that had hidden on Wayland, which iced no longer has.
+    Forget(window::Id),
 }
 
 impl BeeperGuiApp {
@@ -130,7 +136,7 @@ impl BeeperGuiApp {
                     .iter()
                     .find(|w| w.1.selected_chat_id.as_deref() == Some(&cid) && !self.is_space_window(w.0));
                 if let Some(&(id, _)) = open {
-                    return window::gain_focus(id);
+                    return self.raise(id);
                 }
                 // Desktop's `windowStateKeeper("pop-out-thread")` keeps the size of the last chat window.
                 let size = self.saved_window_settings(POP_OUT, Size::new(800.0, 600.0)).size;
@@ -145,7 +151,7 @@ impl BeeperGuiApp {
             Msg::OpenSpace(entry) => {
                 self.list.chat_menu = None;
                 if let Some(&(id, ..)) = self.space_windows.iter().find(|w| w.1 == entry) {
-                    return window::gain_focus(id);
+                    return self.raise(id);
                 }
                 // Desktop's space window is 1200 by 800 in the middle of the screen, and keeps no window state.
                 let settings =
@@ -167,10 +173,27 @@ impl BeeperGuiApp {
                 let select = chat.map(|c| self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(c)))));
                 return open.discard().chain(select.unwrap_or_else(Task::none));
             }
+            // A window that hid on Wayland closed in iced only: the app keeps it to open it again.
+            Msg::Closed(id) if self.unmapped.iter().any(|w| w.0 == id) => {}
+            Msg::Forget(id) => {
+                self.unmapped.retain(|w| w.0 != id);
+                return self.windows(Msg::Closed(id));
+            }
+            Msg::Unmapped(id, size, maximized) => {
+                if let Some(w) = self.unmapped.iter_mut().find(|w| w.0 == id) {
+                    // A maximized window keeps the size from before, like Desktop's window state.
+                    if !maximized {
+                        w.1.size = size;
+                    }
+                    w.1.maximized = maximized;
+                }
+            }
+            Msg::UnmappedFocus(widget) => self.unmapped_focus = Some(widget),
             Msg::Closed(id) if self.add_accounts.iter().any(|a| a.id == id) => {
                 return self.add_account_closed(id);
             }
             Msg::Closed(id) => {
+                self.opened.retain(|w| w.0 != id);
                 let mut tasks = Vec::new();
                 self.key_sort.take_if(|s| s.window == id);
                 // Desktop's "Media in %s" window closes its carousel when it closes, which plays the inline video
@@ -179,10 +202,10 @@ impl BeeperGuiApp {
                     self.swap_window(id);
                     let close = self.carousel().is_some().then(|| self.media_view(media_view::Msg::CloseCarousel));
                     self.swap_window(id);
-                    tasks.extend(close.into_iter().chain([window::gain_focus(opener)]));
+                    tasks.extend(close.into_iter().chain([self.raise(opener)]));
                 }
                 // A thread window closes its "Media in %s" window.
-                tasks.extend(self.carousel_windows.iter().filter(|w| w.1 == id).map(|w| window::close(w.0)));
+                tasks.extend(self.carousel_windows.iter().filter(|w| w.1 == id).map(|w| self.close_window(w.0)));
                 if let Some(w) = self.chat_windows.iter().find(|w| w.0 == id) {
                     let mut st = self.store.write();
                     save_draft(&mut st, &w.1);
@@ -250,9 +273,7 @@ impl BeeperGuiApp {
                 if let Some(id) = chat {
                     self.select_chat(&id);
                 }
-                let shown = if self.hidden { self.set_hidden(false) } else { Task::none() };
-                let focus =
-                    shown.chain(window::gain_focus(self.main_window.or(self.login_window).expect("a window is open")));
+                let focus = self.set_hidden(false);
                 return Task::batch([focus, self.load_avatars(), self.load_media(), self.close_notifications()]);
             }
             Msg::SecondInstance(args) => return self.second_instance(args),
@@ -396,12 +417,97 @@ impl BeeperGuiApp {
     /// `deferMaximize`: iced maps each window only after its first frame, and an X11 window manager ignores the
     /// maximized state that winit asks for before then, so on X11 the window opened at its restored size.
     pub(crate) fn open_window(&mut self, settings: window::Settings) -> (window::Id, Task<window::Id>) {
+        let id = window::Id::unique();
+        (id, self.open_window_as(id, settings))
+    }
+
+    /// Opens window `id` with `settings` like [`Self::open_window`]: a new window, or one that hid on Wayland again.
+    fn open_window_as(&mut self, id: window::Id, mut settings: window::Settings) -> Task<window::Id> {
         let maximize = settings.maximized && settings.visible;
-        let (id, open) = window::open(window::Settings { size: settings.size * (1.0 / self.zoom), ..settings });
         if maximize {
             self.maximize_when_placed.push(id);
         }
-        (id, open)
+        let icon = settings.icon.take();
+        if self.unmaps() {
+            self.opened.push((id, settings.clone()));
+        }
+        let settings = window::Settings { size: settings.size * (1.0 / self.zoom), icon, ..settings };
+        // iced's `window::open` with a given ID, so that all the state of a window that hid on Wayland follows it.
+        iced_runtime::task::oneshot(move |done| {
+            iced_runtime::Action::Window(iced_runtime::window::Action::Open(id, settings, done))
+        })
+    }
+
+    /// Whether the app hides a window by closing it and opening it again: on Wayland, where winit cannot hide a
+    /// window (`set_visible` does nothing there) and Electron's `hide` unmaps it.
+    pub(crate) fn unmaps(&self) -> bool {
+        self.display_server == DisplayServerKind::Wayland
+    }
+
+    /// Closes window `id`. A window that hid on Wayland is closed in iced already, so the app forgets it.
+    pub(crate) fn close_window(&self, id: window::Id) -> Task<UiMessage> {
+        match self.unmapped.iter().any(|w| w.0 == id) {
+            true => Task::done(UiMessage::Window(Msg::Forget(id))),
+            false => window::close(id),
+        }
+    }
+
+    /// Hides window `id`. On Wayland it closes the window in iced and keeps it, with its size and maximized state, to
+    /// open it again under its ID, like Electron's `hide`, which unmaps the window.
+    fn hide_window(&mut self, id: window::Id) -> Task<UiMessage> {
+        if !self.unmaps() {
+            return window::set_mode(id, window::Mode::Hidden);
+        }
+        let Some(i) = self.opened.iter().position(|w| w.0 == id) else { return Task::none() };
+        let settings = self.opened.remove(i).1;
+        self.unmapped.push((id, settings));
+        let zoom = self.zoom;
+        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (size * zoom, max)));
+        let state = state.map(move |(size, max)| UiMessage::Window(Msg::Unmapped(id, size, max)));
+        // The new window has none of the widget state of the old one, so the focus goes back to the same widget.
+        let focus = (Some(id) == self.main_window.or(self.login_window)).then(|| {
+            let find = iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::find_focused());
+            find.map(|w| UiMessage::Window(Msg::UnmappedFocus(w)))
+        });
+        if focus.is_some() {
+            self.unmapped_focus = None;
+        }
+        Task::batch([state].into_iter().chain(focus)).chain(window::close(id))
+    }
+
+    /// Opens window `id` again after it hid on Wayland, at the size and maximized state that it had. The main window
+    /// takes its bounds from `window.json`, like Desktop's `windowStateKeeper("main")`.
+    fn map_window(&mut self, id: window::Id) -> Option<Task<UiMessage>> {
+        let i = self.unmapped.iter().position(|w| w.0 == id)?;
+        let mut settings = self.unmapped.remove(i).1;
+        let main = Some(id) == self.main_window.or(self.login_window);
+        if Some(id) == self.main_window {
+            settings = self.main_window_settings();
+        }
+        settings = window::Settings { visible: true, icon: Self::window_settings(settings.size).icon, ..settings };
+        let open = self.open_window_as(id, settings);
+        let focus = self.unmapped_focus.take().filter(|_| main);
+        Some(open.then(move |id| {
+            let opened = Task::done(UiMessage::Window(Msg::Opened(id)));
+            match main {
+                true => opened
+                    .chain(Self::keep_on_screen(id))
+                    .chain(focus.clone().map_or_else(Task::none, iced::widget::operation::focus)),
+                false => opened,
+            }
+        }))
+    }
+
+    /// Shows window `id` and gives it the focus. A window that hid on Wayland opens again.
+    pub(crate) fn raise(&mut self, id: window::Id) -> Task<UiMessage> {
+        if let Some(open) = self.map_window(id) {
+            return open;
+        }
+        let shown = window::mode(id).then(move |mode| match mode {
+            window::Mode::Hidden => window::set_mode(id, window::Mode::Windowed),
+            _ => Task::none(),
+        });
+        shown.chain(window::gain_focus(id))
     }
 
     /// Maximizes window `id` if it opened maximized and the window manager has just placed it, which it reports with
@@ -532,7 +638,7 @@ impl BeeperGuiApp {
         if let Some(&(id, _)) = self.carousel_windows.iter().find(|w| w.1 == opener) {
             let pane = &mut self.chat_windows.iter_mut().find(|w| w.0 == id).expect("an open carousel window").1;
             pane.carousel = Some(carousel);
-            return window::gain_focus(id);
+            return self.raise(id);
         }
         let around =
             self.chat_windows.iter().find(|w| w.0 == opener).expect("an open thread window").1.size * self.zoom;
@@ -596,17 +702,24 @@ impl BeeperGuiApp {
         self.tray_sent.1 = true;
         match hidden {
             true => {
-                let subs = self.sub_windows().into_iter().map(|w| window::set_mode(w, window::Mode::Hidden));
-                let hide = Task::batch(subs).chain(window::set_mode(id, window::Mode::Hidden));
+                let subs: Vec<_> = self.sub_windows().into_iter().map(|w| self.hide_window(w)).collect();
+                let hide = Task::batch(subs).chain(self.hide_window(id));
                 self.save_main_window().chain(hide)
             }
-            false => window::set_mode(id, window::Mode::Windowed).chain(window::gain_focus(id)),
+            false => match self.map_window(id) {
+                Some(open) => open,
+                None => window::set_mode(id, window::Mode::Windowed).chain(window::gain_focus(id)),
+            },
         }
     }
 
     /// Desktop's `showAllWindows` (`hm`): the sub-windows, then the main window.
     pub(crate) fn show_all(&mut self) -> Task<UiMessage> {
-        let subs = self.sub_windows().into_iter().map(|w| window::set_mode(w, window::Mode::Windowed));
+        let subs: Vec<_> = self.sub_windows().into_iter().collect();
+        let subs: Vec<_> = subs
+            .into_iter()
+            .map(|w| self.map_window(w).unwrap_or_else(|| window::set_mode(w, window::Mode::Windowed)))
+            .collect();
         Task::batch(subs).chain(self.set_hidden(false))
     }
 }

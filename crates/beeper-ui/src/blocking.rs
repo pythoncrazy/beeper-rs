@@ -24,7 +24,7 @@ impl BeeperGuiApp {
             Msg::Block(id, block, spam) => return self.block_user(&id, block, spam),
             Msg::ReportSpam(on) => self.report_spam = on,
             Msg::OpenList => return self.open_blocked_users(),
-            Msg::CloseList => return window::close(self.blocked_window.expect("Blocked users is open")),
+            Msg::CloseList => return self.close_window(self.blocked_window.expect("Blocked users is open")),
             Msg::OpenUser(id) => return self.open_blocked_user(id),
         }
         self.settle()

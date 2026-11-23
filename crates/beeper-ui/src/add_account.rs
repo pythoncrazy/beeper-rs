@@ -392,7 +392,7 @@ impl BeeperGuiApp {
             a.step = Some(step);
             self.show(toast);
             let refresh = self.refresh_cloud_accounts();
-            return if show { refresh } else { Task::batch([refresh, window::close(id)]) };
+            return if show { refresh } else { Task::batch([refresh, self.close_window(id)]) };
         }
         a.values =
             step.user_input.iter().flat_map(|u| &u.fields).map(|f| (f.id.clone(), f.default_value.clone())).collect();
@@ -560,7 +560,7 @@ impl BeeperGuiApp {
                 return Task::perform(bridge_login::submit(p, process, step, o.fields.into()), next);
             }
             AddMsg::Copy(code) => return iced::clipboard::write(code),
-            AddMsg::Close => return window::close(id),
+            AddMsg::Close => return self.close_window(id),
         }
         Task::none()
     }
