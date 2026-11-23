@@ -3712,12 +3712,36 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
         st.pushed(row, Some(&id), Some(("M_FORBIDDEN: refused".into(), true)));
         id
     };
+    // Desktop's `sendQueuedMessages` shows the error in a toast that stays, with Copy Error, Show and Retry.
+    let failed = app.store.read().loaded(&id).expect("the local echo").clone();
+    let _ = app.update(UiMessage::Upserted(Box::new(failed)));
+    let toast = app.shown_toast().expect("a toast of the failed send");
+    assert!(
+        toast.text.starts_with("Something went wrong sending message to ")
+            && toast.text.ends_with("\nM_FORBIDDEN: refused")
+    );
+    let labels: Vec<&str> = toast.buttons.iter().map(|b| b.0).collect();
+    assert_eq!(labels, ["Copy Error", "Show", "Retry"]);
+    assert!(matches!(&toast.buttons[2].1, UiMessage::Message(message::Msg::RetrySend(m)) if *m == id));
+    assert_eq!(app.sticky_banner.as_ref(), Some(&app.status_banner), "the toast stays until it is closed");
     let mut sim = simulator(app.view_main());
     assert!(sim.find("Not sent").is_ok() && sim.find("Remove").is_ok(), "a failed send shows its error and actions");
     let _ = sim.click("Retry");
     assert!(matches!(sim.into_messages().last(), Some(UiMessage::Message(message::Msg::RetrySend(m))) if *m == id));
+    let _ = app.update(UiMessage::Toast(toasts::Msg::DismissBanner));
     let _ = app.update(UiMessage::Message(message::Msg::RetrySend(id.clone())));
     assert!(simulator(app.view_main()).find("Retrying ...").is_ok(), "Retry waits for the homeserver");
+    let again = {
+        let mut st = app.store.write();
+        let (row, _, _) = st.outbox.remove(0);
+        st.pushed(row, Some(&id), Some(("M_TOO_LARGE: too big".into(), true)));
+        st.loaded(&id).expect("the local echo").clone()
+    };
+    let _ = app.update(UiMessage::Upserted(Box::new(again.clone())));
+    assert!(app.status_banner.ends_with("\nM_TOO_LARGE: too big"), "a retry that fails shows its error again");
+    let _ = app.update(UiMessage::Toast(toasts::Msg::DismissBanner));
+    let _ = app.update(UiMessage::Upserted(Box::new(again)));
+    assert!(app.status_banner.is_empty(), "the same failure shows once");
     let _ = app.update(UiMessage::Message(message::Msg::RemoveUnsent(id.clone())));
     let st = app.store.read();
     assert!(st.loaded(&id).is_none() && st.outbox.is_empty(), "Remove drops the echo and its send");

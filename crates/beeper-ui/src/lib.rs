@@ -2781,6 +2781,8 @@ pub struct BeeperGuiApp {
     booted: String,
     focused: bool,
     notified: HashSet<String>,
+    /// The failed sends that Retry sent again: Desktop shows their error again when they fail again.
+    retried: HashSet<String>,
     notifications: HashMap<u32, (String, String)>,
     pending: notify::Pending,
     pub gif_query: String,
@@ -3110,6 +3112,7 @@ impl BeeperGuiApp {
             booted: beeper_core::config::now_rfc3339_millis(),
             focused: false,
             notified: HashSet::new(),
+            retried: HashSet::new(),
             notifications: HashMap::new(),
             pending,
             gif_query: String::new(),
