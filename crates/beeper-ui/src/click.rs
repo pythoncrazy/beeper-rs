@@ -1,5 +1,5 @@
 use iced::advanced::layout::Layout;
-use iced::advanced::widget::{self, tree, Widget};
+use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, Clipboard, Shell};
 use iced::{Element, Event, Rectangle, Renderer, Theme};
 
@@ -20,15 +20,17 @@ pub fn click<'a, Message>(content: impl Into<Element<'a, Message>>, message: Mes
 struct Pressed(bool);
 
 impl<Message: Clone> Widget<Message, Theme, Renderer> for Click<'_, Message> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Pressed>()
-    }
-
-    fn state(&self) -> tree::State {
-        tree::State::new(Pressed::default())
-    }
-
-    crate::delegate::delegate!(children, diff, size, layout, operate, mouse_interaction, draw, overlay(Message));
+    crate::delegate::delegate!(
+        state(Pressed),
+        children,
+        diff,
+        size,
+        layout,
+        operate,
+        mouse_interaction,
+        draw,
+        overlay(Message)
+    );
 
     fn update(
         &mut self,

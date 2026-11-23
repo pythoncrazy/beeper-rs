@@ -1320,8 +1320,7 @@ fn toggle_faded<'a>(p: &Palette, on: bool, msg: Option<UiMessage>, alpha: f32) -
     let track =
         container(knob).width(36).height(24).padding(4).align_y(Center).align_x(if on { Right } else { iced::Left });
     button(track.style(bordered_box(CLEAR, p.toggle_off.scale_alpha(alpha), 2.0, 12.0)))
-        .padding(0)
-        .style(btn_style([CLEAR; 3], [p.text; 3], 12.0))
+        .bare(p.text)
         .on_press_maybe(msg)
         .into()
 }
@@ -6463,7 +6462,7 @@ impl BeeperGuiApp {
     ) -> El<'a> {
         let p = &self.pal;
         let icon = tinted(&ROW_ACTIONS[glyph], size * (0.3 + 0.7 * t), p.strong.scale_alpha(t));
-        let btn = button(container(icon).center(size)).padding(6).style(btn_style([CLEAR; 3], [p.strong; 3], 0.0));
+        let btn = button(container(icon).center(size)).bare(p.strong).padding(6);
         let tip = self.tip_caps(btn.on_press(msg).into(), label, keys, tooltip::Position::Right);
         let top = 22f32.min(51.0 - 12.0 - size);
         container(tip.delay(std::time::Duration::from_secs(1)))
@@ -6727,8 +6726,8 @@ impl BeeperGuiApp {
                 let icon = svg(crate::style::brand_svg(brand_key(&c.account_id))).width(16).height(16);
                 let name = txt(account_display_name(st, &c.account_id, &accounts), 13.0);
                 button(row![icon, name.color(p.strong)].spacing(4).align_y(Center))
+                    .bare(p.strong)
                     .padding([4, 0])
-                    .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
                     .on_press(UiMessage::SelectChat(c.id.clone()))
                     .into()
             });

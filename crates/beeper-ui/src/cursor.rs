@@ -2,14 +2,19 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
 use iced::keyboard;
-use iced::{window, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{window, Element, Event, Point, Rectangle, Renderer, Size, Theme, Vector};
 use std::cell::Cell;
 
 /// The root of a window. It keeps the cursor position in `at` without a message, so a mouse move does not
 /// rebuild the view. With `arrow`, it shows the arrow cursor instead of the pointer over `content` and its
 /// overlays, like Desktop when "Use pointer cursor for interactive elements" is off. It marks the widgets of
 /// `window` for the operations, which go through all the windows.
-pub struct Root<'a, Message>(Element<'a, Message>, bool, &'a Cell<Point>, window::Id);
+pub struct Root<'a, Message> {
+    content: Element<'a, Message>,
+    arrow: bool,
+    at: &'a Cell<Point>,
+    window: window::Id,
+}
 
 pub fn root<'a, Message>(
     content: impl Into<Element<'a, Message>>,
@@ -17,7 +22,7 @@ pub fn root<'a, Message>(
     at: &'a Cell<Point>,
     window: window::Id,
 ) -> Root<'a, Message> {
-    Root(content.into(), arrow, at, window)
+    Root { content: content.into(), arrow, at, window }
 }
 
 fn unpoint(arrow: bool, i: mouse::Interaction) -> mouse::Interaction {
@@ -43,21 +48,7 @@ fn record(at: &Cell<Point>, event: &Event) {
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
-    fn children(&self) -> Vec<widget::Tree> {
-        vec![widget::Tree::new(&self.0)]
-    }
-
-    fn diff(&self, tree: &mut widget::Tree) {
-        tree.diff_children(std::slice::from_ref(&self.0));
-    }
-
-    fn size(&self) -> Size<Length> {
-        self.0.as_widget().size()
-    }
-
-    fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        self.0.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
-    }
+    crate::delegate::delegate!(children, diff, size, layout, draw);
 
     fn operate(
         &mut self,
@@ -66,8 +57,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
         renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        operation.custom(None, layout.bounds(), &mut crate::focus::WindowMark(self.3));
-        self.0.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
+        operation.custom(None, layout.bounds(), &mut crate::focus::WindowMark(self.window));
+        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
     }
 
     fn update(
@@ -81,12 +72,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        record(self.2, event);
+        record(self.at, event);
         if shortcut(event) {
             return;
         }
         let tree = &mut tree.children[0];
-        self.0.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+        self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
     }
 
     fn mouse_interaction(
@@ -97,20 +88,10 @@ impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        unpoint(self.1, self.0.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer))
-    }
-
-    fn draw(
-        &self,
-        tree: &widget::Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-    ) {
-        self.0.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+        unpoint(
+            self.arrow,
+            self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer),
+        )
     }
 
     fn overlay<'b>(
@@ -121,8 +102,9 @@ impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        let inner = self.0.as_widget_mut().overlay(&mut tree.children[0], layout, renderer, viewport, translation);
-        inner.map(|o| overlay::Element::new(Box::new(RootOverlay(o, self.1, self.2))))
+        let inner =
+            self.content.as_widget_mut().overlay(&mut tree.children[0], layout, renderer, viewport, translation);
+        inner.map(|o| overlay::Element::new(Box::new(RootOverlay(o, self.arrow, self.at))))
     }
 }
 
