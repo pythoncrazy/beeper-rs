@@ -7,6 +7,7 @@ pub mod cloud;
 pub mod codec;
 pub mod config;
 pub mod connect;
+mod download;
 pub mod drafts;
 mod error;
 pub mod features;
