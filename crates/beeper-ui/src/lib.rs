@@ -25,6 +25,7 @@ mod gallery;
 mod gifs;
 pub mod hotkeys;
 mod i18n;
+mod idle;
 mod images;
 mod info;
 mod integrations;
@@ -416,6 +417,8 @@ pub enum UiMessage {
     Pushed(Result<(), String>),
     /// The scroll of the timeline: the jump to its bottom, and the load of older messages at its top.
     Timeline(timeline::Msg),
+    /// Desktop's idle state, which stops the open chat from reading what comes in.
+    Idle(idle::Msg),
     Ask(Option<u8>),
     /// The close of Desktop's recovery key reminder (`dismissRecoveryCodeReminder`).
     DismissRecoveryReminder,
@@ -2691,6 +2694,9 @@ pub struct Pane {
     pub draft_due: bool,
     /// Desktop's `ScrollToBottom`: whether you scrolled up from the bottom of the timeline, and since when.
     pub scrolled_up: Option<(bool, std::time::Instant)>,
+    /// Desktop's `preventAutoMarkAsRead`: a "Mark as Unread" from a message keeps the open chat unread until you
+    /// leave it (`onThreadDeselected`).
+    pub keep_unread: bool,
     /// Desktop's `unreadDividerMessageSortKey`: the message after the read position of the chat when it opened,
     /// which keeps the "New" divider in place while the chat is read.
     pub unread_divider: Option<String>,
@@ -2894,6 +2900,8 @@ pub struct BeeperGuiApp {
     emoji_hovered: [bool; 2],
     booted: String,
     focused: bool,
+    /// Desktop's `idleState`: 5 minutes passed without input (see [`idle`]).
+    pub(crate) idle: bool,
     notified: HashSet<String>,
     /// The failed sends that Retry sent again: Desktop shows their error again when they fail again.
     retried: HashSet<String>,
@@ -3234,6 +3242,7 @@ impl BeeperGuiApp {
             emoji_hovered: [false; 2],
             booted: beeper_core::config::now_rfc3339_millis(),
             focused: false,
+            idle: false,
             notified: HashSet::new(),
             retried: HashSet::new(),
             notifications: HashMap::new(),
@@ -3936,6 +3945,8 @@ impl BeeperGuiApp {
     }
 
     pub fn select_chat(&mut self, chat_id: &str) {
+        // Desktop's `onThreadDeselected` lets a chat that you leave read again.
+        self.pane.keep_unread &= self.pane.selected_chat_id.as_deref() == Some(chat_id);
         self.leave_draft();
         // Desktop's `setSelectedThread` gives the keyboard to the composer (`focusMessageInput`), and drops the cursor
         // of the chat list.
@@ -3958,7 +3969,7 @@ impl BeeperGuiApp {
         st.load_chat(&id);
         self.pane.unread_divider = message::divider_at(&st, &st.chats[idx], &self.pane_msgs(&st));
         // Desktop reads a chat with an unread divider from there, through the last message in view (`onRangeChange`).
-        if !st.incognito() && self.pane.unread_divider.is_none() {
+        if !st.incognito() && self.pane.unread_divider.is_none() && !self.pane.keep_unread {
             st.mark_read(idx, false);
         }
         let chat = st.chats[idx].clone();
@@ -4502,6 +4513,7 @@ impl BeeperGuiApp {
             UiMessage::Settings(msg) => return self.settings(msg),
             UiMessage::Thread(msg) => return self.threads(msg),
             UiMessage::Timeline(msg) => return self.timeline_scroll(msg),
+            UiMessage::Idle(msg) => return self.idle(msg),
             UiMessage::Toast(msg) => return self.toasts(msg),
             UiMessage::UserCard(msg) => return self.user_card(msg),
             UiMessage::Video(msg) => return self.video(msg),
@@ -4851,7 +4863,8 @@ impl BeeperGuiApp {
                 // Desktop's thread pane reads a new reply that comes into view at the bottom of the thread.
                 let thread =
                     self.pane.thread.as_ref().filter(|t| t.thread_root.is_some() && t.thread_root == m.thread_root);
-                let read_thread = self.focused && thread.is_some_and(|t| t.scrolled_up.is_none_or(|(up, _)| !up));
+                let read_thread =
+                    self.focused && !self.idle && thread.is_some_and(|t| t.scrolled_up.is_none_or(|(up, _)| !up));
                 let st = self.store.read();
                 let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_canonical_chat_id(c));
                 // A write lock moves the store generation, which empties the memo of the views, so only a change
@@ -5714,7 +5727,8 @@ impl BeeperGuiApp {
                 .chain(self.audio_drag())
                 .chain(self.record_events())
                 .chain(self.video_ticks())
-                .chain(self.view_once_ticks()),
+                .chain(self.view_once_ticks())
+                .chain(self.idle_events()),
         )
     }
 
@@ -6444,10 +6458,12 @@ impl BeeperGuiApp {
 
     /// Desktop's timeline effect (`markAsRead` through the last message in view, from `onRangeChange`): while its
     /// window is focused, the open chat is read through the bottom message on screen, all of it at the bottom of the
-    /// timeline, except in incognito mode.
+    /// timeline, except in incognito mode, while the app is idle, and after a "Mark as Unread" from a message of the
+    /// chat (`preventAutoMarkAsRead`) until you leave it.
     fn read_open_chat(&self) {
         let at_bottom = self.pane.scrolled_up.is_none_or(|(up, _)| !up);
         let shows = self.focused && self.pane.thread_root.is_none() && !self.pane.info;
+        let shows = shows && !self.idle && !self.pane.keep_unread;
         let Some(id) = self.pane.selected_chat_id.clone().filter(|_| shows) else {
             return;
         };
