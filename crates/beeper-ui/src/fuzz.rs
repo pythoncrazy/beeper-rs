@@ -2110,7 +2110,8 @@ fn media_window_menu_and_rows_like_desktop() {
     }
     let _ = app.update(UiMessage::Media(media_view::Msg::Tab(1)));
     media_view::load_all_media(&mut app);
-    drop(app.view(id));
+    // The list builds its rows when it lays out at its size.
+    drop(simulator(app.view(id)));
     assert!(app.wants.media.borrow().contains(img), "the row loads the preview image");
 }
 
