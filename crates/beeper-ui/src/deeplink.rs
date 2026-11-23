@@ -39,6 +39,12 @@ pub fn chat_link(account_id: &str, chat_id: &str) -> String {
     format!("{SCHEME}select-thread/{}/{}", platform(account_network(account_id)), encode_uri_component(chat_id))
 }
 
+/// Desktop's "Copy chat deep link" command: the platform name with its `bridge-` and the chat ID as they are, then
+/// the account.
+pub fn chat_deep_link(account_id: &str, chat_id: &str) -> String {
+    format!("{SCHEME}select-thread/bridge-{}/{chat_id}?accountID={account_id}", platform(account_network(account_id)))
+}
+
 /// Desktop's `decodeURIComponent`, which keeps `+`.
 fn decode_uri_component(s: &str) -> Option<String> {
     url_decode(&s.replace('+', "%2B"))
