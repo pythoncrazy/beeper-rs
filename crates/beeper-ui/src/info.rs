@@ -263,8 +263,86 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let cid = self.pane().selected_chat_id.clone().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(&cid).expect("selected chat exists")];
-        let on = |v: Option<bool>| v == Some(true);
-        let flag = |f: ChatFlag| UiMessage::ChatList(chat_list::Msg::ToggleFlag(cid.clone(), f));
+        let pane_head = self.view_info_pane_head(chat, &cid);
+        let other =
+            chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| chat.chat_type == "single");
+        let header = self.view_info_header(&st, chat, &cid, other);
+        let behavior = self.view_behavior_line(&st, chat);
+        let desc = self.view_info_desc(chat);
+        let toolbar = self.view_info_toolbar(&st, chat, &cid);
+        let members = (chat.chat_type == "group").then(|| self.view_members(chat));
+        let media = self.view_info_media(&st, chat);
+        let bookmarks = self.view_bookmarks(&st, chat);
+        let labels = self.view_info_labels(&st, chat, &cid);
+        let timers = self.view_info_timers(&st, chat, &cid);
+        let sound = self.view_info_sound(chat, &cid);
+        let [block, leave] = self.view_info_actions(&st, chat, &cid);
+        let note = text_editor(&self.info_note)
+            .placeholder("Notes")
+            .on_action(|a0| UiMessage::Info(info::Msg::Note(a0)))
+            .size(rem(13.0))
+            .line_height(Pixels(rem(16.0)))
+            .padding([8, 11])
+            .min_height(128)
+            .max_height(self.pane().size.height / 2.0)
+            .style(editor_style(p, 10.0));
+        let body = column![header]
+            .push(behavior)
+            .push(self.view_merge_promo(&st, chat))
+            .push(self.view_merged_section(&st, chat))
+            .push(desc)
+            .push(members)
+            .push(media)
+            .push(bookmarks)
+            .push(labels)
+            .push(self.view_merge_card(&st, chat))
+            .push(other.and_then(|u| self.view_contact(&st, chat, u)))
+            .push(timers)
+            .push(sound)
+            .push(container(note).padding(Padding::ZERO.top(8.0)))
+            .push(block)
+            .push(leave)
+            .padding(Padding::new(8.0).top(0.0));
+        let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
+        // Desktop's `thread-info--detached`: the card fills its window inside 8 px of the window color.
+        let detached = self.pane().info;
+        let card = container(column![pane_head, scroll, toolbar]).height(Fill).style(fill_box(p.card, 10.0));
+        match detached {
+            true => container(card.width(Fill)).padding(8).style(fill_box(p.window, 0.0)).into(),
+            false => container(card.width(300)).padding(Padding::new(8.0).left(0.0)).into(),
+        }
+    }
+
+    /// Desktop's `BrandChatInfoBlockUser` row and the Leave Chat button at the end of Chat Info.
+    fn view_info_actions(&self, st: &BeeperStore, chat: &Chat, cid: &str) -> [Option<El<'_>>; 2] {
+        let p = &self.pal;
+        let block = block_action(st, chat).map(|block| {
+            let (label, fg) = match block {
+                true => (trx("Block", "action to block the other person in a DM"), p.text_danger),
+                false => (trx("Unblock", "action to unblock the other person in a DM"), p.accent),
+            };
+            let row = button(txt(label, 13.0).color(fg))
+                .padding([8, 11])
+                .width(Fill)
+                .style(btn_style([p.chip; 3], [fg; 3], 10.0))
+                .on_press(UiMessage::Blocking(blocking::Msg::Ask(cid.into(), block)));
+            container(row).padding(Padding::ZERO.top(8.0)).into()
+        });
+        // A merged chat has no Leave Chat (`F0e`); Unmerge splits it.
+        let leave = (chat.member_actions & MEMBER_LEAVE != 0 && chat.merge.is_none()).then(|| {
+            let leave = button(semi(tr("Leave Chat"), 14.0).line_height(Pixels(rem(18.0))).color(p.strong))
+                .padding([0, 8])
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+                .on_press(UiMessage::ChatList(chat_list::Msg::AskLeave(cid.into())));
+            container(leave).padding(Padding::ZERO.top(8.0)).into()
+        });
+        [block, leave]
+    }
+
+    /// The top row of Chat Info: Mute Chat and Pin Chat, and Close Chat Info.
+    fn view_info_pane_head(&self, chat: &Chat, cid: &str) -> El<'_> {
+        let p = &self.pal;
+        let flag = |f: ChatFlag| UiMessage::ChatList(chat_list::Msg::ToggleFlag(cid.into(), f));
         let pane_btn = |glyph: char, pressed: bool, label: &'static str, msg: Option<UiMessage>| -> El<'_> {
             let (bg, fg) = if pressed { (p.accent, Color::WHITE) } else { (CLEAR, p.strong) };
             let btn = button(container(ic(glyph, 16.0)).center(28))
@@ -273,8 +351,8 @@ impl BeeperGuiApp {
                 .on_press_maybe(msg);
             self.tip(btn.into(), label, vec![], tooltip::Position::Bottom).into()
         };
-        let locked = on(chat.is_request);
-        let pane_head = row![
+        let locked = chat.is_request == Some(true);
+        row![
             pane_btn(
                 icon::NOTIFICATIONS_OFF,
                 chat.flag(ChatFlag::Muted),
@@ -288,8 +366,15 @@ impl BeeperGuiApp {
         .spacing(4)
         .padding([0, 4])
         .height(36)
-        .align_y(Center);
-        let edits = info_menu(&st, &format!("info:{cid}"), |a| self.can(a, "create_dm"));
+        .align_y(Center)
+        .into()
+    }
+
+    /// The head of Chat Info: the avatar, the title, the original title, the handles and the network of the chat, with
+    /// the Edit button.
+    fn view_info_header(&self, st: &BeeperStore, chat: &Chat, cid: &str, other: Option<&User>) -> El<'_> {
+        let p = &self.pal;
+        let edits = info_menu(st, &format!("info:{cid}"), |a| self.can(a, "create_dm"));
         let edit = match &edits[..] {
             [Some((_, msg))] => msg.clone(),
             _ => edits
@@ -308,14 +393,7 @@ impl BeeperGuiApp {
                 .on_press(copy.clone()),
         )
         .on_right_press(copy);
-        let meta = |s: String| {
-            let copy = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("copy:{cid}\n{s}")));
-            // Desktop's `metadata` rows: 11 px text on the 18.2 px line of the 13 px header.
-            let line = txt(s, 11.0).line_height(Pixels(rem(18.0))).color(Color { a: 0.6, ..p.strong });
-            mouse_area(line).on_right_press(copy)
-        };
-        let other =
-            chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| chat.chat_type == "single");
+        let meta = |s: String| self.info_meta(cid, s);
         let contact = other.map(|u| {
             row![]
                 .push(handle(u).map(meta))
@@ -327,28 +405,7 @@ impl BeeperGuiApp {
             .as_ref()
             .filter(|p| p.title.as_ref().is_some_and(|t| *t != p.room_title) && !p.room_title.is_empty())
             .map(|p| meta(trf("Originally %s", &[&p.room_title])));
-        // Desktop's `profileLink`: the network of a DM with a profile URL opens the profile.
-        let network = merged::chat_platform(chat);
-        let network: El = match profile_link(chat) {
-            Some(url) => {
-                let fg = Color { a: 0.6, ..p.strong };
-                let name = txt(network, 11.0).line_height(Pixels(rem(18.0))).color(fg);
-                let label = row![name, ic(icon::ARROW_UP_RIGHT, 11.0).color(fg)].spacing(2).align_y(Center);
-                let open = button(label).bare(fg).on_press(UiMessage::OpenUrl(url));
-                let tip = match other.and_then(|u| u.username.as_deref()) {
-                    Some(u) => trf("Open @%1$s on %2$s", &[&u.trim_start_matches('@'), &network]),
-                    None => trf("Open in %s", &[&network]),
-                };
-                self.tip_caps(
-                    open.into(),
-                    tip,
-                    hotkey_caps(st.settings.hotkey_keys("Open User Profile")),
-                    tooltip::Position::Bottom,
-                )
-                .into()
-            }
-            None => meta(network.to_string()).into(),
-        };
+        let network = self.view_info_network(st, chat, cid, other);
         // Desktop's `.thread-info-avatar img` has the `zoom-in` cursor.
         let group = chat.chat_type == "group";
         let image =
@@ -357,27 +414,55 @@ impl BeeperGuiApp {
         let avatar = if image { avatar.interaction(mouse::Interaction::ZoomIn) } else { avatar };
         let details =
             column![avatar, title].push(originally).push(contact).push(network).spacing(4).align_x(Center).width(Fill);
-        let behavior = self.view_behavior_line(&st, chat);
+        let can_desc = chat.edits & 1 << 2 != 0;
+        let adding = can_desc && group && self.info_desc.is_none() && chat.description.is_none();
+        mouse_area(stack![
+            container(details).padding(Padding::new(16.0).bottom(if adding { 0.0 } else { 8.0 })),
+            container(edit).align_right(Fill).padding(Padding::ZERO.top(12.0).right(8.0)),
+        ])
+        .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("info:{cid}"))))
+        .into()
+    }
+
+    /// A `metadata` row of Chat Info, whose right click copies it.
+    fn info_meta(&self, cid: &str, s: String) -> iced::widget::MouseArea<'_, UiMessage> {
+        let copy = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("copy:{cid}\n{s}")));
+        // Desktop's `metadata` rows: 11 px text on the 18.2 px line of the 13 px header.
+        let line = txt(s, 11.0).line_height(Pixels(rem(18.0))).color(Color { a: 0.6, ..self.pal.strong });
+        mouse_area(line).on_right_press(copy)
+    }
+
+    /// The network of the chat in Chat Info. Desktop's `profileLink`: the network of a DM with a profile URL opens the
+    /// profile.
+    fn view_info_network(&self, st: &BeeperStore, chat: &Chat, cid: &str, other: Option<&User>) -> El<'_> {
+        let network = merged::chat_platform(chat);
+        let Some(url) = profile_link(chat) else { return self.info_meta(cid, network.to_string()).into() };
+        let fg = Color { a: 0.6, ..self.pal.strong };
+        let name = txt(network, 11.0).line_height(Pixels(rem(18.0))).color(fg);
+        let label = row![name, ic(icon::ARROW_UP_RIGHT, 11.0).color(fg)].spacing(2).align_y(Center);
+        let open = button(label).bare(fg).on_press(UiMessage::OpenUrl(url));
+        let tip = match other.and_then(|u| u.username.as_deref()) {
+            Some(u) => trf("Open @%1$s on %2$s", &[&u.trim_start_matches('@'), &network]),
+            None => trf("Open in %s", &[&network]),
+        };
+        let keys = hotkey_caps(st.settings.hotkey_keys("Open User Profile"));
+        self.tip_caps(open.into(), tip, keys, tooltip::Position::Bottom).into()
+    }
+
+    /// Desktop's group description: its editor, an "Add a description" link, or the description with its Edit and
+    /// "more" links.
+    fn view_info_desc(&self, chat: &Chat) -> Option<El<'_>> {
+        let p = &self.pal;
         let can_desc = chat.edits & 1 << 2 != 0;
         let small =
             |s: &'static str, w: Weight, c: Color| crate::style::t(s, 11.0, w).line_height(Pixels(rem(14.0))).color(c);
         let link = |label: &'static str, w: Weight, msg: UiMessage| {
             button(small(label, w, p.accent)).bare(p.accent).on_press(msg)
         };
-        let desc_head = |btn: Option<_>| {
-            row![small(tr("Group Description"), Weight::Normal, p.strong), Space::new().width(Fill)]
-                .push(btn)
-                .padding([0, 8])
-                .align_y(Center)
-        };
-        let desc: Option<El> = match (&self.info_desc, chat.description.as_deref()) {
-            _ if chat.chat_type != "group" => None,
+        let (btn, body): (_, El) = match (&self.info_desc, chat.description.as_deref()) {
+            _ if chat.chat_type != "group" => return None,
             (Some(content), _) => {
-                let done = link(
-                    trx("Done", "group description submit button"),
-                    Weight::Semibold,
-                    UiMessage::Info(info::Msg::SaveDesc),
-                );
+                let done = trx("Done", "group description submit button");
                 let input = text_editor(content)
                     .id("info-desc")
                     .placeholder(tr("This description is public to the group"))
@@ -387,64 +472,57 @@ impl BeeperGuiApp {
                     .style(editor_style(p, 8.0));
                 let input =
                     if can_desc { input.on_action(|a| UiMessage::Info(info::Msg::Desc(Some(a)))) } else { input };
-                Some(
-                    column![desc_head(can_desc.then_some(done)), input]
-                        .spacing(8)
-                        .padding(Padding::ZERO.top(8.0))
-                        .into(),
-                )
+                (link(done, Weight::Semibold, UiMessage::Info(info::Msg::SaveDesc)), input.into())
             }
-            (None, None) if can_desc => Some(
-                container(link(tr("Add a description"), Weight::Semibold, UiMessage::Info(info::Msg::Desc(None))))
-                    .center_x(Fill)
-                    .padding(Padding::ZERO.bottom(8.0))
-                    .into(),
-            ),
+            (None, None) if can_desc => {
+                let add = link(tr("Add a description"), Weight::Semibold, UiMessage::Info(info::Msg::Desc(None)));
+                return Some(container(add).center_x(Fill).padding(Padding::ZERO.bottom(8.0)).into());
+            }
             (None, Some(d)) => {
-                let full = d.split_whitespace().collect::<Vec<_>>().join(" ");
-                let clamped = crate::style::clamped(&full, 268.0, 3, 11.0, Weight::Normal);
-                let more = *clamped != *full;
-                let shown = if self.info_more { full.clone() } else { clamped.to_string() };
-                let spans = shown.split_inclusive(' ').map(|w| match text_urls(w).first() {
-                    Some(url) => span(w.to_string()).color(p.accent).link(url.clone()),
-                    None => span(w.to_string()).color(p.strong),
-                });
-                let text = rich_text(spans.collect::<Vec<_>>())
-                    .size(rem(11.0))
-                    .line_height(Pixels(rem(14.0)))
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                    .on_link_click(UiMessage::OpenUrl);
-                let edit = link(
-                    trx("Edit", "group description edit button"),
-                    Weight::Semibold,
-                    UiMessage::Info(info::Msg::Desc(None)),
-                );
-                let more = more.then(|| {
-                    link(
-                        trx("more", "expand group description button"),
-                        Weight::Normal,
-                        UiMessage::Info(info::Msg::More),
-                    )
-                });
-                let body =
-                    container(column![text].push(more).spacing(4)).padding(8).width(Fill).style(fill_box(p.chip, 8.0));
-                Some(
-                    column![desc_head(can_desc.then_some(edit)), body]
-                        .spacing(8)
-                        .padding(Padding::ZERO.top(8.0))
-                        .into(),
-                )
+                let (text, more) = self.view_desc_text(d);
+                let edit = trx("Edit", "group description edit button");
+                let label = trx("more", "expand group description button");
+                let more = more.then(|| link(label, Weight::Normal, UiMessage::Info(info::Msg::More)));
+                let body = column![text].push(more).spacing(4);
+                let body = container(body).padding(8).width(Fill).style(fill_box(p.chip, 8.0));
+                (link(edit, Weight::Semibold, UiMessage::Info(info::Msg::Desc(None))), body.into())
             }
-            (None, None) => None,
+            (None, None) => return None,
         };
-        let adding = can_desc && chat.chat_type == "group" && self.info_desc.is_none() && chat.description.is_none();
-        let header = mouse_area(stack![
-            container(details).padding(Padding::new(16.0).bottom(if adding { 0.0 } else { 8.0 })),
-            container(edit).align_right(Fill).padding(Padding::ZERO.top(12.0).right(8.0)),
-        ])
-        .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("info:{cid}"))));
+        let head = row![small(tr("Group Description"), Weight::Normal, p.strong), Space::new().width(Fill)]
+            .push(can_desc.then_some(btn))
+            .padding([0, 8])
+            .align_y(Center);
+        Some(column![head, body].spacing(8).padding(Padding::ZERO.top(8.0)).into())
+    }
+
+    /// The text of the group description with its links, clamped to three lines until "more", and whether it is
+    /// longer.
+    fn view_desc_text(&self, d: &str) -> (El<'_>, bool) {
+        let p = &self.pal;
+        let full = d.split_whitespace().collect::<Vec<_>>().join(" ");
+        let clamped = crate::style::clamped(&full, 268.0, 3, 11.0, Weight::Normal);
+        let more = *clamped != *full;
+        let shown = if self.info_more { full.clone() } else { clamped.to_string() };
+        let spans = shown.split_inclusive(' ').map(|w| match text_urls(w).first() {
+            Some(url) => span(w.to_string()).color(p.accent).link(url.clone()),
+            None => span(w.to_string()).color(p.strong),
+        });
+        let text = rich_text(spans.collect::<Vec<_>>())
+            .size(rem(11.0))
+            .line_height(Pixels(rem(14.0)))
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+            .on_link_click(UiMessage::OpenUrl);
+        (text.into(), more)
+    }
+
+    /// The toolbar at the bottom of Chat Info: Archive, the reminder, Snooze, Search and More Options.
+    fn view_info_toolbar(&self, st: &BeeperStore, chat: &Chat, cid: &str) -> El<'_> {
+        let p = &self.pal;
+        let locked = chat.is_request == Some(true);
         let archived = chat.flag(ChatFlag::Archived);
         let pinned = !archived && chat.flag(ChatFlag::Pinned);
+        let keys = |name| hotkey_caps(st.settings.hotkey_keys(name));
         let tool = |glyph: char, fg: Color, label: &'static str, keys, msg: Option<UiMessage>| -> El<'_> {
             let style = move |_: &Theme, s: button::Status| button::Style {
                 text_color: if matches!(s, button::Status::Disabled) { fg.scale_alpha(0.2) } else { fg },
@@ -454,87 +532,67 @@ impl BeeperGuiApp {
             let tip = self.tip_caps(btn.on_press_maybe(msg).into(), label, keys, tooltip::Position::Top);
             container(tip).center_x(Fill).into()
         };
-        let toolbar = row![
-            tool(
-                if archived { icon::INBOX } else { icon::ARCHIVE },
-                p.strong,
-                match (pinned, archived) {
-                    (true, _) => tr("Pinned chats can't be archived"),
-                    (false, true) => trx("Unarchive", "button label to unarchive chat"),
-                    (false, false) => trx("Archive", "button label to archive chat"),
-                },
-                hotkey_caps(st.settings.hotkey_keys("Chat: Toggle Archive")),
-                (!pinned && !locked).then(|| flag(ChatFlag::Archived)),
-            ),
-            // Desktop's `hasReminder` and `dismissThreadReminder`: the soonest of the message reminders and the chat
-            // reminder is dismissed.
-            match (self.soonest_message_reminder(&st, chat), chat.reminder.is_some()) {
-                (Some(mid), _) => tool(
-                    icon::SCHEDULE,
-                    ORANGE,
-                    tr("Dismiss Reminder"),
-                    hotkey_caps(st.settings.hotkey_keys("Remind Later")),
-                    Some(UiMessage::Reminders(reminders::Msg::Message(mid, None))),
-                ),
-                (None, true) => tool(
-                    icon::SCHEDULE,
-                    ORANGE,
-                    tr("Dismiss Reminder"),
-                    hotkey_caps(st.settings.hotkey_keys("Remind Later")),
-                    Some(UiMessage::Reminders(reminders::Msg::Set(cid.clone(), None))),
-                ),
-                (None, false) => tool(
-                    icon::SCHEDULE,
-                    p.strong,
-                    tr("Remind Me"),
-                    hotkey_caps(st.settings.hotkey_keys("Remind Later")),
-                    Some(UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.clone()))),
-                ),
-            },
-            // Desktop's Snooze button shows when the chat can snooze, is snoozed or needs Beeper Plus to snooze; it
-            // is highlighted with the end of the snooze while the chat is snoozed.
-            reminders::shows_snooze(&st, &[chat]).then(|| {
-                let until = reminders::snoozed_until(&st, chat);
-                let label = match until {
-                    Some(at) => reminders::snoozed_label(at, st.settings.pref("timeFormat") == 1),
-                    None => trx("Snooze", "chat info toolbar button").into(),
-                };
-                let icon = tinted(&MOON_STARS, 20.0, if until.is_some() { p.accent } else { p.strong });
-                let open = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{SNOOZE_MENU}{cid}")));
-                let btn = button(container(icon).center_x(Fill)).padding(6).width(Fill).style(btn_style(
-                    [CLEAR; 3],
-                    [p.strong; 3],
-                    0.0,
-                ));
-                container(self.tip(btn.on_press(open).into(), label, vec![], tooltip::Position::Top)).center_x(Fill)
-            }),
-            tool(
-                icon::SEARCH,
-                p.strong,
-                tr("Search"),
-                hotkey_caps(st.settings.hotkey_keys("Search: Room")),
-                Some(UiMessage::CommandBar(commands::Msg::SearchRoom(cid.clone())))
-            ),
-            tool(
-                icon::EXPAND_MORE,
-                p.strong,
-                tr("More Options"),
-                vec![],
-                Some(UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.clone())))
-            ),
-        ]
-        .align_y(Center)
-        .padding([8, 12]);
-        let toolbar = column![
+        let label = match (pinned, archived) {
+            (true, _) => tr("Pinned chats can't be archived"),
+            (false, true) => trx("Unarchive", "button label to unarchive chat"),
+            (false, false) => trx("Archive", "button label to archive chat"),
+        };
+        let toggle = UiMessage::ChatList(chat_list::Msg::ToggleFlag(cid.into(), ChatFlag::Archived));
+        let glyph = if archived { icon::INBOX } else { icon::ARCHIVE };
+        let archive =
+            tool(glyph, p.strong, label, keys("Chat: Toggle Archive"), (!pinned && !locked).then_some(toggle));
+        // Desktop's `hasReminder` and `dismissThreadReminder`: the soonest of the message reminders and the chat
+        // reminder is dismissed.
+        let (fg, label, remind) = match (self.soonest_message_reminder(st, chat), chat.reminder.is_some()) {
+            (Some(mid), _) => {
+                (ORANGE, tr("Dismiss Reminder"), UiMessage::Reminders(reminders::Msg::Message(mid, None)))
+            }
+            (None, true) => {
+                (ORANGE, tr("Dismiss Reminder"), UiMessage::Reminders(reminders::Msg::Set(cid.into(), None)))
+            }
+            (None, false) => (p.strong, tr("Remind Me"), UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.into()))),
+        };
+        let remind = tool(icon::SCHEDULE, fg, label, keys("Remind Later"), Some(remind));
+        let snooze = self.view_info_snooze(st, chat, cid);
+        let search = Some(UiMessage::CommandBar(commands::Msg::SearchRoom(cid.into())));
+        let search = tool(icon::SEARCH, p.strong, tr("Search"), keys("Search: Room"), search);
+        let more = Some(UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.into())));
+        let more = tool(icon::EXPAND_MORE, p.strong, tr("More Options"), vec![], more);
+        let toolbar = row![archive, remind].push(snooze).push(search).push(more).align_y(Center).padding([8, 12]);
+        column![
             container(Space::new().width(Fill).height(2)).style(fill_box(Color { a: 0.1, ..p.strong }, 0.0)),
             container(toolbar).center_y(46),
-        ];
-        let members = (chat.chat_type == "group").then(|| self.view_members(chat));
-        let media = self.view_info_media(&st, chat);
-        let bookmarks = self.view_bookmarks(&st, chat);
+        ]
+        .into()
+    }
+
+    /// Desktop's Snooze button of the Chat Info toolbar shows when the chat can snooze, is snoozed or needs Beeper
+    /// Plus to snooze; it is highlighted with the end of the snooze while the chat is snoozed.
+    fn view_info_snooze(&self, st: &BeeperStore, chat: &Chat, cid: &str) -> Option<El<'_>> {
+        let p = &self.pal;
+        reminders::shows_snooze(st, &[chat]).then(|| {
+            let until = reminders::snoozed_until(st, chat);
+            let label = match until {
+                Some(at) => reminders::snoozed_label(at, st.settings.pref("timeFormat") == 1),
+                None => trx("Snooze", "chat info toolbar button").into(),
+            };
+            let icon = tinted(&MOON_STARS, 20.0, if until.is_some() { p.accent } else { p.strong });
+            let open = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{SNOOZE_MENU}{cid}")));
+            let btn = button(container(icon).center_x(Fill)).padding(6).width(Fill).style(btn_style(
+                [CLEAR; 3],
+                [p.strong; 3],
+                0.0,
+            ));
+            container(self.tip(btn.on_press(open).into(), label, vec![], tooltip::Position::Top)).center_x(Fill).into()
+        })
+    }
+
+    /// Desktop's Labels section of Chat Info: the labels of the chat with Edit, or "Add to a Label".
+    fn view_info_labels(&self, st: &BeeperStore, chat: &Chat, cid: &str) -> Option<El<'_>> {
+        let p = &self.pal;
         let feature = st.feature("labels-v2");
-        let labels = feature.show.then(|| {
-            let open = feature.on.then(|| UiMessage::Labels(labels::Msg::OpenEdit(cid.clone())));
+        feature.show.then(|| {
+            let open = feature.on.then(|| UiMessage::Labels(labels::Msg::OpenEdit(cid.into())));
             let mine: Vec<&Label> =
                 chat.label_ids.iter().filter_map(|id| st.labels.iter().find(|l| l.id == *id)).collect();
             let edit = (!mine.is_empty()).then(|| {
@@ -570,119 +628,70 @@ impl BeeperGuiApp {
                         .collect(),
                 ),
             };
-            column![head, body]
-        });
-        let timers =
-            chat.timers.as_ref().filter(|_| st.feature("enable-disappearing-message-timer-config").on).map(|t| {
-                let can = t.can_set && !locked;
-                let options: Vec<String> = [0].iter().chain(&t.timers).map(|&ms| timer_label(ms)).collect();
-                let values: Vec<u64> = [0].into_iter().chain(t.timers.iter().copied()).collect();
-                let current = timer_label(chat.disappearing.unwrap_or(0));
-                let (id, fg) = (cid.clone(), if can { p.strong } else { p.sub });
-                let pick = pick_list(options.clone(), Some(current), move |l| {
-                    let i = options.iter().position(|o| *o == l).expect("a listed timer");
-                    UiMessage::Info(info::Msg::SetDisappearing(id.clone(), values[i]))
-                })
-                .text_size(rem(13.0))
-                .text_line_height(Pixels(rem(16.0)))
-                .handle(pick_list::Handle::None)
-                .padding([8, 12])
-                .width(Fill)
-                .style(pick_style(p.chip, p.chip, fg, fg))
-                .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border));
-                let pick: El = match can {
-                    true => pick.into(),
-                    false => container(txt(timer_label(chat.disappearing.unwrap_or(0)), 13.0).color(fg))
-                        .padding([8, 12])
-                        .width(Fill)
-                        .style(fill_box(p.chip, 8.0))
-                        .into(),
-                };
-                let arrow =
-                    container(tinted(&SELECT_ARROW, 10.0, fg)).align_right(Fill).center_y(Fill).padding([0, 12]);
-                let pick = stack![pick, arrow];
-                let about =
-                    txt(tr("For added privacy, new messages disappear after the set time."), 10.0).color(p.strong);
-                let head = container(txt(tr("Disappearing messages"), 11.0).color(p.strong)).padding(8);
-                column![head, column![pick, container(about).padding([0, 8])].spacing(4)]
-            });
-        // Desktop's `BrandChatInfoNotificationSound`: Default, Silent, and the sound the chat has if it is another one.
-        let sound = {
-            let current = chat.notification_sound.clone();
-            let mut sounds: Vec<Option<String>> = vec![None, Some("silent".into())];
-            sounds.extend(current.clone().filter(|s| s != "silent").map(Some));
-            let labels: Vec<&'static str> = sounds.iter().map(|s| sound_label(s.as_deref())).collect();
-            let id = cid.clone();
-            let pick = pick_list(labels.clone(), Some(sound_label(current.as_deref())), move |l| {
-                let i = labels.iter().position(|o| *o == l).expect("a listed sound");
-                UiMessage::Info(info::Msg::SetSound(id.clone(), sounds[i].clone()))
+            column![head, body].into()
+        })
+    }
+
+    /// Desktop's disappearing messages select of Chat Info, which only shows the timer when the chat cannot set it.
+    fn view_info_timers(&self, st: &BeeperStore, chat: &Chat, cid: &str) -> Option<El<'_>> {
+        let p = &self.pal;
+        let locked = chat.is_request == Some(true);
+        chat.timers.as_ref().filter(|_| st.feature("enable-disappearing-message-timer-config").on).map(|t| {
+            let can = t.can_set && !locked;
+            let options: Vec<String> = [0].iter().chain(&t.timers).map(|&ms| timer_label(ms)).collect();
+            let values: Vec<u64> = [0].into_iter().chain(t.timers.iter().copied()).collect();
+            let current = timer_label(chat.disappearing.unwrap_or(0));
+            let (id, fg) = (cid.to_string(), if can { p.strong } else { p.sub });
+            let pick = pick_list(options.clone(), Some(current), move |l| {
+                let i = options.iter().position(|o| *o == l).expect("a listed timer");
+                UiMessage::Info(info::Msg::SetDisappearing(id.clone(), values[i]))
             })
             .text_size(rem(13.0))
             .text_line_height(Pixels(rem(16.0)))
             .handle(pick_list::Handle::None)
             .padding([8, 12])
             .width(Fill)
-            .style(pick_style(p.chip, p.chip, p.strong, p.strong))
+            .style(pick_style(p.chip, p.chip, fg, fg))
             .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border));
-            let arrow =
-                container(tinted(&SELECT_ARROW, 10.0, p.strong)).align_right(Fill).center_y(Fill).padding([0, 12]);
-            let about = txt(tr("Silent chats still show notifications, just without a sound."), 10.0).color(p.strong);
-            let head = container(txt(tr("Notification sound"), 11.0).color(p.strong)).padding(8);
-            column![head, column![stack![pick, arrow], container(about).padding([0, 8])].spacing(4)]
-        };
-        let note = text_editor(&self.info_note)
-            .placeholder("Notes")
-            .on_action(|a0| UiMessage::Info(info::Msg::Note(a0)))
-            .size(rem(13.0))
-            .line_height(Pixels(rem(16.0)))
-            .padding([8, 11])
-            .min_height(128)
-            .max_height(self.pane().size.height / 2.0)
-            .style(editor_style(p, 10.0));
-        let body = column![header]
-            .push(behavior)
-            .push(self.view_merge_promo(&st, chat))
-            .push(self.view_merged_section(&st, chat))
-            .push(desc)
-            .push(members)
-            .push(media)
-            .push(bookmarks)
-            .push(labels)
-            .push(self.view_merge_card(&st, chat))
-            .push(other.and_then(|u| self.view_contact(&st, chat, u)))
-            .push(timers)
-            .push(sound)
-            .push(container(note).padding(Padding::ZERO.top(8.0)))
-            .push(block_action(&st, chat).map(|block| {
-                // Desktop's `BrandChatInfoBlockUser` row.
-                let (label, fg) = match block {
-                    true => (trx("Block", "action to block the other person in a DM"), p.text_danger),
-                    false => (trx("Unblock", "action to unblock the other person in a DM"), p.accent),
-                };
-                let row = button(txt(label, 13.0).color(fg))
-                    .padding([8, 11])
+            let pick: El = match can {
+                true => pick.into(),
+                false => container(txt(timer_label(chat.disappearing.unwrap_or(0)), 13.0).color(fg))
+                    .padding([8, 12])
                     .width(Fill)
-                    .style(btn_style([p.chip; 3], [fg; 3], 10.0))
-                    .on_press(UiMessage::Blocking(blocking::Msg::Ask(cid.clone(), block)));
-                container(row).padding(Padding::ZERO.top(8.0))
-            }))
-            // A merged chat has no Leave Chat (`F0e`); Unmerge splits it.
-            .push((chat.member_actions & MEMBER_LEAVE != 0 && chat.merge.is_none()).then(|| {
-                let leave = button(semi(tr("Leave Chat"), 14.0).line_height(Pixels(rem(18.0))).color(p.strong))
-                    .padding([0, 8])
-                    .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                    .on_press(UiMessage::ChatList(chat_list::Msg::AskLeave(cid.clone())));
-                container(leave).padding(Padding::ZERO.top(8.0))
-            }))
-            .padding(Padding::new(8.0).top(0.0));
-        let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
-        // Desktop's `thread-info--detached`: the card fills its window inside 8 px of the window color.
-        let detached = self.pane().info;
-        let card = container(column![pane_head, scroll, toolbar]).height(Fill).style(fill_box(p.card, 10.0));
-        match detached {
-            true => container(card.width(Fill)).padding(8).style(fill_box(p.window, 0.0)).into(),
-            false => container(card.width(300)).padding(Padding::new(8.0).left(0.0)).into(),
-        }
+                    .style(fill_box(p.chip, 8.0))
+                    .into(),
+            };
+            let arrow = container(tinted(&SELECT_ARROW, 10.0, fg)).align_right(Fill).center_y(Fill).padding([0, 12]);
+            let pick = stack![pick, arrow];
+            let about = txt(tr("For added privacy, new messages disappear after the set time."), 10.0).color(p.strong);
+            let head = container(txt(tr("Disappearing messages"), 11.0).color(p.strong)).padding(8);
+            column![head, column![pick, container(about).padding([0, 8])].spacing(4)].into()
+        })
+    }
+
+    /// Desktop's `BrandChatInfoNotificationSound`: Default, Silent, and the sound the chat has if it is another one.
+    fn view_info_sound(&self, chat: &Chat, cid: &str) -> El<'_> {
+        let p = &self.pal;
+        let current = chat.notification_sound.clone();
+        let mut sounds: Vec<Option<String>> = vec![None, Some("silent".into())];
+        sounds.extend(current.clone().filter(|s| s != "silent").map(Some));
+        let labels: Vec<&'static str> = sounds.iter().map(|s| sound_label(s.as_deref())).collect();
+        let id = cid.to_string();
+        let pick = pick_list(labels.clone(), Some(sound_label(current.as_deref())), move |l| {
+            let i = labels.iter().position(|o| *o == l).expect("a listed sound");
+            UiMessage::Info(info::Msg::SetSound(id.clone(), sounds[i].clone()))
+        })
+        .text_size(rem(13.0))
+        .text_line_height(Pixels(rem(16.0)))
+        .handle(pick_list::Handle::None)
+        .padding([8, 12])
+        .width(Fill)
+        .style(pick_style(p.chip, p.chip, p.strong, p.strong))
+        .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border));
+        let arrow = container(tinted(&SELECT_ARROW, 10.0, p.strong)).align_right(Fill).center_y(Fill).padding([0, 12]);
+        let about = txt(tr("Silent chats still show notifications, just without a sound."), 10.0).color(p.strong);
+        let head = container(txt(tr("Notification sound"), 11.0).color(p.strong)).padding(8);
+        column![head, column![stack![pick, arrow], container(about).padding([0, 8])].spacing(4)].into()
     }
 
     /// Desktop's zoomed `thread-info-avatar`: over a `#000000e6` backdrop, the avatar of the chat with its full-size
@@ -722,8 +731,6 @@ impl BeeperGuiApp {
     /// and every loaded message with an attachment or a link (`pushMessages`); the open chat has all its stored
     /// messages loaded, so its audio and file messages show too.
     pub(crate) fn view_info_media<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
-        // Desktop's `mediaGrid`: two 124 px columns 8 px apart in the 8 px padding of the 272 px pane.
-        const TILE: f32 = 124.0;
         let p = &self.pal;
         let mut found: Vec<&Message> = st
             .chat_timeline(&chat.id)
@@ -738,71 +745,7 @@ impl BeeperGuiApp {
         let limit = if chat.chat_type == "single" { 4 } else { 6 };
         let expandable = found.len() > limit;
         let shown = if self.info_media.is_some() { &found[..] } else { &found[..found.len().min(limit)] };
-        let kinds: &[&str] = match self.info_media {
-            None => &["img", "video", "audio", "unknown"],
-            Some(0) => &["img"],
-            Some(1) => &["video"],
-            Some(2) => &["audio"],
-            Some(3) => &[],
-            Some(4) => &["unknown"],
-            Some(n) => unreachable!("media tab {n}"),
-        };
-        let links = matches!(self.info_media, None | Some(3));
-        let white = Color::WHITE;
-        // Desktop's `MediaWithSender`: the avatar of a member sender, with their full name in a tooltip on the left.
-        let sender = |m: &Message| -> Option<El<'a>> {
-            let u = chat.participants.items.iter().find(|u| u.id == m.sender_id)?;
-            let face = container(self.face(u.img_url.as_deref(), &member_name(u), 20.0, 0.0))
-                .padding(2)
-                .style(shadow_box(white, CLEAR, 12.0, 8.0));
-            let face: El = match u.full_name.clone() {
-                Some(name) => self.tip(face.into(), name, vec![], tooltip::Position::Left).into(),
-                None => face.into(),
-            };
-            Some(container(face).padding(8).into())
-        };
-        let file = |title: String, sub: El<'a>| -> El<'a> {
-            let title = txt(crate::style::clamped(&title, TILE - 16.0, 3, 10.0, Weight::Normal).to_string(), 10.0)
-                .color(p.strong);
-            let bg = if self.dark { Color::BLACK } else { Color::WHITE };
-            container(column![title, sub]).padding(8).align_bottom(TILE).width(TILE).style(fill_box(bg, 8.0)).into()
-        };
-        let tiles: Vec<El> = shown
-            .iter()
-            .flat_map(|m| {
-                let atts = m.attachments.iter().filter(|a| kinds.contains(&a.attachment_type.as_str()));
-                let atts = atts.map(|a| match a.attachment_type.as_str() {
-                    "img" => self.thumb(a, TILE, 4.0),
-                    // Desktop's `BrandVideo` play button: a 36 px `secondary-container` disc in the middle.
-                    "video" => {
-                        let play =
-                            container(ic(icon::PLAY, 14.0).color(p.strong)).center(36).style(fill_box(p.chip, 18.0));
-                        stack![self.thumb(a, TILE, 4.0), container(play).center(TILE)].into()
-                    }
-                    _ => {
-                        let kind = ell(file_kind(a.mime_type.as_deref()), TILE - 16.0, 10.0, Weight::Semibold);
-                        file(
-                            a.file_name.clone().unwrap_or_default(),
-                            kind.line_height(Pixels(rem(12.0))).color(p.strong).into(),
-                        )
-                    }
-                });
-                let urls = m.links.iter().filter(|_| links).map(|l| {
-                    let title = crate::links::shown_title(l);
-                    let url =
-                        ell(&l.url, TILE - 29.0, 10.0, Weight::Semibold).line_height(Pixels(rem(12.0))).color(p.strong);
-                    file(title, row![tinted(&MEDIA_ICONS[2], 12.0, p.strong), url].align_y(Center).into())
-                });
-                atts.chain(urls).map(|tile| {
-                    let face = stack![tile].push(sender(m)).width(TILE).height(TILE);
-                    button(face)
-                        .padding(0)
-                        .style(btn_style([CLEAR; 3], [p.strong; 3], 4.0))
-                        .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(chat.id.clone(), m.id.clone())))
-                        .into()
-                })
-            })
-            .collect();
+        let tiles = self.view_info_media_tiles(chat, shown);
         let grid: El = match tiles.is_empty() {
             true => container(txt(tr("Nothing here"), 13.0).color(p.sub)).center_x(Fill).padding([10, 0]).into(),
             false => {
@@ -836,6 +779,82 @@ impl BeeperGuiApp {
         Some(column![head, container(body).width(Fill).style(fill_box(Color { a: 0.1, ..p.strong }, 10.0))].into())
     }
 
+    /// The tiles of the Media section: the images, videos and files of the messages of the tab, and their links,
+    /// with the avatar of the sender.
+    fn view_info_media_tiles<'a>(&'a self, chat: &Chat, shown: &[&Message]) -> Vec<El<'a>> {
+        // Desktop's `mediaGrid`: two 124 px columns 8 px apart in the 8 px padding of the 272 px pane.
+        const TILE: f32 = 124.0;
+        let p = &self.pal;
+        let kinds: &[&str] = match self.info_media {
+            None => &["img", "video", "audio", "unknown"],
+            Some(0) => &["img"],
+            Some(1) => &["video"],
+            Some(2) => &["audio"],
+            Some(3) => &[],
+            Some(4) => &["unknown"],
+            Some(n) => unreachable!("media tab {n}"),
+        };
+        let links = matches!(self.info_media, None | Some(3));
+        let file = |title: String, sub: El<'a>| -> El<'a> {
+            let title = txt(crate::style::clamped(&title, TILE - 16.0, 3, 10.0, Weight::Normal).to_string(), 10.0)
+                .color(p.strong);
+            let bg = if self.dark { Color::BLACK } else { Color::WHITE };
+            container(column![title, sub]).padding(8).align_bottom(TILE).width(TILE).style(fill_box(bg, 8.0)).into()
+        };
+        shown
+            .iter()
+            .flat_map(|m| {
+                let atts = m.attachments.iter().filter(|a| kinds.contains(&a.attachment_type.as_str()));
+                let atts = atts.map(|a| match a.attachment_type.as_str() {
+                    "img" => self.thumb(a, TILE, 4.0),
+                    // Desktop's `BrandVideo` play button: a 36 px `secondary-container` disc in the middle.
+                    "video" => {
+                        let play =
+                            container(ic(icon::PLAY, 14.0).color(p.strong)).center(36).style(fill_box(p.chip, 18.0));
+                        stack![self.thumb(a, TILE, 4.0), container(play).center(TILE)].into()
+                    }
+                    _ => {
+                        let kind = ell(file_kind(a.mime_type.as_deref()), TILE - 16.0, 10.0, Weight::Semibold);
+                        file(
+                            a.file_name.clone().unwrap_or_default(),
+                            kind.line_height(Pixels(rem(12.0))).color(p.strong).into(),
+                        )
+                    }
+                });
+                let urls = m.links.iter().filter(|_| links).map(|l| {
+                    let title = crate::links::shown_title(l);
+                    let url =
+                        ell(&l.url, TILE - 29.0, 10.0, Weight::Semibold).line_height(Pixels(rem(12.0))).color(p.strong);
+                    file(title, row![tinted(&MEDIA_ICONS[2], 12.0, p.strong), url].align_y(Center).into())
+                });
+                atts.chain(urls).map(|tile| {
+                    let face = stack![tile].push(self.media_sender(chat, m)).width(TILE).height(TILE);
+                    button(face)
+                        .padding(0)
+                        .style(btn_style([CLEAR; 3], [p.strong; 3], 4.0))
+                        .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(chat.id.clone(), m.id.clone())))
+                        .into()
+                })
+            })
+            .collect()
+    }
+
+    /// Desktop's `MediaWithSender`: the avatar of a member sender, with their full name in a tooltip on the left.
+    fn media_sender(&self, chat: &Chat, m: &Message) -> Option<El<'_>> {
+        let u = chat.participants.items.iter().find(|u| u.id == m.sender_id)?;
+        let face = container(self.face(u.img_url.as_deref(), &member_name(u), 20.0, 0.0)).padding(2).style(shadow_box(
+            Color::WHITE,
+            CLEAR,
+            12.0,
+            8.0,
+        ));
+        let face: El = match u.full_name.clone() {
+            Some(name) => self.tip(face.into(), name, vec![], tooltip::Position::Left).into(),
+            None => face.into(),
+        };
+        Some(container(face).padding(8).into())
+    }
+
     /// Desktop's `Kfe` Bookmarks section: the newest bookmarks of the chat first, 15 until "Show all".
     pub(crate) fn view_bookmarks<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
         const SHOWN: usize = 15;
@@ -857,60 +876,9 @@ impl BeeperGuiApp {
         });
         let expandable = marked.len() > SHOWN;
         let shown = if self.info_bookmarks { marked.len() } else { marked.len().min(SHOWN) };
-        let (h24, dim) = (st.settings.pref("timeFormat") == 1, Color { a: 0.7, ..p.strong });
         let restored = st.bookmarks_restored();
-        let rows: Vec<El> = marked[..shown]
-            .iter()
-            .map(|&(target, m)| {
-                let menu = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("bookmark:{} {target}", chat.id)));
-                let blank = || Space::new().width(24).height(24);
-                let lines = |title: El<'a>, text: &str| {
-                    let preview = ell(text, 220.0, 11.0, Weight::Normal).line_height(Pixels(rem(14.0))).color(dim);
-                    column![title, preview].spacing(2).width(Fill)
-                };
-                let (line, jump) = match m {
-                    Some(m) => {
-                        let u = chat.participants.items.iter().find(|u| u.id == m.sender_id);
-                        let name =
-                            u.map(member_name).or_else(|| m.sender_name.clone()).unwrap_or_else(|| m.sender_id.clone());
-                        let title = row![
-                            ell(&name, 160.0, 11.0, Weight::Semibold).line_height(Pixels(rem(14.0))).color(p.strong),
-                            txt(list_ts(&m.timestamp, h24), 10.0).color(dim)
-                        ]
-                        .spacing(6)
-                        .align_y(iced::Bottom);
-                        let text = preview_body(m).unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
-                        let face = self.face(u.and_then(|u| u.img_url.as_deref()), &name, 24.0, 0.0);
-                        let jump = st
-                            .loaded(target)
-                            .is_some()
-                            .then(|| UiMessage::CommandBar(commands::Msg::JumpTo(chat.id.clone(), m.id.clone())));
-                        (row![face, lines(title.into(), &text)], jump)
-                    }
-                    None if st.bookmarked.contains_key(target) => {
-                        let title = semi(tr("Message unavailable"), 11.0).color(p.strong);
-                        let remove = button(ic(icon::CLOSE, 16.0).color(p.sub))
-                            .padding(4)
-                            .style(btn_style([CLEAR; 3], [p.sub; 3], 8.0))
-                            .on_press_maybe(
-                                restored.then(|| UiMessage::Info(info::Msg::RemoveBookmark(target.into()))),
-                            );
-                        let text = tr("It was deleted or is no longer available.");
-                        (row![blank(), lines(title.into(), text), remove], None)
-                    }
-                    None => {
-                        let title = semi(tr("Loading…"), 11.0).color(p.strong.scale_alpha(0.5));
-                        (row![blank(), lines(title.into(), "")], None)
-                    }
-                };
-                let btn = button(line.spacing(8).align_y(Center))
-                    .padding(8)
-                    .width(Fill)
-                    .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                    .on_press_maybe(jump);
-                mouse_area(btn).on_right_press(menu).into()
-            })
-            .collect();
+        let rows: Vec<El> =
+            marked[..shown].iter().map(|&(target, m)| self.view_bookmark_row(st, chat, target, m)).collect();
         // Desktop's empty Bookmarks by `bookmarkStore.status`: restored, failed, or still loading.
         let (title, about) = match (restored, st.bookmarks_failed) {
             (true, _) => (tr("No Bookmarks"), Some(tr("Bookmarked messages will appear here."))),
@@ -940,6 +908,58 @@ impl BeeperGuiApp {
             .align_y(Center)
             .padding(8);
         column![head, body].into()
+    }
+
+    /// A row of the Bookmarks section: the sender, the time and the text of a bookmarked message, which jumps to it,
+    /// or a message that is unavailable or still loading.
+    fn view_bookmark_row<'a>(&'a self, st: &BeeperStore, chat: &Chat, target: &str, m: Option<&Message>) -> El<'a> {
+        let p = &self.pal;
+        let (h24, dim) = (st.settings.pref("timeFormat") == 1, Color { a: 0.7, ..p.strong });
+        let restored = st.bookmarks_restored();
+        let menu = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("bookmark:{} {target}", chat.id)));
+        let blank = || Space::new().width(24).height(24);
+        let lines = |title: El<'a>, text: &str| {
+            let preview = ell(text, 220.0, 11.0, Weight::Normal).line_height(Pixels(rem(14.0))).color(dim);
+            column![title, preview].spacing(2).width(Fill)
+        };
+        let (line, jump) = match m {
+            Some(m) => {
+                let u = chat.participants.items.iter().find(|u| u.id == m.sender_id);
+                let name = u.map(member_name).or_else(|| m.sender_name.clone()).unwrap_or_else(|| m.sender_id.clone());
+                let title = row![
+                    ell(&name, 160.0, 11.0, Weight::Semibold).line_height(Pixels(rem(14.0))).color(p.strong),
+                    txt(list_ts(&m.timestamp, h24), 10.0).color(dim)
+                ]
+                .spacing(6)
+                .align_y(iced::Bottom);
+                let text = preview_body(m).unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
+                let face = self.face(u.and_then(|u| u.img_url.as_deref()), &name, 24.0, 0.0);
+                let jump = st
+                    .loaded(target)
+                    .is_some()
+                    .then(|| UiMessage::CommandBar(commands::Msg::JumpTo(chat.id.clone(), m.id.clone())));
+                (row![face, lines(title.into(), &text)], jump)
+            }
+            None if st.bookmarked.contains_key(target) => {
+                let title = semi(tr("Message unavailable"), 11.0).color(p.strong);
+                let remove = button(ic(icon::CLOSE, 16.0).color(p.sub))
+                    .padding(4)
+                    .style(btn_style([CLEAR; 3], [p.sub; 3], 8.0))
+                    .on_press_maybe(restored.then(|| UiMessage::Info(info::Msg::RemoveBookmark(target.into()))));
+                let text = tr("It was deleted or is no longer available.");
+                (row![blank(), lines(title.into(), text), remove], None)
+            }
+            None => {
+                let title = semi(tr("Loading…"), 11.0).color(p.strong.scale_alpha(0.5));
+                (row![blank(), lines(title.into(), "")], None)
+            }
+        };
+        let btn = button(line.spacing(8).align_y(Center))
+            .padding(8)
+            .width(Fill)
+            .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+            .on_press_maybe(jump);
+        mouse_area(btn).on_right_press(menu).into()
     }
 }
 
