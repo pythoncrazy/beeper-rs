@@ -53,22 +53,41 @@ fn youtube_id(url: &str) -> Option<&str> {
 }
 
 impl BeeperGuiApp {
-    /// The image of a link at `w` by `h`, cut to cover, or an empty space while it loads.
-    fn link_image<'a>(&'a self, url: Option<&str>, (w, h): (f32, f32), radius: border::Radius) -> El<'a> {
-        match url.and_then(|u| self.media_at(u)) {
-            Some(Ok(frames)) => anim::gif(frames, self.shows(), self.started, move |f| {
-                image(f).width(w).height(h).content_fit(ContentFit::Cover).border_radius(radius)
-            }),
-            _ => Space::new().width(w).height(h).into(),
+    /// The image of a link at `w` by `h`, cut to cover, or an empty space while it loads. The image of a link preview
+    /// of message `mid` is Desktop's `EnhancedImg playable`: an animation plays with "Autoplay GIFs" (`autoplay`), and
+    /// without it shows its first frame with the play button.
+    fn link_image<'a>(
+        &'a self,
+        mid: Option<(&str, bool)>,
+        url: Option<&str>,
+        (w, h): (f32, f32),
+        radius: border::Radius,
+    ) -> El<'a> {
+        let Some((url, Some(Ok(frames)))) = url.map(|u| (u, self.media_at(u))) else {
+            return Space::new().width(w).height(h).into();
+        };
+        let make = move |f| image(f).width(w).height(h).content_fit(ContentFit::Cover).border_radius(radius);
+        let Some((mid, autoplay)) = mid else { return anim::gif(frames, self.shows(), self.started, make) };
+        let key = (mid.to_string(), url.to_string());
+        let played = self.pane().played_links.get(&key).filter(|_| !autoplay);
+        let (play, start) = match played {
+            Some(&at) => (self.shows(), at),
+            None => (autoplay && self.shows(), self.started),
+        };
+        let gif = anim::gif(frames, play, start, make);
+        match !autoplay && frames.len() > 1 {
+            true => crate::message::gif_toggle(gif, played.is_some(), crate::message::Msg::ToggleLinkGif(key.0, key.1)),
+            false => gif,
         }
     }
 
     /// The preview card of a link, `max` wide at most, in the colors that `dim` gives for a selected message. Like the
     /// `<a>` of Desktop's `LinkPreview`, a click on the card opens the link.
-    /// A right click on the card opens the menu of message `mid` with the link's items.
+    /// A right click on the card opens the menu of message `mid` with the link's items. `autoplay` is Desktop's
+    /// "Autoplay GIFs".
     pub(crate) fn view_link<'a>(
         &'a self,
-        mid: &str,
+        (mid, autoplay): (&str, bool),
         link: &MessageLink,
         max: f32,
         dim: impl Fn(Color) -> Color,
@@ -106,7 +125,9 @@ impl BeeperGuiApp {
                 .padding([12.0, BUBBLE_PAD_X])
                 .width(text);
             let radius = border::Radius::default().top_left(RADIUS).bottom_left(RADIUS);
-            row![self.link_image(link.img.as_deref(), (iw, 120.0), radius), body].height(120).into()
+            row![self.link_image(Some((mid, autoplay)), link.img.as_deref(), (iw, 120.0), radius), body]
+                .height(120)
+                .into()
         } else {
             // A known image size makes the card 300 px wide, and an unknown one up to 360 px.
             let w = match (link.img.is_some(), size) {
@@ -117,7 +138,7 @@ impl BeeperGuiApp {
             let tw = w - 2.0 * BUBBLE_PAD_X;
             let title = clamp(&link.title, tw, 3, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0)));
             let radius = border::Radius::default().top_left(RADIUS).top_right(RADIUS);
-            let image = link.img.as_ref().map(|u| self.link_image(Some(u), (w, 160.0), radius));
+            let image = link.img.as_ref().map(|u| self.link_image(Some((mid, autoplay)), Some(u), (w, 160.0), radius));
             let text = column![title.color(dim(p.strong))].push(summary(tw)).push(meta).spacing(8);
             column![]
                 .push(image)
@@ -154,7 +175,7 @@ impl BeeperGuiApp {
         let thumb = format!("https://i.ytimg.com/vi_webp/{id}/hqdefault.webp");
         let radius = border::Radius::default().bottom_left(RADIUS).bottom_right(RADIUS);
         let h = (w * 9.0 / 16.0).min(350.0);
-        let shot = container(self.link_image(Some(&thumb), (w, h), radius)).style(fill_box(Color::BLACK, 0.0));
+        let shot = container(self.link_image(None, Some(&thumb), (w, h), radius)).style(fill_box(Color::BLACK, 0.0));
         let play = |i: usize, alpha: f32| {
             let b = svg(PLAY[i].clone()).width(68).height(48).opacity(alpha);
             container(b).center_x(w).center_y(h)
