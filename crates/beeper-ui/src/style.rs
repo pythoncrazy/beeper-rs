@@ -966,8 +966,11 @@ macro_rules! palette {
 }
 
 palette! {
-    /// `--left-pane-bg`: the window behind the chat list and the chat.
+    /// `--left-pane-bg`: the window behind the chat list and the chat, and `--transparency-main-window-bg` of the
+    /// modal windows. A theme color makes `--left-pane-bg` transparent over its [`Self::backdrop`].
     window: Color = hex(0xeaebf0), hex(0x1c1d1e);
+    /// The gradient of the theme color (`ui_theme`) behind the transparent `--left-pane-bg`.
+    backdrop: Option<crate::ui_theme::Backdrop> = None, None;
     /// `--appearance-color-bg-primary`.
     card: Color = hex(0xffffff), hex(0x000000);
     /// `--color-background-selected`.
@@ -1020,6 +1023,21 @@ palette! {
     accent: Color = hex(0x0d4ffb), hex(0x2561fb);
     /// `--toggle-style-knob-on`.
     toggle_on: Color = hex(0x0d4ffb), hex(0x0d4ffb);
+    /// The fill of a checked `Checkbox`, `--checkbox-style-bg-selected`.
+    checked: Color = hex(0x0e4df2), hex(0x0e4df2);
+    /// `--color-highlight-reaction`: your own reactions, which a monochrome theme fills with its backdrop.
+    highlight: Color = hex(0xcbd9ff), hex(0x1b43aa);
+    /// The color of the quote of your own message (`LinkedMessage` `isSender`) under a rich theme, else `None`.
+    quote: Option<Color> = None, None;
+    /// The `color` of `.message-download-btn` and `.Transcribe-module__button`.
+    action: Color = hex(0x0d4ffb), hex(0x2561fb);
+    /// `--color-brand`: the text and border of Desktop's secondary `BrandButton`.
+    brand: Color = hex(0x0d4ffb), hex(0x0d4ffb);
+    /// The colors of a monochrome theme's `--gradient-brand` at -7.24% and 109.66% of its 190 degree line, or `None`
+    /// for Desktop's own.
+    brand_stops: Option<[Color; 2]> = None, None;
+    /// The text of the white unread counts, `AccountBadge` dots and pinned bubbles of a dark rich theme.
+    badge: Option<Color> = None, None;
     /// `--toggle-style-border` and `--toggle-style-knob-off`.
     toggle_off: Color = hexa(0x000000, 0.302), hexa(0xffffff, 0.302);
     /// `--color-background-grouped-weak`.
@@ -1102,12 +1120,13 @@ palette! {
 /// A color that depends on the theme.
 pub type Token = fn(&Palette) -> Color;
 
-pub fn palette(dark: bool) -> Palette {
-    if dark {
-        BEEPER_DARK
-    } else {
-        BEEPER_LIGHT
+/// The palette of the theme, with the theme color `ui` at the time `now_ms` (which moves a rich gradient).
+pub fn palette(dark: bool, ui: Option<beeper_core::models::UiTheme>, now_ms: i64) -> Palette {
+    let mut p = if dark { BEEPER_DARK } else { BEEPER_LIGHT };
+    if let Some(t) = ui {
+        crate::ui_theme::apply(&mut p, t, dark, now_ms);
     }
+    p
 }
 
 /// A slider with no visible rail or handle, over a custom track.

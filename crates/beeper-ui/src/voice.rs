@@ -848,7 +848,7 @@ impl BeeperGuiApp {
             _ if done => row![ai()].push(count?).spacing(4).align_y(Center).into(),
             _ => {
                 let fresh = free.is_some_and(|(used, limit)| used == 0 && limit > 0);
-                let label = small(tr(if fresh { "Try Transcribe" } else { "Transcribe" }).into(), p.accent);
+                let label = small(tr(if fresh { "Try Transcribe" } else { "Transcribe" }).into(), p.action);
                 let press = match used_up {
                     true => UiMessage::Settings(settings::Msg::Open(crate::SettingsTab::BeeperPlus)),
                     false => UiMessage::Voice(Msg::Transcribe(m.id.clone(), false, None)),
