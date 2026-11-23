@@ -108,3 +108,41 @@ macro_rules! delegate {
 }
 
 pub(crate) use delegate;
+
+/// A wrapper that leaves `mark` for the operations before its content, under its ID when it has one, which also marks
+/// a container there.
+pub(crate) struct Marked<'a, T> {
+    content: crate::El<'a>,
+    id: Option<iced::widget::Id>,
+    mark: T,
+}
+
+pub(crate) fn marked<'a, T: Clone + 'static>(
+    content: impl Into<crate::El<'a>>, id: Option<iced::widget::Id>, mark: T,
+) -> crate::El<'a> {
+    iced::Element::new(Marked { content: content.into(), id, mark })
+}
+
+impl<T: Clone + 'static> iced::advanced::Widget<crate::UiMessage, iced::Theme, iced::Renderer> for Marked<'_, T> {
+    delegate!(
+        children,
+        diff,
+        size,
+        layout,
+        update(crate::UiMessage),
+        mouse_interaction,
+        draw,
+        overlay(crate::UiMessage)
+    );
+
+    fn operate(
+        &mut self, tree: &mut iced::advanced::widget::Tree, layout: iced::advanced::Layout<'_>,
+        renderer: &iced::Renderer, operation: &mut dyn iced::advanced::widget::Operation,
+    ) {
+        if let Some(id) = &self.id {
+            operation.container(Some(id), layout.bounds());
+        }
+        operation.custom(self.id.as_ref(), layout.bounds(), &mut self.mark.clone());
+        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
+    }
+}
