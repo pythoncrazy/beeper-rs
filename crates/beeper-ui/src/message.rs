@@ -1428,7 +1428,8 @@ impl BeeperGuiApp {
         );
         let up = self.pane().scrolled_up.is_some_and(|s| s.0);
         let held = timeline::hold(scroller(col).id(self.pane().scroll_id()), up).glide(self.pane().glide);
-        let list = lift::tight(held);
+        // Chromium scrolls the timeline while a drag that selects its text holds the pointer past its top or bottom.
+        let list = lift::tight(crate::selectable::autoscroll(held, self.pane().scroll_id(), true));
         let opened = self.pane().reply_opened.map_or(1.0, |at| at.elapsed().as_secs_f32());
         let (shown, below) = replies_reveal(opened);
         let replies = self.pane().reply_thread.as_ref().map(|id| {
@@ -2800,6 +2801,7 @@ impl BeeperGuiApp {
                         Some(self.tip_card(med(host, 13.0).color(p.strong)).into())
                     };
                     let line = crate::selectable::selectable(spans)
+                        .key(vlist::key((&m.id, i)))
                         .images(
                             images.iter().map(|i| i.0.clone()).collect(),
                             self.animate.get().then_some(self.started),

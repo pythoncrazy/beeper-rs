@@ -80,6 +80,9 @@ thread_local! {
     static CLICK: Cell<Option<Click>> = const { Cell::new(None) };
     /// The selected text of each text on screen, by place, so [`text`] joins them in reading order. Drawing fills it.
     static PIECES: RefCell<BTreeMap<(i32, i32), String>> = const { RefCell::new(BTreeMap::new()) };
+    /// The key of the text where the drag started, and the anchor in that text: the anchor of the drag follows the
+    /// text when the rows of a virtual list above it change height, as a browser selection stays on its node.
+    static ANCHOR: Cell<Option<(u64, Vector)>> = const { Cell::new(None) };
 }
 
 /// Selectable rich text: `iced::widget::rich_text` with a selection.
@@ -100,6 +103,7 @@ pub fn selectable<'a, Link: Clone + 'static, Message>(
         tip: None,
         images: Vec::new(),
         playing: None,
+        key: None,
     }
 }
 
@@ -119,6 +123,8 @@ pub struct Selectable<'a, Link: Clone + 'static, Message> {
     images: Vec<Option<crate::Frames>>,
     /// When the animated images started to play, if they play.
     playing: Option<Instant>,
+    /// The key of the text among the texts of its list, which keeps the anchor of a drag on it.
+    key: Option<u64>,
 }
 
 impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
@@ -180,6 +186,13 @@ impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
         self
     }
 
+    /// Names the text among the texts of its list, so that a drag that starts on it stays anchored to it while the
+    /// list moves the text.
+    pub fn key(mut self, key: u64) -> Self {
+        self.key = Some(key);
+        self
+    }
+
     /// The frame of an image that is due now.
     fn frame(&self, frames: &[crate::anim::Frame]) -> core_image::Handle {
         match self.playing.filter(|_| frames.len() > 1) {
@@ -207,6 +220,19 @@ struct State<Link> {
 impl<Link> State<Link> {
     fn part(&self, bounds: Rectangle) -> Option<(Cursor, Cursor)> {
         SELECTION.get()?.part(self.paragraph.buffer(), bounds)
+    }
+
+    /// Notes the selected text of this text at `bounds` for [`text`], and returns its part.
+    fn note_piece(&self, bounds: Rectangle) -> Option<(Cursor, Cursor)> {
+        let part = self.part(bounds);
+        let key = (bounds.y.round() as i32, bounds.x.round() as i32);
+        let piece =
+            part.map(|(start, end)| selected_text(self.paragraph.buffer(), start, end)).filter(|t| !t.is_empty());
+        PIECES.with_borrow_mut(|pieces| match piece {
+            Some(piece) => pieces.insert(key, piece),
+            None => pieces.remove(&key),
+        });
+        part
     }
 }
 
@@ -305,14 +331,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
     ) {
         let bounds = layout.bounds();
         let state = tree.state.downcast_ref::<State<Link>>();
-        let part = state.part(bounds);
-        let key = (bounds.y.round() as i32, bounds.x.round() as i32);
-        let piece =
-            part.map(|(start, end)| selected_text(state.paragraph.buffer(), start, end)).filter(|t| !t.is_empty());
-        PIECES.with_borrow_mut(|pieces| match piece {
-            Some(piece) => pieces.insert(key, piece),
-            None => pieces.remove(&key),
-        });
+        let part = state.note_piece(bounds);
         if !bounds.intersects(viewport) {
             return;
         }
@@ -411,6 +430,20 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
         }
         let state = tree.state.downcast_mut::<State<Link>>();
         let inside = cursor.position_in(bounds);
+        // The anchor of a drag that started on this text moves with it.
+        if let (Some(key), Some((anchored, offset)), Some(Selection::Drag { anchor, head, held })) =
+            (self.key, ANCHOR.get(), SELECTION.get())
+        {
+            let at = bounds.position() + offset;
+            if key == anchored && at != anchor {
+                select(Some(Selection::Drag { anchor: at, head, held }), shell);
+            }
+        }
+        // Like the nodes that a virtual list keeps in the DOM, a text of the list that is not on screen keeps its part
+        // of the selection for a copy.
+        if matches!(event, Event::Window(iced::window::Event::RedrawRequested(_))) && SELECTION.get().is_some() {
+            let _ = state.note_piece(bounds);
+        }
 
         let hovered_link = inside
             .and_then(|position| state.paragraph.hit_span(position))
@@ -446,6 +479,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
                     _ => 1,
                 };
                 CLICK.set(Some(Click { at: now, position, count }));
+                ANCHOR.set(self.key.filter(|_| count == 1).map(|k| (k, position - bounds.position())));
                 let buffer = state.paragraph.buffer();
                 let at = bounds.position();
                 let selection = match count {
@@ -692,6 +726,138 @@ fn selected_text(buffer: &Buffer, start: Cursor, end: Cursor) -> String {
     lines.join("\n").trim_end_matches(['\u{a0}', '\u{200b}', '\u{2060}']).to_string()
 }
 
+/// Chromium's frame, which its selection autoscroll moves by the distance of the pointer from the edge.
+const FRAME: Duration = Duration::from_micros(16_667);
+
+/// Chromium's selection autoscroll (`AutoscrollController`, `kAutoscrollForSelection`) around the scrollable `id`:
+/// while a drag that started on its text holds the left button with the pointer past its top or bottom edge, each
+/// frame scrolls it toward the pointer by the distance past the edge (`LayoutBox::Autoscroll`, which scrolls the
+/// point into view to the edge), and the selection follows the pointer, held to the edge (`UpdateSelectionForMouseDrag`).
+/// `end` tells that the scrollable anchors its content at the bottom, where its offset counts up from the bottom.
+pub fn autoscroll<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+    id: impl Into<iced::widget::Id>,
+    end: bool,
+) -> AutoScroll<'a, Message> {
+    AutoScroll { content: content.into(), id: id.into(), end }
+}
+
+pub struct AutoScroll<'a, Message> {
+    content: Element<'a, Message>,
+    id: iced::widget::Id,
+    end: bool,
+}
+
+/// Whether the left button went down in the widget, and the last frame that scrolled.
+#[derive(Default)]
+struct Auto {
+    pressed: bool,
+    last: Option<Instant>,
+}
+
+/// The distance of `p` past the top (negative) or the bottom edge of `bounds`.
+fn past_edge(bounds: Rectangle, p: Point) -> f32 {
+    if p.y < bounds.y {
+        p.y - bounds.y
+    } else {
+        (p.y - (bounds.y + bounds.height)).max(0.0)
+    }
+}
+
+/// `p` held inside `bounds`, a pixel from its edges.
+fn held(bounds: Rectangle, p: Point) -> Point {
+    let x = p.x.clamp(bounds.x + 1.0, (bounds.x + bounds.width - 1.0).max(bounds.x + 1.0));
+    let y = p.y.clamp(bounds.y + 1.0, (bounds.y + bounds.height - 1.0).max(bounds.y + 1.0));
+    Point::new(x, y)
+}
+
+impl<Message> Widget<Message, Theme, Renderer> for AutoScroll<'_, Message> {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<Auto>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(Auto::default())
+    }
+
+    crate::delegate::delegate!(children, diff, size, layout, operate, mouse_interaction, draw, overlay(Message));
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let bounds = layout.bounds();
+        let auto = tree.state.downcast_mut::<Auto>();
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                auto.pressed = cursor.land().is_over(bounds);
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => *auto = Auto::default(),
+            _ => {}
+        }
+        let dragging = auto.pressed && matches!(SELECTION.get(), Some(Selection::Drag { held: true, .. }));
+        // The pointer of a drag past the edges, also over the layers above the list and outside the window.
+        let outside = cursor.land().position().filter(|p| dragging && !bounds.contains(*p));
+        let content = &mut tree.children[0];
+        if let Some(p) = outside {
+            let follow = match event {
+                Event::Window(iced::window::Event::RedrawRequested(now)) => {
+                    let by = past_edge(bounds, p);
+                    let dt = auto.last.map_or(FRAME, |last| now.saturating_duration_since(last)).min(FRAME * 4);
+                    auto.last = (by != 0.0).then_some(*now);
+                    if by != 0.0 {
+                        let step = by * dt.as_secs_f32() / FRAME.as_secs_f32();
+                        let offset =
+                            iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: if self.end { -step } else { step } };
+                        let mut scroll =
+                            iced::advanced::widget::operation::scrollable::scroll_by(self.id.clone(), offset);
+                        self.content.as_widget_mut().operate(content, layout, renderer, &mut scroll);
+                        shell.request_redraw();
+                    }
+                    true
+                }
+                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    shell.request_redraw();
+                    true
+                }
+                _ => false,
+            };
+            if follow {
+                let at = held(bounds, p);
+                let moved = Event::Mouse(mouse::Event::CursorMoved { position: at });
+                let held_cursor = mouse::Cursor::Available(at);
+                self.content.as_widget_mut().update(
+                    content,
+                    &moved,
+                    layout,
+                    held_cursor,
+                    renderer,
+                    clipboard,
+                    shell,
+                    viewport,
+                );
+                if matches!(event, Event::Mouse(_)) {
+                    return;
+                }
+            }
+        }
+        self.content.as_widget_mut().update(content, event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+}
+
+impl<'a, Message: 'a> From<AutoScroll<'a, Message>> for Element<'a, Message> {
+    fn from(a: AutoScroll<'a, Message>) -> Self {
+        Element::new(a)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -776,5 +942,86 @@ mod tests {
             let _ = sim.simulate([Event::Mouse(MouseEvent::ButtonPressed(Button::Right))]);
         }
         assert_eq!(sim.into_messages().collect::<Vec<_>>(), [1, 0]);
+    }
+
+    /// The top-based offset of the scrollable "t", as an operation reads it.
+    struct Offset(f32);
+
+    impl iced::advanced::widget::Operation for Offset {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+            operate(self)
+        }
+
+        fn scrollable(
+            &mut self,
+            _: Option<&iced::widget::Id>,
+            _: Rectangle,
+            _: Rectangle,
+            at: Vector,
+            _: &mut dyn iced::advanced::widget::operation::Scrollable,
+        ) {
+            self.0 = at.y;
+        }
+    }
+
+    /// Chromium's selection autoscroll: a drag held 20 px over the top of a list scrolls it 20 px a frame and selects
+    /// up to the top of the list, and the anchor stays on its text when a row above it grows, as a virtual list does
+    /// when it measures a row.
+    #[test]
+    fn a_drag_past_the_edge_scrolls_and_keeps_its_anchor_like_chromium() {
+        use iced::advanced::renderer::Headless as _;
+        use iced::widget::{scrollable, Column};
+        use iced_runtime::user_interface::{Cache, UserInterface};
+        let mut renderer =
+            iced::futures::executor::block_on(Renderer::new(Font::DEFAULT, Pixels(13.0), Some("tiny-skia"))).unwrap();
+        // 60 rows of 20 px in a list of 200 px anchored at its bottom: rows 50 to 59 show, row 50 at the top.
+        let view = |tall: bool| -> Element<'static, ()> {
+            let rows = (0..60u64).map(|i| {
+                let text = if tall && i == 0 { "Line 00\nmore\nmore".to_string() } else { format!("Line {i:02}") };
+                let line =
+                    selectable::<(), ()>(vec![span(text).size(13.0)]).line_height(LineHeight::Absolute(Pixels(20.0)));
+                line.key(i).into()
+            });
+            let list = scrollable(Column::with_children(rows)).id("t").anchor_bottom().width(300).height(200);
+            autoscroll(list, "t", true).into()
+        };
+        let mut cache = Cache::default();
+        let mut step = |renderer: &mut Renderer, tall: bool, events: &[Event], at: Point| {
+            let size = Size::new(300.0, 400.0);
+            let mut ui = UserInterface::build(view(tall), size, std::mem::take(&mut cache), renderer);
+            let cursor = mouse::Cursor::Available(at);
+            let _ = ui.update(events, cursor, renderer, &mut iced::advanced::clipboard::Null, &mut Vec::new());
+            let mut offset = Offset(0.0);
+            ui.operate(renderer, &mut offset);
+            cache = ui.into_cache();
+            offset.0
+        };
+        let moved = |p: Point| Event::Mouse(mouse::Event::CursorMoved { position: p });
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let start = Instant::now();
+        let frame = |n: u32| Event::Window(iced::window::Event::RedrawRequested(start + FRAME * n));
+        let anchor = Point::new(40.0, 190.0);
+        assert_eq!(step(&mut renderer, false, &[moved(anchor), press], anchor), 1000.0, "row 59 at the bottom");
+        let above = Point::new(40.0, -20.0);
+        assert_eq!(step(&mut renderer, false, &[moved(above)], above), 1000.0, "a move does not scroll");
+        let frames: Vec<Event> = (0..5).map(frame).collect();
+        assert_eq!(step(&mut renderer, false, &frames, above), 900.0, "5 frames of 20 px");
+        let lines = |t: String| t.lines().map(String::from).collect::<Vec<_>>();
+        let picked = lines(text());
+        // The drag runs from 40 px into row 59 to 40 px into row 45, which the scroll brought to the top.
+        assert_eq!((picked.len(), &picked[0][..], &picked[14][..]), (15, "5", "Line 5"), "{picked:?}");
+        // Row 0 grows by 40 px: the rows under it move down in the content, and the anchor moves with row 59.
+        // The move of the anchor asks for the frame that notes the parts again.
+        let _ = step(&mut renderer, true, &[frame(5), frame(6)], Point::new(40.0, 100.0));
+        let after = lines(text());
+        // The head stays at its point until the pointer moves, which row 43 now holds: rows 43 to 59.
+        assert_eq!((after.len(), &after[15][..], &after[16][..]), (17, "Line 58", "Line 5"), "{after:?}");
+        // Inside the list the scroll stops, and the release ends the autoscroll.
+        let inside = Point::new(40.0, 100.0);
+        let before = step(&mut renderer, true, &[moved(inside), frame(7), frame(8)], inside);
+        assert_eq!(step(&mut renderer, true, &[frame(9)], inside), before);
+        let release = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
+        let _ = step(&mut renderer, true, &[release, moved(above)], above);
+        assert_eq!(step(&mut renderer, true, &[frame(10), frame(11)], above), before, "no drag, no scroll");
     }
 }
