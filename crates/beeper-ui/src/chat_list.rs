@@ -672,6 +672,60 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Whether the chat list is in Desktop's `threadSelectionMode`, with chats selected or the checkboxes shown.
+    pub(crate) fn selecting_chats(&self) -> bool {
+        self.select_mode || !self.selection.is_empty()
+    }
+
+    /// Whether the keys of the selection mode move the selection: not while the command bar or a dialog is open.
+    pub(crate) fn selection_keys(&self) -> bool {
+        self.selecting_chats()
+            && !self.show_command_palette
+            && self.forward.is_none()
+            && self.creating_chat.is_none()
+            && self.confirm.is_none()
+            && !self.menu_open()
+    }
+
+    /// Desktop's `u` of the keyboard: X or Shift+↑/↓ with no chat open selects the chat of the cursor, which starts
+    /// the selection mode.
+    pub(crate) fn begin_chat_selection(&mut self) {
+        // `toggleThreadSelectionMode` drops the cursor.
+        let pointed = self.list.cursor.take().filter(|c| self.list_ids(&self.store.read()).contains(c));
+        match pointed {
+            Some(id) => (self.selection, self.select_mode) = (vec![id], false),
+            None => (self.selection, self.select_mode) = (Vec::new(), true),
+        }
+    }
+
+    /// Desktop's `selectThreadKeyboard` in the selection mode: ↓ or ↑ selects only the chat after or before the
+    /// lowest selected chat, and with Shift adds the chat after the lowest or before the highest selected chat. With
+    /// nothing selected, it selects the chat after the first. The list scrolls to the chat.
+    pub(crate) fn select_chat_key(&mut self, shift: bool, down: bool) -> Task<UiMessage> {
+        let ids = self.list_ids(&self.store.read());
+        let first = ids.iter().position(|c| self.selection.contains(c));
+        let last = ids.iter().rposition(|c| self.selection.contains(c));
+        let from = match (first, last) {
+            (Some(f), Some(_)) if shift && !down => f,
+            (Some(_), Some(l)) => l,
+            _ => 0,
+        };
+        let Some(id) = (if down { from.checked_add(1) } else { from.checked_sub(1) }).and_then(|i| ids.get(i)) else {
+            return Task::none();
+        };
+        if !shift && last.is_some() {
+            self.selection.clear();
+        }
+        self.selection.retain(|c| c != id);
+        self.selection.push(id.clone());
+        self.select_mode = false;
+        // Desktop's `scrollThreadsListToItem`.
+        let pinned = self.pins_and_rows(&self.store.read()).0.iter().any(|c| c.id == *id);
+        let to = self.list.rows.nearest((!pinned).then(|| vlist::key(id)));
+        let scroll = self.list.scroll.0.clone();
+        to.map_or_else(Task::none, |y| operation::scroll_to(scroll, operation::AbsoluteOffset { x: 0.0, y }))
+    }
+
     /// The open chat and the chat of the cursor, which [`Self::reveal_pointed`] follows.
     pub(crate) fn pointed(&self) -> (Option<String>, Option<String>) {
         (self.pane.selected_chat_id.clone(), self.list.cursor.clone())

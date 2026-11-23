@@ -1190,8 +1190,11 @@ async fn sync_receipts(store: &SharedStore, room: &Room, only: Option<&HashSet<S
             });
             let Some(target) = target else { continue };
             // Desktop's `seenByMeAt` and `recipientReadTimerStartedAt`: the read starts the timers of the messages
-            // that it reads, your own ones for a read of the recipient.
-            let read = st.messages[target].sort_key.clone();
+            // that it reads, your own ones for a read of the recipient. A receipt on a reaction reads up to the
+            // reaction, which comes after the message that it reacts to: Desktop takes the receipt's `hsOrder`.
+            let m = &st.messages[target];
+            let reaction = m.reactions.iter().find(|r| r.id == ev && !r.sort_key.is_empty());
+            let read = reaction.map_or(&m.sort_key, |r| (&r.sort_key).max(&m.sort_key)).clone();
             for &i in &indices {
                 let m = &st.messages[i];
                 let sender = m.is_sender == Some(true);
@@ -3336,12 +3339,12 @@ pub fn logged(src: &str) -> String {
 }
 
 /// Desktop's `getAsset`: the media of `source` from the cache, or else downloaded like Desktop's SDK and cached.
-async fn fetch(client: &Client, source: MediaSource, interactive: bool) -> Result<Vec<u8>, String> {
-    let request = MediaRequestParameters { source, format: MediaFormat::File };
-    let uri = crate::download::uri(&request.source).to_string();
-    let shown = match &request.source {
-        MediaSource::Encrypted(_) => format!("{uri} (encrypted)"),
-        MediaSource::Plain(_) => uri,
+async fn fetch(client: &Client, source: crate::download::Source, interactive: bool) -> Result<Vec<u8>, String> {
+    let request = MediaRequestParameters { source: source.cache_key(), format: MediaFormat::File };
+    let uri = source.uri().to_string();
+    let shown = match source.encrypted() {
+        true => format!("{uri} (encrypted)"),
+        false => uri,
     };
     let cache = client.media_store();
     if let Ok(cache) = cache.lock().await {
@@ -3351,7 +3354,7 @@ async fn fetch(client: &Client, source: MediaSource, interactive: bool) -> Resul
     }
     let token = client.access_token().ok_or("Not signed in to Matrix")?;
     let tried = |n, e: &str| eprintln!("media load {n}/{} failed, trying again: {shown}: {e}", crate::download::TRIES);
-    let bytes = crate::download::download(&client.homeserver(), &token, &request.source, interactive, tried)
+    let bytes = crate::download::download(&client.homeserver(), &token, &source, interactive, tried)
         .await
         .inspect_err(|e| eprintln!("media load failed: {shown}: {e}"))?;
     let keep = matrix_sdk::media::store::IgnoreMediaRetentionPolicy::No;
@@ -3381,7 +3384,8 @@ pub async fn media_interactive(client: Option<Client>, src: String) -> Result<()
 }
 
 /// The Matrix media of a source URL, with the encrypted file info of its `encryptedFileInfoJSON` query.
-fn media_source(src: String) -> Result<MediaSource, String> {
+fn media_source(src: String) -> Result<crate::download::Source, String> {
+    use crate::download::Source;
     Ok(match src.split_once(&format!("?{ENCRYPTED_FILE}=")) {
         Some((_, json)) => {
             let json = crate::codec::url_decode(json).ok_or("bad encrypted file info")?;
@@ -3390,14 +3394,20 @@ fn media_source(src: String) -> Result<MediaSource, String> {
                 false => vodozemac::base64_decode(json.trim_end_matches('=').replace('-', "+").replace('_', "/"))
                     .map_err(|e| e.to_string())?,
             };
-            // The files of other encryptions, like the `com.beeper.floe.v1` of the WhatsApp bridge, say so.
             let v: Value = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
-            if let Some(other) = v["v"].as_str().filter(|v| *v != "v2") {
-                return Err(format!("unsupported file encryption {other}"));
+            match v["v"].as_str() {
+                // The SDK's `FLOEFile`, for the files of bridges like WhatsApp's.
+                Some(crate::floe::VERSION) => {
+                    let url = s(&v["url"]).ok_or("no URL in the encrypted file info")?;
+                    Source::Floe(url.into(), crate::floe::File::parse(&v)?)
+                }
+                Some(other) if other != "v2" => return Err(format!("unsupported file encryption {other}")),
+                _ => Source::Matrix(MediaSource::Encrypted(Box::new(
+                    serde_json::from_value(v).map_err(|e| e.to_string())?,
+                ))),
             }
-            MediaSource::Encrypted(Box::new(serde_json::from_value(v).map_err(|e| e.to_string())?))
         }
-        None => MediaSource::Plain(src.into()),
+        None => Source::Matrix(MediaSource::Plain(src.into())),
     })
 }
 
@@ -5678,10 +5688,13 @@ mod tests {
             std::io::Read::read_to_end(&mut enc, &mut secret).expect("encrypt");
             (secret, serde_json::to_value(enc.finish()).expect("the encryption info"))
         };
+        // A FLOE body of 3 segments, whose last is shorter.
+        let floe_plain: Vec<u8> = (0..10_000u32).map(|i| (i % 253) as u8).collect();
+        let (floe_header, floe_body) = crate::floe::tests::encrypt(&[5; 32], &[6; 32], &floe_plain);
         let me: Arc<OnceLock<String>> = Arc::default();
         let (seen, tries) = (Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(AtomicUsize::new(0)));
         let (me2, seen2, tries2) = (me.clone(), seen.clone(), tries.clone());
-        let (photo2, secret2) = (photo.clone(), secret.clone());
+        let (photo2, secret2, floe_body2) = (photo.clone(), secret.clone(), floe_body.clone());
         let url = crate::bridge_stub::serve_raw(move |_, path, headers: &HashMap<String, String>, _| {
             let json = |code, v: Value| {
                 (code, vec![("content-type".into(), b"application/json".to_vec())], v.to_string().into_bytes())
@@ -5710,6 +5723,7 @@ mod tests {
                     )
                 }
                 "/_matrix/client/v1/media/download/x/secret" if ok => (200, Vec::new(), secret2.clone()),
+                "/_matrix/client/v1/media/download/x/floe" if ok => (200, Vec::new(), floe_body2.clone()),
                 "/_matrix/client/v1/media/download/x/flaky" if ok && tries2.fetch_add(1, Relaxed) < 2 => {
                     json(502, json!({ "errcode": "M_UNKNOWN", "error": "bad gateway" }))
                 }
@@ -5729,10 +5743,23 @@ mod tests {
         file["url"] = json!("mxc://x/secret");
         let src = format!("mxc://x/secret?encryptedFileInfoJSON={}", crate::codec::url_encode(&file.to_string()));
         assert_eq!(load(&src).await.expect("the decrypted media"), b"the secret photo");
-        let floe = json!({ "url": "mxc://x/floe", "v": "com.beeper.floe.v1", "floe_key": "k", "floe_header": "h" });
-        let floe = format!("mxc://x/floe?encryptedFileInfoJSON={}", crate::codec::url_encode(&floe.to_string()));
-        let e = load(&floe).await.expect_err("another encryption");
-        assert_eq!(e, "unsupported file encryption com.beeper.floe.v1");
+        let b64 = |b: &[u8]| vodozemac::base64_encode(b);
+        let floe = |key: &[u8], sha256: &[u8]| {
+            let file = json!({
+                "url": "mxc://x/floe", "v": "com.beeper.floe.v1", "floe_key": b64(key), "floe_header": b64(&floe_header),
+                "hashes": { "sha256": b64(sha256) },
+            });
+            format!("mxc://x/floe?encryptedFileInfoJSON={}", crate::codec::url_encode(&file.to_string()))
+        };
+        let sha256 = ring::digest::digest(&ring::digest::SHA256, &floe_body);
+        seen.lock().expect("the requests").clear();
+        let e = load(&floe(&[4; 32], sha256.as_ref())).await.expect_err("another key");
+        assert_eq!(e, "decrypt: invalid header tag");
+        assert!(seen.lock().expect("the requests").is_empty(), "a wrong key downloads nothing");
+        assert_eq!(load(&floe(&[5; 32], sha256.as_ref())).await.expect("the FLOE media"), floe_plain);
+        let other = json!({ "url": "mxc://x/other", "v": "v9" });
+        let other = format!("mxc://x/other?encryptedFileInfoJSON={}", crate::codec::url_encode(&other.to_string()));
+        assert_eq!(load(&other).await.expect_err("another encryption"), "unsupported file encryption v9");
         assert_eq!(load("mxc://x/flaky").await.expect("the third try"), b"at last");
         assert_eq!(tries.load(Relaxed), 3, "two failures and the success");
         seen.lock().expect("the requests").clear();
@@ -6023,6 +6050,36 @@ mod tests {
         let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
         super::sync_room(&store, &room, Vec::new()).await;
         assert_eq!(read(&store), Some(super::sort_key(3)), "the older receipt does not move it back");
+    }
+
+    /// A receipt on a reaction reads up to the reaction, like Desktop's `hsOrder` of the receipt, not up to the older
+    /// message that it reacts to: the messages after that message stay read and the chat shows no "New" divider.
+    #[tokio::test]
+    async fn a_receipt_on_a_reaction_reads_up_to_the_reaction_like_desktop() {
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => {
+                let mut sync = stub_sync();
+                let receipt =
+                    json!({ "type": "m.receipt", "content": { "$k": { "m.read": { "@me:x": { "ts": 1 } } } } });
+                sync["rooms"]["join"]["!room:x"]["ephemeral"] = json!({ "events": [receipt] });
+                (200, sync)
+            }
+            p if p.ends_with("/messages") => {
+                let rel = json!({ "rel_type": "m.annotation", "event_id": "$e1", "key": "👍" });
+                let mut reaction = stub_event("$k", "m.reaction", json!({ "m.relates_to": rel }));
+                reaction["sender"] = json!("@ann:x");
+                reaction["unsigned"]["com.beeper.hs.order"] = json!(3);
+                (200, json!({ "start": "t3", "chunk": [reaction, stub_message(2), stub_message(1)] }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = crate::testing::stub_room_store(&crate::testing::temp_dir("reaction-receipt"), &url).await;
+        let st = store.read();
+        assert_eq!(st.message("$e1").reactions.len(), 1, "the reaction is on m1");
+        assert_eq!(st.chat("!room:x").last_read_message_sort_key, Some(super::sort_key(3)), "read up to the reaction");
     }
 
     /// A limited sync of a room that synced before leaves out the events since the last sync, and pages back from its

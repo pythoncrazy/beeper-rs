@@ -1119,6 +1119,75 @@ fn command_bar_opens_empty_like_desktop() {
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
 }
 
+/// Desktop's `CommandBarContainer` of the search: Enter opens the highlighted chat, at first the first result. ↓ and
+/// ↑ move over the results and the headings of the sections with an action, and stop at the ends (`gqt`). Enter on
+/// a heading runs its action and keeps the bar open, and the pointer highlights a row too.
+#[test]
+fn command_bar_search_keys_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("cmdbarkeys");
+    let key =
+        |app: &mut BeeperGuiApp, k: Named| drop(app.update(UiMessage::KeyPressed(Key::Named(k), Modifiers::empty())));
+    let title = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        app.pane.selected_chat_id.as_deref().map(|id| st.chat(id).title.clone())
+    };
+    let search = |app: &mut BeeperGuiApp, q: &str| {
+        let _ = app.update(UiMessage::RunHotkey("Search"));
+        let _ = app.update(UiMessage::CommandBar(commands::Msg::Query(q.into())));
+    };
+    search(&mut app, "eric");
+    key(&mut app, Named::Enter);
+    assert!(!app.show_command_palette, "Enter closes the bar");
+    assert_eq!(title(&app).as_deref(), Some("Eric Migicovsky"), "the first chat");
+    // Chats: Eric. In Groups: the chats with Eric among their members.
+    let groups = {
+        let st = app.store.read();
+        app.search_hits(&st, "eric").in_groups.iter().map(|&i| st.chats[i].title.clone()).collect::<Vec<_>>()
+    };
+    search(&mut app, "eric");
+    key(&mut app, Named::ArrowDown);
+    assert_eq!(app.search_index, Some(2), "the In Groups heading has Show more");
+    key(&mut app, Named::ArrowDown);
+    key(&mut app, Named::Enter);
+    assert_eq!(title(&app), groups.first().cloned(), "the first chat of In Groups");
+    search(&mut app, "eric");
+    key(&mut app, Named::ArrowUp);
+    key(&mut app, Named::ArrowUp);
+    assert_eq!(app.search_index, Some(0), "↑ stops at the Chats heading");
+    key(&mut app, Named::Enter);
+    assert!(app.show_command_palette, "a heading without Show more keeps the bar open");
+    for _ in 0..40 {
+        key(&mut app, Named::ArrowDown);
+    }
+    let last = app.search_index.expect("a row");
+    key(&mut app, Named::ArrowDown);
+    assert_eq!(app.search_index, Some(last), "↓ stops at the last row");
+    // The chats with an "a", five of them until Show more.
+    let _ = app.update(UiMessage::CloseModals);
+    search(&mut app, "a");
+    assert!(search_view(&app).find("Show more").is_ok());
+    key(&mut app, Named::ArrowUp);
+    key(&mut app, Named::Enter);
+    assert!(app.show_command_palette && app.search_expanded.contains("Chats"), "Enter shows more");
+    assert_eq!(app.search_index, Some(0), "the heading stays highlighted");
+    // The pointer on a group.
+    let _ = app.update(UiMessage::CloseModals);
+    search(&mut app, "eric");
+    let at = groups.iter().position(|g| g != "Eric Migicovsky").expect("a group with Eric");
+    let msgs: Vec<UiMessage> = {
+        let mut sim = search_view(&app);
+        let row = sim.find(groups[at].as_str()).expect("the group").bounds();
+        sim.point_at(row.center());
+        let _ = sim.simulate([iced::Event::Mouse(iced::mouse::Event::CursorMoved { position: row.center() })]);
+        sim.into_messages().collect()
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.search_index, Some(3 + at), "the pointer highlights the row");
+}
+
 /// Desktop's chat hotkeys take `selectedOrCursorThread`, so Ctrl E and E archive the chat of the cursor while no chat
 /// is open. `toggleThreadArchive` first moves the cursor to the next chat, and a pinned chat stays with the toast
 /// "Pinned chats can't be archived".
@@ -4218,6 +4287,43 @@ fn the_open_chat_reads_new_messages_like_desktop() {
     assert_eq!(unread(&app), 0, "back at the bottom it is read");
 }
 
+/// Desktop's `onThreadDeselected` reads nothing: a chat that you leave keeps what came in while its window was not
+/// focused, or below the view, unread, and sends no receipt.
+#[test]
+fn leaving_a_chat_keeps_it_unread_like_desktop() {
+    let mut app = demo_app("leave-unread");
+    let st = app.store.read();
+    let mut read = st.chats.iter().filter(|c| c.id != NOTE_CHAT_ID && !c.is_unread());
+    let (id, other) = (read.next().unwrap().id.clone(), read.next().unwrap().id.clone());
+    drop(st);
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let arrive = |app: &mut BeeperGuiApp| {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&id).unwrap();
+        st.update_chat(idx, |c| c.unread_count += 1);
+        let m = st.messages.iter().rfind(|m| m.chat_id == id).unwrap().clone();
+        drop(st);
+        let _ = app.update(UiMessage::Upserted(Box::new(m)));
+    };
+    let unread = |app: &BeeperGuiApp| app.store.read().chat(&id).unread_count;
+    let receipts = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.outbox.iter().filter(|(_, c, o)| *c == id && matches!(o, beeper_core::matrix::Outgoing::Read(_))).count()
+    };
+    arrive(&mut app);
+    let sent = receipts(&app);
+    let _ = app.update(UiMessage::SelectChat(other.clone()));
+    assert_eq!(unread(&app), 1, "the message that came while the window was not focused stays unread");
+    assert_eq!(receipts(&app), sent, "leaving sends no receipt");
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(true)));
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(true)));
+    let before = unread(&app);
+    arrive(&mut app);
+    let _ = app.update(UiMessage::SelectChat(other));
+    assert_eq!(unread(&app), before + 1, "a message below the view stays unread after you leave");
+}
+
 /// Desktop's `unreadDividerMessageSortKey`: a Matrix room, whose messages keep no unread mark, shows "New" after the
 /// read position that the chat had when it opened, and ↓ with nothing selected goes to the first message after it.
 #[test]
@@ -7058,6 +7164,46 @@ fn deleting_selected_chats_like_desktop() {
     select(&mut app, &ids[2], &ids[3]);
     assert_eq!(app.status_banner, "Selected chats do not support the same delete action");
     assert!(!gone(&app, &ids[2]) && !gone(&app, &ids[3]));
+}
+
+/// Desktop's keyboard selection of chats (`KeyboardHandlers`): with no chat open, Shift+↓ selects the chat of the
+/// cursor and the next one, and X the chat of the cursor. In the selection mode ↓ and ↑ select the chat after or before
+/// the lowest selected chat alone, Shift adds the chat after the lowest or before the highest, and J and K do the same.
+#[test]
+fn chats_select_with_the_keyboard_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("chat-keys");
+    let main = app.main_window.expect("the main window");
+    let key = |app: &mut BeeperGuiApp, k: Named, m: Modifiers| _ = app.update(UiMessage::KeyPressed(Key::Named(k), m));
+    let text = |app: &mut BeeperGuiApp, t: &str| _ = app.update(UiMessage::WindowText(main, t.into()));
+    key(&mut app, Named::Escape, Modifiers::empty());
+    assert!(app.pane.selected_chat_id.is_none() && app.list.cursor.is_some(), "Escape leaves the cursor on the chat");
+    let ids = app.list_ids(&app.store.read());
+    let at = ids.iter().position(|c| Some(c) == app.list.cursor.as_ref()).expect("the cursor is in the list");
+    let picked = |app: &BeeperGuiApp| {
+        let mut on: Vec<usize> = app.selection.iter().map(|c| ids.iter().position(|i| i == c).unwrap()).collect();
+        on.sort();
+        on
+    };
+    key(&mut app, Named::ArrowDown, Modifiers::SHIFT);
+    assert_eq!(picked(&app), [at, at + 1]);
+    key(&mut app, Named::ArrowDown, Modifiers::empty());
+    assert_eq!(picked(&app), [at + 2], "↓ selects the chat after the lowest one alone");
+    key(&mut app, Named::ArrowUp, Modifiers::SHIFT);
+    assert_eq!(picked(&app), [at + 1, at + 2], "Shift+↑ adds the chat before the highest one");
+    key(&mut app, Named::ArrowUp, Modifiers::empty());
+    assert_eq!(picked(&app), [at + 1], "↑ goes from the lowest one");
+    text(&mut app, "J");
+    assert_eq!(picked(&app), [at + 1, at + 2], "Shift+J grows it");
+    text(&mut app, "j");
+    assert_eq!(picked(&app), [at + 3]);
+    assert!(app.pane.selected_chat_id.is_none(), "the keys open no chat");
+    key(&mut app, Named::Escape, Modifiers::empty());
+    assert!(app.selection.is_empty() && !app.select_mode, "Escape ends the selection");
+    app.list.cursor = Some(ids[at].clone());
+    text(&mut app, "x");
+    assert_eq!(picked(&app), [at], "X selects the chat of the cursor");
+    assert!(app.list.cursor.is_none(), "the selection mode drops the cursor");
 }
 
 /// Desktop's thread header (`ij`) returns nothing in `threadSelectionMode`, which selecting chats turns on.
