@@ -481,6 +481,14 @@ pub(crate) fn media_box(window_w: f32, size: Option<(f32, f32)>, share: f32) -> 
     }
 }
 
+/// Whether an image has more pixels than [`crate::gallery::BAKE`] times its box of `px`, so that its baked cut is
+/// smaller than the image.
+pub(crate) fn larger(h: &image::Handle, (w, ht): (u32, u32)) -> bool {
+    let image::Handle::Rgba { width, height, .. } = h else { return false };
+    let scale = crate::gallery::BAKE;
+    *width as f32 > scale * w as f32 && *height as f32 > scale * ht as f32
+}
+
 /// Desktop's box of a sticker of known size: at most 400 px high and `share` of the window wide, never upscaled, and
 /// never cropped (`object-fit: contain`), however tall or wide it is.
 pub(crate) fn sticker_box(window_w: f32, (w, h): (f32, f32), share: f32) -> (f32, f32, bool) {
@@ -2409,11 +2417,13 @@ impl BeeperGuiApp {
                     // Desktop's `<img>`, whose right click gives the menu its image items.
                     let img = !is_video && matches!(thumb_url.as_ref().and_then(|u| self.media_at(u)), Some(Ok(_)));
                     // A cropped image shows from a baked cut, as the renderer draws `Cover` past its box: a still, or
-                    // the frames of an animation once a worker cut them. Until then the whole image shows.
+                    // the frames of an animation once a worker cut them. Until then the whole image shows. A still
+                    // much larger than its box shows from a cut too, like Chromium's decode to scale, so the renderer
+                    // keeps and draws the pixels of the box and not those of a whole photo.
                     let px = (w.round() as u32, h.round() as u32);
                     let base: El<'_> = match thumb_url.as_ref().and_then(|u| Some((u, self.media_at(u)?))) {
                         Some((url, Ok(frames)))
-                            if cover
+                            if (cover || larger(&frames[0].0, px))
                                 && !lottie
                                 && frames.len() == 1
                                 && let Some(t) = self.cover_tile(url, px) =>
@@ -5935,6 +5945,30 @@ pub(crate) mod tests {
         assert_eq!(app.file_state(&a), FileState::Ready);
         assert!(app.media.get(&url).is_none(), "the image loads again, from the cache");
         assert!(simulator(app.view_conversation()).find("photo.jpg").is_err(), "the image takes its place");
+    }
+
+    /// A still that is much larger than its box shows from a cut of its box that a worker bakes, like Chromium's
+    /// decode to scale, and a small one shows whole.
+    #[test]
+    fn large_images_show_from_a_cut_of_their_box() {
+        let mut app = crate::fuzz::demo_app("large-image");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = newest(&app, |m| m.is_deleted != Some(true) && m.attachments.is_empty());
+        let cut = |app: &mut BeeperGuiApp, (w, h): (u32, u32)| {
+            let url = format!("mxc://x/{w}");
+            let size = Some(AttachmentSize { width: Some(w), height: Some(h) });
+            let img =
+                Attachment { attachment_type: "img".into(), src_url: Some(url.clone()), size, ..Default::default() };
+            change(app, &mid, |m| (m.text, m.attachments) = (None, vec![img]));
+            let px = crate::Frames::from([(image::Handle::from_rgba(w, h, vec![0; (w * h * 4) as usize]), 0)]);
+            let _ = app.update(UiMessage::Loaded(loads::Msg::Media(url.clone(), Ok(px))));
+            app.wants.tiles.borrow_mut().clear();
+            drop(alone(app, &mid));
+            let asked = app.wants.tiles.borrow().iter().any(|t| t.0 == url && t.3 == crate::gallery::Look::Inline);
+            asked
+        };
+        assert!(cut(&mut app, (2400, 1800)), "a photo much larger than its box");
+        assert!(!cut(&mut app, (300, 200)), "an image at its own size");
     }
 
     /// Desktop's `img.loading`: an image that loads shows the shimmering `--skeleton-bg` in the box of the image,

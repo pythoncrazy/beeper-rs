@@ -55,6 +55,30 @@ impl Pipeline {
         ) {
             // The rotation of `transform` about the center of the image.
             let rotation = transform.pre_scale(1.0 / scale, 1.0 / scale);
+            let (x, y) = ((bounds.x * scale) as i32, (bounds.y * scale) as i32);
+
+            // Without a turn, and at a whole pixel, the icon is a plain copy.
+            let r = rotation;
+            let one = |v: f32| (v - 1.0).abs() < 1e-4;
+            let whole = |v: f32| (v - v.round()).abs() < 1e-3 && v.abs() < 1e9;
+            if one(r.sx)
+                && one(r.sy)
+                && r.kx == 0.0
+                && r.ky == 0.0
+                && whole(r.tx)
+                && whole(r.ty)
+            {
+                let (dx, dy) = (r.tx.round() as i32, r.ty.round() as i32);
+                crate::blit::draw(
+                    pixels,
+                    x + dx,
+                    y + dy,
+                    image,
+                    opacity,
+                    clip_mask,
+                );
+                return;
+            }
 
             pixels.draw_pixmap(
                 (bounds.x * scale) as i32,

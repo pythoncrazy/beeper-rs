@@ -73,10 +73,19 @@ pub(crate) fn demo_app(name: &str) -> BeeperGuiApp {
     BeeperGuiApp::boot(beeper_core::testing::demo_store(name)).0
 }
 
+/// The tokio runtime that the tasks of the tests run in, like iced's tasks in the app: zbus runs on it.
+fn task_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("a tokio runtime")
+    });
+    &RUNTIME
+}
+
 /// The messages that a task outputs. The window and clipboard actions of the task do nothing here: each is dropped
 /// as it comes, so that a task that waits for its answer goes on.
 pub(crate) async fn task_messages(task: Task<UiMessage>) -> Vec<UiMessage> {
     use iced::futures::StreamExt;
+    let _runtime = task_runtime().enter();
     let Some(stream) = iced_runtime::task::into_stream(task) else { return Vec::new() };
     let out = stream.filter_map(|a| async move {
         match a {
@@ -90,6 +99,7 @@ pub(crate) async fn task_messages(task: Task<UiMessage>) -> Vec<UiMessage> {
 /// The actions of a task that does not wait for the answer of an action.
 pub(crate) async fn task_actions(task: Task<UiMessage>) -> Vec<iced_runtime::Action<UiMessage>> {
     use iced::futures::StreamExt;
+    let _runtime = task_runtime().enter();
     let Some(stream) = iced_runtime::task::into_stream(task) else { return Vec::new() };
     stream.collect().await
 }
@@ -4656,7 +4666,7 @@ fn spoilers_like_desktop() {
 /// the quote, or "Message unavailable".
 #[test]
 fn unloaded_quotes_like_desktop() {
-    let mut app = demo_app("quotes");
+    let mut app = demo_app("unloaded-quotes");
     let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID).unwrap().id.clone();
     let _ = app.update(UiMessage::SelectChat(id.clone()));
     let quoted = {
@@ -5588,12 +5598,18 @@ fn time_suggestions_editor_like_desktop() {
     let defaults: Vec<String> = prefs::TIME_SUGGESTIONS.map(String::from).to_vec();
     let about = "Customize time suggestions for quick reminders in the command bar and context menus. Try \
         \"7am Tomorrow\", \"In 3 weeks\", \"Next Monday\".";
+    // Whether the view shows the time of `phrase`. The view reads the clock while it renders, so the minute of the
+    // time can turn between the clock reads before and after the view, and the view shows one of the two.
+    let shows_time = |sim: &mut Simulator<'_, UiMessage>, phrase: &str, before: i64| {
+        let times = [before, now_unix_millis()].map(|now| suggestion_date(parse_when_millis(phrase, now).unwrap()));
+        times.iter().any(|t| sim.find(t.as_str()).is_ok())
+    };
     {
+        let before = now_unix_millis();
         let mut sim = tall(&app);
         assert!(sim.find("Time Suggestions").is_ok(), "the section heading");
         assert!(sim.find(format!("{about} You can add up to 8.")).is_ok());
-        let at = parse_when_millis("Tomorrow", now_unix_millis()).unwrap();
-        assert!(sim.find("Tomorrow").is_ok() && sim.find(suggestion_date(at)).is_ok(), "the phrase and its time");
+        assert!(sim.find("Tomorrow").is_ok() && shows_time(&mut sim, "Tomorrow", before), "the phrase and its time");
         assert!(sim.find("Reset").is_ok());
         let _ = sim.click("Add").expect("the Add button");
         let msgs: Vec<UiMessage> = sim.into_messages().collect();
@@ -5616,8 +5632,8 @@ fn time_suggestions_editor_like_desktop() {
         let _ = app.update(UiMessage::TimeSuggestions(Msg::Input(String::new())));
     }
     type_in(&mut app, "In 3w");
-    let at = parse_when_millis("In 3w", now_unix_millis()).unwrap();
-    assert!(tall(&app).find(suggestion_date(at)).is_ok(), "the preview of the new phrase");
+    let before = now_unix_millis();
+    assert!(shows_time(&mut tall(&app), "In 3w", before), "the preview of the new phrase");
     assert_eq!(list(&app), [&defaults[..], &["In 3w".to_string()]].concat(), "Enter saves a new future time");
     assert!(app.time_edit.input.is_none(), "the save closes the input");
     let _ = app.update(UiMessage::TimeSuggestions(Msg::Add));
@@ -8748,7 +8764,7 @@ fn new_group_avatar_and_size_like_desktop() {
         sim.into_messages().count()
     };
     assert_eq!(start(&app), 0, "the bridge needs an avatar");
-    let path = beeper_core::testing::temp_dir("new-group-avatar").join("a.png");
+    let path = beeper_core::testing::temp_dir("new-group-avatar-image").join("a.png");
     ::image::RgbaImage::new(4, 4).save_with_format(&path, ::image::ImageFormat::Png).expect("write an image");
     let n = app.new_chats[0].id;
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::AvatarLoaded(n, portal::load_file(&path))));
@@ -9345,6 +9361,7 @@ fn run_window_actions(task: Task<UiMessage>, size: Size, maximized: &[window::Id
     use iced_runtime::window::Action as W;
     let Some(mut stream) = iced_runtime::task::into_stream(task) else { return Default::default() };
     let (mut done, mut out) = (Vec::new(), Vec::new());
+    let _runtime = task_runtime().enter();
     iced::futures::executor::block_on(async {
         while let Some(action) = stream.next().await {
             match action {
@@ -9968,7 +9985,7 @@ fn chat_info_sets_the_notification_sound_like_desktop() {
 /// Desktop's space sheet is as wide as its longest space name, which stays on one line.
 #[test]
 fn the_space_sheet_fits_its_names_like_desktop() {
-    let app = demo_app("space-sheet");
+    let app = demo_app("space-sheet-width");
     let narrow = app.view_space_sheet().1;
     {
         let mut st = app.store.write();
@@ -10278,14 +10295,18 @@ fn row_hover_actions_fade_like_desktop() {
     let mut app = demo_app("row-hover-fade");
     let id = app.visible_chats(&app.store.read())[0].id.clone();
     let hover = |app: &mut BeeperGuiApp, on| app.update(UiMessage::ChatList(chat_list::Msg::Hover(id.clone(), on)));
+    // The fade lasts 0.1 s, which a busy run can sleep through, so the checks give the times instead of reading the
+    // clock.
+    let fade = std::time::Duration::from_secs_f32(HOVER_FADE);
     let _ = hover(&mut app, true);
-    assert!(app.hover_progress(&id).is_some_and(|t| t < 0.5), "the actions start small and clear");
-    std::thread::sleep(std::time::Duration::from_millis(120));
-    assert_eq!(app.hover_progress(&id), Some(1.0), "and are in after the transition");
+    let on = app.hover_at.expect("the hover starts the fade");
+    assert!(app.hover_progress(&id).is_some(), "the hovered row shows its actions");
+    assert!(app.hover_progress_at(&id, on).is_some_and(|t| t < 0.5), "the actions start small and clear");
+    assert_eq!(app.hover_progress_at(&id, on + fade), Some(1.0), "and are in after the transition");
     let _ = hover(&mut app, false);
-    assert!(app.hover_progress(&id).is_some_and(|t| t > 0.5), "they fade back out");
-    std::thread::sleep(std::time::Duration::from_millis(120));
-    assert_eq!(app.hover_progress(&id), None, "and are gone after it");
+    let off = app.unhovered.as_ref().map(|u| u.1).expect("the leave starts the fade");
+    assert!(app.hover_progress_at(&id, off).is_some_and(|t| t > 0.5), "they fade back out");
+    assert_eq!(app.hover_progress_at(&id, off + fade), None, "and are gone after it");
 }
 
 /// Desktop's view-limited media: a pill in place of the media, the viewer that counts a view, the Play queue of the

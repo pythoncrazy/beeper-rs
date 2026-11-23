@@ -736,9 +736,12 @@ mod tests {
     /// Desktop's `fetch` of KLIPY fails with Chromium's "Failed to fetch" when KLIPY cannot be reached.
     #[tokio::test]
     async fn klipy_unreachable_fails_to_fetch_like_desktop() {
-        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        // A bound socket that does not listen refuses connections, and it keeps its port for the request: a port
+        // that the test frees can go to the stub server of another test, or be the source port of the request
+        // itself, and either one answers.
+        let closed = tokio::net::TcpSocket::new_v4().unwrap();
+        closed.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let api = format!("http://{}/v2", closed.local_addr().unwrap());
-        drop(closed);
         assert_eq!(klipy_gifs_at(&api, "cat".into(), String::new()).await, Err("Failed to fetch".into()));
     }
 
