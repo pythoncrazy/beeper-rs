@@ -2106,6 +2106,26 @@ pub struct StickerPack {
     pub stickers: Vec<Sticker>,
 }
 
+/// A pack of Desktop's "Installed sticker packs" (`StickerPacksPreference`): an image pack with stickers of a personal
+/// space of a bridge or of `m.image_pack.rooms`, or the parts of a pack that a bridge split (`fi.mau.combined_pack_key`)
+/// as one pack.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InstalledPack {
+    /// The `eventType|roomID|stateKey` of the pack, or of the part whose state key is the key of the combined pack.
+    pub id: String,
+    /// The `display_name` of the pack, without the " (part 1)" of a combined pack, else its state key, else empty.
+    pub name: String,
+    /// The `avatar_url` of the pack, else the first sticker with its MIME type.
+    pub icon: Option<(String, Option<String>)>,
+    pub attribution: Option<String>,
+    /// `fi.mau.bridged_pack`: a bridge imported the pack, so Desktop can remove it.
+    pub bridged: bool,
+    /// The room and the state key of each part, in the order of the parts.
+    pub parts: Vec<(String, String)>,
+    /// The room, the event type and the state key of each image pack event of the parts, which a removal empties.
+    pub events: Vec<(String, String, String)>,
+}
+
 /// Desktop's sticker of a pack: the image URL with its shortcodes, the body and the info of its first image, and
 /// Desktop's `source` (`tTt`) of a pack in a room.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

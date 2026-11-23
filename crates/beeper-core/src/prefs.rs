@@ -22,6 +22,9 @@ pub enum Control {
     /// Desktop's `QuickReactionsSettings` under "Show quick reactions": the frequent emoji, or the
     /// [`crate::models::BeeperSettings::quick_reactions`] that the toggle picks.
     QuickReactions(&'static Pref),
+    /// Desktop's `StickerPacksPreference` under "Use sticker packs": the installed sticker packs, each with "Use in all
+    /// chats" and the Remove of a bridged pack.
+    StickerPacks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,9 +256,12 @@ pub const GENERAL: &[Item] = &[
         s("upArrow", "Press ↑ in the composer to:", &["Move focus to the message list", "Edit your last message"], 0),
     ]),
     Item::Heading("Sticker packs"),
-    Item::Group(&[t("stickerPacks", "Use sticker packs", false)
-        .badge(Badge::Labs)
-        .desc("Send stickers from your Telegram, Signal and WhatsApp packs, and from Matrix sticker packs.")]),
+    Item::Group(&[
+        t("stickerPacks", "Use sticker packs", false)
+            .badge(Badge::Labs)
+            .desc("Send stickers from your Telegram, Signal and WhatsApp packs, and from Matrix sticker packs."),
+        custom("installedStickerPacks", "Installed sticker packs", Control::StickerPacks),
+    ]),
     Item::Heading("Time Suggestions"),
     Item::TimeSuggestions,
     Item::Group(&[
