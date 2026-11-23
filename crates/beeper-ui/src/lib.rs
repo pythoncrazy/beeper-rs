@@ -80,7 +80,7 @@ mod tray {
         Hide,
         Quit,
     }
-    pub fn events() -> iced::futures::stream::Empty<Result<Event, String>> {
+    pub fn events(_: &[String; 2]) -> iced::futures::stream::Empty<Result<Event, String>> {
         unreachable!("only the Linux build shows a tray icon")
     }
 
@@ -637,6 +637,14 @@ pub(crate) fn hotkey_text(keys: &str) -> String {
 /// The key caps of [`hotkey_text`].
 pub(crate) fn hotkey_caps(keys: &str) -> Vec<String> {
     hotkey_text(keys).split_whitespace().map(String::from).collect()
+}
+
+/// The hotkeys whose keys are the accelerators of the tray menu (Desktop's `MINIMIZE_TO_TRAY` and `QUIT_APP`).
+pub(crate) const TRAY_HOTKEYS: [&str; 2] = ["Minimize To Tray", "Quit App"];
+
+/// The keys of [`TRAY_HOTKEYS`].
+fn tray_hotkeys(s: &BeeperSettings) -> [String; 2] {
+    TRAY_HOTKEYS.map(|h| s.hotkey_keys(h).to_string())
 }
 
 fn downloads_dir(s: &BeeperSettings) -> std::path::PathBuf {
@@ -5345,8 +5353,11 @@ impl BeeperGuiApp {
             w.loading.is_some() || w.tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE)
         });
         let animated = animated || media;
-        let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
-            .then(|| Subscription::run(tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0))));
+        // Desktop's tray menu takes the keys of the Minimize To Tray and Quit App hotkeys.
+        let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon")).then(|| {
+            let keys = tray_hotkeys(&self.store.read().settings);
+            Subscription::run_with(keys, tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0)))
+        });
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
         let notes = (!self.notifications.is_empty() || self.verify.note.is_some()).then(|| {
             Subscription::run(notify::events).map(|(id, action)| UiMessage::Notify(notify::Msg::Event(id, action)))
