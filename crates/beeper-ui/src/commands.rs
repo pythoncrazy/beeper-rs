@@ -890,6 +890,11 @@ impl BeeperGuiApp {
                 let link = copy(format!("https://matrix.to/#/{}?via=beeper.com", c.id));
                 v.push(cmd("Developer", "Copy invite link", link.filter(|_| c.member_actions & MEMBER_INVITE != 0)));
             }
+            // Desktop's JSON copies, which copy when they run: the chat, and the loaded or the selected messages.
+            let json = |what| Some(UiMessage::CommandBar(Msg::CopyJson(what)));
+            v.push(cmd("Developer", "Copy current chat as JSON", json(JsonCopy::Chat)));
+            v.push(cmd("Developer", "Copy loaded messages as JSON", json(JsonCopy::Loaded)));
+            v.push(cmd("Developer", "Copy selected messages as JSON", json(JsonCopy::Selected)));
             let deep = copy(crate::deeplink::chat_deep_link(&c.account_id, &c.id));
             v.push(cmd("Developer", "Copy chat deep link", deep));
         }
@@ -1037,9 +1042,20 @@ impl BeeperGuiApp {
     }
 }
 
+/// What a JSON copy of the Developer commands copies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum JsonCopy {
+    Chat,
+    Loaded,
+    Selected,
+}
+
 #[derive(Clone)]
 pub enum Msg {
     OpenSubMenu(SubMenu),
+    /// Desktop's "Copy current chat as JSON", "Copy loaded messages as JSON" and "Copy selected messages as JSON" of
+    /// the open chat.
+    CopyJson(JsonCopy),
     NoReply(bool),
     /// Keeps the time phrase for Desktop's "Last Used".
     LastTime(String),
@@ -1065,6 +1081,37 @@ pub enum Msg {
 }
 
 impl BeeperGuiApp {
+    /// Desktop's JSON copies of the open chat. The chat is the Desktop API's chat, as Desktop's Matrix accounts have no
+    /// original object of it (`getOriginalObject`). The messages are Desktop's `copyMessagesAsJSON`: each as
+    /// `{ "message": … }`, one as an object and others as a list, with "Copied to clipboard!".
+    fn copy_json(&mut self, what: JsonCopy) -> Task<UiMessage> {
+        let Some(text) = self.json_copy(what) else { return Task::none() };
+        match what {
+            JsonCopy::Chat => iced::clipboard::write(text),
+            _ => self.update(UiMessage::Message(message::Msg::CopyLink(text))),
+        }
+    }
+
+    /// The text of a JSON copy of the open chat.
+    pub(crate) fn json_copy(&self, what: JsonCopy) -> Option<String> {
+        let st = self.store.read();
+        let chat = self.pane.selected_chat_id.as_deref().and_then(|id| st.resolve_chat_idx(id))?;
+        let json = match what {
+            JsonCopy::Chat => serde_json::to_value(&st.chats[chat]).expect("a chat serializes"),
+            JsonCopy::Loaded | JsonCopy::Selected => {
+                let msgs = self.timeline(&st).0.into_iter();
+                let picked = |m: &&Message| what == JsonCopy::Loaded || self.pane.selected_msgs.contains(&m.id);
+                let mut each: Vec<serde_json::Value> =
+                    msgs.filter(picked).map(|m| serde_json::json!({ "message": m })).collect();
+                match each.len() {
+                    1 => each.remove(0),
+                    _ => serde_json::Value::Array(each),
+                }
+            }
+        };
+        Some(serde_json::to_string_pretty(&json).expect("JSON prints"))
+    }
+
     /// Desktop's `onSearchClosed`, for the search that the bar last closed on: a search with a text and filters
     /// becomes the newest recent search, and its filters end. Other filters stay for the next search.
     pub(crate) fn search_closed(&mut self) {
@@ -1119,6 +1166,7 @@ impl BeeperGuiApp {
                 (self.search_expanded, self.search_index) = (Default::default(), None);
                 return operation::focus("cmd-palette-input");
             }
+            Msg::CopyJson(what) => return self.copy_json(what),
             Msg::NoReply(on) => self.cmd_no_reply = on,
             Msg::LastTime(phrase) => self.patch_settings(|s| s.last_time = phrase),
             Msg::OpenSubMenu(menu) => {

@@ -9019,6 +9019,33 @@ fn new_group_avatar_and_size_like_desktop() {
     assert!(app.new_chats.iter().any(|d| d.id == m), "Desktop's `isDraftEmpty` keeps a draft with an avatar");
 }
 
+/// Desktop's JSON copies of the Developer commands: the chat, the loaded messages as a list of `{ message }`, and one
+/// selected message as an object.
+#[test]
+fn json_copies_in_the_command_bar_like_desktop() {
+    let mut app = demo_app("json-copies");
+    let group = "!tg_rust:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(group.into()));
+    let cmds = app.commands(&app.store.read(), "json");
+    let titles: Vec<&str> = cmds.iter().take(3).map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, ["Copy current chat as JSON", "Copy loaded messages as JSON", "Copy selected messages as JSON"]);
+    assert!(cmds[..3].iter().all(|c| c.category == "Developer" && c.msg.is_some()));
+    let parse = |app: &BeeperGuiApp, what| -> serde_json::Value {
+        serde_json::from_str(&app.json_copy(what).expect("an open chat")).expect("JSON")
+    };
+    assert_eq!(parse(&app, commands::JsonCopy::Chat)["id"], group);
+    let loaded = parse(&app, commands::JsonCopy::Loaded);
+    let ids: Vec<String> = app.timeline(&app.store.read()).0.iter().map(|m| m.id.clone()).collect();
+    let listed: Vec<&str> =
+        loaded.as_array().expect("a list").iter().map(|m| m["message"]["id"].as_str().unwrap()).collect();
+    assert_eq!(listed, ids);
+    assert_eq!(parse(&app, commands::JsonCopy::Selected), serde_json::json!([]), "no selected message");
+    app.pane.selected_msgs = vec![ids[0].clone()];
+    assert_eq!(parse(&app, commands::JsonCopy::Selected)["message"]["id"], ids[0], "one message is an object");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::CopyJson(commands::JsonCopy::Selected)));
+    assert_eq!(app.status_banner, "Copied to clipboard!");
+}
+
 /// Desktop's "Message yourself" of the command bar's `%s Account` commands (`canMessageSelf`), and its "Send a link to
 /// %s" of Settings > Devices, which sends the install link to the chat with yourself of a phone number account.
 #[test]
