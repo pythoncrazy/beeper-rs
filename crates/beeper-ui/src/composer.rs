@@ -11,7 +11,7 @@ use crate::scheduled::send_day;
 use crate::style::rem;
 use crate::style::{
     bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, mix, scroll_style, semi,
-    shadow_box, text_width, txt, Bare, CLEAR,
+    text_width, txt, Bare, CLEAR,
 };
 use crate::threads;
 use crate::units::human_size;
@@ -53,6 +53,20 @@ pub(crate) type Typo = (std::ops::Range<usize>, Vec<String>);
 pub enum Suggestion {
     Emoji(String, String),
     Mention(String, String, Option<Box<User>>),
+}
+
+/// Where a pasted text goes when it is one link and nothing else, like linkifyjs's `find(...).isLink && value ===
+/// text` in Desktop's `handlePasteLink`, with the `defaultProtocol` of `https` for a bare domain.
+fn pasted_link(t: &str) -> Option<String> {
+    if t.contains(char::is_whitespace) {
+        return None;
+    }
+    let (r, href) = crate::linkify::link(t).filter(|(r, _)| *r == (0..t.len()))?;
+    let bare = !t[r].to_lowercase().starts_with("http://");
+    Some(match href.strip_prefix("http://").filter(|_| bare) {
+        Some(rest) => format!("https://{rest}"),
+        None => href,
+    })
 }
 
 /// Desktop's `xk`: the label of a mention of `u`.
@@ -546,15 +560,16 @@ impl BeeperGuiApp {
             Suggestion::Emoji(c, _) if emoji::is_mxc(c) => Some(self.custom_image(c, 13.0, self.animate.get())),
             Suggestion::Emoji(..) => None,
             Suggestion::Mention(_, _, Some(u)) => {
-                Some(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 24.0, 0.0))
+                Some(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 32.0, 0.0))
             }
             Suggestion::Mention(_, _, None) => {
                 let chat = self.pane().selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
-                Some(self.chat_avatar(&st.chats[chat.expect("the open chat")], 24.0, 0.0))
+                Some(self.chat_avatar(&st.chats[chat.expect("the open chat")], 32.0, 0.0))
             }
         };
+        // `.TextAreaAutocomplete-module__item > * .participant-img`: a 32 px avatar with a 4 px margin.
         let faces = match &picks[0] {
-            Suggestion::Mention(..) => 30.0,
+            Suggestion::Mention(..) => 36.0,
             _ if picks.iter().any(|s| matches!(s, Suggestion::Emoji(c, _) if emoji::is_mxc(c))) => 13.0,
             _ => 0.0,
         };
@@ -563,12 +578,23 @@ impl BeeperGuiApp {
         let items = picks.iter().enumerate().map(|(i, s)| {
             let (bg, fg) = if i == at { (p.accent, Color::WHITE) } else { (CLEAR, p.text) };
             let name = txt(label(s), 13.0).wrapping(iced::widget::text::Wrapping::None);
-            let gap = if matches!(s, Suggestion::Mention(..)) { 6.0 } else { 0.0 };
+            let gap = if matches!(s, Suggestion::Mention(..)) { 4.0 } else { 0.0 };
             let b = button(row![].push(face(s)).push(name).spacing(gap).align_y(Center)).padding([4, 6]).width(width);
             b.style(btn_style([bg; 3], [fg; 3], 4.0)).on_press(UiMessage::Composer(Msg::PickSuggestion(i))).into()
         });
-        let list =
-            container(Column::with_children(items).padding([4, 4])).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        // `.TextAreaAutocomplete-module__container`: `--color-background-elevated` in a 1 px border of
+        // `--color-border-neutrals`, with the `--shadows-background-elevated` shadow.
+        let card = move |_: &iced::Theme| container::Style {
+            background: Some(p.elevated.into()),
+            border: iced::Border { color: p.border_neutrals, width: 1.0, radius: 6.0.into() },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.11),
+                offset: iced::Vector::new(0.0, 13.0),
+                blur_radius: 20.0,
+            },
+            ..container::Style::default()
+        };
+        let list = container(Column::with_children(items).padding([4, 4])).style(card);
         let unveiled = hidden_actions(st).len() as f32;
         let plus = if self.pane().show_attach_menu { 36.0 + 6.0 + 2.0 + unveiled * 30.0 - 2.0 } else { 36.0 };
         let text = self.pane().composer.text();
@@ -1298,6 +1324,8 @@ pub enum Msg {
     /// Ctrl+V and "Paste": Desktop's `paste` handler reads the clipboard.
     Paste,
     Pasted(Result<Clip, String>),
+    /// The text of the clipboard, which a paste puts in the composer.
+    PasteText(String),
     DiscardAttachment(usize),
     /// Desktop's `openAttachmentPicker`.
     PickFiles,
@@ -1629,9 +1657,9 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let html = st.loaded(&mid).and_then(|m| m.html.clone());
                 drop(st);
-                // Desktop scrolls the edited message into view (`scrollIntoView` of the editing target).
+                // Desktop scrolls the edited message into view with the least scroll (`align: "nearest"`).
                 self.pane.timeline.reveal(vlist::key(&mid));
-                let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Center);
+                let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Nearest);
                 // Desktop's `customEmoji` nodes of the message's `img[data-mx-emoticon]`, named by their `alt`.
                 self.pane.emoticons.extend(html.as_deref().map(html_emoticons).unwrap_or_default());
                 self.pane.start_edit(mid, &old_txt, html.map_or(Vec::new(), |h| html_pills(&h)));
@@ -1700,15 +1728,31 @@ impl BeeperGuiApp {
                 Ok(Clip::Text) => {
                     let id = self.composer_id();
                     let paste = iced::clipboard::read().map(|t| match t {
-                        Some(t) => UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(
-                            t.into(),
-                        )))),
+                        Some(t) => UiMessage::Composer(Msg::PasteText(t)),
                         None => UiMessage::Noop,
                     });
                     return Task::batch([paste, operation::focus(id)]);
                 }
                 Err(e) => self.status_banner = e,
             },
+            // Desktop's `linkOnPaste` (`handlePasteLink`): a link pasted over selected text links the text, in a
+            // chat whose messages take links.
+            Msg::PasteText(t) => {
+                let old = self.pane.composer.text();
+                let st = self.store.read();
+                let chat = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+                let links = chat.is_some_and(|i| st.chats[i].formatting & (1 << format::LINK) != 0);
+                drop(st);
+                let link =
+                    format::selection(&self.pane.composer).filter(|r| links && !r.is_empty()).zip(pasted_link(&t));
+                let Some((r, href)) = link else {
+                    let paste = text_editor::Action::Edit(text_editor::Edit::Paste(t.into()));
+                    return self.update(UiMessage::Composer(Msg::Edit(paste)));
+                };
+                let (text, r) = format::link(&old, r.clone(), &href, &old[r]);
+                self.pane.composer = format::content(&text, r);
+                return self.composer_changed(old);
+            }
             Msg::DiscardAttachment(i) => {
                 self.pane.attachments.remove(i);
                 (self.pane.att_focus, self.pane.quick_look) = (None, None);
@@ -1897,5 +1941,32 @@ impl BeeperGuiApp {
             }
         }
         self.settle()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Desktop's `linkOnPaste`: a link pasted over selected text links the text, with `https` for a bare domain, in
+    /// a chat whose messages take links. Without a selection, or with more than a link, the text goes in as it is.
+    #[test]
+    fn a_link_pasted_over_text_links_it_like_desktop() {
+        let mut app = crate::fuzz::demo_app("paste-link");
+        let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
+        let paste = |app: &mut BeeperGuiApp, text: &str, sel: std::ops::Range<usize>, clip: &str| {
+            app.pane.composer = format::content(text, sel);
+            let _ = app.update(UiMessage::Composer(Msg::PasteText(clip.into())));
+            app.pane.composer.text()
+        };
+        assert_eq!(paste(&mut app, "see docs", 4..8, "https://example.com/a"), "see [docs](https://example.com/a)");
+        assert_eq!(paste(&mut app, "see docs", 4..8, "example.com"), "see [docs](https://example.com)");
+        assert_eq!(paste(&mut app, "mail me", 0..4, "a@example.com"), "[mail](mailto:a@example.com) me");
+        assert_eq!(paste(&mut app, "see docs", 4..8, "the docs"), "see the docs", "more than a link");
+        assert_eq!(paste(&mut app, "see ", 4..4, "https://example.com/a"), "see https://example.com/a");
+        let note = app.store.read().resolve_chat_idx(beeper_core::store::NOTE_CHAT_ID).expect("the note chat");
+        app.store.write().update_chat(note, |c| c.formatting &= !(1 << format::LINK));
+        let plain = paste(&mut app, "see docs", 4..8, "https://example.com/a");
+        assert_eq!(plain, "see https://example.com/a", "a chat without links");
     }
 }
