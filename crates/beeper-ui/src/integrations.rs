@@ -221,6 +221,6 @@ impl BeeperGuiApp {
         let content = column![container(main).padding(Padding::new(0.0).top(32.0).bottom(16.0)), body];
         let pane = column![title, container(content).padding([0, 16])];
         let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
-        mouse_area(container(pane).padding(8)).on_press(UiMessage::Noop).into()
+        crate::backdrop(container(pane).padding(8)).on_press(UiMessage::Noop).into()
     }
 }

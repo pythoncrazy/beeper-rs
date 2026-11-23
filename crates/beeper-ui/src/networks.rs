@@ -289,7 +289,7 @@ impl BeeperGuiApp {
             .padding(Padding::ZERO.left(at.x).top(at.y))
             .width(Fill)
             .height(Fill);
-        Some(mouse_area(layer).on_press(close.clone()).on_right_press(close).into())
+        Some(crate::backdrop(layer).on_press(close.clone()).on_right_press(close).into())
     }
 
     /// Desktop's `fVt`: the accounts that the plan still allows, and "Upgrade to %s for more" with a plan above

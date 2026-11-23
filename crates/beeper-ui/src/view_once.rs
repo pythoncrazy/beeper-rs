@@ -651,6 +651,6 @@ impl BeeperGuiApp {
             .width(Fill)
             .height(Fill)
             .style(fill_box(Color::BLACK.scale_alpha(0.9), 0.0));
-        Some(mouse_area(overlay).on_press(UiMessage::ViewOnce(Msg::Dismiss)).into())
+        Some(crate::backdrop(overlay).on_press(UiMessage::ViewOnce(Msg::Dismiss)).into())
     }
 }

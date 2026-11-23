@@ -1008,7 +1008,7 @@ impl BeeperGuiApp {
         let menu = crate::menu_card(p, Column::with_children(rows), 180);
         let area = self.carousel_area();
         let at = Padding::ZERO.left(at.x.min(area.width - 188.0)).top(at.y.min(area.height - h - 8.0));
-        mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+        crate::backdrop(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
             .on_press(UiMessage::Media(Msg::CarouselMenu(false)))
             .on_right_press(UiMessage::Media(Msg::CarouselMenu(false)))
             .into()
@@ -1341,7 +1341,7 @@ impl BeeperGuiApp {
         let at = Padding::ZERO.left(at.x.min(w.size.width - 180.0 - 8.0)).top(at.y.min(w.size.height - h - 8.0));
         let menu = container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill);
         Some(
-            mouse_area(menu)
+            crate::backdrop(menu)
                 .on_press(UiMessage::Media(Msg::ItemMenu(None)))
                 .on_right_press(UiMessage::Media(Msg::ItemMenu(None)))
                 .into(),
@@ -1368,7 +1368,7 @@ impl BeeperGuiApp {
         ];
         let menu = crate::menu_card(p, col, 180);
         let at = Padding::ZERO.top(at.y).left(at.x.min(w.size.width - 8.0 - 180.0));
-        mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+        crate::backdrop(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
             .on_press(UiMessage::Media(Msg::Menu(false)))
             .into()
     }

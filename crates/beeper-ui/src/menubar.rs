@@ -147,7 +147,7 @@ impl BeeperGuiApp {
         let drop = open.map(|i| {
             let (menu, x) = self.view_menu_dropdown(i);
             let at = Padding::ZERO.left(x).top(BAR_H);
-            mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+            crate::backdrop(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
                 .on_press(UiMessage::MenuBar(Msg::Show(None)))
                 .into()
         });

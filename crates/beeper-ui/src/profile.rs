@@ -346,7 +346,9 @@ impl BeeperGuiApp {
             let menu = crate::menu_card(p, items, 200);
             let menu = container(mouse_area(menu).on_press(UiMessage::Noop)).align_right(Fill).padding([64, 34]);
             return Some(
-                mouse_area(container(menu).width(Fill).height(Fill)).on_press(UiMessage::Profile(Msg::Menu)).into(),
+                crate::backdrop(container(menu).width(Fill).height(Fill))
+                    .on_press(UiMessage::Profile(Msg::Menu))
+                    .into(),
             );
         }
         if f.leaving.is_some() {
@@ -364,7 +366,7 @@ impl BeeperGuiApp {
         let card = |content: El<'a>, width: f32, close: UiMessage| -> El<'a> {
             let card =
                 container(content).width(width).padding(20).style(shadow_box(p.elevated, p.menu_border, 12.0, 24.0));
-            mouse_area(
+            crate::backdrop(
                 container(mouse_area(card).on_press(UiMessage::Noop))
                     .center(Fill)
                     .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.45), 0.0)),

@@ -697,7 +697,7 @@ impl BeeperGuiApp {
             let sub_x = if right { x + PIP_MENU_W } else { x - SPEED_MENU_W };
             placed(sub_x, (y + 3.0 * menu_pitch()).min(h - speed_menu_h()), sub)
         });
-        let close = mouse_area(Space::new().width(Fill).height(Fill))
+        let close = crate::backdrop(Space::new().width(Fill).height(Fill))
             .on_press(UiMessage::Video(Msg::PipMenu(false)))
             .on_right_press(UiMessage::Video(Msg::PipMenu(false)));
         stack![video, close, placed(x, y, menu.into())].push(sub).into()

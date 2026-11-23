@@ -686,7 +686,7 @@ impl BeeperGuiApp {
             .spacing(10)
             .padding(16)
             .width(buttons.max(308.0) + 40.0);
-        mouse_area(
+        crate::backdrop(
             container(focus::trap(
                 mouse_area(container(card).style(shadow_box(p.elevated, p.menu_border, 12.0, 24.0)))
                     .on_press(UiMessage::Noop),
@@ -932,7 +932,7 @@ impl BeeperGuiApp {
             });
             let menu = crate::menu_card(p, Column::with_children(items), ACCOUNT_SUB_W);
             stack![
-                mouse_area(Space::new().width(Fill).height(Fill)).on_press(pane(LabelPane::Menu(false))),
+                crate::backdrop(Space::new().width(Fill).height(Fill)).on_press(pane(LabelPane::Menu(false))),
                 container(menu).align_right(Fill).padding(Padding::ZERO.top(LABEL_INBOX_MENU_Y).right(24.0)),
             ]
         });

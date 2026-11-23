@@ -834,6 +834,14 @@ fn checkbox_plus<'a>(p: &Palette, on: bool) -> El<'a> {
     }
 }
 
+/// The backdrop of a modal, a sheet or a menu, which fills its window: Desktop's `.portal` of a popover, its
+/// `.modal-container` and `.modal-dimmer`, and the `SheetFrame-module__scrim` of a sheet. The backdrop takes the
+/// pointer wherever the layer on it does not, so that what is under it shows no hover, takes no press or wheel and
+/// sets no cursor: an iced `Stack` levitates the cursor of its lower layers over a layer that has an interaction.
+fn backdrop<'a, M: 'a>(layer: impl Into<Element<'a, M>>) -> iced::widget::MouseArea<'a, M> {
+    mouse_area(layer).interaction(mouse::Interaction::Idle)
+}
+
 /// Desktop's context menu: `items` with 4 px above and below them, in a shadowed card `w` wide.
 fn menu_card<'a>(
     p: &Palette,
@@ -5523,7 +5531,7 @@ impl BeeperGuiApp {
             (None, false) => self.forward.as_ref().map(|f| self.view_forward(f)),
         };
         let scrim = modal.filter(|_| in_main).map(|m| {
-            mouse_area(
+            backdrop(
                 container(mouse_area(m).on_press(UiMessage::Noop))
                     .center(Fill)
                     .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.2), 0.0)),
@@ -5531,7 +5539,7 @@ impl BeeperGuiApp {
             .on_press(UiMessage::CloseModals)
         });
         let select = self.search_select.filter(|_| self.show_command_palette).map(|(chip, at)| {
-            mouse_area(
+            backdrop(
                 container(mouse_area(self.view_search_select(chip, at)).on_press(UiMessage::Noop))
                     .padding(Padding::ZERO.left(at.x).top(at.y))
                     .width(Fill)
@@ -5667,7 +5675,7 @@ impl BeeperGuiApp {
         let main_menu = main_menu.or(chat_menu.filter(|_| in_list));
         // Desktop's native menus take the arrows, Home, End and Enter.
         let layer = |(m, x, y): (El<'a>, f32, f32), close: UiMessage| -> El<'a> {
-            mouse_area(
+            backdrop(
                 container(mouse_area(menu_keys::menu(m)).on_press(UiMessage::Noop))
                     .padding(Padding::ZERO.left(x).top(y))
                     .width(Fill)
