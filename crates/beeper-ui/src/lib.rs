@@ -647,7 +647,9 @@ fn copy_text(m: &Message, stamp: bool, many: bool) -> String {
 /// Desktop's `downloadsDirPath`: the chosen folder, or the downloads folder of the OS.
 /// Desktop's `humanized` of a hotkey: the label of the first combination of its `keys`, empty when it is disabled.
 pub(crate) fn hotkey_text(keys: &str) -> String {
-    prefs::hotkey_label(keys.split(", ").next().unwrap_or_default())
+    // The tooltips and menus in view show their hotkeys each time they draw.
+    thread_local!(static MEMO: style::Memo<String, String> = Default::default());
+    style::memo(&MEMO, keys.to_owned(), || prefs::hotkey_label(keys.split(", ").next().unwrap_or_default()))
 }
 
 /// The key caps of [`hotkey_text`].

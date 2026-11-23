@@ -248,10 +248,10 @@ fn shape<T>(s: &str, size: f32, w: Weight, width: Option<f32>, f: impl FnOnce(&c
 /// measurements of the last views stay.
 const MEMO: usize = 4096;
 
-type Memo<K, V> = RefCell<[HashMap<K, V>; 2]>;
+pub(crate) type Memo<K, V> = RefCell<[HashMap<K, V>; 2]>;
 
 /// The value of `key` in `memo`, made by `make` once while the key stays in use.
-fn memo<K: std::hash::Hash + Eq, V: Clone>(
+pub(crate) fn memo<K: std::hash::Hash + Eq, V: Clone>(
     memo: &'static std::thread::LocalKey<Memo<K, V>>,
     key: K,
     make: impl FnOnce() -> V,

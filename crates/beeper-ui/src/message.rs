@@ -60,9 +60,13 @@ pub(crate) fn attachment_name(a: &Attachment) -> String {
 
 /// The `host` of a URL (`Xp`), with its port when it is not the default one. A URL without a host has none.
 fn url_host(url: &str) -> Option<String> {
-    let url = url::Url::parse(url).ok()?;
-    let host = url.host_str().filter(|h| !h.is_empty())?;
-    Some(url.port().map_or_else(|| host.to_string(), |port| format!("{host}:{port}")))
+    // The views ask for the hosts of the links in view each time they draw.
+    thread_local!(static MEMO: crate::style::Memo<String, Option<String>> = Default::default());
+    crate::style::memo(&MEMO, url.to_owned(), || {
+        let url = url::Url::parse(url).ok()?;
+        let host = url.host_str().filter(|h| !h.is_empty())?;
+        Some(url.port().map_or_else(|| host.to_string(), |port| format!("{host}:{port}")))
+    })
 }
 
 /// The links of a block's spans that show their host in a tooltip, like Desktop's `ExtLink` with `showHostOnHover`:
