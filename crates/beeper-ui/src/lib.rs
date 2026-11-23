@@ -2831,6 +2831,9 @@ pub struct BeeperGuiApp {
     pub status_banner: String,
     /// The text of Desktop's toast with a "Relaunch app" button, after a change that needs a relaunch.
     relaunch_toast: Option<&'static str>,
+    /// "Quit Beeper when closing the main window" as it was at launch: Desktop's main process reads `quit_on_close`
+    /// from the user config once, so a change takes effect after a relaunch.
+    quit_on_close: bool,
     /// Desktop's backup banner of the recovery key was clicked in this session.
     key_banner_closed: bool,
     /// The newest toast with its icon and buttons, shown only while the banner still is the text it was made for.
@@ -3000,6 +3003,7 @@ impl BeeperGuiApp {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => panic!("read sidebar-hidden: {e}"),
         };
+        let quit_on_close = store.read().settings.on("quitOnClose");
         let mut app = Self {
             pane: Pane { size: MAIN_SIZE, ..Pane::default() },
             chat_windows: Vec::new(),
@@ -3127,6 +3131,7 @@ impl BeeperGuiApp {
             typing_shown: HashMap::new(),
             status_banner: String::new(),
             relaunch_toast: None,
+            quit_on_close,
             key_banner_closed: false,
             toast: None,
             older_toasts: Vec::new(),

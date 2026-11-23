@@ -861,9 +861,18 @@ fn closing_the_main_window_hides_it_like_desktop() {
     assert_eq!(app.sub_windows(), [app.settings_window.expect("the settings window")]);
     let _ = app.update(UiMessage::Window(windows::Msg::Tray(Ok(tray::Event::Activate))));
     assert!(!app.hidden, "a click on the tray icon shows the windows");
+    // Desktop's main process reads `quit_on_close` once at launch, and the setting asks for a relaunch.
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("quitOnClose", 1)));
+    assert_eq!(app.relaunch_toast, Some("Preference changed"));
     let _ = app.update(UiMessage::Window(windows::Msg::CloseRequested(main)));
-    assert!(!app.hidden, "with Quit on close, the window closes");
+    assert!(app.hidden, "until a relaunch, the window still hides");
+    let mut app = BeeperGuiApp::boot(app.store.clone()).0;
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::Window(windows::Msg::CloseRequested(main)));
+    assert!(!app.hidden, "after a relaunch with Quit on close, the window closes");
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("quitOnClose", 0)));
+    let _ = app.update(UiMessage::Window(windows::Msg::CloseRequested(main)));
+    assert!(!app.hidden, "turning it off also waits for a relaunch");
 }
 
 /// Desktop has one window, so closing it while signed out hides the app too, and opening the app again shows it.
