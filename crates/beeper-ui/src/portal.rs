@@ -426,17 +426,13 @@ mod tests {
 
     /// A portal on the session bus under a private name answers with a file.
     #[cfg(target_os = "linux")]
-    #[test]
+    #[tokio::test]
     #[ignore = "needs a D-Bus session bus"]
-    fn file_chooser_talks_to_the_portal() {
+    async fn file_chooser_talks_to_the_portal() {
         use iced::futures::StreamExt;
         let name = format!("org.beeper.rs.TestPortal{}", std::process::id());
-        use iced::futures::executor::block_on;
-        let conn = block_on(async {
-            let conn = zbus::Connection::session().await.unwrap();
-            conn.request_name(name.as_str()).await.unwrap();
-            conn
-        });
+        let conn = zbus::Connection::session().await.unwrap();
+        conn.request_name(name.as_str()).await.unwrap();
         let mut calls = zbus::MessageStream::from(&conn);
         let serve = async {
             let call = loop {
@@ -457,8 +453,7 @@ mod tests {
             let iface = "org.freedesktop.portal.Request";
             conn.emit_signal(Some(sender), &path, iface, "Response", &(0u32, results)).await.unwrap();
         };
-        let (_, got) =
-            block_on(iced::futures::future::join(serve, open_files(name.clone(), "Open".into(), Pick::Files)));
+        let (_, got) = iced::futures::future::join(serve, open_files(name.clone(), "Open".into(), Pick::Files)).await;
         assert_eq!(got, Ok(vec![PathBuf::from("/tmp/x.txt")]));
     }
 }

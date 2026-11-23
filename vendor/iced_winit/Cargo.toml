@@ -42,7 +42,7 @@ default = [
 ]
 linux-theme-detection = [
     "dep:mundy",
-    "mundy/async-io",
+    "mundy/tokio",
     "mundy/color-scheme",
 ]
 sysinfo = ["dep:sysinfo"]
