@@ -2546,6 +2546,46 @@ fn chat_windows_that_left_their_chat_draw_nothing() {
     drop(simulator(app.view(id)));
 }
 
+/// "Open in New Window" on an unread chat scrolls the new window's timeline to its unread divider. The operation goes
+/// through every window, like iced's, and each has a "timeline": it scrolls the one of the window with the divider,
+/// and finds nothing, instead of panicking, while the new window is not built yet.
+#[test]
+fn opening_an_unread_chat_in_a_window_scrolls_that_window_to_the_divider() {
+    use iced::advanced::renderer::Headless;
+    use iced::advanced::widget::operation::{black_box, Operation, Outcome};
+    let mut app = demo_app("chat-window-unread");
+    let st = app.store.read();
+    let unread = app.visible_chats(&st).iter().find(|c| c.unread_count > 0).map(|c| c.id.clone());
+    drop(st);
+    let unread = unread.expect("a demo chat is unread");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::Window(windows::Msg::OpenChat(unread)));
+    let (main, chat) = (app.main_window.expect("the main window"), app.chat_windows[0].0);
+    let size = Size::new(1200.0, 800.0);
+    let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+        iced::Font::DEFAULT,
+        iced::Pixels(13.0),
+        Some("tiny-skia"),
+    ))
+    .expect("a headless renderer");
+    let views = [main, chat].map(|w| app.view(w));
+    let mut uis = views.map(|v| iced_runtime::UserInterface::build(v, size, Default::default(), &mut renderer));
+    let target = iced::widget::Id::new("unread-divider");
+    let locate = |uis: &mut [iced_runtime::UserInterface<'_, UiMessage, Theme, iced::Renderer>]| {
+        let mut op = Locate::new(target.clone(), "timeline", Align::Start(80.0));
+        for ui in uis {
+            ui.operate(&renderer, &mut black_box(&mut op));
+        }
+        match op.finish() {
+            Outcome::Some(found) => Some(found),
+            _ => None,
+        }
+    };
+    assert_eq!(locate(&mut uis[..1]), None, "the chat window is still opening");
+    let (window, _) = locate(&mut uis).expect("the chat window shows the unread divider");
+    assert_eq!(window, Some(chat), "the scroll is the chat window's, not the main window's");
+}
+
 /// The chats that a space window of rail space `entry` lists.
 fn space_chats(app: &mut BeeperGuiApp, entry: &str) -> Vec<String> {
     let main = std::mem::replace(&mut app.list, chat_list::ListState::space(entry));
