@@ -30,8 +30,8 @@ impl BeeperGuiApp {
             }
             Msg::Avatar(_, Err(_)) => {}
             Msg::Media(url, r) => {
-                if let Some(e) = r.as_ref().err().filter(|e| beeper_core::matrix::reload_needed(e)) {
-                    eprintln!("media needs a download that the user asks for: {e}");
+                // The load logged why it failed.
+                if r.as_ref().err().is_some_and(|e| beeper_core::matrix::reload_needed(e)) {
                     self.needs_download.insert(url.strip_suffix(media_view::LOOP).unwrap_or(&url).to_string());
                 }
                 self.media.insert(url, Some(r));
