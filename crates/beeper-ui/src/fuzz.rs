@@ -8872,6 +8872,62 @@ fn new_group_avatar_and_size_like_desktop() {
     assert!(app.new_chats.iter().any(|d| d.id == m), "Desktop's `isDraftEmpty` keeps a draft with an avatar");
 }
 
+/// Desktop's "Message yourself" of the command bar's `%s Account` commands (`canMessageSelf`), and its "Send a link to
+/// %s" of Settings > Devices, which sends the install link to the chat with yourself of a phone number account.
+#[test]
+fn message_yourself_and_send_a_link_like_desktop() {
+    let mut app = demo_app("message-self");
+    let (wa, tg) = {
+        let st = app.store.read();
+        let on = |net: &str| st.chats.iter().find(|c| brand_key(&c.account_id) == net).cloned();
+        (on("whatsapp").expect("a WhatsApp chat"), on("telegram").expect("a Telegram chat"))
+    };
+    {
+        let mut st = app.store.write();
+        for b in
+            st.bridge_accounts.iter_mut().filter(|b| b.account_id == wa.account_id || b.account_id == tg.account_id)
+        {
+            b.state = "CONNECTED".into();
+            b.remote_profile =
+                Some(beeper_core::models::RemoteProfile { phone: Some("+14155550100".into()), ..Default::default() });
+        }
+    }
+    let me = |app: &BeeperGuiApp| {
+        app.commands(&app.store.read(), "saved messages").into_iter().find(|c| c.title == "Message yourself")
+    };
+    let _ = app.update(UiMessage::SelectChat(tg.id.clone()));
+    let cmd = me(&app).expect("the command");
+    assert!(cmd.category.ends_with(" Account") && cmd.msg.is_none(), "Telegram cannot message yourself");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(me(&app).and_then(|c| c.msg).expect("the Beeper account can"));
+    assert_eq!(app.pane.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
+    let _ = app.update(UiMessage::SelectChat(wa.id.clone()));
+    assert!(me(&app).is_some_and(|c| c.msg.is_some()), "WhatsApp can");
+    // The chat with yourself on WhatsApp.
+    let own = {
+        let mut st = app.store.write();
+        let mut c = wa.clone();
+        (c.id, c.title, c.chat_type) = ("!self_wa:beeper.com".into(), "You".into(), "single".into());
+        c.participants.items.retain(|u| u.is_self == Some(true));
+        st.add_all(vec![c.clone()], Vec::new());
+        c.id
+    };
+    let phones = crate::link_phones(&app.store.read());
+    assert_eq!(phones[0], (wa.account_id.clone(), fmt_phone("+14155550100")), "the accounts with a number");
+    assert!(phones.iter().all(|(a, _)| a != &tg.account_id), "Telegram cannot message you");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Devices)));
+    {
+        let mut sim = simulator(app.view_settings());
+        assert!(sim.find(format!("Send a link to {}", fmt_phone("+14155550100")).as_str()).is_ok());
+    }
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::SendLink(wa.account_id.clone())));
+    assert_eq!(app.pane.selected_chat_id.as_deref(), Some(own.as_str()), "the chat with yourself opens");
+    let last = app.store.read().chat_timeline(&own).last().map(|m| m.text.clone());
+    assert_eq!(last.flatten().as_deref(), Some(crate::INSTALL_LINK));
+    assert_eq!(app.toast.as_ref().map(|t| t.text.clone()), Some(format!("Link sent to {}", fmt_phone("+14155550100"))));
+    assert!(app.link_to.is_none() && app.link_sent.is_some());
+}
+
 #[test]
 fn reply_privately_like_desktop() {
     let mut app = demo_app("reply-privately");

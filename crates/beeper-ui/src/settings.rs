@@ -1070,7 +1070,7 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `TakeBeeperWithYou` card.
-    fn take_beeper(&self) -> El<'_> {
+    fn take_beeper(&self, st: &BeeperStore) -> El<'_> {
         let p = &self.pal;
         let action: El<'_> = match self.app_qr {
             true => container(svg(APP_QR.clone()).width(108).height(108))
@@ -1089,11 +1089,63 @@ impl BeeperGuiApp {
         };
         let heading = semi(tr("Take Beeper with you"), 16.0).color(p.strong);
         let card = column![svg(TAKE_BEEPER.clone()).width(58).height(48), heading, action].spacing(12).align_x(Center);
+        let card = card.push(self.send_link_to_phone(st));
         container(card)
             .center_x(Fill)
             .padding(Padding::new(8.0).top(20.0).bottom(12.0))
             .style(fill_box(p.prefs_group, 12.0))
             .into()
+    }
+
+    /// Desktop's `SendLinkToPhone`: "Send a link to %s" of the first number, or of the picked one, which with several
+    /// numbers opens a list of them and their networks, and "Link sent to %s" for 3 s after a send.
+    fn send_link_to_phone(&self, st: &BeeperStore) -> Option<El<'_>> {
+        let p = &self.pal;
+        let phones = crate::link_phones(st);
+        let picked = self.link_pick.0.as_ref().and_then(|a| phones.iter().find(|(id, _)| id == a));
+        let (account, phone) = picked.or(phones.first())?.clone();
+        let sent = self.link_sent.as_ref().filter(|(_, at)| at.elapsed() < std::time::Duration::from_secs(3));
+        let label = match sent {
+            Some((to, _)) => trf("Link sent to %s", &[to]),
+            None => trf("Send a link to %s", &[&phone]),
+        };
+        let many = phones.len() > 1;
+        let busy = self.link_to.is_some();
+        // `.sendLinkTrigger`: 12 px semibold in the primary color, at 0.6 while it sends.
+        let fg = p.accent.scale_alpha(if busy { 0.6 } else { 1.0 });
+        let chevron = many.then(|| tinted(&CHEVRON_DOWN, 16.0, p.strong));
+        let trigger = button(row![semi(label, 12.0).color(fg)].push(chevron).spacing(2).align_y(Center))
+            .padding([4, 8])
+            .style(|_, _| button::Style::default())
+            .on_press_maybe((!busy).then(|| match many {
+                true => UiMessage::Accounts(accounts::Msg::ToggleLinkMenu),
+                false => UiMessage::Accounts(accounts::Msg::SendLink(account.clone())),
+            }));
+        // `.sendLinkDropdown`: each number with its network, on the background with a border and 10 px corners.
+        let menu = (many && self.link_pick.1).then(|| {
+            let items = phones.iter().map(|(id, phone)| {
+                let item = row![
+                    semi(phone.clone(), 13.0).color(p.strong),
+                    Space::new().width(Fill),
+                    txt(crate::network_name(id), 12.0).color(p.sub)
+                ]
+                .spacing(12)
+                .align_y(Center);
+                button(item)
+                    .padding([8, 12])
+                    .width(Fill)
+                    .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 6.0))
+                    .on_press(UiMessage::Accounts(accounts::Msg::SendLink(id.clone())))
+                    .into()
+            });
+            container(Column::with_children(items)).padding(4).width(240).style(bordered_box(
+                p.card,
+                p.prefs_border,
+                1.0,
+                10.0,
+            ))
+        });
+        Some(column![trigger].push(menu).spacing(4).align_x(Center).into())
     }
 
     fn device_list<'a>(&self, title: &'a str, list: &[&DeviceInfo]) -> El<'a> {
@@ -1314,7 +1366,7 @@ impl BeeperGuiApp {
                     .map(|(title, list)| self.device_list(title, &list))
                     .collect(),
                 };
-                let page = column![self.take_beeper(), Space::new().height(8)].extend(lists);
+                let page = column![self.take_beeper(st), Space::new().height(8)].extend(lists);
                 vec![page.into()]
             }
             SettingsTab::BeeperPlus => vec![group(

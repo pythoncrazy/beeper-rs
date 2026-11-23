@@ -696,6 +696,8 @@ impl BeeperGuiApp {
             )));
             let category = interned(trf("%s Account", &[&crate::network_label(a)]));
             v.push(cmd(category, mute_title.replacen("%s", &user, 1), mute));
+            let me = crate::can_message_self(st, a).then(|| UiMessage::Accounts(accounts::Msg::MessageSelf(a.into())));
+            v.push(cmd(category, tr("Message yourself"), me).keys(&["saved messages"]));
             let later = self.pane.editing_message_id.is_none().then_some(UiMessage::Scheduled(scheduled::Msg::Open));
             let later = cmd(trx("Message", "Command bar category"), tr("Send later"), later);
             v.push(later.keys(&["schedule", "past", "future", "time"]).hotkey("Message: Send Later"));
