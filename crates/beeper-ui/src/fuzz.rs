@@ -7610,6 +7610,44 @@ fn chat_info_contact_like_desktop() {
     assert!(matches!(&msgs[..], [UiMessage::SelectChat(c)] if c == "!sg_lena:beeper.com"));
 }
 
+/// Desktop's identity header of a DM (`v0e`): the username, the phone number and the email each start a line, since
+/// the phone number and the email are `div`s, and a click on the email opens its `EmailAddress` menu. A merged chat
+/// shows none of them.
+#[test]
+fn chat_info_identifiers_like_desktop() {
+    let mut app = demo_app("chat-info-identifiers");
+    let id = "!im_jordan:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(id.into()));
+    {
+        let mut st = app.store.write();
+        let i = st.chat_idx(id);
+        let u = st.chats[i].participants.items.iter_mut().find(|u| u.is_self != Some(true)).expect("Jordan");
+        u.phone_number = Some("+14155550123".into());
+    }
+    let msgs: Vec<UiMessage> = {
+        let mut sim = tall(app.view_info());
+        let mut y = |s: &str| sim.find(s).unwrap_or_else(|_| panic!("{s} shows")).bounds().y;
+        let (name, phone, email) = (y("@jordan"), y(&fmt_phone("+14155550123")), y("jordan@example.com"));
+        assert!(name < phone && phone < email, "one line each: {name} {phone} {email}");
+        let _ = sim.click("jordan@example.com").expect("the email");
+        sim.into_messages().collect()
+    };
+    let menu = format!("contact:{id} email");
+    assert!(matches!(&msgs[..], [UiMessage::ChatList(chat_list::Msg::OpenMenu(m))] if *m == menu));
+    {
+        let mut st = app.store.write();
+        let i = st.chat_idx(id);
+        let merge = ChatMergeInfo { chat_ids: vec![id.into(), "!sg_lena:beeper.com".into()], default_chat_id: None };
+        st.update_chat(i, |c| c.merge = Some(merge));
+    }
+    let mut sim = tall(app.view_info());
+    let below = |sim: &mut Simulator<'_, UiMessage>, s: &str| {
+        let contact = sim.find("Contact").map_or(0.0, |c| c.bounds().y);
+        sim.find(s).map_or(true, |e| e.bounds().y > contact)
+    };
+    assert!(below(&mut sim, "@jordan") && below(&mut sim, "jordan@example.com"), "a merged chat has no identity line");
+}
+
 #[test]
 fn chat_info_media_like_desktop() {
     let mut app = demo_app("chat-info-media");
