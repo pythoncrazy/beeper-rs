@@ -451,7 +451,7 @@ impl BeeperGuiApp {
             self.as_media(close);
         }
         let closed = |id: &window::Id| self.chat_windows.iter().any(|w| w.0 == *id && w.1.carousel.is_none());
-        Task::batch(self.carousel_windows.iter().filter(|w| closed(&w.0)).map(|w| window::close(w.0)))
+        Task::batch(self.carousel_windows.iter().filter(|w| closed(&w.0)).map(|w| self.close_window(w.0)))
     }
 
     /// Runs `f` as the Media window, whose carousel is its viewer.
@@ -1463,7 +1463,7 @@ impl BeeperGuiApp {
             }
             Msg::Open => {
                 if let Some(w) = &self.media_window {
-                    return window::gain_focus(w.id);
+                    return self.raise(w.id);
                 }
                 // Desktop's `media-viewer` window state.
                 let settings = self.saved_window_settings("media-viewer", Size::new(1000.0, 720.0));

@@ -8768,6 +8768,108 @@ fn window_changes_save_the_state_after_the_last_one_like_desktop() {
     assert_eq!((task.units(), app.state_changes), (0, n), "a window without a state saves nothing");
 }
 
+/// The window actions of `task`, run like iced would with windows that are `size`, of which `maximized` are maximized,
+/// and the messages that it outputs.
+fn run_window_actions(task: Task<UiMessage>, size: Size, maximized: &[window::Id]) -> (Vec<String>, Vec<UiMessage>) {
+    use iced::futures::StreamExt;
+    use iced_runtime::window::Action as W;
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else { return Default::default() };
+    let (mut done, mut out) = (Vec::new(), Vec::new());
+    iced::futures::executor::block_on(async {
+        while let Some(action) = stream.next().await {
+            match action {
+                iced_runtime::Action::Output(m) => out.push(m),
+                iced_runtime::Action::Window(W::GetMaximized(id, tx)) => drop(tx.send(maximized.contains(&id))),
+                iced_runtime::Action::Window(W::GetSize(_, tx)) => drop(tx.send(size)),
+                iced_runtime::Action::Window(W::GetPosition(_, tx)) => drop(tx.send(None)),
+                iced_runtime::Action::Window(W::Close(id)) => done.push(format!("close {id:?}")),
+                iced_runtime::Action::Window(W::SetMode(id, mode)) => done.push(format!("mode {id:?} {mode:?}")),
+                iced_runtime::Action::Window(W::Open(id, s, tx)) => {
+                    done.push(format!("open {id:?} {}x{} {}", s.size.width, s.size.height, s.maximized));
+                    let _ = tx.send(id);
+                }
+                _ => {}
+            }
+        }
+    });
+    (done, out)
+}
+
+/// On Wayland, where winit cannot hide a window, the close of the main window closes the windows of the app in iced,
+/// like Electron's `hide` unmaps them, and keeps the app and all its state. Showing the app opens the main window again
+/// under the same ID with its saved size and maximized state, and showing all windows opens the others again too.
+#[test]
+fn wayland_hides_windows_by_closing_them_like_electron() {
+    use beeper_core::platform::DisplayServerKind;
+    let mut app = demo_app("wayland-unmap");
+    app.display_server = DisplayServerKind::Wayland;
+    let main = app.main_window.expect("the main window");
+    // The boot opened the main window before the test switched to Wayland.
+    app.opened.push((main, app.main_window_settings()));
+    let _ = app.update(UiMessage::Window(windows::Msg::OpenChat(beeper_core::store::NOTE_CHAT_ID.into())));
+    let chat = app.chat_windows.last().expect("a chat window").0;
+    let chat_pane = app.chat_windows.last().unwrap().1.selected_chat_id.clone();
+    let selected = app.pane.selected_chat_id.clone();
+
+    let close = app.update(UiMessage::Window(windows::Msg::CloseRequested(main)));
+    assert!(app.hidden);
+    let (done, out) = run_window_actions(close, Size::new(900.0, 640.0), &[main]);
+    assert_eq!(done, [format!("close {chat:?}"), format!("close {main:?}")], "the chat window hides first");
+    for m in out {
+        let _ = app.update(m);
+    }
+    let path = app.store.read().config.data_dir.join("window.json");
+    let saved = crate::windows::read_window_state(&path);
+    assert_eq!(saved["windowState"]["main"]["isMaximized"], true, "the main window saved its state as it hid");
+    // iced reports the closes, which neither quit nor forget the windows.
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(chat)));
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(main)));
+    assert_eq!((app.main_window, app.pane.selected_chat_id.clone()), (Some(main), selected));
+    assert_eq!(app.chat_windows.iter().find(|w| w.0 == chat).map(|w| w.1.selected_chat_id.clone()), Some(chat_pane));
+    assert_eq!(app.unmapped.len(), 2);
+
+    // A later launch shows the main window: the same ID opens again, maximized like it hid.
+    let show = app.update(UiMessage::Window(windows::Msg::SecondInstance(Vec::new())));
+    let (done, _) = run_window_actions(show, Size::new(900.0, 640.0), &[main]);
+    let open: Vec<_> = done.iter().filter(|a| a.starts_with("open")).collect();
+    assert_eq!(open.len(), 1, "only the main window shows: {done:?}");
+    assert!(open[0].starts_with(&format!("open {main:?} 1200x800 true")), "{done:?}");
+    assert!(!app.hidden && app.unmapped.iter().all(|w| w.0 != main));
+
+    // The tray's click shows all windows: the chat window opens again at the size that it had.
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(true)));
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(false)));
+    let all = app.show_all();
+    let (done, _) = run_window_actions(all, Size::new(900.0, 640.0), &[]);
+    assert!(done[0].starts_with(&format!("open {chat:?} 900x640 false")), "{done:?}");
+    assert!(app.unmapped.is_empty());
+
+    // A window that the app closes while it hides is only forgotten, since iced has no window to close.
+    let _ = app.set_hidden(true);
+    assert_eq!(app.unmapped.len(), 2);
+    let close = app.close_window(chat);
+    let (done, out) = run_window_actions(close, Size::new(900.0, 640.0), &[]);
+    assert!(done.is_empty());
+    for m in out {
+        let _ = app.update(m);
+    }
+    assert!(app.chat_windows.iter().all(|w| w.0 != chat) && app.unmapped.len() == 1, "the chat window is gone");
+}
+
+/// On X11 the windows hide and show as they are.
+#[test]
+fn x11_hides_windows_in_place() {
+    use beeper_core::platform::DisplayServerKind;
+    let mut app = demo_app("x11-hide");
+    app.display_server = DisplayServerKind::X11;
+    let main = app.main_window.expect("the main window");
+    let (done, _) = run_window_actions(app.set_hidden(true), Size::new(900.0, 640.0), &[]);
+    assert_eq!(done, [format!("mode {main:?} Hidden")]);
+    let (done, _) = run_window_actions(app.set_hidden(false), Size::new(900.0, 640.0), &[]);
+    assert_eq!(done, [format!("mode {main:?} Windowed")]);
+    assert!(app.unmapped.is_empty() && app.opened.is_empty());
+}
+
 #[test]
 fn main_window_keeps_its_state_like_desktop() {
     let mut app = demo_app("windowstate");

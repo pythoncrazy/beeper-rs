@@ -47,8 +47,8 @@ use iced::widget::{
     Row, Space, Stack,
 };
 use iced::{
-    border, mouse, window, Bottom, Center, Color, Fill, Length, Padding, Pixels, Point, Right, Shadow, Size, Task,
-    Theme, Vector,
+    border, mouse, Bottom, Center, Color, Fill, Length, Padding, Pixels, Point, Right, Shadow, Size, Task, Theme,
+    Vector,
 };
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -3722,7 +3722,7 @@ impl BeeperGuiApp {
             Msg::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
             Msg::OpenPollVotes(chat, mid) => {
                 if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
-                    return window::gain_focus(w.0);
+                    return self.raise(w.0);
                 }
                 let (id, open) = self.open_child(Size::new(342.0, 563.0));
                 self.vote_windows.push((id, chat, mid));
@@ -3977,7 +3977,7 @@ impl BeeperGuiApp {
                 return iced::clipboard::write(url);
             }
             Msg::GoTo(chat, mid) => {
-                let main = window::gain_focus(self.main_window.expect("the main window is open"));
+                let main = self.raise(self.main_window.expect("the main window is open"));
                 return Task::batch([self.update(UiMessage::CommandBar(commands::Msg::JumpTo(chat, mid))), main]);
             }
             Msg::Download(mid, only) => {
@@ -4280,6 +4280,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use iced::window;
     use iced_test::simulator::simulator;
 
     /// Desktop's right click on a selection: it acts on all the selected messages, and a right click outside the

@@ -43,7 +43,7 @@ impl BeeperGuiApp {
     pub(crate) fn update_enter_key(&mut self, msg: KeyMsg) -> Task<UiMessage> {
         let k = &mut self.enter_key;
         match msg {
-            KeyMsg::Open if k.window.is_some() => return k.window.map_or_else(Task::none, window::gain_focus),
+            KeyMsg::Open if let Some(w) = k.window => return self.raise(w),
             KeyMsg::Open => {
                 let (id, open) = self.open_child(SIZE);
                 self.enter_key = EnterKey { window: Some(id), ..EnterKey::default() };
