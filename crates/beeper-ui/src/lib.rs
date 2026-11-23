@@ -4145,6 +4145,32 @@ impl BeeperGuiApp {
         }
     }
 
+    /// The room of the open chat and Chat Info in the main window (Desktop's `.subheader-content`): the window less
+    /// the sidebar, or the 8 px frame where it hides, the 8 px frame on the right, and the 8 px gap between the two.
+    fn chat_room(&self) -> f32 {
+        let left = if self.sidebar_shown() { self.left_width() } else { 8.0 };
+        self.pane.size.width - left - 8.0 - 8.0
+    }
+
+    /// The width of Desktop's `.thread-info` beside the chat: it shares the room with the chat (`flex: 1` both),
+    /// up to its `max-width: 300px`, so a narrow window gives each half of it.
+    pub(crate) fn info_width(&self) -> f32 {
+        (self.chat_room() / 2.0).clamp(0.0, 300.0)
+    }
+
+    /// The width of Desktop's `.conversation` of the pane that `view` draws: in the main window, the room less Chat
+    /// Info while it shows; in a chat window or beside a thread, the window less its 8 px frame.
+    pub(crate) fn conversation_width(&self) -> f32 {
+        let main = self.drawing.get().is_none() && !self.drawing_thread.get();
+        if !main || self.pane.thread.is_some() || !self.selection.is_empty() {
+            return self.pane().size.width - 16.0;
+        }
+        match self.show_right_panel {
+            true => self.chat_room() - self.info_width(),
+            false => self.chat_room() + 8.0,
+        }
+    }
+
     /// The width of the chat list: Desktop's `threads` width, which takes the space of a hidden space bar.
     fn list_width(&self, st: &BeeperStore) -> f32 {
         self.sidebar_width + if st.settings.on("showSidebar") && !self.list().locked { 0.0 } else { 68.0 }
