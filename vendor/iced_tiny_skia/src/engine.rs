@@ -622,14 +622,32 @@ impl Engine {
     ) {
         match image {
             #[cfg(feature = "image")]
-            Image::Raster { image, bounds, .. } => {
+            Image::Raster {
+                image,
+                bounds,
+                clip_bounds,
+            } => {
                 let physical_bounds = *bounds * _transformation;
+                // The image's own clip bounds (the widget's bounds for a
+                // `ContentFit::Cover` image, which is larger than its box),
+                // within the layer's.
+                let Some(effective_clip) = (*clip_bounds * _transformation)
+                    .intersection(&_clip_bounds)
+                else {
+                    return;
+                };
 
-                if !_clip_bounds.intersects(&physical_bounds) {
+                if !effective_clip.intersects(&physical_bounds) {
                     return;
                 }
 
-                let clip_mask = (!physical_bounds.is_within(&_clip_bounds))
+                let needs_custom_mask = effective_clip != _clip_bounds
+                    && !physical_bounds.is_within(&effective_clip);
+                if needs_custom_mask {
+                    adjust_clip_mask(_clip_mask, effective_clip);
+                }
+
+                let clip_mask = (!physical_bounds.is_within(&effective_clip))
                     .then_some(_clip_mask as &_);
 
                 let center = physical_bounds.center();
@@ -650,16 +668,38 @@ impl Engine {
                     transform,
                     clip_mask,
                 );
+
+                if needs_custom_mask {
+                    adjust_clip_mask(_clip_mask, _clip_bounds);
+                }
             }
             #[cfg(feature = "svg")]
-            Image::Vector { svg, bounds, .. } => {
+            Image::Vector {
+                svg,
+                bounds,
+                clip_bounds,
+            } => {
                 let physical_bounds = *bounds * _transformation;
+                // The image's own clip bounds (the widget's bounds for a
+                // `ContentFit::Cover` image, which is larger than its box),
+                // within the layer's.
+                let Some(effective_clip) = (*clip_bounds * _transformation)
+                    .intersection(&_clip_bounds)
+                else {
+                    return;
+                };
 
-                if !_clip_bounds.intersects(&physical_bounds) {
+                if !effective_clip.intersects(&physical_bounds) {
                     return;
                 }
 
-                let clip_mask = (!physical_bounds.is_within(&_clip_bounds))
+                let needs_custom_mask = effective_clip != _clip_bounds
+                    && !physical_bounds.is_within(&effective_clip);
+                if needs_custom_mask {
+                    adjust_clip_mask(_clip_mask, effective_clip);
+                }
+
+                let clip_mask = (!physical_bounds.is_within(&effective_clip))
                     .then_some(_clip_mask as &_);
 
                 let center = physical_bounds.center();
@@ -680,6 +720,10 @@ impl Engine {
                     transform,
                     clip_mask,
                 );
+
+                if needs_custom_mask {
+                    adjust_clip_mask(_clip_mask, _clip_bounds);
+                }
             }
             #[cfg(not(feature = "image"))]
             Image::Raster { .. } => {
