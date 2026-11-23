@@ -4998,7 +4998,13 @@ impl BeeperGuiApp {
                 return Task::batch(tasks);
             }
             UiMessage::RoomJoined(r) => self.room_joined(r),
-            UiMessage::Online(on) => self.online = on,
+            UiMessage::Online(on) => {
+                // Desktop's `online` listener: when the network comes back, the connections of the old one reset.
+                let was = std::mem::replace(&mut self.online, on);
+                if on && !was && self.store.read().matrix.is_some() {
+                    return Task::future(beeper_core::matrix::reset_network_connections(self.store.clone())).discard();
+                }
+            }
             UiMessage::PillHover(on) => self.pill_hover = on,
             UiMessage::Login(m) => {
                 let screen = self.login.screen;
