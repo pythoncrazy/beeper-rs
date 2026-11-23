@@ -467,7 +467,8 @@ mod tests {
     #[test]
     fn workers_draw_the_frames_that_show() {
         let a = std::sync::Arc::new(Animation::new(include_bytes!("../assets/onboarding/key.json")));
-        assert!(!a.want(3, (64, 64)) && a.drawn((64, 64)).is_none(), "a worker draws it");
+        // The worker may draw the frame at once, so only the ask is checked here.
+        assert!(!a.want(3, (64, 64)), "a worker draws it");
         let t = std::time::Instant::now();
         while a.drawn((64, 64)).is_none() {
             assert!(t.elapsed() < Duration::from_secs(10), "the worker draws the frame");

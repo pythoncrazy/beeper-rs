@@ -263,9 +263,9 @@ impl BeeperGuiApp {
         Task::batch([show].into_iter().chain(again))
     }
 
-    /// Desktop's `showThreadNotification` of a due reminder or an ended snooze: `body` under the chat title.
+    /// Desktop's `showThreadNotification` of a due reminder or an ended snooze: `body` under the combined title.
     pub(crate) fn notify_thread(&mut self, chat: &Chat, message: &str, body: String) -> Task<UiMessage> {
-        let toast = Toast { title: chat.title.clone(), body, ..Toast::default() };
+        let toast = Toast { title: chat.combined_title(), body, ..Toast::default() };
         self.show_note(Note { chat: chat.id.clone(), message: message.into(), toast }, false)
     }
 
@@ -315,7 +315,7 @@ impl BeeperGuiApp {
             let Some(p) = c.participants.items.iter().find(|p| p.id == user) else { continue };
             let name = p.full_name.as_deref().expect("members have a name");
             let body = if c.chat_type == "group" { format!("{name} is typing...") } else { "typing...".into() };
-            let toast = Toast { title: c.title.clone(), body, ..Toast::default() };
+            let toast = Toast { title: c.combined_title(), body, ..Toast::default() };
             notes.push(Note { chat: chat.clone(), message: String::new(), toast });
         }
         drop(st);
@@ -407,7 +407,7 @@ impl BeeperGuiApp {
             let replies = chat.messages.reply || st.threaded(chat);
             reply = (account.previews && !chat.is_read_only && replies).then(|| crate::i18n::tr("Reply").to_string());
         }
-        let toast = Toast { title: shown_as.title.clone(), body, silent, buttons, reply };
+        let toast = Toast { title: shown_as.combined_title(), body, silent, buttons, reply };
         Some((Note { chat: shown_as.id.clone(), message: m.id.clone(), toast }, otp))
     }
 
@@ -518,13 +518,19 @@ fn emit(id: u32, action: Option<String>) {
 static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::const_new();
 
 /// Notification servers send the click signals to the connection that showed the notification. zbus runs on the
-/// tokio runtime that iced drives the tasks on, so a task that runs without one, like in a test, has no bus.
+/// tokio runtime that iced drives the tasks on, so a task that runs without one has no bus. The tests talk to a bus of
+/// their own, [`crate::test_bus`], on its own runtime.
 #[cfg(target_os = "linux")]
 pub(crate) async fn bus() -> Result<&'static zbus::Connection, String> {
+    #[cfg(not(test))]
     if tokio::runtime::Handle::try_current().is_err() {
         return Err("D-Bus needs the tokio runtime".into());
     }
-    BUS.get_or_try_init(zbus::Connection::session).await.map_err(|e| e.to_string())
+    #[cfg(not(test))]
+    let connect = zbus::Connection::session;
+    #[cfg(test)]
+    let connect = crate::test_bus::connect;
+    BUS.get_or_try_init(connect).await.map_err(|e| e.to_string())
 }
 
 /// Shows a notification that a click opens, and returns its ID.
@@ -687,6 +693,31 @@ mod tests {
         event(&mut app, format!("{REPLY}on my way"));
         let sent = app.store.read().timeline(&chat.id).any(|m| m.text.as_deref() == Some("on my way"));
         assert!(sent, "a reply sends to the chat");
+    }
+
+    /// Desktop's `combinedTitle` in its notifications of a message, a typing user and a reminder, and in its "Delete
+    /// %s": the network of a bridged chat follows its title, like in the chat list. A failed send keeps the title.
+    #[test]
+    fn notifications_name_the_network_like_desktop() {
+        let mut app = crate::fuzz::demo_app("network-title");
+        let (chat, mut m) = {
+            let st = app.store.read();
+            let c = st.chats.iter().find(|c| c.chat_type == "group" && c.account_id != "hungryserv");
+            let c = c.expect("a demo group").clone();
+            let m = st.timeline(&c.id).find(|m| m.is_sender != Some(true));
+            (c, m.expect("a received message").clone())
+        };
+        (m.id, m.timestamp) = ("$new".into(), "2099-01-01T00:00:00.000Z".into());
+        let idx = app.store.read().chat_idx(&chat.id);
+        app.store.write().update_chat(idx, |c| c.network_name = Some("Acme Corp ".into()));
+        let title = format!("{} • Acme Corp", chat.title);
+        let (note, _) = app.notification(&m).expect("a notification");
+        assert_eq!(note.toast.title, title);
+        assert_eq!(app.store.read().chat(&chat.id).combined_title(), title);
+        app.store.write().update_chat(idx, |c| c.network_name = Some(String::new()));
+        m.id = "$newer".into();
+        let (note, _) = app.notification(&m).expect("a notification");
+        assert_eq!(note.toast.title, chat.title, "an empty network adds nothing");
     }
 
     fn attachment(kind: &str, file: Option<&str>) -> Attachment {

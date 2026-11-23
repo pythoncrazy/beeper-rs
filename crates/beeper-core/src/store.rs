@@ -2622,6 +2622,24 @@ impl BeeperStore {
         }
     }
 
+    /// The users who type in `chat`, other than you, from its `m.typing`.
+    pub fn set_typing(&mut self, chat: &str, ids: Vec<String>) {
+        let old = match ids.is_empty() {
+            true => self.typing.remove(chat),
+            false => self.typing.insert(chat.to_string(), ids.clone()),
+        };
+        if old.unwrap_or_default() != ids {
+            self.emit_ws("chat.typing", chat, None, None, None);
+        }
+    }
+
+    /// Desktop's `onUserActivityStopped` of `onNewMessages`: a new message of a user who types ends their typing, also
+    /// when their client did not end the notice.
+    pub fn stop_typing(&mut self, chat: &str, senders: &[String]) {
+        let ids = self.typing.get(chat).into_iter().flatten().filter(|u| !senders.contains(u)).cloned().collect();
+        self.set_typing(chat, ids);
+    }
+
     pub fn emit_ws(
         &self,
         event_type: &str,
