@@ -3801,11 +3801,14 @@ pub fn bridge_user(v: &Value) -> User {
 pub enum ChatBridge {
     Matrix(SharedStore),
     Cloud(Provision),
+    /// The demo's stand-in for the bridges of an account: it makes local chats and asks no server.
+    Demo(SharedStore, String),
 }
 
 impl ChatBridge {
     pub fn of(store: &SharedStore, account_id: &str) -> Self {
         match account_id {
+            _ if store.read().config.demo => ChatBridge::Demo(store.clone(), account_id.into()),
             "hungryserv" => ChatBridge::Matrix(store.clone()),
             _ => ChatBridge::Cloud(store.read().provision(account_id)),
         }
@@ -3816,40 +3819,73 @@ impl ChatBridge {
         match self {
             ChatBridge::Matrix(_) => Ok(matrix_capabilities()),
             ChatBridge::Cloud(p) => capabilities(p).await,
+            ChatBridge::Demo(_, account) if account == "hungryserv" => Ok(matrix_capabilities()),
+            ChatBridge::Demo(..) => Ok(demo_capabilities()),
         }
     }
 
-    /// The users that match a name: the homeserver's user directory, or the bridge's `search_users`.
+    /// The users that match a name: the homeserver's user directory, or the bridge's `search_users`. The demo finds
+    /// no one, like a bridge that does not answer.
     pub async fn search_users(self, query: String) -> Result<Vec<User>, String> {
         match self {
             ChatBridge::Matrix(store) => search_matrix_users(store, query).await,
             ChatBridge::Cloud(p) => Ok(search_users(p, query).await?.iter().map(bridge_user).collect()),
+            ChatBridge::Demo(..) => Ok(Vec::new()),
         }
     }
 
-    /// The user of a phone number, email, username or user ID, as a bridge reply.
+    /// The user of a phone number, email, username or user ID, as a bridge reply. The demo knows no one.
     pub async fn resolve_identifier(self, identifier: String) -> Result<Option<Value>, String> {
         match self {
             ChatBridge::Matrix(store) => resolve_matrix_user(store, identifier).await,
             ChatBridge::Cloud(p) => resolve_identifier(p, identifier).await,
+            ChatBridge::Demo(..) => Ok(None),
         }
     }
 
-    /// The room of a direct chat with `identifier`.
+    /// The room of a direct chat with `identifier`. The demo makes a local chat with the person, whom another chat
+    /// of the account can know.
     pub async fn create_dm(self, identifier: String) -> Result<String, String> {
         match self {
             ChatBridge::Matrix(store) => create_matrix_dm(store, identifier).await,
             ChatBridge::Cloud(p) => create_dm(p, identifier).await,
+            ChatBridge::Demo(store, account) => {
+                let mut st = store.write();
+                let mut people =
+                    st.chats.iter().filter(|c| c.account_id == account).flat_map(|c| &c.participants.items);
+                let known = people.find(|u| u.id == identifier).cloned();
+                let name = known.as_ref().and_then(|u| u.full_name.clone());
+                let id = st.create_or_start_chat(&account, "single", name, vec![identifier], None, None, None).0.id;
+                if let Some(user) = known {
+                    let idx = st.resolve_chat_idx(&id).expect("the new chat");
+                    st.update_chat(idx, |c| c.participants.items[0] = user);
+                }
+                Ok(id)
+            }
         }
     }
 
-    /// The room of a new group of `kind` with the users, named when `name` is not empty.
+    /// The room of a new group of `kind` with the users, named when `name` is not empty. The demo makes a local
+    /// group.
     pub async fn create_group(self, kind: String, name: String, users: Vec<String>) -> Result<String, String> {
         match self {
             ChatBridge::Matrix(store) => create_matrix_group(store, kind, name, users).await,
             ChatBridge::Cloud(p) => create_group(p, kind, name, users).await,
+            ChatBridge::Demo(store, account) => {
+                let title = Some(name).filter(|n| !n.is_empty());
+                Ok(store.write().create_or_start_chat(&account, "group", title, users, None, None, None).0.id)
+            }
         }
     }
+}
+
+/// The provisioning capabilities of the demo's accounts: direct chats with any phone number, and named groups of
+/// two people or more.
+pub fn demo_capabilities() -> Value {
+    serde_json::json!({
+        "resolve_identifier": { "create_dm": true, "any_phone": true },
+        "group_creation": { "group": { "name": { "allowed": true }, "participants": { "min_length": 2 } } },
+    })
 }
 
 /// Desktop SDK's `GetProvisioningCapabilities` of its `matrix` pseudo-bridge, which Desktop's
@@ -4043,7 +4079,7 @@ pub(crate) async fn connect(store: &SharedStore) -> Result<Client, String> {
         backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
         auto_enable_backups: true,
     };
-    let builder = Client::builder().homeserver_url(&s.homeserver).sqlite_store(dir, None);
+    let builder = crate::net::matrix_client()?.homeserver_url(&s.homeserver).sqlite_store(dir, None);
     let builder = builder.with_encryption_settings(encryption);
     #[cfg(any(test, feature = "stub"))]
     let builder = match STUB_CLIENTS.load(std::sync::atomic::Ordering::Relaxed) {

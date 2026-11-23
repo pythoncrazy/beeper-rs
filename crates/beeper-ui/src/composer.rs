@@ -954,10 +954,16 @@ impl BeeperGuiApp {
         if !can || st.settings.on("noOutgoingLinkPreviews") {
             return Task::none();
         }
+        let demo = st.config.demo;
         drop(st);
         let mut tasks = Vec::new();
         for url in urls {
             if self.pane.composer_links.iter().all(|(u, _)| *u != url) {
+                // The demo loads no page: its links are like pages without a preview.
+                if demo {
+                    self.pane.composer_links.push((url, LinkState::Discarded));
+                    continue;
+                }
                 self.pane.composer_links.push((url.clone(), LinkState::Loading));
                 let load = beeper_core::cloud::link_preview(url.clone());
                 tasks.push(Task::perform(load, move |r| UiMessage::Composer(Msg::LinkPreviewLoaded(url, r))));

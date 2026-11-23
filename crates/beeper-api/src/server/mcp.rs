@@ -579,6 +579,10 @@ fn call(
         _ => (path, serde_json::to_vec(&args).expect("serialize tool arguments")),
     };
     let (status, bytes) = if target.starts_with("https://") {
+        // The demo fetches no page.
+        if cloud.offline {
+            return Err(beeper_core::net::OFFLINE_ERROR.into());
+        }
         (200, tokio::runtime::Handle::current().block_on(beeper_core::cloud::http_bytes(&target))?)
     } else {
         let headers = [("content-type", "application/json"), ("accept", "application/json")];
