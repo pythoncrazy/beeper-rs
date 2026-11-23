@@ -1014,8 +1014,10 @@ impl BeeperGuiApp {
         match msg {
             Msg::ChatSub(sub) => self.chat_sub = sub,
             Msg::TogglePalette => {
+                // Desktop's `reset` empties the input each time the bar closes, so it opens empty.
                 if !self.show_command_palette {
                     self.search_filters = SearchFilters::default();
+                    self.command_palette_query.clear();
                 }
                 self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
                 (self.cmd_bar_commands_mode, self.cmd_index, self.cmd_submenu) = (false, 0, None);
@@ -1026,6 +1028,11 @@ impl BeeperGuiApp {
                 }
             }
             Msg::SearchRoom(cid) => {
+                // Desktop's `showSearch` keeps the text of an open bar, but resets a submenu, and `reset` emptied a
+                // closed bar.
+                if !self.show_command_palette || self.cmd_submenu.is_some() {
+                    self.command_palette_query.clear();
+                }
                 (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, false, None);
                 (self.search_room, self.list.chat_menu) = (Some(cid), None);
                 self.search_filters.accounts.clear();
