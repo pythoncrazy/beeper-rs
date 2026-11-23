@@ -2342,29 +2342,40 @@ impl BeeperGuiApp {
                         .style(fill_box(Color::BLACK.scale_alpha(alpha), 17.0))
                         .into()
                     };
-                    // A cropped still shows from a baked cut (the renderer draws `Cover` and crops past their box).
-                    let cut = |u: &String| self.cover_tile(u, (w.round() as u32, h.round() as u32));
-                    let cut = thumb_url.as_ref().filter(|_| cover && !looped).and_then(cut);
                     // Desktop's `<img>`, whose right click gives the menu its image items.
                     let img = !is_video && matches!(thumb_url.as_ref().and_then(|u| self.media_at(u)), Some(Ok(_)));
-                    let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media_at(u)) {
-                        Some(Ok(_)) if let Some(t) = cut => image(t.clone()).width(w).height(h).into(),
-                        Some(Ok(frames)) => {
+                    // A cropped image shows from a baked cut, as the renderer draws `Cover` past its box: a still, or
+                    // the frames of an animation once a worker cut them. Until then the whole image shows.
+                    let px = (w.round() as u32, h.round() as u32);
+                    let base: El<'_> = match thumb_url.as_ref().and_then(|u| Some((u, self.media_at(u)?))) {
+                        Some((url, Ok(frames)))
+                            if cover
+                                && frames.len() == 1
+                                && let Some(t) = self.cover_tile(url, px) =>
+                        {
+                            image(t.clone()).width(w).height(h).into()
+                        }
+                        Some((url, Ok(frames))) => {
+                            let cut = (cover && frames.len() > 1).then(|| self.cover_frames(url, px)).flatten();
                             let autoplay = st.settings.on("autoplayGifs");
                             let played = self.pane().played_gifs.get(&(m.id.clone(), ai)).filter(|_| !autoplay);
                             let (play, start) = match played {
                                 Some(&at) => (self.shows(), at),
                                 None => (self.autoplays(st), self.started),
                             };
-                            let gif = anim::gif(frames, play, start, move |f| {
-                                image(f).width(w).height(h).border_radius(17.0)
-                            });
+                            let gif = match cut {
+                                // The cut has the corners of the bubble.
+                                Some(cut) => anim::gif(cut, play, start, move |f| image(f).width(w).height(h)),
+                                None => anim::gif(frames, play, start, move |f| {
+                                    image(f).width(w).height(h).border_radius(17.0)
+                                }),
+                            };
                             match !autoplay && frames.len() > 1 {
                                 true => gif_toggle(gif, played.is_some(), Msg::ToggleGif(m.id.clone(), ai)),
                                 false => gif,
                             }
                         }
-                        Some(Err(_)) if m.unresolved_media.is_none() => self.image_error(w, h, 17.0),
+                        Some((_, Err(_))) if m.unresolved_media.is_none() => self.image_error(w, h, 17.0),
                         _ => container(ic(icon::IMAGE, 28.0).color(p.sub))
                             .center_x(w)
                             .center_y(h)
@@ -4928,6 +4939,90 @@ pub(crate) mod tests {
         let see_through = mix(Color::WHITE, app.pal.link_card, 0.5);
         assert!(close((6, 16), see_through) && close((6, 50), see_through), "Desktop's half gray-40 bubbles");
         assert!(close((6, 84), app.pal.received));
+    }
+
+    /// Desktop's `object-fit: cover` of a very tall GIF (`kf`): the 160 by 400 box is full, and the GIF plays. A worker
+    /// cuts its frames to the box with the corners of the bubble, and until then the whole GIF shows.
+    #[test]
+    fn cropped_gifs_play_like_desktop() {
+        let mut app = crate::fuzz::demo_app("cropped-gif");
+        app.pane.size = Size::new(900.0, 700.0);
+        let mid = plain_received(&app, "");
+        let url = "mxc://x/tall-gif".to_string();
+        change(&app, &mid, |m| {
+            m.text = None;
+            m.attachments = vec![Attachment {
+                attachment_type: "img".into(),
+                mime_type: Some("image/gif".into()),
+                src_url: Some(url.clone()),
+                size: Some(AttachmentSize { width: Some(100), height: Some(1000) }),
+                ..Default::default()
+            }];
+        });
+        assert_eq!(media_box(900.0, Some((100.0, 1000.0)), 0.45), (160.0, 400.0, true), "a very tall GIF crops");
+        let fill = |c: [u8; 4]| image::Handle::from_rgba(100, 1000, c.repeat(100 * 1000));
+        let (red, blue) = (0xff0000, 0x0000ff);
+        let frames = crate::Frames::from([(fill([255, 0, 0, 255]), 1000), (fill([0, 0, 255, 255]), 1000)]);
+        app.media.insert(url.clone(), Some(Ok(frames.clone())));
+        // The width of the pixels of a color, at 2x.
+        let wide = |shot: &::image::RgbaImage, c: u32| {
+            let xs: Vec<u32> = spots(shot, c).into_iter().map(|p| p.0).collect();
+            xs.iter().max().zip(xs.iter().min()).map_or(0, |(a, b)| a - b + 1)
+        };
+        let at = |app: &mut BeeperGuiApp, ms: u64| {
+            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            pixels(&mut alone(app, &mid))
+        };
+        let whole = at(&mut app, 0);
+        assert!((70..=90).contains(&wide(&whole, red)), "the whole GIF while its cut waits: {}", wide(&whole, red));
+        let wanted: Vec<_> = std::mem::take(&mut *app.wants.cuts.borrow_mut()).into_iter().collect();
+        assert_eq!(wanted, [(url.clone(), 160, 400)], "the view asks for the cut");
+        let k = format!("160x400 {url}");
+        app.cuts.insert(k, Some(crate::gallery::cut_frames(&frames, (160, 400))));
+        let first = at(&mut app, 0);
+        assert!((300..=322).contains(&wide(&first, red)), "the cut fills the box: {}", wide(&first, red));
+        let second = at(&mut app, 1100);
+        assert!((300..=322).contains(&wide(&second, blue)) && spots(&second, red).is_empty(), "and plays");
+        assert!(matches!(alone_redraw(&app, &mid), window::RedrawRequest::At(_)), "the next frame is due");
+        let iced::advanced::image::Handle::Rgba { pixels, .. } =
+            &app.cuts.get(&format!("160x400 {url}")).unwrap().as_ref().unwrap()[0].0
+        else {
+            panic!("RGBA")
+        };
+        assert_eq!(pixels[3], 0, "a round corner");
+        app.store.write().settings.set_pref("autoplayGifs", 0);
+        let paused = at(&mut app, 1100);
+        assert!(spots(&paused, 0xefeff0).len() > 1000 && spots(&paused, blue).is_empty(), "the first frame, to play");
+    }
+
+    /// When the view of `mid` alone asks to be drawn again after a frame.
+    fn alone_redraw(app: &BeeperGuiApp, mid: &str) -> window::RedrawRequest {
+        use iced::advanced::renderer::Headless as _;
+        let now = std::time::Instant::now();
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            iced::Font::DEFAULT,
+            Pixels(13.0),
+            Some("tiny-skia"),
+        ))
+        .expect("a headless renderer");
+        let st = app.store.read();
+        let m = st.message(mid);
+        let flags = (true, true, Chain::default(), false, false);
+        let view = app.view_message(&st, st.chat(&m.chat_id), &[m], flags, (None, 0), Column::new());
+        let mut ui =
+            iced_runtime::UserInterface::build(view, Size::new(900.0, 400.0), Default::default(), &mut renderer);
+        let redraw = [iced::Event::Window(window::Event::RedrawRequested(now))];
+        let (state, _) = ui.update(
+            &redraw,
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut vec![],
+        );
+        match state {
+            iced_runtime::user_interface::State::Updated { redraw_request, .. } => redraw_request,
+            iced_runtime::user_interface::State::Outdated => panic!("the interface is up to date"),
+        }
     }
 
     /// Desktop's `EnhancedImg` with "Autoplay GIFs" off: a GIF shows its first frame with a play button, and once it

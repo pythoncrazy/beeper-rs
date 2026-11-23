@@ -547,7 +547,7 @@ impl BeeperGuiApp {
         self.media.extend(urls.iter().map(|u| (u.clone(), None)));
         let audio = Task::batch([self.load_audio(), self.auto_transcribe(), self.load_vcards()]);
         let bookmarks = self.load_bookmarks();
-        let tiles = self.bake_tiles();
+        let tiles = Task::batch([self.bake_tiles(), self.cut_animations()]);
         Task::batch(urls.into_iter().map(|url| {
             let (client, u) = (client.clone(), url.clone());
             Task::perform(

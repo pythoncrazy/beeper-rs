@@ -11,6 +11,8 @@ pub enum Msg {
     /// A PDF of the carousel, read from its file.
     Pdf(String, Result<crate::pdf::Doc, String>),
     Tile(String, image::Handle),
+    /// The frames of an animation cut to its inline box.
+    Cut(String, Frames),
     /// A quoted message that the timeline did not have, or why it could not load.
     Quote(String, Result<Box<Message>, String>),
     /// Desktop's `mediaDownloadStore.download`: the interactive download of a media URL, and its end.
@@ -46,6 +48,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::Tile(key, h) => self.tiles.insert(key, Some(h)),
+            Msg::Cut(key, f) => self.cuts.insert(key, Some(f)),
             Msg::Fetch(url) => {
                 if !self.fetching.insert(url.clone()) {
                     return Task::none();
