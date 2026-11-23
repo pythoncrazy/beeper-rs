@@ -214,7 +214,8 @@ impl BeeperGuiApp {
                 (crate::tr("Retry"), UiMessage::Message(message::Msg::RetrySend(m.id.clone()))),
             ];
             self.show(crate::toasts::Toast { buttons, ..crate::toasts::Toast::new(text.clone()) });
-            self.sticky_banner = Some(text);
+            self.sticky_banner = Some(text.clone());
+            self.send_toast = Some((m.id.clone(), text));
         }
         self.show_note(note, false)
     }

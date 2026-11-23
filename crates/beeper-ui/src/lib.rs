@@ -2797,6 +2797,8 @@ pub struct BeeperGuiApp {
     notified: HashSet<String>,
     /// The failed sends that Retry sent again: Desktop shows their error again when they fail again.
     retried: HashSet<String>,
+    /// The failed send whose error toast shows, and its text: Desktop's `retryErroredMessage` closes it.
+    send_toast: Option<(String, String)>,
     notifications: HashMap<u32, (String, String)>,
     pending: notify::Pending,
     pub gif_query: String,
@@ -3130,6 +3132,7 @@ impl BeeperGuiApp {
             focused: false,
             notified: HashSet::new(),
             retried: HashSet::new(),
+            send_toast: None,
             notifications: HashMap::new(),
             pending,
             gif_query: String::new(),
