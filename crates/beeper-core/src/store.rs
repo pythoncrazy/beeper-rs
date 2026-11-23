@@ -3123,7 +3123,6 @@ impl BeeperStore {
             removed_from_beeper(m);
             (m.removed, m.is_edited) = (false, Some(true));
             (m.linked_message_id, m.mentions) = (None, None);
-            m.flags &= !MSG_MENTION;
         });
         if removed {
             self.clean_up_removals(message_id);
@@ -3277,7 +3276,7 @@ impl BeeperStore {
                         mention: false,
                     })
                     .collect();
-                let mention = m.flags & MSG_MENTION != 0;
+                let mention = self.mentions_me(&m);
                 std::iter::once(ThreadRow { key: m.sort_key, id: m.id, mine, mention }).chain(reactions)
             })
             .collect()
@@ -3323,6 +3322,11 @@ impl BeeperStore {
         if event.starts_with('$') {
             self.queue(chat_id, Outgoing::ThreadRead { root: root.into(), event });
         }
+    }
+
+    /// Desktop's mention test of `maybeSendNotification`: the `m.mentions` of the message name the signed-in user.
+    pub fn mentions_me(&self, m: &Message) -> bool {
+        m.mentions_user(&self.beeper_state.user_id)
     }
 
     /// Desktop's `getMessageRequestLastViewedAccountID`: the `<bridge ID>.<login ID>` of the bridge login of a chat,
@@ -3894,6 +3898,45 @@ mod tests {
         assert_eq!(st.settings.pref("appLanguage"), 1, "a signed-in app without a language takes English");
     }
 
+    /// Desktop's `unreadMentionsCount` of a thread and `extra.isNudge`, which the stored messages keep: a reply that
+    /// mentions you counts as a mention when the store reads it back from SQLite, also after a restart.
+    #[test]
+    fn stored_messages_keep_mentions_and_nudges() {
+        let config = crate::testing::demo_config("stored-mentions");
+        let mut st = super::BeeperStore::from_config(config.clone());
+        let chat = st.chats.iter().map(|c| c.id.clone()).find(|c| st.timeline_indices(c).len() > 2).expect("a chat");
+        st.load_chat(&chat);
+        let root = st.messages[st.chat_msg_indices[&chat][0]].clone();
+        let reply = |id: &str, mentions: Vec<String>, n: i64| super::Message {
+            id: id.into(),
+            sort_key: super::sort_key(9_000_000 + n),
+            is_sender: Some(false),
+            sender_id: "@ann:beeper.com".into(),
+            thread_root: Some(root.id.clone()),
+            mentions: Some(mentions),
+            reactions: Vec::new(),
+            ..root.clone()
+        };
+        let me = st.beeper_state.user_id.clone();
+        st.upsert_message(reply("$plain", vec!["@bob:beeper.com".into()], 1));
+        st.upsert_message(super::Message { nudge: true, ..reply("$at", vec![me.clone()], 2) });
+        let idx = st.chat_idx(&chat);
+        st.update_chat(idx, |c| drop(c.thread_reads.insert(root.id.clone(), super::sort_key(1))));
+        let check = |st: &super::BeeperStore| {
+            assert_eq!(st.thread_unread(&st.chats[st.chat_idx(&chat)], &root.id), (2, 1), "one reply mentions you");
+            let stored = st.stored_message("$at").expect("the stored reply");
+            assert!(st.mentions_me(&stored) && stored.nudge, "the stored reply keeps its mention and its nudge");
+            let plain = st.stored_message("$plain").expect("the other reply");
+            assert!(!st.mentions_me(&plain) && !plain.nudge, "the other reply has neither");
+        };
+        check(&st);
+        drop(st);
+        let mut st = super::BeeperStore::from_config(config);
+        check(&st);
+        st.load_chat(&chat);
+        assert!(st.mentions_me(st.message("$at")) && st.message("$at").nudge, "a loaded chat reads them too");
+    }
+
     /// Desktop's `handleRedaction`: a deleted reply leaves its reply line and its mentions, as a redacted event has
     /// neither.
     #[test]
@@ -3903,16 +3946,14 @@ mod tests {
         st.load_chat(&chat);
         let ids: Vec<String> = st.chat_msg_indices[&chat].iter().map(|&i| st.messages[i].id.clone()).collect();
         let (root, reply) = (ids[0].clone(), ids[1].clone());
-        let i = st.find_message(&reply).expect("the reply");
-        st.update_message(i, |m| {
-            (m.linked_message_id, m.mentions) = (Some(root), Some(vec!["@me:beeper.com".into()]));
-            m.flags |= super::MSG_MENTION;
-        });
+        let (i, me) = (st.find_message(&reply).expect("the reply"), st.beeper_state.user_id.clone());
+        st.update_message(i, |m| (m.linked_message_id, m.mentions) = (Some(root), Some(vec![me])));
+        assert!(st.mentions_me(st.message(&reply)), "the reply mentions you");
         st.delete_message(&chat, &reply).unwrap();
         let stored = st.stored("id = ?1", [&reply]).pop().expect("the stored reply");
         for m in [st.message(&reply), &stored] {
             assert_eq!((&m.linked_message_id, &m.mentions), (&None, &None), "a deleted message replies to nothing");
-            assert_eq!(m.flags & super::MSG_MENTION, 0, "and mentions no one");
+            assert!(!st.mentions_me(m), "and mentions no one");
         }
     }
 

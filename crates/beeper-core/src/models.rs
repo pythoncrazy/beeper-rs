@@ -213,10 +213,6 @@ pub const MSG_BOOKMARKED: u16 = 1 << 2;
 pub const MSG_VOICE_NOTE: u16 = 1 << 3;
 pub const MSG_EDITED: u16 = 1 << 5;
 pub const MSG_DELETED: u16 = 1 << 6;
-/// The message mentions the user in `m.mentions`.
-pub const MSG_MENTION: u16 = 1 << 7;
-/// Desktop's `extra.isNudge`: the message is a nudge (`com.beeper.nudge`).
-pub const MSG_NUDGE: u16 = 1 << 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NetworkKind {
@@ -1437,6 +1433,10 @@ pub struct Message {
     /// Desktop's `actionButtons`: the buttons under a message from the [`system_user`].
     #[serde(rename = "actionButtons", default, skip_serializing_if = "Vec::is_empty")]
     pub buttons: Vec<ActionButton>,
+    /// Desktop's `extra.isNudge`: the message is a nudge (`com.beeper.nudge`).
+    #[serde(rename = "isNudge", default, skip_serializing_if = "std::ops::Not::not")]
+    pub nudge: bool,
+    /// The bits that [`Message::sync_flags`] derives from the fields, which the store does not keep.
     #[serde(skip)]
     pub flags: u16,
 }
@@ -1729,6 +1729,11 @@ impl Message {
         self.flags & MSG_DELETED == 0 || self.view_expired
     }
 
+    /// Desktop's `user_id && mentions?.includes(user_id)`: the `m.mentions` of the message name the user `user`.
+    pub fn mentions_user(&self, user: &str) -> bool {
+        !user.is_empty() && self.mentions.iter().flatten().any(|u| u == user)
+    }
+
     /// Desktop's `isThreadOnly` with `threads` on: a thread reply that only its thread shows.
     pub fn thread_only(&self, threads: bool) -> bool {
         threads && self.thread_root.is_some() && !self.broadcast
@@ -1760,8 +1765,6 @@ impl Message {
             (self.attachments.iter().any(|a| a.is_voice_note == Some(true)), MSG_VOICE_NOTE),
             (self.edited(), MSG_EDITED),
             (self.is_deleted == Some(true), MSG_DELETED),
-            (self.flags & MSG_MENTION != 0, MSG_MENTION),
-            (self.flags & MSG_NUDGE != 0, MSG_NUDGE),
         ]);
     }
 }

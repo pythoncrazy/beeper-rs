@@ -129,7 +129,7 @@ impl BeeperGuiApp {
     pub(crate) fn maybe_nudge(&mut self, m: &Message) {
         let st = self.store.read();
         let on = st.feature("nudge").on && st.settings.on("enableNudges") && m.account_id == BEEPER;
-        if !on || m.flags & beeper_core::models::MSG_NUDGE == 0 || self.nudges.seen.contains(&m.id) {
+        if !on || !m.nudge || self.nudges.seen.contains(&m.id) {
             return;
         }
         let at = millis_from_rfc3339(&m.timestamp).unwrap_or(0);
@@ -176,7 +176,7 @@ mod tests {
     }
 
     fn nudge_from(app: &BeeperGuiApp, id: &str, own: bool, ago_ms: i64) -> Message {
-        let mut m = Message {
+        Message {
             id: id.into(),
             account_id: BEEPER.into(),
             chat_id: NOTE_CHAT_ID.into(),
@@ -184,10 +184,9 @@ mod tests {
             timestamp: beeper_core::config::rfc3339_from_millis(now_unix_millis() - ago_ms),
             is_sender: Some(own),
             text: Some("Ann sent you a nudge".into()),
+            nudge: true,
             ..Default::default()
-        };
-        m.flags = beeper_core::models::MSG_NUDGE;
-        m
+        }
     }
 
     /// Desktop's `createSlashCommandTriggerSettings` and `sendNudge`: `/` lists the commands of the chat while the

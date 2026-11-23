@@ -7,7 +7,7 @@ use crate::windows;
 use crate::{BeeperGuiApp, UiMessage};
 use beeper_core::config::{account_network, millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::NetworkKind::*;
-use beeper_core::models::{Attachment, Chat, ChatFlag, Message, MSG_MENTION};
+use beeper_core::models::{Attachment, Chat, ChatFlag, Message};
 use iced::Task;
 use std::collections::{HashMap, HashSet};
 
@@ -365,7 +365,7 @@ impl BeeperGuiApp {
         // Desktop's `shouldSuppressNotification`: a snoozed chat stays quiet, also for mentions.
         let shown = shown && otp.is_some()
             || shown
-                && (!st.notifications_muted(chat) || m.flags & MSG_MENTION != 0)
+                && (!st.notifications_muted(chat) || st.mentions_me(m))
                 && reminders::snoozed_until(&st, chat).is_none()
                 && chat.is_hidden_from_inbox != Some(true)
                 && chat.is_request != Some(true)
@@ -374,7 +374,7 @@ impl BeeperGuiApp {
                 && (m.message_type.as_deref() != Some("REACTION") || prefs.on("notifyReactions"))
                 // Desktop notifies a reply only in a thread when you follow the thread or it mentions you.
                 && m.thread_root.as_deref().is_none_or(|r| {
-                    !m.thread_only(st.threaded(chat)) || m.flags & MSG_MENTION != 0 || st.follows_thread(chat, r)
+                    !m.thread_only(st.threaded(chat)) || st.mentions_me(m) || st.follows_thread(chat, r)
                 })
                 && !(self.focused
                     && (self.pane.selected_chat_id.as_ref() == Some(&shown_as.id) || !prefs.on("notifyInFocus")));
@@ -658,7 +658,7 @@ mod tests {
         let hidden = note(&mut app, AccountProps { previews: false, silent: true, ..on }, &mut m, "b");
         assert_eq!(hidden, Some(("You have a new message".into(), true)));
         assert_eq!(note(&mut app, AccountProps { notifications: false, ..on }, &mut m, "c"), None);
-        m.flags |= MSG_MENTION;
+        m.mentions = Some(vec![app.store.read().beeper_state.user_id.clone()]);
         let mention = note(&mut app, AccountProps { notifications: false, ..on }, &mut m, "d");
         assert_eq!(mention, Some(("hi".into(), false)), "a mention notifies through the mute");
         // Desktop's `notificationSound`: the sound of the chat comes before the account and the preference.
