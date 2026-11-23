@@ -316,11 +316,27 @@ impl BeeperGuiApp {
         };
         let other =
             chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| chat.chat_type == "single");
-        let contact = other.map(|u| {
-            row![]
-                .push(handle(u).map(meta))
-                .push(u.phone_number.as_deref().map(|n| meta(fmt_phone(n))))
-                .push(u.email.clone().map(meta))
+        // Desktop's identity `metadata` of a DM that is not merged: the inline username, then the phone number and
+        // the email in their own `div`s, so each starts a line. A click on either opens its `PhoneNumber` or
+        // `EmailAddress` menu. The `.phone` div is a flex row, so its number starts at the left of the block.
+        let contact = other.filter(|_| chat.merge.is_none()).map(|u| {
+            let lines =
+                [(handle(u), ""), (u.phone_number.as_deref().map(fmt_phone), "phone"), (u.email.clone(), "email")];
+            let lines: Vec<(String, &str)> = lines.into_iter().filter_map(|(s, kind)| Some((s?, kind))).collect();
+            let wide = lines.iter().map(|(s, _)| text_width(s, 11.0, Weight::Normal)).fold(0.0, f32::max).ceil();
+            Column::with_children(lines.into_iter().map(|(s, kind)| -> El<'_> {
+                let line = meta(s);
+                match kind {
+                    "" => line.into(),
+                    _ => {
+                        let menu = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("contact:{cid} {kind}")));
+                        let line = line.on_press(menu).interaction(mouse::Interaction::Pointer);
+                        let left = if kind == "phone" { iced::Alignment::Start } else { Center };
+                        container(line).width(wide).align_x(left).into()
+                    }
+                }
+            }))
+            .align_x(Center)
         });
         let originally = chat
             .personal
