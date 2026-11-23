@@ -1866,11 +1866,22 @@ fn stored(st: &BeeperStore, id: &str) -> Message {
 }
 
 /// Desktop's `rootMessageIDs`: the first message of the reply chain of `m`, which can be a message that is not loaded.
-fn reply_root<'s>(st: &'s BeeperStore, mut m: &'s Message) -> &'s str {
+fn reply_root<'s>(st: &'s BeeperStore, m: &'s Message) -> &'s str {
+    reply_root_with(st, m, |_, _| ())
+}
+
+/// [`reply_root`], which shows `look` each message ID that the chain looks up, and the message when it is loaded.
+fn reply_root_with<'s>(
+    st: &'s BeeperStore,
+    mut m: &'s Message,
+    mut look: impl FnMut(&'s str, Option<&'s Message>),
+) -> &'s str {
     let mut seen = HashSet::new();
     while m.thread_root.is_none() {
         let Some(r) = m.linked_message_id.as_deref().filter(|r| *r != m.id && seen.insert(&m.id)) else { return &m.id };
-        match st.loaded(r) {
+        let next = st.loaded(r);
+        look(r, next);
+        match next {
             Some(next) => m = next,
             None => return r,
         }
@@ -2560,8 +2571,8 @@ pub struct Pane {
     pub top: TopOfThread,
     timeline: vlist::VList,
     thread_list: vlist::VList,
-    /// The messages of the conversation and their rows, for a store generation and a chat.
-    rows: std::cell::RefCell<Option<(u64, String, Rc<Rows>)>>,
+    /// The messages of the conversation and their rows, with what they were made from.
+    rows: std::cell::RefCell<Option<(message::RowsKey, Rc<Rows>)>>,
     /// Desktop's `stopTypingTimeout`: the chat with a typing notice, and the time of the last key.
     pub typing: Option<(String, std::time::Instant)>,
     /// The mention pills of the composer text, which Desktop sends as `mentionedUserIDs`.
