@@ -463,7 +463,7 @@ mod tests {
             chat
         };
         let due: Vec<String> = app.chat_reminders_due(now).into_iter().map(|c| c.id).collect();
-        assert_eq!(due, [chat.clone()], "the chat to notify");
+        assert_eq!(due, std::slice::from_ref(&chat), "the chat to notify");
         {
             let st = app.store.read();
             let c = st.chat(&chat);
