@@ -24,10 +24,10 @@ use crate::{
     fmt_phone, group, icon_btn, inbox_label, locate, menu_pitch, outline_input, pill_btn, pill_style, plan_pill,
     portal, pref_row, reconnect, record, select, slider_style, status_text, style, svg_size, theme_cards, tinted,
     toggle, toggle_faded, BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE,
-    ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT,
-    ASK_REMOVE_PACK, ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_DOWN, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON,
-    COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, ORANGE, QR_CODE, REVERT,
-    SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
+    ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_DISCONNECT_SERVER, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS,
+    ASK_REMOVE_ACCOUNT, ASK_REMOVE_PACK, ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_DOWN, CHEVRON_LEFT, CLAUDE_LOGO,
+    COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, ORANGE, QR_CODE,
+    REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
 };
 use beeper_core::config::{now_unix_millis, now_unix_secs, APP_VERSION};
 use beeper_core::matrix::DeviceInfo;
@@ -499,7 +499,7 @@ pub(crate) fn donut(parts: &[(storage::Kind, u64)]) -> svg::Handle {
 }
 
 /// The dialogs over the Settings window.
-pub(crate) const SETTINGS_DIALOGS: [u8; 9] = [
+pub(crate) const SETTINGS_DIALOGS: [u8; 10] = [
     ASK_LOGOUT,
     ASK_LOGOUT_DEVICE,
     ASK_CLEAR_STORAGE,
@@ -508,6 +508,7 @@ pub(crate) const SETTINGS_DIALOGS: [u8; 9] = [
     ASK_REVOKE_CONNECTION,
     ASK_REMOTE_ACCESS,
     ASK_REMOVE_ACCOUNT,
+    ASK_DISCONNECT_SERVER,
     ASK_REMOVE_PACK,
 ];
 
@@ -1784,7 +1785,17 @@ impl BeeperGuiApp {
                     container(buttons.spacing(6).align_y(Center)).align_right(160).center_y(20).padding([0, 2]);
                 container(stack![label, buttons]).style(bordered_box(CLEAR, border, 1.0, 4.0))
             });
-            let line = row![ell(tr(name), 226.0, 13.0, Weight::Normal).color(p.text).width(Fill)]
+            // Desktop's `Global` tag (`.tag`) of a global hotkey, with its tooltip.
+            let global = ["Focus App", "Focus App and Command Bar"].contains(&name).then(|| {
+                let tag = container(txt(trx("Global", "hotkey scope tag"), 12.0).color(p.text))
+                    .padding([1, 4])
+                    .style(fill_box(p.strong.scale_alpha(0.1), 4.0));
+                let tip =
+                    trf("Global hotkeys will work when any app is active, as long as %s is running", &[&"Beeper"]);
+                container(self.tip(tag.into(), tip, vec![], tooltip::Position::Top)).padding(Padding::ZERO.left(6.0))
+            });
+            let title = row![ell(tr(name), 226.0, 13.0, Weight::Normal).color(p.text)].push(global).align_y(Center);
+            let line = row![container(title).width(Fill)]
                 .push(recorder)
                 .push(toggle(p, keys != "disabled", Some(UiMessage::Hotkeys(hotkeys::Msg::Toggle(name)))))
                 .spacing(6)
@@ -2014,7 +2025,79 @@ impl BeeperGuiApp {
                 .into()
         });
         let settings = group(p, Some(tr("Settings")), rows.collect());
-        [Some(head.into()), disconnected, Some(card.into()), Some(settings), remove].into_iter().flatten().collect()
+        let servers = bridge.and_then(|b| self.servers_view(st, b));
+        [Some(head.into()), disconnected, Some(card.into()), Some(settings), servers, remove]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    /// Desktop's `RemoteSubView` of an account with servers: the "Servers" heading with Refresh List, and each server
+    /// with its Show in Inbox and its connect switch. It shows once the bridge has sent servers.
+    fn servers_view(&self, st: &BeeperStore, b: &BridgeAccountInfo) -> Option<El<'_>> {
+        let servers =
+            st.sub_accounts.get(&b.account_id).filter(|l| !l.is_empty() && accounts::has_servers(st, &b.account_id))?;
+        let p = &self.pal;
+        let id = b.account_id.clone();
+        // Desktop's `remoteHasError` locks the switches.
+        let broken = b.remote_error.is_some();
+        // `RemoteSubView-module__spin`: a turn back every 1.2 s with `cubic-bezier(0.5, 0, 0.5, 1)`.
+        let turn = self.servers_loading.get(&id).map_or(0.0, |at| {
+            let t = at.elapsed().as_secs_f32() / 1.2 % 1.0;
+            -crate::cubic_bezier(t, [0.5, 0.0, 0.5, 1.0]) * std::f32::consts::TAU
+        });
+        let color = p.text;
+        let icon = svg(crate::MAT_SYNC.clone())
+            .width(20)
+            .height(20)
+            .rotation(iced::Rotation::Solid(iced::Radians(turn)))
+            .style(move |_, _| svg::Style { color: Some(color) });
+        let refresh =
+            button(icon).bare(p.text).padding(0).on_press(UiMessage::Accounts(accounts::Msg::FetchServers(id.clone())));
+        // `.subview-prefs h4` beside the refresh button, in `RemoteSubView-module__header`.
+        let head = row![container(txt(tr("Servers"), 13.0).color(p.muted)).padding([0, 13]).width(Fill), refresh]
+            .align_y(Center);
+        let options = [("all", "All Messages"), ("none", "None")];
+        let labels: Vec<String> = options.iter().map(|&(_, l)| inbox_label(l).to_string()).collect();
+        let widest = labels.iter().map(|l| text_width(l, 11.0, Weight::Semibold)).fold(0.0, f32::max);
+        let rows = servers.iter().map(|s| {
+            let (key, now) = beeper_core::matrix::inbox_rule(&st.inbox_rules, &id, &b.bridge_id, Some(&s.id));
+            let at = options.iter().position(|(o, _)| *o == now).expect("all or none");
+            let pick = match broken || !s.connected {
+                // Chromium's `select:disabled` is 70 % opaque.
+                true => {
+                    let fade = |c: Color| c.scale_alpha(0.7);
+                    let label = semi(labels[at].clone(), 11.0).color(fade(p.strong));
+                    let chevron = tinted(&SELECT_ARROW, 10.0, fade(p.strong));
+                    let body = row![container(label).width(Fill), chevron].align_y(Center);
+                    container(body).width(widest + 34.0).padding([4, 8]).style(fill_box(fade(p.chip), 12.0)).into()
+                }
+                false => {
+                    let labels = labels.clone();
+                    select(p, labels.clone(), labels[at].clone(), move |l| {
+                        let i = labels.iter().position(|x| *x == l).expect("a listed option");
+                        UiMessage::Accounts(accounts::Msg::SetInboxVisibility(key.clone(), options[i].0))
+                    })
+                }
+            };
+            let press = (!broken).then(|| UiMessage::Accounts(accounts::Msg::ToggleServer(id.clone(), s.id.clone())));
+            let switch = toggle_faded(p, s.connected, press, if broken { 0.5 } else { 1.0 });
+            let switch: El<'_> = match broken {
+                true => {
+                    let why = trf("You can't change %s while the connection is broken", &[&"server"]);
+                    self.tip(switch, why, Vec::new(), tooltip::Position::Left).into()
+                }
+                false => switch,
+            };
+            // `RemoteSubView-module__toggle`: 10 px from the right edge of the row.
+            row![container(pref_row(p, s.name.clone(), None, None, pick)).width(Fill), switch]
+                .padding(Padding::ZERO.right(10.0))
+                .align_y(Center)
+                .into()
+        });
+        // `RemoteSubView-module__container` is 4 px further from its heading than a `prefs-group`.
+        let card = container(group(p, None, rows.collect())).padding(Padding::ZERO.top(4.0));
+        Some(column![head, card].spacing(6).into())
     }
 
     /// A settings item with the id that search results scroll to, and the flash of a picked result.

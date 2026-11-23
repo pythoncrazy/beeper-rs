@@ -569,6 +569,8 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Select Previous Chat", "Chats", "ctrl+[, ctrl+alt+up"),
     ("Switch First 9 Chats Modifier", "Chats", "ctrl"),
     ("Toggle Chat Info", "Chats", "ctrl+shift+i"),
+    ("Focus App", "App", "disabled"),
+    ("Focus App and Command Bar", "App", "disabled"),
     ("Command Bar", "App", "ctrl+j"),
     ("Cycle Filters", "App", "alt+tab"),
     ("Filter: All", "App", "disabled"),

@@ -142,6 +142,15 @@ impl BeeperGuiApp {
                 id.map(UiMessage::SelectChat)
             }
             "Toggle Chat Info" => Some(UiMessage::ToggleRightPanel),
+            // Desktop's `showMainWindow`, and with the command bar, `cmdBarViewStore.setVisible(true)` first.
+            "Focus App" => Some(UiMessage::Window(windows::Msg::FocusRequested(None))),
+            "Focus App and Command Bar" => {
+                let bar = match self.show_command_palette {
+                    true => Task::none(),
+                    false => self.update(UiMessage::RunHotkey("Command Bar")),
+                };
+                return Task::batch([bar, self.update(UiMessage::Window(windows::Msg::FocusRequested(None)))]);
+            }
             "Command Bar" if self.show_command_palette => Some(UiMessage::CommandBar(commands::Msg::ToggleMode)),
             "Command Bar" => {
                 let open = self.update(UiMessage::CommandBar(commands::Msg::TogglePalette));

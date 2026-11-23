@@ -232,9 +232,9 @@ pub fn inbox_rule<'a>(rules: &'a Value, account_id: &str, bridge: &str, network:
     let vis = |key: &str| visibility(rules, key);
     match network.filter(|_| !matches!(bridge, "slackgo" | "whatsapp" | "telegram")) {
         Some(n) => {
-            let key = format!("{account_id}.{n}");
+            let key = network_key(account_id, n);
             let option = vis(&key).filter(|&o| o != "dmOnly").unwrap_or("none");
-            (key, option)
+            (canonical_key(&key), option)
         }
         None => {
             let default = if matches!(bridge, "slackgo" | "discordgo") { "dmOnly" } else { "all" };
@@ -244,10 +244,91 @@ pub fn inbox_rule<'a>(rules: &'a Value, account_id: &str, bridge: &str, network:
     }
 }
 
-/// The `chat_list_rules` option of `key`. Desktop's `YH` skips the values that it does not know, so a newer client
-/// cannot break the inbox.
+/// Desktop's `V_e`: a part of a `v2:cloud:` key, which keeps only letters, digits, `-` and `~`.
+fn key_part(s: &str) -> String {
+    s.bytes().fold(String::with_capacity(s.len()), |mut out, b| {
+        match b.is_ascii_alphanumeric() || b"-~".contains(&b) {
+            true => out.push(b as char),
+            false => out.push_str(&format!("%{b:02X}")),
+        }
+        out
+    })
+}
+
+/// Desktop's `ic` of a network of an account, like a Discord server: a cloud login of a bridge with several logins
+/// (`bridge.login`) has a `v2:cloud:` key, where a Discord server with a numeric ID has a `*`.
+pub fn network_key(account_id: &str, network: &str) -> String {
+    let (bridge, login) = account_id.split_once('.').unwrap_or((account_id, ""));
+    if !login.is_empty() && login != "unknown" && login != bridge {
+        let numeric = !network.is_empty() && network.bytes().all(|b| b.is_ascii_digit());
+        let network = match bridge {
+            "telegram" | "whatsapp" => None,
+            "discordgo" if numeric => Some(format!("*{network}")),
+            _ => Some(network.to_string()),
+        };
+        let parts = [Some(bridge.to_string()), Some(login.to_string()), network].into_iter().flatten();
+        return ["v2".to_string(), "cloud".into()]
+            .into_iter()
+            .chain(parts.map(|p| key_part(&p)))
+            .collect::<Vec<_>>()
+            .join(":");
+    }
+    let owner = if bridge != account_id && bridge != "slackgo" { bridge } else { account_id };
+    format!("{owner}.{network}")
+}
+
+/// Desktop's `W_e`: the older key of a `v2:cloud:` key, `bridge` or `bridge.network`.
+fn older_key(key: &str) -> Option<String> {
+    let mut parts = key.split(':');
+    let (v, cloud, bridge) = (parts.next()?, parts.next()?, parts.next()?);
+    if v != "v2" || cloud != "cloud" {
+        return None;
+    }
+    let decode = |p: &str| crate::codec::url_decode(p).unwrap_or_else(|| p.to_string());
+    Some(match parts.nth(1) {
+        Some(network) => format!("{}.{}", decode(bridge), decode(network)),
+        None => decode(bridge),
+    })
+}
+
+/// Desktop's `$se`: the form of an older key that Desktop keeps, with a `*` before a numeric Discord server and
+/// a Slack login as its workspace.
+fn canonical_key(key: &str) -> String {
+    if let Some((bridge, id)) = key.split_once('.').filter(|(b, _)| matches!(*b, "discord" | "discordgo")) {
+        if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
+            return format!("{bridge}.*{id}");
+        }
+    }
+    match key.strip_prefix("slackgo.").and_then(|r| r.split_once('-')).filter(|(team, _)| !team.is_empty()) {
+        Some((team, _)) => format!("slackgo.{team}"),
+        None => key.into(),
+    }
+}
+
+/// The `chat_list_rules` option of `key`, like Desktop's `getInboxVisibility` over the table of `EKt`: older keys
+/// count under their [`canonical_key`], with the widest option, except that an older Discord key gives way to the
+/// `*` key. Desktop's `YH` skips the values that it does not know, so a newer client cannot break the inbox.
 fn visibility<'a>(rules: &'a Value, key: &str) -> Option<&'a str> {
-    rules["visibility"][key].as_str().filter(|v| matches!(*v, "all" | "dmOnly" | "none"))
+    let table = rules["visibility"].as_object()?;
+    let known = |v: &'a Value| v.as_str().filter(|v| matches!(*v, "all" | "dmOnly" | "none"));
+    let versioned = |k: &str| {
+        k.is_empty()
+            || (k.starts_with('v')
+                && k[1..].split_once(':').is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+    };
+    let key = match older_key(key) {
+        Some(_) if table.get(key).and_then(known).is_some() => return table.get(key).and_then(known),
+        Some(older) => older,
+        None if versioned(key) => return table.get(key).and_then(known),
+        None => key.to_string(),
+    };
+    let want = canonical_key(&key);
+    let discord = want.starts_with("discord.*") || want.starts_with("discordgo.*");
+    let starred = discord && table.get(&want).and_then(known).is_some();
+    let rank = |v: &str| ["none", "dmOnly", "all"].iter().position(|o| *o == v);
+    let found = table.iter().filter(|(k, _)| !versioned(k) && canonical_key(k) == want);
+    let found = found.filter(|(k, _)| !starred || **k == want).filter_map(|(_, v)| known(v));
+    found.max_by_key(|v| rank(v))
 }
 
 /// Desktop's `setInboxVisibility`.
@@ -260,7 +341,7 @@ pub fn hidden_from_inbox(rules: &Value, account_id: &str, bridge: &Value, group:
     let name = bridge["com.beeper.bridge_name"].as_str().unwrap_or_default();
     let scoped = match s(&bridge["network"]["id"]) {
         Some(n) if !matches!(name, "slackgo" | "whatsapp" | "telegram") => {
-            visibility(rules, &format!("{account_id}.{n}"))
+            visibility(rules, &network_key(account_id, &n))
         }
         _ => None,
     };
@@ -1249,6 +1330,27 @@ async fn load_room_older(store: SharedStore, chat: String) -> Result<(), String>
         let idx = st.chat_idx(&chat);
         st.update_chat(idx, |c| c.older = end.map_or(Older::Start, Older::From));
     }
+    Ok(())
+}
+
+/// Desktop's `refreshMessages`. A chat of a cloud bridge loads its newest page again and paginates back from there
+/// (`restartRoomPagination`), which fills what an earlier sync missed. A Beeper chat and a merged chat read their newest
+/// messages again (`loadLatestMessages`), which the store already has.
+pub async fn refresh_chat(store: SharedStore, chat: String) -> Result<(), String> {
+    let client = {
+        let st = store.read();
+        let c = st.chat(&chat);
+        match st.matrix.clone() {
+            Some(client) if c.merge.is_none() && c.account_id != "hungryserv" => client,
+            _ => return Ok(()),
+        }
+    };
+    let room = chat_room(&client, &chat).await?;
+    let (events, end) = page(&room, None, HISTORY).await.map_err(|e| e.to_string())?;
+    sync_room(&store, &room, events).await;
+    let mut st = store.write();
+    let idx = st.chat_idx(&chat);
+    st.update_chat(idx, |c| c.older = end.map_or(Older::Start, Older::From));
     Ok(())
 }
 
@@ -3692,17 +3794,36 @@ async fn bridge_reply(resp: Result<reqwest::Response, reqwest::Error>) -> Result
 
 impl Provision {
     fn url(&self, path: &str) -> String {
+        self.bridge_url(&format!("/_matrix/provision/v3/{path}"))
+    }
+
+    /// The homeserver URL of a request to the bridge at `path`, like the SDK's `CallBridgeAPI`.
+    fn bridge_url(&self, path: &str) -> String {
         let enc = crate::codec::url_encode;
         let login = match self.login_id.is_empty() {
             true => String::new(),
             false => format!("&login_id={}", enc(&self.login_id)),
         };
         format!(
-            "{}/_matrix/client/unstable/com.beeper.bridge/{}/_matrix/provision/v3/{path}?user_id={}{login}",
+            "{}/_matrix/client/unstable/com.beeper.bridge/{}{path}?user_id={}{login}",
             self.homeserver.trim_end_matches('/'),
             enc(&self.bridge_id),
             enc(&self.user_id),
         )
+    }
+
+    /// A request to the bridge at `path` with a JSON body, and the JSON reply.
+    async fn call(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
+        let mut req =
+            crate::cloud::http_client().request(method, self.bridge_url(path)).bearer_auth(&self.access_token);
+        if let Some(b) = body {
+            req = req.header("content-type", "application/json").body(b.to_string());
+        }
+        let body = bridge_reply(req.send().await).await?;
+        match body.trim() {
+            "" => Ok(Value::Null),
+            b => serde_json::from_str(b).map_err(|e| e.to_string()),
+        }
     }
 
     /// A POST without a timeout, because `display_and_wait` steps answer only when the user acts.
@@ -3751,7 +3872,15 @@ pub async fn resolve_identifier(p: Provision, identifier: String) -> Result<Opti
 }
 
 pub async fn resolve_media(p: Provision, event_id: String, raw: String) -> Result<(), String> {
-    p.post(&format!("resolve_media/{}", crate::codec::url_encode(&event_id)), raw).await.map(drop)
+    p.post(&format!("resolve_media/{}", crate::codec::url_encode(&event_id)), resolve_body(&raw)?).await.map(drop)
+}
+
+/// The body of a `resolve_media` request: the SDK's `provisionutil.ReqResolveMedia`, which carries the event's
+/// `com.beeper.unresolved_media` value verbatim under that key. The bridge fails a bare value with "Internal error
+/// resolving media".
+fn resolve_body(raw: &str) -> Result<String, String> {
+    let media: Value = serde_json::from_str(raw).map_err(|e| format!("bad unresolved media: {e}"))?;
+    Ok(serde_json::json!({ "com.beeper.unresolved_media": media }).to_string())
 }
 
 /// The SDK's `ViewLimitedMedia`: tells the bridge that the view-once media of `event_id` was viewed once under
@@ -3778,6 +3907,69 @@ pub async fn create_group(p: Provision, kind: String, name: String, users: Vec<S
     let body = p.post(&format!("create_group/{}", crate::codec::url_encode(&kind)), body.to_string()).await?;
     let v: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     v["mxid"].as_str().map(str::to_string).ok_or_else(|| "the bridge sent no mxid".into())
+}
+
+/// A Discord server of a Discord login (Desktop's `subAccounts`): `bridging_mode` is the bridge's own, and the server
+/// is connected when it has a space room.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SubAccount {
+    pub id: String,
+    pub name: String,
+    pub avatar: Option<String>,
+    pub bridging_mode: Option<String>,
+    pub mxid: Option<String>,
+    pub connected: bool,
+}
+
+/// The servers of a `GET /_matrix/provision/v1/guilds` reply, like Desktop's `getSubAccounts`.
+pub fn sub_accounts_of(v: &Value) -> Vec<SubAccount> {
+    let guilds = v["guilds"].as_array().into_iter().flatten();
+    let guilds = guilds.map(|g| {
+        let mxid = s(&g["mxid"]);
+        SubAccount {
+            id: g["id"].as_str().map_or_else(|| g["id"].to_string(), str::to_string),
+            name: s(&g["name"]).unwrap_or_default(),
+            avatar: s(&g["avatar_url"]).filter(|u| !u.is_empty()),
+            bridging_mode: s(&g["bridging_mode"]),
+            connected: mxid.as_ref().is_some_and(|m| !m.is_empty()),
+            mxid,
+        }
+    });
+    guilds.collect()
+}
+
+/// Desktop's `getSubAccounts` of a Discord login: the servers of the bridge's `guilds`.
+pub async fn sub_accounts(p: Provision) -> Result<Vec<SubAccount>, String> {
+    Ok(sub_accounts_of(&p.call(reqwest::Method::GET, "/_matrix/provision/v1/guilds", None).await?))
+}
+
+/// The servers of the demo's Discord account, two of them connected.
+pub fn demo_sub_accounts() -> Vec<SubAccount> {
+    let server = |id: &str, name: &str, connected: bool| SubAccount {
+        id: id.into(),
+        name: name.into(),
+        bridging_mode: Some("everything".into()),
+        mxid: connected.then(|| format!("!{id}:beeper.local")),
+        connected,
+        ..Default::default()
+    };
+    vec![
+        server("1100000000000000001", "Beeper Community", true),
+        server("1100000000000000002", "Rust Programming Language", true),
+        server("1100000000000000003", "Pebble Developers", false),
+        server("1100000000000000004", "Linux Gaming", false),
+    ]
+}
+
+/// Desktop's `connectSubAccount` and `disconnectSubAccount`: the bridge bridges a server with all its channels, or
+/// removes it from Beeper.
+pub async fn connect_sub_account(p: Provision, id: String, connect: bool) -> Result<(), String> {
+    let path = format!("/_matrix/provision/v1/guilds/{}", crate::codec::url_encode(&id));
+    match connect {
+        true => p.call(reqwest::Method::POST, &path, Some(serde_json::json!({ "auto_create_channels": true }))).await,
+        false => p.call(reqwest::Method::DELETE, &path, None).await,
+    }
+    .map(drop)
 }
 
 /// The user of a bridge `resolve_identifier` or `search_users` result, by its Matrix ID.
@@ -6859,6 +7051,19 @@ mod tests {
 
     /// Desktop's `lastReadMessageSortKey` of a room: the order of the event of your own read receipt, which a read
     /// here goes ahead of until the receipt catches up.
+    /// Desktop's `resolveMedia` sends the unresolved media of the event under `com.beeper.unresolved_media`, like the
+    /// SDK's `ReqResolveMedia`, not the bare value.
+    #[test]
+    fn resolve_media_wraps_the_unresolved_media_like_desktop() {
+        let raw = r#"{"kind":"permanent","fi.mau.instagram.full_title":"t"}"#;
+        let body: Value = serde_json::from_str(&super::resolve_body(raw).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            json!({ "com.beeper.unresolved_media": { "kind": "permanent", "fi.mau.instagram.full_title": "t" } })
+        );
+        assert!(super::resolve_body("not json").is_err());
+    }
+
     #[tokio::test]
     async fn own_receipts_set_the_read_position_like_desktop() {
         let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
@@ -7489,6 +7694,80 @@ mod tests {
         super::view_limited_media(p, "$a:b".into(), limit.clone()).await.expect("the bridge takes the view");
         let path = "/_matrix/client/unstable/com.beeper.bridge/whatsapp/_matrix/provision/v3/view_limited_media/%24a%3Ab?user_id=%40me%3Abeeper.com&login_id=15550100";
         assert_eq!(*seen.lock().unwrap(), [("POST".into(), path.into(), json!({ "com.beeper.view_limited": limit }))]);
+    }
+
+    /// Desktop's `getSubAccounts`, `connectSubAccount` and `disconnectSubAccount` of a Discord login: the provisioning
+    /// API v1 of the bridge's servers, with the login, through the homeserver.
+    #[tokio::test]
+    async fn discord_servers_go_through_the_bridge_like_desktop() {
+        let (url, bridges) = crate::bridge_stub::homeserver().await;
+        let p = super::Provision {
+            homeserver: url,
+            access_token: "token".into(),
+            user_id: "@me:beeper.com".into(),
+            bridge_id: "discordgo".into(),
+            login_id: "123".into(),
+        };
+        let guilds = "/_matrix/provision/v1/guilds";
+        assert_eq!(
+            p.bridge_url(guilds),
+            format!("{}/_matrix/client/unstable/com.beeper.bridge/discordgo{guilds}?user_id=%40me%3Abeeper.com&login_id=123", p.homeserver),
+        );
+        let servers = super::sub_accounts(p.clone()).await.expect("the servers");
+        let first = super::SubAccount {
+            id: "100".into(),
+            name: "Beeper Community".into(),
+            avatar: Some("mxc://discord/beeper".into()),
+            bridging_mode: Some("everything".into()),
+            mxid: Some("!guild100:beeper.local".into()),
+            connected: true,
+        };
+        assert_eq!(servers[0], first);
+        assert_eq!((servers[1].connected, servers[1].avatar.as_deref()), (false, None), "an empty mxid and avatar");
+        super::connect_sub_account(p.clone(), "200".into(), true).await.expect("the server connects");
+        super::connect_sub_account(p.clone(), "100".into(), false).await.expect("the server disconnects");
+        let now = super::sub_accounts(p.clone()).await.expect("the servers");
+        assert_eq!(now.iter().map(|s| s.connected).collect::<Vec<_>>(), [false, true]);
+        let base = "/_matrix/client/unstable/com.beeper.bridge/discordgo/_matrix/provision/v1/guilds";
+        let want = ["GET", "POST", "DELETE", "GET"].map(|m| m.to_string());
+        let path = |r: &String| r.split_once(' ').map(|(m, p)| (m.to_string(), p.to_string())).unwrap();
+        let sent: Vec<_> = bridges.requests().iter().map(path).collect();
+        assert_eq!(sent.iter().map(|s| s.0.clone()).collect::<Vec<_>>(), want);
+        assert_eq!([&sent[1].1, &sent[2].1], [&format!("{base}/200"), &format!("{base}/100")]);
+        assert_eq!(bridges.bodies(), [json!({ "auto_create_channels": true })], "Desktop bridges all the channels");
+        let missing = super::connect_sub_account(p, "300".into(), true).await;
+        assert_eq!(missing, Err("Guild not found".into()), "the bridge's error");
+    }
+
+    /// Desktop's `ic` of a Discord server, and the lookup of `getInboxVisibility` over `EKt`'s table: a numeric server
+    /// is `discordgo.*<id>` since Desktop's `DiscordKeyMigration`, a login of several has a `v2:cloud:` key, and an
+    /// older key gives way to a newer one.
+    #[test]
+    fn discord_server_rules_follow_desktop() {
+        use super::{hidden_from_inbox, inbox_rule, network_key, with_inbox_visibility};
+        assert_eq!(network_key("discordgo", "123"), "discordgo.123");
+        assert_eq!(network_key("discordgo.L_1", "123"), "v2:cloud:discordgo:L%5F1:%2A123");
+        assert_eq!(network_key("discordgo.L1", "G1"), "v2:cloud:discordgo:L1:G1");
+        assert_eq!(network_key("telegram.L1", "topic"), "v2:cloud:telegram:L1");
+        assert_eq!(network_key("acc_discord", "123"), "acc_discord.123");
+        let empty = json!({});
+        assert_eq!(inbox_rule(&empty, "discordgo", "discordgo", Some("123")), ("discordgo.*123".into(), "none"));
+        let both = json!({ "visibility": { "discordgo.123": "all", "discordgo.*123": "none" } });
+        assert_eq!(inbox_rule(&both, "discordgo", "discordgo", Some("123")).1, "none", "the * key wins");
+        let older = json!({ "visibility": { "discordgo.123": "all" } });
+        assert_eq!(inbox_rule(&older, "discordgo", "discordgo", Some("123")).1, "all", "an older key still counts");
+        let bridge = json!({ "com.beeper.bridge_name": "discordgo", "network": { "id": "123" } });
+        let r = with_inbox_visibility(empty.clone(), "discordgo.*123", "all");
+        assert!(!hidden_from_inbox(&r, "discordgo", &bridge, true));
+        assert!(hidden_from_inbox(&with_inbox_visibility(r, "discordgo.*123", "none"), "discordgo", &bridge, false));
+        let (key, _) = inbox_rule(&empty, "discordgo.L1", "discordgo", Some("123"));
+        assert_eq!(key, "v2:cloud:discordgo:L1:%2A123");
+        let legacy = json!({ "visibility": { "discordgo.*123": "all" } });
+        assert_eq!(inbox_rule(&legacy, "discordgo.L1", "discordgo", Some("123")).1, "all", "the key before v2");
+        let newer = with_inbox_visibility(legacy, &key, "none");
+        assert_eq!(inbox_rule(&newer, "discordgo.L1", "discordgo", Some("123")).1, "none", "the v2 key first");
+        let slack = json!({ "visibility": { "slackgo.T1-U1": "none", "slackgo.T1-U2": "dmOnly" } });
+        assert_eq!(inbox_rule(&slack, "slackgo.T1-U3", "slackgo", None).1, "dmOnly", "the widest of a team");
     }
 
     /// Desktop's `actionButtonsFrom`: the `com.beeper.buttons` of the system user's messages only, and an edit takes
