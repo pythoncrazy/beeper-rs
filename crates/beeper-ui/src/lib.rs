@@ -2721,8 +2721,6 @@ pub struct Pane {
     thread_list: vlist::VList,
     /// The messages of the conversation and their rows, with what they were made from.
     rows: std::cell::RefCell<Option<(message::RowsKey, Rc<Rows>)>>,
-    /// Desktop's `stopTypingTimeout`: the chat with a typing notice, and the time of the last key.
-    pub typing: Option<(String, std::time::Instant)>,
     /// The mention pills of the composer text, which Desktop sends as `mentionedUserIDs`.
     pub mentions: Vec<Mention>,
     /// The custom emoji that the autocomplete or the picker put in the composer as ":name:", Desktop's
@@ -3064,6 +3062,9 @@ pub struct BeeperGuiApp {
     pub flash: Option<(String, std::time::Instant)>,
     /// Desktop's `BrandTypingIndicator` of each chat as it shows (`true`) or hides: who types, and since when.
     typing_shown: HashMap<String, (Vec<String>, bool, std::time::Instant)>,
+    /// Desktop's `stopTypingTimeout` of each chat, which the composers of the chat, of its threads and of its windows
+    /// share: the chats with a typing notice, and the time of their last key.
+    typing: HashMap<String, std::time::Instant>,
     last_click: Option<(String, std::time::Instant)>,
     /// While `cycling`, a selection does not reorder the history of the opened chats.
     cycling: bool,
@@ -3315,7 +3316,7 @@ impl BeeperGuiApp {
             delete_target, delete_chats, devices_busy, report_spam, time_edit, recorder, talk, queued, selection,
             select_mode, selection_menu, show_command_palette, settings_query, settings_slider, settings_focus,
             settings_search_on, settings_pick, pref_flash, networks, app_qr, integrations, token_ask, account_page,
-            quick_look_target, quick_open, hovered_chat, hover_at, unhovered, flash, typing_shown, status_banner,
+            quick_look_target, quick_open, hovered_chat, hover_at, unhovered, flash, typing_shown, typing, status_banner,
             relaunch_toast, key_banner_closed, toast, older_toasts, nudges, toast_dismissals, undo_stack, undo_note,
             pill_hover, sticky_banner, mobile_apps_toast, rail_float, sidebar_slide, dragging, rail_hover,
             header_hover, menu_bar, alt_alone, pin_hover, pin_drag, pin_slides, key_sort, user_hover, rail_drag,
@@ -4488,9 +4489,8 @@ impl BeeperGuiApp {
             UiMessage::InThread(msg) => return self.in_thread(*msg),
             UiMessage::TypingTick => {
                 let client = self.store.read().matrix.clone();
-                let panes = std::iter::once(&mut self.pane).chain(self.chat_windows.iter_mut().map(|w| &mut w.1));
                 let ended: Vec<String> =
-                    panes.filter_map(|p| p.typing.take_if(|t| t.1.elapsed() >= TYPING_STOP)).map(|t| t.0).collect();
+                    self.typing.extract_if(|_, at| at.elapsed() >= TYPING_STOP).map(|(chat, _)| chat).collect();
                 let notices = ended.into_iter().filter_map(|chat| {
                     let stop = beeper_core::matrix::typing(client.clone()?, chat, false);
                     Some(Task::future(stop).discard())
@@ -5068,7 +5068,7 @@ impl BeeperGuiApp {
         let expiry = expiry.map(|e| e.map(|_| UiMessage::AnimationTick));
         let remind = due.0.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Reminders(reminders::Msg::Check)));
         let send = due.1.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Scheduled(scheduled::Msg::Check)));
-        let typed = self.panes().filter_map(|p| p.typing.as_ref().map(|t| t.1)).min();
+        let typed = self.typing.values().min();
         let typing = typed.map(|t| {
             let left = TYPING_STOP.saturating_sub(t.elapsed()).max(Duration::from_millis(1));
             iced::time::every(left).map(|_| UiMessage::TypingTick)

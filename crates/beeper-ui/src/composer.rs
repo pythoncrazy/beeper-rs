@@ -775,19 +775,19 @@ impl BeeperGuiApp {
         Task::batch([typing, self.fetch_link_previews()])
     }
 
-    /// Desktop's `onTyping` and `stopTyping`: one typing notice when you start to type in a chat, and its end when
-    /// you send. [`UiMessage::TypingTick`] ends it 3 seconds after the last key.
+    /// Desktop's `onTyping` and `stopTyping` of the chat of the pane: one typing notice when you start to type in the
+    /// chat, from its composer or from that of one of its threads, and its end when you send from the chat's composer
+    /// (`sendMessage`; `sendThreadedReply` leaves it). [`UiMessage::TypingTick`] ends it 3 seconds after the last key.
     pub(crate) fn typing(&mut self, on: bool) -> Task<UiMessage> {
-        let chat = self.pane.selected_chat_id.clone().filter(|_| on);
-        // The notice of another chat, or of this chat when you stop, ends now.
-        let ended = self.pane.typing.take_if(|(c, _)| Some(&*c) != chat.as_ref()).map(|(c, _)| c);
-        let started = chat.clone().filter(|_| self.pane.typing.is_none());
-        self.pane.typing = chat.map(|c| (c, std::time::Instant::now()));
+        let Some(chat) = self.pane.selected_chat_id.clone() else { return Task::none() };
+        let notice = match on {
+            true => self.typing.insert(chat.clone(), std::time::Instant::now()).is_none(),
+            false => self.typing.remove(&chat).is_some(),
+        };
         let st = self.store.read();
-        let Some(client) = st.matrix.clone().filter(|_| st.typing_notices()) else { return Task::none() };
+        let Some(client) = st.matrix.clone().filter(|_| notice && st.typing_notices()) else { return Task::none() };
         drop(st);
-        let notice = |chat, on| Task::future(beeper_core::matrix::typing(client.clone(), chat, on)).discard();
-        Task::batch([ended.map(|c| notice(c, false)), started.map(|c| notice(c, true))].into_iter().flatten())
+        Task::future(beeper_core::matrix::typing(client, chat, on)).discard()
     }
 
     /// Desktop's `sendMessage`: a new message moves an archived chat to the inbox, unless `archive` is set.
@@ -1819,7 +1819,10 @@ impl BeeperGuiApp {
             Msg::Submit if !self.can_compose() => {}
             Msg::Submit => {
                 self.submit_composer(false);
-                return self.typing(false);
+                return match self.pane.thread_root.is_some() {
+                    true => Task::none(),
+                    false => self.typing(false),
+                };
             }
             Msg::SendAndArchive => {
                 let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");

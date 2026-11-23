@@ -3062,19 +3062,53 @@ fn typing_notices_like_desktop() {
     let note = "!note_self:beeper.com";
     let mut app = demo_app("typing");
     let _ = app.update(UiMessage::SelectChat(note.into()));
-    let typing = |app: &BeeperGuiApp| app.pane.typing.as_ref().map(|t| t.0.clone());
+    let typing = |app: &BeeperGuiApp| app.typing.keys().cloned().collect::<Vec<_>>();
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed("a".into())));
-    assert_eq!(typing(&app), Some(note.to_string()), "a key starts the notice");
+    assert_eq!(typing(&app), [note], "a key starts the notice");
     let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
-    assert_eq!(typing(&app), None, "a send ends the notice");
+    assert!(typing(&app).is_empty(), "a send ends the notice");
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(Some((now_unix_millis() + 3_600_000, false)))));
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed("later".into())));
-    assert_eq!(typing(&app), None, "a Send Later message has no notice");
+    assert!(typing(&app).is_empty(), "a Send Later message has no notice");
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(None)));
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed("b".into())));
     let _ = app.update(UiMessage::TypingTick);
-    assert_eq!(typing(&app), Some(note.to_string()), "the notice stays for 3 seconds");
-    app.pane.typing.as_mut().unwrap().1 -= TYPING_STOP;
+    assert_eq!(typing(&app), [note], "the notice stays for 3 seconds");
+    // Desktop's `stopTypingTimeout` is that of the chat: another chat has its own, and the notice of the chat that
+    // you leave ends on its time.
+    let other = "!sl_infra:beeper.com";
+    app.select_chat(other);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("c".into())));
+    let mut both = typing(&app);
+    both.sort();
+    assert_eq!(both, [note, other], "each chat has its notice");
+    app.typing.values_mut().for_each(|at| *at -= TYPING_STOP);
+    let _ = app.update(UiMessage::TypingTick);
+    assert!(typing(&app).is_empty(), "the notices end 3 seconds after the last key");
+}
+
+/// Desktop's thread composer types in its chat (`onActivity` of `ThreadedRepliesView` is the chat's `onTyping`): the
+/// notice is that of the chat, which its composer shares, it ends 3 seconds after the last key in either of them,
+/// and a reply in the thread leaves it (`sendThreadedReply` does not call `stopTyping`).
+#[test]
+fn thread_typing_notices_like_desktop() {
+    let mut app = demo_app("thread-typing");
+    let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
+    app.select_chat(chat);
+    let _ = app.update(UiMessage::Thread(threads::Msg::Show(root.into())));
+    let typing = |app: &BeeperGuiApp| app.typing.get(chat).copied();
+    let in_thread = |app: &mut BeeperGuiApp, m: composer::Msg| {
+        let _ = app.update(UiMessage::InThread(Box::new(UiMessage::Composer(m))));
+    };
+    in_thread(&mut app, composer::Msg::Changed("a".into()));
+    let started = typing(&app).expect("a key in the thread composer starts the notice of the chat");
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("b".into())));
+    assert!(typing(&app).is_some_and(|at| at > started), "a key in the chat's composer keeps the same notice");
+    let edit = text_editor::Edit::Paste(Arc::new("reply".into()));
+    in_thread(&mut app, composer::Msg::Edit(text_editor::Action::Edit(edit)));
+    in_thread(&mut app, composer::Msg::Submit);
+    assert!(typing(&app).is_some(), "a reply in the thread keeps the notice");
+    app.typing.values_mut().for_each(|at| *at -= TYPING_STOP);
     let _ = app.update(UiMessage::TypingTick);
     assert_eq!(typing(&app), None, "the notice ends 3 seconds after the last key");
 }
