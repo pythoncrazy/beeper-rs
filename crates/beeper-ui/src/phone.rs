@@ -5,18 +5,15 @@
 //! digits. `assets/countries.json` is the library's country list.
 use crate::emoji::EMOJI_FONT;
 use crate::style::rem;
-use crate::style::{bar, btn_style, ell, scroll_style, txt, CLEAR, GUTTER};
+use crate::style::{bar, btn_style, ell, pad, scroll_style, txt, CLEAR, GUTTER};
 use crate::{BeeperGuiApp, El, UiMessage};
-use iced::advanced::layout::{self, Layout};
+use iced::advanced::layout::Layout;
+use iced::advanced::overlay;
 use iced::advanced::widget::{self, Widget};
-use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
 use iced::font::Weight;
 use iced::keyboard::{key::Named, Key};
 use iced::widget::{button, container, row, scrollable, text_input, tooltip, Column};
-use iced::{
-    border, Border, Center, Color, Element, Event, Fill, Padding, Point, Rectangle, Renderer, Shadow, Size, Theme,
-    Vector,
-};
+use iced::{border, Border, Center, Color, Element, Fill, Padding, Rectangle, Renderer, Shadow, Theme, Vector};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
@@ -547,7 +544,7 @@ impl BeeperGuiApp {
             .on_submit(submit)
             .size(rem(12.0))
             .line_height(iced::Pixels(rem(15.0)))
-            .padding(Padding { top: 8.5, bottom: 8.5, left: 10.0, right: 13.0 })
+            .padding(pad(8.5, 13.0, 8.5, 10.0))
             .width(Fill)
             .style(move |_, status| text_input::Style {
                 background: fill.into(),
@@ -626,22 +623,7 @@ impl Widget<UiMessage, Theme, Renderer> for Anchored<'_> {
         tree.diff_children(&all);
     }
 
-    crate::delegate::delegate!(size, layout, mouse_interaction, draw, operate);
-
-    fn update(
-        &mut self,
-        tree: &mut widget::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, UiMessage>,
-        viewport: &Rectangle,
-    ) {
-        let tree = &mut tree.children[0];
-        self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
-    }
+    crate::delegate::delegate!(size, layout, update(UiMessage), mouse_interaction, draw, operate);
 
     fn overlay<'b>(
         &'b mut self,
@@ -657,63 +639,11 @@ impl Widget<UiMessage, Theme, Renderer> for Anchored<'_> {
         let popup = self.popup.as_mut().map(|popup| {
             let tree = rest.first_mut().expect("the dropdown has a tree");
             let at = selector.position() + Vector::new(0.0, LIST_TOP);
-            let on_blur = self.on_blur.clone();
-            overlay::Element::new(Box::new(Dropdown { popup, tree, at, selector, on_blur }))
+            let blur = Some((selector, self.on_blur.clone()));
+            overlay::Element::new(Box::new(crate::popover::Bubble { popup, tree, at, below: true, blur }))
         });
         let all: Vec<_> = inner.into_iter().chain(popup).collect();
         (!all.is_empty()).then(|| overlay::Group::with_children(all).overlay())
-    }
-}
-
-struct Dropdown<'a, 'b> {
-    popup: &'b mut El<'a>,
-    tree: &'b mut widget::Tree,
-    at: Point,
-    selector: Rectangle,
-    on_blur: UiMessage,
-}
-
-impl overlay::Overlay<UiMessage, Theme, Renderer> for Dropdown<'_, '_> {
-    fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
-        let node = self.popup.as_widget_mut().layout(self.tree, renderer, &layout::Limits::new(Size::ZERO, bounds));
-        node.move_to(self.at)
-    }
-
-    fn draw(
-        &self,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-    ) {
-        self.popup.as_widget().draw(self.tree, renderer, theme, style, layout, cursor, &layout.bounds());
-    }
-
-    fn operate(&mut self, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn widget::Operation) {
-        self.popup.as_widget_mut().operate(self.tree, layout, renderer, operation);
-    }
-
-    fn update(
-        &mut self,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, UiMessage>,
-    ) {
-        if let Event::Mouse(mouse::Event::ButtonPressed(_)) = event {
-            if !cursor.is_over(layout.bounds()) && !cursor.is_over(self.selector) {
-                shell.publish(self.on_blur.clone());
-            }
-        }
-        let viewport = layout.bounds();
-        self.popup.as_widget_mut().update(self.tree, event, layout, cursor, renderer, clipboard, shell, &viewport);
-    }
-
-    fn mouse_interaction(&self, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer) -> mouse::Interaction {
-        self.popup.as_widget().mouse_interaction(self.tree, layout, cursor, &layout.bounds(), renderer)
     }
 }
 

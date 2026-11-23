@@ -92,6 +92,10 @@ pub struct StoredAsset {
 }
 
 pub const NOTE_CHAT_ID: &str = "!note_self:beeper.com";
+
+/// How long a typing update shows its users at most: Desktop's `durationMs: 6e4` of a `m.typing`, whatever the
+/// timeout that the typing users sent.
+pub const TYPING_DURATION: std::time::Duration = std::time::Duration::from_secs(60);
 /// Logout writes this file and the next start deletes the local data, because
 /// Windows can't delete the databases while this process has them open.
 pub const LOGGED_OUT: &str = "logged-out";
@@ -629,7 +633,10 @@ pub struct BeeperStore {
     pub syncs: u64,
     /// The Matrix IDs of sent events and created labels by their local IDs.
     pub sent: HashMap<String, String>,
+    /// Who types in each chat, by its Matrix `m.typing`.
     pub typing: HashMap<String, Vec<String>>,
+    /// The number of `m.typing` updates of each chat, which a typing timeout compares with its own.
+    pub typing_updates: HashMap<String, u64>,
     /// `io.element.recent_emoji` keys (emoji or emoji-mart ids) with their use counts.
     pub recent_emoji: Vec<(String, u64)>,
     /// Desktop's `accountDataStore.imagePack`: the own `m.image_pack`, whose images are the custom emoji, or null.
@@ -756,89 +763,34 @@ impl BeeperStore {
         let beeper_state = if config.demo { demo_state() } else { BeeperStateRecord::default() };
         let features =
             if config.demo { crate::features::Flags::free_plan() } else { crate::features::Flags::default() };
-        let mut store = Self {
-            setup: None,
-            settings: BeeperSettings::default(),
+        let mut store = crate::with_defaults!(Self {
             config,
             db: Mutex::new(conn),
-            verification: None,
             beeper_state,
-            bridge_accounts: Vec::new(),
-            pin_rank: HashMap::new(),
-            recent_chat_ids: Vec::new(),
-            network_spaces: Vec::new(),
-            contacts: Vec::new(),
-            bridge_sessions: HashMap::new(),
-            accounts: Vec::new(),
-            labels: Vec::new(),
-            chats: Vec::new(),
-            chat_changes: 0,
             instance: {
                 static STORES: AtomicU64 = AtomicU64::new(0);
                 STORES.fetch_add(1, Ordering::Relaxed)
             },
-            chat_idx_by_id: HashMap::new(),
-            chat_order: BTreeSet::new(),
-            local_chat_idx_by_id: HashMap::new(),
-            messages: Vec::new(),
-            msg_idx_by_id: HashMap::new(),
-            chat_msg_indices: HashMap::new(),
-            loaded: Vec::new(),
-            unloaded: None,
-            shown: Vec::new(),
-            thread_msg_indices: HashMap::new(),
-            timeline_revs: HashMap::new(),
-            timeline_writes: 0,
-            moves: 0,
-            assets: HashMap::new(),
-            assets_by_mxc: HashMap::new(),
-            connect: crate::connect::Connect::default(),
             connect_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
             ws_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
             focus_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
             launch_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
             api_on: tokio::sync::watch::channel(false).0,
-            matrix: None,
-            matrix_error: None,
-            sync_failing: false,
-            session_ended: false,
-            syncing: false,
-            sas_confirm: None,
-            pending_recovery_key: None,
             initial_sync: (0, 0),
-            ui_auth_token: None,
-            outbox: Vec::new(),
-            bookmarks_room: None,
-            bookmarks_failed: false,
-            bookmarks: HashMap::new(),
-            bookmarked: HashMap::new(),
-            reminders_room: None,
-            message_reminders: HashMap::new(),
-            reminder_events: HashMap::new(),
-            removals: None,
-            outbox_ready: Default::default(),
-            sync_tx: false,
-            sent_flags: HashMap::new(),
-            syncs: 0,
-            sent: HashMap::new(),
-            typing: HashMap::new(),
-            recent_emoji: Vec::new(),
             image_pack: serde_json::Value::Null,
-            scheduled: Vec::new(),
-            synced_prefs: BTreeMap::new(),
-            skin_tone: 0,
             inbox_rules: serde_json::Value::Null,
-            muted_rooms: Vec::new(),
-            room_reads: Default::default(),
             account_overrides_synced: serde_json::Value::Null,
             account_overrides: serde_json::Value::Null,
-            account_data_key: None,
-            requests_viewed: HashMap::new(),
             features,
-            whoami: Profile::default(),
-            drafts: Default::default(),
             next_seq: 1000,
-        };
+        }, default: setup, settings, verification, bridge_accounts, pin_rank, recent_chat_ids, network_spaces,
+            contacts, bridge_sessions, accounts, labels, chats, chat_changes, chat_idx_by_id, chat_order,
+            local_chat_idx_by_id, messages, msg_idx_by_id, chat_msg_indices, loaded, unloaded, shown,
+            thread_msg_indices, timeline_revs, timeline_writes, moves, assets, assets_by_mxc, connect, matrix,
+            matrix_error, sync_failing, session_ended, syncing, sas_confirm, pending_recovery_key, ui_auth_token,
+            outbox, bookmarks_room, bookmarks_failed, bookmarks, bookmarked, reminders_room, message_reminders,
+            reminder_events, removals, outbox_ready, sync_tx, sent_flags, syncs, sent, typing, typing_updates, recent_emoji, scheduled,
+            synced_prefs, skin_tone, muted_rooms, room_reads, account_data_key, requests_viewed, whoami, drafts);
         store.load_from_sqlite();
         store
     }
@@ -2677,6 +2629,43 @@ impl BeeperStore {
         }
     }
 
+    /// Desktop's `m.typing` of `chat`: `ids` type, each of them for [`TYPING_DURATION`] at most unless another update
+    /// comes (`USER_ACTIVITY` with `durationMs: 6e4`). Returns the number of the update, which
+    /// [`Self::typing_timeout`] takes.
+    pub fn typing_update(&mut self, chat: &str, ids: Vec<String>) -> u64 {
+        let n = self.typing_updates.entry(chat.to_string()).or_default();
+        *n += 1;
+        let n = *n;
+        self.set_typing(chat, ids);
+        n
+    }
+
+    /// Desktop's `deleteUserActivity` when the activity of the typing update `n` of `chat` times out: whoever is left
+    /// of its users stops, unless a later update came.
+    pub fn typing_timeout(&mut self, chat: &str, n: u64) {
+        if self.typing_updates.get(chat) == Some(&n) {
+            self.set_typing(chat, Vec::new());
+        }
+    }
+
+    /// The users who type in `chat`, other than you, from its `m.typing`.
+    pub fn set_typing(&mut self, chat: &str, ids: Vec<String>) {
+        let old = match ids.is_empty() {
+            true => self.typing.remove(chat),
+            false => self.typing.insert(chat.to_string(), ids.clone()),
+        };
+        if old.unwrap_or_default() != ids {
+            self.emit_ws("chat.typing", chat, None, None, None);
+        }
+    }
+
+    /// Desktop's `onUserActivityStopped` of `onNewMessages`: a new message of a user who types ends their typing, also
+    /// when their client did not end the notice.
+    pub fn stop_typing(&mut self, chat: &str, senders: &[String]) {
+        let ids = self.typing.get(chat).into_iter().flatten().filter(|u| !senders.contains(u)).cloned().collect();
+        self.set_typing(chat, ids);
+    }
+
     pub fn emit_ws(
         &self,
         event_type: &str,
@@ -4421,6 +4410,31 @@ mod tests {
         managed.participants.items.iter_mut().for_each(|u| u.manage = 3);
         st.upsert_chat(managed);
         assert!(st.chat(&chat.id).participants.items.iter().all(|u| u.manage == 3));
+    }
+
+    /// Desktop's typing users: each `m.typing` shows its users for 60 s at most, which a later update starts again.
+    /// A new message of one of them stops them alone, and leaves the others to the timeout of the update.
+    #[test]
+    fn typing_times_out_like_desktop() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("typing-timeout"));
+        let chat = st.chats[0].id.clone();
+        let mut rx = st.ws_tx.subscribe();
+        let typing = |st: &super::BeeperStore| st.typing.get(&chat).cloned().unwrap_or_default();
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let first = st.typing_update(&chat, ids(&["@a:x", "@b:x"]));
+        assert_eq!(rx.try_recv().expect("an event").event_type, "chat.typing");
+        let again = st.typing_update(&chat, ids(&["@a:x", "@b:x"]));
+        assert!(rx.try_recv().is_err(), "the same users send no event");
+        st.typing_timeout(&chat, first);
+        assert_eq!(typing(&st), ids(&["@a:x", "@b:x"]), "the timeout of an older update keeps them");
+        st.typing_timeout(&chat, again);
+        assert!(typing(&st).is_empty(), "that of the last update stops them");
+        assert_eq!(rx.try_recv().expect("an event").event_type, "chat.typing");
+        let last = st.typing_update(&chat, ids(&["@a:x", "@b:x"]));
+        st.stop_typing(&chat, &ids(&["@a:x"]));
+        assert_eq!(typing(&st), ids(&["@b:x"]), "a message stops its sender");
+        st.typing_timeout(&chat, last);
+        assert!(typing(&st).is_empty(), "and the timeout of the update the others");
     }
 
     /// A sync upserts each of its rooms: an unchanged room writes nothing, so it sends no event and keeps what the
