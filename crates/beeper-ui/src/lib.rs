@@ -2708,7 +2708,7 @@ pub struct BeeperGuiApp {
     /// The open selection bar menu (Remind Me or More) and the x of its button.
     selection_menu: Option<(u8, f32)>,
     chat_sub: Option<u8>,
-    /// The reminder time each chat or message was last reminded of.
+    /// The reminder time each message was last reminded of.
     reminded: HashMap<String, i64>,
     /// Desktop's `snoozeStore.clockMs`: when the ended snoozes were last checked.
     snooze_clock: i64,
@@ -6426,8 +6426,9 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's `hasExpiredReminder`: the reminder of the chat came due and notified.
     fn expired(&self, c: &Chat) -> bool {
-        c.reminder.as_ref().is_some_and(|r| self.reminded.get(&c.id) == Some(&r.remind_at_ms))
+        c.reminder.as_ref().is_some_and(|r| r.user_reminded_at.is_some())
     }
 
     /// Desktop's `earliestMessageReminder` of the chat, while message reminders are on.

@@ -2042,6 +2042,7 @@ impl BeeperStore {
                 merge: c.merge.take(),
                 merged_into_chat_id: c.merged_into_chat_id.take(),
                 preview: c.preview.take(),
+                reminder: ChatReminder::synced(chat.reminder.clone(), c.reminder.as_ref()),
                 note: c.note.take(),
                 notifiable: c.notifiable.take(),
                 older: std::mem::take(&mut c.older),
