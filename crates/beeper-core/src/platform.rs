@@ -194,6 +194,45 @@ pub fn forward_launches(first: std::os::unix::net::UnixListener, tx: tokio::sync
     });
 }
 
+/// Shuts down the TCP connections of this process to `peers`, like Go's `CloseIdleConnections` with the requests in
+/// flight canceled: a request that waits on one of them fails at once, and its client connects again for the next.
+/// The connections show in `/proc/self/net/tcp` and `tcp6` by the inode of their socket. Gives how many it shut down.
+#[cfg(target_os = "linux")]
+pub fn shutdown_tcp_to(peers: &std::collections::HashSet<std::net::SocketAddr>) -> usize {
+    let inodes: std::collections::HashSet<u64> = ["tcp", "tcp6"]
+        .iter()
+        .filter_map(|t| std::fs::read_to_string(format!("/proc/self/net/{t}")).ok())
+        .flat_map(|table| table.lines().skip(1).filter_map(tcp_row).collect::<Vec<_>>())
+        .filter(|(remote, _)| peers.contains(remote))
+        .map(|(_, inode)| inode)
+        .collect();
+    let fds = std::fs::read_dir("/proc/self/fd").into_iter().flatten().flatten();
+    let socket = |fd: &std::fs::DirEntry| {
+        let link = std::fs::read_link(fd.path()).ok()?;
+        let inode = link.to_str()?.strip_prefix("socket:[")?.strip_suffix(']')?.parse().ok()?;
+        inodes.contains(&inode).then(|| fd.file_name().to_str()?.parse::<i32>().ok()).flatten()
+    };
+    let fds: Vec<i32> = fds.filter_map(|fd| socket(&fd)).collect();
+    // SAFETY: shutdown(2) only ends the connection; the descriptor stays open for its owner, which closes it.
+    fds.iter().filter(|&&fd| unsafe { libc::shutdown(fd, libc::SHUT_RDWR) } == 0).count()
+}
+
+/// The remote address and the socket inode of a row of `/proc/net/tcp` or `tcp6`, whose addresses are the bytes of
+/// the address in network order, printed as host-order 32-bit words, and the port in hex. An IPv4 address mapped to
+/// IPv6 gives its IPv4 address.
+#[cfg(target_os = "linux")]
+fn tcp_row(row: &str) -> Option<(std::net::SocketAddr, u64)> {
+    let cols: Vec<&str> = row.split_whitespace().collect();
+    let (addr, port) = cols.get(2)?.split_once(':')?;
+    let words = (0..addr.len() / 8).map(|i| u32::from_str_radix(&addr[i * 8..i * 8 + 8], 16).map(u32::to_le_bytes));
+    let bytes: Vec<u8> = words.collect::<Result<Vec<_>, _>>().ok()?.concat();
+    let ip = match <[u8; 16]>::try_from(bytes.as_slice()) {
+        Ok(v6) => std::net::Ipv6Addr::from(v6).to_canonical(),
+        Err(_) => std::net::Ipv4Addr::from(<[u8; 4]>::try_from(bytes.as_slice()).ok()?).into(),
+    };
+    Some((std::net::SocketAddr::new(ip, u16::from_str_radix(port, 16).ok()?), cols.get(9)?.parse().ok()?))
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::single_instance;
@@ -213,5 +252,42 @@ mod tests {
         UnixStream::from(OwnedFd::from(first)).shutdown(std::net::Shutdown::Both).expect("stop the socket");
         drop(profile);
         assert!(single_instance(dir, &[]).is_some(), "a launch after a stop replaces the old socket");
+    }
+
+    /// A connection to a peer of the list ends at once for both ends, also while its reader waits; one to another
+    /// peer stays.
+    #[test]
+    fn the_connections_to_the_peers_shut_down() {
+        use std::io::{Read, Write};
+        let (reset, other) =
+            (std::net::TcpListener::bind("127.0.0.1:0").unwrap(), std::net::TcpListener::bind("[::1]:0"));
+        let mut client = std::net::TcpStream::connect(reset.local_addr().unwrap()).unwrap();
+        let mut server = reset.accept().unwrap().0;
+        let other = other.expect("an IPv6 loopback");
+        let mut kept = std::net::TcpStream::connect(other.local_addr().unwrap()).unwrap();
+        let waiting = std::thread::spawn(move || client.read(&mut [0; 8]).map_err(|e| e.kind()));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let peers = std::collections::HashSet::from([reset.local_addr().unwrap()]);
+        assert_eq!(super::shutdown_tcp_to(&peers), 1);
+        assert_eq!(waiting.join().unwrap(), Ok(0), "the waiting read ends");
+        assert_eq!(server.read(&mut [0; 8]).unwrap(), 0, "the peer sees the end");
+        kept.write_all(b"ping").unwrap();
+        let mut buf = [0; 4];
+        other.accept().unwrap().0.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"ping");
+    }
+
+    #[test]
+    fn tcp_rows_give_the_remote_address_and_the_inode() {
+        let v4 = "   3: 0100007F:A1B2 0100007F:5CF3 01 00000000:00000000 00:00000000 00000000  1000        0 4242 1 0";
+        let mapped =
+            "   0: 0000000000000000FFFF00000100007F:A1B2 0000000000000000FFFF00000200A8C0:01BB 01 00000000:00000000 \
+                      00:00000000 00000000  1000        0 77 1 0";
+        let v6 =
+            "   1: 00000000000000000000000001000000:A1B2 B80D0120000000000000000001000000:01BB 01 0:0 0:0 0 1000 0 9";
+        assert_eq!(super::tcp_row(v4), Some(("127.0.0.1:23795".parse().unwrap(), 4242)));
+        assert_eq!(super::tcp_row(mapped), Some(("192.168.0.2:443".parse().unwrap(), 77)));
+        assert_eq!(super::tcp_row(v6), Some(("[2001:db8::1]:443".parse().unwrap(), 9)));
+        assert_eq!(super::tcp_row("  sl  local_address rem_address   st tx_queue rx_queue"), None);
     }
 }

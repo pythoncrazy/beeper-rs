@@ -2781,6 +2781,23 @@ async fn push_loop(store: SharedStore) {
 /// Whether the homeserver cannot be reached now. Some calls of a push, like a redaction or the push rules of a mute,
 /// lose the kind of their error, so a failed push asks the homeserver again: a change that failed while it is offline
 /// waits for it like a send, instead of being dropped.
+/// Desktop's `resetNetworkConnections`, which its app calls on the window's `online` event: its SDK closes the
+/// connections of the old network. The connections to the homeserver shut down, so the sync that waits on one (for up
+/// to a minute when the network changed under it) fails at once, and the sync loop connects again.
+pub async fn reset_network_connections(store: SharedStore) {
+    let Some(client) = store.read().matrix.clone() else { return };
+    let homeserver = client.homeserver();
+    let (Some(host), Some(port)) = (homeserver.host_str(), homeserver.port_or_known_default()) else { return };
+    let peers = match tokio::net::lookup_host((host, port)).await {
+        Ok(addrs) => addrs.collect(),
+        Err(e) => return eprintln!("reset the connections to {host}: {e}"),
+    };
+    #[cfg(target_os = "linux")]
+    crate::platform::shutdown_tcp_to(&peers);
+    #[cfg(not(target_os = "linux"))]
+    let _: std::collections::HashSet<std::net::SocketAddr> = peers;
+}
+
 async fn unreachable(store: &SharedStore) -> bool {
     let client = store.read().matrix.clone().expect("flush checks the Matrix client");
     // One try: the push loop tries the change again later.
