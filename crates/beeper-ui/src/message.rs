@@ -1652,6 +1652,9 @@ impl BeeperGuiApp {
                 10.0,
                 0.0,
             ));
+            // Desktop's overlay is over the chat (`z-index: 10`): it takes the pointer, so the buttons under it lose
+            // their hover and the tooltip of a hovered button closes.
+            let zone = mouse_area(zone).interaction(mouse::Interaction::Idle);
             container(zone).padding(Padding { top: 39.0, right: 13.0, bottom: 6.5, left: 6.5 })
         });
         let wallpaper =
