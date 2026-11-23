@@ -5956,42 +5956,50 @@ pub async fn run(store: SharedStore) {
     tokio::spawn(update_device_metadata(client.clone()));
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
-    // Like Desktop's SDK, the state is `initialized` when the device knows the identity of the account. When the
-    // query fails, the first sync reads the state.
-    client.encryption().wait_for_e2ee_initialization_tasks().await;
-    let me = client.user_id().expect("signed-in client has a user ID").to_owned();
-    match client.encryption().request_user_identity(&me).await {
-        Ok(_) => refresh_e2ee(&client, &store).await,
-        Err(e) => eprintln!("Could not query the own identity, the first sync reads it: {e}"),
-    }
     client.add_event_handler_context(store.clone());
     client.add_event_handler(verification_requested);
-    sync_account_data(&client, &store).await;
-    sync_prefs(&client, &store).await;
-    sync_profile(&client, &store).await;
-    store.write().inbox_rules = global(&client, RULES).await;
-    // Nothing saves a sync before the loop below, so the passes over the rooms read the global account data once.
-    let globals = Globals::read(&client).await;
-    for room in client.invited_rooms() {
-        sync_invite(&store, &room, &globals).await;
-    }
-    // The chats that stay after a leave or a removal, without history to load again.
-    for room in client.left_rooms() {
-        let chat = chat_id(&room).await;
-        if store.read().resolve_chat_idx(&chat).is_some() {
-            sync_room_with(&store, &room, Vec::new(), &globals).await;
+    // Like Desktop's SDK, the state is `initialized` when the device knows the identity of the account. When the
+    // query fails, the first sync reads the state.
+    let identity = async {
+        let (encryption, me) = (client.encryption(), client.user_id().expect("signed-in client has a user ID"));
+        let ((), identity) =
+            tokio::join!(encryption.wait_for_e2ee_initialization_tasks(), encryption.request_user_identity(me));
+        match identity {
+            Ok(_) => refresh_e2ee(&client, &store).await,
+            Err(e) => eprintln!("Could not query the own identity, the first sync reads it: {e}"),
         }
-    }
-    let first = !store.read().beeper_state.first_sync_done;
-    start_pass(&client, &store, &globals, first).await;
-    if first {
-        let mut st = store.write();
-        st.beeper_state.first_sync_done = true;
-        st.persist_state_to_sqlite();
-    }
-    // Desktop's SDK catches up at once at the start, so "Syncing..." ends without waiting for a long poll.
-    let now = SyncSettings::default().timeout(std::time::Duration::ZERO);
-    if !on_sync(&client, &store, client.sync_once(now).await).await {
+    };
+    let first_sync = async {
+        sync_account_data(&client, &store).await;
+        sync_prefs(&client, &store).await;
+        store.write().inbox_rules = global(&client, RULES).await;
+        // Nothing saves a sync before the first one below, so the passes over the rooms read the global account data
+        // once.
+        let globals = Globals::read(&client).await;
+        for room in client.invited_rooms() {
+            sync_invite(&store, &room, &globals).await;
+        }
+        // The chats that stay after a leave or a removal, without history to load again.
+        for room in client.left_rooms() {
+            let chat = chat_id(&room).await;
+            if store.read().resolve_chat_idx(&chat).is_some() {
+                sync_room_with(&store, &room, Vec::new(), &globals).await;
+            }
+        }
+        let first = !store.read().beeper_state.first_sync_done;
+        start_pass(&client, &store, &globals, first).await;
+        if first {
+            let mut st = store.write();
+            st.beeper_state.first_sync_done = true;
+            st.persist_state_to_sqlite();
+        }
+        // Desktop's SDK catches up at once at the start, so "Syncing..." ends without waiting for a long poll.
+        client.sync_once(SyncSettings::default().timeout(std::time::Duration::ZERO)).await
+    };
+    // The identity query, the profile and the first sync wait for the homeserver at the same time, not one after the
+    // other. The first sync applies once all three are done.
+    let ((), (), synced) = tokio::join!(identity, sync_profile(&client, &store), first_sync);
+    if !on_sync(&client, &store, synced).await {
         return;
     }
     let settings = SyncSettings::default().timeout(std::time::Duration::from_secs(30));
