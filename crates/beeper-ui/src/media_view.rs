@@ -1565,11 +1565,13 @@ impl BeeperGuiApp {
                 // Desktop closes the search at once, and searches 300 ms after the last change of the field.
                 let search = match w.search.is_some() {
                     true => {
-                        let n = w.typed;
-                        let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
-                        Task::perform(wait, move |()| UiMessage::Media(Msg::Searched(n)))
+                        let searched = UiMessage::Media(Msg::Searched(w.typed));
+                        self.timers.media.after(std::time::Duration::from_millis(300), searched)
                     }
-                    false => self.media_search(),
+                    false => {
+                        self.timers.media.cancel();
+                        self.media_search()
+                    }
                 };
                 return match open {
                     true => Task::batch([search, iced::widget::operation::focus("media-search")]),

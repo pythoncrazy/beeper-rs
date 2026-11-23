@@ -10,6 +10,12 @@ use beeper_core::{
 use std::{ops::RangeInclusive, path::PathBuf};
 use tokio::{net::TcpListener, runtime::Runtime};
 
+/// mimalloc for all allocations. Each message builds the whole view (thousands of small boxes) and drops the one
+/// before, and glibc's malloc spent about a seventh of the UI thread on that churn: its thread cache keeps only 7 chunks
+/// of a size and none above 1 KiB, so the frees of a dropped view go to bins that the next large allocation sorts.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const BIN: &str = env!("CARGO_BIN_NAME");
 const USAGE: &str = concat!("USAGE\n  $ ", env!("CARGO_BIN_NAME"), " [COMMAND] [FLAGS] [LINK]");
 const ARGUMENTS: &str = "ARGUMENTS

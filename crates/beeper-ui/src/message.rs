@@ -631,6 +631,19 @@ pub(crate) fn replies_reveal(t: f32) -> (f32, f32) {
 /// The time from one flyover item to the next: the item's ease-out is a quarter in after 32 ms of its 0.2 s.
 const FLYOVER_STAGGER: f32 = 0.032;
 
+/// Whether the flyover of the hovered message of `p` still reveals its items: the reply, thread and react items (three
+/// at most) one after another, and once the pointer is on the flyover, the quick reactions after them, which take
+/// clicks 120 ms after the last one is in. A message that the pointer left has no flyover.
+pub(crate) fn flyover_revealing(p: &crate::Pane) -> bool {
+    let Some(at) = p.hover_msg_at.filter(|_| p.hovered_msg.is_some()) else { return false };
+    let items = at.elapsed().as_secs_f32() < 2.0 * FLYOVER_STAGGER + 0.2;
+    let after = at + std::time::Duration::from_secs_f32(3.0 * FLYOVER_STAGGER);
+    items || p.flyover_at.is_some_and(|f| f.max(after).elapsed() < QUICK_REVEAL)
+}
+
+/// How long the quick reactions of a flyover take to come in and take clicks.
+const QUICK_REVEAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Desktop's `pm` text: the formatted body with each custom emoji (`data-mx-emoticon`) as 📟 when it has one, else
 /// the text, so a message of custom emoji is a jumbo emoji too.
 fn emoji_text(m: &Message) -> String {
@@ -1826,7 +1839,12 @@ impl BeeperGuiApp {
 
     /// Starts the fade of Desktop's `ScrollToBottom` when the timeline leaves its bottom (`up`) or comes back to it.
     pub(crate) fn timeline_scrolled(&mut self, up: bool) {
-        if self.pane.scrolled_up.is_none_or(|s| s.0 != up) {
+        // A chat that opens at its bottom has no scroll-to-bottom button to fade out, like Desktop's.
+        let fade = match self.pane.scrolled_up {
+            None => up,
+            Some((was, _)) => was != up,
+        };
+        if fade {
             self.pane.scrolled_up = Some((up, std::time::Instant::now()));
         }
     }
@@ -4535,6 +4553,24 @@ pub(crate) mod tests {
         let _ = app.update(UiMessage::Message(Msg::HoverEnter(mine)));
         let _ = app.update(UiMessage::Message(Msg::ShowQuickReactions));
         assert!(!quick_shown(&app), "never on your own");
+    }
+
+    /// The animation clock runs while a flyover reveals its items, and stops once they are in or the pointer left.
+    #[test]
+    fn the_flyover_animates_only_while_it_reveals() {
+        let mut app = crate::fuzz::demo_app("flyover-clock");
+        let ago = |ms| std::time::Instant::now() - std::time::Duration::from_millis(ms);
+        let _ = app.update(UiMessage::Message(Msg::HoverEnter("m".into())));
+        assert!(flyover_revealing(&app.pane), "its items come in");
+        app.pane.hover_msg_at = Some(ago(270));
+        assert!(!flyover_revealing(&app.pane), "the three items are in after 264 ms");
+        app.pane.flyover_at = Some(ago(100));
+        assert!(flyover_revealing(&app.pane), "the quick reactions come in");
+        (app.pane.hover_msg_at, app.pane.flyover_at) = (Some(ago(700)), Some(ago(510)));
+        assert!(!flyover_revealing(&app.pane), "and are in");
+        app.pane.hover_msg_at = Some(ago(10));
+        let _ = app.update(UiMessage::Message(Msg::HoverExit("m".into())));
+        assert!(!flyover_revealing(&app.pane), "a message that the pointer left has no flyover");
     }
 
     /// Desktop's `ActionButtons` under a message of the system user: the buttons that can open their link or post to
