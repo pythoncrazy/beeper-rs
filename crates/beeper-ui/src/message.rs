@@ -4561,7 +4561,7 @@ pub(crate) mod tests {
         assert!(!flyover_revealing(&app.pane), "the three items are in after 264 ms");
         app.pane.flyover_at = Some(ago(100));
         assert!(flyover_revealing(&app.pane), "the quick reactions come in");
-        app.pane.flyover_at = Some(ago(510));
+        (app.pane.hover_msg_at, app.pane.flyover_at) = (Some(ago(700)), Some(ago(510)));
         assert!(!flyover_revealing(&app.pane), "and are in");
         app.pane.hover_msg_at = Some(ago(10));
         let _ = app.update(UiMessage::Message(Msg::HoverExit("m".into())));
