@@ -515,6 +515,16 @@ fn attachments_send_like_desktop() {
     assert_eq!(app.status_banner, "File size (4 B) exceeds the maximum allowed size (3 B)");
     let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(vec![Err("Couldn't attach c.mp4".into())])));
     assert_eq!(app.status_banner, "Couldn't attach c.mp4");
+    // Desktop's `attachFiles` adds a toast for each file that does not attach, and they stack.
+    let two = vec![Err("Couldn't attach d.mp4".into()), Err("Couldn't attach e.mp4".into())];
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(two)));
+    assert_eq!(app.status_banner, "Couldn't attach e.mp4", "the last file's toast is the newest");
+    let older: Vec<&str> = app.older_toasts.iter().map(|t| t.0.text.as_str()).collect();
+    assert!(
+        older.ends_with(&["Couldn't attach c.mp4", "Couldn't attach d.mp4"]),
+        "the others stack in order: {older:?}"
+    );
+    assert!(app.older_toasts.last().is_some_and(|t| t.0.error), "an error toast");
 }
 
 #[test]
