@@ -2421,6 +2421,7 @@ fn upload_file(st: &BeeperStore, a: &Value) -> Result<OutFile, Response> {
         sticker: kind == Some("sticker"),
         voice: (kind == Some("voice-note")).then(Vec::new),
         echo_url: Some(stored.mxc_url.clone()),
+        echo_poster: None,
         mime,
         pack: None,
     })

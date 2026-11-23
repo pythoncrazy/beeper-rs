@@ -267,12 +267,14 @@ fn caption(text: &str, files: &[PendingMedia], rules: &FileRules) -> Option<Stri
 }
 
 /// Desktop's `KFe`: a composer file to send. A video and an audio file go with their measured length and size. An
-/// image keeps its frames in `media`, under the URL of its local echo.
+/// image keeps its frames in `media`, under the URL of its local echo, and a video its first frame, under the URL of
+/// the poster of its local echo, like Desktop's `<video>` of the local file.
 fn out_file(media: &mut images::Images<Result<Frames, String>>, st: &mut BeeperStore, f: PendingMedia) -> OutFile {
     let PendingMedia { bytes, name, mime, is_gif, size, frames, duration, sticker } = f;
     let image = !frames.is_empty() && mime.starts_with("image/");
+    let video = !frames.is_empty() && mime.starts_with("video/");
     let key = format!("pasted:{}", st.next_id("img"));
-    if image {
+    if image || video {
         media.insert(key.clone(), Some(Ok(frames)));
     }
     OutFile {
@@ -285,7 +287,8 @@ fn out_file(media: &mut images::Images<Result<Frames, String>>, st: &mut BeeperS
         sticker: sticker.is_some(),
         pack: sticker,
         voice: None,
-        echo_url: image.then_some(key),
+        echo_url: image.then(|| key.clone()),
+        echo_poster: video.then_some(key),
     }
 }
 
@@ -1626,9 +1629,9 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let html = st.loaded(&mid).and_then(|m| m.html.clone());
                 drop(st);
-                // Desktop scrolls the edited message into view (`scrollIntoView` of the editing target).
+                // Desktop scrolls the edited message into view with the least scroll (`align: "nearest"`).
                 self.pane.timeline.reveal(vlist::key(&mid));
-                let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Center);
+                let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Nearest);
                 // Desktop's `customEmoji` nodes of the message's `img[data-mx-emoticon]`, named by their `alt`.
                 self.pane.emoticons.extend(html.as_deref().map(html_emoticons).unwrap_or_default());
                 self.pane.start_edit(mid, &old_txt, html.map_or(Vec::new(), |h| html_pills(&h)));
