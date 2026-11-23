@@ -123,7 +123,10 @@ pub struct Video {
     frames: Option<Receiver<image::Handle>>,
     start: f32,
     shown: usize,
+    /// The frame that shows, over the one that showed before it: the wgpu renderer uploads an image of 2 MB or more
+    /// on a worker and draws nothing for it until then, so a video showed no frame between its frames and flickered.
     frame: Option<image::Handle>,
+    under: Option<image::Handle>,
     pub rate: f32,
     pub muted: bool,
     /// The frame size before the video filled the screen, and before it went to Picture in Picture.
@@ -225,7 +228,7 @@ impl Video {
             size,
             since: Some(Instant::now()),
             rate: 1.0,
-        }, default: media, at, frames, start, shown, frame, muted, full, inline, sub, failed)
+        }, default: media, at, frames, start, shown, frame, under, muted, full, inline, sub, failed)
     }
 
     pub fn playing(&self) -> bool {
@@ -461,11 +464,16 @@ impl BeeperGuiApp {
                     }
                 }
                 let due = (((v.pos() - v.start) * FPS) as usize + 1).max(1);
+                let shown = v.shown;
+                let last = v.frame.clone();
                 while v.shown < due {
                     match v.frames.as_ref().and_then(|f| f.try_recv().ok()) {
                         Some(f) => (v.frame, v.shown) = (Some(f), v.shown + 1),
                         None => break,
                     }
+                }
+                if v.shown > shown {
+                    v.under = last;
                 }
             }
         }
@@ -585,8 +593,11 @@ impl BeeperGuiApp {
             });
             return stack![dim].push(restore).into();
         }
+        let frame = |f: image::Handle| image(f).width(w).height(h).border_radius(r);
         let base: El<'a> = match v.and_then(|v| v.frame.clone()) {
-            Some(f) => image(f).width(w).height(h).border_radius(r).into(),
+            Some(f) => iced::widget::Stack::with_children(v.and_then(|v| v.under.clone()).map(|u| frame(u).into()))
+                .push(frame(f))
+                .into(),
             None => poster,
         };
         // A click on the inline video opens the carousel, and elsewhere it plays or pauses the video.
@@ -831,6 +842,27 @@ mod tests {
         let seen = msgs.iter().map(|m| matches!(m, UiMessage::Video(Msg::Seen(_, true)))).collect();
         msgs.into_iter().for_each(|m| drop(app.update(m)));
         seen
+    }
+
+    /// The wgpu renderer uploads a large frame on a worker and draws nothing for it until then, so a new frame shows
+    /// over the one before it: the video never shows a gap between frames.
+    #[test]
+    fn a_new_frame_shows_over_the_one_before_it() {
+        let mut app = playing("frame-under");
+        let (tx, rx) = sync_channel(2);
+        let px = |c: u8| image::Handle::from_rgba(1, 1, vec![c; 4]);
+        let (a, b) = (px(1), px(2));
+        app.video.as_mut().unwrap().frames = Some(rx);
+        tx.send(a.clone()).unwrap();
+        let _ = app.update(UiMessage::Video(Msg::Tick));
+        tx.send(b.clone()).unwrap();
+        app.video.as_mut().unwrap().at = 1.0;
+        let _ = app.update(UiMessage::Video(Msg::Tick));
+        let v = app.video.as_ref().unwrap();
+        assert_eq!(
+            (v.frame.as_ref().map(image::Handle::id), v.under.as_ref().map(image::Handle::id)),
+            (Some(b.id()), Some(a.id()))
+        );
     }
 
     /// Desktop's video menu takes the place of the message menu for a right click on the video, and its Open in PiP
