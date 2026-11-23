@@ -10578,3 +10578,35 @@ fn a_covering_image_stays_in_its_box() {
     assert!(red_at(30), "the image fills its box");
     assert!(!red_at(10) && !red_at(50), "and nothing beside it");
 }
+
+/// GNOME's text scaling on Wayland reaches the app with a change of GTK's settings, as Desktop's device scale: the
+/// windows take it once, and a restored one keeps its size in Desktop's pixels, so it grows with it on the screen.
+#[test]
+fn windows_follow_the_text_scaling() {
+    use iced::futures::StreamExt;
+    use iced_runtime::{window::Action as W, Action};
+    let mut app = demo_app("text-scale");
+    let main = app.main_window.expect("a main window");
+    assert_eq!(app.text_scale, 1.0);
+    let other = app.update(UiMessage::Window(windows::Msg::FrameReady));
+    let other = iced::futures::executor::block_on(task_actions(other));
+    assert!(other.is_empty(), "another change of GTK's settings changes nothing");
+    crate::set_text_scale(1.25);
+    let task = app.update(UiMessage::Window(windows::Msg::FrameReady));
+    crate::set_text_scale(1.0);
+    assert_eq!(app.text_scale, 1.25, "the windows take GNOME's Large Text");
+    let mut stream = iced_runtime::task::into_stream(task).expect("the windows resize");
+    let resized = iced::futures::executor::block_on(async {
+        while let Some(action) = stream.next().await {
+            match action {
+                Action::Window(W::GetMaximized(_, tx)) => drop(tx.send(false)),
+                // The size at the new scale, 1000x750 at the old one.
+                Action::Window(W::GetSize(_, tx)) => drop(tx.send(Size::new(800.0, 600.0))),
+                Action::Window(W::Resize(id, size)) if id == main => return Some(size),
+                _ => {}
+            }
+        }
+        None
+    });
+    assert_eq!(resized, Some(Size::new(1000.0, 750.0)), "the window keeps its size in Desktop's pixels");
+}

@@ -30,6 +30,8 @@ pub enum Msg {
     FocusRequested(Option<String>),
     /// Desktop's `second-instance` event with the arguments of the later launch.
     SecondInstance(Vec<String>),
+    /// GTK opened to draw the title bars, or its settings changed, among them the text scaling.
+    FrameReady,
     /// A window that hid on Wayland had this size in screen pixels, and was maximized or not, as it closed.
     Unmapped(window::Id, Size, bool),
     /// The widget that had the keyboard focus as the main window hid on Wayland.
@@ -99,6 +101,7 @@ impl BeeperGuiApp {
                 return window::screenshot(id).map(move |s| UiMessage::Window(Msg::ScreenshotCaptured(id, s)));
             }
             Msg::Drawn(_) => {}
+            Msg::FrameReady => return self.follow_text_scale(),
             Msg::Resized(id, size) => {
                 self.resized(id, size);
                 return Task::batch([self.maximize_if_placed(id), self.save_soon(id)]);
@@ -604,6 +607,32 @@ impl BeeperGuiApp {
         for (id, size) in all {
             self.resized(id, size * k);
         }
+    }
+
+    /// Follows a change of GNOME's text scaling on Wayland, which Chromium makes part of the device scale: Desktop's
+    /// page and title bar grow like a zoom, and its windows keep their sizes in its pixels, so they grow with it, but
+    /// for maximized ones, which keep the screen's size and lay out again.
+    fn follow_text_scale(&mut self) -> Task<UiMessage> {
+        let scale = text_scale();
+        if scale == self.text_scale {
+            return Task::none();
+        }
+        let k = scale / self.text_scale;
+        self.text_scale = scale;
+        let all = self.main_window.into_iter().chain(self.login_window).chain(self.sub_windows());
+        // The sizes come at the new scale, so a window of the same size at the old one grows by `k` on the screen.
+        Task::batch(all.map(move |id| {
+            let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size)));
+            state.then(move |(max, size)| match max {
+                // The title bar grew or shrank, but winit takes the content's size out of the screen's only when the
+                // compositor configures the window, which GNOME does for a change of its state: restored and
+                // maximized again in one go, the window does not show the restored size.
+                true => Task::done(UiMessage::Window(Msg::Resized(id, size)))
+                    .chain(window::maximize(id, false))
+                    .chain(window::maximize(id, true)),
+                false => window::resize(id, size * k),
+            })
+        }))
     }
 
     /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.

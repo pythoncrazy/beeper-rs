@@ -2877,6 +2877,8 @@ pub struct BeeperGuiApp {
     pub dark: bool,
     pub zoom: f32,
     zoom_drag: Option<f32>,
+    /// GNOME's text scaling on Wayland that the windows have; see [`TEXT_SCALE`].
+    pub text_scale: f32,
     /// The windows that opened maximized, to maximize again once the window manager places them.
     maximize_when_placed: Vec<window::Id>,
     pub pal: Palette,
@@ -3252,6 +3254,7 @@ impl BeeperGuiApp {
             dark: theme,
             zoom: 1.0,
             zoom_drag: None,
+            text_scale: text_scale(),
             maximize_when_placed: Vec::new(),
             list: chat_list::ListState { filters, ..Default::default() },
             seen_requests: Vec::new(),
@@ -5017,7 +5020,7 @@ impl BeeperGuiApp {
         let frame_ready = Subscription::run(|| {
             iced::futures::stream::unfold((), |()| async {
                 FRAME_READY.notified().await;
-                Some((UiMessage::Noop, ()))
+                Some((UiMessage::Window(windows::Msg::FrameReady), ()))
             })
         });
         let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
@@ -6877,24 +6880,31 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .title(BeeperGuiApp::title)
         .subscription(BeeperGuiApp::subscription)
         .theme(|a: &BeeperGuiApp, _| a.iced_theme())
-        .scale_factor(|a: &BeeperGuiApp, _| a.zoom * text_scale())
+        .scale_factor(|a: &BeeperGuiApp, _| a.zoom * a.text_scale)
         .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.window, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
     app.run()
 }
 
 /// Woken once GTK opens to draw the title bars, and whenever GTK's settings change, so that the windows lay out and
-/// draw their frames again with the GTK theme and settings.
+/// draw their frames again with the GTK theme and settings, and follow the text scaling.
 pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
-/// GNOME's `text-scaling-factor` on Wayland, which Chromium applies to the whole of each window like a zoom, the size
-/// of the window included: Desktop's device scale is the screen's times it. On X11 the scale of the window already
-/// has it, from `Xft.dpi`.
-pub static TEXT_SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+/// GNOME's `text-scaling-factor` on Wayland, as the bits of an `f32`, which Chromium applies to the whole of each
+/// window like a zoom, the size of the window included: Desktop's device scale is the screen's times it. On X11 the
+/// scale of the window already has it, from `Xft.dpi`.
+static TEXT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
 
-/// [`TEXT_SCALE`], or 1.
+/// Takes GNOME's text scaling, at launch and when it changes; the windows follow it once [`FRAME_READY`] wakes them.
+pub fn set_text_scale(scale: f32) {
+    if scale.is_finite() && scale > 0.0 {
+        TEXT_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// [`TEXT_SCALE`].
 fn text_scale() -> f32 {
-    TEXT_SCALE.get().copied().unwrap_or(1.0)
+    f32::from_bits(TEXT_SCALE.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// People, each with the account to reach them on.

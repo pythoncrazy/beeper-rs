@@ -16,6 +16,8 @@ use crate::{pointer::Location, wl_typed::WlTyped};
 #[derive(Debug)]
 pub struct DecorationParts {
     parts: [Part; 5],
+    /// The window's height without the title bar, in logical points.
+    height: u32,
 }
 
 impl DecorationParts {
@@ -125,7 +127,7 @@ impl DecorationParts {
             ),
         ];
 
-        Self { parts }
+        Self { parts, height: 0 }
     }
 
     pub fn parts(&self) -> std::iter::Enumerate<std::slice::Iter<'_, Part>> {
@@ -151,7 +153,15 @@ impl DecorationParts {
     // and then never emptied afterwards.
     #[allow(clippy::unwrap_used)]
     pub fn resize(&mut self, width: u32, height: u32) {
+        self.height = height;
+        // The title bar's height follows the text scaling.
+        let header = header_size();
         self.parts[Self::HEADER].surface_rect.width = width;
+        self.parts[Self::HEADER].surface_rect.height = header;
+        self.parts[Self::HEADER].surface_rect.y = -(header as i32);
+        self.parts[Self::TOP].surface_rect.y = -(header as i32 + BORDER_SIZE as i32);
+        self.parts[Self::LEFT].surface_rect.y = -(header as i32);
+        self.parts[Self::RIGHT].surface_rect.y = -(header as i32);
 
         self.parts[Self::BOTTOM].surface_rect.width = width + 2 * BORDER_SIZE;
         self.parts[Self::BOTTOM].surface_rect.y = height as i32;
@@ -162,12 +172,17 @@ impl DecorationParts {
         self.parts[Self::TOP].input_rect.as_mut().unwrap().width =
             self.parts[Self::TOP].surface_rect.width - (BORDER_SIZE * 2) + (RESIZE_HANDLE_SIZE * 2);
 
-        self.parts[Self::LEFT].surface_rect.height = height + header_size();
+        self.parts[Self::LEFT].surface_rect.height = height + header;
         self.parts[Self::LEFT].input_rect.as_mut().unwrap().height = self.parts[Self::LEFT].surface_rect.height;
 
         self.parts[Self::RIGHT].surface_rect.height = self.parts[Self::LEFT].surface_rect.height;
         self.parts[Self::RIGHT].surface_rect.x = width as i32;
         self.parts[Self::RIGHT].input_rect.as_mut().unwrap().height = self.parts[Self::RIGHT].surface_rect.height;
+    }
+
+    /// Places the parts again for the title bar's height, which follows the text scaling.
+    pub fn relayout(&mut self) {
+        self.resize(self.parts[Self::HEADER].surface_rect.width, self.height);
     }
 
     pub fn header(&self) -> &Part {
