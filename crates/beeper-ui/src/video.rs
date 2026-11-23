@@ -602,10 +602,7 @@ impl BeeperGuiApp {
             let restore = self.pip_manual.then(|| {
                 let glyph = container(tinted(&GLYPHS[5], 24.0, Color::BLACK)).padding(8);
                 let glyph = glyph.style(fill_box(Color::from_rgb8(0xef, 0xef, 0xf0), 99.0));
-                button(container(glyph).center_x(w).center_y(h))
-                    .padding(0)
-                    .style(btn_style([CLEAR; 3], [CLEAR; 3], r))
-                    .on_press(UiMessage::Video(Msg::Restore))
+                button(container(glyph).center_x(w).center_y(h)).bare(CLEAR).on_press(UiMessage::Video(Msg::Restore))
             });
             return stack![dim].push(restore).into();
         }
@@ -635,7 +632,7 @@ impl BeeperGuiApp {
             let card = container(card).center_x(w.max(200.0)).center_y(h);
             return card.style(crate::style::bordered_box(p.window, edge, 1.0, 8.0)).into();
         }
-        let surface = button(base).padding(0).style(btn_style([CLEAR; 3], [CLEAR; 3], r)).on_press_maybe(click);
+        let surface = button(base).bare(CLEAR).on_press_maybe(click);
         let Some(v) = v else {
             let play = button(tinted(&crate::voice::ICONS[0], 20.0, Color::from_rgb8(0x20, 0x21, 0x24)))
                 .padding(8)

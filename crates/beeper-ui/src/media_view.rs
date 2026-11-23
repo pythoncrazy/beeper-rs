@@ -914,7 +914,7 @@ impl BeeperGuiApp {
                 let face = container(self.thumb(a, 44.0, 6.0)).padding(2);
                 let face = face.style(bordered_box(white.scale_alpha(0.1), edge, 2.0, 8.0));
                 let open = UiMessage::Media(Msg::OpenCarousel(mid.clone(), *ai, true));
-                button(face).padding(0).style(btn_style([CLEAR; 3], [white; 3], 8.0)).on_press(open).into()
+                button(face).bare(white).on_press(open).into()
             });
             let row = container(Row::with_children(thumbs).spacing(4)).padding([6, 10]).width(Fill);
             let scroll = |d: mouse::ScrollDelta| {
@@ -1060,8 +1060,8 @@ impl BeeperGuiApp {
             let label = txt(tr(label), 11.0).color(p.strong);
             button(container(label).center_x(Fill))
                 .width(width)
+                .bare(p.strong)
                 .padding([2, 8])
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 20.0))
                 .on_press(UiMessage::Media(Msg::Tab(i)))
                 .into()
         });
@@ -1220,7 +1220,7 @@ impl BeeperGuiApp {
             true => UiMessage::Media(Msg::Pick(m.id.clone(), k)),
             false => UiMessage::Media(Msg::OpenCarousel(m.id.clone(), k, true)),
         };
-        let b = button(face).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 8.0));
+        let b = button(face).bare(p.strong);
         mouse_area(b.on_press(open)).on_right_press(UiMessage::Media(Msg::ItemMenu(Some((m.id.clone(), k))))).into()
     }
 
