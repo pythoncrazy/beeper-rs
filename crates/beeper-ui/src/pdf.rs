@@ -334,12 +334,7 @@ mod tests {
         // The 200 × 100 page shows in the middle of the carousel below its header, at x 400 to 600 and y 335 to 435,
         // and the 100 × 44 controls from x 460 and 40 px above its bottom, with Previous Page at x 468 and Next Page at
         // x 538. The test reads the pixels of the page, which the simulator does not find.
-        let dir = std::env::temp_dir().join(format!("beeper-rs-pdf-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let _ = sim(&app).snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("page"));
-        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-        let shot = ::image::open(&png).unwrap().into_rgba8();
-        std::fs::remove_dir_all(&dir).unwrap();
+        let shot = crate::focus::tests::pixels(&mut sim(&app), &iced::Theme::Light, "pdf");
         let k = shot.width() / 1000;
         let px = |x: u32, y: u32| shot.get_pixel(x * k, y * k).0;
         assert_eq!(px(430, 360), [0, 0, 0, 255], "the square of the page");

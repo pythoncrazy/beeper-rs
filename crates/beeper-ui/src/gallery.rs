@@ -397,6 +397,14 @@ impl BeeperGuiApp {
                     .content_fit(iced::ContentFit::Contain)
                     .rotation(iced::Rotation::Solid(iced::Radians(turn)))
                     .into(),
+                // Desktop's `MediaImg` of the tile is the `ImageError` of a media that failed to load.
+                None if !video && matches!(url.and_then(|u| self.media.get(u)), Some(Some(Err(_)))) => {
+                    let error = container(self.image_error(w, h, RADIUS));
+                    container(error.style(bordered_box(p.chip, p.prefs_border, 0.5, RADIUS)))
+                        .center(bw)
+                        .center_y(bh)
+                        .into()
+                }
                 None => {
                     let fill = if video { Color::BLACK } else { p.chip };
                     let tile = container(Space::new()).width(w).height(h);
