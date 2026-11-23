@@ -1292,6 +1292,26 @@ mod tests {
         assert!(!red(72, 40), "nothing right of the image");
     }
 
+    /// The software renderer rounds the corners of an image with a border radius, like the image shader of wgpu: the
+    /// inline images and videos of the timeline have the 17 px corners of a bubble.
+    #[test]
+    fn rounded_images_draw_round_in_the_software_renderer() {
+        use iced::advanced::image::{Handle, Image, Renderer as _};
+        use iced::{Point, Rectangle, Size};
+        let red = Handle::from_rgba(2, 2, [255, 0, 0, 255].repeat(4));
+        let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, 16.into());
+        let bounds = Rectangle::new(Point::new(10.0, 10.0), Size::new(60.0, 40.0));
+        renderer.draw_image(Image { border_radius: 17.0.into(), ..Image::new(red) }, bounds, bounds);
+        let (mut pixmap, mut mask) = (tiny_skia::Pixmap::new(80, 80).unwrap(), tiny_skia::Mask::new(80, 80).unwrap());
+        let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(Size::new(80, 80), 1.0);
+        let screen = [Rectangle::with_size(Size::new(80.0, 80.0))];
+        renderer.draw(&mut pixmap.as_mut(), &mut mask, &viewport, &screen, Color::WHITE);
+        let red = |x, y| pixmap.pixel(x, y).expect("a pixel in the pixmap").green() < 128;
+        assert!(!red(11, 11) && !red(68, 11) && !red(11, 48) && !red(68, 48), "the corners are round");
+        assert!(red(40, 11) && red(11, 30) && red(40, 30) && red(68, 30), "the image fills its sides");
+        assert!(!red(72, 30) && !red(40, 52), "nothing past the image");
+    }
+
     /// The software renderer draws a turned icon, like the Next Attachment arrow of the carousel and the open
     /// chevrons, which it left out.
     #[test]
