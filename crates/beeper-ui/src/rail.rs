@@ -906,7 +906,8 @@ impl BeeperGuiApp {
                 return self.update(*m);
             }
             SpacesEdit::NewLabel => {
-                let close = window::close(d.id);
+                let id = d.id;
+                let close = self.close_window(id);
                 return Task::batch([close, self.update(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())))]);
             }
         }

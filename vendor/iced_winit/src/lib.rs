@@ -1416,9 +1416,10 @@ fn run_action<'a, P, C>(
                     ));
                 }
 
-                if window_manager.is_empty() {
-                    *compositor = None;
-                }
+                // beeper-rs: the compositor stays when the last window
+                // closes. The app closes its windows to hide them on
+                // Wayland, and a new compositor takes seconds to start with
+                // a software Vulkan driver before the window shows again.
             }
             window::Action::GetOldest(channel) => {
                 let id =
