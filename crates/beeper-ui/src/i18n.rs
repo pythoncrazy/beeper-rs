@@ -247,12 +247,17 @@ pub fn trn_named(one: &'static str, many: &'static str, n: usize, args: &[(&str,
 }
 
 fn plural(key: &str, english: [&'static str; 2], n: usize) -> &'static str {
-    let form = match table().map_or("en", |t| t.0) {
-        "ja" => 0,
-        "fr" => usize::from(n > 1),
-        _ => usize::from(n != 1),
-    };
+    let form = plural_form(table().map_or("en", |t| t.0), n);
     forms(key).map_or(english[form], |f| &f[form])
+}
+
+/// The plural form of `n` in `lang`, by the `plural-forms` of Desktop's catalogs.
+fn plural_form(lang: &str, n: usize) -> usize {
+    match lang {
+        "ja" => 0,
+        "fr" | "pt-BR" => usize::from(n > 1),
+        _ => usize::from(n != 1),
+    }
 }
 
 fn sprintf(s: &str, args: &[&dyn Display]) -> String {
@@ -287,6 +292,17 @@ mod tests {
         assert_eq!(super::sprintf("%1$s um %2$s Uhr", &[&"Gesendet", &12]), "Gesendet um 12 Uhr");
         assert_eq!(super::sprintf("%d chats, %s", &[&3, &"x"]), "3 chats, x");
         assert_eq!(super::trn("%d chat selected", "%d chats selected", 2, &[&2]), "2 chats selected");
+    }
+
+    /// The `plural-forms` of Desktop's catalogs: French and Brazilian Portuguese take the singular for 0 too, and
+    /// Japanese has one form.
+    #[test]
+    fn plural_forms_match_the_catalogs() {
+        let forms = |lang| [0, 1, 2].map(|n| super::plural_form(lang, n));
+        let want = [("en", [1, 0, 1]), ("de", [1, 0, 1]), ("es", [1, 0, 1]), ("fr", [0, 0, 1]), ("pt-BR", [0, 0, 1])];
+        for (lang, want) in want.into_iter().chain([("ja", [0, 0, 0])]) {
+            assert_eq!(forms(lang), want, "{lang}");
+        }
     }
 
     /// The `Intl.DateTimeFormat` output of Node for 2025-10-10 09:05 and 2025-05-03 21:45, without regions.
@@ -446,7 +462,8 @@ mod tests {
     fn catalogs_have_the_new_strings() {
         for (lang, json) in super::LANGS {
             let table: std::collections::HashMap<String, Vec<String>> = serde_json::from_str(json).unwrap();
-            for key in ["Bookmarked", "%d new reply", "Download All", "Also send to chat"] {
+            let keys = ["Bookmarked", "%d new reply", "Download All", "Also send to chat"];
+            for key in keys.into_iter().chain(["Invalid code. Please try again or contact support."]) {
                 assert!(table.contains_key(key), "{lang} has no {key:?}");
             }
         }

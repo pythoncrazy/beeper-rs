@@ -652,6 +652,9 @@ fn right_to_left(text: &str) -> bool {
     text.chars().find(|c| c.is_alphabetic()).is_some_and(rtl)
 }
 
+/// How far under the top of the timeline the date of the day at its top floats, under the header card.
+const STICKY_DATE: f32 = 80.0;
+
 /// The container of the unread divider, which a chat scrolls to when it opens.
 const UNREAD_DIVIDER: &str = "unread-divider";
 
@@ -1508,7 +1511,7 @@ impl BeeperGuiApp {
             .sticky()
             .filter(|_| in_chat)
             .and_then(|i| msgs.get(i))
-            .map(|m| self.day_pill(&m.timestamp).padding(Padding::ZERO.top(80.0).left(GUTTER)));
+            .map(|m| self.day_pill(&m.timestamp, true).padding(Padding::ZERO.top(STICKY_DATE).left(GUTTER)));
         let overlay = match in_chat {
             true if selecting => stack![fade],
             true if chat.is_request == Some(true) => stack![fade, self.view_info_toggle(&st)],
@@ -1797,6 +1800,9 @@ impl BeeperGuiApp {
         // Desktop's `ThreadedRepliesView` lists the root and the replies of a thread under its header, and loads older
         // messages of the chat only until the root loads.
         let root = self.pane().thread_root.as_deref();
+        let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
+        // The date of the day that starts under the header shows only where it floats.
+        let covered = list.covered().filter(|_| !thread);
         let top = if root.is_some() { 38.0 } else { 96.0 };
         let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(top).bottom(0.0));
         let loaded = root.is_some_and(|r| msgs.first().is_some_and(|m| m.id == r));
@@ -1833,7 +1839,8 @@ impl BeeperGuiApp {
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             let mut head = Column::new().width(Fill).push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
-                head = head.push(self.day_pill(&m.timestamp).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
+                let shown = covered.is_none_or(|c| i > c);
+                head = head.push(self.day_pill(&m.timestamp, shown).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
             // The `along-message-footer` line of the message before goes on through the gap below it, past its
             // sender's avatar, and the date between two messages of a chain (`MessageDate`) has a line of its own.
@@ -2004,8 +2011,8 @@ impl BeeperGuiApp {
                 None => cell.into(),
             }
         };
-        let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
-        list.sections(days.clone());
+        // The pill floats at `STICKY_DATE`, 4 px into the row of its day.
+        list.sections(days.clone(), if thread { 0.0 } else { STICKY_DATE - 4.0 });
         col.push(list.view(keys, true, 48.0, UiMessage::Relist, item))
     }
 
@@ -2059,11 +2066,12 @@ impl BeeperGuiApp {
         Some(mouse_area(list).on_enter(UiMessage::HeaderHover(true)).on_exit(UiMessage::HeaderHover(false)).into())
     }
 
-    /// Desktop's `MessageDate` pill of the day of `timestamp`, in the middle of its row.
-    fn day_pill<'a>(&self, timestamp: &str) -> iced::widget::Container<'a, UiMessage> {
+    /// Desktop's `MessageDate` pill of the day of `timestamp`, in the middle of its row, or its empty place.
+    fn day_pill<'a>(&self, timestamp: &str, shown: bool) -> iced::widget::Container<'a, UiMessage> {
         let p = &self.pal;
-        let label = semi(day_label(timestamp), 11.0).color(p.on_secondary);
-        container(container(label).padding([5, 9]).style(bordered_box(p.card, p.chip, 1.0, 12.0))).center_x(Fill)
+        let [fg, bg, edge] = if shown { [p.on_secondary, p.card, p.chip] } else { [CLEAR; 3] };
+        let label = semi(day_label(timestamp), 11.0).color(fg);
+        container(container(label).padding([5, 9]).style(bordered_box(bg, edge, 1.0, 12.0))).center_x(Fill)
     }
 
     /// A message, or the gallery of the messages `ms`.
@@ -2078,6 +2086,8 @@ impl BeeperGuiApp {
     ) -> El<'a> {
         let (p, m) = (&self.pal, ms[0]);
         let (sent, sent_fg, sent_meta) = self.sent_colors(st, Some(&chat.id));
+        let bubble =
+            chat_theme::resolve(&st.settings.chat_appearance, Some(&chat.id), self.dark, &st.config.data_dir).1;
         let on_wall = self.wallpaper_fg(st, chat, thread);
         let muted = on_wall.unwrap_or(p.muted);
         let mine = m.is_sender == Some(true);
@@ -2189,7 +2199,7 @@ impl BeeperGuiApp {
                 return ((!chain.prev).then(|| quote_row(pill.into(), None)), false);
             };
             let q_mine = q.is_sender == Some(true);
-            let col = self.linked_message(chat, q, group, on_wall, sent).filter(|_| !chain.prev);
+            let col = self.linked_message(chat, q, group, on_wall, bubble).filter(|_| !chain.prev);
             let quote = col.map(|c| {
                 mouse_area(c)
                     .on_press(UiMessage::Message(Msg::ShowReplies(q.id.clone())))
@@ -2600,8 +2610,6 @@ impl BeeperGuiApp {
             let code_lines = blocks.iter().filter(|b| b.6).flat_map(|b| b.2.lines());
             let code_w =
                 code_lines.map(|l| l.chars().count() as f32 * 0.6 * 13.0 * 0.9 + 2.0 * code_pad).fold(0.0, f32::max);
-            let text_w = blocks.iter().filter(|b| !b.6).flat_map(|b| b.2.lines());
-            let text_w = text_w.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
             let last_pre = blocks.last().is_some_and(|b| b.6);
             let (room, time, footer_time) = match clamp {
                 Some(_) => (0.0, None, time),
@@ -2626,8 +2634,12 @@ impl BeeperGuiApp {
             let padded = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
             let blocks_html =
                 m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
-            let width = match crate::style::wraps(&padded, max, 13.0) {
-                _ if code_w > 0.0 => Length::Fixed(code_w.max(text_w).min(max)),
+            let width = match code_w > 0.0 || crate::style::wraps(&padded, max, 13.0) {
+                _ if code_w > 0.0 => {
+                    let lines = blocks.iter().filter(|b| !b.6).flat_map(|b| b.2.lines());
+                    let text_w = lines.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
+                    Length::Fixed(code_w.max(text_w).min(max))
+                }
                 false => Length::Shrink,
                 true if st.settings.on("balanceText") && !blocks_html => {
                     Length::Fixed(crate::style::balanced_width(&padded, max, 13.0))
@@ -2693,12 +2705,15 @@ impl BeeperGuiApp {
                     (quote, container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into())
                 })
                 .collect();
-            let body = Column::with_children(quotes(items, 0, p.strong)).width(width);
+            // Desktop's `dir="auto"`: a right-to-left text starts its lines at the right of the bubble, and its time
+            // floats to its left, where its room is.
+            let rtl = right_to_left(&text);
+            let start = if rtl { Right } else { iced::Left };
+            let body = Column::with_children(quotes(items, 0, p.strong)).width(width).align_x(start);
             let cut = cut.map(|(t, left)| {
                 txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             });
-            // Desktop's `dir="auto"`: the time of a right-to-left text floats to its left, where its room is.
-            let body = stack![column![body].push(cut)].push(time.map(|t| match right_to_left(&text) {
+            let body = stack![column![body].push(cut).align_x(start)].push(time.map(|t| match rtl {
                 true => container(t).align_left(Fill).align_bottom(Fill),
                 false => container(t).align_right(Fill).align_bottom(Fill),
             }));
@@ -3110,7 +3125,7 @@ impl BeeperGuiApp {
         q: &Message,
         group: bool,
         on_wall: Option<Color>,
-        sent: Color,
+        bubble: Option<chat_theme::Pair>,
     ) -> Option<Column<'a, UiMessage>> {
         let p = &self.pal;
         let deleted = q.is_deleted == Some(true);
@@ -3118,7 +3133,18 @@ impl BeeperGuiApp {
             return None;
         }
         let q_mine = q.is_sender == Some(true);
-        let (edge, fill) = if q_mine { (sent, mix(p.card, sent, 0.3)) } else { (p.received, p.card) };
+        // Desktop's quote of your own message has the border of your bubbles, and its text in `--bubble-out-quote-fg`:
+        // the primary color, or the text color under a chat bubble color. Its box is the timeline's own color, mixed
+        // with 30% of the bubble color in the dark theme or under a chat bubble color (`has-bubble-color`).
+        let sent = bubble.map_or(p.sent, |b| b.0);
+        let (edge, fill, fg) = match q_mine {
+            true => {
+                let fill = if bubble.is_some() || self.dark { mix(p.card, sent, 0.3) } else { p.card };
+                (sent, fill, if bubble.is_some() { p.strong } else { p.accent })
+            }
+            false => (p.received, p.card, p.text),
+        };
+        let name_fg = if q_mine { fg } else { p.strong };
         let max = 0.45 * self.pane().size.width;
         // Desktop's `isDeleted` box has a dashed border.
         let boxed = move |c: El<'a>, dashed: bool| -> El<'a> {
@@ -3134,11 +3160,11 @@ impl BeeperGuiApp {
         let name = || semi(sender_label(chat, q), 12.0).line_height(Pixels(16.0));
         let items: Vec<El<'a>> = match view {
             true => vec![self.view_once_indicator(q, view_once::Variant::Quote, (fill, p.text))],
-            false => q.attachments.iter().map(|a| self.linked_attachment(a)).collect(),
+            false => q.attachments.iter().map(|a| self.linked_attachment(a, fg)).collect(),
         };
         let media = (!items.is_empty() || deleted).then(|| {
             let gone = tr(if q.removed { "Removed from Beeper" } else { "Message Deleted" });
-            let gone = (deleted && !view).then(|| med(gone, 13.0).color(p.text));
+            let gone = (deleted && !view).then(|| med(gone, 13.0).color(fg));
             boxed(Row::with_children(items).push(gone).spacing(4).align_y(Center).into(), deleted && !view)
         });
         let text = q.text.as_deref().filter(|_| !deleted).map(|t| match view_once::preview(q) {
@@ -3149,11 +3175,10 @@ impl BeeperGuiApp {
             true => format!("{}...", t.chars().take(125).collect::<String>()),
             false => t,
         });
-        let within = (group && !visual).then(|| name().color(p.strong));
-        let text =
-            text.map(|t| boxed(column![].push(within).push(med(t, 13.0).color(p.text)).spacing(2).into(), false));
+        let within = (group && !visual).then(|| name().color(name_fg));
+        let text = text.map(|t| boxed(column![].push(within).push(med(t, 13.0).color(fg)).spacing(2).into(), false));
         let above = (group && visual).then(|| {
-            container(name().color(on_wall.unwrap_or(p.strong))).padding(Padding::new(0.0).left(11.0).right(11.0))
+            container(name().color(on_wall.unwrap_or(name_fg))).padding(Padding::new(0.0).left(11.0).right(11.0))
         });
         let shown = media.is_some() || text.is_some();
         let col = column![].push(above).push(media).push(text).spacing(8);
@@ -3161,8 +3186,9 @@ impl BeeperGuiApp {
     }
 
     /// An attachment in Desktop's `bfe`: a 100 px tile of an image or a video at half opacity, a tag of a sticker, a
-    /// GIF, a voice note, an audio file or a contact card, or the file row of Desktop's `FileAttachment`.
-    fn linked_attachment<'a>(&'a self, a: &Attachment) -> El<'a> {
+    /// GIF, a voice note, an audio file or a contact card, or the file row of Desktop's `FileAttachment` at 0.6, in
+    /// the `fg` of the quote.
+    fn linked_attachment<'a>(&'a self, a: &Attachment, fg: Color) -> El<'a> {
         let p = &self.pal;
         if quote_tile(a) {
             let tile = a.poster_img.as_ref().or(a.src_url.as_ref()).and_then(|u| self.cover_tile(u, (100, 100)));
@@ -3183,12 +3209,13 @@ impl BeeperGuiApp {
             _ => None,
         };
         if let Some(tag) = tag {
-            return med(tag, 13.0).color(p.text).into();
+            return med(tag, 13.0).color(fg).into();
         }
         let meta = file_label(a).into_iter().chain(a.file_size.map(human_size)).collect::<Vec<_>>();
-        let info = column![med(name.to_string(), 13.0).color(p.text)]
-            .push((!meta.is_empty()).then(|| txt(meta.join(" ・ "), 11.0).color(p.sub)));
-        row![tinted(file_icon(a), 20.0, p.text), info].spacing(8).align_y(Center).into()
+        let (text, sub) = (p.text.scale_alpha(0.6), p.sub.scale_alpha(0.6));
+        let info = column![med(name.to_string(), 13.0).color(text)]
+            .push((!meta.is_empty()).then(|| txt(meta.join(" ・ "), 11.0).color(sub)));
+        row![tinted(file_icon(a), 20.0, text), info].spacing(8).align_y(Center).into()
     }
 
     /// Desktop's `TimelineNote`: a centered line of the timeline.
@@ -3512,8 +3539,9 @@ pub enum Msg {
     GoTo(String, String),
     /// Save the attachments of a message, or only one of them, to the downloads folder.
     Download(String, Option<usize>),
-    /// The name of the last saved file, or the URL of the file that failed and why.
-    Downloaded(Result<String, (String, String)>),
+    /// The text of the "Downloading" toast, and the path of the last saved file, none when the user cancelled the
+    /// save dialog, or the URL of the file that failed and why.
+    Downloaded(String, Result<Option<std::path::PathBuf>, (String, String)>),
     /// Desktop's "Delete message?" dialog of the messages.
     AskDelete(Vec<String>),
     /// Desktop's `retryErroredMessage` and `removeErroredMessage` of a failed send.
@@ -3861,12 +3889,13 @@ impl BeeperGuiApp {
                     })
                     .collect();
                 let client = st.matrix.clone();
-                self.status_banner = trf("Downloading %s", &[&files[0].1]);
-                self.sticky_banner = Some(self.status_banner.clone());
+                let busy = trf("Downloading %s", &[&files[0].1]);
+                self.status_banner = busy.clone();
+                self.sticky_banner = Some(busy.clone());
                 let (dir, ask) = (downloads_dir(&st.settings), st.settings.on("alwaysAskDownload"));
                 return Task::perform(
                     async move {
-                        let mut last = String::new();
+                        let mut last = None;
                         for (url, name) in files {
                             let save = async {
                                 let name = safe_file_name(&name);
@@ -3890,26 +3919,37 @@ impl BeeperGuiApp {
                                 };
                                 let bytes = beeper_core::matrix::media(client.clone(), url.clone()).await?;
                                 std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-                                Ok(Some(path.file_name().expect("a file path").to_string_lossy().into_owned()))
+                                Ok(Some(path))
                             };
-                            if let Some(name) = save.await.map_err(|e| (url.clone(), e))? {
-                                last = name;
+                            if let Some(path) = save.await.map_err(|e| (url.clone(), e))? {
+                                last = Some(path);
                             }
                         }
                         Ok(last)
                     },
-                    |a0| UiMessage::Message(Msg::Downloaded(a0)),
+                    move |r| UiMessage::Message(Msg::Downloaded(busy.clone(), r)),
                 );
             }
-            // Like Desktop's media manager, a file that the bridge only loads when the user asks needs a download.
-            Msg::Downloaded(r) => {
-                self.status_banner = match r {
-                    Ok(name) => trf("Downloaded %s", &[&name]),
+            // Desktop's `downloadFile` removes its "Downloading" toast, then shows the saved file, or why it failed.
+            Msg::Downloaded(busy, r) => {
+                if self.sticky_banner.take_if(|t| *t == busy).is_some() && self.status_banner == busy {
+                    self.status_banner.clear();
+                }
+                match r {
+                    Ok(None) => {}
+                    Ok(Some(path)) => {
+                        let text = trf("Downloaded %s", &[&path.file_name().expect("a file path").to_string_lossy()]);
+                        let open = UiMessage::OpenUrl(path.to_string_lossy().into_owned());
+                        let buttons = vec![(tr("Open"), open), ("Show in folder", UiMessage::ShowInFolder(path))];
+                        self.show(Toast { buttons, ..Toast::new(text) });
+                    }
                     Err((url, e)) => {
+                        // Like Desktop's media manager, a file that the bridge only loads when the user asks needs a
+                        // download.
                         if beeper_core::matrix::reload_needed(&e) {
                             self.needs_download.insert(url);
                         }
-                        trf("Download failed: %s", &[&e])
+                        self.fail(Toast::new(trf("Download failed: %s", &[&e])));
                     }
                 }
             }
@@ -4153,6 +4193,38 @@ mod tests {
         app.pane.selected_msgs = ids[..2].to_vec();
         let _ = app.update(UiMessage::Message(Msg::QuoteSelected));
         assert!(app.pane.composer.text().starts_with("> "), "the selection is quoted in the composer");
+    }
+
+    /// Desktop's `downloadFile`: the "Downloading" toast goes when the file is saved, and the "Downloaded" toast opens
+    /// the file or shows it in its folder. A cancelled save dialog shows nothing, and a failure is an error toast.
+    #[test]
+    fn download_toasts_like_desktop() {
+        let mut app = crate::fuzz::demo_app("download-toasts");
+        let busy = "Downloading a.png".to_string();
+        let start =
+            |app: &mut BeeperGuiApp| (app.status_banner, app.sticky_banner) = (busy.clone(), Some(busy.clone()));
+        let path = std::path::PathBuf::from("/tmp/saved/a (1).png");
+        start(&mut app);
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy.clone(), Ok(Some(path.clone())))));
+        assert_eq!(app.sticky_banner, None, "the Downloading toast is gone, and New Chat can start a chat again");
+        let t = app.shown_toast().expect("the Downloaded toast");
+        assert_eq!(t.text, "Downloaded a (1).png");
+        assert!(
+            matches!(&t.buttons[..], [("Open", UiMessage::OpenUrl(o)), ("Show in folder", UiMessage::ShowInFolder(s))]
+            if o == "/tmp/saved/a (1).png" && *s == path)
+        );
+        start(&mut app);
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy.clone(), Ok(None))));
+        assert_eq!((app.status_banner.as_str(), app.sticky_banner.as_deref()), ("", None), "a cancel says nothing");
+        start(&mut app);
+        let failed = Err(("mxc://x/y".into(), "boom".into()));
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy.clone(), failed)));
+        let t = app.shown_toast().expect("the failure toast");
+        assert!(t.error && t.text == "Download failed: boom");
+        // A toast that waits for an answer, like a verification request, stays.
+        (app.status_banner, app.sticky_banner) = ("Verification request from Pixel".into(), Some("Pixel".into()));
+        let _ = app.update(UiMessage::Message(Msg::Downloaded(busy, Ok(Some(path)))));
+        assert_eq!(app.sticky_banner.as_deref(), Some("Pixel"));
     }
 
     /// Desktop's `.reply-thread` fades in over 0.2 s while its messages rise 10 px into place over 0.6 s, both on
@@ -4541,6 +4613,65 @@ mod tests {
             st.update_chat(i, |c| c.chat_type = "single".into());
         }
         assert!(alone(&app, &reply).find("Z").is_err(), "a DM has no reply avatar");
+    }
+
+    /// Desktop's `dir="auto"`: the wrapped lines of a right-to-left message start at the right of its bubble, so its
+    /// ragged edge is on the left.
+    #[test]
+    fn rtl_lines_start_at_the_right_like_desktop() {
+        let mut app = crate::fuzz::demo_app("rtl-lines");
+        app.pane.size = Size::new(1000.0, 700.0);
+        let mid =
+            plain_received(&app, "שלום עולם, זו הודעה בעברית עם מילים רבות כדי לבדוק גלישה של שורות ארוכות בממשק");
+        let shot = pixels(&mut alone(&app, &mid));
+        // The rightmost columns of the bubble and of the dark pixels of its text, at the scale of 2.
+        let rightmost = |hit: &dyn Fn([u8; 4]) -> bool| {
+            (0..shot.width()).rev().find(|&x| (0..shot.height()).any(|y| hit(shot.get_pixel(x, y).0))).expect("pixels")
+        };
+        let bubble = rightmost(&|px| near(px, app.pal.received));
+        let ink = rightmost(&|px| px[..3].iter().map(|&c| u32::from(c)).sum::<u32>() < 200);
+        assert!(bubble - ink <= 2 * (BUBBLE_PAD_X as u32 + 2), "the lines end at the padding: {bubble} {ink}");
+    }
+
+    /// Desktop's quote of your own message in the light theme is a white box with the border of your bubbles and its
+    /// text in the primary color, so it does not look like your message again. The dark theme and a chat bubble color
+    /// mix 30% of the bubble color into the box, and a bubble color draws the text in the text color.
+    #[test]
+    fn own_quotes_like_desktop() {
+        let mut app = crate::fuzz::demo_app("own-quotes");
+        // Eric's reply quotes your message with a file and a text.
+        let reply = "msg_1001";
+        let text = app.store.read().message("msg_1000b").text.clone().expect("a text");
+        assert_eq!(app.store.read().message(reply).linked_message_id.as_deref(), Some("msg_1000b"));
+        // The box beside the quoted text and the color of its text that differs the most from the box.
+        let look = |app: &BeeperGuiApp| {
+            let mut sim = alone(app, reply);
+            let b = sim.find(text.as_str()).expect("the quoted text").bounds();
+            let shot = pixels(&mut sim);
+            let fill = shot.get_pixel((2.0 * (b.x - 3.0)) as u32, (2.0 * b.center_y()) as u32).0;
+            let off = |px: &[u8; 4]| (0..3).map(|i| u32::from(px[i].abs_diff(fill[i]))).sum::<u32>();
+            let ink = (2 * b.y as u32..2 * (b.y + b.height) as u32)
+                .flat_map(|y| (2 * b.x as u32..2 * (b.x + 60.0) as u32).map(move |x| (x, y)))
+                .map(|(x, y)| shot.get_pixel(x, y).0)
+                .max_by_key(off)
+                .expect("the text");
+            (fill, ink)
+        };
+        let (fill, ink) = look(&app);
+        assert!(near(fill, app.pal.card), "a white box: {fill:?}");
+        assert!(near(ink, app.pal.accent), "the text in the primary color: {ink:?}");
+        app.dark = true;
+        app.pal = crate::style::palette(true);
+        let (fill, ink) = look(&app);
+        assert!(near(fill, mix(app.pal.card, app.pal.sent, 0.3)), "the dark theme mixes the box: {fill:?}");
+        assert!(near(ink, app.pal.accent), "{ink:?}");
+        app.dark = false;
+        app.pal = crate::style::palette(false);
+        let swatch = Some(beeper_core::models::Bubble::Swatch { id: "blue".into() });
+        let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Bubble(None, swatch)));
+        let (fill, ink) = look(&app);
+        assert!(near(fill, mix(app.pal.card, crate::style::hex(0x3478f6), 0.3)), "a bubble color mixes it: {fill:?}");
+        assert!(near(ink, app.pal.strong), "{ink:?}");
     }
 
     /// A received message of a DM, as plain text.

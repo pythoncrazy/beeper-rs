@@ -695,6 +695,10 @@ fn label<'a>(s: impl iced::widget::text::IntoFragment<'a>, lead: Option<El<'a>>)
     row![].push(lead).push(text).spacing(8).align_y(Center).into()
 }
 
+/// Desktop's `h3.BrandHeading-module__heading`, 1.625rem: the headings of the recovery key, the sync and Connect Chat
+/// Accounts.
+pub(crate) const H3: f32 = 26.0;
+
 /// Desktop's `BrandHeading` with `gradient` on a 40 px line.
 pub(crate) fn heading<'a>(s: &str, size: f32) -> El<'a> {
     let (text, width) = gradient_text(s, size, 40.0);
@@ -1035,7 +1039,7 @@ impl BeeperGuiApp {
             LoginMsg::Continue => {
                 self.login = Login::default();
                 let first_read =
-                    self.visible_chats(&self.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
+                    self.listed_chats(&self.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
                 let enter = self.enter_app(first_read.as_deref().unwrap_or(NOTE_CHAT_ID));
                 let later = async { tokio::time::sleep(std::time::Duration::from_secs(1)).await };
                 let toast = Task::perform(later, |()| UiMessage::Toast(crate::toasts::Msg::MobileApps(true)));
@@ -1440,10 +1444,11 @@ impl BeeperGuiApp {
                         container(go_on).padding(12)
                     ]
                 });
-                let foot = self.view_accounts_footer(&st).map(|f| container(f).center_y(31));
+                // One line of the footer takes 31 px, and a wrapped footer takes more.
+                let foot = self.view_accounts_footer(&st).map(|f| container(f).padding([3, 0]));
                 column![
                     {
-                        let (headline, width) = gradient_text(tr("Connect Chat Accounts"), 26.0, 48.0);
+                        let (headline, width) = gradient_text(tr("Connect Chat Accounts"), H3, 48.0);
                         let headline = mouse_area(svg(headline).width(width).height(48));
                         container(headline.on_press(LoginMsg::Headline.into())).center_x(Fill)
                     },
@@ -1685,6 +1690,16 @@ impl BeeperGuiApp {
 
 #[cfg(test)]
 mod tests {
+    /// Desktop's h3 headings of the recovery key fit the 314 px frame of the 330 px sign-in window at their size,
+    /// where the 28 px ones were squeezed to its edges.
+    #[test]
+    fn recovery_key_headings_fit_the_sign_in_window_like_desktop() {
+        for title in ["Enter your Recovery Key", "Save Your Recovery Key"] {
+            let width = crate::style::gradient_text(title, super::H3, 40.0).1;
+            assert!(width <= 330.0 - 2.0 * 8.0, "{title}: {width}");
+        }
+    }
+
     #[test]
     fn ease_in_out_like_css() {
         // Chromium's `cubic-bezier(0.42, 0, 0.58, 1)` at 0, 0.25, 0.5, 0.75 and 1.
@@ -1980,8 +1995,8 @@ mod tests {
             app
         };
         let mut app = onboarding("onboarding-continue");
-        let first_read = app.visible_chats(&app.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
-        assert!(first_read.as_deref().is_some_and(|c| c != beeper_core::store::NOTE_CHAT_ID), "a read demo chat");
+        let first_read = app.listed_chats(&app.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
+        assert!(first_read.is_some(), "a read demo chat");
         let task = app.update(LoginMsg::Continue.into());
         assert_eq!(app.pane.selected_chat_id, first_read, "Desktop's selectFirstReadThread");
         assert!(!app.mobile_apps_toast, "the toast comes a second later");

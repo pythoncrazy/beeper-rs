@@ -2,7 +2,7 @@
 //! onboarding screens of encrypted messaging after the sign-in.
 use crate::emoji::EMOJI_FONT;
 use crate::i18n::{tr, trn_named, trx};
-use crate::login::{actions, art, brand_gradient, heading, Login, LoginMsg, Screen};
+use crate::login::{actions, art, brand_gradient, heading, Login, LoginMsg, Screen, H3};
 use crate::style::{bold, btn_style, fill_box, fw, ic, icon, semi, shadow_box, t, txt, Bare, Palette, CLEAR};
 use crate::{BeeperGuiApp, El, Toast, UiMessage};
 use beeper_core::matrix::E2eeSetup;
@@ -589,7 +589,7 @@ impl BeeperGuiApp {
         let error = l.error.as_deref().map(|e| txt(e, 12.0).color(p.text_danger).center().width(Fill));
         column![
             Space::new().height(40),
-            heading(tr("Enter your Recovery Key"), 28.0),
+            heading(tr("Enter your Recovery Key"), H3),
             key_input(p, &l.key_input, l.error.is_some(), LOGIN_EDIT, LoginMsg::PasteKey.into()),
             Space::new().height(Fill),
         ]
@@ -639,7 +639,7 @@ impl BeeperGuiApp {
             }
         };
         let circle = (!new).then(|| container(progress_circle(p, processed, total)).center_x(Fill));
-        column![Space::new().height(34), heading(title, 28.0)]
+        column![Space::new().height(34), heading(title, H3)]
             .push(circle)
             .push(container(body).center(Fill).padding(18))
             .into()
@@ -748,7 +748,7 @@ impl BeeperGuiApp {
         let save = brand_btn(p, trx("Save Key", "button label"), Brand::Primary, LoginMsg::NewKey.into());
         column![
             Space::new().height(40),
-            heading(tr("Save Your Recovery Key"), 28.0),
+            heading(tr("Save Your Recovery Key"), H3),
             container(art(3, 240.0)).center(Fill),
         ]
         .push(actions(vec![txt(text, 13.0).color(p.strong).center().width(Fill).into(), save], 24.0))
@@ -794,7 +794,7 @@ impl BeeperGuiApp {
             }
         };
         let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, next, false);
-        column![Space::new().height(40), heading(title, 28.0), middle, Space::new().height(Fill)]
+        column![Space::new().height(40), heading(title, H3), middle, Space::new().height(Fill)]
             .push(error)
             .push(actions(vec![warning, next], 24.0))
             .into()
@@ -816,7 +816,7 @@ impl BeeperGuiApp {
         let reset =
             brand_btn(p, trx("Reset Recovery Key", "button label"), Brand::Danger, LoginMsg::ConfirmReset.into());
         let back = brand_btn(p, trx("Cancel", "button label"), Brand::Muted, LoginMsg::Show(Screen::Verify).into());
-        let title = bold(tr("Reset your Recovery Key"), 28.0).color(p.text_danger).center().width(Fill);
+        let title = bold(tr("Reset your Recovery Key"), H3).color(p.text_danger).center().width(Fill);
         column![Space::new().height(40), container(title).padding([0, 8]), container(warning).center(Fill)]
             .push(actions(vec![reset, back], 24.0))
             .into()

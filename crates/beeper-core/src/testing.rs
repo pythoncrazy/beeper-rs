@@ -65,12 +65,13 @@ pub fn stub_message(i: i64) -> Value {
         "unsigned": { "com.beeper.hs.order": i } })
 }
 
-/// The `/messages` reply of the stub room, which has 70 messages: 30 back from the token `tN` of message N, or from
-/// the newest message.
+/// The `/messages` reply of the stub room, which has 70 messages: `limit` (30 by default) back from the token `tN` of
+/// message N, or from the newest message.
 pub fn stub_page(query: &str) -> Value {
-    let from = query.split('&').find_map(|kv| kv.strip_prefix("from=t"));
-    let to: i64 = from.map_or(70, |t| t.parse().expect("a stub token"));
-    let end = (to - 30).max(0);
+    let arg = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(k));
+    let to: i64 = arg("from=t").map_or(70, |t| t.parse().expect("a stub token"));
+    let limit: i64 = arg("limit=").map_or(30, |n| n.parse().expect("a limit"));
+    let end = (to - limit).max(0);
     let mut page =
         json!({ "start": format!("t{to}"), "chunk": (end + 1..=to).rev().map(stub_message).collect::<Vec<_>>() });
     if end > 0 {

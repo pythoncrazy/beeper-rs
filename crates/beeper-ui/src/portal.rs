@@ -91,6 +91,21 @@ async fn watch_network(
     }
 }
 
+/// Electron's `showItemInFolder` on Linux: the file manager of `org.freedesktop.FileManager1` shows the file selected.
+#[cfg(target_os = "linux")]
+pub async fn show_item(path: PathBuf) -> Result<(), String> {
+    let uri = url::Url::from_file_path(&path).map_err(|()| format!("not an absolute path: {}", path.display()))?;
+    let (name, obj) = ("org.freedesktop.FileManager1", "/org/freedesktop/FileManager1");
+    let bus = crate::notify::bus().await?;
+    let show = bus.call_method(Some(name), obj, Some(name), "ShowItems", &(vec![uri.as_str()], "")).await;
+    show.map(drop).map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn show_item(_path: PathBuf) -> Result<(), String> {
+    Err("only the Linux build asks the file manager".into())
+}
+
 /// Desktop's image extensions that the `image` codecs of the app decode.
 #[cfg(target_os = "linux")]
 const IMAGES: [&str; 5] = ["jpg", "jpeg", "png", "gif", "webp"];
