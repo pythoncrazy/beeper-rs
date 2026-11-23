@@ -20,6 +20,19 @@ impl BeeperGuiApp {
         {
             return self.focus_space(id, false).unwrap_or_else(Task::none);
         }
+        // Desktop's J and K move or grow the selection of chats like ↓ and ↑ in the selection mode while no chat is
+        // open, with Shift for J and K.
+        let main = Some(id) == self.main_window && self.pane.selected_chat_id.is_none();
+        if matches!(text.as_str(), "j" | "k" | "J" | "K") && main && self.selection_keys() {
+            let arrow = Key::Named(if text.eq_ignore_ascii_case("j") { Named::ArrowDown } else { Named::ArrowUp });
+            let shift = if text.chars().all(char::is_uppercase) { Modifiers::SHIFT } else { Modifiers::empty() };
+            return self.update(UiMessage::WindowKey(id, arrow, shift));
+        }
+        // Desktop's X with no chat open selects the chat of the cursor, which starts the selection mode.
+        if text == "x" && Some(id) == self.main_window && self.points_chats() {
+            self.begin_chat_selection();
+            return Task::none();
+        }
         // Desktop's J and K move the cursor of the chat list like ↓ and ↑ while no chat is open.
         if matches!(text.as_str(), "j" | "k") && self.window_points_chats(id) {
             let arrow = Key::Named(if text == "j" { Named::ArrowDown } else { Named::ArrowUp });
@@ -215,6 +228,7 @@ impl BeeperGuiApp {
             .composer_key(&key, mods)
             .or_else(|| self.focus_keys(&key, mods))
             .or_else(|| self.palette_key(&key, mods))
+            .or_else(|| self.palette_search_key(&key, mods))
             .or_else(|| self.navigation_key(&key, mods))
             .or_else(|| self.dialog_key(&key, mods))
             .or_else(|| self.selection_key(&key, mods))
@@ -241,7 +255,9 @@ impl BeeperGuiApp {
                 return Some(task);
             }
         }
-        let n = self.suggestions(&self.store.read()).map_or(0, |(_, picks)| picks.len());
+        let picks = self.suggestions(&self.store.read());
+        let command = picks.as_ref().is_some_and(|(_, p)| matches!(p[0], composer::Suggestion::Command(_)));
+        let n = picks.map_or(0, |(_, picks)| picks.len());
         if n == 0 || !mods.is_empty() {
             return None;
         }
@@ -249,7 +265,12 @@ impl BeeperGuiApp {
         match key.as_ref() {
             Key::Named(Named::ArrowUp | Named::ArrowDown) => {
                 let down = *key == Key::Named(Named::ArrowDown);
-                self.pane.suggest = if down { (at + 1) % n } else { (at + n - 1) % n };
+                // Desktop's ↑ stops at the first slash command, and goes around the other lists.
+                self.pane.suggest = match (down, command) {
+                    (true, _) => (at + 1) % n,
+                    (false, true) => at.saturating_sub(1),
+                    (false, false) => (at + n - 1) % n,
+                };
                 Some(Task::none())
             }
             Key::Named(Named::Tab) => Some(self.update(UiMessage::Composer(composer::Msg::PickSuggestion(at)))),
@@ -276,6 +297,18 @@ impl BeeperGuiApp {
         let defaults = asking && self.creating_chat.is_none();
         if let Some(task) = window.filter(|_| asking || free).and_then(|w| self.focus_key(w, key, mods, defaults)) {
             return Some(task);
+        }
+        // Tiptap's `Mod-Shift-7` and `Mod-Shift-8` of the lists, which `cursor::Root` keeps from the composer as
+        // shortcuts on digits.
+        let list = match key.as_ref() {
+            Key::Character("7" | "&") => Some(5),
+            Key::Character("8" | "*") => Some(4),
+            _ => None,
+        };
+        let shortcut = mods.command() && mods.shift() && !mods.alt() && self.composer_takes_keys();
+        if let Some((window, i)) = window.zip(list).filter(|_| shortcut) {
+            let caret = focus::caret(window, self.composer_id());
+            return Some(caret.map(move |at| UiMessage::Composer(composer::Msg::FormatKey(i, at))));
         }
         let window = window.filter(|_| self.composer_takes_keys() && (mods - Modifiers::SHIFT).is_empty())?;
         match key.as_ref() {
@@ -320,12 +353,29 @@ impl BeeperGuiApp {
         Some(locate(format!("cmd-{}", self.cmd_index), commands::COMMANDS, Align::Nearest))
     }
 
+    /// The arrows and Enter of the search results of the command palette: Desktop's `CommandBarContainer` of the
+    /// search, whose filter menus take the keys while open.
+    fn palette_search_key(&mut self, key: &Key, mods: Modifiers) -> Option<Task<UiMessage>> {
+        let searching = self.show_command_palette && !self.cmd_bar_commands_mode && self.search_select.is_none();
+        (searching && mods.is_empty()).then(|| self.search_key(key)).flatten()
+    }
+
     /// Escape, and the arrows and Enter of the chat list, of the thread pane and of the messages, where ↑ can edit
     /// the last own message.
     fn navigation_key(&mut self, key: &Key, mods: Modifiers) -> Option<Task<UiMessage>> {
         let plain = mods.is_empty() || mods == keyboard::Modifiers::SHIFT;
         Some(match key.as_ref() {
             Key::Named(Named::Escape) => self.update(UiMessage::CloseModals),
+            // Desktop's `handleThreadSelection`: in the selection mode the arrows move or grow the selection of
+            // chats, wherever the keyboard is.
+            Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if plain && self.selection_keys() => {
+                self.select_chat_key(mods.shift(), k == Named::ArrowDown)
+            }
+            // Desktop's Shift+↓ and Shift+↑ with no chat open select the chat of the cursor and the next one.
+            Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if mods == Modifiers::SHIFT && self.points_chats() => {
+                self.begin_chat_selection();
+                self.select_chat_key(true, k == Named::ArrowDown)
+            }
             Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if mods.is_empty() && self.points_chats() => {
                 self.point_chat(k == Named::ArrowDown);
                 Task::none()

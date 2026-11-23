@@ -314,6 +314,9 @@ pub const APPEARANCE: &[Item] = &[
     Item::Group(&[
         t("showTimestamps", "Show message timestamps", true),
         t("hideDeleted", "Hide deleted messages", false),
+        t("enableNudges", "Enable nudges", true)
+            .desc("Shake the conversation when someone sends you a nudge")
+            .gated("nudge"),
         t("messageAnimations", "Enable message animations", true),
         t("autoplayGifs", "Autoplay GIFs", true),
         t("animateAvatars", "Animate avatars and emoji", true),
@@ -897,6 +900,7 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ),
     ("showTimestamps", b("message_timestamps")),
     ("hideDeleted", b("hide_deleted_messages")),
+    ("enableNudges", b("enable_nudges")),
     ("messageAnimations", b("enable_message_animations")),
     ("autoplayGifs", b("autoplay_gifs")),
     ("animateAvatars", b("animate_avatars_and_emoji")),

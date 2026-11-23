@@ -50,6 +50,11 @@ impl StoreLock {
     pub fn generation(&self) -> Option<u64> {
         Some(self.1.load(Ordering::Acquire)).filter(|g| g % 2 == 0)
     }
+
+    /// Whether a thread panicked while it held the write lock, so that the store cannot be locked again.
+    pub fn poisoned(&self) -> bool {
+        self.0.is_poisoned()
+    }
 }
 
 impl<G> Drop for Locked<'_, G> {
@@ -532,6 +537,10 @@ pub struct BeeperStore {
     pub(crate) chat_msg_indices: HashMap<String, Vec<usize>>,
     /// The loaded chats, the chat that was used last at the end.
     loaded: Vec<String>,
+    /// The chat that [`Self::with_chat`] writes into without loading it, the length of `messages` and the count of
+    /// `moves` when it started. The messages of the chat that it reads or adds come after that length: they are in
+    /// `msg_idx_by_id`, but in no message list.
+    unloaded: Option<(String, usize, u64)>,
     /// The chats that the windows show, which stay loaded.
     pub shown: Vec<String>,
     /// The replies of each thread in timeline order, by the ID of the thread root.
@@ -593,6 +602,8 @@ pub struct BeeperStore {
     pub removals: Option<HashMap<String, Vec<String>>>,
     /// Wakes the push task of the Matrix sync loop when the outbox has a new change.
     pub(crate) outbox_ready: std::sync::Arc<tokio::sync::Notify>,
+    /// A sync response holds the SQLite transaction of [`Self::begin_sync`].
+    sync_tx: bool,
     /// Flags whose change the homeserver has, with the value and the sync after which a sync shows the change.
     pub sent_flags: HashMap<(String, ChatFlag), (bool, u64)>,
     /// The number of syncs of the Matrix sync loop.
@@ -750,6 +761,7 @@ impl BeeperStore {
             msg_idx_by_id: HashMap::new(),
             chat_msg_indices: HashMap::new(),
             loaded: Vec::new(),
+            unloaded: None,
             shown: Vec::new(),
             thread_msg_indices: HashMap::new(),
             timeline_revs: HashMap::new(),
@@ -782,6 +794,7 @@ impl BeeperStore {
             reminder_events: HashMap::new(),
             removals: None,
             outbox_ready: Default::default(),
+            sync_tx: false,
             sent_flags: HashMap::new(),
             syncs: 0,
             sent: HashMap::new(),
@@ -940,6 +953,9 @@ impl BeeperStore {
         let members = self.chat_idx_by_id.get(id).map(|&i| self.members(i)).unwrap_or_default();
         let members: Vec<String> = members.into_iter().map(|i| self.chats[i].id.clone()).collect();
         for c in members.iter().map(String::as_str).chain([id]) {
+            if self.is_unloaded(c) {
+                self.detach();
+            }
             self.loaded.retain(|l| l != c);
             self.loaded.push(c.into());
             if !self.chat_msg_indices.contains_key(c) {
@@ -951,6 +967,135 @@ impl BeeperStore {
             }
         }
         self.unload_old();
+    }
+
+    /// Runs `f`, which writes into the chat `chat`, with the stored messages `ids` of the chat in `messages`, so that
+    /// `loaded_idx` finds them like those of a loaded chat. A loaded chat stays loaded and counts as used, like after
+    /// [`Self::load_chat`]. A chat that is not loaded stays unloaded, so that a sync does not read all its messages
+    /// for a new one: `f` finds the messages `ids` of it, the ones that `upsert_message` changes and the ones that it
+    /// adds, but no message list has them, and they leave `messages` when `f` ends. Each write of a message goes to
+    /// SQLite, so the stored messages of the chat stay all of its messages.
+    pub fn with_chat<R>(&mut self, chat: &str, ids: &[&str], f: impl FnOnce(&mut Self) -> R) -> R {
+        if self.chat_msg_indices.contains_key(chat) || self.unloaded.is_some() {
+            self.load_chat(chat);
+            return f(self);
+        }
+        assert!(self.chat_idx_by_id.contains_key(chat), "write into the unknown chat {chat}");
+        self.unloaded = Some((chat.into(), self.messages.len(), self.moves));
+        if !ids.is_empty() {
+            let filter = format!("chat_id = ?1 AND id IN ({})", vec!["?"; ids.len()].join(", "));
+            self.attach_stored(&filter, rusqlite::params_from_iter(std::iter::once(chat).chain(ids.iter().copied())));
+        }
+        let r = f(self);
+        self.detach();
+        r
+    }
+
+    /// Whether `chat` is the chat that [`Self::with_chat`] writes into without loading it.
+    fn is_unloaded(&self, chat: &str) -> bool {
+        self.unloaded.as_ref().is_some_and(|u| u.0 == chat)
+    }
+
+    /// Puts the stored messages of the unloaded chat that `filter` selects into `messages`, unless they are there,
+    /// and returns their indices in the order of `filter`.
+    fn attach_stored(&mut self, filter: &str, args: impl rusqlite::Params) -> Vec<usize> {
+        let found = self.stored(filter, args);
+        let attach = |st: &mut Self, m: Message| {
+            assert!(st.is_unloaded(&m.chat_id), "{} is no message of the unloaded chat", m.id);
+            let idx = st.messages.len();
+            st.msg_idx_by_id.insert(m.id.clone(), idx);
+            st.messages.push(m);
+            idx
+        };
+        found.into_iter().map(|m| self.msg_idx_by_id.get(&m.id).copied().unwrap_or_else(|| attach(self, m))).collect()
+    }
+
+    /// Ends [`Self::with_chat`] in a chat that is not loaded: its messages leave `messages`.
+    fn detach(&mut self) {
+        let Some((chat, base, moves)) = self.unloaded.take() else { return };
+        if moves == self.moves {
+            for (i, m) in self.messages.iter().enumerate().skip(base) {
+                if m.chat_id == chat && self.msg_idx_by_id.get(&m.id) == Some(&i) {
+                    self.msg_idx_by_id.remove(&m.id);
+                }
+            }
+            if self.messages[base..].iter().all(|m| m.chat_id == chat) {
+                return self.messages.truncate(base);
+            }
+        } else {
+            self.msg_idx_by_id.retain(|_, i| self.messages[*i].chat_id != chat);
+        }
+        self.compact();
+    }
+
+    /// The index of the message `id` of the chat `chat`: a loaded message of it, or in [`Self::with_chat`] a stored
+    /// message of the unloaded chat, which goes into `messages`.
+    fn chat_message(&mut self, chat: &str, id: &str) -> Option<usize> {
+        match self.loaded_idx(id) {
+            Some(i) => Some(i).filter(|&i| self.messages[i].chat_id == chat),
+            None if self.is_unloaded(chat) => self.attach_stored("chat_id = ?1 AND id = ?2", [chat, id]).pop(),
+            None => None,
+        }
+    }
+
+    /// The first message of the chat in timeline order with the reaction `reaction`, in [`Self::with_chat`] also of
+    /// a chat that is not loaded.
+    pub fn reacted_message(&mut self, chat: &str, reaction: &str) -> Option<usize> {
+        if self.is_unloaded(chat) {
+            let filter = "chat_id = ?1 AND instr(json, '\"reactions\"') > 0 AND EXISTS (SELECT 1 FROM \
+                          json_each(messages.json, '$.reactions') r WHERE r.value ->> '$.id' = ?2) \
+                          ORDER BY sort_key, n LIMIT 1";
+            return self.attach_stored(filter, [chat, reaction]).pop();
+        }
+        let has = |i: &usize| self.messages[*i].reactions.iter().any(|r| r.id == reaction);
+        self.timeline_indices(chat).iter().copied().find(has)
+    }
+
+    /// The order of the newest message of the chat that is no membership change, and the newest order of the
+    /// reactions to its messages, in [`Self::with_chat`] also of a chat that is not loaded.
+    pub fn newest_orders(&self, chat: &str) -> (Option<String>, Option<String>) {
+        if !self.is_unloaded(chat) {
+            let msgs = self.timeline(chat);
+            let last = msgs.clone().rev().find(|m| m.message_type.as_deref() != Some("MEMBERSHIP"));
+            let reacted = msgs.flat_map(|m| &m.reactions).map(|r| &r.sort_key).max();
+            return (last.map(|m| m.sort_key.clone()), reacted.cloned());
+        }
+        let db = self.db.lock().unwrap();
+        let one = |sql: &str| -> Option<String> {
+            let mut q = db.prepare_cached(sql).expect("prepare an order read");
+            q.query_row([chat], |r| r.get(0)).optional().expect("read an order").flatten()
+        };
+        (
+            one("SELECT sort_key FROM messages WHERE chat_id = ?1 AND (json ->> '$.type') IS NOT 'MEMBERSHIP' \
+                 ORDER BY sort_key DESC LIMIT 1"),
+            // A reaction sent here has no order yet: the empty text, which sorts first.
+            one("SELECT max(coalesce(r.value ->> '$.sortKey', '')) FROM messages m, json_each(m.json, '$.reactions') r \
+                 WHERE m.chat_id = ?1 AND instr(m.json, '\"reactions\"') > 0"),
+        )
+    }
+
+    /// The indices of the messages of the chat in timeline order that a read receipt of one of the `events` can
+    /// change: all loaded ones, or in [`Self::with_chat`] in a chat that is not loaded, the stored ones that someone
+    /// has seen, that have a disappearing timer, or that have one of the events as their ID or a reaction.
+    pub fn receipt_messages(&mut self, chat: &str, events: &[&str]) -> Vec<usize> {
+        if !self.is_unloaded(chat) {
+            return self.timeline_indices(chat).to_vec();
+        }
+        let event: String = (2..events.len() + 2).map(|n| format!(" OR id = ?{n} OR instr(json, ?{n}) > 0")).collect();
+        let filter = format!(
+            "chat_id = ?1 AND (instr(json, '\"seen\"') > 0 OR instr(json, '\"disappearingTimer\"') > 0{event}) \
+             ORDER BY sort_key, n"
+        );
+        self.attach_stored(&filter, rusqlite::params_from_iter(std::iter::once(chat).chain(events.iter().copied())))
+    }
+
+    /// Whether the message `id` is stored, loaded or not.
+    pub fn has_message(&self, id: &str) -> bool {
+        self.msg_idx_by_id.contains_key(id) || {
+            let db = self.db.lock().unwrap();
+            let mut q = db.prepare_cached("SELECT 1 FROM messages WHERE id = ?1").expect("prepare a message lookup");
+            q.exists([id]).expect("look up a message")
+        }
     }
 
     /// With more than `LOADED_MESSAGES` loaded messages, unloads the chats that were used least recently down to half
@@ -973,6 +1118,15 @@ impl BeeperStore {
         self.loaded.retain(|c| !old.contains(c));
         self.chat_msg_indices.retain(|c, _| !old.contains(c));
         old.iter().for_each(|c| self.touch_timeline(c));
+        self.compact();
+    }
+
+    /// Unloads the chat, like `unload_old` when it was used least recently.
+    #[cfg(test)]
+    pub(crate) fn unload_chat(&mut self, id: &str) {
+        self.loaded.retain(|c| c != id);
+        assert!(self.chat_msg_indices.remove(id).is_some(), "{id} is loaded");
+        self.touch_timeline(id);
         self.compact();
     }
 
@@ -1081,10 +1235,15 @@ impl BeeperStore {
     /// Drops the messages of the chats that are not loaded, and the removed messages, from `messages`.
     fn compact(&mut self) {
         // The messages that stay are the ones that the timelines of the loaded chats list, which `msg_idx_by_id`
-        // finds too, so the messages move up in place without a lookup of each.
+        // finds too, so the messages move up in place without a lookup of each. In [`Self::with_chat`] the messages
+        // of the unloaded chat that `msg_idx_by_id` finds stay too, though no timeline lists them.
         let before = self.messages.len();
         let mut keep = vec![false; before];
         self.chat_msg_indices.values().flatten().for_each(|&i| keep[i] = true);
+        if let Some((chat, ..)) = &self.unloaded {
+            let unloaded = self.msg_idx_by_id.values().filter(|&&i| self.messages[i].chat_id == *chat);
+            unloaded.for_each(|&i| keep[i] = true);
+        }
         let (mut moved, mut kept) = (vec![usize::MAX; keep.len()], 0);
         for (i, _) in keep.iter().enumerate().filter(|k| *k.1) {
             (moved[i], kept) = (kept, kept + 1);
@@ -1350,6 +1509,28 @@ impl BeeperStore {
             self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit a batch");
         }
         r
+    }
+
+    /// Opens one SQLite transaction for the writes of the rooms of a sync response, which their `batch` joins, so that
+    /// they make one commit and not one each. The sync does not hold the store lock while it reads the Matrix state of
+    /// the next room, and the writes of the windows meanwhile go into the transaction too: they share the connection,
+    /// so they read what they wrote, and they commit with the sync. So the sync commits before it waits for the
+    /// homeserver, see [`Self::commit_sync`].
+    pub fn begin_sync(&mut self) {
+        let db = self.db.lock().unwrap();
+        if !self.sync_tx && db.is_autocommit() {
+            db.execute_batch("BEGIN IMMEDIATE;").expect("begin the writes of a sync");
+            self.sync_tx = true;
+        }
+    }
+
+    /// Commits the transaction of [`Self::begin_sync`], and returns whether it was open.
+    pub fn commit_sync(&mut self) -> bool {
+        let open = std::mem::take(&mut self.sync_tx);
+        if open {
+            self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit the writes of a sync");
+        }
+        open
     }
 
     /// Adds new chats and their messages in one SQLite transaction. A message without a sort key takes the next one.
@@ -1802,7 +1983,8 @@ impl BeeperStore {
         idx
     }
 
-    /// Puts a message of a loaded chat into the message lists.
+    /// Puts a message of a loaded chat into the message lists. A message of the chat that `with_chat` writes into
+    /// without loading it goes only into `messages`.
     fn insert_message(&mut self, mut msg: Message) -> usize {
         msg.sync_flags();
         let digits = msg.sort_key.strip_prefix('-').unwrap_or(&msg.sort_key).len();
@@ -1810,10 +1992,13 @@ impl BeeperStore {
         self.next_seq = self.next_seq.max(msg.sort_key.parse().expect("sort keys are numbers"));
         let idx = self.messages.len();
         assert!(self.msg_idx_by_id.insert(msg.id.clone(), idx).is_none(), "duplicate message {}", msg.id);
-        let chat = self.chat_msg_indices.get_mut(&msg.chat_id).expect("the chat of the message is loaded");
-        let thread = msg.thread_root.as_ref().map(|r| self.thread_msg_indices.entry(r.clone()).or_default());
-        for list in std::iter::once(chat).chain(thread) {
-            list.insert(list.partition_point(|&i| self.messages[i].sort_key <= msg.sort_key), idx);
+        if let Some(chat) = self.chat_msg_indices.get_mut(&msg.chat_id) {
+            let thread = msg.thread_root.as_ref().map(|r| self.thread_msg_indices.entry(r.clone()).or_default());
+            for list in std::iter::once(chat).chain(thread) {
+                list.insert(list.partition_point(|&i| self.messages[i].sort_key <= msg.sort_key), idx);
+            }
+        } else {
+            assert!(self.is_unloaded(&msg.chat_id), "the chat of the message {} is loaded", msg.id);
         }
         self.touch_timeline(&msg.chat_id);
         self.messages.push(msg);
@@ -2213,13 +2398,20 @@ impl BeeperStore {
         if self.bookmarks_room.is_some() {
             msg.is_bookmarked = Some(self.bookmarks.contains_key(&msg.id));
         }
-        self.load_chat(&msg.chat_id);
+        // A chat that `with_chat` writes into without loading it reads only the stored message.
+        let found = match self.is_unloaded(&msg.chat_id) {
+            true => self.loaded_idx(&msg.id).or_else(|| self.chat_message(&msg.chat_id, &msg.id)),
+            false => {
+                self.load_chat(&msg.chat_id);
+                self.loaded_idx(&msg.id)
+            }
+        };
         // Desktop's upsert keeps `isDeleted` when the message has a removal.
-        let stored = self.msg_idx_by_id.get(&msg.id).is_some_and(|&i| self.messages[i].removed);
+        let stored = found.is_some_and(|i| self.messages[i].removed);
         if msg.is_deleted != Some(true) && (stored || self.removals.as_ref().is_some_and(|r| r.contains_key(&msg.id))) {
             removed_from_beeper(&mut msg);
         }
-        let Some(&idx) = self.msg_idx_by_id.get(&msg.id) else {
+        let Some(idx) = found else {
             let idx = self.push_message(msg, true);
             let m = self.messages[idx].clone();
             return self.emit_ws("message.upserted", &m.chat_id, Some(&m.id), None, Some(m.clone()));
@@ -2924,9 +3116,14 @@ impl BeeperStore {
         self.messages[m_idx].flags |= MSG_DELETED;
         (self.messages[m_idx].text, self.messages[m_idx].html) = (None, None);
         self.msg_idx_by_id.remove(message_id);
-        self.chat_msg_indices.get_mut(&chat_id).expect("chat has messages").retain(|&i| i != m_idx);
-        if let Some(root) = &self.messages[m_idx].thread_root {
-            self.thread_msg_indices.get_mut(root).expect("a thread has replies").retain(|&i| i != m_idx);
+        match self.chat_msg_indices.get_mut(&chat_id) {
+            Some(list) => {
+                list.retain(|&i| i != m_idx);
+                if let Some(root) = &self.messages[m_idx].thread_root {
+                    self.thread_msg_indices.get_mut(root).expect("a thread has replies").retain(|&i| i != m_idx);
+                }
+            }
+            None => assert!(self.is_unloaded(&chat_id), "the chat of {message_id} is loaded"),
         }
         self.touch_timeline(&chat_id);
         self.exec("DELETE FROM messages WHERE id = ?1", params![message_id]);
@@ -3332,6 +3529,20 @@ impl BeeperStore {
             m.poll = Some(poll.clone());
         });
         self.queue(&chat_id, Outgoing::Poll { txn, poll });
+    }
+
+    /// Desktop's `sendNudge`: "{name} sent you a nudge" as an `m.notice` with `com.beeper.nudge`, named like
+    /// `getLocalSenderDisplayName`.
+    pub fn send_nudge(&mut self, chat_id: &str) {
+        let me = self.me();
+        let full = me.full_name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+        let user = me.username.as_deref().map(str::trim).filter(|n| !n.is_empty());
+        let local = || {
+            let id = me.id.strip_prefix('@')?;
+            Some(id.split_once(':').filter(|(l, _)| !l.is_empty()).map_or(id, |(l, _)| l))
+        };
+        let name = full.or(user).or_else(local).unwrap_or("Someone").to_string();
+        self.queue(chat_id, Outgoing::Nudge(format!("{name} sent you a nudge")));
     }
 
     /// Desktop's `endPoll`: ends the own poll `message_id`, here and on the homeserver.
@@ -3774,6 +3985,35 @@ mod tests {
         assert_eq!((t.engine.as_str(), t.language), ("unknown", None));
         assert!(t.transcription.starts_with("Native Rust"));
         assert_eq!(found(&st, "instantaneous"), HashSet::from(["msg_1000c".to_string()]));
+    }
+
+    /// A sync response keeps the writes of its rooms in one SQLite transaction, which their batches join, and commits
+    /// them at once.
+    #[test]
+    fn a_sync_commits_its_rooms_at_once() {
+        let config = crate::testing::demo_config("sync-tx");
+        let mut st = super::BeeperStore::from_config(config.clone());
+        let other = rusqlite::Connection::open(&config.db_path).expect("a second connection");
+        let committed = |id: &str| {
+            let q = "SELECT count(*) FROM messages WHERE id = ?1";
+            other.query_row(q, [id], |r| r.get::<_, i64>(0)).expect("count a message") == 1
+        };
+        let chats: Vec<String> = st.chats.iter().take(2).map(|c| c.id.clone()).collect();
+        let template = st.stored("1 LIMIT 1", []).pop().expect("a stored message");
+        let upsert = |st: &mut super::BeeperStore, n: usize| {
+            let (id, chat_id) = (format!("$sync{n}"), chats[n % 2].clone());
+            let m = super::Message { id, chat_id, sort_key: super::sort_key(9_000_000 + n as i64), ..template.clone() };
+            st.batch(|st| st.upsert_message(m));
+        };
+        st.begin_sync();
+        upsert(&mut st, 0);
+        upsert(&mut st, 1);
+        assert!(!committed("$sync0") && !committed("$sync1"), "the rooms of the sync wait for its commit");
+        assert!(st.stored_message("$sync1").is_some(), "the store reads its own writes");
+        assert!(st.commit_sync() && committed("$sync0") && committed("$sync1"), "the sync commits them once");
+        assert!(!st.commit_sync(), "the transaction is closed");
+        upsert(&mut st, 2);
+        assert!(committed("$sync2"), "a batch without a sync commits on its own");
     }
 
     /// A start loads no messages. A chat loads its stored messages on first use, and the chats that were used least
