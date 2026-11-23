@@ -3077,6 +3077,10 @@ pub struct BeeperGuiApp {
     alt_alone: bool,
     pub pin_hover: Option<String>,
     pub pin_drag: Option<PinDrag>,
+    /// The pins that slide into their cells: how far from the cell each started, and when.
+    pub pin_slides: HashMap<String, (Vector, std::time::Instant)>,
+    /// The columns, the cell width and the row height of the pinned grid that was drawn last.
+    pub pin_grid: std::cell::Cell<(usize, f32, f32)>,
     /// The sortable item that the keyboard moves (see [`sortable`]).
     pub key_sort: Option<sortable::KeySort>,
     pub main_window: Option<window::Id>,
@@ -3371,6 +3375,8 @@ impl BeeperGuiApp {
             alt_alone: false,
             pin_hover: None,
             pin_drag: None,
+            pin_slides: HashMap::new(),
+            pin_grid: std::cell::Cell::new((1, 0.0, 0.0)),
             key_sort: None,
             user_hover: UserHover::default(),
             rail_drag: None,
@@ -5254,6 +5260,7 @@ impl BeeperGuiApp {
             || self.hover_fading()
             || self.nudges.shaking()
             || self.sidebar_progress().is_some()
+            || self.pins_sliding()
             || self
                 .panes()
                 .any(|p| [p.hover_msg_at, p.flyover_at].iter().flatten().any(|t| t.elapsed() < FLYOVER_REVEAL));

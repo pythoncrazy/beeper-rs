@@ -1545,6 +1545,11 @@ impl BeeperGuiApp {
         let previews = st.settings.on("showMessagePreviews");
         let now = now_unix_millis();
         let launched = now - self.started.elapsed().as_millis() as i64;
+        // The height of a row of the grid: the padding, the avatar and the title of a pin.
+        let pin_h = if compact { 8.0 + 4.0 + 6.0 } else { 12.0 + 8.0 + 10.0 } + pin_av + rem(15.0);
+        self.pin_grid.set((cols, cell, pin_h));
+        let mouse_held = self.pin_drag.as_ref().filter(|d| d.order.is_some());
+        let ghost = self.pin_ghost();
         let pin_row = |chunk: &[&Chat]| {
             El::from(chunk.iter().fold(Row::new(), |r, c| {
                 let on = selected == Some(c.id.as_str());
@@ -1588,6 +1593,29 @@ impl BeeperGuiApp {
                 let item = stack![item].push(bubble);
                 // Desktop's `useDropPlaceholder`: the dragged pin marks the place it would drop at.
                 let held = dragged == Some(c.id.as_str());
+                // A pin that the mouse drags follows the pointer at `opacity: 0.4`, inside the list, over the
+                // `dropPlaceholder` of the cell that it would drop in, unless that is its own cell.
+                if let Some(d) = mouse_held.filter(|d| d.id == c.id) {
+                    let face = container(item).width(tile).style(fill_box(if on { p.selected } else { CLEAR }, 8.0));
+                    let veil = container(Space::new())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(fill_box(p.window.scale_alpha(0.6), 8.0));
+                    let by = ghost.unwrap_or(Vector::ZERO);
+                    let face = iced::widget::float(stack![face, veil]).translate(move |b, view| {
+                        let x = (b.x + by.x).clamp(view.x, (view.x + view.width - b.width).max(view.x));
+                        let y = (b.y + by.y).clamp(view.y, (view.y + view.height - b.height).max(view.y));
+                        Vector::new(x - b.x, y - b.y)
+                    });
+                    let to = pinned.iter().position(|o| o.id == c.id);
+                    let mark = (to != Some(d.start)).then(|| {
+                        container(Space::new())
+                            .width(Fill)
+                            .height(Fill)
+                            .style(fill_box(Color::BLACK.scale_alpha(0.1), 8.0))
+                    });
+                    return r.push(container(stack![face].push(mark)).center_x(cell));
+                }
                 let item = button(item)
                     .padding(0)
                     .style(btn_style([if on || held { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
@@ -1600,6 +1628,10 @@ impl BeeperGuiApp {
                 // the pin up for the arrows (see `sortable`).
                 let pick = Self::pick(window, sortable::List::Pins, &c.id, &items, cols);
                 let item = self.target(window, format!("pin-{}", c.id), item, Keys::press(pick), Look::Auto);
+                let item: El<'_> = match self.pin_offset(&c.id) {
+                    Some(by) => iced::widget::float(item).translate(move |_, _| by).into(),
+                    None => item,
+                };
                 r.push(container(item).center_x(cell))
             }))
         };
