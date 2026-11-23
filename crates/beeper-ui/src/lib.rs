@@ -5290,9 +5290,9 @@ impl BeeperGuiApp {
 
     pub fn subscription(&self) -> Subscription<UiMessage> {
         let frame_ready = Subscription::run(|| {
-            iced::futures::stream::once(async {
+            iced::futures::stream::unfold((), |()| async {
                 FRAME_READY.notified().await;
-                UiMessage::Noop
+                Some((UiMessage::Noop, ()))
             })
         });
         let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
@@ -7150,7 +7150,8 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
     app.run()
 }
 
-/// Woken once GTK opens to draw the title bars, so that the windows draw their frames again with the GTK theme.
+/// Woken once GTK opens to draw the title bars, and whenever GTK's settings change, so that the windows lay out and
+/// draw their frames again with the GTK theme and settings.
 pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// People, each with the account to reach them on.

@@ -240,7 +240,8 @@ mod display {
                 unsafe { std::env::remove_var("DESKTOP_STARTUP_ID") };
             }
             sctk_adwaita::preload();
-            // The first frames draw from the cached theme; once GTK opens, the windows draw again with it.
+            // The first frames draw from the cached theme; once GTK opens, and whenever its settings change, the
+            // windows draw again with it.
             sctk_adwaita::on_ready(|| beeper_ui::FRAME_READY.notify_one());
         }
     }
