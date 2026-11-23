@@ -6977,6 +6977,9 @@ mod fuzz;
 #[cfg(test)]
 mod perf;
 
+#[cfg(all(test, target_os = "linux"))]
+mod test_bus;
+
 #[cfg(test)]
 mod tests {
     use super::*;

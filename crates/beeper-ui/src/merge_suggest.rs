@@ -513,7 +513,8 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fuzz::demo_app;
+    use crate::fuzz::{clicks, demo_app};
+    use crate::merged::tests::merged_app;
     use beeper_core::models::{BLOCK_USER, USER_BLOCKED};
     use iced_test::simulator::simulator;
 
@@ -537,21 +538,9 @@ mod tests {
         app
     }
 
-    /// A merged chat of Kai on Instagram and Lena on Signal, open.
-    fn merged_app(name: &str) -> (BeeperGuiApp, String) {
-        let mut app = demo_app(name);
-        let members = Some(vec![KAI.to_string(), LENA.to_string()]);
-        let title = Some("Friends".to_string());
-        let (chat, _) =
-            app.store.write().create_or_start_chat("hungryserv", "single", title, vec![], None, members, None);
-        let _ = app.update(UiMessage::SelectChat(chat.id.clone()));
-        (app, chat.id)
-    }
-
+    /// Clicks `label` in the main window, and returns the messages of the click.
     fn clicked(app: &BeeperGuiApp, label: &str) -> Vec<UiMessage> {
-        let mut sim = simulator(app.view_main());
-        let _ = sim.click(label).unwrap_or_else(|_| panic!("{label}"));
-        sim.into_messages().collect()
+        clicks(app.view_main(), label)
     }
 
     /// Desktop's `mergeSuggestions`: the direct chats whose other people share a `tel:`, `mailto:` or `name:` key,

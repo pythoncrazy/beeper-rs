@@ -200,6 +200,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fuzz::clicks;
     use crate::fuzz::demo_app;
     use crate::message;
     use iced::Point;
@@ -297,9 +298,7 @@ mod tests {
         let _ = sim.click("beeper-v4-spec.pdf").expect("the PDF row");
         assert!(sim.into_messages().any(|m| opens(&m)), "a click on the row opens the carousel");
         let _ = app.update(UiMessage::Message(message::Msg::OpenMenu(MID.into())));
-        let mut sim = simulator(app.view_main());
-        let _ = sim.click("Preview in Carousel").expect("Preview in Carousel");
-        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        let msgs: Vec<UiMessage> = clicks(app.view_main(), "Preview in Carousel");
         assert!(matches!(&msgs[..], [UiMessage::Message(message::Msg::Menu(m))] if opens(m)), "the item opens the PDF");
         let image = {
             let st = app.store.read();

@@ -1018,378 +1018,226 @@ impl BeeperGuiApp {
 
     /// The chat menu, with `room` pixels from its top to the bottom of the window.
     pub(crate) fn view_chat_menu(&self, cid: &str, sub_left: bool, room: f32) -> El<'_> {
+        if let Some(menu) = self.view_other_menu(cid) {
+            return menu;
+        }
+        let st = self.store.read();
+        let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
+        let m = MenuChats { st: &st, c, picked: self.selected_chats(&st) };
+        let menu = crate::menu_card(&self.pal, self.chat_menu_items(&m), chat_menu_w(&st));
+        let sub = self.chat_sub.map(|i| self.view_chat_sub(&m, i, room));
+        let (l, r) = if sub_left { (sub, None) } else { (None, sub) };
+        row![].push(l).push(menu).push(r).into()
+    }
+
+    /// The menus that share the chat menu's slot but are not a chat's: the chat list's, the rail's, Chat Info's, a
+    /// space's, the Snooze and behavior menus of Chat Info, and a new-chat draft's.
+    fn view_other_menu(&self, cid: &str) -> Option<El<'_>> {
         let p = &self.pal;
         if cid == SIDEBAR_MENU {
             let st = self.store.read();
             let keys = |name| prefs::hotkey_label(st.settings.hotkey_keys(name));
             let bar = if st.settings.on("showSidebar") { "Hide Space Bar" } else { "Show Space Bar" };
-            let col = column![
-                menu_item(
-                    p,
-                    None,
-                    tr("Start New Chat").into(),
-                    keys("Chat: Start New"),
-                    Some(UiMessage::NewChat(new_chat::Msg::Open))
-                ),
-                menu_item(
-                    p,
-                    None,
-                    tr("Add/Remove Accounts").into(),
-                    "",
-                    Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)))
-                ),
-                menu_item(
-                    p,
-                    None,
-                    tr(bar).into(),
-                    keys("Toggle Space Bar"),
-                    Some(UiMessage::RunHotkey("Toggle Space Bar"))
-                ),
-                menu_item(
-                    p,
-                    None,
-                    tr("Settings").into(),
-                    "",
-                    Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)))
-                ),
-            ];
-            return crate::menu_card(p, col, 233).into();
+            let settings = |tab| UiMessage::Settings(settings::Msg::Open(tab));
+            let items = [
+                (tr("Start New Chat"), keys("Chat: Start New"), UiMessage::NewChat(new_chat::Msg::Open)),
+                (tr("Add/Remove Accounts"), String::new(), settings(SettingsTab::Accounts)),
+                (tr(bar), keys("Toggle Space Bar"), UiMessage::RunHotkey("Toggle Space Bar")),
+                (tr("Settings"), String::new(), settings(SettingsTab::General)),
+            ]
+            .map(|(label, key, msg)| menu_item(p, None, label.into(), key, Some(msg)));
+            return Some(crate::menu_card(p, Column::with_children(items), 233).into());
         }
         if cid == RAIL_MORE {
             let items = more_menu(&self.store.read()).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", Some(msg)),
                 None => menu_rule(p),
             });
-            return crate::menu_card(p, Column::with_children(items), 233).into();
+            return Some(crate::menu_card(p, Column::with_children(items), 233).into());
         }
         if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
             let items = info_menu(&self.store.read(), cid, |a| self.can(a, "create_dm")).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", msg),
                 None => menu_rule(p),
             });
-            return crate::menu_card(p, Column::with_children(items), 233).into();
+            return Some(crate::menu_card(p, Column::with_children(items), 233).into());
         }
         if let Some(entry) = cid.strip_prefix("account:") {
-            return self.view_account_menu(entry);
+            return Some(self.view_account_menu(entry));
         }
         if cid == RAIL_MENU {
-            return self.rail_menu(&self.store.read(), None);
+            return Some(self.rail_menu(&self.store.read(), None));
         }
         if let Some(entry) = cid.strip_prefix("head:") {
             let (menu, sub) = self.account_menu(entry, SpaceMenu::Header);
-            return row![menu].push(sub).into();
+            return Some(row![menu].push(sub).into());
         }
         // Desktop's Snooze menu of the Chat Info toolbar.
         if let Some(id) = cid.strip_prefix(SNOOZE_MENU) {
-            let st = self.store.read();
-            let rows = self.snooze_items(&st, &[id.to_string()]);
-            return crate::menu_rows(p, rows, SUB_MENU_W[3]).0.into();
+            let rows = self.snooze_items(&self.store.read(), &[id.to_string()]);
+            return Some(crate::menu_rows(p, rows, SUB_MENU_W[3]).0.into());
         }
         if let Some(id) = cid.strip_prefix(behavior::BEHAVIOR_MENU) {
             let (rows, w) = self.behavior_items(&self.store.read(), id);
-            return crate::menu_rows(p, rows, w).0.into();
+            return Some(crate::menu_rows(p, rows, w).0.into());
         }
-        if let Some(n) = cid.strip_prefix("draft:") {
-            let delete = menu_item(
-                p,
-                None,
-                tr("Delete Chat").into(),
-                "",
-                Some(UiMessage::NewChat(new_chat::Msg::Delete(n.parse().unwrap()))),
-            );
-            return crate::menu_card(p, column![delete], 124).into();
-        }
-        let st = self.store.read();
-        let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
-        let flag = |f: ChatFlag| Some(UiMessage::ChatList(chat_list::Msg::ToggleFlag(c.id.clone(), f)));
-        let archived = c.flag(ChatFlag::Archived);
-        let unread = c.is_unread();
-        let close_sub = |items: Column<'static, UiMessage>| {
+        let n = cid.strip_prefix("draft:")?;
+        let delete = UiMessage::NewChat(new_chat::Msg::Delete(n.parse().unwrap()));
+        Some(crate::menu_card(p, column![chat_item(p, tr("Delete Chat"), "", Some(delete))], 124).into())
+    }
+
+    /// The items of a chat's menu, in the groups that close an open submenu on hover, and the submenu openers.
+    fn chat_menu_items<'a>(&'a self, m: &MenuChats) -> Column<'a, UiMessage> {
+        let (p, st, c, n) = (&self.pal, m.st, m.c, m.picked.len());
+        let close_sub = |items: Column<'a, UiMessage>| {
             mouse_area(items).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)))
         };
-        let key = |name| hotkey_text(st.settings.hotkey_keys(name));
-        let item = |label: &str, key: &str, msg| menu_item(p, None, label.into(), key.to_string(), msg);
         let open_sub = |i: u8, label: &str| {
-            mouse_area(menu_item(
-                p,
-                None,
-                label.into(),
-                "›",
-                Some(UiMessage::CommandBar(commands::Msg::ChatSub(Some(i)))),
-            ))
-            .on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(Some(i))))
+            let open = UiMessage::CommandBar(commands::Msg::ChatSub(Some(i)));
+            mouse_area(menu_item(p, None, label.into(), "›", Some(open.clone()))).on_enter(open)
         };
-        let pick = |on: bool, yes, no| if on { yes } else { no };
-        let selecting = self.selection.is_empty();
-        let labels = st.feature("labels-v2").on;
-        let reason = st.notifications_muted(c).then(|| muted_by(&st, c)).flatten();
-        let picked = self.selected_chats(&st);
-        let n = picked.len();
-        // Desktop's `l`: the selected chats, or the chat of the menu.
-        let chats = if n == 0 { vec![c] } else { picked.clone() };
-        let targets: Vec<String> = chats.iter().map(|c| c.id.clone()).collect();
-        let snooze = reminders::shows_snooze(&st, &chats);
-        let reason = reason.filter(|_| n == 0);
-        let every = |f: ChatFlag| picked.iter().all(|c| has_flag(c, f));
-        let some = |f: ChatFlag| picked.iter().any(|c| has_flag(c, f));
-        let set = |f: ChatFlag, on: bool| Some(UiMessage::ChatList(chat_list::Msg::SelectionSet(f, on)));
-        let can_archive = archived || !c.flag(ChatFlag::Pinned);
-        let archive = match n {
-            0 => item(
-                pick(
-                    archived,
-                    trx("Unarchive", "thread context menu action"),
-                    trx("Archive", "thread context menu action"),
-                ),
-                &key("Chat: Toggle Archive"),
-                flag(ChatFlag::Archived).filter(|_| can_archive),
-            ),
-            _ => item(
-                match every(ChatFlag::Archived) {
-                    true => trx("Unarchive", "button label to unarchive selected chats"),
-                    false => trx("Archive", "button label to archive selected chats"),
-                },
-                &key("Chat: Toggle Archive"),
-                set(ChatFlag::Archived, !every(ChatFlag::Archived)).filter(|_| can_archive),
-            ),
-        };
-        let mute = match (n, st.notifications_muted(c)) {
-            (0, false) => {
-                item(trx("Mute", "thread context menu action"), &key("Chat: Toggle Mute"), flag(ChatFlag::Muted))
-            }
-            (0, true) => item(
-                trx("Unmute", "thread context menu action"),
-                &key("Chat: Toggle Mute"),
-                flag(ChatFlag::Muted).filter(|_| c.flag(ChatFlag::Muted) && reason.is_none()),
-            ),
-            _ => item(
-                pick(
-                    every(ChatFlag::Muted),
-                    trx("Unmute", "thread context menu action"),
-                    trx("Mute", "thread context menu action"),
-                ),
-                &key("Chat: Toggle Mute"),
-                set(ChatFlag::Muted, !every(ChatFlag::Muted)),
-            ),
-        };
-        let read = |all: bool| match all {
-            true => item(tr("Mark as Read"), &key("Chat: Toggle Mark As Read"), set(ChatFlag::MarkedUnread, false)),
-            false => item(tr("Mark as Unread"), &key("Chat: Toggle Mark As Read"), set(ChatFlag::MarkedUnread, true)),
-        };
-        let reads: Vec<El> = match n {
-            0 => vec![item(
-                tr(pick(unread, "Mark as Read", "Mark as Unread")),
-                &key("Chat: Toggle Mark As Read"),
-                Some(UiMessage::ChatList(chat_list::Msg::ToggleRead(c.id.clone()))),
-            )],
-            1 => vec![read(every(ChatFlag::MarkedUnread))],
-            _ => [
-                some(ChatFlag::MarkedUnread)
-                    .then(|| item(tr("Mark All as Read"), "", set(ChatFlag::MarkedUnread, false))),
-                picked
-                    .iter()
-                    .any(|c| !has_flag(c, ChatFlag::MarkedUnread))
-                    .then(|| item(tr("Mark All as Unread"), "", set(ChatFlag::MarkedUnread, true))),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
-        };
-        let pinned = if n == 0 { c.flag(ChatFlag::Pinned) } else { every(ChatFlag::Pinned) };
-        let pin = match n {
-            0 => flag(ChatFlag::Pinned),
-            _ => set(ChatFlag::Pinned, !pinned),
-        };
-        let low = if n == 0 { c.flag(ChatFlag::LowPriority) } else { every(ChatFlag::LowPriority) };
-        let low = item(
-            tr(pick(low, "Move to Inbox", "Move to Low Priority")),
+        let low = if n == 0 { c.flag(ChatFlag::LowPriority) } else { m.every(ChatFlag::LowPriority) };
+        let low = chat_item(
+            p,
+            tr(if low { "Move to Inbox" } else { "Move to Low Priority" }),
             "",
-            if n == 0 { flag(ChatFlag::LowPriority) } else { set(ChatFlag::LowPriority, !low) },
+            if n == 0 { flag_msg(c, ChatFlag::LowPriority) } else { set_msg(ChatFlag::LowPriority, !low) },
         );
-        let heading = (n > 1).then(|| item(&trn("%d chat selected", "%d chats selected", n, &[&n]), "", None));
-        let (accept, decline) = request_answers(c);
-        let group = c.chat_type == "group";
-        let accept = accept.then(|| {
-            let label = tr(pick(group, "Accept group invitation", "Accept message request"));
-            item(label, "", Some(UiMessage::ChatList(chat_list::Msg::AcceptRequest(c.id.clone()))))
-        });
-        let decline = decline.then(|| {
-            let label = tr(pick(group, "Decline group invitation", "Decline message request"));
-            item(label, "", Some(UiMessage::ChatList(chat_list::Msg::Delete(c.id.clone(), false))))
-        });
-        let answered = (accept.is_some() || decline.is_some()).then(|| menu_rule(p));
-        let col = column![
-            close_sub(
-                column![]
-                    .push(accept)
-                    .push(decline)
-                    .push(answered)
-                    .push(heading)
-                    .push(archive)
-                    .push(mute)
-                    .push(reason.as_deref().map(|r| item(r, "", None)))
-                    .extend(reads)
-                    .push(item(
-                        pick(
-                            pinned,
-                            trx("Unpin", "thread context menu action"),
-                            trx("Pin", "thread context menu action")
-                        ),
-                        &key("Chat: Toggle Pin"),
-                        pin
-                    ))
-                    .push((n <= 1 && st.threaded(c)).then(|| {
-                        let on = c.follows.follows_all(c.participants.total);
-                        let label = tr(if on { "Stop Following All Threads" } else { "Follow All Threads" });
-                        item(label, "", Some(UiMessage::Thread(threads::Msg::FollowAll(c.id.clone(), !on))))
-                    }))
-                    .push(can_edit_group(c).then(|| {
-                        let open = UiMessage::OpenEditGroup(c.id.clone());
-                        item(tr("Edit Group..."), "", (c.is_request != Some(true)).then_some(open))
-                    }))
-            ),
+        let search = UiMessage::CommandBar(commands::Msg::SearchRoom(c.id.clone()));
+        column![
+            close_sub(self.chat_menu_head(m)),
             open_sub(0, tr("Copy")),
             close_sub(column![
                 menu_rule(p),
-                item(
-                    tr("Search…"),
-                    &key("Search: Room"),
-                    Some(UiMessage::CommandBar(commands::Msg::SearchRoom(c.id.clone())))
-                ),
+                chat_item(p, tr("Search…"), &m.key("Search: Room"), Some(search)),
                 menu_rule(p),
                 low,
             ]),
-            labels.then(|| open_sub(2, trx("Label", "thread context menu submenu label"))),
+            st.feature("labels-v2").on.then(|| open_sub(2, trx("Label", "thread context menu submenu label"))),
             open_sub(1, tr("Remind Me")),
-            snooze.then(|| open_sub(3, trx("Snooze", "thread context menu submenu label"))),
-            close_sub({
-                // Desktop's Unmerge of one merged chat, in the place of Delete Chat.
-                let delete = match n <= 1 && c.merge.is_some() {
-                    true => Some(item(
-                        trx("Unmerge", "thread context menu action to split a merged chat"),
-                        "",
-                        Some(UiMessage::Merged(merged::Msg::Ask(c.id.clone()))),
-                    )),
-                    false => st.feature("delete-chats").on.then(|| {
-                        let ask =
-                            (c.delete_modes != 0).then(|| UiMessage::ChatList(chat_list::Msg::AskDelete(c.id.clone())));
-                        item(tr("Delete Chat"), "", ask)
-                    }),
-                };
-                let block = block_action(&st, c).filter(|_| n == 0).map(|block| {
-                    let label = match block {
-                        true => trx("Block…", "action to block the other person in a DM"),
-                        false => trx("Unblock…", "action to unblock the other person in a DM"),
-                    };
-                    item(label, "", Some(UiMessage::Blocking(blocking::Msg::Ask(c.id.clone(), block))))
-                });
-                // Like Electron's menus, a group without items has no separator.
-                column![]
-                    .push((delete.is_some() || block.is_some()).then(|| menu_rule(p)))
-                    .push(delete)
-                    .push(block)
-                    .push(selecting.then(|| menu_rule(p)))
-                    .push(selecting.then(|| {
-                        item(
-                            tr("Open in New Window"),
-                            "",
-                            Some(UiMessage::Window(windows::Msg::OpenChat(c.id.clone()))),
-                        )
-                    }))
-                    .push(selecting.then(|| {
-                        item(
-                            tr("Begin Selecting"),
-                            "",
-                            Some(UiMessage::ChatList(chat_list::Msg::BeginSelecting(c.id.clone()))),
-                        )
-                    }))
-                    .push(menu_rule(p))
-                    .push(item(
-                        tr("Report a Problem"),
-                        &key("Report a Problem"),
-                        Some(UiMessage::OpenUrl(ISSUES_URL.into())),
-                    ))
-            }),
-        ];
-        let menu = crate::menu_card(p, col, chat_menu_w(&st));
-        let sub = self.chat_sub.map(|i| {
-            let item = |label: &str, at: String, msg| menu_item(p, None, label.into(), at, msg);
-            let (items, rules): (Vec<El>, f32) = match i {
-                0 => (
-                    vec![item(
-                        tr("Chat Link"),
-                        String::new(),
-                        Some(UiMessage::ChatList(chat_list::Msg::CopyLink(c.id.clone()))),
-                    )],
-                    0.0,
-                ),
-                2 => {
-                    let targets: Vec<String> = match picked.is_empty() {
-                        true => vec![c.id.clone()],
-                        false => picked.iter().map(|c| c.id.clone()).collect(),
-                    };
-                    let mut sorted: Vec<&Label> = st.labels.iter().collect();
-                    sorted.sort_by_cached_key(|l| l.name.to_lowercase());
-                    let rows = sorted.into_iter().map(|l| {
-                        let on = c.label_ids.contains(&l.id);
-                        let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into();
-                        let msg = UiMessage::Labels(labels::Msg::Toggle(l.id.clone(), targets.clone(), !on));
-                        menu_item(p, Some(lead), l.name.clone(), "", Some(msg))
-                    });
-                    let new = item(
-                        tr("New Label…"),
-                        String::new(),
-                        Some(UiMessage::Labels(labels::Msg::OpenCreate(targets.clone()))),
-                    );
-                    (rows.chain([menu_rule(p), new]).collect(), 1.0)
-                }
-                1 => {
-                    let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
-                    // Desktop's `canSetReminderFor`: Beeper Plus, a free use, or a reminder to change.
-                    let can = st.feature("remind-later").on || c.reminder.is_some();
-                    let set = |at| can.then(|| UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), Some(at))));
-                    let last = last_used(&st, now).map(|at| item(tr("Last Used"), last_used_label(at, h24), set(at)));
-                    let presets = remind_presets(&st.settings, now).into_iter().map(|(label, at)| {
-                        let last = UiMessage::CommandBar(commands::Msg::LastTime(label.clone()));
-                        let msg = set(at).map(|set| UiMessage::Commands(vec![last, set]));
-                        item(&label, remind_label(at, h24), msg)
-                    });
-                    let upgrade = (!can).then(|| {
-                        let open = UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus));
-                        [item(tr("Upgrade to Beeper Plus"), String::new(), Some(open)), menu_rule(p)]
-                    });
-                    let presets = upgrade.into_iter().flatten().chain(last).chain(presets);
-                    let dismiss =
-                        c.reminder.is_some().then(|| UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), None)));
-                    let custom =
-                        UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(c.id.clone())));
-                    let custom = item(tr("Custom…"), String::new(), can.then_some(custom));
-                    let dismiss = item(tr("Dismiss Reminder"), String::new(), dismiss);
-                    let rules = if can { 2.0 } else { 3.0 };
-                    (presets.chain([menu_rule(p), custom, menu_rule(p), dismiss]).collect(), rules)
-                }
-                _ => {
-                    let rows = self.snooze_items(&st, &targets);
-                    let rules = rows.iter().filter(|r| r.1 < menu_pitch()).count() as f32;
-                    (rows.into_iter().map(|r| r.0).collect(), rules)
-                }
-            };
-            let h = 8.0 + items.len() as f32 * menu_pitch() - rules * (menu_pitch() - 11.0);
-            let top = match i {
-                0 => 4.0 * menu_pitch(),
-                1 if labels => 8.0 * menu_pitch() + 22.0,
-                3 if labels => 9.0 * menu_pitch() + 22.0,
-                3 => 8.0 * menu_pitch() + 22.0,
-                _ => 7.0 * menu_pitch() + 22.0,
-            } + if reason.is_some() { menu_pitch() } else { 0.0 }
-                + if can_edit_group(c) { menu_pitch() } else { 0.0 }
-                + self.selection_rows(&st);
-            let top = top.min(room - h).max(0.0);
-            let body = crate::menu_card(p, Column::with_children(items), SUB_MENU_W[usize::from(i)]);
-            column![Space::new().height(top), body]
+            reminders::shows_snooze(st, &m.chats())
+                .then(|| open_sub(3, trx("Snooze", "thread context menu submenu label"))),
+            close_sub(self.chat_menu_tail(m)),
+        ]
+    }
+
+    /// The first group of a chat's menu: the answers to a request, the count of the selected chats, Archive, Mute,
+    /// the reason of a mute, the read items, Pin, Follow All Threads and Edit Group.
+    fn chat_menu_head<'a>(&'a self, m: &MenuChats) -> Column<'a, UiMessage> {
+        let (p, st, c, n) = (&self.pal, m.st, m.c, m.picked.len());
+        let reason = m.reason();
+        let heading = (n > 1).then(|| chat_item(p, &trn("%d chat selected", "%d chats selected", n, &[&n]), "", None));
+        let (accept, decline) = request_answers(c);
+        let group = c.chat_type == "group";
+        let accept = accept.then(|| {
+            let label = tr(if group { "Accept group invitation" } else { "Accept message request" });
+            chat_item(p, label, "", Some(UiMessage::ChatList(chat_list::Msg::AcceptRequest(c.id.clone()))))
         });
-        let (l, r) = if sub_left { (sub, None) } else { (None, sub) };
-        row![].push(l).push(menu).push(r).into()
+        let decline = decline.then(|| {
+            let label = tr(if group { "Decline group invitation" } else { "Decline message request" });
+            chat_item(p, label, "", Some(UiMessage::ChatList(chat_list::Msg::Delete(c.id.clone(), false))))
+        });
+        let answered = (accept.is_some() || decline.is_some()).then(|| menu_rule(p));
+        let pinned = if n == 0 { c.flag(ChatFlag::Pinned) } else { m.every(ChatFlag::Pinned) };
+        let pin = if n == 0 { flag_msg(c, ChatFlag::Pinned) } else { set_msg(ChatFlag::Pinned, !pinned) };
+        let pin_label =
+            if pinned { trx("Unpin", "thread context menu action") } else { trx("Pin", "thread context menu action") };
+        column![]
+            .push(accept)
+            .push(decline)
+            .push(answered)
+            .push(heading)
+            .push(m.archive_item(p))
+            .push(m.mute_item(p, reason.is_some()))
+            .push(reason.as_deref().map(|r| chat_item(p, r, "", None)))
+            .extend(m.read_items(p))
+            .push(chat_item(p, pin_label, &m.key("Chat: Toggle Pin"), pin))
+            .push((n <= 1 && st.threaded(c)).then(|| {
+                let on = c.follows.follows_all(c.participants.total);
+                let label = tr(if on { "Stop Following All Threads" } else { "Follow All Threads" });
+                chat_item(p, label, "", Some(UiMessage::Thread(threads::Msg::FollowAll(c.id.clone(), !on))))
+            }))
+            .push(can_edit_group(c).then(|| {
+                let open = UiMessage::OpenEditGroup(c.id.clone());
+                chat_item(p, tr("Edit Group..."), "", (c.is_request != Some(true)).then_some(open))
+            }))
+    }
+
+    /// The last group of a chat's menu: Delete Chat or Unmerge, Block, Open in New Window, Begin Selecting and
+    /// Report a Problem.
+    fn chat_menu_tail<'a>(&'a self, m: &MenuChats) -> Column<'a, UiMessage> {
+        let (p, st, c, n) = (&self.pal, m.st, m.c, m.picked.len());
+        let selecting = self.selection.is_empty();
+        // Desktop's Unmerge of one merged chat, in the place of Delete Chat.
+        let delete = match n <= 1 && c.merge.is_some() {
+            true => Some(chat_item(
+                p,
+                trx("Unmerge", "thread context menu action to split a merged chat"),
+                "",
+                Some(UiMessage::Merged(merged::Msg::Ask(c.id.clone()))),
+            )),
+            false => st.feature("delete-chats").on.then(|| {
+                let ask = (c.delete_modes != 0).then(|| UiMessage::ChatList(chat_list::Msg::AskDelete(c.id.clone())));
+                chat_item(p, tr("Delete Chat"), "", ask)
+            }),
+        };
+        let block = block_action(st, c).filter(|_| n == 0).map(|block| {
+            let label = match block {
+                true => trx("Block…", "action to block the other person in a DM"),
+                false => trx("Unblock…", "action to unblock the other person in a DM"),
+            };
+            chat_item(p, label, "", Some(UiMessage::Blocking(blocking::Msg::Ask(c.id.clone(), block))))
+        });
+        let window = UiMessage::Window(windows::Msg::OpenChat(c.id.clone()));
+        let select = UiMessage::ChatList(chat_list::Msg::BeginSelecting(c.id.clone()));
+        // Like Electron's menus, a group without items has no separator.
+        column![]
+            .push((delete.is_some() || block.is_some()).then(|| menu_rule(p)))
+            .push(delete)
+            .push(block)
+            .push(selecting.then(|| menu_rule(p)))
+            .push(selecting.then(|| chat_item(p, tr("Open in New Window"), "", Some(window))))
+            .push(selecting.then(|| chat_item(p, tr("Begin Selecting"), "", Some(select))))
+            .push(menu_rule(p))
+            .push(chat_item(
+                p,
+                tr("Report a Problem"),
+                &m.key("Report a Problem"),
+                Some(UiMessage::OpenUrl(ISSUES_URL.into())),
+            ))
+    }
+
+    /// The open submenu `i` of a chat's menu: Copy, Remind Me, Label or Snooze, next to the item that opens it and
+    /// inside the window.
+    fn view_chat_sub<'a>(&'a self, m: &MenuChats, i: u8, room: f32) -> Column<'a, UiMessage> {
+        let (p, st, c) = (&self.pal, m.st, m.c);
+        let (items, rules): (Vec<El>, f32) = match i {
+            0 => {
+                let copy = UiMessage::ChatList(chat_list::Msg::CopyLink(c.id.clone()));
+                (vec![chat_item(p, tr("Chat Link"), "", Some(copy))], 0.0)
+            }
+            2 => m.label_items(p),
+            1 => m.remind_items(p),
+            _ => {
+                let rows = self.snooze_items(st, &m.targets());
+                let rules = rows.iter().filter(|r| r.1 < menu_pitch()).count() as f32;
+                (rows.into_iter().map(|r| r.0).collect(), rules)
+            }
+        };
+        let labels = st.feature("labels-v2").on;
+        let h = 8.0 + items.len() as f32 * menu_pitch() - rules * (menu_pitch() - 11.0);
+        let top = match i {
+            0 => 4.0 * menu_pitch(),
+            1 if labels => 8.0 * menu_pitch() + 22.0,
+            3 if labels => 9.0 * menu_pitch() + 22.0,
+            3 => 8.0 * menu_pitch() + 22.0,
+            _ => 7.0 * menu_pitch() + 22.0,
+        } + if m.reason().is_some() { menu_pitch() } else { 0.0 }
+            + if can_edit_group(c) { menu_pitch() } else { 0.0 }
+            + self.selection_rows(st);
+        let top = top.min(room - h).max(0.0);
+        let body = crate::menu_card(p, Column::with_children(items), SUB_MENU_W[usize::from(i)]);
+        column![Space::new().height(top), body]
     }
 
     /// Desktop's `hasExpiredReminder`: the reminder time came while the reminder was set.
@@ -2233,4 +2081,172 @@ pub(crate) fn chat_menu_w(st: &BeeperStore) -> f32 {
     };
     let rows = rows.iter().map(|(label, key)| width(label, key));
     rows.chain(plain.iter().map(|label| width(tr(label), ""))).fold(233.0, f32::max).ceil()
+}
+
+/// An item of the chat menu.
+fn chat_item<'a>(p: &Palette, label: &str, key: &str, msg: Option<UiMessage>) -> El<'a> {
+    menu_item(p, None, label.into(), key.to_string(), msg)
+}
+
+/// The message that turns flag `f` of the chat on or off.
+fn flag_msg(c: &Chat, f: ChatFlag) -> Option<UiMessage> {
+    Some(UiMessage::ChatList(chat_list::Msg::ToggleFlag(c.id.clone(), f)))
+}
+
+/// The message that sets flag `f` of the selected chats.
+fn set_msg(f: ChatFlag, on: bool) -> Option<UiMessage> {
+    Some(UiMessage::ChatList(chat_list::Msg::SelectionSet(f, on)))
+}
+
+/// The chat of a chat menu, and the selected chats, which the menu acts on when there are some.
+struct MenuChats<'s> {
+    st: &'s BeeperStore,
+    c: &'s Chat,
+    picked: Vec<&'s Chat>,
+}
+
+impl MenuChats<'_> {
+    /// Desktop's `l`: the selected chats, or the chat of the menu.
+    fn chats(&self) -> Vec<&Chat> {
+        if self.picked.is_empty() {
+            vec![self.c]
+        } else {
+            self.picked.clone()
+        }
+    }
+
+    fn targets(&self) -> Vec<String> {
+        self.chats().iter().map(|c| c.id.clone()).collect()
+    }
+
+    fn every(&self, f: ChatFlag) -> bool {
+        self.picked.iter().all(|c| has_flag(c, f))
+    }
+
+    /// The keys of hotkey `name`.
+    fn key(&self, name: &str) -> String {
+        hotkey_text(self.st.settings.hotkey_keys(name))
+    }
+
+    /// Why the chat is muted when something other than its own mute mutes it, without a selection.
+    fn reason(&self) -> Option<String> {
+        let (st, c) = (self.st, self.c);
+        st.notifications_muted(c).then(|| muted_by(st, c)).flatten().filter(|_| self.picked.is_empty())
+    }
+
+    /// Archive or Unarchive, which a pinned chat does not take.
+    fn archive_item<'a>(&self, p: &Palette) -> El<'a> {
+        let c = self.c;
+        let archived = c.flag(ChatFlag::Archived);
+        let can_archive = archived || !c.flag(ChatFlag::Pinned);
+        let key = self.key("Chat: Toggle Archive");
+        match self.picked.len() {
+            0 => chat_item(
+                p,
+                match archived {
+                    true => trx("Unarchive", "thread context menu action"),
+                    false => trx("Archive", "thread context menu action"),
+                },
+                &key,
+                flag_msg(c, ChatFlag::Archived).filter(|_| can_archive),
+            ),
+            _ => chat_item(
+                p,
+                match self.every(ChatFlag::Archived) {
+                    true => trx("Unarchive", "button label to unarchive selected chats"),
+                    false => trx("Archive", "button label to archive selected chats"),
+                },
+                &key,
+                set_msg(ChatFlag::Archived, !self.every(ChatFlag::Archived)).filter(|_| can_archive),
+            ),
+        }
+    }
+
+    /// Mute or Unmute. A chat that something else mutes (`reason`) has no Unmute.
+    fn mute_item<'a>(&self, p: &Palette, reason: bool) -> El<'a> {
+        let c = self.c;
+        let key = self.key("Chat: Toggle Mute");
+        let (mute, unmute) = (trx("Mute", "thread context menu action"), trx("Unmute", "thread context menu action"));
+        match (self.picked.len(), self.st.notifications_muted(c)) {
+            (0, false) => chat_item(p, mute, &key, flag_msg(c, ChatFlag::Muted)),
+            (0, true) => {
+                chat_item(p, unmute, &key, flag_msg(c, ChatFlag::Muted).filter(|_| c.flag(ChatFlag::Muted) && !reason))
+            }
+            _ => {
+                let all = self.every(ChatFlag::Muted);
+                chat_item(p, if all { unmute } else { mute }, &key, set_msg(ChatFlag::Muted, !all))
+            }
+        }
+    }
+
+    /// Mark as Read or Unread, or Mark All as Read and Unread for a selection of several chats.
+    fn read_items<'a>(&self, p: &Palette) -> Vec<El<'a>> {
+        let key = self.key("Chat: Toggle Mark As Read");
+        let marked = |f: &dyn Fn(&&Chat) -> bool| self.picked.iter().any(f);
+        match self.picked.len() {
+            0 => {
+                let label = tr(if self.c.is_unread() { "Mark as Read" } else { "Mark as Unread" });
+                vec![chat_item(
+                    p,
+                    label,
+                    &key,
+                    Some(UiMessage::ChatList(chat_list::Msg::ToggleRead(self.c.id.clone()))),
+                )]
+            }
+            1 => vec![match self.every(ChatFlag::MarkedUnread) {
+                true => chat_item(p, tr("Mark as Read"), &key, set_msg(ChatFlag::MarkedUnread, false)),
+                false => chat_item(p, tr("Mark as Unread"), &key, set_msg(ChatFlag::MarkedUnread, true)),
+            }],
+            _ => [
+                marked(&|c| has_flag(c, ChatFlag::MarkedUnread))
+                    .then(|| chat_item(p, tr("Mark All as Read"), "", set_msg(ChatFlag::MarkedUnread, false))),
+                marked(&|c| !has_flag(c, ChatFlag::MarkedUnread))
+                    .then(|| chat_item(p, tr("Mark All as Unread"), "", set_msg(ChatFlag::MarkedUnread, true))),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        }
+    }
+
+    /// The Label submenu: the labels by name, checked when the chat has them, then New Label….
+    fn label_items<'a>(&self, p: &Palette) -> (Vec<El<'a>>, f32) {
+        let targets = self.targets();
+        let mut sorted: Vec<&Label> = self.st.labels.iter().collect();
+        sorted.sort_by_cached_key(|l| l.name.to_lowercase());
+        let rows = sorted.into_iter().map(|l| {
+            let on = self.c.label_ids.contains(&l.id);
+            let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into();
+            let msg = UiMessage::Labels(labels::Msg::Toggle(l.id.clone(), targets.clone(), !on));
+            menu_item(p, Some(lead), l.name.clone(), "", Some(msg))
+        });
+        let new = chat_item(p, tr("New Label…"), "", Some(UiMessage::Labels(labels::Msg::OpenCreate(targets.clone()))));
+        (rows.chain([menu_rule(p), new]).collect(), 1.0)
+    }
+
+    /// The Remind Me submenu: Last Used and the presets with their times, Custom… and Dismiss Reminder.
+    fn remind_items<'a>(&self, p: &Palette) -> (Vec<El<'a>>, f32) {
+        let (st, c) = (self.st, self.c);
+        let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
+        // Desktop's `canSetReminderFor`: Beeper Plus, a free use, or a reminder to change.
+        let can = st.feature("remind-later").on || c.reminder.is_some();
+        let set = |at| can.then(|| UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), Some(at))));
+        let last = last_used(st, now).map(|at| chat_item(p, tr("Last Used"), &last_used_label(at, h24), set(at)));
+        let presets = remind_presets(&st.settings, now).into_iter().map(|(label, at)| {
+            let last = UiMessage::CommandBar(commands::Msg::LastTime(label.clone()));
+            let msg = set(at).map(|set| UiMessage::Commands(vec![last, set]));
+            chat_item(p, &label, &remind_label(at, h24), msg)
+        });
+        let upgrade = (!can).then(|| {
+            let open = UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus));
+            [chat_item(p, tr("Upgrade to Beeper Plus"), "", Some(open)), menu_rule(p)]
+        });
+        let presets = upgrade.into_iter().flatten().chain(last).chain(presets);
+        let dismiss = c.reminder.is_some().then(|| UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), None)));
+        let custom = UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(c.id.clone())));
+        let custom = chat_item(p, tr("Custom…"), "", can.then_some(custom));
+        let dismiss = chat_item(p, tr("Dismiss Reminder"), "", dismiss);
+        let rules = if can { 2.0 } else { 3.0 };
+        (presets.chain([menu_rule(p), custom, menu_rule(p), dismiss]).collect(), rules)
+    }
 }
