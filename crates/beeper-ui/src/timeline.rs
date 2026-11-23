@@ -25,9 +25,8 @@ impl BeeperGuiApp {
                 self.timeline_scrolled(up);
                 self.read_open_chat();
             }
-            Msg::ScrollToBottom => {
-                return operation::scroll_to(self.pane.scroll_id(), operation::AbsoluteOffset { x: 0.0, y: 0.0 });
-            }
+            // Desktop's `ScrollToBottom` button and hotkey scroll with `smooth: true`.
+            Msg::ScrollToBottom => self.pane.glide = Some(std::time::Instant::now()),
             Msg::TopShown(shown) => {
                 self.pane.top.shown = shown;
                 return self.load_older();
@@ -49,19 +48,36 @@ impl BeeperGuiApp {
 /// counts from its bottom. So the widget notes how far the first container with an id in view, a message, is from
 /// the bottom of the content, and when a layout moves it, it moves the offset by as much. At the bottom (`hold`
 /// false) the timeline stays pinned to its bottom instead, like Desktop's `shouldPinToBottom`.
+///
+/// It also glides the timeline to its bottom from the instant `glide`, like Chromium's `scrollTo` with `behavior:
+/// "smooth"` that Desktop's `scrollToIndex` with `smooth: true` asks for.
 pub(crate) struct Hold<'a> {
     content: Element<'a, UiMessage>,
     hold: bool,
+    glide: Option<std::time::Instant>,
 }
 
 /// The scrollable of the timeline, held while `hold`.
 pub(crate) fn hold<'a>(content: impl Into<Element<'a, UiMessage>>, hold: bool) -> Hold<'a> {
-    Hold { content: content.into(), hold }
+    Hold { content: content.into(), hold, glide: None }
 }
 
-/// The container of a [`Hold`] that the view follows, and how far its top is from the bottom of the content.
+/// The state of a [`Hold`]: the container that the view follows and how far its top is from the bottom of the
+/// content, and the glide to the bottom.
 #[derive(Default)]
-struct Anchor(Option<(iced::widget::Id, f32)>);
+struct Anchor {
+    noted: Option<(iced::widget::Id, f32)>,
+    /// The start of the glide, the offset it starts from, and how long it takes in seconds.
+    glide: Option<(std::time::Instant, f32, f32)>,
+    /// The start of the last glide that ended, or that a wheel or a press stopped.
+    ended: Option<std::time::Instant>,
+}
+
+/// How long Chromium's programmatic smooth scroll takes for `delta` px (`ScrollOffsetAnimationCurve` with
+/// `kDeltaBased`): the square root of the distance in 60ths of a second, at most 0.7 seconds.
+pub(crate) fn glide_secs(delta: f32) -> f32 {
+    delta.abs().sqrt().min(0.7 * 60.0) / 60.0
+}
 
 /// What a pass over the timeline finds: its scrollable, with its viewport, content and translation, the bounds of
 /// the container `target`, and the first container with an id in the viewport.
@@ -125,6 +141,47 @@ impl Operation for SetOffset {
 }
 
 impl Hold<'_> {
+    /// Glides from the instant `at` (see [`Hold`]).
+    pub(crate) fn glide(self, at: Option<std::time::Instant>) -> Self {
+        Self { glide: at, ..self }
+    }
+
+    /// The frame of the glide at `now`, which asks for the next frame until the glide ends.
+    fn glide_frame(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        now: std::time::Instant,
+        shell: &mut iced::advanced::Shell<'_, UiMessage>,
+    ) {
+        let state = tree.state.downcast_ref::<Anchor>();
+        let Some(start) = self.glide.filter(|s| state.ended != Some(*s)) else { return };
+        let glide = match state.glide.filter(|g| g.0 == start) {
+            Some(g) => g,
+            None => {
+                let Some((view, content, at)) = self.measure(tree, layout, renderer, None).scroll else { return };
+                let from = (content.height - view.height).max(0.0) - at;
+                (start, from, glide_secs(from))
+            }
+        };
+        let t = match glide.2 > 0.0 {
+            true => (now.saturating_duration_since(start).as_secs_f32() / glide.2).min(1.0),
+            false => 1.0,
+        };
+        let left = if t < 1.0 { glide.1 * (1.0 - crate::login::ease_in_out(t)) } else { 0.0 };
+        let mut set = SetOffset(Some(left));
+        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, &mut set);
+        let state = tree.state.downcast_mut::<Anchor>();
+        state.glide = Some(glide);
+        if t < 1.0 {
+            shell.request_redraw();
+        } else {
+            state.ended = Some(start);
+        }
+        self.note(tree, layout, renderer);
+    }
+
     /// Passes over the timeline, for the container `target`.
     fn measure(
         &mut self,
@@ -142,7 +199,7 @@ impl Hold<'_> {
     fn note(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &iced::Renderer) {
         let m = self.measure(tree, layout, renderer, None);
         let noted = m.first.zip(m.scroll).map(|((id, b), (_, content, _))| (id, content.y + content.height - b.y));
-        tree.state.downcast_mut::<Anchor>().0 = noted;
+        tree.state.downcast_mut::<Anchor>().noted = noted;
     }
 }
 
@@ -172,7 +229,7 @@ impl iced::advanced::Widget<UiMessage, Theme, iced::Renderer> for Hold<'_> {
     fn layout(&mut self, tree: &mut Tree, renderer: &iced::Renderer, limits: &layout::Limits) -> layout::Node {
         let node = self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits);
         let layout = Layout::new(&node);
-        let noted = tree.state.downcast_ref::<Anchor>().0.clone();
+        let noted = tree.state.downcast_ref::<Anchor>().noted.clone();
         if let Some((id, was)) = noted.filter(|_| self.hold) {
             let m = self.measure(tree, layout, renderer, Some(id));
             if let (Some(b), Some((view, content, at))) = (m.found, m.scroll) {
@@ -202,6 +259,19 @@ impl iced::advanced::Widget<UiMessage, Theme, iced::Renderer> for Hold<'_> {
     ) {
         let child = &mut tree.children[0];
         self.content.as_widget_mut().update(child, event, layout, cursor, renderer, clipboard, shell, viewport);
+        match event {
+            Event::Window(window::Event::RedrawRequested(now)) => {
+                return self.glide_frame(tree, layout, renderer, *now, shell);
+            }
+            // Like Chromium, a scroll of your own stops the glide.
+            Event::Mouse(mouse::Event::WheelScrolled { .. } | mouse::Event::ButtonPressed(_)) | Event::Touch(_)
+                if cursor.is_over(layout.bounds()) =>
+            {
+                let state = tree.state.downcast_mut::<Anchor>();
+                state.ended = state.ended.max(self.glide);
+            }
+            _ => {}
+        }
         // The events that scroll: the wheel, the keys, a touch, and a drag of the scrollbar.
         let scrolls = match event {
             Event::Mouse(mouse::Event::WheelScrolled { .. } | mouse::Event::ButtonReleased(_)) => true,
@@ -232,6 +302,8 @@ mod tests {
     struct ShownAt {
         target: iced::widget::Id,
         scroll: Option<(Rectangle, f32)>,
+        /// The offset of the timeline from its bottom.
+        offset: f32,
         at: Option<f32>,
     }
 
@@ -243,13 +315,13 @@ mod tests {
         fn scrollable(
             &mut self,
             id: Option<&iced::widget::Id>,
-            _: Rectangle,
+            view: Rectangle,
             content: Rectangle,
             at: Vector,
             _: &mut dyn op::Scrollable,
         ) {
             if id == Some(&iced::widget::Id::new("timeline")) {
-                self.scroll = Some((content, at.y));
+                (self.scroll, self.offset) = (Some((content, at.y)), (content.height - view.height).max(0.0) - at.y);
             }
         }
 
@@ -286,6 +358,10 @@ mod tests {
     struct Frames {
         renderer: iced::Renderer,
         cache: Option<Cache>,
+        /// The instant of the frame that the next view draws, if it draws one.
+        frame: Option<std::time::Instant>,
+        /// The offset of the timeline from its bottom in the last frame.
+        offset: f32,
     }
 
     impl Frames {
@@ -295,7 +371,12 @@ mod tests {
                 iced::Pixels(13.0),
                 Some("tiny-skia"),
             ));
-            Self { renderer: renderer.expect("a headless renderer"), cache: Some(Cache::default()) }
+            Self {
+                renderer: renderer.expect("a headless renderer"),
+                cache: Some(Cache::default()),
+                frame: None,
+                offset: 0.0,
+            }
         }
 
         /// A frame of `app` where `then` operates, and how far under the top of the timeline `target` shows after.
@@ -310,9 +391,15 @@ mod tests {
             let size = iced::Size::new(1200.0, 800.0);
             let mut ui = UserInterface::build(app.view(main), size, cache, &mut self.renderer);
             then(&mut ui, &self.renderer);
-            let mut find = ShownAt { target: target.to_string().into(), scroll: None, at: None };
+            if let Some(now) = self.frame.take() {
+                let redraw = [iced::Event::Window(window::Event::RedrawRequested(now))];
+                let clipboard = &mut iced::advanced::clipboard::Null;
+                let _ = ui.update(&redraw, mouse::Cursor::Unavailable, &mut self.renderer, clipboard, &mut Vec::new());
+            }
+            let mut find = ShownAt { target: target.to_string().into(), scroll: None, at: None, offset: 0.0 };
             ui.operate(&self.renderer, &mut black_box(&mut find));
             self.cache = Some(ui.into_cache());
+            self.offset = find.offset;
             find.at
         }
     }
@@ -397,5 +484,44 @@ mod tests {
         assert!((at - 80.0).abs() < 1.0, "{at}");
         assert_eq!(app.pane.selected_msgs, ["$line030"]);
         assert!(app.flash.is_none(), "the media viewer's jump does not flash it");
+    }
+
+    /// Desktop's `ScrollToBottom` button and hotkey scroll with `smooth: true`: Chromium glides the timeline down
+    /// with `ease-in-out`, in the square root of the distance in 60ths of a second, and at most 0.7 seconds.
+    #[test]
+    fn the_scroll_to_bottom_glides_like_desktop() {
+        assert_eq!(glide_secs(100.0), 10.0 / 60.0);
+        assert_eq!(glide_secs(5000.0), 0.7);
+        let mut app = crate::fuzz::demo_app("timeline-glide");
+        long_chat(&mut app);
+        let mut frames = Frames::new();
+        offset_at(&mut frames, &app, None);
+        frames_scroll(&mut frames, &app, 600.0);
+        app.timeline_scrolled(true);
+        let _ = app.update(UiMessage::Timeline(Msg::ScrollToBottom));
+        let start = app.pane.glide.expect("a glide");
+        let secs = glide_secs(600.0);
+        let after = |s: f32| Some(start + std::time::Duration::from_secs_f32(s));
+        assert_eq!(offset_at(&mut frames, &app, Some(start)), 600.0, "the glide starts where the timeline is");
+        // Halfway through the time, `ease-in-out` is halfway down.
+        let half = offset_at(&mut frames, &app, after(secs / 2.0));
+        assert!((half - 300.0).abs() < 1.0, "{half}");
+        let late = offset_at(&mut frames, &app, after(secs * 0.9));
+        assert!(late > 0.0 && late < 20.0, "{late}");
+        let end = offset_at(&mut frames, &app, after(secs + 0.001));
+        assert!(end < 1.0, "the glide ends at the bottom: {end}");
+    }
+
+    /// The offset of the timeline from its bottom after a frame of `app`, drawn at `frame` if given.
+    fn offset_at(frames: &mut Frames, app: &BeeperGuiApp, frame: Option<std::time::Instant>) -> f32 {
+        frames.frame = frame;
+        frames.shown_at(app, "msg-$line000", |_, _| {});
+        frames.offset
+    }
+
+    /// Scrolls the timeline of `app` `y` px above its bottom in a frame of `frames`.
+    fn frames_scroll(frames: &mut Frames, app: &BeeperGuiApp, y: f32) {
+        frames.shown_at(app, "msg-$line000", scroll(y));
+        assert_eq!(frames.offset, y);
     }
 }
