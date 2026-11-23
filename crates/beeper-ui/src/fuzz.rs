@@ -3766,6 +3766,35 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     assert!(st.loaded(&id).is_none() && st.outbox.is_empty(), "Remove drops the echo and its send");
 }
 
+/// Desktop's `.thread-info` shares `.subheader-content` with the chat (`flex: 1` both, `max-width: 300px`, an 8 px
+/// gap): Chat Info is 300 px wide in a wide window, and half of the room in a narrow one, where the chat keeps the
+/// other half instead of a sliver. The sidebar hides under 600 px.
+#[test]
+fn chat_info_shares_a_narrow_window_like_desktop() {
+    let mut app = demo_app("info-narrow");
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::ToggleRightPanel);
+    assert!(app.show_right_panel);
+    let at = |app: &mut BeeperGuiApp, w: f32| {
+        let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(w, 800.0))));
+        let mut sim = Simulator::with_size(Default::default(), Size::new(w, 800.0), app.view_main());
+        assert!(sim.find("Note to self").is_ok(), "Chat Info shows at {w} px");
+        (app.conversation_width(), app.info_width())
+    };
+    let (chat, info) = at(&mut app, 1200.0);
+    assert_eq!(info, 300.0);
+    assert_eq!(chat, 1200.0 - 68.0 - app.sidebar_width - 8.0 - 8.0 - 300.0, "the chat takes the rest");
+    let (chat, info) = at(&mut app, 800.0);
+    let room = 800.0 - 68.0 - app.sidebar_width - 16.0;
+    assert!(!app.sidebar_hidden && info < 300.0 && chat == info && info == room / 2.0, "{chat} {info}");
+    let (chat, info) = at(&mut app, 400.0);
+    assert!(app.sidebar_hidden, "the sidebar hides under 600 px");
+    assert!(chat == info && info == (400.0 - 8.0 - 16.0) / 2.0, "{chat} {info}");
+    let _ = app.update(UiMessage::ToggleRightPanel);
+    assert_eq!(app.conversation_width(), 400.0 - 16.0, "without Chat Info the chat fills the window");
+}
+
 /// Desktop's `message-attachment-failed`: a failed send of a file without text shows "Not sent" under the file.
 #[test]
 fn failed_files_show_not_sent_like_desktop() {
