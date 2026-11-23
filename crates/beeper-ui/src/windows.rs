@@ -100,10 +100,10 @@ impl BeeperGuiApp {
             }
             // Desktop hides the main window on close, with or without the tray: a later launch shows it again.
             Msg::CloseRequested(id) => {
-                let quit = self.store.read().settings.on("quitOnClose");
-                // Desktop's window `close`: it hides the app unless Quit on Close is on, also while signed out.
+                // Desktop's window `close`: it hides the app unless Quit on Close was on at launch, also while
+                // signed out.
                 let primary = Some(id) == self.main_window || Some(id) == self.login_window;
-                return match (primary, quit) {
+                return match (primary, self.quit_on_close) {
                     (true, false) => self.set_hidden(true),
                     (true, true) => self.save_main_window().chain(window::close(id)),
                     _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
@@ -214,6 +214,8 @@ impl BeeperGuiApp {
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                     self.time_edit = Default::default();
+                    // Desktop's Settings is a new window each time, so its search starts empty.
+                    (self.settings_query, self.settings_focus, self.settings_pick) = (String::new(), 0, None);
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
                     self.media_window = None;
                 } else if [self.main_window, self.login_window].contains(&Some(id)) {

@@ -1,6 +1,7 @@
 use crate::composer;
 use crate::message;
 use crate::settings;
+use crate::style::rem;
 use crate::style::{med, mix, txt, CLEAR};
 use crate::{BeeperGuiApp, El, UiMessage};
 use beeper_core::codec::Emoticon;
@@ -581,7 +582,8 @@ impl BeeperGuiApp {
     fn view_allowed_reactions<'a>(&self, allowed: &[String]) -> El<'a> {
         let c = self.emoji_colors();
         let buttons = allowed.iter().map(|r| -> El<'a> {
-            let glyph = crate::style::txt(r.clone(), 16.0).line_height(1.0).font(EMOJI_FONT);
+            let glyph =
+                crate::style::fixed(r.clone(), 16.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT);
             let style = crate::style::btn_style([CLEAR, c.input, c.input], [c.fg; 3], 4.0);
             button(glyph).padding(6).style(style).on_press(UiMessage::Emoji(EmojiMsg::React(r.clone()))).into()
         });
@@ -661,7 +663,7 @@ impl BeeperGuiApp {
         let input = text_input("Search", &pk.query)
             .id(SEARCH_INPUT)
             .on_input(|q| UiMessage::Emoji(EmojiMsg::Query(q)))
-            .size(14)
+            .size(rem(14.0))
             .padding(Padding::new(10.0).left(30.8).right(28.0))
             .style(move |_, s| {
                 let focused = matches!(s, text_input::Status::Focused { .. });
@@ -764,9 +766,13 @@ impl BeeperGuiApp {
     /// hover background when the keys selected it.
     fn emoji_cell(&self, it: Item, custom: &[Emoticon], tone: u8, hover: Color, selected: bool) -> El<'static> {
         let (glyph, pick): (El<'static>, _) = match it {
-            Item::Native(i) => {
-                (txt(DATA.emojis[i].skinned(tone), 24.0).line_height(1.0).font(EMOJI_FONT).into(), EmojiMsg::Pick(i))
-            }
+            Item::Native(i) => (
+                crate::style::fixed(DATA.emojis[i].skinned(tone), 24.0, iced::font::Weight::Normal)
+                    .line_height(1.0)
+                    .font(EMOJI_FONT)
+                    .into(),
+                EmojiMsg::Pick(i),
+            ),
             // emoji-mart's own `<img>`, which plays whatever the settings.
             Item::Custom(i) => {
                 (self.custom_image(&custom[i].url, 24.0, self.shows()), EmojiMsg::PickCustom(custom[i].clone()))
@@ -857,7 +863,9 @@ impl BeeperGuiApp {
         });
         let glyph: El<'static> = match is_mxc(&glyph) {
             true => self.custom_image(&glyph, 36.0, self.shows()),
-            false => txt(glyph, 36.0).line_height(1.0).font(EMOJI_FONT).into(),
+            false => {
+                crate::style::fixed(glyph, 36.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT).into()
+            }
         };
         let emoji = container(glyph).center(CELL);
         container(row![emoji, container(text).padding(Padding::ZERO.left(12.0)).width(Fill)].push(skin).align_y(Center))

@@ -303,7 +303,7 @@ impl BeeperGuiApp {
             .on_press_maybe(edit);
         let copy = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("copy:{cid}")));
         let title = mouse_area(
-            button(semi(chat.title.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong).center())
+            button(semi(chat.title.clone(), 15.0).line_height(Pixels(rem(20.0))).color(p.strong).center())
                 .bare(p.strong)
                 .on_press(copy.clone()),
         )
@@ -311,7 +311,7 @@ impl BeeperGuiApp {
         let meta = |s: String| {
             let copy = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("copy:{cid}\n{s}")));
             // Desktop's `metadata` rows: 11 px text on the 18.2 px line of the 13 px header.
-            let line = txt(s, 11.0).line_height(Pixels(18.0)).color(Color { a: 0.6, ..p.strong });
+            let line = txt(s, 11.0).line_height(Pixels(rem(18.0))).color(Color { a: 0.6, ..p.strong });
             mouse_area(line).on_right_press(copy)
         };
         let other =
@@ -332,7 +332,7 @@ impl BeeperGuiApp {
         let network: El = match profile_link(chat) {
             Some(url) => {
                 let fg = Color { a: 0.6, ..p.strong };
-                let name = txt(network, 11.0).line_height(Pixels(18.0)).color(fg);
+                let name = txt(network, 11.0).line_height(Pixels(rem(18.0))).color(fg);
                 let label = row![name, ic(icon::ARROW_UP_RIGHT, 11.0).color(fg)].spacing(2).align_y(Center);
                 let open = button(label).bare(fg).on_press(UiMessage::OpenUrl(url));
                 let tip = match other.and_then(|u| u.username.as_deref()) {
@@ -360,7 +360,7 @@ impl BeeperGuiApp {
         let behavior = self.view_behavior_line(&st, chat);
         let can_desc = chat.edits & 1 << 2 != 0;
         let small =
-            |s: &'static str, w: Weight, c: Color| crate::style::t(s, 11.0, w).line_height(Pixels(14.0)).color(c);
+            |s: &'static str, w: Weight, c: Color| crate::style::t(s, 11.0, w).line_height(Pixels(rem(14.0))).color(c);
         let link = |label: &'static str, w: Weight, msg: UiMessage| {
             button(small(label, w, p.accent)).bare(p.accent).on_press(msg)
         };
@@ -381,16 +381,10 @@ impl BeeperGuiApp {
                 let input = text_editor(content)
                     .id("info-desc")
                     .placeholder(tr("This description is public to the group"))
-                    .size(11)
-                    .line_height(Pixels(14.0))
+                    .size(rem(11.0))
+                    .line_height(Pixels(rem(14.0)))
                     .padding(8)
-                    .style(move |_: &Theme, _| text_editor::Style {
-                        background: p.chip.into(),
-                        border: border::rounded(8),
-                        placeholder: p.sub,
-                        value: p.strong,
-                        selection: p.accent.scale_alpha(0.3),
-                    });
+                    .style(editor_style(p, 8.0));
                 let input =
                     if can_desc { input.on_action(|a| UiMessage::Info(info::Msg::Desc(Some(a)))) } else { input };
                 Some(
@@ -416,8 +410,8 @@ impl BeeperGuiApp {
                     None => span(w.to_string()).color(p.strong),
                 });
                 let text = rich_text(spans.collect::<Vec<_>>())
-                    .size(11)
-                    .line_height(Pixels(14.0))
+                    .size(rem(11.0))
+                    .line_height(Pixels(rem(14.0)))
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .on_link_click(UiMessage::OpenUrl);
                 let edit = link(
@@ -566,7 +560,7 @@ impl BeeperGuiApp {
                     p,
                     mine.iter()
                         .map(|l| {
-                            let name = ell(&l.name, 240.0, 13.0, Weight::Normal).line_height(Pixels(16.0));
+                            let name = ell(&l.name, 240.0, 13.0, Weight::Normal).line_height(Pixels(rem(16.0)));
                             row![label_icon(l, 20.0, p.strong), name.color(p.strong)]
                                 .spacing(8)
                                 .padding(8)
@@ -589,8 +583,8 @@ impl BeeperGuiApp {
                     let i = options.iter().position(|o| *o == l).expect("a listed timer");
                     UiMessage::Info(info::Msg::SetDisappearing(id.clone(), values[i]))
                 })
-                .text_size(13)
-                .text_line_height(Pixels(16.0))
+                .text_size(rem(13.0))
+                .text_line_height(Pixels(rem(16.0)))
                 .handle(pick_list::Handle::None)
                 .padding([8, 12])
                 .width(Fill)
@@ -623,8 +617,8 @@ impl BeeperGuiApp {
                 let i = labels.iter().position(|o| *o == l).expect("a listed sound");
                 UiMessage::Info(info::Msg::SetSound(id.clone(), sounds[i].clone()))
             })
-            .text_size(13)
-            .text_line_height(Pixels(16.0))
+            .text_size(rem(13.0))
+            .text_line_height(Pixels(rem(16.0)))
             .handle(pick_list::Handle::None)
             .padding([8, 12])
             .width(Fill)
@@ -639,18 +633,12 @@ impl BeeperGuiApp {
         let note = text_editor(&self.info_note)
             .placeholder("Notes")
             .on_action(|a0| UiMessage::Info(info::Msg::Note(a0)))
-            .size(13)
-            .line_height(Pixels(16.0))
+            .size(rem(13.0))
+            .line_height(Pixels(rem(16.0)))
             .padding([8, 11])
             .min_height(128)
             .max_height(self.pane().size.height / 2.0)
-            .style(move |_: &Theme, _| text_editor::Style {
-                background: p.chip.into(),
-                border: border::rounded(10),
-                placeholder: p.sub,
-                value: p.strong,
-                selection: p.accent.scale_alpha(0.3),
-            });
+            .style(editor_style(p, 10.0));
         let body = column![header]
             .push(behavior)
             .push(self.view_merge_promo(&st, chat))
@@ -680,7 +668,7 @@ impl BeeperGuiApp {
             }))
             // A merged chat has no Leave Chat (`F0e`); Unmerge splits it.
             .push((chat.member_actions & MEMBER_LEAVE != 0 && chat.merge.is_none()).then(|| {
-                let leave = button(semi(tr("Leave Chat"), 14.0).line_height(Pixels(18.0)).color(p.strong))
+                let leave = button(semi(tr("Leave Chat"), 14.0).line_height(Pixels(rem(18.0))).color(p.strong))
                     .padding([0, 8])
                     .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
                     .on_press(UiMessage::ChatList(chat_list::Msg::AskLeave(cid.clone())));
@@ -795,15 +783,14 @@ impl BeeperGuiApp {
                         let kind = ell(file_kind(a.mime_type.as_deref()), TILE - 16.0, 10.0, Weight::Semibold);
                         file(
                             a.file_name.clone().unwrap_or_default(),
-                            kind.line_height(Pixels(12.0)).color(p.strong).into(),
+                            kind.line_height(Pixels(rem(12.0))).color(p.strong).into(),
                         )
                     }
                 });
                 let urls = m.links.iter().filter(|_| links).map(|l| {
-                    let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
-                    let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
+                    let title = crate::links::shown_title(l);
                     let url =
-                        ell(&l.url, TILE - 29.0, 10.0, Weight::Semibold).line_height(Pixels(12.0)).color(p.strong);
+                        ell(&l.url, TILE - 29.0, 10.0, Weight::Semibold).line_height(Pixels(rem(12.0))).color(p.strong);
                     file(title, row![tinted(&MEDIA_ICONS[2], 12.0, p.strong), url].align_y(Center).into())
                 });
                 atts.chain(urls).map(|tile| {
@@ -878,7 +865,7 @@ impl BeeperGuiApp {
                 let menu = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("bookmark:{} {target}", chat.id)));
                 let blank = || Space::new().width(24).height(24);
                 let lines = |title: El<'a>, text: &str| {
-                    let preview = ell(text, 220.0, 11.0, Weight::Normal).line_height(Pixels(14.0)).color(dim);
+                    let preview = ell(text, 220.0, 11.0, Weight::Normal).line_height(Pixels(rem(14.0))).color(dim);
                     column![title, preview].spacing(2).width(Fill)
                 };
                 let (line, jump) = match m {
@@ -887,7 +874,7 @@ impl BeeperGuiApp {
                         let name =
                             u.map(member_name).or_else(|| m.sender_name.clone()).unwrap_or_else(|| m.sender_id.clone());
                         let title = row![
-                            ell(&name, 160.0, 11.0, Weight::Semibold).line_height(Pixels(14.0)).color(p.strong),
+                            ell(&name, 160.0, 11.0, Weight::Semibold).line_height(Pixels(rem(14.0))).color(p.strong),
                             txt(list_ts(&m.timestamp, h24), 10.0).color(dim)
                         ]
                         .spacing(6)

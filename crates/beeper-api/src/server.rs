@@ -1959,7 +1959,10 @@ fn chat_search<'a>(st: &'a BeeperStore, s: &ChatSearch) -> CursorPage<view::ApiC
     let pool = st.chats.iter().filter(|c| c.flags & CHAT_INACTIVE_UNION == 0).filter(accounts);
     let found: Vec<(&Chat, usize)> = match s.query {
         "" => pool.map(|c| (c, 0)).collect(),
-        q => search::search(pool, q, s.people, true),
+        q => {
+            let keep = |c: &Chat| c.flags & CHAT_INACTIVE_UNION == 0 && accounts(&c);
+            search::search_in(st, keep, q, s.people, true)
+        }
     };
     let (mut chats, mut merged) = (Vec::new(), Vec::<(&Chat, usize)>::new());
     for (c, hits) in found {
@@ -2169,7 +2172,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         ("POST", ["reminders"]) => {
             let (at, dismiss) = reminder_input(r)?;
             // Desktop's `setReminder` dismisses the reminder on an incoming message when the request does not say.
-            let reminder = ChatReminder { remind_at_ms: at, dismiss_on_incoming_message: dismiss.unwrap_or(true) };
+            let reminder = ChatReminder::new(at, dismiss.unwrap_or(true));
             st.set_reminder(idx, Some(reminder));
             empty(StatusCode::NO_CONTENT, Vec::new())
         }

@@ -26,6 +26,19 @@ pub struct ListState {
     /// Desktop's `disableSpaceSwitching`: a space window shows its space without the space bar, and its header does
     /// not switch spaces.
     pub(crate) locked: bool,
+    /// Desktop's `threadCursorID`: the chat that ↑, ↓, J and K point at while no chat is open, which shows as
+    /// selected and which Enter opens.
+    pub(crate) cursor: Option<String>,
+    /// The id of the list's scrollable, its own in each window.
+    pub(crate) scroll: ListScroll,
+}
+
+pub(crate) struct ListScroll(pub(crate) iced::widget::Id);
+
+impl Default for ListScroll {
+    fn default() -> Self {
+        Self(iced::widget::Id::unique())
+    }
 }
 
 impl ListState {
@@ -612,6 +625,67 @@ pub(crate) static TAG_ICONS: std::sync::LazyLock<[svg::Handle; 10]> = std::sync:
 });
 
 impl BeeperGuiApp {
+    /// Desktop's `f` of `defaultOnKeyDown`: no chat or draft is open and nothing else takes the keys, so ↑, ↓, J, K
+    /// and Enter work on the cursor of the chat list.
+    pub(crate) fn points_chats(&self) -> bool {
+        self.pane().selected_chat_id.is_none()
+            && self.creating_chat.is_none()
+            && !self.show_command_palette
+            && self.forward.is_none()
+            && self.hotkeys_modal.is_none()
+            && !self.menu_open()
+            && !self.select_mode
+            && self.selection.is_empty()
+    }
+
+    /// [`Self::points_chats`] in the main window or in a space window `id`.
+    pub(crate) fn window_points_chats(&mut self, id: window::Id) -> bool {
+        if Some(id) == self.main_window {
+            return self.points_chats();
+        }
+        if !self.space_windows.iter().any(|w| w.0 == id) {
+            return false;
+        }
+        self.swap_window(id);
+        let on = self.points_chats();
+        self.swap_window(id);
+        on
+    }
+
+    /// Desktop's `pointNextThread` and `pointPrevThread`: the cursor moves to the next or the previous chat of the
+    /// list, and from a chat that the list does not show, to the first chat.
+    pub(crate) fn point_chat(&mut self, down: bool) {
+        let ids = self.list_ids(&self.store.read());
+        let at = self.list.cursor.as_ref().and_then(|c| ids.iter().position(|i| i == c));
+        let to = match (at, down) {
+            (None, _) => Some(0),
+            (Some(i), true) => Some(i + 1),
+            (Some(i), false) => i.checked_sub(1),
+        };
+        if let Some(id) = to.and_then(|i| ids.get(i)) {
+            self.list.cursor = Some(id.clone());
+        }
+    }
+
+    /// The open chat and the chat of the cursor, which [`Self::reveal_pointed`] follows.
+    pub(crate) fn pointed(&self) -> (Option<String>, Option<String>) {
+        (self.pane.selected_chat_id.clone(), self.list.cursor.clone())
+    }
+
+    /// Desktop's `scrollThreadsListToItem`, which `bringThreadToViewOnSelection` and `setThreadCursorID` call: when the
+    /// open chat or the cursor moved from `before` to another chat, the list scrolls that chat into view with the
+    /// least scroll (`align: "nearest"`). A pinned tile brings the top of the list, where Desktop's first item holds
+    /// the whole pinned grid.
+    pub(crate) fn reveal_pointed(&self, before: (Option<String>, Option<String>)) -> Task<UiMessage> {
+        let (open, cursor) = self.pointed();
+        let moved = |now: Option<String>, was: Option<String>| now.filter(|n| was.as_ref() != Some(n));
+        let Some(id) = moved(open, before.0).or_else(|| moved(cursor, before.1)) else { return Task::none() };
+        let pinned = self.pins_and_rows(&self.store.read()).0.iter().any(|c| c.id == id);
+        let to = self.list.rows.nearest((!pinned).then(|| vlist::key(&id)));
+        let scroll = self.list.scroll.0.clone();
+        to.map_or_else(Task::none, |y| operation::scroll_to(scroll, operation::AbsoluteOffset { x: 0.0, y }))
+    }
+
     /// The selected chats that still exist: the sync task can drop one before StoreChanged reaches update.
     /// The chat menu rows that a selection of more chats adds: the count, and both Mark All items.
     pub(crate) fn selection_rows(&self, st: &BeeperStore) -> f32 {
@@ -619,8 +693,8 @@ impl BeeperGuiApp {
         let unread = picked.iter().filter(|c| has_flag(c, ChatFlag::MarkedUnread)).count();
         match picked.len() {
             0 | 1 => 0.0,
-            n if (1..n).contains(&unread) => 2.0 * MENU_ITEM,
-            _ => MENU_ITEM,
+            n if (1..n).contains(&unread) => 2.0 * menu_pitch(),
+            _ => menu_pitch(),
         }
     }
 
@@ -794,8 +868,8 @@ impl BeeperGuiApp {
                 .flatten()
                 .collect()
         };
-        let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { 11.0 - MENU_ITEM } else { 0.0 };
-        let h = 8.0 + items.len() as f32 * MENU_ITEM + rules;
+        let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { 11.0 - menu_pitch() } else { 0.0 };
+        let h = 8.0 + items.len() as f32 * menu_pitch() + rules;
         let width = if which == 0 { SUB_MENU_W[1] } else { 233.0 };
         let menu = container(Column::with_children(items).padding([4, 0])).width(width).style(shadow_box(
             p.menu,
@@ -873,7 +947,7 @@ impl BeeperGuiApp {
             .chain(account_rule)
             .chain(accounts),
         );
-        container(col.padding([4, 0])).width(width).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
+        crate::menu_card(p, col, width).into()
     }
 
     /// The chat menu, with `room` pixels from its top to the bottom of the window.
@@ -913,26 +987,21 @@ impl BeeperGuiApp {
                     Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)))
                 ),
             ];
-            return container(col.padding([4, 0]))
-                .width(233)
-                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-                .into();
+            return crate::menu_card(p, col, 233).into();
         }
         if cid == RAIL_MORE {
             let items = more_menu(&self.store.read()).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", Some(msg)),
                 None => menu_rule(p),
             });
-            let col = Column::with_children(items).padding([4, 0]);
-            return container(col).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+            return crate::menu_card(p, Column::with_children(items), 233).into();
         }
         if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
             let items = info_menu(&self.store.read(), cid, |a| self.can(a, "create_dm")).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", msg),
                 None => menu_rule(p),
             });
-            let col = Column::with_children(items).padding([4, 0]);
-            return container(col).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+            return crate::menu_card(p, Column::with_children(items), 233).into();
         }
         if let Some(entry) = cid.strip_prefix("account:") {
             return self.view_account_menu(entry);
@@ -948,13 +1017,11 @@ impl BeeperGuiApp {
         if let Some(id) = cid.strip_prefix(SNOOZE_MENU) {
             let st = self.store.read();
             let rows = self.snooze_items(&st, &[id.to_string()]);
-            let col = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
-            return container(col).width(SUB_MENU_W[3]).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+            return crate::menu_rows(p, rows, SUB_MENU_W[3]).0.into();
         }
         if let Some(id) = cid.strip_prefix(behavior::BEHAVIOR_MENU) {
             let (rows, w) = self.behavior_items(&self.store.read(), id);
-            let col = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
-            return container(col).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+            return crate::menu_rows(p, rows, w).0.into();
         }
         if let Some(n) = cid.strip_prefix("draft:") {
             let delete = menu_item(
@@ -964,10 +1031,7 @@ impl BeeperGuiApp {
                 "",
                 Some(UiMessage::NewChat(new_chat::Msg::Delete(n.parse().unwrap()))),
             );
-            return container(column![delete].padding([4, 0]))
-                .width(124)
-                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-                .into();
+            return crate::menu_card(p, column![delete], 124).into();
         }
         let st = self.store.read();
         let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
@@ -1181,8 +1245,7 @@ impl BeeperGuiApp {
                     ))
             }),
         ];
-        let menu =
-            container(col.padding([4, 0])).width(chat_menu_w(&st)).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_card(p, col, chat_menu_w(&st));
         let sub = self.chat_sub.map(|i| {
             let item = |label: &str, at: String, msg| menu_item(p, None, label.into(), at, msg);
             let (items, rules): (Vec<El>, f32) = match i {
@@ -1241,23 +1304,23 @@ impl BeeperGuiApp {
                 }
                 _ => {
                     let rows = self.snooze_items(&st, &targets);
-                    let rules = rows.iter().filter(|r| r.1 < MENU_ITEM).count() as f32;
+                    let rules = rows.iter().filter(|r| r.1 < menu_pitch()).count() as f32;
                     (rows.into_iter().map(|r| r.0).collect(), rules)
                 }
             };
-            let h = 8.0 + items.len() as f32 * MENU_ITEM - rules * (MENU_ITEM - 11.0);
+            let h = 8.0 + items.len() as f32 * menu_pitch() - rules * (menu_pitch() - 11.0);
             let top = match i {
-                0 => 4.0 * MENU_ITEM,
-                1 if labels => 8.0 * MENU_ITEM + 22.0,
-                3 if labels => 9.0 * MENU_ITEM + 22.0,
-                3 => 8.0 * MENU_ITEM + 22.0,
-                _ => 7.0 * MENU_ITEM + 22.0,
-            } + if reason.is_some() { MENU_ITEM } else { 0.0 }
-                + if can_edit_group(c) { MENU_ITEM } else { 0.0 }
+                0 => 4.0 * menu_pitch(),
+                1 if labels => 8.0 * menu_pitch() + 22.0,
+                3 if labels => 9.0 * menu_pitch() + 22.0,
+                3 => 8.0 * menu_pitch() + 22.0,
+                _ => 7.0 * menu_pitch() + 22.0,
+            } + if reason.is_some() { menu_pitch() } else { 0.0 }
+                + if can_edit_group(c) { menu_pitch() } else { 0.0 }
                 + self.selection_rows(&st);
             let top = top.min(room - h).max(0.0);
-            let body = container(Column::with_children(items).padding([4, 0])).width(SUB_MENU_W[usize::from(i)]);
-            column![Space::new().height(top), body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))]
+            let body = crate::menu_card(p, Column::with_children(items), SUB_MENU_W[usize::from(i)]);
+            column![Space::new().height(top), body]
         });
         let (l, r) = if sub_left { (sub, None) } else { (None, sub) };
         row![].push(l).push(menu).push(r).into()
@@ -1338,7 +1401,8 @@ impl BeeperGuiApp {
             let trigger: El<'_> = match count {
                 0 => Space::new().into(),
                 1 => ic(icon::EXPAND_MORE, 10.0).color(fg).into(),
-                n => txt(n.to_string(), 11.0).color(fg).into(),
+                // `.FilterButton-module__count` is 11 px.
+                n => crate::style::fixed(n.to_string(), 11.0, Weight::Normal).line_height(1.0).color(fg).into(),
             };
             let trigger = button(container(trigger).padding(Padding::ZERO.left(6.0)).center_y(20))
                 .padding(0)
@@ -1387,7 +1451,9 @@ impl BeeperGuiApp {
             .align_y(Center)
             .height(52)
             .padding(Padding::ZERO.right(8.0));
-        let selected = self.creating_chat.is_none().then_some(self.pane().selected_chat_id.as_deref()).flatten();
+        // Desktop's `isSelected` row is the open chat, or the chat of the cursor (`threadCursorID`).
+        let open = self.pane().selected_chat_id.as_deref();
+        let selected = self.creating_chat.is_none().then(|| open.or(self.list().cursor.as_deref())).flatten();
         let (mut pinned, rest) = self.pins_and_rows(&st);
         // The order of a pin drag, which moves the pins under the pointer.
         let dragged = self.pin_drag.as_ref().filter(|d| d.order.is_some()).map(|d| d.id.as_str());
@@ -1432,7 +1498,7 @@ impl BeeperGuiApp {
                 let title = ell(short_title(c), title_w, 12.0, Weight::Semibold);
                 let label = row![]
                     .push(dot)
-                    .push(title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(15.0.into())))
+                    .push(title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(rem(15.0).into())))
                     .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.strong)))
                     .spacing(3.2)
                     .align_y(Center);
@@ -1551,8 +1617,10 @@ impl BeeperGuiApp {
             let names: Vec<&str> = d.users.iter().map(|(_, u)| u.full_name.as_deref().unwrap_or(&u.id)).collect();
             let title = if names.is_empty() { tr("New Chat").into() } else { names.join(", ") };
             let title = ell(&title, text_w, title_size, if counts { Weight::Medium } else { Weight::Semibold });
-            let rows =
-                [container(title.color(p.strong)).height(16).into(), Space::new().height(16 * lines as u32).into()];
+            let rows = [
+                container(title.color(p.strong)).height(rem(16.0)).into(),
+                Space::new().height(rem(16.0) * lines as f32).into(),
+            ];
             let face = self.face(
                 d.users.first().and_then(|(_, u)| u.img_url.as_deref()),
                 names.first().unwrap_or(&""),
@@ -1629,7 +1697,7 @@ impl BeeperGuiApp {
                 .push(
                     txt(ts, ts_size).color(p.strong.scale_alpha(0.7)).font(iced::Font { style, ..fw(Weight::Normal) }),
                 )
-                .height(16)
+                .height(rem(16.0))
                 .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
             let receipt = m.is_some_and(read_icon);
@@ -1765,7 +1833,12 @@ impl BeeperGuiApp {
                     let shown = crate::style::clamped(&b, text_w - reserve, lines, 13.0, Weight::Normal);
                     if !shown.contains('\u{fe0f}') {
                         let text = clamp(&b, text_w - reserve, lines, 13.0, Weight::Normal);
-                        return text.width(text_w - reserve).line_height(Pixels(16.0)).font(body_font).color(fg).into();
+                        return text
+                            .width(text_w - reserve)
+                            .line_height(Pixels(rem(16.0)))
+                            .font(body_font)
+                            .color(fg)
+                            .into();
                     }
                     let spans = crate::emoji::with_emoji_font(vec![span::<(), _>(shown.to_string()).font(body_font)]);
                     let wrap = if lines == 1 {
@@ -1774,8 +1847,8 @@ impl BeeperGuiApp {
                         iced::widget::text::Wrapping::WordOrGlyph
                     };
                     rich_text(spans)
-                        .size(13)
-                        .line_height(Pixels(16.0))
+                        .size(rem(13.0))
+                        .line_height(Pixels(rem(16.0)))
                         .color(fg)
                         .width(text_w - reserve)
                         .wrapping(wrap)
@@ -1787,8 +1860,8 @@ impl BeeperGuiApp {
                         crate::style::clamped(&format!("{label} {t}"), text_w - reserve, lines, 13.0, Weight::Normal);
                     let rest = s.strip_prefix(label).expect("the draft label fits").to_string();
                     rich_text![span::<(), _>(label).font(fw(Weight::Semibold)).color(p.accent), span(rest).color(fg)]
-                        .size(13)
-                        .line_height(Pixels(16.0))
+                        .size(rem(13.0))
+                        .line_height(Pixels(rem(16.0)))
                         .width(text_w - reserve)
                 }))
                 .push(Space::new().width(Fill))
@@ -1818,7 +1891,14 @@ impl BeeperGuiApp {
                 true => Some(container(checkbox(p, picked(c))).padding(Padding::ZERO.right(8.0)).into()),
                 false => dot.map(El::from),
             };
-            frame(c.id.clone(), dot, face.into(), [top.into(), preview.height(16 * lines as u32).into()], on, pick(c))
+            frame(
+                c.id.clone(),
+                dot,
+                face.into(),
+                [top.into(), preview.height(rem(16.0) * lines as f32).into()],
+                on,
+                pick(c),
+            )
         };
         let list: El<'_> = if chats.is_empty() && self.new_chats.is_empty() {
             let tab =
@@ -1873,6 +1953,7 @@ impl BeeperGuiApp {
                 Some(i) => chat_row(rest[i - tiles - drafts]).into(),
             });
             scrollable(container(rows).padding(Padding::ZERO.right(bar_pad + GUTTER)))
+                .id(self.list().scroll.0.clone())
                 .direction(stable_bar())
                 .height(Fill)
                 .style(scroll_style(p.scroll))

@@ -130,6 +130,11 @@ fn file_path(uri: &str) -> Option<PathBuf> {
     beeper_core::codec::url_decode(uri.strip_prefix("file://")?).map(PathBuf::from)
 }
 
+/// [`load_file`] on a blocking thread, so the window stays responsive while a big file loads.
+pub async fn load_off_thread(path: PathBuf) -> Result<PendingMedia, String> {
+    tokio::task::spawn_blocking(move || load_file(&path)).await.expect("file load thread")
+}
+
 /// A file for the composer: an image has its size and frames, and an other file has its MIME type by its extension.
 pub fn load_file(path: &Path) -> Result<PendingMedia, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;

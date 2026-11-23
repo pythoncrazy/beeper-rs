@@ -36,6 +36,10 @@ pub async fn serve(reply: impl Fn(&str, &str, Value) -> (u16, Value) + Send + Sy
                     Err(_) => Value::String(String::from_utf8_lossy(&body).into()),
                 };
                 let (code, json) = reply(method, path, body);
+                // Code 0 closes the connection without an answer, like a homeserver that cannot be reached.
+                if code == 0 {
+                    return;
+                }
                 let json = json.to_string();
                 let head = format!(
                     "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",

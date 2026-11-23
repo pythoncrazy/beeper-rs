@@ -861,9 +861,18 @@ fn closing_the_main_window_hides_it_like_desktop() {
     assert_eq!(app.sub_windows(), [app.settings_window.expect("the settings window")]);
     let _ = app.update(UiMessage::Window(windows::Msg::Tray(Ok(tray::Event::Activate))));
     assert!(!app.hidden, "a click on the tray icon shows the windows");
+    // Desktop's main process reads `quit_on_close` once at launch, and the setting asks for a relaunch.
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("quitOnClose", 1)));
+    assert_eq!(app.relaunch_toast, Some("Preference changed"));
     let _ = app.update(UiMessage::Window(windows::Msg::CloseRequested(main)));
-    assert!(!app.hidden, "with Quit on close, the window closes");
+    assert!(app.hidden, "until a relaunch, the window still hides");
+    let mut app = BeeperGuiApp::boot(app.store.clone()).0;
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::Window(windows::Msg::CloseRequested(main)));
+    assert!(!app.hidden, "after a relaunch with Quit on close, the window closes");
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("quitOnClose", 0)));
+    let _ = app.update(UiMessage::Window(windows::Msg::CloseRequested(main)));
+    assert!(!app.hidden, "turning it off also waits for a relaunch");
 }
 
 /// Desktop has one window, so closing it while signed out hides the app too, and opening the app again shows it.
@@ -987,6 +996,47 @@ fn remind_submenu_like_desktop() {
     assert!(upgrade, "without free uses only the upgrade works");
 }
 
+/// Desktop's chat list cursor (`threadCursorID`) for the keyboard: Escape leaves the open chat with the cursor on it,
+/// a second Escape points at the first chat, ↓ and J, ↑ and K move the cursor without opening a chat, and Enter
+/// opens the chat of the cursor.
+#[test]
+fn chat_list_cursor_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("listcursor");
+    let main = app.main_window.expect("a main window");
+    let ids = app.list_ids(&app.store.read());
+    let key = |app: &mut BeeperGuiApp, k: Named| {
+        drop(app.update(UiMessage::WindowKey(main, Key::Named(k), Modifiers::empty())))
+    };
+    let text = |app: &mut BeeperGuiApp, t: &str| drop(app.update(UiMessage::WindowText(main, t.into())));
+    let _ = app.update(UiMessage::SelectChat(ids[2].clone()));
+    key(&mut app, Named::Escape);
+    assert_eq!(app.pane.selected_chat_id, None, "Escape leaves the chat");
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[2]), "the cursor stays on the chat that was open");
+    key(&mut app, Named::ArrowDown);
+    text(&mut app, "j");
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[4]), "↓ and J point at the next chats");
+    assert_eq!(app.pane.selected_chat_id, None, "pointing opens no chat");
+    text(&mut app, "k");
+    key(&mut app, Named::ArrowUp);
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[2]), "↑ and K point at the previous chats");
+    key(&mut app, Named::Escape);
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[0]), "Escape with no chat open points at the first chat");
+    key(&mut app, Named::ArrowUp);
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[0]), "the cursor stops at the first chat");
+    key(&mut app, Named::ArrowDown);
+    key(&mut app, Named::Enter);
+    assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&ids[1]), "Enter opens the chat of the cursor");
+    assert_eq!(app.list.cursor, None, "an open chat drops the cursor");
+    text(&mut app, "j");
+    assert_eq!(app.pane.composer.text(), "j", "with a chat open, J types in the composer");
+    let _ = app.update(UiMessage::SelectChat(ids[1].clone()));
+    key(&mut app, Named::Escape);
+    let _ = app.update(UiMessage::RunHotkey("Search"));
+    key(&mut app, Named::ArrowDown);
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[1]), "the command bar takes the arrows");
+}
+
 /// Desktop's `reset` empties the command bar each time it closes, so a time typed in Remind Me or a search that was
 /// closed does not come back in the next search.
 #[test]
@@ -1015,6 +1065,78 @@ fn command_bar_opens_empty_like_desktop() {
     let _ = app.update(UiMessage::CloseModals);
     let _ = app.update(UiMessage::RunHotkey("Search: Room"));
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
+}
+
+/// Desktop's `scrollThreadsListToItem` with `align: "nearest"`: the chat list scrolls the chat of the cursor and the
+/// open chat into view with the least scroll, for ↓ and ↑, Ctrl ] and Ctrl 1 to 9. A pinned tile brings the top of the
+/// list, where the pinned grid is.
+#[test]
+fn chat_list_scrolls_to_the_pointed_chat_like_desktop() {
+    use iced::advanced::widget::operation::scrollable::{AbsoluteOffset, RelativeOffset, Scrollable};
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    use iced::Rectangle;
+    struct Offset(Option<f32>);
+    impl Scrollable for Offset {
+        fn snap_to(&mut self, _: RelativeOffset<Option<f32>>) {}
+        fn scroll_to(&mut self, to: AbsoluteOffset<Option<f32>>) {
+            self.0 = to.y;
+        }
+        fn scroll_by(&mut self, _: AbsoluteOffset, _: Rectangle, _: Rectangle) {}
+    }
+    let mut app = demo_app("listreveal");
+    let main = app.main_window.expect("a main window");
+    let ids = app.list_ids(&app.store.read());
+    let scroll = app.list.scroll.0.clone();
+    // Where the task scrolls the chat list to.
+    let scrolled = |task: Task<UiMessage>| -> Option<f32> {
+        let actions = iced::futures::executor::block_on(task_actions(task));
+        let mut offset = Offset(None);
+        for a in actions {
+            if let iced_runtime::Action::Widget(mut op) = a {
+                op.scrollable(Some(&scroll), Rectangle::default(), Rectangle::default(), Vector::ZERO, &mut offset);
+            }
+        }
+        offset.0
+    };
+    // A frame of the main window, 450 px high, after the wheel moved the list `wheel` px down.
+    let draw = |app: &BeeperGuiApp, wheel: f32| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 450.0), app.view(main));
+        sim.point_at(Point::new(290.0, 300.0));
+        let delta = ScrollDelta::Pixels { x: 0.0, y: -wheel };
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::WheelScrolled { delta })]);
+        let _ = sim.simulate([iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))]);
+    };
+    let key =
+        |app: &mut BeeperGuiApp, k: Named| app.update(UiMessage::WindowKey(main, Key::Named(k), Modifiers::empty()));
+    let _ = app.update(UiMessage::SelectChat(ids[2].clone()));
+    let _ = key(&mut app, Named::Escape);
+    draw(&app, 0.0);
+    assert_eq!(scrolled(key(&mut app, Named::ArrowDown)), None, "a chat in view does not scroll the list");
+    let mut offsets = Vec::new();
+    while let Some(next) = ids.get(ids.iter().position(|i| Some(i) == app.list.cursor.as_ref()).unwrap() + 1) {
+        let y = scrolled(key(&mut app, Named::ArrowDown));
+        assert_eq!(app.list.cursor.as_ref(), Some(next));
+        offsets.extend(y);
+    }
+    assert!(!offsets.is_empty(), "the chats below the list scroll it");
+    assert!(offsets.is_sorted() && offsets[0] > 0.0, "each next chat ends at the bottom: {offsets:?}");
+    let _ = app.update(UiMessage::SelectChat(ids[6].clone()));
+    draw(&app, 0.0);
+    let mut by_hotkey = Vec::new();
+    for _ in 0..ids.len() {
+        by_hotkey.extend(scrolled(app.update(UiMessage::RunHotkey("Select Next Chat"))));
+    }
+    assert_eq!(app.pane.selected_chat_id.as_ref(), ids.last());
+    assert!(!by_hotkey.is_empty() && by_hotkey.is_sorted(), "Ctrl ] scrolls like the cursor: {by_hotkey:?}");
+    draw(&app, 5000.0);
+    let first = app.update(UiMessage::KeyPressed(Key::Character("1".into()), Modifiers::CTRL));
+    assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&ids[0]));
+    assert_eq!(scrolled(first), Some(0.0), "Ctrl 1 on a pinned tile scrolls to the top");
+    draw(&app, 5000.0);
+    let ninth = scrolled(app.update(UiMessage::KeyPressed(Key::Character("9".into()), Modifiers::CTRL)));
+    assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&ids[8]));
+    let end = *offsets.last().unwrap();
+    assert!(ninth.is_some_and(|y| y > 0.0 && y < end), "Ctrl 9 brings a chat above the list to its top: {ninth:?}");
 }
 
 #[test]
@@ -3009,6 +3131,48 @@ fn search_sections_like_desktop() {
     assert!(hits(&app, "eric").chats.is_empty(), "a media filter shows no chats");
 }
 
+/// Desktop's `threadSearcher` also finds the chats that All Chats hides, after the others by `computeStatePenalty`:
+/// low priority adds 120 and a chat hidden from the inbox (snoozed, or hidden by a label or by the "Show in Inbox" of
+/// its account) adds 80. A member of a merged chat is `isHidden` and does not show.
+#[test]
+fn search_shows_hidden_chats_lower_like_desktop() {
+    let mut app = demo_app("search-hidden");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    // Six chats named Zulu, newest first.
+    let zulu: Vec<String> = {
+        let mut st = app.store.write();
+        let mut chats: Vec<&Chat> = st.chats.iter().filter(|c| c.listed() && c.flags == 0).collect();
+        chats.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+        let ids: Vec<String> = chats.iter().take(6).map(|c| c.id.clone()).collect();
+        assert_eq!(ids.len(), 6, "the demo has six plain chats");
+        for (n, id) in ids.iter().enumerate() {
+            let idx = st.chat_idx(id);
+            st.update_chat(idx, |c| c.title = format!("Zulu {n}"));
+        }
+        ids
+    };
+    let (low, label, account, snoozed, merged) = (&zulu[0], &zulu[1], &zulu[2], &zulu[3], &zulu[4]);
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(low.clone(), ChatFlag::LowPriority)));
+    let _ = app.update(UiMessage::Labels(labels::Msg::Switch("lbl_work".into(), label.clone(), true)));
+    let _ = app.update(UiMessage::Labels(labels::Msg::SetInbox("lbl_work".into(), Some("none"))));
+    {
+        let mut st = app.store.write();
+        st.features.internal = true;
+        st.features.flags["features"]["*"]["snooze"] = serde_json::json!(true);
+        let (a, s, m) = (st.chat_idx(account), st.chat_idx(snoozed), st.chat_idx(merged));
+        st.update_chat(a, |c| c.is_hidden_from_inbox = Some(true));
+        st.update_chat(s, |c| c.snoozed_until_ms = Some(now_unix_millis() + 3_600_000));
+        st.update_chat(m, |c| c.merged_into_chat_id = Some(low.clone()));
+    }
+    let st = app.store.read();
+    for id in [label, account] {
+        assert_ne!(st.find_chat(id).unwrap().flags & CHAT_HIDDEN, 0, "All Chats hides {id}");
+    }
+    let found: Vec<&str> = app.search_hits(&st, "zulu").chats.iter().map(|&i| st.chats[i].title.as_str()).collect();
+    let order = ["Zulu 5", "Zulu 1", "Zulu 2", "Zulu 3", "Zulu 0"];
+    assert_eq!(found, order, "the shown chat, the hidden ones, then low priority, and no merged member");
+}
+
 /// Desktop's `Hct` operators in the query and in the filters, and its partial matches toggle.
 #[test]
 fn search_operators_and_partial_matches_like_desktop() {
@@ -4351,8 +4515,11 @@ fn zoom_keys_like_desktop() {
         let _ = app.update(UiMessage::KeyPressed(Key::Character(key.into()), Modifiers::CTRL));
         assert_eq!(app.zoom, zoom, "ctrl {key}");
     }
+    // Desktop's Font size sets the root font (`--custom-font-size`), which only the text in rem follows.
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 0)));
-    assert_eq!(app.zoom, 0.75, "the font size 9 is a root font of 12 px, as in Desktop");
+    assert_eq!((app.zoom, crate::style::rem(16.0)), (1.0, 12.0), "the font size 9 is a root font of 12 px");
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("=".into()), Modifiers::CTRL));
+    assert_eq!((app.zoom, crate::style::rem(16.0)), (1.1, 12.0), "the zoom keeps the root font");
 }
 
 /// Desktop's windows open at their size in screen pixels whatever the zoom and the font size, and iced opens a
@@ -4360,23 +4527,31 @@ fn zoom_keys_like_desktop() {
 #[test]
 fn windows_open_at_their_size_at_any_zoom_like_desktop() {
     use iced::futures::StreamExt;
+    use iced::keyboard::{Key, Modifiers};
+    let opened = |app: &mut BeeperGuiApp| {
+        let task = app.open_settings(SettingsTab::General);
+        let actions = iced_runtime::task::into_stream(task).expect("a window opens");
+        iced::futures::executor::block_on(
+            actions
+                .filter_map(|a| async move {
+                    match a {
+                        iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s.size),
+                        _ => None,
+                    }
+                })
+                .boxed()
+                .next(),
+        )
+    };
     let mut app = demo_app("zoomed-windows");
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 8)));
-    assert_eq!(app.zoom, 1.25, "the font size 17 is a root font of 20 px");
-    let task = app.open_settings(SettingsTab::General);
-    let actions = iced_runtime::task::into_stream(task).expect("a window opens");
-    let size = iced::futures::executor::block_on(
-        actions
-            .filter_map(|a| async move {
-                match a {
-                    iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s.size),
-                    _ => None,
-                }
-            })
-            .boxed()
-            .next(),
-    );
-    assert_eq!(size, Some(SETTINGS_SIZE * 0.8), "800 by 740 screen pixels");
+    assert_eq!(opened(&mut app), Some(SETTINGS_SIZE), "the font size 17 does not zoom the window");
+    app.settings_window = None;
+    for _ in 0..10 {
+        let _ = app.update(UiMessage::KeyPressed(Key::Character("=".into()), Modifiers::CTRL));
+    }
+    assert_eq!(app.zoom, 2.0);
+    assert_eq!(opened(&mut app), Some(SETTINGS_SIZE / 2.0), "800 by 740 screen pixels at 200%");
 }
 
 /// The sizes of the windows are in iced's logical pixels, which the zoom scales like Desktop's CSS pixels: the
@@ -4405,6 +4580,154 @@ fn the_zoom_resizes_the_viewport_like_desktop() {
     assert_eq!((app.pane.size.width.round(), app.sidebar_hidden), (704.0, false));
 }
 
+/// Sets Desktop's Font size (9 to 36) and zoom (in percent) of `app`.
+fn font_and_zoom(app: &mut BeeperGuiApp, font: u8, zoom: u16) {
+    app.store.write().settings.zoom_percent = zoom;
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", font - 9)));
+    assert_eq!((app.zoom, crate::style::rem(16.0)), (f32::from(zoom) / 100.0, f32::from(font) + 3.0));
+}
+
+/// Desktop's Font size is its root font (`--custom-font-size`), which only the sizes in rem follow: the text, not the
+/// space bar, whose buttons are in px. Only the zoom scales those, and the viewport with them.
+#[test]
+fn the_font_size_scales_the_text_and_not_the_space_bar_like_desktop() {
+    let mut app = demo_app("font-size-rail");
+    let main = app.main_window.expect("the main window");
+    let bounds = |sim: &mut Simulator<UiMessage>, id: &'static str| {
+        sim.find(iced::widget::Id::new(id)).unwrap_or_else(|_| panic!("{id} shows")).bounds()
+    };
+    for zoom in [50, 100, 150, 200] {
+        let mut rail = None;
+        for font in [13, 9, 10, 12, 14, 16, 18, 20, 22, 24] {
+            font_and_zoom(&mut app, font, zoom);
+            let size = app.pane.size;
+            let viewport = MAIN_SIZE * (100.0 / f32::from(zoom));
+            assert_eq!(
+                (size.width.round(), size.height.round()),
+                (viewport.width.round(), viewport.height.round()),
+                "the viewport"
+            );
+            let mut sim = Simulator::with_size(Default::default(), size, app.view(main));
+            let (more, media) = (bounds(&mut sim, "rail-more"), bounds(&mut sim, "rail-media"));
+            let rail = *rail.get_or_insert((more, media));
+            assert_eq!((more, media), rail, "the space bar at font {font} and {zoom}% is the one of font 13");
+            let label = sim.find("Unread threads").expect("the unread threads pill").bounds();
+            assert_eq!(label.height, crate::style::rem(16.0), "its text in rem at font {font}");
+        }
+    }
+    // At 24 the Media button still draws its icon, which the spaces above it used to cover.
+    font_and_zoom(&mut app, 24, 100);
+    let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+    let media = bounds(&mut sim, "rail-media");
+    let shot = crate::message::tests::pixels(&mut sim);
+    let k = shot.width() as f32 / app.pane.size.width;
+    let dark = (0..36).flat_map(|y| (0..36).map(move |x| (x, y))).any(|(x, y)| {
+        let px = shot.get_pixel(((media.x + x as f32) * k) as u32, ((media.y + y as f32) * k) as u32).0;
+        px[..3].iter().all(|&c| c < 100)
+    });
+    assert!(dark, "the Media icon draws at font 24");
+}
+
+/// Desktop's settings row (`.label-wrapper label`) keeps its label, which wraps anywhere (`overflow-wrap: anywhere`)
+/// and shrinks (`min-width: 0`), before its select (`flex: 0 0 auto`), at any font size and zoom.
+#[test]
+fn settings_labels_stay_clear_of_their_selects_at_any_font_size_like_desktop() {
+    let mut app = demo_app("font-size-settings");
+    let _ = app.open_settings(SettingsTab::Appearance);
+    let id = app.settings_window.expect("the settings window");
+    for zoom in [50, 100, 150, 200] {
+        for font in [9, 13, 16, 20, 24] {
+            font_and_zoom(&mut app, font, zoom);
+            let size = SETTINGS_SIZE * (100.0 / f32::from(zoom));
+            let mut sim = Simulator::with_size(Default::default(), size, app.view(id));
+            let label = sim.find("Badge count").expect("the label").bounds();
+            let select = sim.find(iced::widget::Id::new("select-badgeCount")).expect("the select").bounds();
+            let at = format!("at font {font} and {zoom}%: {label:?} {select:?}");
+            assert!(label.x + label.width <= select.x, "the label ends before the select {at}");
+            assert!((select.center_y() - label.center_y()).abs() < 1.0, "the select centers on the label {at}");
+            let line = crate::style::rem(16.0);
+            let whole = crate::style::text_width("Badge count", 13.0, Weight::Normal);
+            let room = select.x - 6.0 - label.x;
+            // The Font size alone leaves the row its width, so the label keeps its line, as in Desktop.
+            assert!(zoom > 100 || room >= whole, "the label has its room {at}");
+            if room >= whole {
+                assert!(label.width >= whole - 0.5 && label.height == line, "the label on one line {at}");
+            } else if room >= crate::style::text_width("Badge", 13.0, Weight::Normal) {
+                assert!(label.height == 2.0 * line, "the label wraps between its words {at}");
+            }
+        }
+    }
+}
+
+/// Desktop's `.message .timestamp` is 11 px, so the time of a message keeps its size while the text follows the Font
+/// size.
+#[test]
+fn message_times_keep_their_px_size_like_desktop() {
+    let mut app = demo_app("font-size-times");
+    let main = app.main_window.expect("the main window");
+    let (chat, time) = {
+        let st = app.store.read();
+        let chat = st.chats.iter().find(|c| c.title == "Note to self").expect("the demo note").id.clone();
+        let last = st.chat_timeline(&chat).into_iter().last().expect("a message").timestamp.clone();
+        (chat, crate::time::format_short_ts(&last, false))
+    };
+    let _ = app.update(UiMessage::SelectChat(chat));
+    for font in [9, 13, 24] {
+        font_and_zoom(&mut app, font, 100);
+        let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+        let at = sim.find(time.as_str()).expect("the time of the last message").bounds();
+        let px = crate::style::fixed_width(&time, 11.0, Weight::Normal);
+        assert_eq!(at.width, px, "11 px text at font {font}: {time} {at:?}");
+        // The read receipt is `--semantic-typo-size-label-sm` text, in rem.
+        let sent = sim.find("Sent").expect("the receipt").bounds();
+        assert_eq!(sent.height, crate::style::rem(15.0), "rem text at font {font}");
+    }
+}
+
+/// Text that Desktop sets in px keeps its size at any Font size: the filter count (`.FilterButton-module__count`,
+/// 11 px), the empty command bar (`.command-bar .empty`, 14 px), the title and the empty list of the Keyboard
+/// Shortcuts (`.modal h3`, 24 px, and `.hotkey-search-empty`, 16 px) and the tiles of the chat theme
+/// (`.ChatAppearancePicker-module__tileNone`, 11 px).
+#[test]
+fn px_text_keeps_its_size_like_desktop() {
+    use crate::style::fixed_width;
+    let mut app = demo_app("font-size-px");
+    let main = app.main_window.expect("the main window");
+    let note = app.store.read().chats.iter().find(|c| c.title == "Note to self").expect("the demo note").id.clone();
+    let width =
+        |sim: &mut Simulator<'_, UiMessage>, s: &str| sim.find(s).unwrap_or_else(|_| panic!("{s}")).bounds().width;
+    // The widths of each text at each font size.
+    let mut widths: Vec<[f32; 5]> = Vec::new();
+    for font in [9, 13, 24] {
+        font_and_zoom(&mut app, font, 100);
+        app.set_filters(0b11);
+        let count = width(&mut Simulator::with_size(Default::default(), app.pane.size, app.view(main)), "2");
+        app.set_filters(0);
+        let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+        let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("zzqqxx".into())));
+        let empty = width(&mut Simulator::with_size(Default::default(), app.pane.size, app.view(main)), "No results");
+        let _ = app.update(UiMessage::CloseModals);
+        let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Modal(Some("zzqqxx".into()))));
+        let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+        let (title, none) = (width(&mut sim, "Keyboard Shortcuts"), width(&mut sim, "No results"));
+        drop(sim);
+        let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Modal(None)));
+        let mut sim = Simulator::with_size(Default::default(), Size::new(400.0, 800.0), app.view_chat_theme(&note));
+        widths.push([count, empty, title, none, width(&mut sim, "None")]);
+    }
+    assert!(widths.iter().all(|w| *w == widths[0]), "the same widths at fonts 9, 13 and 24: {widths:?}");
+    let px = [
+        fixed_width("2", 11.0, Weight::Normal),
+        fixed_width("No results", 14.0, Weight::Normal),
+        fixed_width("Keyboard Shortcuts", 24.0, Weight::Bold),
+        fixed_width("No results", 16.0, Weight::Normal),
+        fixed_width("None", 11.0, Weight::Normal),
+    ];
+    for (w, px) in widths[0].iter().zip(px) {
+        assert!((w - px).abs() < 2.0, "{w} is the width at its px size {px}");
+    }
+}
+
 #[test]
 fn search_finds_custom_items_like_desktop() {
     let mut app = demo_app("search-custom");
@@ -4423,6 +4746,22 @@ fn search_finds_custom_items_like_desktop() {
     assert_eq!(app.active_settings_tab, SettingsTab::Appearance);
     assert_eq!(app.pref_flash.map(|f| f.0), Some("Default chat theme"));
     let _ = simulator(app.view_settings());
+}
+
+/// Desktop's Settings is a new window each time it opens, so a search typed before it closed does not hide the
+/// sections of the next one.
+#[test]
+fn settings_search_starts_empty_like_desktop() {
+    let mut app = demo_app("search-reopen");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Query("time formatminimized".into())));
+    assert!(simulator(app.view_settings()).find("Notifications").is_err(), "a search without hits hides the sections");
+    let id = app.settings_window.expect("the Settings window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
+    assert_eq!(app.settings_query, "");
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("time formatminimized").is_err() && sim.find("Notifications").is_ok(), "the sections show again");
 }
 
 #[test]

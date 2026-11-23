@@ -104,14 +104,14 @@ impl BeeperGuiApp {
         let head = strip(head.spacing(12).align_y(Center).into(), border::Radius::default().top(18)).center_y(44);
         let pills = f.picked.iter().map(|cid| -> El<'a> {
             let c = st.chat(cid);
-            let label = semi(c.title.clone(), 14.0).line_height(Pixels(16.0)).color(p.strong);
+            let label = semi(c.title.clone(), 14.0).line_height(Pixels(rem(16.0))).color(p.strong);
             let pill = row![self.chat_avatar(c, 16.0, 0.0), label].spacing(4).align_y(Center);
             container(pill).padding(Padding::new(2.0).right(8.0)).style(fill_box(shade, 20.0)).into()
         });
         let input = text_input(tr("Search name, @, or number"), &f.query)
             .id("forward-input")
             .on_input(|a0| UiMessage::Forward(forward::Msg::Query(a0)))
-            .size(14)
+            .size(rem(14.0))
             .padding(0)
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let inputs = Row::with_children(pills).push(input).spacing(4).align_y(Center).height(24);
@@ -122,13 +122,7 @@ impl BeeperGuiApp {
                 .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
         });
         let rows = chats.iter().enumerate().fold(Column::new().push(cat), |col, (i, c)| {
-            let sub = chat_search_subtitle(c);
-            let title = row![
-                ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
-                ell(&sub, 220.0, 13.0, Weight::Normal).color(p.sub),
-            ]
-            .spacing(4)
-            .align_y(Center);
+            let title = crate::chat_search_title(p, c);
             let line = row![self.chat_avatar(c, 32.0, 0.0), title, Space::new().width(Fill)]
                 .push(svg(brand_svg(brand_key(&c.account_id))).width(16).height(16))
                 .spacing(8)

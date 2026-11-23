@@ -4,7 +4,7 @@ use crate::i18n::{tr, trx};
 use crate::media_view;
 use crate::message;
 use crate::style::{btn_style, fill_box, shadow_box, Bare, CLEAR};
-use crate::{ic, icon, menu_item, sound, tinted, view_once, BeeperGuiApp, El, UiMessage, MENU_ITEM};
+use crate::{ic, icon, menu_item, menu_pitch, sound, tinted, view_once, BeeperGuiApp, El, UiMessage};
 use iced::gradient::Linear;
 use iced::widget::{button, column, container, hover, image, mouse_area, row, slider, stack, svg, Column, Space};
 use iced::{window, Background, Center, Color, Fill, Padding, Subscription, Task};
@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 
 const FPS: f32 = 30.0;
 pub(crate) const SPEED_MENU_W: f32 = 110.0;
-const SPEED_MENU_H: f32 = 8.0 + crate::voice::RATES.len() as f32 * MENU_ITEM;
+fn speed_menu_h() -> f32 {
+    8.0 + crate::voice::RATES.len() as f32 * menu_pitch()
+}
 /// The width of the menu of the Picture in Picture window, which leaves room for the speed submenu beside it in a
 /// window 400 px wide.
 const PIP_MENU_W: f32 = 200.0;
@@ -693,7 +695,7 @@ impl BeeperGuiApp {
         let sub = self.view_speed_menu(&v.mid).map(|sub| {
             let right = x + PIP_MENU_W + SPEED_MENU_W <= w;
             let sub_x = if right { x + PIP_MENU_W } else { x - SPEED_MENU_W };
-            placed(sub_x, (y + 3.0 * MENU_ITEM).min(h - SPEED_MENU_H), sub)
+            placed(sub_x, (y + 3.0 * menu_pitch()).min(h - speed_menu_h()), sub)
         });
         let close = mouse_area(Space::new().width(Fill).height(Fill))
             .on_press(UiMessage::Video(Msg::PipMenu(false)))
@@ -743,7 +745,13 @@ impl BeeperGuiApp {
         let k = crate::voice::RATES.iter().position(|&r| r == v.rate).expect("a rate of the list");
         let next = crate::voice::RATES[(k + 1) % crate::voice::RATES.len()];
         let speed = self.video_button(v, &SPEEDS[k], UiMessage::Video(Msg::Rate(next)));
-        let time = crate::semi(format!("{}/{}", mmss(v.pos().min(secs)), mmss(secs)), 11.0).color(Color::WHITE);
+        // `.video-time-display` is 11 px.
+        let time = crate::style::fixed(
+            format!("{}/{}", mmss(v.pos().min(secs)), mmss(secs)),
+            11.0,
+            iced::font::Weight::Semibold,
+        );
+        let time = time.color(Color::WHITE);
         let bar = row![self.video_skips(v).spacing(12), video_progress(v), speed, time].spacing(12).align_y(Center);
         let bar = mouse_area(container(bar).padding([8, 12])).on_press(UiMessage::Noop);
         Some(container(bar).align_bottom(Fill).padding(Padding::new(8.0).top(0.0).bottom(28.0)).into())
@@ -761,7 +769,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let item = |label: &str, msg| {
             let msg = if pip { UiMessage::Video(Msg::PipItem(Box::new(msg))) } else { msg };
-            (menu_item(p, None, label.into(), "", Some(msg)), MENU_ITEM)
+            (menu_item(p, None, label.into(), "", Some(msg)), menu_pitch())
         };
         let action = |label| trx(label, "video context menu action");
         let speed = mouse_area(menu_item(p, None, tr("Playback Speed").into(), "›", Some(UiMessage::Video(Msg::Sub))))
@@ -776,7 +784,7 @@ impl BeeperGuiApp {
         let tail = [
             item(action("Download"), UiMessage::Message(message::Msg::Download(mid.into(), None))),
             item(action(if v.muted { "Unmute" } else { "Mute" }), UiMessage::Video(Msg::Mute)),
-            (speed.into(), MENU_ITEM),
+            (speed.into(), menu_pitch()),
         ];
         Some(head.into_iter().chain(tail).collect())
     }
@@ -790,8 +798,8 @@ impl BeeperGuiApp {
             let label = if r == 1.0 { tr("Normal").into() } else { format!("{r}x") };
             menu_item(p, lead(v.rate == r), label, "", Some(UiMessage::Video(Msg::Rate(r))))
         });
-        let list = container(Column::with_children(rates).padding([4, 0])).width(SPEED_MENU_W);
-        Some(list.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into())
+        let list = crate::menu_card(p, Column::with_children(rates), SPEED_MENU_W);
+        Some(list.into())
     }
 }
 

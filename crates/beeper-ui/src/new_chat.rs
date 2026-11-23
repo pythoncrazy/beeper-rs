@@ -234,10 +234,9 @@ impl BeeperGuiApp {
             }
             Msg::AvatarPicked(n, Ok(paths)) => {
                 let Some(path) = paths.into_iter().next() else { return Task::none() };
-                let load = async move {
-                    tokio::task::spawn_blocking(move || portal::load_file(&path)).await.expect("file load thread")
-                };
-                return Task::perform(load, move |r| UiMessage::NewChat(Msg::AvatarLoaded(n, r)));
+                return Task::perform(portal::load_off_thread(path), move |r| {
+                    UiMessage::NewChat(Msg::AvatarLoaded(n, r))
+                });
             }
             Msg::AvatarPicked(_, Err(e)) | Msg::AvatarLoaded(_, Err(e)) => self.fail(Toast::new(e)),
             Msg::AvatarLoaded(n, Ok(m)) => match round_avatar(&m.bytes) {
@@ -413,7 +412,7 @@ impl BeeperGuiApp {
             text_input(placeholder, &self.new_chat_query)
                 .id("new-chat-input")
                 .on_input(|a0| UiMessage::NewChat(new_chat::Msg::Query(a0)))
-                .size(13)
+                .size(rem(13.0))
                 .padding([8, 0])
                 .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0))
         };
@@ -436,8 +435,8 @@ impl BeeperGuiApp {
             let input = text_input(tr("Room address or Matrix link"), &self.new_chat_query)
                 .id("new-chat-input")
                 .on_input(|q| UiMessage::NewChat(new_chat::Msg::Query(q)))
-                .size(14)
-                .line_height(Pixels(18.0))
+                .size(rem(14.0))
+                .line_height(Pixels(rem(18.0)))
                 .padding([7, 10])
                 .style(input_style(p.chip, p.strong, p.sub, p.accent, 8.0));
             let input =
@@ -560,7 +559,8 @@ impl BeeperGuiApp {
         };
         // Desktop's `CommandBarUser`.
         let person = |a: &String, u: &User| -> El<'a> {
-            let small = |s: String| txt(s, 12.0).color(Color { a: 0.7, ..p.strong });
+            // `.search-participant .small` is 12 px.
+            let small = |s: String| crate::style::fixed(s, 12.0, Weight::Normal).color(Color { a: 0.7, ..p.strong });
             let bare = [&u.full_name, &u.username, &u.phone_number, &u.email].iter().all(|f| f.is_none());
             let line = row![self.face(u.img_url.as_deref(), person_name(u), 28.0, 0.0)]
                 .push(u.full_name.clone().or_else(|| bare.then(|| u.id.clone())).map(|n| med(n, 13.0).color(p.strong)))
@@ -755,7 +755,7 @@ impl BeeperGuiApp {
             let name = text_input(tr("New Group Chat"), &d.title)
                 .on_input(|a0| UiMessage::NewChat(new_chat::Msg::GroupTitle(a0)))
                 .width(200)
-                .size(13)
+                .size(rem(13.0))
                 .padding(0)
                 .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
             let bg = if self.dark { Color::BLACK } else { Color::WHITE };

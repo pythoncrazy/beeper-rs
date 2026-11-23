@@ -59,6 +59,7 @@ struct Queue {
 }
 
 /// Desktop's `viewLimitedMediaViewer` and the state of its `ViewLimitedMediaViewer`.
+#[derive(Default)]
 struct Viewer {
     mid: String,
     kind: String,
@@ -331,10 +332,7 @@ impl BeeperGuiApp {
             sender,
             timestamp: m.timestamp.clone(),
             account_id: m.account_id.clone(),
-            shown: None,
-            viewed: false,
-            deadline: None,
-            audio: (0.0, None),
+            ..Default::default()
         };
         self.view_once.pending.insert(mid.into(), (m.account_id.clone(), limit, after));
         self.audio.pause();

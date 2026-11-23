@@ -12,6 +12,7 @@ use crate::rail;
 use crate::reminders;
 use crate::scheduled;
 use crate::settings;
+use crate::style::rem;
 use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
 use crate::threads;
 use crate::windows;
@@ -30,6 +31,7 @@ use iced::widget::{column, container, mouse_area, row, scrollable, svg, Row, Spa
 use iced::{Center, Fill, Padding, Pixels, Task};
 
 /// A command: Desktop shows a disabled command, which has no message, at 70% opacity.
+#[derive(Default)]
 pub(crate) struct Command {
     pub category: &'static str,
     pub title: String,
@@ -64,19 +66,7 @@ fn interned(s: String) -> &'static str {
 }
 
 fn cmd(category: &'static str, title: impl Into<String>, msg: Option<UiMessage>) -> Command {
-    Command {
-        category,
-        title: title.into(),
-        subtitle: None,
-        keywords: Vec::new(),
-        hotkey: None,
-        digit: None,
-        account: None,
-        render: None,
-        chat: None,
-        user: None,
-        msg,
-    }
+    Command { category, title: title.into(), msg, ..Default::default() }
 }
 
 impl Command {
@@ -877,7 +867,8 @@ impl BeeperGuiApp {
                     .padding([8, 24])
             });
             let empty =
-                column![crate::ic(crate::icon::SEARCH, 24.0).color(p.sub), txt(tr("No results"), 14.0).color(p.sub)]
+                // `.command-bar .empty` is 14 px.
+                column![crate::ic(crate::icon::SEARCH, 24.0).color(p.sub), crate::style::fixed(tr("No results"), 14.0, iced::font::Weight::Normal).color(p.sub)]
                     .spacing(8)
                     .align_x(Center);
             return column![].push(hint).push(container(empty).center(Fill)).height(Fill).into();
@@ -888,7 +879,7 @@ impl BeeperGuiApp {
                 && (i == 0 || cmds[i - 1].category != c.category))
                 .then(|| {
                     let head = semi(if c.category.is_empty() { "Commands" } else { c.category }, 12.0);
-                    container(head.line_height(Pixels(15.0)).color(p.sub))
+                    container(head.line_height(Pixels(rem(15.0))).color(p.sub))
                         .center_y(32)
                         .padding(Padding::ZERO.left(12.0).right(4.0))
                 });
@@ -960,7 +951,11 @@ impl BeeperGuiApp {
         let u = c.user.as_ref().expect("a user");
         let name = u.full_name.clone().unwrap_or_else(|| u.id.clone());
         let small = [crate::handle(u), u.phone_number.as_deref().map(crate::fmt_phone), u.email.clone()];
-        let small = small.into_iter().flatten().map(|s| txt(s, 12.0).color(p.strong.scale_alpha(0.7)).into());
+        // `.search-participant .small` is 12 px.
+        let small = small
+            .into_iter()
+            .flatten()
+            .map(|s| crate::style::fixed(s, 12.0, iced::font::Weight::Normal).color(p.strong.scale_alpha(0.7)).into());
         let title = row![semi(name.clone(), 13.0).color(p.strong)].extend(small);
         let face = self.face(u.img_url.as_deref(), &name, 28.0, 0.0);
         let right = c.account.as_deref().map(|a| {

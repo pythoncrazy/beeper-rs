@@ -3,7 +3,8 @@
 use crate::bridge_texts::{bridge_error, bridge_text};
 use crate::i18n::{tr, trf, trx};
 use crate::phone::{self, KeyOutcome, Phone, PhoneMsg};
-use crate::style::{brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, Palette, CLEAR};
+use crate::style::rem;
+use crate::style::{brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, txt, Palette, CLEAR};
 use crate::{menu_item, BeeperGuiApp, El, Toast, UiMessage, ERROR_CIRCLE};
 use beeper_core::bridge_login::{self, Field, Flow, Step};
 use beeper_core::browser_login::{self, BrowserLogin, Outcome};
@@ -254,7 +255,7 @@ static STEP_ICONS: LazyLock<[svg::Handle; 4]> = LazyLock::new(|| {
 
 /// A line of Desktop's `.login-steps`: 13 px text on an 18 px line.
 fn step_line<'a>(p: &Palette, t: String) -> iced::widget::Text<'a> {
-    txt(t, 13.0).line_height(iced::Pixels(18.0)).color(p.strong)
+    txt(t, 13.0).line_height(iced::Pixels(rem(18.0))).color(p.strong)
 }
 
 /// A step whose text has Desktop's `zs` tags, each in place of its icon.
@@ -662,7 +663,7 @@ impl BeeperGuiApp {
                         [span::<UiMessage, _>(strong).font(bold), span(rest)]
                     })
                     .collect();
-                let sync = rich_text(spans).size(13).line_height(iced::Pixels(18.0)).color(p.strong);
+                let sync = rich_text(spans).size(rem(13.0)).line_height(iced::Pixels(rem(18.0))).color(p.strong);
                 let note = "You can send and receive new messages without syncing your history.";
                 (vec![line(tr("Open Viber on your phone")), sync.into()], Some(note))
             }
@@ -695,12 +696,12 @@ impl BeeperGuiApp {
         ];
         let rows = steps.iter().enumerate().map(|(i, t)| -> El<'a> {
             let n = container(med((i + 1).to_string(), 14.0).color(fg)).center(24).style(fill_box(circle, 12.0));
-            let text = txt(tr(t), 13.0).line_height(iced::Pixels(18.2)).color(fg);
+            let text = txt(tr(t), 13.0).line_height(iced::Pixels(rem(18.2))).color(fg);
             row![n, container(text).width(Fill)].spacing(12).align_y(Center).into()
         });
         let list = container(Column::with_children(rows).spacing(16).width(320).padding([8, 0])).center_x(Fill);
         let lead = txt(tr("If you've forgotten your password, reset it in Telegram:"), 12.0)
-            .line_height(iced::Pixels(16.8))
+            .line_height(iced::Pixels(rem(16.8)))
             .color(fg);
         Some(column![lead, list].spacing(4).padding([0, 16]).into())
     }
@@ -710,7 +711,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let line = |t: String| step_line(p, t);
         let go = move |m: AddMsg| UiMessage::AddAccount(a.id, m);
-        let hint = |t: &'static str| txt(tr(t), 12.0).line_height(iced::Pixels(16.0)).color(p.sub);
+        let hint = |t: &'static str| txt(tr(t), 12.0).line_height(iced::Pixels(rem(16.0))).color(p.sub);
         // `.TabList-module__segmented`: 10 px semibold tabs in a 2 px tinted pill, the active one on the card color.
         let tab = |label: &'static str, android: bool| -> El<'a> {
             let on = a.android == android;
@@ -930,7 +931,7 @@ impl BeeperGuiApp {
             span(tr("Learn more")).color(p.accent).link(UiMessage::OpenUrl(LEARN_MORE.into())),
         ]
         .on_link_click(|m: UiMessage| m)
-        .size(12)
+        .size(rem(12.0))
         .width(Fill);
         let fine = (a.login.is_empty() && !complete).then(|| column![about].push(limits).spacing(6).padding([16, 24]));
         let card = column![container(main).center_x(Fill).height(Fill)].push(fine);
@@ -956,8 +957,7 @@ impl BeeperGuiApp {
                 });
                 menu_item(p, None, label, "", (!a.busy).then(|| go(AddMsg::Flow(f.id.clone()))))
             });
-            let list = container(Column::with_children(items).padding([4, 0])).width(200);
-            let list = list.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let list = crate::menu_card(p, Column::with_children(items), 200);
             mouse_area(container(list).align_right(Fill).height(Fill).padding(Padding::ZERO.top(30).right(8)))
                 .on_press(go(AddMsg::Menu))
         });
@@ -999,7 +999,7 @@ impl BeeperGuiApp {
                         .on_input(move |v| go(AddMsg::Field(id.clone(), v)))
                         .on_submit(go(AddMsg::Submit))
                         .secure(secret && !shown)
-                        .size(14)
+                        .size(rem(14.0))
                         .padding([8, 10])
                         .style(input_style(p.input, p.strong, p.tertiary, p.accent, 8.0));
                     let accessory = |handle: svg::Handle, msg: AddMsg| {

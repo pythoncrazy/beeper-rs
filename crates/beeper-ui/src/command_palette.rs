@@ -13,12 +13,8 @@ impl BeeperGuiApp {
             let lead = container(on.then(|| ic(icon::CHECK, 14.0))).center_x(14).padding(Padding::ZERO.right(6.0));
             menu_item(p, Some(lead.into()), label.into(), "", pick(m))
         };
-        let menu = |items: Vec<El<'static>>| -> El<'static> {
-            container(Column::with_children(items).padding([4, 0]))
-                .width(233)
-                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-                .into()
-        };
+        let menu =
+            |items: Vec<El<'static>>| -> El<'static> { crate::menu_card(p, Column::with_children(items), 233).into() };
         let brand = |options: Vec<(String, bool, SearchPick)>| -> El<'static> {
             let any = options.iter().any(|o| o.1);
             let widest = options.iter().map(|o| crate::style::text_width(&o.0, 11.0, Weight::Semibold));
@@ -104,7 +100,7 @@ impl BeeperGuiApp {
         let input = text_input(&placeholder, &self.command_palette_query)
             .id("cmd-palette-input")
             .on_input(|a0| UiMessage::CommandBar(commands::Msg::Query(a0)))
-            .size(13)
+            .size(rem(13.0))
             .padding([6, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let kbd = |label: &'static str| {
@@ -298,23 +294,23 @@ impl BeeperGuiApp {
                 }
             };
             let head = row![
-                txt(label, 11.0).line_height(Pixels(7.0)).color(p.text),
+                txt(label, 11.0).line_height(Pixels(rem(7.0))).color(p.text),
                 Space::new().width(Fill),
-                txt(list_ts(&m.timestamp, h24), 11.0).line_height(Pixels(7.0)).color(p.text)
+                txt(list_ts(&m.timestamp, h24), 11.0).line_height(Pixels(rem(7.0))).color(p.text)
             ];
             let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.received, p.strong) };
             let body = clamped(m.text.as_deref().expect("text message"), 554.0, 3, 13.0, Weight::Normal);
             let lower = body.to_ascii_lowercase();
             let (mut spans, mut at): (Vec<iced::widget::text::Span<()>>, _) = (Vec::new(), 0);
             for (k, hit) in lower.match_indices(&needle) {
-                spans.push(span(body[at..k].to_string()).size(13.0).color(fg));
-                let mark = span(body[k..k + hit.len()].to_string()).size(13.0);
+                spans.push(span(body[at..k].to_string()).size(rem(13.0)).color(fg));
+                let mark = span(body[k..k + hit.len()].to_string()).size(rem(13.0));
                 spans.push(mark.color(hex(0x202124)).background(hex(0xf6ce46)));
                 at = k + hit.len();
             }
-            spans.push(span(body[at..].to_string()).size(13.0).color(fg));
+            spans.push(span(body[at..].to_string()).size(rem(13.0)).color(fg));
             let bubble = rich_text(spans)
-                .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
+                .line_height(iced::widget::text::LineHeight::Absolute(rem(16.0).into()))
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
             let bubble = container(container(bubble).padding([8, 11]).style(fill_box(bg, 17.0)))
                 .width(Fill)
@@ -329,8 +325,10 @@ impl BeeperGuiApp {
         let tiles = media.iter().map(|m| -> El<'_> {
             let c = st.chat(&m.chat_id);
             let card = |title: String, sub: El<'static>| -> El<'static> {
-                let body =
-                    column![clamp(&title, 94.0, 3, 10.0, Weight::Normal).line_height(Pixels(12.0)).color(p.text), sub];
+                let body = column![
+                    clamp(&title, 94.0, 3, 10.0, Weight::Normal).line_height(Pixels(rem(12.0))).color(p.text),
+                    sub
+                ];
                 container(body).align_bottom(Fill).width(Fill).padding(8).style(fill_box(p.window, 8.0)).into()
             };
             let thumb = m.attachments.iter().find(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
@@ -345,8 +343,7 @@ impl BeeperGuiApp {
                     _ => Space::new().into(),
                 },
                 (None, Some(l), _) => {
-                    let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
-                    let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
+                    let title = crate::links::shown_title(l);
                     let sub = row![
                         ic(icon::LINK, 12.0).color(p.text),
                         ell(&l.url, 77.0, 10.0, Weight::Semibold).color(p.text)
@@ -420,13 +417,7 @@ impl BeeperGuiApp {
             [("Recent chats", &recent), ("Last archived", &archived), ("Chats", &chats), ("In Groups", &in_groups)];
         let lead = sections.iter().find(|s| !s.1.is_empty()).map(|s| s.0);
         let chat = |label: &'static str, i: usize, c: &Chat| -> El<'_> {
-            let sub = chat_search_subtitle(c);
-            let title = row![
-                ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
-                ell(&sub, 220.0, 13.0, Weight::Normal).color(p.sub),
-            ]
-            .spacing(4)
-            .align_y(Center);
+            let title = crate::chat_search_title(p, c);
             let line = row![
                 self.chat_avatar(c, 28.0, 0.0),
                 title,

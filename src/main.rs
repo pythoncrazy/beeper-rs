@@ -283,10 +283,13 @@ fn main() {
     let command = if command == Command::Gui && server_dir.is_some() { Command::Serve } else { command };
     let profile = profile.or_else(|| var("BEEPER_PROFILE"));
     let data_dir = data_dir.or_else(|| server_dir.or_else(|| var("BEEPER_USER_DATA_DIR")).map(PathBuf::from));
+    // Only Linux has a choice of display server.
     #[cfg(target_os = "linux")]
     if let Command::Gui = command {
         display::setup(ozone.as_deref());
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = ozone;
     let host = launch_host.clone().unwrap_or_else(|| DEFAULT_PAS_HOST.to_string());
     let ports = port.map_or(DEFAULT_PAS_PORT..=DEFAULT_PAS_PORT + 50, |p| p..=p);
     let data_dir = data_dir.unwrap_or_else(|| {

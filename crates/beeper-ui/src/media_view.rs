@@ -5,6 +5,7 @@ use crate::forward;
 use crate::i18n::{tr, trn, trx};
 use crate::loads;
 use crate::message;
+use crate::style::rem;
 use crate::style::{
     bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, med, scroll_style, semi, shadow_box,
     text_width, txt, Bare, CLEAR,
@@ -13,9 +14,9 @@ use crate::time::{day_num, format_short_ts, iso_millis, today};
 use crate::units::human_size;
 use crate::windows;
 use crate::{
-    anim, closable_head, cubic_bezier, deletable, file_kind, i18n, menu_item, menu_rule, pdf, relative_date, stored,
-    tinted, video, vlist, voice, zoom, BeeperGuiApp, El, Frames, PillLook, UiMessage, AVATAR_SLOTS, MEDIA_ICONS,
-    MENU_ITEM, ROW_ACTIONS, SYS_ARROW_BACK, SYS_DELETE, SYS_DOWNLOAD, SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
+    anim, closable_head, cubic_bezier, deletable, file_kind, i18n, menu_item, menu_pitch, menu_rule, pdf,
+    relative_date, stored, tinted, video, vlist, voice, zoom, BeeperGuiApp, El, Frames, PillLook, UiMessage,
+    AVATAR_SLOTS, MEDIA_ICONS, ROW_ACTIONS, SYS_ARROW_BACK, SYS_DELETE, SYS_DOWNLOAD, SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
 };
 use beeper_core::config::civil_from_days;
 use beeper_core::models::*;
@@ -724,8 +725,12 @@ impl BeeperGuiApp {
         };
         let title = row![]
             .push(face)
-            .push(ell(name, 600.0, 14.0, Weight::Medium).color(white))
-            .push(txt(format_short_ts(&m.timestamp, h24), 12.0).color(white.scale_alpha(0.7)))
+            // `.carousel-thread-title` and `.carousel-timestamp` are 14 px and 12 px.
+            .push(crate::style::fixed_ell(name, 600.0, 14.0, Weight::Medium).color(white))
+            .push(
+                crate::style::fixed(format_short_ts(&m.timestamp, h24), 12.0, Weight::Normal)
+                    .color(white.scale_alpha(0.7)),
+            )
             .spacing(8)
             .align_y(Center);
         let go = car.in_media.then(|| {
@@ -938,7 +943,7 @@ impl BeeperGuiApp {
         rows.push(None);
         rows.extend(first.into_iter().map(Some));
         rows.extend(delete.map(|d| [None, Some(d)]).into_iter().flatten());
-        let h = 8.0 + rows.iter().map(|r| if r.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>();
+        let h = 8.0 + rows.iter().map(|r| if r.is_some() { menu_pitch() } else { 11.0 }).sum::<f32>();
         let rows = rows.into_iter().map(|r| match r {
             Some((label, msg)) => {
                 let msg = UiMessage::Commands(vec![UiMessage::Media(Msg::CarouselMenu(false)), msg]);
@@ -946,8 +951,7 @@ impl BeeperGuiApp {
             }
             None => menu_rule(p),
         });
-        let menu = container(Column::with_children(rows).padding([4, 0])).width(180);
-        let menu = menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_card(p, Column::with_children(rows), 180);
         let area = self.carousel_area();
         let at = Padding::ZERO.left(at.x.min(area.width - 188.0)).top(at.y.min(area.height - h - 8.0));
         mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
@@ -1052,7 +1056,7 @@ impl BeeperGuiApp {
             let (lo, hi) = (days.clone().min().expect("a group has items"), days.max().expect("a group has items"));
             let full = |d| i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0));
             let range = if lo == hi { full(lo) } else { format!("{} - {}", full(lo), full(hi)) };
-            let head = column![semi(label.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong), sub(range)];
+            let head = column![semi(label.clone(), 15.0).line_height(Pixels(rem(20.0))).color(p.strong), sub(range)];
             let col = col.push(container(head).padding(Padding::new(6.0).top(12.0).left(10.0).right(10.0)));
             match w.tab {
                 0 => group.chunks(cols).fold(col, |col, chunk| {
@@ -1118,8 +1122,7 @@ impl BeeperGuiApp {
                         // Desktop's link thumb: the preview image of the link, or the link icon.
                         1 => {
                             let l = &m.links[k];
-                            let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
-                            let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
+                            let title = crate::links::shown_title(l);
                             let thumb = match l.img.as_deref().map(|u| self.media_at(u)) {
                                 Some(Some(Ok(frames))) => image(frames[0].0.clone())
                                     .width(40)
@@ -1148,8 +1151,8 @@ impl BeeperGuiApp {
                         }
                     };
                     let text = column![
-                        ell(&title, text_w, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong),
-                        ell(&line, text_w, 11.0, Weight::Normal).line_height(Pixels(14.0)).color(p.on_secondary),
+                        ell(&title, text_w, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(p.strong),
+                        ell(&line, text_w, 11.0, Weight::Normal).line_height(Pixels(rem(14.0))).color(p.on_secondary),
                     ]
                     .width(Fill);
                     let meta = column![sub(Self::sender_name(&st, m).to_string()), sub(relative_date(&m.timestamp))]
@@ -1250,9 +1253,9 @@ impl BeeperGuiApp {
                 deletable(&st, m)
                     .then(|| act(tr("Delete…"), UiMessage::Media(Msg::AskDelete(vec![(mid.clone(), *k)])))),
             );
-            let h = 8.0 + MENU_ITEM * (1 + actions.len()) as f32 + 11.0;
+            let h = 8.0 + menu_pitch() * (1 + actions.len()) as f32 + 11.0;
             let col = Column::with_children([go, menu_rule(p)].into_iter().chain(actions));
-            let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let menu = crate::menu_card(p, col, 180);
             let at = Padding::ZERO.left(at.x.min(w.size.width - 180.0 - 8.0)).top(at.y.min(w.size.height - h - 8.0));
             let menu = container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill);
             Some(
@@ -1278,7 +1281,7 @@ impl BeeperGuiApp {
                 radio(tr("Newest"), !w.oldest, UiMessage::Media(Msg::Oldest(false))),
                 radio(tr("Oldest"), w.oldest, UiMessage::Media(Msg::Oldest(true))),
             ];
-            let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let menu = crate::menu_card(p, col, 180);
             let at = Padding::ZERO.top(at.y).left(at.x.min(w.size.width - 8.0 - 180.0));
             mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
                 .on_press(UiMessage::Media(Msg::Menu(false)))

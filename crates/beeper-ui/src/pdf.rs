@@ -3,6 +3,7 @@
 //! place of pdf.js: a worker reads the file once, and another draws only the page that the carousel shows, as media.
 
 use crate::i18n::tr;
+use crate::style::rem;
 use crate::style::{fill_box, text_width, txt, Bare};
 use crate::{anim, loads, media_view, BeeperGuiApp, El, Frames, UiMessage};
 use beeper_core::models::Attachment;
@@ -140,7 +141,7 @@ impl BeeperGuiApp {
         // react-pdf's messages, which Desktop does not translate, and the error in the 16 px type of the carousel.
         let note = |s: &'a str| -> (El<'a>, Size) {
             let size = Size::new(text_width(s, 16.0, Weight::Normal), 22.4);
-            (txt(s, 16.0).line_height(Pixels(22.4)).color(white).into(), size)
+            (txt(s, 16.0).line_height(Pixels(rem(22.4))).color(white).into(), size)
         };
         let (count, (shown, size)) = match self.pdf_at(url) {
             None => (None, note("Loading PDF…")),
@@ -180,7 +181,8 @@ impl BeeperGuiApp {
         let line = row![
             arrow(false, (n > 1).then(|| n - 1)),
             Space::new().width(Fill),
-            container(txt(counter, 14.0).line_height(Pixels(19.6)).color(white)).padding(Padding::ZERO.bottom(2.0)),
+            container(txt(counter, 14.0).line_height(Pixels(rem(19.6))).color(white))
+                .padding(Padding::ZERO.bottom(2.0)),
             Space::new().width(Fill),
             arrow(true, (Some(n) != count).then_some(n + 1)),
         ]

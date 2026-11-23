@@ -105,7 +105,7 @@ pub fn search_field<'a>(p: &Palette, query: &str, on: fn(String) -> UiMessage) -
         ic(icon::SEARCH, 16.0).color(p.tertiary),
         text_input(tr("Search..."), query)
             .on_input(on)
-            .size(14)
+            .size(rem(14.0))
             .padding([10, 0])
             .style(input_style(CLEAR, p.fg, p.tertiary, CLEAR, 0.0)),
     ]
@@ -282,8 +282,8 @@ impl BeeperGuiApp {
         });
         let add = row![accessory(ic(icon::PLUS, 10.0).into()), txt(tr("Add another account"), 13.0)].spacing(6);
         let add = menu_line(p, add, (!entry.blocked()).then_some(UiMessage::Networks(Msg::Connect(network))));
-        let items = Column::with_children(rows).push(menu_rule(p)).push(add).padding([4, 0]);
-        let menu = container(items).width(MENU_W).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let items = Column::with_children(rows).push(menu_rule(p)).push(add);
+        let menu = crate::menu_card(p, items, MENU_W);
         let close = UiMessage::Networks(Msg::Menu(None));
         let layer = container(mouse_area(menu).on_press(UiMessage::Noop))
             .padding(Padding::ZERO.left(at.x).top(at.y))
