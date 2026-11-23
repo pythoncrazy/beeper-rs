@@ -9,6 +9,16 @@ use iced::widget::{column, container, hover, image, mouse_area, row, stack, svg,
 use iced::{border, Center, Color, ContentFit, Fill, Length, Padding, Pixels};
 use std::sync::LazyLock;
 
+/// The title that a link shows: its own, or the host of its URL when it has none.
+pub(crate) fn shown_title(l: &MessageLink) -> String {
+    let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
+    if l.title.is_empty() {
+        host.to_string()
+    } else {
+        l.title.clone()
+    }
+}
+
 /// Desktop's `narrowThreshold`: an image narrower than this, or a square one, shows at the left of the text.
 const NARROW: u32 = 200;
 /// `--chat-view-bubble-radius`.

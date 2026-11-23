@@ -6,9 +6,7 @@ use crate::commands;
 use crate::i18n::{tr, trf, trn};
 use crate::message;
 use crate::style::rem;
-use crate::style::{
-    bordered_btn, brand_svg, btn_style, ell, fill_box, ic, icon, scroll_style, semi, shadow_box, txt, CLEAR,
-};
+use crate::style::{bordered_btn, brand_svg, btn_style, ell, fill_box, ic, icon, scroll_style, semi, txt, CLEAR};
 use crate::time::format_short_ts;
 use crate::{
     activates, brand_key, composer_with, membership, menu_item, menu_pitch, menu_rule, tinted, BeeperGuiApp, El, Pane,
@@ -285,9 +283,8 @@ impl BeeperGuiApp {
                 (menu_item(p, None, tr("View in Chat").into(), "", Some(view)), menu_pitch()),
             ])
             .collect();
-        let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
-        let col = Column::with_children(rows.into_iter().map(|r| r.0));
-        let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let (menu, h) = crate::menu_rows(p, rows, 233);
+        let menu = menu;
         let x = if at.x + 233.0 > self.pane().size.width { at.x - 233.0 } else { at.x };
         (menu.into(), x, at.y.min(self.pane().size.height - h - 8.0))
     }
@@ -329,7 +326,7 @@ impl BeeperGuiApp {
         let n = self.unread_threads(&st, true).len();
         let label = trn("Mark %d Thread as Read", "Mark %d Threads as Read", n, &[&n]);
         let col = column![menu_item(p, None, label, "", Some(UiMessage::Thread(Msg::MarkAllRead)))];
-        let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_card(p, col, 233);
         (menu.into(), at.x, at.y.min(self.pane().size.height - 8.0 - menu_pitch() - 8.0))
     }
 

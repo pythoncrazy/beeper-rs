@@ -902,8 +902,7 @@ impl BeeperGuiApp {
             }
             None => menu_rule(p),
         });
-        let menu = container(Column::with_children(rows).padding([4, 0])).width(180);
-        let menu = menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_card(p, Column::with_children(rows), 180);
         let area = self.carousel_area();
         let at = Padding::ZERO.left(at.x.min(area.width - 188.0)).top(at.y.min(area.height - h - 8.0));
         mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
@@ -1074,8 +1073,7 @@ impl BeeperGuiApp {
                         // Desktop's link thumb: the preview image of the link, or the link icon.
                         1 => {
                             let l = &m.links[k];
-                            let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
-                            let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
+                            let title = crate::links::shown_title(l);
                             let thumb = match l.img.as_deref().map(|u| self.media_at(u)) {
                                 Some(Some(Ok(frames))) => image(frames[0].0.clone())
                                     .width(40)
@@ -1208,7 +1206,7 @@ impl BeeperGuiApp {
             );
             let h = 8.0 + menu_pitch() * (1 + actions.len()) as f32 + 11.0;
             let col = Column::with_children([go, menu_rule(p)].into_iter().chain(actions));
-            let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let menu = crate::menu_card(p, col, 180);
             let at = Padding::ZERO.left(at.x.min(w.size.width - 180.0 - 8.0)).top(at.y.min(w.size.height - h - 8.0));
             let menu = container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill);
             Some(
@@ -1234,7 +1232,7 @@ impl BeeperGuiApp {
                 radio(tr("Newest"), !w.oldest, UiMessage::Media(Msg::Oldest(false))),
                 radio(tr("Oldest"), w.oldest, UiMessage::Media(Msg::Oldest(true))),
             ];
-            let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let menu = crate::menu_card(p, col, 180);
             let at = Padding::ZERO.top(at.y).left(at.x.min(w.size.width - 8.0 - 180.0));
             mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
                 .on_press(UiMessage::Media(Msg::Menu(false)))

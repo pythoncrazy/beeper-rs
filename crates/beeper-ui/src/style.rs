@@ -3,7 +3,7 @@ use iced::advanced::graphics::text::cosmic_text::{self, fontdb::Source, Fallback
 use iced::advanced::graphics::text::{font_system, to_attributes};
 use iced::font::{Family, Font, Weight};
 use iced::overlay::menu;
-use iced::widget::{button, container, pick_list, scrollable, slider, svg, text, text_input};
+use iced::widget::{button, container, pick_list, scrollable, slider, svg, text, text_editor, text_input};
 use iced::{border, Border, Color, Shadow, Theme, Vector};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -806,6 +806,21 @@ pub fn bordered_btn(
         border: Border { color: border_col, width, radius: r.into() },
         ..btn_style(bgs, fgs, r)(t, s)
     }
+}
+
+/// A text area on the chip color with corners of `r`, like Desktop's description and notes fields.
+pub fn editor_style(p: &Palette, r: f32) -> impl Fn(&Theme, text_editor::Status) -> text_editor::Style + Copy {
+    let (bg, placeholder, value, selection) = (p.chip, p.sub, p.strong, p.accent.scale_alpha(0.3));
+    move |_, _| text_editor::Style { background: bg.into(), border: border::rounded(r), placeholder, value, selection }
+}
+
+/// Desktop's Done button of a sheet: a white label in an accent pill.
+pub fn done_btn<'a, M: Clone + 'a>(p: &Palette) -> button::Button<'a, M> {
+    button(med(crate::i18n::tr("Done"), 13.0).color(Color::WHITE)).padding([6, 14]).style(btn_style(
+        [p.accent; 3],
+        [Color::WHITE; 3],
+        999.0,
+    ))
 }
 
 pub fn input_style(

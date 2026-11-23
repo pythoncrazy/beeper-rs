@@ -321,7 +321,7 @@ impl BeeperGuiApp {
         let col = Column::with_children(
             orders.chain([menu_rule(p), menu_item(p, lead(false), tr("Dismiss All Reminders").into(), "", ask)]),
         );
-        container(col.padding([4, 0])).width(291).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
+        crate::menu_card(p, col, 291).into()
     }
 
     pub(crate) fn set_reminder(&mut self, cid: &str, at: Option<i64>, no_reply: Option<bool>) {

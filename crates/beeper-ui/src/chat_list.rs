@@ -918,7 +918,7 @@ impl BeeperGuiApp {
             .chain(account_rule)
             .chain(accounts),
         );
-        container(col.padding([4, 0])).width(width).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
+        crate::menu_card(p, col, width).into()
     }
 
     /// The chat menu, with `room` pixels from its top to the bottom of the window.
@@ -958,26 +958,21 @@ impl BeeperGuiApp {
                     Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)))
                 ),
             ];
-            return container(col.padding([4, 0]))
-                .width(233)
-                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-                .into();
+            return crate::menu_card(p, col, 233).into();
         }
         if cid == RAIL_MORE {
             let items = more_menu(&self.store.read()).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", Some(msg)),
                 None => menu_rule(p),
             });
-            let col = Column::with_children(items).padding([4, 0]);
-            return container(col).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+            return crate::menu_card(p, Column::with_children(items), 233).into();
         }
         if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
             let items = info_menu(&self.store.read(), cid, |a| self.can(a, "create_dm")).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", msg),
                 None => menu_rule(p),
             });
-            let col = Column::with_children(items).padding([4, 0]);
-            return container(col).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+            return crate::menu_card(p, Column::with_children(items), 233).into();
         }
         if let Some(entry) = cid.strip_prefix("account:") {
             return self.view_account_menu(entry);
@@ -993,13 +988,11 @@ impl BeeperGuiApp {
         if let Some(id) = cid.strip_prefix(SNOOZE_MENU) {
             let st = self.store.read();
             let rows = self.snooze_items(&st, &[id.to_string()]);
-            let col = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
-            return container(col).width(SUB_MENU_W[3]).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+            return crate::menu_rows(p, rows, SUB_MENU_W[3]).0.into();
         }
         if let Some(id) = cid.strip_prefix(behavior::BEHAVIOR_MENU) {
             let (rows, w) = self.behavior_items(&self.store.read(), id);
-            let col = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
-            return container(col).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+            return crate::menu_rows(p, rows, w).0.into();
         }
         if let Some(n) = cid.strip_prefix("draft:") {
             let delete = menu_item(
@@ -1009,10 +1002,7 @@ impl BeeperGuiApp {
                 "",
                 Some(UiMessage::NewChat(new_chat::Msg::Delete(n.parse().unwrap()))),
             );
-            return container(column![delete].padding([4, 0]))
-                .width(124)
-                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-                .into();
+            return crate::menu_card(p, column![delete], 124).into();
         }
         let st = self.store.read();
         let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
@@ -1226,8 +1216,7 @@ impl BeeperGuiApp {
                     ))
             }),
         ];
-        let menu =
-            container(col.padding([4, 0])).width(chat_menu_w(&st)).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_card(p, col, chat_menu_w(&st));
         let sub = self.chat_sub.map(|i| {
             let item = |label: &str, at: String, msg| menu_item(p, None, label.into(), at, msg);
             let (items, rules): (Vec<El>, f32) = match i {
@@ -1301,8 +1290,8 @@ impl BeeperGuiApp {
                 + if can_edit_group(c) { menu_pitch() } else { 0.0 }
                 + self.selection_rows(&st);
             let top = top.min(room - h).max(0.0);
-            let body = container(Column::with_children(items).padding([4, 0])).width(SUB_MENU_W[usize::from(i)]);
-            column![Space::new().height(top), body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))]
+            let body = crate::menu_card(p, Column::with_children(items), SUB_MENU_W[usize::from(i)]);
+            column![Space::new().height(top), body]
         });
         let (l, r) = if sub_left { (sub, None) } else { (None, sub) };
         row![].push(l).push(menu).push(r).into()

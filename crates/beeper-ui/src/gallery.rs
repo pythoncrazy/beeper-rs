@@ -6,13 +6,13 @@ use crate::loads;
 use crate::media_view;
 use crate::message;
 use crate::style::rem;
-use crate::style::{bordered_box, btn_style, fill_box, semi, shadow_box, Palette};
+use crate::style::{bordered_box, btn_style, fill_box, semi, Palette};
 use crate::time::iso_millis;
 use crate::{deletable, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, UiMessage};
 use crate::{hotkey_text, menu_pitch, MESSAGE_MENU_W};
 use beeper_core::models::{AttachmentSize, Message};
 use beeper_core::store::BeeperStore;
-use iced::widget::{button, container, image, mouse_area, stack, Column, Space, Stack};
+use iced::widget::{button, container, image, mouse_area, stack, Space, Stack};
 use iced::{mouse, Color, Fill, Padding, Pixels, Point, Task};
 
 /// Desktop's `rbt`, `obt` and `ibt`: at most 20 messages, at most 2 minutes after the first, at most 60 seconds apart.
@@ -279,9 +279,8 @@ impl BeeperGuiApp {
         .flatten()
         .flatten()
         .collect();
-        let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
-        let col = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
-        Some((container(col).width(MESSAGE_MENU_W).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into(), h, 0.0))
+        let (menu, h) = crate::menu_rows(p, rows, MESSAGE_MENU_W);
+        Some((menu.into(), h, 0.0))
     }
 
     /// Desktop's reactions list of the messages of a gallery, at the point of its anchor.
