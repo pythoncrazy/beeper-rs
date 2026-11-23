@@ -76,7 +76,42 @@ const INTER: [&[u8]; 8] = [
     font!("Inter-Bold.woff"),
     font!("Inter-BoldItalic.woff"),
 ];
+/// Desktop's `redacted_regular` font of "Redact names and pictures", whose letters are bars.
+const REDACTED_WOFF: &[u8] = font!("Redacted-Regular.woff");
 pub const CLEAR: Color = Color::TRANSPARENT;
+
+thread_local! {
+    /// While a view draws: Desktop's `redactedMode`, and whether the widgets that it makes are in a
+    /// `.redacted-region`.
+    static REDACT: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
+}
+
+/// Starts the view of a window with Desktop's `redactedMode` on or off, outside any region.
+pub fn redacted_mode(on: bool) {
+    REDACT.set((on, false));
+}
+
+/// Makes `f`'s widgets in a `.redacted-region` (`on`) or in a `.negate-redacted-region`.
+pub fn region<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let (mode, was) = REDACT.get();
+    REDACT.set((mode, on));
+    let r = f();
+    REDACT.set((mode, was));
+    r
+}
+
+/// Whether the widgets made now are redacted: `.redacted .redacted-region`.
+pub fn redacting() -> bool {
+    REDACT.get() == (true, true)
+}
+
+/// `font`, or the redacted font while [`redacting`].
+pub fn redact(font: Font) -> Font {
+    match redacting() {
+        true => Font { family: Family::Name("Redacted"), weight: Weight::Normal, ..font },
+        false => font,
+    }
+}
 
 static LOAD_FONTS: Once = Once::new();
 static PLATFORM: cosmic_text::PlatformFallback = cosmic_text::PlatformFallback;
@@ -117,7 +152,7 @@ pub fn ensure_fonts_loaded() {
         }
         let knicknack = desktop_asars().find_map(|p| knicknack_woff(&p));
         KNICKNACK.store(knicknack.is_some(), Ordering::Relaxed);
-        for woff in INTER.into_iter().chain(knicknack.as_deref()) {
+        for woff in INTER.into_iter().chain([REDACTED_WOFF]).chain(knicknack.as_deref()) {
             db.load_font_source(Source::Binary(Arc::new(woff_to_sfnt(woff))));
         }
     });
@@ -432,12 +467,15 @@ pub fn flow(s: &str, indent: f32, max: f32, lines: usize, size: f32, w: Weight) 
 /// `--semantic-typo-line-height-*` for the 10, 11, 12, 13 and 16 px sizes, so only other pairs (14/18, 15/20, 17/24,
 /// ...) set their own.
 pub fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
-    text(s).size(rem(size)).font(fw(w)).line_height(text::LineHeight::Absolute(rem((size * 1.24).round()).into()))
+    text(s)
+        .size(rem(size))
+        .font(redact(fw(w)))
+        .line_height(text::LineHeight::Absolute(rem((size * 1.24).round()).into()))
 }
 
 /// Text at `size` px that Desktop gives in px, like `.message .timestamp`, which the Font size does not change.
 pub fn fixed<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
-    text(s).size(size).font(fw(w)).line_height(text::LineHeight::Absolute((size * 1.24).round().into()))
+    text(s).size(size).font(redact(fw(w))).line_height(text::LineHeight::Absolute((size * 1.24).round().into()))
 }
 
 /// A [`fixed`] text on one line of at most `max` width, with "…" at its end when it is wider, like [`ell`].

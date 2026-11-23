@@ -11,6 +11,7 @@ mod click;
 mod command_palette;
 pub mod commands;
 pub mod composer;
+mod confetti;
 mod cursor;
 mod dashed;
 mod deeplink;
@@ -325,6 +326,10 @@ pub enum UiMessage {
     Window(windows::Msg),
     /// Desktop's `toggleIncognitoMode` from a hotkey or the command bar, with its toast.
     ToggleIncognito,
+    /// Desktop's "Confetti" command (`fireConfetti`).
+    Confetti,
+    /// Desktop's `toggleRedactedMode`: "Redact names and pictures" and "Unredact names and pictures".
+    ToggleRedacted,
     /// Desktop's GIF and sticker picker: the GIF search, the sticker packs, and the picked media for the composer.
     Gifs(gifs::Msg),
     /// Desktop's chat reminders: Remind me, If no reply, the due reminders and the Reminders list.
@@ -1004,7 +1009,8 @@ fn avatar<'a>(name: &str, size: f32, ls: f32, alpha: f32, p: &Palette) -> El<'a>
     let &(bottom, top) = pick(name, &AVATAR_GRADIENTS);
     let (top, bottom) = (hex(top).scale_alpha(alpha), hex(bottom).scale_alpha(alpha));
     let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, top).add_stop(1.0, bottom);
-    let font = crate::style::initials_font();
+    // Desktop's `DefaultAvatar` circle is a `.redacted-region` wherever it shows.
+    let font = crate::style::region(true, || crate::style::redact(crate::style::initials_font()));
     let white = Color::WHITE.scale_alpha(alpha);
     let letter = |c: char| txt(c.to_string(), size * 0.5).line_height(1.0).font(font).color(white).into();
     let trail = Padding::ZERO.right((ls - 1.0).max(0.0)).left((1.0 - ls).max(0.0));
@@ -3121,6 +3127,10 @@ pub struct BeeperGuiApp {
     older_toasts: Vec<(Toast, Duration)>,
     /// The nudges that came in and went out, and the shake of the timeline.
     nudges: nudge::Nudges,
+    /// Desktop's confetti window while it shows.
+    confetti: Option<confetti::Confetti>,
+    /// Desktop's `redactedMode`, which lasts until the app quits.
+    redacted: bool,
     /// How many times the newest toast was dismissed, so that a dismissed toast does not move up.
     toast_dismissals: u32,
     /// Desktop's action stack `Jv`: what each action did and the message that undoes it.
@@ -3359,7 +3369,7 @@ impl BeeperGuiApp {
             select_mode, selection_menu, show_command_palette, settings_query, settings_slider, settings_focus,
             settings_search_on, settings_pick, pref_flash, networks, app_qr, integrations, token_ask, account_page,
             quick_look_target, quick_open, hovered_chat, hover_at, unhovered, flash, typing_shown, typing, status_banner,
-            relaunch_toast, key_banner_closed, toast, older_toasts, nudges, toast_dismissals, undo_stack, undo_note,
+            relaunch_toast, key_banner_closed, toast, older_toasts, nudges, confetti, redacted, toast_dismissals, undo_stack, undo_note,
             pill_hover, sticky_banner, mobile_apps_toast, rail_float, sidebar_slide, dragging, rail_hover,
             header_hover, menu_bar, alt_alone, pin_hover, pin_drag, pin_slides, key_sort, user_hover, rail_drag,
             rail_press, main_window, key_targets, swapped, settings_window, login_window, theme_windows,
@@ -3455,6 +3465,10 @@ impl BeeperGuiApp {
             }
         });
         match loaded {
+            // `.redacted .redacted-region img`: `filter: brightness(0)` on a black background.
+            Some(_) if crate::style::redacting() => {
+                container(Space::new()).width(size).height(size).style(fill_box(Color::BLACK, size / 2.0)).into()
+            }
             Some(frames) => self.emoji(frames, move |h| image(h).width(size).height(size).opacity(alpha)),
             None => avatar(name, size, ls, alpha, &self.pal),
         }
@@ -4708,7 +4722,12 @@ impl BeeperGuiApp {
                 let note = self.notify_typing(chat);
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
-            UiMessage::AnimationTick => {}
+            UiMessage::AnimationTick => {
+                self.confetti.take_if(|c| !c.running());
+                if let Some(c) = self.confetti.as_mut() {
+                    c.advance();
+                }
+            }
             UiMessage::Pushed(Ok(())) => {}
             UiMessage::DismissRecoveryReminder => {
                 let now = beeper_core::config::now_unix_millis();
@@ -4760,6 +4779,8 @@ impl BeeperGuiApp {
                     Err(_) => UiMessage::OpenUrl(folder.clone()),
                 });
             }
+            UiMessage::Confetti => self.confetti = Some(confetti::Confetti::fire(self.pane.size)),
+            UiMessage::ToggleRedacted => self.redacted ^= true,
             UiMessage::ToggleIncognito => {
                 let on = !self.store.read().settings.on("incognito");
                 let task = self.update(UiMessage::Settings(settings::Msg::SetPref("incognito", u8::from(on))));
@@ -5159,6 +5180,7 @@ impl BeeperGuiApp {
             || self.group_window.as_ref().is_some_and(|d| d.saving)
             || self.hover_fading()
             || self.nudges.shaking()
+            || self.confetti.is_some()
             || self.sidebar_progress().is_some()
             || self.pins_sliding()
             || self.panes().any(message::flyover_revealing);
@@ -5190,6 +5212,7 @@ impl BeeperGuiApp {
         crate::lottie::set_scale(self.screen_scale * self.zoom * text_scale());
         self.drawing.set(self.chat_windows.iter().any(|w| w.0 == id).then_some(id));
         self.in_media.set(self.media_window.as_ref().is_some_and(|w| w.id == id));
+        crate::style::redacted_mode(self.redacted);
         let el = cursor::root(self.view_window(id), arrow, &self.cursor, id);
         self.drawing.set(None);
         self.in_media.set(false);
@@ -5581,7 +5604,8 @@ impl BeeperGuiApp {
             .push(palette_menu)
             .push(select);
         let token = self.token_ask.as_ref().map(|a| self.view_token_ask(a));
-        layers.push(confirm).push(hotkeys).push(token).into()
+        let confetti = self.confetti.as_ref().filter(|_| in_main).map(confetti::Confetti::view);
+        layers.push(confirm).push(hotkeys).push(token).push(confetti).into()
     }
 
     /// Desktop's "Remove from Beeper" button of the delete dialog.

@@ -1485,7 +1485,8 @@ impl BeeperGuiApp {
         let msgs: Vec<&Message> = rows.msgs.iter().map(|&i| &st.messages[i]).collect();
         // Desktop's `ThreadedRepliesView` hides the typing indicator, and its list has no scheduled messages.
         let in_chat = self.pane().thread_root.is_none();
-        let col = self.view_messages(&st, chat, &msgs, &rows, false);
+        // Desktop's `messages-list-scrolling-container` is a `.redacted-region`.
+        let col = crate::style::region(true, || self.view_messages(&st, chat, &msgs, &rows, false));
         let typing = self.typing_now(&st, cid).filter(|_| in_chat);
         let col = col.push(typing.map(|(ids, v)| self.typing_bubble(&st, chat, ids, v)));
         let col = col.push(self.incognito_mark_read(&st, chat));
@@ -1553,19 +1554,20 @@ impl BeeperGuiApp {
             let tip = trf("Messages disappear after %s", &[&beeper_core::models::timer_distance(t)]);
             container(self.tip(icon.into(), tip, vec![], tooltip::Position::Bottom)).padding(Padding::ZERO.left(2))
         });
-        let name_row = row![semi(short_title(chat).to_string(), 13.0).line_height(lh(16.0)).color(p.fg)]
-            .push(timer)
-            .push(ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary))
-            .spacing(2)
-            .align_y(Center);
+        // Desktop's `thread-header-left`, `thread-header-name` and `thread-header-status` are `.redacted-region`s.
+        let name =
+            crate::style::region(true, || semi(short_title(chat).to_string(), 13.0).line_height(lh(16.0)).color(p.fg));
+        let name_row =
+            row![name].push(timer).push(ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary)).spacing(2).align_y(Center);
         // Desktop's `thread-header-status`: the activity of the other person of a 1:1 chat under the name.
         let typing = st.typing.get(cid).filter(|ids| chat.chat_type == "single" && ids.len() == 1);
-        let status = typing.map(|_| txt("typing", 10.0).color(p.sub));
+        let status = typing.map(|_| crate::style::region(true, || txt("typing", 10.0).color(p.sub)));
         let status_line = status.is_some();
         let info = container(column![name_row].push(status).spacing(2).align_x(Center))
             .padding(pad(6.0, 6.0, 6.0, 10.0))
             .style(raised(p.elevated, 14.0, Some(p.strong.scale_alpha(0.025)), (4.0, 10.0, 0x16)));
-        let avatar = container(self.chat_avatar(chat, 40.0, 0.0)).style(raised(p.card, 20.0, None, (1.0, 4.0, 0x1a)));
+        let avatar = crate::style::region(true, || self.chat_avatar(chat, 40.0, 0.0));
+        let avatar = container(avatar).style(raised(p.card, 20.0, None, (1.0, 4.0, 0x1a)));
         // The pill sets the width of the card, and the avatar sits over its middle.
         let card = stack![column![Space::new().height(36.0), info].align_x(Center), container(avatar).center_x(Fill)];
         let card = mouse_area(card)
@@ -2037,7 +2039,9 @@ impl BeeperGuiApp {
             let mut head = Column::new().width(Fill).push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
                 let shown = covered.is_none_or(|c| i > c);
-                head = head.push(self.day_pill(&m.timestamp, shown).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
+                // Desktop's `date` is a `.negate-redacted-region`.
+                let pill = crate::style::region(false, || self.day_pill(&m.timestamp, shown));
+                head = head.push(pill.padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
             // The `along-message-footer` line of the message before goes on through the gap below it, past its
             // sender's avatar, and the date between two messages of a chain (`MessageDate`) has a line of its own.
@@ -2191,7 +2195,8 @@ impl BeeperGuiApp {
             let ms = &msgs[i..end];
             let hide_time = time_hidden(m, next, st.settings.pref("timeFormat") == 1);
             let flags = (first, last, chain, thread, hide_time);
-            let view = self.view_message(st, chat, ms, flags, (status, replies), head);
+            // Desktop's `message-main` is a `.negate-redacted-region` of the redacted timeline.
+            let view = crate::style::region(false, || self.view_message(st, chat, ms, flags, (status, replies), head));
             let view = match send_rise(st, m) {
                 Some(t) => lift::lift(view, 14.0 * (1.0 - t), 0.97 + 0.03 * t).into(),
                 None => view,
@@ -2339,7 +2344,9 @@ impl BeeperGuiApp {
         let named = (group || network_bot(chat, &m.sender_id)) && !mine && named_first;
         let sender = || {
             let name = sender_label(chat, m);
-            self.user_trigger(chat, &m.sender_id, semi(name.clone(), 12.0).color(hex(*pick(&name, &p.names))))
+            // Desktop's sender name is a `.redacted-region` in the `.negate-redacted-region` of the message.
+            let label = crate::style::region(true, || semi(name.clone(), 12.0).color(hex(*pick(&name, &p.names))));
+            self.user_trigger(chat, &m.sender_id, label)
         };
         // Desktop's `hasAttachedMedia`: a message with media names its sender above the bubble, a text bubble inside.
         let media = !m.attachments.is_empty()
@@ -3029,6 +3036,8 @@ impl BeeperGuiApp {
         let broadcast =
             (in_pane && m.broadcast).then(|| -> El<'a> { txt(tr("Also sent to the chat"), 11.0).color(muted).into() });
         let mut footer: Vec<El<'a>> = [status.map(|(t, tip)| -> El<'a> {
+            // Desktop's `message-seen-by-text` is a `.redacted-region`.
+            let label = |t| crate::style::region(true, || label(t));
             match tip {
                 Some(tip) => self.tip(label(t).into(), tip, vec![], tooltip::Position::Left).into(),
                 None => label(t).into(),
@@ -3256,7 +3265,7 @@ impl BeeperGuiApp {
                     chat.participants.items.iter().find(|u| u.id == m.sender_id).and_then(|u| u.img_url.as_deref());
                 // Desktop's `sender-img`: a click starts a chat with the sender, when the account can.
                 let dm = UiMessage::Members(members::Msg::Message(chat.id.clone(), m.sender_id.clone()));
-                let face = mouse_area(self.face(url, &sender_label(chat, m), FACE, 0.0));
+                let face = mouse_area(crate::style::region(true, || self.face(url, &sender_label(chat, m), FACE, 0.0)));
                 let face = if self.can(&chat.account_id, "create_dm") { face.on_press(dm) } else { face };
                 self.user_trigger(chat, &m.sender_id, face)
             } else {
@@ -3407,7 +3416,8 @@ impl BeeperGuiApp {
         // Desktop's view-once media, which can be viewed or expired, shows as its pill, and its text as its preview.
         let view = q.view_once() || q.view_once_expired();
         let visual = view || q.attachments.iter().any(|a| quote_tile(a) || a.attachment_type == "audio");
-        let name = || semi(sender_label(chat, q), 12.0).line_height(lh(16.0));
+        // Desktop's `linked-sender-name` is a `.redacted-region`.
+        let name = || crate::style::region(true, || semi(sender_label(chat, q), 12.0).line_height(lh(16.0)));
         let items: Vec<El<'a>> = match view {
             true => vec![self.view_once_indicator(q, view_once::Variant::Quote, (fill, p.text))],
             false => q.attachments.iter().map(|a| self.linked_attachment(a, fg)).collect(),

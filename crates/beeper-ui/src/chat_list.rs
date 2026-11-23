@@ -1402,14 +1402,17 @@ impl BeeperGuiApp {
             .chain(row_keys[lead..].iter().copied())
             .collect();
         let estimate = if look.compact { 52.0 } else { 68.0 };
-        let rows = self.list().rows.view(&keys, false, estimate, UiMessage::Relist, |i| match i.checked_sub(pre) {
-            None => self.unread_threads_pill(st, &threads),
-            Some(i) if i < tiles => {
-                self.view_pin_row(&look, &grid, &pinned[i * cols..(i * cols + cols).min(pinned.len())])
-            }
-            Some(i) if i < tiles + lead => self.view_chat_row(&look, rest[i - tiles]),
-            Some(i) if i < tiles + lead + drafts => self.view_draft_row(&look, &self.new_chats[i - tiles - lead]),
-            Some(i) => self.view_chat_row(&look, rest[i - tiles - drafts]),
+        // Desktop's `threads` list is a `.redacted-region`.
+        let rows = self.list().rows.view(&keys, false, estimate, UiMessage::Relist, |i| {
+            crate::style::region(true, || match i.checked_sub(pre) {
+                None => self.unread_threads_pill(st, &threads),
+                Some(i) if i < tiles => {
+                    self.view_pin_row(&look, &grid, &pinned[i * cols..(i * cols + cols).min(pinned.len())])
+                }
+                Some(i) if i < tiles + lead => self.view_chat_row(&look, rest[i - tiles]),
+                Some(i) if i < tiles + lead + drafts => self.view_draft_row(&look, &self.new_chats[i - tiles - lead]),
+                Some(i) => self.view_chat_row(&look, rest[i - tiles - drafts]),
+            })
         });
         scrollable(container(rows).padding(Padding::ZERO.right(bar_pad + GUTTER)))
             .id(self.list().scroll.0.clone())
@@ -1793,7 +1796,11 @@ impl BeeperGuiApp {
             .push(snoozed.map(|_| container(tinted(&MOON_STARS, 12.0, p.strong)).padding([0, 2])))
             .push(Space::new().width(Fill))
             .push(later.then(|| tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))))
-            .push(txt(ts, l.ts_size).color(p.strong.scale_alpha(0.7)).font(iced::Font { style, ..fw(Weight::Normal) }))
+            .push(
+                txt(ts, l.ts_size)
+                    .color(p.strong.scale_alpha(0.7))
+                    .font(crate::style::redact(iced::Font { style, ..fw(Weight::Normal) })),
+            )
             .height(rem(16.0))
             .align_y(Center)
             .into()
@@ -1894,7 +1901,7 @@ impl BeeperGuiApp {
             b => (b, None),
         };
         let style = if italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
-        let font = iced::Font { style, ..fw(Weight::Normal) };
+        let font = crate::style::redact(iced::Font { style, ..fw(Weight::Normal) });
         let fg = p.fg.scale_alpha(0.63);
         let receipt = m.filter(|_| receipt).map(|m| self.preview_receipt(st, c, m, fg));
         let face =
@@ -1914,10 +1921,13 @@ impl BeeperGuiApp {
                 let label = trx("Draft:", "thread list draft preview prefix");
                 let s = crate::style::clamped(&format!("{label} {t}"), width, lines, 13.0, Weight::Normal);
                 let rest = s.strip_prefix(label).expect("the draft label fits").to_string();
-                rich_text![span::<(), _>(label).font(fw(Weight::Semibold)).color(p.accent), span(rest).color(fg)]
-                    .size(rem(13.0))
-                    .line_height(lh(16.0))
-                    .width(width)
+                rich_text![
+                    span::<(), _>(label).font(crate::style::redact(fw(Weight::Semibold))).color(p.accent),
+                    span(rest).font(crate::style::redact(fw(Weight::Normal))).color(fg)
+                ]
+                .size(rem(13.0))
+                .line_height(lh(16.0))
+                .width(width)
             }))
             .push(Space::new().width(Fill))
             .push(count)
