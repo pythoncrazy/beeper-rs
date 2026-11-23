@@ -1556,7 +1556,7 @@ async fn lifecycle() {
             assert_eq!(sent, [Some(at), None], "a reminder is set and dismissed on the homeserver");
             assert!(st.chats[0].reminder.is_none() && gui.list.chat_menu.is_none());
             for (i, at) in [(0, 2), (1, 1)] {
-                st.set_reminder(i, Some(ChatReminder { remind_at_ms: at, dismiss_on_incoming_message: true }));
+                st.set_reminder(i, Some(ChatReminder::new(at, true)));
             }
         }
         let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::SelectTab(InboxTab::Reminders)));
@@ -1579,7 +1579,7 @@ async fn lifecycle() {
             let mut st = store.write();
             st.chats[1].is_pinned = Some(false);
             assert!(st.set_chat_flag(1, ChatFlag::Archived, Some(true)));
-            st.set_reminder(1, Some(ChatReminder { remind_at_ms: 1, dismiss_on_incoming_message: true }));
+            st.set_reminder(1, Some(ChatReminder::new(1, true)));
         }
         let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Check));
         let other = store.read().chats[1].id.clone();

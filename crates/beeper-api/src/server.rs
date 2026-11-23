@@ -2169,7 +2169,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         ("POST", ["reminders"]) => {
             let (at, dismiss) = reminder_input(r)?;
             // Desktop's `setReminder` dismisses the reminder on an incoming message when the request does not say.
-            let reminder = ChatReminder { remind_at_ms: at, dismiss_on_incoming_message: dismiss.unwrap_or(true) };
+            let reminder = ChatReminder::new(at, dismiss.unwrap_or(true));
             st.set_reminder(idx, Some(reminder));
             empty(StatusCode::NO_CONTENT, Vec::new())
         }

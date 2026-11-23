@@ -484,10 +484,8 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         is_pinned: Some(tags.contains_key(&TagName::Favorite)),
         is_low_priority: Some(tags.contains_key(&TagName::LowPriority)),
         reminder: account_data(room, REMINDER).await.and_then(|r| {
-            Some(ChatReminder {
-                remind_at_ms: r["remind_at_ms"].as_i64().filter(|&ms| ms > 0)?,
-                dismiss_on_incoming_message: r["dismiss_on_incoming_message"] == true,
-            })
+            let at = r["remind_at_ms"].as_i64().filter(|&ms| ms > 0)?;
+            Some(ChatReminder::new(at, r["dismiss_on_incoming_message"] == true))
         }),
         // Desktop's `com.beeper.chats.snoozed` handler keeps a snooze that ends in the future.
         snoozed_until_ms: account_data(room, SNOOZED)
@@ -1572,6 +1570,7 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
                 }
             } else {
                 let i = st.chat_idx(NOTE_CHAT_ID);
+                chat.reminder = ChatReminder::synced(chat.reminder.take(), st.chats[i].reminder.as_ref());
                 let room = |c: &Chat| {
                     (
                         c.img_url.clone(),

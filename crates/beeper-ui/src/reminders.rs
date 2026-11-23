@@ -55,23 +55,9 @@ impl BeeperGuiApp {
                 let now = now_unix_millis();
                 let mut notes = self.message_reminders_due(now);
                 notes.extend(self.snoozes_ended(now));
-                let mut st = self.store.write();
-                for i in 0..st.chats.len() {
-                    let c = &st.chats[i];
-                    let Some(at) = c.reminder.as_ref().map(|r| r.remind_at_ms).filter(|&at| at <= now) else {
-                        continue;
-                    };
-                    if self.reminded.insert(c.id.clone(), at) == Some(at) {
-                        continue;
-                    }
-                    let flags = [ChatFlag::LowPriority, ChatFlag::Archived].map(|f| (f, c.flag(f)));
-                    let ts = rfc3339_from_millis(at);
-                    st.update_chat(i, |c| c.last_activity = c.last_activity.take().max(Some(ts)));
-                    for (flag, _) in flags.into_iter().filter(|f| f.1) {
-                        st.set_chat_flag(i, flag, Some(false));
-                    }
-                }
-                drop(st);
+                let due = self.chat_reminders_due(now);
+                let body = || trx("Reminder", "thread reminder notification body").to_string();
+                notes.extend(due.iter().map(|c| self.notify_thread(c, "", body())));
                 self.refresh_theme_and_tray();
                 return Task::batch(notes.into_iter().chain([self.settle()]));
             }
@@ -101,6 +87,31 @@ impl BeeperGuiApp {
             }
         }
         self.settle()
+    }
+
+    /// Desktop's `onReminderElapsed`: each chat reminder that came due, also while the app was closed, moves its chat
+    /// back to the inbox once, and is the chat to notify "Reminder" for. Its `userRemindedAt` stays in the chat.
+    fn chat_reminders_due(&mut self, now: i64) -> Vec<Chat> {
+        let mut st = self.store.write();
+        let mut due = Vec::new();
+        for i in 0..st.chats.len() {
+            let c = &st.chats[i];
+            let Some(r) = c.reminder.clone().filter(|r| r.remind_at_ms <= now && r.user_reminded_at.is_none()) else {
+                continue;
+            };
+            let flags = [ChatFlag::LowPriority, ChatFlag::Archived].map(|f| (f, c.flag(f)));
+            let ts = rfc3339_from_millis(r.remind_at_ms);
+            let reminded = ChatReminder { user_reminded_at: Some(now), ..r };
+            let c = st.update_chat(i, |c| {
+                c.last_activity = c.last_activity.take().max(Some(ts));
+                c.reminder = Some(reminded);
+            });
+            for (flag, _) in flags.into_iter().filter(|f| f.1) {
+                st.set_chat_flag(i, flag, Some(false));
+            }
+            due.push(c);
+        }
+        due
     }
 
     /// Desktop's `onMessageReminderDue`: each message reminder that comes due unarchives its chat and notifies once.
@@ -325,7 +336,7 @@ impl BeeperGuiApp {
     /// and the chat is archived when "Archive after setting reminder on chat" is on.
     pub(crate) fn remind(&self, st: &mut BeeperStore, idx: usize, at: Option<i64>, no_reply: Option<bool>) {
         let dismiss_on_incoming_message = no_reply.unwrap_or(st.settings.pref("remindLaterDefault") == 0);
-        st.set_reminder(idx, at.map(|remind_at_ms| ChatReminder { remind_at_ms, dismiss_on_incoming_message }));
+        st.set_reminder(idx, at.map(|at| ChatReminder::new(at, dismiss_on_incoming_message)));
         let c = &st.chats[idx];
         if at.is_some() && st.settings.on("archiveOnReminder") && c.flags & (CHAT_PINNED | CHAT_REQUEST) == 0 {
             self.set_archived(st, idx, true);
@@ -430,6 +441,54 @@ mod tests {
         app.store.write().whoami.internal = true;
         let _ = app.update(UiMessage::Reminders(Msg::Message(mid.clone(), None)));
         assert!(app.store.read().message_reminders.is_empty(), "Mark as Done dismisses it");
+    }
+
+    /// Desktop's `onReminderElapsed`: a chat reminder that comes due notifies and moves its chat back to the inbox
+    /// once. Its `userRemindedAt` stays in the stored chat through a sync of the same reminder, so a restart does not
+    /// remind again or unarchive the chat again.
+    #[test]
+    fn a_due_chat_reminder_notifies_once_like_desktop() {
+        use beeper_core::models::ChatReminder;
+        let mut app = crate::fuzz::demo_app("due-chat-reminder");
+        let now = now_unix_millis();
+        let at = now - 1_000;
+        let chat = {
+            let mut st = app.store.write();
+            let c = st.chats.iter().find(|c| c.account_id != "hungryserv" && !c.flag(ChatFlag::Pinned));
+            let chat = c.expect("a bridged chat").id.clone();
+            let i = st.resolve_chat_idx(&chat).expect("the chat");
+            st.set_chat_flag(i, ChatFlag::Archived, Some(true));
+            st.set_reminder(i, Some(ChatReminder::new(at, true)));
+            st.outbox.clear();
+            chat
+        };
+        let due: Vec<String> = app.chat_reminders_due(now).into_iter().map(|c| c.id).collect();
+        assert_eq!(due, [chat.clone()], "the chat to notify");
+        {
+            let st = app.store.read();
+            let c = st.chat(&chat);
+            assert!(!c.flag(ChatFlag::Archived), "the chat leaves the archive");
+            assert_eq!(c.reminder.as_ref().and_then(|r| r.user_reminded_at), Some(now));
+            let stored = serde_json::to_value(c).expect("chat JSON");
+            assert_eq!(stored["reminder"]["userRemindedAt"], now, "the time is stored with the chat");
+            let sent = st.outbox.iter().any(|o| matches!(o.2, beeper_core::matrix::Outgoing::Reminder(_)));
+            assert!(!sent, "the time stays on this device");
+            assert!(app.expired(c), "leaving the chat dismisses the reminder");
+        }
+        assert!(app.chat_reminders_due(now + 1).is_empty(), "it reminds once");
+        {
+            let mut st = app.store.write();
+            let mut synced = st.chat(&chat).clone();
+            synced.reminder = Some(ChatReminder::new(at, true));
+            st.upsert_chat(synced.clone());
+            assert_eq!(st.chat(&chat).reminder.as_ref().and_then(|r| r.user_reminded_at), Some(now), "a sync keeps it");
+            let i = st.resolve_chat_idx(&chat).expect("the chat");
+            st.set_chat_flag(i, ChatFlag::Archived, Some(true));
+            synced.reminder = Some(ChatReminder::new(at + 1, true));
+            st.upsert_chat(synced);
+        }
+        let due: Vec<String> = app.chat_reminders_due(now).into_iter().map(|c| c.id).collect();
+        assert_eq!(due, [chat], "a new reminder from another device reminds again");
     }
 
     /// Desktop's `onMessageReminderDue`: a due message reminder unarchives its chat once, and keeps the chat in the

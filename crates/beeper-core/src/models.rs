@@ -642,6 +642,24 @@ pub struct ChatReminder {
     pub remind_at_ms: i64,
     #[serde(rename = "dismissOnIncomingMessage", default)]
     pub dismiss_on_incoming_message: bool,
+    /// Desktop's `userRemindedAt`: when the reminder came due here, notified and moved its chat back to the inbox.
+    /// Like Desktop's `recordThreadReminderElapsed`, it stays on this device.
+    #[serde(rename = "userRemindedAt", default, skip_serializing_if = "Option::is_none")]
+    pub user_reminded_at: Option<i64>,
+}
+
+impl ChatReminder {
+    pub fn new(remind_at_ms: i64, dismiss_on_incoming_message: bool) -> Self {
+        Self { remind_at_ms, dismiss_on_incoming_message, user_reminded_at: None }
+    }
+
+    /// The reminder of a sync, with the time that `old` came due here when it is the same reminder.
+    pub fn synced(new: Option<Self>, old: Option<&Self>) -> Option<Self> {
+        new.map(|n| match old.filter(|o| o.remind_at_ms == n.remind_at_ms) {
+            Some(o) => Self { user_reminded_at: o.user_reminded_at, ..n },
+            None => n,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
