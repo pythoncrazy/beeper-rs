@@ -328,9 +328,10 @@ pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
                 .filter(|(_, r)| {
                     let (label, desc) = r.split_args();
                     let name = r.name.map_or_else(|| trs(r.label, label), |n| tr(n).into());
-                    has(&r
-                        .desc
-                        .map_or_else(|| name.clone(), |d| format!("{name} {}", pref_text(&st.settings, d, desc))))
+                    // Desktop's `searchText`: the name, the description, and the keywords.
+                    let desc = r.desc.map(|d| pref_text(&st.settings, d, desc));
+                    let text = [Some(name), desc, r.about.map(|a| tr(a).to_string())].into_iter().flatten();
+                    has(&text.chain(r.keywords.iter().map(|k| k.to_string())).collect::<Vec<_>>().join(" "))
                 })
                 .map(|(_, r)| SettingsHit::Pref(tab, r))
                 .chain(
@@ -2299,10 +2300,8 @@ impl BeeperGuiApp {
                     .align_y(Center)
                     .wrap()
                     .vertical_spacing(8);
-                let label = match n {
-                    0 => tr("Archive chats").into(),
-                    n => trnx("Archive %d chat", "Archive %d chats", n, "auto-archive catch-up button", &[&n]),
-                };
+                // Desktop's `ArchiveAllPreference` counts the chats, none too.
+                let label = trnx("Archive %d chat", "Archive %d chats", n, "archive all button", &[&n]);
                 let archive = UiMessage::ChatList(chat_list::Msg::ArchiveStale);
                 let archive = self.target(
                     self.settings_window,
