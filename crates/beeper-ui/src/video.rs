@@ -504,7 +504,7 @@ impl BeeperGuiApp {
         if let Some(v) = self.video.as_mut() {
             v.set_pip(false);
         }
-        window::close(id)
+        self.close_window(id)
     }
 
     /// Desktop's `setPipState(null)`: the Picture in Picture window closes, and its video stops.

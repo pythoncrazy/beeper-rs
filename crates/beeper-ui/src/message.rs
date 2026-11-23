@@ -47,8 +47,8 @@ use iced::widget::{
     Row, Space, Stack,
 };
 use iced::{
-    border, mouse, window, Bottom, Center, Color, Fill, Length, Padding, Pixels, Point, Right, Shadow, Size, Task,
-    Theme, Vector,
+    border, mouse, Bottom, Center, Color, Fill, Length, Padding, Pixels, Point, Right, Shadow, Size, Task, Theme,
+    Vector,
 };
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -677,7 +677,10 @@ pub(crate) fn divider_at(st: &BeeperStore, chat: &Chat, msgs: &[&Message]) -> Op
     let read = chat.last_read_message_sort_key.as_ref().filter(|k| Some(*k) < last);
     let after = read.and_then(|r| msgs.windows(2).position(|w| w[0].sort_key <= *r && w[1].sort_key > *r));
     let at = after.map(|i| i + 1);
-    let at = at.or_else(|| msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)));
+    // The unread marks of the messages count only while the chat is unread: a read through the bottom of the
+    // timeline leaves them, and leaving the chat reads nothing.
+    let marked = |m: &&&Message| m.is_deleted != Some(true) && m.is_unread == Some(true);
+    let at = at.or_else(|| msgs.iter().position(|m| chat.is_unread() && marked(&m)));
     at.map(|i| msgs[i].id.clone())
 }
 
@@ -1426,9 +1429,11 @@ impl BeeperGuiApp {
                 .on_show(|_| UiMessage::Timeline(timeline::Msg::Scrolled(false)))
                 .on_hide(UiMessage::Timeline(timeline::Msg::Scrolled(true))),
         );
+        // Desktop's `beeper-nudge-active` shakes the scrolling container of the chat that a nudge came to.
+        let (dx, dy) = self.nudges.offset(st.resolve_canonical_chat_id(&chat.id).as_deref());
         let up = self.pane().scrolled_up.is_some_and(|s| s.0);
         let held = timeline::hold(scroller(col).id(self.pane().scroll_id()), up).glide(self.pane().glide);
-        let list = lift::tight(held);
+        let list = lift::tight(held).shift(dx, dy);
         let opened = self.pane().reply_opened.map_or(1.0, |at| at.elapsed().as_secs_f32());
         let (shown, below) = replies_reveal(opened);
         let replies = self.pane().reply_thread.as_ref().map(|id| {
@@ -3759,7 +3764,12 @@ impl BeeperGuiApp {
                 self.store.write().toggle_bookmark(&mid);
             }
             Msg::MarkUnreadFromHere(cid, mid) => {
-                self.store.write().mark_unread_from_message(&cid, &mid);
+                let mut st = self.store.write();
+                st.mark_unread_from_message(&cid, &mid);
+                // Desktop's `preventAutoMarkAsRead`: the open chat stays unread until you leave it.
+                let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+                self.pane.keep_unread |= open.is_some() && open == st.resolve_chat_idx(&cid);
+                drop(st);
                 self.refresh_theme_and_tray();
             }
             Msg::MarkReadThrough(cid, mid) => {
@@ -3779,7 +3789,7 @@ impl BeeperGuiApp {
             Msg::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
             Msg::OpenPollVotes(chat, mid) => {
                 if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
-                    return window::gain_focus(w.0);
+                    return self.raise(w.0);
                 }
                 let (id, open) = self.open_child(Size::new(342.0, 563.0));
                 self.vote_windows.push((id, chat, mid));
@@ -4034,7 +4044,7 @@ impl BeeperGuiApp {
                 return iced::clipboard::write(url);
             }
             Msg::GoTo(chat, mid) => {
-                let main = window::gain_focus(self.main_window.expect("the main window is open"));
+                let main = self.raise(self.main_window.expect("the main window is open"));
                 // Desktop's `jumpToMessage` of the media viewer selects the message and does not flash it.
                 return Task::batch([self.reveal(chat, mid, false), main]);
             }
@@ -4345,6 +4355,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use iced::window;
     use iced_test::simulator::simulator;
 
     /// Desktop's right click on a selection: it acts on all the selected messages, and a right click outside the

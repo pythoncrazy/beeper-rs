@@ -97,6 +97,11 @@ pub(crate) fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
         })?;
         Ok(Frames::from([(handle(px.into_rgba8()), 0)]))
     };
+    // Desktop's `transcodeImage` of a HEIC or HEIF photo, which ffmpeg cannot read: its own HEIF decoder, then ffmpeg
+    // for an AVIF in a HEIF box.
+    if beeper_core::media::heif(&bytes) {
+        return still(&bytes);
+    }
     if bytes.get(4..8) == Some(b"ftyp") {
         return still(&run_ffmpeg(&bytes, &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"])?);
     }
@@ -462,7 +467,7 @@ impl BeeperGuiApp {
             self.as_media(close);
         }
         let closed = |id: &window::Id| self.chat_windows.iter().any(|w| w.0 == *id && w.1.carousel.is_none());
-        Task::batch(self.carousel_windows.iter().filter(|w| closed(&w.0)).map(|w| window::close(w.0)))
+        Task::batch(self.carousel_windows.iter().filter(|w| closed(&w.0)).map(|w| self.close_window(w.0)))
     }
 
     /// Runs `f` as the Media window, whose carousel is its viewer.
@@ -1491,7 +1496,7 @@ impl BeeperGuiApp {
             }
             Msg::Open => {
                 if let Some(w) = &self.media_window {
-                    return window::gain_focus(w.id);
+                    return self.raise(w.id);
                 }
                 // Desktop's `media-viewer` window state.
                 let settings = self.saved_window_settings("media-viewer", Size::new(1000.0, 720.0));
@@ -1685,6 +1690,16 @@ mod ffmpeg_tests {
         assert!(moov > mdat, "the index comes after the media");
         let frames = super::decode_media(bytes).expect("the first frame");
         assert_eq!(frames.len(), 1);
+    }
+
+    /// A HEIC photo, whose `ftyp` box ffmpeg 6 takes for an MP4 that it cannot read, shows like Desktop's transcode.
+    #[test]
+    fn a_heic_photo_decodes_without_ffmpeg() {
+        let bytes = include_bytes!("../../beeper-core/tests/heic/rotated.heic").to_vec();
+        let frames = super::decode_media(bytes).expect("the photo");
+        assert_eq!(frames.len(), 1);
+        let iced::widget::image::Handle::Rgba { width, height, .. } = &frames[0].0 else { panic!("decoded pixels") };
+        assert_eq!((*width, *height), (64, 32), "upright by its rotation");
     }
 }
 

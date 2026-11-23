@@ -54,7 +54,7 @@ impl BeeperGuiApp {
             Msg::Open(account) => {
                 self.list.chat_menu = None;
                 if let Some(d) = self.nickname_windows.iter().find(|d| d.account == account) {
-                    return window::gain_focus(d.id);
+                    return self.raise(d.id);
                 }
                 let (id, open) = self.open_child(NICKNAME_SIZE);
                 let name = self.store.read().custom_name(&account).unwrap_or_default().to_string();
@@ -66,9 +66,9 @@ impl BeeperGuiApp {
                     d.name = name;
                 }
             }
-            Msg::Cancel(id) => return window::close(id),
+            Msg::Cancel(id) => return self.close_window(id),
             Msg::Save(id) => return self.save_nickname(id),
-            Msg::Saved(id, Ok(())) => return window::close(id),
+            Msg::Saved(id, Ok(())) => return self.close_window(id),
             Msg::Saved(id, Err(e)) => {
                 let Some(d) = self.nickname_windows.iter_mut().find(|d| d.id == id) else { return Task::none() };
                 let text = trf("Something went wrong: %s", &[&e]);
@@ -94,7 +94,7 @@ impl BeeperGuiApp {
             let Some(b) = st.bridge_accounts.iter().find(|b| b.account_id == d.account) else { return Task::none() };
             let (bridge, login) = (b.bridge_id.clone(), b.login_id.clone());
             if d.name.trim() == st.custom_name(&d.account).unwrap_or_default() {
-                return window::close(id);
+                return self.close_window(id);
             }
             if !st.config.demo {
                 d.saving = true;
@@ -107,7 +107,7 @@ impl BeeperGuiApp {
             let names = beeper_core::matrix::with_account_name(&st.account_overrides, &bridge, &login, d.name.trim());
             st.account_overrides = names.expect("the demo overrides are valid");
         }
-        window::close(id)
+        self.close_window(id)
     }
 
     /// Desktop's `RenameAccount`: the account's icon, the name pill with the default name as its placeholder, the

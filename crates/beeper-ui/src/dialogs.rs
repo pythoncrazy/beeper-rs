@@ -702,7 +702,7 @@ impl BeeperGuiApp {
     pub(crate) fn open_label_sheet(&mut self, label: String, step: LabelStep) -> Task<UiMessage> {
         self.list.chat_menu = None;
         if let Some(d) = &self.label_window {
-            return window::gain_focus(d.id);
+            return self.raise(d.id);
         }
         let (id, open) = self.open_child(LABEL_SHEET_SIZE);
         let label = self.label_id(label);
@@ -732,7 +732,10 @@ impl BeeperGuiApp {
                 Some(c) => return self.label_edit(LabelEdit::Icon(LABEL_ICONS[c - LABEL_COLORS.len()].0)),
                 None => {}
             },
-            LabelEdit::Cancel => return window::close(d.id),
+            LabelEdit::Cancel => {
+                let id = d.id;
+                return self.close_window(id);
+            }
             LabelEdit::Back => d.step = LabelStep::Pick,
             LabelEdit::Advance if !d.ready() => {}
             LabelEdit::Advance if d.label.is_none() && d.step != LabelStep::Details => {
@@ -759,7 +762,7 @@ impl BeeperGuiApp {
                         let (what, text) = (format!("Update label \"{}\"", old.name), format!("Updated {name}"));
                         self.act(what, UiMessage::Labels(labels::Msg::Restore(Box::new(old))), Some((text, None)));
                     }
-                    return window::close(id);
+                    return self.close_window(id);
                 }
                 let label = self.store.write().create_label(&name, color, icon, chats);
                 let open = UiMessage::Rail(rail::Msg::Select(Some(format!("label:{label}"))));
@@ -767,7 +770,7 @@ impl BeeperGuiApp {
                 let (what, text) = (format!("Create label \"{name}\""), format!("Created {name}"));
                 self.act(what, UiMessage::Labels(labels::Msg::Delete(label.clone())), Some((text, Some(open))));
                 return Task::batch([
-                    window::close(id),
+                    self.close_window(id),
                     self.update(UiMessage::Labels(labels::Msg::OpenSettings(label))),
                 ]);
             }
@@ -1212,7 +1215,7 @@ impl BeeperGuiApp {
     pub(crate) fn open_edit_for_me(&mut self, chat: String) -> Task<UiMessage> {
         self.list.chat_menu = None;
         if let Some(d) = &self.group_window {
-            return window::gain_focus(d.id);
+            return self.raise(d.id);
         }
         let (id, open) = self.open_child(PERSONAL_SIZE);
         let st = self.store.read();
@@ -1300,10 +1303,10 @@ impl BeeperGuiApp {
                 let (id, chat) = (d.id, d.chat.clone());
                 let avatar = url.as_ref().map(Option::as_deref);
                 self.store.write().apply_group(&chat, title.as_deref(), topic.as_deref(), avatar);
-                return window::close(id);
+                return self.close_window(id);
             }
             GroupEdit::Cancel => {
-                return window::close(self.group_window.as_ref().expect("the Edit Group window is open").id)
+                return self.close_window(self.group_window.as_ref().expect("the Edit Group window is open").id)
             }
             GroupEdit::Save => {
                 let d = self.group_window.as_mut().expect("the Edit Group window is open");
@@ -1328,7 +1331,7 @@ impl BeeperGuiApp {
                 let photo = photo.map(|p| p.map(|(url, m, _)| (url, m.bytes, m.mime)));
                 if !personal {
                     self.store.write().update_group(&chat, title, topic, photo);
-                    return window::close(id);
+                    return self.close_window(id);
                 }
                 if let Some(t) = title {
                     let name =
@@ -1343,7 +1346,7 @@ impl BeeperGuiApp {
                     self.store.write().set_personal(&chat, None, Some(photo));
                     self.show(Toast { strong: true, ..Toast::new(text.into()) });
                 }
-                return window::close(id);
+                return self.close_window(id);
             }
             edit => {
                 let d = self.group_window.as_mut().expect("the Edit Group window is open");
@@ -1467,7 +1470,7 @@ impl BeeperGuiApp {
     /// Desktop's `kCt`: the Blocked users window, once.
     pub(crate) fn open_blocked_users(&mut self) -> Task<UiMessage> {
         if let Some(id) = self.blocked_window {
-            return window::gain_focus(id);
+            return self.raise(id);
         }
         let (id, open) = self.open_child(Size::new(342.0, 488.0));
         self.blocked_window = Some(id);
@@ -1478,7 +1481,7 @@ impl BeeperGuiApp {
     pub(crate) fn open_blocked_user(&mut self, id: String) -> Task<UiMessage> {
         self.show_right_panel = true;
         let main = self.main_window.expect("the main window is open");
-        self.update(UiMessage::SelectChat(id)).chain(window::gain_focus(main))
+        self.update(UiMessage::SelectChat(id)).chain(self.raise(main))
     }
 
     /// Desktop's `ICt`: the blocked people by name, or "No Blocked Users", and Done.
@@ -1543,7 +1546,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let rules = st.resolve_chat_idx(&self.poll_windows[i].chat).and_then(|c| st.chats[c].polls);
         drop(st);
-        let Some(rules) = rules else { return window::close(id) };
+        let Some(rules) = rules else { return self.close_window(id) };
         let d = &mut self.poll_windows[i];
         let n = d.options.len();
         match edit {
@@ -1590,12 +1593,12 @@ impl BeeperGuiApp {
                 let d = self.poll_windows.remove(i);
                 let answers = d.answers();
                 self.store.write().send_poll(&d.chat, d.question.trim().into(), answers, d.multiple, d.hidden);
-                return window::close(id);
+                return self.close_window(id);
             }
             PollEdit::Send => {}
             PollEdit::Close if d.discarding => d.discarding = false,
             PollEdit::Close if d.dirty() => d.discarding = true,
-            PollEdit::Close | PollEdit::Discard(true) => return window::close(id),
+            PollEdit::Close | PollEdit::Discard(true) => return self.close_window(id),
             PollEdit::Discard(false) => d.discarding = false,
         }
         Task::none()
