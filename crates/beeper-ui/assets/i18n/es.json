@@ -1188,6 +1188,7 @@
 "Switch First 9 Chats Modifier":["Cambiar el modificador de los primeros 9 chats"],
 "Switch First 9 Spaces Modifier":["Cambiar el modificador de los primeros 9 espacios"],
 "Switch chats":["Cambiar de chat"],
+"Switch to Texts.app keybindings":["Cambiar a la combinación de teclas de Texts.app"],
 "Synced %(processed)d of %(total)d chat.":["Se ha sincronizado %(processed)d de %(total)d chat.", "Se ha sincronizado %(processed)d de %(total)d chats."],
 "Syncing your data":["Sincronizando tus datos"],
 "Syncing...":["Sincronizando…"],

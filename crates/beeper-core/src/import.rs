@@ -1,7 +1,7 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
     Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, MessageTimer, Reaction, SpaceOrder,
-    ThemeChoice, ThreadFollows, Transcription, User, CHAT_SOUNDS,
+    ThemeChoice, ThreadFollows, Transcription, UiTheme, User, CHAT_SOUNDS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -38,6 +38,8 @@ pub struct BeeperData {
     pub pin_rank: HashMap<String, usize>,
     pub recent_chat_ids: Vec<String>,
     pub theme: Option<ThemeChoice>,
+    /// Desktop's local `ui_theme`.
+    pub ui_theme: Option<UiTheme>,
     pub spaces_order: Vec<SpaceOrder>,
     pub ever_labeled: bool,
 }
@@ -140,7 +142,19 @@ fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
     let spaces_order = prefs.as_ref().map(read_spaces_order).transpose()?.unwrap_or_default();
     let theme = prefs.as_ref().map(read_theme).transpose()?;
     let ever_labeled = prefs.as_ref().is_some_and(|p| p["has_ever_created_label"] == true);
-    Ok(BeeperData { user_id, crypto, chats, messages, pin_rank, recent_chat_ids, theme, spaces_order, ever_labeled })
+    let ui_theme = prefs.as_ref().and_then(read_ui_theme);
+    Ok(BeeperData {
+        user_id,
+        crypto,
+        chats,
+        messages,
+        pin_rank,
+        recent_chat_ids,
+        theme,
+        ui_theme,
+        spaces_order,
+        ever_labeled,
+    })
 }
 
 fn read_local_prefs(db: &Connection) -> Result<Option<Value>, String> {
@@ -164,6 +178,11 @@ fn read_theme(prefs: &Value) -> Result<ThemeChoice, String> {
         Some("system") => Ok(ThemeChoice::System),
         other => Err(format!("unknown Beeper Desktop theme {other:?}")),
     }
+}
+
+/// Desktop's `ui_theme`, which Desktop leaves out (or `null`) for its own colors and looks up by id.
+fn read_ui_theme(prefs: &Value) -> Option<UiTheme> {
+    prefs.get("ui_theme").and_then(Value::as_str).and_then(UiTheme::from_id)
 }
 
 fn read_crypto(db: &Connection) -> rusqlite::Result<Option<DesktopCrypto>> {
@@ -711,6 +730,23 @@ mod tests {
         let unchanged = serde_json::json!({ "app_locale": "en" });
         assert!(matches!(read_theme(&unchanged), Ok(ThemeChoice::System)), "Desktop's default theme is system");
         assert!(read_theme(&serde_json::json!({ "native_theme_source": 1 })).is_err());
+    }
+
+    /// Desktop's `ui_theme` by its id: every theme comes over, and an unset, `null` or unknown one is Desktop's own
+    /// colors.
+    #[test]
+    fn the_theme_color_imports_like_desktop() {
+        for theme in UiTheme::ALL {
+            let prefs = serde_json::json!({ "ui_theme": theme.id() });
+            assert_eq!(read_ui_theme(&prefs), Some(theme));
+            let stored = serde_json::to_value(Some(theme)).expect("the setting");
+            assert_eq!(stored, theme.id(), "beeper-rs keeps Desktop's id");
+        }
+        let unset =
+            [serde_json::json!({}), serde_json::json!({ "ui_theme": null }), serde_json::json!({ "ui_theme": "x" })];
+        for prefs in unset {
+            assert_eq!(read_ui_theme(&prefs), None, "{prefs}");
+        }
     }
 
     /// Desktop's `isRoomDone` from the `com.beeper.inbox.done` that Server and Desktop keep in the thread: an order

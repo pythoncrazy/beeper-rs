@@ -615,19 +615,22 @@ fn bubble(text: &str) -> El<'_> {
     container(tip).align_bottom(Fill).padding(Padding::ZERO.left(85).bottom(112)).into()
 }
 
-/// Desktop's `--gradient-brand`, `linear-gradient(190.1deg, #6953f2 -7.24%, #0c52f9 109.66%)`.
+/// Desktop's `--gradient-brand`, `linear-gradient(190.1deg, #6953f2 -7.24%, #0c52f9 109.66%)`, or the one of a
+/// monochrome theme at 190 degrees.
 /// iced spans a gradient over a shorter line than CSS, so the stops are the CSS colors at the ends of the iced line
 /// in a 278x36 button.
-pub(crate) fn brand_gradient() -> Background {
-    lit_gradient(1.0)
+pub(crate) fn brand_gradient(p: &Palette) -> Background {
+    lit_gradient(p, 1.0)
 }
 
 /// `brand_gradient` made `k` times brighter, like `filter: brightness(k)`.
-fn lit_gradient(k: f32) -> Background {
-    let c = |r: f32, g: f32, b: f32| {
-        Color::from_rgb((r * k / 255.0).min(1.0), (g * k / 255.0).min(1.0), (b * k / 255.0).min(1.0))
+fn lit_gradient(p: &Palette, k: f32) -> Background {
+    let lit = |c: Color| Color::from_rgb((c.r * k).min(1.0), (c.g * k).min(1.0), (c.b * k).min(1.0));
+    let c = |r: f32, g: f32, b: f32| lit(Color::from_rgb(r / 255.0, g / 255.0, b / 255.0));
+    let g = match p.brand_stops {
+        None => Linear::new(Degrees(190.1)).add_stop(0.0, c(82.5, 82.8, 243.7)).add_stop(1.0, c(36.4, 82.3, 247.2)),
+        Some(stops) => crate::ui_theme::brand_line(stops, Size::new(278.0, 36.0), lit),
     };
-    let g = Linear::new(Degrees(190.1)).add_stop(0.0, c(82.5, 82.8, 243.7)).add_stop(1.0, c(36.4, 82.3, 247.2));
     Background::Gradient(Gradient::Linear(g))
 }
 
@@ -644,7 +647,7 @@ pub(crate) fn brand_button<'a>(
     let (bg, fg, edge) = match (msg.is_some(), variant) {
         (false, _) => (Some(p.chip), p.on_secondary, CLEAR),
         (true, Brand::Primary) => (None, Color::WHITE, CLEAR),
-        (true, Brand::Secondary) => (Some(CLEAR), p.accent, p.accent),
+        (true, Brand::Secondary) => (Some(CLEAR), p.brand, p.brand),
         (true, Brand::Muted) => (Some(p.chip), p.strong, CLEAR),
         (true, Brand::Danger) => (Some(p.danger), Color::WHITE, CLEAR),
     };
@@ -662,6 +665,7 @@ pub(crate) fn brand_button<'a>(
         container(row((0..3).map(dot)).spacing(8)).center(Fill)
     });
     let hover = matches!(variant, Brand::Primary | Brand::Secondary) && msg.is_some();
+    let gradients = [lit_gradient(p, 1.0), lit_gradient(p, 1.05)];
     // `:not(:disabled):active { transform: scale(.98) }`.
     let pressable = msg.is_some();
     let button = button(stack![container(content).center_x(Fill)].push(dots))
@@ -672,7 +676,7 @@ pub(crate) fn brand_button<'a>(
             let k = if hover && s == button::Status::Hovered { 1.05 } else { 1.0 };
             let lift = |c: Color| Color { r: (c.r * k).min(1.0), g: (c.g * k).min(1.0), b: (c.b * k).min(1.0), a: c.a };
             button::Style {
-                background: Some(bg.map_or_else(|| lit_gradient(k), |c| lift(c).into())),
+                background: Some(bg.map_or_else(|| gradients[usize::from(k > 1.0)], |c| lift(c).into())),
                 text_color: if loading { CLEAR } else { lift(fg) },
                 border: border::rounded(9999).color(edge).width(1),
                 ..Default::default()
@@ -1229,7 +1233,9 @@ impl BeeperGuiApp {
             let at = Padding::ZERO.top(34.0 + pad).right(6.0 + pad);
             crate::backdrop(container(items).align_right(Fill).height(Fill).padding(at)).on_press(LoginMsg::Menu.into())
         });
-        let window = stack![container(page).padding(pad).style(fill_box(frame, 0.0))]
+        // `onboarding-module__frame` is `--left-pane-bg`.
+        let backdrop = p.backdrop.filter(|_| !onboarding);
+        let window = stack![crate::ui_theme::window_bg(container(page).padding(pad), backdrop, frame)]
             .push(l.toast.as_deref().map(|t| toast(p, t, true)))
             .push(l.pasted().then(|| toast(p, tr("Code auto pasted from clipboard"), false)))
             .push(l.invalid.as_deref().map(bubble))
