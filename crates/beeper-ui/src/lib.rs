@@ -6434,7 +6434,12 @@ impl BeeperGuiApp {
     /// `--animation-timing` (0.1 s, ease-in-out) while the pointer is on it, and back out after it leaves. Gives how far
     /// in they are, or `None` when they do not show.
     pub(crate) fn hover_progress(&self, key: &str) -> Option<f32> {
-        let gone = |at: std::time::Instant| (at.elapsed().as_secs_f32() / HOVER_FADE).min(1.0);
+        self.hover_progress_at(key, std::time::Instant::now())
+    }
+
+    /// [`Self::hover_progress`] at the time `now`.
+    fn hover_progress_at(&self, key: &str, now: std::time::Instant) -> Option<f32> {
+        let gone = |at: std::time::Instant| (now.saturating_duration_since(at).as_secs_f32() / HOVER_FADE).min(1.0);
         match (&self.hovered_chat, &self.unhovered) {
             (Some(k), _) if k == key => Some(crate::login::ease_in_out(self.hover_at.map_or(1.0, gone))),
             (_, Some((k, at))) if k == key && gone(*at) < 1.0 => Some(1.0 - crate::login::ease_in_out(gone(*at))),
