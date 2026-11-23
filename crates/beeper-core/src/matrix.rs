@@ -482,7 +482,37 @@ async fn members(room: &Room, bridge: &Value) -> (Vec<User>, String, bool) {
     (items, title, dm)
 }
 
-async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value, known: Option<Known>) -> Chat {
+/// The global account data that the chats read: the inbox order of the pinned chats (`com.beeper.favourites_order`),
+/// the muted rooms of `com.beeper.muted` and the push rules. The SDK saves all of a sync response before
+/// [`on_sync`], so the rooms of a response, or a pass over all the rooms, read it once instead of once per room.
+pub(crate) struct Globals {
+    pins: Value,
+    muted: Vec<String>,
+    notifications: matrix_sdk::notification_settings::NotificationSettings,
+}
+
+impl Globals {
+    pub(crate) async fn read(client: &Client) -> Self {
+        Self {
+            pins: global(client, "com.beeper.favourites_order").await,
+            muted: muted_rooms(client).await,
+            notifications: client.notification_settings().await,
+        }
+    }
+
+    /// The place of `room` in the inbox order of the pinned chats.
+    fn pin_rank(&self, room: &str) -> Option<usize> {
+        self.pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room))
+    }
+}
+
+async fn chat(
+    room: &Room,
+    accounts: &[BridgeAccountInfo],
+    rules: &Value,
+    known: Option<Known>,
+    globals: &Globals,
+) -> Chat {
     let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
     let (mut items, title, dm) = match known {
         Some(k) => (k.participants, k.title, k.dm),
@@ -521,13 +551,8 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value, known:
         is_muted: Some(
             // Desktop's `mutedRoomIDs` of `com.beeper.muted`, or the room's push rule. The SDK's
             // `Room::user_defined_notification_mode` is empty for a room the user left, but its rule still mutes it.
-            muted_rooms(&room.client()).await.iter().any(|r| r == room.room_id().as_str())
-                || room
-                    .client()
-                    .notification_settings()
-                    .await
-                    .get_user_defined_room_notification_mode(room.room_id())
-                    .await
+            globals.muted.iter().any(|r| r == room.room_id().as_str())
+                || globals.notifications.get_user_defined_room_notification_mode(room.room_id()).await
                     == Some(RoomNotificationMode::MentionsAndKeywordsOnly),
         ),
         is_pinned: Some(tags.contains_key(&TagName::Favorite)),
@@ -1486,12 +1511,12 @@ async fn sync_space(store: &SharedStore, room: &Room) {
 
 /// Desktop's `createThreadFromInvite`: an invite to a room is a read-only message request, from the stripped state
 /// of the room, at the time it came.
-async fn sync_invite(store: &SharedStore, room: &Room) {
+async fn sync_invite(store: &SharedStore, room: &Room, globals: &Globals) {
     let (accounts, rules) = {
         let st = store.read();
         (st.bridge_accounts.clone(), st.inbox_rules.clone())
     };
-    let mut chat = chat(room, &accounts, &rules, None).await;
+    let mut chat = chat(room, &accounts, &rules, None, globals).await;
     // Desktop lists the own invite as a pending member that the inviter added.
     if let Ok(invite) = room.invite_details().await {
         let me = invite.invitee;
@@ -1522,7 +1547,7 @@ async fn sync_invite(store: &SharedStore, room: &Room) {
 
 /// Desktop keeps a chat that the user left or was removed from (its own member `hasExited`, see `chat`), and the
 /// message of that leave previews it (`shouldPreview`). A chat that is gone here, as after Delete Chat, stays gone.
-async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
+async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>, globals: &Globals) {
     let chat = chat_id(room).await;
     if store.read().resolve_chat_idx(&chat).is_none() {
         return;
@@ -1532,7 +1557,7 @@ async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>)
         let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
         (v["type"] == "m.room.member" && v["state_key"] == me.as_str()).then(|| s(&v["event_id"])).flatten()
     });
-    sync_room(store, room, events).await;
+    sync_room_after(store, room, events, None, Some(globals)).await;
     let mut st = store.write();
     // A merged chat that the user left is gone (`UNION_REMOVED`).
     let Some(idx) = st.resolve_chat_idx(&chat) else { return };
@@ -1543,7 +1568,12 @@ async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>)
 }
 
 pub(crate) async fn sync_room(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
-    sync_room_after(store, room, events, None).await;
+    sync_room_after(store, room, events, None, None).await;
+}
+
+/// [`sync_room`] with the global account data of a pass over many rooms.
+async fn sync_room_with(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>, globals: &Globals) {
+    sync_room_after(store, room, events, None, Some(globals)).await;
 }
 
 /// What a sync gives with the events of a room.
@@ -1555,8 +1585,15 @@ struct Update {
     state_changed: bool,
 }
 
-/// [`sync_room`] with the `update` of a sync, which reads the receipts of its receipt events after it.
-async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, update: Option<Update>) {
+/// [`sync_room`] with the `update` of a sync, which reads the receipts of its receipt events after it, and the global
+/// account data that the caller read, else read here.
+async fn sync_room_after(
+    store: &SharedStore,
+    room: &Room,
+    mut events: Vec<TimelineEvent>,
+    update: Option<Update>,
+    globals: Option<&Globals>,
+) {
     let from_sync = update.is_some();
     let (prev_batch, state_changed) = update.map_or((None, true), |u| (u.prev_batch, u.state_changed));
     match room.room_id().as_str() {
@@ -1587,15 +1624,22 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
     let note = chat_id == NOTE_CHAT_ID;
     let accounts = store.read().bridge_accounts.clone();
     let rules = store.read().inbox_rules.clone();
-    let pins = global(&room.client(), "com.beeper.favourites_order").await;
-    let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
+    let read;
+    let globals = match globals {
+        Some(g) => g,
+        None => {
+            read = Globals::read(&room.client()).await;
+            &read
+        }
+    };
+    let rank = globals.pin_rank(room.room_id().as_str());
     let known = (!state_changed && union.is_none() && room.state() == RoomState::Joined).then(|| {
         let st = store.read();
         // A chat that no sync made yet, like one copied from Desktop, reads its members.
         let c = st.chat_idx_by_id.get(&chat_id).map(|&i| &st.chats[i]).filter(|c| c.notifiable.is_some())?;
         Some(Known { participants: c.participants.items.clone(), title: c.title.clone(), dm: c.chat_type == "single" })
     });
-    let mut chat = chat(room, &accounts, &rules, known.flatten()).await;
+    let mut chat = chat(room, &accounts, &rules, known.flatten(), globals).await;
     // Desktop's `rT`: a merged chat is single.
     if union.is_some() {
         chat.chat_type = "single".into();
@@ -4076,11 +4120,13 @@ pub fn with_custom_emoji(pack: &Value, name: &str, url: &str) -> Result<Value, S
 }
 
 /// Applies a change of the inbox rules to every room.
-async fn sync_rules(client: &Client, store: &SharedStore) {
+async fn sync_rules(client: &Client, store: &SharedStore, globals: &Globals) {
     let rules = global(client, RULES).await;
     if std::mem::replace(&mut store.write().inbox_rules, rules.clone()) != rules {
         let rooms = futures_util::stream::iter(client.joined_rooms());
-        rooms.for_each_concurrent(8, |room| async move { sync_room(store, &room, Vec::new()).await }).await;
+        rooms
+            .for_each_concurrent(8, |room| async move { sync_room_with(store, &room, Vec::new(), globals).await })
+            .await;
     }
 }
 
@@ -5081,14 +5127,16 @@ pub async fn run(store: SharedStore) {
     sync_prefs(&client, &store).await;
     sync_profile(&client, &store).await;
     store.write().inbox_rules = global(&client, RULES).await;
+    // Nothing saves a sync before the loop below, so the passes over the rooms read the global account data once.
+    let globals = Globals::read(&client).await;
     for room in client.invited_rooms() {
-        sync_invite(&store, &room).await;
+        sync_invite(&store, &room, &globals).await;
     }
     // The chats that stay after a leave or a removal, without history to load again.
     for room in client.left_rooms() {
         let chat = chat_id(&room).await;
         if store.read().resolve_chat_idx(&chat).is_some() {
-            sync_room(&store, &room, Vec::new()).await;
+            sync_room_with(&store, &room, Vec::new(), &globals).await;
         }
     }
     let first = !store.read().beeper_state.first_sync_done;
@@ -5096,10 +5144,10 @@ pub async fn run(store: SharedStore) {
     store.write().initial_sync = (0, rooms.len());
     futures_util::stream::iter(rooms)
         .for_each_concurrent(8, |room| {
-            let store = store.clone();
+            let (store, globals) = (store.clone(), &globals);
             async move {
                 let events = if first || has_utd(&store, &room).await { history(&room).await } else { Vec::new() };
-                sync_room(&store, &room, events).await;
+                sync_room_with(&store, &room, events, globals).await;
                 store.write().initial_sync.0 += 1;
             }
         })
@@ -5201,16 +5249,18 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             refresh_e2ee(client, store).await;
             sync_account_data(client, store).await;
             sync_prefs(client, store).await;
-            sync_rules(client, store).await;
+            // The SDK saved the response before this, and nothing in it changes the global account data.
+            let globals = Globals::read(client).await;
+            sync_rules(client, store, &globals).await;
             // The writes of the rooms make one SQLite commit.
             let tx = SyncTx::begin(store);
             for id in resp.rooms.invited.keys() {
-                sync_invite(store, &client.get_room(id).expect("an invited room is known")).await;
+                sync_invite(store, &client.get_room(id).expect("an invited room is known"), &globals).await;
             }
             for (id, update) in resp.rooms.left {
                 match client.get_room(&id) {
                     Some(room) if room.state() == RoomState::Left => {
-                        sync_left(store, &room, update.timeline.events).await
+                        sync_left(store, &room, update.timeline.events, &globals).await
                     }
                     // A forgotten room, like a deleted label, is gone from the client, and from its merged chats.
                     _ => store.write().remove_deleted_chat(id.as_str()),
@@ -5230,7 +5280,8 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 let state_key = |e: &TimelineEvent| e.raw().get_field::<String>("state_key").ok().flatten().is_some();
                 let state_changed = state || update.timeline.events.iter().any(state_key);
                 let prev_batch = update.timeline.prev_batch;
-                sync_room_after(store, &room, update.timeline.events, Some(Update { prev_batch, state_changed })).await;
+                let u = Some(Update { prev_batch, state_changed });
+                sync_room_after(store, &room, update.timeline.events, u, Some(&globals)).await;
                 for e in &update.account_data {
                     let v: Value = e.deserialize_as().expect("room account data JSON");
                     if v["type"] == crate::drafts::DRAFT {
@@ -5453,7 +5504,7 @@ mod tests {
         }
         super::load_older(store.clone(), "!room:x".into()).await.expect("its history still loads");
         store.write().remove_chat("!room:x");
-        super::sync_left(&store, &room, Vec::new()).await;
+        super::sync_left(&store, &room, Vec::new(), &super::Globals::read(&client).await).await;
         assert!(store.read().resolve_chat_idx("!room:x").is_none(), "a deleted chat stays deleted");
     }
 
@@ -7442,7 +7493,7 @@ mod tests {
             let client = store.read().matrix.clone().expect("a Matrix client");
             client.get_room(matrix_sdk::ruma::room_id!("!team:x")).expect("the invited room")
         };
-        super::sync_invite(&store, &room).await;
+        super::sync_invite(&store, &room, &super::Globals::read(&room.client()).await).await;
         {
             let st = store.read();
             let c = st.chat("!team:x");
