@@ -4,6 +4,7 @@
 
 use crate::config::account_network;
 use crate::models::{member_order, Chat, User};
+use crate::store::BeeperStore;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -266,8 +267,32 @@ pub fn search<'a>(
     people: bool,
     fuzzy: bool,
 ) -> Vec<(&'a Chat, usize)> {
-    let fields: &[Field] = if people { &[Field::Participants] } else { &[Field::Title, Field::Network] };
     let chats = Fields::all(chats);
+    matches(chats.iter().map(|(c, f)| (*c, &**f)).collect(), query, people, fuzzy)
+}
+
+/// [`search`] of the chats of the store `st` that `keep` takes. The fields of its chats hold while its chats stay the
+/// same (`chat_changes`), so a key of the command bar only matches them.
+pub fn search_in<'a>(
+    st: &'a BeeperStore,
+    keep: impl Fn(&Chat) -> bool,
+    query: &str,
+    people: bool,
+    fuzzy: bool,
+) -> Vec<(&'a Chat, usize)> {
+    type ByChat = (Option<(u64, u64)>, Vec<Arc<Fields>>);
+    static FIELDS: OnceLock<Mutex<ByChat>> = OnceLock::new();
+    let mut fields = FIELDS.get_or_init(Default::default).lock().expect("the chat search fields");
+    let revision = Some((st.instance, st.chat_changes));
+    if fields.0 != revision || fields.1.len() != st.chats.len() {
+        *fields = (revision, Fields::all(st.chats.iter()).into_iter().map(|(_, f)| f).collect());
+    }
+    let chats = st.chats.iter().zip(&fields.1).filter(|(c, _)| keep(c)).map(|(c, f)| (c, &**f)).collect();
+    matches(chats, query, people, fuzzy)
+}
+
+fn matches<'a>(chats: Vec<(&'a Chat, &Fields)>, query: &str, people: bool, fuzzy: bool) -> Vec<(&'a Chat, usize)> {
+    let fields: &[Field] = if people { &[Field::Participants] } else { &[Field::Title, Field::Network] };
     let whole = phrase(query);
     if !people && has_symbol(&whole) {
         let found: Vec<_> = chats

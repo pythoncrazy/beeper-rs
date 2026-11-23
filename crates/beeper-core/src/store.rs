@@ -514,6 +514,9 @@ pub struct BeeperStore {
     /// Counts the chats added and removed and the changes of `update_chat`, but not the previews of new messages, so
     /// that a view can keep what it finds from the people and kinds of the chats over the writes of a sync.
     pub chat_changes: u64,
+    /// This store among the stores of the process, so that a cache of values found from its chats keys them by
+    /// `(instance, chat_changes)`.
+    pub instance: u64,
     pub(crate) chat_idx_by_id: HashMap<String, usize>,
     /// The `activity_key` of each chat, for Desktop's chat order `ORDER BY timestamp DESC`.
     chat_order: BTreeSet<(i64, String)>,
@@ -719,6 +722,10 @@ impl BeeperStore {
             labels: Vec::new(),
             chats: Vec::new(),
             chat_changes: 0,
+            instance: {
+                static STORES: AtomicU64 = AtomicU64::new(0);
+                STORES.fetch_add(1, Ordering::Relaxed)
+            },
             chat_idx_by_id: HashMap::new(),
             chat_order: BTreeSet::new(),
             local_chat_idx_by_id: HashMap::new(),
