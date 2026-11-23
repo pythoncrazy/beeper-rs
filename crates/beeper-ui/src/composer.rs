@@ -190,18 +190,42 @@ pub(crate) fn save_draft(st: &mut BeeperStore, pane: &Pane) {
         mentions,
         ts: None,
         send_room_id,
+        revision_id: None,
     };
     // Desktop's `applyDraftTime`: the draft time changes with the text or the files.
     let old = st.chats[idx].draft.as_ref();
     let same = old.is_some_and(|o| o.text == draft.text && o.attachments == draft.attachments);
     let ts = if same { old.and_then(|o| o.ts) } else { Some(now_unix_millis()) };
-    let draft = (draft.text.is_some() || !draft.attachments.is_empty()).then_some(ChatDraft { ts, ..draft });
+    // The store gives the draft its revision, which stays while what syncs of it does.
+    let revision_id = old.and_then(|o| o.revision_id.clone());
+    let draft =
+        (draft.text.is_some() || !draft.attachments.is_empty()).then_some(ChatDraft { ts, revision_id, ..draft });
     if draft != st.chats[idx].draft {
-        st.patch_chat(chat, true, None, None).expect("clear draft");
-        st.patch_chat(chat, false, draft, None).expect("save draft");
+        st.put_draft(idx, draft);
         // A sent draft or a changed file leaves its upload behind.
         st.drop_unused_uploads(&old_ids);
     }
+}
+
+/// Desktop's `applyRemoteDraft`: the composer of `pane` shows the draft of its chat, which a synced one replaced, when
+/// it has no change of its own since then.
+pub(crate) fn show_synced_draft(st: &BeeperStore, pane: &mut Pane, chat: &str) {
+    let idx = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+    let Some(idx) = idx.filter(|&i| st.chats[i].id == chat) else { return };
+    if pane.draft_due || pane.editing_message_id.is_some() || !pane.attachments.is_empty() {
+        return;
+    }
+    let draft = st.chats[idx].draft.clone().unwrap_or_default();
+    pane.emoticons.clear();
+    let text = stored_text(pane, draft.text.as_deref().unwrap_or_default());
+    pane.composer = composer_with(&text);
+    pane.composer_links = draft.discarded_links.into_iter().map(|u| (u, LinkState::Discarded)).collect();
+    (pane.history, pane.reply_to_message_id, pane.mentions) =
+        (Default::default(), draft.reply_to_message_id, draft.mentions);
+    pane.send_later = draft.send_later.filter(|&(at, _)| at > now_unix_millis());
+    let members = st.members(idx);
+    let seeded = draft.send_room_id.filter(|r| members.iter().any(|&m| st.chats[m].id == *r));
+    pane.compose_target = seeded.map(|r| (r, true));
 }
 
 /// Desktop's `restoreDraftSnapshot`: the attachments of a saved draft. A draft from the API's focus endpoint names its
