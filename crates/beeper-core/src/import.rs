@@ -30,6 +30,8 @@ pub struct GroupSessionRow {
 
 #[derive(Debug, Clone, Default)]
 pub struct BeeperData {
+    /// The Matrix user of the Desktop data: the user of its keys, or the `user_id` of Desktop's `beeperState`.
+    pub user_id: Option<String>,
     pub crypto: Option<DesktopCrypto>,
     pub chats: Vec<Chat>,
     pub messages: Vec<Message>,
@@ -105,6 +107,9 @@ fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
         false => None,
     };
     let db = open(&dir.join("index.db")).map_err(e)?;
+    // Desktop's `getKeyValue("beeperState")`: the signed-in user, also of a Desktop without keys.
+    let state = read_kv_json(&db, "beeperState")?;
+    let user_id = crypto.as_ref().map(|c| c.user_id.clone()).or_else(|| str_field(&state, "user_id"));
     let note_id: Option<String> = db
         .query_row(
             "SELECT threadID FROM threads WHERE json_extract(CAST(thread AS TEXT), '$.extra.isNoteToSelf') = 1",
@@ -135,7 +140,7 @@ fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
     let spaces_order = prefs.as_ref().map(read_spaces_order).transpose()?.unwrap_or_default();
     let theme = prefs.as_ref().map(read_theme).transpose()?;
     let ever_labeled = prefs.as_ref().is_some_and(|p| p["has_ever_created_label"] == true);
-    Ok(BeeperData { crypto, chats, messages, pin_rank, recent_chat_ids, theme, spaces_order, ever_labeled })
+    Ok(BeeperData { user_id, crypto, chats, messages, pin_rank, recent_chat_ids, theme, spaces_order, ever_labeled })
 }
 
 fn read_local_prefs(db: &Connection) -> Result<Option<Value>, String> {
