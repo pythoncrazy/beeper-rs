@@ -1033,9 +1033,57 @@ impl BeeperGuiApp {
 
     pub(crate) fn view_composer<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
         let p = &self.pal;
-        // Desktop's quoted message in the composer (`bfe`): the sender in groups, and at most 128 characters on at most
-        // half of the width.
-        let quote = self.pane().reply_to_message_id.as_ref().and_then(|r| st.loaded_idx(r)).map(|i| {
+        let quote = self.view_composer_quote(st, chat);
+        let gif_picker = (self.pane().picker == Some(Picker::Gif)).then(|| self.view_gif_picker());
+        let (pri, sec) = composer_buttons(st);
+        let input = self.view_composer_input(st, chat);
+        let net = self.view_composer_network(st, chat);
+        let action_btn = |id| self.composer_action_btn(st, chat, id);
+        let inline = Row::with_children([pri, sec].into_iter().flatten().map(action_btn)).spacing(2).align_y(Center);
+        let net = Row::new().push(net.map(|n| container(n).padding(Padding::ZERO.right(2.0)).center_y(36)));
+        let inline = container(inline).padding(Padding::ZERO.left(2.0)).center_y(36);
+        let formats = if st.settings.on("formattingMenu") { chat.formatting } else { 0 };
+        let input = self.with_formatting(input, formats);
+        let line = row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(6.5));
+        let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.pane().show_attach_menu)], 20.0, p.muted);
+        let toggle = button(container(plus_icon).center(36))
+            .padding(0)
+            .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
+            .on_press(UiMessage::Composer(Msg::ToggleAttachMenu));
+        let unveiled = self.pane().show_attach_menu.then(|| {
+            Row::with_children(self.pane_actions(st).into_iter().map(action_btn))
+                .spacing(2)
+                .padding([0, 1])
+                .align_y(Center)
+        });
+        let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
+        let pending = self.view_pending_attachments(st);
+        let send = self.view_send_button();
+        let links = self.view_link_previews();
+        let broadcast = self.view_broadcast(st, chat);
+        // Desktop's `messageInputExternal`: the quote, the attachments and the link previews inside the pill.
+        let external: Vec<El<'a>> =
+            [broadcast, quote, pending.map(El::from), links.map(El::from)].into_iter().flatten().collect();
+        let external = (!external.is_empty()).then(|| {
+            let inner = Column::with_children(external).spacing(8);
+            container(inner).padding(Padding { top: 8.0, right: 8.0, bottom: 0.0, left: 12.0 })
+        });
+        let pill = self.view_composer_pill(st, external, line);
+        let stickers = (self.pane().picker == Some(Picker::Sticker)).then(|| self.view_sticker_picker(st));
+        let extras = Column::new().push(gif_picker).push(stickers);
+        let line: Row<'a, UiMessage> = match (&self.recorder, &self.talk) {
+            (Some(r), _) => row![self.view_recorder(r), send],
+            (None, Some(t)) => row![self.view_talk(t), send],
+            (None, None) => row![plus, pill, send],
+        };
+        column![extras, line.spacing(8).align_y(Center).padding(8)].into()
+    }
+
+    /// Desktop's quoted message in the composer (`bfe`): the sender in groups, and at most 128 characters on at most
+    /// half of the width.
+    fn view_composer_quote<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
+        let p = &self.pal;
+        self.pane().reply_to_message_id.as_ref().and_then(|r| st.loaded_idx(r)).map(|i| {
             let q = &st.messages[i];
             let text = preview_body(q).map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
             let text = text.or_else(|| message_tag(q).map(|t| t.1.to_string())).unwrap_or_default();
@@ -1048,115 +1096,124 @@ impl BeeperGuiApp {
             };
             let pill = container(body).max_width(self.pane().size.width / 2.0).padding(8);
             removable(p, pill.style(bordered_box(fill, edge, 2.0, 17.0)), UiMessage::Composer(Msg::CancelMode))
-        });
-        let gif_picker = (self.pane().picker == Some(Picker::Gif)).then(|| {
-            let search = text_input(tr("Search KLIPY..."), &self.gif_query)
-                .id("gif-search-input")
-                .on_input(|a0| UiMessage::Gifs(gifs::Msg::Query(a0)))
-                .size(rem(13.0))
-                .padding([6, 12])
-                .style(input_style(p.input, p.strong, p.sub, p.accent, 8.0));
-            // Desktop's `GifPicker`: the error or "No results" text, or 10 skeleton tiles while the first page loads.
-            let note =
-                |t: String| -> El<'a> { container(txt(t, 13.0).color(p.text)).center_x(Fill).center_y(215).into() };
-            let carousel: El<'a> = if let Some(err) = self.gif_error.as_ref().filter(|_| self.gifs.is_empty()) {
-                note(trf("Something went wrong (%s). Try searching something else?", &[err]))
-            } else if self.gif_loading && self.gifs.is_empty() {
-                let tile = || container(Space::new()).width(300).height(200).style(fill_box(p.hover, 4.0)).into();
-                let tiles = Row::with_children((0..10).map(|_| tile())).spacing(4);
-                container(tiles).padding(Padding::ZERO.left(14.0)).height(215).clip(true).into()
-            } else if self.gifs.is_empty() {
-                note(tr("No results. Try searching something else?").to_string())
-            } else {
-                let items = self.gifs.iter().enumerate().map(|(i, g)| {
-                    let w = gif_width(g);
-                    let cell: El<'a> = match self.media_at(&g.preview_url) {
-                        Some(Ok(frames)) => anim::gif(frames, self.shows(), self.started, move |f| {
-                            image(f).width(w).height(215).content_fit(iced::ContentFit::Cover)
-                        }),
-                        _ => container(Space::new()).width(w).height(215).style(fill_box(p.hover, 4.0)).into(),
-                    };
-                    // Desktop's `.gif.selected`: a 4 px outline in the primary color inside the GIF.
-                    let ring = (self.gif_sel == Some(i)).then(|| {
-                        container(Space::new()).width(w).height(215).style(bordered_box(CLEAR, p.accent, 4.0, 0.0))
-                    });
-                    button(stack![container(cell).clip(true).style(fill_box(CLEAR, 4.0))].push(ring))
-                        .padding(0)
-                        .style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 4.0))
-                        .on_press(UiMessage::Gifs(gifs::Msg::PickGif(g.clone())))
-                        .into()
-                });
-                // Desktop's skeleton tiles while the next page loads.
-                let tile = || container(Space::new()).width(300).height(200).style(fill_box(p.hover, 4.0)).into();
-                let more = self
-                    .gif_loading
-                    .then(|| Row::with_children((0..10).map(|_| tile())).spacing(4).padding(Padding::ZERO.left(14.0)));
-                let dir = Direction::Horizontal(Scrollbar::new().width(4).scroller_width(4));
-                let row = Row::with_children(items).push(more).spacing(4);
-                scrollable(container(row).padding(Padding::ZERO.left(14.0)))
-                    .id("gif-carousel")
-                    .on_scroll(|v| {
-                        let (x, content, width) = (v.absolute_offset().x, v.content_bounds().width, v.bounds().width);
-                        UiMessage::Gifs(gifs::Msg::Scrolled(x, content, width))
-                    })
-                    .direction(dir)
-                    .height(215)
-                    .width(Fill)
-                    .style(scroll_style(p.scroll))
-                    .into()
+        })
+    }
+
+    /// Desktop's `GifPicker`: the KLIPY search above the carousel of GIFs.
+    fn view_gif_picker(&self) -> Column<'_, UiMessage> {
+        let p = &self.pal;
+        let search = text_input(tr("Search KLIPY..."), &self.gif_query)
+            .id("gif-search-input")
+            .on_input(|a0| UiMessage::Gifs(gifs::Msg::Query(a0)))
+            .size(rem(13.0))
+            .padding([6, 12])
+            .style(input_style(p.input, p.strong, p.sub, p.accent, 8.0));
+        column![container(search).padding([0, 14]), self.view_gif_carousel()].spacing(8).padding(Padding::ZERO.top(4.0))
+    }
+
+    /// The GIFs of the picker, with skeleton tiles while a page loads, or the error or "No results" text.
+    fn view_gif_carousel(&self) -> El<'_> {
+        let p = &self.pal;
+        let note = |t: String| -> El<'_> { container(txt(t, 13.0).color(p.text)).center_x(Fill).center_y(215).into() };
+        let tile = || container(Space::new()).width(300).height(200).style(fill_box(p.hover, 4.0)).into();
+        if let Some(err) = self.gif_error.as_ref().filter(|_| self.gifs.is_empty()) {
+            return note(trf("Something went wrong (%s). Try searching something else?", &[err]));
+        }
+        if self.gif_loading && self.gifs.is_empty() {
+            let tiles = Row::with_children((0..10).map(|_| tile())).spacing(4);
+            return container(tiles).padding(Padding::ZERO.left(14.0)).height(215).clip(true).into();
+        }
+        if self.gifs.is_empty() {
+            return note(tr("No results. Try searching something else?").to_string());
+        }
+        let items = self.gifs.iter().enumerate().map(|(i, g)| {
+            let w = gif_width(g);
+            let cell: El<'_> = match self.media_at(&g.preview_url) {
+                Some(Ok(frames)) => anim::gif(frames, self.shows(), self.started, move |f| {
+                    image(f).width(w).height(215).content_fit(iced::ContentFit::Cover)
+                }),
+                _ => container(Space::new()).width(w).height(215).style(fill_box(p.hover, 4.0)).into(),
             };
-            column![container(search).padding([0, 14]), carousel].spacing(8).padding(Padding::ZERO.top(4.0))
-        });
-        let editing = self.pane().editing_message_id.is_some();
-        let action_btn = |id: u8| -> El<'a> {
-            let (label, hotkey, on) = composer_action(st, chat, id, editing);
-            let msg = action_msg(id, &chat.id).filter(|_| on);
-            let active = (id == 2 && self.pane().picker == Some(Picker::Gif))
-                || (id == 7 && self.pane().picker == Some(Picker::Sticker))
-                || (id == 0 && self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none() && pk.pref.is_none()));
-            // Desktop's `Emoji-module__active`: the open emoji picker turns its button `--color-primary`.
-            let (color, bg) = match (active, id) {
-                (true, 0) => (p.accent, CLEAR),
-                (true, _) => (p.strong, p.hover),
-                (false, _) => (p.on_secondary, CLEAR),
-            };
-            let glyph = svg(COMPOSER_ICONS[usize::from(id) + 2].clone())
-                .width(20)
-                .height(20)
-                .opacity(if msg.is_some() { 1.0_f32 } else { 0.3 })
-                .style(move |_, _| svg::Style { color: Some(color) });
-            let b = button(container(glyph).center(28))
+            // Desktop's `.gif.selected`: a 4 px outline in the primary color inside the GIF.
+            let ring = (self.gif_sel == Some(i))
+                .then(|| container(Space::new()).width(w).height(215).style(bordered_box(CLEAR, p.accent, 4.0, 0.0)));
+            button(stack![container(cell).clip(true).style(fill_box(CLEAR, 4.0))].push(ring))
                 .padding(0)
-                .style(btn_style([bg, p.hover, p.selected], [p.text; 3], 14.0))
-                .on_press_maybe(msg);
-            let caps = hotkey.map_or_else(Vec::new, |h| hotkey_caps(st.settings.hotkey_keys(h)));
-            match id {
-                // Desktop shows "Add Emoji" when the picker does not open on hover.
-                0 => {
-                    let b = mouse_area(b)
-                        .on_enter(UiMessage::Emoji(emoji::EmojiMsg::Pointer(0, true)))
-                        .on_exit(UiMessage::Emoji(emoji::EmojiMsg::Pointer(0, false)));
-                    match st.settings.on("emojiPickerOnHover") {
-                        true => b.into(),
-                        false => self.tip(b.into(), label, vec![], tooltip::Position::Top).into(),
-                    }
-                }
-                _ => self.tip_caps(b.into(), label, caps, tooltip::Position::Top).into(),
-            }
+                .style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 4.0))
+                .on_press(UiMessage::Gifs(gifs::Msg::PickGif(g.clone())))
+                .into()
+        });
+        // Desktop's skeleton tiles while the next page loads.
+        let more = self
+            .gif_loading
+            .then(|| Row::with_children((0..10).map(|_| tile())).spacing(4).padding(Padding::ZERO.left(14.0)));
+        let dir = Direction::Horizontal(Scrollbar::new().width(4).scroller_width(4));
+        let row = Row::with_children(items).push(more).spacing(4);
+        scrollable(container(row).padding(Padding::ZERO.left(14.0)))
+            .id("gif-carousel")
+            .on_scroll(|v| {
+                let (x, content, width) = (v.absolute_offset().x, v.content_bounds().width, v.bounds().width);
+                UiMessage::Gifs(gifs::Msg::Scrolled(x, content, width))
+            })
+            .direction(dir)
+            .height(215)
+            .width(Fill)
+            .style(scroll_style(p.scroll))
+            .into()
+    }
+
+    /// A button of the composer's actions: emoji, GIF, stickers, attachments and the others, dimmed when the chat
+    /// does not take it.
+    fn composer_action_btn<'a>(&'a self, st: &BeeperStore, chat: &Chat, id: u8) -> El<'a> {
+        let p = &self.pal;
+        let (label, hotkey, on) = composer_action(st, chat, id, self.pane().editing_message_id.is_some());
+        let msg = action_msg(id, &chat.id).filter(|_| on);
+        let active = (id == 2 && self.pane().picker == Some(Picker::Gif))
+            || (id == 7 && self.pane().picker == Some(Picker::Sticker))
+            || (id == 0 && self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none() && pk.pref.is_none()));
+        // Desktop's `Emoji-module__active`: the open emoji picker turns its button `--color-primary`.
+        let (color, bg) = match (active, id) {
+            (true, 0) => (p.accent, CLEAR),
+            (true, _) => (p.strong, p.hover),
+            (false, _) => (p.on_secondary, CLEAR),
         };
-        let (pri, sec) = composer_buttons(st);
-        let placeholder = self.composer_placeholder(st, chat);
-        let suggesting = self.suggestions(st).is_some();
-        // Desktop's `KeyboardHandlers`: Backspace in an empty composer, or ← and ↑ at its start, focus the last
-        // pending attachment.
-        let last = self.pane().attachments.len().checked_sub(1);
+        let glyph = svg(COMPOSER_ICONS[usize::from(id) + 2].clone())
+            .width(20)
+            .height(20)
+            .opacity(if msg.is_some() { 1.0_f32 } else { 0.3 })
+            .style(move |_, _| svg::Style { color: Some(color) });
+        let b = button(container(glyph).center(28))
+            .padding(0)
+            .style(btn_style([bg, p.hover, p.selected], [p.text; 3], 14.0))
+            .on_press_maybe(msg);
+        let caps = hotkey.map_or_else(Vec::new, |h| hotkey_caps(st.settings.hotkey_keys(h)));
+        if id != 0 {
+            return self.tip_caps(b.into(), label, caps, tooltip::Position::Top).into();
+        }
+        let b = mouse_area(b)
+            .on_enter(UiMessage::Emoji(emoji::EmojiMsg::Pointer(0, true)))
+            .on_exit(UiMessage::Emoji(emoji::EmojiMsg::Pointer(0, false)));
+        // Desktop shows "Add Emoji" when the picker does not open on hover.
+        match st.settings.on("emojiPickerOnHover") {
+            true => b.into(),
+            false => self.tip(b.into(), label, vec![], tooltip::Position::Top).into(),
+        }
+    }
+
+    /// The text field of the composer, with its marks and its keys.
+    fn view_composer_input<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
+        let p = &self.pal;
         let cursor = self.pane().composer.cursor();
-        let at_start = cursor.selection.is_none() && (cursor.position.line, cursor.position.column) == (0, 0);
-        let empty = self.pane().composer.text().trim_end_matches('\n').is_empty();
-        let formats = chat.formatting;
-        let keys = ["Message: Send Message and Archive", "Send Message", "Insert New Line"]
-            .map(|h| st.settings.hotkey_keys(h).to_string());
-        let undo = self.queued_here().then(|| st.settings.hotkey_keys("Undo Pending Send").to_string());
+        let keys = ComposerKeys {
+            keys: ["Message: Send Message and Archive", "Send Message", "Insert New Line"]
+                .map(|h| st.settings.hotkey_keys(h).to_string()),
+            undo: self.queued_here().then(|| st.settings.hotkey_keys("Undo Pending Send").to_string()),
+            suggesting: self.suggestions(st).is_some(),
+            last: self.pane().attachments.len().checked_sub(1),
+            at_start: cursor.selection.is_none() && (cursor.position.line, cursor.position.column) == (0, 0),
+            empty: self.pane().composer.text().trim_end_matches('\n').is_empty(),
+            formats: chat.formatting,
+        };
         let marks = format::MarkStyle {
             mentions: self.pane().mentions.iter().map(|(label, _)| label.clone()).collect(),
             emoticons: self.pane().emoticons.iter().map(|e| e.name.clone()).collect(),
@@ -1164,79 +1221,11 @@ impl BeeperGuiApp {
             link: p.link,
             mark: p.tertiary,
         };
-        let input = text_editor(&self.pane().composer)
+        text_editor(&self.pane().composer)
             .id(self.composer_id())
-            .placeholder(placeholder)
+            .placeholder(self.composer_placeholder(st, chat))
             .on_action(|a0| UiMessage::Composer(Msg::Edit(a0)))
-            .key_binding(move |k| match k.key.as_ref() {
-                _ if !matches!(k.status, text_editor::Status::Focused { .. }) => None,
-                _ if undo.as_deref().zip(hotkey_key(&k.key)).is_some_and(|(keys, key)| {
-                    let m = k.modifiers;
-                    prefs::hotkey_has(keys, [m.control() || m.command(), m.shift(), m.alt()], &key)
-                }) =>
-                {
-                    Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::UndoSend)))
-                }
-                Key::Named(Named::Enter) => {
-                    let m = k.modifiers;
-                    let mods = [m.control() || m.command(), m.shift(), m.alt()];
-                    match keys.iter().position(|keys| prefs::hotkey_has(keys, mods, "enter")) {
-                        Some(0) => Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::SendAndArchive))),
-                        Some(1) => Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Submit))),
-                        _ => Some(text_editor::Binding::Enter),
-                    }
-                }
-                // The typed backtick, not the key under "~" on a US layout.
-                _ if k.modified_key.as_ref() == Key::Character("`") && !k.modifiers.command() => {
-                    Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Format(format::CODE))))
-                }
-                Key::Named(key @ (Named::Backspace | Named::Delete))
-                    if k.modifiers.jump() || k.modifiers.macos_command() =>
-                {
-                    use text_editor::Motion;
-                    let back = key == Named::Backspace;
-                    let to = match (back, k.modifiers.macos_command()) {
-                        (true, false) => Motion::WordLeft,
-                        (false, false) => Motion::WordRight,
-                        (true, true) => Motion::Home,
-                        (false, true) => Motion::End,
-                    };
-                    Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::DeleteTo(to, back))))
-                }
-                Key::Named(Named::ArrowUp | Named::ArrowDown) if suggesting => None,
-                Key::Named(Named::Backspace) if empty && k.modifiers.is_empty() => last
-                    .map(|i| text_editor::Binding::Custom(UiMessage::Composer(Msg::FocusAttachment(i))))
-                    .or_else(|| text_editor::Binding::from_key_press(k)),
-                Key::Named(Named::ArrowLeft | Named::ArrowUp) if at_start && last.is_some() => {
-                    last.map(|i| text_editor::Binding::Custom(UiMessage::Composer(Msg::FocusAttachment(i))))
-                }
-                Key::Named(Named::Escape) => None,
-                Key::Character(_) if k.modifiers.command() => {
-                    let i = match (k.key.to_latin(k.physical_key).map(|c| c.to_ascii_lowercase()), k.modifiers.shift())
-                    {
-                        (Some('z'), redo) => {
-                            return Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Undo(redo))))
-                        }
-                        (Some('y'), false) => {
-                            return Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Undo(true))))
-                        }
-                        (Some('v'), false) => {
-                            return Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Paste)))
-                        }
-                        (Some('b'), false) => 0,
-                        (Some('i'), false) => 1,
-                        (Some('x'), true) => 2,
-                        // Tiptap's `Mod-Shift-b` of the quote and `Mod-Alt-c` of the code block, whose extensions
-                        // Desktop's composer loads only where the chat supports them (`Lx`). `Mod-Shift-7` and
-                        // `Mod-Shift-8` of the lists come through the hotkeys.
-                        (Some('b'), true) if formats & 1 << 6 != 0 => 6,
-                        (Some('c'), false) if k.modifiers.alt() && formats & 1 << 8 != 0 => 8,
-                        _ => return text_editor::Binding::from_key_press(k),
-                    };
-                    Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Format(i))))
-                }
-                _ => text_editor::Binding::from_key_press(k),
-            })
+            .key_binding(move |k| keys.binding(k))
             .highlight_with::<format::Marks>(marks, |f, _| *f)
             .size(rem(13.0))
             .line_height(Pixels(rem(16.0)))
@@ -1249,16 +1238,21 @@ impl BeeperGuiApp {
                 placeholder: p.subtle,
                 value: p.strong,
                 selection: p.accent.scale_alpha(0.45),
-            });
+            })
+            .into()
+    }
+
+    /// The network icon before the text field. Desktop's `AccountAvatar` takes its place when you have more
+    /// accounts of the bridge, and the merged chat switcher in a merged chat.
+    fn view_composer_network<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         let empty = self.pane().composer.is_empty();
-        // Desktop's `AccountAvatar` takes the place of the network icon when you have more accounts of the bridge.
         let switch =
             switch_targets(st, chat).filter(|_| self.pane().thread_root.is_none() && self.drawing.get().is_none());
         // Desktop's merged chat switcher: the 20 px avatar of the target member chat, with the card of the member
         // chats on hover, or the title of the only one in a tooltip.
         let merged =
             self.merged_targets(st).filter(|_| self.pane().thread_root.is_none() && self.drawing.get().is_none());
-        let net: Option<El<'a>> = match (merged, switch) {
+        match (merged, switch) {
             (Some(members), _) => {
                 let target = &st.chats[self.compose_target_of(st, st.chat_idx(&chat.id))];
                 let face = container(self.chat_avatar(target, 20.0, 1.25)).padding(Padding::ZERO.right(4.0));
@@ -1282,26 +1276,13 @@ impl BeeperGuiApp {
             }
             (None, None) => (st.settings.on("showNetworkIcons") && empty && !several_accounts(st, &chat.account_id))
                 .then(|| svg(brand_svg(brand_key(&chat.account_id))).width(14).height(14).into()),
-        };
-        let inline = Row::with_children([pri, sec].into_iter().flatten().map(&action_btn)).spacing(2).align_y(Center);
-        let net = Row::new().push(net.map(|n| container(n).padding(Padding::ZERO.right(2.0)).center_y(36)));
-        let inline = container(inline).padding(Padding::ZERO.left(2.0)).center_y(36);
-        let input = self.with_formatting(input.into(), if st.settings.on("formattingMenu") { formats } else { 0 });
-        let line = row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(6.5));
-        let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.pane().show_attach_menu)], 20.0, p.muted);
-        let toggle = button(container(plus_icon).center(36))
-            .padding(0)
-            .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
-            .on_press(UiMessage::Composer(Msg::ToggleAttachMenu));
-        let unveiled = self.pane().show_attach_menu.then(|| {
-            Row::with_children(self.pane_actions(st).into_iter().map(&action_btn))
-                .spacing(2)
-                .padding([0, 1])
-                .align_y(Center)
-        });
-        let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
-        let ready = self.has_draft();
-        let pending = (!self.pane().attachments.is_empty()).then(|| {
+        }
+    }
+
+    /// The pending attachments above the text field, which a click focuses.
+    fn view_pending_attachments(&self, st: &BeeperStore) -> Option<Row<'_, UiMessage>> {
+        let p = &self.pal;
+        (!self.pane().attachments.is_empty()).then(|| {
             let items = self.pane().attachments.iter().enumerate().map(|(i, pm)| {
                 let preview = self.pending_preview(pm, st);
                 // Desktop's `.pending-attachments .attachment:focus`: a 3 px ring of the primary color.
@@ -1312,27 +1293,33 @@ impl BeeperGuiApp {
                 removable(p, preview, UiMessage::Composer(Msg::DiscardAttachment(i)))
             });
             Row::with_children(items).spacing(8).align_y(iced::Bottom)
-        });
-        let send: El<'a> = match self.pane().editing_message_id {
-            // Desktop's "Edit Message" button in place of the send button.
-            Some(_) => {
-                let edit = button(container(ic(icon::CHECK, 20.0).color(Color::WHITE)).center(36))
-                    .padding(0)
-                    .style(btn_style([p.accent; 3], [Color::WHITE; 3], 18.0))
-                    .on_press(UiMessage::Composer(Msg::Submit));
-                let label = tr("Edit Message");
-                self.tip(edit.into(), label, vec!["⏎"], tooltip::Position::Top).into()
-            }
-            None => button(container(tinted(&SEND_ARROW, 20.0, Color::WHITE)).center(36))
+        })
+    }
+
+    /// The send button, or Desktop's "Edit Message" button while a message is edited.
+    fn view_send_button(&self) -> El<'_> {
+        let p = &self.pal;
+        if self.pane().editing_message_id.is_some() {
+            let edit = button(container(ic(icon::CHECK, 20.0).color(Color::WHITE)).center(36))
                 .padding(0)
-                .style(btn_style([if ready { p.accent } else { p.rule }, p.accent, p.accent], [Color::WHITE; 3], 18.0))
-                .on_press(UiMessage::Composer(Msg::Submit))
-                .into(),
-        };
-        let text = self.pane().composer.text();
-        let urls = text_urls(&text);
+                .style(btn_style([p.accent; 3], [Color::WHITE; 3], 18.0))
+                .on_press(UiMessage::Composer(Msg::Submit));
+            return self.tip(edit.into(), tr("Edit Message"), vec!["⏎"], tooltip::Position::Top).into();
+        }
+        let ready = self.has_draft();
+        button(container(tinted(&SEND_ARROW, 20.0, Color::WHITE)).center(36))
+            .padding(0)
+            .style(btn_style([if ready { p.accent } else { p.rule }, p.accent, p.accent], [Color::WHITE; 3], 18.0))
+            .on_press(UiMessage::Composer(Msg::Submit))
+            .into()
+    }
+
+    /// The previews of the links of the composer's text: loading bars, or the title, host and image of the page.
+    fn view_link_previews(&self) -> Option<Column<'_, UiMessage>> {
+        let p = &self.pal;
+        let urls = text_urls(&self.pane().composer.text());
         let links = self.pane().composer_links.iter().filter(|(u, _)| urls.contains(u)).filter_map(|(u, s)| {
-            let card: El<'a> = match s {
+            let card: El<'_> = match s {
                 LinkState::Discarded => return None,
                 LinkState::Loading => {
                     let bar = |w: f32| container(Space::new()).width(w).height(12).style(fill_box(p.hover, 12.0));
@@ -1360,59 +1347,142 @@ impl BeeperGuiApp {
             };
             Some(removable(p, card, UiMessage::Composer(Msg::RemoveLinkPreview(u.clone()))))
         });
-        let links: Vec<El<'a>> = links.collect();
-        let links = (!links.is_empty()).then(|| Column::with_children(links).spacing(4));
-        // Desktop's "Also send to chat" of the thread composer of Slack and Beeper chats, once it has a draft.
-        let pane = self.pane();
+        let links: Vec<El<'_>> = links.collect();
+        (!links.is_empty()).then(|| Column::with_children(links).spacing(4))
+    }
+
+    /// Desktop's "Also send to chat" of the thread composer of Slack and Beeper chats, once it has a draft.
+    fn view_broadcast<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
+        let (p, pane) = (&self.pal, self.pane());
         let draft = !pane.composer.text().trim().is_empty() || !pane.attachments.is_empty();
         let shown = pane.thread_root.is_some() && pane.editing_message_id.is_none() && (draft || pane.broadcast);
-        let broadcast = (shown && can_broadcast(st, chat)).then(|| -> El<'a> {
+        (shown && can_broadcast(st, chat)).then(|| -> El<'a> {
             let label = txt(tr("Also send to chat"), 13.0).color(p.sub);
             let line = row![checkbox(p, pane.broadcast), label].spacing(4).align_y(Center);
             let toggle = mouse_area(container(line).padding(Padding::ZERO.left(1.0).bottom(6.0)));
             toggle.on_press(UiMessage::Thread(threads::Msg::SetBroadcast(!pane.broadcast))).into()
-        });
-        // Desktop's `messageInputExternal`: the quote, the attachments and the link previews inside the pill.
-        let external: Vec<El<'a>> =
-            [broadcast, quote, pending.map(El::from), links.map(El::from)].into_iter().flatten().collect();
-        let external = (!external.is_empty()).then(|| {
-            let inner = Column::with_children(external).spacing(8);
-            container(inner).padding(Padding { top: 8.0, right: 8.0, bottom: 0.0, left: 12.0 })
-        });
-        let pill: El<'a> = match self.pane().send_later {
-            None => container(column![].push(external).push(line)).width(Fill).style(fill_box(p.input, 18.0)).into(),
-            Some((at, no_reply)) => {
-                let when = send_day(at, st.settings.pref("timeFormat") == 1);
-                let when = if no_reply { trf("%s if no reply", &[&when]) } else { when };
-                let details = row![
-                    tinted(&COMPOSER_ICONS[6], 20.0, p.accent),
-                    semi(when, 11.0).color(p.accent),
-                    tinted(&CHEVRON_DOWN, 14.0, p.accent)
-                ];
-                let details = button(details.spacing(4).align_y(Center))
-                    .bare(p.accent)
-                    .on_press(UiMessage::Scheduled(scheduled::Msg::Open));
-                let close =
-                    icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::Scheduled(scheduled::Msg::Set(None)));
-                let blue = if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) };
-                let banner = container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center))
-                    .padding(2)
-                    .style(fill_box(blue, 20.0));
-                let banner = container(banner).padding(Padding::new(8.0).bottom(0.0).left(12.0));
-                let body = column![banner].push(external).push(line);
-                let body = container(body).width(Fill).style(fill_box(p.card, 18.0));
-                stack![body, dashed::dashes(hex(0x808080), 18.0, 1.0)].into()
-            }
-        };
+        })
+    }
 
-        let stickers = (self.pane().picker == Some(Picker::Sticker)).then(|| self.view_sticker_picker(st));
-        let extras = Column::new().push(gif_picker).push(stickers);
-        let line: Row<'a, UiMessage> = match (&self.recorder, &self.talk) {
-            (Some(r), _) => row![self.view_recorder(r), send],
-            (None, Some(t)) => row![self.view_talk(t), send],
-            (None, None) => row![plus, pill, send],
+    /// The pill of the composer around the quote, attachments and links above the text field, with the banner of
+    /// the time of a scheduled send above them.
+    fn view_composer_pill<'a>(
+        &'a self,
+        st: &BeeperStore,
+        external: Option<iced::widget::Container<'a, UiMessage>>,
+        line: Row<'a, UiMessage>,
+    ) -> El<'a> {
+        let p = &self.pal;
+        let Some((at, no_reply)) = self.pane().send_later else {
+            return container(column![].push(external).push(line)).width(Fill).style(fill_box(p.input, 18.0)).into();
         };
-        column![extras, line.spacing(8).align_y(Center).padding(8)].into()
+        let when = send_day(at, st.settings.pref("timeFormat") == 1);
+        let when = if no_reply { trf("%s if no reply", &[&when]) } else { when };
+        let details = row![
+            tinted(&COMPOSER_ICONS[6], 20.0, p.accent),
+            semi(when, 11.0).color(p.accent),
+            tinted(&CHEVRON_DOWN, 14.0, p.accent)
+        ];
+        let details = button(details.spacing(4).align_y(Center))
+            .bare(p.accent)
+            .on_press(UiMessage::Scheduled(scheduled::Msg::Open));
+        let close = icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::Scheduled(scheduled::Msg::Set(None)));
+        let blue = if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) };
+        let banner = container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center))
+            .padding(2)
+            .style(fill_box(blue, 20.0));
+        let banner = container(banner).padding(Padding::new(8.0).bottom(0.0).left(12.0));
+        let body = container(column![banner].push(external).push(line)).width(Fill).style(fill_box(p.card, 18.0));
+        stack![body, dashed::dashes(hex(0x808080), 18.0, 1.0)].into()
+    }
+}
+
+/// What the keys of the composer's text field read.
+struct ComposerKeys {
+    /// The keys of Send Message and Archive, Send Message and Insert New Line.
+    keys: [String; 3],
+    /// The keys of Undo Pending Send, while a send waits.
+    undo: Option<String>,
+    suggesting: bool,
+    /// The last pending attachment.
+    last: Option<usize>,
+    at_start: bool,
+    empty: bool,
+    formats: u16,
+}
+
+impl ComposerKeys {
+    /// The binding of a key in the focused composer. Desktop's `KeyboardHandlers`: Backspace in an empty composer,
+    /// or ← and ↑ at its start, focus the last pending attachment.
+    fn binding(&self, k: text_editor::KeyPress) -> Option<text_editor::Binding<UiMessage>> {
+        let custom = |m| Some(text_editor::Binding::Custom(UiMessage::Composer(m)));
+        let mods = |m: iced::keyboard::Modifiers| [m.control() || m.command(), m.shift(), m.alt()];
+        match k.key.as_ref() {
+            _ if !matches!(k.status, text_editor::Status::Focused { .. }) => None,
+            _ if self
+                .undo
+                .as_deref()
+                .zip(hotkey_key(&k.key))
+                .is_some_and(|(keys, key)| prefs::hotkey_has(keys, mods(k.modifiers), &key)) =>
+            {
+                custom(Msg::UndoSend)
+            }
+            Key::Named(Named::Enter) => {
+                match self.keys.iter().position(|keys| prefs::hotkey_has(keys, mods(k.modifiers), "enter")) {
+                    Some(0) => custom(Msg::SendAndArchive),
+                    Some(1) => custom(Msg::Submit),
+                    _ => Some(text_editor::Binding::Enter),
+                }
+            }
+            // The typed backtick, not the key under "~" on a US layout.
+            _ if k.modified_key.as_ref() == Key::Character("`") && !k.modifiers.command() => {
+                custom(Msg::Format(format::CODE))
+            }
+            Key::Named(key @ (Named::Backspace | Named::Delete))
+                if k.modifiers.jump() || k.modifiers.macos_command() =>
+            {
+                use text_editor::Motion;
+                let back = key == Named::Backspace;
+                let to = match (back, k.modifiers.macos_command()) {
+                    (true, false) => Motion::WordLeft,
+                    (false, false) => Motion::WordRight,
+                    (true, true) => Motion::Home,
+                    (false, true) => Motion::End,
+                };
+                custom(Msg::DeleteTo(to, back))
+            }
+            Key::Named(Named::ArrowUp | Named::ArrowDown) if self.suggesting => None,
+            Key::Named(Named::Backspace) if self.empty && k.modifiers.is_empty() => self
+                .last
+                .and_then(|i| custom(Msg::FocusAttachment(i)))
+                .or_else(|| text_editor::Binding::from_key_press(k)),
+            Key::Named(Named::ArrowLeft | Named::ArrowUp) if self.at_start && self.last.is_some() => {
+                self.last.and_then(|i| custom(Msg::FocusAttachment(i)))
+            }
+            Key::Named(Named::Escape) => None,
+            Key::Character(_) if k.modifiers.command() => self.command_binding(k),
+            _ => text_editor::Binding::from_key_press(k),
+        }
+    }
+
+    /// The binding of Ctrl and a letter: undo, redo, paste, and the marks that the chat supports.
+    fn command_binding(&self, k: text_editor::KeyPress) -> Option<text_editor::Binding<UiMessage>> {
+        let custom = |m| Some(text_editor::Binding::Custom(UiMessage::Composer(m)));
+        let i = match (k.key.to_latin(k.physical_key).map(|c| c.to_ascii_lowercase()), k.modifiers.shift()) {
+            (Some('z'), redo) => return custom(Msg::Undo(redo)),
+            (Some('y'), false) => return custom(Msg::Undo(true)),
+            (Some('v'), false) => return custom(Msg::Paste),
+            (Some('b'), false) => 0,
+            (Some('i'), false) => 1,
+            (Some('x'), true) => 2,
+            // Tiptap's `Mod-Shift-b` of the quote and `Mod-Alt-c` of the code block, whose extensions Desktop's
+            // composer loads only where the chat supports them (`Lx`). `Mod-Shift-7` and `Mod-Shift-8` of the lists
+            // come through the hotkeys.
+            (Some('b'), true) if self.formats & 1 << 6 != 0 => 6,
+            (Some('c'), false) if k.modifiers.alt() && self.formats & 1 << 8 != 0 => 8,
+            _ => return text_editor::Binding::from_key_press(k),
+        };
+        custom(Msg::Format(i))
     }
 }
 
