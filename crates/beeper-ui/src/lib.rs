@@ -2610,8 +2610,8 @@ struct Memo {
     counts: std::cell::RefCell<HashMap<String, usize>>,
     /// The virtual list keys of the chat rows by tab, filters and account.
     keys: std::cell::RefCell<HashMap<ListKey, Rc<[u64]>>>,
-    /// All chats newest first, and the lowercase title and search subtitle of each chat.
-    words: std::cell::RefCell<Option<Words>>,
+    /// All chats newest first.
+    by_activity: std::cell::RefCell<Option<Rc<[usize]>>>,
     /// The command bar finds for a query, its filters and its room.
     hits: std::cell::RefCell<Option<(HitsKey, Hits)>>,
     /// The unread threads of all chats, as the chat index and the root.
@@ -2641,9 +2641,6 @@ struct Found {
 }
 
 type Hits = Rc<Found>;
-
-/// All chats newest first, as indices of `chats`, and the lowercase title and search subtitle of each chat.
-type Words = (Rc<[usize]>, Rc<[String]>);
 
 pub struct BeeperGuiApp {
     pub pane: Pane,
@@ -3645,7 +3642,7 @@ impl BeeperGuiApp {
             self.memo.lists.borrow_mut().clear();
             self.memo.counts.borrow_mut().clear();
             self.memo.keys.borrow_mut().clear();
-            self.memo.words.take();
+            self.memo.by_activity.take();
             self.memo.hits.take();
             self.memo.threads.take();
             self.memo.counted.take();
@@ -5872,23 +5869,33 @@ impl BeeperGuiApp {
         if let Some((_, hits)) = memo.and_then(|m| m.hits.borrow().clone()).filter(|(k, _)| *k == key) {
             return hits;
         }
-        let q = raw.to_lowercase();
-        let (order, words) = self.chat_words(st);
-        let low = |i: usize| st.chats[i].flags & CHAT_LOW_PRIORITY != 0;
-        let shown = |i: &usize| {
-            let c = &st.chats[*i];
-            c.flags & CHAT_HIDDEN == 0 && (f.accounts.is_empty() || f.accounts.contains(&c.account_id))
+        let shown =
+            |c: &&Chat| c.flags & CHAT_HIDDEN == 0 && (f.accounts.is_empty() || f.accounts.contains(&c.account_id));
+        // Desktop's `computeStatePenalty`: a low priority chat, then a chat that All Chats does not show.
+        let penalty = |c: &Chat| {
+            let snoozed = reminders::snoozed_until(st, c).is_some() && !self.due_message_reminder(st, c);
+            (c.flags & CHAT_LOW_PRIORITY != 0, snoozed)
         };
-        // Desktop's `sortResults`: a chat that matches by its network only comes last, then a low priority chat.
-        let mut titled: Vec<usize> = match q.is_empty() {
-            true => Vec::new(),
-            false => order.iter().copied().filter(shown).filter(|&i| words[i].contains(&q)).collect(),
+        // Desktop's `threadSearcher`, whose index does not take fuzzy matches, and its `sortResults`: a chat that
+        // matches by its network only comes last, then by the penalty, newest first.
+        let find = |people: bool| -> Vec<usize> {
+            let found = beeper_core::chat_index::search(st.chats.iter().filter(shown), raw, people, false);
+            let mut found: Vec<(&Chat, bool)> = found.into_iter().map(|(c, hits)| (c, !people && hits == 0)).collect();
+            found.sort_by(|(a, a_net), (b, b_net)| {
+                (a_net, penalty(a))
+                    .cmp(&(b_net, penalty(b)))
+                    .then_with(|| b.last_activity.cmp(&a.last_activity))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            found.into_iter().map(|(c, _)| st.chat_idx(&c.id)).collect()
         };
-        titled.sort_by_key(|&i| (!words[i].split('\0').next().is_some_and(|t| t.contains(&q)), low(i)));
-        let chats_shown = !q.is_empty() && room.is_none() && f.media.is_empty();
-        let people = |i: &usize| chats_shown && shown(i) && search::participants_match(&st.chats[*i], raw);
-        let mut in_groups: Vec<usize> = order.iter().copied().filter(people).collect();
-        in_groups.sort_by_key(|&i| low(i));
+        let mut titled = find(false);
+        let chats_shown = !raw.is_empty() && room.is_none() && f.media.is_empty();
+        let mut in_groups = if chats_shown { find(true) } else { Vec::new() };
+        // Desktop's `executeSearchThreads`: without a chat, the chat whose ID is the query.
+        if titled.is_empty() && in_groups.is_empty() {
+            titled.extend(st.resolve_chat_idx(raw).filter(|&i| st.chats[i].id == raw && shown(&&st.chats[i])));
+        }
         // Desktop's `hasTextSearchQuery`.
         let text_query = raw.chars().count() > 1;
         let now = now_unix_millis();
@@ -5942,20 +5949,19 @@ impl BeeperGuiApp {
         hits
     }
 
-    /// All chats newest first, as indices of `chats`, and the lowercase title and search subtitle of each chat.
-    fn chat_words(&self, st: &BeeperStore) -> Words {
+    /// All chats newest first, as indices of `chats`.
+    fn chats_by_activity(&self, st: &BeeperStore) -> Rc<[usize]> {
         let memo = self.memo();
-        if let Some(words) = memo.and_then(|m| m.words.borrow().clone()) {
-            return words;
+        if let Some(order) = memo.and_then(|m| m.by_activity.borrow().clone()) {
+            return order;
         }
         let mut order: Vec<usize> = (0..st.chats.len()).collect();
         order.sort_by(|&a, &b| st.chats[b].last_activity.cmp(&st.chats[a].last_activity));
-        let words = st.chats.iter().map(|c| format!("{}\0{}", c.title, chat_search_subtitle(c)).to_lowercase());
-        let words = (order.into(), words.collect());
+        let order: Rc<[usize]> = order.into();
         if let Some(m) = memo {
-            *m.words.borrow_mut() = Some(words.clone());
+            *m.by_activity.borrow_mut() = Some(order.clone());
         }
-        words
+        order
     }
 
     /// Desktop's `SwitchChatHoverCard`: "Switch Chat" and a row for each chat of the person, with the avatar, the

@@ -3,6 +3,7 @@ use crate::http::{
     http_date, parse_query, read_message, read_ws_frame, weak_etag, write_ws_frame, HttpMessage, StatusCode,
 };
 use beeper_core::bridge_login;
+use beeper_core::chat_index as search;
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
     cloud_bridge, millis_from_rfc3339, now_rfc3339_millis, CentralConfig, APP_BUNDLE_ID, APP_NAME, APP_VERSION,
@@ -28,7 +29,6 @@ mod mcp;
 mod new_chat;
 mod proxy;
 mod routes;
-mod search;
 mod view;
 
 struct Response {
@@ -1959,7 +1959,7 @@ fn chat_search<'a>(st: &'a BeeperStore, s: &ChatSearch) -> CursorPage<view::ApiC
     let pool = st.chats.iter().filter(|c| c.flags & CHAT_INACTIVE_UNION == 0).filter(accounts);
     let found: Vec<(&Chat, usize)> = match s.query {
         "" => pool.map(|c| (c, 0)).collect(),
-        q => search::search(pool, q, s.people),
+        q => search::search(pool, q, s.people, true),
     };
     let (mut chats, mut merged) = (Vec::new(), Vec::<(&Chat, usize)>::new());
     for (c, hits) in found {

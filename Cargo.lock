@@ -481,12 +481,9 @@ name = "beeper-api"
 version = "4.3.308"
 dependencies = [
  "beeper-core",
- "foldhash 0.2.0",
  "serde",
  "serde_json",
  "tokio",
- "unicode-normalization",
- "unicode-properties",
  "url",
 ]
 
@@ -497,6 +494,7 @@ dependencies = [
  "aes",
  "chrono",
  "ctr",
+ "foldhash 0.2.0",
  "futures-util",
  "image",
  "imagesize",
@@ -513,6 +511,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "unicode-normalization",
+ "unicode-properties",
  "vodozemac",
 ]
 
