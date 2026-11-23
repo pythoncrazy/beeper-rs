@@ -215,6 +215,7 @@ impl BeeperGuiApp {
             .composer_key(&key, mods)
             .or_else(|| self.focus_keys(&key, mods))
             .or_else(|| self.palette_key(&key, mods))
+            .or_else(|| self.palette_search_key(&key, mods))
             .or_else(|| self.navigation_key(&key, mods))
             .or_else(|| self.dialog_key(&key, mods))
             .or_else(|| self.selection_key(&key, mods))
@@ -337,6 +338,13 @@ impl BeeperGuiApp {
         self.cmd_index = (self.cmd_index + by) % n;
         self.command_list.reveal(cmds[self.cmd_index].key());
         Some(locate(format!("cmd-{}", self.cmd_index), commands::COMMANDS, Align::Nearest))
+    }
+
+    /// The arrows and Enter of the search results of the command palette: Desktop's `CommandBarContainer` of the
+    /// search, whose filter menus take the keys while open.
+    fn palette_search_key(&mut self, key: &Key, mods: Modifiers) -> Option<Task<UiMessage>> {
+        let searching = self.show_command_palette && !self.cmd_bar_commands_mode && self.search_select.is_none();
+        (searching && mods.is_empty()).then(|| self.search_key(key)).flatten()
     }
 
     /// Escape, and the arrows and Enter of the chat list, of the thread pane and of the messages, where ↑ can edit
