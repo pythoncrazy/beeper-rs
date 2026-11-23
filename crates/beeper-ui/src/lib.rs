@@ -4210,15 +4210,14 @@ impl BeeperGuiApp {
             && (!self.pane().selected_msgs.is_empty() || self.pane().composer.is_empty())
     }
 
-    /// Leave the selected chat for `next`: save its draft, mark it read, and drop its elapsed reminder.
+    /// Leave the selected chat for `next`: save its draft, and drop its elapsed reminder (`onNavigateAwayFrom`).
+    /// Like Desktop's `onThreadDeselected`, leaving does not read the chat: what came in while you were not there,
+    /// or below the view, stays unread.
     fn leave_chat(&self, st: &mut BeeperStore, next: Option<&str>) {
         let Some(prev) = self.pane().selected_chat_id.as_deref().filter(|&p| Some(p) != next) else { return };
         save_draft(st, self.pane());
         st.leave_draft(prev);
         let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
-        if !st.incognito() && !st.chats[idx].flag(ChatFlag::MarkedUnread) {
-            st.mark_chat_read(prev, true);
-        }
         if self.expired(&st.chats[idx]) {
             st.set_reminder(idx, None);
         }

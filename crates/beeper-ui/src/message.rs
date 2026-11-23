@@ -677,7 +677,10 @@ pub(crate) fn divider_at(st: &BeeperStore, chat: &Chat, msgs: &[&Message]) -> Op
     let read = chat.last_read_message_sort_key.as_ref().filter(|k| Some(*k) < last);
     let after = read.and_then(|r| msgs.windows(2).position(|w| w[0].sort_key <= *r && w[1].sort_key > *r));
     let at = after.map(|i| i + 1);
-    let at = at.or_else(|| msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)));
+    // The unread marks of the messages count only while the chat is unread: a read through the bottom of the
+    // timeline leaves them, and leaving the chat reads nothing.
+    let marked = |m: &&&Message| m.is_deleted != Some(true) && m.is_unread == Some(true);
+    let at = at.or_else(|| msgs.iter().position(|m| chat.is_unread() && marked(&m)));
     at.map(|i| msgs[i].id.clone())
 }
 
