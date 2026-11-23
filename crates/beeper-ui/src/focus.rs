@@ -6,10 +6,10 @@
 //! text fields of the window in their layout order, which is Desktop's DOM order.
 
 use super::*;
-use iced::advanced::layout::{self, Layout};
+use iced::advanced::layout::Layout;
 use iced::advanced::widget::operation::{Focusable, Operation, Outcome, Scrollable};
 use iced::advanced::widget::{self as advanced, Widget};
-use iced::advanced::{overlay, Clipboard, Shell};
+use iced::advanced::{Clipboard, Shell};
 use iced::{Rectangle, Renderer};
 
 /// Tells when the text field inside `content` takes or loses the keyboard focus, like the DOM's `focus` and `blur`
@@ -42,15 +42,17 @@ impl Operation for HasFocus {
 }
 
 impl Widget<UiMessage, Theme, Renderer> for Watch<'_> {
-    crate::delegate::delegate!(children, diff, size, layout, operate, mouse_interaction, draw, overlay(UiMessage));
-
-    fn tag(&self) -> advanced::tree::Tag {
-        advanced::tree::Tag::of::<Watched>()
-    }
-
-    fn state(&self) -> advanced::tree::State {
-        advanced::tree::State::new(Watched::default())
-    }
+    crate::delegate::delegate!(
+        state(Watched),
+        children,
+        diff,
+        size,
+        layout,
+        operate,
+        mouse_interaction,
+        draw,
+        overlay(UiMessage)
+    );
 
     fn update(
         &mut self,
@@ -272,7 +274,16 @@ struct Mark(Keys);
 struct Trap;
 
 impl Widget<UiMessage, Theme, Renderer> for Target<'_> {
-    crate::delegate::delegate!(children, diff, size, layout, mouse_interaction, draw, overlay(UiMessage));
+    crate::delegate::delegate!(
+        children,
+        diff,
+        size,
+        layout,
+        update(UiMessage),
+        mouse_interaction,
+        draw,
+        overlay(UiMessage)
+    );
 
     fn operate(
         &mut self,
@@ -285,42 +296,24 @@ impl Widget<UiMessage, Theme, Renderer> for Target<'_> {
         operation.custom(Some(&self.id), layout.bounds(), &mut Mark(self.keys.clone()));
         self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
     }
-
-    fn update(
-        &mut self,
-        tree: &mut advanced::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, UiMessage>,
-        viewport: &Rectangle,
-    ) {
-        let content = &mut tree.children[0];
-        self.content.as_widget_mut().update(content, event, layout, cursor, renderer, clipboard, shell, viewport);
-    }
 }
 
 /// A dialog in a window that keeps the focus inside it (see [`Trap`]).
 pub fn trap<'a>(content: impl Into<El<'a>>) -> El<'a> {
-    struct Trapped<'a>(El<'a>);
+    struct Trapped<'a> {
+        content: El<'a>,
+    }
     impl Widget<UiMessage, Theme, Renderer> for Trapped<'_> {
-        fn children(&self) -> Vec<advanced::Tree> {
-            vec![advanced::Tree::new(&self.0)]
-        }
-
-        fn diff(&self, tree: &mut advanced::Tree) {
-            tree.diff_children(std::slice::from_ref(&self.0));
-        }
-
-        fn size(&self) -> Size<Length> {
-            self.0.as_widget().size()
-        }
-
-        fn layout(&mut self, tree: &mut advanced::Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-            self.0.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
-        }
+        crate::delegate::delegate!(
+            children,
+            diff,
+            size,
+            layout,
+            update(UiMessage),
+            mouse_interaction,
+            draw,
+            overlay(UiMessage)
+        );
 
         fn operate(
             &mut self,
@@ -330,60 +323,10 @@ pub fn trap<'a>(content: impl Into<El<'a>>) -> El<'a> {
             operation: &mut dyn advanced::Operation,
         ) {
             operation.custom(None, layout.bounds(), &mut Trap);
-            self.0.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
-        }
-
-        fn update(
-            &mut self,
-            tree: &mut advanced::Tree,
-            event: &Event,
-            layout: Layout<'_>,
-            cursor: mouse::Cursor,
-            renderer: &Renderer,
-            clipboard: &mut dyn Clipboard,
-            shell: &mut Shell<'_, UiMessage>,
-            viewport: &Rectangle,
-        ) {
-            let content = &mut tree.children[0];
-            self.0.as_widget_mut().update(content, event, layout, cursor, renderer, clipboard, shell, viewport);
-        }
-
-        fn mouse_interaction(
-            &self,
-            tree: &advanced::Tree,
-            layout: Layout<'_>,
-            cursor: mouse::Cursor,
-            viewport: &Rectangle,
-            renderer: &Renderer,
-        ) -> mouse::Interaction {
-            self.0.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
-        }
-
-        fn draw(
-            &self,
-            tree: &advanced::Tree,
-            renderer: &mut Renderer,
-            theme: &Theme,
-            style: &iced::advanced::renderer::Style,
-            layout: Layout<'_>,
-            cursor: mouse::Cursor,
-            viewport: &Rectangle,
-        ) {
-            self.0.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
-        }
-
-        fn overlay<'b>(
-            &'b mut self,
-            tree: &'b mut advanced::Tree,
-            layout: Layout<'b>,
-            renderer: &Renderer,
-            viewport: &Rectangle,
-            translation: Vector,
-        ) -> Option<overlay::Element<'b, UiMessage, Theme, Renderer>> {
-            self.0.as_widget_mut().overlay(&mut tree.children[0], layout, renderer, viewport, translation)
+            self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
         }
     }
-    Element::new(Trapped(content.into()))
+    Element::new(Trapped { content: content.into() })
 }
 
 /// A stop of a window: a text field, or a control with its keys.

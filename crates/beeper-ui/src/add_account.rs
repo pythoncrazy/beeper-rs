@@ -1063,6 +1063,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fuzz::clicks;
     use crate::fuzz::task_messages as run;
 
     #[test]
@@ -1481,9 +1482,7 @@ mod tests {
         let m = click(&app, id, "+44");
         let _ = send(&mut app, m).await;
         // A press on the selector only toggles the dropdown, and a press on the input closes it like Desktop's blur.
-        let mut sim = iced_test::simulator(app.view(id));
-        sim.click("+44").expect("the selector");
-        let msgs: Vec<_> = sim.into_messages().collect();
+        let msgs: Vec<UiMessage> = clicks(app.view(id), "+44");
         assert!(matches!(msgs.as_slice(), [UiMessage::AddAccount(_, AddMsg::Phone(_, PhoneMsg::Toggle))]));
         let mut sim = iced_test::simulator(app.view(id));
         sim.click(iced::widget::Id::from(phone::input_id(id, field))).expect("the input");
