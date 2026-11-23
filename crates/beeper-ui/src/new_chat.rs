@@ -560,7 +560,8 @@ impl BeeperGuiApp {
         };
         // Desktop's `CommandBarUser`.
         let person = |a: &String, u: &User| -> El<'a> {
-            let small = |s: String| txt(s, 12.0).color(Color { a: 0.7, ..p.strong });
+            // `.search-participant .small` is 12 px.
+            let small = |s: String| crate::style::fixed(s, 12.0, Weight::Normal).color(Color { a: 0.7, ..p.strong });
             let bare = [&u.full_name, &u.username, &u.phone_number, &u.email].iter().all(|f| f.is_none());
             let line = row![self.face(u.img_url.as_deref(), person_name(u), 28.0, 0.0)]
                 .push(u.full_name.clone().or_else(|| bare.then(|| u.id.clone())).map(|n| med(n, 13.0).color(p.strong)))

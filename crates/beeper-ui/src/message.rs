@@ -3363,7 +3363,8 @@ impl BeeperGuiApp {
                     (shown, UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("vcard:{kind} {s}"))))
                 }
             };
-            let text = txt(label, 12.0).line_height(Pixels(rem(16.0))).color(if reach { fg } else { p.link });
+            let text = crate::style::fixed(label, 12.0, Weight::Normal).line_height(Pixels(rem(16.0)));
+            let text = text.color(if reach { fg } else { p.link });
             button(text).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(msg).into()
         };
         let body = crate::contact_card(p, card, fg, 10, &entry);
@@ -3375,7 +3376,7 @@ impl BeeperGuiApp {
             .on_press(UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))));
         let body = body.push(container(download).padding(Padding::ZERO.top(12.0)));
         // `.contact-attachment` is as wide as its details, at least 200 px, and its button stretches across it.
-        let w = |s: &str, size: f32, weight| crate::style::text_width(s, size, weight);
+        let w = |s: &str, size: f32, weight| crate::style::fixed_width(s, size, weight);
         let entries =
             card.phones.iter().take(10).map(|n| w(&format!("{} →", crate::fmt_phone(n)), 12.0, Weight::Normal));
         let entries = entries.chain(card.emails.iter().take(10).map(|e| w(&format!("{e} →"), 12.0, Weight::Normal)));

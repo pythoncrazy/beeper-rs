@@ -745,7 +745,13 @@ impl BeeperGuiApp {
         let k = crate::voice::RATES.iter().position(|&r| r == v.rate).expect("a rate of the list");
         let next = crate::voice::RATES[(k + 1) % crate::voice::RATES.len()];
         let speed = self.video_button(v, &SPEEDS[k], UiMessage::Video(Msg::Rate(next)));
-        let time = crate::semi(format!("{}/{}", mmss(v.pos().min(secs)), mmss(secs)), 11.0).color(Color::WHITE);
+        // `.video-time-display` is 11 px.
+        let time = crate::style::fixed(
+            format!("{}/{}", mmss(v.pos().min(secs)), mmss(secs)),
+            11.0,
+            iced::font::Weight::Semibold,
+        );
+        let time = time.color(Color::WHITE);
         let bar = row![self.video_skips(v).spacing(12), video_progress(v), speed, time].spacing(12).align_y(Center);
         let bar = mouse_area(container(bar).padding([8, 12])).on_press(UiMessage::Noop);
         Some(container(bar).align_bottom(Fill).padding(Padding::new(8.0).top(0.0).bottom(28.0)).into())

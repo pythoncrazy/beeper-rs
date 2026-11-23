@@ -1415,9 +1415,13 @@ impl BeeperGuiApp {
                     let mut name = name.unwrap_or_else(|| tr("Unnamed Client").into());
                     name.extend(c.version.map(|v| format!(" v{v}")));
                     let tag = t.scopes.iter().any(|s| s == beeper_core::connect::WRITE).then(|| {
-                        container(txt(tr("Sensitive actions"), 12.0).line_height(Pixels(rem(14.0))).color(p.text))
-                            .padding([1, 4])
-                            .style(fill_box(p.chip, 4.0))
+                        container(
+                            crate::style::fixed(tr("Sensitive actions"), 12.0, Weight::Normal)
+                                .line_height(Pixels(rem(14.0)))
+                                .color(p.text),
+                        )
+                        .padding([1, 4])
+                        .style(fill_box(p.chip, 4.0))
                     });
                     let created = distance(now - t.created_at);
                     let when = match t.expires_at {
@@ -1486,7 +1490,10 @@ impl BeeperGuiApp {
         let body = |t: String, color| txt(t, 13.0).color(color);
         let h4 = |t| container(body(tr(t).into(), p.muted)).padding([5, 0]);
         let Some(all) = s.all.as_deref() else {
-            let loading = container(txt(tr("Loading..."), 14.0).color(p.muted)).center_x(Fill).padding(40);
+            // `StoragePrefsSubView`'s loading text, warning, buttons, cache subtitle and room counts are in px.
+            let loading = container(crate::style::fixed(tr("Loading..."), 14.0, Weight::Normal).color(p.muted))
+                .center_x(Fill)
+                .padding(40);
             return column![h4("Storage"), loading].into();
         };
         let totals = storage_totals(all);
@@ -1511,12 +1518,14 @@ impl BeeperGuiApp {
             |inner: El<'a>| container(inner).width(Fill).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
         let link = |label: &'static str, color: Color, size: f32, on: bool, msg| {
             let color = if on { color } else { Color { a: 0.4, ..color } };
-            button(txt(tr(label), size).line_height(1.4).color(color)).bare(color).on_press_maybe(on.then_some(msg))
+            let label = crate::style::fixed(tr(label), size, Weight::Normal).line_height(1.4).color(color);
+            button(label).bare(color).on_press_maybe(on.then_some(msg))
         };
         let warning = || {
             let warn =
                 "⚠️ This will delete local data. You can recover content by logging out and back into your accounts.";
-            container(txt(tr(warn), 12.0).line_height(1.4).color(p.muted).width(Fill).align_x(Center)).padding([0, 16])
+            let warn = crate::style::fixed(tr(warn), 12.0, Weight::Normal).line_height(1.4).color(p.muted);
+            container(warn.width(Fill).align_x(Center)).padding([0, 16])
         };
         let busy = matches!(s.clearing, Some(0 | 1));
         let label = |which| if s.clearing == Some(which) { "Clearing..." } else { "Clear Storage..." };
@@ -1534,7 +1543,7 @@ impl BeeperGuiApp {
         let cache = row![
             column![
                 body(tr("Clear All Cache").into(), p.text),
-                txt(tr("Clears unused previews, old drafts, and temporary data to free up space. Your messages are safe."), 13.0)
+                crate::style::fixed(tr("Clears unused previews, old drafts, and temporary data to free up space. Your messages are safe."), 13.0, Weight::Normal)
                     .line_height(1.4)
                     .color(p.muted)
             ]
@@ -1572,7 +1581,7 @@ impl BeeperGuiApp {
                     .rotation(iced::Radians(if open { std::f32::consts::PI } else { 0.0 }))
                     .style(move |_, _| svg::Style { color: Some(p.muted) });
                 let stats = row![
-                    txt(counts.join(" | "), 13.0).color(p.muted),
+                    crate::style::fixed(counts.join(" | "), 13.0, Weight::Normal).color(p.muted),
                     semi(human_size(bytes), 13.0).color(p.text).width(80).align_x(iced::alignment::Horizontal::Right)
                 ]
                 .spacing(16)
@@ -1777,7 +1786,8 @@ impl BeeperGuiApp {
             column![head].extend(rows).padding(Padding::ZERO.top(12.8)).into()
         });
         let empty = shown.is_empty().then(|| {
-            container(txt(tr("No results"), 16.0).color(p.fg.scale_alpha(0.35)))
+            // `.hotkeys-modal .hotkey-search-empty` is 16 px.
+            container(crate::style::fixed(tr("No results"), 16.0, Weight::Normal).color(p.fg.scale_alpha(0.35)))
                 .center_x(Fill)
                 .height(Fill)
                 .center_y(Fill)
@@ -1798,7 +1808,9 @@ impl BeeperGuiApp {
             .style(outline_input(p));
         let rule = p.fg.scale_alpha(if self.hotkeys_scrolled { 0.1 } else { 0.0 });
         let card = column![
-            container(bold(tr("Keyboard Shortcuts"), 24.0).color(p.text)).padding([8.0, 24.0]),
+            // `.modal h3` is 24 px.
+            container(crate::style::fixed(tr("Keyboard Shortcuts"), 24.0, Weight::Bold).color(p.text))
+                .padding([8.0, 24.0]),
             container(search).padding(Padding { top: 4.0, right: 22.4, bottom: 10.0, left: 22.4 }),
             container(Space::new()).width(Fill).height(1).style(fill_box(rule, 0.0)),
             list,

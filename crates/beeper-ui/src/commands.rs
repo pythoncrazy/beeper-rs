@@ -878,7 +878,8 @@ impl BeeperGuiApp {
                     .padding([8, 24])
             });
             let empty =
-                column![crate::ic(crate::icon::SEARCH, 24.0).color(p.sub), txt(tr("No results"), 14.0).color(p.sub)]
+                // `.command-bar .empty` is 14 px.
+                column![crate::ic(crate::icon::SEARCH, 24.0).color(p.sub), crate::style::fixed(tr("No results"), 14.0, iced::font::Weight::Normal).color(p.sub)]
                     .spacing(8)
                     .align_x(Center);
             return column![].push(hint).push(container(empty).center(Fill)).height(Fill).into();
@@ -961,7 +962,11 @@ impl BeeperGuiApp {
         let u = c.user.as_ref().expect("a user");
         let name = u.full_name.clone().unwrap_or_else(|| u.id.clone());
         let small = [crate::handle(u), u.phone_number.as_deref().map(crate::fmt_phone), u.email.clone()];
-        let small = small.into_iter().flatten().map(|s| txt(s, 12.0).color(p.strong.scale_alpha(0.7)).into());
+        // `.search-participant .small` is 12 px.
+        let small = small
+            .into_iter()
+            .flatten()
+            .map(|s| crate::style::fixed(s, 12.0, iced::font::Weight::Normal).color(p.strong.scale_alpha(0.7)).into());
         let title = row![semi(name.clone(), 13.0).color(p.strong)].extend(small);
         let face = self.face(u.img_url.as_deref(), &name, 28.0, 0.0);
         let right = c.account.as_deref().map(|a| {

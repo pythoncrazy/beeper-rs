@@ -4520,6 +4520,50 @@ fn message_times_keep_their_px_size_like_desktop() {
     }
 }
 
+/// Text that Desktop sets in px keeps its size at any Font size: the filter count (`.FilterButton-module__count`,
+/// 11 px), the empty command bar (`.command-bar .empty`, 14 px), the title and the empty list of the Keyboard
+/// Shortcuts (`.modal h3`, 24 px, and `.hotkey-search-empty`, 16 px) and the tiles of the chat theme
+/// (`.ChatAppearancePicker-module__tileNone`, 11 px).
+#[test]
+fn px_text_keeps_its_size_like_desktop() {
+    use crate::style::fixed_width;
+    let mut app = demo_app("font-size-px");
+    let main = app.main_window.expect("the main window");
+    let note = app.store.read().chats.iter().find(|c| c.title == "Note to self").expect("the demo note").id.clone();
+    let width =
+        |sim: &mut Simulator<'_, UiMessage>, s: &str| sim.find(s).unwrap_or_else(|_| panic!("{s}")).bounds().width;
+    // The widths of each text at each font size.
+    let mut widths: Vec<[f32; 5]> = Vec::new();
+    for font in [9, 13, 24] {
+        font_and_zoom(&mut app, font, 100);
+        app.set_filters(0b11);
+        let count = width(&mut Simulator::with_size(Default::default(), app.pane.size, app.view(main)), "2");
+        app.set_filters(0);
+        let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+        let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("zzqqxx".into())));
+        let empty = width(&mut Simulator::with_size(Default::default(), app.pane.size, app.view(main)), "No results");
+        let _ = app.update(UiMessage::CloseModals);
+        let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Modal(Some("zzqqxx".into()))));
+        let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+        let (title, none) = (width(&mut sim, "Keyboard Shortcuts"), width(&mut sim, "No results"));
+        drop(sim);
+        let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Modal(None)));
+        let mut sim = Simulator::with_size(Default::default(), Size::new(400.0, 800.0), app.view_chat_theme(&note));
+        widths.push([count, empty, title, none, width(&mut sim, "None")]);
+    }
+    assert!(widths.iter().all(|w| *w == widths[0]), "the same widths at fonts 9, 13 and 24: {widths:?}");
+    let px = [
+        fixed_width("2", 11.0, Weight::Normal),
+        fixed_width("No results", 14.0, Weight::Normal),
+        fixed_width("Keyboard Shortcuts", 24.0, Weight::Bold),
+        fixed_width("No results", 16.0, Weight::Normal),
+        fixed_width("None", 11.0, Weight::Normal),
+    ];
+    for (w, px) in widths[0].iter().zip(px) {
+        assert!((w - px).abs() < 2.0, "{w} is the width at its px size {px}");
+    }
+}
+
 #[test]
 fn search_finds_custom_items_like_desktop() {
     let mut app = demo_app("search-custom");
