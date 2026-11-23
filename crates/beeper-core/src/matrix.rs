@@ -49,6 +49,7 @@ use matrix_sdk::ruma::{OwnedDeviceId, OwnedEventId, OwnedUserId};
 use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, RoomState, SessionMeta, SessionTokens};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 use tokio::sync::oneshot;
 
 pub const UTD_TEXT: &str = "Waiting for message";
@@ -367,8 +368,8 @@ fn timers(features: Option<&Value>, levels: &Value, me: &str) -> Option<Timers> 
 
 /// `m.room.power_levels` of the room, where the creators of a room version that privileges them (12 and up) outrank
 /// everyone: they have no level in it, and the user who made a group could not rename it or remove a member.
-async fn power_levels(room: &Room) -> Value {
-    let mut levels = state(room, "m.room.power_levels").await.unwrap_or(Value::Null);
+fn power_levels(room: &Room, reads: &RoomReads) -> Value {
+    let mut levels = reads.levels.clone().unwrap_or(Value::Null);
     let rules = room.version().and_then(|v| v.rules());
     if rules.is_some_and(|r| r.authorization.explicitly_privilege_room_creators) {
         for creator in room.creators().into_iter().flatten() {
@@ -386,6 +387,98 @@ pub(crate) struct Known {
     dm: bool,
 }
 
+/// What the chat of a room reads from the SDK's store besides the members: its state events and its room account data.
+/// Each is a read of the SDK's SQLite on a blocking thread, about 20 of them for a chat. Only a sync changes them, so
+/// the sync of a room that brings neither keeps them from the last sync of the room ([`RoomReadsCache`]).
+#[derive(Clone)]
+pub(crate) struct RoomReads {
+    /// The whole `m.room.create` event, whose time dates the chat, or null in an invite without it.
+    create: Value,
+    note: bool,
+    bridge: Value,
+    features: Option<Value>,
+    tombstone: Option<Value>,
+    /// The content of `m.room.power_levels`, without the creators that [`power_levels`] adds.
+    levels: Option<Value>,
+    disappearing: Option<Value>,
+    tags: matrix_sdk::ruma::events::tag::Tags,
+    reminder: Option<Value>,
+    snoozed: Option<Value>,
+    follows: Option<Value>,
+    sound: Option<Value>,
+    personal_name: Option<Value>,
+    personal_avatar: Option<Value>,
+    done: Option<Value>,
+    /// The names of the senders that [`op`] looked up, from their member state.
+    names: HashMap<String, Option<String>>,
+}
+
+impl RoomReads {
+    /// The `m.room.create` event of `room`.
+    async fn create(room: &Room) -> Option<Value> {
+        states(room, StateEventType::RoomCreate).await.into_iter().next()
+    }
+
+    async fn read(room: &Room, create: Option<Value>) -> Self {
+        Self {
+            create: create.unwrap_or(Value::Null),
+            note: state(room, "com.beeper.rooms.note_to_self").await.is_some(),
+            bridge: state(room, "m.bridge").await.unwrap_or(Value::Null),
+            features: state(room, "com.beeper.room_features").await,
+            tombstone: state(room, "m.room.tombstone").await,
+            levels: state(room, "m.room.power_levels").await,
+            disappearing: state(room, DISAPPEARING_TIMER).await,
+            tags: room.tags().await.expect("read room tags").unwrap_or_default(),
+            reminder: account_data(room, REMINDER).await,
+            snoozed: account_data(room, SNOOZED).await,
+            follows: account_data(room, THREAD_FOLLOWS).await,
+            sound: account_data(room, NOTIFICATION_SOUND).await,
+            personal_name: account_data(room, PERSONAL_NAME).await,
+            personal_avatar: account_data(room, PERSONAL_AVATAR).await,
+            done: account_data(room, "com.beeper.inbox.done").await,
+            names: HashMap::new(),
+        }
+    }
+
+    fn chat_id(&self, room: &Room) -> String {
+        if self.note {
+            NOTE_CHAT_ID.into()
+        } else {
+            room.room_id().to_string()
+        }
+    }
+}
+
+/// The [`RoomReads`] of the rooms that synced. [`on_sync`] drops those of the rooms whose state or account data a
+/// response changes, and a read that began before such a response is not kept, so a kept read is never older than the
+/// last change of its room.
+#[derive(Default)]
+pub struct RoomReadsCache {
+    /// The count of the responses that changed rooms.
+    epoch: u64,
+    /// The `epoch` of the last response that changed each room.
+    changed: HashMap<String, u64>,
+    rooms: HashMap<String, Arc<RoomReads>>,
+}
+
+impl RoomReadsCache {
+    /// A sync response, which the SDK saved, changes the state or the account data of `rooms`.
+    fn changed(&mut self, rooms: impl IntoIterator<Item = String>) {
+        self.epoch += 1;
+        for room in rooms {
+            self.rooms.remove(&room);
+            self.changed.insert(room, self.epoch);
+        }
+    }
+
+    /// Keeps the `reads` of `room` that began at `epoch`, unless a response changed the room after that.
+    fn put(&mut self, room: &str, epoch: u64, reads: Arc<RoomReads>) {
+        if self.changed.get(room).is_none_or(|&c| c <= epoch) {
+            self.rooms.insert(room.into(), reads);
+        }
+    }
+}
+
 /// The `MEMBER_ACTIONS` bits that the room features allow, all of them without room features.
 fn member_actions(features: Option<&Value>) -> u8 {
     features.map_or(ALL_MEMBER_ACTIONS, |f| {
@@ -396,17 +489,17 @@ fn member_actions(features: Option<&Value>) -> u8 {
 
 /// The participants of a room from its members, its title and whether it is a DM, like Desktop's `buildTitle` and
 /// thread type.
-async fn members(room: &Room, bridge: &Value) -> (Vec<User>, String, bool) {
+async fn members(room: &Room, reads: &RoomReads) -> (Vec<User>, String, bool) {
+    let bridge = &reads.bridge;
     let service = room.service_members().unwrap_or_default();
     let bot = s(&bridge["bridgebot"]);
     let me = room.own_user_id();
     // Desktop lists the invited members too, as pending (`isPending`).
     let members =
         room.members_no_sync(RoomMemberships::JOIN | RoomMemberships::INVITE).await.expect("read room members");
-    let levels = power_levels(room).await;
+    let levels = power_levels(room, reads);
     let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
-    let features = state(room, "com.beeper.room_features").await;
-    let member_actions = member_actions(features.as_ref());
+    let member_actions = member_actions(reads.features.as_ref());
     let contents: HashMap<String, Value> = states(room, StateEventType::RoomMember)
         .await
         .into_iter()
@@ -448,9 +541,8 @@ async fn members(room: &Room, bridge: &Value) -> (Vec<User>, String, bool) {
     items.sort_by(crate::models::member_order);
     // Desktop's thread type (`rT`): a note to self is single, a declared DM is single up to two people, and a room
     // with a name or a declared group DM is a group.
-    let note = state(room, "com.beeper.rooms.note_to_self").await.is_some();
     let named = room.name().is_some_and(|n| !n.is_empty());
-    let dm = note
+    let dm = reads.note
         || match bridge["com.beeper.room_type.v2"].as_str() {
             Some("dm") => items.len() <= 2,
             Some("group_dm") => false,
@@ -508,24 +600,25 @@ impl Globals {
 
 async fn chat(
     room: &Room,
+    reads: &RoomReads,
     accounts: &[BridgeAccountInfo],
     rules: &Value,
     known: Option<Known>,
     globals: &Globals,
 ) -> Chat {
-    let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
+    let bridge = &reads.bridge;
     let (mut items, title, dm) = match known {
         Some(k) => (k.participants, k.title, k.dm),
-        None => members(room, &bridge).await,
+        None => members(room, reads).await,
     };
     let me = room.own_user_id();
-    let features = state(room, "com.beeper.room_features").await;
-    let (file, room_features) = file_features(features.as_ref(), &bridge);
-    let tombstone = state(room, "m.room.tombstone").await;
-    let levels = power_levels(room).await;
+    let features = &reads.features;
+    let (file, room_features) = file_features(features.as_ref(), bridge);
+    let tombstone = &reads.tombstone;
+    let levels = power_levels(room, reads);
     let member_actions = member_actions(features.as_ref());
-    let tags = room.tags().await.expect("read room tags").unwrap_or_default();
-    let account_id = account_id(&bridge, accounts);
+    let tags = &reads.tags;
+    let account_id = account_id(bridge, accounts);
     // Kept members come from a chat that SQLite loaded without their `manage` bits, which the power levels give.
     for u in &mut items {
         u.manage = manage(&levels, member_actions, me.as_str(), &u.id, !bridge.is_null());
@@ -536,10 +629,10 @@ async fn chat(
     }
     let mut chat = Chat {
         id: room.room_id().to_string(),
-        is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
+        is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, bridge, !dm)),
         inbox_group: !dm && bridge["com.beeper.room_type.v2"] != "group_dm",
         is_request: Some(bridge["channel"]["com.beeper.message_request"] == true),
-        created_at: states(room, "m.room.create".into()).await.first().and_then(|e| e["origin_server_ts"].as_i64()),
+        created_at: reads.create["origin_server_ts"].as_i64(),
         network_name: s(&bridge["network"]["displayname"]),
         network_id: s(&bridge["network"]["id"]),
         img_url: room.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
@@ -561,13 +654,12 @@ async fn chat(
         ),
         is_pinned: Some(tags.contains_key(&TagName::Favorite)),
         is_low_priority: Some(tags.contains_key(&TagName::LowPriority)),
-        reminder: account_data(room, REMINDER).await.and_then(|r| {
+        reminder: reads.reminder.as_ref().and_then(|r| {
             let at = r["remind_at_ms"].as_i64().filter(|&ms| ms > 0)?;
             Some(ChatReminder::new(at, r["dismiss_on_incoming_message"] == true))
         }),
         // Desktop's `com.beeper.chats.snoozed` handler keeps a snooze that ends in the future.
-        snoozed_until_ms: account_data(room, SNOOZED)
-            .await
+        snoozed_until_ms: (reads.snoozed.as_ref())
             .and_then(|s| s["snoozed_until_ms"].as_i64())
             .filter(|&ms| ms > now_unix_millis()),
         delete_modes: features.as_ref().map_or(0, |f| {
@@ -575,7 +667,7 @@ async fn chat(
                 | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
         }),
         can_accept_request: features.as_ref().is_some_and(|f| f["message_request"]["accept_with_button"] == 2),
-        block: block_bits(features.as_ref(), &bridge),
+        block: block_bits(features.as_ref(), bridge),
         edits: edit_bits(features.as_ref(), &levels, me.as_str()),
         member_actions,
         formatting: features.as_ref().map_or(ALL_FORMATS, |f| {
@@ -591,24 +683,23 @@ async fn chat(
             .flatten()
             .filter_map(|r| r.as_str().map(str::to_string))
             .collect(),
-        custom_emoji: crate::models::custom_emoji(features.as_ref(), &bridge),
-        disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
+        custom_emoji: crate::models::custom_emoji(features.as_ref(), bridge),
+        disappearing: reads.disappearing.as_ref().and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
         timers: timers(features.as_ref(), &levels, me.as_str()),
         is_read_only: tombstone.is_some() || read_only(&levels, me.as_str()),
-        replacement_room: tombstone.and_then(|t| s(&t["replacement_room"])),
+        replacement_room: tombstone.as_ref().and_then(|t| s(&t["replacement_room"])),
         can_mention_room: features.as_ref().is_none_or(|f| f["formatting"]["at_room_mention"].as_i64() >= Some(1))
             && power(&levels, me.as_str()) >= levels["notifications"]["room"].as_i64().unwrap_or(50),
         threads: features.as_ref().is_some_and(|f| f["thread"].as_i64() > Some(0)),
-        follows: account_data(room, THREAD_FOLLOWS).await.and_then(|f| ThreadFollows::parse(&f)).unwrap_or_default(),
+        follows: reads.follows.as_ref().and_then(ThreadFollows::parse).unwrap_or_default(),
         // Desktop's `Up`: a sound it knows, else the Default sound.
-        notification_sound: account_data(room, NOTIFICATION_SOUND)
-            .await
+        notification_sound: (reads.sound.as_ref())
             .and_then(|d| s(&d["sound"]))
             .filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
         ..Default::default()
     };
-    let name = account_data(room, PERSONAL_NAME).await.and_then(|n| s(&n["name"])).filter(|n| !n.is_empty());
-    let photo = account_data(room, PERSONAL_AVATAR).await.and_then(|a| url_field(&a["url"], &a["file"]));
+    let name = reads.personal_name.as_ref().and_then(|n| s(&n["name"])).filter(|n| !n.is_empty());
+    let photo = reads.personal_avatar.as_ref().and_then(|a| url_field(&a["url"], &a["file"]));
     chat.set_personal(name, photo);
     chat
 }
@@ -749,7 +840,15 @@ fn unresolved_media(c: &Value) -> Option<String> {
 }
 
 /// The store operation for a timeline event. With `hidden`, the events that Desktop hides become `HIDDEN` rows.
-async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: bool) -> Option<Op> {
+/// `names` keeps the names of the senders that it looked up, for the next events of the room.
+async fn op(
+    room: &Room,
+    chat_id: &str,
+    account_id: &str,
+    e: &Value,
+    hidden: bool,
+    names: &mut HashMap<String, Option<String>>,
+) -> Option<Op> {
     let deleted = e["unsigned"].get("redacted_because").is_some();
     let (c, rel) = (&e["content"], &e["content"]["m.relates_to"]);
     let sender = s(&e["sender"]).expect("event sender");
@@ -856,7 +955,15 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
     // Desktop's `actionButtonsFrom`: only the messages of the system user have buttons.
     let buttons = if system_user(&sender) { ActionButton::list(&c["com.beeper.buttons"]) } else { Vec::new() };
     let user = matrix_sdk::ruma::UserId::parse(&sender).expect("sender is a user ID");
-    let member = room.get_member_no_sync(&user).await.expect("read room member");
+    let name = match names.get(&sender) {
+        Some(name) => name.clone(),
+        None => {
+            let member = room.get_member_no_sync(&user).await.expect("read room member");
+            let name = member.map(|m| m.name().to_string());
+            names.insert(sender.clone(), name.clone());
+            name
+        }
+    };
     // Desktop's `key || ""`, and its reaction of a custom emoji: its shortcode as the key and its image.
     let key = rel["key"].as_str().unwrap_or_default();
     let img_url = key.starts_with("mxc://").then(|| key.to_string());
@@ -873,7 +980,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         id,
         account_id: account_id.into(),
         chat_id: chat_id.into(),
-        sender_name: Some(profile_name.unwrap_or_else(|| member.map_or_else(|| sender.clone(), |m| m.name().into()))),
+        sender_name: Some(profile_name.unwrap_or_else(|| name.unwrap_or_else(|| sender.clone()))),
         is_sender: Some(user == room.own_user_id()),
         sender_id: sender,
         sort_key: sort_key(order),
@@ -1436,7 +1543,7 @@ pub async fn bookmarked_message(client: Client, chat: String, target: String, ac
     let room = joined_room(&client, &chat).await.ok()?;
     let event = room.event(&OwnedEventId::try_from(target).ok()?, None).await.ok()?;
     let v: Value = serde_json::from_str(event.raw().json().get()).expect("event JSON");
-    match op(&room, &chat, &account_id, &v, false).await {
+    match op(&room, &chat, &account_id, &v, false, &mut HashMap::new()).await {
         Some(Op::Upsert(m)) => Some(*m),
         _ => None,
     }
@@ -1523,7 +1630,8 @@ async fn sync_invite(store: &SharedStore, room: &Room, globals: &Globals) {
         let st = store.read();
         (st.bridge_accounts.clone(), st.inbox_rules.clone())
     };
-    let mut chat = chat(room, &accounts, &rules, None, globals).await;
+    let reads = RoomReads::read(room, RoomReads::create(room).await).await;
+    let mut chat = chat(room, &reads, &accounts, &rules, None, globals).await;
     // Desktop lists the own invite as a pending member that the inviter added.
     if let Ok(invite) = room.invite_details().await {
         let me = invite.invitee;
@@ -1611,7 +1719,16 @@ async fn sync_room_after(
         id if MANAGED_ROOMS.contains(&id) => return,
         _ => {}
     }
-    let create = state(room, "m.room.create").await.expect("rooms have a create event");
+    // A sync takes the reads of a room that it did not change from the last sync of the room. Without one, as for
+    // [`sync_room`], they are read again, like the members.
+    let cached = from_sync && room.state() == RoomState::Joined;
+    let cached = cached.then(|| store.read().room_reads.rooms.get(room.room_id().as_str()).cloned()).flatten();
+    let epoch = store.read().room_reads.epoch;
+    let create_event = match &cached {
+        Some(r) => r.create.clone(),
+        None => RoomReads::create(room).await.expect("rooms have a create event"),
+    };
+    let create = &create_event["content"];
     if create["com.beeper.label"] == true {
         return sync_label(store, room).await;
     }
@@ -1627,7 +1744,15 @@ async fn sync_room_after(
         true => Some(union_rooms(room).await),
         false => None,
     };
-    let chat_id = chat_id(room).await;
+    let mut reads = match cached {
+        Some(r) => r,
+        None => {
+            let r = Arc::new(RoomReads::read(room, Some(create_event)).await);
+            store.write().room_reads.put(room.room_id().as_str(), epoch, r.clone());
+            r
+        }
+    };
+    let chat_id = reads.chat_id(room);
     let note = chat_id == NOTE_CHAT_ID;
     let accounts = store.read().bridge_accounts.clone();
     let rules = store.read().inbox_rules.clone();
@@ -1646,7 +1771,7 @@ async fn sync_room_after(
         let c = st.chat_idx_by_id.get(&chat_id).map(|&i| &st.chats[i]).filter(|c| c.notifiable.is_some())?;
         Some(Known { participants: c.participants.items.clone(), title: c.title.clone(), dm: c.chat_type == "single" })
     });
-    let mut chat = chat(room, &accounts, &rules, known.flatten(), globals).await;
+    let mut chat = chat(room, &reads, &accounts, &rules, known.flatten(), globals).await;
     // Desktop's `rT`: a merged chat is single.
     if union.is_some() {
         chat.chat_type = "single".into();
@@ -1675,10 +1800,11 @@ async fn sync_room_after(
     }
     let (mut ops, mut non_messages, mut roots) = (Vec::new(), Vec::new(), BTreeSet::new());
     let hidden = store.read().settings.on("hiddenEvents");
+    let mut names = reads.names.clone();
     for e in &events {
         let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
         ops.extend(s(&v["unsigned"]["transaction_id"]).map(Op::Remove));
-        match op(room, &chat_id, &chat.account_id, &v, hidden).await {
+        match op(room, &chat_id, &chat.account_id, &v, hidden, &mut names).await {
             Some(Op::Upsert(m)) => {
                 roots.extend(m.thread_root.clone());
                 ops.push(Op::Upsert(m));
@@ -1689,8 +1815,11 @@ async fn sync_room_after(
             }
         }
     }
-    let done = account_data(room, "com.beeper.inbox.done").await;
-    let done = done.map(|d| (d["at_order"].as_i64(), d["updated_ts"].as_i64()));
+    if names.len() > reads.names.len() {
+        Arc::make_mut(&mut reads).names = names;
+        store.write().room_reads.put(room.room_id().as_str(), epoch, reads.clone());
+    }
+    let done = reads.done.as_ref().map(|d| (d["at_order"].as_i64(), d["updated_ts"].as_i64()));
     let reacted =
         ops.iter().filter_map(|o| if let Op::React(_, _, m) = o { Some(m.sort_key.clone()) } else { None }).max();
     let redacted = ops.iter().any(|o| matches!(o, Op::Redact(..)));
@@ -2504,7 +2633,7 @@ pub async fn fetch_message(store: SharedStore, chat: String, id: String) -> Resu
         let st = store.read();
         (st.find_chat(&chat).map(|c| c.account_id.clone()).unwrap_or_default(), st.settings.on("hiddenEvents"))
     };
-    match op(&room, &chat, &account, &v, hidden).await {
+    match op(&room, &chat, &account, &v, hidden, &mut HashMap::new()).await {
         Some(Op::Upsert(m)) => Ok(*m),
         _ => Err("The event is not a message".into()),
     }
@@ -5334,6 +5463,15 @@ async fn outside_sync_tx<T>(store: &SharedStore, f: impl std::future::Future<Out
     r
 }
 
+/// Whether a sync of a joined room changes its state: a state event in the state of the update or in its timeline.
+fn state_changed(update: &matrix_sdk::sync::JoinedRoomUpdate) -> bool {
+    let state = match &update.state {
+        matrix_sdk::sync::State::Before(e) | matrix_sdk::sync::State::After(e) => !e.is_empty(),
+    };
+    let state_key = |e: &TimelineEvent| e.raw().get_field::<String>("state_key").ok().flatten().is_some();
+    state || update.timeline.events.iter().any(state_key)
+}
+
 /// Applies a response of the Matrix sync loop: the account data, the rooms, the invites, and the left rooms. False
 /// when the session has ended, which stops the loop.
 async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<matrix_sdk::sync::SyncResponse>) -> bool {
@@ -5358,8 +5496,16 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             }
         }
         Ok(resp) => {
+            // The joined rooms whose state the response changes.
+            let stateful: HashSet<String> =
+                resp.rooms.joined.iter().filter(|(_, u)| state_changed(u)).map(|(id, _)| id.to_string()).collect();
             {
                 let mut st = store.write();
+                // The SDK saved the response, so the reads of the rooms that it changes are read again.
+                let data = resp.rooms.joined.iter().filter(|(_, u)| !u.account_data.is_empty()).map(|(id, _)| id);
+                let others = resp.rooms.invited.keys().chain(resp.rooms.knocked.keys()).chain(resp.rooms.left.keys());
+                let changed = data.chain(others).map(ToString::to_string).chain(stateful.iter().cloned());
+                st.room_reads.changed(changed);
                 // The homeserver answers again, so the changes that waited for it go now.
                 let back = std::mem::take(&mut st.sync_failing);
                 if back {
@@ -5398,12 +5544,7 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 if gap.is_some() && !synced_before(store, &room).await {
                     gap = None;
                 }
-                // A state event in the state of the update or in its timeline can change the members.
-                let state = match &update.state {
-                    matrix_sdk::sync::State::Before(e) | matrix_sdk::sync::State::After(e) => !e.is_empty(),
-                };
-                let state_key = |e: &TimelineEvent| e.raw().get_field::<String>("state_key").ok().flatten().is_some();
-                let state_changed = state || update.timeline.events.iter().any(state_key);
+                let state_changed = stateful.contains(id.as_str());
                 let prev_batch = update.timeline.prev_batch;
                 let u = Some(Update { prev_batch, state_changed });
                 sync_room_after(store, &room, update.timeline.events, u, Some(&globals)).await;
@@ -6010,6 +6151,98 @@ mod tests {
             got.sort_unstable();
             assert_eq!(got, want);
         }
+    }
+
+    /// A sync that changes neither the state nor the account data of a room takes the reads of its chat from the last
+    /// sync of the room, and a sync that changes either shows the change in the chat and in the names of its senders.
+    #[tokio::test]
+    async fn a_sync_without_changes_keeps_the_reads_of_the_room() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let syncs = AtomicUsize::new(0);
+        let state = |kind: &str, key: &str, n: usize, content: Value| {
+            json!({ "type": kind, "state_key": key, "sender": "@me:x", "event_id": format!("$s{n}{key}"),
+                "origin_server_ts": 1, "content": content })
+        };
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => {
+                let n = syncs.fetch_add(1, Relaxed) + 1;
+                let mut sync = stub_sync();
+                sync["next_batch"] = json!(format!("s{n}"));
+                let room = &mut sync["rooms"]["join"]["!room:x"];
+                // The sync of `stub_store`, then one with room features, one without changes, one with a reminder,
+                // one with other room features and a new name of the user, and one without changes.
+                room["state"] = match n {
+                    1 => room["state"].clone(),
+                    2 => json!({ "events": [state("com.beeper.room_features", "", n, json!({ "edit": 1 }))] }),
+                    5 => json!({ "events": [
+                        state("com.beeper.room_features", "", n, json!({ "edit": 0 })),
+                        state("m.room.member", "@me:x", n, json!({ "membership": "join", "displayname": "New me" })),
+                    ] }),
+                    _ => json!({ "events": [] }),
+                };
+                if n == 4 {
+                    let reminder = json!({ "remind_at_ms": 4_000_000_000_000_i64 });
+                    room["account_data"] = json!({ "events": [{ "type": super::REMINDER, "content": reminder }] });
+                }
+                room["timeline"] = json!({ "events": [stub_message(i64::try_from(n).unwrap())], "prev_batch": "t0" });
+                (200, sync)
+            }
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("keep-reads"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        // The edit rule of the room features, whether the chat has a reminder, and the sender name of the message.
+        for (n, want) in [(2, (true, false, "Me")), (3, (true, false, "Me")), (4, (true, true, "Me"))]
+            .into_iter()
+            .chain([(5, (false, true, "New me")), (6, (false, true, "New me"))])
+        {
+            assert!(super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await);
+            let st = store.read();
+            let c = st.chat("!room:x");
+            let name = st.stored_message(&format!("$e{n}")).and_then(|m| m.sender_name).expect("the synced message");
+            assert_eq!((c.messages.edit, c.reminder.is_some(), name.as_str()), want, "after sync {n}");
+            assert!(st.room_reads.rooms.contains_key("!room:x"), "the reads of sync {n} stay for the next");
+        }
+    }
+
+    /// The reads of a room that began before a sync response changed it are not kept, since they can be older than the
+    /// change; those that began after it are.
+    #[test]
+    fn reads_older_than_a_change_are_not_kept() {
+        let reads = || {
+            std::sync::Arc::new(super::RoomReads {
+                create: Value::Null,
+                note: false,
+                bridge: Value::Null,
+                features: None,
+                tombstone: None,
+                levels: None,
+                disappearing: None,
+                tags: Default::default(),
+                reminder: None,
+                snoozed: None,
+                follows: None,
+                sound: None,
+                personal_name: None,
+                personal_avatar: None,
+                done: None,
+                names: Default::default(),
+            })
+        };
+        let mut cache = super::RoomReadsCache::default();
+        cache.put("!a:x", 0, reads());
+        cache.changed(["!a:x".to_string()]);
+        assert!(!cache.rooms.contains_key("!a:x"), "a change drops the reads");
+        cache.put("!a:x", 0, reads());
+        assert!(!cache.rooms.contains_key("!a:x"), "a read that began before the change");
+        cache.put("!b:x", 0, reads());
+        assert!(cache.rooms.contains_key("!b:x"), "another room did not change");
+        cache.put("!a:x", 1, reads());
+        assert!(cache.rooms.contains_key("!a:x"), "a read that began after the change");
     }
 
     /// Desktop's `lastReadMessageSortKey` of a room: the order of the event of your own read receipt, which a read
