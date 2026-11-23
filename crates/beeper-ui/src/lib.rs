@@ -683,13 +683,10 @@ fn ghost(p: &Palette, r: f32) -> impl Fn(&Theme, button::Status) -> button::Styl
     btn_style([CLEAR, p.hover, p.selected], [p.text; 3], r)
 }
 
-/// A row of a dropdown or context menu. Without a message it is greyed out.
-/// How long Desktop's flyover takes to reveal all its items, one after another.
-const FLYOVER_REVEAL: std::time::Duration = std::time::Duration::from_millis(500);
-
 /// Desktop's `--animation-timing`, in seconds.
 const HOVER_FADE: f32 = 0.1;
 
+/// A row of a dropdown or context menu. Without a message it is greyed out.
 fn menu_item<'a>(
     p: &Palette,
     lead: Option<El<'a>>,
@@ -5088,9 +5085,10 @@ impl BeeperGuiApp {
 
     /// An animation goes on, which redraws at 50 frames a second.
     fn animated(&self) -> bool {
-        // The loading of older messages and the fade of the scroll button, in each chat window too.
-        let moving =
-            |p: &Pane| p.top.loading.is_some() || p.scrolled_up.is_some_and(|s| s.1.elapsed().as_secs_f32() < 0.2);
+        // The loading of older messages and the fade of the scroll button, in each chat window too: 50 ms and 0.15 s
+        // in, or 0.15 s out.
+        let fade = |(up, at): (bool, std::time::Instant)| at.elapsed().as_secs_f32() < if up { 0.2 } else { 0.15 };
+        let moving = |p: &Pane| p.top.loading.is_some() || p.scrolled_up.is_some_and(fade);
         // The fade-in of the reply chain, in the thread panes too.
         let replies =
             |p: &Pane| p.reply_thread.is_some() && p.reply_opened.is_some_and(|t| t.elapsed() < message::REPLIES_RISE);
@@ -5116,9 +5114,7 @@ impl BeeperGuiApp {
             || self.nudges.shaking()
             || self.sidebar_progress().is_some()
             || self.pins_sliding()
-            || self
-                .panes()
-                .any(|p| [p.hover_msg_at, p.flyover_at].iter().flatten().any(|t| t.elapsed() < FLYOVER_REVEAL));
+            || self.panes().any(message::flyover_revealing);
         // The tab slide and the skeleton tiles of the Media window.
         let media = self.media_window.as_ref().is_some_and(|w| {
             w.loading.is_some() || w.tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE)
