@@ -6511,6 +6511,91 @@ fn accounts_settings_rows_have_the_account_menu_like_desktop() {
     assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::ChatList(chat_list::Msg::CloseMenu)]));
 }
 
+/// Desktop's `RemoteSubView` of a Discord account, on the demo's Discord bridge: the servers show once the bridge sent
+/// them, each with its Show in Inbox (only for a connected server) and its switch. A connected server is a space; its
+/// switch asks before it disconnects, turns at once with a "Disconnecting" toast, and the reply replaces the toast.
+#[tokio::test(flavor = "multi_thread")]
+async fn discord_servers_connect_like_desktop() {
+    let mut app = demo_app("discord-servers");
+    let account = "acc_discord".to_string();
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
+    let task = app.update(UiMessage::Accounts(accounts::Msg::Open(Some(account.clone()))));
+    assert!(simulator(app.view_settings()).find("Servers").is_err(), "no servers before the bridge sends them");
+    assert!(app.servers_loading.contains_key(&account), "the account page fetches the servers");
+    for m in task_messages(task).await {
+        let _ = app.update(m);
+    }
+    assert!(app.servers_loading.is_empty());
+    {
+        let mut sim = simulator(app.view_settings());
+        for text in ["Servers", "Beeper Community", "Rust Programming Language", "Pebble Developers", "Linux Gaming"] {
+            assert!(sim.find(text).is_ok(), "{text}");
+        }
+    }
+    let spaces: Vec<String> = app.store.read().network_spaces.iter().map(|n| n.name.clone()).collect();
+    assert_eq!(spaces, ["Beeper Community", "Rust Programming Language"], "the connected servers are spaces");
+    assert!(rail_accounts(&app.store.read()).contains(&"1100000000000000001".to_string()));
+    // Show in Inbox of a connected server.
+    let (key, _) =
+        beeper_core::matrix::inbox_rule(&serde_json::Value::Null, &account, "discordgo", Some("1100000000000000001"));
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::SetInboxVisibility(key, "all")));
+    let rule = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        beeper_core::matrix::inbox_rule(&st.inbox_rules, &account, "discordgo", Some("1100000000000000001"))
+            .1
+            .to_string()
+    };
+    assert_eq!(rule(&app), "all", "the demo keeps the rule");
+    // Connect a server.
+    let pebble = "1100000000000000003".to_string();
+    let task = app.update(UiMessage::Accounts(accounts::Msg::ToggleServer(account.clone(), pebble.clone())));
+    assert_eq!(app.confirm, None, "connecting asks nothing");
+    assert_eq!(app.status_banner, "Connecting Pebble Developers...");
+    assert!(app.store.read().network_spaces.iter().any(|n| n.id == pebble), "the switch turns at once");
+    for m in task_messages(task).await {
+        let more = app.update(m);
+        for m in task_messages(more).await {
+            let _ = app.update(m);
+        }
+    }
+    assert_eq!(app.status_banner, "Connected Pebble Developers");
+    assert!(app.older_toasts.iter().all(|t| !t.0.text.starts_with("Connecting")), "the reply replaces the toast");
+    // Disconnect one: Desktop asks first for a Discord server.
+    let rust = "1100000000000000002".to_string();
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::ToggleServer(account.clone(), rust.clone())));
+    assert_eq!(app.confirm, Some(ASK_DISCONNECT_SERVER));
+    let set = {
+        let mut sim = simulator(app.view_settings());
+        assert!(sim.find("Disconnect Discord Server?").is_ok());
+        let _ = sim.click("Disconnect").expect("the confirm button");
+        sim.into_messages().collect::<Vec<_>>()
+    };
+    assert!(matches!(&set[..], [UiMessage::Accounts(accounts::Msg::SetServer(a, s))] if *a == account && *s == rust));
+    let task = app.update(set.into_iter().next().unwrap());
+    assert_eq!((app.confirm, app.status_banner.as_str()), (None, "Disconnecting Rust Programming Language..."));
+    assert!(app.store.read().network_spaces.iter().all(|n| n.id != rust), "the space goes at once");
+    for m in task_messages(task).await {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.status_banner, "Disconnected Rust Programming Language");
+    // A failed change: Desktop's "Something went wrong" toast, then the servers again.
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::ServerSet(
+        account.clone(),
+        rust,
+        true,
+        Err("Guild not found".into()),
+    )));
+    assert_eq!(app.status_banner, "Something went wrong: Guild not found");
+    assert!(app.servers_loading.contains_key(&account), "the servers load again");
+    // The servers stay through an error of the list, like Desktop's `fetchSubAccounts`.
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::Servers(account.clone(), Err("offline".into()))));
+    assert!(app.servers_loading.is_empty() && simulator(app.view_settings()).find("Linux Gaming").is_ok());
+    // A broken connection locks the switches.
+    app.store.write().bridge_accounts.iter_mut().find(|b| b.account_id == account).unwrap().remote_error =
+        Some("x".into());
+    assert!(simulator(app.view_settings()).find("Linux Gaming").is_ok());
+}
+
 /// The demo has no Beeper Cloud: Remove Account takes the account out of the demo without a request to the Beeper
 /// API or the homeserver.
 #[tokio::test(flavor = "multi_thread")]
