@@ -4514,7 +4514,12 @@ pub async fn installed_packs(store: SharedStore) -> Result<Vec<InstalledPack>, S
             events.extend(room_packs(&client, room.room_id().as_str()).await);
         }
     }
-    let global_rooms = global(&client, IMAGE_PACK_ROOMS).await;
+    // The list of the store, which a change of "Use in all chats" sets before the homeserver echoes it.
+    let stored = store.read().image_pack_rooms.clone();
+    let global_rooms = match stored {
+        Value::Null => global(&client, IMAGE_PACK_ROOMS).await,
+        rooms => rooms,
+    };
     for (r, keys) in global_rooms["rooms"].as_object().into_iter().flatten() {
         for p in room_packs(&client, r).await {
             let known = events.iter().any(|q| (&q.0, &q.1, &q.2) == (&p.0, &p.1, &p.2));
