@@ -208,14 +208,22 @@ impl BeeperGuiApp {
         });
         drop(st);
         if let Some((text, e)) = error {
+            // Desktop's Copy Error (`copyErrorToClipboard("sendMessage", error)`): the error as JSON with the version,
+            // without the stack of the JavaScript error.
+            let json = serde_json::json!({
+                "errorName": "Error",
+                "errorMessage": e,
+                "appVersion": beeper_core::config::APP_VERSION,
+            });
             let buttons = vec![
-                (crate::tr("Copy Error"), UiMessage::Message(message::Msg::CopyText(e))),
+                (crate::tr("Copy Error"), UiMessage::Message(message::Msg::CopyText(format!("sendMessage:{json}")))),
                 (crate::tr("Show"), UiMessage::SelectChat(note.chat.clone())),
                 (crate::tr("Retry"), UiMessage::Message(message::Msg::RetrySend(m.id.clone()))),
             ];
-            self.show(crate::toasts::Toast { buttons, ..crate::toasts::Toast::new(text.clone()) });
-            self.sticky_banner = Some(text.clone());
-            self.send_toast = Some((m.id.clone(), text));
+            // Desktop's toast of a failed send has the ID of the message and no timeout (`-1`).
+            let id = Some(m.id.clone());
+            self.show(crate::toasts::Toast { buttons, stays: true, id, ..crate::toasts::Toast::new(text.clone()) });
+            self.sticky_banner = Some(text);
         }
         self.show_note(note, false)
     }

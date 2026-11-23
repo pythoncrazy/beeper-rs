@@ -440,7 +440,7 @@ impl BeeperGuiApp {
             Msg::ShowInChat => {
                 let mid = self.pip.as_ref().expect("the Picture in Picture window is open").1.clone();
                 let cid = self.store.read().loaded(&mid).map(|m| m.chat_id.clone());
-                let jump = cid.map_or_else(Task::none, |cid| self.jump_to(cid, mid));
+                let jump = cid.map_or_else(Task::none, |cid| self.reveal(cid, mid, false));
                 return Task::batch([self.set_hidden(false), jump, self.restore_pip()]);
             }
             Msg::Restore => return self.restore_pip(),

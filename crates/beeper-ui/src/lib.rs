@@ -28,6 +28,7 @@ mod i18n;
 mod images;
 mod info;
 mod integrations;
+mod keys;
 mod labels;
 mod lift;
 mod linkify;
@@ -2638,6 +2639,8 @@ pub struct Pane {
     pub spoilers: HashSet<String>,
     /// The GIFs that their play button started while "Autoplay GIFs" is off, by message and attachment, from when.
     pub played_gifs: HashMap<(String, usize), std::time::Instant>,
+    /// The link preview images that their play button started, by message and image URL, from when.
+    pub played_links: HashMap<(String, String), std::time::Instant>,
     pub hovered_msg: Option<String>,
     /// When `hovered_msg` began, and when the pointer entered its flyover, for the flyover's staggered reveal.
     pub hover_msg_at: Option<std::time::Instant>,
@@ -2691,6 +2694,8 @@ pub struct Pane {
     pub draft_due: bool,
     /// Desktop's `ScrollToBottom`: whether you scrolled up from the bottom of the timeline, and since when.
     pub scrolled_up: Option<(bool, std::time::Instant)>,
+    /// When the last smooth scroll to the bottom of the timeline started (see [`timeline::Hold`]).
+    pub glide: Option<std::time::Instant>,
     /// Desktop's `unreadDividerMessageSortKey`: the message after the read position of the chat when it opened,
     /// which keeps the "New" divider in place while the chat is read.
     pub unread_divider: Option<String>,
@@ -2897,8 +2902,6 @@ pub struct BeeperGuiApp {
     notified: HashSet<String>,
     /// The failed sends that Retry sent again: Desktop shows their error again when they fail again.
     retried: HashSet<String>,
-    /// The failed send whose error toast shows, and its text: Desktop's `retryErroredMessage` closes it.
-    send_toast: Option<(String, String)>,
     notifications: HashMap<u32, (String, String)>,
     pending: notify::Pending,
     pub gif_query: String,
@@ -3240,7 +3243,6 @@ impl BeeperGuiApp {
             focused: false,
             notified: HashSet::new(),
             retried: HashSet::new(),
-            send_toast: None,
             notifications: HashMap::new(),
             pending,
             gif_query: String::new(),
@@ -3675,20 +3677,12 @@ impl BeeperGuiApp {
     /// Opens the windows of the last session, like Desktop's `setupSubwindowRestoreHandler`.
     fn restore_subwindows(&mut self) -> Task<UiMessage> {
         let path = self.store.read().config.data_dir.join("subwindow-state.json");
-        let json = match std::fs::read_to_string(path) {
-            Ok(json) => json,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Task::none(),
-            Err(e) => panic!("read the subwindow state: {e}"),
-        };
-        let state: serde_json::Value = serde_json::from_str(&json).expect("a valid subwindow state");
-        let open = state["openSubwindows"].as_array().expect("a list of subwindows").clone();
-        let tasks = open.into_iter().filter_map(|w| match w["type"].as_str().expect("a subwindow type") {
-            "thread" => {
-                let id = w["threadId"].as_str().expect("a thread window has a chat").to_owned();
+        let tasks = windows::read_subwindows(&path).into_iter().filter_map(|w| match w {
+            windows::Subwindow::Thread(id) => {
                 let known = self.store.read().resolve_chat_idx(&id).is_some();
                 known.then(|| self.update(UiMessage::Window(windows::Msg::OpenChat(id))))
             }
-            _ => Some(self.open_settings(self.active_settings_tab)),
+            windows::Subwindow::Prefs => Some(self.open_settings(self.active_settings_tab)),
         });
         Task::batch(tasks.collect::<Vec<_>>())
     }
@@ -3957,6 +3951,9 @@ impl BeeperGuiApp {
         if !self.cycling {
             self.push_history(chat_id);
         }
+        // Desktop's timeline mounts new `<img>`s, which load a media that failed again: one that waits for the user to
+        // ask for it stays.
+        self.media.retain(|_, m| !matches!(m, Some(Err(e)) if !beeper_core::matrix::reload_needed(e)));
         let mut st = self.store.write();
         self.leave_chat(&mut st, Some(chat_id));
         if let Some(old) = self.pane.selected_chat_id.clone() {
@@ -4151,6 +4148,32 @@ impl BeeperGuiApp {
         }
     }
 
+    /// The room of the open chat and Chat Info in the main window (Desktop's `.subheader-content`): the window less
+    /// the sidebar, or the 8 px frame where it hides, the 8 px frame on the right, and the 8 px gap between the two.
+    fn chat_room(&self) -> f32 {
+        let left = if self.sidebar_shown() { self.left_width() } else { 8.0 };
+        self.pane.size.width - left - 8.0 - 8.0
+    }
+
+    /// The width of Desktop's `.thread-info` beside the chat: it shares the room with the chat (`flex: 1` both),
+    /// up to its `max-width: 300px`, so a narrow window gives each half of it.
+    pub(crate) fn info_width(&self) -> f32 {
+        (self.chat_room() / 2.0).clamp(0.0, 300.0)
+    }
+
+    /// The width of Desktop's `.conversation` of the pane that `view` draws: in the main window, the room less Chat
+    /// Info while it shows; in a chat window or beside a thread, the window less its 8 px frame.
+    pub(crate) fn conversation_width(&self) -> f32 {
+        let main = self.drawing.get().is_none() && !self.drawing_thread.get();
+        if !main || self.pane.thread.is_some() || !self.selection.is_empty() {
+            return self.pane().size.width - 16.0;
+        }
+        match self.show_right_panel {
+            true => self.chat_room() - self.info_width(),
+            false => self.chat_room() + 8.0,
+        }
+    }
+
     /// The width of the chat list: Desktop's `threads` width, which takes the space of a hidden space bar.
     fn list_width(&self, st: &BeeperStore) -> f32 {
         self.sidebar_width + if st.settings.on("showSidebar") && !self.list().locked { 0.0 } else { 68.0 }
@@ -4340,8 +4363,16 @@ impl BeeperGuiApp {
         let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
         let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
-        let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
+        // A toast with the same text replaces the shown one, unless Desktop's toast ID tells them apart.
+        let replaced = |t: &(Toast, Duration)| {
+            let id = self.toast.as_ref().filter(|n| n.text == self.status_banner).and_then(|n| n.id.as_ref());
+            !self.status_banner.is_empty() && (t.0.text != self.status_banner || t.0.id.as_ref() != id)
+        };
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
+            // A toast that stays keeps its place in the stack, under the new one.
+            if t.0.stays && self.sticky_banner.as_ref() == Some(&t.0.text) && self.status_banner != t.0.text {
+                self.sticky_banner = None;
+            }
             // It is older than the toasts that this message stacked.
             self.older_toasts.insert(stacked.min(self.older_toasts.len()), t);
             self.trim_older_toasts();
@@ -4622,173 +4653,8 @@ impl BeeperGuiApp {
             UiMessage::InputEscape(id) => {
                 return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
             }
-            // Desktop's `KeyboardSensor` takes Space, Enter, Tab, Escape and the arrows of its window while it moves
-            // an item.
-            UiMessage::WindowText(id, text)
-                if text == " " && self.key_sort.as_ref().is_some_and(|s| s.window == id) =>
-            {
-                return self.sortable(sortable::Msg::Drop);
-            }
-            UiMessage::WindowKey(id, key, mods)
-                if self.key_sort.as_ref().is_some_and(|s| s.window == id)
-                    && sortable::key_msg(&key, mods).is_some() =>
-            {
-                return self.sortable(sortable::key_msg(&key, mods).expect("a key of the sort"));
-            }
-            // Chromium's Space on a focused control of the main window, when the composer does not take the keys.
-            UiMessage::WindowText(id, text)
-                if text == " "
-                    && Some(id) == self.main_window
-                    && self.key_targets.contains_key(&id)
-                    && !self.composer_takes_keys() =>
-            {
-                return self.focus_space(id, false).unwrap_or_else(Task::none);
-            }
-            // Desktop's J and K move the cursor of the chat list like ↓ and ↑ while no chat is open.
-            UiMessage::WindowText(id, text) if matches!(text.as_str(), "j" | "k") && self.window_points_chats(id) => {
-                let arrow = Key::Named(if text == "j" { Named::ArrowDown } else { Named::ArrowUp });
-                return self.update(UiMessage::WindowKey(id, arrow, Modifiers::empty()));
-            }
-            // Desktop's hotkeys without a modifier, like the "e" of Chat: Toggle Archive, while no chat is open.
-            UiMessage::WindowText(id, text)
-                if self.find_hotkey(&Key::Character(text.as_str().into()), Modifiers::empty()).is_some()
-                    && self.window_points_chats(id) =>
-            {
-                return self.update(UiMessage::WindowKey(id, Key::Character(text.into()), Modifiers::empty()));
-            }
-            UiMessage::WindowText(id, text) if self.chat_windows.iter().any(|w| w.0 == id) => {
-                return self.update(UiMessage::InWindow(id, Box::new(UiMessage::Composer(composer::Msg::Type(text)))));
-            }
-            UiMessage::WindowText(id, text) if Some(id) == self.main_window => {
-                return self.update(UiMessage::Composer(composer::Msg::Type(text)));
-            }
-            UiMessage::WindowText(id, text) if Some(id) == self.login_window => return self.login_text(&text),
-            UiMessage::WindowText(id, text) if self.add_account_dropdown(id) => {
-                return self.update_add_account(id, add_account::AddMsg::Text(text));
-            }
-            // Chromium's Space on a focused button or `role="button"` row presses it.
-            UiMessage::WindowText(id, text)
-                if text == " " && (self.key_targets.contains_key(&id) || self.asking(id)) =>
-            {
-                return self.focus_space(id, true).unwrap_or_else(Task::none);
-            }
-            UiMessage::WindowText(..) => {}
-            // Desktop's menu roles "close" and "minimize", whose accelerators work while the menu bar hides.
-            UiMessage::WindowKey(id, Key::Character(c), mods)
-                if mods == Modifiers::COMMAND && matches!(c.to_lowercase().as_str(), "w" | "m") =>
-            {
-                return match c.eq_ignore_ascii_case("w") {
-                    true => self.update(UiMessage::Window(windows::Msg::CloseRequested(id))),
-                    false => window::minimize(id, true),
-                };
-            }
-            UiMessage::WindowKey(id, key, mods) if Some(id) == self.login_window || !self.store.read().signed_in() => {
-                return self.login_key(key, mods);
-            }
-            UiMessage::WindowKey(_, Key::Named(Named::Escape), _) if self.menu_bar.is_some() => self.menu_bar = None,
-            // Desktop's `onEscapePressed` of the Picture in Picture window.
-            UiMessage::WindowKey(id, Key::Named(Named::Escape), _) if self.pip.as_ref().is_some_and(|p| p.0 == id) => {
-                if self.pip_menu.take().is_none() {
-                    return window::close(id);
-                }
-            }
-            UiMessage::WindowKey(id, key, mods) => {
-                if Some(id) == self.settings_window {
-                    return self.settings_key(key, mods);
-                }
-                // Chromium's Tab, Enter and arrows in Desktop's sheets; a confirmation over Label Settings has the
-                // focus on its default button.
-                let sheet = self.nickname_windows.iter().any(|d| d.id == id)
-                    || self.label_settings.iter().any(|w| w.id == id)
-                    || self.label_window.as_ref().is_some_and(|d| d.id == id)
-                    || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
-                    || Some(id) == self.blocked_window
-                    || self.poll_windows.iter().any(|w| w.id == id);
-                if let Some(task) = sheet.then(|| self.focus_key(id, &key, mods, true)).flatten() {
-                    return task;
-                }
-                if self.label_asking(id) && key == Key::Named(Named::Escape) {
-                    self.confirm = None;
-                    return Task::none();
-                }
-                if self.label_settings.iter().any(|w| w.id == id) || Some(id) == self.how_window {
-                    return match key {
-                        Key::Named(Named::Escape) => window::close(id),
-                        Key::Named(Named::Enter) if mods.command() => window::close(id),
-                        _ => Task::none(),
-                    };
-                }
-                // The open dropdown of a phone field takes the keys, so Escape closes it and not the window.
-                if self.add_account_dropdown(id) {
-                    return self.update_add_account(id, add_account::AddMsg::Key(key));
-                }
-                if self.theme_windows.iter().any(|w| w.0 == id)
-                    || self.labels_windows.iter().any(|w| w.0 == id)
-                    || self.vote_windows.iter().any(|w| w.0 == id)
-                    || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
-                    || self.merge_window.as_ref().is_some_and(|d| d.id == id)
-                    || self.group_window.as_ref().is_some_and(|d| d.id == id)
-                    || Some(id) == self.blocked_window
-                    || self.nickname_windows.iter().any(|d| d.id == id)
-                    || self.add_accounts.iter().any(|a| a.id == id)
-                {
-                    return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
-                }
-                // Desktop's `onEscapePressed` closes the Add an Account window, after the menu of a network.
-                if self.networks.window == Some(id) {
-                    if key == Key::Named(Named::Escape) && self.networks.menu.take().is_none() {
-                        return window::close(id);
-                    }
-                    return Task::none();
-                }
-                if self.reauth.window == Some(id) {
-                    return self.reauth_key(key);
-                }
-                if self.enter_key.window == Some(id) {
-                    return self.enter_key_key(key);
-                }
-                if self.label_window.as_ref().is_some_and(|d| d.id == id) {
-                    return match key {
-                        Key::Named(Named::Escape) => window::close(id),
-                        Key::Named(Named::Enter) if mods.command() => self.label_edit(LabelEdit::Advance),
-                        _ => Task::none(),
-                    };
-                }
-                if self.poll_windows.iter().any(|w| w.id == id) {
-                    return match key {
-                        Key::Named(Named::Escape) => self.poll_edit(id, PollEdit::Close),
-                        Key::Named(Named::Enter) if mods.command() => self.poll_edit(id, PollEdit::Send),
-                        _ => Task::none(),
-                    };
-                }
-                if self.media_window.as_ref().is_none_or(|w| w.id != id) {
-                    let key = UiMessage::KeyPressed(key, mods);
-                    return match self.chat_windows.iter().any(|w| w.0 == id) {
-                        true => self.update(UiMessage::InWindow(id, Box::new(key))),
-                        false => self.update(key),
-                    };
-                }
-                let w = self.media_window.as_ref().expect("the Media window is open");
-                if w.viewer.is_some() && w.deleting.is_none() {
-                    return self.as_media(|s| s.carousel_key(&key, mods));
-                }
-                if key == Key::Named(Named::Escape) {
-                    let w = self.media_mut();
-                    if w.item_menu.is_some() {
-                        w.item_menu = None;
-                    } else if w.menu.is_some() {
-                        w.menu = None;
-                    } else if w.deleting.is_some() {
-                        w.deleting = None;
-                    } else if let Some(q) = w.search.as_ref().map(|q| (!q.is_empty()).then(String::new)) {
-                        return self.update(UiMessage::Media(media_view::Msg::Search(q)));
-                    } else if w.select {
-                        (w.select, w.picked) = (false, Vec::new());
-                    } else {
-                        return self.update(UiMessage::Window(windows::Msg::CloseRequested(id)));
-                    }
-                }
-            }
+            UiMessage::WindowText(id, text) => return self.window_text(id, text),
+            UiMessage::WindowKey(id, key, mods) => return self.window_key(id, key, mods),
             UiMessage::Commands(msgs) => {
                 return Task::batch(msgs.into_iter().map(|m| self.update(m)).collect::<Vec<_>>())
             }
@@ -4880,80 +4746,7 @@ impl BeeperGuiApp {
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
             }
-            UiMessage::CloseModals if self.search_select.is_some() => self.search_select = None,
-            UiMessage::CloseModals
-                if self.pane.message_menu.is_none() && self.video.as_ref().is_some_and(video::Video::is_full) =>
-            {
-                return self.video(video::Msg::Fullscreen);
-            }
-            UiMessage::CloseModals => {
-                self.user_hover.shown = None;
-                if self.show_command_palette
-                    || self.forward.is_some()
-                    || self.menu_open()
-                    || self.pane.gallery_reactions.is_some()
-                    || self.pane.picker.is_some()
-                    || self.pane.emoji.is_some()
-                    || self.quick_look_target.is_some()
-                    || self.hotkeys_modal.is_some()
-                {
-                    self.hotkeys_modal = None;
-                    self.show_command_palette = false;
-                    self.forward = None;
-                    self.list.show_filter_menu = false;
-                    self.list.chat_menu = None;
-                    // Desktop unselects the gallery when its menu closes without an action.
-                    if self.pane.message_menu.take().is_some() && !self.pane.gallery_menu.is_empty() {
-                        self.pane.selected_msgs.clear();
-                    }
-                    self.pane.gallery_reactions = None;
-                    self.pane.thread_menu = None;
-                    self.unread_menu = None;
-                    self.pane.edit_menu = None;
-                    self.pane.sched_menu = None;
-                    self.list.reminder_menu = None;
-                    self.audio.menu = None;
-                    self.selection_menu = None;
-                    self.pane.show_attach_menu = false;
-                    self.pane.picker = None;
-                    self.pane.emoji = None;
-                    self.quick_look_target = None;
-                } else if self.select_mode || !self.selection.is_empty() {
-                    (self.selection, self.select_mode) = (Vec::new(), false);
-                } else if self.join_matrix_mode {
-                    self.join_matrix_mode = false;
-                } else if self.confirm == Some(ASK_ROOM_ENCRYPTION) {
-                    self.confirm = None;
-                } else if self.creating_chat.is_some() {
-                    self.leave_draft();
-                    self.pane.selected_chat_id = None;
-                } else if self.pane.reply_to_message_id.is_some() {
-                    self.pane.reply_to_message_id = None;
-                } else if self.pane.editing_message_id.is_some() {
-                    return self.update(UiMessage::Composer(composer::Msg::CancelMode));
-                } else if !self.pane.selected_msgs.is_empty() {
-                    self.pane.selected_msgs.clear();
-                } else if self.pane.reply_thread.is_some() {
-                    self.pane.reply_thread = None;
-                } else if self.pane.thread_root.is_some() {
-                    // Desktop's `onEscapePressed` closes the thread window.
-                    self.pane.selected_chat_id = None;
-                } else if self.pane.selected_chat_id.is_some() {
-                    self.leave_chat(&mut self.store.write(), None);
-                    // Desktop's `pointCurrentThread`: the cursor of the list stays on the chat that was open.
-                    self.list.cursor = self.pane.selected_chat_id.take();
-                    self.pane.composer = composer_with("");
-                    self.refresh_theme_and_tray();
-                } else if self.list().active_tab != InboxTab::AllChats {
-                    self.list.active_tab = InboxTab::AllChats;
-                    self.list.space_view_account = None;
-                } else if !self.status_banner.is_empty() {
-                    self.status_banner.clear();
-                } else {
-                    // Desktop's `setThreadCursorIDByThread` of the first chat.
-                    self.list.cursor = self.list_ids(&self.store.read()).into_iter().next();
-                }
-            }
+            UiMessage::CloseModals => return self.close_modals(),
             UiMessage::Noop => {}
             UiMessage::Relist => {
                 // Above its bottom, the timeline reads through its last row in view; at the bottom its sensor reads.
@@ -5114,224 +4907,7 @@ impl BeeperGuiApp {
             UiMessage::OpenAddAccount(..) if self.store.read().config.demo => {}
             UiMessage::OpenAddAccount(network, login) => return self.open_add_account(&network, login),
             UiMessage::AddAccount(id, m) => return self.update_add_account(id, m),
-            UiMessage::KeyPressed(Key::Named(k @ (Named::Enter | Named::Escape)), m)
-                if (self.recorder.is_some() || self.talk.is_some()) && m.is_empty() =>
-            {
-                return self.record(record::Msg::Key(k));
-            }
-            UiMessage::KeyPressed(Key::Named(Named::Escape), _) if self.view_once.is_open() => {
-                return self.view_once(view_once::Msg::Dismiss);
-            }
-            UiMessage::KeyPressed(key, mods) if self.pane.carousel.is_some() => {
-                return self.carousel_key(&key, mods);
-            }
-            // Desktop's `C_t` takes every key while a pending attachment has the focus.
-            UiMessage::KeyPressed(key, _) if self.pane.att_focus.is_some() => {
-                return self.update(UiMessage::Composer(composer::Msg::AttachmentKey(key)));
-            }
-            UiMessage::KeyPressed(key, mods) => {
-                let z = mods.command() && matches!(key.as_ref(), Key::Character(c) if c.eq_ignore_ascii_case("z"));
-                if z && !mods.shift() && self.shown_undo().is_none() && !self.undo_stack.is_empty() {
-                    return self.update(UiMessage::UndoAction);
-                }
-                if z && (self.queued_here() || self.shown_undo().is_some()) {
-                    return self.update(UiMessage::Composer(composer::Msg::Undo(mods.shift())));
-                }
-                if self.pane.picker == Some(Picker::Gif) && mods.is_empty() {
-                    if let Some(task) = self.gif_key(&key) {
-                        return task;
-                    }
-                }
-                if self.pane.emoji.is_some() && mods.is_empty() {
-                    if let Some(task) = self.emoji_key(&key) {
-                        return task;
-                    }
-                }
-                let n = self.suggestions(&self.store.read()).map_or(0, |(_, picks)| picks.len());
-                if n > 0 && mods.is_empty() {
-                    let at = self.pane.suggest.min(n - 1);
-                    match key.as_ref() {
-                        Key::Named(Named::ArrowUp | Named::ArrowDown) => {
-                            let down = key == Key::Named(Named::ArrowDown);
-                            self.pane.suggest = if down { (at + 1) % n } else { (at + n - 1) % n };
-                            return Task::none();
-                        }
-                        Key::Named(Named::Tab) => {
-                            return self.update(UiMessage::Composer(composer::Msg::PickSuggestion(at)))
-                        }
-                        Key::Named(Named::Escape) => {
-                            self.pane.suggest_hidden = Some(self.pane.composer.text());
-                            return Task::none();
-                        }
-                        _ => {}
-                    }
-                }
-                // Chromium's focus in a confirmation dialog, and in a window without an open chat, where Desktop's
-                // `KeyboardHandlers` leave Tab to it.
-                let window = self.swapped.or(self.main_window);
-                let modal = self.show_command_palette
-                    || self.forward.is_some()
-                    || self.creating_chat.is_some()
-                    || self.pane.carousel.is_some();
-                let free = self.pane.selected_chat_id.is_none() && !modal;
-                // New Chat's own Enter starts the group from its encryption prompt.
-                let asking = window.is_some_and(|w| self.asking(w));
-                let defaults = asking && self.creating_chat.is_none();
-                if let Some(task) =
-                    window.filter(|_| asking || free).and_then(|w| self.focus_key(w, &key, mods, defaults))
-                {
-                    return task;
-                }
-                // Desktop's `KeyboardHandlers` and Chromium: Tab and Shift+Tab move through the composer row, and
-                // Enter presses its focused button.
-                let composer = window.filter(|_| self.composer_takes_keys() && (mods - Modifiers::SHIFT).is_empty());
-                if let Some(window) = composer {
-                    match key.as_ref() {
-                        Key::Named(Named::Tab) => {
-                            let back = mods.shift();
-                            return focus::caret(window, self.composer_id())
-                                .map(move |at| UiMessage::Composer(composer::Msg::Tab(back, at)));
-                        }
-                        Key::Named(Named::Enter) if mods.is_empty() => {
-                            if let Some(press) = self.composer_press() {
-                                self.pane.key_focus.set(None);
-                                return self.update(press);
-                            }
-                            if !self.popup_menu_open() && self.pane.picker.is_none() {
-                                return focus::caret(window, self.composer_id())
-                                    .map(|at| UiMessage::Composer(composer::Msg::Enter(at)));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                if self.show_command_palette && self.cmd_bar_commands_mode && mods.is_empty() {
-                    let cmds = self.commands(&self.store.read(), self.command_palette_query.trim());
-                    let n = cmds.len().max(1);
-                    let step = match key.as_ref() {
-                        Key::Named(Named::ArrowDown) => Some(1),
-                        Key::Named(Named::ArrowUp) => Some(n - 1),
-                        Key::Named(Named::Enter) => {
-                            let Some(m) = cmds.into_iter().nth(self.cmd_index).and_then(|c| c.msg) else {
-                                return Task::none();
-                            };
-                            return self.update(UiMessage::Commands(vec![UiMessage::CloseModals, m]));
-                        }
-                        _ => None,
-                    };
-                    if let Some(by) = step {
-                        self.cmd_index = (self.cmd_index + by) % n;
-                        self.command_list.reveal(cmds[self.cmd_index].key());
-                        return locate(format!("cmd-{}", self.cmd_index), commands::COMMANDS, Align::Nearest);
-                    }
-                }
-                match key.as_ref() {
-                    Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
-                    Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if mods.is_empty() && self.points_chats() => {
-                        self.point_chat(k == Named::ArrowDown);
-                        return Task::none();
-                    }
-                    // Desktop's Enter on the chat of the cursor (`selectChatListItem`).
-                    Key::Named(Named::Enter) if mods.is_empty() && self.points_chats() => {
-                        let pointed = self.list.cursor.clone();
-                        let listed = pointed.filter(|c| self.list_ids(&self.store.read()).contains(c));
-                        return listed.map_or_else(Task::none, |c| self.update(UiMessage::SelectChat(c)));
-                    }
-                    Key::Named(Named::ArrowUp | Named::ArrowDown | Named::ArrowRight)
-                        if (mods.is_empty() || mods == keyboard::Modifiers::SHIFT)
-                            && self.pane.thread.is_some()
-                            && self.pane.thread_focus =>
-                    {
-                        return self.in_thread(UiMessage::KeyPressed(key, mods));
-                    }
-                    Key::Named(Named::ArrowUp | Named::ArrowDown)
-                        if (mods.is_empty() || mods == keyboard::Modifiers::SHIFT) && self.can_select_messages() =>
-                    {
-                        let down = key == Key::Named(Named::ArrowDown);
-                        let edit = !down
-                            && self.pane.selected_msgs.is_empty()
-                            && self.store.read().settings.pref("upArrow") == 1;
-                        let step = self.update(UiMessage::Message(message::Msg::Step(down, mods.shift())));
-                        let Some(m) = edit.then(|| self.last_own_message()).flatten() else { return step };
-                        self.pane.selected_msgs = vec![m.id.clone()];
-                        return step.chain(
-                            self.update(UiMessage::Composer(composer::Msg::StartEdit(
-                                m.id,
-                                m.text.unwrap_or_default(),
-                            ))),
-                        );
-                    }
-                    Key::Named(Named::Enter) if self.forward.is_some() => {
-                        let picked = !self.forward.as_ref().expect("forward").picked.is_empty();
-                        return match mods.control() {
-                            false => self.update(UiMessage::Forward(forward::Msg::Submit)),
-                            true if picked => self.update(UiMessage::Forward(forward::Msg::Send)),
-                            true => Task::none(),
-                        };
-                    }
-                    Key::Named(Named::Backspace) if self.forward.as_ref().is_some_and(|f| f.query.is_empty()) => {
-                        self.forward.as_mut().expect("forward").picked.pop();
-                        return Task::none();
-                    }
-                    Key::Named(Named::Enter)
-                        if mods.is_empty() && self.creating_chat.is_some() && !self.join_matrix_mode =>
-                    {
-                        return self.update(UiMessage::NewChat(new_chat::Msg::Start));
-                    }
-                    Key::Named(Named::Backspace)
-                        if self.creating_chat.is_some() && !self.join_matrix_mode && self.new_chat_query.is_empty() =>
-                    {
-                        let n = self.creating_chat.expect("an open draft");
-                        self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").users.pop();
-                        return Task::none();
-                    }
-                    Key::Named(Named::ArrowRight)
-                        if mods.is_empty() && self.single_msg().is_some() && self.can_select_messages() =>
-                    {
-                        return self.update(UiMessage::Message(message::Msg::ReactOn(
-                            self.single_msg().cloned().expect("a selected message"),
-                        )));
-                    }
-                    Key::Character("c") if mods.command() && !mods.shift() && selectable::has_selection() => {
-                        return iced::clipboard::write(selectable::text());
-                    }
-                    Key::Character("c") if mods.command() && !mods.shift() && !self.pane.selected_msgs.is_empty() => {
-                        let stamp = self.store.read().settings.on("copyTimestamps");
-                        return self.update(UiMessage::Message(message::Msg::CopySelected(stamp)));
-                    }
-                    Key::Character("a")
-                        if mods.command() && !mods.shift() && !mods.alt() && self.can_select_messages() =>
-                    {
-                        let st = self.store.read();
-                        let (msgs, live) = self.timeline(&st);
-                        let all = msgs.iter().zip(live).filter(|(_, l)| *l).map(|(m, _)| m.id.clone()).collect();
-                        drop(st);
-                        self.pane.selected_msgs = all;
-                        return Task::none();
-                    }
-                    Key::Character("a")
-                        if mods.command()
-                            && !mods.shift()
-                            && !mods.alt()
-                            && self.pane.selected_chat_id.is_none()
-                            && !self.show_command_palette
-                            && self.list().active_tab != InboxTab::Requests =>
-                    {
-                        (self.selection, self.select_mode) = (self.list_ids(&self.store.read()), false);
-                        if let Some(first) = self.selection.first().cloned() {
-                            self.select_chat(&first);
-                        }
-                        return Task::none();
-                    }
-                    Key::Character("v") if mods.command() && self.pane.selected_chat_id.is_some() => {
-                        return self.update(UiMessage::Composer(composer::Msg::Paste));
-                    }
-                    _ => {}
-                }
-                if let Some((h, digit)) = self.find_hotkey(&key, mods) {
-                    return self.run_hotkey(h, digit);
-                }
-            }
+            UiMessage::KeyPressed(key, mods) => return self.key_pressed(key, mods),
         }
         self.settle()
     }
