@@ -3747,8 +3747,8 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     assert!(sim.find("Not sent").is_ok() && sim.find("Remove").is_ok(), "a failed send shows its error and actions");
     let _ = sim.click("Retry");
     assert!(matches!(sim.into_messages().last(), Some(UiMessage::Message(message::Msg::RetrySend(m))) if *m == id));
-    let _ = app.update(UiMessage::Toast(toasts::Msg::DismissBanner));
     let _ = app.update(UiMessage::Message(message::Msg::RetrySend(id.clone())));
+    assert!(app.status_banner.is_empty() && app.sticky_banner.is_none(), "Retry closes the error toast");
     assert!(simulator(app.view_main()).find("Retrying ...").is_ok(), "Retry waits for the homeserver");
     let again = {
         let mut st = app.store.write();
