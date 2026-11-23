@@ -4610,16 +4610,49 @@ const METHODS: [VerificationMethod; 4] = [
     VerificationMethod::ReciprocateV1,
 ];
 
-/// Desktop's `startVerification`: asks the other devices of the account to verify this device.
+/// How long this device waits for an answer to its verification request before it sends the request again.
+///
+/// The other devices see a new device in the same sync as its first request, and the crypto machine of matrix-sdk 0.19
+/// drops a request from a device that it does not know yet ("Could not retrieve the device data for the incoming
+/// verification request"). The first request after a sign-in then reaches no device, and the one sent again does.
+const UNANSWERED: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Desktop's `startVerification`: asks the other devices of the account to verify this device. A request that no
+/// device accepted or answered after `UNANSWERED` is cancelled and sent once more.
 pub async fn start_verification(store: &SharedStore, purpose: &'static str) -> Result<(), String> {
+    let request = request_verification(store).await?;
+    begin(store, request.clone(), purpose, None);
+    let store = store.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(UNANSWERED).await;
+        if !unanswered(store.read().verification.as_ref(), request.flow_id(), &request.state()) {
+            return;
+        }
+        // The old request ends first: the crypto machine cancels both requests when a second one starts beside it.
+        if let Err(e) = request.cancel().await {
+            eprintln!("Could not cancel the unanswered verification request: {e}");
+        }
+        match request_verification(&store).await {
+            Ok(again) => begin(&store, again, purpose, None),
+            Err(e) => store.write().matrix_error = Some(e),
+        }
+    });
+    Ok(())
+}
+
+/// Sends a verification request to the other devices of the account.
+async fn request_verification(store: &SharedStore) -> Result<VerificationRequest, String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     let me = client.user_id().expect("signed-in client has a user ID").to_owned();
     let identity = client.encryption().get_user_identity(&me).await.map_err(|x| e(&x))?;
     let identity = identity.ok_or("this account has no cross-signing identity")?;
-    let request = identity.request_verification_with_methods(METHODS.to_vec()).await;
-    begin(store, request.map_err(|x| e(&x))?, purpose, None);
-    Ok(())
+    identity.request_verification_with_methods(METHODS.to_vec()).await.map_err(|x| e(&x))
+}
+
+/// Whether the request `id` that this device sent still shows and no device accepted, answered or cancelled it.
+fn unanswered(shown: Option<&AppVerification>, id: &str, state: &VerificationRequestState) -> bool {
+    shown.is_some_and(|v| v.id == id) && matches!(state, VerificationRequestState::Created { .. })
 }
 
 /// A verification request from another device of the account: Desktop's `VERIFICATION_REQUESTED`.
@@ -4993,6 +5026,32 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
 mod tests {
     use crate::testing::{stub_message, stub_page, stub_store, stub_sync};
     use serde_json::{json, Value};
+
+    /// The request of a new device is sent again only while it shows and no device took it: not after the other
+    /// device accepted it or it ended, and not when the user moved on to another verification.
+    #[test]
+    fn only_a_shown_request_without_answer_is_sent_again() {
+        use super::{unanswered, VerificationRequestState as S, METHODS};
+        use crate::models::AppVerification;
+        let shown = |id: &str| AppVerification {
+            id: id.into(),
+            purpose: "login",
+            direction: "outgoing",
+            state: "requested",
+            methods: Vec::new(),
+            available_actions: Vec::new(),
+            other_user_id: None,
+            other_device: None,
+            qr: None,
+            sas: None,
+            error: None,
+        };
+        let waiting = S::Created { our_methods: METHODS.to_vec() };
+        assert!(unanswered(Some(&shown("$a")), "$a", &waiting), "no device took the request");
+        assert!(!unanswered(Some(&shown("$b")), "$a", &waiting), "another verification shows");
+        assert!(!unanswered(None, "$a", &waiting), "no verification shows");
+        assert!(!unanswered(Some(&shown("$a")), "$a", &S::Done), "the verification ended");
+    }
 
     /// Desktop keeps a chat that the user was removed from: its own member has exited, the removal previews it, and
     /// it stays muted. A chat that was deleted here stays deleted when the leave of its room comes.
