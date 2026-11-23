@@ -22,4 +22,7 @@ This directory is sctk-adwaita 0.10.1 from crates.io with these changes:
   each frame lays its buttons out again and draws again (`generation`), and the `on_ready` callback, which now runs
   on every change, wakes the application. A frame that opened with stale cached settings takes GTK's once GTK opens.
 - The first window takes the launcher's `xdg_activation_v1` token (`set_activation_token`), so it gets the focus.
+- `activation` raises a window with `xdg_activation_v1`, which winit 0.30 cannot do on Wayland: it follows the input
+  serials on a seat and queue of its own (`track`), and `activate` asks for a token with the serial of the focused
+  window or of its latest button press, or uses a token from elsewhere (a later launch, a notification).
 - Lifetimes that newer compilers warn about are spelled out.

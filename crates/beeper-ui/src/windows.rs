@@ -78,6 +78,9 @@ impl BeeperGuiApp {
             // A focus that came back while the window manager answered wins.
             Msg::Minimized(minimized) => self.minimized = minimized && !self.focused,
             Msg::Opened(id) => {
+                // The serials of the input that the window gets from now on let the app raise its windows later.
+                #[cfg(target_os = "linux")]
+                let track = self.unmaps().then(|| window::run(id, activation::track).discard());
                 let key = if Some(id) == self.settings_window {
                     "BEEPER_SCREENSHOT_SETTINGS"
                 } else {
@@ -85,6 +88,10 @@ impl BeeperGuiApp {
                 };
                 if std::env::var(key).is_ok() {
                     self.shot = Some(id);
+                }
+                #[cfg(target_os = "linux")]
+                if let Some(track) = track {
+                    return track;
                 }
             }
             Msg::Drawn(id) if self.shot == Some(id) => {
@@ -487,7 +494,7 @@ impl BeeperGuiApp {
         settings = window::Settings { visible: true, icon: Self::window_settings(settings.size).icon, ..settings };
         let open = self.open_window_as(id, settings);
         let focus = self.unmapped_focus.take().filter(|_| main);
-        Some(open.then(move |id| {
+        let opened = open.then(move |id| {
             let opened = Task::done(UiMessage::Window(Msg::Opened(id)));
             match main {
                 true => opened
@@ -495,7 +502,8 @@ impl BeeperGuiApp {
                     .chain(focus.clone().map_or_else(Task::none, iced::widget::operation::focus)),
                 false => opened,
             }
-        }))
+        });
+        Some(opened.chain(self.focus_window(id)))
     }
 
     /// Shows window `id` and gives it the focus. A window that hid on Wayland opens again.
@@ -507,7 +515,21 @@ impl BeeperGuiApp {
             window::Mode::Hidden => window::set_mode(id, window::Mode::Windowed),
             _ => Task::none(),
         });
-        shown.chain(window::gain_focus(id))
+        shown.chain(self.focus_window(id))
+    }
+
+    /// Gives window `id` the keyboard focus. winit's `focus_window` does nothing on Wayland, where the window asks the
+    /// compositor with `xdg_activation_v1` instead: with the token of the later launch or the notification that shows
+    /// it, else with a token for the latest input of the app, like Chromium. GNOME raises the window when a window of
+    /// the app has the focus, and else says that it "is ready".
+    pub(crate) fn focus_window(&mut self, id: window::Id) -> Task<UiMessage> {
+        let token = self.activation_token.take();
+        #[cfg(target_os = "linux")]
+        if self.unmaps() {
+            return window::run(id, move |w| activation::activate(w, token)).discard();
+        }
+        drop(token);
+        window::gain_focus(id)
     }
 
     /// Maximizes window `id` if it opened maximized and the window manager has just placed it, which it reports with
@@ -708,7 +730,7 @@ impl BeeperGuiApp {
             }
             false => match self.map_window(id) {
                 Some(open) => open,
-                None => window::set_mode(id, window::Mode::Windowed).chain(window::gain_focus(id)),
+                None => window::set_mode(id, window::Mode::Windowed).chain(self.focus_window(id)),
             },
         }
     }
@@ -721,5 +743,38 @@ impl BeeperGuiApp {
             .map(|w| self.map_window(w).unwrap_or_else(|| window::set_mode(w, window::Mode::Windowed)))
             .collect();
         Task::batch(subs).chain(self.set_hidden(false))
+    }
+}
+
+/// The Wayland handles of a window for `sctk_adwaita::activation`.
+#[cfg(target_os = "linux")]
+mod activation {
+    use iced::window::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+
+    fn handles(
+        w: &dyn iced::window::Window,
+    ) -> Option<(std::ptr::NonNull<std::ffi::c_void>, Option<std::ptr::NonNull<std::ffi::c_void>>)> {
+        let RawDisplayHandle::Wayland(display) = w.display_handle().ok()?.as_raw() else { return None };
+        let surface = match w.window_handle().ok().map(|h| h.as_raw()) {
+            Some(RawWindowHandle::Wayland(h)) => Some(h.surface),
+            _ => None,
+        };
+        Some((display.display, surface))
+    }
+
+    /// Starts following the input serials of the app's Wayland display, once.
+    pub(super) fn track(w: &dyn iced::window::Window) {
+        if let Some((display, _)) = handles(w) {
+            // Safety: the display of the app's windows stays open while the app runs.
+            unsafe { sctk_adwaita::activation::track(display) }
+        }
+    }
+
+    /// Raises window `w` with `token`, or with a token for the latest input of the app.
+    pub(super) fn activate(w: &dyn iced::window::Window, token: Option<String>) {
+        if let Some((display, Some(surface))) = handles(w) {
+            // Safety: iced runs this while the window and its surface are open.
+            unsafe { sctk_adwaita::activation::activate(display, surface, token) }
+        }
     }
 }

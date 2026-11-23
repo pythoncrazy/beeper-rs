@@ -9304,6 +9304,33 @@ fn wayland_hides_windows_by_closing_them_like_electron() {
     assert!(app.chat_windows.iter().all(|w| w.0 != chat) && app.unmapped.len() == 1, "the chat window is gone");
 }
 
+/// A later launch hands its launcher's activation token over, and a notification's `ActivationToken` comes before its
+/// action: the window that shows next raises with the token on Wayland. On X11, winit's focus raises the window.
+#[test]
+fn launches_and_notifications_raise_the_window_with_their_activation_token() {
+    use beeper_core::platform::DisplayServerKind;
+    let mut app = demo_app("activation-token");
+    let main = app.main_window.expect("the main window");
+    let token = format!("{}launcher-token", crate::ACTIVATION_TOKEN_ARG);
+    let _ = app.second_instance(vec![token.clone(), "beeper://no-such-link".into()]);
+    assert!(app.activation_token.is_none(), "showing the main window took the token");
+    // The link stays the last argument, and an empty token is none.
+    app.display_server = DisplayServerKind::X11;
+    let empty = crate::ACTIVATION_TOKEN_ARG.to_owned();
+    let (done, _) = run_window_actions(app.second_instance(vec![empty]), Size::new(900.0, 640.0), &[]);
+    assert_eq!(done, [format!("mode {main:?} Windowed")]);
+
+    // A notification's token waits for its action, and the token of a notification of another app does not count.
+    let _ = app.update(UiMessage::Notify(notify::Msg::Token(41, "other-app".into())));
+    assert!(app.activation_token.is_none());
+    app.notifications.insert(42, (beeper_core::store::NOTE_CHAT_ID.into(), String::new()));
+    let _ = app.update(UiMessage::Notify(notify::Msg::Token(42, "shell-token".into())));
+    assert_eq!(app.activation_token.as_deref(), Some("shell-token"));
+    let _ = app.update(UiMessage::Notify(notify::Msg::Event(42, Some("default".into()))));
+    assert!(app.activation_token.is_none(), "the click showed the window with it");
+    assert_eq!(app.pane.selected_chat_id.as_deref(), Some(beeper_core::store::NOTE_CHAT_ID));
+}
+
 /// On X11 the windows hide and show as they are.
 #[test]
 fn x11_hides_windows_in_place() {
