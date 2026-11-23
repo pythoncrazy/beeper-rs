@@ -50,6 +50,10 @@ pub struct Pref {
     pub requires: Option<&'static str>,
     /// Desktop's `displayName` in search when it is not the label, like "Notification Sound" for "Sound".
     pub name: Option<&'static str>,
+    /// Desktop's `description` of a row without a `footer`, which only the settings search reads.
+    pub about: Option<&'static str>,
+    /// Desktop's `searchKeywords`.
+    pub keywords: &'static [&'static str],
     pub control: Control,
 }
 
@@ -121,6 +125,15 @@ impl Pref {
     const fn named(self, name: &'static str) -> Self {
         Pref { name: Some(name), ..self }
     }
+
+    /// A description that the settings search finds, but that the row does not show.
+    const fn about(self, about: &'static str) -> Self {
+        Pref { about: Some(about), ..self }
+    }
+
+    const fn keywords(self, keywords: &'static [&'static str]) -> Self {
+        Pref { keywords, ..self }
+    }
 }
 
 const fn t(key: &'static str, label: &'static str, on: bool) -> Pref {
@@ -129,7 +142,19 @@ const fn t(key: &'static str, label: &'static str, on: bool) -> Pref {
 
 /// A row with its own control and no value.
 const fn custom(key: &'static str, label: &'static str, control: Control) -> Pref {
-    Pref { key, label, desc: None, args: &[], badge: None, feature: None, requires: None, name: None, control }
+    Pref {
+        key,
+        label,
+        desc: None,
+        args: &[],
+        badge: None,
+        feature: None,
+        requires: None,
+        name: None,
+        about: None,
+        keywords: &[],
+        control,
+    }
 }
 
 const fn s(key: &'static str, label: &'static str, options: &'static [&'static str], default: u8) -> Pref {
@@ -195,7 +220,7 @@ pub const GENERAL: &[Item] = &[
         t("typingIndicators", "Show recipients I'm typing", true).plus("stealth-mode"),
         custom("blockedUsers", "Blocked users", Control::BlockedUsers).gated("block-users"),
     ]),
-    Item::Group(&[s("appLanguage", "App language", LANGUAGES, 0)]),
+    Item::Group(&[s("appLanguage", "App language", LANGUAGES, 0).keywords(&["locale", "localization", "translation"])]),
     Item::Group(&[
         s("remindLaterDefault", "Default for remind later", &["If no reply", "Always"], 0).plus("remind-later"),
         t("archiveOnReminder", "Archive after setting reminder on chat", false).plus("remind-later"),
@@ -287,14 +312,15 @@ pub const APPEARANCE: &[Item] = &[
     Item::Heading("Conversation View"),
     Item::Group(&[
         t("showTimestamps", "Show message timestamps", true),
-        t("hideDeleted", "Hide deleted messages", false),
+        t("hideDeleted", "Hide deleted messages", false)
+            .about("Hide deleted messages from conversations instead of showing a placeholder"),
         t("enableNudges", "Enable nudges", true)
-            .desc("Shake the conversation when someone sends you a nudge")
+            .about("Shake the conversation when someone sends you a nudge")
             .gated("nudge"),
         t("messageAnimations", "Enable message animations", true),
         t("autoplayGifs", "Autoplay GIFs", true),
         t("animateAvatars", "Animate avatars and emoji", true),
-        t("balanceText", "Balance message text", false),
+        t("balanceText", "Balance message text", false).about("Adjust line breaks to create more even message bubbles"),
         t("loadEmbeds", "Load external embeds automatically", true),
         t("incognitoIndicator", "Show incognito mode indicator", true).plus("stealth-mode").requires("incognito"),
         t("quickReactions", "Show quick reactions", true),
@@ -302,9 +328,10 @@ pub const APPEARANCE: &[Item] = &[
         custom("quickReactionEmoji", "Quick reaction emoji", Control::ReactionEmoji { general: false })
             .desc("Used for quick react keyboard shortcut (%s)")
             .args(&["Message: Quick React"]),
-        t("reactionsOnSelect", "Show reactions when a message is selected", false),
+        t("reactionsOnSelect", "Show reactions when a message is selected", false)
+            .about("Display who reacted to a message when you select it"),
         t("feedbackWidget", "Show feedback widget", true),
-        t("membershipEvents", "Show membership events", true),
+        t("membershipEvents", "Show membership events", true).about("Show when people join or leave a conversation"),
     ]),
     Item::Heading("Composer"),
     Item::Group(&[
@@ -373,12 +400,14 @@ pub const AI: &[Item] = &[
     Item::Group(&[
         t("transcribeWithOpenai", "Use OpenAI's Whisper model for Talk to Type and transcribing voice notes", false)
             .plus("talk-to-type")
-            .desc("Privacy: this will send audio clips to OpenAI via our servers."),
+            .desc("Privacy: this will send audio clips to OpenAI via our servers.")
+            .keywords(&["speech to text", "voice to text"]),
         // Desktop shows these two rows only when `transcribeWithOpenai` is on.
         t("autoTranscribe", "Automatically transcribe voice notes when they are received", false).plus("talk-to-type"),
         s("transcriptionLanguage", "Default language", &TRANSCRIPTION_NAMES, 0)
             .plus("voice-transcription")
-            .desc("Improves accuracy."),
+            .desc("Improves accuracy.")
+            .keywords(&["spoken language", "voice note language", "transcription language"]),
     ]),
     Item::Heading("AI Mentions"),
     Item::Group(&[t("mentionLlms", "Mention an AI to get answers and help in chat", false)
