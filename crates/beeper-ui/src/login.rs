@@ -1154,11 +1154,12 @@ impl BeeperGuiApp {
                         l.import = Some(data);
                         l.screen = Screen::Welcome;
                     }
-                    Ok(Outcome::Session(session, profile, accounts)) => match l.import.take() {
-                        Some(data) if data.crypto.as_ref().is_some_and(|c| c.user_id != session.user_id) => {
-                            let user = &data.crypto.as_ref().expect("checked above").user_id;
+                    // The import stays until it is done, so that a sign-in after a refusal or a failed import of
+                    // the keys copies the data too.
+                    Ok(Outcome::Session(session, profile, accounts)) => match l.import.clone() {
+                        Some(data) if data.user_id.as_ref().is_some_and(|u| *u != session.user_id) => {
+                            let user = data.user_id.as_deref().expect("checked above");
                             l.toast = Some(format!("Sign in as {user} to finish the import."));
-                            l.import = Some(data);
                         }
                         Some(data) => {
                             let dir = self.store.read().matrix_dir();
@@ -1177,6 +1178,7 @@ impl BeeperGuiApp {
                         }
                     },
                     Ok(Outcome::Imported(data, session, profile, accounts)) => {
+                        l.import = None;
                         let homeserver = self.cloud.homeserver.clone();
                         let mut st = self.store.write();
                         st.import_beeper(Arc::unwrap_or_clone(data));
@@ -1809,6 +1811,46 @@ mod tests {
         while let Some(m) = queue.pop() {
             queue.extend(task_messages(app.update(m)).await);
         }
+    }
+
+    /// "Copy from Beeper Desktop" copies only into the Desktop account, also from a Desktop without keys, whose
+    /// account is in `beeperState`. A refused sign-in and a failed copy of the keys keep the import, so the next
+    /// sign-in copies the data instead of starting fresh.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_import_waits_for_a_sign_in_of_the_desktop_account() {
+        use beeper_core::models::{MatrixSession, Profile};
+        use beeper_core::store::Setup;
+        let mut app = signed_out_app("import-account");
+        let chat =
+            beeper_core::models::Chat { id: "!desk:x".into(), title: "From Desktop".into(), ..Default::default() };
+        let data =
+            beeper_core::import::BeeperData { user_id: Some("@ann:x".into()), chats: vec![chat], ..Default::default() };
+        let _ = app.update(LoginMsg::Done(Ok(Outcome::Read(Arc::new(data)))).into());
+        let session = |user: &str| {
+            let s = MatrixSession {
+                user_id: user.into(),
+                access_token: "token".into(),
+                device_id: "NEW".into(),
+                jwt: None,
+            };
+            LoginMsg::Done(Ok(Outcome::Session(s, Profile::default(), Vec::new()))).into()
+        };
+        let _ = app.update(session("@bob:x"));
+        assert_eq!(app.login.toast.as_deref(), Some("Sign in as @ann:x to finish the import."));
+        assert!(!app.store.read().signed_in() && app.store.read().setup.is_none(), "nothing is copied for bob");
+
+        let copy = app.update(session("@ann:x"));
+        let failed = beeper_core::cloud::CloudError { status: 0, message: "bad key".into(), errcode: None, body: None };
+        let _ = app.update(LoginMsg::Done(Err(failed)).into());
+        assert!(app.login.import.is_some() && app.store.read().setup.is_none(), "a failed copy keeps the import");
+
+        for m in task_messages(copy).await {
+            let _ = app.update(m);
+        }
+        let st = app.store.read();
+        assert_eq!((st.setup, st.beeper_state.user_id.as_str()), (Some(Setup::Imported), "@ann:x"));
+        assert!(st.find_chat("!desk:x").is_some(), "the Desktop chat came over");
+        assert!(app.login.import.is_none());
     }
 
     /// A click on "Resend", in the middle of the line under the code, asks for a new code, and a click on "Didn't

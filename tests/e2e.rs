@@ -447,6 +447,7 @@ async fn lifecycle() {
     }
     let data = Arc::new(read_beeper_data(&orig_dir).expect("read the Beeper Desktop fixture"));
     assert!(data.crypto.is_none(), "a Desktop without an account has no keys");
+    assert_eq!(data.user_id, None, "a signed-out Desktop has an empty user in beeperState");
     let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Read(data.clone())))));
     assert_eq!(gui.login.screen, Screen::Welcome, "the import asks to sign in as a new device");
     assert!(shared.read().setup.is_none(), "nothing is imported before the sign-in");
