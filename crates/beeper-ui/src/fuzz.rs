@@ -1067,6 +1067,38 @@ fn command_bar_opens_empty_like_desktop() {
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
 }
 
+/// Desktop's chat hotkeys take `selectedOrCursorThread`, so Ctrl E and E archive the chat of the cursor while no chat
+/// is open. `toggleThreadArchive` first moves the cursor to the next chat, and a pinned chat stays with the toast
+/// "Pinned chats can't be archived".
+#[test]
+fn archive_keys_take_the_chat_of_the_cursor_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("archivecursor");
+    let main = app.main_window.expect("a main window");
+    let ids = app.list_ids(&app.store.read());
+    let flag = |app: &BeeperGuiApp, id: &str, f: ChatFlag| app.store.read().find_chat(id).expect("a chat").flag(f);
+    assert!(flag(&app, &ids[0], ChatFlag::Pinned), "the demo list starts with a pinned chat");
+    let _ = app.update(UiMessage::SelectChat(ids[0].clone()));
+    let _ = app.update(UiMessage::WindowKey(main, Key::Named(Named::Escape), Modifiers::empty()));
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[0]));
+    let _ = app.update(UiMessage::WindowKey(main, Key::Character("e".into()), Modifiers::CTRL));
+    assert_eq!(app.status_banner, "Pinned chats can't be archived");
+    assert!(!flag(&app, &ids[0], ChatFlag::Archived), "the pinned chat stays");
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[1]), "the cursor moves to the next chat");
+    let row = ids.iter().position(|id| !flag(&app, id, ChatFlag::Pinned)).expect("a chat that is not pinned");
+    app.list.cursor = Some(ids[row].clone());
+    let _ = app.update(UiMessage::WindowText(main, "e".into()));
+    assert!(flag(&app, &ids[row], ChatFlag::Archived), "E archives the chat of the cursor");
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[row + 1]));
+    assert_eq!(app.pane.selected_chat_id, None, "archiving the chat of the cursor opens no chat");
+    let _ = app.update(UiMessage::RunHotkey("Chat: Toggle Pin"));
+    assert!(flag(&app, &ids[row + 1], ChatFlag::Pinned), "Ctrl P pins the chat of the cursor");
+    let _ = app.update(UiMessage::SelectChat(ids[row + 2].clone()));
+    let _ = app.update(UiMessage::WindowText(main, "e".into()));
+    assert_eq!(app.pane.composer.text(), "e", "with a chat open, E types in the composer");
+    assert!(!flag(&app, &ids[row + 2], ChatFlag::Archived));
+}
+
 /// Desktop's `scrollThreadsListToItem` with `align: "nearest"`: the chat list scrolls the chat of the cursor and the
 /// open chat into view with the least scroll, for ↓ and ↑, Ctrl ] and Ctrl 1 to 9. A pinned tile brings the top of the
 /// list, where the pinned grid is.
