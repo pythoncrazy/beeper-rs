@@ -2863,10 +2863,19 @@ pub fn room_address(input: &str) -> Result<(String, Vec<String>), BadAddress> {
     Err(BadAddress::Invalid)
 }
 
-/// Desktop's `sendActivityIndicator`: a typing notice that fails, for example offline, only goes to the log.
+/// Desktop's `sendActivityIndicator`: a typing notice for 30 s (`userTyping(roomID, true, 3e4)`), or its end. One
+/// that fails, for example offline, only goes to the log. matrix-sdk's `typing_notice` would last 4 s only.
 pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) {
+    use matrix_sdk::ruma::api::client::typing::create_typing_event::v3::{Request, Typing, TypingInfo};
+    let typing = match on {
+        true => Typing::Yes(TypingInfo::new(std::time::Duration::from_secs(30))),
+        false => Typing::No,
+    };
     let sent = match joined_room(&client, &chat).await {
-        Ok(room) => room.typing_notice(on).await.map_err(|e| e.to_string()),
+        Ok(room) => {
+            let request = Request::new(room.own_user_id().to_owned(), room.room_id().to_owned(), typing);
+            client.send(request).await.map(|_| ()).map_err(|e| e.to_string())
+        }
         Err(e) => Err(e),
     };
     if let Err(e) = sent {
