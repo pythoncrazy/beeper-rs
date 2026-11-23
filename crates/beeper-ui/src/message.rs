@@ -3273,29 +3273,15 @@ impl BeeperGuiApp {
             .iter()
             .zip(times)
             .enumerate()
-            .map(|(k, (e, at))| Message {
-                id: format!("{}{EDIT_HISTORY}{k}", m.id),
-                timestamp: at.clone(),
-                text: Some(e.text.clone()),
-                html: None,
-                linked_message_id: m.linked_message_id.clone().filter(|_| k == 0),
-                attachments: Vec::new(),
-                links: Vec::new(),
-                reactions: Vec::new(),
-                edit_history: Vec::new(),
-                seen: Default::default(),
-                is_edited: None,
-                is_bookmarked: None,
-                is_deleted: None,
-                poll: None,
-                call: None,
-                timer: None,
-                send_error: None,
-                disappearing: None,
-                unresolved_media: None,
-                view_limit: None,
-                broadcast: false,
-                ..m.clone()
+            .map(|(k, (e, at))| {
+                beeper_core::with_defaults!(Message {
+                    id: format!("{}{EDIT_HISTORY}{k}", m.id),
+                    timestamp: at.clone(),
+                    text: Some(e.text.clone()),
+                    linked_message_id: m.linked_message_id.clone().filter(|_| k == 0),
+                    ..m.clone()
+                }, default: html, attachments, links, reactions, edit_history, seen, is_edited, is_bookmarked,
+                    is_deleted, poll, call, timer, send_error, disappearing, unresolved_media, view_limit, broadcast)
             })
             .collect();
         let nexts = versions.iter().skip(1).chain([m]);
