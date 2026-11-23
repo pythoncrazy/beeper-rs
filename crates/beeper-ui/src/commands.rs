@@ -31,6 +31,7 @@ use iced::widget::{column, container, mouse_area, row, scrollable, svg, Row, Spa
 use iced::{Center, Fill, Padding, Pixels, Task};
 
 /// A command: Desktop shows a disabled command, which has no message, at 70% opacity.
+#[derive(Default)]
 pub(crate) struct Command {
     pub category: &'static str,
     pub title: String,
@@ -65,19 +66,7 @@ fn interned(s: String) -> &'static str {
 }
 
 fn cmd(category: &'static str, title: impl Into<String>, msg: Option<UiMessage>) -> Command {
-    Command {
-        category,
-        title: title.into(),
-        subtitle: None,
-        keywords: Vec::new(),
-        hotkey: None,
-        digit: None,
-        account: None,
-        render: None,
-        chat: None,
-        user: None,
-        msg,
-    }
+    Command { category, title: title.into(), msg, ..Default::default() }
 }
 
 impl Command {

@@ -303,6 +303,7 @@ fn flag(iso2: &str) -> String {
 }
 
 /// The state of a phone field.
+#[derive(Default)]
 pub(crate) struct Phone {
     pub country: usize,
     /// The input's text: the national number in the mask.
@@ -351,12 +352,10 @@ impl Phone {
             country,
             input,
             phone: phone.clone(),
-            open: false,
             focus: country,
             shown: usize::MAX,
             scroll: 0.0,
-            search: String::new(),
-            searched: None,
+            ..Default::default()
         };
         p.show(country);
         (p, if value.is_empty() { String::new() } else { phone })

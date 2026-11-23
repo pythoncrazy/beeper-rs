@@ -71,6 +71,7 @@ struct Track {
     since: Option<Instant>,
 }
 
+#[derive(Default)]
 pub struct Player {
     clips: HashMap<String, Option<Result<Clip, String>>>,
     now: Option<Track>,
@@ -119,24 +120,7 @@ impl Player {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => 8.0,
             Err(e) => panic!("read {}: {e}", saved.display()),
         };
-        Self {
-            clips: HashMap::new(),
-            now: None,
-            stops: HashMap::new(),
-            rate: 1.0,
-            menu: None,
-            sub: false,
-            lang: false,
-            pill: false,
-            closed: false,
-            ended: None,
-            bottom,
-            grab: None,
-            saved,
-            more: HashSet::new(),
-            transcribing: HashMap::new(),
-            asked: None,
-        }
+        Self { rate: 1.0, bottom, saved, ..Default::default() }
     }
 }
 

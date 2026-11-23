@@ -993,7 +993,7 @@ struct Queued {
     files: Vec<PendingMedia>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct PendingMedia {
     pub bytes: Vec<u8>,
     pub name: String,
