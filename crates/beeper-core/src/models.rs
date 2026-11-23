@@ -626,6 +626,19 @@ pub struct ChatDraft {
     /// switcher picked, which the draft sends to when the chat opens again.
     #[serde(rename = "sendRoomID", skip_serializing_if = "Option::is_none", default)]
     pub send_room_id: Option<String>,
+    /// Desktop's `com.beeper.revision_id` of the draft record: a new one for each change of what syncs, or the one of
+    /// the synced draft that it came from (see [`crate::drafts`]).
+    #[serde(rename = "revisionID", skip_serializing_if = "Option::is_none", default)]
+    pub revision_id: Option<String>,
+}
+
+/// Desktop's `SYNCED_DRAFT` thread prop: the last `com.beeper.draft` record that this device read or wrote, and
+/// whether the draft here took it (`isApplied`). One that it did not take waits until the draft here goes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedDraft {
+    pub record: serde_json::Value,
+    #[serde(rename = "isApplied")]
+    pub applied: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -679,6 +692,9 @@ pub struct Chat {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draft: Option<ChatDraft>,
+    /// Desktop's `SYNCED_DRAFT` of the chat's `com.beeper.draft`, which stays on this device.
+    #[serde(rename = "syncedDraft", default, skip_serializing_if = "Option::is_none")]
+    pub synced_draft: Option<Box<SyncedDraft>>,
     #[serde(rename = "isArchived", skip_serializing_if = "Option::is_none")]
     pub is_archived: Option<bool>,
     #[serde(rename = "isMarkedUnread", skip_serializing_if = "Option::is_none")]

@@ -4049,6 +4049,7 @@ impl BeeperGuiApp {
     fn leave_chat(&self, st: &mut BeeperStore, next: Option<&str>) {
         let Some(prev) = self.pane().selected_chat_id.as_deref().filter(|&p| Some(p) != next) else { return };
         save_draft(st, self.pane());
+        st.leave_draft(prev);
         let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
         if !st.incognito() && !st.chats[idx].flag(ChatFlag::MarkedUnread) {
             st.mark_chat_read(prev, true);
@@ -4190,6 +4191,7 @@ impl BeeperGuiApp {
         // The windows that `handle` swaps in follow their own chat lists there.
         let pointed = self.swapped.is_none().then(|| self.pointed());
         let task = self.handle(msg);
+        self.link_drafts();
         let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
         let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
@@ -4210,6 +4212,35 @@ impl BeeperGuiApp {
             return task;
         }
         Task::batch([task, badge_sync(now.0, now.1)])
+    }
+
+    /// Tells the drafts sync which chats are open and whether their composers take a synced draft, and shows the
+    /// synced drafts that replaced the drafts of open chats.
+    fn link_drafts(&mut self) {
+        use beeper_core::drafts::Composer;
+        let st = self.store.read();
+        let link = st.drafts.link.clone();
+        let mut open = HashMap::new();
+        for (i, p) in self.panes().enumerate() {
+            let Some(idx) = p.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)) else { continue };
+            // The recorder belongs to the composer of the main window.
+            let unsyncable = p.editing_message_id.is_some() || (i == 0 && self.recorder.is_some());
+            let accepts = !unsyncable && p.attachments.is_empty() && !p.draft_due;
+            open.insert(st.chats[idx].id.clone(), Composer { accepts, unsyncable });
+        }
+        let applied = {
+            let mut l = link.lock().unwrap();
+            if l.open != open {
+                l.open = open;
+            }
+            std::mem::take(&mut l.applied)
+        };
+        for chat in applied {
+            composer::show_synced_draft(&st, &mut self.pane, &chat);
+            for w in &mut self.chat_windows {
+                composer::show_synced_draft(&st, &mut w.1, &chat);
+            }
+        }
     }
 
     /// Desktop's `updateAppBadgeCount`: the unread chats in all chats or in the chat list, by "Badge count".

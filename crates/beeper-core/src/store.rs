@@ -622,6 +622,8 @@ pub struct BeeperStore {
     pub requests_viewed: HashMap<String, i64>,
     pub features: crate::features::Flags,
     pub whoami: Profile,
+    /// The state of the drafts sync of `com.beeper.draft` (see [`crate::drafts`]).
+    pub drafts: crate::drafts::DraftSync,
     next_seq: i64,
 }
 
@@ -794,6 +796,7 @@ impl BeeperStore {
             requests_viewed: HashMap::new(),
             features,
             whoami: Profile::default(),
+            drafts: Default::default(),
             next_seq: 1000,
         };
         store.load_from_sqlite();
@@ -2073,6 +2076,7 @@ impl BeeperStore {
         let merge = |c: &mut Chat| {
             *c = Chat {
                 draft: c.draft.take(),
+                synced_draft: c.synced_draft.take(),
                 label_ids: std::mem::take(&mut c.label_ids),
                 last_activity: c.last_activity.take().or(chat.last_activity.clone()),
                 local_chat_id: c.local_chat_id.take(),
@@ -2630,7 +2634,8 @@ impl BeeperStore {
         if let Some(merge) = new_merge {
             self.set_merge(idx, merge);
         }
-        Ok(self.update_chat(idx, |c| c.draft = draft))
+        self.put_draft(idx, draft);
+        Ok(self.chats[idx].clone())
     }
 
     /// Sends a draft: writes its local echoes and queues them for the homeserver. Returns the chat ID of the send and

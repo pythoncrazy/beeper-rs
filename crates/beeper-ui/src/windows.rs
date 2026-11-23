@@ -164,7 +164,11 @@ impl BeeperGuiApp {
                 // A thread window closes its "Media in %s" window.
                 tasks.extend(self.carousel_windows.iter().filter(|w| w.1 == id).map(|w| window::close(w.0)));
                 if let Some(w) = self.chat_windows.iter().find(|w| w.0 == id) {
-                    save_draft(&mut self.store.write(), &w.1);
+                    let mut st = self.store.write();
+                    save_draft(&mut st, &w.1);
+                    if let Some(chat) = w.1.selected_chat_id.as_deref() {
+                        st.leave_draft(chat);
+                    }
                 }
                 self.chat_windows.retain(|w| w.0 != id);
                 self.space_windows.retain(|w| w.0 != id);
