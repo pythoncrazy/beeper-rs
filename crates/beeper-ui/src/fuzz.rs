@@ -8692,6 +8692,50 @@ fn window_changes_save_the_state_after_the_last_one_like_desktop() {
     assert_eq!((task.units(), app.state_changes), (0, n), "a window without a state saves nothing");
 }
 
+/// A `window.json` or `subwindow-state.json` that is not a JSON object reads as an empty store, like Desktop's
+/// FastConf with `clearInvalidConfig`, and the entries of `openSubwindows` that Desktop does not know are skipped,
+/// instead of a panic at launch.
+#[test]
+fn malformed_window_stores_read_as_defaults() {
+    use crate::windows::{read_subwindows, Subwindow};
+    let mut app = demo_app("malformed-window-stores");
+    let dir = app.store.read().config.data_dir.clone();
+    let subs = dir.join("subwindow-state.json");
+    let bad: [&[u8]; 9] = [
+        b"{",
+        b"",
+        b"[1, 2]",
+        b"null",
+        b"{\"openSubwindows\": 5}",
+        b"{\"openSubwindows\": {\"type\": \"prefs\"}}",
+        br#"{"openSubwindows": [7, null, "prefs", {}, {"type": "thread"}, {"type": "thread", "threadId": 3}, {"type": 3}]}"#,
+        br#"{"openSubwindows": [{"type": "thread", "threadId": ""}, {"type": "popover"}]}"#,
+        b"{\"openSubwindows\": [\xff]}",
+    ];
+    for json in bad {
+        std::fs::write(&subs, json).unwrap();
+        assert_eq!(read_subwindows(&subs), [], "{}", String::from_utf8_lossy(json));
+        let _ = app.restore_subwindows();
+    }
+    assert!(app.chat_windows.is_empty() && app.settings_window.is_none(), "nothing opens");
+    let good = br#"{"openSubwindows": [{"type": "thread", "threadId": "c"}, 1, {"type": "prefs"},
+        {"type": "prefs-subview", "subView": "notifications"}]}"#;
+    std::fs::write(&subs, good).unwrap();
+    assert_eq!(read_subwindows(&subs), [Subwindow::Thread("c".into()), Subwindow::Prefs, Subwindow::Prefs]);
+
+    let path = dir.join("window.json");
+    let bad = ["{", "[]", "3", "{\"windowState\": 5}", "{\"windowState\": {\"main\": 5}}", "{\"windowState\": []}"];
+    for json in bad {
+        std::fs::write(&path, json).unwrap();
+        let s = app.main_window_settings();
+        assert_eq!((s.size, s.maximized), (Size::new(1200.0, 800.0), false), "{json}");
+        assert!(matches!(s.position, window::Position::Centered), "{json}");
+        // FastConf's `set` replaces what is in its way.
+        write_window_state(&path, "main", true, Size::new(900.0, 700.0), None);
+        assert!(app.main_window_settings().maximized, "{json}");
+    }
+}
+
 #[test]
 fn main_window_keeps_its_state_like_desktop() {
     let mut app = demo_app("windowstate");
