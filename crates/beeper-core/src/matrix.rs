@@ -2532,8 +2532,15 @@ pub fn room_address(input: &str) -> Result<(String, Vec<String>), BadAddress> {
     Err(BadAddress::Invalid)
 }
 
-pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) -> Result<(), String> {
-    joined_room(&client, &chat).await?.typing_notice(on).await.map_err(|e| e.to_string())
+/// Desktop's `sendActivityIndicator`: a typing notice that fails, for example offline, only goes to the log.
+pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) {
+    let sent = match joined_room(&client, &chat).await {
+        Ok(room) => room.typing_notice(on).await.map_err(|e| e.to_string()),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = sent {
+        eprintln!("typing notice dropped: {e}");
+    }
 }
 
 /// Desktop's `formatMessage`: the text, its HTML with a `matrix.to` link for each user mention, and `m.mentions` with
@@ -4006,7 +4013,8 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
 async fn sync_profile(client: &Client, store: &SharedStore) {
     let profile = match client.account().fetch_user_profile().await {
         Ok(r) => r.data,
-        Err(e) => return store.write().matrix_error = Some(e.to_string()),
+        // The profile of the last start stays while the homeserver cannot be reached.
+        Err(e) => return eprintln!("Could not read the own profile: {e}"),
     };
     let field = |k: &str| profile.get(k).and_then(Value::as_str).map(str::to_string);
     let mut st = store.write();
@@ -4923,7 +4931,7 @@ pub async fn run(store: SharedStore) {
     let me = client.user_id().expect("signed-in client has a user ID").to_owned();
     match client.encryption().request_user_identity(&me).await {
         Ok(_) => refresh_e2ee(&client, &store).await,
-        Err(e) => store.write().matrix_error = Some(e.to_string()),
+        Err(e) => eprintln!("Could not query the own identity, the first sync reads it: {e}"),
     }
     client.add_event_handler_context(store.clone());
     client.add_event_handler(verification_requested);
@@ -4996,18 +5004,18 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             st.emit_ws("setup.updated", "", None, None, None);
             return false;
         }
+        // Like Desktop's SDK, a sync that fails (the homeserver cannot be reached) only goes to the log, and the loop
+        // tries again. The toast of the main window takes `matrix_error`, so the outbox waits on its own flag.
         Err(e) => {
-            let mut st = store.write();
-            if st.matrix_error.replace(e.to_string()).is_none() {
-                // The "Offline" pill and the API's app state follow the error.
-                st.emit_ws("setup.updated", "", None, None, None);
+            if !std::mem::replace(&mut store.write().sync_failing, true) {
+                eprintln!("Matrix sync failed, trying again: {e}");
             }
         }
         Ok(resp) => {
             {
                 let mut st = store.write();
                 // The homeserver answers again, so the changes that waited for it go now.
-                let back = st.matrix_error.take().is_some();
+                let back = std::mem::take(&mut st.sync_failing);
                 if back {
                     st.outbox_ready.notify_one();
                 }
@@ -6964,6 +6972,39 @@ mod tests {
         assert!(!store.read().syncing);
         let kinds: Vec<String> = std::iter::from_fn(|| events.try_recv().ok()).map(|e| e.event_type).collect();
         assert!(kinds.iter().any(|k| k == "setup.updated"), "{kinds:?}");
+    }
+
+    /// Like Desktop's SDK, a sync that cannot reach the homeserver shows no toast with the URL of the request, and the
+    /// first sync that works again wakes the outbox. Before, each failed sync was a toast, and as the toast took the
+    /// error, the outbox missed the reconnect and waited up to a minute.
+    #[tokio::test]
+    async fn failed_syncs_are_quiet_and_the_reconnect_wakes_the_outbox() {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+        let down = std::sync::Arc::new(AtomicBool::new(false));
+        let offline = down.clone();
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split('?').next().expect("a path") {
+            _ if offline.load(Relaxed) => (0, Value::Null),
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("quiet-sync"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        let ready = store.read().outbox_ready.clone();
+        let now = || super::SyncSettings::default().timeout(std::time::Duration::ZERO);
+        down.store(true, Relaxed);
+        for _ in 0..2 {
+            assert!(super::on_sync(&client, &store, client.sync_once(now()).await).await, "the loop goes on");
+        }
+        assert!(store.read().sync_failing);
+        assert_eq!(store.read().matrix_error, None, "no toast");
+        down.store(false, Relaxed);
+        super::on_sync(&client, &store, client.sync_once(now()).await).await;
+        assert!(!store.read().sync_failing);
+        let woken = tokio::time::timeout(std::time::Duration::from_secs(1), ready.notified()).await;
+        assert!(woken.is_ok(), "the reconnect wakes the outbox");
     }
 
     /// Desktop's `createThreadFromInvite`: an invite is a read-only group request with Accept (a join) and Decline.

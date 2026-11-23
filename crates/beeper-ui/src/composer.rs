@@ -608,7 +608,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let Some(client) = st.matrix.clone().filter(|_| st.typing_notices()) else { return Task::none() };
         drop(st);
-        let notice = |chat, on| Task::perform(beeper_core::matrix::typing(client.clone(), chat, on), UiMessage::Pushed);
+        let notice = |chat, on| Task::future(beeper_core::matrix::typing(client.clone(), chat, on)).discard();
         Task::batch([ended.map(|c| notice(c, false)), started.map(|c| notice(c, true))].into_iter().flatten())
     }
 
