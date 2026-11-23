@@ -2752,6 +2752,9 @@ pub struct BeeperGuiApp {
     /// Desktop's `FileDropOverlay` shows, and Shift was down at a drop, so the dropped files are sent.
     dropping: bool,
     drop_send: bool,
+    /// The files of a drop so far: winit gives each file of a drop in its own event, and Desktop's `onDrop` attaches
+    /// them all at once.
+    dropped: Vec<std::path::PathBuf>,
     hotkeys_scrolled: bool,
     /// Chats picked by Begin Selecting; selection mode is on while this is not empty.
     pub selection: Vec<String>,
@@ -3091,6 +3094,7 @@ impl BeeperGuiApp {
             hotkeys_modal: None,
             dropping: false,
             drop_send: false,
+            dropped: vec![],
             hotkeys_scrolled: false,
             chat_sub: None,
             reminded: HashMap::new(),

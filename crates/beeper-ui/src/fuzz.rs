@@ -483,13 +483,22 @@ fn attachments_send_like_desktop() {
     let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(id, true)));
     assert!(simulator(app.view_main()).find("Drop files here to attach").is_ok(), "a drag shows the drop zone");
     let _ = app.update(UiMessage::Modifiers(Modifiers::SHIFT));
-    let _ = app.update(UiMessage::Composer(composer::Msg::FileDropped(id, "/none".into())));
-    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files[1..].iter().cloned().map(Ok).collect())));
+    // winit gives each file of a drop in its own event; Desktop's `onDrop` attaches them together, in their order.
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileDropped(id, "/a".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileDropped(id, "/b".into())));
+    assert_eq!(app.dropped, ["/a", "/b"].map(std::path::PathBuf::from), "the files of a drop wait for each other");
+    let _ = app.update(UiMessage::Composer(composer::Msg::DropEnded));
+    assert!(app.dropped.is_empty(), "the drop loads its files at once");
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files.iter().cloned().map(Ok).collect())));
     assert!(!app.dropping && app.pane.attachments.is_empty(), "a drop with Shift sends");
-    assert_eq!(last(&app, 1), [(None, vec!["unknown".into()])]);
+    assert_eq!(last(&app, 2), [(None, vec!["img".into()]), (None, vec!["unknown".into()])], "all the files at once");
     let _ = app.update(UiMessage::Modifiers(Modifiers::empty()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files[1..].iter().cloned().map(Ok).collect())));
+    assert_eq!(app.pane.attachments.len(), 1, "a file picked after a drop with Shift waits for the send");
+    let _ = app.update(UiMessage::Composer(composer::Msg::DiscardAttachment(0)));
     let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(id, true)));
     let _ = app.update(UiMessage::Composer(composer::Msg::FileDropped(id, "/none".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::DropEnded));
     let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files[1..].iter().cloned().map(Ok).collect())));
     assert_eq!(app.pane.attachments.len(), 1, "a drop attaches");
     let _ = app.update(UiMessage::Composer(composer::Msg::DiscardAttachment(0)));
