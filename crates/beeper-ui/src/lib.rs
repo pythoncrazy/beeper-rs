@@ -5900,7 +5900,7 @@ impl BeeperGuiApp {
         // Desktop's `threadSearcher`, whose index does not take fuzzy matches, and its `sortResults`: a chat that
         // matches by its network only comes last, then by the penalty, newest first.
         let find = |people: bool| -> Vec<usize> {
-            let found = beeper_core::chat_index::search(st.chats.iter().filter(shown), raw, people, false);
+            let found = beeper_core::chat_index::search_in(st, |c| shown(&c), raw, people, false);
             let mut found: Vec<(&Chat, bool)> = found.into_iter().map(|(c, hits)| (c, !people && hits == 0)).collect();
             found.sort_by(|(a, a_net), (b, b_net)| {
                 (a_net, penalty(a))
