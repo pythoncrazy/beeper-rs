@@ -8,6 +8,21 @@ use std::sync::{Arc, Mutex};
 /// An HTTP server on a free port that answers each request with `reply(method, path, body)`. A body that is not
 /// JSON is a JSON string, and an empty body is null.
 pub async fn serve(reply: impl Fn(&str, &str, Value) -> (u16, Value) + Send + Sync + 'static) -> String {
+    serve_raw(move |method, path, _, body| {
+        let (code, json) = reply(method, path, body);
+        (code, vec![("content-type".into(), b"application/json".to_vec())], json.to_string().into_bytes())
+    })
+    .await
+}
+
+/// A raw answer of [`serve_raw`]: the status, the headers with their bytes as sent, and the body.
+pub type RawReply = (u16, Vec<(String, Vec<u8>)>, Vec<u8>);
+
+/// [`serve`] with the request headers (lowercase names) and any answer: headers that need not be ASCII, redirects,
+/// and bodies that are not JSON.
+pub async fn serve_raw(
+    reply: impl Fn(&str, &str, &HashMap<String, String>, Value) -> RawReply + Send + Sync + 'static,
+) -> String {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind the stub server");
     let url = format!("http://{}", listener.local_addr().expect("the stub address"));
@@ -19,12 +34,15 @@ pub async fn serve(reply: impl Fn(&str, &str, Value) -> (u16, Value) + Send + Sy
             tokio::spawn(async move {
                 let (mut stream, mut line, mut len) = (BufReader::new(stream), String::new(), 0);
                 stream.read_line(&mut line).await.expect("read the request line");
-                let mut header = String::new();
+                let (mut header, mut headers) = (String::new(), HashMap::new());
                 while stream.read_line(&mut header).await.expect("read a header") > 2 {
-                    if let Some(v) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-                        len = v.trim().parse().expect("a content length");
+                    if let Some((k, v)) = header.split_once(':') {
+                        headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
                     }
                     header.clear();
+                }
+                if let Some(v) = headers.get("content-length") {
+                    len = v.parse().expect("a content length");
                 }
                 let mut body = vec![0; len];
                 stream.read_exact(&mut body).await.expect("read the request body");
@@ -35,17 +53,19 @@ pub async fn serve(reply: impl Fn(&str, &str, Value) -> (u16, Value) + Send + Sy
                     Err(_) if body.is_empty() => Value::Null,
                     Err(_) => Value::String(String::from_utf8_lossy(&body).into()),
                 };
-                let (code, json) = reply(method, path, body);
+                let (code, head, body) = reply(method, path, &headers, body);
                 // Code 0 closes the connection without an answer, like a homeserver that cannot be reached.
                 if code == 0 {
                     return;
                 }
-                let json = json.to_string();
-                let head = format!(
-                    "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                    json.len()
-                );
-                stream.get_mut().write_all(format!("{head}{json}").as_bytes()).await.expect("write the reply");
+                let mut out = format!("HTTP/1.1 {code} X\r\n").into_bytes();
+                for (k, v) in head {
+                    out.extend([k.as_bytes(), b": ", &v, b"\r\n"].concat());
+                }
+                out.extend(format!("content-length: {}\r\nconnection: close\r\n\r\n", body.len()).into_bytes());
+                out.extend(body);
+                // A client that gave up on the answer has closed the connection.
+                let _ = stream.get_mut().write_all(&out).await;
             });
         }
     });

@@ -1641,9 +1641,9 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let html = st.loaded(&mid).and_then(|m| m.html.clone());
                 drop(st);
-                // Desktop scrolls the edited message into view (`scrollIntoView` of the editing target).
+                // Desktop scrolls the edited message into view with the least scroll (`align: "nearest"`).
                 self.pane.timeline.reveal(vlist::key(&mid));
-                let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Center);
+                let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Nearest);
                 // Desktop's `customEmoji` nodes of the message's `img[data-mx-emoticon]`, named by their `alt`.
                 self.pane.emoticons.extend(html.as_deref().map(html_emoticons).unwrap_or_default());
                 self.pane.start_edit(mid, &old_txt, html.map_or(Vec::new(), |h| html_pills(&h)));
