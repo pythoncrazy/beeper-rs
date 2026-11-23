@@ -30,6 +30,8 @@ pub enum Msg {
     FocusRequested(Option<String>),
     /// Desktop's `second-instance` event with the arguments of the later launch.
     SecondInstance(Vec<String>),
+    /// GTK opened to draw the title bars, or its settings changed, among them the text scaling.
+    FrameReady,
     /// A window that hid on Wayland had this size in screen pixels, and was maximized or not, as it closed.
     Unmapped(window::Id, Size, bool),
     /// The widget that had the keyboard focus as the main window hid on Wayland.
@@ -78,6 +80,9 @@ impl BeeperGuiApp {
             // A focus that came back while the window manager answered wins.
             Msg::Minimized(minimized) => self.minimized = minimized && !self.focused,
             Msg::Opened(id) => {
+                // The serials of the input that the window gets from now on let the app raise its windows later.
+                #[cfg(target_os = "linux")]
+                let track = self.unmaps().then(|| window::run(id, activation::track).discard());
                 let key = if Some(id) == self.settings_window {
                     "BEEPER_SCREENSHOT_SETTINGS"
                 } else {
@@ -86,12 +91,17 @@ impl BeeperGuiApp {
                 if std::env::var(key).is_ok() {
                     self.shot = Some(id);
                 }
+                #[cfg(target_os = "linux")]
+                if let Some(track) = track {
+                    return track;
+                }
             }
             Msg::Drawn(id) if self.shot == Some(id) => {
                 self.shot = None;
                 return window::screenshot(id).map(move |s| UiMessage::Window(Msg::ScreenshotCaptured(id, s)));
             }
             Msg::Drawn(_) => {}
+            Msg::FrameReady => return self.follow_text_scale(),
             Msg::Resized(id, size) => {
                 self.resized(id, size);
                 return Task::batch([self.maximize_if_placed(id), self.save_soon(id)]);
@@ -249,6 +259,7 @@ impl BeeperGuiApp {
                     self.time_edit = Default::default();
                     // Desktop's Settings is a new window each time, so its search starts empty.
                     (self.settings_query, self.settings_focus, self.settings_pick) = (String::new(), 0, None);
+                    self.settings_search_on = false;
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
                     self.media_window = None;
                 } else if [self.main_window, self.login_window].contains(&Some(id)) {
@@ -487,7 +498,7 @@ impl BeeperGuiApp {
         settings = window::Settings { visible: true, icon: Self::window_settings(settings.size).icon, ..settings };
         let open = self.open_window_as(id, settings);
         let focus = self.unmapped_focus.take().filter(|_| main);
-        Some(open.then(move |id| {
+        let opened = open.then(move |id| {
             let opened = Task::done(UiMessage::Window(Msg::Opened(id)));
             match main {
                 true => opened
@@ -495,7 +506,8 @@ impl BeeperGuiApp {
                     .chain(focus.clone().map_or_else(Task::none, iced::widget::operation::focus)),
                 false => opened,
             }
-        }))
+        });
+        Some(opened.chain(self.focus_window(id)))
     }
 
     /// Shows window `id` and gives it the focus. A window that hid on Wayland opens again.
@@ -507,7 +519,21 @@ impl BeeperGuiApp {
             window::Mode::Hidden => window::set_mode(id, window::Mode::Windowed),
             _ => Task::none(),
         });
-        shown.chain(window::gain_focus(id))
+        shown.chain(self.focus_window(id))
+    }
+
+    /// Gives window `id` the keyboard focus. winit's `focus_window` does nothing on Wayland, where the window asks the
+    /// compositor with `xdg_activation_v1` instead: with the token of the later launch or the notification that shows
+    /// it, else with a token for the latest input of the app, like Chromium. GNOME raises the window when a window of
+    /// the app has the focus, and else says that it "is ready".
+    pub(crate) fn focus_window(&mut self, id: window::Id) -> Task<UiMessage> {
+        let token = self.activation_token.take();
+        #[cfg(target_os = "linux")]
+        if self.unmaps() {
+            return window::run(id, move |w| activation::activate(w, token)).discard();
+        }
+        drop(token);
+        window::gain_focus(id)
     }
 
     /// Maximizes window `id` if it opened maximized and the window manager has just placed it, which it reports with
@@ -582,6 +608,32 @@ impl BeeperGuiApp {
         for (id, size) in all {
             self.resized(id, size * k);
         }
+    }
+
+    /// Follows a change of GNOME's text scaling on Wayland, which Chromium makes part of the device scale: Desktop's
+    /// page and title bar grow like a zoom, and its windows keep their sizes in its pixels, so they grow with it, but
+    /// for maximized ones, which keep the screen's size and lay out again.
+    fn follow_text_scale(&mut self) -> Task<UiMessage> {
+        let scale = text_scale();
+        if scale == self.text_scale {
+            return Task::none();
+        }
+        let k = scale / self.text_scale;
+        self.text_scale = scale;
+        let all = self.main_window.into_iter().chain(self.login_window).chain(self.sub_windows());
+        // The sizes come at the new scale, so a window of the same size at the old one grows by `k` on the screen.
+        Task::batch(all.map(move |id| {
+            let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size)));
+            state.then(move |(max, size)| match max {
+                // The title bar grew or shrank, but winit takes the content's size out of the screen's only when the
+                // compositor configures the window, which GNOME does for a change of its state: restored and
+                // maximized again in one go, the window does not show the restored size.
+                true => Task::done(UiMessage::Window(Msg::Resized(id, size)))
+                    .chain(window::maximize(id, false))
+                    .chain(window::maximize(id, true)),
+                false => window::resize(id, size * k),
+            })
+        }))
     }
 
     /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.
@@ -708,7 +760,7 @@ impl BeeperGuiApp {
             }
             false => match self.map_window(id) {
                 Some(open) => open,
-                None => window::set_mode(id, window::Mode::Windowed).chain(window::gain_focus(id)),
+                None => window::set_mode(id, window::Mode::Windowed).chain(self.focus_window(id)),
             },
         }
     }
@@ -721,5 +773,38 @@ impl BeeperGuiApp {
             .map(|w| self.map_window(w).unwrap_or_else(|| window::set_mode(w, window::Mode::Windowed)))
             .collect();
         Task::batch(subs).chain(self.set_hidden(false))
+    }
+}
+
+/// The Wayland handles of a window for `sctk_adwaita::activation`.
+#[cfg(target_os = "linux")]
+mod activation {
+    use iced::window::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+
+    fn handles(
+        w: &dyn iced::window::Window,
+    ) -> Option<(std::ptr::NonNull<std::ffi::c_void>, Option<std::ptr::NonNull<std::ffi::c_void>>)> {
+        let RawDisplayHandle::Wayland(display) = w.display_handle().ok()?.as_raw() else { return None };
+        let surface = match w.window_handle().ok().map(|h| h.as_raw()) {
+            Some(RawWindowHandle::Wayland(h)) => Some(h.surface),
+            _ => None,
+        };
+        Some((display.display, surface))
+    }
+
+    /// Starts following the input serials of the app's Wayland display, once.
+    pub(super) fn track(w: &dyn iced::window::Window) {
+        if let Some((display, _)) = handles(w) {
+            // Safety: the display of the app's windows stays open while the app runs.
+            unsafe { sctk_adwaita::activation::track(display) }
+        }
+    }
+
+    /// Raises window `w` with `token`, or with a token for the latest input of the app.
+    pub(super) fn activate(w: &dyn iced::window::Window, token: Option<String>) {
+        if let Some((display, Some(surface))) = handles(w) {
+            // Safety: iced runs this while the window and its surface are open.
+            unsafe { sctk_adwaita::activation::activate(display, surface, token) }
+        }
     }
 }

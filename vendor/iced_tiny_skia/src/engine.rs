@@ -641,14 +641,34 @@ impl Engine {
                     return;
                 }
 
-                let needs_custom_mask = effective_clip != _clip_bounds
-                    && !physical_bounds.is_within(&effective_clip);
+                // Like the image shader of wgpu, an image with a border
+                // radius draws in its own clip bounds with rounded corners.
+                let radii = <[f32; 4]>::from(image.border_radius);
+                let rounded = radii.iter().any(|r| *r > 0.0);
+
+                let needs_custom_mask = rounded
+                    || (effective_clip != _clip_bounds
+                        && !physical_bounds.is_within(&effective_clip));
                 if needs_custom_mask {
                     adjust_clip_mask(_clip_mask, effective_clip);
                 }
+                if rounded {
+                    let own = *clip_bounds * _transformation;
+                    let max = own.width.min(own.height) / 2.0;
+                    let radii = radii.map(|r| {
+                        (r * _transformation.scale_factor()).min(max)
+                    });
+                    _clip_mask.intersect_path(
+                        &rounded_rectangle(own, radii),
+                        tiny_skia::FillRule::EvenOdd,
+                        true,
+                        tiny_skia::Transform::default(),
+                    );
+                }
 
-                let clip_mask = (!physical_bounds.is_within(&effective_clip))
-                    .then_some(_clip_mask as &_);
+                let clip_mask = (rounded
+                    || !physical_bounds.is_within(&effective_clip))
+                .then_some(_clip_mask as &_);
 
                 let center = physical_bounds.center();
                 let radians = f32::from(image.rotation);

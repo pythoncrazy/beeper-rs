@@ -28,12 +28,35 @@ pub(crate) struct Metrics {
 pub(crate) const ADWAITA: Metrics =
     Metrics { header: 35, button: (24., 24.), button_top: 5., inset: (5., 5.), spacing: 13. };
 
-static METRICS: std::sync::OnceLock<Metrics> = std::sync::OnceLock::new();
+impl Metrics {
+    /// The sizes grown by the text scaling `zoom`. The header takes whole points down, as
+    /// Chromium's frame takes whole pixels: 37 at 1.5 is 55, which GTK fills with 36⅔ CSS pixels.
+    pub(crate) fn zoomed(self, zoom: f64) -> Self {
+        let z = zoom as f32;
+        Metrics {
+            header: (f64::from(self.header) * zoom + 1e-6).floor().max(1.) as u32,
+            button: (self.button.0 * z, self.button.1 * z),
+            button_top: self.button_top * z,
+            inset: (self.inset.0 * z, self.inset.1 * z),
+            spacing: self.spacing * z,
+        }
+    }
+}
+
+/// The theme's sizes, and whether GTK draws with them.
+static METRICS: std::sync::OnceLock<(Metrics, bool)> = std::sync::OnceLock::new();
 
 /// The sizes the frames of this process use: the GTK theme's when GTK draws them (see
-/// [`crate::gtk`]), else libadwaita's. Fixed by the first frame.
+/// [`crate::gtk`]), else libadwaita's, which the first frame picks. The GTK theme's grow with the
+/// desktop's text scaling while the app runs, like Electron's frame, whose device scale has it.
 pub(crate) fn metrics() -> Metrics {
-    *METRICS.get_or_init(|| crate::gtk::metrics().unwrap_or(ADWAITA))
+    let (metrics, gtk) =
+        *METRICS.get_or_init(|| crate::gtk::metrics().map_or((ADWAITA, false), |metrics| (metrics, true)));
+    if gtk {
+        metrics.zoomed(crate::gtk::text_scale())
+    } else {
+        metrics
+    }
 }
 
 /// The title bar's height in logical points.

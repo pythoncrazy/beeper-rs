@@ -1447,7 +1447,7 @@ fn run_action<'a, P, C>(
             }
             window::Action::Resize(id, size) => {
                 if let Some(window) = window_manager.get_mut(id) {
-                    let _ = window.raw.request_inner_size(
+                    let applied = window.raw.request_inner_size(
                         winit::dpi::LogicalSize {
                             width: size.width,
                             height: size.height,
@@ -1456,6 +1456,29 @@ fn run_action<'a, P, C>(
                             window.state.scale_factor(),
                         )),
                     );
+
+                    // A size that winit applies at once (Wayland) comes
+                    // with no `Resized` event, so the window takes it here.
+                    if let Some(applied) = applied.filter(|applied| {
+                        let current = window.state.physical_size();
+                        (applied.width, applied.height)
+                            != (current.width, current.height)
+                    }) {
+                        let event =
+                            winit::event::WindowEvent::Resized(applied);
+
+                        window.state.update(program, &window.raw, &event);
+
+                        if let Some(event) = conversion::window_event(
+                            event,
+                            window.state.scale_factor(),
+                            window.state.modifiers(),
+                        ) {
+                            events.push((id, event));
+                        }
+
+                        window.raw.request_redraw();
+                    }
                 }
             }
             window::Action::SetMinSize(id, size) => {

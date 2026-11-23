@@ -2067,6 +2067,22 @@ pub struct BeeperSettings {
     /// Desktop's synced `time_suggestion_options`, normalized by [`crate::prefs::time_suggestion_options`]; empty is
     /// Desktop's defaults.
     pub time_suggestions: Vec<String>,
+    /// Desktop's synced `quick_replies`.
+    pub quick_replies: Vec<QuickReply>,
+}
+
+/// A quick reply of Desktop's `QuickRepliesPrefsSubView`: its title, which `;` finds, and its text. Its attachments
+/// are files of the Desktop that saved them, which they keep as they are.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct QuickReply {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<serde_json::Value>,
 }
 
 /// Desktop's image pack with stickers (`OCt` and `z0e`): the id, the tab title, the avatar, and the stickers.

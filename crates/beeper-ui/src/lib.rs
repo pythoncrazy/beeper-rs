@@ -14,6 +14,7 @@ pub mod composer;
 mod cursor;
 mod dashed;
 mod deeplink;
+pub use deeplink::ACTIVATION_TOKEN_ARG;
 mod delegate;
 mod dialogs;
 pub mod emoji;
@@ -39,6 +40,7 @@ pub mod login;
 mod lottie;
 mod media_view;
 mod members;
+mod menu_keys;
 mod menubar;
 mod merge_editor;
 mod merge_suggest;
@@ -707,7 +709,8 @@ fn menu_item<'a>(
 fn menu_line<'a>(p: &Palette, line: Row<'a, UiMessage>, msg: Option<UiMessage>) -> El<'a> {
     let style = btn_style([CLEAR, p.menu_hover, p.menu_hover], [p.text, Color::WHITE, Color::WHITE], 4.0);
     let line = line.align_y(Center);
-    container(button(line).padding([3, 8]).width(Fill).style(style).on_press_maybe(msg)).padding([1, 5]).into()
+    let line = button(line).padding([3, 8]).width(Fill).style(style).on_press_maybe(msg.clone());
+    container(menu_keys::row(line, msg)).padding([1, 5]).into()
 }
 
 /// Desktop's `menu-item section-header`: a grey heading row of a menu, as high as a menu row, in 11 px text.
@@ -762,6 +765,18 @@ const MESSAGE_MENU_W: f32 = 270.0;
 const MIN_PANE_W: f32 = 240.0;
 /// Desktop's `.menu-item` line: 13 px text at the 1.4 line height of `html`.
 const MENU_LINE: f32 = 13.0 * 1.4;
+/// Where Chromium's `MenuController::CalculateMenuBounds` puts a native context menu of `w` x `h` that opens at the
+/// cursor `at`, with the window as the screen: below the cursor when it fits, else above it when that fits, and moved
+/// back inside the edges. Electron's menus on Linux are Chromium's, which do not flip to the left of the cursor.
+fn menu_spot(at: Point, w: f32, h: f32, area: Size) -> (f32, f32) {
+    let y = match at.y + h <= area.height {
+        true => at.y,
+        false if at.y - h >= 0.0 => at.y - h,
+        false => at.y,
+    };
+    (at.x.clamp(0.0, (area.width - w).max(0.0)), y.clamp(0.0, (area.height - h).max(0.0)))
+}
+
 /// The pitch of Desktop's `.menu-item`: the line in rem, 3 px of padding on each side, and a collapsed 2 px margin.
 fn menu_pitch() -> f32 {
     rem(MENU_LINE) + 8.0
@@ -1991,6 +2006,14 @@ pub struct SearchFilters {
     pub media: Vec<usize>,
 }
 
+impl SearchFilters {
+    /// The filters that are set, like the keys of Desktop's `searchFilters`.
+    pub fn count(&self) -> usize {
+        let set = [self.accounts.is_empty(), self.sent.is_none(), self.group.is_none(), self.period.is_none()];
+        set.into_iter().chain([self.media.is_empty()]).filter(|&empty| !empty).count()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SearchPick {
     Account(String),
@@ -2859,12 +2882,17 @@ pub struct BeeperGuiApp {
     opened: Vec<(window::Id, window::Settings)>,
     /// The widget that had the keyboard focus when the main window hid on Wayland, to focus it again in the new one.
     unmapped_focus: Option<iced::widget::Id>,
+    /// The activation token of the later launch or the notification that shows a window next, which raises it on
+    /// Wayland.
+    pub(crate) activation_token: Option<String>,
     /// The unread count and window state last sent to the tray and the app badge, and whether they can be stale.
     tray_sent: (Option<(u32, bool)>, bool),
     pub system_dark: bool,
     pub dark: bool,
     pub zoom: f32,
     zoom_drag: Option<f32>,
+    /// GNOME's text scaling on Wayland that the windows have; see [`TEXT_SCALE`].
+    pub text_scale: f32,
     /// The windows that opened maximized, to maximize again once the window manager places them.
     maximize_when_placed: Vec<window::Id>,
     pub pal: Palette,
@@ -2946,6 +2974,8 @@ pub struct BeeperGuiApp {
     pub search_index: Option<usize>,
     /// Desktop's `expandedCategories`: the search sections that show more.
     pub search_expanded: HashSet<&'static str>,
+    /// Desktop's `recentSearches`: the searches with filters that the bar closed on, the newest first.
+    pub recent_searches: Vec<(String, SearchFilters)>,
     /// Desktop's `partialMatchesEnabled` of the message search.
     pub search_partial: bool,
     /// Desktop's `lastArchivedThread`: the chat that was archived or unarchived last.
@@ -3000,6 +3030,8 @@ pub struct BeeperGuiApp {
     pub settings_slider: Option<(&'static str, u8)>,
     /// The focused row of the settings search results, and the last opened one.
     settings_focus: usize,
+    /// The settings search has the keyboard focus, which shows Desktop's suggestions while it is empty.
+    settings_search_on: bool,
     settings_pick: Option<SettingsHit>,
     /// The pref that a search result opened, which flashes for 2 s.
     pref_flash: Option<(&'static str, std::time::Instant)>,
@@ -3077,6 +3109,10 @@ pub struct BeeperGuiApp {
     alt_alone: bool,
     pub pin_hover: Option<String>,
     pub pin_drag: Option<PinDrag>,
+    /// The pins that slide into their cells: how far from the cell each started, and when.
+    pub pin_slides: HashMap<String, (Vector, std::time::Instant)>,
+    /// The columns, the cell width and the row height of the pinned grid that was drawn last.
+    pub pin_grid: std::cell::Cell<(usize, f32, f32)>,
     /// The sortable item that the keyboard moves (see [`sortable`]).
     pub key_sort: Option<sortable::KeySort>,
     pub main_window: Option<window::Id>,
@@ -3231,12 +3267,14 @@ impl BeeperGuiApp {
             unmapped: Vec::new(),
             opened: Vec::new(),
             unmapped_focus: None,
+            activation_token: None,
             tray_sent: (None, true),
             pal: crate::style::palette(theme),
             system_dark: false,
             dark: theme,
             zoom: 1.0,
             zoom_drag: None,
+            text_scale: text_scale(),
             maximize_when_placed: Vec::new(),
             list: chat_list::ListState { filters, ..Default::default() },
             seen_requests: Vec::new(),
@@ -3288,6 +3326,7 @@ impl BeeperGuiApp {
             cmd_index: 0,
             search_index: None,
             search_expanded: HashSet::new(),
+            recent_searches: Vec::new(),
             search_partial: true,
             last_archived: Default::default(),
             creating_chat: None,
@@ -3328,6 +3367,7 @@ impl BeeperGuiApp {
             settings_query: String::new(),
             settings_slider: None,
             settings_focus: 0,
+            settings_search_on: false,
             settings_pick: None,
             pref_flash: None,
             networks: Default::default(),
@@ -3371,6 +3411,8 @@ impl BeeperGuiApp {
             alt_alone: false,
             pin_hover: None,
             pin_drag: None,
+            pin_slides: HashMap::new(),
+            pin_grid: std::cell::Cell::new((1, 0.0, 0.0)),
             key_sort: None,
             user_hover: UserHover::default(),
             rail_drag: None,
@@ -4690,8 +4732,10 @@ impl BeeperGuiApp {
             UiMessage::InputEscape(id) if Some(id) == self.settings_window && self.integrations.add.is_some() => {
                 self.integrations.add = None;
             }
+            // Desktop's Escape in the search clears it, and Escape in a field of Settings takes the focus away.
             UiMessage::InputEscape(id) if Some(id) == self.settings_window => {
-                return self.update(UiMessage::Settings(settings::Msg::Query(String::new())));
+                let clear = self.update(UiMessage::Settings(settings::Msg::Query(String::new())));
+                return Task::batch([clear, focus::blur()]);
             }
             UiMessage::InputEscape(id) => {
                 return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
@@ -5001,7 +5045,7 @@ impl BeeperGuiApp {
         let frame_ready = Subscription::run(|| {
             iced::futures::stream::unfold((), |()| async {
                 FRAME_READY.notified().await;
-                Some((UiMessage::Noop, ()))
+                Some((UiMessage::Window(windows::Msg::FrameReady), ()))
             })
         });
         let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
@@ -5254,6 +5298,7 @@ impl BeeperGuiApp {
             || self.hover_fading()
             || self.nudges.shaking()
             || self.sidebar_progress().is_some()
+            || self.pins_sliding()
             || self
                 .panes()
                 .any(|p| [p.hover_msg_at, p.flyover_at].iter().flatten().any(|t| t.elapsed() < FLYOVER_REVEAL));
@@ -5268,9 +5313,8 @@ impl BeeperGuiApp {
             Subscription::run_with(keys, tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0)))
         });
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
-        let notes = (!self.notifications.is_empty() || self.verify.note.is_some()).then(|| {
-            Subscription::run(notify::events).map(|(id, action)| UiMessage::Notify(notify::Msg::Event(id, action)))
-        });
+        let notes = (!self.notifications.is_empty() || self.verify.note.is_some())
+            .then(|| Subscription::run(notify::events).map(UiMessage::Notify));
         let toast =
             self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::Toast(toasts::Msg::Tick)));
         let tick =
@@ -5639,7 +5683,7 @@ impl BeeperGuiApp {
                         },
                 )
             };
-            let x = if at.x + w > self.pane().size.width { at.x - w } else { at.x };
+            let (x, y) = menu_spot(*at, w, h, self.pane().size);
             let sub_w = self
                 .chat_sub
                 .filter(|_| {
@@ -5647,8 +5691,7 @@ impl BeeperGuiApp {
                 })
                 .map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
             let left = x + w + sub_w > self.pane().size.width;
-            let y = at.y.min(self.pane().size.height - h - 8.0);
-            (self.view_chat_menu(cid, left, self.pane().size.height - 8.0 - y), if left { x - sub_w } else { x }, y)
+            (self.view_chat_menu(cid, left, self.pane().size.height - y), if left { x - sub_w } else { x }, y)
         });
         let selection_menu = self.selection_menu.map(|(i, x)| {
             let (menu, h) = self.view_selection_menu(i);
@@ -5657,9 +5700,10 @@ impl BeeperGuiApp {
         });
         let main_menu = filter_menu.or(reminder_menu).filter(|_| in_list).or(rate_menu.filter(|_| in_main));
         let main_menu = main_menu.or(chat_menu.filter(|_| in_list));
+        // Desktop's native menus take the arrows, Home, End and Enter.
         let layer = |(m, x, y): (El<'a>, f32, f32), close: UiMessage| -> El<'a> {
             mouse_area(
-                container(mouse_area(m).on_press(UiMessage::Noop))
+                container(mouse_area(menu_keys::menu(m)).on_press(UiMessage::Noop))
                     .padding(Padding::ZERO.left(x).top(y))
                     .width(Fill)
                     .height(Fill),
@@ -5733,8 +5777,7 @@ impl BeeperGuiApp {
     fn pane_menu(&self) -> Option<(El<'_>, f32, f32)> {
         let message_menu = self.pane().message_menu.as_ref().map(|(mid, at)| {
             let (menu, h, top) = self.view_message_menu(mid);
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            let y = at.y.min(self.pane().size.height - h - 8.0);
+            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
             let (sub, sub_w) = match self.view_speed_menu(mid) {
                 // Level with its row, under Fullscreen, Open in PiP, Download and Mute.
                 Some(sub) => (Some(column![Space::new().height(4.0 * menu_pitch()), sub].into()), video::SPEED_MENU_W),
@@ -5748,7 +5791,7 @@ impl BeeperGuiApp {
                 }
                 None => {
                     let st = self.store.read();
-                    let room = self.pane().size.height - y - 8.0;
+                    let room = self.pane().size.height - y;
                     self.view_voice_sub(&st, &stored(&st, mid), top, room).map_or((None, 0.0), |(e, w)| (Some(e), w))
                 }
             };
@@ -5757,18 +5800,18 @@ impl BeeperGuiApp {
                 true => (x - sub_w, row![].push(sub).push(menu).into()),
                 false => (x, row![menu].push(sub).into()),
             };
-            (menu, x, at.y.min(self.pane().size.height - h - 8.0))
+            (menu, x, y)
         });
         let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| {
             let (menu, h) = self.view_edit_menu(word.as_ref());
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            (menu, x, at.y.min(self.pane().size.height - h - 8.0))
+            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
+            (menu, x, y)
         });
         let edit_menu = edit_menu.or_else(|| {
             let (ids, items, at) = self.pane().sched_menu.as_ref()?;
             let (menu, h) = self.view_scheduled_menu(ids, *items);
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            Some((menu, x, at.y.min(self.pane().size.height - h - 8.0)))
+            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
+            Some((menu, x, y))
         });
         let react = self.pane().emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
             let x = if at.x + 352.0 > self.pane().size.width { at.x - 352.0 } else { at.x };
@@ -6052,7 +6095,7 @@ impl BeeperGuiApp {
     fn read_open_chat(&self) {
         let at_bottom = self.pane.scrolled_up.is_none_or(|(up, _)| !up);
         let shows = self.focused && self.pane.thread_root.is_none() && !self.pane.info;
-        let shows = shows && !self.idle && !self.pane.keep_unread;
+        let shows = shows && !self.idle && !self.pane.keep_unread && !self.main_selecting();
         let Some(id) = self.pane.selected_chat_id.clone().filter(|_| shows) else {
             return;
         };
@@ -6391,7 +6434,12 @@ impl BeeperGuiApp {
     /// `--animation-timing` (0.1 s, ease-in-out) while the pointer is on it, and back out after it leaves. Gives how far
     /// in they are, or `None` when they do not show.
     pub(crate) fn hover_progress(&self, key: &str) -> Option<f32> {
-        let gone = |at: std::time::Instant| (at.elapsed().as_secs_f32() / HOVER_FADE).min(1.0);
+        self.hover_progress_at(key, std::time::Instant::now())
+    }
+
+    /// [`Self::hover_progress`] at the time `now`.
+    fn hover_progress_at(&self, key: &str, now: std::time::Instant) -> Option<f32> {
+        let gone = |at: std::time::Instant| (now.saturating_duration_since(at).as_secs_f32() / HOVER_FADE).min(1.0);
         match (&self.hovered_chat, &self.unhovered) {
             (Some(k), _) if k == key => Some(crate::login::ease_in_out(self.hover_at.map_or(1.0, gone))),
             (_, Some((k, at))) if k == key && gone(*at) < 1.0 => Some(1.0 - crate::login::ease_in_out(gone(*at))),
@@ -6518,6 +6566,12 @@ impl BeeperGuiApp {
     /// Whether one of the main window's menus is open.
     fn menu_open(&self) -> bool {
         self.popup_menu_open() || self.pane.show_attach_menu
+    }
+
+    /// Whether one of the main window's menus is open, rather than a hover card, which shows in the same place.
+    fn native_menu_open(&self) -> bool {
+        let card = |c: &str| c.starts_with("card:") || c == SWITCH_CARD;
+        self.popup_menu_open() && !self.list().chat_menu.as_ref().is_some_and(|(c, _)| card(c))
     }
 
     /// Whether one of the main window's menus is open, other than the unveiled actions of the composer, which are
@@ -6862,24 +6916,31 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .title(BeeperGuiApp::title)
         .subscription(BeeperGuiApp::subscription)
         .theme(|a: &BeeperGuiApp, _| a.iced_theme())
-        .scale_factor(|a: &BeeperGuiApp, _| a.zoom * text_scale())
+        .scale_factor(|a: &BeeperGuiApp, _| a.zoom * a.text_scale)
         .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.window, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
     app.run()
 }
 
 /// Woken once GTK opens to draw the title bars, and whenever GTK's settings change, so that the windows lay out and
-/// draw their frames again with the GTK theme and settings.
+/// draw their frames again with the GTK theme and settings, and follow the text scaling.
 pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
-/// GNOME's `text-scaling-factor` on Wayland, which Chromium applies to the whole of each window like a zoom, the size
-/// of the window included: Desktop's device scale is the screen's times it. On X11 the scale of the window already
-/// has it, from `Xft.dpi`.
-pub static TEXT_SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+/// GNOME's `text-scaling-factor` on Wayland, as the bits of an `f32`, which Chromium applies to the whole of each
+/// window like a zoom, the size of the window included: Desktop's device scale is the screen's times it. On X11 the
+/// scale of the window already has it, from `Xft.dpi`.
+static TEXT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
 
-/// [`TEXT_SCALE`], or 1.
+/// Takes GNOME's text scaling, at launch and when it changes; the windows follow it once [`FRAME_READY`] wakes them.
+pub fn set_text_scale(scale: f32) {
+    if scale.is_finite() && scale > 0.0 {
+        TEXT_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// [`TEXT_SCALE`].
 fn text_scale() -> f32 {
-    TEXT_SCALE.get().copied().unwrap_or(1.0)
+    f32::from_bits(TEXT_SCALE.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// People, each with the account to reach them on.
@@ -6922,6 +6983,21 @@ mod tests {
             tx.send(tokio::runtime::Handle::current().metrics().num_workers()).expect("the test waits");
         });
         assert_eq!(rx.recv().expect("the task runs"), 1);
+    }
+
+    /// Chromium's `CalculateMenuBounds` of a root context menu: below the cursor, else above it, and back inside at the
+    /// right edge rather than to the left of the cursor.
+    #[test]
+    fn context_menus_open_like_chromium() {
+        let area = Size::new(1200.0, 800.0);
+        assert_eq!(menu_spot(Point::new(100.0, 100.0), 233.0, 400.0, area), (100.0, 100.0), "below the cursor");
+        assert_eq!(menu_spot(Point::new(100.0, 590.0), 233.0, 400.0, area), (100.0, 190.0), "above, ending at it");
+        assert_eq!(
+            menu_spot(Point::new(100.0, 300.0), 233.0, 700.0, area),
+            (100.0, 100.0),
+            "moved up when neither fits"
+        );
+        assert_eq!(menu_spot(Point::new(1100.0, 100.0), 233.0, 400.0, area), (967.0, 100.0), "kept at the right edge");
     }
 
     #[test]

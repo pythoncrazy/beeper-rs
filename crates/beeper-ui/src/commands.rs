@@ -19,7 +19,7 @@ use crate::windows;
 use crate::{
     has_flag, network_name, shown, BeeperGuiApp, El, InboxTab, SettingsHit, SettingsTab, UiMessage, ASK_LOGOUT,
 };
-use crate::{Find, SearchFilters, SearchPick, ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
+use crate::{Find, SearchPick, ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
 use beeper_core::models::{
     AccountProps, Chat, ChatFlag, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE,
     MEMBER_KICK, MEMBER_LEAVE,
@@ -1004,16 +1004,30 @@ pub enum Msg {
     OpenSearchSelect(usize),
     SearchSelect(Option<(usize, iced::Rectangle)>),
     PickSearchFilter(SearchPick),
+    /// Desktop's `restoreSearch` of a recent search, which keeps the bar open.
+    RestoreSearch(usize),
 }
 
 impl BeeperGuiApp {
+    /// Desktop's `onSearchClosed`, for the search that the bar last closed on: a search with a text and filters
+    /// becomes the newest recent search, and its filters end. Other filters stay for the next search.
+    pub(crate) fn search_closed(&mut self) {
+        let term = self.command_palette_query.trim().to_string();
+        if self.cmd_bar_commands_mode || self.search_filters.count() == 0 || term.is_empty() {
+            return;
+        }
+        let filters = std::mem::take(&mut self.search_filters);
+        self.recent_searches.retain(|(t, f)| *t != term || *f != filters);
+        self.recent_searches.insert(0, (term, filters));
+    }
+
     pub(crate) fn command_bar(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
             Msg::ChatSub(sub) => self.chat_sub = sub,
             Msg::TogglePalette => {
                 // Desktop's `reset` empties the input each time the bar closes, so it opens empty.
                 if !self.show_command_palette {
-                    self.search_filters = SearchFilters::default();
+                    self.search_closed();
                     self.command_palette_query.clear();
                 }
                 self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
@@ -1027,6 +1041,9 @@ impl BeeperGuiApp {
             Msg::SearchRoom(cid) => {
                 // Desktop's `showSearch` keeps the text of an open bar, but resets a submenu, and `reset` emptied a
                 // closed bar.
+                if !self.show_command_palette {
+                    self.search_closed();
+                }
                 if !self.show_command_palette || self.cmd_submenu.is_some() {
                     self.command_palette_query.clear();
                 }
@@ -1038,6 +1055,12 @@ impl BeeperGuiApp {
             Msg::ToggleMode => {
                 (self.cmd_bar_commands_mode, self.cmd_index, self.search_index) =
                     (!self.cmd_bar_commands_mode, 0, None);
+                return operation::focus("cmd-palette-input");
+            }
+            Msg::RestoreSearch(i) => {
+                let Some((term, filters)) = self.recent_searches.get(i).cloned() else { return Task::none() };
+                (self.command_palette_query, self.search_filters) = (term, filters);
+                (self.search_expanded, self.search_index) = (Default::default(), None);
                 return operation::focus("cmd-palette-input");
             }
             Msg::NoReply(on) => self.cmd_no_reply = on,
@@ -1079,6 +1102,7 @@ impl BeeperGuiApp {
             Msg::HighlightResult(i) => self.search_index = Some(i),
             Msg::JumpTo(cid, mid) => return self.jump_to(cid, mid),
             Msg::ExecuteChat(cid) => {
+                self.search_closed();
                 self.show_command_palette = false;
                 self.command_palette_query.clear();
                 self.select_chat(&cid);

@@ -481,6 +481,16 @@ pub(crate) fn media_box(window_w: f32, size: Option<(f32, f32)>, share: f32) -> 
     }
 }
 
+/// Desktop's box of a sticker of known size: at most 400 px high and `share` of the window wide, never upscaled, and
+/// never cropped (`object-fit: contain`), however tall or wide it is.
+pub(crate) fn sticker_box(window_w: f32, (w, h): (f32, f32), share: f32) -> (f32, f32, bool) {
+    if w <= 0.0 || h <= 0.0 {
+        return media_box(window_w, None, share);
+    }
+    let k = 1f32.min(400.0 / h).min((share * window_w).max(1.0) / w);
+    (w * k, h * k, false)
+}
+
 /// Desktop's `--cv-avatar-size` and the margin of `.sender-img-container`: the sender avatar of a group message.
 const FACE: f32 = 34.0;
 const FACE_GAP: f32 = 8.0;
@@ -1433,7 +1443,8 @@ impl BeeperGuiApp {
         let (dx, dy) = self.nudges.offset(st.resolve_canonical_chat_id(&chat.id).as_deref());
         let up = self.pane().scrolled_up.is_some_and(|s| s.0);
         let held = timeline::hold(scroller(col).id(self.pane().scroll_id()), up).glide(self.pane().glide);
-        let list = lift::tight(held).shift(dx, dy);
+        // Chromium scrolls the timeline while a drag that selects its text holds the pointer past its top or bottom.
+        let list = lift::tight(crate::selectable::autoscroll(held, self.pane().scroll_id(), true)).shift(dx, dy);
         let opened = self.pane().reply_opened.map_or(1.0, |at| at.elapsed().as_secs_f32());
         let (shown, below) = replies_reveal(opened);
         let replies = self.pane().reply_thread.as_ref().map(|id| {
@@ -1618,13 +1629,15 @@ impl BeeperGuiApp {
         });
         // Desktop's `TargetSwitcherNudge` comes with the text composer and its switcher.
         let texting = upgraded.is_none() && blocked.is_none() && !chat.exited() && unavailable(&st, chat).is_none();
+        let texting = texting && !selecting;
         let nudge = self
             .view_switcher_nudge(&st)
             .filter(|_| texting && in_chat && self.pane().thread_root.is_none() && self.drawing.get().is_none())
             .filter(|_| self.recorder.is_none() && self.talk.is_none());
-        // Desktop's `ThreadComposer` draws nothing once the user left the chat or was removed from it.
+        // Desktop's `ThreadComposer` draws nothing once the user left the chat or was removed from it, or in the
+        // selection mode (`threadSelectionMode`).
         let composer = match upgraded.or(blocked) {
-            _ if chat.exited() => None,
+            _ if chat.exited() || selecting => None,
             Some(link) => Some(link),
             None => unavailable(&st, chat).is_none().then(|| self.view_composer(&st, chat)),
         };
@@ -1694,6 +1707,9 @@ impl BeeperGuiApp {
 
     /// [`Self::jump_to`], with the flash only when `highlight`.
     pub(crate) fn reveal(&mut self, cid: String, mid: String, highlight: bool) -> Task<UiMessage> {
+        if self.show_command_palette {
+            self.search_closed();
+        }
         (self.show_command_palette, self.command_palette_query, self.list.chat_menu) = (false, String::new(), None);
         if self.pane.thread_root.is_none() {
             self.select_chat(&cid);
@@ -2360,7 +2376,10 @@ impl BeeperGuiApp {
                     let is_video = a.attachment_type == "video";
                     let size = a.size.as_ref().and_then(|s| Some((s.width? as f32, s.height? as f32)));
                     let share = if self.sidebar_hidden { 0.85 } else { 0.45 };
-                    let (w, h, cover) = media_box(self.pane().size.width, size, share);
+                    let (w, h, cover) = match size.filter(|_| a.is_sticker == Some(true)) {
+                        Some(size) => sticker_box(self.pane().size.width, size, share),
+                        None => media_box(self.pane().size.width, size, share),
+                    };
                     // Desktop plays a video with `isGif` inline like a GIF, without sound, again and again.
                     let looped = is_video && a.is_gif == Some(true) && m.unresolved_media.is_none();
                     // Desktop's `Lottie` plays an animated sticker itself, not its still thumbnail.
@@ -2423,11 +2442,8 @@ impl BeeperGuiApp {
                             }
                         }
                         Some((_, Err(_))) if m.unresolved_media.is_none() => self.image_error(w, h, 17.0),
-                        _ => container(ic(icon::IMAGE, 28.0).color(p.sub))
-                            .center_x(w)
-                            .center_y(h)
-                            .style(fill_box(p.link_card, 17.0))
-                            .into(),
+                        // Desktop's `img.loading`: the shimmering `--skeleton-bg` in the box of the image.
+                        _ => anim::skeleton(w, h, 17.0, p.skeleton, self.started),
                     };
                     let (slot, press): (El<'_>, _) =
                         if let Some(raw) = m.unresolved_media.as_ref().filter(|_| !is_video) {
@@ -2529,7 +2545,14 @@ impl BeeperGuiApp {
             let glyphs: Vec<El<'a>> = runs
                 .map(|r| match r.emoticon.as_deref() {
                     Some(url) => {
+                        // A selected animation plays dimmed once a worker dimmed its frames, and shows its first
+                        // frame dimmed until then.
+                        let dimmed = |f: &crate::Frames| match f.len() > 1 {
+                            true => self.dimmed_frames(url).map(|d| self.emoji(d, |h| image(h).height(48.0))),
+                            false => None,
+                        };
                         let img: El<'a> = match self.frames(url) {
+                            Some(f) if selected && let Some(d) = dimmed(&f) => d,
                             Some(f) if selected => image(crate::style::dimmed_image(&f[0].0, 0.8)).height(48.0).into(),
                             Some(f) => self.emoji(&f, |h| image(h).height(48.0)),
                             None => Space::new().width(48.0).height(48.0).into(),
@@ -2818,6 +2841,7 @@ impl BeeperGuiApp {
                         Some(self.tip_card(med(host, 13.0).color(p.strong)).into())
                     };
                     let line = crate::selectable::selectable(spans)
+                        .key(vlist::key((&m.id, i)))
                         .images(
                             images.iter().map(|i| i.0.clone()).collect(),
                             self.animate.get().then_some(self.started),
@@ -5030,8 +5054,8 @@ pub(crate) mod tests {
         let whole = at(&mut app, 0);
         assert!((70..=90).contains(&wide(&whole, red)), "the whole GIF while its cut waits: {}", wide(&whole, red));
         let wanted: Vec<_> = std::mem::take(&mut *app.wants.cuts.borrow_mut()).into_iter().collect();
-        assert_eq!(wanted, [(url.clone(), 160, 400)], "the view asks for the cut");
-        let k = format!("160x400 {url}");
+        assert_eq!(wanted, [(url.clone(), crate::gallery::Cut::Cover(160, 400))], "the view asks for the cut");
+        let k = format!("Cover(160, 400) {url}");
         app.cuts.insert(k, Some(crate::gallery::cut_frames(&frames, (160, 400))));
         let first = at(&mut app, 0);
         assert!((300..=322).contains(&wide(&first, red)), "the cut fills the box: {}", wide(&first, red));
@@ -5039,7 +5063,7 @@ pub(crate) mod tests {
         assert!((300..=322).contains(&wide(&second, blue)) && spots(&second, red).is_empty(), "and plays");
         assert!(matches!(alone_redraw(&app, &mid), window::RedrawRequest::At(_)), "the next frame is due");
         let iced::advanced::image::Handle::Rgba { pixels, .. } =
-            &app.cuts.get(&format!("160x400 {url}")).unwrap().as_ref().unwrap()[0].0
+            &app.cuts.get(&format!("Cover(160, 400) {url}")).unwrap().as_ref().unwrap()[0].0
         else {
             panic!("RGBA")
         };
@@ -5511,6 +5535,40 @@ pub(crate) mod tests {
         assert!(red(&app).abs_diff(204) <= 2, "brightness(0.8)");
     }
 
+    /// Desktop's `filter: brightness(0.8)` of a selected emoji message dims an animated custom emoji, which goes on
+    /// playing: a worker dims its frames, and its first frame shows dimmed until then.
+    #[test]
+    fn selected_big_custom_emoji_play_like_desktop() {
+        let mut app = crate::fuzz::demo_app("jumbo-animated");
+        app.pane.size = Size::new(900.0, 700.0);
+        let mid = plain_received(&app, ":party:");
+        let url = "mxc://x/party".to_string();
+        change(&app, &mid, |m| {
+            m.html = Some(format!(r#"<img data-mx-emoticon src="{url}" alt=":party:" title=":party:" height="32">"#));
+        });
+        let fill = |c: [u8; 4]| image::Handle::from_rgba(48, 48, c.repeat(48 * 48));
+        let frames = crate::Frames::from([(fill([255, 0, 0, 255]), 1000), (fill([0, 0, 255, 255]), 1000)]);
+        app.media.insert(url.clone(), Some(Ok(frames.clone())));
+        // The brightest red and blue of the message at `ms` into the animation.
+        let at = |app: &mut BeeperGuiApp, ms: u64| {
+            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            let shot = pixels(&mut alone(app, &mid));
+            let most = |c: usize| shot.pixels().filter(|p| p[(c + 2) % 3] < 40 && p[3] > 0).map(|p| p[c]).max();
+            (most(0).unwrap_or(0), most(2).unwrap_or(0))
+        };
+        assert_eq!(at(&mut app, 1100), (0, 255), "the emoji plays");
+        app.pane.selected_msgs = vec![mid.clone()];
+        let (red, _) = at(&mut app, 1100);
+        assert!(red.abs_diff(204) <= 2, "the dimmed first frame while the worker dims the frames");
+        let wanted: Vec<_> = std::mem::take(&mut *app.wants.cuts.borrow_mut()).into_iter().collect();
+        assert_eq!(wanted, [(url.clone(), crate::gallery::Cut::Dim)], "the view asks for the dimmed frames");
+        app.cuts.insert(format!("Dim {url}"), Some(crate::gallery::dim_frames(&frames, 0.8)));
+        assert!(at(&mut app, 0).0.abs_diff(204) <= 2, "the first frame, dimmed");
+        let (red, blue) = at(&mut app, 1100);
+        assert!(red == 0 && blue.abs_diff(204) <= 2, "the second frame, dimmed: {red} {blue}");
+        assert!(matches!(alone_redraw(&app, &mid), window::RedrawRequest::At(_)), "it goes on playing");
+    }
+
     /// Desktop's reaction pill (`.message-reaction-avatars`): up to 3 faces, each 6 px over the next one, and "+N" in
     /// `label-xs`. Its reactions list ends with "and N more" past 20, in Desktop's `xgt` numbers.
     #[test]
@@ -5877,6 +5935,35 @@ pub(crate) mod tests {
         assert_eq!(app.file_state(&a), FileState::Ready);
         assert!(app.media.get(&url).is_none(), "the image loads again, from the cache");
         assert!(simulator(app.view_conversation()).find("photo.jpg").is_err(), "the image takes its place");
+    }
+
+    /// Desktop's `img.loading`: an image that loads shows the shimmering `--skeleton-bg` in the box of the image,
+    /// which the image takes when it loads.
+    #[test]
+    fn loading_image_like_desktop() {
+        let mut app = crate::fuzz::demo_app("loading-image");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = newest(&app, |m| m.is_deleted != Some(true) && m.attachments.is_empty());
+        let url = "mxc://x/photo".to_string();
+        let size = Some(AttachmentSize { width: Some(300), height: Some(200) });
+        let img = Attachment { attachment_type: "img".into(), src_url: Some(url.clone()), size, ..Default::default() };
+        change(&app, &mid, |m| (m.text, m.attachments) = (None, vec![img]));
+        let loading = |app: &BeeperGuiApp| {
+            let mut sim = alone(app, &mid);
+            sim.find(|c: iced_test::selector::Candidate<'_>| match c {
+                iced_test::selector::Candidate::Custom { bounds, state, .. } if state.is::<anim::Loading>() => {
+                    Some(bounds)
+                }
+                _ => None,
+            })
+            .ok()
+        };
+        let shown = loading(&app).expect("the skeleton");
+        assert_eq!((shown.width, shown.height), (300.0, 200.0), "the box of the image");
+        assert!(alone(&app, &mid).find(icon::IMAGE.to_string()).is_err(), "no image icon");
+        let px = crate::Frames::from([(image::Handle::from_rgba(1, 1, vec![0; 4]), 0)]);
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Media(url, Ok(px))));
+        assert!(loading(&app).is_none(), "the image takes its place");
     }
 
     /// Desktop's `ImageError`: an image that failed to load shows the info icon, not the text of unresolved media,

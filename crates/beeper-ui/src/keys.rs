@@ -20,9 +20,9 @@ impl BeeperGuiApp {
         {
             return self.focus_space(id, false).unwrap_or_else(Task::none);
         }
-        // Desktop's J and K move or grow the selection of chats like ↓ and ↑ in the selection mode while no chat is
-        // open, with Shift for J and K.
-        let main = Some(id) == self.main_window && self.pane.selected_chat_id.is_none();
+        // Desktop's `handleThreadSelection`: J and K move or grow the selection of chats like ↓ and ↑ in the
+        // selection mode, with Shift for J and K, also with a chat open, whose composer is gone in that mode.
+        let main = Some(id) == self.main_window;
         if matches!(text.as_str(), "j" | "k" | "J" | "K") && main && self.selection_keys() {
             let arrow = Key::Named(if text.eq_ignore_ascii_case("j") { Named::ArrowDown } else { Named::ArrowUp });
             let shift = if text.chars().all(char::is_uppercase) { Modifiers::SHIFT } else { Modifiers::empty() };
@@ -97,6 +97,12 @@ impl BeeperGuiApp {
         }
         if Some(id) == self.settings_window {
             return self.settings_key(key, mods);
+        }
+        // Chromium's menus take the keyboard while they are open: their arrows and Enter move and run their selection
+        // (see `menu_keys`).
+        let menu_key = matches!(key, Key::Named(Named::ArrowUp | Named::ArrowDown | Named::Enter));
+        if menu_key && mods.is_empty() && self.native_menu_open() {
+            return self.settle();
         }
         // Chromium's Tab, Enter and arrows in Desktop's sheets; a confirmation over Label Settings has the
         // focus on its default button.
@@ -502,6 +508,13 @@ impl BeeperGuiApp {
             self.close_menus();
         } else if self.select_mode || !self.selection.is_empty() {
             (self.selection, self.select_mode) = (Vec::new(), false);
+            // Desktop's `setSelectedThread(null)` with the end of the selection mode: the open chat closes too.
+            if self.pane.selected_chat_id.is_some() {
+                self.leave_chat(&mut self.store.write(), None);
+                self.pane.selected_chat_id = None;
+                self.pane.composer = composer_with("");
+                self.refresh_theme_and_tray();
+            }
         } else if self.join_matrix_mode {
             self.join_matrix_mode = false;
         } else if self.confirm == Some(ASK_ROOM_ENCRYPTION) {

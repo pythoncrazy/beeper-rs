@@ -216,7 +216,8 @@ mod display {
         if wayland.is_some() {
             let scale = gsetting("text-scaling-factor").and_then(|v| text_scale(&v));
             if let Some(scale) = scale {
-                let _ = beeper_ui::TEXT_SCALE.set(scale);
+                beeper_ui::set_text_scale(scale);
+                sctk_adwaita::set_text_scale(f64::from(scale));
             }
         }
         let gpu_display = match wayland.is_some() {
@@ -248,8 +249,12 @@ mod display {
             }
             sctk_adwaita::preload();
             // The first frames draw from the cached theme; once GTK opens, and whenever its settings change, the
-            // windows draw again with it.
-            sctk_adwaita::on_ready(|| beeper_ui::FRAME_READY.notify_one());
+            // windows draw again with it. GTK follows the text scaling while the app runs, as Chromium's `GtkUi`
+            // does for Desktop's device scale.
+            sctk_adwaita::on_ready(|| {
+                beeper_ui::set_text_scale(sctk_adwaita::text_scale() as f32);
+                beeper_ui::FRAME_READY.notify_one();
+            });
         }
     }
 
@@ -317,6 +322,10 @@ fn main() {
     let command = if command == Command::Gui && server_dir.is_some() { Command::Serve } else { command };
     let profile = profile.or_else(|| var("BEEPER_PROFILE"));
     let data_dir = data_dir.or_else(|| server_dir.or_else(|| var("BEEPER_USER_DATA_DIR")).map(PathBuf::from));
+    // The launcher's activation token, before `display::setup` hands it to the first window: a later launch passes it
+    // on to the running app, which raises its window with it on Wayland.
+    #[cfg(target_os = "linux")]
+    let launch_token = var("XDG_ACTIVATION_TOKEN");
     // Only Linux has a choice of display server.
     #[cfg(target_os = "linux")]
     if let Command::Gui = command {
@@ -348,7 +357,11 @@ fn main() {
     #[cfg(target_os = "linux")]
     let first = match std::env::var("ALLOW_MULTIPLE_INSTANCES").as_deref() {
         Ok("true") => None,
-        _ => Some(beeper_core::platform::single_instance(&data_dir, &std::env::args().skip(1).collect::<Vec<_>>())),
+        _ => {
+            let token = launch_token.map(|t| format!("{}{t}", beeper_ui::ACTIVATION_TOKEN_ARG));
+            let args: Vec<String> = token.into_iter().chain(std::env::args().skip(1)).collect();
+            Some(beeper_core::platform::single_instance(&data_dir, &args))
+        }
     };
     #[cfg(target_os = "linux")]
     if let Some(None) = first {

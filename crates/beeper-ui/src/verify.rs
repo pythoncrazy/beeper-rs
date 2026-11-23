@@ -989,6 +989,41 @@ mod tests {
         assert!(app.login_window.is_none(), "the keys and the sync end the wait");
     }
 
+    /// Desktop's `o1` Enter hotkey of the recovery key screens runs in the key box (mousetrap's `stopCallback` is
+    /// off) and prevents its newline: it submits the key as it is, compares the confirmed key, or resets.
+    #[test]
+    fn enter_submits_the_recovery_key_screens_like_desktop() {
+        use iced::keyboard::{key::Named, Key, Modifiers};
+        let mut app = crate::fuzz::demo_app("recovery-enter");
+        let login = window::Id::unique();
+        app.login_window = Some(login);
+        let enter = |app: &mut BeeperGuiApp| {
+            _ = app.update(UiMessage::WindowKey(login, Key::Named(Named::Enter), Modifiers::empty()))
+        };
+        app.login.screen = Screen::RecoveryKey;
+        let _ = app.update(LoginMsg::KeyEdit(text_editor::Action::Edit(text_editor::Edit::Insert('a'))).into());
+        let _ = app.update(LoginMsg::KeyEdit(text_editor::Action::Edit(text_editor::Edit::Enter)).into());
+        assert_eq!(app.login.key_input.text(), "a", "no newline goes in");
+        enter(&mut app);
+        assert!(app.login.busy, "a partial key is submitted too");
+        assert_eq!(app.login.tried_keys, ["a"]);
+        enter(&mut app);
+        assert_eq!(app.login.tried_keys.len(), 1, "not again while it is checked");
+        let _ = app.update(LoginMsg::Recovered(Err("Invalid recovery key".into())).into());
+        // The demo account needs no more onboarding, which closes the window.
+        (app.login_window, app.login.screen) = (Some(login), Screen::ConfirmKey);
+        assert!(!app.login.busy, "the check ended");
+        app.store.write().pending_recovery_key =
+            Some("EsTG bqMm dUDy dKth xAyD 45dS HhyC WKc9 CF6B xsFi J5FQ t8u2".into());
+        let _ = app.update(LoginMsg::Pasted(Some("EsTG".into())).into());
+        enter(&mut app);
+        let error = "The Recovery Key you entered doesn't match your Recovery Key.";
+        assert_eq!(app.login.error.as_deref(), Some(error), "the confirmation compares a partial key");
+        app.login.screen = Screen::Reset;
+        enter(&mut app);
+        assert!(app.login.busy, "Enter resets like Reset Recovery Key");
+    }
+
     #[test]
     fn onboarding_verifies_with_another_device_or_the_recovery_key_like_desktop() {
         use beeper_core::matrix::DeviceInfo;

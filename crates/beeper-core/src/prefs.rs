@@ -769,6 +769,8 @@ pub fn find(key: &str) -> &'static Pref {
 pub const DESKTOP_PREFS: &str = "com.beeper.desktop.prefs";
 /// Desktop's `time_suggestion_options` of [`DESKTOP_PREFS`]: the time phrases of the reminder menus.
 pub const TIME_SUGGESTION_OPTIONS: &str = "time_suggestion_options";
+/// Desktop's synced `quick_replies`.
+pub const QUICK_REPLIES: &str = "quick_replies";
 /// Desktop's `y0`: the most time suggestions.
 pub const TIME_SUGGESTIONS_MAX: usize = 8;
 /// Desktop's `Odt`: the time suggestions when there are none.

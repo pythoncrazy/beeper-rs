@@ -1450,7 +1450,7 @@ async fn bodies_and_unknown_chats_get_the_errors_of_desktop() {
     let expected = refused("Required", json!([no_body])).to_string();
     assert!(out.starts_with("HTTP/1.1 400 ") && out.ends_with(&expected), "a request without a body: {out}");
 
-    let (port, token) = server("setup-bodies").await;
+    let (port, token) = server("unknown-chats").await;
     let purpose = json!({ "received": "x", "code": "invalid_enum_value", "options": ["login", "device"], "path": ["purpose"], "message": "Invalid enum value. Expected 'login' | 'device', received 'x'" });
     let expected = (400, refused("Invalid enum value. Expected 'login' | 'device', received 'x'", json!([purpose])));
     assert_eq!(call(port, &token, "POST", "/v1/app/setup/verifications", r#"{"purpose":"x"}"#).await, expected);

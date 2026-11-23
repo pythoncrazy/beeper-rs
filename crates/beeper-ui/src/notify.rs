@@ -575,9 +575,10 @@ pub(crate) async fn close(ids: Vec<u32>) -> Result<(), String> {
     }
 }
 
-/// A notification id, and the action that the user invoked, or `None` when the server closed it.
+/// The events of the notifications: the action that the user invoked, or `None` when the server closed one, and the
+/// activation token that the server sends before an action (GNOME Shell does), which raises the window on Wayland.
 #[cfg(target_os = "linux")]
-pub fn events() -> impl iced::futures::Stream<Item = (u32, Option<String>)> {
+pub fn events() -> impl iced::futures::Stream<Item = Msg> {
     use iced::futures::StreamExt;
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
@@ -595,22 +596,27 @@ pub fn events() -> impl iced::futures::Stream<Item = (u32, Option<String>)> {
             "ActionInvoked" => {
                 let (id, action): (u32, String) =
                     body.deserialize().expect("ActionInvoked carries an id and an action");
-                Some((id, Some(action)))
+                Some(Msg::Event(id, Some(action)))
+            }
+            "ActivationToken" => {
+                let (id, token): (u32, String) = body.deserialize().expect("ActivationToken carries an id and a token");
+                Some(Msg::Token(id, token))
             }
             "NotificationClosed" => {
-                Some((body.deserialize::<(u32, u32)>().expect("NotificationClosed carries an id").0, None))
+                Some(Msg::Event(body.deserialize::<(u32, u32)>().expect("NotificationClosed carries an id").0, None))
             }
             _ => None,
         }
     })
 }
 
-/// A notification id, and the action that the user invoked.
+/// The actions that the user invoked on the notifications.
 #[cfg(not(target_os = "linux"))]
-pub fn events() -> iced::futures::channel::mpsc::UnboundedReceiver<(u32, Option<String>)> {
+pub fn events() -> impl iced::futures::Stream<Item = Msg> {
+    use iced::futures::StreamExt;
     let (tx, rx) = iced::futures::channel::mpsc::unbounded();
     LISTENERS.lock().expect("the listener lock is not poisoned").push(tx);
-    rx
+    rx.map(|(id, action)| Msg::Event(id, action))
 }
 
 #[cfg(test)]
@@ -721,6 +727,8 @@ pub enum Msg {
     /// A shown notification, with its chat and message.
     Notified(Result<(u32, (String, String)), String>),
     Event(u32, Option<String>),
+    /// The activation token of a notification that the user is about to act on.
+    Token(u32, String),
 }
 
 impl BeeperGuiApp {
@@ -731,6 +739,13 @@ impl BeeperGuiApp {
             // Like Desktop, a desktop without a notification server shows no notifications and no error.
             Msg::Notified(Err(e)) => eprintln!("notification: {e}"),
             Msg::Event(id, action) => return self.notification_event(id, action),
+            // The token comes before the action, which shows the window with it.
+            Msg::Token(id, token)
+                if self.notifications.contains_key(&id) || self.verify.note.as_ref().is_some_and(|n| n.0 == id) =>
+            {
+                self.activation_token = Some(token).filter(|t| !t.is_empty());
+            }
+            Msg::Token(..) => {}
         }
         self.settle()
     }

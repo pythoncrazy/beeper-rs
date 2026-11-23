@@ -89,6 +89,9 @@ pub struct Player {
     closed: bool,
     /// When the current track ended, while nothing plays since.
     ended: Option<Instant>,
+    /// The track to play when its audio is decoded, as (chat, message, URL): like Desktop's `playQueueEntry`, the
+    /// next or previous voice note plays even when no player shows it, once it loads.
+    queued: Option<(String, String, String)>,
     /// Desktop's `audio-player-position`: the global player is this far above the bottom of the sidebar.
     pub bottom: f32,
     /// The drag of the global player: the cursor height and `bottom` at the press, and if the drag started.
@@ -283,7 +286,17 @@ impl BeeperGuiApp {
             }
             Msg::Spin => {}
             Msg::Loaded(url, clip) => {
-                audio.clips.insert(url, Some(clip));
+                let ok = clip.is_ok();
+                audio.clips.insert(url.clone(), Some(clip));
+                if let Some((chat, mid, url)) = audio.queued.take_if(|q| q.2 == url).filter(|_| ok) {
+                    return self.voice(Msg::Toggle(chat, mid, url));
+                }
+            }
+            // A track that no player loaded loads first, and plays once it is decoded.
+            Msg::Toggle(chat, mid, url) if audio.clip(&url).is_none() => {
+                audio.queued = Some((chat, mid, url.clone()));
+                self.wants.ask(&self.wants.audio, url.as_str());
+                return self.load_audio();
             }
             Msg::Toggle(chat, mid, url) => match &mut audio.now {
                 Some(t) if t.mid == mid && t.since.is_some() => audio.pause(),
@@ -398,26 +411,27 @@ impl BeeperGuiApp {
         self.audio.now.as_ref().map(|t| &t.chat)
     }
 
-    /// The decoded audio message before or after the current track in its chat, like `prevAudio` and `nextAudio`.
+    /// The audio message before or after the current track in its chat, like `prevAudio` and `nextAudio`, unless its
+    /// audio failed to decode. It may not be decoded yet.
     fn neighbor(&self, st: &BeeperStore, forward: bool) -> Option<(String, String, String)> {
         let t = self.audio.now.as_ref()?;
+        let failed = |u: &str| matches!(self.audio.clips.get(u), Some(Some(Err(_))));
         let queue = st.timeline(&t.chat);
-        let queue: Vec<_> = queue.filter_map(|m| Some((&m.id, audio_url(m)?))).collect();
+        let queue: Vec<_> = queue.filter_map(|m| Some((&m.id, audio_url(m).filter(|u| !failed(u))?))).collect();
         let k = queue.iter().position(|(id, _)| **id == t.mid)?;
         let (id, url) = if forward { queue.get(k + 1) } else { k.checked_sub(1).map(|k| &queue[k]) }?;
-        self.audio.clip(url).map(|_| (t.chat.clone(), id.to_string(), url.to_string()))
+        Some((t.chat.clone(), id.to_string(), url.to_string()))
     }
 
-    /// Fetch and decode the audio of the open chat and of the shown players.
+    /// Fetch and decode the audio of the shown players and of the queued track. Like Desktop's player, which loads
+    /// its audio when it shows, the other audio of the chat does not load.
     pub(crate) fn load_audio(&mut self) -> Task<UiMessage> {
         let st = self.store.read();
         // Without a client, the asked URLs stay asked, so the frames do not ask for them again.
         let Some(client) = st.matrix.clone() else { return Task::none() };
-        let shown = std::mem::take(&mut *self.wants.audio.borrow_mut());
-        let chat = self.pane.selected_chat_id.as_ref().map(|c| st.timeline_indices(c));
-        let timeline = chat.into_iter().flatten().filter_map(|&i| audio_url(&st.messages[i]).map(str::to_string));
-        let urls: BTreeSet<String> = timeline.chain(shown).filter(|u| !self.audio.clips.contains_key(u)).collect();
         drop(st);
+        let shown = std::mem::take(&mut *self.wants.audio.borrow_mut());
+        let urls: BTreeSet<String> = shown.into_iter().filter(|u| !self.audio.clips.contains_key(u)).collect();
         self.audio.clips.extend(urls.iter().map(|u| (u.clone(), None)));
         Task::batch(urls.into_iter().map(|url| {
             let (client, u) = (Some(client.clone()), url.clone());
@@ -1100,6 +1114,26 @@ mod tests {
         assert_eq!(ended(&mut app), ("v1".into(), true));
         app.store.write().settings.set_pref("autoPlayVoiceNotes", 0);
         assert_eq!(ended(&mut app), ("v0".into(), false));
+    }
+
+    /// Like Desktop's `playQueueEntry`, the next voice note plays when one ends even when no player loaded its audio:
+    /// it loads, and plays once it is decoded. Its player shows nothing in the meantime.
+    #[test]
+    fn plays_the_next_voice_note_once_it_loads() {
+        let (mut app, chat) = two_notes("autoplay-load");
+        app.audio.clips.remove("mxc://b");
+        let _ = app.voice(Msg::Toggle(chat.clone(), "v0".into(), "mxc://a".into()));
+        let next = app.neighbor(&app.store.read(), true).map(|n| n.1);
+        assert_eq!(next.as_deref(), Some("v1"), "the next note is next before it loads");
+        std::thread::sleep(Duration::from_millis(20));
+        let _ = app.voice(Msg::Tick);
+        assert_eq!(app.audio.now.as_ref().map(|t| (t.mid.as_str(), t.since.is_some())), Some(("v0", false)));
+        assert!(app.wants.audio.borrow().contains("mxc://b"), "the next note loads");
+        let short = Clip { samples: vec![0.0; 480].into(), peaks: vec![1.0].into() };
+        let _ = app.voice(Msg::Loaded("mxc://b".into(), Ok(short)));
+        assert_eq!(app.audio.now.as_ref().map(|t| (t.mid.as_str(), t.since.is_some())), Some(("v1", true)));
+        let _ = app.voice(Msg::Loaded("mxc://a".into(), Err("gone".into())));
+        assert_eq!(app.neighbor(&app.store.read(), false), None, "a note that failed to decode is skipped");
     }
 
     /// Desktop's `lastPosition`: a voice note plays again where it stopped, until a track of another chat plays.
