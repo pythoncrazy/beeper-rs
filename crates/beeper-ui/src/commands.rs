@@ -528,9 +528,19 @@ impl BeeperGuiApp {
                 v.push(reply.hotkey("Message: Quote & Reply"));
             }
             if let [m] = picked[..] {
-                if crate::can_thread(st, chat.expect("a chat of the picked messages"), m) {
+                let c = chat.expect("a chat of the picked messages");
+                if crate::can_thread(st, c, m) {
                     let thread = Some(UiMessage::Thread(threads::Msg::Show(m.id.clone())));
                     v.push(cmd(e, trx("Reply in thread", "message command"), thread).hotkey("Show Replies"));
+                }
+                // Desktop's "Reply privately" (`_` of `KFt`): the message menu's Reply Privately, in a group where the
+                // network makes direct chats.
+                let others = c.participants.items.iter().filter(|u| u.is_self != Some(true)).count();
+                let sender = c.participants.items.iter().any(|u| u.id == m.sender_id);
+                let theirs = m.is_sender != Some(true) && sender && live;
+                if rules.reply && others > 1 && theirs && self.can(&m.account_id, "create_dm") {
+                    let reply = UiMessage::ChatList(chat_list::Msg::ReplyPrivately(m.id.clone()));
+                    v.push(cmd(e, tr("Reply privately"), Some(reply)));
                 }
             }
         }
@@ -830,11 +840,15 @@ impl BeeperGuiApp {
         let problem = cmd("", tr("Report a problem"), hot("Report a Problem"));
         v.push(problem.keys(&["bug", "issue", "feedback"]).hotkey("Report a Problem"));
         if let Some(c) = chat {
-            v.push(cmd(
-                "Developer",
-                "Copy current chat ID",
-                Some(UiMessage::Message(message::Msg::CopyText(c.id.clone()))),
-            ));
+            let copy = |text: String| Some(UiMessage::Message(message::Msg::CopyText(text)));
+            v.push(cmd("Developer", "Copy current chat ID", copy(c.id.clone())));
+            // Desktop's invite link of a Beeper group, which needs the right to invite.
+            if c.account_id == "hungryserv" && c.chat_type == "group" {
+                let link = copy(format!("https://matrix.to/#/{}?via=beeper.com", c.id));
+                v.push(cmd("Developer", "Copy invite link", link.filter(|_| c.member_actions & MEMBER_INVITE != 0)));
+            }
+            let deep = copy(crate::deeplink::chat_deep_link(&c.account_id, &c.id));
+            v.push(cmd("Developer", "Copy chat deep link", deep));
         }
         v.push(cmd("Developer", "Reload app", hot("Reload App")).hotkey("Reload App"));
         v.push(cmd("Developer", "Relaunch app", Some(UiMessage::Window(windows::Msg::Relaunch))));
