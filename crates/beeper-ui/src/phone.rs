@@ -5,7 +5,7 @@
 //! digits. `assets/countries.json` is the library's country list.
 use crate::emoji::EMOJI_FONT;
 use crate::style::rem;
-use crate::style::{bar, btn_style, ell, scroll_style, txt, CLEAR, GUTTER};
+use crate::style::{bar, btn_style, ell, pad, scroll_style, txt, CLEAR, GUTTER};
 use crate::{BeeperGuiApp, El, UiMessage};
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
@@ -547,7 +547,7 @@ impl BeeperGuiApp {
             .on_submit(submit)
             .size(rem(12.0))
             .line_height(iced::Pixels(rem(15.0)))
-            .padding(Padding { top: 8.5, bottom: 8.5, left: 10.0, right: 13.0 })
+            .padding(pad(8.5, 13.0, 8.5, 10.0))
             .width(Fill)
             .style(move |_, status| text_input::Style {
                 background: fill.into(),

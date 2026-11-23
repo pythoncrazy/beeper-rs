@@ -119,9 +119,7 @@ impl BeeperGuiApp {
             };
             let info = column![
                 ell(&m.title, w - 75.0, 16.0, Weight::Normal).color(p.strong),
-                ell(&sub, w - 75.0, 12.0, Weight::Normal)
-                    .line_height(Pixels(rem(16.0)))
-                    .color(p.strong.scale_alpha(0.4)),
+                ell(&sub, w - 75.0, 12.0, Weight::Normal).line_height(lh(16.0)).color(p.strong.scale_alpha(0.4)),
             ];
             let check = selected.then(|| ic(icon::CHECK, 13.0).color(p.strong));
             let row = row![].push(check).push(self.chat_avatar(m, 28.0, 1.25)).push(info).spacing(8).align_y(Center);

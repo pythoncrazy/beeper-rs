@@ -232,8 +232,7 @@ impl BeeperGuiApp {
         let b = behavior(st, chat)?;
         let line = b.line(st.settings.pref("timeFormat") == 1)?;
         let dim = p.sub;
-        let text =
-            txt(line, 12.0).line_height(Pixels(rem(15.0))).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
+        let text = txt(line, 12.0).line_height(lh(15.0)).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
         let label =
             row![tinted(b.icon(), 14.0, dim), text, tinted(&CHEVRON_FORWARD, 10.0, dim)].spacing(5).align_y(Center);
         let open = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{BEHAVIOR_MENU}{}", chat.id)));
@@ -330,16 +329,16 @@ impl BeeperGuiApp {
         let rows = rules.into_iter().map(|(icon, title, body)| -> El<'_> {
             let icon = container(tinted(icon, 18.0, p.strong)).center(28);
             let text = column![
-                med(title, 13.0).line_height(Pixels(rem(16.0))).color(p.strong),
-                txt(body, 13.0).line_height(Pixels(rem(16.0))).color(p.sub)
+                med(title, 13.0).line_height(lh(16.0)).color(p.strong),
+                txt(body, 13.0).line_height(lh(16.0)).color(p.sub)
             ]
             .spacing(2)
             .padding(Padding::ZERO.left(4.0).top(5.0));
             row![icon, text].into()
         });
         let head = column![
-            semi(tr("How It Works"), 15.0).line_height(Pixels(rem(20.0))).color(p.strong),
-            txt(tr("Visibility and Notifications"), 13.0).line_height(Pixels(rem(16.0))).color(p.sub)
+            semi(tr("How It Works"), 15.0).line_height(lh(20.0)).color(p.strong),
+            txt(tr("Visibility and Notifications"), 13.0).line_height(lh(16.0)).color(p.sub)
         ];
         let body = column![head, Column::with_children(rows).spacing(16).padding(Padding::ZERO.top(16.0))].padding(16);
         let done = done_btn(p).on_press(UiMessage::Info(info::Msg::HowItWorks(false)));
