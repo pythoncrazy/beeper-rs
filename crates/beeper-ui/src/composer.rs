@@ -543,7 +543,7 @@ impl BeeperGuiApp {
             Suggestion::Mention(label, ..) => format!("@{label}"),
         };
         let face = |s: &Suggestion| match s {
-            Suggestion::Emoji(c, _) if emoji::is_mxc(c) => Some(self.custom_image(c, 13.0)),
+            Suggestion::Emoji(c, _) if emoji::is_mxc(c) => Some(self.custom_image(c, 13.0, self.animate.get())),
             Suggestion::Emoji(..) => None,
             Suggestion::Mention(_, _, Some(u)) => {
                 Some(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 24.0, 0.0))
@@ -925,7 +925,7 @@ impl BeeperGuiApp {
                 let items = self.gifs.iter().enumerate().map(|(i, g)| {
                     let w = gif_width(g);
                     let cell: El<'a> = match self.media_at(&g.preview_url) {
-                        Some(Ok(frames)) => anim::gif(frames, self.started, move |f| {
+                        Some(Ok(frames)) => anim::gif(frames, self.shows(), self.started, move |f| {
                             image(f).width(w).height(215).content_fit(iced::ContentFit::Cover)
                         }),
                         _ => container(Space::new()).width(w).height(215).style(fill_box(p.hover, 4.0)).into(),
@@ -1321,6 +1321,8 @@ pub enum Msg {
     Type(String),
     /// Tab (Shift+Tab with `back`) in the window, after a look for the caret.
     Tab(bool, Caret),
+    /// Enter without a modifier in the window, after a look for the caret.
+    Enter(Caret),
 }
 
 impl BeeperGuiApp {
@@ -1353,8 +1355,8 @@ impl BeeperGuiApp {
             // Desktop's pending `BrandVideo`: the MP4 of a GIF loops with "Autoplay GIFs", and a video is a
             // thumbnail with a play button.
             let video = pm.mime.starts_with("video/");
-            let frames = anim::playing(&pm.frames, !video || st.settings.on("autoplayGifs"));
-            let img = container(anim::gif(frames, self.started, fit)).max_width(120).clip(true);
+            let play = self.shows() && (!video || st.settings.on("autoplayGifs"));
+            let img = container(anim::gif(&pm.frames, play, self.started, fit)).max_width(120).clip(true);
             let img = img.style(bordered_box(CLEAR, fg, 1.0, 8.0));
             let play = container(tinted(&voice::ICONS[0], 20.0, p.strong)).center(36).style(fill_box(p.received, 18.0));
             match video && !pm.is_gif {
@@ -1664,6 +1666,25 @@ impl BeeperGuiApp {
                 self.pane.key_focus.set(None);
                 return operation::focus(self.composer_id());
             }
+            // Desktop's `KeyboardHandlers` focus the composer at its end for Enter outside a text field, like after
+            // a click on the attachment button or a sticker. Chromium's keypress then goes to the composer, whose
+            // Enter does what it does there: it sends by default.
+            Msg::Enter(Caret::None) if self.composer_takes_keys() => {
+                self.hold_compose_target();
+                let keys = ["Message: Send Message and Archive", "Send Message", "Insert New Line"]
+                    .map(|h| self.store.read().settings.hotkey_keys(h).to_string());
+                self.pane.composer.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+                let focus = operation::focus(self.composer_id());
+                let enter = match keys.iter().position(|k| prefs::hotkey_has(k, [false; 3], "enter")) {
+                    Some(0) => self.update(UiMessage::Composer(Msg::SendAndArchive)),
+                    Some(1) => self.update(UiMessage::Composer(Msg::Submit)),
+                    _ => {
+                        self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Enter))))
+                    }
+                };
+                return Task::batch([focus, enter]);
+            }
+            Msg::Enter(_) => {}
             Msg::Paste => return Task::perform(clipboard_paste(), |r| UiMessage::Composer(Msg::Pasted(r))),
             // Desktop's `paste` handler: copied files go to the attachments, and a text goes into the composer.
             Msg::Pasted(r) => match r {
@@ -1672,7 +1693,7 @@ impl BeeperGuiApp {
                     name: "image.png".into(),
                     mime: "image/png".into(),
                     size,
-                    frames: vec![(image::Handle::from_bytes(png.clone()), 0)],
+                    frames: Frames::from([(image::Handle::from_bytes(png.clone()), 0)]),
                     bytes: png,
                     ..Default::default()
                 })]),
@@ -1766,7 +1787,9 @@ impl BeeperGuiApp {
             Msg::DropEnded => {
                 let paths = std::mem::take(&mut self.dropped);
                 if self.pane.selected_chat_id.is_some() {
-                    return self.update(UiMessage::Composer(Msg::FilesPicked(Ok(paths))));
+                    // Desktop's `onDrop` focuses the composer (`focusComposerFor`) before the files attach.
+                    let focus = operation::focus(self.composer_id());
+                    return Task::batch([focus, self.update(UiMessage::Composer(Msg::FilesPicked(Ok(paths))))]);
                 }
                 self.drop_send = false;
             }

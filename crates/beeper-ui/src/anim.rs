@@ -3,15 +3,18 @@ use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, renderer, Clipboard, Renderer as _, Shell};
 use iced::widget::{image, Image};
 use iced::{window, Color, Element, Event, Length, Rectangle, Renderer, Size, Theme};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A frame of an animation and its delay in milliseconds.
 pub type Frame = (image::Handle, u128);
 
 /// Draws the frame of `frames` that is due since `start`, and asks for a redraw at the next frame while it is
-/// visible. The view does not change, so the animation needs no view or layout.
+/// visible. The view does not change, so the animation needs no view or layout. An animation that does not play
+/// shows its first frame and asks for no redraws.
 pub struct Gif<'a> {
-    frames: &'a [Frame],
+    frames: Frames,
+    play: bool,
     start: Instant,
     make: Box<dyn Fn(image::Handle) -> Image + 'a>,
     /// The turn in radians from the first angle to the second one in `TURN_MS` from the time.
@@ -21,26 +24,47 @@ pub struct Gif<'a> {
 /// The time of Desktop's `.2s transform` transition.
 const TURN_MS: f32 = 200.0;
 
+/// The frames of an image, shared with the cache that decoded them: a still image has one frame.
+pub type Frames = Arc<[Frame]>;
+
+/// `frames` as `make` draws them, playing from `start` when `play`. A still image, or an animation that does not
+/// play, is the plain image of its first frame, so it adds no work to the frames of the window.
 pub fn gif<'a, M: 'a>(
-    frames: &'a [Frame],
+    frames: &Frames,
+    play: bool,
     start: Instant,
     make: impl Fn(image::Handle) -> Image + 'a,
 ) -> Element<'a, M> {
-    match frames.len() {
-        1 => make(frames[0].0.clone()).into(),
-        _ => Element::new(Gif { frames, start, make: Box::new(make), turn: (0.0, 0.0, start) }),
+    match plays(frames, play) {
+        false => make(frames[0].0.clone()).into(),
+        true => {
+            let turn = (0.0, 0.0, start);
+            Element::new(Gif { frames: frames.clone(), play, start, make: Box::new(make), turn })
+        }
     }
 }
 
 /// `gif`, turned from the first angle to the second one in radians, from the time on, with the CSS `ease` curve.
 /// The turned image fits in its bounds.
 pub fn turning<'a, M: 'a>(
-    frames: &'a [Frame],
+    frames: &Frames,
+    play: bool,
     start: Instant,
     turn: (f32, f32, Instant),
     make: impl Fn(image::Handle) -> Image + 'a,
 ) -> Element<'a, M> {
-    Element::new(Gif { frames, start, make: Box::new(make), turn })
+    Element::new(Gif { frames: frames.clone(), play, start, make: Box::new(make), turn })
+}
+
+/// Whether an animation of `frames` moves when it is to `play`: it has more than one frame.
+pub fn plays(frames: &[Frame], play: bool) -> bool {
+    play && frames.len() > 1
+}
+
+/// The time of the frame after the one that is due at `now`, of an animation that plays from `start`.
+pub fn next(frames: &[Frame], start: Instant, now: Instant) -> Instant {
+    let (_, left) = frame(frames, now.saturating_duration_since(start).as_millis());
+    now + Duration::from_millis(left as u64)
 }
 
 impl Gif<'_> {
@@ -51,11 +75,6 @@ impl Gif<'_> {
         let angle = from + (to - from) * crate::cubic_bezier(t, [0.25, 0.1, 0.25, 1.0]);
         ((self.make)(h).rotation(iced::Rotation::Solid(iced::Radians(angle))), t < 1.0 && from != to)
     }
-}
-
-/// The frames to draw: only the first one when the animation does not play.
-pub fn playing(frames: &[Frame], play: bool) -> &[Frame] {
-    &frames[..if play { frames.len() } else { 1 }]
 }
 
 /// The frame at `ms` into the loop, and the time until the next frame.
@@ -99,9 +118,8 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
         }
         if self.image(self.frames[0].0.clone()).1 {
             shell.request_redraw();
-        } else if self.frames.len() > 1 {
-            let (_, left) = frame(self.frames, now.duration_since(self.start).as_millis());
-            shell.request_redraw_at(*now + Duration::from_millis(left as u64));
+        } else if plays(&self.frames, self.play) {
+            shell.request_redraw_at(next(&self.frames, self.start, *now));
         }
     }
 
@@ -116,9 +134,9 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
         viewport: &Rectangle,
     ) {
         // A still image has one frame without a delay.
-        let h = match self.frames {
-            [(h, _)] => h,
-            _ => frame(self.frames, self.start.elapsed().as_millis()).0,
+        let h = match plays(&self.frames, self.play) {
+            false => &self.frames[0].0,
+            true => frame(&self.frames, self.start.elapsed().as_millis()).0,
         };
         let (image, _) = self.image(h.clone());
         Widget::<M, Theme, Renderer>::draw(&image, tree, renderer, theme, style, layout, cursor, viewport);
@@ -192,9 +210,9 @@ mod tests {
     #[test]
     fn turns_like_desktop() {
         assert!((crate::cubic_bezier(0.5, [0.25, 0.1, 0.25, 1.0]) - 0.802).abs() < 5e-3, "the CSS ease curve");
-        let frames = [(image::Handle::from_rgba(1, 1, vec![0; 4]), 0)];
+        let frames: Frames = Arc::new([(image::Handle::from_rgba(1, 1, vec![0; 4]), 0)]);
         let start = Instant::now();
-        let gif = |turn| Gif { frames: &frames, start, make: Box::new(image), turn };
+        let gif = |turn| Gif { frames: frames.clone(), play: true, start, make: Box::new(image), turn };
         let h = || frames[0].0.clone();
         assert!(gif((0.0, -1.0, Instant::now())).image(h()).1, "a new turn goes on");
         assert!(!gif((0.0, -1.0, start - Duration::from_millis(300))).image(h()).1, "a turn ends after 200 ms");

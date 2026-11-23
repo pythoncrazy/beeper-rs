@@ -162,6 +162,8 @@ pub struct AdwaitaFrame<State> {
     title_text: Option<TitleText>,
     shadow: Shadow,
     gtk_drawn: bool,
+    /// The [`gtk::generation`] of GTK's settings that the buttons and the click actions follow.
+    gtk_settings: u64,
 }
 
 impl<State> AdwaitaFrame<State>
@@ -180,6 +182,7 @@ where
         let base_surface = WlTyped::wrap::<State>(base_surface.wl_surface().clone());
         // Opens GTK, when there is one to draw with, before anything is sized.
         theme::metrics();
+        let gtk_settings = gtk::generation();
 
         let pool = SlotPool::new(1, shm)?;
 
@@ -209,6 +212,7 @@ where
             resizable: true,
             shadow: Shadow::default(),
             gtk_drawn: false,
+            gtk_settings,
         })
     }
 
@@ -302,7 +306,26 @@ where
         }
     }
 
+    /// Takes GTK's settings when they changed since the frame last looked: the buttons of
+    /// `gtk-decoration-layout` and the title bar's click actions. Electron's frame follows them
+    /// while it runs, and a frame opened before GTK did has the cached ones, which may be old.
+    fn follow_gtk_settings(&mut self) {
+        let generation = gtk::generation();
+        if self.gtk_settings == generation {
+            return;
+        }
+        self.gtk_settings = generation;
+        self.buttons = Buttons::new(gtk::decoration_layout().or_else(get_button_layout_config));
+        self.buttons.update_wm_capabilities(self.wm_capabilities);
+        if let Some(decorations) = &self.decorations {
+            self.buttons.arrange(decorations.header().surface_rect.width, get_margin_h_lp(&self.state));
+        }
+        self.mouse.titlebar = gtk::titlebar_actions().unwrap_or_default();
+        self.dirty = true;
+    }
+
     fn redraw_inner(&mut self) -> Option<bool> {
+        self.follow_gtk_settings();
         let decorations = self.decorations.as_ref()?;
 
         // Reset the dirty bit.
@@ -604,7 +627,7 @@ where
     }
 
     fn is_dirty(&self) -> bool {
-        self.dirty || (!self.gtk_drawn && gtk::ready())
+        self.dirty || (!self.gtk_drawn && gtk::ready()) || self.gtk_settings != gtk::generation()
     }
 
     fn is_hidden(&self) -> bool {

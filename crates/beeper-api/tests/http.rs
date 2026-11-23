@@ -1267,7 +1267,7 @@ async fn search_messages_filters_orders_and_pages_like_desktop() {
             break;
         }
     }
-    assert_eq!(seen.len(), 31, "paging `before` walks all the messages");
+    assert_eq!(seen.len(), 33, "paging `before` walks all the messages");
     assert!(seen.chunks(6).zip(seen.chunks(6).skip(1)).all(|(a, b)| a.iter().min() > b.iter().max()));
     let first = search("limit=1").await;
     let piped = search("limit=1&cursor=%7Cimsg").await;
@@ -1287,11 +1287,11 @@ async fn search_messages_filters_orders_and_pages_like_desktop() {
     assert_eq!(found("accountIDs=acc_slack").await, ["2005", "1011", "1010", "1009", "1008", "1007"]);
     assert_eq!(found("chatType=group").await.len(), 11);
     assert_eq!(found("chatType=single&limit=1").await, ["1001"]);
-    assert_eq!(found("mediaTypes=image").await, ["2010", "2009", "2008", "2002"]);
+    assert_eq!(found("mediaTypes=image").await, ["2010", "2009", "2008", "2002", "0950"]);
     assert_eq!(found("mediaTypes=file").await, ["1003", "0998"]);
     assert_eq!(found("mediaTypes=link").await, ["0904", "0902", "0900"]);
-    assert_eq!(found("mediaTypes=any").await.len(), 7);
-    assert_eq!(found("mediaTypes=image&mediaTypes=file").await.len(), 6);
+    assert_eq!(found("mediaTypes=any").await.len(), 8);
+    assert_eq!(found("mediaTypes=image&mediaTypes=file").await.len(), 7);
     assert_eq!(found("sender=me").await.len(), 7);
     assert_eq!(search("sender=others").await["hasMore"], true);
     assert_eq!(found("sender=@devon:beeper.com").await, ["1010", "1009", "1007"]);
