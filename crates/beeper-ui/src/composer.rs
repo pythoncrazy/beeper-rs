@@ -8,6 +8,7 @@ use crate::gifs::gif_width;
 use crate::i18n::{tr, trf};
 use crate::scheduled;
 use crate::scheduled::send_day;
+use crate::style::rem;
 use crate::style::{
     bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, mix, scroll_style, semi,
     shadow_box, text_width, txt, Bare, CLEAR,
@@ -18,9 +19,9 @@ use crate::vcard::parse_vcard;
 use crate::{
     account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, clipboard_paste, contact_card,
     dashed, default_account_user, emoji, format, has_flag, hotkey_caps, hotkey_key, icon_btn, images, locate,
-    menu_item, menu_rule, network_name, portal, record, removable, several_accounts, spell, switch_targets, text_urls,
-    tinted, toasts, truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker,
-    Queued, Toast, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
+    menu_item, menu_pitch, menu_rule, network_name, portal, record, removable, several_accounts, spell, switch_targets,
+    text_urls, tinted, toasts, truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia,
+    Picker, Queued, Toast, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MESSAGE_MENU_W, SEND_ARROW,
 };
 use beeper_core::codec::Emoticon;
 use beeper_core::config::{account_network, now_unix_millis};
@@ -607,7 +608,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let Some(client) = st.matrix.clone().filter(|_| st.typing_notices()) else { return Task::none() };
         drop(st);
-        let notice = |chat, on| Task::perform(beeper_core::matrix::typing(client.clone(), chat, on), UiMessage::Pushed);
+        let notice = |chat, on| Task::future(beeper_core::matrix::typing(client.clone(), chat, on)).discard();
         Task::batch([ended.map(|c| notice(c, false)), started.map(|c| notice(c, true))].into_iter().flatten())
     }
 
@@ -816,7 +817,7 @@ impl BeeperGuiApp {
             item("Paste", edit(MenuEdit::Paste)),
         ]);
         let rules = word.map_or(0, |_| 2) + usize::from(has);
-        let h = 8.0 + (items.len() - rules) as f32 * MENU_ITEM + rules as f32 * 11.0;
+        let h = 8.0 + (items.len() - rules) as f32 * menu_pitch() + rules as f32 * 11.0;
         let menu = container(Column::with_children(items.into_iter().flatten()).padding([4, 0]))
             .width(MESSAGE_MENU_W)
             .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -878,7 +879,7 @@ impl BeeperGuiApp {
             let search = text_input(tr("Search KLIPY..."), &self.gif_query)
                 .id("gif-search-input")
                 .on_input(|a0| UiMessage::Gifs(gifs::Msg::Query(a0)))
-                .size(13)
+                .size(rem(13.0))
                 .padding([6, 12])
                 .style(input_style(p.input, p.strong, p.sub, p.accent, 8.0));
             // Desktop's `GifPicker`: the error or "No results" text, or 10 skeleton tiles while the first page loads.
@@ -1058,8 +1059,8 @@ impl BeeperGuiApp {
                 _ => text_editor::Binding::from_key_press(k),
             })
             .highlight_with::<format::Marks>(marks, |f, _| *f)
-            .size(13)
-            .line_height(Pixels(16.0))
+            .size(rem(13.0))
+            .line_height(Pixels(rem(16.0)))
             .padding([10, 2])
             .height(Shrink)
             .max_height(self.pane().size.height / 2.0)
@@ -1168,7 +1169,7 @@ impl BeeperGuiApp {
                     let wide = if img.is_some() { 158.0 } else { 338.0 };
                     let link = row![ic(icon::LINK, 12.0).color(p.weak), txt(host, 11.0).color(p.weak)];
                     let text = column![
-                        clamp(title, wide, 3, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong),
+                        clamp(title, wide, 3, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(p.strong),
                         link.spacing(4).align_y(Center)
                     ];
                     let card = container(column![].push(img).push(text.spacing(8).padding([12, 11])));
@@ -1300,14 +1301,14 @@ impl BeeperGuiApp {
         if pm.frames.is_empty() && vcard {
             let entry = |phone: bool, s: &str| -> El<'a> {
                 let s = if phone { crate::fmt_phone(s) } else { s.to_string() };
-                txt(s, 12.0).line_height(Pixels(16.0)).color(p.text).into()
+                txt(s, 12.0).line_height(Pixels(rem(16.0))).color(p.text).into()
             };
             let card = contact_card(p, &parse_vcard(&String::from_utf8_lossy(&pm.bytes)), p.text, 1, &entry);
             container(card).padding([8, 10]).style(fill_box(p.received, 0.0)).into()
         } else if pm.frames.is_empty() {
             let ext = std::path::Path::new(&pm.name).extension().map(|e| e.to_string_lossy().to_uppercase());
             let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();
-            let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(Pixels(14.0));
+            let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(Pixels(rem(14.0)));
             let info = column![name, txt(meta.join(" ・ "), 11.0)].spacing(4);
             let icon = &FILE_ICONS[if pm.mime.starts_with("audio") { 3 } else { 0 }];
             let line = row![tinted(icon, 20.0, p.strong), info].spacing(8).align_y(Center);

@@ -359,8 +359,25 @@ async fn power_levels(room: &Room) -> Value {
     levels
 }
 
-async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Chat {
-    let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
+/// What a chat keeps from the members of its room while their state does not change: the participants, the title and
+/// whether it is a DM. Reading thousands of members for each message of a big group took most of its sync.
+pub(crate) struct Known {
+    participants: Vec<User>,
+    title: String,
+    dm: bool,
+}
+
+/// The `MEMBER_ACTIONS` bits that the room features allow, all of them without room features.
+fn member_actions(features: Option<&Value>) -> u8 {
+    features.map_or(ALL_MEMBER_ACTIONS, |f| {
+        let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
+        MEMBER_ACTIONS.iter().enumerate().filter(|(_, k)| on(k)).fold(0, |m, (i, _)| m | 1 << i)
+    })
+}
+
+/// The participants of a room from its members, its title and whether it is a DM, like Desktop's `buildTitle` and
+/// thread type.
+async fn members(room: &Room, bridge: &Value) -> (Vec<User>, String, bool) {
     let service = room.service_members().unwrap_or_default();
     let bot = s(&bridge["bridgebot"]);
     let me = room.own_user_id();
@@ -370,12 +387,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let levels = power_levels(room).await;
     let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
     let features = state(room, "com.beeper.room_features").await;
-    let (file, room_features) = file_features(features.as_ref(), &bridge);
-    let tombstone = state(room, "m.room.tombstone").await;
-    let member_actions = features.as_ref().map_or(ALL_MEMBER_ACTIONS, |f| {
-        let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
-        MEMBER_ACTIONS.iter().enumerate().filter(|(_, k)| on(k)).fold(0, |m, (i, _)| m | 1 << i)
-    });
+    let member_actions = member_actions(features.as_ref());
     let contents: HashMap<String, Value> = states(room, StateEventType::RoomMember)
         .await
         .into_iter()
@@ -415,7 +427,6 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         })
         .collect();
     items.sort_by(crate::models::member_order);
-    let tags = room.tags().await.expect("read room tags").unwrap_or_default();
     // Desktop's thread type (`rT`): a note to self is single, a declared DM is single up to two people, and a room
     // with a name or a declared group DM is a group.
     let note = state(room, "com.beeper.rooms.note_to_self").await.is_some();
@@ -449,6 +460,22 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             .expect("a chat with other members")
         }
     });
+    (items, title, dm)
+}
+
+async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value, known: Option<Known>) -> Chat {
+    let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
+    let (mut items, title, dm) = match known {
+        Some(k) => (k.participants, k.title, k.dm),
+        None => members(room, &bridge).await,
+    };
+    let me = room.own_user_id();
+    let features = state(room, "com.beeper.room_features").await;
+    let (file, room_features) = file_features(features.as_ref(), &bridge);
+    let tombstone = state(room, "m.room.tombstone").await;
+    let levels = power_levels(room).await;
+    let member_actions = member_actions(features.as_ref());
+    let tags = room.tags().await.expect("read room tags").unwrap_or_default();
     let account_id = account_id(&bridge, accounts);
     // Desktop's `hasExited`: in a room that the user left, the own member stays, exited, and does not count above.
     if room.state() == RoomState::Left {
@@ -487,10 +514,8 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         is_pinned: Some(tags.contains_key(&TagName::Favorite)),
         is_low_priority: Some(tags.contains_key(&TagName::LowPriority)),
         reminder: account_data(room, REMINDER).await.and_then(|r| {
-            Some(ChatReminder {
-                remind_at_ms: r["remind_at_ms"].as_i64().filter(|&ms| ms > 0)?,
-                dismiss_on_incoming_message: r["dismiss_on_incoming_message"] == true,
-            })
+            let at = r["remind_at_ms"].as_i64().filter(|&ms| ms > 0)?;
+            Some(ChatReminder::new(at, r["dismiss_on_incoming_message"] == true))
         }),
         // Desktop's `com.beeper.chats.snoozed` handler keeps a snooze that ends in the future.
         snoozed_until_ms: account_data(room, SNOOZED)
@@ -1083,16 +1108,20 @@ async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
     }
 }
 
-async fn sync_receipts(store: &SharedStore, room: &Room) {
+async fn sync_receipts(store: &SharedStore, room: &Room, only: Option<&HashSet<String>>) {
     let chat = chat_id(room).await;
+    let me = room.own_user_id().to_string();
+    // Each receipt is a read of the state store, so a receipt event reads only the receipts of its users, not those of
+    // the thousands of members of a big group.
+    let wanted = |u: &String| only.is_none_or(|o| o.contains(u));
     let peers: Vec<String> = {
         let st = store.read();
         let Some(&idx) = st.chat_idx_by_id.get(&chat) else { return };
-        st.chats[idx].participants.items.iter().filter(|u| u.is_self != Some(true)).map(|u| u.id.clone()).collect()
+        let peers = st.chats[idx].participants.items.iter().filter(|u| u.is_self != Some(true));
+        peers.map(|u| u.id.clone()).chain([me.clone()]).filter(wanted).collect()
     };
     let mut updates = Vec::new();
-    let me = room.own_user_id().to_string();
-    for uid in peers.into_iter().chain([me.clone()]) {
+    for uid in peers {
         let Ok(parsed) = matrix_sdk::ruma::UserId::parse(&uid) else { continue };
         let receipt = room.load_user_receipt(ReceiptType::Read, &ReceiptThread::Unthreaded, &parsed).await;
         if let Some((ev, r)) = receipt.expect("read receipt") {
@@ -1442,7 +1471,7 @@ async fn sync_invite(store: &SharedStore, room: &Room) {
         let st = store.read();
         (st.bridge_accounts.clone(), st.inbox_rules.clone())
     };
-    let mut chat = chat(room, &accounts, &rules).await;
+    let mut chat = chat(room, &accounts, &rules, None).await;
     // Desktop lists the own invite as a pending member that the inviter added.
     if let Ok(invite) = room.invite_details().await {
         let me = invite.invitee;
@@ -1496,9 +1525,19 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, events: Vec<Time
     sync_room_after(store, room, events, None).await;
 }
 
-/// [`sync_room`] with `prev_batch`, the token of the events before `events` that a sync gives, so that a new room
-/// loads only the older events that its first page needs, not the newest ones again.
-async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, prev_batch: Option<String>) {
+/// What a sync gives with the events of a room.
+struct Update {
+    /// The token of the events before those of the sync, so that a new room loads only the older events that its
+    /// first page needs, not the newest ones again.
+    prev_batch: Option<String>,
+    /// Whether the sync changed a state of the room. Without a change, a chat keeps what it found from the members.
+    state_changed: bool,
+}
+
+/// [`sync_room`] with the `update` of a sync, which reads the receipts of its receipt events after it.
+async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, update: Option<Update>) {
+    let from_sync = update.is_some();
+    let (prev_batch, state_changed) = update.map_or((None, true), |u| (u.prev_batch, u.state_changed));
     match room.room_id().as_str() {
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
         TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
@@ -1529,7 +1568,13 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
     let rules = store.read().inbox_rules.clone();
     let pins = global(&room.client(), "com.beeper.favourites_order").await;
     let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
-    let mut chat = chat(room, &accounts, &rules).await;
+    let known = (!state_changed && union.is_none() && room.state() == RoomState::Joined).then(|| {
+        let st = store.read();
+        // A chat that no sync made yet, like one copied from Desktop, reads its members.
+        let c = st.chat_idx_by_id.get(&chat_id).map(|&i| &st.chats[i]).filter(|c| c.notifiable.is_some())?;
+        Some(Known { participants: c.participants.items.clone(), title: c.title.clone(), dm: c.chat_type == "single" })
+    });
+    let mut chat = chat(room, &accounts, &rules, known.flatten()).await;
     // Desktop's `rT`: a merged chat is single.
     if union.is_some() {
         chat.chat_type = "single".into();
@@ -1602,6 +1647,7 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
                 }
             } else {
                 let i = st.chat_idx(NOTE_CHAT_ID);
+                chat.reminder = ChatReminder::synced(chat.reminder.take(), st.chats[i].reminder.as_ref());
                 let room = |c: &Chat| {
                     (
                         c.img_url.clone(),
@@ -1797,7 +1843,9 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
         });
     }
     sync_thread_reads(store, room, roots).await;
-    sync_receipts(store, room).await;
+    if !from_sync {
+        sync_receipts(store, room, None).await;
+    }
 }
 
 /// Desktop's `applyDisappearingTimer`: the timer of a later event replaces the one of the message.
@@ -2251,7 +2299,10 @@ async fn flush(store: SharedStore) -> Result<(), PushError> {
             Outgoing::Flag(f, on) => Some((chat.clone(), f, on)),
             _ => None,
         };
-        let r = push(&store, chat, out).await;
+        let r = match push(&store, chat, out).await {
+            Err(e) if !e.transient => Err(PushError { transient: unreachable(&store).await, ..e }),
+            r => r,
+        };
         let mut st = store.write();
         match (r, message) {
             (Ok(()), message) => {
@@ -2295,6 +2346,20 @@ async fn push_loop(store: SharedStore) {
             Some(s) => drop(tokio::time::timeout(std::time::Duration::from_secs(s), ready.notified()).await),
             None => ready.notified().await,
         }
+    }
+}
+
+/// Whether the homeserver cannot be reached now. Some calls of a push, like a redaction or the push rules of a mute,
+/// lose the kind of their error, so a failed push asks the homeserver again: a change that failed while it is offline
+/// waits for it like a send, instead of being dropped.
+async fn unreachable(store: &SharedStore) -> bool {
+    let client = store.read().matrix.clone().expect("flush checks the Matrix client");
+    // One try: the push loop tries the change again later.
+    let once = matrix_sdk::config::RequestConfig::new().retry_limit(1);
+    let whoami = matrix_sdk::ruma::api::client::account::whoami::v3::Request::new();
+    match client.send(whoami).with_request_config(once).await {
+        Ok(_) => false,
+        Err(h) => PushError::from(matrix_sdk::Error::from(h)).transient,
     }
 }
 
@@ -2484,8 +2549,15 @@ pub fn room_address(input: &str) -> Result<(String, Vec<String>), BadAddress> {
     Err(BadAddress::Invalid)
 }
 
-pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) -> Result<(), String> {
-    joined_room(&client, &chat).await?.typing_notice(on).await.map_err(|e| e.to_string())
+/// Desktop's `sendActivityIndicator`: a typing notice that fails, for example offline, only goes to the log.
+pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) {
+    let sent = match joined_room(&client, &chat).await {
+        Ok(room) => room.typing_notice(on).await.map_err(|e| e.to_string()),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = sent {
+        eprintln!("typing notice dropped: {e}");
+    }
 }
 
 /// Desktop's `formatMessage`: the text, its HTML with a `matrix.to` link for each user mention, and `m.mentions` with
@@ -3958,7 +4030,8 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
 async fn sync_profile(client: &Client, store: &SharedStore) {
     let profile = match client.account().fetch_user_profile().await {
         Ok(r) => r.data,
-        Err(e) => return store.write().matrix_error = Some(e.to_string()),
+        // The profile of the last start stays while the homeserver cannot be reached.
+        Err(e) => return eprintln!("Could not read the own profile: {e}"),
     };
     let field = |k: &str| profile.get(k).and_then(Value::as_str).map(str::to_string);
     let mut st = store.write();
@@ -4875,7 +4948,7 @@ pub async fn run(store: SharedStore) {
     let me = client.user_id().expect("signed-in client has a user ID").to_owned();
     match client.encryption().request_user_identity(&me).await {
         Ok(_) => refresh_e2ee(&client, &store).await,
-        Err(e) => store.write().matrix_error = Some(e.to_string()),
+        Err(e) => eprintln!("Could not query the own identity, the first sync reads it: {e}"),
     }
     client.add_event_handler_context(store.clone());
     client.add_event_handler(verification_requested);
@@ -4948,18 +5021,18 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             st.emit_ws("setup.updated", "", None, None, None);
             return false;
         }
+        // Like Desktop's SDK, a sync that fails (the homeserver cannot be reached) only goes to the log, and the loop
+        // tries again. The toast of the main window takes `matrix_error`, so the outbox waits on its own flag.
         Err(e) => {
-            let mut st = store.write();
-            if st.matrix_error.replace(e.to_string()).is_none() {
-                // The "Offline" pill and the API's app state follow the error.
-                st.emit_ws("setup.updated", "", None, None, None);
+            if !std::mem::replace(&mut store.write().sync_failing, true) {
+                eprintln!("Matrix sync failed, trying again: {e}");
             }
         }
         Ok(resp) => {
             {
                 let mut st = store.write();
                 // The homeserver answers again, so the changes that waited for it go now.
-                let back = st.matrix_error.take().is_some();
+                let back = std::mem::take(&mut st.sync_failing);
                 if back {
                     st.outbox_ready.notify_one();
                 }
@@ -4992,7 +5065,14 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 if gap.is_some() && !synced_before(store, &room).await {
                     gap = None;
                 }
-                sync_room_after(store, &room, update.timeline.events, update.timeline.prev_batch).await;
+                // A state event in the state of the update or in its timeline can change the members.
+                let state = match &update.state {
+                    matrix_sdk::sync::State::Before(e) | matrix_sdk::sync::State::After(e) => !e.is_empty(),
+                };
+                let state_key = |e: &TimelineEvent| e.raw().get_field::<String>("state_key").ok().flatten().is_some();
+                let state_changed = state || update.timeline.events.iter().any(state_key);
+                let prev_batch = update.timeline.prev_batch;
+                sync_room_after(store, &room, update.timeline.events, Some(Update { prev_batch, state_changed })).await;
                 if let Some(from) = gap {
                     tokio::spawn(fill_gap(store.clone(), room.clone(), from));
                 }
@@ -5001,7 +5081,10 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                     if v["type"] == "m.typing" {
                         set_typing(store, &room, &v["content"]["user_ids"]).await;
                     } else if v["type"] == "m.receipt" {
-                        sync_receipts(store, &room).await;
+                        let receipts = v["content"].as_object().into_iter().flatten();
+                        let users = receipts.flat_map(|(_, r)| r["m.read"].as_object().into_iter().flatten());
+                        let users: HashSet<String> = users.map(|(u, _)| u.clone()).collect();
+                        sync_receipts(store, &room, Some(&users)).await;
                         let me = room.own_user_id().as_str();
                         let receipts = v["content"].as_object().into_iter().flatten();
                         if receipts.into_iter().any(|(_, r)| r["m.read"].get(me).is_some()) {
@@ -5334,6 +5417,48 @@ mod tests {
         let texts: Vec<_> = st.chat_timeline("!room:x").iter().filter_map(|m| m.text.clone()).collect();
         assert_eq!(texts, (41..=70).map(|i| format!("m{i}")).collect::<Vec<_>>());
         assert_eq!(st.chat("!room:x").older, crate::models::Older::From("t40".into()));
+    }
+
+    /// A sync that changes no state of a room keeps the members that its chat found, without reading them and their
+    /// receipts again, and a member that joins in a later sync shows.
+    #[tokio::test]
+    async fn a_sync_without_state_keeps_the_members() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let syncs = AtomicUsize::new(0);
+        let member = |u: &str| {
+            json!({ "type": "m.room.member", "state_key": u, "sender": u, "event_id": format!("$join{u}"),
+                "origin_server_ts": 1, "content": { "membership": "join", "displayname": format!("{u} name") } })
+        };
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => {
+                let n = syncs.fetch_add(1, Relaxed) + 1;
+                let mut sync = stub_sync();
+                sync["next_batch"] = json!(format!("s{n}"));
+                let room = &mut sync["rooms"]["join"]["!room:x"];
+                // The sync of `stub_store`, then one with Ann, one without a state, and one with Bob.
+                match n {
+                    1 | 2 => room["state"]["events"].as_array_mut().expect("state events").push(member("@ann:x")),
+                    3 => room["state"] = json!({ "events": [] }),
+                    _ => room["state"] = json!({ "events": [member("@bob:x")] }),
+                }
+                room["timeline"] = json!({ "events": [stub_message(i64::try_from(n).unwrap())], "prev_batch": "t0" });
+                (200, sync)
+            }
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("keep-members"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        for want in [vec!["@ann:x", "@me:x"], vec!["@ann:x", "@me:x"], vec!["@ann:x", "@bob:x", "@me:x"]] {
+            assert!(super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await);
+            let st = store.read();
+            let mut got: Vec<&str> = st.chat("!room:x").participants.items.iter().map(|u| u.id.as_str()).collect();
+            got.sort_unstable();
+            assert_eq!(got, want);
+        }
     }
 
     /// Desktop's `lastReadMessageSortKey` of a room: the order of the event of your own read receipt, which a read
@@ -6866,6 +6991,39 @@ mod tests {
         assert!(kinds.iter().any(|k| k == "setup.updated"), "{kinds:?}");
     }
 
+    /// Like Desktop's SDK, a sync that cannot reach the homeserver shows no toast with the URL of the request, and the
+    /// first sync that works again wakes the outbox. Before, each failed sync was a toast, and as the toast took the
+    /// error, the outbox missed the reconnect and waited up to a minute.
+    #[tokio::test]
+    async fn failed_syncs_are_quiet_and_the_reconnect_wakes_the_outbox() {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+        let down = std::sync::Arc::new(AtomicBool::new(false));
+        let offline = down.clone();
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split('?').next().expect("a path") {
+            _ if offline.load(Relaxed) => (0, Value::Null),
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("quiet-sync"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        let ready = store.read().outbox_ready.clone();
+        let now = || super::SyncSettings::default().timeout(std::time::Duration::ZERO);
+        down.store(true, Relaxed);
+        for _ in 0..2 {
+            assert!(super::on_sync(&client, &store, client.sync_once(now()).await).await, "the loop goes on");
+        }
+        assert!(store.read().sync_failing);
+        assert_eq!(store.read().matrix_error, None, "no toast");
+        down.store(false, Relaxed);
+        super::on_sync(&client, &store, client.sync_once(now()).await).await;
+        assert!(!store.read().sync_failing);
+        let woken = tokio::time::timeout(std::time::Duration::from_secs(1), ready.notified()).await;
+        assert!(woken.is_ok(), "the reconnect wakes the outbox");
+    }
+
     /// Desktop's `createThreadFromInvite`: an invite is a read-only group request with Accept (a join) and Decline.
     #[tokio::test]
     async fn invites_are_requests_like_desktop() {
@@ -6944,6 +7102,50 @@ mod tests {
         pushed_until(&store, |st| st.sent.contains_key(&txn)).await;
         assert!(store.read().stored_message(&txn).expect("the echo").send_error.is_none());
         assert!(tries.load(Relaxed) >= 3 && store.read().outbox.is_empty(), "the third try went through");
+    }
+
+    /// A delete for everyone and a mute while the homeserver cannot be reached wait in the outbox, like a send, and go
+    /// when it answers again. Before, the redaction and the push rules lost the kind of their error and were dropped,
+    /// so the message stayed for everyone else and the mute came back.
+    #[tokio::test]
+    async fn changes_made_offline_wait_for_the_homeserver() {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+        let down = std::sync::Arc::new(AtomicBool::new(false));
+        let pushed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (offline, seen) = (down.clone(), pushed.clone());
+        let url = crate::bridge_stub::serve(move |method, path, _| {
+            let path = path.split('?').next().expect("a path");
+            // The connection closes without an answer.
+            if offline.load(Relaxed) && path != "/_matrix/client/v3/sync" {
+                return (0, Value::Null);
+            }
+            match path {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, stub_sync()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                "/_matrix/client/v3/account/whoami" => (200, json!({ "user_id": "@me:x" })),
+                p if method == "PUT" && (p.contains("/redact/") || p.contains("/pushrules/")) => {
+                    seen.lock().unwrap().push(if p.contains("/redact/") { "redact" } else { "pushrules" });
+                    (200, json!({ "event_id": "$redaction" }))
+                }
+                p if method == "PUT" && p.contains("/account_data/") => (200, json!({})),
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            }
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("outbox-offline"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        down.store(true, Relaxed);
+        store.write().queue("!room:x", super::Outgoing::Redact { target: "$e1".into() });
+        store.write().queue("!room:x", super::Outgoing::Flag(super::ChatFlag::Muted, true));
+        let e = super::flush(store.clone()).await.expect_err("the homeserver is offline");
+        assert!(e.transient, "{e:?}");
+        assert_eq!(store.read().outbox.len(), 2, "both changes wait");
+        assert!(pushed.lock().unwrap().is_empty());
+        down.store(false, Relaxed);
+        super::flush(store.clone()).await.expect("the homeserver takes the changes");
+        assert!(store.read().outbox.is_empty());
+        assert_eq!(*pushed.lock().unwrap(), ["redact", "pushrules"], "in the order they were made");
     }
 
     #[tokio::test]

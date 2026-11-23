@@ -1,8 +1,9 @@
 //! Desktop's audio player (`Audio.tsx`): decoding, the waveform, playback speed, and autoplay of the next
 //! voice note.
 use crate::settings;
+use crate::style::rem;
 use crate::style::{btn_style, clamped, fill_box, hidden_slider, ic, icon, semi, shadow_box, text_width, txt, Bare};
-use crate::{menu_item, sound, tinted, tr, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS, MENU_ITEM};
+use crate::{menu_item, menu_pitch, sound, tinted, tr, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS};
 use beeper_core::models::{Attachment, Message, Transcription};
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
@@ -526,7 +527,7 @@ impl BeeperGuiApp {
                 let body = stack![body].push(float.map(|t| container(stamp(t)).align_right(Fill).align_bottom(Fill)));
                 let footer = over.then(|| {
                     let label = semi(if open { tr("Show less") } else { tr("Show more") }, 13.0);
-                    let toggle = button(label.line_height(Pixels(16.0)).color(self.pal.accent))
+                    let toggle = button(label.line_height(Pixels(rem(16.0))).color(self.pal.accent))
                         .padding(0)
                         .style(|_, _| button::Style::default())
                         .on_press(UiMessage::Voice(Msg::More(m.id.clone())));
@@ -583,7 +584,7 @@ impl BeeperGuiApp {
         let row = |label: &'static str, open: Msg| -> (El<'_>, f32) {
             let open = UiMessage::Voice(open);
             let row = menu_item(&self.pal, None, tr(label).into(), "›", Some(open.clone()));
-            (mouse_area(row).on_enter(open).into(), MENU_ITEM)
+            (mouse_area(row).on_enter(open).into(), menu_pitch())
         };
         let speed = self.playable(a).then(|| row("Playback Speed", Msg::Sub));
         let language = st.feature("voice-transcription").on.then(|| row("Transcription Language", Msg::LangSub));
@@ -600,7 +601,7 @@ impl BeeperGuiApp {
             return None;
         }
         let a = &m.attachments[0];
-        let top = top + if self.playable(a) { MENU_ITEM } else { 0.0 };
+        let top = top + if self.playable(a) { menu_pitch() } else { 0.0 };
         // Desktop's `getTranscriptionLanguage`: the language of the transcription, else the default language.
         let pref = beeper_core::prefs::TRANSCRIPTION_CODES[st.settings.pref("transcriptionLanguage") as usize];
         let current = a.transcription.as_ref().and_then(|t| t.language.as_deref()).unwrap_or(pref);
@@ -614,7 +615,7 @@ impl BeeperGuiApp {
         let items = std::iter::once(item(&langs[0])).chain([crate::menu_rule(p)]).chain(langs[1..].iter().map(item));
         let names = langs.iter().map(|(_, n)| text_width(tr(n), 13.0, Weight::Normal));
         let w = 10.0 + 16.0 + 22.0 + names.fold(0.0, f32::max);
-        let h = (8.0 + 11.0 + (langs.len() as f32) * MENU_ITEM).min((room - top).max(4.0 * MENU_ITEM));
+        let h = (8.0 + 11.0 + (langs.len() as f32) * menu_pitch()).min((room - top).max(4.0 * menu_pitch()));
         let list = iced::widget::scrollable(Column::with_children(items).padding([4, 0])).height(h);
         let menu = container(list).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         Some((column![Space::new().height(top), menu].into(), w))

@@ -154,14 +154,14 @@ impl BeeperGuiApp {
         let (before, after) = sentence.split_once("<app/>").expect("the sentence names the app");
         let main =
             rich_text![span::<(), _>(before), span(a.app.as_str()).font(fw(Weight::Bold)).color(p.strong), span(after)]
-                .size(15.0)
-                .line_height(Pixels(20.0))
+                .size(rem(15.0))
+                .line_height(Pixels(rem(20.0)))
                 .color(p.text)
                 .align_x(Center)
                 .width(Fill);
         let button = |label: &'static str, primary: bool, msg: UiMessage| -> El<'a> {
             let (bg, fg) = if primary { (p.accent, Color::WHITE) } else { (p.button, p.strong) };
-            let label = txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(Pixels(16.0)).color(fg);
+            let label = txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(Pixels(rem(16.0))).color(fg);
             button(container(label).center_y(Fill))
                 .height(32)
                 .padding([0, 12])
@@ -172,7 +172,7 @@ impl BeeperGuiApp {
         let body: El<'a> = match a.timed_out {
             true => {
                 let notice = column![
-                    semi(tr("The request has timed out."), 15.0).line_height(Pixels(20.0)).color(p.strong),
+                    semi(tr("The request has timed out."), 15.0).line_height(Pixels(rem(20.0))).color(p.strong),
                     txt(tr("To try again you will need to relaunch the third-party app or re-request login in its MCP settings."), 13.0)
                         .color(p.text)
                 ]

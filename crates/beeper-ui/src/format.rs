@@ -2,6 +2,7 @@
 use crate::composer;
 use crate::i18n::tr;
 use crate::popover::above;
+use crate::style::rem;
 use crate::style::{bordered_box, btn_style, carets, fill_box, fw, semi, shadow_box, txt, CLEAR};
 use crate::{spell, BeeperGuiApp, El, UiMessage};
 use iced::advanced::text::highlighter::{Format, Highlighter};
@@ -210,8 +211,8 @@ impl BeeperGuiApp {
         let input = |id: &'static str, hint: &'static str, value: &str| {
             text_input(hint, value)
                 .id(id)
-                .size(10)
-                .line_height(Pixels(12.0))
+                .size(rem(10.0))
+                .line_height(Pixels(rem(12.0)))
                 .padding([6, 8])
                 .on_submit_maybe(save.clone())
                 .style(move |_, _| text_input::Style {

@@ -514,6 +514,9 @@ pub struct BeeperStore {
     /// Counts the chats added and removed and the changes of `update_chat`, but not the previews of new messages, so
     /// that a view can keep what it finds from the people and kinds of the chats over the writes of a sync.
     pub chat_changes: u64,
+    /// This store among the stores of the process, so that a cache of values found from its chats keys them by
+    /// `(instance, chat_changes)`.
+    pub instance: u64,
     pub(crate) chat_idx_by_id: HashMap<String, usize>,
     /// The `activity_key` of each chat, for Desktop's chat order `ORDER BY timestamp DESC`.
     chat_order: BTreeSet<(i64, String)>,
@@ -542,7 +545,11 @@ pub struct BeeperStore {
     /// Whether the Desktop API server should listen.
     pub api_on: tokio::sync::watch::Sender<bool>,
     pub matrix: Option<matrix_sdk::Client>,
+    /// An error for the toast of the main window.
     pub matrix_error: Option<String>,
+    /// The last sync of the Matrix sync loop failed, so the homeserver may not be reachable. Like Desktop's SDK, the
+    /// loop tries again quietly, and the outbox goes again when a sync works.
+    pub sync_failing: bool,
     /// The homeserver ended this device's session (signed out elsewhere); the app starts over at sign-in.
     pub session_ended: bool,
     /// Desktop's `isSyncing`: the app is connected to Matrix and waits for its first sync.
@@ -719,6 +726,10 @@ impl BeeperStore {
             labels: Vec::new(),
             chats: Vec::new(),
             chat_changes: 0,
+            instance: {
+                static STORES: AtomicU64 = AtomicU64::new(0);
+                STORES.fetch_add(1, Ordering::Relaxed)
+            },
             chat_idx_by_id: HashMap::new(),
             chat_order: BTreeSet::new(),
             local_chat_idx_by_id: HashMap::new(),
@@ -738,6 +749,7 @@ impl BeeperStore {
             api_on: tokio::sync::watch::channel(false).0,
             matrix: None,
             matrix_error: None,
+            sync_failing: false,
             session_ended: false,
             syncing: false,
             sas_confirm: None,
@@ -2042,6 +2054,7 @@ impl BeeperStore {
                 merge: c.merge.take(),
                 merged_into_chat_id: c.merged_into_chat_id.take(),
                 preview: c.preview.take(),
+                reminder: ChatReminder::synced(chat.reminder.clone(), c.reminder.as_ref()),
                 note: c.note.take(),
                 notifiable: c.notifiable.take(),
                 older: std::mem::take(&mut c.older),

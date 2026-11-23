@@ -1,6 +1,7 @@
 use crate::accounts;
 use crate::focus::Focus;
 use crate::i18n::{tr, trx, trxf};
+use crate::style::rem;
 use crate::style::{
     bold, bordered_box, btn_style, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi, shadow_box,
     txt, Bare, Palette, CLEAR,
@@ -584,7 +585,7 @@ fn card_style(bg: Color) -> impl Fn(&Theme) -> container::Style {
 /// Desktop's `showToast`: a neutral toast with centered text and no close button, which goes after 3 s.
 fn toast<'a>(p: &Palette, text: &'a str, error: bool) -> El<'a> {
     let (bg, fg) = if error { (ERROR_RED, Color::WHITE) } else { (p.card, p.strong) };
-    let text = txt(text, 13.0).line_height(iced::Pixels(16.0)).color(fg).width(Fill);
+    let text = txt(text, 13.0).line_height(iced::Pixels(rem(16.0))).color(fg).width(Fill);
     let line: El<'a> = match error {
         true => {
             let close = button(ic(icon::CLOSE, 14.0).color(fg))
@@ -603,7 +604,8 @@ fn toast<'a>(p: &Palette, text: &'a str, error: bool) -> El<'a> {
 fn bubble(text: &str) -> El<'_> {
     let mark =
         container(bold("!", 15.0).color(Color::WHITE)).center(22).style(fill_box(Color::from_rgb8(232, 89, 12), 2.0));
-    let line = row![mark, txt(text, 14.0).line_height(iced::Pixels(16.0)).color(Color::BLACK).width(Fill)].spacing(8);
+    let line =
+        row![mark, txt(text, 14.0).line_height(iced::Pixels(rem(16.0))).color(Color::BLACK).width(Fill)].spacing(8);
     let card = container(line).padding(8).width(162).style(shadow_box(
         Color::WHITE,
         Color::from_rgb8(160, 160, 160),
@@ -691,7 +693,7 @@ pub(crate) fn actions(items: Vec<El<'_>>, bottom: f32) -> El<'_> {
 
 /// The content of a `BrandButton`: 13 px medium text, after an 18 px icon with an 8 px gap.
 fn label<'a>(s: impl iced::widget::text::IntoFragment<'a>, lead: Option<El<'a>>) -> El<'a> {
-    let text = med(s, 13.0).line_height(iced::Pixels(14.95));
+    let text = med(s, 13.0).line_height(iced::Pixels(rem(14.95)));
     row![].push(lead).push(text).spacing(8).align_y(Center).into()
 }
 
@@ -740,7 +742,7 @@ fn field_with_icons<'a, M: Into<UiMessage> + 'a>(
     let input = stack![input].push(icons);
     // `translate(26px, -60%) scale(0.6875)` of the label, with its origin at the left middle of the field.
     let chip = (!value.is_empty()).then(|| {
-        let hint = txt(hint, 14.0 * 0.6875).line_height(iced::Pixels(18.0 * 0.6875)).color(p.on_secondary);
+        let hint = txt(hint, 14.0 * 0.6875).line_height(iced::Pixels(rem(18.0 * 0.6875))).color(p.on_secondary);
         let chip = container(hint).padding([10.0 * 0.6875, 12.0 * 0.6875]).style(fill_box(p.card, 99.0));
         container(chip).padding(Padding::ZERO.left(26))
     });
@@ -758,8 +760,8 @@ fn brand_input<'a, M: Into<UiMessage> + 'a>(
     text_input(hint, value)
         .id(id)
         .on_input_maybe(on.map(|on| move |v| on(v).into()))
-        .size(14)
-        .line_height(iced::Pixels(18.0))
+        .size(rem(14.0))
+        .line_height(iced::Pixels(rem(18.0)))
         .padding(Padding::new(10.0).left(12.0).right(12.0))
         .style(input_style(p.chip, p.on_secondary, p.on_secondary, p.accent, 19.0))
 }
@@ -1152,11 +1154,12 @@ impl BeeperGuiApp {
                         l.import = Some(data);
                         l.screen = Screen::Welcome;
                     }
-                    Ok(Outcome::Session(session, profile, accounts)) => match l.import.take() {
-                        Some(data) if data.crypto.as_ref().is_some_and(|c| c.user_id != session.user_id) => {
-                            let user = &data.crypto.as_ref().expect("checked above").user_id;
+                    // The import stays until it is done, so that a sign-in after a refusal or a failed import of
+                    // the keys copies the data too.
+                    Ok(Outcome::Session(session, profile, accounts)) => match l.import.clone() {
+                        Some(data) if data.user_id.as_ref().is_some_and(|u| *u != session.user_id) => {
+                            let user = data.user_id.as_deref().expect("checked above");
                             l.toast = Some(format!("Sign in as {user} to finish the import."));
-                            l.import = Some(data);
                         }
                         Some(data) => {
                             let dir = self.store.read().matrix_dir();
@@ -1175,6 +1178,7 @@ impl BeeperGuiApp {
                         }
                     },
                     Ok(Outcome::Imported(data, session, profile, accounts)) => {
+                        l.import = None;
                         let homeserver = self.cloud.homeserver.clone();
                         let mut st = self.store.write();
                         st.import_beeper(Arc::unwrap_or_clone(data));
@@ -1248,8 +1252,8 @@ impl BeeperGuiApp {
                 let plain = sentence.replace("%1$s", terms_label).replace("%2$s", privacy_label);
                 let terms = rich_text(spans)
                     .on_link_click(|m: UiMessage| m)
-                    .size(11)
-                    .line_height(iced::widget::text::LineHeight::Absolute(14.0.into()))
+                    .size(rem(11.0))
+                    .line_height(iced::widget::text::LineHeight::Absolute(rem(14.0).into()))
                     .width(crate::style::balanced_width(&plain, 278.0, 11.0))
                     .center();
                 let terms = container(terms).center_x(Fill);
@@ -1343,7 +1347,7 @@ impl BeeperGuiApp {
                         .code
                         .chars()
                         .nth(i)
-                        .map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(36.0)).color(ink).into());
+                        .map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(rem(36.0))).color(ink).into());
                     let at = focused && i == l.slot;
                     let caret = (at && i >= l.code.len())
                         .then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
@@ -1365,7 +1369,7 @@ impl BeeperGuiApp {
                     .id(CODE_INPUT)
                     .on_input(|v| LoginMsg::Slot(v, false).into())
                     .on_paste(|v| LoginMsg::Slot(v, true).into())
-                    .size(28)
+                    .size(rem(28.0))
                     .padding(14)
                     .style(input_style(CLEAR, CLEAR, CLEAR, CLEAR, 0.0));
                 let press = mouse_area(container(Space::new()).width(Fill).height(60))
@@ -1382,8 +1386,8 @@ impl BeeperGuiApp {
                     span(trx("Resend", "button label")).color(p.accent).link(UiMessage::Login(LoginMsg::Resend))
                 ]
                 .on_link_click(move |m: UiMessage| if l.busy { UiMessage::Noop } else { m })
-                .size(11)
-                .line_height(iced::Pixels(14.0));
+                .size(rem(11.0))
+                .line_height(iced::Pixels(rem(14.0)));
                 // iced finds the link of a rich text as if its line started at the left of the text, so the line takes
                 // its own width and the container centers it: a wider centered text would take the clicks on
                 // "Resend" somewhere left of it.
@@ -1405,7 +1409,7 @@ impl BeeperGuiApp {
                         vec![
                             container(
                                 txt(info, 13.0)
-                                    .line_height(iced::Pixels(16.0))
+                                    .line_height(iced::Pixels(rem(16.0)))
                                     .color(p.on_secondary)
                                     .center()
                                     .width(Fill)
@@ -1807,6 +1811,46 @@ mod tests {
         while let Some(m) = queue.pop() {
             queue.extend(task_messages(app.update(m)).await);
         }
+    }
+
+    /// "Copy from Beeper Desktop" copies only into the Desktop account, also from a Desktop without keys, whose
+    /// account is in `beeperState`. A refused sign-in and a failed copy of the keys keep the import, so the next
+    /// sign-in copies the data instead of starting fresh.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_import_waits_for_a_sign_in_of_the_desktop_account() {
+        use beeper_core::models::{MatrixSession, Profile};
+        use beeper_core::store::Setup;
+        let mut app = signed_out_app("import-account");
+        let chat =
+            beeper_core::models::Chat { id: "!desk:x".into(), title: "From Desktop".into(), ..Default::default() };
+        let data =
+            beeper_core::import::BeeperData { user_id: Some("@ann:x".into()), chats: vec![chat], ..Default::default() };
+        let _ = app.update(LoginMsg::Done(Ok(Outcome::Read(Arc::new(data)))).into());
+        let session = |user: &str| {
+            let s = MatrixSession {
+                user_id: user.into(),
+                access_token: "token".into(),
+                device_id: "NEW".into(),
+                jwt: None,
+            };
+            LoginMsg::Done(Ok(Outcome::Session(s, Profile::default(), Vec::new()))).into()
+        };
+        let _ = app.update(session("@bob:x"));
+        assert_eq!(app.login.toast.as_deref(), Some("Sign in as @ann:x to finish the import."));
+        assert!(!app.store.read().signed_in() && app.store.read().setup.is_none(), "nothing is copied for bob");
+
+        let copy = app.update(session("@ann:x"));
+        let failed = beeper_core::cloud::CloudError { status: 0, message: "bad key".into(), errcode: None, body: None };
+        let _ = app.update(LoginMsg::Done(Err(failed)).into());
+        assert!(app.login.import.is_some() && app.store.read().setup.is_none(), "a failed copy keeps the import");
+
+        for m in task_messages(copy).await {
+            let _ = app.update(m);
+        }
+        let st = app.store.read();
+        assert_eq!((st.setup, st.beeper_state.user_id.as_str()), (Some(Setup::Imported), "@ann:x"));
+        assert!(st.find_chat("!desk:x").is_some(), "the Desktop chat came over");
+        assert!(app.login.import.is_none());
     }
 
     /// A click on "Resend", in the middle of the line under the code, asks for a new code, and a click on "Didn't

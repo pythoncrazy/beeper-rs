@@ -4,6 +4,7 @@
 //! mask, and it guesses the country from the digits (`Vf`). Its value is the `phone`: `+`, the dial code and the
 //! digits. `assets/countries.json` is the library's country list.
 use crate::emoji::EMOJI_FONT;
+use crate::style::rem;
 use crate::style::{bar, btn_style, ell, scroll_style, txt, CLEAR, GUTTER};
 use crate::{BeeperGuiApp, El, UiMessage};
 use iced::advanced::layout::{self, Layout};
@@ -522,9 +523,13 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let c = &COUNTRIES[phone.country];
         let flag = |c: &Country, size: f32| -> El<'a> {
-            container(txt(flag(&c.iso2), size).line_height(1.0).font(EMOJI_FONT)).center(size).into()
+            container(
+                crate::style::fixed(flag(&c.iso2), size, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT),
+            )
+            .center(size)
+            .into()
         };
-        let preview = txt(format!("+{}", c.dial), 12.0).line_height(iced::Pixels(15.0)).color(p.fg);
+        let preview = txt(format!("+{}", c.dial), 12.0).line_height(iced::Pixels(rem(15.0))).color(p.fg);
         let selector = button(container(row![flag(c, 14.0), preview].spacing(4).align_y(Center)).center_y(32))
             .padding(Padding::ZERO.left(9).right(8))
             .style(btn_style([p.fill_primary; 3], [p.fg; 3], 10.0))
@@ -541,8 +546,8 @@ impl BeeperGuiApp {
             .on_input(move |v| typed(PhoneMsg::Input(v)))
             .on_paste(move |v| pasted(PhoneMsg::Paste(v)))
             .on_submit(submit)
-            .size(12)
-            .line_height(iced::Pixels(15.0))
+            .size(rem(12.0))
+            .line_height(iced::Pixels(rem(15.0)))
             .padding(Padding { top: 8.5, bottom: 8.5, left: 10.0, right: 13.0 })
             .width(Fill)
             .style(move |_, status| text_input::Style {
@@ -571,7 +576,10 @@ impl BeeperGuiApp {
             let room = LIST_WIDTH - GUTTER - 16.0 - 16.0 - 8.0 - 8.0;
             let room = room - crate::style::text_width(&dial, 14.0, Weight::Normal);
             let name = ell(&c.name, room, 14.0, Weight::Normal).color(LIST_TEXT);
-            let flag = container(txt(flag(&c.iso2), 16.0).line_height(1.0).font(EMOJI_FONT)).center(16);
+            let flag = container(
+                crate::style::fixed(flag(&c.iso2), 16.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT),
+            )
+            .center(16);
             let content = row![flag, name, txt(dial, 14.0).color(LIST_DIAL)].spacing(8).align_y(Center);
             let bg = if i == phone.country || i == phone.focus { LIST_SELECTED } else { CLEAR };
             button(container(content).center_y(ITEM).padding([0, 8]))
