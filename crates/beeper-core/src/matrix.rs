@@ -74,6 +74,9 @@ enum Op {
         /// The buttons of an edit by the system user, which replace those of its own message.
         buttons: Option<Vec<ActionButton>>,
     },
+    /// Desktop's `handlePollEdit`: an `m.replace` of a poll start, which applies only to a poll of its own sender. It
+    /// has the poll, the sender, the new poll and the time of the edit unless it is not shown.
+    PollEdit(String, String, Box<PollData>, Option<String>),
     /// The `com.beeper.disappearing_timer` of an edit without content, and the sender of the edit.
     Timer(String, String, MessageTimer),
     /// A redaction, and whether the bridge redacted view-once media after its last view.
@@ -637,6 +640,22 @@ fn poll(c: &Value) -> Option<PollData> {
     })
 }
 
+/// Desktop's `handlePollEdit` of the poll message `m`: the edit takes the question, the answers, the kind, the number
+/// of selections and the fallback text, and keeps whether the poll ended. The votes for the answers that the edit
+/// keeps stay, as Desktop counts the responses by answer ID.
+fn edit_poll(m: &mut Message, mut poll: PollData, timestamp: Option<String>) {
+    let old = m.poll.take().expect("an edited poll");
+    for o in &mut poll.options {
+        o.voter_ids = old.options.iter().find(|x| x.id == o.id).map(|x| x.voter_ids.clone()).unwrap_or_default();
+    }
+    poll.ended = old.ended;
+    let prev = m.text.replace(poll.question.clone()).unwrap_or_default();
+    if let Some(timestamp) = timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t)) {
+        m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
+    }
+    m.poll = Some(poll);
+}
+
 /// Desktop's poll response answers.
 fn poll_answers(c: &Value) -> Vec<String> {
     let answers =
@@ -723,6 +742,17 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
             let timer = MessageTimer::of(&c["disappearing_timer"], order)
                 .filter(|_| c["status"] == "SUCCESS" && rel["rel_type"] == "m.reference" && local);
             return Some(Op::SendStatus(s(&rel["event_id"])?, delivered, error, Box::new(status), timer));
+        }
+        // Desktop's `handlePollEdit`: the edit changes the poll, and is no message of its own.
+        "org.matrix.msc3381.poll.start" | "m.poll.start" if rel["rel_type"] == "m.replace" => {
+            let ts = e["origin_server_ts"].as_i64().expect("event timestamp");
+            let timestamp = (c["com.beeper.dont_render_edited"] != true).then(|| rfc3339_from_millis(ts));
+            return Some(Op::PollEdit(
+                s(&rel["event_id"])?,
+                sender,
+                Box::new(self::poll(&c["m.new_content"])?),
+                timestamp,
+            ));
         }
         "org.matrix.msc3381.poll.response" | "m.poll.response" => {
             return Some(Op::Vote(s(&rel["event_id"])?, sender, poll_answers(c)));
@@ -1637,6 +1667,11 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
                         st.update_poll(&target, |p| p.ended = true);
                     }
                     Op::Vote(..) | Op::EndPoll(..) => {}
+                    Op::PollEdit(target, sender, poll, timestamp) => {
+                        if let Some(i) = mine(st, &target, &sender).filter(|&i| st.messages[i].poll.is_some()) {
+                            st.update_message(i, |m| edit_poll(m, *poll, timestamp));
+                        }
+                    }
                     Op::SendStatus(target, delivered, error, status, timer) => {
                         let i = here(st, &target);
                         if let Some((i, timer)) = i.zip(timer) {
@@ -5697,6 +5732,55 @@ mod tests {
         let m = st.message("$note");
         assert!(m.is_deleted.is_none() && m.text.as_deref() == Some("Q") && m.reactions.is_empty());
         assert_eq!(m.poll.as_ref().map(|p| p.voters()), Some(0));
+    }
+
+    /// Desktop's `handlePollEdit`: an `m.replace` of a poll start changes the poll and shows no poll of its own. The
+    /// votes for the answers that stay are kept, and an edit by another sender is ignored.
+    #[tokio::test]
+    async fn poll_edits_change_the_poll_of_their_sender_like_desktop() {
+        let answer = |id: &str, text: &str| json!({ "id": id, "org.matrix.msc1767.text": text });
+        let start = |question: &str, answers: Value| json!({ "org.matrix.msc3381.poll.start": { "question": { "body": question }, "answers": answers } });
+        let edit = |id: &str, sender: &str, target: &str| {
+            let new = start("Q2", json!([answer("1", "A2"), answer("3", "C")]));
+            let mut content = start("* Q2", json!([answer("1", "A2"), answer("3", "C")]));
+            content["m.new_content"] = new;
+            content["m.relates_to"] = json!({ "rel_type": "m.replace", "event_id": target });
+            let mut e = stub_event(id, "org.matrix.msc3381.poll.start", content);
+            e["sender"] = json!(sender);
+            e
+        };
+        let vote = {
+            let rel = json!({ "rel_type": "m.reference", "event_id": "$p" });
+            let content = json!({ "m.relates_to": rel, "org.matrix.msc3381.poll.response": { "answers": ["1"] } });
+            let mut e = stub_event("$v", "org.matrix.msc3381.poll.response", content);
+            e["sender"] = json!("@vic:x");
+            e
+        };
+        let mut vics = stub_event("$vp", "org.matrix.msc3381.poll.start", start("V", json!([answer("1", "A")])));
+        vics["sender"] = json!("@vic:x");
+        let events = vec![
+            stub_event("$p", "org.matrix.msc3381.poll.start", start("Q", json!([answer("1", "A"), answer("2", "B")]))),
+            vote,
+            vics,
+            edit("$e1", "@me:x", "$p"),
+            edit("$e2", "@vic:x", "$p"),
+            edit("$e3", "@me:x", "$vp"),
+        ];
+        let store = stub_history("poll-edits", events, ("!other:x", Vec::new())).await;
+        sync_stub_room(&store, "!room:x").await;
+        let st = store.read();
+        for id in ["$e1", "$e2", "$e3"] {
+            assert!(st.loaded_idx(id).is_none(), "the edit {id} is no poll of its own");
+        }
+        let m = st.message("$p");
+        let p = m.poll.as_ref().expect("a poll");
+        assert_eq!((p.question.as_str(), m.text.as_deref()), ("Q2", Some("Q2")));
+        let options: Vec<_> = p.options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.voter_ids.len())).collect();
+        assert_eq!(options, [("1", "A2", 1), ("3", "C", 0)], "vic's vote for the kept answer stays");
+        assert_eq!(m.edit_history.len(), 1, "vic's edit of my poll is ignored");
+        assert_eq!(m.edit_history[0].text, "Q");
+        let v = st.message("$vp");
+        assert_eq!(v.poll.as_ref().map(|p| p.question.as_str()), Some("V"), "my edit of vic's poll is ignored");
     }
 
     /// The Matrix spec ignores an edit whose sender is not the sender of the message, and MSC3381 a poll end from
