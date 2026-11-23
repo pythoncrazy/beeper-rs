@@ -22,9 +22,9 @@ impl Weigh for Handle {
     }
 }
 
-impl<T> Weigh for std::sync::Arc<[(Handle, T)]> {
+impl Weigh for crate::Frames {
     fn bytes(&self) -> usize {
-        self.iter().map(|f| f.0.bytes()).sum()
+        self.iter().map(|f| f.0.bytes()).sum::<usize>() + self.animation().map_or(0, |a| a.bytes())
     }
 }
 

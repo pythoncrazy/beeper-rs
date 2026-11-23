@@ -218,20 +218,25 @@ impl BeeperGuiApp {
         let load = async move {
             let bytes = fetch.await?;
             let load = move || {
+                let frames = decode_media(bytes.clone())?;
                 let reader = ::image::ImageReader::new(std::io::Cursor::new(&bytes));
                 let reader = reader.with_guessed_format().expect("in memory");
-                let sniffed = reader.format().map(|f| f.to_mime_type().to_string());
-                let dims = reader.into_dimensions().map_err(|e| e.to_string())?;
+                let sniffed = match frames.animation() {
+                    Some(_) if bytes.starts_with(&[0x1f, 0x8b]) => Some("application/x-tgsticker".to_string()),
+                    Some(_) => Some("video/lottie+json".to_string()),
+                    None => reader.format().map(|f| f.to_mime_type().to_string()),
+                };
                 let mime = mime.or(sniffed).ok_or("The sticker has no image type")?;
                 let ext =
                     mime.split_once('/').map(|(_, t)| t.replace("x-tgsticker", "tgs").replace("lottie+json", "json"));
                 let code = Some(s.shortcodes[0].as_str()).filter(|c| !c.is_empty()).unwrap_or("sticker");
                 let name = format!("{code}.{}", ext.unwrap_or_else(|| "webp".into()));
-                let size = match (s.info["w"].as_u64(), s.info["h"].as_u64()) {
-                    (Some(w), Some(h)) => (w as u32, h as u32),
-                    _ => dims,
+                // An animated sticker has the size of its composition.
+                let size = match (s.info["w"].as_u64(), s.info["h"].as_u64(), frames.animation()) {
+                    (Some(w), Some(h), _) => (w as u32, h as u32),
+                    (_, _, Some(a)) => a.size(),
+                    _ => reader.into_dimensions().map_err(|e| e.to_string())?,
                 };
-                let frames = decode_media(bytes.clone())?;
                 let is_gif = mime == "image/gif";
                 Ok(PendingMedia { bytes, name, mime, is_gif, size, frames, duration: None, sticker: Some(Box::new(s)) })
             };

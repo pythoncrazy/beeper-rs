@@ -677,14 +677,37 @@ pub(crate) mod tests {
 
     /// The pixels of `view` at `size`, from the simulator's snapshot.
     pub(crate) fn shot(view: El<'_>, size: Size, name: &str) -> ::image::RgbaImage {
-        let mut sim = Simulator::with_size(Default::default(), size, view);
-        let dir = std::env::temp_dir().join(format!("beeper-rs-focus-{name}-{}", std::process::id()));
+        pixels(&mut Simulator::with_size(Default::default(), size, view), &iced::Theme::Light, name)
+    }
+
+    /// The pixels of the snapshot of `sim` in `theme`. The snapshot goes through a PNG in a folder of its own, also
+    /// for a `name` that another test of the process takes at the same time.
+    pub(crate) fn pixels(sim: &mut Simulator<'_, UiMessage>, theme: &iced::Theme, name: &str) -> ::image::RgbaImage {
+        static SHOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = SHOTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("beeper-rs-shot-{name}-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("shot"));
+        let _ = sim.snapshot(theme).unwrap().matches_image(dir.join("shot"));
         let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
         let shot = ::image::open(&png).unwrap().into_rgba8();
         std::fs::remove_dir_all(&dir).unwrap();
         shot
+    }
+
+    /// The tests of a process run at once, and two of them may snapshot under the same name, like the space bar
+    /// and Edit Spaces tests with "held" and "lifted". Each snapshot reads its own pixels.
+    #[test]
+    fn snapshots_of_one_name_do_not_collide() {
+        let size = Size::new(40.0, 20.0);
+        let widths: Vec<u32> = std::thread::scope(|s| {
+            let runs: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(move || (0..4).map(|_| shot(iced::widget::text("x").into(), size, "same").width()).sum())
+                })
+                .collect();
+            runs.into_iter().map(|r| r.join().expect("a snapshot of its own")).collect()
+        });
+        assert!(widths.iter().all(|&w| w >= 4 * 40), "{widths:?}");
     }
 
     /// Desktop's `RenameAccount` form: Tab goes from the name field to Cancel and Save and back to the field, and
