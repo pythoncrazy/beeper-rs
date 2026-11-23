@@ -4236,6 +4236,43 @@ fn the_open_chat_reads_new_messages_like_desktop() {
     assert_eq!(unread(&app), 0, "back at the bottom it is read");
 }
 
+/// Desktop's `onThreadDeselected` reads nothing: a chat that you leave keeps what came in while its window was not
+/// focused, or below the view, unread, and sends no receipt.
+#[test]
+fn leaving_a_chat_keeps_it_unread_like_desktop() {
+    let mut app = demo_app("leave-unread");
+    let st = app.store.read();
+    let mut read = st.chats.iter().filter(|c| c.id != NOTE_CHAT_ID && !c.is_unread());
+    let (id, other) = (read.next().unwrap().id.clone(), read.next().unwrap().id.clone());
+    drop(st);
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let arrive = |app: &mut BeeperGuiApp| {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&id).unwrap();
+        st.update_chat(idx, |c| c.unread_count += 1);
+        let m = st.messages.iter().rfind(|m| m.chat_id == id).unwrap().clone();
+        drop(st);
+        let _ = app.update(UiMessage::Upserted(Box::new(m)));
+    };
+    let unread = |app: &BeeperGuiApp| app.store.read().chat(&id).unread_count;
+    let receipts = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.outbox.iter().filter(|(_, c, o)| *c == id && matches!(o, beeper_core::matrix::Outgoing::Read(_))).count()
+    };
+    arrive(&mut app);
+    let sent = receipts(&app);
+    let _ = app.update(UiMessage::SelectChat(other.clone()));
+    assert_eq!(unread(&app), 1, "the message that came while the window was not focused stays unread");
+    assert_eq!(receipts(&app), sent, "leaving sends no receipt");
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(true)));
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(true)));
+    let before = unread(&app);
+    arrive(&mut app);
+    let _ = app.update(UiMessage::SelectChat(other));
+    assert_eq!(unread(&app), before + 1, "a message below the view stays unread after you leave");
+}
+
 /// Desktop's `unreadDividerMessageSortKey`: a Matrix room, whose messages keep no unread mark, shows "New" after the
 /// read position that the chat had when it opened, and ↓ with nothing selected goes to the first message after it.
 #[test]
