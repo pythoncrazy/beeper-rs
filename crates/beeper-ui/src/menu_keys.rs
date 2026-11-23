@@ -4,10 +4,9 @@
 //! item, and the pointer over an item selects it.
 
 use super::*;
-use iced::advanced::layout::Layout;
-use iced::advanced::widget::{self as advanced, Operation, Widget};
-use iced::advanced::{mouse, renderer, Clipboard, Shell};
-use iced::{Rectangle, Renderer};
+use crate::prelude::*;
+use iced::advanced::widget::{self as advanced};
+use iced::advanced::{mouse, renderer};
 
 /// A row of a menu, whose message is its action, or none when it is greyed out.
 pub fn row<'a>(content: impl Into<El<'a>>, msg: Option<UiMessage>) -> El<'a> {

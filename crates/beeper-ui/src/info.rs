@@ -1,8 +1,8 @@
 //! Desktop's Chat Info panel: the description, the note, the media and bookmarks lists, the personal name and disappearing messages.
 
 use super::*;
-use crate::chat_list::preview_body;
-use crate::time::{list_ts, timer_label};
+use crate::prelude::*;
+use crate::time::timer_label;
 use iced::widget::column;
 
 #[derive(Clone)]

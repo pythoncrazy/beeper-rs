@@ -1,31 +1,18 @@
 //! The Media window, the carousel of a chat, and the decode and the load of the media that they show.
 
 use crate::composer;
-use crate::forward;
 use crate::i18n::{tr, trn, trx};
-use crate::loads;
 use crate::message;
-use crate::style::rem;
-use crate::style::{
-    bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, lh, med, scroll_style, semi, shadow_box, text_width, txt, Bare,
-    CLEAR, GUTTER,
-};
-use crate::time::{day_num, format_short_ts, iso_millis, today};
-use crate::units::human_size;
+use crate::prelude::*;
 use crate::windows;
 use crate::{
-    anim, closable_head, cubic_bezier, deletable, file_kind, i18n, menu_item, menu_pitch, menu_rule, pdf, relative_date, stored, tinted,
-    video, vlist, voice, zoom, BeeperGuiApp, El, Frames, PillLook, UiMessage, AVATAR_SLOTS, MEDIA_ICONS, ROW_ACTIONS, SYS_ARROW_BACK,
-    SYS_DELETE, SYS_DOWNLOAD, SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
+    anim, closable_head, cubic_bezier, file_kind, i18n, pdf, relative_date, MEDIA_ICONS, ROW_ACTIONS, SYS_ARROW_BACK, SYS_DELETE,
+    SYS_DOWNLOAD, SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
 };
-use beeper_core::config::civil_from_days;
 use beeper_core::models::*;
-use beeper_core::store::{BeeperStore, Query};
-use iced::font::Weight;
-use iced::keyboard::{self, key::Named, Key};
-use iced::widget::{button, column, container, image, mouse_area, row, scrollable, stack, svg, text_input, tooltip, Column, Row, Space};
-use iced::{border, mouse, window, Center, Color, Fill, Padding, Point, Right, Size, Task, Theme};
-use std::sync::Arc;
+use iced::keyboard::{self, key::Named};
+use iced::widget::column;
+use iced::{border, mouse, window};
 
 /// ffmpeg over `bytes`, which it reads from a temporary file of its own: an MP4 or M4A with its `moov` atom at the
 /// end, as many encoders write them, needs an input that ffmpeg can seek, which a pipe is not.

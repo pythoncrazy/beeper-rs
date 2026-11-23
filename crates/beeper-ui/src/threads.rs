@@ -1,23 +1,12 @@
 //! Desktop's threaded replies: the thread pane and window, the unread threads list, and the thread parts of the
 //! timeline.
 
-use crate::chat_list::preview_body;
-use crate::commands;
 use crate::i18n::{tr, trf, trn};
 use crate::message;
-use crate::style::{bordered_btn, brand_svg, btn_style, ell, fill_box, ic, icon, lh, pad, scroll_style, semi, txt, CLEAR};
-use crate::time::format_short_ts;
-use crate::{
-    activates, brand_key, composer_with, membership, menu_item, menu_pitch, menu_rule, tinted, BeeperGuiApp, El, Pane, UiMessage,
-    BUBBLE_PAD_X, CHEVRON_FORWARD, MIN_PANE_W,
-};
-use beeper_core::models::*;
-use beeper_core::store::BeeperStore;
-use iced::font::Weight;
-use iced::widget::{button, column, container, mouse_area, row, scrollable, stack, svg, tooltip, Column, Row, Space};
-use iced::{mouse, Center, Color, Element, Fill, Padding, Point, Right, Size, Task};
-use std::collections::HashSet;
-use std::rc::Rc;
+use crate::prelude::*;
+use crate::{activates, MIN_PANE_W};
+use iced::mouse;
+use iced::widget::column;
 
 /// Desktop's default `threadedRepliesPaneFraction`.
 pub(crate) const THREAD_FRACTION: f32 = 0.5;

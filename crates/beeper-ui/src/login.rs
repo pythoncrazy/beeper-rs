@@ -1,25 +1,13 @@
-use crate::accounts;
 use crate::focus::Focus;
 use crate::i18n::{tr, trx, trxf};
-use crate::style::rem;
-use crate::style::{
-    bold, bordered_box, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi, shadow_box, txt, Bare, Palette, CLEAR,
-};
-use crate::verify::Brand;
-use crate::{BeeperGuiApp, El, UiMessage};
-use beeper_core::cloud::{Cloud, CloudError, CodeResult};
+use crate::prelude::*;
+use crate::style::gradient_text;
 use beeper_core::import::{read_beeper_data, BeeperData};
-use beeper_core::matrix::{DeviceInfo, E2eeSetup};
 use beeper_core::models::{BridgeAccountInfo, MatrixSession, Profile};
-use beeper_core::store::{Setup, NOTE_CHAT_ID};
-use iced::gradient::Linear;
-use iced::keyboard::{key::Named, Key, Modifiers};
-use iced::widget::{
-    button, column, container, mouse_area, operation, rich_text, row, scrollable, span, stack, svg, text_editor, text_input, Space,
-};
-use iced::{border, window, Background, Center, Color, Degrees, Fill, Gradient, Padding, Size, Task, Theme};
-use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use beeper_core::store::Setup;
+use iced::keyboard::key::Named;
+use iced::widget::{column, operation};
+use iced::{border, window};
 
 /// The room over a `field` for its floating label: the label rises 60 % of the 38 px field and is 26.125 px high. A
 /// screen with a field puts the same room under its heading, so that its gaps are Desktop's.

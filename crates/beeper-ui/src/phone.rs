@@ -3,19 +3,11 @@
 //! its dropdown of countries (`zf`), the "+<dial code>" preview (`Kf`) and the national number with the country's
 //! mask, and it guesses the country from the digits (`Vf`). Its value is the `phone`: `+`, the dial code and the
 //! digits. `assets/countries.json` is the library's country list.
-use crate::emoji::EMOJI_FONT;
-use crate::style::rem;
-use crate::style::{bar, btn_style, ell, pad, scroll_style, txt, CLEAR, GUTTER};
-use crate::{BeeperGuiApp, El, UiMessage};
-use iced::advanced::layout::Layout;
+use crate::prelude::*;
 use iced::advanced::overlay;
-use iced::advanced::widget::{self, Widget};
-use iced::font::Weight;
-use iced::keyboard::{key::Named, Key};
-use iced::widget::{button, container, row, scrollable, text_input, tooltip, Column};
-use iced::{border, Border, Center, Color, Element, Fill, Padding, Rectangle, Renderer, Shadow, Theme, Vector};
-use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use iced::advanced::widget::{self};
+use iced::border;
+use iced::keyboard::key::Named;
 
 /// The mask symbol (`Ka`) and the mask of a country without a format (`defaultMask`).
 const MASK_CHAR: char = '.';

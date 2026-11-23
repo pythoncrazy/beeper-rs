@@ -2,7 +2,7 @@
 //! Nickname window (`sft` with `RenameAccount`), which names an account in Beeper on all devices.
 
 use super::*;
-use crate::focus::{Keys, Look};
+use crate::prelude::*;
 use iced::widget::column;
 
 /// The size of Desktop's Account Nickname window.

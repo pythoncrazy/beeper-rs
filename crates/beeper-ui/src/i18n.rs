@@ -1,9 +1,8 @@
 //! Beeper Desktop's translations of the UI. `scripts/i18n.py` copies them from Desktop.
 
-use std::collections::HashMap;
+use crate::prelude::*;
 use std::fmt::Display;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::OnceLock;
+use std::sync::atomic::AtomicUsize;
 
 /// Desktop's languages other than English, in the order of the "App language" options after "System" and "English".
 const LANGS: [(&str, &str); 5] = [

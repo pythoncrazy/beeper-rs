@@ -3,19 +3,13 @@
 use crate::bridge_texts::{bridge_error, bridge_text};
 use crate::i18n::{tr, trf, trx};
 use crate::phone::{self, KeyOutcome, Phone, PhoneMsg};
-use crate::style::rem;
-use crate::style::{brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, txt, Palette, CLEAR};
-use crate::{menu_item, BeeperGuiApp, El, Toast, UiMessage, ERROR_CIRCLE};
+use crate::prelude::*;
 use beeper_core::bridge_login::{self, Field, Flow, Step};
 use beeper_core::browser_login::{self, BrowserLogin, Outcome};
-use beeper_core::config::{cloud_bridge, find_network};
 use beeper_core::matrix::Provision;
-use beeper_core::models::NetworkSpec;
+use iced::widget::column;
 use iced::widget::operation::{self, AbsoluteOffset};
-use iced::widget::{button, column, container, image, pick_list, rich_text, row, scrollable, span, stack, svg, text_input, Column};
-use iced::{window, Center, Color, Fill, Padding, Size, Task};
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::LazyLock;
+use iced::window;
 
 /// Desktop's `LoginBrowserWindow` size (`Ms` and `Bs` of sentry-common).
 pub const SIZE: Size = Size::new(400.0, 560.0);

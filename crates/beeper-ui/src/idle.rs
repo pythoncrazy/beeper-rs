@@ -6,8 +6,8 @@
 //! a chat only reads while a window of the app is focused, and the focused window gets the keys.
 
 use super::*;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use crate::prelude::*;
+use std::sync::atomic::AtomicU64;
 
 /// Desktop's default `idle_timeout` of 300 seconds.
 pub(crate) const IDLE_AFTER: Duration = Duration::from_secs(300);

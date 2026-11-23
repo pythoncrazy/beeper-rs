@@ -1,12 +1,10 @@
 //! Desktop's link previews of a message (`LinkPreview` and `VideoEmbed` in `MessageContent.tsx`): a card with the
 //! preview image, the title, the summary and the host, or a YouTube card with the video thumbnail.
-use crate::style::{clamp, fill_box, ic, icon, lh, text_width, txt};
-use crate::{anim, BeeperGuiApp, El, UiMessage, BUBBLE_PAD_X};
+use crate::anim;
+use crate::prelude::*;
 use beeper_core::models::MessageLink;
-use iced::font::Weight;
-use iced::widget::{column, container, hover, image, mouse_area, row, stack, svg, Space};
-use iced::{border, Center, Color, ContentFit, Fill, Length, Padding};
-use std::sync::LazyLock;
+use iced::border;
+use iced::widget::column;
 
 /// The title that a link shows: its own, or the host of its URL when it has none.
 pub(crate) fn shown_title(l: &MessageLink) -> String {

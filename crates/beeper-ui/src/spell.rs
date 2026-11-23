@@ -1,8 +1,7 @@
 //! Desktop's composer spellcheck ("Enable spellcheck"), with the system Hunspell dictionary of the locale.
 
-use std::ops::Range;
-use std::path::PathBuf;
-use std::sync::{OnceLock, RwLock};
+use crate::prelude::*;
+use std::sync::RwLock;
 use unicode_script::{Script, UnicodeScript};
 
 /// The dictionary, its script, and Chromium's "Custom Dictionary.txt" of the words added with "Learn Spelling".

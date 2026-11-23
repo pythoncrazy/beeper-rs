@@ -1,7 +1,7 @@
 //! Desktop's space bar (rail): its spaces, their order and drags, the floating rail, and the width of the sidebar.
 
 use super::*;
-use crate::focus::{Keys, Look};
+use crate::prelude::*;
 use iced::widget::column;
 
 #[derive(Clone)]

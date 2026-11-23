@@ -1,47 +1,27 @@
 //! The Settings window: its sections, the settings search, the hotkey recorder, and the Storage, Integrations,
 //! Devices and Accounts pages.
 
-use crate::accounts;
-use crate::blocking;
-use crate::blocking::blocked_chats;
 use crate::chat_list;
-use crate::focus::{Keys, Look};
 use crate::hotkeys;
 use crate::i18n::{tr, trf, trn, trnx, trs, trx};
-use crate::integrations;
+use crate::prelude::*;
 use crate::rail::SpaceMenu;
 use crate::sortable;
-use crate::style::rem;
-use crate::style::{
-    bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, ell, fill_box, fw, glow_box, gutter_style, hex, ic, icon, input_style, lh,
-    med, pad, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
-};
-use crate::units::{compact, grouped, human_size};
+use crate::style::{gutter_style, Token};
+use crate::units::{compact, grouped};
 use crate::windows;
-use crate::zoom;
 use crate::{
-    ago, badge, brand_key, checkbox, distance, divider, downloads_dir, duration, ease_out, feedback_btn, first_groups, fmt_phone, group,
-    icon_btn, inbox_label, locate, menu_pitch, outline_input, pill_btn, pill_style, plan_pill, portal, pref_row, reconnect, record, select,
-    slider_style, status_text, style, svg_size, theme_cards, tinted, toggle, toggle_faded, BeeperGuiApp, El, Toast, UiMessage,
-    ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_DISCONNECT_SERVER, ASK_LOGOUT,
-    ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REMOVE_PACK, ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_DOWN,
-    CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, ORANGE,
+    ago, divider, duration, first_groups, group, portal, pref_row, select, slider_style, status_text, style, svg_size, theme_cards,
+    toggle_faded, ADD_ICON, APP_QR, CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, LOGO,
     QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
 };
-use beeper_core::config::{now_unix_millis, now_unix_secs, APP_VERSION};
-use beeper_core::matrix::DeviceInfo;
+use beeper_core::config::APP_VERSION;
 use beeper_core::models::*;
 use beeper_core::prefs;
 use beeper_core::storage;
-use beeper_core::store::BeeperStore;
-use iced::font::Weight;
-use iced::keyboard::{self, key::Named, Key};
-use iced::widget::scrollable::{Direction, Scrollbar};
-use iced::widget::{
-    button, column, container, mouse_area, operation, rich_text, row, scrollable, slider, span, stack, svg, text_input, tooltip, Column,
-    Row, Space,
-};
-use iced::{window, Center, Color, Fill, Length, Padding, Size, Task, Theme};
+use iced::keyboard::{self, key::Named};
+use iced::widget::{column, operation};
+use iced::window;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {

@@ -3,17 +3,13 @@
 use crate::i18n::{tr, trx};
 use crate::media_view;
 use crate::message;
-use crate::style::{btn_style, fill_box, shadow_box, Bare, CLEAR};
-use crate::{ic, icon, menu_item, menu_pitch, sound, tinted, view_once, BeeperGuiApp, El, UiMessage};
-use iced::gradient::Linear;
-use iced::widget::{button, column, container, hover, image, mouse_area, row, slider, stack, svg, Column, Space};
-use iced::{window, Background, Center, Color, Fill, Padding, Subscription, Task};
+use crate::prelude::*;
+use crate::{ic, icon};
+use iced::widget::column;
+use iced::window;
 use std::io::Read;
-use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{sync_channel, Receiver};
-use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
 
 const FPS: f32 = 30.0;
 pub(crate) const SPEED_MENU_W: f32 = 110.0;

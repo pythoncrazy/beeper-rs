@@ -1,11 +1,10 @@
 use crate::lottie;
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{self, Widget};
-use iced::advanced::{mouse, renderer, Clipboard, Renderer as _, Shell};
-use iced::widget::{image, Image};
-use iced::{window, Color, Element, Event, Length, Rectangle, Renderer, Size, Theme};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use crate::prelude::*;
+use iced::advanced::layout::{self};
+use iced::advanced::widget::{self};
+use iced::advanced::{mouse, renderer, Renderer as _};
+use iced::widget::Image;
+use iced::window;
 
 /// A frame of an animation and its delay in milliseconds.
 pub type Frame = (image::Handle, u128);

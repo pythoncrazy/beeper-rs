@@ -1,7 +1,7 @@
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{self, Widget};
+use crate::prelude::*;
+use iced::advanced::layout::{self};
+use iced::advanced::widget::{self};
 use iced::advanced::{mouse, renderer, Renderer as _};
-use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
 
 /// A dashed border `width` px wide with rounded corners, like CSS `border: 1px dashed`. Put it over the content in a
 /// stack.

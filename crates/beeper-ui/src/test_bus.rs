@@ -1,9 +1,9 @@
 //! The session bus of the tests: a bus in the process with no tray host, notification server or portal, like a
 //! session without them, so that the tests neither need a session bus nor reach the one of the desktop that runs them.
 //! A test serves a name of its own with [`serve`].
+use crate::prelude::*;
 use iced::futures::channel::mpsc;
 use iced::futures::StreamExt;
-use std::sync::{LazyLock, Mutex, OnceLock};
 use zbus::message::{Flags, Type};
 use zbus::{Connection, Message};
 

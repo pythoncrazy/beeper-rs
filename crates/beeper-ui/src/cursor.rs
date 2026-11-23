@@ -1,9 +1,9 @@
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{self, Widget};
-use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
+use crate::prelude::*;
+use iced::advanced::layout::{self};
+use iced::advanced::widget::{self};
+use iced::advanced::{mouse, overlay, renderer};
 use iced::keyboard;
-use iced::{window, Element, Event, Point, Rectangle, Renderer, Size, Theme, Vector};
-use std::cell::Cell;
+use iced::window;
 
 /// The root of a window. It keeps the cursor position in `at` without a message, so a mouse move does not
 /// rebuild the view. With `arrow`, it shows the arrow cursor instead of the pointer over `content` and its

@@ -1,11 +1,11 @@
 //! Desktop's `BrandReplyLineSegment`: the 3 px line of a reply chain, 15 px from the left of the timeline, which
 //! starts with a curve, ends with one, loops, or goes straight.
 
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{self, Widget};
+use crate::prelude::*;
+use iced::advanced::layout::{self};
+use iced::advanced::widget::{self};
 use iced::advanced::{mouse, renderer, svg, Renderer as _};
-use iced::{border, Color, Element, Length, Rectangle, Renderer, Size, Theme};
-use std::sync::LazyLock;
+use iced::border;
 
 /// Desktop's `So`.
 #[derive(Clone, Copy, Debug, PartialEq)]

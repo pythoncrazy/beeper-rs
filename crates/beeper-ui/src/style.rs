@@ -1,16 +1,11 @@
-use beeper_core::config::NETWORK_SPECS;
+use crate::prelude::*;
 use iced::advanced::graphics::text::cosmic_text::{self, fontdb::Source, Fallback as _};
 use iced::advanced::graphics::text::{font_system, to_attributes};
-use iced::font::{Family, Font, Weight};
+use iced::border;
+use iced::font::{Family, Font};
 use iced::overlay::menu;
-use iced::widget::{button, container, pick_list, scrollable, slider, svg, text, text_editor, text_input};
-use iced::{border, Border, Color, Shadow, Theme, Vector};
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Once};
+use iced::widget::text;
+use std::sync::Once;
 
 pub mod icon {
     pub const INBOX: char = '\u{f000}';

@@ -3,19 +3,12 @@
 //! (`ViewLimitedMediaViewer`) and the Play button of the chat list (`ViewLimitedPlayButton`).
 
 use crate::i18n::{tr, trx};
-use crate::style::{bordered_box, bordered_btn, btn_style, ell, fill_box, med, semi, txt, Bare};
+use crate::prelude::*;
 use crate::toasts::Toast;
-use crate::{anim, chat_list, media_view, sound, tinted, video, voice, BeeperGuiApp, El, Frames, UiMessage};
-use beeper_core::config::find_network;
-use beeper_core::models::{Chat, Message, NetworkKind};
-use iced::font::Weight;
-use iced::gradient::Linear;
-use iced::widget::{button, column, container, image, mouse_area, row, stack, svg, Space};
-use iced::{Background, Center, Color, Fill, Length, Padding, Subscription, Task};
+use crate::{anim, chat_list, media_view};
+use iced::widget::column;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::collections::VecDeque;
 
 /// Desktop's `view-once`, `view-replay` and `play-fill-rounded`.
 static GLYPHS: LazyLock<[svg::Handle; 3]> = LazyLock::new(|| {

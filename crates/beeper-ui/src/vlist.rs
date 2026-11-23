@@ -5,12 +5,10 @@
 //! below stand for the other rows. A frame that measures a new row height, or that moves the visible span out of
 //! the inner half of the overscan, publishes the list message, so that the view builds the rows again.
 
-use iced::advanced::layout::{self, flex, Layout};
-use iced::advanced::widget::{tree, Operation, Tree, Widget};
-use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
-use iced::{window, Alignment, Element, Event, Length, Padding, Rectangle, Renderer, Size, Theme, Vector};
-use std::cell::RefCell;
-use std::collections::HashMap;
+use crate::prelude::*;
+use iced::advanced::layout::{self, flex};
+use iced::advanced::{mouse, overlay, renderer};
+use iced::{window, Alignment};
 use std::hash::{Hash, Hasher};
 
 const OVERSCAN: usize = 15;

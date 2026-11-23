@@ -4,18 +4,15 @@
 //!
 //! The animated stickers of Telegram (TGS, gzipped Lottie) play the same way. Like Desktop's rlottie workers, a few
 //! threads draw their frames as they are due, at the size that they show, and keep no other frames.
+use crate::prelude::*;
 use hayro::vello_cpu::kurbo::{Affine, Rect, Shape};
 use hayro::vello_cpu::peniko::{BlendMode, Brush, Fill, ImageAlphaType};
 use hayro::vello_cpu::{Pixmap, RenderContext, Resources};
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{self, Widget};
-use iced::advanced::{mouse, renderer, Clipboard, Shell};
-use iced::widget::image;
-use iced::{window, Element, Event, Length, Rectangle, Renderer, Size, Theme};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{mpsc, Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use iced::advanced::layout::{self};
+use iced::advanced::widget::{self};
+use iced::advanced::{mouse, renderer};
+use iced::window;
+use std::sync::atomic::AtomicU32;
 use velato::model::{fixed, Content, ImageAsset};
 use velato::{Composition, RenderSink};
 

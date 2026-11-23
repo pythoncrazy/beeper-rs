@@ -1,8 +1,8 @@
 //! Desktop's New Chat: its drafts, the contact and user search, the networks of a contact, and the start of a chat or group.
 
 use super::*;
+use crate::prelude::*;
 use iced::widget::{column, Container};
-use std::sync::LazyLock;
 
 /// The plus of Desktop's `PlusIcon` on the avatar of the `GroupTitleBar`.
 static PLUS: LazyLock<svg::Handle> = LazyLock::new(|| {

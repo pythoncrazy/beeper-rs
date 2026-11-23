@@ -2,8 +2,7 @@
 //! `globalShortcut` takes from the whole desktop. On X11 the app grabs their keys on the root window, as Chromium's
 //! `GlobalShortcutListenerX11` does. A Wayland session has no such grab without the GlobalShortcuts portal, so there
 //! the hotkeys work only inside the app.
-use crate::UiMessage;
-use iced::Subscription;
+use crate::prelude::*;
 
 /// The names of Desktop's global hotkeys.
 pub(crate) const GLOBAL: [&str; 2] = ["Focus App", "Focus App and Command Bar"];

@@ -3,9 +3,8 @@
 //! the last drop stay, so a view that shows more than the budget does not load its images again and again. A view
 //! that shows a dropped image asks for it again (`wants.rs`).
 
+use crate::prelude::*;
 use iced::widget::image::Handle;
-use std::cell::Cell;
-use std::collections::HashMap;
 
 /// The decoded size of a value.
 pub trait Weigh {

@@ -1,19 +1,10 @@
 use crate::composer;
 use crate::message;
+use crate::prelude::*;
 use crate::settings;
-use crate::style::rem;
-use crate::style::{med, mix, txt, CLEAR};
-use crate::{BeeperGuiApp, El, UiMessage};
-use beeper_core::codec::Emoticon;
-use beeper_core::store::BeeperStore;
-use iced::gradient::Linear;
-use iced::keyboard::{key::Named, Key};
-use iced::widget::scrollable::{Direction, Scrollbar};
-use iced::widget::{button, column, container, image, mouse_area, operation, row, scrollable, stack, svg, text_input, Space};
-use iced::{border, Background, Border, Center, Color, Degrees, Fill, Gradient, Padding, Shadow, Task, Vector};
-use std::collections::HashMap;
-use std::ops::Range;
-use std::sync::LazyLock;
+use iced::border;
+use iced::keyboard::key::Named;
+use iced::widget::{column, operation};
 
 const PER_LINE: usize = 9;
 const CELL: f32 = 36.0;

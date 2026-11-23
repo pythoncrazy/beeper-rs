@@ -1,16 +1,10 @@
 //! Desktop's `beeper://` links (`deep-link-CFIhWY4D.js` `Ld`): from the launch arguments, and from a later launch.
 use crate::chat_list;
-use crate::commands;
 use crate::composer;
 use crate::i18n::tr;
-use crate::login::LoginMsg;
-use crate::new_chat;
-use crate::{composer_with, encode_uri_component, BeeperGuiApp, InboxTab, SettingsTab, Toast, UiMessage, User};
+use crate::prelude::*;
+use crate::{encode_uri_component, User};
 use beeper_core::codec::url_decode;
-use beeper_core::config::{account_network, find_network, NETWORK_SPECS};
-use beeper_core::models::NetworkSpec;
-use iced::Task;
-use std::collections::HashMap;
 
 pub const SCHEME: &str = "beeper://";
 

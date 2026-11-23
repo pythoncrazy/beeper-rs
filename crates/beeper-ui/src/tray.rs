@@ -1,6 +1,6 @@
 //! Desktop's tray icon (`createTray`) as a StatusNotifierItem with a `com.canonical.dbusmenu` menu, and its app badge
 //! (`app.badgeCount`) as a Unity launcher entry.
-use std::collections::HashMap;
+use crate::prelude::*;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Structure};
 

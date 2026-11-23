@@ -1,7 +1,7 @@
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{self, Widget};
-use iced::advanced::{mouse, renderer, Clipboard, Renderer as _, Shell};
-use iced::{Element, Event, Rectangle, Renderer, Theme, Transformation};
+use crate::prelude::*;
+use iced::advanced::layout::{self};
+use iced::advanced::widget::{self};
+use iced::advanced::{mouse, renderer, Renderer as _};
 
 /// Draws `content` lowered by `dy` and scaled by `scale` from its bottom right corner, like Desktop's
 /// `message-send-insert` keyframes. The layout does not change, except that a `tight` lift gives `content`

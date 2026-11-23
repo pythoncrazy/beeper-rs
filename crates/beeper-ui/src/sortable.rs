@@ -7,7 +7,7 @@
 //! tree, so beeper-rs does not.
 
 use super::*;
-use std::sync::Arc;
+use crate::prelude::*;
 
 /// The sortable lists of Desktop that the keyboard reorders.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

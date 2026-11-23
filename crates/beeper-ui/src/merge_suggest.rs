@@ -5,9 +5,8 @@
 use super::*;
 use crate::merge_editor::{merge_keys, mergeable, other, MERGE_HELP};
 use crate::message::raised;
-use iced::widget::{column, rich_text, span};
-use std::collections::BTreeSet;
-use std::sync::LazyLock;
+use crate::prelude::*;
+use iced::widget::column;
 
 /// Desktop's `BANNER_SHOW_LIMIT`: the merge suggestion banner shows in 3 chats at most.
 const BANNER_SHOW_LIMIT: usize = 3;

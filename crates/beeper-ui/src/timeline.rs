@@ -2,9 +2,9 @@
 //! view while it is above its bottom.
 
 use super::*;
-use iced::advanced::widget::{operation as op, Operation, Tree};
+use crate::prelude::*;
+use iced::advanced::widget::operation as op;
 use iced::advanced::{layout, Layout};
-use iced::Rectangle;
 
 #[derive(Clone)]
 pub enum Msg {

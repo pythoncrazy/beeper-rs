@@ -1,8 +1,8 @@
 //! Desktop's `showOpenDialog`: the XDG desktop portal file chooser, and the files it gives.
-use crate::{decode_media, PendingMedia};
+use crate::decode_media;
+use crate::prelude::*;
 use beeper_core::media::{decide, Action, Facts, Sent};
 use beeper_core::models::{FileRule, FileRules, FILE_AUDIO, FILE_FILE, FILE_GIF, FILE_IMAGE, FILE_VIDEO};
-use std::path::{Path, PathBuf};
 
 pub const PORTAL: &str = "org.freedesktop.portal.Desktop";
 
