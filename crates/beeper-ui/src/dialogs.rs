@@ -408,7 +408,7 @@ impl BeeperGuiApp {
                     ),
                 };
                 let title = match &chats[..] {
-                    [one] => trf("Delete %s", &[&one.title]),
+                    [one] => trf("Delete %s", &[&one.combined_title()]),
                     _ => tr("Delete Chats").into(),
                 };
                 (title, body.into(), actions)
