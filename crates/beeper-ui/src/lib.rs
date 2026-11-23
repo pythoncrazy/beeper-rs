@@ -763,6 +763,18 @@ const MESSAGE_MENU_W: f32 = 270.0;
 const MIN_PANE_W: f32 = 240.0;
 /// Desktop's `.menu-item` line: 13 px text at the 1.4 line height of `html`.
 const MENU_LINE: f32 = 13.0 * 1.4;
+/// Where Chromium's `MenuController::CalculateMenuBounds` puts a native context menu of `w` x `h` that opens at the
+/// cursor `at`, with the window as the screen: below the cursor when it fits, else above it when that fits, and moved
+/// back inside the edges. Electron's menus on Linux are Chromium's, which do not flip to the left of the cursor.
+fn menu_spot(at: Point, w: f32, h: f32, area: Size) -> (f32, f32) {
+    let y = match at.y + h <= area.height {
+        true => at.y,
+        false if at.y - h >= 0.0 => at.y - h,
+        false => at.y,
+    };
+    (at.x.clamp(0.0, (area.width - w).max(0.0)), y.clamp(0.0, (area.height - h).max(0.0)))
+}
+
 /// The pitch of Desktop's `.menu-item`: the line in rem, 3 px of padding on each side, and a collapsed 2 px margin.
 fn menu_pitch() -> f32 {
     rem(MENU_LINE) + 8.0
@@ -3016,6 +3028,8 @@ pub struct BeeperGuiApp {
     pub settings_slider: Option<(&'static str, u8)>,
     /// The focused row of the settings search results, and the last opened one.
     settings_focus: usize,
+    /// The settings search has the keyboard focus, which shows Desktop's suggestions while it is empty.
+    settings_search_on: bool,
     settings_pick: Option<SettingsHit>,
     /// The pref that a search result opened, which flashes for 2 s.
     pref_flash: Option<(&'static str, std::time::Instant)>,
@@ -3093,6 +3107,10 @@ pub struct BeeperGuiApp {
     alt_alone: bool,
     pub pin_hover: Option<String>,
     pub pin_drag: Option<PinDrag>,
+    /// The pins that slide into their cells: how far from the cell each started, and when.
+    pub pin_slides: HashMap<String, (Vector, std::time::Instant)>,
+    /// The columns, the cell width and the row height of the pinned grid that was drawn last.
+    pub pin_grid: std::cell::Cell<(usize, f32, f32)>,
     /// The sortable item that the keyboard moves (see [`sortable`]).
     pub key_sort: Option<sortable::KeySort>,
     pub main_window: Option<window::Id>,
@@ -3349,6 +3367,7 @@ impl BeeperGuiApp {
             settings_query: String::new(),
             settings_slider: None,
             settings_focus: 0,
+            settings_search_on: false,
             settings_pick: None,
             pref_flash: None,
             networks: Default::default(),
@@ -3392,6 +3411,8 @@ impl BeeperGuiApp {
             alt_alone: false,
             pin_hover: None,
             pin_drag: None,
+            pin_slides: HashMap::new(),
+            pin_grid: std::cell::Cell::new((1, 0.0, 0.0)),
             key_sort: None,
             user_hover: UserHover::default(),
             rail_drag: None,
@@ -4712,8 +4733,10 @@ impl BeeperGuiApp {
             UiMessage::InputEscape(id) if Some(id) == self.settings_window && self.integrations.add.is_some() => {
                 self.integrations.add = None;
             }
+            // Desktop's Escape in the search clears it, and Escape in a field of Settings takes the focus away.
             UiMessage::InputEscape(id) if Some(id) == self.settings_window => {
-                return self.update(UiMessage::Settings(settings::Msg::Query(String::new())));
+                let clear = self.update(UiMessage::Settings(settings::Msg::Query(String::new())));
+                return Task::batch([clear, focus::blur()]);
             }
             UiMessage::InputEscape(id) => {
                 return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
@@ -5277,6 +5300,7 @@ impl BeeperGuiApp {
             || self.hover_fading()
             || self.nudges.shaking()
             || self.sidebar_progress().is_some()
+            || self.pins_sliding()
             || self
                 .panes()
                 .any(|p| [p.hover_msg_at, p.flyover_at].iter().flatten().any(|t| t.elapsed() < FLYOVER_REVEAL));
@@ -5662,7 +5686,7 @@ impl BeeperGuiApp {
                         },
                 )
             };
-            let x = if at.x + w > self.pane().size.width { at.x - w } else { at.x };
+            let (x, y) = menu_spot(*at, w, h, self.pane().size);
             let sub_w = self
                 .chat_sub
                 .filter(|_| {
@@ -5670,8 +5694,7 @@ impl BeeperGuiApp {
                 })
                 .map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
             let left = x + w + sub_w > self.pane().size.width;
-            let y = at.y.min(self.pane().size.height - h - 8.0);
-            (self.view_chat_menu(cid, left, self.pane().size.height - 8.0 - y), if left { x - sub_w } else { x }, y)
+            (self.view_chat_menu(cid, left, self.pane().size.height - y), if left { x - sub_w } else { x }, y)
         });
         let selection_menu = self.selection_menu.map(|(i, x)| {
             let (menu, h) = self.view_selection_menu(i);
@@ -5756,8 +5779,7 @@ impl BeeperGuiApp {
     fn pane_menu(&self) -> Option<(El<'_>, f32, f32)> {
         let message_menu = self.pane().message_menu.as_ref().map(|(mid, at)| {
             let (menu, h, top) = self.view_message_menu(mid);
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            let y = at.y.min(self.pane().size.height - h - 8.0);
+            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
             let (sub, sub_w) = match self.view_speed_menu(mid) {
                 // Level with its row, under Fullscreen, Open in PiP, Download and Mute.
                 Some(sub) => (Some(column![Space::new().height(4.0 * menu_pitch()), sub].into()), video::SPEED_MENU_W),
@@ -5771,7 +5793,7 @@ impl BeeperGuiApp {
                 }
                 None => {
                     let st = self.store.read();
-                    let room = self.pane().size.height - y - 8.0;
+                    let room = self.pane().size.height - y;
                     self.view_voice_sub(&st, &stored(&st, mid), top, room).map_or((None, 0.0), |(e, w)| (Some(e), w))
                 }
             };
@@ -5780,18 +5802,18 @@ impl BeeperGuiApp {
                 true => (x - sub_w, row![].push(sub).push(menu).into()),
                 false => (x, row![menu].push(sub).into()),
             };
-            (menu, x, at.y.min(self.pane().size.height - h - 8.0))
+            (menu, x, y)
         });
         let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| {
             let (menu, h) = self.view_edit_menu(word.as_ref());
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            (menu, x, at.y.min(self.pane().size.height - h - 8.0))
+            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
+            (menu, x, y)
         });
         let edit_menu = edit_menu.or_else(|| {
             let (ids, items, at) = self.pane().sched_menu.as_ref()?;
             let (menu, h) = self.view_scheduled_menu(ids, *items);
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            Some((menu, x, at.y.min(self.pane().size.height - h - 8.0)))
+            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
+            Some((menu, x, y))
         });
         let react = self.pane().emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
             let x = if at.x + 352.0 > self.pane().size.width { at.x - 352.0 } else { at.x };
@@ -6075,7 +6097,7 @@ impl BeeperGuiApp {
     fn read_open_chat(&self) {
         let at_bottom = self.pane.scrolled_up.is_none_or(|(up, _)| !up);
         let shows = self.focused && self.pane.thread_root.is_none() && !self.pane.info;
-        let shows = shows && !self.idle && !self.pane.keep_unread;
+        let shows = shows && !self.idle && !self.pane.keep_unread && !self.main_selecting();
         let Some(id) = self.pane.selected_chat_id.clone().filter(|_| shows) else {
             return;
         };
@@ -6952,6 +6974,21 @@ mod tests {
             tx.send(tokio::runtime::Handle::current().metrics().num_workers()).expect("the test waits");
         });
         assert_eq!(rx.recv().expect("the task runs"), 1);
+    }
+
+    /// Chromium's `CalculateMenuBounds` of a root context menu: below the cursor, else above it, and back inside at the
+    /// right edge rather than to the left of the cursor.
+    #[test]
+    fn context_menus_open_like_chromium() {
+        let area = Size::new(1200.0, 800.0);
+        assert_eq!(menu_spot(Point::new(100.0, 100.0), 233.0, 400.0, area), (100.0, 100.0), "below the cursor");
+        assert_eq!(menu_spot(Point::new(100.0, 590.0), 233.0, 400.0, area), (100.0, 190.0), "above, ending at it");
+        assert_eq!(
+            menu_spot(Point::new(100.0, 300.0), 233.0, 700.0, area),
+            (100.0, 100.0),
+            "moved up when neither fits"
+        );
+        assert_eq!(menu_spot(Point::new(1100.0, 100.0), 233.0, 400.0, area), (967.0, 100.0), "kept at the right edge");
     }
 
     #[test]

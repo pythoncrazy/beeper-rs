@@ -29,6 +29,23 @@ pub fn demo_store(name: &str) -> SharedStore {
 /// How long a stub client may take to set up its key backup or to sync once, before the test fails.
 const STUB_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// A signed-in store in `dir` with a Matrix client that synced the stub homeserver at `url`.
+pub async fn stub_store(dir: &std::path::Path, url: &str) -> SharedStore {
+    let store = open_stub_store(dir, url).await;
+    let client = store.read().matrix.clone().expect("a Matrix client");
+    let sync = tokio::time::timeout(STUB_WAIT, client.sync_once(matrix_sdk::config::SyncSettings::default()));
+    sync.await.expect("the first sync ends in time").expect("sync with the stub homeserver");
+    store
+}
+
+/// A signed-in store in `dir` with a Matrix client of the stub homeserver at `url`, which has not synced yet in this
+/// run, like the store of a start.
+pub async fn open_stub_store(dir: &std::path::Path, url: &str) -> SharedStore {
+    let (store, client) = stub_client(dir, url).await;
+    store.write().matrix = Some(client);
+    store
+}
+
 /// A signed-in store in `dir` with a Matrix client of the stub homeserver at `url`, before its first sync.
 pub async fn stub_client(dir: &std::path::Path, url: &str) -> (SharedStore, matrix_sdk::Client) {
     crate::cloud::install_tls();
@@ -51,15 +68,6 @@ pub async fn stub_client(dir: &std::path::Path, url: &str) -> (SharedStore, matr
     let setup = tokio::time::timeout(STUB_WAIT, encryption.wait_for_e2ee_initialization_tasks());
     setup.await.expect("the key backup setup ends in time");
     (store, client)
-}
-
-/// A signed-in store in `dir` with a Matrix client that synced the stub homeserver at `url`.
-pub async fn stub_store(dir: &std::path::Path, url: &str) -> SharedStore {
-    let (store, client) = stub_client(dir, url).await;
-    let sync = tokio::time::timeout(STUB_WAIT, client.sync_once(matrix_sdk::config::SyncSettings::default()));
-    sync.await.expect("the first sync ends in time").expect("sync with the stub homeserver");
-    store.write().matrix = Some(client);
-    store
 }
 
 /// The `/sync` reply of the stub homeserver: one joined room `!room:x` of the user `@me:x`.

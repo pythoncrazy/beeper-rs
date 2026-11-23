@@ -204,7 +204,8 @@ impl BeeperGuiApp {
             }
             List::Pins => {
                 let Some(order) = s.moved(&s.items) else { return self.settle() };
-                self.pin_drag = Some(PinDrag { id: s.id.clone(), from: None, order: Some(order) });
+                self.pin_drag =
+                    Some(PinDrag { id: s.id.clone(), from: None, at: Point::ORIGIN, order: Some(order), start: 0 });
                 self.pins(pins::Msg::DragEnd)
             }
             // `ZLt`'s `setAccountsOrder` and `persistAccountsOrder`: the place of each account in the list.

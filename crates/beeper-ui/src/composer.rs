@@ -492,6 +492,7 @@ impl BeeperGuiApp {
     /// Whether keys outside a text field go to the composer: a chat that takes messages shows, with no dialog over it.
     pub(crate) fn composer_takes_keys(&self) -> bool {
         self.can_compose()
+            && !self.main_selecting()
             && self.confirm.is_none()
             && !self.show_command_palette
             && self.forward.is_none()

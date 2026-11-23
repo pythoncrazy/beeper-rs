@@ -293,6 +293,21 @@ fn emoji_button<'a>(p: &Palette, glyph: El<'a>, slot: u8) -> El<'a> {
         .into()
 }
 
+/// Desktop's suggestions of the empty settings search (`v` of `PrefsLeftPane`): the label, the section, and the
+/// key of the row that opens highlighted, for the sections that show, then Beeper Plus for a free account that can
+/// subscribe.
+pub(crate) fn suggestions(st: &BeeperStore) -> Vec<(&'static str, SettingsTab, Option<&'static str>)> {
+    let rows = [
+        ("Add an Account", SettingsTab::Accounts, None),
+        ("Incognito Mode", SettingsTab::General, Some("incognito")),
+        ("Show Recipients I'm Typing", SettingsTab::General, Some("typingIndicators")),
+        ("Group Message Notifications", SettingsTab::Notifications, Some("groupNotifications")),
+        ("Subscribe to Beeper Plus", SettingsTab::BeeperPlus, None),
+    ];
+    let listed: Vec<SettingsTab> = SettingsTab::listed(st).collect();
+    rows.into_iter().filter(|r| listed.contains(&r.1)).collect()
+}
+
 /// Desktop's settings search: each matching section, then its matching rows, then the other sections when a row
 /// matches.
 pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
@@ -519,7 +534,7 @@ impl BeeperGuiApp {
         if let Some(task) = self.focus_key(window, &key, mods, self.asking(window)) {
             return task;
         }
-        let n = search_settings(&self.store.read(), &self.settings_query).len();
+        let n = self.search_rows();
         match key {
             Key::Named(Named::Escape) if self.confirm.is_some() => self.confirm = None,
             Key::Named(Named::Escape) if self.integrations.add.is_some() => self.integrations.add = None,
@@ -547,6 +562,15 @@ impl BeeperGuiApp {
             _ => {}
         }
         Task::none()
+    }
+
+    /// The rows that ↑ and ↓ go through in the search: the results, or the suggestions of the focused empty search.
+    fn search_rows(&self) -> usize {
+        let st = self.store.read();
+        match self.settings_query.trim().is_empty() {
+            true if self.settings_search_on => suggestions(&st).len(),
+            _ => search_settings(&st, &self.settings_query).len(),
+        }
     }
 
     /// Desktop's `label-wrapper` row, which Tab reaches: `.label-wrapper:focus-visible` takes
@@ -724,7 +748,10 @@ impl BeeperGuiApp {
         let search_input = text_input(tr("Search Settings"), &self.settings_query)
             .id("settings-search")
             .on_input(|a0| UiMessage::Settings(Msg::Query(a0)))
-            .on_submit_maybe(hits.get(self.settings_focus).map(|&h| UiMessage::Settings(Msg::Pick(h))))
+            .on_submit_maybe(match self.settings_query.trim().is_empty() {
+                true => self.settings_search_on.then_some(UiMessage::Settings(Msg::Suggest(self.settings_focus))),
+                false => hits.get(self.settings_focus).map(|&h| UiMessage::Settings(Msg::Pick(h))),
+            })
             .size(rem(13.0))
             .line_height(Pixels(rem(16.0)))
             .padding(0)
@@ -736,11 +763,14 @@ impl BeeperGuiApp {
         });
         // Desktop's 16 px Material icon is scaled by 1.2 without a change to its 16 px box.
         let search = container(
-            row![ic(icon::SEARCH, 16.0 * 1.2).color(p.strong), search_input]
-                .push(clear)
-                .spacing(8.0 - 1.6)
-                .align_y(Center)
-                .padding(Padding::new(6.0 - 1.6).left(8.0 - 1.6).right(8.0)),
+            row![
+                ic(icon::SEARCH, 16.0 * 1.2).color(p.strong),
+                crate::focus::watch(search_input, |on| UiMessage::Settings(Msg::SearchFocus(on)))
+            ]
+            .push(clear)
+            .spacing(8.0 - 1.6)
+            .align_y(Center)
+            .padding(Padding::new(6.0 - 1.6).left(8.0 - 1.6).right(8.0)),
         )
         .style(fill_box(p.search, 38.0));
         // The search results draw the icons at Desktop's 11 px instead of 13 px.
@@ -866,17 +896,41 @@ impl BeeperGuiApp {
             true => nav.into(),
             false => container(results).padding(Padding::ZERO.top(3)).into(),
         };
-        let left = column![
-            container(semi(tr("Settings"), 14.0).color(p.strong)).center_y(35).padding([0, 8]),
-            column![
-                search,
-                scrollable(list).id("settings-nav").direction(bar()).height(Fill).style(scroll_style(p.scroll))
-            ]
-            .spacing(5)
+        // Desktop's `SearchSuggestions` of the focused empty search: a card 4 px under the field, as wide as it.
+        let suggested = (self.settings_search_on && self.settings_query.trim().is_empty()).then(|| {
+            let gray = Color::from_rgb8(0x80, 0x80, 0x80);
+            let head =
+                row![Space::new().width(20), semi(tr("Suggestions"), 11.0).color(gray).line_height(Pixels(rem(14.0)))]
+                    .spacing(8)
+                    .padding(Padding::ZERO.bottom(4.0));
+            let rows = suggestions(&st).into_iter().enumerate().map(|(i, (label, tab, _))| -> El<'_> {
+                let face: El<'_> = match tab {
+                    SettingsTab::BeeperPlus => Space::new().width(20).into(),
+                    _ => tile(tab, false, 1.0).into(),
+                };
+                let line = row![face, txt(tr(label), 13.0).color(p.strong).line_height(Pixels(rem(16.0)))]
+                    .spacing(8)
+                    .align_y(Center)
+                    .padding([6, 4]);
+                let bg = if i == self.settings_focus { p.strong.scale_alpha(0.1) } else { CLEAR };
+                mouse_area(container(line).width(Fill).style(fill_box(bg, 6.0)))
+                    .on_enter(UiMessage::Settings(Msg::Focus(i)))
+                    .on_release(UiMessage::Settings(Msg::Suggest(i)))
+                    .into()
+            });
+            let card = Column::with_children(std::iter::once(head.into()).chain(rows)).padding([12, 4]);
+            container(card).width(Fill).style(glow_box(p.card, Color::BLACK.scale_alpha(0.12), 10.0, 0.0, 10.0))
+        });
+        let field = column![
+            search,
+            scrollable(list).id("settings-nav").direction(bar()).height(Fill).style(scroll_style(p.scroll))
         ]
-        .spacing(8)
-        .width(270)
-        .padding(Padding::new(8.0).right(15.0));
+        .spacing(5);
+        let field = stack![field].push(suggested.map(|s| container(s).padding(Padding::ZERO.top(28.0 + 4.0))));
+        let left = column![container(semi(tr("Settings"), 14.0).color(p.strong)).center_y(35).padding([0, 8]), field]
+            .spacing(8)
+            .width(270)
+            .padding(Padding::new(8.0).right(15.0));
         let right = container(
             scrollable(container(self.settings_content(&st)).max_width(600).padding(13).center_x(Fill))
                 .id("settings-pane")
@@ -2306,6 +2360,10 @@ pub enum Msg {
     /// Moves the focused search result down by the given count, wrapping around.
     Step(usize),
     Pick(SettingsHit),
+    /// The search field takes (`true`) or loses the keyboard focus.
+    SearchFocus(bool),
+    /// Desktop's suggestion of the empty search at this index.
+    Suggest(usize),
     CycleTheme,
     SelectTheme(ThemeChoice),
     SystemTheme(iced::theme::Mode),
@@ -2508,9 +2566,36 @@ impl BeeperGuiApp {
             }
             Msg::Focus(i) => self.settings_focus = i,
             Msg::Step(step) => {
-                self.settings_focus =
-                    (self.settings_focus + step) % search_settings(&self.store.read(), &self.settings_query).len();
+                let n = self.search_rows();
+                self.settings_focus = (self.settings_focus + step) % n.max(1);
+                if self.settings_query.trim().is_empty() {
+                    return Task::none();
+                }
                 return locate(format!("hit-{}", self.settings_focus), "settings-nav", crate::Align::Nearest);
+            }
+            // Desktop's `onFocus` of the search starts at the first row.
+            Msg::SearchFocus(on) => {
+                if on && !self.settings_search_on {
+                    self.settings_focus = 0;
+                }
+                self.settings_search_on = on;
+            }
+            // Desktop's `M` of a suggestion: its section with its row highlighted, or Beeper Plus, and the search
+            // gives the focus back.
+            Msg::Suggest(i) => {
+                let Some(&(_, tab, key)) = suggestions(&self.store.read()).get(i) else { return Task::none() };
+                if tab == SettingsTab::BeeperPlus {
+                    self.settings_query.clear();
+                }
+                self.settings_search_on = false;
+                let open = Task::batch([self.update(UiMessage::Settings(Msg::SelectTab(tab))), crate::focus::blur()]);
+                return match key {
+                    Some(key) => {
+                        self.pref_flash = Some((key, std::time::Instant::now()));
+                        Task::batch([open, locate(key, "settings-pane", crate::Align::Center)])
+                    }
+                    None => open,
+                };
             }
             Msg::Pick(hit) => {
                 self.settings_pick = Some(hit);

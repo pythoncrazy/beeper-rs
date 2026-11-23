@@ -12,6 +12,69 @@ use iced::advanced::widget::{self as advanced, Widget};
 use iced::advanced::{overlay, Clipboard, Shell};
 use iced::{Rectangle, Renderer};
 
+/// Tells when the text field inside `content` takes or loses the keyboard focus, like the DOM's `focus` and `blur`
+/// events: `on_change` gets whether it has the focus now.
+pub fn watch<'a>(content: impl Into<El<'a>>, on_change: fn(bool) -> UiMessage) -> El<'a> {
+    El::new(Watch { content: content.into(), on_change })
+}
+
+/// The widget of [`watch`].
+struct Watch<'a> {
+    content: El<'a>,
+    on_change: fn(bool) -> UiMessage,
+}
+
+/// Whether the text field had the focus at the last event.
+#[derive(Default)]
+struct Watched(bool);
+
+/// The operation that finds whether a text field has the focus.
+struct HasFocus(bool);
+
+impl Operation for HasFocus {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self)
+    }
+
+    fn focusable(&mut self, _: Option<&iced::widget::Id>, _: Rectangle, state: &mut dyn Focusable) {
+        self.0 |= state.is_focused();
+    }
+}
+
+impl Widget<UiMessage, Theme, Renderer> for Watch<'_> {
+    crate::delegate::delegate!(children, diff, size, layout, operate, mouse_interaction, draw, overlay(UiMessage));
+
+    fn tag(&self) -> advanced::tree::Tag {
+        advanced::tree::Tag::of::<Watched>()
+    }
+
+    fn state(&self) -> advanced::tree::State {
+        advanced::tree::State::new(Watched::default())
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut advanced::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, UiMessage>,
+        viewport: &Rectangle,
+    ) {
+        let content = &mut tree.children[0];
+        self.content.as_widget_mut().update(content, event, layout, cursor, renderer, clipboard, shell, viewport);
+        let mut focus = HasFocus(false);
+        self.content.as_widget_mut().operate(content, layout, renderer, &mut focus);
+        let was = tree.state.downcast_mut::<Watched>();
+        if was.0 != focus.0 {
+            was.0 = focus.0;
+            shell.publish((self.on_change)(focus.0));
+        }
+    }
+}
+
 /// The control of a window that has the keyboard focus, out of the window's stops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Focus<S>(Option<S>);
