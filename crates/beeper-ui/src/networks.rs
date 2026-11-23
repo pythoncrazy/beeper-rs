@@ -122,7 +122,7 @@ impl BeeperGuiApp {
         match msg {
             Msg::Open => {
                 if let Some(id) = self.networks.window {
-                    return window::gain_focus(id);
+                    return self.raise(id);
                 }
                 let (id, open) = self.open_window(window::Settings {
                     resizable: false,

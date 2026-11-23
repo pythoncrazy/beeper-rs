@@ -496,6 +496,7 @@ dependencies = [
  "ctr",
  "foldhash 0.2.0",
  "futures-util",
+ "heic-rs",
  "image",
  "imagesize",
  "libc",
@@ -2437,6 +2438,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "heic-rs"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d49b15a89afa2dcb507a217880eb20df21aeadf04af40366a969f9b505a0c648"
+
+[[package]]
 name = "hermit-abi"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2839,8 +2846,6 @@ dependencies = [
 [[package]]
 name = "iced_winit"
 version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7589888c8e951899cc688247a69933bb7a0511f0b4b2e122ac3fcd5dacb37f72"
 dependencies = [
  "iced_debug",
  "iced_program",

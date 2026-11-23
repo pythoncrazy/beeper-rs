@@ -39,7 +39,7 @@ impl BeeperGuiApp {
             Msg::OpenEdit(chat) => {
                 self.list.chat_menu = None;
                 if let Some(&(id, _)) = self.labels_windows.iter().find(|w| w.1 == chat) {
-                    return window::gain_focus(id);
+                    return self.raise(id);
                 }
                 let (id, open) = self.open_child(Size::new(303.0, 488.0));
                 self.labels_windows.push((id, chat));
@@ -67,7 +67,7 @@ impl BeeperGuiApp {
             Msg::OpenCreate(chats) => {
                 self.list.chat_menu = None;
                 if let Some(d) = &self.label_window {
-                    return window::gain_focus(d.id);
+                    return self.raise(d.id);
                 }
                 let intro = !self.store.read().settings.labels_intro_seen;
                 if intro {
@@ -105,7 +105,7 @@ impl BeeperGuiApp {
                 self.list.chat_menu = None;
                 let label = self.label_id(label);
                 if let Some(w) = self.label_settings.iter().find(|w| w.label == label) {
-                    return window::gain_focus(w.id);
+                    return self.raise(w.id);
                 }
                 let (id, open) = self.open_child(LABEL_SETTINGS_SIZE);
                 self.label_settings.push(LabelSettings { id, label, menu: false });
@@ -119,7 +119,7 @@ impl BeeperGuiApp {
                         (self.confirm, self.delete_target) = (Some(ASK_DELETE_LABEL), Some(w.label.clone()));
                         self.delete_in = Some(id);
                     }
-                    LabelPane::Done => return window::close(id),
+                    LabelPane::Done => return self.close_window(id),
                 }
             }
             Msg::Delete(id) => {
@@ -139,7 +139,7 @@ impl BeeperGuiApp {
                     self.list.selected_account_filter = None;
                 }
                 let shown = self.label_settings.iter().filter(|w| w.label == id);
-                return Task::batch(shown.map(|w| window::close(w.id)).collect::<Vec<_>>());
+                return Task::batch(shown.map(|w| self.close_window(w.id)).collect::<Vec<_>>());
             }
             Msg::Change(edit) => return self.label_edit(edit),
         }

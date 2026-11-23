@@ -132,6 +132,7 @@ impl Default for BeeperSettings {
             chat_info_merge_promo_dismissed: false,
             target_switcher_nudge_seen_rooms: Vec::new(),
             target_switcher_nudge_dismissed: false,
+            has_seen_first_nudge: false,
             recovery_reminder_dismissed_at: 0,
             downloads_dir: String::new(),
             quick_reaction: "❤️".into(),
