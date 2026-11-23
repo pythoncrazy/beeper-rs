@@ -1297,8 +1297,11 @@ async fn sync_receipts(store: &SharedStore, room: &Room, only: Option<&HashSet<S
             });
             let Some(target) = target else { continue };
             // Desktop's `seenByMeAt` and `recipientReadTimerStartedAt`: the read starts the timers of the messages
-            // that it reads, your own ones for a read of the recipient.
-            let read = st.messages[target].sort_key.clone();
+            // that it reads, your own ones for a read of the recipient. A receipt on a reaction reads up to the
+            // reaction, which comes after the message that it reacts to: Desktop takes the receipt's `hsOrder`.
+            let m = &st.messages[target];
+            let reaction = m.reactions.iter().find(|r| r.id == ev && !r.sort_key.is_empty());
+            let read = reaction.map_or(&m.sort_key, |r| (&r.sort_key).max(&m.sort_key)).clone();
             for &i in &indices {
                 let m = &st.messages[i];
                 let sender = m.is_sender == Some(true);
@@ -6271,6 +6274,36 @@ mod tests {
         let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
         super::sync_room(&store, &room, Vec::new()).await;
         assert_eq!(read(&store), Some(super::sort_key(3)), "the older receipt does not move it back");
+    }
+
+    /// A receipt on a reaction reads up to the reaction, like Desktop's `hsOrder` of the receipt, not up to the older
+    /// message that it reacts to: the messages after that message stay read and the chat shows no "New" divider.
+    #[tokio::test]
+    async fn a_receipt_on_a_reaction_reads_up_to_the_reaction_like_desktop() {
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => {
+                let mut sync = stub_sync();
+                let receipt =
+                    json!({ "type": "m.receipt", "content": { "$k": { "m.read": { "@me:x": { "ts": 1 } } } } });
+                sync["rooms"]["join"]["!room:x"]["ephemeral"] = json!({ "events": [receipt] });
+                (200, sync)
+            }
+            p if p.ends_with("/messages") => {
+                let rel = json!({ "rel_type": "m.annotation", "event_id": "$e1", "key": "👍" });
+                let mut reaction = stub_event("$k", "m.reaction", json!({ "m.relates_to": rel }));
+                reaction["sender"] = json!("@ann:x");
+                reaction["unsigned"]["com.beeper.hs.order"] = json!(3);
+                (200, json!({ "start": "t3", "chunk": [reaction, stub_message(2), stub_message(1)] }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = crate::testing::stub_room_store(&crate::testing::temp_dir("reaction-receipt"), &url).await;
+        let st = store.read();
+        assert_eq!(st.message("$e1").reactions.len(), 1, "the reaction is on m1");
+        assert_eq!(st.chat("!room:x").last_read_message_sort_key, Some(super::sort_key(3)), "read up to the reaction");
     }
 
     /// A limited sync of a room that synced before leaves out the events since the last sync, and pages back from its
