@@ -1105,6 +1105,17 @@ async fn run_instance<P>(
                                 &mut system_theme,
                             );
                         } else {
+                            // winit also sends `ModifiersChanged` when only a lock key or the keyboard group
+                            // changes (and on Wayland at each modifiers event of the compositor), with the same
+                            // Shift, Control, Alt and Logo. Such an event changes nothing for a widget or the
+                            // program, but every widget would get it and, as a message, it would build the view
+                            // again.
+                            let same_modifiers = matches!(
+                                &window_event,
+                                winit::event::WindowEvent::ModifiersChanged(m)
+                                    if m.state() == window.state.modifiers()
+                            );
+
                             window.state.update(
                                 &program,
                                 &window.raw,
@@ -1115,7 +1126,8 @@ async fn run_instance<P>(
                                 window_event,
                                 window.state.scale_factor(),
                                 window.state.modifiers(),
-                            ) {
+                            ) && !same_modifiers
+                            {
                                 events.push((id, event));
                             }
                         }
