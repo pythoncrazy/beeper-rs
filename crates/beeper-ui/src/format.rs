@@ -14,20 +14,10 @@ use std::ops::Range;
 
 pub const LINK: usize = 3;
 pub const CODE: usize = 7;
-pub const LABELS: [&str; 9] = [
-    "Bold",
-    "Italic",
-    "Strikethrough",
-    "Add Link",
-    "Bullet List",
-    "Numbered List",
-    "Blockquote",
-    "Inline Code",
-    "Code Block",
-];
+pub const LABELS: [&str; 9] =
+    ["Bold", "Italic", "Strikethrough", "Add Link", "Bullet List", "Numbered List", "Blockquote", "Inline Code", "Code Block"];
 pub const GROUPS: [u8; 9] = [1, 1, 1, 1, 2, 2, 3, 3, 3];
-pub const HOTKEYS: [&[&str]; 9] =
-    [&["Ctrl", "B"], &["Ctrl", "I"], &["Ctrl", "Shift", "X"], &[], &[], &[], &[], &[], &[]];
+pub const HOTKEYS: [&[&str]; 9] = [&["Ctrl", "B"], &["Ctrl", "I"], &["Ctrl", "Shift", "X"], &[], &[], &[], &[], &[], &[]];
 const MARKS: [(&str, &str); 9] =
     [("**", "**"), ("_", "_"), ("~~", "~~"), ("[", "]("), ("", ""), ("", ""), ("", ""), ("`", "`"), ("```\n", "\n```")];
 
@@ -247,8 +237,7 @@ pub fn toggle_mark(i: usize, text: &str, r: Range<usize>) -> (String, Range<usiz
         let found = span(p);
         let (from, to, body, lo, hi) = match on {
             true => {
-                let &[start, body, end, stop] =
-                    found.iter().find(|s| s[0] <= p.start && p.end <= s[3]).expect("covered");
+                let &[start, body, end, stop] = found.iter().find(|s| s[0] <= p.start && p.end <= s[3]).expect("covered");
                 let (lo, hi) = (p.start.clamp(body, end), p.end.clamp(body, end));
                 let (left, right) = (wrapped(i, &text[body..lo]).0, wrapped(i, &text[hi..end]).0);
                 let new = format!("{left}{}{right}", &text[lo..hi]);
@@ -260,16 +249,12 @@ pub fn toggle_mark(i: usize, text: &str, r: Range<usize>) -> (String, Range<usiz
                 let to = over.iter().map(|s| s[3]).fold(p.end, usize::max);
                 let marks: Vec<Range<usize>> = over.iter().flat_map(|s| [s[0]..s[1], s[2]..s[3]]).collect();
                 let kept = |a: usize, b: usize| (a..b).filter(|x| !marks.iter().any(|m| m.contains(x))).count();
-                let body: String = text[from..to]
-                    .char_indices()
-                    .filter(|(k, _)| !marks.iter().any(|m| m.contains(&(from + k))))
-                    .map(|(_, c)| c)
-                    .collect();
+                let body: String =
+                    text[from..to].char_indices().filter(|(k, _)| !marks.iter().any(|m| m.contains(&(from + k)))).map(|(_, c)| c).collect();
                 let (new, mark_start, mark_end) = wrapped(i, &body);
                 // A place in the old text, in the new one, inside the marks.
                 let core = mark_end - mark_start - open.len() - close.len();
-                let place =
-                    |x: usize| from + open.len() + kept(from, x.clamp(from, to)).clamp(mark_start, mark_start + core);
+                let place = |x: usize| from + open.len() + kept(from, x.clamp(from, to)).clamp(mark_start, mark_start + core);
                 (from, to, new, place(p.start), place(p.end))
             }
         };
@@ -328,17 +313,13 @@ impl BeeperGuiApp {
         });
         let hits = words.clone();
         above(editor, popup, move |size| {
-            let &[(x0, row), (x1, _)] = &carets(&text, 13.0, size.width - 4.0, at(&text, &r))[..] else {
-                unreachable!()
-            };
+            let &[(x0, row), (x1, _)] = &carets(&text, 13.0, size.width - 4.0, at(&text, &r))[..] else { unreachable!() };
             Vector::new(2.0 + (x0 + x1) / 2.0, 9.0 + row as f32 * 13.0 * 1.3 - 8.0)
         })
         .squiggles(move |size| words(size).into_iter().map(|(_, at, width)| (at, width)).collect())
         .on_right(move |size, p| {
             let over = |at: &Point, w: f32| (at.x..at.x + w).contains(&p.x) && (at.y - 16.9..at.y + 3.0).contains(&p.y);
-            UiMessage::Composer(composer::Msg::EditMenu(
-                hits(size).into_iter().find(|(_, at, w)| over(at, *w)).map(|w| w.0),
-            ))
+            UiMessage::Composer(composer::Msg::EditMenu(hits(size).into_iter().find(|(_, at, w)| over(at, *w)).map(|w| w.0)))
         })
         .into()
     }
@@ -358,12 +339,8 @@ impl BeeperGuiApp {
             let label = tr(if i == LINK && on { "Remove Link" } else { LABELS[i] });
             let (bg, fg) = if on { (p.accent, Color::WHITE) } else { (CLEAR, p.strong) };
             let icon = svg(ICONS[i].clone()).width(16).height(16).style(move |_, _| svg::Style { color: Some(fg) });
-            let b = button(icon)
-                .padding(4)
-                .style(btn_style([bg; 3], [fg; 3], 8.0))
-                .on_press(UiMessage::Composer(composer::Msg::Format(i)));
-            items =
-                items.push(self.tip(b.into(), label, HOTKEYS[i].to_vec(), tooltip::Position::Top).padding(0).gap(6));
+            let b = button(icon).padding(4).style(btn_style([bg; 3], [fg; 3], 8.0)).on_press(UiMessage::Composer(composer::Msg::Format(i)));
+            items = items.push(self.tip(b.into(), label, HOTKEYS[i].to_vec(), tooltip::Position::Top).padding(0).gap(6));
         }
         container(items).padding(4).style(bordered_box(p.input, p.prefs_border, 1.0, 8.0)).into()
     }
@@ -372,20 +349,16 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let save = (!url.trim().is_empty()).then_some(UiMessage::Composer(composer::Msg::SaveLink));
         let input = |id: &'static str, hint: &'static str, value: &str| {
-            text_input(hint, value)
-                .id(id)
-                .size(rem(10.0))
-                .line_height(lh(12.0))
-                .padding([6, 8])
-                .on_submit_maybe(save.clone())
-                .style(move |_, _| text_input::Style {
+            text_input(hint, value).id(id).size(rem(10.0)).line_height(lh(12.0)).padding([6, 8]).on_submit_maybe(save.clone()).style(
+                move |_, _| text_input::Style {
                     background: p.chip.into(),
                     border: Border { color: p.surface_dim, width: 1.0, radius: 8.0.into() },
                     icon: p.sub,
                     placeholder: p.on_secondary,
                     value: p.strong,
                     selection: p.accent.scale_alpha(0.45),
-                })
+                },
+            )
         };
         let field = |name: &'static str, input| column![txt(tr(name), 11.0).color(p.sub), input].spacing(2);
         let (u, l) = (url.to_owned(), label.to_owned());
@@ -401,8 +374,7 @@ impl BeeperGuiApp {
             btn("Cancel", CLEAR, p.strong, Some(UiMessage::Composer(composer::Msg::LinkDialog(None)))),
             btn("Save", p.accent, Color::WHITE, save.clone())
         ];
-        let body =
-            column![field("URL", url_in), field("Text", text_in), buttons.spacing(6).padding(Padding::ZERO.top(2.0))];
+        let body = column![field("URL", url_in), field("Text", text_in), buttons.spacing(6).padding(Padding::ZERO.top(2.0))];
         container(body.spacing(6)).padding(8).width(220).style(shadow_box(p.card, CLEAR, 8.0, 20.0)).into()
     }
 }
@@ -453,8 +425,7 @@ impl Highlighter for Marks {
 
     fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
         let s = &self.style;
-        let font =
-            |weight, mono: bool| Some(Font { weight, ..if mono { Font::MONOSPACE } else { fw(Weight::Normal) } });
+        let font = |weight, mono: bool| Some(Font { weight, ..if mono { Font::MONOSPACE } else { fw(Weight::Normal) } });
         let mark = Format { color: Some(s.mark), font: None };
         let code = Format { color: None, font: font(Weight::Medium, true) };
         let (inside, fence) = (self.code[self.line], line.trim_start().starts_with("```"));
@@ -474,22 +445,17 @@ impl Highlighter for Marks {
         };
         out.extend((start > 0).then_some((0..start, mark)));
         let bold = Format { color: None, font: font(Weight::Bold, false) };
-        let italic =
-            Format { color: None, font: Some(Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) }) };
+        let italic = Format { color: None, font: Some(Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) }) };
         let strike = Format { color: Some(s.mark), font: None };
-        let pairs =
-            [("`", "`", code), ("**", "**", bold), ("~~", "~~", strike), ("_", "_", italic), ("*", "*", italic)];
+        let pairs = [("`", "`", code), ("**", "**", bold), ("~~", "~~", strike), ("_", "_", italic), ("*", "*", italic)];
         let link = Format { color: Some(s.link), font: None };
         let mention = Format { color: Some(s.mention), font: font(Weight::Bold, false) };
         let mut i = start;
         while let Some(c) = line[i..].chars().next() {
             let rest = &line[i..];
             let word_start = !line[..i].ends_with(|c: char| c.is_alphanumeric());
-            let emoticon =
-                |n: &&String| !n.is_empty() && rest[1..].strip_prefix(n.as_str()).is_some_and(|r| r.starts_with(':'));
-            if let Some(n) =
-                rest.starts_with(':').then(|| s.emoticons.iter().filter(emoticon).max_by_key(|n| n.len())).flatten()
-            {
+            let emoticon = |n: &&String| !n.is_empty() && rest[1..].strip_prefix(n.as_str()).is_some_and(|r| r.starts_with(':'));
+            if let Some(n) = rest.starts_with(':').then(|| s.emoticons.iter().filter(emoticon).max_by_key(|n| n.len())).flatten() {
                 out.push((i..i + 2 + n.len(), Format { color: Some(s.mention), font: None }));
                 i += 2 + n.len();
                 continue;
@@ -552,16 +518,9 @@ mod tests {
                 ("@Ann B".into(), Some(Color::BLACK), bold)
             ]
         );
-        assert_eq!(
-            spans(&mut m, "see [x](https://a.b)")[1..],
-            [("x".into(), white, None), ("](https://a.b)".into(), white, None)]
-        );
+        assert_eq!(spans(&mut m, "see [x](https://a.b)")[1..], [("x".into(), white, None), ("](https://a.b)".into(), white, None)]);
         assert_eq!(spans(&mut m, "```").len(), 1);
-        assert_eq!(
-            spans(&mut m, "**not bold**"),
-            [("**not bold**".into(), None, Some(Weight::Medium))],
-            "a code block"
-        );
+        assert_eq!(spans(&mut m, "**not bold**"), [("**not bold**".into(), None, Some(Weight::Medium))], "a code block");
         assert_eq!(spans(&mut m, "```").len(), 1);
         m.change_line(3);
         assert_eq!((m.current_line(), spans(&mut m, "x").len()), (3, 1), "line 3 is still in the code block");
@@ -624,10 +583,7 @@ mod tests {
         assert_eq!(t(0, "**ab**cd", 3..7), ("**abc**d".into(), 3..5));
         assert_eq!(t(0, "**a** **b**", 2..9), ("**a b**".into(), 2..5));
         assert_eq!(t(0, "  ", 0..2), ("  ".into(), 0..2), "nothing to mark");
-        assert!(
-            covered(0, "**bold**", &(3..6)) && !covered(0, "a **b** c", &(0..9)),
-            "the bubble's highlighted button"
-        );
+        assert!(covered(0, "**bold**", &(3..6)) && !covered(0, "a **b** c", &(0..9)), "the bubble's highlighted button");
         // Each line of a selection gets its own marks.
         let (lines, r) = t(0, "a\nb", 0..3);
         assert_eq!((lines.as_str(), r.clone()), ("**a**\n**b**", 2..9));

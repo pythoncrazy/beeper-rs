@@ -28,8 +28,7 @@ pub async fn open_files(dest: String, title: String, pick: Pick) -> Result<Vec<P
     let bus = crate::notify::bus().await?;
     let token = format!("beeper_rs_{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     let me = bus.unique_name().expect("a session bus connection has a name");
-    let path =
-        format!("/org/freedesktop/portal/desktop/request/{}/{token}", me.trim_start_matches(':').replace('.', "_"));
+    let path = format!("/org/freedesktop/portal/desktop/request/{}/{token}", me.trim_start_matches(':').replace('.', "_"));
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
         .interface("org.freedesktop.portal.Request")
@@ -52,8 +51,7 @@ pub async fn open_files(dest: String, title: String, pick: Pick) -> Result<Vec<P
     let (obj, iface) = ("/org/freedesktop/portal/desktop", Some("org.freedesktop.portal.FileChooser"));
     bus.call_method(Some(dest.as_str()), obj, iface, method, &("", title, options)).await.map_err(s)?;
     let answer = answers.next().await.expect("the portal answers the request").map_err(s)?;
-    let (code, results): (u32, HashMap<String, OwnedValue>) =
-        answer.body().deserialize().expect("Response carries a code and the results");
+    let (code, results): (u32, HashMap<String, OwnedValue>) = answer.body().deserialize().expect("Response carries a code and the results");
     let uris = results.get("uris").map(|u| Vec::<String>::try_from(u.try_clone().expect("a string array")));
     picked(code, uris.transpose().expect("uris is a string array").unwrap_or_default())
 }
@@ -74,9 +72,7 @@ pub fn online() -> iced::futures::stream::Empty<bool> {
 }
 
 #[cfg(target_os = "linux")]
-async fn watch_network(
-    out: &mut iced::futures::channel::mpsc::Sender<bool>,
-) -> Result<std::convert::Infallible, String> {
+async fn watch_network(out: &mut iced::futures::channel::mpsc::Sender<bool>) -> Result<std::convert::Infallible, String> {
     use iced::futures::{SinkExt, StreamExt};
     let (obj, iface) = ("/org/freedesktop/portal/desktop", "org.freedesktop.portal.NetworkMonitor");
     let bus = crate::notify::bus().await?;

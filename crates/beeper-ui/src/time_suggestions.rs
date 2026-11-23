@@ -66,9 +66,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::Cancel => e.input = None,
-            Msg::Remove(t) if list.len() > 1 => {
-                return self.set_time_suggestions(list.into_iter().filter(|x| *x != t).collect())
-            }
+            Msg::Remove(t) if list.len() > 1 => return self.set_time_suggestions(list.into_iter().filter(|x| *x != t).collect()),
             Msg::Remove(_) => {}
             Msg::Reset => return self.set_time_suggestions(Vec::new()),
             Msg::Hover(o, true) => {
@@ -97,9 +95,7 @@ impl BeeperGuiApp {
         let mut st = self.store.write();
         let client = st.matrix.clone();
         match beeper_core::matrix::time_suggestions_write(&mut st).zip(client) {
-            Some(((kind, content), c)) => {
-                Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed)
-            }
+            Some(((kind, content), c)) => Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed),
             None => Task::none(),
         }
     }
@@ -148,11 +144,7 @@ impl BeeperGuiApp {
             rows = rows.push(line);
         }
         let solid = |key: &str, content: El<'static>, msg: Option<UiMessage>| {
-            self.plain(
-                format!("time-{key}"),
-                button(content).padding([4, 6]).style(pill_style(p)).on_press_maybe(msg.clone()),
-                msg,
-            )
+            self.plain(format!("time-{key}"), button(content).padding([4, 6]).style(pill_style(p)).on_press_maybe(msg.clone()), msg)
         };
         let foot: El = match &e.input {
             Some(text) => {
@@ -182,8 +174,7 @@ impl BeeperGuiApp {
             None => {
                 let label = |t| txt(tr(t), 13.0).line_height(1.0).into();
                 let add = (n < TIME_SUGGESTIONS_MAX).then(|| edit(Msg::Add));
-                let buttons =
-                    row![solid("add", label("Add"), add), solid("reset", label("Reset"), Some(edit(Msg::Reset)))];
+                let buttons = row![solid("add", label("Add"), add), solid("reset", label("Reset"), Some(edit(Msg::Reset)))];
                 container(buttons.spacing(6)).width(Fill).align_right(Fill).padding(Padding::ZERO.top(6.0)).into()
             }
         };

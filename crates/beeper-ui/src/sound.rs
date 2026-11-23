@@ -21,12 +21,7 @@ const WAVS: [&[u8]; 2] = [include_bytes!("../assets/sound_send.wav"), include_by
 /// The interleaved samples of a bundled WAV, which is 24-bit stereo 48 kHz PCM with a 44-byte header.
 fn pcm(wav: &[u8]) -> Vec<f32> {
     assert_eq!(wav[20..40], *b"\x01\0\x02\0\x80\xbb\0\0\0\x65\x04\0\x06\0\x18\0data");
-    wav[44..]
-        .as_chunks::<3>()
-        .0
-        .iter()
-        .map(|&[a, b, c]| i32::from_le_bytes([0, a, b, c]) as f32 / 2_147_483_648.0)
-        .collect()
+    wav[44..].as_chunks::<3>().0.iter().map(|&[a, b, c]| i32::from_le_bytes([0, a, b, c]) as f32 / 2_147_483_648.0).collect()
 }
 
 /// Play `sound` at `volume` (0 to 1). Like Desktop, a sound plays at most once every 400 ms.

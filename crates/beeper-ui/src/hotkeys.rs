@@ -26,9 +26,7 @@ impl BeeperGuiApp {
             Msg::Toggle(name) => {
                 self.patch_settings(|s| {
                     match s.hotkey_keys(name) {
-                        "disabled" if prefs::hotkey_default(name) == "disabled" => {
-                            s.keybindings.insert(name.into(), "".into())
-                        }
+                        "disabled" if prefs::hotkey_default(name) == "disabled" => s.keybindings.insert(name.into(), "".into()),
                         "disabled" => s.keybindings.remove(name),
                         _ => s.keybindings.insert(name.into(), "disabled".into()),
                     };
@@ -131,10 +129,7 @@ impl BeeperGuiApp {
             }
             "Select Next Unread Chat" => {
                 let st = self.store.read();
-                let next = self
-                    .listed_chats(&st)
-                    .into_iter()
-                    .find(|c| c.flags & CHAT_UNREAD != 0 && Some(&c.id) != chat.as_ref());
+                let next = self.listed_chats(&st).into_iter().find(|c| c.flags & CHAT_UNREAD != 0 && Some(&c.id) != chat.as_ref());
                 next.map(|c| UiMessage::SelectChat(c.id.clone()))
             }
             "Switch First 9 Chats Modifier" => {
@@ -157,12 +152,8 @@ impl BeeperGuiApp {
                 self.cmd_bar_commands_mode = true;
                 return open;
             }
-            "Filter By Account" => {
-                Some(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::FilterAccount)))
-            }
-            "Remind Later" => {
-                chat.map(|id| UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(id))))
-            }
+            "Filter By Account" => Some(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::FilterAccount))),
+            "Remind Later" => chat.map(|id| UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(id)))),
             "Cycle Filters" => {
                 self.set_filters(match self.list().filters {
                     f if f == 1 << 4 => 0,
@@ -171,9 +162,7 @@ impl BeeperGuiApp {
                 });
                 None
             }
-            "Keyboard Shortcuts" => {
-                Some(UiMessage::Hotkeys(hotkeys::Msg::Modal(self.hotkeys_modal.is_none().then(String::new))))
-            }
+            "Keyboard Shortcuts" => Some(UiMessage::Hotkeys(hotkeys::Msg::Modal(self.hotkeys_modal.is_none().then(String::new)))),
             "Filter: All" => {
                 self.set_filters(0);
                 None
@@ -215,11 +204,7 @@ impl BeeperGuiApp {
             "Send Feedback" => chat.map(|_| UiMessage::OpenQuickLook("Feedback".into(), FEEDBACK.into())),
             // Desktop's `openPrefsInNewWindow` focuses the open Settings, else opens it at Accounts.
             "Settings" => {
-                let tab = if self.settings_window.is_some() {
-                    self.active_settings_tab
-                } else {
-                    crate::SettingsTab::Accounts
-                };
+                let tab = if self.settings_window.is_some() { self.active_settings_tab } else { crate::SettingsTab::Accounts };
                 Some(UiMessage::Settings(settings::Msg::Open(tab)))
             }
             "Switch First 9 Spaces Modifier" => {
@@ -269,9 +254,7 @@ impl BeeperGuiApp {
             }
             "Message: Open First Link" => {
                 let text = self.selected_message().and_then(|m| m.text);
-                text.and_then(|t| {
-                    t.split_whitespace().find(|w| w.starts_with("http")).map(|u| UiMessage::OpenUrl(u.into()))
-                })
+                text.and_then(|t| t.split_whitespace().find(|w| w.starts_with("http")).map(|u| UiMessage::OpenUrl(u.into())))
             }
             "Message: Quick React" => selected.map(|m| self.quick_react(m)),
             "Message: Quote & Reply" => selected.map(|a0| UiMessage::Composer(composer::Msg::StartReply(a0))),
@@ -290,20 +273,14 @@ impl BeeperGuiApp {
             "Show Replies" => chat.and_then(|_| {
                 let st = self.store.read();
                 let msgs = self.timeline(&st).0;
-                let chat = &st.chats[st
-                    .resolve_chat_idx(self.pane.selected_chat_id.as_ref().expect("an open chat"))
-                    .expect("a known chat")];
+                let chat =
+                    &st.chats[st.resolve_chat_idx(self.pane.selected_chat_id.as_ref().expect("an open chat")).expect("a known chat")];
                 self.pane.selected_msgs.iter().find_map(|id| {
                     let m = st.message(id);
                     let replied = || msgs.iter().any(|r| r.id != m.id && reply_root(&st, r) == m.id);
-                    let thread =
-                        || can_thread(&st, chat, m).then(|| UiMessage::Thread(threads::Msg::Show(m.id.clone())));
+                    let thread = || can_thread(&st, chat, m).then(|| UiMessage::Thread(threads::Msg::Show(m.id.clone())));
                     let chain = || replied().then(|| UiMessage::Message(message::Msg::ShowReplies(m.id.clone())));
-                    m.linked_message_id
-                        .clone()
-                        .map(|a0| UiMessage::Message(message::Msg::ShowReplies(a0)))
-                        .or_else(thread)
-                        .or_else(chain)
+                    m.linked_message_id.clone().map(|a0| UiMessage::Message(message::Msg::ShowReplies(a0))).or_else(thread).or_else(chain)
                 })
             }),
             _ => unreachable!("{name} has no action"),

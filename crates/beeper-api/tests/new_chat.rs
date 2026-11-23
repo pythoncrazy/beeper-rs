@@ -30,8 +30,7 @@ fn room(id: &str) -> Value {
 /// the next sync, which has a new token. The log has the bridge requests and the `createRoom` bodies.
 async fn homeserver(log: Arc<Mutex<Vec<String>>>) -> String {
     let rooms = Arc::new(Mutex::new(Vec::<String>::new()));
-    let sam =
-        json!({ "id": "15550100", "name": "Sam Lee", "mxid": "@whatsapp_sam:x", "identifiers": ["tel:+15550100"] });
+    let sam = json!({ "id": "15550100", "name": "Sam Lee", "mxid": "@whatsapp_sam:x", "identifiers": ["tel:+15550100"] });
     beeper_core::bridge_stub::serve(move |method, path, body| {
         let path = path.split_once('?').map_or(path, |p| p.0);
         let made = |room: &str| rooms.lock().unwrap().push(room.into());
@@ -137,8 +136,7 @@ async fn chats_are_made_by_the_bridge_like_desktop() {
     assert_eq!(take(), ["GET capabilities", "POST create_dm/%2B15550100"], "the phone number, which WhatsApp takes");
 
     let email = json!({ "accountID": "whatsapp", "user": { "email": "sam@x.com" } });
-    let unsupported =
-        json!({ "message": "No supported identifiers for this account", "code": "UNSUPPORTED_IDENTIFIER" });
+    let unsupported = json!({ "message": "No supported identifiers for this account", "code": "UNSUPPORTED_IDENTIFIER" });
     assert_eq!(call(port, "POST", "/v1/chats/start", email).await, (400, unsupported));
     let nobody = json!({ "accountID": "whatsapp", "user": { "phoneNumber": "+15550199" }, "mode": "start" });
     let not_found = json!({ "message": "User not found", "code": "USER_NOT_FOUND" });
@@ -146,18 +144,13 @@ async fn chats_are_made_by_the_bridge_like_desktop() {
     take();
 
     let single = json!({ "accountID": "whatsapp", "type": "single", "participantIDs": ["+15550199"] });
-    let failed =
-        json!({ "message": "Failed to execute tool: createChat", "code": "TOOL_EXECUTION_ERROR", "details": {} });
+    let failed = json!({ "message": "Failed to execute tool: createChat", "code": "TOOL_EXECUTION_ERROR", "details": {} });
     assert_eq!(call(port, "POST", "/v1/chats", single).await, (500, failed));
     assert_eq!(take(), ["POST create_dm/%2B15550199"]);
     let group = json!({ "accountID": "hungryserv", "type": "group", "participantIDs": ["@sam:x"], "title": "Team" });
     let (status, chat) = call(port, "POST", "/v1/chats", group).await;
-    assert_eq!(
-        (status, &chat["id"], &chat["chatID"], chat.get("status")),
-        (200, &json!("!group:x"), &json!("!group:x"), None)
-    );
-    let encryption =
-        json!({ "type": "m.room.encryption", "state_key": "", "content": { "algorithm": "m.megolm.v1.aes-sha2" } });
+    assert_eq!((status, &chat["id"], &chat["chatID"], chat.get("status")), (200, &json!("!group:x"), &json!("!group:x"), None));
+    let encryption = json!({ "type": "m.room.encryption", "state_key": "", "content": { "algorithm": "m.megolm.v1.aes-sha2" } });
     let room = json!({ "invite": ["@sam:x"], "preset": "private_chat", "initial_state": [encryption], "name": "Team" });
     assert_eq!(take(), [format!("createRoom {room}")], "a Matrix group of Desktop's SDK");
     syncing.abort();

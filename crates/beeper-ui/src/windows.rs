@@ -86,11 +86,7 @@ impl BeeperGuiApp {
                 // The serials of the input that the window gets from now on let the app raise its windows later.
                 #[cfg(target_os = "linux")]
                 let track = self.unmaps().then(|| window::run(id, activation::track).discard());
-                let key = if Some(id) == self.settings_window {
-                    "BEEPER_SCREENSHOT_SETTINGS"
-                } else {
-                    "BEEPER_SCREENSHOT_EXIT"
-                };
+                let key = if Some(id) == self.settings_window { "BEEPER_SCREENSHOT_SETTINGS" } else { "BEEPER_SCREENSHOT_EXIT" };
                 if std::env::var(key).is_ok() {
                     self.shot = Some(id);
                 }
@@ -146,10 +142,7 @@ impl BeeperGuiApp {
             }
             Msg::OpenChat(cid) => {
                 self.list.chat_menu = None;
-                let open = self
-                    .chat_windows
-                    .iter()
-                    .find(|w| w.1.selected_chat_id.as_deref() == Some(&cid) && !self.is_space_window(w.0));
+                let open = self.chat_windows.iter().find(|w| w.1.selected_chat_id.as_deref() == Some(&cid) && !self.is_space_window(w.0));
                 if let Some(&(id, _)) = open {
                     return self.raise(id);
                 }
@@ -169,8 +162,7 @@ impl BeeperGuiApp {
                     return self.raise(id);
                 }
                 // Desktop's space window is 1200 by 800 in the middle of the screen, and keeps no window state.
-                let settings =
-                    window::Settings { position: window::Position::Centered, ..Self::window_settings(MAIN_SIZE) };
+                let settings = window::Settings { position: window::Position::Centered, ..Self::window_settings(MAIN_SIZE) };
                 let (id, open) = self.open_window(settings);
                 self.chat_windows.push((id, Pane { size: MAIN_SIZE, ..Pane::default() }));
                 let list = chat_list::ListState::space(&entry);
@@ -276,9 +268,8 @@ impl BeeperGuiApp {
             }
             Msg::ScreenshotCaptured(id, shot) => {
                 let is_settings = Some(id) == self.settings_window;
-                let path =
-                    std::env::var(if is_settings { "BEEPER_SCREENSHOT_SETTINGS" } else { "BEEPER_SCREENSHOT_EXIT" })
-                        .expect("screenshot path");
+                let path = std::env::var(if is_settings { "BEEPER_SCREENSHOT_SETTINGS" } else { "BEEPER_SCREENSHOT_EXIT" })
+                    .expect("screenshot path");
                 write_rgba_png(std::path::Path::new(&path), shot.size.width, shot.size.height, &shot.rgba);
                 if !is_settings && std::env::var("BEEPER_SCREENSHOT_SETTINGS").is_ok() {
                     return self.open_settings(SettingsTab::General);
@@ -386,9 +377,7 @@ pub(crate) fn read_subwindows(path: &std::path::Path) -> Vec<Subwindow> {
 /// the launcher badge of Linux.
 #[cfg(target_os = "linux")]
 pub(crate) fn badge_sync(unread: u32, visible: bool) -> Task<UiMessage> {
-    Task::future(tray::update(unread, visible))
-        .map(Result::err)
-        .and_then(|e| Task::done(UiMessage::Window(windows::Msg::TrayFailed(e))))
+    Task::future(tray::update(unread, visible)).map(Result::err).and_then(|e| Task::done(UiMessage::Window(windows::Msg::TrayFailed(e))))
 }
 
 /// Desktop's `setAppBadgeCount`: the unread count on the Dock icon of macOS.
@@ -419,10 +408,7 @@ fn center_over(id: window::Id, parent: window::Id, around: Size, size: Size) -> 
 pub(crate) fn grown(at: Point, old: Size, size: Size, screen: Size) -> (Point, Size) {
     let fit = Size::new(size.width.min(screen.width), size.height.min(screen.height));
     let place = |at: f32, old: f32, new: f32, room: f32| (at - (new - old) / 2.0).min(room - new).max(0.0).floor();
-    (
-        Point::new(place(at.x, old.width, fit.width, screen.width), place(at.y, old.height, fit.height, screen.height)),
-        fit,
-    )
+    (Point::new(place(at.x, old.width, fit.width, screen.width), place(at.y, old.height, fit.height, screen.height)), fit)
 }
 
 impl BeeperGuiApp {
@@ -449,9 +435,7 @@ impl BeeperGuiApp {
         }
         let settings = window::Settings { size: settings.size * (1.0 / self.zoom), icon, ..settings };
         // iced's `window::open` with a given ID, so that all the state of a window that hid on Wayland follows it.
-        iced_runtime::task::oneshot(move |done| {
-            iced_runtime::Action::Window(iced_runtime::window::Action::Open(id, settings, done))
-        })
+        iced_runtime::task::oneshot(move |done| iced_runtime::Action::Window(iced_runtime::window::Action::Open(id, settings, done)))
     }
 
     /// Whether the app hides a window by closing it and opening it again: on Wayland, where winit cannot hide a
@@ -506,9 +490,7 @@ impl BeeperGuiApp {
         let opened = open.then(move |id| {
             let opened = Task::done(UiMessage::Window(Msg::Opened(id)));
             match main {
-                true => opened
-                    .chain(Self::keep_on_screen(id))
-                    .chain(focus.clone().map_or_else(Task::none, iced::widget::operation::focus)),
+                true => opened.chain(Self::keep_on_screen(id)).chain(focus.clone().map_or_else(Task::none, iced::widget::operation::focus)),
                 false => opened,
             }
         });
@@ -642,8 +624,7 @@ impl BeeperGuiApp {
 
     /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.
     pub(crate) fn open_child(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
-        let (id, open) =
-            self.open_window(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
+        let (id, open) = self.open_window(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
         // The main window, or the sign-in window of the onboarding.
         let (parent, around) = match self.main_window {
             Some(main) => (main, self.pane.size * self.zoom),
@@ -658,8 +639,7 @@ impl BeeperGuiApp {
             min_size: Some(Size::new(330.0, 400.0)),
             exit_on_close_request: false,
             icon: Some({
-                let img =
-                    ::image::load_from_memory(include_bytes!("../assets/icon.png")).expect("the app icon is a PNG");
+                let img = ::image::load_from_memory(include_bytes!("../assets/icon.png")).expect("the app icon is a PNG");
                 let img = img.into_rgba8();
                 let (w, h) = img.dimensions();
                 window::icon::from_rgba(img.into_raw(), w, h).expect("the app icon is valid RGBA")
@@ -696,8 +676,7 @@ impl BeeperGuiApp {
             pane.carousel = Some(carousel);
             return self.raise(id);
         }
-        let around =
-            self.chat_windows.iter().find(|w| w.0 == opener).expect("an open thread window").1.size * self.zoom;
+        let around = self.chat_windows.iter().find(|w| w.0 == opener).expect("an open thread window").1.size * self.zoom;
         let size = Size::new(around.width.max(800.0), around.height.max(600.0));
         let (id, open) = self.open_window(Self::window_settings(size));
         self.chat_windows.push((id, Pane { carousel: Some(carousel), size, ..Pane::default() }));
@@ -742,11 +721,7 @@ impl BeeperGuiApp {
         let group = self.group_window.as_ref().map(|d| d.id);
         let lists = lists.chain(self.poll_windows.iter().map(|w| w.id)).chain(self.add_accounts.iter().map(|a| a.id));
         let lists = lists.chain(self.nickname_windows.iter().map(|d| d.id));
-        singles
-            .chain([group, self.blocked_window, self.how_window, self.networks.window])
-            .flatten()
-            .chain(lists)
-            .collect()
+        singles.chain([group, self.blocked_window, self.how_window, self.networks.window]).flatten().chain(lists).collect()
     }
 
     /// Desktop's `hideToTray` (`Du`), which hides the sub-windows and then the main window, and `showWindow`, which
@@ -772,10 +747,8 @@ impl BeeperGuiApp {
     /// Desktop's `showAllWindows` (`hm`): the sub-windows, then the main window.
     pub(crate) fn show_all(&mut self) -> Task<UiMessage> {
         let subs: Vec<_> = self.sub_windows().into_iter().collect();
-        let subs: Vec<_> = subs
-            .into_iter()
-            .map(|w| self.map_window(w).unwrap_or_else(|| window::set_mode(w, window::Mode::Windowed)))
-            .collect();
+        let subs: Vec<_> =
+            subs.into_iter().map(|w| self.map_window(w).unwrap_or_else(|| window::set_mode(w, window::Mode::Windowed))).collect();
         Task::batch(subs).chain(self.set_hidden(false))
     }
 }
@@ -785,9 +758,7 @@ impl BeeperGuiApp {
 mod activation {
     use iced::window::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
-    fn handles(
-        w: &dyn iced::window::Window,
-    ) -> Option<(std::ptr::NonNull<std::ffi::c_void>, Option<std::ptr::NonNull<std::ffi::c_void>>)> {
+    fn handles(w: &dyn iced::window::Window) -> Option<(std::ptr::NonNull<std::ffi::c_void>, Option<std::ptr::NonNull<std::ffi::c_void>>)> {
         let RawDisplayHandle::Wayland(display) = w.display_handle().ok()?.as_raw() else { return None };
         let surface = match w.window_handle().ok().map(|h| h.as_raw()) {
             Some(RawWindowHandle::Wayland(h)) => Some(h.surface),

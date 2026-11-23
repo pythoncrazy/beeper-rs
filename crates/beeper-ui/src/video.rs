@@ -561,9 +561,7 @@ impl BeeperGuiApp {
     /// The video of message `mid` over `poster`, `w` by `h`, at `place`. The inline video of the played video tells
     /// when it comes into view and leaves it, like Desktop's `VisibilityMonitor`, an `IntersectionObserver` without
     /// a threshold.
-    pub(crate) fn view_video<'a>(
-        &self, mid: &str, url: &str, poster: El<'a>, size: (f32, f32), place: Place,
-    ) -> El<'a> {
+    pub(crate) fn view_video<'a>(&self, mid: &str, url: &str, poster: El<'a>, size: (f32, f32), place: Place) -> El<'a> {
         let video = self.view_video_at(mid, url, poster, size, place);
         match place {
             Place::Inline(_) if self.video.as_ref().is_some_and(|v| v.url == url) => {
@@ -595,9 +593,7 @@ impl BeeperGuiApp {
         }
         let frame = |f: image::Handle| image(f).width(w).height(h).border_radius(r);
         let base: El<'a> = match v.and_then(|v| v.frame.clone()) {
-            Some(f) => iced::widget::Stack::with_children(v.and_then(|v| v.under.clone()).map(|u| frame(u).into()))
-                .push(frame(f))
-                .into(),
+            Some(f) => iced::widget::Stack::with_children(v.and_then(|v| v.under.clone()).map(|u| frame(u).into())).push(frame(f)).into(),
             None => poster,
         };
         // A click on the inline video opens the carousel, and elsewhere it plays or pauses the video.
@@ -614,10 +610,7 @@ impl BeeperGuiApp {
                 .style(crate::style::bordered_btn([CLEAR; 3], [p.text; 3], edge, 1.0, 99.0))
                 .on_press(UiMessage::Message(message::Msg::Download(mid.into(), None)));
             let text = crate::semi(tr("Something went wrong displaying video"), 13.0).color(p.text);
-            let (text, download) = (
-                container(text).padding(Padding::ZERO.top(13.0)),
-                container(download).padding(Padding::ZERO.top(10.0)),
-            );
+            let (text, download) = (container(text).padding(Padding::ZERO.top(13.0)), container(download).padding(Padding::ZERO.top(10.0)));
             let card = column![tinted(&ERROR, 32.0, p.text), text, download].align_x(Center);
             let card = container(card).center_x(w.max(200.0)).center_y(h);
             return card.style(crate::style::bordered_box(p.window, edge, 1.0, 8.0)).into();
@@ -710,17 +703,13 @@ impl BeeperGuiApp {
 
     /// A white control of the played video, which works once the video is loaded.
     fn video_button<'a>(&self, v: &Video, glyph: &svg::Handle, msg: UiMessage) -> El<'a> {
-        button(tinted(glyph, 20.0, Color::WHITE))
-            .bare(Color::WHITE)
-            .on_press_maybe(v.media.is_some().then_some(msg))
-            .into()
+        button(tinted(glyph, 20.0, Color::WHITE)).bare(Color::WHITE).on_press_maybe(v.media.is_some().then_some(msg)).into()
     }
 
     /// Desktop's Rewind, Play or Pause, and Fast Forward buttons.
     fn video_skips<'a>(&self, v: &Video) -> iced::widget::Row<'a, UiMessage> {
         let skip = |i: usize, by| self.video_button(v, &GLYPHS[i], UiMessage::Video(Msg::Skip(by)));
-        let toggle =
-            self.video_button(v, &crate::voice::ICONS[usize::from(v.playing())], UiMessage::Video(Msg::Toggle));
+        let toggle = self.video_button(v, &crate::voice::ICONS[usize::from(v.playing())], UiMessage::Video(Msg::Toggle));
         row![skip(0, -10.0), toggle, skip(1, 10.0)]
     }
 
@@ -733,11 +722,7 @@ impl BeeperGuiApp {
         let next = crate::voice::RATES[(k + 1) % crate::voice::RATES.len()];
         let speed = self.video_button(v, &SPEEDS[k], UiMessage::Video(Msg::Rate(next)));
         // `.video-time-display` is 11 px.
-        let time = crate::style::fixed(
-            format!("{}/{}", mmss(v.pos().min(secs)), mmss(secs)),
-            11.0,
-            iced::font::Weight::Semibold,
-        );
+        let time = crate::style::fixed(format!("{}/{}", mmss(v.pos().min(secs)), mmss(secs)), 11.0, iced::font::Weight::Semibold);
         let time = time.color(Color::WHITE);
         let bar = row![self.video_skips(v).spacing(12), video_progress(v), speed, time].spacing(12).align_y(Center);
         let bar = mouse_area(container(bar).padding([8, 12])).on_press(UiMessage::Noop);
@@ -763,10 +748,9 @@ impl BeeperGuiApp {
             .on_enter(UiMessage::Video(Msg::Sub));
         let head = match pip {
             true => vec![item(tr("Show in Chat"), UiMessage::Video(Msg::ShowInChat))],
-            false => vec![
-                item(tr("Fullscreen"), UiMessage::Video(Msg::Fullscreen)),
-                item(action("Open in PiP"), UiMessage::Video(Msg::OpenPip)),
-            ],
+            false => {
+                vec![item(tr("Fullscreen"), UiMessage::Video(Msg::Fullscreen)), item(action("Open in PiP"), UiMessage::Video(Msg::OpenPip))]
+            }
         };
         let tail = [
             item(action("Download"), UiMessage::Message(message::Msg::Download(mid.into(), None))),
@@ -808,8 +792,7 @@ mod tests {
             let mut st = app.store.write();
             let base = st.messages[*st.timeline_indices(NOTE_CHAT_ID).last().expect("a message")].clone();
             let size = Some(AttachmentSize { width: Some(320), height: Some(180) });
-            let a =
-                Attachment { attachment_type: "video".into(), src_url: Some(CLIP.into()), size, ..Default::default() };
+            let a = Attachment { attachment_type: "video".into(), src_url: Some(CLIP.into()), size, ..Default::default() };
             let sort_key = format!("{:016}", 9_000_000);
             st.upsert_message(Message { id: "$clip".into(), sort_key, attachments: vec![a], text: None, ..base });
         }
@@ -859,10 +842,7 @@ mod tests {
         app.video.as_mut().unwrap().at = 1.0;
         let _ = app.update(UiMessage::Video(Msg::Tick));
         let v = app.video.as_ref().unwrap();
-        assert_eq!(
-            (v.frame.as_ref().map(image::Handle::id), v.under.as_ref().map(image::Handle::id)),
-            (Some(b.id()), Some(a.id()))
-        );
+        assert_eq!((v.frame.as_ref().map(image::Handle::id), v.under.as_ref().map(image::Handle::id)), (Some(b.id()), Some(a.id())));
     }
 
     /// Desktop's video menu takes the place of the message menu for a right click on the video, and its Open in PiP
@@ -992,8 +972,7 @@ mod tests {
         let _ = app.update(UiMessage::Video(Msg::OpenPip));
         let clip = voice::Clip { samples: vec![0.0; 480].into(), peaks: vec![1.0].into() };
         let _ = app.update(UiMessage::Voice(voice::Msg::Loaded("mxc://a".into(), Ok(clip))));
-        let _ =
-            app.update(UiMessage::Voice(voice::Msg::Toggle(NOTE_CHAT_ID.into(), "$voice".into(), "mxc://a".into())));
+        let _ = app.update(UiMessage::Voice(voice::Msg::Toggle(NOTE_CHAT_ID.into(), "$voice".into(), "mxc://a".into())));
         assert!(app.pip.is_none() && app.video.is_none(), "a playing track closes it");
     }
 }

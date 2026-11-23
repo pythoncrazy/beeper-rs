@@ -94,8 +94,7 @@ impl BeeperGuiApp {
     pub(crate) fn load_pdfs(&mut self) -> Task<UiMessage> {
         let client = self.store.read().matrix.clone();
         let loadable = |u: &String| client.is_some() || u.starts_with("https://") || u.starts_with("data:");
-        let (urls, rest): (BTreeSet<_>, _) =
-            std::mem::take(&mut *self.wants.pdfs.borrow_mut()).into_iter().partition(loadable);
+        let (urls, rest): (BTreeSet<_>, _) = std::mem::take(&mut *self.wants.pdfs.borrow_mut()).into_iter().partition(loadable);
         *self.wants.pdfs.borrow_mut() = rest;
         let urls: Vec<String> = urls.into_iter().filter(|u| !self.pdfs.contains_key(u)).collect();
         self.pdfs.extend(urls.iter().map(|u| (u.clone(), None)));
@@ -118,8 +117,7 @@ impl BeeperGuiApp {
             Task::perform(doc, move |r| UiMessage::Loaded(loads::Msg::Pdf(url.clone(), r)))
         });
         let draws = pages.into_iter().map(|(key, (doc, n))| {
-            let page =
-                async move { tokio::task::spawn_blocking(move || render(&doc, n)).await.expect("PDF render task") };
+            let page = async move { tokio::task::spawn_blocking(move || render(&doc, n)).await.expect("PDF render task") };
             Task::perform(page, move |r| UiMessage::Loaded(loads::Msg::Media(key.clone(), r)))
         });
         Task::batch(reads.chain(draws))
@@ -129,9 +127,7 @@ impl BeeperGuiApp {
     /// like an image, react-pdf's "Loading PDF…", or "Unable to load PDF…". The second element is its
     /// `.pdf-carousel-controls`, 40 px above the bottom of the first and 40 px left of its middle, which goes over the
     /// zoom of the carousel.
-    pub(crate) fn view_pdf<'a>(
-        &'a self, url: &str, n: usize, turn: (f32, f32, Instant), area: Size,
-    ) -> (El<'a>, El<'a>) {
+    pub(crate) fn view_pdf<'a>(&'a self, url: &str, n: usize, turn: (f32, f32, Instant), area: Size) -> (El<'a>, El<'a>) {
         let white = Color::WHITE;
         // react-pdf's messages, which Desktop does not translate, and the error in the 16 px type of the carousel.
         let note = |s: &'a str| -> (El<'a>, Size) {
@@ -149,14 +145,10 @@ impl BeeperGuiApp {
                         let size = fit(page.render_dimensions(), area);
                         // The page is white while it draws, like react-pdf's page under its canvas.
                         let page: El<'a> = match self.media_at(&page_key(url, n)) {
-                            Some(Ok(frames)) => anim::turning(frames, false, self.started, turn, move |f| {
-                                image(f).width(size.width).height(size.height)
-                            }),
-                            _ => container(Space::new())
-                                .width(size.width)
-                                .height(size.height)
-                                .style(fill_box(white, 0.0))
-                                .into(),
+                            Some(Ok(frames)) => {
+                                anim::turning(frames, false, self.started, turn, move |f| image(f).width(size.width).height(size.height))
+                            }
+                            _ => container(Space::new()).width(size.width).height(size.height).style(fill_box(white, 0.0)).into(),
                         };
                         (page, size)
                     }
@@ -182,8 +174,7 @@ impl BeeperGuiApp {
         ]
         .align_y(Center);
         let controls = container(line).width(100).padding([0, 8]).center_y(CONTROLS_H);
-        let controls =
-            mouse_area(controls.style(fill_box(Color::BLACK.scale_alpha(0.5), 16.0))).on_press(UiMessage::Noop);
+        let controls = mouse_area(controls.style(fill_box(Color::BLACK.scale_alpha(0.5), 16.0))).on_press(UiMessage::Noop);
         // The middle of the carousel below its 50 px header, inside its 8 px margin.
         let (x, y) = (area.width / 2.0, 50.0 + 8.0 + (area.height - 66.0) / 2.0);
         let at = Padding::ZERO.left(x - 40.0).top(y + size.height / 2.0 - 40.0 - CONTROLS_H);
@@ -215,10 +206,7 @@ mod tests {
             ),
         ];
         let content = 3 + pages;
-        objects.extend(
-            (0..pages)
-                .map(|_| format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents {content} 0 R >>")),
-        );
+        objects.extend((0..pages).map(|_| format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents {content} 0 R >>")));
         let draw = "0 0 0 rg 0 50 100 50 re f";
         objects.push(format!("<< /Length {} >>\nstream\n{draw}\nendstream", draw.len()));
         let mut pdf = b"%PDF-1.4\n".to_vec();
@@ -230,9 +218,7 @@ mod tests {
         let xref = pdf.len();
         pdf.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
         pdf.extend(offsets.iter().flat_map(|o| format!("{o:010} 00000 n \n").into_bytes()));
-        pdf.extend(
-            format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes(),
-        );
+        pdf.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
         pdf
     }
 

@@ -38,9 +38,7 @@ fn client() -> &'static reqwest::Client {
     static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     HTTP.get_or_init(|| {
         let builder = crate::net::builder().redirect(reqwest::redirect::Policy::none());
-        crate::net::client(
-            builder.connect_timeout(Duration::from_secs(20)).read_timeout(STALL).user_agent("matrix-rust-sdk"),
-        )
+        crate::net::client(builder.connect_timeout(Duration::from_secs(20)).read_timeout(STALL).user_agent("matrix-rust-sdk"))
     })
 }
 
@@ -122,8 +120,7 @@ impl Sink {
 /// The download URL of the SDK's `DownloadFileWithContext`: `/_matrix/client/v1/media/download/{server}/{id}`, with
 /// `com.beeper.interactive_download_request` set to `true` or `false` like the media manager's `downloadMedia`.
 pub(crate) fn url(homeserver: &Url, uri: &MxcUri, interactive: bool) -> Result<Url, Failure> {
-    let (server, id) =
-        uri.parts().map_err(|e| Failure { again: false, ..Failure::new(format!("bad MXC URI: {e}")) })?;
+    let (server, id) = uri.parts().map_err(|e| Failure { again: false, ..Failure::new(format!("bad MXC URI: {e}")) })?;
     let mut url = homeserver.clone();
     let path = ["_matrix", "client", "v1", "media", "download", server.as_str(), id];
     url.path_segments_mut().expect("a base URL").pop_if_empty().extend(path);
@@ -156,9 +153,7 @@ fn network(e: reqwest::Error) -> Failure {
 
 /// One try of the download of `source`: its bytes, decrypted when it is encrypted. A FLOE body decrypts a segment at
 /// a time as it downloads, like the SDK's `FLOEStream`.
-pub(crate) async fn once(
-    homeserver: &Url, token: &str, source: &Source, interactive: bool,
-) -> Result<Vec<u8>, Failure> {
+pub(crate) async fn once(homeserver: &Url, token: &str, source: &Source, interactive: bool) -> Result<Vec<u8>, Failure> {
     let mut sink = Sink::new(source)?;
     let first = url(homeserver, source.uri(), interactive)?;
     let (mut at, mut trail) = (first.clone(), Vec::new());
@@ -206,8 +201,7 @@ fn refused(status: StatusCode, body: &[u8], via: &str) -> Failure {
         Some(code) => format!("{code} (HTTP {}): {}{via}", status.as_u16(), json["error"].as_str().unwrap_or_default()),
         None => format!("HTTP {status}{via}"),
     };
-    let again = !(code == Some(crate::matrix::MEDIA_RELOAD_NEEDED) || status == StatusCode::NOT_FOUND)
-        && code != Some(NOT_FOUND);
+    let again = !(code == Some(crate::matrix::MEDIA_RELOAD_NEEDED) || status == StatusCode::NOT_FOUND) && code != Some(NOT_FOUND);
     let wait = json["retry_after_ms"].as_u64().map(Duration::from_millis);
     Failure { error, again, wait }
 }

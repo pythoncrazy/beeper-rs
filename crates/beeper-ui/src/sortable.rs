@@ -60,8 +60,7 @@ pub struct KeySort {
 impl KeySort {
     fn new(p: Pick) -> Option<Self> {
         let at = p.items.iter().position(|i| *i == p.id)?;
-        let mut s =
-            KeySort { window: p.window, list: p.list, id: p.id, items: p.items, cols: p.cols.max(1), at, over: None };
+        let mut s = KeySort { window: p.window, list: p.list, id: p.id, items: p.items, cols: p.cols.max(1), at, over: None };
         // `closestCenter` over the droppables: the item itself, or the nearest other one when the item is disabled.
         s.over = s.nearest(|_| true).first().copied();
         Some(s)
@@ -150,9 +149,7 @@ pub(crate) fn key_msg(key: &Key, mods: Modifiers) -> Option<Msg> {
     match key {
         Key::Named(Named::Enter | Named::Tab) => Some(Msg::Drop),
         Key::Named(Named::Escape) => Some(Msg::Cancel),
-        Key::Named(k @ (Named::ArrowUp | Named::ArrowDown | Named::ArrowLeft | Named::ArrowRight)) => {
-            Some(Msg::Move(*k))
-        }
+        Key::Named(k @ (Named::ArrowUp | Named::ArrowDown | Named::ArrowLeft | Named::ArrowRight)) => Some(Msg::Move(*k)),
         _ => None,
     }
 }
@@ -164,9 +161,7 @@ impl BeeperGuiApp {
     }
 
     /// The message of Enter and Space on the item `id` of `list` in `window`, whose items show as `items`.
-    pub(crate) fn pick(
-        window: Option<window::Id>, list: List, id: &str, items: &Arc<[String]>, cols: usize,
-    ) -> Option<UiMessage> {
+    pub(crate) fn pick(window: Option<window::Id>, list: List, id: &str, items: &Arc<[String]>, cols: usize) -> Option<UiMessage> {
         let (id, items) = (id.to_string(), items.clone());
         window.map(|window| UiMessage::Sort(Msg::Pick(Box::new(Pick { window, list, id, items, cols }))))
     }
@@ -200,8 +195,7 @@ impl BeeperGuiApp {
             }
             List::Pins => {
                 let Some(order) = s.moved(&s.items) else { return self.settle() };
-                self.pin_drag =
-                    Some(PinDrag { id: s.id.clone(), from: None, at: Point::ORIGIN, order: Some(order), start: 0 });
+                self.pin_drag = Some(PinDrag { id: s.id.clone(), from: None, at: Point::ORIGIN, order: Some(order), start: 0 });
                 self.pins(pins::Msg::DragEnd)
             }
             // `ZLt`'s `setAccountsOrder` and `persistAccountsOrder`: the place of each account in the list.
@@ -311,8 +305,7 @@ mod tests {
         focus(&mut app, main, &first);
         ask(&mut app, main, size, None, Ask::Press(true));
         key(&mut app, main, Named::ArrowRight);
-        let order: Vec<String> =
-            ids(&survey_of(&app, main, size, None)).into_iter().filter(|s| s.starts_with("pin-")).collect();
+        let order: Vec<String> = ids(&survey_of(&app, main, size, None)).into_iter().filter(|s| s.starts_with("pin-")).collect();
         assert_eq!(order[1], first, "the pin shows in the place it drops at");
         key(&mut app, main, Named::Enter);
         assert_eq!(pins(&app), moved(&before, 0, 1), "Enter drops it after the next pin");

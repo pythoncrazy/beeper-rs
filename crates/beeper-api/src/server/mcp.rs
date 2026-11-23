@@ -13,7 +13,8 @@ use std::sync::LazyLock;
 static TOOLS: LazyLock<Vec<Value>> =
     LazyLock::new(|| serde_json::from_str(include_str!("../../assets/mcp_tools.json")).expect("MCP tools JSON"));
 const VERSIONS: [&str; 4] = ["2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
-const INSTRUCTIONS: &str = "Access to all chats and messages across networks using Beeper Desktop. Can be used to find, get, send, and manage messages and chats.";
+const INSTRUCTIONS: &str =
+    "Access to all chats and messages across networks using Beeper Desktop. Can be used to find, get, send, and manage messages and chats.";
 
 /// An error of the MCP SDK's transport, which writes the JSON with `writeHead`, so without a `Content-Type`.
 fn rpc_error(status: u16, code: i64, message: &str) -> Reply {
@@ -42,8 +43,7 @@ struct Caps {
     name_len: Option<usize>,
 }
 
-const CAPS: Caps =
-    Caps { top_level_unions: true, valid_json: true, refs: true, unions: true, formats: true, name_len: None };
+const CAPS: Caps = Caps { top_level_unions: true, valid_json: true, refs: true, unions: true, formats: true, name_len: None };
 const CAPABILITIES: [&str; 6] = ["top-level-unions", "valid-json", "refs", "unions", "formats", "tool-name-length"];
 const CLIENTS: [&str; 5] = ["openai-agents", "claude", "claude-code", "cursor", "infer"];
 
@@ -68,20 +68,16 @@ fn tools(msg: &HttpMessage) -> Result<(Vec<Value>, Caps), String> {
     // The zod issues in the order of Desktop's schema (`dx`).
     let check = |key: &str, allowed: &[&str]| -> Vec<String> {
         let values = values(key).into_iter().enumerate();
-        values
-            .filter(|(_, v)| !allowed.contains(v))
-            .map(|(i, v)| enum_issue(format!("{key}[{i}]"), allowed, v))
-            .collect()
+        values.filter(|(_, v)| !allowed.contains(v)).map(|(i, v)| enum_issue(format!("{key}[{i}]"), allowed, v)).collect()
     };
     let client = query.get("client").and_then(Value::as_str).filter(|c| !CLIENTS.contains(c));
-    let issues: Vec<String> =
-        [check("tools", &["docs"]), check("no_tools", &["docs"]), check("operation", &["read", "write"])]
-            .into_iter()
-            .chain([check("no_operation", &["read", "write"])])
-            .chain([client.map(|c| enum_issue("client".into(), &CLIENTS, c)).into_iter().collect()])
-            .chain([check("no_capability", &CAPABILITIES)])
-            .flatten()
-            .collect();
+    let issues: Vec<String> = [check("tools", &["docs"]), check("no_tools", &["docs"]), check("operation", &["read", "write"])]
+        .into_iter()
+        .chain([check("no_operation", &["read", "write"])])
+        .chain([client.map(|c| enum_issue("client".into(), &CLIENTS, c)).into_iter().collect()])
+        .chain([check("no_capability", &CAPABILITIES)])
+        .flatten()
+        .collect();
     if !issues.is_empty() {
         return Err(format!("Validation error: {}", issues.join("; ")));
     }
@@ -127,9 +123,7 @@ fn tools(msg: &HttpMessage) -> Result<(Vec<Value>, Caps), String> {
             })
         })
         .collect();
-    let simple = |s: &str| -> String {
-        s.to_lowercase().chars().filter(|c| c.is_ascii_lowercase() || ".*-_".contains(*c)).collect()
-    };
+    let simple = |s: &str| -> String { s.to_lowercase().chars().filter(|c| c.is_ascii_lowercase() || ".*-_".contains(*c)).collect() };
     let matches = |(kind, _, value): &(&str, bool, &str), t: &Value| match *kind {
         "resource" => glob(&simple(value), &simple(t["resource"].as_str().unwrap_or_default())),
         "operation" => t["operation"] == *value,
@@ -258,8 +252,7 @@ fn split_union(t: Value) -> Vec<Value> {
             let title = r["title"].as_str().map_or_else(|| format!("variant{}", i + 1), str::to_string);
             let mut v = t.clone();
             v["tool"]["name"] = format!("{}_{}", t["tool"]["name"].as_str().unwrap_or_default(), snake(&title)).into();
-            v["tool"]["description"] =
-                r.get("description").cloned().unwrap_or_else(|| t["tool"]["description"].clone());
+            v["tool"]["description"] = r.get("description").cloned().unwrap_or_else(|| t["tool"]["description"].clone());
             v["tool"]["inputSchema"] = u.into();
             v
         })
@@ -267,9 +260,7 @@ fn split_union(t: Value) -> Vec<Value> {
 }
 
 /// Desktop's `Pc`: the `$defs` that a schema refers to, with theirs.
-fn referenced_defs(
-    v: &Value, defs: &serde_json::Map<String, Value>, seen: &mut Vec<String>, out: &mut serde_json::Map<String, Value>,
-) {
+fn referenced_defs(v: &Value, defs: &serde_json::Map<String, Value>, seen: &mut Vec<String>, out: &mut serde_json::Map<String, Value>) {
     match v {
         Value::Object(o) => {
             if let Some(r) = o.get("$ref").and_then(Value::as_str) {
@@ -408,9 +399,7 @@ fn jsonrpc(m: &Value) -> bool {
         }
 }
 
-pub(super) fn handle(
-    store: &SharedStore, cloud: &Cloud, method: &str, msg: &HttpMessage, token: Option<&str>,
-) -> Reply {
+pub(super) fn handle(store: &SharedStore, cloud: &Cloud, method: &str, msg: &HttpMessage, token: Option<&str>) -> Reply {
     match method {
         "OPTIONS" => return empty(StatusCode::NO_CONTENT, Vec::new()),
         "POST" => {}
@@ -423,11 +412,7 @@ pub(super) fn handle(
     };
     let accept = msg.header("accept").unwrap_or_default();
     if !accept.contains("application/json") || !accept.contains("text/event-stream") {
-        return rpc_error(
-            406,
-            -32000,
-            "Not Acceptable: Client must accept both application/json and text/event-stream",
-        );
+        return rpc_error(406, -32000, "Not Acceptable: Client must accept both application/json and text/event-stream");
     }
     if !msg.header("content-type").is_some_and(|c| c.contains("application/json")) {
         return rpc_error(415, -32000, "Unsupported Media Type: Content-Type must be application/json");
@@ -447,14 +432,11 @@ pub(super) fn handle(
         return rpc_error(400, -32600, "Invalid Request: Only one initialization request is allowed");
     }
     if !initialize && !VERSIONS.contains(&msg.header("mcp-protocol-version").unwrap_or(VERSIONS[1])) {
-        let supported =
-            format!("Bad Request: Unsupported protocol version (supported versions: {})", VERSIONS.join(", "));
+        let supported = format!("Bad Request: Unsupported protocol version (supported versions: {})", VERSIONS.join(", "));
         return rpc_error(400, -32000, &supported);
     }
     let requests = batch.iter().filter(|m| m.get("id").is_some() && m["method"].is_string());
-    let events: String = requests
-        .map(|m| format!("event: message\ndata: {}\n\n", answer(store, cloud, &tools, caps, m, token)))
-        .collect();
+    let events: String = requests.map(|m| format!("event: message\ndata: {}\n\n", answer(store, cloud, &tools, caps, m, token))).collect();
     if events.is_empty() {
         return empty(StatusCode(202), Vec::new());
     }
@@ -548,9 +530,7 @@ fn query_pairs(key: &str, v: &Value, out: &mut Vec<String>) {
 }
 
 /// Calls the route with the token of the MCP client, so the route checks its scopes.
-fn call(
-    store: &SharedStore, cloud: &Cloud, tools: &[Value], caps: Caps, params: &Value, token: Option<&str>,
-) -> Result<Value, String> {
+fn call(store: &SharedStore, cloud: &Cloud, tools: &[Value], caps: Caps, params: &Value, token: Option<&str>) -> Result<Value, String> {
     let name = params["name"].as_str().unwrap_or_default();
     let t = tools.iter().find(|t| t["tool"]["name"] == name).ok_or_else(|| format!("Unknown tool: {name}"))?;
     let mut args = params["arguments"].as_object().cloned().unwrap_or_default();
@@ -574,8 +554,7 @@ fn call(
         (200, tokio::runtime::Handle::current().block_on(beeper_core::cloud::http_bytes(&target))?)
     } else {
         let headers = [("content-type", "application/json"), ("accept", "application/json")];
-        let mut headers: std::collections::HashMap<_, _> =
-            headers.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let mut headers: std::collections::HashMap<_, _> = headers.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         headers.extend(token.map(|t| ("authorization".to_string(), format!("Bearer {t}"))));
         let msg = HttpMessage { start_line: format!("{method} {target} HTTP/1.1"), headers, body };
         let resp = respond(store, cloud, msg).unwrap_or_else(|e| e);
@@ -641,10 +620,7 @@ mod tests {
         assert_eq!(at("client=cursor").unwrap().2, CAPS, "a stateless request never infers the client");
         let unknown = at("capability=fast").unwrap_err();
         assert!(unknown.starts_with("Unknown capability: fast. Valid capabilities are: top-level-unions, valid-json"));
-        assert_eq!(
-            at("capability=tool-name-length=x").unwrap_err(),
-            "Invalid tool-name-length value: x. Expected a number."
-        );
+        assert_eq!(at("capability=tool-name-length=x").unwrap_err(), "Invalid tool-name-length value: x. Expected a number.");
         let caps = at("no_capability=valid-json&no_capability=refs").unwrap().2;
         assert!(!caps.valid_json && !caps.refs && caps.unions);
     }
@@ -664,9 +640,7 @@ mod tests {
         assert!(path(json!({ "chatID": {} })).unwrap_err().contains("/v1/chats/[object Object]/messages"));
         assert_eq!(
             path(json!({ "chatID": ".." })).unwrap_err(),
-            format!(
-                "{invalid}Value \"..\" can't be safely passed as a path parameter\n/v1/chats/../messages\n          ^^"
-            )
+            format!("{invalid}Value \"..\" can't be safely passed as a path parameter\n/v1/chats/../messages\n          ^^")
         );
         let mut query = Vec::new();
         let args = json!({ "a": null, "ids": ["x", "y z"], "o": { "k": true }, "n": 1.0, "e": [] });
@@ -683,8 +657,7 @@ mod tests {
         assert_eq!(clash[1..4], ["search", "get_ac1", "get_ch1"], "a clash numbers every long name");
         assert_eq!(clash.iter().filter(|n| n.starts_with("search")).count(), 4);
         let (_, tools, _) = at("no_capability=formats&no_capability=unions").unwrap();
-        let schemas =
-            serde_json::to_string(&tools.iter().map(|t| &t["tool"]["inputSchema"]).collect::<Vec<_>>()).unwrap();
+        let schemas = serde_json::to_string(&tools.iter().map(|t| &t["tool"]["inputSchema"]).collect::<Vec<_>>()).unwrap();
         assert!(!schemas.contains("\"format\"") && schemas.contains("(format: \\\"date-time\\\")"));
         assert!(!schemas.contains("anyOf"));
         let mut args = serde_json::Map::from_iter([("a".into(), json!("{\"b\":1}")), ("c".into(), json!("[1]"))]);

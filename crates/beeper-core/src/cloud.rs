@@ -124,8 +124,7 @@ fn profile(info: &Value) -> Profile {
         username: field(info, "username"),
         email: field(info, "email"),
         plan,
-        can_subscribe: provider.is_none_or(|p| !managed.contains(&p))
-            && info["canSubscribe"]["STRIPE"].as_bool().unwrap_or(!active),
+        can_subscribe: provider.is_none_or(|p| !managed.contains(&p)) && info["canSubscribe"]["STRIPE"].as_bool().unwrap_or(!active),
         internal: info["channel"] == "INTERNAL",
         analytics_disabled: info["analyticsDisabled"] != false,
     }
@@ -137,11 +136,7 @@ fn strings(v: &Value) -> Vec<String> {
 
 pub fn install_tls() {
     static TLS: Once = Once::new();
-    TLS.call_once(|| {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .expect("no other rustls crypto provider is installed")
-    });
+    TLS.call_once(|| rustls::crypto::ring::default_provider().install_default().expect("no other rustls crypto provider is installed"));
 }
 
 fn block_on<F: Future>(f: F) -> F::Output {
@@ -165,9 +160,7 @@ impl Cloud {
         self.send(method, url, token, body)
     }
 
-    fn send(
-        &self, method: reqwest::Method, url: &str, token: Option<&str>, body: Option<&Value>,
-    ) -> Result<Value, CloudError> {
+    fn send(&self, method: reqwest::Method, url: &str, token: Option<&str>, body: Option<&Value>) -> Result<Value, CloudError> {
         if self.offline {
             return Err(fail(0, crate::net::OFFLINE_ERROR));
         }
@@ -237,8 +230,7 @@ impl Cloud {
         let name = crate::config::DEVICE_NAME;
         let body = json!({ "type": "org.matrix.login.jwt", "token": jwt, "initial_device_display_name": name });
         let v = self.call(&format!("{}/_matrix/client/v3/login", self.homeserver), None, Some(&body))?;
-        let session: MatrixSession =
-            serde_json::from_value(v).map_err(|e| fail(502, format!("Bad Matrix login response: {e}")))?;
+        let session: MatrixSession = serde_json::from_value(v).map_err(|e| fail(502, format!("Bad Matrix login response: {e}")))?;
         Ok(MatrixSession { jwt: Some(jwt.into()), ..session })
     }
 
@@ -261,9 +253,7 @@ impl Cloud {
         let url = format!("{}/_matrix/client/v3/register/available?username={name}", self.homeserver);
         match self.call(&url, None, None) {
             Ok(v) => Ok(v["available"] == true),
-            Err(e) if matches!(e.errcode.as_deref(), Some("M_USER_IN_USE" | "M_INVALID_USERNAME" | "M_EXCLUSIVE")) => {
-                Ok(false)
-            }
+            Err(e) if matches!(e.errcode.as_deref(), Some("M_USER_IN_USE" | "M_INVALID_USERNAME" | "M_EXCLUSIVE")) => Ok(false),
             Err(e) => Err(e),
         }
     }
@@ -415,8 +405,7 @@ pub async fn transcribe(
     base: &str, token: &str, (audio, (name, mime)): (Vec<u8>, (&str, &str)), language: Option<&str>,
 ) -> Result<String, String> {
     let b = matrix_sdk::ruma::TransactionId::new();
-    let part =
-        |name: &str, extra: &str| format!("--{b}\r\nContent-Disposition: form-data; name=\"{name}\"{extra}\r\n\r\n");
+    let part = |name: &str, extra: &str| format!("--{b}\r\nContent-Disposition: form-data; name=\"{name}\"{extra}\r\n\r\n");
     let fields = [("model", "whisper-1")].into_iter().chain(language.map(|l| ("language", l)));
     let mut body: Vec<u8> = fields.flat_map(|(k, v)| format!("{}{v}\r\n", part(k, "")).into_bytes()).collect();
     body.extend(part("file", &format!("; filename=\"{name}\"\r\nContent-Type: {mime}")).bytes());
@@ -443,9 +432,8 @@ pub async fn transcribe(
 
 /// Beeper Desktop's KLIPY API key, masked so that it is not plain text in the repository (see NOTICE).
 const KLIPY_KEY: [u8; 64] = [
-    5, 93, 45, 61, 22, 55, 85, 26, 60, 48, 2, 36, 6, 21, 1, 64, 71, 6, 35, 6, 22, 21, 85, 70, 116, 74, 27, 54, 17, 38,
-    69, 38, 51, 94, 4, 42, 26, 7, 35, 36, 48, 64, 97, 5, 67, 81, 93, 9, 36, 50, 2, 64, 21, 20, 83, 55, 80, 70, 92, 40,
-    104, 20, 71, 9,
+    5, 93, 45, 61, 22, 55, 85, 26, 60, 48, 2, 36, 6, 21, 1, 64, 71, 6, 35, 6, 22, 21, 85, 70, 116, 74, 27, 54, 17, 38, 69, 38, 51, 94, 4,
+    42, 26, 7, 35, 36, 48, 64, 97, 5, 67, 81, 93, 9, 36, 50, 2, 64, 21, 20, 83, 55, 80, 70, 92, 40, 104, 20, 71, 9,
 ];
 
 fn klipy_key() -> String {
@@ -519,8 +507,7 @@ pub async fn klipy_gifs(api: String, query: String, pos: String) -> Result<(Vec<
 /// the app version (`callAppAPI`): the status of each platform, by Desktop platform name. Like Desktop, it reads the
 /// JSON of any HTTP status.
 pub async fn platform_status(app_api: String, token: String) -> Result<Value, String> {
-    let req =
-        http_client().get(format!("{app_api}/platform-status")).header("x-app-version", crate::config::APP_VERSION);
+    let req = http_client().get(format!("{app_api}/platform-status")).header("x-app-version", crate::config::APP_VERSION);
     let req = if token.is_empty() { req } else { req.bearer_auth(token) };
     let text = req.send().await.map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
     serde_json::from_str(&text).map_err(|e| e.to_string())
@@ -548,8 +535,7 @@ pub async fn link_preview(url: String) -> Result<Option<PagePreview>, String> {
     let tags = crate::codec::page_meta(&resp.text().await.map_err(|e| e.to_string())?);
     let get = |k: &str| tags.iter().find(|(n, c)| n == k && !c.is_empty()).map(|(_, c)| c.clone());
     let image = get("og:image:secure_url").or_else(|| get("og:image")).and_then(|i| page.join(&i).ok());
-    let (title, summary) =
-        (get("og:title").or_else(|| get("title")), get("og:description").or_else(|| get("description")));
+    let (title, summary) = (get("og:title").or_else(|| get("title")), get("og:description").or_else(|| get("description")));
     let Some(kind) = get("og:type").filter(|_| title.is_some() || image.is_some() || summary.is_some()) else {
         return Ok(None);
     };
@@ -719,8 +705,7 @@ mod tests {
             assert_eq!((method, path), ("POST", "/proxy/_/v1/audio/transcriptions"));
             assert!(body.contains("name=\"model\"\r\n\r\nwhisper-1\r\n"), "{body}");
             let de = body.contains("name=\"language\"\r\n\r\nde\r\n");
-            let file =
-                if de { "speech.mp3\"\r\nContent-Type: audio/mpeg" } else { "a.wav\"\r\nContent-Type: audio/wav" };
+            let file = if de { "speech.mp3\"\r\nContent-Type: audio/mpeg" } else { "a.wav\"\r\nContent-Type: audio/wav" };
             assert!(body.contains(&format!("filename=\"{file}\r\n\r\nOggS\r\n--")), "{body}");
             match de {
                 true => (200, json!({ "text": "Hallo" })),
@@ -750,8 +735,7 @@ mod tests {
         let key = klipy_key();
         assert!(key.len() == 64 && key.bytes().all(|b| b.is_ascii_alphanumeric()));
         if std::env::var_os("KLIPY_LIVE").is_some() {
-            let (featured, next) =
-                klipy_gifs(KLIPY_API.into(), String::new(), String::new()).await.expect("KLIPY featured");
+            let (featured, next) = klipy_gifs(KLIPY_API.into(), String::new(), String::new()).await.expect("KLIPY featured");
             assert!(!featured.is_empty() && !next.is_empty(), "a first page has a next page");
             let (more, _) = klipy_gifs(KLIPY_API.into(), String::new(), next).await.expect("KLIPY featured page 2");
             assert!(!more.is_empty(), "the next page has GIFs");

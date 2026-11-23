@@ -1,13 +1,10 @@
 use crate::codec::{base64_decode, base64_encode_standard, sha1};
-use crate::http::{
-    http_date, parse_query, read_message, read_ws_frame, weak_etag, write_ws_frame, HttpMessage, StatusCode,
-};
+use crate::http::{http_date, parse_query, read_message, read_ws_frame, weak_etag, write_ws_frame, HttpMessage, StatusCode};
 use beeper_core::bridge_login;
 use beeper_core::chat_index as search;
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
-    cloud_bridge, millis_from_rfc3339, now_rfc3339_millis, CentralConfig, APP_BUNDLE_ID, APP_NAME, APP_VERSION,
-    NETWORK_SPECS,
+    cloud_bridge, millis_from_rfc3339, now_rfc3339_millis, CentralConfig, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS,
 };
 use beeper_core::connect::{Token, READ};
 use beeper_core::matrix;
@@ -213,8 +210,7 @@ fn zod_datetime(s: &str, offset: bool) -> Option<i64> {
     let (y, m, d) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
     let days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let date_ok =
-        is(4, b'-') && is(7, b'-') && is(10, b'T') && (1..=12).contains(&m) && (1..=days[m as usize - 1]).contains(&d);
+    let date_ok = is(4, b'-') && is(7, b'-') && is(10, b'T') && (1..=12).contains(&m) && (1..=days[m as usize - 1]).contains(&d);
     let (h, min) = (num(11, 2)?, num(14, 2)?);
     if !date_ok || !is(13, b':') || h > 23 || min > 59 {
         return None;
@@ -318,14 +314,7 @@ fn whole_issues(n: f64, path: Value) -> Vec<Issue> {
         issues.push(float_issue(path.clone()));
     }
     if n < 0.0 {
-        issues.push(bound_issue(
-            "too_small",
-            0,
-            "number",
-            true,
-            "Number must be greater than or equal to 0".into(),
-            path,
-        ));
+        issues.push(bound_issue("too_small", 0, "number", true, "Number must be greater than or equal to 0".into(), path));
     }
     issues
 }
@@ -343,10 +332,8 @@ fn checked(issues: Vec<Issue>) -> Result<(), Response> {
 /// without case.
 fn zod_email(s: &str) -> bool {
     let Some((local, domain)) = s.split_once('@') else { return false };
-    let label = |l: &str| {
-        l.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
-            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    };
+    let label =
+        |l: &str| l.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric()) && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
     let Some((labels, top)) = domain.rsplit_once('.') else { return false };
     !s.starts_with('.')
         && !s.contains("..")
@@ -442,8 +429,7 @@ fn check<T>(issues: &mut Vec<Issue>, v: Result<T, Issue>) -> Option<T> {
 /// The issues of Desktop's zod schema `CreateChatInput` for a request body.
 fn create_chat_issues(b: &Value) -> Vec<Issue> {
     let field = |k: &'static str, optional| string_issue(b.get(k), optional, json!([k]));
-    let mut issues: Vec<Issue> =
-        [field("accountID", false), field("messageText", true)].into_iter().flatten().collect();
+    let mut issues: Vec<Issue> = [field("accountID", false), field("messageText", true)].into_iter().flatten().collect();
     issues.extend(enum_issue(b.get("type"), &["single", "group"], json!(["type"])));
     let count = b.get("participantIDs").and_then(Value::as_array).map(Vec::len);
     match b.get("participantIDs") {
@@ -707,9 +693,7 @@ pub fn serve_http(listener: TcpListener, store: SharedStore) -> impl std::future
 fn body_limit(head: &HttpMessage) -> usize {
     match head.path().split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>()[..] {
         ["oauth", ..] | ["register"] | ["v1", "app", "setup", ..] => 64 << 10,
-        ["v1", "assets", "upload"] if head.header("content-type").is_some_and(|t| t.contains("application/json")) => {
-            100 << 20
-        }
+        ["v1", "assets", "upload"] if head.header("content-type").is_some_and(|t| t.contains("application/json")) => 100 << 20,
         ["v1", "assets", "upload"] => 500 << 20,
         _ => 10 << 20,
     }
@@ -719,9 +703,8 @@ fn body_limit(head: &HttpMessage) -> usize {
 /// `/focus` and `/deeplink`.
 fn cors_origin(head: &HttpMessage) -> Option<String> {
     let origin = head.header("origin")?;
-    let blocked = ["/focus", "/deeplink"]
-        .iter()
-        .any(|p| head.path().strip_prefix(p).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')));
+    let blocked =
+        ["/focus", "/deeplink"].iter().any(|p| head.path().strip_prefix(p).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')));
     let web = url::Url::parse(origin).is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
     (web && !blocked).then(|| origin.into())
 }
@@ -732,16 +715,12 @@ const EXPOSE_HEADERS: (&str, &str) = ("Access-Control-Expose-Headers", "WWW-Auth
 fn preflight(origin: String) -> Response {
     let headers = [
         ("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS"),
-        (
-            "Access-Control-Allow-Headers",
-            "Authorization,Content-Type,MCP-Protocol-Version,X-Beeper-Access-Token,X-Stainless-MCP",
-        ),
+        ("Access-Control-Allow-Headers", "Authorization,Content-Type,MCP-Protocol-Version,X-Beeper-Access-Token,X-Stainless-MCP"),
         ("Access-Control-Max-Age", "600"),
         EXPOSE_HEADERS,
         ("Content-Length", "0"),
     ];
-    let mut cors =
-        vec![("X-Powered-By", "Express".into()), ("Access-Control-Allow-Origin", origin), ("Vary", "Origin".into())];
+    let mut cors = vec![("X-Powered-By", "Express".into()), ("Access-Control-Allow-Origin", origin), ("Vary", "Origin".into())];
     cors.extend(headers.map(|(k, v)| (k, v.into())));
     Response { status: StatusCode::NO_CONTENT, headers: cors, body: Vec::new() }
 }
@@ -758,9 +737,7 @@ fn express(resp: Response, origin: Option<String>, if_none_match: Option<&str>) 
     headers.push(("X-Beeper-Desktop-Version", APP_VERSION.into()));
     // `res.redirect` ends the response without the ETag of `res.send`.
     let sent = status != StatusCode::FOUND
-        && route
-            .iter()
-            .any(|(k, v)| *k == "content-type" && ["application/json", "text/html"].iter().any(|t| v.starts_with(t)));
+        && route.iter().any(|(k, v)| *k == "content-type" && ["application/json", "text/html"].iter().any(|t| v.starts_with(t)));
     headers.extend(route);
     let tag = sent.then(|| weak_etag(&body));
     let fresh = tag.as_ref().is_some_and(|tag| if_none_match.is_some_and(|m| m.split(',').any(|t| t.trim() == tag)));
@@ -782,8 +759,7 @@ const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(360);
 /// Node keeps an HTTP/1.1 connection open unless the client asks to close it, and an HTTP/1.0 connection only when
 /// the client asks to keep it open.
 fn keep_alive(msg: &HttpMessage) -> bool {
-    let asks =
-        |t: &str| msg.header("connection").is_some_and(|c| c.split(',').any(|v| v.trim().eq_ignore_ascii_case(t)));
+    let asks = |t: &str| msg.header("connection").is_some_and(|c| c.split(',').any(|v| v.trim().eq_ignore_ascii_case(t)));
     if msg.start_line.ends_with(" HTTP/1.0") {
         asks("keep-alive")
     } else {
@@ -795,8 +771,7 @@ fn keep_alive(msg: &HttpMessage) -> bool {
 fn valid_request(msg: &HttpMessage) -> bool {
     let [method, target, version] = msg.start_line.split(' ').collect::<Vec<_>>()[..] else { return false };
     let digit = |s: &str| s.len() == 1 && s.bytes().all(|b| b.is_ascii_digit());
-    let version_ok =
-        version.strip_prefix("HTTP/").and_then(|v| v.split_once('.')).is_some_and(|(a, b)| digit(a) && digit(b));
+    let version_ok = version.strip_prefix("HTTP/").and_then(|v| v.split_once('.')).is_some_and(|(a, b)| digit(a) && digit(b));
     let method_ok = !method.is_empty() && method.bytes().all(|b| b.is_ascii_uppercase() || b == b'-');
     method_ok && !target.is_empty() && version_ok && (version != "HTTP/1.1" || msg.header("host").is_some())
 }
@@ -817,8 +792,7 @@ async fn write_response(stream: &mut TcpStream, resp: Response, keep_alive: bool
     let mut head = format!("HTTP/1.1 {} {}\r\n", resp.status.0, resp.status.reason());
     resp.headers.iter().for_each(|(k, v)| write!(head, "{k}: {v}\r\n").unwrap());
     let connection = if keep_alive { "keep-alive\r\nKeep-Alive: timeout=360" } else { "close" };
-    write!(head, "Date: {}\r\nConnection: {connection}\r\n\r\n", http_date(beeper_core::config::now_unix_secs()))
-        .unwrap();
+    write!(head, "Date: {}\r\nConnection: {connection}\r\n\r\n", http_date(beeper_core::config::now_unix_secs())).unwrap();
     let body = if with_body { resp.body } else { Vec::new() };
     stream.write_all(&[head.into_bytes(), body].concat()).await.is_ok()
 }
@@ -840,11 +814,7 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
         let limit = |head: &HttpMessage| {
             origin = cors_origin(head);
             let (start_line, headers) = (head.start_line.clone(), head.headers.clone());
-            api_head = (valid_request(head) && api_path(head)).then_some(HttpMessage {
-                start_line,
-                headers,
-                body: Vec::new(),
-            });
+            api_head = (valid_request(head) && api_path(head)).then_some(HttpMessage { start_line, headers, body: Vec::new() });
             body_limit(head)
         };
         let Ok(read) = tokio::time::timeout(KEEP_ALIVE, read_message(&mut stream, &mut buf, limit)).await else {
@@ -875,8 +845,7 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
         };
         let keep_alive = keep_alive(&msg);
         if !api_path(&msg) {
-            let empty =
-                Response { status: StatusCode::OK, headers: vec![("Content-Length", "0".into())], body: Vec::new() };
+            let empty = Response { status: StatusCode::OK, headers: vec![("Content-Length", "0".into())], body: Vec::new() };
             if !write_response(&mut stream, empty, keep_alive, true).await || !keep_alive {
                 return;
             }
@@ -927,9 +896,7 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
 /// Desktop's `requireAuth` of a route: the token of the request, or the refusal.
 fn require_auth(st: &BeeperStore, route: &routes::Route, msg: &HttpMessage) -> Result<Option<Token>, Response> {
     match route.auth {
-        routes::Auth::Token(scopes) => {
-            Ok(Some(auth::authorize(st, auth::access_token(msg), scopes).map_err(auth::refusal)?))
-        }
+        routes::Auth::Token(scopes) => Ok(Some(auth::authorize(st, auth::access_token(msg), scopes).map_err(auth::refusal)?)),
         routes::Auth::Matrix => {
             let scopes: &[&str] = if route.method == "GET" { &[READ] } else { &[beeper_core::connect::WRITE] };
             Ok(Some(auth::authorize(st, auth::access_token(msg), scopes).map_err(proxy::refusal)?))
@@ -1009,9 +976,7 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
             ])]));
         }
     }
-    if let ("POST", ["v1", "app", "setup", step @ ("start" | "email" | "response" | "register")]) =
-        (method.as_str(), &segs[..])
-    {
+    if let ("POST", ["v1", "app", "setup", step @ ("start" | "email" | "response" | "register")]) = (method.as_str(), &segs[..]) {
         auth::setup_origin(&req.msg)?;
         return sign_in_step(store, cloud, step, &req);
     }
@@ -1080,11 +1045,9 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
             not_ready()?;
             validate(r.sent(), &[("recoveryKey", Field::Filled)])?;
             let key = r.str("recoveryKey").expect("the body passed its schema").to_string();
-            rt.block_on(matrix::recover(store.clone(), key)).map_err(|e| {
-                match e.to_lowercase().contains("invalid recovery key") {
-                    true => error(StatusCode::BAD_REQUEST, "The recovery key is invalid", "invalid_recovery_code"),
-                    false => failed(&e),
-                }
+            rt.block_on(matrix::recover(store.clone(), key)).map_err(|e| match e.to_lowercase().contains("invalid recovery key") {
+                true => error(StatusCode::BAD_REQUEST, "The recovery key is invalid", "invalid_recovery_code"),
+                false => failed(&e),
             })?;
             ok(&json!({ "session": store.read().app_state() }))
         }
@@ -1120,12 +1083,7 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
             }
             if let Some(v) = store.read().app_verification().filter(|v| !matches!(v.state, "done" | "cancelled")) {
                 let details = json!({ "verificationID": v.id, "state": v.state });
-                return Err(error_with(
-                    StatusCode::CONFLICT,
-                    "A verification is already in progress",
-                    "verification_in_progress",
-                    details,
-                ));
+                return Err(error_with(StatusCode::CONFLICT, "A verification is already in progress", "verification_in_progress", details));
             }
             rt.block_on(matrix::start_verification(store, purpose)).map_err(|e| failed(&e))?;
             progress(store, true)
@@ -1204,8 +1162,7 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
             let st = store.read();
             // Desktop's `serveAsset` also takes the token from the query, for media elements.
             let token = auth::access_token(&r.msg).or(r.q("dangerouslyUseTokenInQuery")).filter(|t| !t.is_empty());
-            let token =
-                token.ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Unauthorized: Missing token", "unauthorized"))?;
+            let token = token.ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Unauthorized: Missing token", "unauthorized"))?;
             auth::authorize(&st, Some(token), &[READ]).map_err(auth::refusal)?;
             asset_file(&st, r)?
         };
@@ -1228,9 +1185,7 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
             let unknown = || if rest.is_empty() { missing("Chat not found") } else { no_chat(id) };
             // Desktop checks `GetChatInput` before it looks for the chat.
             let max = match (rest, r.query.get("maxParticipantCount")) {
-                ([], Some(v)) => {
-                    coerce_int(v, (-1, true), 500, json!(["maxParticipantCount"])).map_err(invalid_input)?
-                }
+                ([], Some(v)) => coerce_int(v, (-1, true), 500, json!(["maxParticipantCount"])).map_err(invalid_input)?,
                 _ => 100,
             };
             let idx = st.resolve_chat_idx(id).ok_or_else(unknown)?;
@@ -1256,28 +1211,17 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
         ("POST", ["v1", "assets", "upload"]) => match r.msg.header("content-type").unwrap_or_default() {
             t if t.contains("multipart/form-data") => upload_multipart(st, r),
             t if t.contains("application/json") => upload_json(st, r),
-            _ => Err(error(
-                StatusCode::BAD_REQUEST,
-                "Use application/json or multipart/form-data",
-                "INVALID_CONTENT_TYPE",
-            )),
+            _ => Err(error(StatusCode::BAD_REQUEST, "Use application/json or multipart/form-data", "INVALID_CONTENT_TYPE")),
         },
         ("POST", ["v1", "assets", "upload", "base64"]) => {
             let field = |k: &'static str, optional| string_issue(r.body.get(k), optional, json!([k]));
-            let issues: Vec<Issue> = [field("content", false), field("fileName", true), field("mimeType", true)]
-                .into_iter()
-                .flatten()
-                .collect();
+            let issues: Vec<Issue> =
+                [field("content", false), field("fileName", true), field("mimeType", true)].into_iter().flatten().collect();
             if !issues.is_empty() {
                 return Err(invalid_input(issues));
             }
             let bytes = base64_decode(r.str("content").expect("a string content")).filter(|b| !b.is_empty());
-            upload(
-                st,
-                r.str("fileName"),
-                r.str("mimeType"),
-                &bytes.ok_or_else(|| bad("content must be non-empty base64"))?,
-            )
+            upload(st, r.str("fileName"), r.str("mimeType"), &bytes.ok_or_else(|| bad("content must be non-empty base64"))?)
         }
         ("POST", ["v1", "assets", "download"]) => {
             // Desktop's `DownloadAssetInput`: a URL of at least one character, which its refinement checks for a
@@ -1441,9 +1385,7 @@ fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Repl
         (502, "Could not start sign-in" | "Could not finish sign-in") => {
             error(StatusCode::BAD_GATEWAY, &e.message, "invalid_sign_in_response")
         }
-        (502, "Could not create the account") => {
-            error(StatusCode::BAD_GATEWAY, &e.message, "invalid_registration_response")
-        }
+        (502, "Could not create the account") => error(StatusCode::BAD_GATEWAY, &e.message, "invalid_registration_response"),
         _ => failed(&e.message),
     };
     let text = |k: &str| r.str(k).expect("the body passed its schema");
@@ -1451,11 +1393,7 @@ fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Repl
         "start" => {
             let (request, methods) = cloud.start_login().map_err(upstream)?;
             if !methods.iter().any(|m| m == "email") {
-                return Err(error(
-                    StatusCode::CONFLICT,
-                    "Email sign-in is not available right now",
-                    "email_sign_in_not_supported",
-                ));
+                return Err(error(StatusCode::CONFLICT, "Email sign-in is not available right now", "email_sign_in_not_supported"));
             }
             return ok(&json!({ "setupRequestID": request, "signInMethods": methods }));
         }
@@ -1489,12 +1427,8 @@ fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Repl
             }
         }
         "register" => {
-            let fields = [
-                ("setupRequestID", Field::Text),
-                ("leadToken", Field::Text),
-                ("username", Field::Filled),
-                ("acceptTerms", Field::True),
-            ];
+            let fields =
+                [("setupRequestID", Field::Text), ("leadToken", Field::Text), ("username", Field::Filled), ("acceptTerms", Field::True)];
             validate(r.sent(), &fields)?;
             cloud.register(text("setupRequestID"), text("leadToken"), text("username")).map_err(upstream)?
         }
@@ -1633,11 +1567,7 @@ fn bridge_call(store: &SharedStore, cloud: &Cloud, method: &str, id: &str, rest:
                 }
                 let found = found.flatten();
                 if found.is_some_and(|b| b.bridge_id != bridge) {
-                    return Err(error(
-                        StatusCode::BAD_REQUEST,
-                        "Account does not belong to this bridge",
-                        "INVALID_ACCOUNT",
-                    ));
+                    return Err(error(StatusCode::BAD_REQUEST, "Account does not belong to this bridge", "INVALID_ACCOUNT"));
                 }
                 let login = login_id.map(str::to_string).or(found.map(|b| b.login_id.clone()));
                 let mine = st.bridge_accounts.iter().filter(|b| b.bridge_id == bridge);
@@ -1649,9 +1579,11 @@ fn bridge_call(store: &SharedStore, cloud: &Cloud, method: &str, id: &str, rest:
             }
             let flow = match r.str("flowID") {
                 Some(f) => f.to_string(),
-                None => flows(p.clone())?.into_iter().next().map(|f| f.id).ok_or_else(|| {
-                    error(StatusCode::CONFLICT, "No login flow is available for this bridge", "NO_LOGIN_FLOW")
-                })?,
+                None => flows(p.clone())?
+                    .into_iter()
+                    .next()
+                    .map(|f| f.id)
+                    .ok_or_else(|| error(StatusCode::CONFLICT, "No login flow is available for this bridge", "NO_LOGIN_FLOW"))?,
             };
             let p = matrix::Provision { login_id: login.clone().unwrap_or_default(), ..p };
             let (sid, step) = rt.block_on(bridge_login::start(p, flow)).map_err(|e| failed(&e))?;
@@ -1753,8 +1685,7 @@ fn list_chats(st: &BeeperStore, r: &Req) -> Reply {
     let cursor = r.q("cursor").and_then(|c| c.split('|').next()).filter(|c| !c.is_empty());
     let range = cursor.map_or(Some((Unbounded, Unbounded)), |c| rooms_range(c, after));
     let in_accounts = |k: &(i64, &str)| accounts.is_empty() || accounts.contains(&st.chat(k.1).account_id.as_str());
-    let rows: Vec<(i64, &str)> =
-        range.map_or_else(Vec::new, |range| chat_keys(st, range).filter(in_accounts).take(limit).collect());
+    let rows: Vec<(i64, &str)> = range.map_or_else(Vec::new, |range| chat_keys(st, range).filter(in_accounts).take(limit).collect());
     let shown: Vec<(i64, &str)> = rows.iter().copied().filter(|k| st.chat(k.1).listed()).collect();
     let (newest, oldest) = match shown.is_empty() {
         // With only member chats, Desktop moves the cursor of the direction to a row of `getRooms`, which returns its
@@ -1784,15 +1715,13 @@ fn chats(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
 /// beeper-rs's `mode: "merge"` of `POST /v1/chats`, which Desktop does not have: a merged chat of the chats.
 fn merge_chats(st: &mut BeeperStore, r: &Req) -> Reply {
     let merge = &r.body["merge"];
-    let chat_ids: Vec<String> =
-        serde_json::from_value(merge["chatIDs"].clone()).map_err(|_| bad("merge.chatIDs is required"))?;
+    let chat_ids: Vec<String> = serde_json::from_value(merge["chatIDs"].clone()).map_err(|_| bad("merge.chatIDs is required"))?;
     let default_chat_id = merge["defaultChatID"].as_str().map(str::to_string);
     check_merge(st, &chat_ids, default_chat_id.as_deref())?;
     let lead = default_chat_id.as_deref().unwrap_or(&chat_ids[0]);
     let account = st.chats[st.resolve_chat_idx(lead).expect("check_merge found the chat")].account_id.clone();
     let title = r.need("title")?.into();
-    let (chat, status) =
-        st.create_or_start_chat(&account, "merged", Some(title), Vec::new(), None, Some(chat_ids), default_chat_id);
+    let (chat, status) = st.create_or_start_chat(&account, "merged", Some(title), Vec::new(), None, Some(chat_ids), default_chat_id);
     ok(&json!({ "chatID": chat.id, "status": status }))
 }
 
@@ -2100,8 +2029,7 @@ fn chat_input(method: &str, rest: &[&str], r: &Req) -> Result<(), Response> {
     let optional = |k: &'static str| string_issue(r.input(k), true, at(k));
     checked(match (method, rest) {
         ("PATCH", []) => {
-            let nullable =
-                |k: &'static str| r.input(k).filter(|v| !v.is_null()).and_then(|v| string_issue(Some(v), false, at(k)));
+            let nullable = |k: &'static str| r.input(k).filter(|v| !v.is_null()).and_then(|v| string_issue(Some(v), false, at(k)));
             let mut issues: Vec<Issue> = ["title", "description", "imgURL"].into_iter().filter_map(nullable).collect();
             let flags = ["isArchived", "isLowPriority", "isPinned", "isMuted"];
             issues.extend(flags.into_iter().filter_map(|k| kind_issue(r.input(k), "boolean", true, at(k))));
@@ -2125,10 +2053,7 @@ fn chat_input(method: &str, rest: &[&str], r: &Req) -> Result<(), Response> {
             v => kind_issue(v, "boolean", true, at("forEveryone")).into_iter().collect(),
         },
         ("POST", ["messages", _, "reactions"]) => {
-            [filled_issue(r.input("reactionKey"), at("reactionKey")), optional("transactionID")]
-                .into_iter()
-                .flatten()
-                .collect()
+            [filled_issue(r.input("reactionKey"), at("reactionKey")), optional("transactionID")].into_iter().flatten().collect()
         }
         _ => Vec::new(),
     })
@@ -2188,8 +2113,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
                 return refuse("This message is too old to edit on this network");
             }
             // Desktop edits the caption of one media file, and no other attachments.
-            let media =
-                ["IMAGE", "VIDEO", "AUDIO", "VOICE", "FILE"].contains(&msg.message_type.as_deref().unwrap_or(""));
+            let media = ["IMAGE", "VIDEO", "AUDIO", "VOICE", "FILE"].contains(&msg.message_type.as_deref().unwrap_or(""));
             if msg.attachments.len() > 1 || (msg.attachments.len() == 1 && !media) {
                 return refuse("Cannot edit messages with attachments");
             }
@@ -2482,10 +2406,7 @@ impl<'a> MessageSearch<'a> {
         let exclude_low_priority = check(&mut issues, r.boolean("excludeLowPriority", true)).unwrap_or_default();
         let include_muted = check(&mut issues, r.boolean("includeMuted", true)).unwrap_or_default();
         if !issues.iter().any(Issue::aborts) && date_after.zip(date_before).is_some_and(|(a, b)| a >= b) {
-            issues.push(custom_issue(
-                "'dateAfter' must be earlier than 'dateBefore' when both are provided.",
-                json!(["dateAfter"]),
-            ));
+            issues.push(custom_issue("'dateAfter' must be earlier than 'dateBefore' when both are provided.", json!(["dateAfter"])));
         }
         if !issues.is_empty() {
             return Err(invalid_input(issues));
@@ -2535,9 +2456,7 @@ fn message_search(st: &BeeperStore, s: &MessageSearch) -> Result<Value, Response
     for id in &s.chat_ids {
         let chat = &st.chats[st.resolve_chat_idx(id).ok_or_else(|| no_chat(id))?];
         match &chat.merge {
-            Some(m) => {
-                rooms.extend(m.chat_ids.iter().map(|id| st.resolve_canonical_chat_id(id).expect("member exists")))
-            }
+            Some(m) => rooms.extend(m.chat_ids.iter().map(|id| st.resolve_canonical_chat_id(id).expect("member exists"))),
             None => rooms.push(chat.id.clone()),
         }
     }
@@ -2770,9 +2689,9 @@ fn upload_multipart(st: &mut BeeperStore, r: &Req) -> Reply {
         let head = std::str::from_utf8(&part[..head_end]).map_err(|_| bad("multipart headers must be UTF-8"))?;
         let content = &part[head_end + 4..];
         let attr = |key: &str| head.split(&format!("{key}=\"")).nth(1).and_then(|s| s.split('"').next());
-        let content_type = head.lines().find_map(|l| {
-            l.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case("content-type")).map(|(_, v)| v.trim())
-        });
+        let content_type = head
+            .lines()
+            .find_map(|l| l.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case("content-type")).map(|(_, v)| v.trim()));
         // multer takes the part with a file name as the file. The other parts are fields that Desktop ignores, and
         // busboy gives a part without a type the RFC 7578 default type.
         if let (Some("file"), Some(name)) = (attr("name"), attr("filename")) {
@@ -2805,9 +2724,7 @@ fn parse_range(header: &str, total: usize) -> Option<(usize, usize)> {
 /// Desktop's failures of `resolveMatrixAsset`.
 fn asset_failure(url: &str) -> (StatusCode, &'static str) {
     match url {
-        u if u.starts_with("mxc://") || u.starts_with("localmxc://") => {
-            (StatusCode::BAD_GATEWAY, "Failed to download asset: Not found")
-        }
+        u if u.starts_with("mxc://") || u.starts_with("localmxc://") => (StatusCode::BAD_GATEWAY, "Failed to download asset: Not found"),
         _ => (StatusCode::BAD_REQUEST, "URL must be mxc:// or localmxc://"),
     }
 }
@@ -2870,11 +2787,8 @@ fn serve_asset(path: std::path::PathBuf, r: &Req) -> Reply {
     // Node's `mtimeMs`.
     let etag = format!("\"{}-{}\"", bytes.len(), since.as_nanos() as f64 / 1e6);
     let fresh = r.msg.header("if-none-match") == Some(etag.as_str());
-    let mut headers = vec![
-        ("ETag", etag),
-        ("Last-Modified", http_date(since.as_secs() as i64)),
-        ("Cache-Control", "private, max-age=3600".into()),
-    ];
+    let mut headers =
+        vec![("ETag", etag), ("Last-Modified", http_date(since.as_secs() as i64)), ("Cache-Control", "private, max-age=3600".into())];
     if fresh {
         return Ok(Response { status: StatusCode::NOT_MODIFIED, headers, body: Vec::new() });
     }
@@ -2909,8 +2823,7 @@ fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
         return Err(error_with(StatusCode(500), message, "TOOL_EXECUTION_ERROR", json!({})));
     }
     if let Some(idx) = idx.filter(|_| text.is_some() || path.is_some()) {
-        let attachments =
-            path.into_iter().map(|p| ChatDraftAttachment { upload_id: p.clone(), file_name: Some(p), mime_type: None });
+        let attachments = path.into_iter().map(|p| ChatDraftAttachment { upload_id: p.clone(), file_name: Some(p), mime_type: None });
         let ts = Some(beeper_core::config::now_unix_millis());
         let draft = ChatDraft { text, attachments: attachments.collect(), ts, ..ChatDraft::default() };
         st.put_draft(idx, Some(draft));
@@ -3025,8 +2938,8 @@ fn subscribe(subs: &RwLock<Vec<String>>, app_on: &std::sync::atomic::AtomicBool,
     if let Some(message) = subscription_issue(command) {
         return error("INVALID_PAYLOAD", &message, v.get("requestID"));
     }
-    let ids: Vec<String> = serde_json::from_value(v.get("chatIDs").cloned().unwrap_or(json!([])))
-        .expect("the chat IDs passed their schema");
+    let ids: Vec<String> =
+        serde_json::from_value(v.get("chatIDs").cloned().unwrap_or(json!([]))).expect("the chat IDs passed their schema");
     let app = v["app"]["state"] == true;
     // Desktop's `Sf`: the trimmed IDs that are not empty, in locale order, or `*` alone.
     let mut ids: Vec<String> = ids.iter().map(|id| id.trim()).filter(|id| !id.is_empty()).map(Into::into).collect();
@@ -3055,14 +2968,12 @@ fn close_payload(code: u16, reason: &str) -> Vec<u8> {
 const WS_MAX_PAYLOAD: usize = 64 * 1024;
 
 async fn serve_ws(
-    mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, store: SharedStore,
-    mut events: tokio::sync::broadcast::Receiver<WsEvent>,
+    mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, store: SharedStore, mut events: tokio::sync::broadcast::Receiver<WsEvent>,
 ) {
     let Some(key) = msg.header("sec-websocket-key") else { return };
     let accept = base64_encode_standard(&sha1(format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes()));
-    let handshake = format!(
-        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {accept}\r\n\r\n"
-    );
+    let handshake =
+        format!("HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {accept}\r\n\r\n");
     if stream.write_all(handshake.as_bytes()).await.is_err() {
         return;
     }
@@ -3202,9 +3113,7 @@ async fn serve_ws(
 /// Desktop's `app.state.updated` frame of the setup state when it changed since `last` (always with `snapshot`, its
 /// `sendAppStateSnapshot`), then its `verification.updated` or `verification.removed` frame when the verification
 /// changed.
-fn app_state_frames(
-    store: &SharedStore, last: &mut Option<(String, Option<Value>)>, seq: &mut u64, snapshot: bool,
-) -> Vec<Vec<u8>> {
+fn app_state_frames(store: &SharedStore, last: &mut Option<(String, Option<Value>)>, seq: &mut u64, snapshot: bool) -> Vec<Vec<u8>> {
     let state = store.read().app_state();
     let state = serde_json::to_value(&state).expect("serialize the app state");
     let fingerprint = state.to_string();
@@ -3263,9 +3172,7 @@ mod tests {
     fn subscriptions_are_checked_like_desktop() {
         let (subs, app) = (RwLock::new(Vec::new()), std::sync::atomic::AtomicBool::new(false));
         let reply = |payload: &str| subscribe(&subs, &app, payload.as_bytes()).to_string();
-        let error = |request: &str, message: &str| {
-            format!(r#"{{"type":"error",{request}"code":"INVALID_PAYLOAD","message":"{message}"}}"#)
-        };
+        let error = |request: &str, message: &str| format!(r#"{{"type":"error",{request}"code":"INVALID_PAYLOAD","message":"{message}"}}"#);
         let set = |rest: &str| format!(r#"{{"type":"subscriptions.set",{rest}}}"#);
         let cases = [
             (set(r#""requestID":5"#), error(r#""requestID":5,"#, "Expected string, received number")),
@@ -3286,9 +3193,6 @@ mod tests {
         assert_eq!(reply(r#"{"type":[1,2]}"#), unsupported, "JavaScript's String of the type");
         let ack = reply(&set(r#""requestID":"r","chatIDs":["b","a","b"],"app":{"state":true}"#));
         assert_eq!(ack, r#"{"type":"subscriptions.updated","requestID":"r","chatIDs":["a","b"],"app":{"state":true}}"#);
-        assert_eq!(
-            (subs.read().unwrap().clone(), app.load(std::sync::atomic::Ordering::Relaxed)),
-            (vec!["a".into(), "b".into()], true)
-        );
+        assert_eq!((subs.read().unwrap().clone(), app.load(std::sync::atomic::Ordering::Relaxed)), (vec!["a".into(), "b".into()], true));
     }
 }

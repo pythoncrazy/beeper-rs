@@ -97,9 +97,7 @@ pub(crate) fn bubble_text(c: &Chat, launched: i64, now: i64) -> Option<String> {
 
 /// Desktop's `PinnedThreadListItem` bubble: at most 8em wide, from 3px right of the avatar's top right corner,
 /// centered on the avatar when wider than it, with a half disc below.
-pub(crate) fn pin_bubble<'a>(
-    text: &str, mention: bool, (bg, fg): (Color, Color), cell: f32, av: f32, compact: bool,
-) -> El<'a> {
+pub(crate) fn pin_bubble<'a>(text: &str, mention: bool, (bg, fg): (Color, Color), cell: f32, av: f32, compact: bool) -> El<'a> {
     let max = rem(80.0).min(cell - 4.0);
     let at_w = if mention { 14.0 } else { 0.0 };
     let w = (crate::style::text_width(text, 10.0, Weight::Normal) + at_w + 8.0).clamp(22.0, max);
@@ -118,8 +116,7 @@ pub(crate) fn pin_bubble<'a>(
         border: iced::Border { radius: iced::border::Radius::default().bottom(3.0), ..Default::default() },
         ..Default::default()
     });
-    stack![pin(bubble).x(x).y(y - h / 2.0), pin(nub).x(right - 9.0).y(y + h / 2.0 - if compact { 0.28 } else { 0.0 })]
-        .into()
+    stack![pin(bubble).x(x).y(y - h / 2.0), pin(nub).x(right - 9.0).y(y + h / 2.0 - if compact { 0.28 } else { 0.0 })].into()
 }
 
 /// A press on a pin of the pinned grid, which Desktop's `Drop` sorts after the cursor moves 5px: the pin, where the

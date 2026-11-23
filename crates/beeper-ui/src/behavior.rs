@@ -91,14 +91,7 @@ pub(crate) fn behavior(st: &BeeperStore, c: &Chat) -> Option<Behavior> {
         let s = Source { kind: Kind::Snooze, id: "chat".into(), name: String::new() };
         let entry = Contributor { section: Section::Chat, source: s.clone(), hides: true, mutes: true, decides: true };
         let (visibility, notification) = (Some(s.clone()), Some(s));
-        return Some(Behavior {
-            hidden: true,
-            muted: true,
-            visibility,
-            notification,
-            contributors: vec![entry],
-            snoozed: Some(at),
-        });
+        return Some(Behavior { hidden: true, muted: true, visibility, notification, contributors: vec![entry], snoozed: Some(at) });
     }
     // Desktop's `labelContributions` of a chat with labels, each `normal`: it hides unless its "Show in Inbox" shows
     // the chat, and mutes when the label is muted.
@@ -109,8 +102,7 @@ pub(crate) fn behavior(st: &BeeperStore, c: &Chat) -> Option<Behavior> {
             .map(|id| {
                 let l = st.labels.iter().find(|l| l.id == *id);
                 let name = l.map(|l| l.name.trim()).filter(|n| !n.is_empty());
-                let name = name
-                    .unwrap_or(trx("Unknown label", "chat behavior explanation, a label whose details are missing"));
+                let name = name.unwrap_or(trx("Unknown label", "chat behavior explanation, a label whose details are missing"));
                 let source = Source { kind: Kind::Label, id: id.clone(), name: name.into() };
                 (source, !shows(l.and_then(|l| l.inbox), c), l.is_some_and(|l| l.muted))
             })
@@ -152,9 +144,7 @@ pub(crate) fn behavior(st: &BeeperStore, c: &Chat) -> Option<Behavior> {
         .chain(labels.into_iter().map(|(s, hides, mutes)| entry(Section::Active, s, hides, mutes)))
         .collect();
     contributors.sort_by(|a, b| {
-        (a.section.cmp(&b.section))
-            .then_with(|| b.decides.cmp(&a.decides))
-            .then_with(|| locale_cmp(&a.source.name, &b.source.name))
+        (a.section.cmp(&b.section)).then_with(|| b.decides.cmp(&a.decides)).then_with(|| locale_cmp(&a.source.name, &b.source.name))
     });
     Some(Behavior { hidden, muted, visibility, notification, contributors, snoozed: None })
 }
@@ -177,11 +167,8 @@ impl Behavior {
         if !hidden && !muted {
             return None;
         }
-        let deciding: Vec<&Source> = [hidden.then_some(&self.visibility), muted.then_some(&self.notification)]
-            .into_iter()
-            .flatten()
-            .flatten()
-            .collect();
+        let deciding: Vec<&Source> =
+            [hidden.then_some(&self.visibility), muted.then_some(&self.notification)].into_iter().flatten().flatten().collect();
         let one = match deciding[..] {
             [s] => Some(s),
             [a, b] if a.same(Some(b)) => Some(a),
@@ -211,12 +198,9 @@ impl Behavior {
 /// Desktop's `hce`: what a source does to the chat, below its name in the menu.
 fn sublabel(c: &Contributor, st: &BeeperStore, snoozed: Option<i64>, h24: bool) -> String {
     // Desktop's `pKe`: a label whose "Show in Inbox" is "Only DMs".
-    let dm_only =
-        || c.source.kind == Kind::Label && st.labels.iter().any(|l| l.id == c.source.id && l.inbox == Some("dmOnly"));
+    let dm_only = || c.source.kind == Kind::Label && st.labels.iter().any(|l| l.id == c.source.id && l.inbox == Some("dmOnly"));
     match (c.source.kind, c.hides, c.mutes) {
-        (Kind::Snooze, ..) => {
-            trxf("Snoozes until %s", "chat info menu row", &[&until(snoozed.expect("a snoozed chat"), h24)])
-        }
+        (Kind::Snooze, ..) => trxf("Snoozes until %s", "chat info menu row", &[&until(snoozed.expect("a snoozed chat"), h24)]),
         (_, true, false) if dm_only() => trx("Shows only DMs", "chat info menu row").into(),
         (_, true, true) => trx("Hides and mutes this chat", "chat info menu row").into(),
         (_, true, false) => trx("Hides this chat", "chat info menu row").into(),
@@ -233,8 +217,7 @@ impl BeeperGuiApp {
         let line = b.line(st.settings.pref("timeFormat") == 1)?;
         let dim = p.sub;
         let text = txt(line, 12.0).line_height(lh(15.0)).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
-        let label =
-            row![tinted(b.icon(), 14.0, dim), text, tinted(&CHEVRON_FORWARD, 10.0, dim)].spacing(5).align_y(Center);
+        let label = row![tinted(b.icon(), 14.0, dim), text, tinted(&CHEVRON_FORWARD, 10.0, dim)].spacing(5).align_y(Center);
         let open = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{BEHAVIOR_MENU}{}", chat.id)));
         let btn = button(label).bare(p.strong).on_press(open);
         Some(container(btn).center_x(Fill).clip(true).padding(Padding::ZERO.top(4.0).bottom(8.0)).into())
@@ -254,12 +237,8 @@ impl BeeperGuiApp {
         for entry in &b.contributors {
             let s = &entry.source;
             let (name, icon): (String, El) = match s.kind {
-                Kind::Snooze => {
-                    (trx("Chat Snooze", "chat behavior explanation row").into(), tinted(&MOON_STARS, 16.0, p.text))
-                }
-                Kind::Chat => {
-                    (trx("Chat Settings", "chat behavior explanation row").into(), tinted(&TUNE, 16.0, p.text))
-                }
+                Kind::Snooze => (trx("Chat Snooze", "chat behavior explanation row").into(), tinted(&MOON_STARS, 16.0, p.text)),
+                Kind::Chat => (trx("Chat Settings", "chat behavior explanation row").into(), tinted(&TUNE, 16.0, p.text)),
                 Kind::Network => (s.name.clone(), svg(brand_svg(brand_key(&s.id))).width(16).height(16).into()),
                 Kind::Label => {
                     let label = st.labels.iter().find(|l| l.id == s.id).cloned().unwrap_or_default();
@@ -269,13 +248,7 @@ impl BeeperGuiApp {
             };
             let sub = sublabel(entry, st, b.snoozed, h24);
             width = width.max(
-                16.0 + 5.0
-                    + text_width(&name, 13.0, Weight::Normal).max(crate::style::fixed_width(
-                        &sub,
-                        11.0,
-                        Weight::Normal,
-                    ))
-                    + 26.0,
+                16.0 + 5.0 + text_width(&name, 13.0, Weight::Normal).max(crate::style::fixed_width(&sub, 11.0, Weight::Normal)) + 26.0,
             );
             // Desktop's `CO` opens the Label Settings of a label, and `M0e` the settings of an account.
             let msg = match s.kind {
@@ -283,10 +256,8 @@ impl BeeperGuiApp {
                 Kind::Network => UiMessage::Accounts(accounts::Msg::OpenSettings(s.id.clone())),
                 Kind::Snooze | Kind::Chat => UiMessage::ChatList(chat_list::Msg::CloseMenu),
             };
-            let stack = column![
-                txt(name, 13.0).line_height(Pixels(rem(MENU_LINE))),
-                crate::style::fixed(sub, 11.0, Weight::Normal).color(p.sub)
-            ];
+            let stack =
+                column![txt(name, 13.0).line_height(Pixels(rem(MENU_LINE))), crate::style::fixed(sub, 11.0, Weight::Normal).color(p.sub)];
             let line = row![container(icon).center_x(16), stack].spacing(14);
             rows.push((menu_line(p, line, Some(close(msg))), menu_pitch() + 11.0 * 1.4));
         }
@@ -309,11 +280,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let rules = [
             (&ACCOUNT_CIRCLE, tr("You Come First"), tr("If you mute or snooze a chat, labels can’t change it.")),
-            (
-                &SELL,
-                tr("Labels Set the Rules"),
-                tr("If any label hides a chat, it’s hidden. If any label notifies, you’re notified."),
-            ),
+            (&SELL, tr("Labels Set the Rules"), tr("If any label hides a chat, it’s hidden. If any label notifies, you’re notified.")),
             (
                 &EVENT_BUSY,
                 tr("Away and Snoozed Labels"),
@@ -328,12 +295,9 @@ impl BeeperGuiApp {
         ];
         let rows = rules.into_iter().map(|(icon, title, body)| -> El<'_> {
             let icon = container(tinted(icon, 18.0, p.strong)).center(28);
-            let text = column![
-                med(title, 13.0).line_height(lh(16.0)).color(p.strong),
-                txt(body, 13.0).line_height(lh(16.0)).color(p.sub)
-            ]
-            .spacing(2)
-            .padding(Padding::ZERO.left(4.0).top(5.0));
+            let text = column![med(title, 13.0).line_height(lh(16.0)).color(p.strong), txt(body, 13.0).line_height(lh(16.0)).color(p.sub)]
+                .spacing(2)
+                .padding(Padding::ZERO.left(4.0).top(5.0));
             row![icon, text].into()
         });
         let head = column![

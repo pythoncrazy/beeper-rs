@@ -11,8 +11,7 @@ use std::path::PathBuf;
 /// Each name serves one call in a test binary. Tests run at once on their own threads, and two tests with one name
 /// deleted each other's folder and wrote into each other's SQLite files, so a second call with a name fails at once.
 pub fn temp_dir(name: &str) -> PathBuf {
-    static TAKEN: std::sync::Mutex<std::collections::BTreeSet<String>> =
-        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    static TAKEN: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
     let first = TAKEN.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string());
     assert!(first, "the test folder {name:?} is taken: give each test, and each folder of a test, its own name");
     let checkout = env!("CARGO_MANIFEST_DIR").bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b.into()));
@@ -65,8 +64,7 @@ pub async fn stub_client(dir: &std::path::Path, url: &str) -> (SharedStore, matr
     let mut st = crate::store::BeeperStore::from_config(cfg.clone());
     if !st.signed_in() {
         let s = &mut st.beeper_state;
-        (s.homeserver, s.user_id, s.device_id, s.access_token) =
-            (url.into(), "@me:x".into(), "DEV".into(), "token".into());
+        (s.homeserver, s.user_id, s.device_id, s.access_token) = (url.into(), "@me:x".into(), "DEV".into(), "token".into());
         st.persist_state_to_sqlite();
         // A signed-in start adds the note chat of the user.
         st = crate::store::BeeperStore::from_config(cfg);
@@ -108,8 +106,7 @@ pub fn stub_page(query: &str) -> Value {
     let to: i64 = arg("from=t").map_or(70, |t| t.parse().expect("a stub token"));
     let limit: i64 = arg("limit=").map_or(30, |n| n.parse().expect("a limit"));
     let end = (to - limit).max(0);
-    let mut page =
-        json!({ "start": format!("t{to}"), "chunk": (end + 1..=to).rev().map(stub_message).collect::<Vec<_>>() });
+    let mut page = json!({ "start": format!("t{to}"), "chunk": (end + 1..=to).rev().map(stub_message).collect::<Vec<_>>() });
     if end > 0 {
         page["end"] = json!(format!("t{end}"));
     }
@@ -205,9 +202,7 @@ pub fn widen_large(st: &mut BeeperStore) {
 }
 
 /// The chats and messages of `sized_store` on the accounts `accounts`.
-fn large_data(
-    accounts: &[String], chats: usize, messages: usize,
-) -> (Vec<crate::models::Chat>, Vec<crate::models::Message>) {
+fn large_data(accounts: &[String], chats: usize, messages: usize) -> (Vec<crate::models::Chat>, Vec<crate::models::Message>) {
     let (count, people) = (chats, chats * 2 / 5);
     let name = |p: usize| format!("Person{p} Family{}", p % 97);
     let person = |p: usize, account: &str| {
@@ -223,8 +218,7 @@ fn large_data(
             true => (0..3 + i % 15).map(|k| person((p + k * 31) % people, account)).chain([me.clone()]).collect(),
             false => vec![person(p, account), me.clone()],
         };
-        let labels: Vec<String> =
-            i.is_multiple_of(3).then(|| format!("lbl_large_{}", i % LARGE_LABELS)).into_iter().collect();
+        let labels: Vec<String> = i.is_multiple_of(3).then(|| format!("lbl_large_{}", i % LARGE_LABELS)).into_iter().collect();
         serde_json::from_value(json!({
             "id": format!("!large_{i}:beeper.com"), "accountID": account,
             "title": if group { format!("Group {i}") } else { name(p) }, "type": if group { "group" } else { "single" },

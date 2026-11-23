@@ -9,9 +9,7 @@ use crate::{BeeperGuiApp, El, Toast, UiMessage};
 use beeper_core::matrix::E2eeSetup;
 use beeper_core::store::SharedStore;
 use iced::font::Weight;
-use iced::widget::{
-    button, column, container, mouse_area, rich_text, row, span, svg, text_editor, tooltip, Column, Space,
-};
+use iced::widget::{button, column, container, mouse_area, rich_text, row, span, svg, text_editor, tooltip, Column, Space};
 use iced::{border, window, Center, Color, Fill, Padding, Size, Task, Theme};
 use std::sync::LazyLock;
 
@@ -71,9 +69,7 @@ fn device_name(v: &beeper_core::models::AppVerification) -> String {
 }
 
 /// A Matrix call of the verification. A failure shows the toast `what`, or the error when `what` is empty.
-fn call(
-    what: &'static str, f: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
-) -> Task<UiMessage> {
+fn call(what: &'static str, f: impl std::future::Future<Output = Result<(), String>> + Send + 'static) -> Task<UiMessage> {
     Task::perform(f, move |r| VerifyMsg::Done(what, r).into())
 }
 
@@ -86,9 +82,7 @@ impl BeeperGuiApp {
         let s = self.store.clone();
         match msg {
             VerifyMsg::Accept(id) => {
-                let accept = call("Failed to start verification", async move {
-                    beeper_core::matrix::accept_verification(&s, &id).await
-                });
+                let accept = call("Failed to start verification", async move { beeper_core::matrix::accept_verification(&s, &id).await });
                 return Task::batch([accept, self.open_verify()]);
             }
             VerifyMsg::Decline(id) => return cancel(s, id),
@@ -271,12 +265,8 @@ impl BeeperGuiApp {
         let body: Option<El<'_>> = emojis.map(|sas| {
             let name = device_name(v.expect("emojis come from a verification"));
             let glyphs = sas.emojis.iter().map(|e| {
-                let glyph = crate::style::fixed(e.emoji.clone(), 28.0, iced::font::Weight::Normal)
-                    .line_height(1.0)
-                    .font(EMOJI_FONT);
-                let tip = container(txt(e.description.clone(), 12.0).color(p.strong))
-                    .padding([4, 8])
-                    .style(fill_box(p.elevated, 6.0));
+                let glyph = crate::style::fixed(e.emoji.clone(), 28.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT);
+                let tip = container(txt(e.description.clone(), 12.0).color(p.strong)).padding([4, 8]).style(fill_box(p.elevated, 6.0));
                 tooltip(glyph, tip, tooltip::Position::Bottom).into()
             });
             let glyphs = container(row(glyphs).spacing(4)).center_x(Fill).padding([70, 0]);
@@ -301,11 +291,7 @@ impl BeeperGuiApp {
         });
         drop(st);
         let card = column![title].push(code).push(body).align_x(Center).width(Fill);
-        let card = container(card)
-            .width(Fill)
-            .height(Fill)
-            .padding(Padding::new(24.0).top(36.0))
-            .style(fill_box(p.primary_container, 8.0));
+        let card = container(card).width(Fill).height(Fill).padding(Padding::new(24.0).top(36.0)).style(fill_box(p.primary_container, 8.0));
         let card = mouse_area(card).on_press(UiMessage::Noop);
         // `VerificationModal` is `--left-pane-bg`.
         let frame = crate::ui_theme::window_bg(container(card).padding(8), p.backdrop, p.window);
@@ -328,9 +314,7 @@ pub(crate) fn brand_btn<'a>(p: &Palette, label: &'a str, variant: Brand, msg: Ui
 }
 
 /// `brand_btn`, which is disabled without a message, and shows Desktop's dots while `loading`.
-pub(crate) fn brand_btn_maybe<'a>(
-    p: &Palette, label: &'a str, variant: Brand, msg: Option<UiMessage>, loading: bool,
-) -> El<'a> {
+pub(crate) fn brand_btn_maybe<'a>(p: &Palette, label: &'a str, variant: Brand, msg: Option<UiMessage>, loading: bool) -> El<'a> {
     let label = t(label, 13.0, Weight::Medium).line_height(lh(14.95));
     crate::login::brand_button(p, label.into(), variant, msg, loading)
 }
@@ -377,8 +361,7 @@ fn progress_circle<'a>(p: &Palette, current: usize, max: usize) -> El<'a> {
 /// margin of 4 modules, like the `qrcode` package of Desktop.
 pub(crate) fn qr_code<'a>(data: &[u8]) -> El<'a> {
     use qrcodegen::{QrCode, QrCodeEcc, QrSegment};
-    let code =
-        QrCode::encode_segments(&[QrSegment::make_bytes(data)], QrCodeEcc::Low).expect("a QR code holds the data");
+    let code = QrCode::encode_segments(&[QrSegment::make_bytes(data)], QrCodeEcc::Low).expect("a QR code holds the data");
     let px = ((code.size() + 8) * 4) as f32;
     svg::Svg::new(crate::style::qr_svg(&code, 4)).width(px).height(px).into()
 }
@@ -424,12 +407,7 @@ impl BeeperGuiApp {
     /// "Enter Recovery Key": cancels the verification and asks for the recovery key.
     pub(crate) fn use_recovery_key(&mut self) -> Task<UiMessage> {
         (self.login.screen, self.login.waiting, self.login.error) = (Screen::RecoveryKey, false, None);
-        let id = self
-            .store
-            .read()
-            .app_verification()
-            .filter(|v| !matches!(v.state, "done" | "cancelled"))
-            .map(|v| v.id.clone());
+        let id = self.store.read().app_verification().filter(|v| !matches!(v.state, "done" | "cancelled")).map(|v| v.id.clone());
         id.map_or_else(Task::none, |id| cancel(self.store.clone(), id))
     }
 
@@ -483,8 +461,7 @@ impl BeeperGuiApp {
         drop(st);
         let secondary = |label, msg: UiMessage| brand_btn(p, label, Brand::Secondary, msg);
         let use_key = || secondary(trx("Enter Recovery Key", "button label"), LoginMsg::UseRecoveryKey.into());
-        let emojis_btn =
-            || can_emojis.then(|| secondary(trx("Confirm using emojis", "button label"), VerifyMsg::Emojis.into()));
+        let emojis_btn = || can_emojis.then(|| secondary(trx("Confirm using emojis", "button label"), VerifyMsg::Emojis.into()));
         let note = |s: &'static str| txt(tr(s), 13.0).color(p.strong).center().width(Fill);
         let (middle, bottom): (El<'_>, Vec<El<'_>>) = match (l.waiting, emojis, qr) {
             (true, _, _) => {
@@ -493,12 +470,8 @@ impl BeeperGuiApp {
             }
             (false, Some(sas), _) => {
                 let glyphs = sas.emojis.into_iter().map(|e| {
-                    let glyph = crate::style::fixed(e.emoji, 28.0, iced::font::Weight::Normal)
-                        .line_height(1.0)
-                        .font(EMOJI_FONT);
-                    let tip = container(txt(e.description, 12.0).color(p.strong))
-                        .padding([4, 8])
-                        .style(fill_box(p.elevated, 6.0));
+                    let glyph = crate::style::fixed(e.emoji, 28.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT);
+                    let tip = container(txt(e.description, 12.0).color(p.strong)).padding([4, 8]).style(fill_box(p.elevated, 6.0));
                     tooltip(glyph, tip, tooltip::Position::Bottom).into()
                 });
                 let buttons = vec![
@@ -529,9 +502,9 @@ impl BeeperGuiApp {
             }
             (false, None, None) => {
                 let devices = self.login.devices.iter().take(5).map(|d| -> El<'_> {
-                    let seen = d.last_seen_ms.map(|t| {
-                        txt(tr("seen %(lastSeen)s").replace("%(lastSeen)s", &crate::ago(t)), 11.0).color(p.on_secondary)
-                    });
+                    let seen = d
+                        .last_seen_ms
+                        .map(|t| txt(tr("seen %(lastSeen)s").replace("%(lastSeen)s", &crate::ago(t)), 11.0).color(p.on_secondary));
                     column![txt(d.name.clone(), 13.0).color(p.strong)].push(seen).into()
                 });
                 let devices: El<'_> = match self.login.devices.is_empty() {
@@ -539,10 +512,9 @@ impl BeeperGuiApp {
                     false => Column::with_children(devices).spacing(6).into(),
                 };
                 let tip = container(devices).padding([8, 12]).style(shadow_box(p.elevated, p.chip, 8.0, 10.0));
-                let another =
-                    row![semi(tr("another device"), 17.0).color(p.strong), ic(icon::INFO, 16.0).color(p.on_secondary)]
-                        .spacing(4)
-                        .align_y(Center);
+                let another = row![semi(tr("another device"), 17.0).color(p.strong), ic(icon::INFO, 16.0).color(p.on_secondary)]
+                    .spacing(4)
+                    .align_y(Center);
                 let title = column![
                     semi("Open Beeper", 17.0).color(p.strong),
                     row![
@@ -555,16 +527,12 @@ impl BeeperGuiApp {
                 ]
                 .align_x(Center)
                 .width(Fill);
-                let link = |s: &'static str, m: UiMessage| -> El<'_> {
-                    button(txt(s, 13.0).color(p.accent)).bare(p.accent).on_press(m).into()
-                };
+                let link =
+                    |s: &'static str, m: UiMessage| -> El<'_> { button(txt(s, 13.0).color(p.accent)).bare(p.accent).on_press(m).into() };
                 let mut buttons = vec![title.into()];
                 match l.another_way {
-                    false => buttons.push(
-                        container(link(trx("Try another way", "button label"), LoginMsg::AnotherWay.into()))
-                            .center_x(Fill)
-                            .into(),
-                    ),
+                    false => buttons
+                        .push(container(link(trx("Try another way", "button label"), LoginMsg::AnotherWay.into())).center_x(Fill).into()),
                     true => {
                         buttons.push(note(trx("or", "verification method divider")).into());
                         buttons.extend(emojis_btn());
@@ -623,28 +591,17 @@ impl BeeperGuiApp {
                 .into(),
             (false, true) => {
                 let text = "Your other device has not sent your private keys yet. You may want to verify with your recovery key instead.";
-                let key = brand_btn(
-                    p,
-                    trx("Use your Recovery Key", "button label"),
-                    Brand::Primary,
-                    LoginMsg::UseRecoveryKey.into(),
-                );
+                let key = brand_btn(p, trx("Use your Recovery Key", "button label"), Brand::Primary, LoginMsg::UseRecoveryKey.into());
                 column![paragraph(tr(text).into()), key].spacing(24).into()
             }
-            _ if processed == 0 || total == 0 => {
-                paragraph(tr("We're syncing your chats. This may take a while...").into()).into()
-            }
+            _ if processed == 0 || total == 0 => paragraph(tr("We're syncing your chats. This may take a while...").into()).into(),
             _ => {
-                let (one, many) =
-                    ("Synced %(processed)d of %(total)d chat.", "Synced %(processed)d of %(total)d chats.");
+                let (one, many) = ("Synced %(processed)d of %(total)d chat.", "Synced %(processed)d of %(total)d chats.");
                 paragraph(trn_named(one, many, total, &[("processed", &processed), ("total", &total)])).into()
             }
         };
         let circle = (!new).then(|| container(progress_circle(p, processed, total)).center_x(Fill));
-        column![Space::new().height(34), heading(title, H3)]
-            .push(circle)
-            .push(container(body).center(Fill).padding(18))
-            .into()
+        column![Space::new().height(34), heading(title, H3)].push(circle).push(container(body).center(Fill).padding(18)).into()
     }
 }
 
@@ -667,24 +624,19 @@ pub(crate) fn format_recovery_key(key: &str) -> String {
 pub(crate) const KEY_INPUT: &str = "recovery-key-input";
 
 pub(crate) fn key_input<'a>(
-    p: &Palette, content: &'a text_editor::Content, error: bool, edit: fn(text_editor::Action) -> UiMessage,
-    on_paste: UiMessage,
+    p: &Palette, content: &'a text_editor::Content, error: bool, edit: fn(text_editor::Action) -> UiMessage, on_paste: UiMessage,
 ) -> El<'a> {
     let p = *p;
     let edge = if error { p.text_danger } else { CLEAR };
-    let editor = text_editor(content)
-        .id(KEY_INPUT)
-        .on_action(edit)
-        .size(rem(17.0))
-        .height(4.0 * 17.0 * 1.3 + 24.0)
-        .padding(12)
-        .style(move |_: &Theme, _| text_editor::Style {
+    let editor = text_editor(content).id(KEY_INPUT).on_action(edit).size(rem(17.0)).height(4.0 * 17.0 * 1.3 + 24.0).padding(12).style(
+        move |_: &Theme, _| text_editor::Style {
             background: p.chip.into(),
             border: border::rounded(12).color(edge).width(1),
             placeholder: p.on_secondary,
             value: p.strong,
             selection: p.accent.scale_alpha(0.3),
-        });
+        },
+    );
     let paste = txt(trx("Paste from Clipboard", "button label"), 12.0).color(p.on_secondary);
     let paste = button(paste).padding(4).style(btn_style([CLEAR, p.chip, p.chip], [p.on_secondary; 3], 6.0));
     column![editor, paste.on_press(on_paste)].spacing(4).align_x(Center).padding([24, 18]).into()
@@ -710,8 +662,7 @@ pub(crate) fn edit_recovery_key(content: &mut text_editor::Content, action: text
         + lines.get(at.line).map_or(0, |l| count(&l.chars().take(at.column).collect::<String>()));
     // Desktop's caret: after the same character, and after the dash or the line end that follows a full group.
     let formatted = format_recovery_key(&text);
-    let caret =
-        ((0..before.min(48)).map(|i| 1 + usize::from(i % 4 == 3 && i < 47)).sum::<usize>()).min(formatted.len());
+    let caret = ((0..before.min(48)).map(|i| 1 + usize::from(i % 4 == 3 && i < 47)).sum::<usize>()).min(formatted.len());
     let line = formatted[..caret].matches('\n').count();
     let column = caret - formatted[..caret].rfind('\n').map_or(0, |i| i + 1);
     *content = text_editor::Content::with_text(&formatted);
@@ -748,13 +699,9 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let text = tr("If you lose your device you'll need your Recovery Key to access your encrypted chat backup.");
         let save = brand_btn(p, trx("Save Key", "button label"), Brand::Primary, LoginMsg::NewKey.into());
-        column![
-            Space::new().height(40),
-            heading(tr("Save Your Recovery Key"), H3),
-            container(art(3, 240.0)).center(Fill),
-        ]
-        .push(actions(vec![txt(text, 13.0).color(p.strong).center().width(Fill).into(), save], 24.0))
-        .into()
+        column![Space::new().height(40), heading(tr("Save Your Recovery Key"), H3), container(art(3, 240.0)).center(Fill),]
+            .push(actions(vec![txt(text, 13.0).color(p.strong).center().width(Fill).into(), save], 24.0))
+            .into()
     }
 
     /// Desktop's `AwaitNewRecoveryCode`: the new key to copy, then the key again to confirm that it was saved.
@@ -777,12 +724,10 @@ impl BeeperGuiApp {
                 let key: El<'_> = match &l.new_key {
                     Some(key) => {
                         let copy = if l.copied { tr("Copied!") } else { tr("Copy to Clipboard") };
-                        let body = column![
-                            txt(format_recovery_key(key), 17.0).color(p.strong).center(),
-                            txt(copy, 12.0).color(p.on_secondary),
-                        ]
-                        .spacing(12)
-                        .align_x(Center);
+                        let body =
+                            column![txt(format_recovery_key(key), 17.0).color(p.strong).center(), txt(copy, 12.0).color(p.on_secondary),]
+                                .spacing(12)
+                                .align_x(Center);
                         button(container(body).center_x(Fill).padding(16))
                             .padding(0)
                             .style(btn_style([p.chip; 3], [p.strong; 3], 12.0))
@@ -805,9 +750,8 @@ impl BeeperGuiApp {
     /// Desktop's `ConfirmResetRecoveryCode`.
     pub(crate) fn view_onboarding_reset(&self) -> El<'_> {
         let p = &self.pal;
-        let bullet = |s: &'static str| -> El<'_> {
-            row![txt("•", 13.0).color(p.strong), txt(tr(s), 13.0).color(p.strong)].spacing(8).into()
-        };
+        let bullet =
+            |s: &'static str| -> El<'_> { row![txt("•", 13.0).color(p.strong), txt(tr(s), 13.0).color(p.strong)].spacing(8).into() };
         let warning = column![
             semi(trx("Warning", "recovery key reset warning heading"), 15.0).color(p.text_danger),
             bullet("All of your data is encrypted with your Recovery Key. All your accounts will be disconnected. Your chat history and settings will be lost."),
@@ -815,8 +759,7 @@ impl BeeperGuiApp {
         ]
         .spacing(12)
         .padding([0, 24]);
-        let reset =
-            brand_btn(p, trx("Reset Recovery Key", "button label"), Brand::Danger, LoginMsg::ConfirmReset.into());
+        let reset = brand_btn(p, trx("Reset Recovery Key", "button label"), Brand::Danger, LoginMsg::ConfirmReset.into());
         let back = brand_btn(p, trx("Cancel", "button label"), Brand::Muted, LoginMsg::Show(Screen::Verify).into());
         let title = bold(tr("Reset your Recovery Key"), H3).color(p.text_danger).center().width(Fill);
         column![Space::new().height(40), container(title).padding([0, 8]), container(warning).center(Fill)]
@@ -828,9 +771,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use beeper_core::models::{
-        AppVerification, VerificationDevice, VerificationQr, VerificationSas, VerificationSasEmoji,
-    };
+    use beeper_core::models::{AppVerification, VerificationDevice, VerificationQr, VerificationSas, VerificationSasEmoji};
     use iced_test::simulator::simulator;
 
     fn request(device: Option<VerificationDevice>) -> AppVerification {
@@ -991,9 +932,7 @@ mod tests {
         let mut app = crate::fuzz::demo_app("recovery-enter");
         let login = window::Id::unique();
         app.login_window = Some(login);
-        let enter = |app: &mut BeeperGuiApp| {
-            _ = app.update(UiMessage::WindowKey(login, Key::Named(Named::Enter), Modifiers::empty()))
-        };
+        let enter = |app: &mut BeeperGuiApp| _ = app.update(UiMessage::WindowKey(login, Key::Named(Named::Enter), Modifiers::empty()));
         app.login.screen = Screen::RecoveryKey;
         let _ = app.update(LoginMsg::KeyEdit(text_editor::Action::Edit(text_editor::Edit::Insert('a'))).into());
         let _ = app.update(LoginMsg::KeyEdit(text_editor::Action::Edit(text_editor::Edit::Enter)).into());
@@ -1007,8 +946,7 @@ mod tests {
         // The demo account needs no more onboarding, which closes the window.
         (app.login_window, app.login.screen) = (Some(login), Screen::ConfirmKey);
         assert!(!app.login.busy, "the check ended");
-        app.store.write().pending_recovery_key =
-            Some("EsTG bqMm dUDy dKth xAyD 45dS HhyC WKc9 CF6B xsFi J5FQ t8u2".into());
+        app.store.write().pending_recovery_key = Some("EsTG bqMm dUDy dKth xAyD 45dS HhyC WKc9 CF6B xsFi J5FQ t8u2".into());
         let _ = app.update(LoginMsg::Pasted(Some("EsTG".into())).into());
         enter(&mut app);
         let error = "The Recovery Key you entered doesn't match your Recovery Key.";
@@ -1029,10 +967,7 @@ mod tests {
         let _ = app.check_e2ee();
         app.login.screen = Screen::RecoveryKey;
         let _ = app.login_text(" ");
-        assert!(
-            app.login.focus.get().is_none(),
-            "the keys of the encryption screens find no stale stop of the sign-in"
-        );
+        assert!(app.login.focus.get().is_none(), "the keys of the encryption screens find no stale stop of the sign-in");
         let phone = DeviceInfo {
             id: "PHONE".into(),
             name: "Pixel".into(),
@@ -1109,8 +1044,7 @@ mod tests {
     fn a_restart_before_the_end_of_the_onboarding_continues_it_like_desktop() {
         use beeper_core::config::CentralConfig;
         use beeper_core::store::{BeeperStore, StoreLock};
-        let config =
-            CentralConfig::new(beeper_core::testing::temp_dir("verify-restart"), "127.0.0.1".into(), 23391, None);
+        let config = CentralConfig::new(beeper_core::testing::temp_dir("verify-restart"), "127.0.0.1".into(), 23391, None);
         let session = beeper_core::models::MatrixSession {
             user_id: "@me:beeper.com".into(),
             access_token: "t".into(),

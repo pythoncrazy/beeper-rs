@@ -3,21 +3,17 @@
 use crate::i18n::{tr, trf, trx, trxf};
 use crate::settings;
 use crate::style::rem;
-use crate::style::{
-    bold, bordered_box, btn_style, fill_box, fw, ic, icon, lh, med, semi, shadow_box, txt, Bare, Palette, CLEAR,
-};
+use crate::style::{bold, bordered_box, btn_style, fill_box, fw, ic, icon, lh, med, semi, shadow_box, txt, Bare, Palette, CLEAR};
 use crate::{
-    menu_item, menu_rule, outline_input, pill_style, plan_pill, portal, round_avatar, tinted, BeeperGuiApp, El,
-    PendingMedia, SettingsTab, Toast, UiMessage, CHEVRON_DOWN,
+    menu_item, menu_rule, outline_input, pill_style, plan_pill, portal, round_avatar, tinted, BeeperGuiApp, El, PendingMedia, SettingsTab,
+    Toast, UiMessage, CHEVRON_DOWN,
 };
 use beeper_core::cloud::{Cloud, CloudError};
 use beeper_core::config::now_unix_millis;
 use beeper_core::models::{Plan, User};
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
-use iced::widget::{
-    button, column, container, hover, image, mouse_area, rich_text, row, span, text_editor, text_input, Column, Space,
-};
+use iced::widget::{button, column, container, hover, image, mouse_area, rich_text, row, span, text_editor, text_input, Column, Space};
 use iced::{Center, Color, Fill, Padding, Task, Theme};
 use std::path::PathBuf;
 
@@ -90,9 +86,8 @@ pub enum Msg {
 impl ProfileForm {
     /// Desktop's `hasChanges`: an edited field differs from the profile, or an avatar is picked.
     pub fn dirty(&self, me: &User) -> bool {
-        let changed = |edit: &Option<String>, now: &Option<String>| {
-            edit.as_deref().is_some_and(|e| e.trim() != now.as_deref().unwrap_or_default())
-        };
+        let changed =
+            |edit: &Option<String>, now: &Option<String>| edit.as_deref().is_some_and(|e| e.trim() != now.as_deref().unwrap_or_default());
         changed(&self.name, &me.full_name) || changed(&self.email, &me.email) || self.avatar.is_some()
     }
 }
@@ -105,17 +100,15 @@ fn same_email(a: &str, b: &str) -> bool {
 impl BeeperGuiApp {
     /// A Beeper API call on a worker thread. The demo account answers at once without the network.
     fn cloud_call(
-        &self, call: impl FnOnce(&Cloud, &str) -> Result<(), CloudError> + Send + 'static,
-        done: fn(Result<(), String>) -> Msg,
+        &self, call: impl FnOnce(&Cloud, &str) -> Result<(), CloudError> + Send + 'static, done: fn(Result<(), String>) -> Msg,
     ) -> Task<UiMessage> {
         let st = self.store.read();
         if st.config.demo {
             return Task::done(UiMessage::Profile(done(Ok(()))));
         }
         let (cloud, token) = (self.cloud.clone(), st.beeper_state.access_token.clone());
-        let work = async move {
-            tokio::task::spawn_blocking(move || call(&cloud, &token).map_err(|e| e.message)).await.expect("API thread")
-        };
+        let work =
+            async move { tokio::task::spawn_blocking(move || call(&cloud, &token).map_err(|e| e.message)).await.expect("API thread") };
         Task::perform(work, move |r| UiMessage::Profile(done(r)))
     }
 
@@ -141,8 +134,7 @@ impl BeeperGuiApp {
             Msg::Save => {
                 let st = self.store.read();
                 let me = st.me();
-                let name =
-                    f.name.as_deref().map(str::trim).filter(|n| *n != me.full_name.as_deref().unwrap_or_default());
+                let name = f.name.as_deref().map(str::trim).filter(|n| *n != me.full_name.as_deref().unwrap_or_default());
                 let email = f.email.as_deref().map(str::trim).filter(|e| *e != me.email.as_deref().unwrap_or_default());
                 if let Some(email) = email {
                     f.change_email = Some(([String::new(), email.to_string(), String::new()], false, None));
@@ -185,8 +177,7 @@ impl BeeperGuiApp {
             Msg::KeyPaste => return iced::clipboard::read().map(|t| UiMessage::Profile(Msg::KeyPasted(t))),
             Msg::KeyPasted(text) => {
                 let Some(KeyStep::Verify(typed, false, error)) = &mut f.recovery_key else { return Task::none() };
-                *typed =
-                    text_editor::Content::with_text(&crate::verify::format_recovery_key(&text.unwrap_or_default()));
+                *typed = text_editor::Content::with_text(&crate::verify::format_recovery_key(&text.unwrap_or_default()));
                 *error = None;
                 return self.check_typed_key();
             }
@@ -288,8 +279,7 @@ impl BeeperGuiApp {
             (false, Plan::PlusPlus) => tr("Manage Beeper Plus Plus Subscription"),
             (false, _) => tr("Manage Beeper Plus Subscription"),
         };
-        let upsell =
-            st.whoami.can_subscribe.then_some(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::BeeperPlus)));
+        let upsell = st.whoami.can_subscribe.then_some(UiMessage::Settings(settings::Msg::SelectTab(SettingsTab::BeeperPlus)));
         let link = button(semi(link, 11.0).color(p.accent)).bare(p.accent);
         let field = |label: &'static str, value: String, on: Option<fn(String) -> Msg>| -> El<'a> {
             let input = text_input("", &value)
@@ -298,9 +288,7 @@ impl BeeperGuiApp {
                 .font(fw(Weight::Semibold))
                 .padding(Padding::new(8.0).right(30.0))
                 .style(profile_input(p));
-            column![container(semi(tr(label), 11.0).color(p.sub)).padding(Padding::ZERO.left(8.0)), input]
-                .spacing(4)
-                .into()
+            column![container(semi(tr(label), 11.0).color(p.sub)).padding(Padding::ZERO.left(8.0)), input].spacing(4).into()
         };
         let form = column![
             column![avatar, container(link.on_press_maybe(upsell)).padding(Padding::ZERO.top(8.0))].align_x(Center),
@@ -334,8 +322,7 @@ impl BeeperGuiApp {
         let f = &self.profile;
         let st = self.store.read();
         if f.menu {
-            let item =
-                |label: &'static str, msg| menu_item(p, None, tr(label).into(), "", Some(UiMessage::Profile(msg)));
+            let item = |label: &'static str, msg| menu_item(p, None, tr(label).into(), "", Some(UiMessage::Profile(msg)));
             let key = !st.beeper_state.secrets.recovery_code.is_empty();
             let items = column![]
                 .push(key.then(|| item("Show Recovery Key", Msg::RecoveryKey(true))))
@@ -344,27 +331,16 @@ impl BeeperGuiApp {
                 .push(item("Delete account", Msg::Delete(Some(String::new()))));
             let menu = crate::menu_card(p, items, 200);
             let menu = container(mouse_area(menu).on_press(UiMessage::Noop)).align_right(Fill).padding([64, 34]);
-            return Some(
-                crate::backdrop(container(menu).width(Fill).height(Fill))
-                    .on_press(UiMessage::Profile(Msg::Menu))
-                    .into(),
-            );
+            return Some(crate::backdrop(container(menu).width(Fill).height(Fill)).on_press(UiMessage::Profile(Msg::Menu)).into());
         }
         if f.leaving.is_some() {
             let actions = vec![(trx("Save", "button label"), UiMessage::Profile(Msg::Leave(true)))];
             let body = tr("Would you like to save your changes before leaving?").into();
             let discard = (trx("Discard", "button label"), UiMessage::Profile(Msg::Leave(false)));
-            return Some(self.dialog(
-                self.settings_window,
-                tr("You have unsaved changes").into(),
-                body,
-                actions,
-                discard,
-            ));
+            return Some(self.dialog(self.settings_window, tr("You have unsaved changes").into(), body, actions, discard));
         }
         let card = |content: El<'a>, width: f32, close: UiMessage| -> El<'a> {
-            let card =
-                container(content).width(width).padding(20).style(shadow_box(p.elevated, p.menu_border, 12.0, 24.0));
+            let card = container(content).width(width).padding(20).style(shadow_box(p.elevated, p.menu_border, 12.0, 24.0));
             crate::backdrop(
                 container(mouse_area(card).on_press(UiMessage::Noop))
                     .center(Fill)
@@ -392,19 +368,13 @@ impl BeeperGuiApp {
             let username = st.me().username.clone().unwrap_or_default();
             let ok = (*typed == username).then_some(UiMessage::Profile(Msg::ConfirmDelete));
             let warning = tr("<strong>Warning: This is a permanent action.</strong> When you delete your account:");
-            let (strong, rest) =
-                warning.trim_start_matches("<strong>").split_once("</strong>").expect("a bold warning");
+            let (strong, rest) = warning.trim_start_matches("<strong>").split_once("</strong>").expect("a bold warning");
             let item = |t: &'static str| {
-                row![ic(icon::CLOSE, 14.0).color(p.danger), txt(tr(t), 13.0).color(p.text)]
-                    .spacing(8)
-                    .align_y(Center)
-                    .into()
+                row![ic(icon::CLOSE, 14.0).color(p.danger), txt(tr(t), 13.0).color(p.text)].spacing(8).align_y(Center).into()
             };
             let content = column![
                 bold(tr("Delete account"), 17.0).color(p.strong),
-                rich_text![span::<(), _>(strong.to_string()).font(fw(Weight::Bold)), span(rest.to_string())]
-                    .size(rem(13.0))
-                    .color(p.text),
+                rich_text![span::<(), _>(strong.to_string()).font(fw(Weight::Bold)), span(rest.to_string())].size(rem(13.0)).color(p.text),
                 Column::with_children([
                     item("Your account will be permanently deleted"),
                     item("Your encrypted message history and network connections will be deleted"),
@@ -412,8 +382,7 @@ impl BeeperGuiApp {
                 ])
                 .spacing(6),
                 txt(trf("To confirm, type your username %s below.", &[&username]), 13.0).color(p.text),
-                input(typed, "", Box::new(|v| UiMessage::Profile(Msg::Delete(Some(v)))))
-                    .on_submit(UiMessage::Profile(Msg::ConfirmDelete)),
+                input(typed, "", Box::new(|v| UiMessage::Profile(Msg::Delete(Some(v))))).on_submit(UiMessage::Profile(Msg::ConfirmDelete)),
             ]
             .push(error.as_ref().map(|e| txt(e.clone(), 12.0).color(p.danger)))
             .push(buttons(*busy, UiMessage::Profile(Msg::Delete(None)), tr("Delete account"), ok, true))
@@ -490,9 +459,7 @@ impl BeeperGuiApp {
                 .padding(12)
                 .width(Fill)
                 .style(fill_box(p.chip, 8.0)),
-            txt(format!("{}\n{}", tr("Do not share your recovery key."), tr("Put it in a safe place.")), 12.0)
-                .color(p.sub)
-                .center(),
+            txt(format!("{}\n{}", tr("Do not share your recovery key."), tr("Put it in a safe place.")), 12.0).color(p.sub).center(),
             copy,
         ]
         .spacing(12)
@@ -537,9 +504,7 @@ impl BeeperGuiApp {
             return Task::none();
         }
         *busy = true;
-        Task::perform(beeper_core::matrix::recover(self.store.clone(), key), |r| {
-            UiMessage::Profile(Msg::KeyVerified(r))
-        })
+        Task::perform(beeper_core::matrix::recover(self.store.clone(), key), |r| UiMessage::Profile(Msg::KeyVerified(r)))
     }
 }
 

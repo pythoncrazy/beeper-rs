@@ -60,8 +60,7 @@ mod tests {
 
     #[test]
     fn vcards_parse_like_desktop() {
-        let card =
-            "BEGIN:VCARD\r\nVERSION:3.0\r\nN:Doe;Jo;;;\r\nORG:Acme\\, Inc.\r\nitem1.TEL;type=CELL:+1555\r\n 0100\r\n\
+        let card = "BEGIN:VCARD\r\nVERSION:3.0\r\nN:Doe;Jo;;;\r\nORG:Acme\\, Inc.\r\nitem1.TEL;type=CELL:+1555\r\n 0100\r\n\
             TEL:+15550100200\r\nEMAIL:jo@x.y\r\nEND:VCARD\r\n";
         let want = VCard {
             name: "Jo Doe".into(),

@@ -107,9 +107,7 @@ fn host(s: &str) -> bool {
         return false;
     }
     let labels: Vec<&str> = name.split('.').collect();
-    let ok = |l: &&str| {
-        !l.is_empty() && !l.starts_with('-') && !l.ends_with('-') && l.chars().all(|c| c.is_alphanumeric() || c == '-')
-    };
+    let ok = |l: &&str| !l.is_empty() && !l.starts_with('-') && !l.ends_with('-') && l.chars().all(|c| c.is_alphanumeric() || c == '-');
     labels.len() >= 2 && labels.iter().all(ok) && TLDS.contains(&labels[labels.len() - 1].to_lowercase())
 }
 
@@ -137,10 +135,7 @@ mod tests {
                 pair("me@localhost", "mailto:me@localhost")
             ]
         );
-        assert_eq!(
-            hrefs("x@y.zz a..b@x.com u@x.com/p"),
-            [pair("b@x.com", "mailto:b@x.com"), pair("u@x.com", "mailto:u@x.com")]
-        );
+        assert_eq!(hrefs("x@y.zz a..b@x.com u@x.com/p"), [pair("b@x.com", "mailto:b@x.com"), pair("u@x.com", "mailto:u@x.com")]);
         assert_eq!(hrefs("mailto:me@x.com"), [pair("mailto:me@x.com", "mailto:me@x.com")]);
         assert_eq!(
             hrefs("ünï.de\nbeeper.com:8080/x"),

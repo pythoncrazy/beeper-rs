@@ -95,26 +95,20 @@ impl BeeperGuiApp {
             identifier(&st, m, &same).unwrap_or_else(|| network.to_string())
         };
         let line = || container(Space::new().width(Fill).height(1)).style(fill_box(p.received, 0.0));
-        let header =
-            container(semi(tr("Switch chats"), 13.0).color(p.strong)).padding(Padding::new(12.0).left(27.0).right(8.0));
+        let header = container(semi(tr("Switch chats"), 13.0).color(p.strong)).padding(Padding::new(12.0).left(27.0).right(8.0));
         let wide = |m: &Chat| {
             let name = text_width(&m.title, 16.0, Weight::Normal);
             29.0 + 28.0 + 8.0 + name.max(text_width(&subtitle(m), 12.0, Weight::Normal)) + 8.0
         };
-        let w = members
-            .iter()
-            .map(|m| wide(m))
-            .fold(35.0 + text_width(tr("Switch chats"), 13.0, Weight::Semibold), f32::max);
+        let w = members.iter().map(|m| wide(m)).fold(35.0 + text_width(tr("Switch chats"), 13.0, Weight::Semibold), f32::max);
         let w = w.min(300.0);
         let rows = members.iter().enumerate().map(|(i, m)| -> El<'_> {
             let selected = m.id == on;
             let blocked = st.user_blocked(m);
             let sub = match blocked {
-                true => format!(
-                    "{} • {}",
-                    subtitle(m),
-                    trx("Blocked", "status of a blocked person, after their username in a list of chats")
-                ),
+                true => {
+                    format!("{} • {}", subtitle(m), trx("Blocked", "status of a blocked person, after their username in a list of chats"))
+                }
                 false => subtitle(m),
             };
             let info = column![
@@ -124,8 +118,7 @@ impl BeeperGuiApp {
             let check = selected.then(|| ic(icon::CHECK, 13.0).color(p.strong));
             let row = row![].push(check).push(self.chat_avatar(m, 28.0, 1.25)).push(info).spacing(8).align_y(Center);
             let pad = Padding::new(8.0).left(if selected { 8.0 } else { 29.0 });
-            let b =
-                button(row).padding(pad).width(Fill).style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 0.0));
+            let b = button(row).padding(pad).width(Fill).style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 0.0));
             column![b.on_press(UiMessage::SwitchChat(m.id.clone()))].push((i + 1 < members.len()).then(line)).into()
         });
         let h = 41.0 + members.len() as f32 * 53.0;
@@ -137,9 +130,7 @@ impl BeeperGuiApp {
     /// Desktop's `ThreadInfoBrowserWindow.open`: a 330 by 560 window 20 px right of and below the main window, or the
     /// open one of the chat. It reads nothing.
     fn open_chat_info(&mut self, chat: String) -> Task<UiMessage> {
-        if let Some((id, _)) =
-            self.chat_windows.iter().find(|w| w.1.info && w.1.selected_chat_id.as_ref() == Some(&chat))
-        {
+        if let Some((id, _)) = self.chat_windows.iter().find(|w| w.1.info && w.1.selected_chat_id.as_ref() == Some(&chat)) {
             return self.raise(*id);
         }
         self.store.write().load_chat(&chat);
@@ -176,11 +167,8 @@ impl BeeperGuiApp {
                 let rows = members.into_iter().map(|i| -> El<'a> {
                     let c = &st.chats[i];
                     let name = ell(&c.title, 180.0, 13.0, Weight::Normal).color(p.strong).width(Fill);
-                    let mark = (Some(i) == default).then(|| {
-                        container(semi(tr("Default"), 10.0).color(p.strong))
-                            .padding([2, 4])
-                            .style(fill_box(p.card, 4.0))
-                    });
+                    let mark = (Some(i) == default)
+                        .then(|| container(semi(tr("Default"), 10.0).color(p.strong)).padding([2, 4]).style(fill_box(p.card, 4.0)));
                     let row = row![self.chat_avatar(c, 28.0, 1.25), name].push(mark).spacing(8).align_y(Center);
                     button(row.padding(4))
                         .padding(0)
@@ -251,8 +239,7 @@ pub(crate) mod tests {
         let mut app = demo_app(name);
         let members = Some(vec![KAI.to_string(), LENA.to_string()]);
         let title = Some("Friends".to_string());
-        let (chat, _) =
-            app.store.write().create_or_start_chat("hungryserv", "single", title, vec![], None, members, None);
+        let (chat, _) = app.store.write().create_or_start_chat("hungryserv", "single", title, vec![], None, members, None);
         let _ = app.update(UiMessage::SelectChat(chat.id.clone()));
         (app, chat.id)
     }
@@ -363,9 +350,7 @@ pub(crate) mod tests {
         let windows: Vec<window::Id> = app.chat_windows.iter().filter(|w| w.1.info).map(|w| w.0).collect();
         let [id] = windows[..] else { panic!("one Chat Info window: {windows:?}") };
         assert_eq!(app.title(id), "Lena Fischer — Chat Info");
-        assert!(
-            simulator(app.view(id)).find("Mute Chat").is_ok() || simulator(app.view(id)).find("Lena Fischer").is_ok()
-        );
+        assert!(simulator(app.view(id)).find("Mute Chat").is_ok() || simulator(app.view(id)).find("Lena Fischer").is_ok());
         app.focused = true;
         let _ = app.update(UiMessage::InWindow(id, Box::new(UiMessage::Window(crate::windows::Msg::Focused(true)))));
         assert_eq!(app.store.read().chats[lena].unread_count, 2, "the Chat Info window reads nothing");

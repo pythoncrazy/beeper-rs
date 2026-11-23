@@ -115,9 +115,8 @@ pub fn redact(font: Font) -> Font {
 
 static LOAD_FONTS: Once = Once::new();
 static PLATFORM: cosmic_text::PlatformFallback = cosmic_text::PlatformFallback;
-static COMMON_FALLBACK: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
-    std::iter::once(crate::emoji::EMOJI_FAMILY).chain(PLATFORM.common_fallback().iter().copied()).collect()
-});
+static COMMON_FALLBACK: LazyLock<Vec<&'static str>> =
+    LazyLock::new(|| std::iter::once(crate::emoji::EMOJI_FAMILY).chain(PLATFORM.common_fallback().iter().copied()).collect());
 
 /// Desktop's font stack reaches Twemoji before the generic sans-serif fonts.
 struct TwemojiFirst;
@@ -177,11 +176,9 @@ fn desktop_asars() -> impl Iterator<Item = PathBuf> {
     let mounts = std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten().map(|e| e.path());
     let mounts = mounts.filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".mount_")));
     let opt = ["/opt/beeper", "/opt/Beeper", "/opt/BeeperTexts"].map(PathBuf::from);
-    let windows =
-        env("LOCALAPPDATA").into_iter().flat_map(|l| ["BeeperTexts", "beeper"].map(|n| l.join("Programs").join(n)));
+    let windows = env("LOCALAPPDATA").into_iter().flat_map(|l| ["BeeperTexts", "beeper"].map(|n| l.join("Programs").join(n)));
     let mac = [Some(PathBuf::from("/")), env("HOME")].into_iter().flatten();
-    let mac =
-        mac.flat_map(|r| ["Beeper Desktop.app", "Beeper.app"].map(|a| r.join("Applications").join(a).join("Contents")));
+    let mac = mac.flat_map(|r| ["Beeper Desktop.app", "Beeper.app"].map(|a| r.join("Applications").join(a).join("Contents")));
     let resources = opt.into_iter().chain(mounts).chain(windows).map(|d| d.join("resources"));
     resources.chain(mac.map(|d| d.join("Resources"))).map(|d| d.join("app.asar"))
 }
@@ -400,9 +397,7 @@ pub fn line_count(s: &str, max: f32, size: f32) -> usize {
     if surely_fits(s, max, size) {
         return 1;
     }
-    memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || {
-        shape(s, size, Weight::Normal, Some(max), |b| b.layout_runs().count())
-    })
+    memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || shape(s, size, Weight::Normal, Some(max), |b| b.layout_runs().count()))
 }
 
 pub fn text_width(s: &str, size: f32, w: Weight) -> f32 {
@@ -439,9 +434,8 @@ pub fn clamped(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> Rc<str>
     let size = rem(size);
     memo(&MEMO, (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), w, lines), || {
         let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-        let starts: Vec<usize> = shape(&s, size, w, Some(max.max(0.0)), |buf| {
-            buf.layout_runs().map(|r| r.glyphs.first().map_or(0, |g| g.start)).collect()
-        });
+        let starts: Vec<usize> =
+            shape(&s, size, w, Some(max.max(0.0)), |buf| buf.layout_runs().map(|r| r.glyphs.first().map_or(0, |g| g.start)).collect());
         match starts.get(lines - 1) {
             Some(&k) if starts.len() > lines => format!("{}{}", &s[..k], ell_line(&s[k..], max, size, w)).into(),
             _ => s.into(),
@@ -465,10 +459,7 @@ pub fn flow(s: &str, indent: f32, max: f32, lines: usize, size: f32, w: Weight) 
 /// `--semantic-typo-line-height-*` for the 10, 11, 12, 13 and 16 px sizes, so only other pairs (14/18, 15/20, 17/24,
 /// ...) set their own.
 pub fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
-    text(s)
-        .size(rem(size))
-        .font(redact(fw(w)))
-        .line_height(text::LineHeight::Absolute(rem((size * 1.24).round()).into()))
+    text(s).size(rem(size)).font(redact(fw(w))).line_height(text::LineHeight::Absolute(rem((size * 1.24).round()).into()))
 }
 
 /// Text at `size` px that Desktop gives in px, like `.message .timestamp`, which the Font size does not change.
@@ -740,8 +731,7 @@ pub fn dimmed_image(h: &iced::widget::image::Handle, k: f32) -> iced::widget::im
     let Handle::Rgba { width, height, pixels, .. } = h else { return h.clone() };
     memo(&MEMO, (h.id(), k.to_bits()), || {
         let dim = |c: u8| (f32::from(c) * k).round() as u8;
-        let pixels: Vec<u8> =
-            pixels.as_chunks::<4>().0.iter().flat_map(|&[r, g, b, a]| [dim(r), dim(g), dim(b), a]).collect();
+        let pixels: Vec<u8> = pixels.as_chunks::<4>().0.iter().flat_map(|&[r, g, b, a]| [dim(r), dim(g), dim(b), a]).collect();
         Handle::from_rgba(*width, *height, pixels)
     })
 }
@@ -805,11 +795,7 @@ pub fn shadow_box(bg: Color, border_col: Color, r: f32, blur: f32) -> impl Fn(&T
     move |_| container::Style {
         background: Some(bg.into()),
         border: Border { color: border_col, width: 1.0, radius: r.into() },
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
-            offset: Vector::new(0.0, 4.0),
-            blur_radius: blur,
-        },
+        shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.3), offset: Vector::new(0.0, 4.0), blur_radius: blur },
         text_color: None,
         snap: false,
     }
@@ -844,10 +830,7 @@ pub fn btn_style(bgs: [Color; 3], fgs: [Color; 3], r: f32) -> impl Fn(&Theme, bu
 pub fn bordered_btn(
     bgs: [Color; 3], fgs: [Color; 3], border_col: Color, width: f32, r: f32,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
-    move |t, s| button::Style {
-        border: Border { color: border_col, width, radius: r.into() },
-        ..btn_style(bgs, fgs, r)(t, s)
-    }
+    move |t, s| button::Style { border: Border { color: border_col, width, radius: r.into() }, ..btn_style(bgs, fgs, r)(t, s) }
 }
 
 /// A text area on the chip color with corners of `r`, like Desktop's description and notes fields.
@@ -885,30 +868,19 @@ pub fn pick_style(
         text_color: text_col,
         placeholder_color: sub_col,
         handle_color: sub_col,
-        background: (if matches!(status, pick_list::Status::Hovered | pick_list::Status::Opened { .. }) {
-            hover_bg
-        } else {
-            bg
-        })
-        .into(),
+        background: (if matches!(status, pick_list::Status::Hovered | pick_list::Status::Opened { .. }) { hover_bg } else { bg }).into(),
         border: Border { color: CLEAR, width: 0.0, radius: 12.0.into() },
     }
 }
 
-pub fn pick_menu_style(
-    bg: Color, hover_bg: Color, text_col: Color, border_col: Color,
-) -> impl Fn(&Theme) -> menu::Style + Copy {
+pub fn pick_menu_style(bg: Color, hover_bg: Color, text_col: Color, border_col: Color) -> impl Fn(&Theme) -> menu::Style + Copy {
     move |_| menu::Style {
         background: bg.into(),
         border: Border { color: border_col, width: 1.0, radius: 8.0.into() },
         text_color: text_col,
         selected_text_color: text_col,
         selected_background: hover_bg.into(),
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
-            offset: Vector::new(0.0, 4.0),
-            blur_radius: 14.0,
-        },
+        shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.35), offset: Vector::new(0.0, 4.0), blur_radius: 14.0 },
     }
 }
 
@@ -934,8 +906,7 @@ pub fn stable_bar() -> scrollable::Direction {
 pub fn scroll_style(base: Color) -> impl Fn(&Theme, scrollable::Status) -> scrollable::Style + Copy {
     move |_, status| {
         let alpha = match status {
-            scrollable::Status::Hovered { is_vertical_scrollbar_hovered: true, .. }
-            | scrollable::Status::Dragged { .. } => 0.5,
+            scrollable::Status::Hovered { is_vertical_scrollbar_hovered: true, .. } | scrollable::Status::Dragged { .. } => 0.5,
             scrollable::Status::Active { .. } if !SOLID_BARS => 0.0,
             _ => 0.3,
         };
@@ -958,12 +929,7 @@ pub(crate) fn rail_style(track: Color, thumb: Color) -> scrollable::Style {
         vertical_rail: rail(track, thumb),
         horizontal_rail: rail(CLEAR, CLEAR),
         gap: None,
-        auto_scroll: scrollable::AutoScroll {
-            background: CLEAR.into(),
-            border: Border::default(),
-            shadow: Shadow::default(),
-            icon: CLEAR,
-        },
+        auto_scroll: scrollable::AutoScroll { background: CLEAR.into(), border: Border::default(), shadow: Shadow::default(), icon: CLEAR },
     }
 }
 
@@ -1308,9 +1274,8 @@ mod tests {
         let full = shadowed_card(blue, &[Rectangle::with_size(Size::new(200.0, 200.0))]);
         // Tiles with fractional edges. The middle tile misses the rounded corners, so it fills only a rectangle.
         let side = 200.0 / 3.0;
-        let tiles: Vec<Rectangle> = (0..9)
-            .map(|i| Rectangle::new(Point::new((i % 3) as f32 * side, (i / 3) as f32 * side), Size::new(side, side)))
-            .collect();
+        let tiles: Vec<Rectangle> =
+            (0..9).map(|i| Rectangle::new(Point::new((i % 3) as f32 * side, (i / 3) as f32 * side), Size::new(side, side))).collect();
         let tiled = shadowed_card(blue, &tiles);
         // The masked corners of the card can be 1 level away, like in the shadow test.
         assert!(full.data().iter().zip(tiled.data()).all(|(a, b)| a.abs_diff(*b) <= 1), "the tiles draw the card");
@@ -1332,13 +1297,7 @@ mod tests {
         renderer.draw_image(Image::new(red), bounds, bounds);
         let (mut pixmap, mut mask) = (tiny_skia::Pixmap::new(80, 80).unwrap(), tiny_skia::Mask::new(80, 80).unwrap());
         let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(Size::new(80, 80), 1.0);
-        renderer.draw(
-            &mut pixmap.as_mut(),
-            &mut mask,
-            &viewport,
-            &[Rectangle::with_size(Size::new(80.0, 80.0))],
-            Color::WHITE,
-        );
+        renderer.draw(&mut pixmap.as_mut(), &mut mask, &viewport, &[Rectangle::with_size(Size::new(80.0, 80.0))], Color::WHITE);
         let red = |x, y| pixmap.pixel(x, y).expect("a pixel in the pixmap").green() < 128;
         assert!(!red(9, 40) && !red(40, 9), "nothing left of or above the image");
         assert!(red(12, 40) && red(40, 12) && red(69, 69), "the image fills its bounds");
@@ -1371,15 +1330,13 @@ mod tests {
     fn turned_icons_draw_in_the_software_renderer() {
         use iced::advanced::svg::{Renderer as _, Svg};
         use iced::{Point, Rectangle, Size};
-        let left =
-            br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect width="10" height="20"/></svg>"#;
+        let left = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect width="10" height="20"/></svg>"#;
         let left = svg::Handle::from_memory(left.as_slice());
         let dark = |turn: f32| {
             let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, 16.into());
             let bounds = Rectangle::new(Point::new(10.0, 10.0), Size::new(20.0, 20.0));
             renderer.draw_svg(Svg::new(left.clone()).color(Color::BLACK).rotation(turn), bounds, bounds);
-            let (mut pixmap, mut mask) =
-                (tiny_skia::Pixmap::new(40, 40).unwrap(), tiny_skia::Mask::new(40, 40).unwrap());
+            let (mut pixmap, mut mask) = (tiny_skia::Pixmap::new(40, 40).unwrap(), tiny_skia::Mask::new(40, 40).unwrap());
             let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(Size::new(40, 40), 1.0);
             let screen = Rectangle::with_size(Size::new(40.0, 40.0));
             renderer.draw(&mut pixmap.as_mut(), &mut mask, &viewport, &[screen], Color::WHITE);
@@ -1399,15 +1356,13 @@ mod tests {
     fn translucent_icons_stay_translucent_in_the_software_renderer() {
         use iced::advanced::svg::{Renderer as _, Svg};
         use iced::{Point, Rectangle, Size};
-        let square =
-            br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect width="20" height="20"/></svg>"#;
+        let square = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect width="20" height="20"/></svg>"#;
         let square = svg::Handle::from_memory(square.as_slice());
         let red_at = |alpha: f32| {
             let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, 16.into());
             let bounds = Rectangle::new(Point::new(10.0, 10.0), Size::new(20.0, 20.0));
             renderer.draw_svg(Svg::new(square.clone()).color(Color::BLACK.scale_alpha(alpha)), bounds, bounds);
-            let (mut pixmap, mut mask) =
-                (tiny_skia::Pixmap::new(40, 40).unwrap(), tiny_skia::Mask::new(40, 40).unwrap());
+            let (mut pixmap, mut mask) = (tiny_skia::Pixmap::new(40, 40).unwrap(), tiny_skia::Mask::new(40, 40).unwrap());
             let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(Size::new(40, 40), 1.0);
             let screen = Rectangle::with_size(Size::new(40.0, 40.0));
             renderer.draw(&mut pixmap.as_mut(), &mut mask, &viewport, &[screen], Color::WHITE);

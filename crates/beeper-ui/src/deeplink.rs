@@ -182,15 +182,11 @@ impl BeeperGuiApp {
 
     /// The end of a join of the Join a Matrix room view of the `draft`: Desktop opens the room and drops the draft,
     /// or shows why it could not in the view, or in a toast once the user has left the view.
-    pub(crate) fn matrix_room_joined(
-        &mut self, draft: Option<u32>, r: Result<String, String>, unrouted: bool,
-    ) -> Task<UiMessage> {
+    pub(crate) fn matrix_room_joined(&mut self, draft: Option<u32>, r: Result<String, String>, unrouted: bool) -> Task<UiMessage> {
         self.join_room.0 = false;
         let here = self.join_matrix_mode && self.creating_chat == draft;
         let error = match r {
-            Ok(id) if here && self.store.read().resolve_chat_idx(&id).is_some() => {
-                return self.open_joined_room(draft, &id)
-            }
+            Ok(id) if here && self.store.read().resolve_chat_idx(&id).is_some() => return self.open_joined_room(draft, &id),
             Ok(_) if here => "You joined the room, but Beeper couldn't open it yet. Try again.",
             Ok(_) => "The Matrix room was joined, but it was not opened.",
             Err(e) => {
@@ -274,9 +270,7 @@ impl BeeperGuiApp {
                 let window = match id {
                     "main" => None,
                     "prefs" => self.settings_window,
-                    _ if let Some(space) = id.strip_prefix("space-") => {
-                        self.space_windows.iter().find(|w| w.1 == space).map(|w| w.0)
-                    }
+                    _ if let Some(space) = id.strip_prefix("space-") => self.space_windows.iter().find(|w| w.1 == space).map(|w| w.0),
                     _ => self
                         .chat_windows
                         .iter()
@@ -308,8 +302,7 @@ impl BeeperGuiApp {
             drop(st);
             return toast(self, format!("Could not find any {} accounts", network.display_name));
         }
-        let thread =
-            part(2).and_then(|id| st.resolve_chat_idx(id)).filter(|&i| accounts.contains(&st.chats[i].account_id));
+        let thread = part(2).and_then(|id| st.resolve_chat_idx(id)).filter(|&i| accounts.contains(&st.chats[i].account_id));
         let thread = thread.map(|i| (st.chats[i].id.clone(), st.chats[i].is_request == Some(true)));
         let at_key = |key: &str| {
             let (cid, _) = thread.as_ref()?;
@@ -337,10 +330,8 @@ impl BeeperGuiApp {
                 if let Some(t) = text {
                     self.pane.composer = composer_with(&t);
                 }
-                let jump = sorted
-                    .map_or_else(Task::none, |mid| self.update(UiMessage::CommandBar(commands::Msg::JumpTo(cid, mid))));
-                let files = attachment
-                    .map(|p| self.update(UiMessage::Composer(composer::Msg::FilesPicked(Ok(vec![p.into()])))));
+                let jump = sorted.map_or_else(Task::none, |mid| self.update(UiMessage::CommandBar(commands::Msg::JumpTo(cid, mid))));
+                let files = attachment.map(|p| self.update(UiMessage::Composer(composer::Msg::FilesPicked(Ok(vec![p.into()])))));
                 Task::batch([jump].into_iter().chain(files))
             }
             "highlight-message" => {
@@ -365,10 +356,7 @@ mod tests {
         assert_eq!(parse("beeper://join-matrix-room/%23a%3Ab.c").unwrap().0[1], "%23a%3Ab.c");
         assert!(parse("beeper://select-thread/%zz").is_none());
         let n = |id| NETWORK_SPECS.iter().find(|n| n.bridge_id == id).unwrap();
-        assert_eq!(
-            [platform(n("whatsapp")), platform(n("facebook")), platform(n("hungryserv"))],
-            ["whatsapp", "facebookgo", "hungryserv"]
-        );
+        assert_eq!([platform(n("whatsapp")), platform(n("facebook")), platform(n("hungryserv"))], ["whatsapp", "facebookgo", "hungryserv"]);
         assert_eq!(chat_link("acc_instagram", "!r:beeper.com"), "beeper://select-thread/instagramgo/!r%3Abeeper.com");
         #[cfg(target_os = "linux")]
         assert!(desktop_entry("/a b/beeper-rs", "/i.png").contains("\nExec=\"/a b/beeper-rs\" %u\n"));

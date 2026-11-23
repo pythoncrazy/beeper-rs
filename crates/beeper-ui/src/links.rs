@@ -55,9 +55,7 @@ impl BeeperGuiApp {
     /// The image of a link at `w` by `h`, cut to cover, or an empty space while it loads. The image of a link preview
     /// of message `mid` is Desktop's `EnhancedImg playable`: an animation plays with "Autoplay GIFs" (`autoplay`), and
     /// without it shows its first frame with the play button.
-    fn link_image<'a>(
-        &'a self, mid: Option<(&str, bool)>, url: Option<&str>, (w, h): (f32, f32), radius: border::Radius,
-    ) -> El<'a> {
+    fn link_image<'a>(&'a self, mid: Option<(&str, bool)>, url: Option<&str>, (w, h): (f32, f32), radius: border::Radius) -> El<'a> {
         let Some((url, Some(Ok(frames)))) = url.map(|u| (u, self.media_at(u))) else {
             return Space::new().width(w).height(h).into();
         };
@@ -92,16 +90,11 @@ impl BeeperGuiApp {
         let size = link.img_size.as_ref().and_then(|s| s.width.zip(s.height));
         let square = size.is_some_and(|(w, h)| w == h);
         let narrow = link.img.is_some() && (square || size.is_some_and(|(w, _)| w < NARROW));
-        let meta = row![ic(icon::LINK, 12.0).color(dim(p.weak)), txt(host.clone(), 11.0).color(dim(p.weak))]
-            .spacing(4)
-            .align_y(Center);
+        let meta = row![ic(icon::LINK, 12.0).color(dim(p.weak)), txt(host.clone(), 11.0).color(dim(p.weak))].spacing(4).align_y(Center);
         let natural = [Some(link.title.as_str()), link.summary.as_deref(), Some(&host)];
         let natural = natural.into_iter().flatten().map(|t| text_width(t, 13.0, Weight::Semibold)).fold(0.0, f32::max);
-        let summary = |w: f32| {
-            link.summary
-                .as_deref()
-                .map(|s| clamp(s, w, 3, 13.0, Weight::Normal).line_height(lh(16.0)).color(dim(p.strong)))
-        };
+        let summary =
+            |w: f32| link.summary.as_deref().map(|s| clamp(s, w, 3, 13.0, Weight::Normal).line_height(lh(16.0)).color(dim(p.strong)));
         let card: El<'a> = if narrow {
             // `.narrow`: a 120 px high row, with the image at the left and the title on one line.
             let (w, _) = size.expect("a narrow image has a size");
@@ -116,9 +109,7 @@ impl BeeperGuiApp {
                 .padding([12.0, BUBBLE_PAD_X])
                 .width(text);
             let radius = border::Radius::default().top_left(RADIUS).bottom_left(RADIUS);
-            row![self.link_image(Some((mid, autoplay)), link.img.as_deref(), (iw, 120.0), radius), body]
-                .height(120)
-                .into()
+            row![self.link_image(Some((mid, autoplay)), link.img.as_deref(), (iw, 120.0), radius), body].height(120).into()
         } else {
             // A known image size makes the card 300 px wide, and an unknown one up to 360 px.
             let w = match (link.img.is_some(), size) {
@@ -131,12 +122,7 @@ impl BeeperGuiApp {
             let radius = border::Radius::default().top_left(RADIUS).top_right(RADIUS);
             let image = link.img.as_ref().map(|u| self.link_image(Some((mid, autoplay)), Some(u), (w, 160.0), radius));
             let text = column![title.color(dim(p.strong))].push(summary(tw)).push(meta).spacing(8);
-            column![]
-                .push(image)
-                .push(container(text).padding(Padding::new(BUBBLE_PAD_X).top(8.0).bottom(8.0)))
-                .spacing(8)
-                .width(w)
-                .into()
+            column![].push(image).push(container(text).padding(Padding::new(BUBBLE_PAD_X).top(8.0).bottom(8.0))).spacing(8).width(w).into()
         };
         let card = container(card).style(fill_box(dim(p.link_card), RADIUS));
         mouse_area(card).on_press(UiMessage::OpenUrl(link.url.clone())).on_right_press(menu).into()
@@ -145,9 +131,7 @@ impl BeeperGuiApp {
     /// Desktop's `VideoEmbed` of a YouTube link: the platform, the title, and the `lite-youtube` thumbnail with its
     /// play button. Desktop's title links to the video and its play button starts the player. iced has no web view for
     /// the player, so a click on the card opens the video in the browser.
-    fn view_youtube<'a>(
-        &'a self, link: &MessageLink, id: &str, max: f32, dim: impl Fn(Color) -> Color, menu: UiMessage,
-    ) -> El<'a> {
+    fn view_youtube<'a>(&'a self, link: &MessageLink, id: &str, max: f32, dim: impl Fn(Color) -> Color, menu: UiMessage) -> El<'a> {
         let p = &self.pal;
         let w = (0.45 * self.pane().size.width).min(400.0).min(max);
         let title = (!link.title.is_empty()).then(|| {

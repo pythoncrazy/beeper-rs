@@ -57,9 +57,9 @@ impl Agent {
         };
         let beeper = if *self == Agent::Google { " Beeper/3.110.1" } else { "" };
         match self {
-            Agent::Desktop | Agent::Google => Some(format!(
-                "Mozilla/5.0 ({os}) AppleWebKit/537.36 (KHTML, like Gecko){beeper} Chrome/{chrome}.0.0.0 Safari/537.36"
-            )),
+            Agent::Desktop | Agent::Google => {
+                Some(format!("Mozilla/5.0 ({os}) AppleWebKit/537.36 (KHTML, like Gecko){beeper} Chrome/{chrome}.0.0.0 Safari/537.36"))
+            }
             Agent::Browser => None,
             Agent::Custom(ua) => Some(ua.clone()),
         }
@@ -269,8 +269,7 @@ pub async fn log_in(browser: PathBuf, login: BrowserLogin) -> Result<Outcome, St
     let fail = |e: std::io::Error| format!("Could not start {}: {e}", browser.display());
     let profile = Profile::new().map_err(fail)?;
     // The browser reads the commands on its fd 3, and writes its replies on its fd 4. The pipes close on exec.
-    let ((commands, to_browser), (from_browser, replies)) =
-        (std::io::pipe().map_err(fail)?, std::io::pipe().map_err(fail)?);
+    let ((commands, to_browser), (from_browser, replies)) = (std::io::pipe().map_err(fail)?, std::io::pipe().map_err(fail)?);
     let (to_browser, from_browser) = (OwnedFd::from(to_browser), OwnedFd::from(from_browser));
     let mut cmd = tokio::process::Command::new(&browser);
     cmd.args(args(&login, &profile.0)).stdin(std::process::Stdio::null()).kill_on_drop(true);
@@ -280,8 +279,7 @@ pub async fn log_in(browser: PathBuf, login: BrowserLogin) -> Result<Outcome, St
     unsafe {
         cmd.pre_exec(move || {
             // Copies above 4 first, so that a descriptor that is 3 or 4 already is not overwritten.
-            let (r, w) =
-                (libc::fcntl(read_fd, libc::F_DUPFD_CLOEXEC, 10), libc::fcntl(write_fd, libc::F_DUPFD_CLOEXEC, 10));
+            let (r, w) = (libc::fcntl(read_fd, libc::F_DUPFD_CLOEXEC, 10), libc::fcntl(write_fd, libc::F_DUPFD_CLOEXEC, 10));
             if r < 0 || w < 0 || libc::dup2(r, 3) < 0 || libc::dup2(w, 4) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -426,9 +424,7 @@ fn domain_matches(domain: &str, wanted: &str) -> bool {
 }
 
 /// The first source of the type of each field that has one.
-fn sourced<'a>(
-    fields: &'a [CookieField], kind: &'a str,
-) -> impl Iterator<Item = (&'a CookieField, &'a crate::bridge_login::CookieSource)> {
+fn sourced<'a>(fields: &'a [CookieField], kind: &'a str) -> impl Iterator<Item = (&'a CookieField, &'a crate::bridge_login::CookieSource)> {
     fields.iter().filter_map(move |f| f.sources.iter().find(|s| s.kind == kind).map(|s| (f, s)))
 }
 
@@ -460,9 +456,7 @@ fn read_cookies(fields: &[CookieField], cookies: &[Value], found: &mut Map<Strin
 /// Desktop's `forEach` of the `special` fields: the values in the result of the close script.
 fn read_special(fields: &[CookieField], result: &Value, found: &mut Map<String, Value>) {
     for f in fields.iter().filter(|f| f.sources.iter().any(|s| s.kind == "special")) {
-        let value = result
-            .get(&f.id)
-            .filter(|v| matches(&f.pattern, &v.as_str().map_or_else(|| v.to_string(), str::to_string)));
+        let value = result.get(&f.id).filter(|v| matches(&f.pattern, &v.as_str().map_or_else(|| v.to_string(), str::to_string)));
         if let Some(v) = value {
             found.insert(f.id.clone(), v.clone());
         }
@@ -482,8 +476,7 @@ async fn set_up(cdp: Arc<Cdp>, win: Shared, session: String, main: bool, agent: 
     if main {
         calls.push(("Page.enable", json!({})));
     }
-    calls
-        .push(("Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true })));
+    calls.push(("Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true })));
     // A target without a domain, such as a worker without `Page`, rejects its call, and the others still run.
     for (method, params) in calls {
         let _ = cdp.call(s, method, params).await;
@@ -495,9 +488,7 @@ async fn set_up(cdp: Arc<Cdp>, win: Shared, session: String, main: bool, agent: 
 }
 
 /// Follows the events of the browser until it closes.
-async fn follow(
-    cdp: Arc<Cdp>, win: Shared, login: BrowserLogin, agent: Option<String>, mut events: mpsc::UnboundedReceiver<Value>,
-) {
+async fn follow(cdp: Arc<Cdp>, win: Shared, login: BrowserLogin, agent: Option<String>, mut events: mpsc::UnboundedReceiver<Value>) {
     let mut extra: HashMap<(String, String), Map<String, Value>> = HashMap::new();
     while let Some(e) = events.recv().await {
         let (p, session) = (&e["params"], e["sessionId"].as_str().unwrap_or_default().to_string());
@@ -534,12 +525,7 @@ async fn follow(
                 let url = p["request"]["url"].as_str().unwrap_or_default().to_string();
                 win.send_modify(|w| {
                     let empty = Map::new();
-                    read_headers(
-                        &login.fields,
-                        &url,
-                        p["request"]["headers"].as_object().unwrap_or(&empty),
-                        &mut w.fields,
-                    );
+                    read_headers(&login.fields, &url, p["request"]["headers"].as_object().unwrap_or(&empty), &mut w.fields);
                     if let Some(h) = extra.remove(&id) {
                         read_headers(&login.fields, &url, &h, &mut w.fields);
                     }
@@ -581,8 +567,7 @@ async fn wait(win: &Shared, d: Duration) -> bool {
 /// Desktop's `Am` on a protocol connection to a browser that has just started: loads the login page in the
 /// browser's page, reads the fields of the login every 100 ms, and closes the browser when it has them all.
 pub async fn drive(
-    input: impl AsyncRead + Unpin + Send + 'static, output: impl AsyncWrite + Unpin + Send + 'static,
-    login: &BrowserLogin,
+    input: impl AsyncRead + Unpin + Send + 'static, output: impl AsyncWrite + Unpin + Send + 'static, login: &BrowserLogin,
 ) -> Result<Outcome, String> {
     let final_url = match login.final_url.as_str() {
         "" => None,
@@ -641,9 +626,7 @@ pub async fn drive(
         let mut storage = Map::new();
         for (f, s) in sourced(&login.fields, "local_storage") {
             let js = format!("window.localStorage.getItem({})", Value::from(s.name.as_str()));
-            if let Some(v) =
-                cdp.eval(&session, &js, true).await.filter(|v| v.as_str().is_some_and(|v| matches(&f.pattern, v)))
-            {
+            if let Some(v) = cdp.eval(&session, &js, true).await.filter(|v| v.as_str().is_some_and(|v| matches(&f.pattern, v))) {
                 storage.insert(f.id.clone(), v);
             }
         }
@@ -776,8 +759,7 @@ mod tests {
 
     /// Drives the fake browser with `site`, and returns the outcome and the calls of the login.
     async fn run(login: &BrowserLogin, site: Site) -> (Outcome, Vec<Value>) {
-        let ((to_browser, commands), (replies, from_browser)) =
-            (tokio::io::duplex(1 << 16), tokio::io::duplex(1 << 16));
+        let ((to_browser, commands), (replies, from_browser)) = (tokio::io::duplex(1 << 16), tokio::io::duplex(1 << 16));
         let log = Log::default();
         tokio::spawn(fake(commands, replies, site, log.clone()));
         let outcome = drive(from_browser, to_browser, login).await.expect("the login runs");
@@ -837,8 +819,7 @@ mod tests {
             ..Site::default()
         };
         let (outcome, calls) = run(&login, site).await;
-        let fields =
-            json!({ "authorization": "Bearer a", "ct0": "c0", "auth": "abc1", "token": "t0k", "special": "s3cret" });
+        let fields = json!({ "authorization": "Bearer a", "ct0": "c0", "auth": "abc1", "token": "t0k", "special": "s3cret" });
         assert_eq!(Value::Object(outcome.fields), fields);
         assert!(outcome.finished);
         assert_eq!(outcome.last_url, "https://x.test/home");
@@ -864,8 +845,7 @@ mod tests {
             ..Cookies::default()
         };
         let login = BrowserLogin::new(&cookies, "discord", "token");
-        let site =
-            Site { cookies: vec![cookie("ct0", "a", "x.test")], cookies_at: 3, close_at: Some(2), ..Site::default() };
+        let site = Site { cookies: vec![cookie("ct0", "a", "x.test")], cookies_at: 3, close_at: Some(2), ..Site::default() };
         let (outcome, calls) = run(&login, site).await;
         assert_eq!(outcome, Outcome { finished: false, last_url: "https://x.test/login".into(), fields: Map::new() });
         assert!(calls_of(&calls, "Network.setUserAgentOverride").is_empty(), "an empty user agent is the browser's");
@@ -900,10 +880,7 @@ mod tests {
         let (process, step) = crate::bridge_login::start(p.clone(), "cookies".into()).await.expect("the cookie step");
         let login = BrowserLogin::new(step.cookies.as_ref().expect("cookies"), "twitter", "cookies");
         assert_eq!(login.launch_js.as_deref(), Some(scripts::TWITTER), "Desktop hides the Google and Apple logins");
-        let site = Site {
-            cookies: vec![cookie("ct0", "a", ".x.com"), cookie("auth_token", "b", ".x.com")],
-            ..Site::default()
-        };
+        let site = Site { cookies: vec![cookie("ct0", "a", ".x.com"), cookie("auth_token", "b", ".x.com")], ..Site::default() };
         let (outcome, _) = run(&login, site).await;
         assert!(outcome.finished);
         let done = crate::bridge_login::submit(p, process, step, Value::Object(outcome.fields)).await;
@@ -924,19 +901,14 @@ mod tests {
         assert_eq!(BrowserLogin::new(&google, "facebook", "messenger").agent, Agent::Google);
         assert_eq!(map("instagram", "cookies").close_js.as_deref(), Some("successfulLogin"));
         let slack = map("slack", "token");
-        assert_eq!(
-            (slack.url.as_str(), slack.launch_js.as_deref()),
-            ("https://slack.com/signin", Some(scripts::SLACK))
-        );
+        assert_eq!((slack.url.as_str(), slack.launch_js.as_deref()), ("https://slack.com/signin", Some(scripts::SLACK)));
         assert_eq!(slack.navigate_js, Some(format!("\n    {}\n    \n    ", scripts::SLACK)));
         let linkedin = map("linkedin", "cookies");
         assert_eq!(linkedin.url, "https://www.linkedin.com/login");
         assert_eq!(linkedin.launch_js, Some(format!("\n{}", scripts::LINKEDIN)));
         assert_eq!(linkedin.blocked, ["checkpoint/pk/initiateLogin"]);
         let gmessages = map("gmessages", "google");
-        assert!(
-            gmessages.url.starts_with("https://accounts.google.com/AccountChooser") && gmessages.agent == Agent::Google
-        );
+        assert!(gmessages.url.starts_with("https://accounts.google.com/AccountChooser") && gmessages.agent == Agent::Google);
         assert_eq!(map("chatgpt-dots", "cookies").agent, Agent::Google);
         assert_eq!(map("grokbot", "cookies").agent, Agent::Browser);
         let own = Cookies { user_agent: Some("UA".into()), ..step.clone() };
@@ -947,8 +919,7 @@ mod tests {
         assert!(x.launch_js.as_deref().unwrap().contains("const result = await ((() => {\n\treturn 1\n})())"));
         assert_eq!(x.navigate_js, x.launch_js);
         assert_eq!(x.close_js.as_deref(), Some("globalThis.__BEEP_BEEP_AUTH_RESULTS__"));
-        let desktop =
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
+        let desktop = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
         assert_eq!(Agent::Desktop.string("152").as_deref(), Some(desktop), "Desktop's `Qg`");
     }
 

@@ -12,9 +12,7 @@ use beeper_core::config::{cloud_bridge, find_network};
 use beeper_core::matrix::Provision;
 use beeper_core::models::NetworkSpec;
 use iced::widget::operation::{self, AbsoluteOffset};
-use iced::widget::{
-    button, column, container, image, pick_list, rich_text, row, scrollable, span, stack, svg, text_input, Column,
-};
+use iced::widget::{button, column, container, image, pick_list, rich_text, row, scrollable, span, stack, svg, text_input, Column};
 use iced::{window, Center, Color, Fill, Padding, Size, Task};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
@@ -71,13 +69,10 @@ fn stroke(paths: &str) -> svg::Handle {
 }
 
 static COPY: LazyLock<svg::Handle> = LazyLock::new(|| {
-    stroke(
-        r#"<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><rect x="9" y="9" width="13" height="13" rx="2"/>"#,
-    )
+    stroke(r#"<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><rect x="9" y="9" width="13" height="13" rx="2"/>"#)
 });
-static EYE: LazyLock<svg::Handle> = LazyLock::new(|| {
-    stroke(r#"<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>"#)
-});
+static EYE: LazyLock<svg::Handle> =
+    LazyLock::new(|| stroke(r#"<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>"#));
 static EYE_OFF: LazyLock<svg::Handle> = LazyLock::new(|| {
     stroke(concat!(
         r#"<path d="M9.9 4.2A10 10 0 0 1 12 4c6.4 0 10 8 10 8a17 17 0 0 1-2.2 3.2M6.6 6.6A17 17 0 0 0 2 12s3.6 8 10 8"#,
@@ -87,7 +82,8 @@ static EYE_OFF: LazyLock<svg::Handle> = LazyLock::new(|| {
 static CLEAR_FIELD: LazyLock<svg::Handle> = LazyLock::new(|| stroke(r#"<path d="M18 6 6 18M6 6l12 12"/>"#));
 /// Desktop's `ExternalLinkIcon` of the "Open %s Login" button.
 static EXTERNAL: LazyLock<svg::Handle> = LazyLock::new(|| {
-    let path = r#"<path d="M1 7L7 1M7 1V5.5M7 1H2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#;
+    let path =
+        r#"<path d="M1 7L7 1M7 1V5.5M7 1H2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#;
     let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" fill="none">{path}</svg>"#);
     svg::Handle::from_memory(svg.into_bytes())
 });
@@ -193,8 +189,9 @@ fn invalid(f: &Field, v: &str) -> Option<String> {
     let bad = match f.kind.as_str() {
         "phone_number" => (!phone::is_valid(v)).then_some("Please enter a valid phone number"),
         "domain" => (!DOMAIN.is_match(v)).then_some("Please enter a valid domain (e.g., example.com)"),
-        "email" => (!v.split_once('@').is_some_and(|(a, b)| !a.is_empty() && b.contains('.')))
-            .then_some("Please enter a valid email address"),
+        "email" => {
+            (!v.split_once('@').is_some_and(|(a, b)| !a.is_empty() && b.contains('.'))).then_some("Please enter a valid email address")
+        }
         "url" => (!(v.starts_with("https://") || v.starts_with("http://"))).then_some("Please enter a valid URL"),
         "select" => return None,
         _ => None,
@@ -209,12 +206,8 @@ fn invalid(f: &Field, v: &str) -> Option<String> {
         _ if min > 0 && min == max && n != min => {
             return Some(chars("Must be exactly %d character", "Must be exactly %d characters", min));
         }
-        _ if min > 0 && n < min => {
-            return Some(chars("Must be at least %d character", "Must be at least %d characters", min))
-        }
-        _ if max > 0 && n > max => {
-            return Some(chars("Must be at most %d character", "Must be at most %d characters", max))
-        }
+        _ if min > 0 && n < min => return Some(chars("Must be at least %d character", "Must be at least %d characters", min)),
+        _ if max > 0 && n > max => return Some(chars("Must be at most %d character", "Must be at most %d characters", max)),
         _ => {}
     }
     // Desktop ignores a pattern that does not compile.
@@ -273,8 +266,7 @@ fn inline<'a>(p: &Palette, text: &str, icons: Vec<(&str, El<'a>)>) -> El<'a> {
 
 /// The QR code of a `display_and_wait` step as an SVG, like Desktop's `QRCodeSVG` with level `M`.
 fn qr_svg(data: &str) -> svg::Handle {
-    let code =
-        qrcodegen::QrCode::encode_text(data, qrcodegen::QrCodeEcc::Medium).expect("the QR data fits in a QR code");
+    let code = qrcodegen::QrCode::encode_text(data, qrcodegen::QrCodeEcc::Medium).expect("the QR data fits in a QR code");
     crate::style::qr_svg(&code, 0)
 }
 
@@ -347,17 +339,14 @@ impl BeeperGuiApp {
     /// Desktop's `startLoginProcess`: cancels the running process and starts the flow.
     fn start_flow(&mut self, i: usize, flow: String) -> Task<UiMessage> {
         let p = self.add_provision(i);
-        let cancel = self.add_accounts[i]
-            .process
-            .take()
-            .map(|process| Task::perform(bridge_login::cancel(p.clone(), process), |_| UiMessage::Noop));
+        let cancel =
+            self.add_accounts[i].process.take().map(|process| Task::perform(bridge_login::cancel(p.clone(), process), |_| UiMessage::Noop));
         let a = &mut self.add_accounts[i];
         a.run += 1;
         (a.flow, a.step, a.error, a.failed, a.busy, a.menu, a.qr, a.emoji, a.browser) =
             (flow.clone(), None, None, None, true, false, None, None, Browser::Closed);
         let (id, run) = (a.id, a.run);
-        let start =
-            Task::perform(bridge_login::start(p, flow), move |r| UiMessage::AddAccount(id, AddMsg::Started(run, r)));
+        let start = Task::perform(bridge_login::start(p, flow), move |r| UiMessage::AddAccount(id, AddMsg::Started(run, r)));
         Task::batch(cancel.into_iter().chain([start]))
     }
 
@@ -378,8 +367,7 @@ impl BeeperGuiApp {
             let refresh = self.refresh_cloud_accounts();
             return if show { refresh } else { Task::batch([refresh, self.close_window(id)]) };
         }
-        a.values =
-            step.user_input.iter().flat_map(|u| &u.fields).map(|f| (f.id.clone(), f.default_value.clone())).collect();
+        a.values = step.user_input.iter().flat_map(|u| &u.fields).map(|f| (f.id.clone(), f.default_value.clone())).collect();
         // Desktop keys the form by its field IDs, so the next form with the same fields keeps its phone fields: their
         // country stays, and the reset of the form's values empties their number to the dial code.
         let ids = |s: &Step| s.user_input.iter().flat_map(|u| &u.fields).map(|f| f.id.clone()).collect::<Vec<_>>();
@@ -427,9 +415,7 @@ impl BeeperGuiApp {
         };
         a.browser = Browser::Open;
         let (id, run) = (a.id, a.run);
-        Task::perform(browser_login::log_in(browser, login), move |r| {
-            UiMessage::AddAccount(id, AddMsg::Browser(run, r))
-        })
+        Task::perform(browser_login::log_in(browser, login), move |r| UiMessage::AddAccount(id, AddMsg::Browser(run, r)))
     }
 
     pub fn update_add_account(&mut self, id: window::Id, msg: AddMsg) -> Task<UiMessage> {
@@ -575,9 +561,7 @@ impl BeeperGuiApp {
                 return operation::focus(input);
             }
             PhoneMsg::Toggle => {
-                return field
-                    .toggle()
-                    .map_or_else(Task::none, |y| operation::scroll_to(list, AbsoluteOffset { x: 0.0, y }));
+                return field.toggle().map_or_else(Task::none, |y| operation::scroll_to(list, AbsoluteOffset { x: 0.0, y }));
             }
             PhoneMsg::Blur => {
                 field.close();
@@ -629,8 +613,7 @@ impl BeeperGuiApp {
                 (vec![line(tr("Open WeChat on your phone")), tap, line(tr("Scan this QR code"))], Some(note))
             }
             "fi.mau.viber.login.qr" => {
-                let more =
-                    inline(p, tr("Open Viber and tap <icon/> More at the bottom"), vec![("<icon/>", icon(2, 12.0))]);
+                let more = inline(p, tr("Open Viber and tap <icon/> More at the bottom"), vec![("<icon/>", icon(2, 12.0))]);
                 let qr = inline(p, tr("Tap <icon/> QR code"), vec![("<icon/>", icon(3, 18.0))]);
                 (vec![more, qr, line(tr("Scan the QR code shown here"))], None)
             }
@@ -642,8 +625,7 @@ impl BeeperGuiApp {
                     .split("<b>")
                     .enumerate()
                     .flat_map(|(i, part)| {
-                        let (strong, rest) =
-                            if i == 0 { ("", part) } else { part.split_once("</b>").unwrap_or((part, "")) };
+                        let (strong, rest) = if i == 0 { ("", part) } else { part.split_once("</b>").unwrap_or((part, "")) };
                         [span::<UiMessage, _>(strong).font(bold), span(rest)]
                     })
                     .collect();
@@ -655,9 +637,7 @@ impl BeeperGuiApp {
         };
         // `.login-steps`: 288 px of rows 12 px apart, each with its number in a 20 px tinted circle.
         let rows = items.into_iter().enumerate().map(|(i, item)| -> El<'a> {
-            let n = container(semi((i + 1).to_string(), 14.0).color(p.strong))
-                .center(20)
-                .style(fill_box(p.strong.scale_alpha(0.06), 10.0));
+            let n = container(semi((i + 1).to_string(), 14.0).color(p.strong)).center(20).style(fill_box(p.strong.scale_alpha(0.06), 10.0));
             row![n, container(item).width(Fill)].spacing(8).into()
         });
         let steps = container(Column::with_children(rows).spacing(12).width(288)).center_x(Fill);
@@ -684,9 +664,7 @@ impl BeeperGuiApp {
             row![n, container(text).width(Fill)].spacing(12).align_y(Center).into()
         });
         let list = container(Column::with_children(rows).spacing(16).width(320).padding([8, 0])).center_x(Fill);
-        let lead = txt(tr("If you've forgotten your password, reset it in Telegram:"), 12.0)
-            .line_height(iced::Pixels(rem(16.8)))
-            .color(fg);
+        let lead = txt(tr("If you've forgotten your password, reset it in Telegram:"), 12.0).line_height(iced::Pixels(rem(16.8))).color(fg);
         Some(column![lead, list].spacing(4).padding([0, 16]).into())
     }
 
@@ -706,9 +684,7 @@ impl BeeperGuiApp {
                 .on_press(go(AddMsg::Device(android)))
                 .into()
         };
-        let tabs = container(row![tab("iPhone", false), tab("Android", true)])
-            .padding(2)
-            .style(fill_box(p.strong.scale_alpha(0.06), 6.0));
+        let tabs = container(row![tab("iPhone", false), tab("Android", true)]).padding(2).style(fill_box(p.strong.scale_alpha(0.06), 6.0));
         // "Open %s on your <device/>", with the tabs in place of `<device/>`.
         let open = |app: &str| -> El<'a> {
             let text = tr(match app {
@@ -717,17 +693,12 @@ impl BeeperGuiApp {
                 _ => "Open Signal on your <device/>",
             });
             let (before, after) = text.split_once("<device/>").unwrap_or((text, ""));
-            row![line(before.trim_end().to_string()), tabs, line(after.trim_start().to_string())]
-                .spacing(4)
-                .align_y(Center)
-                .into()
+            row![line(before.trim_end().to_string()), tabs, line(after.trim_start().to_string())].spacing(4).align_y(Center).into()
         };
-        let qr =
-            |app: &'static str| -> El<'a> { column![line(tr("Scan the QR code").into()), hint(app)].spacing(2).into() };
+        let qr = |app: &'static str| -> El<'a> { column![line(tr("Scan the QR code").into()), hint(app)].spacing(2).into() };
         let (first, [two, three], rest): (El<'a>, [&'static str; 2], Vec<El<'a>>) = match (a.bridge, a.android) {
             ("whatsapp", android) => {
-                let code = s.step_id == "fi.mau.whatsapp.login.code"
-                    || s.display_and_wait.as_ref().is_some_and(|d| d.kind == "code");
+                let code = s.step_id == "fi.mau.whatsapp.login.code" || s.display_and_wait.as_ref().is_some_and(|d| d.kind == "code");
                 let rest = match code {
                     true => vec![
                         line(tr("Tap \"Link with phone number instead\"").into()).into(),
@@ -750,10 +721,7 @@ impl BeeperGuiApp {
             }
             ("signal", android) => {
                 let steps = match android {
-                    false => [
-                        "Tap your profile in the top left → \"Settings\"",
-                        "Tap \"Linked Devices\" → \"Link a New Device\"",
-                    ],
+                    false => ["Tap your profile in the top left → \"Settings\"", "Tap \"Linked Devices\" → \"Link a New Device\""],
                     true => ["Tap your profile in the top left", "Tap \"Linked Devices\" → \"Link a new Device\""],
                 };
                 (open("Signal"), steps, vec![qr("Grant Signal camera access if prompted")])
@@ -850,15 +818,10 @@ impl BeeperGuiApp {
                     let hidden = s.cookies.as_ref().is_some_and(|c| c.hidden);
                     let window = trx("window", "browser login UI container");
                     match &a.browser {
-                        Browser::Open if !hidden && !a.busy => {
-                            para(trf("Continue login in the browser %s", &[&window]))
-                        }
+                        Browser::Open if !hidden && !a.busy => para(trf("Continue login in the browser %s", &[&window])),
                         Browser::Open | Browser::Closed if hidden || a.busy => para(tr("Authenticating...").into()),
                         browser => {
-                            let text = trf(
-                                "Click the button below to open the browser and begin authentication with %s.",
-                                &[&name],
-                            );
+                            let text = trf("Click the button below to open the browser and begin authentication with %s.", &[&name]);
                             let error = match browser {
                                 Browser::Failed(e) => Some(error_line(e)),
                                 _ => None,
@@ -882,11 +845,9 @@ impl BeeperGuiApp {
         };
         let mark: El<'a> = match a.qr.clone().filter(|_| a.error.is_none()) {
             Some(qr) => {
-                let plate =
-                    container(svg(qr).width(QR_SIZE).height(QR_SIZE)).padding(8).style(fill_box(Color::WHITE, 12.0));
-                let logo = container(svg(brand_svg(a.network.bridge_id)).width(20).height(20))
-                    .padding(2)
-                    .style(fill_box(Color::WHITE, 6.0));
+                let plate = container(svg(qr).width(QR_SIZE).height(QR_SIZE)).padding(8).style(fill_box(Color::WHITE, 12.0));
+                let logo =
+                    container(svg(brand_svg(a.network.bridge_id)).width(20).height(20)).padding(2).style(fill_box(Color::WHITE, 6.0));
                 stack![plate, container(logo).center(QR_SIZE + 16.0)].into()
             }
             None => svg(brand_svg(a.network.bridge_id)).width(52).height(52).into(),
@@ -904,10 +865,10 @@ impl BeeperGuiApp {
             .spacing(24)
             .align_x(Center)
             .padding([24, 32]);
-        let limits = CLOUD_LIMITS.iter().find(|l| l.0 == a.network.bridge_id).map(|l| {
-            row![txt(tr("Not supported:"), 12.0).color(p.strong), txt(tr(l.1), 12.0).color(p.sub).width(Fill)]
-                .spacing(4)
-        });
+        let limits = CLOUD_LIMITS
+            .iter()
+            .find(|l| l.0 == a.network.bridge_id)
+            .map(|l| row![txt(tr("Not supported:"), 12.0).color(p.strong), txt(tr(l.1), 12.0).color(p.sub).width(Fill)].spacing(4));
         let about = rich_text![
             span(tr("Your login information and chats will be synced across devices and data is stored encrypted on Beeper servers."))
                 .color(p.sub),
@@ -992,11 +953,9 @@ impl BeeperGuiApp {
                             .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 6.0))
                             .on_press(go(msg))
                     };
-                    let eye = secret.then(|| {
-                        accessory(if shown { EYE_OFF.clone() } else { EYE.clone() }, AddMsg::Reveal(f.id.clone()))
-                    });
-                    let clear = (!secret && !value.is_empty())
-                        .then(|| accessory(CLEAR_FIELD.clone(), AddMsg::Field(f.id.clone(), String::new())));
+                    let eye = secret.then(|| accessory(if shown { EYE_OFF.clone() } else { EYE.clone() }, AddMsg::Reveal(f.id.clone())));
+                    let clear =
+                        (!secret && !value.is_empty()).then(|| accessory(CLEAR_FIELD.clone(), AddMsg::Field(f.id.clone(), String::new())));
                     row![input].push(eye).push(clear).spacing(4).align_y(Center).into()
                 }
             };
@@ -1019,9 +978,8 @@ impl BeeperGuiApp {
                 .style(btn_style([CLEAR; 3], [p.accent, p.accent, p.sub], 6.0))
                 .on_press_maybe((!a.busy).then(|| go(AddMsg::Back)))
         });
-        let intro = (!s.instructions.is_empty()).then(|| {
-            txt(bridge_text("instructions", &s.step_id, &s.instructions), 14.0).color(p.strong).center().width(Fill)
-        });
+        let intro = (!s.instructions.is_empty())
+            .then(|| txt(bridge_text("instructions", &s.step_id, &s.instructions), 14.0).color(p.strong).center().width(Fill));
         let start_over = a.error.as_deref().map(|e| {
             column![
                 txt(tr("Something went wrong and we couldn't add your account."), 13.0).color(p.strong),
@@ -1031,16 +989,7 @@ impl BeeperGuiApp {
             .spacing(8)
             .align_x(Center)
         });
-        column![]
-            .push(intro)
-            .extend(rows)
-            .push(submit)
-            .push(back)
-            .push(start_over)
-            .spacing(16)
-            .align_x(Center)
-            .width(Fill)
-            .into()
+        column![].push(intro).extend(rows).push(submit).push(back).push(start_over).spacing(16).align_x(Center).width(Fill).into()
     }
 }
 
@@ -1119,18 +1068,12 @@ mod tests {
             let mut sim = simulator(app.view_add_account(&app.add_accounts[0]));
             texts.iter().all(|t| sim.find(*t).is_ok()) && sim.find("The bridge's own steps").is_err()
         };
-        assert!(shows(
-            &app,
-            &["Open WeChat on your phone", "Tap", "in the top-right corner, then", "Scan", "Scan this QR code"]
-        ));
+        assert!(shows(&app, &["Open WeChat on your phone", "Tap", "in the top-right corner, then", "Scan", "Scan this QR code"]));
         assert!(shows(&app, &["If WeChat warns that another device is already logged in, continuing will sign out that device. On your phone, select “Import recent chat history from this phone”, then tap “Log In”."]));
         app.add_accounts[0].step = Some(step("display_and_wait", "fi.mau.viber.login.qr"));
         assert!(shows(&app, &["Open Viber and tap", "More at the bottom", "QR code", "Scan the QR code shown here"]));
         app.add_accounts[0].step = Some(step("complete", DONE_STEP));
-        assert!(shows(
-            &app,
-            &["Open Viber on your phone", "You can send and receive new messages without syncing your history."]
-        ));
+        assert!(shows(&app, &["Open Viber on your phone", "You can send and receive new messages without syncing your history."]));
         let mut sim = simulator(app.view_add_account(&app.add_accounts[0]));
         let _ = sim.click("Done").expect("the Done button");
         let id = app.add_accounts[0].id;
@@ -1156,12 +1099,7 @@ mod tests {
         let dir = beeper_core::testing::temp_dir(&format!("add-account-{name}"));
         let config = beeper_core::config::CentralConfig::new(dir, "127.0.0.1".into(), 23631, None);
         let store = beeper_core::store::StoreLock::shared(beeper_core::store::BeeperStore::from_config(config));
-        let session = MatrixSession {
-            user_id: "@me:beeper.com".into(),
-            access_token: "t".into(),
-            device_id: "D".into(),
-            jwt: None,
-        };
+        let session = MatrixSession { user_id: "@me:beeper.com".into(), access_token: "t".into(), device_id: "D".into(), jwt: None };
         store.write().sign_in(session, url.clone(), &Profile::default(), Vec::new());
         let mut app = BeeperGuiApp::boot(store).0;
         let cloud = beeper_core::cloud::Cloud::new(&url, &url);
@@ -1256,17 +1194,13 @@ mod tests {
         let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(password.clone(), wrong))).await;
         settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
         assert!(shows(&app, id, "Incorrect password, please try again."));
-        for text in
-            [help, "Open the Telegram app.", "Follow the prompts to reset your password, then return to Beeper."]
-        {
+        for text in [help, "Open the Telegram app.", "Follow the prompts to reset your password, then return to Beeper."] {
             assert!(shows(&app, id, text), "Desktop's help under a wrong password shows {text}");
         }
         let process = app.add_accounts[0].process.clone().expect("a running login");
         settle(&mut app, UiMessage::Window(crate::windows::Msg::Closed(id))).await;
         assert!(app.add_accounts.is_empty());
-        let cancel = format!(
-            "POST /_matrix/client/unstable/com.beeper.bridge/telegram/_matrix/provision/v3/login/cancel/{process}"
-        );
+        let cancel = format!("POST /_matrix/client/unstable/com.beeper.bridge/telegram/_matrix/provision/v3/login/cancel/{process}");
         assert!(bridges.requests().contains(&cancel), "a closed window cancels its login");
     }
 
@@ -1293,8 +1227,7 @@ mod tests {
             one(send(&mut app, m).await)
         };
         let _ = send(&mut app, started).await;
-        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field("phone_number".into(), "+12015550123".into())))
-            .await;
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field("phone_number".into(), "+12015550123".into()))).await;
         let shown = one(send(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await);
         // The wait of the stub ends at once, so it does not run: a real bridge answers when the code is typed.
         drop(app.update(shown));
@@ -1305,8 +1238,7 @@ mod tests {
         };
         let _ = send(&mut app, back).await;
         assert!(shows(&app, id, "Please enter your phone number"), "Back shows the step before");
-        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field("phone_number".into(), "+12015550123".into())))
-            .await;
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field("phone_number".into(), "+12015550123".into()))).await;
         settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
         assert_eq!(app.toast.as_ref().map(|t| t.text.as_str()), Some("Reconnected to WhatsApp"));
     }
@@ -1319,12 +1251,7 @@ mod tests {
         let _ = app.open_add_account("viber", None);
         let a = &mut app.add_accounts[0];
         (a.process, a.qr) = (Some("process".into()), Some(qr_svg("viber://pair")));
-        let done = Step {
-            kind: "complete".into(),
-            step_id: DONE_STEP.into(),
-            instructions: "Logged in".into(),
-            ..Step::default()
-        };
+        let done = Step { kind: "complete".into(), step_id: DONE_STEP.into(), instructions: "Logged in".into(), ..Step::default() };
         let _ = app.show_step(0, done);
         assert!(app.add_accounts[0].qr.is_none(), "no QR code");
         let mut sim = iced_test::simulator(app.view_add_account(&app.add_accounts[0]));
@@ -1337,11 +1264,11 @@ mod tests {
     async fn a_logged_out_account_offers_reconnect() {
         let (mut app, _) = stub_app("reconnect").await;
         let out = serde_json::json!({ "state_event": "BAD_CREDENTIALS", "has_error": true, "message": "Logged out" });
-        let bridges = serde_json::json!({ "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "15550100": out } } });
+        let bridges =
+            serde_json::json!({ "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "15550100": out } } });
         let accounts = beeper_core::cloud::cloud_accounts(&bridges).expect("valid bridge states");
         app.store.write().set_cloud_accounts(accounts);
-        let again =
-            |m: UiMessage| matches!(m, UiMessage::OpenAddAccount(n, Some(l)) if n == "whatsapp" && l == "15550100");
+        let again = |m: UiMessage| matches!(m, UiMessage::OpenAddAccount(n, Some(l)) if n == "whatsapp" && l == "15550100");
         {
             let mut inbox = iced_test::simulator(app.view_sidebar());
             assert!(inbox.find("WhatsApp disconnected").is_ok(), "the inbox shows it too (Desktop's `mpt`)");
@@ -1392,8 +1319,7 @@ mod tests {
             settle(&mut app, m).await;
         }
         assert_eq!(app.toast.as_ref().map(|t| t.text.as_str()), Some("Connected to X"));
-        let process =
-            bridges.requests().into_iter().find(|r| r.ends_with("/fi.mau.twitter.login.enter_cookies/cookies"));
+        let process = bridges.requests().into_iter().find(|r| r.ends_with("/fi.mau.twitter.login.enter_cookies/cookies"));
         assert!(process.is_some(), "the fields went to the cookie step");
     }
 
@@ -1402,9 +1328,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn the_platform_status_shows_its_message_and_gates_the_login() {
         let (mut app, bridges) = stub_app("platform-status").await;
-        let status = |msgs: Vec<UiMessage>| {
-            msgs.into_iter().find(|m| matches!(m, UiMessage::AddAccount(_, AddMsg::Status(_)))).expect("a status")
-        };
+        let status =
+            |msgs: Vec<UiMessage>| msgs.into_iter().find(|m| matches!(m, UiMessage::AddAccount(_, AddMsg::Status(_)))).expect("a status");
         let opened = status(send(&mut app, UiMessage::OpenAddAccount("signal".into(), None)).await);
         let id = app.add_accounts[0].id;
         assert!(shows(&app, id, "Loading...") && !shows(&app, id, "Signal logins may be slow."));

@@ -104,8 +104,7 @@ fn parse(argv: impl IntoIterator<Item = String>) -> Result<Args, (String, i32)> 
             match (args.command, command) {
                 (Command::Gui, Some(command)) => args.command = command,
                 (Command::Gui, None) => {
-                    let words: Vec<String> =
-                        std::iter::once(arg).chain(argv.take_while(|a| !a.starts_with('-'))).collect();
+                    let words: Vec<String> = std::iter::once(arg).chain(argv.take_while(|a| !a.starts_with('-'))).collect();
                     return Err((words.join(" "), 127));
                 }
                 _ => return Err((format!("Unexpected argument: {arg}"), 2)),
@@ -157,9 +156,7 @@ fn help() -> String {
         format!("  {head:<26}{text}{aliases}")
     });
     let flags = flags.join("\n");
-    format!(
-        "Beeper chat app and Desktop API server\n\n{USAGE}\n\n{ARGUMENTS}\n\nCOMMANDS\n{commands}\n\nFLAGS\n{flags}\n\n{ENVIRONMENT}"
-    )
+    format!("Beeper chat app and Desktop API server\n\n{USAGE}\n\n{ARGUMENTS}\n\nCOMMANDS\n{commands}\n\nFLAGS\n{flags}\n\n{ENVIRONMENT}")
 }
 
 /// The version in oclif's layout, with the Node names of the platform and the CPU.
@@ -175,8 +172,7 @@ fn version() -> String {
 fn bind_free(rt: &Runtime, host: &str, ports: RangeInclusive<u16>) -> std::io::Result<TcpListener> {
     let bind = |port| rt.block_on(TcpListener::bind((host, port)));
     let busy = |r: &std::io::Result<_>| {
-        r.as_ref()
-            .is_err_and(|e| matches!(e.kind(), std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied))
+        r.as_ref().is_err_and(|e| matches!(e.kind(), std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied))
     };
     ports.map(bind).find(|r| !busy(r)).unwrap_or_else(|| bind(0))
 }
@@ -228,12 +224,11 @@ mod display {
         }
         let gpu_display = match wayland.is_some() {
             true => has("zwp_linux_dmabuf_v1"),
-            false => x11rb::connect(None).is_ok_and(|(c, _)| {
-                ["DRI3", "NV-GLX"].iter().any(|e| c.extension_information(e).is_ok_and(|i| i.is_some()))
-            }),
+            false => x11rb::connect(None)
+                .is_ok_and(|(c, _)| ["DRI3", "NV-GLX"].iter().any(|e| c.extension_information(e).is_ok_and(|i| i.is_some()))),
         };
-        let render_node = std::fs::read_dir("/dev/dri")
-            .is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("renderD")));
+        let render_node =
+            std::fs::read_dir("/dev/dri").is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("renderD")));
         if std::env::var_os("ICED_BACKEND").is_none() && !(gpu_display && render_node) {
             unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia") };
         }
@@ -405,8 +400,7 @@ fn main() {
         }
     };
     let bind = move |store: &SharedStore| {
-        let listener =
-            bind_free(rt, &host, ports.clone()).map_err(|e| format!("bind the Desktop API to {host}: {e}"))?;
+        let listener = bind_free(rt, &host, ports.clone()).map_err(|e| format!("bind the Desktop API to {host}: {e}"))?;
         store.write().config.port = listener.local_addr().expect("a bound listener has an address").port();
         Ok::<_, String>(listener)
     };
@@ -484,8 +478,7 @@ mod tests {
             domain: Some("beeper-staging.com"),
             ..Args::default()
         };
-        let spaced =
-            ["serve", "--host", "127.0.0.1", "--port", "23471", "--data-dir", "/tmp/d", "--server-env", "staging"];
+        let spaced = ["serve", "--host", "127.0.0.1", "--port", "23471", "--data-dir", "/tmp/d", "--server-env", "staging"];
         assert_eq!(run(&spaced), Ok(want));
         let server = ["--headless", "--host=127.0.0.1", "--port=23471", "--data-dir=/tmp/d", "--server-env=staging"];
         assert_eq!(run(&server).map(|a| (a.port, a.domain)), Ok((Some(23471), Some("beeper-staging.com"))));
@@ -501,10 +494,7 @@ mod tests {
     #[test]
     fn the_app_ignores_switches_like_chromium() {
         let app = run(&["--enable-features=UseOzonePlatform", "--ozone-platform=x11", "--no-tls-verify", "--demo"]);
-        assert_eq!(
-            app.as_ref().map(|a| (a.command, a.demo, a.ozone.as_deref())),
-            Ok((Command::Gui, true, Some("x11")))
-        );
+        assert_eq!(app.as_ref().map(|a| (a.command, a.demo, a.ozone.as_deref())), Ok((Command::Gui, true, Some("x11"))));
         assert_eq!(run(&["--ozone-platform-hint=wayland"]).map(|a| a.ozone), Ok(Some("wayland".into())));
     }
 
@@ -525,11 +515,7 @@ mod tests {
             (&["--port", "abc"], port("abc"), 2),
             (&["--pas-port=0"], port("0"), 2),
             (&["--port=65536"], port("65536"), 2),
-            (
-                &["--server-env=prod"],
-                "Expected --server-env=prod to be one of: production, staging, dev, local".into(),
-                2,
-            ),
+            (&["--server-env=prod"], "Expected --server-env=prod to be one of: production, staging, dev, local".into(), 2),
         ];
         for (argv, error, code) in cases {
             assert_eq!(run(argv), Err((error, code)), "{argv:?}");

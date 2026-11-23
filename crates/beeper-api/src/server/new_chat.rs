@@ -3,8 +3,8 @@
 //! and finds the people of its chats. The bridge calls run without the store lock.
 
 use super::{
-    bad, check, create_chat_issues, custom_issue, error, error_with, invalid_input, missing, ok, search, store_error,
-    string_issue, too_short, type_issue, view, zod_type, Issue, Reply, Req, Response, MIN_1,
+    bad, check, create_chat_issues, custom_issue, error, error_with, invalid_input, missing, ok, search, store_error, string_issue,
+    too_short, type_issue, view, zod_type, Issue, Reply, Req, Response, MIN_1,
 };
 use crate::http::StatusCode;
 use beeper_core::matrix::{bridge_user, ChatBridge};
@@ -95,15 +95,11 @@ fn start_chat_issues(b: &Value) -> Vec<Issue> {
     match b.get("user") {
         Some(Value::Object(u)) => {
             let fields = ["id", "username", "phoneNumber", "email", "fullName"];
-            let found: Vec<Issue> =
-                fields.iter().filter_map(|k| string_issue(u.get(*k), true, json!(["user", k]))).collect();
+            let found: Vec<Issue> = fields.iter().filter_map(|k| string_issue(u.get(*k), true, json!(["user", k]))).collect();
             // zod runs the refinement of `user` only when its fields parse.
             let named = fields[..4].iter().any(|k| u.get(*k).and_then(Value::as_str).is_some_and(|s| !s.is_empty()));
             if found.is_empty() && !named {
-                issues.push(custom_issue(
-                    "At least one of id, username, phoneNumber, or email is required.",
-                    json!(["user", "id"]),
-                ));
+                issues.push(custom_issue("At least one of id, username, phoneNumber, or email is required.", json!(["user", "id"])));
             }
             issues.extend(found);
         }
@@ -186,9 +182,7 @@ fn create_chat(store: &SharedStore, r: &Req) -> Reply {
         true => rt.block_on(bridge.create_group("group".into(), title.unwrap_or_default(), participants)),
         false => rt.block_on(bridge.create_dm(participants[0].clone())),
     };
-    let room = made.map_err(|_| {
-        error_with(StatusCode(500), "Failed to execute tool: createChat", "TOOL_EXECUTION_ERROR", json!({}))
-    })?;
+    let room = made.map_err(|_| error_with(StatusCode(500), "Failed to execute tool: createChat", "TOOL_EXECUTION_ERROR", json!({})))?;
     created(store, &room, text, None)
 }
 
@@ -228,9 +222,10 @@ fn start_chat(store: &SharedStore, r: &Req) -> Reply {
     let real = store.read().matrix.is_some();
     let l = if real { Lookups::of(store, account) } else { Lookups::DEMO };
     let ids = [(l.create_dm, &p.id), (l.phone, &p.phone), (l.email, &p.email), (l.username, &p.username)];
-    let first = ids.into_iter().find_map(|(on, id)| id.as_ref().filter(|_| on)).ok_or_else(|| {
-        error(StatusCode::BAD_REQUEST, "No supported identifiers for this account", "UNSUPPORTED_IDENTIFIER")
-    })?;
+    let first = ids
+        .into_iter()
+        .find_map(|(on, id)| id.as_ref().filter(|_| on))
+        .ok_or_else(|| error(StatusCode::BAD_REQUEST, "No supported identifiers for this account", "UNSUPPORTED_IDENTIFIER"))?;
     let existing = existing_dm(&store.read(), account, &p);
     if let Some(id) = existing {
         return answer(store, &id, Some("existing"));
@@ -265,9 +260,7 @@ fn is_email(s: &str) -> bool {
 /// without a region, which is a `+` and 8 to 15 digits here, a text with an `@` after its start, or an `@` handle.
 fn identifier_like(q: &str) -> bool {
     let digits = q.chars().filter(char::is_ascii_digit).count();
-    let phone = q.starts_with('+')
-        && (8..=15).contains(&digits)
-        && q.chars().all(|c| c.is_ascii_digit() || " +-().".contains(c));
+    let phone = q.starts_with('+') && (8..=15).contains(&digits) && q.chars().all(|c| c.is_ascii_digit() || " +-().".contains(c));
     let handle = q.as_bytes().windows(2).any(|w| w[0] == b'@' && w[1].is_ascii_alphanumeric());
     phone || (q.contains('@') && !q.starts_with('@')) || handle
 }
@@ -292,13 +285,10 @@ fn exact_lookups(l: &Lookups, q: &str) -> Vec<String> {
 /// The users that the bridge of an account finds for a query, with Desktop's scores: its `searchUsers` (200) and
 /// the users of the exact lookups (300). A failed call finds no one, like Desktop's.
 fn bridge_finds(store: &SharedStore, account: &str, q: &str) -> Vec<(User, i64)> {
-    let (rt, l, bridge) =
-        (tokio::runtime::Handle::current(), Lookups::of(store, account), ChatBridge::of(store, account));
-    let lookups: Vec<_> =
-        exact_lookups(&l, q).into_iter().map(|id| rt.spawn(bridge.clone().resolve_identifier(id))).collect();
+    let (rt, l, bridge) = (tokio::runtime::Handle::current(), Lookups::of(store, account), ChatBridge::of(store, account));
+    let lookups: Vec<_> = exact_lookups(&l, q).into_iter().map(|id| rt.spawn(bridge.clone().resolve_identifier(id))).collect();
     rt.block_on(async {
-        let mut found: Vec<(User, i64)> =
-            bridge.search_users(q.into()).await.unwrap_or_default().into_iter().map(|u| (u, 200)).collect();
+        let mut found: Vec<(User, i64)> = bridge.search_users(q.into()).await.unwrap_or_default().into_iter().map(|u| (u, 200)).collect();
         for lookup in lookups {
             if let Ok(Some(v)) = lookup.await.expect("a lookup task") {
                 found.push((bridge_user(&v), 300));

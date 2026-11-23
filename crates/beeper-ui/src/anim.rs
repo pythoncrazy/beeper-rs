@@ -85,9 +85,7 @@ impl FromIterator<Frame> for Frames {
 /// `frames` as `make` draws them, playing from `start` when `play`. A still image, or an animation that does not
 /// play, is the plain image of its first frame, so it adds no work to the frames of the window. A Lottie animation
 /// draws at the size that it shows, so it stays an animation that does not play.
-pub fn gif<'a, M: 'a>(
-    frames: &Frames, play: bool, start: Instant, make: impl Fn(image::Handle) -> Image + 'a,
-) -> Element<'a, M> {
+pub fn gif<'a, M: 'a>(frames: &Frames, play: bool, start: Instant, make: impl Fn(image::Handle) -> Image + 'a) -> Element<'a, M> {
     match plays(frames, play) || frames.animation().is_some() {
         false => make(frames[0].0.clone()).into(),
         true => {
@@ -158,8 +156,8 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
     }
 
     fn update(
-        &mut self, _: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer,
-        _: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
+        &mut self, _: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer, _: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         let Event::Window(window::Event::RedrawRequested(now)) = event else { return };
         if !layout.bounds().intersects(viewport) {
@@ -187,8 +185,8 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
     }
 
     fn draw(
-        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
-        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         // A still image has one frame without a delay. The first frame of a Lottie animation shows until a worker
         // draws its frames at the size that it shows.
@@ -227,8 +225,8 @@ impl<M> Widget<M, Theme, Renderer> for Dot {
     }
 
     fn update(
-        &mut self, _: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer,
-        _: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
+        &mut self, _: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer, _: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         if matches!(event, Event::Window(window::Event::RedrawRequested(_))) && layout.bounds().intersects(viewport) {
             shell.request_redraw();
@@ -236,15 +234,11 @@ impl<M> Widget<M, Theme, Renderer> for Dot {
     }
 
     fn draw(
-        &self, _: &widget::Tree, renderer: &mut Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>,
-        _: mouse::Cursor, _: &Rectangle,
+        &self, _: &widget::Tree, renderer: &mut Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>, _: mouse::Cursor,
+        _: &Rectangle,
     ) {
         let t = ((self.start.elapsed().as_millis() + 1000 - self.delay) % 1000) as f32 / 1000.0;
-        let quad = renderer::Quad {
-            bounds: layout.bounds(),
-            border: iced::border::rounded(self.size / 2.0),
-            ..Default::default()
-        };
+        let quad = renderer::Quad { bounds: layout.bounds(), border: iced::border::rounded(self.size / 2.0), ..Default::default() };
         renderer.fill_quad(quad, self.color.scale_alpha((self.alpha)(t)));
     }
 }
@@ -302,11 +296,9 @@ impl Skeleton {
     /// The gradient of the box at `t` seconds: the shimmer over the fill, in the color of both.
     pub fn gradient(color: Color, t: f32) -> iced::gradient::Linear {
         let c = color.a;
-        shimmer(t)
-            .into_iter()
-            .fold(iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2)), |g, (at, flash)| {
-                g.add_stop(at, Color { a: c + c * flash * (1.0 - c), ..color })
-            })
+        shimmer(t).into_iter().fold(iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2)), |g, (at, flash)| {
+            g.add_stop(at, Color { a: c + c * flash * (1.0 - c), ..color })
+        })
     }
 }
 
@@ -327,8 +319,8 @@ impl<M> Widget<M, Theme, Renderer> for Skeleton {
     }
 
     fn update(
-        &mut self, _: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer,
-        _: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
+        &mut self, _: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer, _: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         if matches!(event, Event::Window(window::Event::RedrawRequested(_))) && layout.bounds().intersects(viewport) {
             shell.request_redraw();
@@ -336,14 +328,10 @@ impl<M> Widget<M, Theme, Renderer> for Skeleton {
     }
 
     fn draw(
-        &self, _: &widget::Tree, renderer: &mut Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>,
-        _: mouse::Cursor, _: &Rectangle,
+        &self, _: &widget::Tree, renderer: &mut Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>, _: mouse::Cursor,
+        _: &Rectangle,
     ) {
-        let quad = renderer::Quad {
-            bounds: layout.bounds(),
-            border: iced::border::rounded(self.radius),
-            ..Default::default()
-        };
+        let quad = renderer::Quad { bounds: layout.bounds(), border: iced::border::rounded(self.radius), ..Default::default() };
         let t = self.start.elapsed().as_secs_f32();
         renderer.fill_quad(quad, iced::Background::Gradient(Self::gradient(self.color, t).into()));
     }

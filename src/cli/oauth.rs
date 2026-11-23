@@ -132,8 +132,7 @@ pub fn login_with_pkce(c: &Ctx, base: &str, save: bool, source: &str) -> Res<Val
     ];
     let query = form_encode(&params);
     open_external(&format!("{}?{}", endpoint("authorization_endpoint", "/oauth/authorize"), query));
-    let reply =
-        callback.recv_timeout(CALLBACK_WAIT).map_err(|_| CliError::bug("Timed out waiting for OAuth callback."))?;
+    let reply = callback.recv_timeout(CALLBACK_WAIT).map_err(|_| CliError::bug("Timed out waiting for OAuth callback."))?;
     let param = |k: &str| reply.iter().find(|(name, _)| name == k).map(|(_, v)| v.as_str());
     if param("state") != Some(state.as_str()) {
         return Err(CliError::bug("OAuth state mismatch."));
@@ -163,10 +162,7 @@ pub fn login_with_pkce(c: &Ctx, base: &str, save: bool, source: &str) -> Res<Val
         let auth = obj([
             ("accessToken", token["access_token"].clone()),
             ("clientID", json!(client_id)),
-            (
-                "expiresAt",
-                token["expires_in"].as_i64().filter(|s| *s != 0).map_or(Value::Null, |s| json!(iso_in(s * 1000))),
-            ),
+            ("expiresAt", token["expires_in"].as_i64().filter(|s| *s != 0).map_or(Value::Null, |s| json!(iso_in(s * 1000)))),
             ("scope", token["scope"].clone()),
             ("source", json!(source)),
             ("tokenType", token["token_type"].clone()),
@@ -203,19 +199,11 @@ fn callback_server(listener: std::net::TcpListener) -> std::sync::mpsc::Receiver
             let target = line.split(' ').nth(1).unwrap_or("/");
             let (path, query) = target.split_once('?').unwrap_or((target, ""));
             if path != "/callback" {
-                drop(
-                    stream.write_all(
-                        b"HTTP/1.1 404 Not Found\r\ncontent-length: 9\r\nconnection: close\r\n\r\nNot found",
-                    ),
-                );
+                drop(stream.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 9\r\nconnection: close\r\n\r\nNot found"));
                 continue;
             }
-            let page =
-                "<!doctype html><title>Beeper CLI</title><p>You can close this tab and return to the terminal.</p>";
-            let head = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                page.len()
-            );
+            let page = "<!doctype html><title>Beeper CLI</title><p>You can close this tab and return to the terminal.</p>";
+            let head = format!("HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", page.len());
             drop(stream.write_all(format!("{head}{page}").as_bytes()));
             let pairs = query.split('&').filter(|p| !p.is_empty()).map(|p| p.split_once('=').unwrap_or((p, "")));
             let pairs = pairs.map(|(k, v)| (url_decode(k).unwrap_or_default(), url_decode(v).unwrap_or_default()));

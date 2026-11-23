@@ -48,11 +48,9 @@ fn write_json(path: &Path, value: &Value) -> Res {
 
 fn read_jsonl(path: &Path) -> Res<Vec<Value>> {
     match std::fs::read_to_string(path) {
-        Ok(text) => text
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(|l| serde_json::from_str(l).map_err(|e| CliError::bug(e.to_string())))
-            .collect(),
+        Ok(text) => {
+            text.lines().filter(|l| !l.is_empty()).map(|l| serde_json::from_str(l).map_err(|e| CliError::bug(e.to_string()))).collect()
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(io(path)(e)),
     }
@@ -106,13 +104,8 @@ fn safe_file_name(value: &str) -> String {
     }
 }
 
-const MIME_EXTENSIONS: [(&str, &str); 5] = [
-    ("image/jpeg", ".jpg"),
-    ("image/png", ".png"),
-    ("image/gif", ".gif"),
-    ("video/mp4", ".mp4"),
-    ("audio/mpeg", ".mp3"),
-];
+const MIME_EXTENSIONS: [(&str, &str); 5] =
+    [("image/jpeg", ".jpg"), ("image/png", ".png"), ("image/gif", ".gif"), ("video/mp4", ".mp4"), ("audio/mpeg", ".mp3")];
 
 /// `fileNameFromURL`: the last part of the URL path, else `attachment` with the extension of the MIME type.
 fn file_name_from_url(url: &str, mime: Option<&str>) -> String {
@@ -168,11 +161,7 @@ fn by_message<'a>(attachments: &'a [Value], id: &Value) -> Vec<&'a Value> {
 }
 
 fn attachment_label(item: &Value) -> String {
-    js_string(if super::truthy(&item["attachment"]["fileName"]) {
-        &item["attachment"]["fileName"]
-    } else {
-        &item["kind"]
-    })
+    js_string(if super::truthy(&item["attachment"]["fileName"]) { &item["attachment"]["fileName"] } else { &item["kind"] })
 }
 
 fn render_markdown(chat: &Value, messages: &[Value], attachments: &[Value]) -> String {
@@ -222,17 +211,10 @@ fn render_html(chat: &Value, messages: &[Value], attachments: &[Value]) -> Strin
         .map(|m| {
             let items = by_message(attachments, &m["id"]);
             let links = items.iter().map(|i| {
-                format!(
-                    "<li><a href=\"{}\">{}</a></li>",
-                    escape_html(&encode_uri(&text_of(&i["path"]))),
-                    escape_html(&attachment_label(i))
-                )
+                format!("<li><a href=\"{}\">{}</a></li>", escape_html(&encode_uri(&text_of(&i["path"]))), escape_html(&attachment_label(i)))
             });
-            let list = if items.is_empty() {
-                String::new()
-            } else {
-                format!("<ul class=\"attachments\">{}</ul>", links.collect::<String>())
-            };
+            let list =
+                if items.is_empty() { String::new() } else { format!("<ul class=\"attachments\">{}</ul>", links.collect::<String>()) };
             let ts = text_of(&m["timestamp"]);
             let body = match super::truthy(&m["text"]) {
                 true => {
@@ -253,12 +235,8 @@ fn render_html(chat: &Value, messages: &[Value], attachments: &[Value]) -> Strin
                 .join("\n")
         })
         .collect();
-    let rows = rows
-        .join("\n")
-        .split('\n')
-        .map(|l| if l.is_empty() { String::new() } else { format!("      {l}") })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let rows =
+        rows.join("\n").split('\n').map(|l| if l.is_empty() { String::new() } else { format!("      {l}") }).collect::<Vec<_>>().join("\n");
     let t = escape_html(&title(chat));
     let meta = |label: &str, value: String| format!("      <span>{label}: {value}</span>");
     [
@@ -308,8 +286,7 @@ impl Export {
             std::fs::copy(from, &absolute).map_err(io(Path::new(from)))?;
             return Ok(target);
         }
-        let bytes = match (source.starts_with("mxc://") || source.starts_with("localmxc://"), source.split_once("://"))
-        {
+        let bytes = match (source.starts_with("mxc://") || source.starts_with("localmxc://"), source.split_once("://")) {
             (true, _) => {
                 let client = c.client()?.clone();
                 let path = query_string("/v1/assets/serve", &[("url", source)]);
@@ -330,9 +307,7 @@ impl Export {
     }
 
     /// `exportChatMessages`: the pages of a chat into `messages.partial.jsonl`, with the cursor in the state.
-    fn messages(
-        &self, c: &mut Ctx, chat: &Value, dir: &Path, state: &mut Value, state_path: &Path,
-    ) -> Res<(Vec<Value>, Vec<Value>, u64)> {
+    fn messages(&self, c: &mut Ctx, chat: &Value, dir: &Path, state: &mut Value, state_path: &Path) -> Res<(Vec<Value>, Vec<Value>, u64)> {
         let id = js_string(&chat["id"]);
         let partial = dir.join("messages.partial.jsonl");
         let manifest = dir.join("attachments").join("attachments.jsonl");
@@ -356,22 +331,17 @@ impl Export {
                     for (index, a) in m["attachments"].as_array().into_iter().flatten().enumerate() {
                         let source = [&a["id"], &a["srcURL"]].into_iter().find(|v| super::truthy(v)).map(js_string);
                         let file_name = a["fileName"].as_str().filter(|n| !n.is_empty()).map(str::to_string);
-                        let poster_name =
-                            if a["fileName"].is_null() { index.to_string() } else { js_string(&a["fileName"]) };
+                        let poster_name = if a["fileName"].is_null() { index.to_string() } else { js_string(&a["fileName"]) };
                         let downloads = [
                             (source, file_name, "attachment", a["mimeType"].as_str()),
-                            (
-                                a["posterImg"].as_str().map(str::to_string),
-                                Some(format!("poster-{poster_name}")),
-                                "poster",
-                                None,
-                            ),
+                            (a["posterImg"].as_str().map(str::to_string), Some(format!("poster-{poster_name}")), "poster", None),
                         ];
                         for (url, name, kind, mime) in downloads {
                             let Some(url) = url.filter(|u| !u.is_empty()) else { continue };
                             let name = name.unwrap_or_else(|| file_name_from_url(&url, mime));
                             let path = self.download(c, dir, &url, &mid, index, &name)?;
-                            let entry = json!({ "attachment": a, "index": index, "kind": kind, "messageID": mid, "path": path, "sourceURL": url });
+                            let entry =
+                                json!({ "attachment": a, "index": index, "kind": kind, "messageID": mid, "path": path, "sourceURL": url });
                             append(&manifest, &entry)?;
                             count += 1;
                         }
@@ -405,8 +375,7 @@ impl Export {
 
 /// `chatTitle`: the title, and the network in parentheses.
 fn label(chat: &Value) -> String {
-    let network =
-        if super::truthy(&chat["network"]) { format!(" ({})", js_string(&chat["network"])) } else { String::new() };
+    let network = if super::truthy(&chat["network"]) { format!(" ({})", js_string(&chat["network"])) } else { String::new() };
     format!("{}{network}", title(chat))
 }
 
@@ -443,10 +412,9 @@ fn export(c: &mut Ctx) -> Res {
     write_json(&job.out.join("accounts.json"), &json!(account_list))?;
     job.progress(&format!("Accounts: {}", account_list.len()));
     let chats = match chat_ids.is_empty() {
-        false => chat_ids
-            .iter()
-            .map(|id| c.get(&query_string(&chat_path(id, ""), &[("maxParticipantCount", "0")])))
-            .collect::<Res<Vec<_>>>()?,
+        false => {
+            chat_ids.iter().map(|id| c.get(&query_string(&chat_path(id, ""), &[("maxParticipantCount", "0")]))).collect::<Res<Vec<_>>>()?
+        }
         true => {
             let query: Vec<(&str, String)> = accounts.iter().map(|a| ("accountIDs", a.clone())).collect();
             let limit = c.int("limit-chats").filter(|n| *n > 0).map_or(usize::MAX, |n| n as usize);

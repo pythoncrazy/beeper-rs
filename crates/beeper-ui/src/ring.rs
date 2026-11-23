@@ -16,9 +16,7 @@ pub struct Ring<'a, Message> {
 }
 
 /// A ring of `width` and `color` around `content`, whose corners have `radius`.
-pub fn ring<'a, Message>(
-    content: impl Into<Element<'a, Message>>, color: Color, width: f32, radius: f32,
-) -> Ring<'a, Message> {
+pub fn ring<'a, Message>(content: impl Into<Element<'a, Message>>, color: Color, width: f32, radius: f32) -> Ring<'a, Message> {
     Ring { content: content.into(), color, width, radius, offset: 0.0 }
 }
 
@@ -30,26 +28,16 @@ impl<Message> Ring<'_, Message> {
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Ring<'_, Message> {
-    crate::delegate::delegate!(
-        children,
-        diff,
-        size,
-        layout,
-        operate,
-        update(Message),
-        mouse_interaction,
-        overlay(Message)
-    );
+    crate::delegate::delegate!(children, diff, size, layout, operate, update(Message), mouse_interaction, overlay(Message));
 
     fn draw(
-        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
-        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
         let (w, out) = (self.width, self.width + self.offset);
         let b = layout.bounds();
-        let bounds =
-            Rectangle::new(b.position() - Vector::new(out, out), Size::new(b.width + 2.0 * out, b.height + 2.0 * out));
+        let bounds = Rectangle::new(b.position() - Vector::new(out, out), Size::new(b.width + 2.0 * out, b.height + 2.0 * out));
         let border = border::rounded(self.radius + out).color(self.color).width(w);
         renderer.fill_quad(Quad { bounds, border, ..Quad::default() }, Background::Color(Color::TRANSPARENT));
     }

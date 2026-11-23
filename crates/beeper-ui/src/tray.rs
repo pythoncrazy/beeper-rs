@@ -129,11 +129,8 @@ struct Menu {
 
 /// Desktop's tray menu: "Minimize to Tray" while the window shows, "Show Window" while it hides, then "Quit Beeper",
 /// with the index of its hotkey in [`crate::TRAY_HOTKEYS`].
-const ENTRIES: [(i32, &str, Option<usize>, Event); 3] = [
-    (1, "Minimize to Tray", Some(0), Event::Hide),
-    (2, "Show Window", None, Event::Show),
-    (3, "Quit Beeper", Some(1), Event::Quit),
-];
+const ENTRIES: [(i32, &str, Option<usize>, Event); 3] =
+    [(1, "Minimize to Tray", Some(0), Event::Hide), (2, "Show Window", None, Event::Show), (3, "Quit Beeper", Some(1), Event::Quit)];
 
 /// The dbusmenu shortcut of hotkey keys like "ctrl+alt+q": Chromium's names of the modifiers and the key. Like an
 /// Electron accelerator, a disabled hotkey or one of several combinations has none.
@@ -191,8 +188,7 @@ impl Menu {
             let item: Layout = (id, props(label, m), Vec::new());
             OwnedValue::try_from(Structure::from(item)).expect("menu item value")
         });
-        let root =
-            HashMap::from([("children-display".to_string(), OwnedValue::from(zbus::zvariant::Str::from("submenu")))]);
+        let root = HashMap::from([("children-display".to_string(), OwnedValue::from(zbus::zvariant::Str::from("submenu")))]);
         (self.revision, (parent_id, root, children.collect()))
     }
     fn get_group_properties(&self, ids: Vec<i32>, _names: Vec<String>) -> Vec<(i32, HashMap<String, OwnedValue>)> {
@@ -293,13 +289,8 @@ pub fn events(keys: &[String; 2]) -> impl iced::futures::Stream<Item = Result<Ev
 pub async fn update(unread: u32, visible: bool) -> Result<(), String> {
     let bus = crate::notify::bus().await?;
     let uri = format!("application://{}.desktop", beeper_core::config::INSTALL_ID);
-    let badge = HashMap::from([
-        ("count", OwnedValue::from(i64::from(unread))),
-        ("count-visible", OwnedValue::from(unread > 0)),
-    ]);
-    bus.emit_signal(None::<&str>, "/", "com.canonical.Unity.LauncherEntry", "Update", &(uri, badge))
-        .await
-        .map_err(|e| e.to_string())?;
+    let badge = HashMap::from([("count", OwnedValue::from(i64::from(unread))), ("count-visible", OwnedValue::from(unread > 0))]);
+    bus.emit_signal(None::<&str>, "/", "com.canonical.Unity.LauncherEntry", "Update", &(uri, badge)).await.map_err(|e| e.to_string())?;
     let server = bus.object_server();
     if let Ok(item) = server.interface::<_, Item>(ITEM).await {
         let mut i = item.get_mut().await;

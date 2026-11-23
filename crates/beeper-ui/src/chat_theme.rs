@@ -120,9 +120,7 @@ pub fn paint(w: &Wallpaper, dark: bool, data_dir: &Path) -> Option<(Paint, Color
 pub type Pair = (Color, Color);
 
 /// Desktop's `resolvedThemeFor`: the wallpaper with its text color, and the color and text color of sent bubbles.
-pub fn resolve(
-    a: &ChatAppearance, chat: Option<&str>, dark: bool, data_dir: &Path,
-) -> (Option<(Paint, Color)>, Option<Pair>) {
+pub fn resolve(a: &ChatAppearance, chat: Option<&str>, dark: bool, data_dir: &Path) -> (Option<(Paint, Color)>, Option<Pair>) {
     let theme = a.theme(chat);
     let bubble = match theme.bubble {
         Some(Bubble::Swatch { id }) => BUBBLES.iter().find(|b| b.0 == id).map(|b| (hex(b.1), on(hex(b.1)))),
@@ -176,15 +174,11 @@ pub const FADE: f32 = 92.0;
 pub fn fade<'a, M: 'a>(paint: Paint, size: Size) -> Element<'a, M> {
     let [a, b, g] = match paint {
         Paint::Gradient(colors) => colors,
-        Paint::Photo(photo, dim) => {
-            return photo_fade(&photo, dim, size).map_or(Space::new().into(), |h| image(h).into())
-        }
+        Paint::Photo(photo, dim) => return photo_fade(&photo, dim, size).map_or(Space::new().into(), |h| image(h).into()),
         Paint::Flat(c) => {
             let fade = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, c).add_stop(1.0, c.scale_alpha(0.0));
-            let style = move |_: &Theme| container::Style {
-                background: Some(Background::Gradient(Gradient::Linear(fade))),
-                ..Default::default()
-            };
+            let style =
+                move |_: &Theme| container::Style { background: Some(Background::Gradient(Gradient::Linear(fade))), ..Default::default() };
             return container(Space::new()).width(Fill).height(FADE).style(style).into();
         }
     };
@@ -246,9 +240,9 @@ pub fn fill<'a, M: 'a>(paint: Paint, size: Size, radius: f32) -> Element<'a, M> 
             return stack![photo.border_radius(radius), dim].into();
         }
         Paint::Flat(c) => Background::Color(*c),
-        Paint::Gradient([a, b, _]) => Background::Gradient(Gradient::Linear(
-            Linear::new(Radians(135f32.to_radians())).add_stop(0.0, *a).add_stop(1.0, *b),
-        )),
+        Paint::Gradient([a, b, _]) => {
+            Background::Gradient(Gradient::Linear(Linear::new(Radians(135f32.to_radians())).add_stop(0.0, *a).add_stop(1.0, *b)))
+        }
     };
     let base = container(Space::new()).width(Fill).height(Fill).style(move |_: &Theme| container::Style {
         background: Some(background),
@@ -257,11 +251,9 @@ pub fn fill<'a, M: 'a>(paint: Paint, size: Size, radius: f32) -> Element<'a, M> 
     });
     match paint {
         Paint::Flat(_) | Paint::Photo(..) => base.into(),
-        Paint::Gradient([_, _, g]) => stack![
-            base,
-            container(image(glow(g, size, radius)).content_fit(ContentFit::None)).width(Fill).height(Fill).clip(true)
-        ]
-        .into(),
+        Paint::Gradient([_, _, g]) => {
+            stack![base, container(image(glow(g, size, radius)).content_fit(ContentFit::None)).width(Fill).height(Fill).clip(true)].into()
+        }
     }
 }
 
@@ -299,15 +291,11 @@ impl BeeperGuiApp {
             Msg::WallpaperPicked(chat, r) => match r.map(|paths| paths.into_iter().next()) {
                 Ok(Some(path)) => {
                     let dir = photo_dir(&self.store.read().config.data_dir);
-                    let ext =
-                        path.extension().map_or(String::new(), |e| format!(".{}", e.to_string_lossy().to_lowercase()));
+                    let ext = path.extension().map_or(String::new(), |e| format!(".{}", e.to_string_lossy().to_lowercase()));
                     let file_name = format!("{}{ext}", beeper_core::connect::random_id());
                     std::fs::create_dir_all(&dir).expect("create the chat wallpapers directory");
                     match std::fs::copy(&path, dir.join(&file_name)) {
-                        Ok(_) => {
-                            return self
-                                .update(UiMessage::ChatTheme(Msg::Wallpaper(chat, Wallpaper::Photo { file_name })))
-                        }
+                        Ok(_) => return self.update(UiMessage::ChatTheme(Msg::Wallpaper(chat, Wallpaper::Photo { file_name }))),
                         Err(e) => self.fail(Toast::new(format!("Could not import {}: {e}", path.display()))),
                     }
                 }

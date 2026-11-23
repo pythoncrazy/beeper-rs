@@ -49,9 +49,7 @@ pub fn scan(store: &SharedStore) -> Vec<Entry> {
     let mut owner = HashMap::new();
     st.scan(&crate::store::Query::default().media(), |m| {
         for a in &m.attachments {
-            if let Some(uri) =
-                a.src_url.as_deref().and_then(|s| s.split('?').next()).filter(|s| s.starts_with("mxc://"))
-            {
+            if let Some(uri) = a.src_url.as_deref().and_then(|s| s.split('?').next()).filter(|s| s.starts_with("mxc://")) {
                 owner.insert(uri.to_string(), (Kind::of(a), m.chat_id.clone()));
             }
         }

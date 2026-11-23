@@ -86,9 +86,7 @@ thread_local! {
 }
 
 /// Selectable rich text: `iced::widget::rich_text` with a selection.
-pub fn selectable<'a, Link: Clone + 'static, Message>(
-    spans: impl AsRef<[Span<'a, Link, Font>]> + 'a,
-) -> Selectable<'a, Link, Message> {
+pub fn selectable<'a, Link: Clone + 'static, Message>(spans: impl AsRef<[Span<'a, Link, Font>]> + 'a) -> Selectable<'a, Link, Message> {
     beeper_core::with_defaults!(Selectable {
         spans: Box::new(spans),
     }, default: line_height, wrapping, on_link_click, on_link_menu, on_image_menu, link_tip, tip, images, playing, key)
@@ -195,8 +193,7 @@ impl<Link> State<Link> {
     fn note_piece(&self, bounds: Rectangle) -> Option<(Cursor, Cursor)> {
         let part = self.part(bounds);
         let key = (bounds.y.round() as i32, bounds.x.round() as i32);
-        let piece =
-            part.map(|(start, end)| selected_text(self.paragraph.buffer(), start, end)).filter(|t| !t.is_empty());
+        let piece = part.map(|(start, end)| selected_text(self.paragraph.buffer(), start, end)).filter(|t| !t.is_empty());
         PIECES.with_borrow_mut(|pieces| match piece {
             Some(piece) => pieces.insert(key, piece),
             None => pieces.remove(&key),
@@ -325,10 +322,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
             let baseline = translation + Vector::new(0.0, size.0 + (line_height.0 - size.0) / 2.0);
             let mut line = |offset: f32| {
                 for region in &regions {
-                    let bounds = Rectangle::new(
-                        region.position() + baseline - Vector::new(0.0, offset),
-                        Size::new(region.width, 1.0),
-                    );
+                    let bounds = Rectangle::new(region.position() + baseline - Vector::new(0.0, offset), Size::new(region.width, 1.0));
                     renderer.fill_quad(Quad { bounds, ..Quad::default() }, ink);
                 }
             };
@@ -456,9 +450,8 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
                     shell.capture_event();
                     return;
                 }
-                let slot = inside
-                    .and_then(|p| state.paragraph.hit_span(p))
-                    .filter(|&s| self.spans().get(s).is_some_and(|s| s.text == IMAGE_SLOT));
+                let slot =
+                    inside.and_then(|p| state.paragraph.hit_span(p)).filter(|&s| self.spans().get(s).is_some_and(|s| s.text == IMAGE_SLOT));
                 if let (Some(slot), Some(on_menu)) = (slot, &self.on_image_menu) {
                     let k = self.spans()[..slot].iter().filter(|s| s.text == IMAGE_SLOT).count();
                     shell.publish(on_menu(k));
@@ -467,9 +460,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 // The cursor, not the event, is in the coordinates of the scrolled content the layout uses.
-                let (Some(Selection::Drag { anchor, held: true, .. }), Some(head)) =
-                    (SELECTION.get(), cursor.position())
-                else {
+                let (Some(Selection::Drag { anchor, held: true, .. }), Some(head)) = (SELECTION.get(), cursor.position()) else {
                     return;
                 };
                 select(Some(Selection::Drag { anchor, head, held: true }), shell);
@@ -501,8 +492,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
     }
 
     fn overlay<'b>(
-        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, _renderer: &Renderer, _viewport: &Rectangle,
-        translation: Vector,
+        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, _renderer: &Renderer, _viewport: &Rectangle, translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let state = tree.state.downcast_mut::<State<Link>>();
         let index = state.hovered_link?;
@@ -510,8 +500,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
         self.tip = self.link_tip.as_ref()?(link);
         let tip = self.tip.as_mut()?;
         let regions = state.paragraph.span_bounds(index);
-        let anchor =
-            regions.into_iter().reduce(|a, b| a.union(&b))? + (layout.position() - Point::ORIGIN) + translation;
+        let anchor = regions.into_iter().reduce(|a, b| a.union(&b))? + (layout.position() - Point::ORIGIN) + translation;
         state.tip.diff(tip.as_widget());
         Some(overlay::Element::new(Box::new(TipOverlay { tip, tree: &mut state.tip, anchor })))
     }
@@ -536,26 +525,19 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for TipOverlay<'_, '_, 
         node.move_to(Point::new(x, y))
     }
 
-    fn draw(
-        &self, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
-        cursor: mouse::Cursor,
-    ) {
+    fn draw(&self, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>, cursor: mouse::Cursor) {
         let viewport = Rectangle::with_size(Size::INFINITE);
         self.tip.as_widget().draw(self.tree, renderer, theme, style, layout, cursor, &viewport);
     }
 }
 
-impl<'a, Link: Clone + 'static, Message: 'a> From<Selectable<'a, Link, Message>>
-    for Element<'a, Message, Theme, Renderer>
-{
+impl<'a, Link: Clone + 'static, Message: 'a> From<Selectable<'a, Link, Message>> for Element<'a, Message, Theme, Renderer> {
     fn from(text: Selectable<'a, Link, Message>) -> Self {
         Element::new(text)
     }
 }
 
-fn styled<T>(
-    content: T, bounds: Size, size: Pixels, line_height: LineHeight, font: Font, wrapping: Wrapping,
-) -> core_text::Text<T, Font> {
+fn styled<T>(content: T, bounds: Size, size: Pixels, line_height: LineHeight, font: Font, wrapping: Wrapping) -> core_text::Text<T, Font> {
     core_text::Text {
         content,
         bounds,
@@ -589,8 +571,7 @@ fn drag_part(buffer: &Buffer, anchor: Point, head: Point, bounds: Rectangle) -> 
     }
     let origin = bounds.position() - Point::ORIGIN;
     let from = if start.y < bounds.y { Cursor::new(0, 0) } else { hit(buffer, start - origin, bounds.size())? };
-    let to =
-        if end.y > bounds.y + bounds.height { text_end(buffer) } else { hit(buffer, end - origin, bounds.size())? };
+    let to = if end.y > bounds.y + bounds.height { text_end(buffer) } else { hit(buffer, end - origin, bounds.size())? };
     let order = |c: Cursor| (c.line, c.index);
     Some(if order(to) < order(from) { (to, from) } else { (from, to) })
 }
@@ -617,8 +598,7 @@ fn word(buffer: &Buffer, at: Cursor) -> Selection {
     let Some(here) = text[under..].chars().next().map(kind) else {
         return Selection::Within { at: Point::ORIGIN, start: at, end: at };
     };
-    let start =
-        text[..under].char_indices().rev().take_while(|(_, c)| kind(*c) == here).last().map_or(under, |(i, _)| i);
+    let start = text[..under].char_indices().rev().take_while(|(_, c)| kind(*c) == here).last().map_or(under, |(i, _)| i);
     let end = text[under..].char_indices().find(|(_, c)| kind(*c) != here).map_or(text.len(), |(i, _)| under + i);
     Selection::Within { at: Point::ORIGIN, start: Cursor::new(at.line, start), end: Cursor::new(at.line, end) }
 }
@@ -708,17 +688,7 @@ fn held(bounds: Rectangle, p: Point) -> Point {
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for AutoScroll<'_, Message> {
-    crate::delegate::delegate!(
-        state(Auto),
-        children,
-        diff,
-        size,
-        layout,
-        operate,
-        mouse_interaction,
-        draw,
-        overlay(Message)
-    );
+    crate::delegate::delegate!(state(Auto), children, diff, size, layout, operate, mouse_interaction, draw, overlay(Message));
 
     fn update(
         &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
@@ -745,10 +715,8 @@ impl<Message> Widget<Message, Theme, Renderer> for AutoScroll<'_, Message> {
                     auto.last = (by != 0.0).then_some(*now);
                     if by != 0.0 {
                         let step = by * dt.as_secs_f32() / FRAME.as_secs_f32();
-                        let offset =
-                            iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: if self.end { -step } else { step } };
-                        let mut scroll =
-                            iced::advanced::widget::operation::scrollable::scroll_by(self.id.clone(), offset);
+                        let offset = iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: if self.end { -step } else { step } };
+                        let mut scroll = iced::advanced::widget::operation::scrollable::scroll_by(self.id.clone(), offset);
                         self.content.as_widget_mut().operate(content, layout, renderer, &mut scroll);
                         shell.request_redraw();
                     }
@@ -764,16 +732,7 @@ impl<Message> Widget<Message, Theme, Renderer> for AutoScroll<'_, Message> {
                 let at = held(bounds, p);
                 let moved = Event::Mouse(mouse::Event::CursorMoved { position: at });
                 let held_cursor = mouse::Cursor::Available(at);
-                self.content.as_widget_mut().update(
-                    content,
-                    &moved,
-                    layout,
-                    held_cursor,
-                    renderer,
-                    clipboard,
-                    shell,
-                    viewport,
-                );
+                self.content.as_widget_mut().update(content, &moved, layout, held_cursor, renderer, clipboard, shell, viewport);
                 if matches!(event, Event::Mouse(_)) {
                     return;
                 }
@@ -899,14 +858,12 @@ mod tests {
         use iced::advanced::renderer::Headless as _;
         use iced::widget::{scrollable, Column};
         use iced_runtime::user_interface::{Cache, UserInterface};
-        let mut renderer =
-            iced::futures::executor::block_on(Renderer::new(Font::DEFAULT, Pixels(13.0), Some("tiny-skia"))).unwrap();
+        let mut renderer = iced::futures::executor::block_on(Renderer::new(Font::DEFAULT, Pixels(13.0), Some("tiny-skia"))).unwrap();
         // 60 rows of 20 px in a list of 200 px anchored at its bottom: rows 50 to 59 show, row 50 at the top.
         let view = |tall: bool| -> Element<'static, ()> {
             let rows = (0..60u64).map(|i| {
                 let text = if tall && i == 0 { "Line 00\nmore\nmore".to_string() } else { format!("Line {i:02}") };
-                let line =
-                    selectable::<(), ()>(vec![span(text).size(13.0)]).line_height(LineHeight::Absolute(Pixels(20.0)));
+                let line = selectable::<(), ()>(vec![span(text).size(13.0)]).line_height(LineHeight::Absolute(Pixels(20.0)));
                 line.key(i).into()
             });
             let list = scrollable(Column::with_children(rows)).id("t").anchor_bottom().width(300).height(200);

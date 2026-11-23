@@ -10,18 +10,18 @@ use crate::scheduled;
 use crate::scheduled::send_day;
 use crate::style::rem;
 use crate::style::{
-    bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, lh, mix, pad, scroll_style, semi,
-    text_width, txt, Bare, CLEAR,
+    bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, lh, mix, pad, scroll_style, semi, text_width, txt,
+    Bare, CLEAR,
 };
 use crate::threads;
 use crate::units::human_size;
 use crate::vcard::parse_vcard;
 use crate::{
-    account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, clipboard_paste, contact_card,
-    dashed, default_account_user, emoji, format, has_flag, hotkey_caps, hotkey_key, icon_btn, images, locate,
-    menu_item, menu_pitch, menu_rule, network_name, portal, record, removable, several_accounts, spell, switch_targets,
-    text_urls, tinted, toasts, truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia,
-    Picker, Queued, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MESSAGE_MENU_W, SEND_ARROW,
+    account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, clipboard_paste, contact_card, dashed,
+    default_account_user, emoji, format, has_flag, hotkey_caps, hotkey_key, icon_btn, images, locate, menu_item, menu_pitch, menu_rule,
+    network_name, portal, record, removable, several_accounts, spell, switch_targets, text_urls, tinted, toasts, truncate, vlist, voice,
+    BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS,
+    MESSAGE_MENU_W, SEND_ARROW,
 };
 use beeper_core::codec::Emoticon;
 use beeper_core::config::{account_network, now_unix_millis};
@@ -34,8 +34,7 @@ use iced::keyboard::{key::Named, Key};
 use iced::widget::operation;
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
-    button, column, container, image, mouse_area, row, scrollable, stack, svg, text_editor, text_input, tooltip,
-    Column, Row, Space,
+    button, column, container, image, mouse_area, row, scrollable, stack, svg, text_editor, text_input, tooltip, Column, Row, Space,
 };
 use iced::{window, Bottom, Center, Color, Fill, Length, Padding, Shrink, Task};
 use std::collections::HashSet;
@@ -132,9 +131,7 @@ pub enum LinkState {
 /// The mention pills of Matrix HTML: the `matrix.to` links of users, with the label after "@".
 pub(crate) fn html_pills(html: &str) -> Vec<Mention> {
     let runs = beeper_core::codec::html_blocks(html).into_iter().flat_map(|b| b.runs);
-    let user = |link: &str| {
-        beeper_core::codec::url_decode(link.strip_prefix("https://matrix.to/#/")?).filter(|id| id.starts_with('@'))
-    };
+    let user = |link: &str| beeper_core::codec::url_decode(link.strip_prefix("https://matrix.to/#/")?).filter(|id| id.starts_with('@'));
     runs.filter_map(|r| Some((r.text.strip_prefix('@')?.to_string(), user(r.link.as_deref()?)?))).collect()
 }
 
@@ -142,8 +139,7 @@ pub(crate) fn html_pills(html: &str) -> Vec<Mention> {
 /// `title`, and its image.
 pub(crate) fn html_emoticons(html: &str) -> Vec<Emoticon> {
     let runs = beeper_core::codec::html_blocks(html).into_iter().flat_map(|b| b.runs);
-    let name =
-        |s: &str| s.strip_prefix(':').and_then(|s| s.strip_suffix(':')).filter(|n| !n.is_empty()).map(str::to_string);
+    let name = |s: &str| s.strip_prefix(':').and_then(|s| s.strip_suffix(':')).filter(|n| !n.is_empty()).map(str::to_string);
     runs.filter_map(|r| {
         let n = name(&r.text).or_else(|| r.title.as_deref().map(|t| name(t).unwrap_or_else(|| t.to_string())))?;
         Some(Emoticon { name: n, url: r.emoticon? })
@@ -168,9 +164,7 @@ pub(crate) fn emoticon_markdown(text: &str, emoticons: &[Emoticon]) -> String {
     while let Some(i) = rest.find(':') {
         md.push_str(&rest[..i]);
         rest = &rest[i..];
-        let shortcode = |e: &&Emoticon| {
-            !e.name.is_empty() && rest[1..].strip_prefix(e.name.as_str()).is_some_and(|r| r.starts_with(':'))
-        };
+        let shortcode = |e: &&Emoticon| !e.name.is_empty() && rest[1..].strip_prefix(e.name.as_str()).is_some_and(|r| r.starts_with(':'));
         match emoticons.iter().filter(shortcode).max_by_key(|e| e.name.len()) {
             Some(e) => {
                 md.push_str(&e.markdown());
@@ -222,11 +216,7 @@ pub(crate) fn save_draft(st: &mut BeeperStore, pane: &Pane) {
             .iter()
             .map(|f| {
                 let a = st.store_uploaded_asset(f.name.clone(), f.mime.clone(), &f.bytes);
-                ChatDraftAttachment {
-                    upload_id: a.upload_id,
-                    file_name: Some(a.file_name),
-                    mime_type: Some(a.mime_type),
-                }
+                ChatDraftAttachment { upload_id: a.upload_id, file_name: Some(a.file_name), mime_type: Some(a.mime_type) }
             })
             .collect(),
     };
@@ -254,8 +244,7 @@ pub(crate) fn save_draft(st: &mut BeeperStore, pane: &Pane) {
     let ts = if same { old.and_then(|o| o.ts) } else { Some(now_unix_millis()) };
     // The store gives the draft its revision, which stays while what syncs of it does.
     let revision_id = old.and_then(|o| o.revision_id.clone());
-    let draft =
-        (draft.text.is_some() || !draft.attachments.is_empty()).then_some(ChatDraft { ts, revision_id, ..draft });
+    let draft = (draft.text.is_some() || !draft.attachments.is_empty()).then_some(ChatDraft { ts, revision_id, ..draft });
     if draft != st.chats[idx].draft {
         st.put_draft(idx, draft);
         // A sent draft or a changed file leaves its upload behind.
@@ -276,8 +265,7 @@ pub(crate) fn show_synced_draft(st: &BeeperStore, pane: &mut Pane, chat: &str) {
     let text = stored_text(pane, draft.text.as_deref().unwrap_or_default());
     pane.composer = composer_with(&text);
     pane.composer_links = draft.discarded_links.into_iter().map(|u| (u, LinkState::Discarded)).collect();
-    (pane.history, pane.reply_to_message_id, pane.mentions) =
-        (Default::default(), draft.reply_to_message_id, draft.mentions);
+    (pane.history, pane.reply_to_message_id, pane.mentions) = (Default::default(), draft.reply_to_message_id, draft.mentions);
     pane.send_later = draft.send_later.filter(|&(at, _)| at > now_unix_millis());
     let members = st.members(idx);
     let seeded = draft.send_room_id.filter(|r| members.iter().any(|&m| st.chats[m].id == *r));
@@ -368,9 +356,7 @@ const ATTACH_BUTTONS: [u8; 9] = [0, 7, 3, 5, 2, 1, 4, 8, 6];
 
 /// Desktop's composer action state (`rIt`, `_R` and `oIt`): the tooltip, the hotkey that it shows, and whether the
 /// button works. Talk to Type is the only action while you edit a message.
-pub(crate) fn composer_action(
-    st: &BeeperStore, chat: &Chat, id: u8, editing: bool,
-) -> (String, Option<&'static str>, bool) {
+pub(crate) fn composer_action(st: &BeeperStore, chat: &Chat, id: u8, editing: bool) -> (String, Option<&'static str>, bool) {
     let (label, hotkey, plus) = COMPOSER_ACTION_INFO[usize::from(id)];
     let supported = match id {
         2 => chat.takes(FILE_GIF),
@@ -420,9 +406,7 @@ pub(crate) fn hidden_actions(st: &BeeperStore, nudge: bool) -> Vec<u8> {
 /// has no button without sticker packs, as Desktop's `Bme` has no config for it then.
 fn composer_buttons(st: &BeeperStore) -> (Option<u8>, Option<u8>) {
     let stickers = st.settings.on("stickerPacks").then_some(7);
-    let action = |key| {
-        [Some(0), Some(1), Some(5), Some(2), Some(3), Some(4), None, stickers][usize::from(st.settings.pref(key))]
-    };
+    let action = |key| [Some(0), Some(1), Some(5), Some(2), Some(3), Some(4), None, stickers][usize::from(st.settings.pref(key))];
     let pri = action("primaryComposerButton");
     (pri, action("secondaryComposerButton").filter(|&x| Some(x) != pri))
 }
@@ -505,8 +489,7 @@ impl BeeperGuiApp {
     pub(crate) fn composer_stops(&self) -> Vec<Stop> {
         let st = self.store.read();
         let pane = self.pane();
-        let Some(chat) = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i])
-        else {
+        let Some(chat) = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i]) else {
             return Vec::new();
         };
         let editing = pane.editing_message_id.is_some();
@@ -538,12 +521,9 @@ impl BeeperGuiApp {
     /// Desktop's `processAttachment`: attaches each file that the open chat accepts, and shows a toast for the others.
     pub(crate) fn attach_files(&mut self, files: Vec<Result<PendingMedia, String>>) {
         let st = self.store.read();
-        let chat = &st.chats
-            [st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
-        let checked: Vec<_> = files
-            .into_iter()
-            .map(|f| f.and_then(|f| portal::check(&f, &chat.file, chat.room_features).map(|()| f)))
-            .collect();
+        let chat = &st.chats[st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
+        let checked: Vec<_> =
+            files.into_iter().map(|f| f.and_then(|f| portal::check(&f, &chat.file, chat.room_features).map(|()| f))).collect();
         drop(st);
         let mut errors = Vec::new();
         for f in checked {
@@ -609,13 +589,11 @@ impl BeeperGuiApp {
             }
             b'@' => {
                 let chat = &st.chats[st.resolve_chat_idx(pane.selected_chat_id.as_deref()?).expect("the open chat")];
-                let key =
-                    |u: &&User| [&u.full_name, &u.username, &u.email].map(|k| k.clone().unwrap_or_default()).to_vec();
+                let key = |u: &&User| [&u.full_name, &u.username, &u.email].map(|k| k.clone().unwrap_or_default()).to_vec();
                 let room = chat.can_mention_room && !query.is_empty() && "room".starts_with(&query.to_lowercase());
                 let room = room.then(|| Suggestion::Mention("room".into(), ROOM_MENTION.into(), None));
                 let users = prefs::match_sort_keys(chat.participants.items.iter(), query, key).into_iter();
-                let users =
-                    users.map(|u| Suggestion::Mention(mention_label(u), u.id.clone(), Some(Box::new(u.clone()))));
+                let users = users.map(|u| Suggestion::Mention(mention_label(u), u.id.clone(), Some(Box::new(u.clone()))));
                 room.into_iter().chain(users).take(8).collect()
             }
             b':' if st.settings.on("emojiAutocomplete") => {
@@ -667,8 +645,7 @@ impl BeeperGuiApp {
             let named = text_width(name, 13.0, Weight::Medium);
             (name, desc, icon, named, 20.0 + 8.0 + named + 8.0 + text_width(desc, 13.0, Weight::Normal))
         };
-        let commands =
-            picks.iter().filter_map(|s| if let Suggestion::Command(i) = s { Some(command(*i).4) } else { None });
+        let commands = picks.iter().filter_map(|s| if let Suggestion::Command(i) = s { Some(command(*i).4) } else { None });
         let row_width = commands.fold(0.0, f32::max).clamp(240.0, 320.0);
         let width = match &picks[0] {
             Suggestion::Command(_) => row_width + 12.0,
@@ -688,14 +665,10 @@ impl BeeperGuiApp {
             }
             if let Suggestion::Command(c) = s {
                 let (name, desc, icon, named, _) = command(*c);
-                let desc = clamp(desc, (row_width - 36.0 - named).max(0.0), 1, 13.0, Weight::Normal)
-                    .color(fg.scale_alpha(0.6));
+                let desc = clamp(desc, (row_width - 36.0 - named).max(0.0), 1, 13.0, Weight::Normal).color(fg.scale_alpha(0.6));
                 let line = row![tinted(&COMPOSER_ICONS[icon], 20.0, fg), crate::med(name, 13.0).color(fg), desc];
                 let b = button(line.spacing(8).align_y(Center)).padding([4, 6]).width(width);
-                return b
-                    .style(btn_style([bg; 3], [fg; 3], 4.0))
-                    .on_press(UiMessage::Composer(Msg::PickSuggestion(i)))
-                    .into();
+                return b.style(btn_style([bg; 3], [fg; 3], 4.0)).on_press(UiMessage::Composer(Msg::PickSuggestion(i))).into();
             }
             let name = txt(label(s), 13.0).wrapping(iced::widget::text::Wrapping::None);
             let gap = if matches!(s, Suggestion::Mention(..)) { 4.0 } else { 0.0 };
@@ -707,11 +680,7 @@ impl BeeperGuiApp {
         let card = move |_: &iced::Theme| container::Style {
             background: Some(p.elevated.into()),
             border: iced::Border { color: p.border_neutrals, width: 1.0, radius: 6.0.into() },
-            shadow: iced::Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.11),
-                offset: iced::Vector::new(0.0, 13.0),
-                blur_radius: 20.0,
-            },
+            shadow: iced::Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.11), offset: iced::Vector::new(0.0, 13.0), blur_radius: 20.0 },
             ..container::Style::default()
         };
         let list = container(Column::with_children(items).padding([4, 4])).style(card);
@@ -802,10 +771,7 @@ impl BeeperGuiApp {
         let idx = st.resolve_chat_idx(&chat_id).expect("chat exists");
         let edit = self.pane.editing_message_id.is_some();
         let later = self.pane.send_later.take();
-        if self.pane.editing_message_id.is_none()
-            && later.is_none()
-            && has_flag(&st.chats[idx], ChatFlag::Archived) != archive
-        {
+        if self.pane.editing_message_id.is_none() && later.is_none() && has_flag(&st.chats[idx], ChatFlag::Archived) != archive {
             self.set_archived(&mut st, idx, archive);
         }
         if let Some(id) = self.pane.editing_message_id.take_if(|id| st.scheduled.iter().any(|s| s.id == *id)) {
@@ -827,28 +793,19 @@ impl BeeperGuiApp {
             }
             for f in files {
                 let upload = st.store_uploaded_asset(f.name, f.mime, &f.bytes).upload_id;
-                st.schedule(
-                    &chat_id,
-                    caption.clone().unwrap_or_default(),
-                    reply_to.take(),
-                    (at, no_reply),
-                    Some(upload),
-                );
+                st.schedule(&chat_id, caption.clone().unwrap_or_default(), reply_to.take(), (at, no_reply), Some(upload));
             }
         } else if let Some(target) = self.pane.editing_message_id.take() {
             st.edit_message(&chat_id, &target, text, mentions).expect("edit message");
         } else {
             let reply_to = self.pane.reply_target();
             let files = std::mem::take(&mut self.pane.attachments);
-            let delay =
-                st.feature("undo-send").on.then(|| prefs::UNDO_SEND_MS[usize::from(st.settings.pref("undoSendDelay"))]);
+            let delay = st.feature("undo-send").on.then(|| prefs::UNDO_SEND_MS[usize::from(st.settings.pref("undoSendDelay"))]);
             let delay = delay.filter(|&ms| ms > 0);
             let restore = delay.map(|_| (typed, reply_to.clone(), files.clone()));
             let urls = text_urls(&text);
             let preview = self.pane.composer_links.iter().find_map(|(u, s)| match s {
-                LinkState::Loaded(v, img) if urls.contains(u) => {
-                    Some((v.clone(), img.as_ref().map(|(b, _)| b.clone())))
-                }
+                LinkState::Loaded(v, img) if urls.contains(u) => Some((v.clone(), img.as_ref().map(|(b, _)| b.clone()))),
                 _ => None,
             });
             let files = files.into_iter().map(|f| out_file(&mut self.media, &mut st, f)).collect();
@@ -872,15 +829,7 @@ impl BeeperGuiApp {
                 (Some(ms), Some((text, reply_to, files))) => {
                     let due = now_unix_millis() + ms;
                     let sends = sends.into_iter().map(|o| (o.message().expect("an echo").to_string(), o)).collect();
-                    self.queued.push(Queued {
-                        chat: chat_id.clone(),
-                        to: to.clone(),
-                        due,
-                        sends,
-                        text,
-                        reply_to,
-                        files,
-                    });
+                    self.queued.push(Queued { chat: chat_id.clone(), to: to.clone(), due, sends, text, reply_to, files });
                 }
                 _ => sends.into_iter().for_each(|out| st.queue(&to, out)),
             }
@@ -943,8 +892,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let chat = self.pane.selected_chat_id.as_ref().and_then(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i]);
         let kind = chat.map(|c| account_network(&c.account_id).kind);
-        let can =
-            matches!(kind, Some(Beeper | WhatsApp | TwitterX | Telegram | Slack | GoogleMessages | Signal | Line));
+        let can = matches!(kind, Some(Beeper | WhatsApp | TwitterX | Telegram | Slack | GoogleMessages | Signal | Line));
         if !can || st.settings.on("noOutgoingLinkPreviews") {
             return Task::none();
         }
@@ -1056,20 +1004,17 @@ impl BeeperGuiApp {
             .padding(0)
             .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
             .on_press(UiMessage::Composer(Msg::ToggleAttachMenu));
-        let unveiled = self.pane().show_attach_menu.then(|| {
-            Row::with_children(self.pane_actions(st).into_iter().map(action_btn))
-                .spacing(2)
-                .padding([0, 1])
-                .align_y(Center)
-        });
+        let unveiled = self
+            .pane()
+            .show_attach_menu
+            .then(|| Row::with_children(self.pane_actions(st).into_iter().map(action_btn)).spacing(2).padding([0, 1]).align_y(Center));
         let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
         let pending = self.view_pending_attachments(st);
         let send = self.view_send_button();
         let links = self.view_link_previews();
         let broadcast = self.view_broadcast(st, chat);
         // Desktop's `messageInputExternal`: the quote, the attachments and the link previews inside the pill.
-        let external: Vec<El<'a>> =
-            [broadcast, quote, pending.map(El::from), links.map(El::from)].into_iter().flatten().collect();
+        let external: Vec<El<'a>> = [broadcast, quote, pending.map(El::from), links.map(El::from)].into_iter().flatten().collect();
         let external = (!external.is_empty()).then(|| {
             let inner = Column::with_children(external).spacing(8);
             container(inner).padding(pad(8.0, 8.0, 0.0, 12.0))
@@ -1150,9 +1095,7 @@ impl BeeperGuiApp {
                 .into()
         });
         // Desktop's skeleton tiles while the next page loads.
-        let more = self
-            .gif_loading
-            .then(|| Row::with_children((0..10).map(|_| tile())).spacing(4).padding(Padding::ZERO.left(14.0)));
+        let more = self.gif_loading.then(|| Row::with_children((0..10).map(|_| tile())).spacing(4).padding(Padding::ZERO.left(14.0)));
         let dir = Direction::Horizontal(Scrollbar::new().width(4).scroller_width(4));
         let row = Row::with_children(items).push(more).spacing(4);
         scrollable(container(row).padding(Padding::ZERO.left(14.0)))
@@ -1211,8 +1154,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let cursor = self.pane().composer.cursor();
         let keys = ComposerKeys {
-            keys: ["Message: Send Message and Archive", "Send Message", "Insert New Line"]
-                .map(|h| st.settings.hotkey_keys(h).to_string()),
+            keys: ["Message: Send Message and Archive", "Send Message", "Insert New Line"].map(|h| st.settings.hotkey_keys(h).to_string()),
             undo: self.queued_here().then(|| st.settings.hotkey_keys("Undo Pending Send").to_string()),
             suggesting: self.suggestions(st).is_some(),
             last: self.pane().attachments.len().checked_sub(1),
@@ -1253,12 +1195,10 @@ impl BeeperGuiApp {
     /// accounts of the bridge, and the merged chat switcher in a merged chat.
     fn view_composer_network<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         let empty = self.pane().composer.is_empty();
-        let switch =
-            switch_targets(st, chat).filter(|_| self.pane().thread_root.is_none() && self.drawing.get().is_none());
+        let switch = switch_targets(st, chat).filter(|_| self.pane().thread_root.is_none() && self.drawing.get().is_none());
         // Desktop's merged chat switcher: the 20 px avatar of the target member chat, with the card of the member
         // chats on hover, or the title of the only one in a tooltip.
-        let merged =
-            self.merged_targets(st).filter(|_| self.pane().thread_root.is_none() && self.drawing.get().is_none());
+        let merged = self.merged_targets(st).filter(|_| self.pane().thread_root.is_none() && self.drawing.get().is_none());
         match (merged, switch) {
             (Some(members), _) => {
                 let target = &st.chats[self.compose_target_of(st, st.chat_idx(&chat.id))];
@@ -1295,8 +1235,8 @@ impl BeeperGuiApp {
                 // Desktop's `.pending-attachments .attachment:focus`: a 3 px ring of the primary color.
                 let radius = if pm.frames.is_empty() { 17.0 } else { 8.0 };
                 let ring = if self.pane().att_focus == Some(i) { p.accent } else { CLEAR };
-                let preview = mouse_area(crate::ring::ring(preview, ring, 3.0, radius))
-                    .on_press(UiMessage::Composer(Msg::FocusAttachment(i)));
+                let preview =
+                    mouse_area(crate::ring::ring(preview, ring, 3.0, radius)).on_press(UiMessage::Composer(Msg::FocusAttachment(i)));
                 removable(p, preview, UiMessage::Composer(Msg::DiscardAttachment(i)))
             });
             Row::with_children(items).spacing(8).align_y(iced::Bottom)
@@ -1336,9 +1276,7 @@ impl BeeperGuiApp {
                 LinkState::Loaded(v, img) => {
                     let title = v["og:title"].as_str().expect("previews have a title");
                     let host = u.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(u).to_string();
-                    let img = img
-                        .as_ref()
-                        .map(|(_, h)| image(h.clone()).width(180).height(101).content_fit(iced::ContentFit::Cover));
+                    let img = img.as_ref().map(|(_, h)| image(h.clone()).width(180).height(101).content_fit(iced::ContentFit::Cover));
                     let wide = if img.is_some() { 158.0 } else { 338.0 };
                     let link = row![ic(icon::LINK, 12.0).color(p.weak), txt(host, 11.0).color(p.weak)];
                     let text = column![
@@ -1385,19 +1323,13 @@ impl BeeperGuiApp {
         };
         let when = send_day(at, st.settings.pref("timeFormat") == 1);
         let when = if no_reply { trf("%s if no reply", &[&when]) } else { when };
-        let details = row![
-            tinted(&COMPOSER_ICONS[6], 20.0, p.accent),
-            semi(when, 11.0).color(p.accent),
-            tinted(&CHEVRON_DOWN, 14.0, p.accent)
-        ];
-        let details = button(details.spacing(4).align_y(Center))
-            .bare(p.accent)
-            .on_press(UiMessage::Scheduled(scheduled::Msg::Open));
+        let details =
+            row![tinted(&COMPOSER_ICONS[6], 20.0, p.accent), semi(when, 11.0).color(p.accent), tinted(&CHEVRON_DOWN, 14.0, p.accent)];
+        let details = button(details.spacing(4).align_y(Center)).bare(p.accent).on_press(UiMessage::Scheduled(scheduled::Msg::Open));
         let close = icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::Scheduled(scheduled::Msg::Set(None)));
         let blue = if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) };
-        let banner = container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center))
-            .padding(2)
-            .style(fill_box(blue, 20.0));
+        let banner =
+            container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center)).padding(2).style(fill_box(blue, 20.0));
         let banner = container(banner).padding(Padding::new(8.0).bottom(0.0).left(12.0));
         let body = container(column![banner, external, line]).width(Fill).style(fill_box(p.card, 18.0));
         stack![body, dashed::dashes(hex(0x808080), 18.0, 1.0)].into()
@@ -1436,20 +1368,14 @@ impl ComposerKeys {
             {
                 custom(Msg::UndoSend)
             }
-            Key::Named(Named::Enter) => {
-                match self.keys.iter().position(|keys| prefs::hotkey_has(keys, mods(k.modifiers), "enter")) {
-                    Some(0) => custom(Msg::SendAndArchive),
-                    Some(1) => custom(Msg::Submit),
-                    _ => Some(text_editor::Binding::Enter),
-                }
-            }
+            Key::Named(Named::Enter) => match self.keys.iter().position(|keys| prefs::hotkey_has(keys, mods(k.modifiers), "enter")) {
+                Some(0) => custom(Msg::SendAndArchive),
+                Some(1) => custom(Msg::Submit),
+                _ => Some(text_editor::Binding::Enter),
+            },
             // The typed backtick, not the key under "~" on a US layout.
-            _ if k.modified_key.as_ref() == Key::Character("`") && !k.modifiers.command() => {
-                custom(Msg::Format(format::CODE))
-            }
-            Key::Named(key @ (Named::Backspace | Named::Delete))
-                if k.modifiers.jump() || k.modifiers.macos_command() =>
-            {
+            _ if k.modified_key.as_ref() == Key::Character("`") && !k.modifiers.command() => custom(Msg::Format(format::CODE)),
+            Key::Named(key @ (Named::Backspace | Named::Delete)) if k.modifiers.jump() || k.modifiers.macos_command() => {
                 use text_editor::Motion;
                 let back = key == Named::Backspace;
                 let to = match (back, k.modifiers.macos_command()) {
@@ -1461,10 +1387,9 @@ impl ComposerKeys {
                 custom(Msg::DeleteTo(to, back))
             }
             Key::Named(Named::ArrowUp | Named::ArrowDown) if self.suggesting => None,
-            Key::Named(Named::Backspace) if self.empty && k.modifiers.is_empty() => self
-                .last
-                .and_then(|i| custom(Msg::FocusAttachment(i)))
-                .or_else(|| text_editor::Binding::from_key_press(k)),
+            Key::Named(Named::Backspace) if self.empty && k.modifiers.is_empty() => {
+                self.last.and_then(|i| custom(Msg::FocusAttachment(i))).or_else(|| text_editor::Binding::from_key_press(k))
+            }
             Key::Named(Named::ArrowLeft | Named::ArrowUp) if self.at_start && self.last.is_some() => {
                 self.last.and_then(|i| custom(Msg::FocusAttachment(i)))
             }
@@ -1578,11 +1503,7 @@ impl BeeperGuiApp {
             let info = column![name, txt(meta.join(" ・ "), 11.0)].spacing(4);
             let icon = &FILE_ICONS[if pm.mime.starts_with("audio") { 3 } else { 0 }];
             let line = row![tinted(icon, 20.0, p.strong), info].spacing(8).align_y(Center);
-            container(column![line, Space::new().width(158)])
-                .max_width(240)
-                .padding([8, 11])
-                .style(fill_box(p.received, 17.0))
-                .into()
+            container(column![line, Space::new().width(158)]).max_width(240).padding([8, 11]).style(fill_box(p.received, 17.0)).into()
         } else {
             let fg = Color { a: 0.1, ..p.text };
             let fit = |f| image(f).height(66).content_fit(iced::ContentFit::Contain);
@@ -1609,11 +1530,7 @@ impl BeeperGuiApp {
         let style = move |_: &iced::Theme| container::Style {
             background: Some(bg.into()),
             border: iced::Border { color: Color { a: 0.1, ..p.text }, width: 1.0, radius: 10.0.into() },
-            shadow: iced::Shadow {
-                color: Color::from_rgba8(0, 0, 0, 0.2),
-                offset: iced::Vector::new(5.0, 8.0),
-                blur_radius: 40.0,
-            },
+            shadow: iced::Shadow { color: Color::from_rgba8(0, 0, 0, 0.2), offset: iced::Vector::new(5.0, 8.0), blur_radius: 40.0 },
             ..Default::default()
         };
         // Desktop's `.pending-attachment-quicklook-wrapper` takes the pointer across the window, between 40 px from
@@ -1644,12 +1561,8 @@ impl BeeperGuiApp {
         let input = || operation::focus(id);
         match key {
             Key::Named(Named::Escape) => self.pane.quick_look = None,
-            Key::Named(Named::ArrowLeft) if i > 0 => {
-                return self.update(UiMessage::Composer(Msg::FocusAttachment(i - 1)))
-            }
-            Key::Named(Named::ArrowRight) if i + 1 < n => {
-                return self.update(UiMessage::Composer(Msg::FocusAttachment(i + 1)))
-            }
+            Key::Named(Named::ArrowLeft) if i > 0 => return self.update(UiMessage::Composer(Msg::FocusAttachment(i - 1))),
+            Key::Named(Named::ArrowRight) if i + 1 < n => return self.update(UiMessage::Composer(Msg::FocusAttachment(i + 1))),
             Key::Named(Named::ArrowRight) => {
                 (self.pane.att_focus, self.pane.quick_look) = (None, None);
                 return input();
@@ -1861,12 +1774,7 @@ impl BeeperGuiApp {
                     let run = match SLASH_COMMANDS[c].0 {
                         // Desktop's `setPicker(GIF)` opens the picker, which takes the keys.
                         "gif" if self.pane.picker == Some(Picker::Gif) => Task::none(),
-                        "gif" => {
-                            return Task::batch([
-                                changed,
-                                self.update(UiMessage::Composer(Msg::TogglePicker(Picker::Gif))),
-                            ])
-                        }
+                        "gif" => return Task::batch([changed, self.update(UiMessage::Composer(Msg::TogglePicker(Picker::Gif)))]),
                         "voice" => self.update(UiMessage::Record(record::Msg::Start)),
                         _ => self.update(UiMessage::Nudge(crate::nudge::Msg::Send)),
                     };
@@ -1961,9 +1869,7 @@ impl BeeperGuiApp {
                 let enter = match keys.iter().position(|k| prefs::hotkey_has(k, [false; 3], "enter")) {
                     Some(0) => self.update(UiMessage::Composer(Msg::SendAndArchive)),
                     Some(1) => self.update(UiMessage::Composer(Msg::Submit)),
-                    _ => {
-                        self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Enter))))
-                    }
+                    _ => self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Enter)))),
                 };
                 return Task::batch([focus, enter]);
             }
@@ -1998,8 +1904,7 @@ impl BeeperGuiApp {
                 let chat = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
                 let links = chat.is_some_and(|i| st.chats[i].formatting & (1 << format::LINK) != 0);
                 drop(st);
-                let link =
-                    format::selection(&self.pane.composer).filter(|r| links && !r.is_empty()).zip(pasted_link(&t));
+                let link = format::selection(&self.pane.composer).filter(|r| links && !r.is_empty()).zip(pasted_link(&t));
                 let Some((r, href)) = link else {
                     let paste = text_editor::Action::Edit(text_editor::Edit::Paste(t.into()));
                     return self.update(UiMessage::Composer(Msg::Edit(paste)));
@@ -2033,9 +1938,8 @@ impl BeeperGuiApp {
             Msg::FilesPicked(r) => match r {
                 Ok(paths) => {
                     let st = self.store.read();
-                    let chat = &st.chats[st
-                        .resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat"))
-                        .expect("chat exists")];
+                    let chat =
+                        &st.chats[st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
                     let (rules, resizes) = (chat.file.clone(), chat.room_features);
                     drop(st);
                     // Desktop's `attachFiles` logs the error of a file and shows "Couldn't attach %s". A file that
@@ -2103,8 +2007,7 @@ impl BeeperGuiApp {
             }
             Msg::FileHover(..) | Msg::FileDropped(..) => {}
             Msg::LinkPreviewLoaded(url, r) => {
-                let entry =
-                    self.pane.composer_links.iter_mut().find(|(u, s)| *u == url && matches!(s, LinkState::Loading));
+                let entry = self.pane.composer_links.iter_mut().find(|(u, s)| *u == url && matches!(s, LinkState::Loading));
                 if let Some((_, s)) = entry {
                     *s = match r {
                         Ok(Some((mut v, bytes))) => {
@@ -2128,11 +2031,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::RemoveLinkPreview(url) => {
-                self.pane
-                    .composer_links
-                    .iter_mut()
-                    .filter(|(u, _)| *u == url)
-                    .for_each(|(_, s)| *s = LinkState::Discarded);
+                self.pane.composer_links.iter_mut().filter(|(u, _)| *u == url).for_each(|(_, s)| *s = LinkState::Discarded);
             }
             Msg::UndoSend => {
                 let open = self.pane.selected_chat_id.as_ref();
@@ -2149,9 +2048,8 @@ impl BeeperGuiApp {
             }
             Msg::SendQueued(chat) => {
                 let now = now_unix_millis();
-                let (send, keep) = std::mem::take(&mut self.queued)
-                    .into_iter()
-                    .partition(|q| chat.as_ref().map_or(q.due <= now, |c| q.chat == *c));
+                let (send, keep) =
+                    std::mem::take(&mut self.queued).into_iter().partition(|q| chat.as_ref().map_or(q.due <= now, |c| q.chat == *c));
                 self.queued = keep;
                 let mut st = self.store.write();
                 for q in send.into_iter().flat_map(|q: Queued| q.sends.into_iter().map(move |s| (q.to.clone(), s.1))) {
@@ -2170,10 +2068,7 @@ impl BeeperGuiApp {
                     if self.gifs.is_empty() && !self.gif_loading {
                         self.gif_loading = true;
                         self.gif_error = None;
-                        return Task::batch([
-                            focus,
-                            self.update(UiMessage::Gifs(gifs::Msg::Search(self.gif_query.clone()))),
-                        ]);
+                        return Task::batch([focus, self.update(UiMessage::Gifs(gifs::Msg::Search(self.gif_query.clone())))]);
                     }
                     return focus;
                 }
@@ -2190,8 +2085,7 @@ impl BeeperGuiApp {
                 if !cut {
                     return copy;
                 }
-                let delete =
-                    self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Delete))));
+                let delete = self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Delete))));
                 return Task::batch([copy, delete]);
             }
         }

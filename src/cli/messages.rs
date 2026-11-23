@@ -19,7 +19,8 @@ const WAIT: Flag = Flag::b("wait", "Wait for the message to leave the pending st
 const WAIT_TIMEOUT: Flag = Flag::i("wait-timeout", "Maximum wait time in ms when --wait is set").def("30000");
 const FILENAME: Flag = Flag::s("filename", "Override the displayed filename");
 const TRANSACTION: Flag = Flag::s("transaction", "Optional transaction ID for deduplication");
-const SEND_DESCRIPTION: &str = "Returns when Desktop accepts the send request. Pass `--wait` to wait until the message leaves the pending state or fails.";
+const SEND_DESCRIPTION: &str =
+    "Returns when Desktop accepts the send request. Pass `--wait` to wait until the message leaves the pending state or fails.";
 
 pub const COMMANDS: &[Cmd] = &[
     Cmd {
@@ -51,7 +52,8 @@ pub const COMMANDS: &[Cmd] = &[
         ..cmd("messages edit", "Edit a message", edit)
     },
     Cmd {
-        description: "Lightweight per-chat JSON export. For a full export with transcripts, attachments, and multiple chats, use `beeper export`.",
+        description:
+            "Lightweight per-chat JSON export. For a full export with transcripts, attachments, and multiple chats, use `beeper export`.",
         flags: &[
             CHAT,
             PICK,
@@ -276,18 +278,13 @@ fn search(c: &mut Ctx) -> Res {
     ];
     query.extend(one.into_iter().filter_map(|(k, v)| Some((k, v?))));
     query.extend(c.many("media").iter().map(|m| ("mediaTypes", m.clone())));
-    query.extend(
-        [("query", q.clone()), ("sender", c.str("sender").map(str::to_string))]
-            .into_iter()
-            .filter_map(|(k, v)| Some((k, v?))),
-    );
+    query.extend([("query", q.clone()), ("sender", c.str("sender").map(str::to_string))].into_iter().filter_map(|(k, v)| Some((k, v?))));
     let n = limit(c, "limit");
     let load = |c: &mut Ctx| c.collect("/v1/messages/search", &query, n, |_| true);
     let items = match c.json() || c.on("ids") {
         true => load(c)?,
         false => {
-            let label =
-                q.as_ref().map_or("Searching messages…".into(), |q| format!("Searching messages for \"{q}\"…"));
+            let label = q.as_ref().map_or("Searching messages…".into(), |q| format!("Searching messages for \"{q}\"…"));
             let done = |v: &Vec<Value>| format!("{} match{}", v.len(), if v.len() == 1 { "" } else { "es" });
             c.spinner(&label, load, done)?
         }
@@ -354,9 +351,7 @@ fn export(c: &mut Ctx) -> Res {
     let query = cursor_query(c)?;
     let chat = chat_flag(c, "chat")?;
     let bound = |flag: &str| -> Res<Option<i64>> {
-        c.str(flag)
-            .map(|s| parse_ms(s).ok_or_else(|| CliError::bug(format!("--{flag} is not a valid ISO timestamp: {s}"))))
-            .transpose()
+        c.str(flag).map(|s| parse_ms(s).ok_or_else(|| CliError::bug(format!("--{flag} is not a valid ISO timestamp: {s}")))).transpose()
     };
     let (after, before) = (bound("after")?, bound("before")?);
     let keep = |m: &Value| {
@@ -415,17 +410,12 @@ fn send(c: &mut Ctx) -> Res {
     let attachment = match c.cmd.id {
         "send text" => Value::Null,
         _ => {
-            let (file, name) =
-                (c.str("file").expect("--file is required").to_string(), c.str("filename").map(str::to_string));
+            let (file, name) = (c.str("file").expect("--file is required").to_string(), c.str("filename").map(str::to_string));
             let mime = c.str("mime").map(str::to_string);
             let up = upload(c, &file, name.as_deref(), mime.as_deref())?;
-            let id = up["uploadID"]
-                .as_str()
-                .filter(|u| !u.is_empty())
-                .ok_or_else(|| CliError::bug("Upload did not return an uploadID"))?;
+            let id = up["uploadID"].as_str().filter(|u| !u.is_empty()).ok_or_else(|| CliError::bug("Upload did not return an uploadID"))?;
             let duration = if c.cmd.id == "send voice" { c.int("duration").map(Value::from) } else { None };
-            let size = (truthy(&up["width"]) && truthy(&up["height"]))
-                .then(|| json!({ "height": up["height"], "width": up["width"] }));
+            let size = (truthy(&up["width"]) && truthy(&up["height"])).then(|| json!({ "height": up["height"], "width": up["width"] }));
             Value::Object(obj([
                 ("uploadID", json!(id)),
                 ("type", json!(kind)),
@@ -452,10 +442,7 @@ fn send(c: &mut Ctx) -> Res {
             ("accepted".to_string(), json!(true)),
             ("state".to_string(), json!("accepted")),
             ("chatID".to_string(), json!(chat)),
-            (
-                "hint".to_string(),
-                json!("Desktop accepted the send request. Pass --wait to wait for the final message or failure."),
-            ),
+            ("hint".to_string(), json!("Desktop accepted the send request. Pass --wait to wait for the final message or failure.")),
         ]);
         return c.print(&Value::Object(result));
     }
@@ -512,15 +499,9 @@ fn media_download(c: &mut Ctx) -> Res {
         return std::io::stdout().write_all(&bytes).map_err(|e| CliError::bug(e.to_string()));
     }
     c.writable()?;
-    let after_scheme = url
-        .split_once("://")
-        .map(|p| p.1)
-        .ok_or_else(|| CliError::bug(format!("\"{url}\" cannot be parsed as a URL.")))?;
+    let after_scheme = url.split_once("://").map(|p| p.1).ok_or_else(|| CliError::bug(format!("\"{url}\" cannot be parsed as a URL.")))?;
     let path = after_scheme.split(['?', '#']).next().unwrap_or_default();
-    let name = path
-        .split_once('/')
-        .map(|p| p.1.trim_end_matches('/').rsplit('/').next().unwrap_or_default())
-        .unwrap_or_default();
+    let name = path.split_once('/').map(|p| p.1.trim_end_matches('/').rsplit('/').next().unwrap_or_default()).unwrap_or_default();
     let name = if name.is_empty() { "media" } else { name };
     let file = if out == "." { name.to_string() } else { format!("{}/{name}", out.trim_end_matches('/')) };
     std::fs::create_dir_all(&out).map_err(|e| CliError::system(format!("{e}, mkdir '{out}'")))?;

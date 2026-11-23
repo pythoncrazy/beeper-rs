@@ -56,12 +56,9 @@ pub(crate) fn combination(keys: &str) -> Option<(u16, u32)> {
 /// The global hotkeys of `bindings`, each a name and its keys, while the app runs on X11. Each press sends
 /// [`UiMessage::RunHotkey`] of the hotkey.
 pub(crate) fn subscription(bindings: Vec<(&'static str, String)>) -> Subscription<UiMessage> {
-    let x11 =
-        std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty());
-    let keys: Vec<(&'static str, u16, u32)> = bindings
-        .iter()
-        .flat_map(|(name, keys)| keys.split(", ").filter_map(combination).map(move |(m, s)| (*name, m, s)))
-        .collect();
+    let x11 = std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty());
+    let keys: Vec<(&'static str, u16, u32)> =
+        bindings.iter().flat_map(|(name, keys)| keys.split(", ").filter_map(combination).map(move |(m, s)| (*name, m, s))).collect();
     if !x11 || keys.is_empty() {
         return Subscription::none();
     }
@@ -105,8 +102,7 @@ fn grab(keys: &[(&'static str, u16, u32)], mut output: iced::futures::channel::m
     while !output.is_closed() {
         match conn.poll_for_event() {
             Ok(Some(Event::KeyPress(e))) => {
-                let hit =
-                    grabbed.iter().find(|(_, mods, code)| *code == e.detail && *mods == u16::from(e.state) & held);
+                let hit = grabbed.iter().find(|(_, mods, code)| *code == e.detail && *mods == u16::from(e.state) & held);
                 if let Some((name, ..)) = hit {
                     let _ = output.try_send(UiMessage::RunHotkey(name));
                 }

@@ -1,8 +1,6 @@
 //! Desktop's `prepareOutgoingMedia`: before the upload to a room with room features, ffmpeg converts videos and audio
 //! files, and the `image` codecs resize or compress images, so that the room takes them.
-use crate::models::{
-    FileRule, FileRules, FILE_AUDIO, FILE_FILE, FILE_GIF, FILE_IMAGE, FILE_STICKER, FILE_VIDEO, FILE_VOICE,
-};
+use crate::models::{FileRule, FileRules, FILE_AUDIO, FILE_FILE, FILE_GIF, FILE_IMAGE, FILE_STICKER, FILE_VIDEO, FILE_VOICE};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -208,8 +206,7 @@ pub fn decide(f: &Facts, rules: &FileRules) -> Action {
             (true, _) => Action::Compress,
         };
     }
-    let listed: Vec<&str> =
-        rule.into_iter().flat_map(|r| &r.mime_types).filter(|(_, &l)| l >= 1).map(|(m, _)| m.as_str()).collect();
+    let listed: Vec<&str> = rule.into_iter().flat_map(|r| &r.mime_types).filter(|(_, &l)| l >= 1).map(|(m, _)| m.as_str()).collect();
     let gif_mp4 = base == "image/gif" && kind == FILE_GIF && best("video/mp4", rules.get(FILE_GIF)) >= Some(1);
     if let Some(mime) = if gif_mp4 { Some("video/mp4") } else { target(&base, &listed) } {
         return Action::Transcode { mime, strong: over, dims: dims.filter(|_| resize) };
@@ -220,9 +217,7 @@ pub fn decide(f: &Facts, rules: &FileRules) -> Action {
     }
     if best(&base, file) >= Some(1) {
         return match file.and_then(|r| r.max_size).filter(|&m| f.size > m) {
-            Some(m) => {
-                Action::Reject(format!("Cannot transcode {base} for {kind}, and exceeds m.file size limit ({m})"))
-            }
+            Some(m) => Action::Reject(format!("Cannot transcode {base} for {kind}, and exceeds m.file size limit ({m})")),
             None => Action::SendAsIs,
         };
     }
@@ -269,9 +264,7 @@ pub struct Upload {
 
 /// Desktop's `uploadMediaForCloudRoom` before the upload: converts the file in the new folder `dir` for the room,
 /// measures what is missing, and checks the result. It gives the bytes and the facts to upload, and removes `dir`.
-pub fn prepare_upload(
-    dir: &Path, bytes: &[u8], f: Upload, rules: &FileRules, sent: Sent,
-) -> Result<(Vec<u8>, Upload), String> {
+pub fn prepare_upload(dir: &Path, bytes: &[u8], f: Upload, rules: &FileRules, sent: Sent) -> Result<(Vec<u8>, Upload), String> {
     let io = |e: std::io::Error| e.to_string();
     let path = dir.join("original").join(safe(&f.name));
     std::fs::create_dir_all(path.parent().expect("a parent folder")).map_err(io)?;
@@ -493,15 +486,13 @@ pub fn audio_duration(path: &Path) -> Result<f64, String> {
 /// Whether `bytes` are a HEIF file by the major brand of its `ftyp` box: file-type's `image/heic`, `image/heif` and
 /// their sequences, which Desktop's `transcodeImage` decodes with libheif since Chromium and sharp cannot.
 pub fn heif(bytes: &[u8]) -> bool {
-    bytes.get(4..8) == Some(b"ftyp")
-        && matches!(bytes.get(8..12), Some(b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1"))
+    bytes.get(4..8) == Some(b"ftyp") && matches!(bytes.get(8..12), Some(b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1"))
 }
 
 /// Desktop's HEIC worker: the primary image of a HEIF file with its rotation, mirror and crop, as RGBA, and at most 100
 /// million pixels.
 fn decode_heif(bytes: &[u8]) -> Result<image::DynamicImage, String> {
-    let options =
-        heic_rs::DecodeOptions::default().with_layout(heic_rs::PixelLayout::Rgba8).with_max_pixels(Some(100_000_000));
+    let options = heic_rs::DecodeOptions::default().with_layout(heic_rs::PixelLayout::Rgba8).with_max_pixels(Some(100_000_000));
     let px = heic_rs::decode(bytes, &options).map_err(|e| format!("Could not decode the HEIF image: {e}"))?;
     let img = image::RgbaImage::from_raw(px.width, px.height, px.data).ok_or("The HEIF image has a wrong size")?;
     Ok(image::DynamicImage::ImageRgba8(img))
@@ -541,9 +532,7 @@ fn image_size(path: &Path) -> Result<(u32, u32), String> {
 }
 
 /// Desktop's `Yf` on Linux: an H.264 MP4 that fits in the largest size of the compression or of the room.
-fn video(
-    src: &Path, stem: &str, dir: &Path, strong: bool, max: Option<u32>, rules: &FileRules,
-) -> Result<Upload, String> {
+fn video(src: &Path, stem: &str, dir: &Path, strong: bool, max: Option<u32>, rules: &FileRules) -> Result<Upload, String> {
     let meta = video_meta(src)?;
     let (audio_rate, dim) = if strong { ("96k", 848) } else { ("128k", 960) };
     let mut max = max.unwrap_or(dim);
@@ -569,14 +558,7 @@ fn video(
             let m = video_meta(src)?;
             let ext = src.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
             let (dims, duration) = (Some(m.size), Some(m.duration));
-            return Ok(Upload {
-                name: format!("{stem}{ext}"),
-                path: src.into(),
-                mime: m.mime.into(),
-                dims,
-                duration,
-                failed: false,
-            });
+            return Ok(Upload { name: format!("{stem}{ext}"), path: src.into(), mime: m.mime.into(), dims, duration, failed: false });
         }
         return Err(format!("Transcoding failed: {e}"));
     }
@@ -631,11 +613,7 @@ fn audio_format(action: &Action, rules: &FileRules) -> usize {
 fn audio(src: &Path, stem: &str, dir: &Path, format: usize) -> Result<Upload, String> {
     let (ext, mime, extra) = AUDIO_FORMATS[format];
     let out = dir.join(format!("{}{ext}", safe(stem)));
-    let args = [
-        &["-i".as_ref(), src.as_os_str(), "-y".as_ref()][..],
-        &extra.iter().map(std::ffi::OsStr::new).collect::<Vec<_>>(),
-    ]
-    .concat();
+    let args = [&["-i".as_ref(), src.as_os_str(), "-y".as_ref()][..], &extra.iter().map(std::ffi::OsStr::new).collect::<Vec<_>>()].concat();
     run("ffmpeg", &[&args[..], &[out.as_os_str()]].concat()).map_err(|e| format!("Audio transcoding failed: {e}"))?;
     let duration = audio_duration(&out).ok();
     Ok(Upload { name: format!("{stem}{ext}"), path: out, mime: mime.into(), dims: None, duration, failed: false })
@@ -675,8 +653,7 @@ fn image(
         _ => img.to_rgb8().write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut file, 75)),
     }
     .map_err(e)?;
-    let (name, mime) =
-        (format!("{stem}.{}", out.extension().expect("an extension").to_string_lossy()), format!("image/{format}"));
+    let (name, mime) = (format!("{stem}.{}", out.extension().expect("an extension").to_string_lossy()), format!("image/{format}"));
     Ok(Upload { name, path: out, mime, dims: Some((img.width(), img.height())), duration: None, failed: false })
 }
 
@@ -694,9 +671,7 @@ mod tests {
     fn captions_follow_the_room_features_like_desktop() {
         let with = |caption| FileRule { caption, ..rule(&[("*/*", 2)]) };
         let rules: FileRules =
-            [(FILE_IMAGE.into(), with(Some(2))), (FILE_AUDIO.into(), with(Some(0))), (FILE_FILE.into(), with(None))]
-                .into_iter()
-                .collect();
+            [(FILE_IMAGE.into(), with(Some(2))), (FILE_AUDIO.into(), with(Some(0))), (FILE_FILE.into(), with(None))].into_iter().collect();
         assert!(takes_caption(&rules, "image/jpeg", false, false));
         assert!(takes_caption(&rules, "image/gif", false, false), "a GIF without its own kind asks images");
         assert!(!takes_caption(&rules, "audio/ogg", false, true), "a voice note asks audio, which says no");
@@ -753,8 +728,7 @@ mod tests {
 
     #[test]
     fn decisions_follow_the_room_features_like_desktop() {
-        let facts =
-            |mime: &str, size, dims, duration| Facts { mime: mime.into(), size, dims, duration, sent: Sent::File };
+        let facts = |mime: &str, size, dims, duration| Facts { mime: mime.into(), size, dims, duration, sent: Sent::File };
         let png = |dims| facts("image/png", 9, dims, None);
         assert_eq!(decide(&png(None), &FileRules::new()), Action::SendAsIs, "a room without file features");
         assert_eq!(decide(&png(Some((9, 9))), &beeper_files()), Action::SendAsIs);

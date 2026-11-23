@@ -9,8 +9,8 @@ use super::commands::{cmd, readiness_with};
 use super::oauth::{ensure_desktop_token, find_local_desktop, login_with_pkce};
 use super::targets::{create_profile_target, SERVER_ENV};
 use super::{
-    config, confirm, interactive, iso_in, js_string, list_targets, obj, profiles, prompt, read_target, target_path,
-    truthy, update_config, write_event, write_json, CliError, Cmd, Ctx, Flag, Res, BIN,
+    config, confirm, interactive, iso_in, js_string, list_targets, obj, profiles, prompt, read_target, target_path, truthy, update_config,
+    write_event, write_json, CliError, Cmd, Ctx, Flag, Res, BIN,
 };
 use beeper_api::client::BeeperClient;
 use serde_json::{json, Map, Value};
@@ -609,7 +609,9 @@ fn setup_email(c: &mut Ctx, target: &Target) -> Res<Value> {
     step_event(c, "email", Some(id(target)));
     let email = c.str("email").ok_or_else(|| CliError::bug("Email setup requires --email."))?.to_string();
     if !chatty(c) {
-        let msg = format!("Email setup prompts for the verification code. For automation, use `{BIN} auth email start` and `{BIN} auth email response`.");
+        let msg = format!(
+            "Email setup prompts for the verification code. For automation, use `{BIN} auth email start` and `{BIN} auth email response`."
+        );
         return Err(CliError::bug(msg));
     }
     let request = start_email(c, target, &email)?;
@@ -626,13 +628,8 @@ fn setup_remote(c: &mut Ctx, url: &str) -> Res {
     if chatty(c) {
         println!("Connecting to Desktop API on another device.\n\nName: {name}\nURL:  {url}\n");
     }
-    let target = obj([
-        ("id", json!(name)),
-        ("name", json!(name)),
-        ("type", json!("remote")),
-        ("baseURL", json!(url)),
-        ("managed", json!(false)),
-    ]);
+    let target =
+        obj([("id", json!(name)), ("name", json!(name)), ("type", json!("remote")), ("baseURL", json!(url)), ("managed", json!(false))]);
     let result = match c.str("email").is_some() {
         true => setup_email(c, &target)?,
         false => setup_oauth(c, &target, Some("remote-oauth"))?,
@@ -652,10 +649,7 @@ fn unique_remote_name(url: &str) -> Res<String> {
         false => h.split(':').next().unwrap_or(h),
     });
     let clean = |h: &str| {
-        h.to_lowercase()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' })
-            .collect::<String>()
+        h.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect::<String>()
     };
     let base = host.map(clean).filter(|h| !h.is_empty()).unwrap_or_else(|| "remote".into());
     let ids: Vec<String> = list_targets()?.iter().map(|t| js_string(&t["id"])).collect();
@@ -705,9 +699,7 @@ struct Local {
 fn stored_value(dir: &std::path::Path, key: &str) -> Result<Value, String> {
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
     let db = rusqlite::Connection::open_with_flags(dir.join("beeper-rs.db"), flags).map_err(|e| e.to_string())?;
-    let text: String = db
-        .query_row("SELECT value FROM kv WHERE key = ?1", [key], |r| r.get(0))
-        .map_err(|_| format!("missing {key}"))?;
+    let text: String = db.query_row("SELECT value FROM kv WHERE key = ?1", [key], |r| r.get(0)).map_err(|_| format!("missing {key}"))?;
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
@@ -731,9 +723,7 @@ fn prepare_local(c: &Ctx, target: &Target) -> Res<Local> {
         (None, Some(dir)) => PathBuf::from(dir),
         (None, None) => beeper_core::platform::current_desktop_data_dir(None),
     };
-    let fail = |e: String| {
-        CliError::bug(format!("Could not find a signed-in local Beeper Desktop session. {}: {e}", dir.display()))
-    };
+    let fail = |e: String| CliError::bug(format!("Could not find a signed-in local Beeper Desktop session. {}: {e}", dir.display()));
     let session = stored_value(&dir, "state").map_err(fail)?;
     let token = session["access_token"].as_str().filter(|t| !t.is_empty()).map(str::to_string);
     let token = token.ok_or_else(|| fail("missing access_token".into()))?;
@@ -825,9 +815,7 @@ fn finish_email(c: &mut Ctx, target: &Target, code: &str, request: &str) -> Res<
     if output["registrationRequired"] == true {
         let (yes, chatty) = (c.on("yes"), chatty(c));
         if !chatty && !yes {
-            return Err(CliError::bug(
-                "Registration requires --yes to accept the Beeper terms in non-interactive setup.",
-            ));
+            return Err(CliError::bug("Registration requires --yes to accept the Beeper terms in non-interactive setup."));
         }
         let username = match (c.str("username"), chatty) {
             (Some(name), _) => name.to_string(),
@@ -899,10 +887,7 @@ mod tests {
     fn account_names_follow_upstream() {
         assert_eq!(account_name(&json!({ "network": "WhatsApp", "accountID": "a" })), Some("WhatsApp".into()));
         assert_eq!(account_name(&json!({ "network": { "displayName": "Signal" } })), Some("Signal".into()));
-        assert_eq!(
-            account_name(&json!({ "bridge": { "type": "telegram" }, "accountID": "a" })),
-            Some("telegram".into())
-        );
+        assert_eq!(account_name(&json!({ "bridge": { "type": "telegram" }, "accountID": "a" })), Some("telegram".into()));
         assert_eq!(account_name(&json!({ "accountID": "acc_x" })), Some("acc_x".into()));
         assert_eq!(account_name(&json!(1)), None);
     }

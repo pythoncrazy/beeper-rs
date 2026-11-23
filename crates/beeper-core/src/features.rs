@@ -126,11 +126,7 @@ impl Flags {
     fn flag(&self, key: &str) -> Feature {
         let all = &self.flags["features"];
         let v = all["appType:desktop"].get(key).or_else(|| all["*"].get(key));
-        v.and_then(Value::as_bool).map_or(Feature { show: false, on: false, upgrade: true }, |on| Feature {
-            show: true,
-            on,
-            upgrade: true,
-        })
+        v.and_then(Value::as_bool).map_or(Feature { show: false, on: false, upgrade: true }, |on| Feature { show: true, on, upgrade: true })
     }
 
     /// Desktop's `maxMergeChats`: the `max-merge-chats` flag, a whole number from -1 for no limit, else 1.
@@ -234,12 +230,7 @@ impl Flags {
             | "personal-room-overrides"
             | "drafts-sync"
             | "deferred-recovery-code-setup" => self.flag(key),
-            "archive-as-unread"
-            | "enable-threads"
-            | "block-users"
-            | "delete-chats"
-            | "nudge"
-            | "slash-commands-available" => {
+            "archive-as-unread" | "enable-threads" | "block-users" | "delete-chats" | "nudge" | "slash-commands-available" => {
                 let on = self.flag(key).on;
                 Feature { show: on, on, upgrade: false }
             }
@@ -300,8 +291,7 @@ mod tests {
         assert_eq!(Flags::free_plan().get("labels-v2", 0), Feature { show: true, on: true, upgrade: true });
         f.subscribed = true;
         assert_eq!(f.get("scheduled-message", 0), lock, "subscribers get no free uses");
-        f.usage =
-            json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2999-01-01T00:00:00Z" } });
+        f.usage = json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2999-01-01T00:00:00Z" } });
         f.subscribed = false;
         assert_eq!(f.get("stealth-mode", 0), open, "the trial is open");
         f.usage = json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "soon" } });

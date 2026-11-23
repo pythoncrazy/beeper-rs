@@ -66,8 +66,7 @@ impl Webhook {
             format!("sha256={}", mac.iter().map(|b| format!("{b:02x}")).collect::<String>())
         };
         let signature = self.secret.as_ref().map(sign);
-        let (client, path, url, body) =
-            (self.client.clone(), self.path.clone(), self.url.clone(), body.as_bytes().to_vec());
+        let (client, path, url, body) = (self.client.clone(), self.path.clone(), self.url.clone(), body.as_bytes().to_vec());
         let inflight = self.inflight.clone();
         inflight.fetch_add(1, Ordering::SeqCst);
         tokio::spawn(async move {
@@ -120,8 +119,7 @@ fn watch(c: &mut Ctx) -> Res {
     }
     let info: Value = serde_json::from_slice(&body).map_err(|e| CliError::bug(format!("JSON Parse error: {e}")))?;
     let endpoint = info["endpoints"]["ws_events"].as_str().filter(|e| !e.is_empty()).unwrap_or("/v1/ws");
-    let (ws_base, path) =
-        if endpoint.contains("://") { split_url(endpoint) } else { (base.clone(), endpoint.to_string()) };
+    let (ws_base, path) = if endpoint.contains("://") { split_url(endpoint) } else { (base.clone(), endpoint.to_string()) };
     let client = BeeperClient::try_new(&ws_base, token).map_err(CliError::bug)?;
     let subscribed: Vec<String> = match c.many("chat") {
         [] => vec!["*".into()],
@@ -151,9 +149,7 @@ fn watch(c: &mut Ctx) -> Res {
         if !json_mode {
             render::print(&render::stream_header(&label, &base));
         }
-        ws.send(&json!({ "type": "subscriptions.set", "chatIDs": subscribed }).to_string())
-            .await
-            .map_err(|_| failed())?;
+        ws.send(&json!({ "type": "subscriptions.set", "chatIDs": subscribed }).to_string()).await.map_err(|_| failed())?;
         let mut index = 0;
         loop {
             let frame = tokio::select! {
@@ -234,8 +230,7 @@ fn split_command_line(input: &str) -> Result<Vec<String>, String> {
 }
 
 #[cfg(unix)]
-const SIGNALS: [(i32, &str); 6] =
-    [(1, "SIGHUP"), (2, "SIGINT"), (6, "SIGABRT"), (9, "SIGKILL"), (11, "SIGSEGV"), (15, "SIGTERM")];
+const SIGNALS: [(i32, &str); 6] = [(1, "SIGHUP"), (2, "SIGINT"), (6, "SIGABRT"), (9, "SIGKILL"), (11, "SIGSEGV"), (15, "SIGTERM")];
 
 /// One request of `rpc`: runs the command in a child process and gives its exit and output.
 fn rpc_one(request: &Value) -> Result<Value, String> {
@@ -252,11 +247,7 @@ fn rpc_one(request: &Value) -> Result<Value, String> {
         return Err(format!("Unsupported nested command: {first}"));
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let out = std::process::Command::new(exe)
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = std::process::Command::new(exe).args(&args).stdin(std::process::Stdio::null()).output().map_err(|e| e.to_string())?;
     #[cfg(unix)]
     let signal = std::os::unix::process::ExitStatusExt::signal(&out.status)
         .map(|n| SIGNALS.iter().find(|s| s.0 == n).map_or(format!("SIG{n}"), |s| s.1.to_string()));
@@ -265,9 +256,7 @@ fn rpc_one(request: &Value) -> Result<Value, String> {
     let signal: Option<String> = None;
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     let id = request.get("id").cloned().unwrap_or_default();
-    Ok(
-        json!({ "id": id, "ok": out.status.success(), "code": out.status.code(), "signal": signal, "stdout": stdout, "stderr": stderr }),
-    )
+    Ok(json!({ "id": id, "ok": out.status.success(), "code": out.status.code(), "signal": signal, "stdout": stdout, "stderr": stderr }))
 }
 
 fn rpc(_: &mut Ctx) -> Res {
@@ -278,8 +267,7 @@ fn rpc(_: &mut Ctx) -> Res {
         }
         let request: Result<Value, String> = serde_json::from_str(&line).map_err(|e| format!("JSON Parse error: {e}"));
         let id = request.as_ref().map_or(Value::Null, |r| r.get("id").cloned().unwrap_or_default());
-        let reply =
-            request.and_then(|r| rpc_one(&r)).unwrap_or_else(|error| json!({ "id": id, "ok": false, "error": error }));
+        let reply = request.and_then(|r| rpc_one(&r)).unwrap_or_else(|error| json!({ "id": id, "ok": false, "error": error }));
         println!("{reply}");
     }
     Ok(())

@@ -47,8 +47,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
     }
 
     fn update(
-        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
-        renderer: &Renderer, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
+        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
     ) {
         if self.press {
             let pressed = tree.state.downcast_mut::<bool>();
@@ -67,17 +67,15 @@ impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
     }
 
     fn draw(
-        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
-        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         let b = layout.bounds();
         let (x, y, scale) = match self.press {
             true => (b.center_x(), b.center_y(), if *tree.state.downcast_ref::<bool>() { self.scale } else { 1.0 }),
             false => (b.x + b.width, b.y + b.height, self.scale),
         };
-        let t = Transformation::translate(x + self.dx, y + self.dy)
-            * Transformation::scale(scale)
-            * Transformation::translate(-x, -y);
+        let t = Transformation::translate(x + self.dx, y + self.dy) * Transformation::scale(scale) * Transformation::translate(-x, -y);
         renderer.with_transformation(t, |r| {
             self.content.as_widget().draw(&tree.children[0], r, theme, style, layout, cursor, viewport);
         });

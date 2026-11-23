@@ -70,8 +70,7 @@ pub fn encrypt(key: &[u8; 32], kind: &str, content: &Value) -> Value {
 
 fn seal(key: &[u8; 32], kind: &str, content: &Value, iv: [u8; 16]) -> Value {
     let mut secret = content.as_object().cloned().unwrap_or_default();
-    let mut out: Map<String, Value> =
-        PLAINTEXT.iter().filter_map(|f| Some((f.to_string(), secret.remove(*f)?))).collect();
+    let mut out: Map<String, Value> = PLAINTEXT.iter().filter_map(|f| Some((f.to_string(), secret.remove(*f)?))).collect();
     let (aes, mac) = derive(key, kind);
     // mautrix encrypts the unpadded base64 of the data, like a secret storage secret.
     let mut payload = vodozemac::base64_encode(Value::Object(secret).to_string()).into_bytes();
@@ -101,8 +100,7 @@ pub fn decrypt(key: &[u8; 32], kind: &str, content: &Value) -> Result<Value, Str
     }
     aes_ctr(&aes, &iv, &mut payload);
     let data = vodozemac::base64_decode(&payload).map_err(|e| e.to_string())?;
-    let mut plain: Value =
-        serde_json::from_slice(&data).map_err(|e| format!("failed to unmarshal decrypted account data: {e}"))?;
+    let mut plain: Value = serde_json::from_slice(&data).map_err(|e| format!("failed to unmarshal decrypted account data: {e}"))?;
     let fields = plain.as_object_mut().ok_or("account data payload must be a JSON object")?;
     for f in PLAINTEXT {
         if let Some(v) = content.get(f) {
@@ -120,8 +118,7 @@ mod tests {
     #[test]
     fn encrypted_account_data_round_trips_like_desktop() {
         let key = new_key();
-        let content =
-            json!({ "accounts": { "whatsapp": { "a": { "name": "Work" } } }, "com.beeper.revision_id": "r1" });
+        let content = json!({ "accounts": { "whatsapp": { "a": { "name": "Work" } } }, "com.beeper.revision_id": "r1" });
         let env = encrypt(&key, "com.beeper.bridge_account_overrides", &content);
         assert!(is_encrypted(&env));
         let keys: Vec<&String> = env.as_object().expect("an object").keys().collect();
@@ -141,8 +138,7 @@ mod tests {
     fn encrypts_a_known_vector() {
         let key: [u8; 32] = std::array::from_fn(|i| i as u8);
         let kind = "com.beeper.bridge_account_overrides";
-        let plain =
-            json!({ "accounts": { "slackgo": { "T1-U1": { "name": "Work" } } }, "com.beeper.revision_id": "rev" });
+        let plain = json!({ "accounts": { "slackgo": { "T1-U1": { "name": "Work" } } }, "com.beeper.revision_id": "rev" });
         let env = json!({
             "com.beeper.revision_id": "rev",
             "encrypted": { "ciphertext": CIPHERTEXT, "iv": "AAECAwQFBgcICQoLDA0ODw", "mac": MAC }
@@ -153,7 +149,6 @@ mod tests {
         assert!(key_from_secret("AAAA").is_err());
     }
 
-    const CIPHERTEXT: &str =
-        "/o3KSAtVsNxJ9pZyO02Wf2PW2k0nwDsc3I67s+lUDgisiw5RYe3nmIpBWUl3k9bLShYKjrLmgQsX+LVip8hka7GN0g";
+    const CIPHERTEXT: &str = "/o3KSAtVsNxJ9pZyO02Wf2PW2k0nwDsc3I67s+lUDgisiw5RYe3nmIpBWUl3k9bLShYKjrLmgQsX+LVip8hka7GN0g";
     const MAC: &str = "jX9e3Z3lHPjkT2nzsudvv9dyMdCVEs15W/HrdDRd6cM";
 }

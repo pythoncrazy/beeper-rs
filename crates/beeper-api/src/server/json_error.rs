@@ -225,9 +225,7 @@ impl Parser<'_> {
                         self.skip_whitespace();
                         return match self.cur() {
                             None => Ok(()),
-                            Some(_) => {
-                                Err((self.at, Report::Expected("Unexpected non-whitespace character after JSON")))
-                            }
+                            Some(_) => Err((self.at, Report::Expected("Unexpected non-whitespace character after JSON"))),
                         };
                     }
                     Some(true) if self.check(b',') => {
@@ -293,10 +291,9 @@ fn v8_message(s: &[u16]) -> Option<String> {
                 _ if pos < CONTEXT => {
                     format!("Unexpected token '{token}', \"{}\"... is not valid JSON", text(0..pos + CONTEXT))
                 }
-                _ if pos < len - CONTEXT => format!(
-                    "Unexpected token '{token}', ...\"{}\"... is not valid JSON",
-                    text(pos - CONTEXT..pos + CONTEXT)
-                ),
+                _ if pos < len - CONTEXT => {
+                    format!("Unexpected token '{token}', ...\"{}\"... is not valid JSON", text(pos - CONTEXT..pos + CONTEXT))
+                }
                 _ => format!("Unexpected token '{token}', ...\"{}\" is not valid JSON", text(pos - CONTEXT..len)),
             }
         }
@@ -388,22 +385,15 @@ mod tests {
                 "{\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\": 1, \"b\": 2 x",
                 "Expected ',' or '}' after property value in JSON at position 55 (line 1 column 56)",
             ),
-            (
-                "[1, 2, 3, 4, 5, 6, 7, 8, x, 9, 10]",
-                "Unexpected token 'x', ...\" 6, 7, 8, x, 9, 10]\" is not valid JSON",
-            ),
-            (
-                "[1, 2, 3, x, 4, 5, 6, 7, 8, 9, 10]",
-                "Unexpected token 'x', ...\"[1, 2, 3, x, 4, 5, 6\"... is not valid JSON",
-            ),
+            ("[1, 2, 3, 4, 5, 6, 7, 8, x, 9, 10]", "Unexpected token 'x', ...\" 6, 7, 8, x, 9, 10]\" is not valid JSON"),
+            ("[1, 2, 3, x, 4, 5, 6, 7, 8, 9, 10]", "Unexpected token 'x', ...\"[1, 2, 3, x, 4, 5, 6\"... is not valid JSON"),
             ("  x  ", "Unexpected token 'x', \"  x  \" is not valid JSON"),
             ("[nul\"null", "Unexpected string in JSON at position 4 (line 1 column 5)"),
         ];
         for (body, expected) in cases {
             assert_eq!(message(body).as_deref(), Some(expected), "{body:?}");
         }
-        for body in ["", "  {\"a\":1} ", "[1e5, 1.5e-3, 123456789012345]", "{\"a\":\"\\u00e9\\n\"}", "[-0, 0.5, true]"]
-        {
+        for body in ["", "  {\"a\":1} ", "[1e5, 1.5e-3, 123456789012345]", "{\"a\":\"\\u00e9\\n\"}", "[-0, 0.5, true]"] {
             assert_eq!(message(body), None, "{body:?}");
         }
     }

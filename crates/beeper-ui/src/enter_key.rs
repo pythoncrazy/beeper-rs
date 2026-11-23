@@ -69,14 +69,10 @@ impl BeeperGuiApp {
                 (k.busy, k.error) = (true, None);
                 let key = beeper_core::matrix::recovery_key_chars(&k.input.text());
                 k.tried.push(key.clone());
-                return Task::perform(beeper_core::matrix::recover(self.store.clone(), key), |r| {
-                    KeyMsg::Done(r).into()
-                });
+                return Task::perform(beeper_core::matrix::recover(self.store.clone(), key), |r| KeyMsg::Done(r).into());
             }
             KeyMsg::Done(Ok(())) => return k.window.take().map_or_else(Task::none, window::close),
-            KeyMsg::Done(Err(e)) => {
-                (k.busy, k.error) = (false, Some(tr("Error: %(message)s").replace("%(message)s", &e)))
-            }
+            KeyMsg::Done(Err(e)) => (k.busy, k.error) = (false, Some(tr("Error: %(message)s").replace("%(message)s", &e))),
         }
         Task::none()
     }

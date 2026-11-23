@@ -36,8 +36,7 @@ impl BeeperGuiApp {
                 self.patch_settings(|s| s.spaces_order = order);
                 if let Some(d) = self.spaces_window.as_mut() {
                     let st = self.store.read();
-                    d.order =
-                        rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st)).collect();
+                    d.order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st)).collect();
                 }
             }
             Msg::ResizeStart => self.dragging = true,
@@ -71,8 +70,7 @@ impl BeeperGuiApp {
             Msg::Press => {
                 let Some((id, grab)) = self.rail_hover.clone() else { return Task::none() };
                 let last = self.rail_press.replace((id.clone(), std::time::Instant::now()));
-                let double =
-                    last.is_some_and(|(s, at)| s == id && at.elapsed() < std::time::Duration::from_millis(500));
+                let double = last.is_some_and(|(s, at)| s == id && at.elapsed() < std::time::Duration::from_millis(500));
                 self.rail_drag = Some(RailDrag { id: id.clone(), grab, from: None, at: Point::ORIGIN, order: None });
                 // Desktop's `onDoubleClick` of a rail space, besides Create Label and a label being made.
                 if double && ![LABEL_NUDGE, LABEL_DRAFT].contains(&id.as_str()) {
@@ -93,12 +91,10 @@ impl BeeperGuiApp {
             Msg::DragEnd => {
                 let Some(order) = self.rail_drag.take().and_then(|d| d.order) else { return Task::none() };
                 let old = self.store.read().settings.spaces_order.clone();
-                let order: Vec<String> =
-                    order.into_iter().map(|id| if id == LABEL_DRAFT { LABEL_NUDGE.into() } else { id }).collect();
-                let shown = order.iter().map(|id| SpaceOrder {
-                    id: id.clone(),
-                    visible: old.iter().find(|o| o.id == *id).is_none_or(|o| o.visible),
-                });
+                let order: Vec<String> = order.into_iter().map(|id| if id == LABEL_DRAFT { LABEL_NUDGE.into() } else { id }).collect();
+                let shown = order
+                    .iter()
+                    .map(|id| SpaceOrder { id: id.clone(), visible: old.iter().find(|o| o.id == *id).is_none_or(|o| o.visible) });
                 let rest = old.iter().filter(|o| !order.contains(&o.id)).cloned();
                 let order = shown.chain(rest).collect();
                 self.patch_settings(|s| s.spaces_order = order);
@@ -263,13 +259,7 @@ impl BeeperGuiApp {
         let heading = (!l.name.is_empty()).then(|| menu_heading(p, l.name.clone()));
         let items = [
             menu_item(p, blank(), mute.into(), "", Some(UiMessage::Labels(labels::Msg::Mute(l.id.clone(), !l.muted)))),
-            menu_item(
-                p,
-                blank(),
-                tr("Label Settings").into(),
-                "",
-                Some(UiMessage::Labels(labels::Msg::OpenSettings(l.id.clone()))),
-            ),
+            menu_item(p, blank(), tr("Label Settings").into(), "", Some(UiMessage::Labels(labels::Msg::OpenSettings(l.id.clone())))),
         ];
         heading.into_iter().chain(items).collect()
     }
@@ -336,8 +326,7 @@ impl BeeperGuiApp {
         // Desktop's sheet is as wide as its longest space name, which stays on one line: the check, icon and gaps
         // (22 + 14 + 10), the row padding (26), and room for the mute icon and the unread badge (44).
         let (shown_ids, hidden_ids) = (rail_spaces(&st), hidden_spaces(&st));
-        let widest =
-            shown_ids.iter().chain(&hidden_ids).map(|id| text_width(&space_name(&st, id), 13.0, Weight::Normal));
+        let widest = shown_ids.iter().chain(&hidden_ids).map(|id| text_width(&space_name(&st, id), 13.0, Weight::Normal));
         let width = (widest.fold(0.0, f32::max) + 22.0 + 14.0 + 10.0 + 26.0 + 44.0).max(233.0);
         let shown: Vec<El> = shown_ids.iter().map(space).collect();
         let hidden: Vec<El> = hidden_ids.iter().map(space).collect();
@@ -365,33 +354,22 @@ impl BeeperGuiApp {
         let options_item = options.map(|_| mouse_area(item).on_enter(open));
         let options_top = h;
         let labels = st.feature("labels-v2").show;
-        let rest = column![menu_item(
-            p,
-            blank(),
-            tr("Select Chats").into(),
-            "",
-            Some(UiMessage::ChatList(chat_list::Msg::ToggleSelectMode))
-        )]
-        // Desktop's `nfe`: Select Chats, then Merge Chats.
-        .push(menu_item(p, blank(), tr("Merge Chats").into(), "", Some(open_merge())))
-        .push(labels.then(|| {
-            menu_item(
-                p,
-                blank(),
-                tr("New Label").into(),
-                "",
-                Some(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()))),
-            )
-        }))
-        .push(menu_rule(p))
-        .push(menu_item(p, blank(), tr("Edit Spaces...").into(), "", Some(UiMessage::OpenEditSpaces)))
-        .push(menu_item(
-            p,
-            blank(),
-            tr("Add/Remove Accounts...").into(),
-            "",
-            Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
-        ));
+        let rest =
+            column![menu_item(p, blank(), tr("Select Chats").into(), "", Some(UiMessage::ChatList(chat_list::Msg::ToggleSelectMode)))]
+                // Desktop's `nfe`: Select Chats, then Merge Chats.
+                .push(menu_item(p, blank(), tr("Merge Chats").into(), "", Some(open_merge())))
+                .push(labels.then(|| {
+                    menu_item(p, blank(), tr("New Label").into(), "", Some(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()))))
+                }))
+                .push(menu_rule(p))
+                .push(menu_item(p, blank(), tr("Edit Spaces...").into(), "", Some(UiMessage::OpenEditSpaces)))
+                .push(menu_item(
+                    p,
+                    blank(),
+                    tr("Add/Remove Accounts...").into(),
+                    "",
+                    Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
+                ));
         h += 8.0 + f32::from(u8::from(options.is_some()) + 4 + u8::from(labels)) * menu_pitch() + 11.0;
         let top = mouse_area(Column::with_children(top)).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
         let rest = mouse_area(rest).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
@@ -402,8 +380,7 @@ impl BeeperGuiApp {
             let (menu, sub) = self.account_menu(e, SpaceMenu::Options);
             column![Space::new().height(options_top), row![menu].push(sub)]
         });
-        let w =
-            width + sub.as_ref().map_or(0.0, |_| 233.0 + if self.chat_sub == Some(0) { ACCOUNT_SUB_W } else { 0.0 });
+        let w = width + sub.as_ref().map_or(0.0, |_| 233.0 + if self.chat_sub == Some(0) { ACCOUNT_SUB_W } else { 0.0 });
         (row![sheet].push(sub).into(), w, h)
     }
 
@@ -444,34 +421,21 @@ impl BeeperGuiApp {
             stack![btn].push(corner).into()
         };
         let counted = self.counted_chats(&st);
-        let tally = |key: &str, f: &dyn Fn(&Chat) -> bool| {
-            self.count(key, || counted.iter().filter(|&&i| f(&st.chats[i])).count())
+        let tally = |key: &str, f: &dyn Fn(&Chat) -> bool| self.count(key, || counted.iter().filter(|&&i| f(&st.chats[i])).count());
+        let tab = |id: &'static str, key: usize, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
+            let on = self.list().active_tab == t && self.list().selected_account_filter.is_none();
+            let btn = badge(rail_btn(format!("{id}-button"), glyph, on, UiMessage::ChatList(chat_list::Msg::SelectTab(t))), n, number);
+            let view = RAIL_VIEWS.iter().find(|v| v.1 == Some(t)).expect("a sidebar view").0;
+            let btn: El = mouse_area(btn).on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{view}")))).into();
+            let btn = if quiet { btn } else { tip(btn, t.label(), hotkey(key)).into() };
+            container(btn).id(id).into()
         };
-        let tab =
-            |id: &'static str, key: usize, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
-                let on = self.list().active_tab == t && self.list().selected_account_filter.is_none();
-                let btn = badge(
-                    rail_btn(format!("{id}-button"), glyph, on, UiMessage::ChatList(chat_list::Msg::SelectTab(t))),
-                    n,
-                    number,
-                );
-                let view = RAIL_VIEWS.iter().find(|v| v.1 == Some(t)).expect("a sidebar view").0;
-                let btn: El = mouse_area(btn)
-                    .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{view}"))))
-                    .into();
-                let btn = if quiet { btn } else { tip(btn, t.label(), hotkey(key)).into() };
-                container(btn).id(id).into()
-            };
         let requests = self.count("requests", || st.chats.iter().filter(|c| st.new_request(c)).count());
         let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
         let ring_color = if self.dark { Color::WHITE } else { Color::BLACK };
-        let ring = svg(DASHED_RING.clone())
-            .width(32)
-            .height(32)
-            .opacity(0.15_f32)
-            .style(move |_, _| svg::Style { color: Some(ring_color) });
-        let add_space =
-            container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
+        let ring =
+            svg(DASHED_RING.clone()).width(32).height(32).opacity(0.15_f32).style(move |_, _| svg::Style { color: Some(ring_color) });
+        let add_space = container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
         let account = |i: usize, acc: String| -> El<'_> {
             let on = self.list().selected_account_filter.as_ref() == Some(&acc);
             let space = network_space(&st, &acc);
@@ -502,9 +466,7 @@ impl BeeperGuiApp {
                 }
                 None => badge(btn, n, true),
             };
-            let btn: El = mouse_area(btn)
-                .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{acc}"))))
-                .into();
+            let btn: El = mouse_area(btn).on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{acc}")))).into();
             if quiet {
                 btn
             } else {
@@ -519,8 +481,7 @@ impl BeeperGuiApp {
         let mut add_label = Some(add_label);
         let draft = self.label_window.as_ref().filter(|d| d.label.is_none());
         let draft_btn = |i: usize, d: &LabelDraft| -> El<'static> {
-            let (l, fg) =
-                (Label { name: d.name.clone(), color: d.color, icon: d.icon.clone(), ..Label::default() }, p.strong);
+            let (l, fg) = (Label { name: d.name.clone(), color: d.color, icon: d.icon.clone(), ..Label::default() }, p.strong);
             let ring = svg(DRAFT_RING.clone()).width(30).height(30).style(move |_, _| svg::Style { color: Some(fg) });
             let logo = container(stack![ring, container(label_icon(&l, 28.0, fg)).center(30)]).into();
             let open = UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()));
@@ -595,12 +556,7 @@ impl BeeperGuiApp {
         });
         let top = Column::with_children(top)
             .push(badge(
-                rail_btn(
-                    "rail-more".into(),
-                    g(icon::MORE_HORIZ),
-                    false,
-                    UiMessage::ChatList(chat_list::Msg::OpenMenu(RAIL_MORE.into())),
-                ),
+                rail_btn("rail-more".into(), g(icon::MORE_HORIZ), false, UiMessage::ChatList(chat_list::Msg::OpenMenu(RAIL_MORE.into()))),
                 if hidden_spaces(&st).iter().any(|s| s == "requests") { requests } else { 0 },
                 false,
             ))
@@ -619,12 +575,7 @@ impl BeeperGuiApp {
             tip(rail_btn("rail-media".into(), g(icon::PHOTO_LIBRARY), false, media), tr("Media"), vec![]),
             // Desktop's "Add an account" opens the Add an Account window (`showAddAccountModal`).
             tip(
-                rail_btn(
-                    "rail-add".into(),
-                    g(icon::LIBRARY_ADD),
-                    false,
-                    UiMessage::Networks(crate::networks::Msg::Open)
-                ),
+                rail_btn("rail-add".into(), g(icon::LIBRARY_ADD), false, UiMessage::Networks(crate::networks::Msg::Open)),
                 tr("Add an account"),
                 vec![]
             ),
@@ -635,8 +586,8 @@ impl BeeperGuiApp {
         .padding(Padding::ZERO.bottom(16.0));
         let scroll = scrollable(top).direction(Direction::Vertical(Scrollbar::hidden())).height(Fill);
         let rail = container(column![scroll, footer].align_x(Center)).width(68).height(Fill);
-        let rail = mouse_area(rail.style(fill_box(p.hover, 0.0)))
-            .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(RAIL_MENU.into())));
+        let rail =
+            mouse_area(rail.style(fill_box(p.hover, 0.0))).on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(RAIL_MENU.into())));
         stack![rail].push(lifted).into()
     }
 }
@@ -714,13 +665,7 @@ impl BeeperGuiApp {
         let col = column![open]
             .push(menu_item(p, None, tr("Add/Remove Accounts…").into(), keys("Settings"), Some(accounts)))
             .push(menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)))
-            .push(menu_item(
-                p,
-                None,
-                tr(bar).into(),
-                keys("Toggle Space Bar"),
-                Some(UiMessage::RunHotkey("Toggle Space Bar")),
-            ))
+            .push(menu_item(p, None, tr(bar).into(), keys("Toggle Space Bar"), Some(UiMessage::RunHotkey("Toggle Space Bar"))))
             .push(menu_item(p, None, tr("Settings").into(), keys("Settings"), Some(general)));
         crate::menu_card(p, col, 233).into()
     }
@@ -732,13 +677,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read();
         let select = (kind == SpaceMenu::Header).then(|| {
-            let item = menu_item(
-                p,
-                None,
-                tr("Select Chats").into(),
-                "",
-                Some(UiMessage::ChatList(chat_list::Msg::ToggleSelectMode)),
-            );
+            let item = menu_item(p, None, tr("Select Chats").into(), "", Some(UiMessage::ChatList(chat_list::Msg::ToggleSelectMode)));
             // Desktop's `nfe`: Select Chats, then Merge Chats.
             let merge = menu_item(p, None, tr("Merge Chats").into(), "", Some(open_merge()));
             mouse_area(column![item, merge]).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)))
@@ -780,8 +719,7 @@ impl BeeperGuiApp {
             "hungryserv" => "hungryserv",
             _ => &st.bridge_accounts.iter().find(|b| b.account_id == account).expect("a rail account").bridge_id,
         };
-        let (key, now) =
-            beeper_core::matrix::inbox_rule(&st.inbox_rules, account, bridge, space.map(|n| n.id.as_str()));
+        let (key, now) = beeper_core::matrix::inbox_rule(&st.inbox_rules, account, bridge, space.map(|n| n.id.as_str()));
         let props = st.settings.account(account);
         let muted = !props.notifications;
         let write = st.matrix.is_some();
@@ -794,13 +732,7 @@ impl BeeperGuiApp {
             });
             crate::menu_card(p, Column::with_children(items), ACCOUNT_SUB_W)
         });
-        let inbox = menu_item(
-            p,
-            None,
-            tr("Show in Inbox").into(),
-            "›",
-            Some(UiMessage::CommandBar(commands::Msg::ChatSub(Some(0)))),
-        );
+        let inbox = menu_item(p, None, tr("Show in Inbox").into(), "›", Some(UiMessage::CommandBar(commands::Msg::ChatSub(Some(0)))));
         let mute = beeper_core::models::AccountProps { notifications: muted, ..props };
         let gear = kind == SpaceMenu::Gear;
         let label = match (gear, muted) {
@@ -808,13 +740,7 @@ impl BeeperGuiApp {
             (false, true) => tr("Unmute Space"),
             (false, false) => tr("Mute Space"),
         };
-        let mute = menu_item(
-            p,
-            None,
-            label.into(),
-            "",
-            Some(UiMessage::Accounts(accounts::Msg::SetProps(account.into(), mute))),
-        );
+        let mute = menu_item(p, None, label.into(), "", Some(UiMessage::Accounts(accounts::Msg::SetProps(account.into(), mute))));
         let accounts = UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts));
         let settings = UiMessage::Accounts(accounts::Msg::OpenSettings(account.into()));
         // Desktop's `Zpe` after Edit Spaces… in `rj`.
@@ -832,21 +758,15 @@ impl BeeperGuiApp {
                     "hungryserv" => UiMessage::ChatList(chat_list::Msg::CloseMenu),
                     _ => UiMessage::Accounts(accounts::Msg::AskRemove(account.into())),
                 };
-                column![
-                    mute,
-                    menu_rule(p),
-                    menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
-                ]
-                .push(nickname)
-                .push(menu_item(p, None, tr("Remove Account…").into(), "", Some(remove)))
+                column![mute, menu_rule(p), menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),]
+                    .push(nickname)
+                    .push(menu_item(p, None, tr("Remove Account…").into(), "", Some(remove)))
             }
-            SpaceMenu::Page => column![
-                mute,
-                menu_rule(p),
-                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
-            ]
-            .push(nickname)
-            .push(menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts))),
+            SpaceMenu::Page => {
+                column![mute, menu_rule(p), menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),]
+                    .push(nickname)
+                    .push(menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts)))
+            }
             SpaceMenu::Rail => column![mute]
                 .push(open)
                 .push(menu_rule(p))
@@ -862,8 +782,7 @@ impl BeeperGuiApp {
         let col = column![
             select,
             mouse_area(inbox).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(Some(0)))),
-            mouse_area(rest.push(again))
-                .on_enter(UiMessage::CommandBar(commands::Msg::ChatSub((kind == SpaceMenu::Options).then_some(1))))
+            mouse_area(rest.push(again)).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub((kind == SpaceMenu::Options).then_some(1))))
         ];
         let menu = crate::menu_card(p, col, 233);
         (menu.into(), sub.map(Into::into))
@@ -929,8 +848,7 @@ impl BeeperGuiApp {
         // Desktop's controls of the sheet: plain `<button>`s whose focus does not show, and the `dnd-kit` handles,
         // which show Chromium's ring, and whose Enter and Space pick the space up for the arrows (see `sortable`).
         let window = Some(d.id);
-        let plain =
-            |key: String, b: El<'a>, msg: UiMessage| self.target(window, key, b, Keys::press(msg), Look::Hidden);
+        let plain = |key: String, b: El<'a>, msg: UiMessage| self.target(window, key, b, Keys::press(msg), Look::Hidden);
         let clear = (!d.search.trim().is_empty()).then(|| {
             let empty = edit(SpacesEdit::Search(String::new()));
             plain("clear".into(), icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, empty.clone()), empty)
@@ -952,8 +870,7 @@ impl BeeperGuiApp {
         };
         let (shown, hidden) = found(&d.order);
         let none_hidden = hidden.is_empty();
-        let items: std::sync::Arc<[String]> =
-            shown.iter().chain([&SPACES_DIVIDER.to_string()]).chain(&hidden).cloned().collect();
+        let items: std::sync::Arc<[String]> = shown.iter().chain([&SPACES_DIVIDER.to_string()]).chain(&hidden).cloned().collect();
         // A space that the keyboard moves shows in the place it drops at, lifted like Desktop's drag overlay.
         let sort = self.key_sort_of(window, sortable::List::Spaces);
         let (shown, hidden) = sort.and_then(|s| s.moved(&d.order)).map_or((shown, hidden), |o| found(&o));
@@ -968,10 +885,7 @@ impl BeeperGuiApp {
                     let (top, bottom) = (if i == 0 { 12.0 } else { 0.0 }, if i == last { 12.0 } else { 0.0 });
                     let muted = match rail_label(&st, id) {
                         Some(l) => l.muted,
-                        None => {
-                            !RAIL_VIEWS.iter().any(|v| v.0 == id)
-                                && !st.settings.account(&rail_owner(&st, id)).notifications
-                        }
+                        None => !RAIL_VIEWS.iter().any(|v| v.0 == id) && !st.settings.account(&rail_owner(&st, id)).notifications,
                     };
                     let gear = !RAIL_VIEWS.iter().any(|v| v.0 == id) && id != LABEL_NUDGE;
                     let room = if gear { 190.0 } else { 216.0 };
@@ -986,44 +900,33 @@ impl BeeperGuiApp {
                     let pick = Self::pick(window, sortable::List::Spaces, id, &items, 1);
                     let handle = self.target(window, format!("handle-{id}"), handle, Keys::press(pick), Look::Auto);
                     let lift = dragged == Some(id.as_str());
-                    let body =
-                        row![container(self.space_icon(&st, id)).center(20), column![name].push(sub).width(Fill),]
-                            .push(gear.then(|| {
-                                let menu = edit(SpacesEdit::Menu(Some(id.clone())));
-                                let gear = mouse_area(container(ic(icon::MORE_HORIZ, 16.0).color(p.sub)).center_x(16))
-                                    .interaction(mouse::Interaction::Pointer)
-                                    .on_press(menu.clone());
-                                plain(format!("gear-{id}"), gear.into(), menu)
-                            }))
-                            .push(handle)
-                            .spacing(10)
-                            .align_y(Center)
-                            .padding([6, 12]);
+                    let body = row![container(self.space_icon(&st, id)).center(20), column![name].push(sub).width(Fill),]
+                        .push(gear.then(|| {
+                            let menu = edit(SpacesEdit::Menu(Some(id.clone())));
+                            let gear = mouse_area(container(ic(icon::MORE_HORIZ, 16.0).color(p.sub)).center_x(16))
+                                .interaction(mouse::Interaction::Pointer)
+                                .on_press(menu.clone());
+                            plain(format!("gear-{id}"), gear.into(), menu)
+                        }))
+                        .push(handle)
+                        .spacing(10)
+                        .align_y(Center)
+                        .padding([6, 12]);
                     let fill = p.received;
                     let body = container(body).style(move |_: &Theme| container::Style {
                         background: Some(fill.into()),
                         border: iced::Border {
-                            radius: border::Radius {
-                                top_left: top,
-                                top_right: top,
-                                bottom_right: bottom,
-                                bottom_left: bottom,
-                            },
+                            radius: border::Radius { top_left: top, top_right: top, bottom_right: bottom, bottom_left: bottom },
                             ..iced::Border::default()
                         },
                         shadow: if lift {
-                            Shadow {
-                                color: Color::BLACK.scale_alpha(0.15),
-                                offset: Vector::new(0.0, 4.0),
-                                blur_radius: 12.0,
-                            }
+                            Shadow { color: Color::BLACK.scale_alpha(0.15), offset: Vector::new(0.0, 4.0), blur_radius: 12.0 }
                         } else {
                             Shadow::default()
                         },
                         ..Default::default()
                     });
-                    let rule =
-                        (i != last).then(|| container(Space::new()).width(Fill).height(1).style(fill_box(line, 0.0)));
+                    let rule = (i != last).then(|| container(Space::new()).width(Fill).height(1).style(fill_box(line, 0.0)));
                     mouse_area(column![body].push(rule)).on_enter(edit(SpacesEdit::Over(id.clone()))).into()
                 })
                 .collect()
@@ -1031,17 +934,13 @@ impl BeeperGuiApp {
         let header = |label: &'static str| container(txt(label, 12.0).color(p.sub)).padding([8, 0]);
         let empty = none_hidden.then(|| {
             let fill = if dragged.is_some() { CLEAR } else { p.received };
-            let msg = container(txt(tr("No Hidden Spaces"), 13.0).color(p.sub)).center_x(Fill).center_y(56).style(
-                move |_: &Theme| container::Style {
+            let msg = container(txt(tr("No Hidden Spaces"), 13.0).color(p.sub)).center_x(Fill).center_y(56).style(move |_: &Theme| {
+                container::Style {
                     background: Some(fill.into()),
-                    border: iced::Border {
-                        color: p.received,
-                        width: if fill == CLEAR { 1.0 } else { 0.0 },
-                        radius: 12.0.into(),
-                    },
+                    border: iced::Border { color: p.received, width: if fill == CLEAR { 1.0 } else { 0.0 }, radius: 12.0.into() },
                     ..Default::default()
-                },
-            );
+                }
+            });
             mouse_area(msg).on_enter(edit(SpacesEdit::Over(String::new())))
         });
         let list = column![header(trx("Pinned", "edit spaces section header"))]
@@ -1054,16 +953,11 @@ impl BeeperGuiApp {
             .direction(Direction::Vertical(Scrollbar::hidden()))
             .height(Fill)
             .on_scroll(move |v| edit(SpacesEdit::Scrolled(v.absolute_offset().y > 0.0)));
-        let shade = d
-            .scrolled
-            .then(|| container(Space::new()).width(Fill).height(2).style(fill_box(p.strong.scale_alpha(0.1), 0.0)));
-        let card =
-            container(column![search, stack![list].push(shade)]).height(Fill).clip(true).style(fill_box(p.card, 12.0));
+        let shade = d.scrolled.then(|| container(Space::new()).width(Fill).height(2).style(fill_box(p.strong.scale_alpha(0.1), 0.0)));
+        let card = container(column![search, stack![list].push(shade)]).height(Fill).clip(true).style(fill_box(p.card, 12.0));
         let new = st.feature("labels-v2").show.then(|| {
-            let link = button(txt(tr("New Label"), 13.0).color(p.accent))
-                .bare(p.accent)
-                .padding([4, 8])
-                .on_press(edit(SpacesEdit::NewLabel));
+            let link =
+                button(txt(tr("New Label"), 13.0).color(p.accent)).bare(p.accent).padding([4, 8]).on_press(edit(SpacesEdit::NewLabel));
             // Desktop's `Button` with `rounded`.
             let keys = Keys::press(edit(SpacesEdit::NewLabel));
             let link = self.target(window, "new-label", link, keys, Look::button(p, 9999.0));

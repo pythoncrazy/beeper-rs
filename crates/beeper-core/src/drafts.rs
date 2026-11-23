@@ -175,8 +175,7 @@ pub fn tombstone(device: &str) -> Value {
 fn canonical(v: &Value) -> Value {
     match v {
         Value::Object(m) => {
-            let sorted: BTreeMap<&String, Value> =
-                m.iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k, canonical(v))).collect();
+            let sorted: BTreeMap<&String, Value> = m.iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k, canonical(v))).collect();
             Value::Object(sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect::<Map<_, _>>())
         }
         Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
@@ -197,10 +196,7 @@ pub fn content_key(record: &Value) -> String {
 pub fn in_sync(local: Option<&ChatDraft>, synced: Option<&SyncedDraft>) -> bool {
     match local {
         None => synced.is_none_or(|s| is_tombstone(&s.record)),
-        Some(d) => d
-            .revision_id
-            .as_deref()
-            .is_some_and(|r| synced.is_some_and(|s| s.applied && revision(&s.record) == Some(r))),
+        Some(d) => d.revision_id.as_deref().is_some_and(|r| synced.is_some_and(|s| s.applied && revision(&s.record) == Some(r))),
     }
 }
 
@@ -465,9 +461,7 @@ impl BeeperStore {
         let rev = revision(&rec).map(String::from);
         match decision {
             Reconcile::Ignore => {
-                if rec["device_id"] == own.as_str()
-                    && rev.as_deref() != synced.as_ref().and_then(|s| revision(&s.record))
-                {
+                if rec["device_id"] == own.as_str() && rev.as_deref() != synced.as_ref().and_then(|s| revision(&s.record)) {
                     self.write_synced(idx, rec, true);
                 } else if let Some(s) = synced.filter(|s| !s.applied && revision(&s.record) == rev.as_deref()) {
                     self.write_synced(idx, s.record, true);
@@ -520,8 +514,7 @@ impl BeeperStore {
     pub(crate) fn replay_drafts(&mut self) {
         let on = self.feature(FLAG).on;
         if on && !std::mem::replace(&mut self.drafts.flag, on) {
-            let waiting: Vec<String> =
-                self.chats.iter().filter(|c| c.synced_draft.is_some()).map(|c| c.id.clone()).collect();
+            let waiting: Vec<String> = self.chats.iter().filter(|c| c.synced_draft.is_some()).map(|c| c.id.clone()).collect();
             if !waiting.is_empty() {
                 eprintln!("[drafts-sync] flag on, reconciling synced drafts across {} threads", waiting.len());
             }
@@ -673,11 +666,7 @@ mod tests {
         st.drafts.link.lock().unwrap().open.insert(id.clone(), Composer { accepts: true, unsyncable: false });
         st.draft_received(&id, rec("r3", "OTHER", "newest"));
         assert_eq!(draft_text(&st, idx), Some("newest"), "a draft that matches the synced one takes the next");
-        assert_eq!(
-            std::mem::take(&mut st.drafts.link.lock().unwrap().applied),
-            std::slice::from_ref(&id),
-            "the composer shows it"
-        );
+        assert_eq!(std::mem::take(&mut st.drafts.link.lock().unwrap().applied), std::slice::from_ref(&id), "the composer shows it");
         st.draft_received(&id, json!({ REVISION: "r4", "device_id": "OTHER" }));
         assert_eq!(st.chats[idx].draft, None, "a removal clears it");
     }

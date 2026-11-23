@@ -190,11 +190,7 @@ impl File {
                 _ => return Err("bad hash: not 32 bytes".into()),
             },
         };
-        Ok(Self {
-            key: base64(&file["floe_key"], "FLOE key")?,
-            header: base64(&file["floe_header"], "FLOE header")?,
-            sha256,
-        })
+        Ok(Self { key: base64(&file["floe_key"], "FLOE key")?, header: base64(&file["floe_header"], "FLOE header")?, sha256 })
     }
 }
 

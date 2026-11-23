@@ -48,19 +48,8 @@ pub fn timer_distance(ms: u64) -> String {
     }
 }
 /// Desktop's `qLt`: the disappearing timers in ms when the room features do not list them.
-pub const DEFAULT_TIMERS: [u64; 11] = [
-    10_000,
-    300_000,
-    1_800_000,
-    3_600_000,
-    14_400_000,
-    86_400_000,
-    172_800_000,
-    259_200_000,
-    604_800_000,
-    2_592_000_000,
-    31_536_000_000,
-];
+pub const DEFAULT_TIMERS: [u64; 11] =
+    [10_000, 300_000, 1_800_000, 3_600_000, 14_400_000, 86_400_000, 172_800_000, 259_200_000, 604_800_000, 2_592_000_000, 31_536_000_000];
 /// Desktop's `es` file kinds of `com.beeper.room_features`.
 pub const FILE_IMAGE: &str = "m.image";
 pub const FILE_AUDIO: &str = "m.audio";
@@ -160,9 +149,8 @@ pub fn default_files(bridge: &serde_json::Value) -> Files {
     DEFAULT_FILES.get(default_features(bridge)).expect("a default table").clone()
 }
 
-static DEFAULT_FILES: std::sync::LazyLock<std::collections::HashMap<String, Files>> = std::sync::LazyLock::new(|| {
-    serde_json::from_str(include_str!("room_files.json")).expect("the default room features parse")
-});
+static DEFAULT_FILES: std::sync::LazyLock<std::collections::HashMap<String, Files>> =
+    std::sync::LazyLock::new(|| serde_json::from_str(include_str!("room_files.json")).expect("the default room features parse"));
 
 /// The `Od` entry of Desktop's `roomFeatures` of a room without `com.beeper.room_features`, by its table: the
 /// `m.bridge` protocol's, else the bridge's (Desktop's `lP`), else the generic bridge's.
@@ -193,17 +181,8 @@ pub fn custom_emoji(features: Option<&serde_json::Value>, bridge: &serde_json::V
     }
 }
 /// The `com.beeper.room_features` formatting keys of Desktop's formatting menu buttons, in menu order.
-pub const FORMATS: [&str; 9] = [
-    "bold",
-    "italic",
-    "strikethrough",
-    "inline_link",
-    "unordered_list",
-    "ordered_list",
-    "blockquote",
-    "inline_code",
-    "code_block",
-];
+pub const FORMATS: [&str; 9] =
+    ["bold", "italic", "strikethrough", "inline_link", "unordered_list", "ordered_list", "blockquote", "inline_code", "code_block"];
 /// Desktop's formatting for a Matrix room without room features.
 pub const ALL_FORMATS: u16 = (1 << FORMATS.len()) - 1;
 
@@ -510,9 +489,7 @@ pub fn locale_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 /// Desktop's `t_`: the order of the participants of a chat. Admins first, then the others, pending and exited members
 /// after them, network bots and the own user last, each by name.
 pub fn member_order(a: &User, b: &User) -> std::cmp::Ordering {
-    let rank = |u: &User| {
-        (u.is_self == Some(true), u.is_network_bot == Some(true), u.is_admin != Some(true), u.is_pending == Some(true))
-    };
+    let rank = |u: &User| (u.is_self == Some(true), u.is_network_bot == Some(true), u.is_admin != Some(true), u.is_pending == Some(true));
     let exited = |u: &User| u.has_exited == Some(true);
     rank(a).cmp(&rank(b)).then(exited(a).cmp(&exited(b))).then_with(|| locale_cmp(a.sort_name(), b.sort_name()))
 }
@@ -858,8 +835,7 @@ pub enum ChatFlag {
 
 impl ChatFlag {
     /// Every flag, each one time.
-    pub const ALL: [ChatFlag; 5] =
-        [ChatFlag::Archived, ChatFlag::Pinned, ChatFlag::LowPriority, ChatFlag::Muted, ChatFlag::MarkedUnread];
+    pub const ALL: [ChatFlag; 5] = [ChatFlag::Archived, ChatFlag::Pinned, ChatFlag::LowPriority, ChatFlag::Muted, ChatFlag::MarkedUnread];
 
     /// The key of the flag in the JSON of a chat: in the store, in the Desktop API, and in `patchChat`.
     pub fn api_key(self) -> &'static str {
@@ -892,9 +868,7 @@ impl ThreadFollows {
 
     /// Desktop's `parseThreadFollows`, where `following` is the old name of `followed`, or `None` for bad content.
     pub fn parse(v: &serde_json::Value) -> Option<Self> {
-        let ids = |k: &str| -> Option<Vec<String>> {
-            v[k].as_array()?.iter().map(|i| i.as_str().map(String::from)).collect()
-        };
+        let ids = |k: &str| -> Option<Vec<String>> { v[k].as_array()?.iter().map(|i| i.as_str().map(String::from)).collect() };
         let followed = if v.get("followed").is_some() { ids("followed") } else { ids("following") };
         Some(Self { follow_all: v["follow_all"].as_bool(), followed: followed?, unfollowed: ids("unfollowed")? })
     }
@@ -981,8 +955,7 @@ pub const REMINDERS_ROOM: &str = "!reminders:beeper.local";
 /// The managed rooms on the Beeper homeserver that keep data and are not chats: the rooms of Desktop's
 /// `managedRoomEventHandlers` and `TRANSCRIPTIONS_ROOM_ID`. `!tips:beeper.local` is also a managed room, but Desktop
 /// shows it as a chat.
-pub const MANAGED_ROOMS: [&str; 5] =
-    [BOOKMARKS_ROOM, TRANSCRIPTIONS_ROOM, "!blasts:beeper.local", REMOVED_MESSAGES_ROOM, REMINDERS_ROOM];
+pub const MANAGED_ROOMS: [&str; 5] = [BOOKMARKS_ROOM, TRANSCRIPTIONS_ROOM, "!blasts:beeper.local", REMOVED_MESSAGES_ROOM, REMINDERS_ROOM];
 
 /// A `com.beeper.bookmark` event of the bookmarks room, which relates to a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1076,23 +1049,15 @@ impl MessageRules {
 }
 
 /// Desktop's message features of a Beeper room.
-pub const BEEPER_MESSAGES: MessageRules = MessageRules {
-    edit: true,
-    edit_max_age: None,
-    delete: true,
-    delete_max_age: None,
-    delete_for_me: false,
-    react: true,
-    reply: true,
-};
+pub const BEEPER_MESSAGES: MessageRules =
+    MessageRules { edit: true, edit_max_age: None, delete: true, delete_max_age: None, delete_for_me: false, react: true, reply: true };
 
 fn beeper_messages() -> MessageRules {
     BEEPER_MESSAGES
 }
 
 /// Desktop's poll features of a Beeper room.
-pub const BEEPER_POLLS: PollRules =
-    PollRules { hidden_votes: true, end: true, duplicates: true, max_options: 20, max_length: 200 };
+pub const BEEPER_POLLS: PollRules = PollRules { hidden_votes: true, end: true, duplicates: true, max_options: 20, max_length: 200 };
 
 fn yes() -> bool {
     true
@@ -1143,8 +1108,7 @@ impl Chat {
         let (room_title, room_img_url) = (self.room_title().to_string(), self.room_img_url().map(str::to_string));
         self.title = title.clone().unwrap_or_else(|| room_title.clone());
         self.img_url = img_url.clone().or_else(|| room_img_url.clone());
-        self.personal = (title.is_some() || img_url.is_some())
-            .then(|| Box::new(Personal { title, img_url, room_title, room_img_url }));
+        self.personal = (title.is_some() || img_url.is_some()).then(|| Box::new(Personal { title, img_url, room_title, room_img_url }));
     }
 
     /// Changes the name or photo of the room, under the personal ones.
@@ -1582,8 +1546,7 @@ impl ActionButton {
             "callback" => ButtonAction::Callback,
             _ => return None,
         };
-        let name =
-            |m: &&str| m.len() <= 64 && m.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_');
+        let name = |m: &&str| m.len() <= 64 && m.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_');
         let icon = v["icon"]["material"].as_str().map(str::trim).filter(|m| !m.is_empty()).filter(name);
         Some(Self { id: s("id")?, label: s("label")?, action, url: s("url")?, icon: icon.map(String::from) })
     }
@@ -2338,9 +2301,7 @@ impl BeeperSettings {
     }
 
     pub fn choice(&self, key: &str) -> &'static str {
-        let crate::prefs::Control::Select(options, _) = crate::prefs::find(key).control else {
-            panic!("{key} is a select")
-        };
+        let crate::prefs::Control::Select(options, _) = crate::prefs::find(key).control else { panic!("{key} is a select") };
         options[usize::from(self.pref(key))]
     }
 
@@ -2462,8 +2423,7 @@ mod tests {
     /// to an allowed path on the homeserver.
     #[test]
     fn action_button_urls_like_desktop() {
-        let b =
-            |action, url: &str| ActionButton { id: "a".into(), label: "A".into(), action, url: url.into(), icon: None };
+        let b = |action, url: &str| ActionButton { id: "a".into(), label: "A".into(), action, url: url.into(), icon: None };
         let link = |url: &str| b(ButtonAction::Link, url).link();
         assert_eq!(link("beeper://settings").as_deref(), Some("beeper://settings"));
         assert_eq!(link("https://Beeper.com").as_deref(), Some("https://beeper.com/"));
@@ -2471,10 +2431,7 @@ mod tests {
         let home = "https://matrix.beeper.com";
         let path = "/_matrix/client/unstable/com.beeper.tips/download_links/email";
         let callback = |url: String| b(ButtonAction::Callback, &url).callback_url(home).map(String::from);
-        assert_eq!(
-            callback(format!("https://matrix.beeper.com{path}")),
-            Some(format!("https://matrix.beeper.com{path}"))
-        );
+        assert_eq!(callback(format!("https://matrix.beeper.com{path}")), Some(format!("https://matrix.beeper.com{path}")));
         for bad in [
             format!("http://matrix.beeper.com{path}"),
             format!("https://beeper.com{path}"),
@@ -2571,8 +2528,7 @@ mod title_tests {
     fn group_titles_like_desktop() {
         let me = User { is_self: Some(true), ..user("@me:x", Some("Me Myself")) };
         let names = |names: &[&str]| -> Vec<User> {
-            let mut all: Vec<User> =
-                names.iter().enumerate().map(|(i, n)| user(&format!("@u{i}:x"), Some(n))).collect();
+            let mut all: Vec<User> = names.iter().enumerate().map(|(i, n)| user(&format!("@u{i}:x"), Some(n))).collect();
             all.push(me.clone());
             all
         };

@@ -202,9 +202,7 @@ pub async fn read_message<S: AsyncRead + AsyncWrite + Unpin>(
         if k.is_empty() || k.contains(|c: char| c.is_ascii_whitespace()) {
             return Err(BAD);
         }
-        if headers.insert(k.to_ascii_lowercase(), v.trim().to_string()).is_some()
-            && k.eq_ignore_ascii_case("content-length")
-        {
+        if headers.insert(k.to_ascii_lowercase(), v.trim().to_string()).is_some() && k.eq_ignore_ascii_case("content-length") {
             return Err(BAD);
         }
     }
@@ -289,9 +287,7 @@ pub async fn read_ws_frame<R: AsyncRead + Unpin>(r: &mut R, max: usize) -> Resul
 }
 
 /// Writes one final frame with `opcode`: 0x1 for text, 0x8 for close.
-pub async fn write_ws_frame<W: AsyncWrite + Unpin>(
-    w: &mut W, opcode: u8, payload: &[u8], masked: bool,
-) -> std::io::Result<()> {
+pub async fn write_ws_frame<W: AsyncWrite + Unpin>(w: &mut W, opcode: u8, payload: &[u8], masked: bool) -> std::io::Result<()> {
     let (mask_bit, mask) = if masked { (0x80, [0x37, 0xFA, 0x21, 0x3D]) } else { (0, [0; 4]) };
     let mut frame = vec![0x80 | opcode];
     match payload.len() {

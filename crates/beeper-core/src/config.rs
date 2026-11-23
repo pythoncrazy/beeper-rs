@@ -39,12 +39,8 @@ pub const DEFAULT_API_URL: &str = "https://api.beeper.com";
 /// Desktop's app API (`As` of sentry-common), which is the same in every `--server-env`.
 pub const APP_API_URL: &str = "https://texts.com/api/beeper";
 /// Desktop's `--server-env` values and the domain of each Beeper cloud, which serves `api.` and `matrix.`.
-pub const SERVER_ENVS: [(&str, &str); 4] = [
-    ("production", "beeper.com"),
-    ("staging", "beeper-staging.com"),
-    ("dev", "beeper-dev.com"),
-    ("local", "beeper.localtest.me"),
-];
+pub const SERVER_ENVS: [(&str, &str); 4] =
+    [("production", "beeper.com"), ("staging", "beeper-staging.com"), ("dev", "beeper-dev.com"), ("local", "beeper.localtest.me")];
 pub const DEFAULT_USER_ID: &str = "@alex:beeper.com";
 pub const DEFAULT_DEVICE_ID: &str = "BEEPER_RS_DEV01";
 pub const DEFAULT_TOKEN: &str = "bp_tok_beeper_rs_default_secret";
@@ -124,8 +120,7 @@ impl Default for BeeperSettings {
 }
 
 const fn net(
-    kind: NetworkKind, bridge_id: &'static str, bridge_type: &'static str, display_name: &'static str,
-    brand_rgb: [u8; 3],
+    kind: NetworkKind, bridge_id: &'static str, bridge_type: &'static str, display_name: &'static str, brand_rgb: [u8; 3],
     [supports_on_device, supports_cloud, supports_sms_mms, supports_e2ee, supports_polls]: [bool; 5],
 ) -> NetworkSpec {
     NetworkSpec {
@@ -241,13 +236,10 @@ pub fn resolve_original_data_dir_for_os(
     )
 }
 
-pub fn resolve_data_dir_for_os(
-    os_name: &str, profile: Option<&str>, env_vars: &HashMap<String, String>, home_dir: &Path,
-) -> PathBuf {
-    let dir = env_vars.get("BEEPER_RS_DATA_DIR").map_or_else(
-        || os_base_config_dir(os_name, env_vars, home_dir).join(profile_folder(DATA_FOLDER_PREFIX, profile)),
-        PathBuf::from,
-    );
+pub fn resolve_data_dir_for_os(os_name: &str, profile: Option<&str>, env_vars: &HashMap<String, String>, home_dir: &Path) -> PathBuf {
+    let dir = env_vars
+        .get("BEEPER_RS_DATA_DIR")
+        .map_or_else(|| os_base_config_dir(os_name, env_vars, home_dir).join(profile_folder(DATA_FOLDER_PREFIX, profile)), PathBuf::from);
     assert_not_original_beeper_dir(&dir);
     dir
 }
@@ -257,12 +249,7 @@ pub fn migrate_legacy_data_dir(data_dir: &Path, profile: Option<&str>) {
     if !legacy.is_dir() || legacy.file_name() == data_dir.file_name() {
         return;
     }
-    assert!(
-        !data_dir.exists(),
-        "{} and {} both exist. Remove the one you do not use.",
-        legacy.display(),
-        data_dir.display()
-    );
+    assert!(!data_dir.exists(), "{} and {} both exist. Remove the one you do not use.", legacy.display(), data_dir.display());
     std::fs::create_dir_all(data_dir).unwrap_or_else(|e| panic!("create {}: {e}", data_dir.display()));
     let keep = legacy.join("beeper-rs.db").is_file();
     for name in LEGACY_DATA_FILES.iter().filter(|_| keep).map(|n| legacy.join(n)).filter(|p| p.exists()) {
@@ -332,8 +319,7 @@ pub fn local_millis(utc_ms: i64) -> i64 {
 pub fn parse_when<Tz: chrono::TimeZone>(text: &str, now: &chrono::DateTime<Tz>) -> Option<chrono::DateTime<Tz>> {
     use chrono::{Datelike, Days, Months, NaiveDateTime, NaiveTime, TimeDelta};
     const WEEKDAYS: [&str; 7] = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-    const NUMBERS: [&str; 13] =
-        ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+    const NUMBERS: [&str; 13] = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
     let text = text.trim().to_lowercase();
     let mut w: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
@@ -409,8 +395,7 @@ pub fn parse_when<Tz: chrono::TimeZone>(text: &str, now: &chrono::DateTime<Tz>) 
     let base = now.naive_local();
     let today = base.date();
     let wd = today.weekday().num_days_from_sunday();
-    let at_time =
-        |d: chrono::NaiveDate, (h, m): (u32, u32)| d.and_time(NaiveTime::from_hms_opt(h, m, 0).expect("a clock"));
+    let at_time = |d: chrono::NaiveDate, (h, m): (u32, u32)| d.and_time(NaiveTime::from_hms_opt(h, m, 0).expect("a clock"));
     let add = |n: u32, unit: &str| -> Option<NaiveDateTime> {
         let unit = match unit {
             "s" | "sec" | "secs" => "second",
@@ -492,8 +477,7 @@ pub fn parse_when<Tz: chrono::TimeZone>(text: &str, now: &chrono::DateTime<Tz>) 
 
 /// [`parse_when`] in local time, in Unix milliseconds.
 pub fn parse_when_millis(text: &str, now_ms: i64) -> Option<i64> {
-    let now =
-        chrono::DateTime::from_timestamp_millis(now_ms).expect("timestamp in range").with_timezone(&chrono::Local);
+    let now = chrono::DateTime::from_timestamp_millis(now_ms).expect("timestamp in range").with_timezone(&chrono::Local);
     parse_when(text, &now).map(|at| at.timestamp_millis())
 }
 

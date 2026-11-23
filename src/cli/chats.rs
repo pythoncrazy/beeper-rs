@@ -48,10 +48,7 @@ pub const COMMANDS: &[Cmd] = &[
     },
     Cmd {
         flags: &[CHAT, PICK, Flag::s("seconds", "Timer in seconds, or \"off\" to disable").req()],
-        examples: &[
-            "beeper chats disappear --chat \"Mom\" --seconds 86400",
-            "beeper chats disappear --chat \"Work Group\" --seconds off",
-        ],
+        examples: &["beeper chats disappear --chat \"Mom\" --seconds 86400", "beeper chats disappear --chat \"Work Group\" --seconds off"],
         ..on_chat("chats disappear", "Set disappearing-message expiry", patch)
     },
     Cmd {
@@ -89,13 +86,7 @@ pub const COMMANDS: &[Cmd] = &[
     on_chat("chats notify-anyway", "Send an iMessage Notify Anyway alert", post),
     on_chat("chats pin", "Pin a chat", patch),
     Cmd {
-        flags: &[
-            CHAT,
-            PICK,
-            Flag::s("level", "Destination: inbox (default mailbox) or low (Low Priority)")
-                .req()
-                .opts(&["inbox", "low"]),
-        ],
+        flags: &[CHAT, PICK, Flag::s("level", "Destination: inbox (default mailbox) or low (Low Priority)").req().opts(&["inbox", "low"])],
         ..on_chat("chats priority", "Move a chat to the Inbox or Low Priority", patch)
     },
     Cmd {
@@ -111,10 +102,7 @@ pub const COMMANDS: &[Cmd] = &[
         ],
         ..on_chat("chats remind", "Set a chat reminder", remind)
     },
-    Cmd {
-        flags: &[CHAT, PICK, Flag::s("title", "New chat title").req()],
-        ..on_chat("chats rename", "Rename a chat", patch)
-    },
+    Cmd { flags: &[CHAT, PICK, Flag::s("title", "New chat title").req()], ..on_chat("chats rename", "Rename a chat", patch) },
     Cmd {
         args: &[arg("query", "Search query (title, participant, or network)")],
         flags: &[ACCOUNT, IDS, Flag::i("limit", "Maximum chats to print").def("20")],
@@ -155,11 +143,7 @@ fn chat_input_id(chat: &Value) -> String {
 
 fn format_chat(chat: &Value) -> String {
     let network = if truthy(&chat["network"]) { format!(" {}", js_string(&chat["network"])) } else { String::new() };
-    let local = if truthy(&chat["localChatID"]) {
-        format!(" local:{}", js_string(&chat["localChatID"]))
-    } else {
-        String::new()
-    };
+    let local = if truthy(&chat["localChatID"]) { format!(" local:{}", js_string(&chat["localChatID"])) } else { String::new() };
     let title = if chat["title"].is_null() { String::new() } else { js_string(&chat["title"]) };
     format!("{}{local}{network} {title}", js_string(&chat["id"])).trim().to_string()
 }
@@ -226,10 +210,8 @@ pub fn resolve_chat(c: &mut Ctx, input: &str, pick: Option<i64>, accounts: &[Str
     query.extend([("query", input.to_string()), ("scope", "titles".to_string())]);
     let candidates = c.collect("/v1/chats/search", &query, 10, |_| true)?;
     let wanted = normalize(&json!(input));
-    let exact: Vec<&Value> = candidates
-        .iter()
-        .filter(|ch| ["id", "localChatID", "title"].iter().any(|k| normalize(&ch[*k]) == wanted))
-        .collect();
+    let exact: Vec<&Value> =
+        candidates.iter().filter(|ch| ["id", "localChatID", "title"].iter().any(|k| normalize(&ch[*k]) == wanted)).collect();
     let matches: Vec<&Value> = if exact.is_empty() { candidates.iter().collect() } else { exact };
     match (matches.as_slice(), pick) {
         ([], _) => suggest(c, input, accounts),
@@ -238,9 +220,7 @@ pub fn resolve_chat(c: &mut Ctx, input: &str, pick: Option<i64>, accounts: &[Str
             Some(chat) => Ok(chat_input_id(chat)),
             None => Err(CliError::abort(format!("--pick {n} is outside the {} matching chats", all.len()), NOT_FOUND)),
         },
-        (all, None) => {
-            Err(ambiguous(&format!("chat \"{input}\""), &all.iter().map(|ch| format_chat(ch)).collect::<Vec<_>>()))
-        }
+        (all, None) => Err(ambiguous(&format!("chat \"{input}\""), &all.iter().map(|ch| format_chat(ch)).collect::<Vec<_>>())),
     }
 }
 
@@ -251,16 +231,12 @@ fn suggest(c: &mut Ctx, input: &str, accounts: &[String]) -> Res<String> {
     let Ok(pool) = c.collect("/v1/chats", &query, 100, |_| true) else { return Ok(input.to_string()) };
     let ranked = rank(input, &pool, 3);
     let Some((top, label)) = ranked.first() else { return Ok(input.to_string()) };
-    let net =
-        |ch: &Value| if truthy(&ch["network"]) { format!(" ({})", js_string(&ch["network"])) } else { String::new() };
+    let net = |ch: &Value| if truthy(&ch["network"]) { format!(" ({})", js_string(&ch["network"])) } else { String::new() };
     eprintln!("No chat matches \"{input}\". Did you mean \"{label}\"{}?", net(top));
     ranked[1..].iter().for_each(|(ch, l)| eprintln!("  also: {l}{}", net(ch)));
     match confirm("use it?") {
         true => Ok(chat_input_id(top)),
-        false => Err(CliError {
-            class: Some("CLIError"),
-            ..CliError::abort(format!("no chat selected for \"{input}\""), 127)
-        }),
+        false => Err(CliError { class: Some("CLIError"), ..CliError::abort(format!("no chat selected for \"{input}\""), 127) }),
     }
 }
 
@@ -301,8 +277,7 @@ fn account_field<'a>(a: &'a Value, (key, sub): (&str, &str)) -> &'a Value {
 /// `matchAccounts`: exact matches of any field, else the accounts whose ID, network, bridge, or name contains it.
 fn match_accounts<'a>(accounts: &'a [Value], input: &str) -> Vec<&'a Value> {
     let wanted = normalize(&json!(input));
-    let exact: Vec<&Value> =
-        accounts.iter().filter(|a| ACCOUNT_KEYS.iter().any(|k| normalize(account_field(a, *k)) == wanted)).collect();
+    let exact: Vec<&Value> = accounts.iter().filter(|a| ACCOUNT_KEYS.iter().any(|k| normalize(account_field(a, *k)) == wanted)).collect();
     if !exact.is_empty() {
         return exact;
     }
@@ -312,8 +287,7 @@ fn match_accounts<'a>(accounts: &'a [Value], input: &str) -> Vec<&'a Value> {
 
 fn format_account(a: &Value) -> String {
     let network = if truthy(&a["network"]) { format!(" {}", js_string(&a["network"])) } else { String::new() };
-    let bridge =
-        if truthy(&a["bridge"]["type"]) { format!(" {}", js_string(&a["bridge"]["type"])) } else { String::new() };
+    let bridge = if truthy(&a["bridge"]["type"]) { format!(" {}", js_string(&a["bridge"]["type"])) } else { String::new() };
     let user = ["displayName", "name", "username", "id"].iter().map(|k| &a["user"][*k]).find(|v| truthy(v));
     let user = user.map_or(String::new(), |u| format!(" {}", js_string(u)));
     format!("{}{network}{bridge}{user}", js_string(&a["accountID"]))
@@ -348,11 +322,7 @@ pub fn resolve_accounts(c: &mut Ctx, inputs: &[String], multiple: bool, default:
 }
 
 pub fn account_ids(c: &mut Ctx) -> Res<Vec<String>> {
-    Ok(accounts_of(c.get("/v1/accounts")?)
-        .iter()
-        .map(|a| js_string(&a["accountID"]))
-        .filter(|a| !a.is_empty())
-        .collect())
+    Ok(accounts_of(c.get("/v1/accounts")?).iter().map(|a| js_string(&a["accountID"])).filter(|a| !a.is_empty()).collect())
 }
 
 // ─── commands ──────────────────────────────────────────────────────────────────
@@ -375,8 +345,7 @@ pub fn list(c: &mut Ctx) -> Res {
     let query: Vec<(&str, String)> = accounts.into_iter().map(|a| ("accountIDs", a)).collect();
     let limit = usize::try_from(c.int("limit").expect("--limit has a default")).unwrap_or(0);
     let items = c.collect("/v1/chats", &query, limit, keep)?;
-    let subtitle =
-        if filtered { "Try relaxing the filter flags." } else { "Connect an account or sync existing chats." };
+    let subtitle = if filtered { "Try relaxing the filter flags." } else { "Connect an account or sync existing chats." };
     match c.on("ids") {
         true => c.print_ids(&items),
         false => c.print_list(&items, Empty::new("No chats matched", subtitle)),
@@ -400,8 +369,7 @@ fn search(c: &mut Ctx) -> Res {
 fn show(c: &mut Ctx) -> Res {
     let id = chat_flag(c, "chat")?;
     let max = c.int("max-participants").map(|n| n.to_string());
-    let path =
-        query_string(&chat_path(&id, ""), &max.as_deref().map(|m| [("maxParticipantCount", m)]).unwrap_or_default());
+    let path = query_string(&chat_path(&id, ""), &max.as_deref().map(|m| [("maxParticipantCount", m)]).unwrap_or_default());
     let chat = c.get(&path)?;
     c.print(&chat)
 }
@@ -409,12 +377,8 @@ fn show(c: &mut Ctx) -> Res {
 /// `userQueryFromInput`: the user fields that a selector can mean.
 fn user_query(input: &str) -> Value {
     let s = input.trim();
-    let matrix = s
-        .strip_prefix('@')
-        .and_then(|r| r.split_once(':'))
-        .is_some_and(|(local, server)| !local.is_empty() && !server.is_empty());
-    let phone =
-        s.chars().count() >= 5 && s.trim_start_matches('+').chars().all(|c| c.is_ascii_digit() || " ().-".contains(c));
+    let matrix = s.strip_prefix('@').and_then(|r| r.split_once(':')).is_some_and(|(local, server)| !local.is_empty() && !server.is_empty());
+    let phone = s.chars().count() >= 5 && s.trim_start_matches('+').chars().all(|c| c.is_ascii_digit() || " ().-".contains(c));
     match () {
         _ if matrix => json!({ "id": s, "username": s }),
         _ if s.contains('@') => json!({ "email": s, "username": s }),
@@ -428,9 +392,7 @@ fn start(c: &mut Ctx) -> Res {
     let account = match c.str("account").map(str::to_string) {
         Some(input) => {
             let ids = resolve_accounts(c, std::slice::from_ref(&input), false, true)?;
-            ids.into_iter()
-                .next()
-                .ok_or_else(|| CliError::abort(format!("No account matches \"{input}\""), NOT_FOUND))?
+            ids.into_iter().next().ok_or_else(|| CliError::abort(format!("No account matches \"{input}\""), NOT_FOUND))?
         }
         None => match account_ids(c)? {
             ids if ids.iter().any(|a| a == "matrix") => "matrix".into(),
@@ -472,12 +434,7 @@ fn patch_body(c: &Ctx) -> Res<Value> {
             let seconds = c.str("seconds").expect("--seconds is required");
             let expiry = match seconds.to_lowercase() == "off" {
                 true => None,
-                false => Some(
-                    seconds
-                        .trim()
-                        .parse::<u64>()
-                        .map_err(|_| CliError::bug("--seconds must be a positive integer or \"off\""))?,
-                ),
+                false => Some(seconds.trim().parse::<u64>().map_err(|_| CliError::bug("--seconds must be a positive integer or \"off\""))?),
             };
             json!({ "messageExpirySeconds": expiry })
         }
@@ -513,8 +470,7 @@ pub fn upload(c: &mut Ctx, path: &str, file_name: Option<&str>, mime: Option<&st
         _ => CliError::system(format!("{e}, open '{path}'")),
     })?;
     let name = std::path::Path::new(path).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
-    let fields: Vec<(&str, &str)> =
-        [("fileName", file_name), ("mimeType", mime)].into_iter().filter_map(|(k, v)| Some((k, v?))).collect();
+    let fields: Vec<(&str, &str)> = [("fileName", file_name), ("mimeType", mime)].into_iter().filter_map(|(k, v)| Some((k, v?))).collect();
     let client = c.client()?.clone();
     Ok(c.block(client.upload(&name, &bytes, &fields))?)
 }
@@ -580,10 +536,7 @@ mod tests {
     #[test]
     fn user_queries_follow_upstream() {
         assert_eq!(user_query("@eric:beeper.com"), json!({ "id": "@eric:beeper.com", "username": "@eric:beeper.com" }));
-        assert_eq!(
-            user_query("eric@example.com"),
-            json!({ "email": "eric@example.com", "username": "eric@example.com" })
-        );
+        assert_eq!(user_query("eric@example.com"), json!({ "email": "eric@example.com", "username": "eric@example.com" }));
         assert_eq!(user_query("+1 (415) 555-0199"), json!({ "phoneNumber": "+1 (415) 555-0199" }));
         assert_eq!(user_query(" Eric "), json!({ "fullName": "Eric", "username": "Eric", "id": "Eric" }));
     }

@@ -7,25 +7,23 @@ use crate::loads;
 use crate::message;
 use crate::style::rem;
 use crate::style::{
-    bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, lh, med, scroll_style, semi, shadow_box,
-    text_width, txt, Bare, CLEAR, GUTTER,
+    bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, lh, med, scroll_style, semi, shadow_box, text_width, txt, Bare,
+    CLEAR, GUTTER,
 };
 use crate::time::{day_num, format_short_ts, iso_millis, today};
 use crate::units::human_size;
 use crate::windows;
 use crate::{
-    anim, closable_head, cubic_bezier, deletable, file_kind, i18n, menu_item, menu_pitch, menu_rule, pdf,
-    relative_date, stored, tinted, video, vlist, voice, zoom, BeeperGuiApp, El, Frames, PillLook, UiMessage,
-    AVATAR_SLOTS, MEDIA_ICONS, ROW_ACTIONS, SYS_ARROW_BACK, SYS_DELETE, SYS_DOWNLOAD, SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
+    anim, closable_head, cubic_bezier, deletable, file_kind, i18n, menu_item, menu_pitch, menu_rule, pdf, relative_date, stored, tinted,
+    video, vlist, voice, zoom, BeeperGuiApp, El, Frames, PillLook, UiMessage, AVATAR_SLOTS, MEDIA_ICONS, ROW_ACTIONS, SYS_ARROW_BACK,
+    SYS_DELETE, SYS_DOWNLOAD, SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
 };
 use beeper_core::config::civil_from_days;
 use beeper_core::models::*;
 use beeper_core::store::{BeeperStore, Query};
 use iced::font::Weight;
 use iced::keyboard::{self, key::Named, Key};
-use iced::widget::{
-    button, column, container, image, mouse_area, row, scrollable, stack, svg, text_input, tooltip, Column, Row, Space,
-};
+use iced::widget::{button, column, container, image, mouse_area, row, scrollable, stack, svg, text_input, tooltip, Column, Row, Space};
 use iced::{border, mouse, window, Center, Color, Fill, Padding, Point, Right, Size, Task, Theme};
 use std::sync::Arc;
 
@@ -91,8 +89,7 @@ pub(crate) fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
     let still = |bytes: &[u8]| -> Result<Frames, String> {
         let px = beeper_core::media::decode_upright(bytes).or_else(|e| {
             // Formats the image crate lacks and Chromium shows, like AVIF, through ffmpeg.
-            let png = run_ffmpeg(bytes, &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"])
-                .map_err(|_| e)?;
+            let png = run_ffmpeg(bytes, &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"]).map_err(|_| e)?;
             beeper_core::media::decode_upright(&png)
         })?;
         Ok(Frames::from([(handle(px.into_rgba8()), 0)]))
@@ -153,9 +150,7 @@ pub(crate) fn animation(bytes: &[u8]) -> Option<Result<Vec<(::image::RgbaImage, 
     let r = std::io::Cursor::new(bytes);
     let frames = match kind {
         Animated::Gif => ::image::codecs::gif::GifDecoder::new(r).map(|d| d.into_frames().collect_frames()),
-        Animated::Png => {
-            ::image::codecs::png::PngDecoder::new(r).and_then(|d| d.apng()).map(|d| d.into_frames().collect_frames())
-        }
+        Animated::Png => ::image::codecs::png::PngDecoder::new(r).and_then(|d| d.apng()).map(|d| d.into_frames().collect_frames()),
         Animated::WebP => ::image::codecs::webp::WebPDecoder::new(r).map(|d| d.into_frames().collect_frames()),
     };
     let frames = frames.and_then(|f| f).map_err(|e| format!("Could not decode the animation: {e}"));
@@ -535,9 +530,7 @@ impl BeeperGuiApp {
     fn media_read(&self) -> Task<UiMessage> {
         let w = self.media_window.as_ref().expect("the Media window is open");
         let (store, ask, id) = (self.store.clone(), MediaAsk::of(w), w.id);
-        let read = async move {
-            tokio::task::spawn_blocking(move || media_page(&store.read(), &ask)).await.expect("media page thread")
-        };
+        let read = async move { tokio::task::spawn_blocking(move || media_page(&store.read(), &ask)).await.expect("media page thread") };
         Task::perform(read, move |page| UiMessage::Loaded(loads::Msg::MediaPage(id, page)))
     }
 
@@ -697,15 +690,11 @@ impl BeeperGuiApp {
             Key::Named(Named::Escape) if c.menu.is_some() => self.update(UiMessage::Media(Msg::CarouselMenu(false))),
             Key::Named(Named::Escape) => self.update(UiMessage::Media(Msg::CloseCarousel)),
             Key::Character("f") if mods.is_empty() && video => self.video(video::Msg::Fullscreen),
-            Key::Named(Named::ArrowLeft) if mods.is_empty() && at > 0 => {
-                self.update(UiMessage::Media(Msg::CarouselStep(false)))
-            }
+            Key::Named(Named::ArrowLeft) if mods.is_empty() && at > 0 => self.update(UiMessage::Media(Msg::CarouselStep(false))),
             Key::Named(Named::ArrowRight) if mods.is_empty() && (at + 1 < items.len() || self.more_media(&c)) => {
                 self.update(UiMessage::Media(Msg::CarouselStep(true)))
             }
-            Key::Character("d") if mods.is_empty() => {
-                self.update(UiMessage::Message(message::Msg::Download(c.mid, Some(c.ai))))
-            }
+            Key::Character("d") if mods.is_empty() => self.update(UiMessage::Message(message::Msg::Download(c.mid, Some(c.ai)))),
             Key::Character("r") if mods.is_empty() => self.update(UiMessage::Media(Msg::RotateCarousel)),
             _ => Task::none(),
         }
@@ -725,8 +714,7 @@ impl BeeperGuiApp {
             UiMessage::Commands(vec![UiMessage::Media(Msg::CloseCarousel), start])
         });
         let right = self.pane().size.width - 8.0 - 28.0 * if reply.is_some() { 4.0 } else { 3.0 };
-        let react = (c.messages.react && live)
-            .then(|| UiMessage::Message(message::Msg::ReactAt(m.id.clone(), Point::new(right, 39.0))));
+        let react = (c.messages.react && live).then(|| UiMessage::Message(message::Msg::ReactAt(m.id.clone(), Point::new(right, 39.0))));
         (react, reply)
     }
 
@@ -746,11 +734,10 @@ impl BeeperGuiApp {
         let h24 = st.settings.pref("timeFormat") == 1;
         let white = Color::WHITE;
         // Desktop's carousel controls have a tooltip with their key.
-        let control =
-            |h: &svg::Handle, label: &'static str, key: Vec<&'static str>, msg: Option<UiMessage>| -> El<'a> {
-                let b = button(tinted(h, 20.0, white)).bare(white);
-                self.tip(b.on_press_maybe(msg).into(), label, key, tooltip::Position::Bottom).into()
-            };
+        let control = |h: &svg::Handle, label: &'static str, key: Vec<&'static str>, msg: Option<UiMessage>| -> El<'a> {
+            let b = button(tinted(h, 20.0, white)).bare(white);
+            self.tip(b.on_press_maybe(msg).into(), label, key, tooltip::Position::Bottom).into()
+        };
         let action = |s| trx(s, "attachment carousel action");
         let (face, name) = match car.in_media {
             true => {
@@ -764,29 +751,19 @@ impl BeeperGuiApp {
             .push(face)
             // `.carousel-thread-title` and `.carousel-timestamp` are 14 px and 12 px.
             .push(crate::style::fixed_ell(name, 600.0, 14.0, Weight::Medium).color(white))
-            .push(
-                crate::style::fixed(format_short_ts(&m.timestamp, h24), 12.0, Weight::Normal)
-                    .color(white.scale_alpha(0.7)),
-            )
+            .push(crate::style::fixed(format_short_ts(&m.timestamp, h24), 12.0, Weight::Normal).color(white.scale_alpha(0.7)))
             .spacing(8)
             .align_y(Center);
         let go = car.in_media.then(|| {
-            control(
-                &MEDIA_ICONS[3],
-                tr("Go to Message"),
-                vec![],
-                Some(UiMessage::Message(message::Msg::GoTo(c.id.clone(), mid.into()))),
-            )
+            control(&MEDIA_ICONS[3], tr("Go to Message"), vec![], Some(UiMessage::Message(message::Msg::GoTo(c.id.clone(), mid.into()))))
         });
         // The Media window viewer has Delete when you can delete the message, like Desktop's `MediaViewer`.
-        let delete = (car.in_media && deletable(&st, m)).then(|| {
-            control(&SYS_DELETE, tr("Delete"), vec![], Some(UiMessage::Media(Msg::AskDelete(vec![(mid.into(), ai)]))))
-        });
+        let delete = (car.in_media && deletable(&st, m))
+            .then(|| control(&SYS_DELETE, tr("Delete"), vec![], Some(UiMessage::Media(Msg::AskDelete(vec![(mid.into(), ai)])))));
         // Desktop shows Fullscreen in place of Rotate for a video.
         let turn_or_full = match &video {
             Some((src, _)) => {
-                let full =
-                    self.video.as_ref().filter(|v| v.url == *src).map(|_| UiMessage::Video(video::Msg::Fullscreen));
+                let full = self.video.as_ref().filter(|v| v.url == *src).map(|_| UiMessage::Video(video::Msg::Fullscreen));
                 control(&video::GLYPHS[3], tr("Fullscreen"), vec!["F"], full)
             }
             None => control(&SYS_ROTATE, action("Rotate"), vec!["R"], Some(UiMessage::Media(Msg::RotateCarousel))),
@@ -804,8 +781,7 @@ impl BeeperGuiApp {
             .push(control(&SYS_DOWNLOAD, action("Download"), vec!["D"], download))
             .push(control(&ROW_ACTIONS[6], action("Close"), vec!["Escape"], Some(UiMessage::Media(Msg::CloseCarousel))))
             .spacing(8);
-        let head =
-            stack![container(title).center_x(Fill).center_y(34), container(controls).align_right(Fill).center_y(34)];
+        let head = stack![container(title).center_x(Fill).center_y(34), container(controls).align_right(Fill).center_y(34)];
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
         // Desktop turns the image by a quarter in `.2s` with the CSS `ease` curve.
         let quarter = -std::f32::consts::FRAC_PI_2;
@@ -840,29 +816,21 @@ impl BeeperGuiApp {
                 let shown: El<'a> = match frames {
                     Some(frames) => {
                         let play = self.autoplays(&st);
-                        anim::turning(frames, play, self.started, turn, |f| {
-                            image(f).content_fit(iced::ContentFit::ScaleDown)
-                        })
+                        anim::turning(frames, play, self.started, turn, |f| image(f).content_fit(iced::ContentFit::ScaleDown))
                     }
                     None => Space::new().into(),
                 };
-                container(zoom::zoom(shown, vlist::key((mid, ai)), UiMessage::Media(Msg::CloseCarousel)))
-                    .padding(8)
-                    .into()
+                container(zoom::zoom(shown, vlist::key((mid, ai)), UiMessage::Media(Msg::CloseCarousel))).padding(8).into()
             }
             _ if let Some(url) = a.src_url.as_deref().filter(|_| pdf::is_pdf(a)) => {
                 let (page, controls) = self.view_pdf(url, car.page, turn, self.carousel_area());
                 pages = Some(controls);
-                container(zoom::zoom(page, vlist::key((mid, ai)), UiMessage::Media(Msg::CloseCarousel)))
-                    .padding(8)
-                    .into()
+                container(zoom::zoom(page, vlist::key((mid, ai)), UiMessage::Media(Msg::CloseCarousel))).padding(8).into()
             }
             _ => {
                 let name = txt(crate::message::attachment_name(a), 13.0).color(white);
                 let link = button(name).bare(white);
-                container(link.on_press(UiMessage::Message(message::Msg::Download(mid.to_string(), Some(ai)))))
-                    .center(Fill)
-                    .into()
+                container(link.on_press(UiMessage::Message(message::Msg::Download(mid.to_string(), Some(ai))))).center(Fill).into()
             }
         };
         let step = |next: bool| -> El<'a> {
@@ -871,11 +839,7 @@ impl BeeperGuiApp {
                 .height(20)
                 .rotation(if next { std::f32::consts::PI } else { 0.0 })
                 .style(move |_, _| svg::Style { color: Some(white) });
-            let b = button(container(arrow).center(32)).padding(0).style(btn_style(
-                [Color { a: 0.1, ..p.strong }; 3],
-                [white; 3],
-                32.0,
-            ));
+            let b = button(container(arrow).center(32)).padding(0).style(btn_style([Color { a: 0.1, ..p.strong }; 3], [white; 3], 32.0));
             let (label, key, at) = match next {
                 true => (tr("Next Attachment"), "→", tooltip::Position::Top),
                 false => (tr("Previous Attachment"), "←", tooltip::Position::Bottom),
@@ -937,12 +901,7 @@ impl BeeperGuiApp {
             .push(car.menu.map(|at| self.view_carousel_menu(&st, car, m, c, at)));
         let scrim = container(layer).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.85), 0.0));
         // The carousel hides the window under it from the cursor.
-        Some(
-            mouse_area(scrim)
-                .interaction(mouse::Interaction::Idle)
-                .on_press(UiMessage::Media(Msg::CloseCarousel))
-                .into(),
-        )
+        Some(mouse_area(scrim).interaction(mouse::Interaction::Idle).on_press(UiMessage::Media(Msg::CloseCarousel)).into())
     }
 
     /// Desktop's carousel menu: Download, Copy for an image, and the extra items. In a chat, the extra items are Reply…,
@@ -954,11 +913,8 @@ impl BeeperGuiApp {
         let close = |msg| UiMessage::Commands(vec![UiMessage::Media(Msg::CloseCarousel), msg]);
         let action = |s| trx(s, "attachment carousel context menu action").to_string();
         let image = m.attachments[ai].attachment_type == "img";
-        let mut rows =
-            vec![Some((action("Download"), UiMessage::Message(message::Msg::Download(mid.clone(), Some(ai)))))];
-        rows.extend(
-            image.then(|| Some((action("Copy"), UiMessage::Message(message::Msg::CopyImage(mid.clone(), ai))))),
-        );
+        let mut rows = vec![Some((action("Download"), UiMessage::Message(message::Msg::Download(mid.clone(), Some(ai)))))];
+        rows.extend(image.then(|| Some((action("Copy"), UiMessage::Message(message::Msg::CopyImage(mid.clone(), ai))))));
         let deletable = deletable(st, m);
         let (first, delete) = match car.in_media {
             true => (
@@ -968,10 +924,7 @@ impl BeeperGuiApp {
             false => {
                 let (react, reply) = self.carousel_actions(car, m, c);
                 // Desktop forwards only from the window of the chat, not from a "Media in %s" window.
-                let forward = self
-                    .drawn_opener()
-                    .is_none()
-                    .then(|| close(UiMessage::Forward(forward::Msg::Open(vec![mid.clone()]))));
+                let forward = self.drawn_opener().is_none().then(|| close(UiMessage::Forward(forward::Msg::Open(vec![mid.clone()]))));
                 let first = [(tr("Reply…"), reply), (tr("React…"), react), (tr("Forward…"), forward)];
                 let first = first.into_iter().filter_map(|(label, msg)| msg.map(|msg| (label.to_string(), msg)));
                 let delete = close(UiMessage::Message(message::Msg::AskDelete(vec![mid.clone()])));
@@ -1062,10 +1015,7 @@ impl BeeperGuiApp {
             tip(self.media_control(search_icon, 18.0, w.search.is_some(), search), tr("Search")),
         ]
         .spacing(4);
-        container(row![tabs, Space::new().width(Fill), controls].spacing(8).align_y(Center))
-            .padding([8, 10])
-            .center_y(52)
-            .into()
+        container(row![tabs, Space::new().width(Fill), controls].spacing(8).align_y(Center)).padding([8, 10]).center_y(52).into()
     }
 
     /// The caption search field of the Media window, with its Close button.
@@ -1116,18 +1066,13 @@ impl BeeperGuiApp {
             row.padding(Padding::new(0.0).bottom(4.0).left(10.0).right(10.0)).into()
         };
         let body = body.push(end).extend((0..skeletons).map(skeleton));
-        scrollable(body.push(Space::new().height(MEDIA_END)))
-            .direction(bar())
-            .height(Fill)
-            .style(scroll_style(p.scroll))
-            .into()
+        scrollable(body.push(Space::new().height(MEDIA_END))).direction(bar()).height(Fill).style(scroll_style(p.scroll)).into()
     }
 
     /// The items of the Media window by Desktop's groups of days, each under its label and its dates: rows of
     /// `cols` tiles on the Media tab, else a row for each link or file.
     fn media_groups<'a>(
-        &'a self, st: &BeeperStore, w: &MediaWindow, groups: &[(String, Vec<(&Message, usize)>)], cols: usize,
-        tile: f32,
+        &'a self, st: &BeeperStore, w: &MediaWindow, groups: &[(String, Vec<(&Message, usize)>)], cols: usize, tile: f32,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
         groups.iter().fold(Column::new(), |col, (label, group)| {
@@ -1141,10 +1086,7 @@ impl BeeperGuiApp {
             match w.tab {
                 0 => group.chunks(cols).fold(col, |col, chunk| {
                     let tiles = chunk.iter().map(|&(m, k)| self.media_tile(st, w, m, k, tile));
-                    col.push(
-                        container(Row::with_children(tiles).spacing(4))
-                            .padding(Padding::new(0.0).bottom(4.0).left(10.0).right(10.0)),
-                    )
+                    col.push(container(Row::with_children(tiles).spacing(4)).padding(Padding::new(0.0).bottom(4.0).left(10.0).right(10.0)))
                 }),
                 _ => group.iter().fold(col, |col, &(m, k)| col.push(self.media_row(st, w, m, k))),
             }
@@ -1192,8 +1134,7 @@ impl BeeperGuiApp {
         .align_bottom(Fill);
         let on = w.is_picked(&m.id, k);
         let mark = w.select.then(|| container(self.media_check(on)).align_right(Fill).padding(4));
-        let ring =
-            on.then(|| container(Space::new()).width(Fill).height(Fill).style(bordered_box(CLEAR, p.accent, 2.0, 8.0)));
+        let ring = on.then(|| container(Space::new()).width(Fill).height(Fill).style(bordered_box(CLEAR, p.accent, 2.0, 8.0)));
         let face = stack![self.thumb(a, tile, 8.0)].push(badge).push(name).push(mark).push(ring);
         let face = face.width(tile).height(tile);
         let open = match w.select || self.mods.control() {
@@ -1210,21 +1151,17 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let text_w = w.size.width - 16.0 - 20.0 - 48.0 - 8.0 - 150.0;
         let sub = |s: String| txt(s, 11.0).color(p.on_secondary);
-        let icon = |glyph, size| -> El<'a> {
-            container(tinted(glyph, size, p.on_secondary)).center(40).style(fill_box(p.chip, 8.0)).into()
-        };
+        let icon =
+            |glyph, size| -> El<'a> { container(tinted(glyph, size, p.on_secondary)).center(40).style(fill_box(p.chip, 8.0)).into() };
         let (thumb, title, line, press) = match w.tab {
             // Desktop's link thumb: the preview image of the link, or the link icon.
             1 => {
                 let l = &m.links[k];
                 let title = crate::links::shown_title(l);
                 let thumb = match l.img.as_deref().map(|u| self.media_at(u)) {
-                    Some(Some(Ok(frames))) => image(frames[0].0.clone())
-                        .width(40)
-                        .height(40)
-                        .content_fit(iced::ContentFit::Cover)
-                        .border_radius(8.0)
-                        .into(),
+                    Some(Some(Ok(frames))) => {
+                        image(frames[0].0.clone()).width(40).height(40).content_fit(iced::ContentFit::Cover).border_radius(8.0).into()
+                    }
                     Some(_) => container(Space::new()).width(40).height(40).style(fill_box(p.chip, 8.0)).into(),
                     None => icon(&MEDIA_ICONS[2], 16.0),
                 };
@@ -1296,25 +1233,18 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let (mid, k, at) = w.item_menu.as_ref()?;
         let m = w.message(mid)?;
-        let act = |label: &str, msg| {
-            menu_item(p, None, label.into(), "", Some(UiMessage::Media(Msg::ItemAct(Box::new(msg)))))
-        };
+        let act = |label: &str, msg| menu_item(p, None, label.into(), "", Some(UiMessage::Media(Msg::ItemAct(Box::new(msg)))));
         let go = act(tr("Go to Message"), UiMessage::Message(message::Msg::GoTo(m.chat_id.clone(), mid.clone())));
         let mut actions = match w.tab {
             1 => vec![act(tr("Copy Link"), UiMessage::Message(message::Msg::CopyLink(m.links[*k].url.clone())))],
-            _ => {
-                std::iter::once(act(tr("Download"), UiMessage::Message(message::Msg::Download(mid.clone(), Some(*k)))))
-                    .chain(
-                        (m.attachments[*k].attachment_type == "img").then(|| {
-                            act(tr("Copy Image"), UiMessage::Message(message::Msg::CopyImage(mid.clone(), *k)))
-                        }),
-                    )
-                    .collect()
-            }
+            _ => std::iter::once(act(tr("Download"), UiMessage::Message(message::Msg::Download(mid.clone(), Some(*k)))))
+                .chain(
+                    (m.attachments[*k].attachment_type == "img")
+                        .then(|| act(tr("Copy Image"), UiMessage::Message(message::Msg::CopyImage(mid.clone(), *k)))),
+                )
+                .collect(),
         };
-        actions.extend(
-            deletable(st, m).then(|| act(tr("Delete…"), UiMessage::Media(Msg::AskDelete(vec![(mid.clone(), *k)])))),
-        );
+        actions.extend(deletable(st, m).then(|| act(tr("Delete…"), UiMessage::Media(Msg::AskDelete(vec![(mid.clone(), *k)])))));
         let h = 8.0 + menu_pitch() * (1 + actions.len()) as f32 + 11.0;
         let col = Column::with_children([go, menu_rule(p)].into_iter().chain(actions));
         let menu = crate::menu_card(p, col, 180);
@@ -1357,12 +1287,7 @@ impl BeeperGuiApp {
     fn media_delete_ask<'a>(&'a self, n: usize) -> El<'a> {
         let body = match n {
             1 => tr("Are you sure you want to delete this message?").to_string(),
-            _ => trn(
-                "Are you sure you want to delete %d message?",
-                "Are you sure you want to delete %d messages?",
-                n,
-                &[&n],
-            ),
+            _ => trn("Are you sure you want to delete %d message?", "Are you sure you want to delete %d messages?", n, &[&n]),
         };
         let title = trn("Delete message", "Delete messages", n, &[]);
         self.dialog(
@@ -1606,9 +1531,7 @@ impl BeeperGuiApp {
                 let w = self.media_window.as_ref().expect("the Media window is open");
                 let files = if w.tab == 1 { Vec::new() } else { w.picked.clone() };
                 return Task::batch(
-                    files
-                        .into_iter()
-                        .map(|(mid, k)| self.update(UiMessage::Message(message::Msg::Download(mid, Some(k))))),
+                    files.into_iter().map(|(mid, k)| self.update(UiMessage::Message(message::Msg::Download(mid, Some(k))))),
                 );
             }
             Msg::AskDelete(items) => {
@@ -1637,12 +1560,8 @@ impl BeeperGuiApp {
                     }
                     drop(st);
                     if skipped > 0 {
-                        self.status_banner = trn(
-                            "Skipped %d item that can’t be deleted",
-                            "Skipped %d items that can’t be deleted",
-                            skipped,
-                            &[&skipped],
-                        );
+                        self.status_banner =
+                            trn("Skipped %d item that can’t be deleted", "Skipped %d items that can’t be deleted", skipped, &[&skipped]);
                     }
                     // Desktop's `removeItems`: the viewer of a deleted item shows the item that takes its place.
                     let gone = |m: &str| pairs.iter().any(|(_, x)| x == m);
@@ -1746,11 +1665,8 @@ mod tests {
         let mut st = app.store.write();
         let base = st.messages[*st.timeline_indices(note).last().expect("a note")].clone();
         for i in 0..n {
-            let a = Attachment {
-                attachment_type: "img".into(),
-                src_url: Some(format!("https://example.com/{i}.png")),
-                ..Default::default()
-            };
+            let a =
+                Attachment { attachment_type: "img".into(), src_url: Some(format!("https://example.com/{i}.png")), ..Default::default() };
             let timestamp = rfc3339_from_millis(1_800_000_000_000 + i as i64 * 60_000);
             let (id, sort_key, text) = (format!("$page{i:03}"), format!("{:016}", 9_000_000 + i), text(i));
             let links = Vec::new();
@@ -1845,8 +1761,7 @@ mod tests {
         let _ = app.update(UiMessage::Media(Msg::OpenCarousel("$page000".into(), 0, false)));
         let _ = app.update(UiMessage::Window(windows::Msg::OpenChat(note.into())));
         let chat = app.chat_windows[0].0;
-        let in_chat =
-            |app: &mut BeeperGuiApp, m| drop(app.update(UiMessage::InWindow(chat, Box::new(UiMessage::Media(m)))));
+        let in_chat = |app: &mut BeeperGuiApp, m| drop(app.update(UiMessage::InWindow(chat, Box::new(UiMessage::Media(m)))));
         in_chat(&mut app, Msg::OpenCarousel("$page002".into(), 0, false));
         let _ = app.update(UiMessage::Media(Msg::Open));
         let media = app.media_window.as_ref().unwrap().id;
@@ -1896,11 +1811,7 @@ mod tests {
         fn pane(app: &BeeperGuiApp, id: window::Id) -> &crate::Pane {
             &app.chat_windows.iter().find(|w| w.0 == id).expect("the window").1
         }
-        assert_eq!(
-            pane(&app, id).size,
-            Size::new(800.0, 700.0),
-            "at least 800 by 600 and the size of the thread window"
-        );
+        assert_eq!(pane(&app, id).size, Size::new(800.0, 700.0), "at least 800 by 600 and the size of the thread window");
         let title = {
             let st = app.store.read();
             st.chats[st.resolve_chat_idx(note).unwrap()].title.clone()
@@ -1944,8 +1855,7 @@ mod tests {
         let _ = app.update(UiMessage::Loaded(loads::Msg::Media(url.clone(), Err(reload))));
         let _ = app.update(UiMessage::Media(Msg::OpenCarousel("$page000".into(), 0, false)));
         let fetches = |app: &BeeperGuiApp| {
-            let mut sim =
-                simulator(app.view_carousel(app.pane.carousel.as_ref().expect("the carousel is open")).unwrap());
+            let mut sim = simulator(app.view_carousel(app.pane.carousel.as_ref().expect("the carousel is open")).unwrap());
             let _ = sim.click("phone.jpg");
             let fetch = |m| matches!(m, UiMessage::Loaded(loads::Msg::Fetch(ref u)) if *u == url);
             sim.into_messages().any(fetch)

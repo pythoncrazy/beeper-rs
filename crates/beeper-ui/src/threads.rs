@@ -5,13 +5,11 @@ use crate::chat_list::preview_body;
 use crate::commands;
 use crate::i18n::{tr, trf, trn};
 use crate::message;
-use crate::style::{
-    bordered_btn, brand_svg, btn_style, ell, fill_box, ic, icon, lh, pad, scroll_style, semi, txt, CLEAR,
-};
+use crate::style::{bordered_btn, brand_svg, btn_style, ell, fill_box, ic, icon, lh, pad, scroll_style, semi, txt, CLEAR};
 use crate::time::format_short_ts;
 use crate::{
-    activates, brand_key, composer_with, membership, menu_item, menu_pitch, menu_rule, tinted, BeeperGuiApp, El, Pane,
-    UiMessage, BUBBLE_PAD_X, CHEVRON_FORWARD, MIN_PANE_W,
+    activates, brand_key, composer_with, membership, menu_item, menu_pitch, menu_rule, tinted, BeeperGuiApp, El, Pane, UiMessage,
+    BUBBLE_PAD_X, CHEVRON_FORWARD, MIN_PANE_W,
 };
 use beeper_core::models::*;
 use beeper_core::store::BeeperStore;
@@ -81,8 +79,7 @@ impl BeeperGuiApp {
     pub(crate) fn mark_thread_read(&mut self) {
         self.pane.thread_menu = None;
         let thread = self.pane.thread.as_ref().expect("a thread pane");
-        let (chat, root) =
-            (thread.selected_chat_id.clone().expect("a chat"), thread.thread_root.clone().expect("a root"));
+        let (chat, root) = (thread.selected_chat_id.clone().expect("a chat"), thread.thread_root.clone().expect("a root"));
         let mut st = self.store.write();
         let cid = st.chats[st.resolve_chat_idx(&chat).expect("a known chat")].id.clone();
         st.mark_thread_read(&cid, &root, None);
@@ -128,8 +125,7 @@ impl BeeperGuiApp {
         let cid = self.pane().selected_chat_id.as_deref().expect("a thread window has a chat");
         let title = st.resolve_chat_idx(cid).map_or("Beeper".into(), |i| st.chats[i].title.clone());
         drop(st);
-        let title =
-            semi(trf("Thread in %s", &[&title]), 14.0).color(p.text).wrapping(iced::widget::text::Wrapping::None);
+        let title = semi(trf("Thread in %s", &[&title]), 14.0).color(p.text).wrapping(iced::widget::text::Wrapping::None);
         let header = container(title).center_x(Fill).center_y(36).padding([0, 4]).clip(true);
         stack![self.view_conversation(), header].into()
     }
@@ -209,15 +205,11 @@ impl BeeperGuiApp {
     pub(crate) fn view_split(&self, area: f32, pad: Padding) -> El<'_> {
         self.thread_area.set(area);
         let w = (self.thread_fraction * (area - THREAD_GRIP)).min(area - THREAD_GRIP - MIN_PANE_W).max(MIN_PANE_W);
-        let line = self
-            .thread_drag
-            .then(|| container(Space::new()).width(2).height(Fill).style(fill_box(self.pal.accent, 0.0)));
-        let grip = mouse_area(
-            container(row![Space::new().width(THREAD_GRIP - 2.0)].push(line)).width(THREAD_GRIP).height(Fill),
-        )
-        .on_press(UiMessage::Thread(Msg::Drag(None)))
-        .on_double_click(UiMessage::Thread(Msg::ResetWidth))
-        .interaction(mouse::Interaction::ResizingHorizontally);
+        let line = self.thread_drag.then(|| container(Space::new()).width(2).height(Fill).style(fill_box(self.pal.accent, 0.0)));
+        let grip = mouse_area(container(row![Space::new().width(THREAD_GRIP - 2.0)].push(line)).width(THREAD_GRIP).height(Fill))
+            .on_press(UiMessage::Thread(Msg::Drag(None)))
+            .on_double_click(UiMessage::Thread(Msg::ResetWidth))
+            .interaction(mouse::Interaction::ResizingHorizontally);
         let chat = container(self.view_conversation()).padding(pad.right(0.0)).width(Fill);
         row![chat, grip, container(self.view_thread_pane()).width(w + 8.0).padding(Padding::new(8.0).left(0.0))].into()
     }
@@ -251,8 +243,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_thread_menu(&self, at: Point) -> (El<'_>, f32, f32) {
         let p = &self.pal;
         let thread = self.pane().thread.as_deref().expect("a thread pane");
-        let (cid, root) =
-            (thread.selected_chat_id.clone().expect("a chat"), thread.thread_root.clone().expect("a root"));
+        let (cid, root) = (thread.selected_chat_id.clone().expect("a chat"), thread.thread_root.clone().expect("a root"));
         let st = self.store.read();
         let chat = &st.chats[st.resolve_chat_idx(&cid).expect("a known chat")];
         let (unread, follow) = (st.thread_unread(chat, &root).0 > 0, self.follow_item(&st, chat, &root));
@@ -264,17 +255,11 @@ impl BeeperGuiApp {
         ]);
         let read = unread.then(|| {
             [
-                (
-                    menu_item(p, None, tr("Mark as Read").into(), "", Some(UiMessage::Thread(Msg::MarkRead))),
-                    menu_pitch(),
-                ),
+                (menu_item(p, None, tr("Mark as Read").into(), "", Some(UiMessage::Thread(Msg::MarkRead))), menu_pitch()),
                 (menu_rule(p), 11.0),
             ]
         });
-        let window = UiMessage::Commands(vec![
-            UiMessage::Thread(Msg::Hide),
-            UiMessage::Thread(Msg::OpenWindow(cid.clone(), root.clone())),
-        ]);
+        let window = UiMessage::Commands(vec![UiMessage::Thread(Msg::Hide), UiMessage::Thread(Msg::OpenWindow(cid.clone(), root.clone()))]);
         let rows: Vec<(El, f32)> = read
             .into_iter()
             .flatten()
@@ -294,14 +279,11 @@ impl BeeperGuiApp {
     pub(crate) fn unread_threads_pill<'a>(&'a self, st: &BeeperStore, threads: &[(usize, String)]) -> El<'a> {
         let p = &self.pal;
         // The mentions of a thread read SQLite, so they are kept until the store changes.
-        let mentions =
-            |i: usize, r: &str| self.count(&format!("thread mentions {i} {r}"), || st.thread_unread(&st.chats[i], r).1);
+        let mentions = |i: usize, r: &str| self.count(&format!("thread mentions {i} {r}"), || st.thread_unread(&st.chats[i], r).1);
         let at = threads.iter().any(|(i, r)| mentions(*i, r) > 0);
-        let count = row![]
-            .push(at.then(|| semi("@", 10.0).color(Color::WHITE)))
-            .push(semi(threads.len().to_string(), 10.0).color(Color::WHITE));
         let count =
-            container(count.spacing(2).align_y(Center)).center_y(16).padding([0, 5]).style(fill_box(p.accent, 16.0));
+            row![].push(at.then(|| semi("@", 10.0).color(Color::WHITE))).push(semi(threads.len().to_string(), 10.0).color(Color::WHITE));
+        let count = container(count.spacing(2).align_y(Center)).center_y(16).padding([0, 5]).style(fill_box(p.accent, 16.0));
         let label = container(semi(tr("Unread threads"), 13.0).color(p.text)).width(Fill);
         let bg = if self.unread_view { p.selected } else { CLEAR };
         let edge = if self.unread_view { CLEAR } else { p.divider };
@@ -313,13 +295,7 @@ impl BeeperGuiApp {
         let pill = mouse_area(pill).on_right_press(UiMessage::Thread(Msg::UnreadMenu(true)));
         // A `<button>` of Desktop, whose focus does not show.
         let keys = crate::focus::Keys::press(UiMessage::Thread(Msg::ShowUnread));
-        let pill = self.target(
-            self.drawing.get().or(self.main_window),
-            "unread-threads",
-            pill,
-            keys,
-            crate::focus::Look::Hidden,
-        );
+        let pill = self.target(self.drawing.get().or(self.main_window), "unread-threads", pill, keys, crate::focus::Look::Hidden);
         container(pill).padding([4, 0]).into()
     }
 
@@ -342,29 +318,21 @@ impl BeeperGuiApp {
         let threads = self.unread_threads(&st, true);
         let open = self.pane.thread.as_ref().map(|t| (t.selected_chat_id.clone(), t.thread_root.clone()));
         let title = semi(tr("Unread threads"), 14.0).line_height(lh(18.0)).color(p.text);
-        let count = (!threads.is_empty())
-            .then(|| container(semi(threads.len().to_string(), 14.0).color(p.tertiary)).padding([0, 6]));
+        let count = (!threads.is_empty()).then(|| container(semi(threads.len().to_string(), 14.0).color(p.tertiary)).padding([0, 6]));
         let header = row![container(title).width(Fill)].push(count).align_y(Center).padding([12, 16]);
-        let empty =
-            threads.is_empty().then(|| container(txt(tr("You’re all caught up."), 13.0).color(p.sub)).padding([0, 16]));
+        let empty = threads.is_empty().then(|| container(txt(tr("You’re all caught up."), 13.0).color(p.sub)).padding([0, 16]));
         let cards = threads.iter().map(|(i, root)| {
             let chat = &st.chats[*i];
-            let selected =
-                open.as_ref().is_some_and(|(c, r)| c.as_deref() == Some(&chat.id) && r.as_deref() == Some(root));
+            let selected = open.as_ref().is_some_and(|(c, r)| c.as_deref() == Some(&chat.id) && r.as_deref() == Some(root));
             self.unread_thread_card(&st, chat, root, selected)
         });
-        let list = scrollable(Column::with_children(cards).padding(Padding::new(8.0).top(0.0)))
-            .height(Fill)
-            .style(scroll_style(p.scroll));
+        let list = scrollable(Column::with_children(cards).padding(Padding::new(8.0).top(0.0))).height(Fill).style(scroll_style(p.scroll));
         drop(st);
         let view = column![header].push(empty).push(list);
         let view = container(view).width(Fill).height(Fill).style(fill_box(p.card, 10.0));
         let pane: El<'_> = match self.pane.thread.is_some() {
             true => self.view_thread_pane(),
-            false => container(txt(tr("Select a thread"), 13.0).color(p.sub))
-                .center(Fill)
-                .style(fill_box(p.card, 10.0))
-                .into(),
+            false => container(txt(tr("Select a thread"), 13.0).color(p.sub)).center(Fill).style(fill_box(p.card, 10.0)).into(),
         };
         row![view, container(pane).width(Fill)].spacing(THREAD_GRIP).into()
     }
@@ -377,11 +345,7 @@ impl BeeperGuiApp {
         let read = chat.thread_reads.get(root).cloned().unwrap_or_default();
         // Desktop's `unreadSenderIDs`: the senders of the unread replies, the newest first.
         let mut senders: Vec<&str> = Vec::new();
-        for m in replies
-            .iter()
-            .rev()
-            .filter(|m| m.sort_key > read && m.is_sender != Some(true) && m.is_deleted != Some(true))
-        {
+        for m in replies.iter().rev().filter(|m| m.sort_key > read && m.is_sender != Some(true) && m.is_deleted != Some(true)) {
             if !senders.contains(&m.sender_id.as_str()) {
                 senders.push(&m.sender_id);
             }
@@ -403,14 +367,11 @@ impl BeeperGuiApp {
             .first()
             .and_then(|id| user(id))
             .map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or(&u.id), 32.0, 0.5));
-        let avatars = row![self.chat_avatar(chat, 32.0, 0.0)]
-            .push(first.map(|f| container(f).padding(Padding::ZERO.left(-8.0))))
-            .width(56);
+        let avatars = row![self.chat_avatar(chat, 32.0, 0.0)].push(first.map(|f| container(f).padding(Padding::ZERO.left(-8.0)))).width(56);
         let message = |m: Option<&Message>| m.and_then(preview_body).unwrap_or_else(|| tr("Message").into());
         let root_text = message(st.stored_message(root).as_ref());
         let time = txt(format_short_ts(&newest.timestamp, st.settings.pref("timeFormat") == 1), 11.0).color(p.sub);
-        let top =
-            row![ell(&repliers, 180.0, 13.0, Weight::Normal).color(p.sub), Space::new().width(Fill), time].spacing(8);
+        let top = row![ell(&repliers, 180.0, 13.0, Weight::Normal).color(p.sub), Space::new().width(Fill), time].spacing(8);
         let badge = thread_badge(p.accent, unread, at);
         let icon = svg(brand_svg(brand_key(&chat.account_id))).width(16).height(16);
         let line = row![
@@ -445,8 +406,7 @@ impl BeeperGuiApp {
             .iter()
             .filter(|m| seen.insert(m.sender_id.as_str()))
             .filter_map(|m| chat.participants.items.iter().find(|u| u.id == m.sender_id));
-        let faces =
-            faces.take(3).map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or(&u.id), 16.0, 0.5));
+        let faces = faces.take(3).map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or(&u.id), 16.0, 0.5));
         let n = replies.len();
         let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).line_height(lh(15.0)).color(p.text);
         let (unread, at) = if st.follows_thread(chat, root) { st.thread_unread(chat, root) } else { (0, 0) };
@@ -467,14 +427,8 @@ impl BeeperGuiApp {
         let preview = st.loaded_idx(root).and_then(|i| preview_body(&st.messages[i])).unwrap_or_default();
         let label = format!("{} ", tr("Replying to:"));
         let room = 300.0 - 2.0 * BUBBLE_PAD_X - crate::style::text_width(&label, 11.0, Weight::Semibold);
-        let line = row![
-            semi(label, 11.0).color(p.sub),
-            ell(&preview, room, 11.0, Weight::Normal).line_height(lh(14.0)).color(p.sub)
-        ];
-        let line = container(line)
-            .max_width(300)
-            .clip(true)
-            .padding(Padding::new(0.0).left(BUBBLE_PAD_X).right(BUBBLE_PAD_X).bottom(2.0));
+        let line = row![semi(label, 11.0).color(p.sub), ell(&preview, room, 11.0, Weight::Normal).line_height(lh(14.0)).color(p.sub)];
+        let line = container(line).max_width(300).clip(true).padding(Padding::new(0.0).left(BUBBLE_PAD_X).right(BUBBLE_PAD_X).bottom(2.0));
         let line = mouse_area(line).on_press(UiMessage::Thread(Msg::Show(root.into())));
         container(line).width(Fill).align_x(if mine { Right } else { iced::Left }).into()
     }

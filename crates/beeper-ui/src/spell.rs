@@ -25,9 +25,7 @@ pub fn load(custom: PathBuf) {
             let read = |ext| std::fs::read_to_string(format!("{dir}/{lang}.{ext}")).ok();
             Some((read("aff")?, read("dic")?))
         })?;
-        let mut dict = spellbook::Dictionary::new(&found.0, &found.1)
-            .map_err(|e| eprintln!("spellcheck dictionary {lang}: {e}"))
-            .ok()?;
+        let mut dict = spellbook::Dictionary::new(&found.0, &found.1).map_err(|e| eprintln!("spellcheck dictionary {lang}: {e}")).ok()?;
         for word in std::fs::read_to_string(&custom).unwrap_or_default().lines() {
             dict.add(word).expect("a learned word has no flags");
         }
@@ -72,8 +70,7 @@ pub fn misspelled(text: &str, caret: usize) -> Vec<Range<usize>> {
 mod tests {
     #[test]
     fn finds_misspelled_words() {
-        let dict =
-            spellbook::Dictionary::new("SET UTF-8\nTRY esianrtolcdugmphbyfvkwz\n", "3\nhello\nworld\nit's\n").unwrap();
+        let dict = spellbook::Dictionary::new("SET UTF-8\nTRY esianrtolcdugmphbyfvkwz\n", "3\nhello\nworld\nit's\n").unwrap();
         let custom = std::env::temp_dir().join(format!("beeper-rs-spell-{}.txt", std::process::id()));
         assert!(super::DICT.set(Some((dict.into(), super::script("3\nhello\n"), custom.clone()))).is_ok());
         let text = "hello wrold, it's https://x.io @bob wrold 日本語の 한국어 привет teh";

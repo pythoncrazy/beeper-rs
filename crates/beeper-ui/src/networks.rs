@@ -82,8 +82,7 @@ pub fn entries(st: &BeeperStore) -> Vec<Entry<'_>> {
     let out = f.accounts_remaining() == 0;
     addable(f)
         .map(|n| {
-            let accounts: Vec<_> =
-                st.bridge_accounts.iter().filter(|a| account_network(&a.bridge_id).bridge_id == n.bridge_id).collect();
+            let accounts: Vec<_> = st.bridge_accounts.iter().filter(|a| account_network(&a.bridge_id).bridge_id == n.bridge_id).collect();
             let bridge = cloud_bridge(n).filter(|b| accounts.is_empty() || f.multi_account(b));
             let capped = bridge.is_some() && f.plan_capped(n);
             let open = bridge.filter(|_| !capped);
@@ -167,9 +166,7 @@ impl BeeperGuiApp {
         let q = query.trim().to_lowercase();
         let entries = entries(st);
         if !q.is_empty() {
-            let hits = entries
-                .iter()
-                .filter(|e| e.network.display_name.to_lowercase().contains(&q) || e.network.bridge_id.contains(&q));
+            let hits = entries.iter().filter(|e| e.network.display_name.to_lowercase().contains(&q) || e.network.bridge_id.contains(&q));
             let rows: Vec<El<'_>> = hits.map(|e| self.network_row(e)).collect();
             if rows.is_empty() {
                 let empty = txt(tr("No networks found"), 12.0).color(p.sub);
@@ -206,30 +203,20 @@ impl BeeperGuiApp {
             (true, true) => None,
         };
         let tile = button(tile).bare(p.fg).padding(8).width(75).on_press_maybe(press.map(UiMessage::Networks));
-        let tip = container(txt(e.tip(), 13.0).color(p.strong))
-            .padding([6, 12])
-            .style(shadow_box(p.elevated, p.chip, 16.0, 10.0));
+        let tip = container(txt(e.tip(), 13.0).color(p.strong)).padding([6, 12]).style(shadow_box(p.elevated, p.chip, 16.0, 10.0));
         let chip = (!e.accounts.is_empty()).then(|| {
             // Desktop's `networkTileAvatars`: each photo 4 px over the next one, the first on top.
             let n = e.accounts.len().min(FACES);
             let faces = e.accounts[..n].iter().enumerate().rev().map(|(i, a)| {
                 let r = a.remote_profile.as_ref();
-                let face = self.face(
-                    r.and_then(|r| r.avatar.as_deref()),
-                    r.and_then(|r| r.name.as_deref()).unwrap_or(""),
-                    12.0,
-                    0.0,
-                );
+                let face = self.face(r.and_then(|r| r.avatar.as_deref()), r.and_then(|r| r.name.as_deref()).unwrap_or(""), 12.0, 0.0);
                 pin(face).x(i as f32 * 8.0).into()
             });
             let faces = Stack::with_children(faces).width(12.0 + (n - 1) as f32 * 8.0).height(12);
             let add = (!e.blocked()).then(|| ic(icon::PLUS, 10.0).color(p.fg));
             let fill = Color { a: if self.dark { 0.1 } else { 0.06 }, ..p.fg };
             let chip = row![faces].push(add).spacing(2).align_y(Center);
-            button(chip)
-                .padding(2)
-                .style(btn_style([fill; 3], [p.fg; 3], 999.0))
-                .on_press(UiMessage::Networks(Msg::Menu(Some(id))))
+            button(chip).padding(2).style(btn_style([fill; 3], [p.fg; 3], 999.0)).on_press(UiMessage::Networks(Msg::Menu(Some(id))))
         });
         column![tooltip(tile, tip, tooltip::Position::Bottom)].push(chip).align_x(Center).into()
     }
@@ -281,10 +268,8 @@ impl BeeperGuiApp {
         let items = Column::with_children(rows).push(menu_rule(p)).push(add);
         let menu = crate::menu_card(p, items, MENU_W);
         let close = UiMessage::Networks(Msg::Menu(None));
-        let layer = container(mouse_area(menu).on_press(UiMessage::Noop))
-            .padding(Padding::ZERO.left(at.x).top(at.y))
-            .width(Fill)
-            .height(Fill);
+        let layer =
+            container(mouse_area(menu).on_press(UiMessage::Noop)).padding(Padding::ZERO.left(at.x).top(at.y)).width(Fill).height(Fill);
         Some(crate::backdrop(layer).on_press(close.clone()).on_right_press(close).into())
     }
 
@@ -321,9 +306,7 @@ impl BeeperGuiApp {
         let card = container(column![search, rule, list]).height(Fill).style(fill_box(p.card, 12.0));
         let page = column![head, card].push(self.view_accounts_footer(&st)).padding(8);
         drop(st);
-        stack![container(page).width(Fill).height(Fill).style(fill_box(p.chip, 0.0))]
-            .push(self.view_network_menu())
-            .into()
+        stack![container(page).width(Fill).height(Fill).style(fill_box(p.chip, 0.0))].push(self.view_network_menu()).into()
     }
 }
 

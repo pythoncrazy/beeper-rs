@@ -18,13 +18,8 @@ const STEP: Duration = Duration::from_micros(16_667);
 /// canvas-confetti's default colors.
 const COLORS: [u32; 7] = [0x26ccff, 0xa25afd, 0xff5e7e, 0x88ff5a, 0xfcff42, 0xffa62d, 0xff36ff];
 /// Desktop's bursts from each corner: the part of 100 pieces, the spread, the start velocity and the scale.
-const BURSTS: [(f32, f32, f32, f32); 5] = [
-    (10.0, 26.0, 80.0, 1.0),
-    (12.0, 60.0, 50.0, 1.0),
-    (15.0, 100.0, 60.0, 0.8),
-    (8.0, 120.0, 80.0, 1.2),
-    (9.0, 120.0, 45.0, 1.0),
-];
+const BURSTS: [(f32, f32, f32, f32); 5] =
+    [(10.0, 26.0, 80.0, 1.0), (12.0, 60.0, 50.0, 1.0), (15.0, 100.0, 60.0, 0.8), (8.0, 120.0, 80.0, 1.2), (9.0, 120.0, 45.0, 1.0)];
 
 #[derive(Debug, Clone)]
 struct Piece {
@@ -68,8 +63,7 @@ fn scale(width: f32) -> f64 {
 impl Confetti {
     /// Fires the bursts of Desktop over an area of `size`.
     pub(crate) fn fire(size: Size) -> Self {
-        let seed =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
         Self { started: Instant::now(), steps: 0, size, pieces: Vec::new(), seed: seed | 1 }
     }
 
@@ -201,8 +195,8 @@ impl<M> Widget<M, Theme, iced::Renderer> for Layer<'_> {
     }
 
     fn draw(
-        &self, _: &widget::Tree, renderer: &mut iced::Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>,
-        _: mouse::Cursor, viewport: &Rectangle,
+        &self, _: &widget::Tree, renderer: &mut iced::Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>, _: mouse::Cursor,
+        viewport: &Rectangle,
     ) {
         use iced::advanced::Renderer as _;
         let origin = layout.bounds().position();
@@ -233,11 +227,7 @@ mod tests {
         c.advance_to(Duration::from_millis(800));
         let higher = c.boxes().map(|b| b.0.y).fold(f32::MAX, f32::min);
         assert!(higher < high - 300.0, "the pieces fly up: {high} then {higher}");
-        assert!(c.boxes().all(|(_, _, color)| COLORS.iter().any(|&h| Color::from_rgb8(
-            (h >> 16) as u8,
-            (h >> 8) as u8,
-            h as u8
-        ) == color)));
+        assert!(c.boxes().all(|(_, _, color)| COLORS.iter().any(|&h| Color::from_rgb8((h >> 16) as u8, (h >> 8) as u8, h as u8) == color)));
         c.advance_to(Duration::from_secs(8));
         assert_eq!(c.count(), 0, "all fell off the bottom");
         let mut wide = Confetti::fire(Size::new(1600.0, 800.0));

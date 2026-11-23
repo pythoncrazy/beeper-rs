@@ -123,9 +123,7 @@ fn state_path(rest: &[&str]) -> Result<Option<(String, String)>, Response> {
 
 /// The routes of the proxy, after `requireAuth`. The router decoded the parameters, which are never empty, so the
 /// `M_UNRECOGNIZED` of Desktop's `ge` for a missing parameter does not happen.
-pub(super) fn handle(
-    store: &SharedStore, method: &str, segs: &[&str], query: &Map<String, Value>, msg: &HttpMessage,
-) -> Reply {
+pub(super) fn handle(store: &SharedStore, method: &str, segs: &[&str], query: &Map<String, Value>, msg: &HttpMessage) -> Reply {
     let (c, user) = {
         let st = store.read();
         (st.matrix.clone().ok_or_else(not_ready)?, st.beeper_state.user_id.clone())
@@ -156,9 +154,7 @@ pub(super) fn handle(
             run(matrix::set_room_account_data(c, s(room), s(kind), body(msg)?.0))?;
             ok(&json!({}))
         }
-        ("GET", ["rooms", room, "account_data", kind]) => {
-            found_text(run(matrix::get_room_account_data(c, s(room), s(kind)))?)
-        }
+        ("GET", ["rooms", room, "account_data", kind]) => found_text(run(matrix::get_room_account_data(c, s(room), s(kind)))?),
         ("PUT", ["rooms", room, "account_data", kind]) => {
             run(matrix::set_room_account_data(c, s(room), s(kind), body(msg)?.0))?;
             ok(&json!({}))
@@ -171,8 +167,8 @@ pub(super) fn handle(
             if query.get("format").and_then(Value::as_str) == Some("event") {
                 return found_text(event);
             }
-            let event: Value = serde_json::from_str(&event)
-                .map_err(|_| matrix_error("M_BAD_JSON", "Room state event response is not valid JSON"))?;
+            let event: Value =
+                serde_json::from_str(&event).map_err(|_| matrix_error("M_BAD_JSON", "Room state event response is not valid JSON"))?;
             match event {
                 Value::Object(mut e) => found(e.remove("content").unwrap_or_default()),
                 _ => Err(matrix_error("M_BAD_JSON", "Room state event response is not a JSON object")),

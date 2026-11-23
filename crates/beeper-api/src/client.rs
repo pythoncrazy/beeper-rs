@@ -37,8 +37,7 @@ fn json_body(body: Option<&Value>) -> Option<(String, Vec<u8>)> {
 fn json_or_text(bytes: Vec<u8>) -> Value {
     match bytes.is_empty() {
         true => Value::Null,
-        false => serde_json::from_slice(&bytes)
-            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())),
+        false => serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())),
     }
 }
 
@@ -79,8 +78,7 @@ impl BeeperClient {
 
     /// A client of a base URL from the user. The client speaks plain HTTP only.
     pub fn try_new(base_url: &str, access_token: impl Into<String>) -> Result<Self, String> {
-        let host =
-            base_url.strip_prefix("http://").ok_or(format!("Only http:// base URLs are supported: {base_url}"))?;
+        let host = base_url.strip_prefix("http://").ok_or(format!("Only http:// base URLs are supported: {base_url}"))?;
         let host_port = host.split('/').next().expect("split gives one item").to_string();
         let host_port = if host_port.contains(':') { host_port } else { format!("{host_port}:80") };
         Ok(Self { host_port, access_token: access_token.into(), debug: false })
@@ -101,8 +99,7 @@ impl BeeperClient {
     pub async fn request_raw(
         &self, method: &str, path: &str, headers: &[(&str, &str)], body: Option<(String, Vec<u8>)>,
     ) -> Result<(u16, Vec<u8>), ApiError> {
-        let (status, bytes) =
-            self.try_send(method, path, headers, body).await.map_err(|_| ApiError("Connection error.".into()))?;
+        let (status, bytes) = self.try_send(method, path, headers, body).await.map_err(|_| ApiError("Connection error.".into()))?;
         if self.debug {
             eprintln!("[beeper-api] {method} {path} -> {}", status.0);
         }
@@ -122,14 +119,11 @@ impl BeeperClient {
         let head = format!("--{BOUNDARY}\r\ncontent-disposition: form-data; name=\"file\"; filename=\"{name}\"\r\ncontent-type: application/octet-stream\r\n\r\n");
         let mut body = [head.as_bytes(), bytes].concat();
         for (k, v) in fields {
-            body.extend(
-                format!("\r\n--{BOUNDARY}\r\ncontent-disposition: form-data; name=\"{k}\"\r\n\r\n{v}").as_bytes(),
-            );
+            body.extend(format!("\r\n--{BOUNDARY}\r\ncontent-disposition: form-data; name=\"{k}\"\r\n\r\n{v}").as_bytes());
         }
         body.extend(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
         let form = (format!("multipart/form-data; boundary={BOUNDARY}"), body);
-        let (status, bytes) =
-            self.request_raw("POST", "/v1/assets/upload", &[("accept", "application/json")], Some(form)).await?;
+        let (status, bytes) = self.request_raw("POST", "/v1/assets/upload", &[("accept", "application/json")], Some(form)).await?;
         Ok(json_or_text(checked(status, bytes)?))
     }
 
@@ -138,10 +132,7 @@ impl BeeperClient {
         &self, method: &str, path: &str, headers: &[(&str, &str)], body: Option<(String, Vec<u8>)>,
     ) -> std::io::Result<(StatusCode, Vec<u8>)> {
         let len = body.as_ref().map_or(0, |b| b.1.len());
-        let mut head = format!(
-            "{method} {path} HTTP/1.1\r\nhost: {}\r\nconnection: close\r\ncontent-length: {len}\r\n",
-            self.host_port
-        );
+        let mut head = format!("{method} {path} HTTP/1.1\r\nhost: {}\r\nconnection: close\r\ncontent-length: {len}\r\n", self.host_port);
         if !self.access_token.is_empty() {
             write!(head, "authorization: Bearer {}\r\n", self.access_token).unwrap();
         }
@@ -216,9 +207,7 @@ impl BeeperClient {
         }
         stream.write_all(format!("{upgrade}\r\n").as_bytes()).await.map_err(failed)?;
         let mut leftover = Vec::new();
-        let resp = read_message(&mut stream, &mut leftover, |_| usize::MAX)
-            .await
-            .map_err(|_| "WebSocket connection failed".to_string())?;
+        let resp = read_message(&mut stream, &mut leftover, |_| usize::MAX).await.map_err(|_| "WebSocket connection failed".to_string())?;
         let status = resp.start_line.split(' ').nth(1).unwrap_or_default();
         if status != "101" {
             return Err(format!("Unexpected server response: {status}"));

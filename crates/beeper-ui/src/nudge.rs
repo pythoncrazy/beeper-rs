@@ -68,9 +68,7 @@ impl Nudges {
     /// The move of the timeline of `chat` now.
     pub(crate) fn offset(&self, chat: Option<&str>) -> (f32, f32) {
         match &self.shake {
-            Some((c, at)) if Some(c.as_str()) == chat && at.elapsed() < SHAKE => {
-                shake_offset(at.elapsed().as_secs_f32())
-            }
+            Some((c, at)) if Some(c.as_str()) == chat && at.elapsed() < SHAKE => shake_offset(at.elapsed().as_secs_f32()),
             _ => (0.0, 0.0),
         }
     }
@@ -222,8 +220,7 @@ mod tests {
         let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
         assert_eq!(app.pane.composer.text().trim_end(), "");
         let st = app.store.read();
-        let sent =
-            st.outbox.iter().find_map(|(_, _, o)| if let Outgoing::Nudge(b) = o { Some(b.clone()) } else { None });
+        let sent = st.outbox.iter().find_map(|(_, _, o)| if let Outgoing::Nudge(b) = o { Some(b.clone()) } else { None });
         assert!(sent.is_some_and(|b| b.ends_with(" sent you a nudge")), "{:?}", st.outbox.len());
         drop(st);
         let (dx, dy) = app.nudges.offset(Some(NOTE_CHAT_ID));

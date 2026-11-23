@@ -20,9 +20,7 @@ pub type RawReply = (u16, Vec<(String, Vec<u8>)>, Vec<u8>);
 
 /// [`serve`] with the request headers (lowercase names) and any answer: headers that need not be ASCII, redirects,
 /// and bodies that are not JSON.
-pub async fn serve_raw(
-    reply: impl Fn(&str, &str, &HashMap<String, String>, Value) -> RawReply + Send + Sync + 'static,
-) -> String {
+pub async fn serve_raw(reply: impl Fn(&str, &str, &HashMap<String, String>, Value) -> RawReply + Send + Sync + 'static) -> String {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     crate::matrix::STUB_CLIENTS.store(true, std::sync::atomic::Ordering::Relaxed);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind the stub server");
@@ -89,10 +87,7 @@ fn form(step: &str, instructions: &str, fields: Value, can_cancel: bool) -> Valu
 }
 
 fn cookies(step: &str, url: &str, names: &[&str]) -> Value {
-    let fields: Vec<_> = names
-        .iter()
-        .map(|n| json!({ "id": n, "required": true, "sources": [{ "type": "cookie", "name": n }] }))
-        .collect();
+    let fields: Vec<_> = names.iter().map(|n| json!({ "id": n, "required": true, "sources": [{ "type": "cookie", "name": n }] })).collect();
     json!({ "type": "cookies", "step_id": step,
             "cookies": { "url": url, "user_agent": "Mozilla/5.0", "fields": fields } })
 }
@@ -105,22 +100,15 @@ fn done(step: &str, login: &str) -> Value {
 /// The flows of a bridge and the steps of each flow, as the bridgev2 bridges send them.
 fn bridge(id: &str) -> Option<Vec<(Value, Vec<Value>)>> {
     let flow = |id: &str, name: &str, description: &str| json!({ "id": id, "name": name, "description": description });
-    let phone = |id: &str, description: &str| json!([{ "type": "phone_number", "id": id, "name": "Phone number", "description": description }]);
+    let phone =
+        |id: &str, description: &str| json!([{ "type": "phone_number", "id": id, "name": "Phone number", "description": description }]);
     Some(match id {
         "whatsapp" => vec![
             (
                 flow("qr", "QR", "Scan a QR code to pair the bridge to your WhatsApp account"),
                 vec![
-                    qr(
-                        "fi.mau.whatsapp.login.qr",
-                        "Scan the QR code with the WhatsApp mobile app to log in",
-                        "2@first",
-                    ),
-                    qr(
-                        "fi.mau.whatsapp.login.qr",
-                        "Scan the QR code with the WhatsApp mobile app to log in",
-                        "2@second",
-                    ),
+                    qr("fi.mau.whatsapp.login.qr", "Scan the QR code with the WhatsApp mobile app to log in", "2@first"),
+                    qr("fi.mau.whatsapp.login.qr", "Scan the QR code with the WhatsApp mobile app to log in", "2@second"),
                     done("fi.mau.whatsapp.login.complete", "15550100"),
                 ],
             ),
@@ -178,11 +166,7 @@ fn bridge(id: &str) -> Option<Vec<(Value, Vec<Value>)>> {
             (
                 flow("qr", "QR Code", "Login by scanning a QR code from your phone"),
                 vec![
-                    qr(
-                        "fi.mau.telegram.login.show_qr",
-                        "Scan the QR code on your phone to log in",
-                        "tg://login?token=a",
-                    ),
+                    qr("fi.mau.telegram.login.show_qr", "Scan the QR code on your phone to log in", "tg://login?token=a"),
                     done("fi.mau.telegram.login.complete", "12345"),
                 ],
             ),
@@ -190,11 +174,7 @@ fn bridge(id: &str) -> Option<Vec<(Value, Vec<Value>)>> {
         "signal" => vec![(
             flow("qr", "QR", "Scan a QR code to pair the bridge to your Signal app"),
             vec![
-                qr(
-                    "fi.mau.signal.login.qr",
-                    "Scan the QR code on your Signal app to log in",
-                    "sgnl://linkdevice?uuid=a",
-                ),
+                qr("fi.mau.signal.login.qr", "Scan the QR code on your Signal app to log in", "sgnl://linkdevice?uuid=a"),
                 done("fi.mau.signal.login.complete", "5d2c0b9e"),
             ],
         )],
@@ -209,11 +189,7 @@ fn bridge(id: &str) -> Option<Vec<(Value, Vec<Value>)>> {
             (
                 flow("qr", "QR Code", "Scan a QR code with the Discord mobile app to log in."),
                 vec![
-                    qr(
-                        "fi.mau.discord.qr",
-                        "On your phone, find “Scan QR Code” in Discord’s settings.",
-                        "https://discord.com/ra/a",
-                    ),
+                    qr("fi.mau.discord.qr", "On your phone, find “Scan QR Code” in Discord’s settings.", "https://discord.com/ra/a"),
                     done("fi.mau.discord.complete", "1234567890"),
                 ],
             ),
@@ -226,11 +202,7 @@ fn bridge(id: &str) -> Option<Vec<(Value, Vec<Value>)>> {
             ],
         )],
         "gmessages" => vec![(
-            flow(
-                "google",
-                "Google Account",
-                "Log in with your Google account and pair by tapping an emoji on your phone",
-            ),
+            flow("google", "Google Account", "Log in with your Google account and pair by tapping an emoji on your phone"),
             vec![
                 json!({ "type": "display_and_wait", "step_id": "fi.mau.gmessages.emoji",
                     "instructions": "Tap the emoji on the Google Messages app on your phone",
@@ -242,11 +214,7 @@ fn bridge(id: &str) -> Option<Vec<(Value, Vec<Value>)>> {
         STOPPED_BRIDGE => vec![(
             flow("cookies", "Cookies", "Log in with your LinkedIn account using your cookies"),
             vec![
-                cookies(
-                    "fi.mau.linkedin.login.enter_cookies",
-                    "https://www.linkedin.com/login",
-                    &["li_at", "JSESSIONID"],
-                ),
+                cookies("fi.mau.linkedin.login.enter_cookies", "https://www.linkedin.com/login", &["li_at", "JSESSIONID"]),
                 done("fi.mau.linkedin.complete", "ACoAA"),
             ],
         )],

@@ -31,9 +31,7 @@ impl BeeperGuiApp {
             }
             Msg::Open => {
                 if self.pane.selected_chat_id.is_some() {
-                    return self.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(
-                        commands::SubMenu::Schedule(Vec::new()),
-                    )));
+                    return self.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Schedule(Vec::new()))));
                 }
             }
             Msg::Set(config) => {
@@ -44,16 +42,14 @@ impl BeeperGuiApp {
             Msg::SendNow(ids) => {
                 self.pane.sched_menu = None;
                 let mut st = self.store.write();
-                let due: Vec<Scheduled> =
-                    ids.iter().filter_map(|id| st.scheduled.iter().find(|s| s.id == *id)).cloned().collect();
+                let due: Vec<Scheduled> = ids.iter().filter_map(|id| st.scheduled.iter().find(|s| s.id == *id)).cloned().collect();
                 ids.iter().for_each(|id| st.update_scheduled(id, |_| false));
                 drop(st);
                 self.send_scheduled(due);
             }
             Msg::Reschedule(ids) => {
                 self.pane.sched_menu = None;
-                return self
-                    .update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Schedule(ids))));
+                return self.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Schedule(ids))));
             }
             Msg::RescheduleTo(ids, at, no_reply) => {
                 let mut st = self.store.write();
@@ -109,9 +105,7 @@ pub(crate) fn send_day(at: i64, h24: bool) -> String {
     match d - t {
         0 => trf("Today at %s", &[&time]),
         1 => trf("Tomorrow at %s", &[&time]),
-        _ if (d + 3).div_euclid(7) == (t + 3).div_euclid(7) => {
-            trf("%1$s at %2$s", &[&tr(WEEKDAYS[(d + 4).rem_euclid(7) as usize]), &time])
-        }
+        _ if (d + 3).div_euclid(7) == (t + 3).div_euclid(7) => trf("%1$s at %2$s", &[&tr(WEEKDAYS[(d + 4).rem_euclid(7) as usize]), &time]),
         _ => {
             let (y, m, day) = civil_from_days(d);
             trf("%1$s at %2$s", &[&format!("{m}/{day}/{y}"), &time])
@@ -127,30 +121,20 @@ impl BeeperGuiApp {
         let first = st.scheduled.iter().find(|s| s.id == ids[0]).expect("a scheduled message");
         let (canceled, n, ids) = (first.canceled, ids.len(), ids.to_vec());
         let key = |name| hotkey_text(st.settings.hotkey_keys(name));
-        let item = |label: String, hotkey: &str, msg: UiMessage| {
-            Some(menu_item(p, None, label, hotkey.to_string(), Some(msg)))
-        };
+        let item = |label: String, hotkey: &str, msg: UiMessage| Some(menu_item(p, None, label, hotkey.to_string(), Some(msg)));
         let ctx = "scheduled message menu action";
         let rows = [
             items.then(|| {
-                item(
-                    trx("Edit...", ctx).into(),
-                    &key("Message: Edit"),
-                    UiMessage::Scheduled(scheduled::Msg::Edit(ids[0].clone())),
-                )
+                item(trx("Edit...", ctx).into(), &key("Message: Edit"), UiMessage::Scheduled(scheduled::Msg::Edit(ids[0].clone())))
             }),
-            items.then(|| {
-                item(trx("Copy", ctx).into(), "Ctrl C", UiMessage::Message(message::Msg::CopyText(first.text.clone())))
-            }),
+            items.then(|| item(trx("Copy", ctx).into(), "Ctrl C", UiMessage::Message(message::Msg::CopyText(first.text.clone())))),
             items.then(|| {
                 let forward = UiMessage::Scheduled(scheduled::Msg::Forward(ids[0].clone()));
                 item(trx("Forward...", "scheduled message menu action").into(), &key("Message: Forward"), forward)
             }),
             items.then(|| Some(menu_rule(p))),
             (!canceled).then(|| match n {
-                1 => {
-                    item(tr("Send Message Now").into(), "", UiMessage::Scheduled(scheduled::Msg::SendNow(ids.clone())))
-                }
+                1 => item(tr("Send Message Now").into(), "", UiMessage::Scheduled(scheduled::Msg::SendNow(ids.clone()))),
                 _ => item(
                     trn("Send %d Message Now", "Send %d Messages Now", n, &[&n]),
                     "",
@@ -163,9 +147,7 @@ impl BeeperGuiApp {
                 None,
                 tr("Reschedule").into(),
                 "",
-                st.feature("scheduled-message")
-                    .on
-                    .then(|| UiMessage::Scheduled(scheduled::Msg::Reschedule(ids.clone()))),
+                st.feature("scheduled-message").on.then(|| UiMessage::Scheduled(scheduled::Msg::Reschedule(ids.clone()))),
             ))),
             Some(item(
                 match (canceled, n) {
@@ -255,16 +237,10 @@ impl BeeperGuiApp {
         let fg = if s.canceled { hex(0x808080) } else { p.accent };
         let line = |t: String| txt(t, 13.0).wrapping(iced::widget::text::Wrapping::WordOrGlyph);
         // A file part shows its file name over its caption.
-        let file = s
-            .upload
-            .as_ref()
-            .and_then(|id| st.assets.get(id))
-            .map(|a| line(a.file_name.clone()).font(fw(Weight::Semibold)).color(fg));
+        let file =
+            s.upload.as_ref().and_then(|id| st.assets.get(id)).map(|a| line(a.file_name.clone()).font(fw(Weight::Semibold)).color(fg));
         let text = column![].push(file).push((!s.text.is_empty()).then(|| line(s.text.clone()).color(fg)));
-        let bubble = container(text)
-            .padding([9.0, BUBBLE_PAD_X])
-            .max_width(0.45 * self.pane().size.width)
-            .style(fill_box(bg, 17.0));
+        let bubble = container(text).padding([9.0, BUBBLE_PAD_X]).max_width(0.45 * self.pane().size.width).style(fill_box(bg, 17.0));
         let bubble = mouse_area(stack![bubble, dashed::dashes(fg, 17.0, 1.0)])
             .on_right_press(UiMessage::Scheduled(scheduled::Msg::Menu(vec![s.id.clone()], true)));
         row![Space::new().width(Fill), bubble].into()

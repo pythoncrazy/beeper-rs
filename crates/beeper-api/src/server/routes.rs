@@ -96,24 +96,14 @@ pub(super) const ROUTES: &[Route] = &[
     op("GET", "/v1/app/setup", "appSetupRetrieve", Own),
     op("POST", "/v1/app/setup/verification/recovery-key", "appSetupVerificationRecoveryKey", RW),
     op("POST", "/v1/app/setup/verification/recovery-key/reset", "appSetupVerificationRecoveryKeyReset", RW),
-    op(
-        "POST",
-        "/v1/app/setup/verification/recovery-key/reset/confirm",
-        "appSetupVerificationRecoveryKeyResetConfirm",
-        RW,
-    ),
+    op("POST", "/v1/app/setup/verification/recovery-key/reset/confirm", "appSetupVerificationRecoveryKeyResetConfirm", RW),
     op("GET", "/v1/app/setup/verifications", "appSetupVerificationsList", R),
     op("POST", "/v1/app/setup/verifications", "appSetupVerificationsCreate", RW),
     op("POST", "/v1/app/setup/verifications/qr/scan", "appSetupVerificationsQRScan", RW),
     op("GET", "/v1/app/setup/verifications/{verificationID}", "appSetupVerificationsGet", R),
     op("POST", "/v1/app/setup/verifications/{verificationID}/accept", "appSetupVerificationsAccept", RW),
     op("POST", "/v1/app/setup/verifications/{verificationID}/cancel", "appSetupVerificationsCancel", RW),
-    op(
-        "POST",
-        "/v1/app/setup/verifications/{verificationID}/qr/confirm-scanned",
-        "appSetupVerificationsQRConfirmScanned",
-        RW,
-    ),
+    op("POST", "/v1/app/setup/verifications/{verificationID}/qr/confirm-scanned", "appSetupVerificationsQRConfirmScanned", RW),
     op("POST", "/v1/app/setup/verifications/{verificationID}/sas/start", "appSetupVerificationsSASStart", RW),
     op("POST", "/v1/app/setup/verifications/{verificationID}/sas/confirm", "appSetupVerificationsSASConfirm", RW),
     op("GET", "/v1/info", "getInfo", Open),
@@ -195,8 +185,7 @@ pub(super) fn find(method: &str, path: &str) -> Result<(&'static Route, Vec<Stri
 
 /// The OpenAPI document of Desktop 4.3.308. The `paths` give the operations of the routes, and the Matrix paths of
 /// Desktop's `includeMatrixCompat`, which name their parameters like the Matrix spec rather than like the routes.
-static OPENAPI: LazyLock<Value> =
-    LazyLock::new(|| serde_json::from_str(include_str!("../../assets/openapi.json")).expect("OpenAPI JSON"));
+static OPENAPI: LazyLock<Value> = LazyLock::new(|| serde_json::from_str(include_str!("../../assets/openapi.json")).expect("OpenAPI JSON"));
 
 /// The text of the document of [`spec`], with `\u0000` in place of the base URL.
 static SPEC: LazyLock<String> = LazyLock::new(|| {

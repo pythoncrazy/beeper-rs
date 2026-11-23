@@ -12,8 +12,7 @@ pub(crate) const MERGE_SIZE: Size = Size::new(340.0, 570.0);
 /// Desktop's `Q`: the most chats of a section of the chat list.
 const SECTION: usize = 8;
 /// Desktop's `lte`, the "Learn more" page of merged chats.
-pub(crate) const MERGE_HELP: &str =
-    "https://help.beeper.com/en_US/quick-references/how-to-create-and-manage-merged-chats";
+pub(crate) const MERGE_HELP: &str = "https://help.beeper.com/en_US/quick-references/how-to-create-and-manage-merged-chats";
 
 /// A step of the editor (`f`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -301,9 +300,7 @@ impl BeeperGuiApp {
         let head = container(semi(Self::merge_title(d), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
         // Desktop's `outsideFooter` of the intro.
         let outside = (d.step == MergeStep::Intro).then(|| {
-            let link = button(txt(tr("Learn more"), 12.0).color(p.accent))
-                .bare(p.accent)
-                .on_press(UiMessage::OpenUrl(MERGE_HELP.into()));
+            let link = button(txt(tr("Learn more"), 12.0).color(p.accent)).bare(p.accent).on_press(UiMessage::OpenUrl(MERGE_HELP.into()));
             let line = row![txt(tr("You can separate merged chats anytime"), 12.0).color(p.sub), link].spacing(4);
             container(line).center_x(Fill).padding(pad(8.0, 0.0, 2.0, 0.0))
         });
@@ -331,8 +328,7 @@ impl BeeperGuiApp {
         let tile = svg(crate::style::brand_round("merged-chat")).width(26).height(26);
         let tile = container(tile).padding(2).style(fill_box(p.card, 15.0));
         let width = 56.0 + (n - 1) as f32 * 33.0;
-        let stack =
-            stack![container(faces).padding(Padding::ZERO.top(15.0)), container(tile).align_right(width + 15.0)];
+        let stack = stack![container(faces).padding(Padding::ZERO.top(15.0)), container(tile).align_right(width + 15.0)];
         let headline = match picked.first().map(|c| c.title.trim()).filter(|t| !t.is_empty()) {
             Some(t) => trf("View all your chats with %s as one conversation", &[&t]),
             None => tr("View chats with the same contacts, across different accounts, as one conversation.").into(),
@@ -353,16 +349,14 @@ impl BeeperGuiApp {
                 true => trn("Merge %d chat for free", "Merge %d chats for free", max as usize, &[&max]),
                 false => tr("You’ve reached your merged chat limit").into(),
             };
-            let text =
-                column![semi(tr("Go unlimited with Beeper Plus"), 12.0).color(p.strong), txt(sub, 12.0).color(p.sub)]
-                    .spacing(2)
-                    .width(Fill);
+            let text = column![semi(tr("Go unlimited with Beeper Plus"), 12.0).color(p.strong), txt(sub, 12.0).color(p.sub)]
+                .spacing(2)
+                .width(Fill);
             let action = container(txt(tr("Upgrade"), 10.0).color(Color::WHITE)).padding([1, 6]);
             let action = action.style(fill_box(p.strong, 999.0));
             let card = row![text, action].spacing(10).align_y(Center).padding(12);
             let card = button(card).bare(p.strong).on_press(edit(MergeEdit::Upgrade));
-            container(container(card).style(bordered_box(CLEAR, p.prefs_border, 0.5, 10.0)))
-                .padding(pad(0.0, 16.0, 16.0, 16.0))
+            container(container(card).style(bordered_box(CLEAR, p.prefs_border, 0.5, 10.0))).padding(pad(0.0, 16.0, 16.0, 16.0))
         });
         let plus = container(badge(p, prefs::Badge::Plus)).align_right(Fill).padding(Padding::new(12.0).right(14.0));
         let body = column![container(intro).center(Fill)].push(upsell);
@@ -376,14 +370,9 @@ impl BeeperGuiApp {
         let face = badged(self.chat_avatar(c, 40.0, 1.25), chat_brand(c), 40.0, 14.0, mono, p.card);
         let name = ell(&c.title, 220.0, 14.0, Weight::Medium).color(p.strong);
         let text = column![name].push(identifier(c).map(|i| ell(&i, 220.0, 13.0, Weight::Normal).color(p.sub)));
-        let line =
-            row![face, text.spacing(4).width(Fill), container(checkbox(p, on)).padding(Padding::ZERO.right(16.0))];
+        let line = row![face, text.spacing(4).width(Fill), container(checkbox(p, on)).padding(Padding::ZERO.right(16.0))];
         let line = line.spacing(10).align_y(Center).padding(pad(10.0, 8.0, 10.0, 16.0));
-        button(line)
-            .bare(p.strong)
-            .width(Fill)
-            .on_press(UiMessage::Merged(merged::Msg::Edit(MergeEdit::Toggle(c.id.clone()))))
-            .into()
+        button(line).bare(p.strong).width(Fill).on_press(UiMessage::Merged(merged::Msg::Edit(MergeEdit::Toggle(c.id.clone())))).into()
     }
 
     /// Desktop's pick step: the search row, then the selected chats and the Suggested, Recent Chats and Chats
@@ -400,34 +389,26 @@ impl BeeperGuiApp {
             .padding([17, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let searching = !d.search.trim().is_empty();
-        let clear =
-            searching.then(|| icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, edit(MergeEdit::Search(String::new()))));
+        let clear = searching.then(|| icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, edit(MergeEdit::Search(String::new()))));
         let search = row![ic(icon::SEARCH, 16.0).color(p.sub), input].push(clear).spacing(10).align_y(Center);
         let search = container(search).padding(pad(0.0, 8.0, 0.0, 16.0));
         let picked: Vec<&Chat> = d.chats.iter().filter_map(|c| st.find_chat(c)).collect();
         // Desktop's `se`: the mergeable chats, and the member chats of the edited merged chat.
-        let pool: Vec<&Chat> =
-            st.chats.iter().filter(|c| mergeable(c) || picked.iter().any(|m| m.id == c.id)).collect();
-        let header = |s: &'static str| -> El<'a> {
-            container(txt(tr(s), 12.0).color(p.sub)).padding(pad(8.0, 16.0, 4.0, 16.0)).into()
-        };
+        let pool: Vec<&Chat> = st.chats.iter().filter(|c| mergeable(c) || picked.iter().any(|m| m.id == c.id)).collect();
+        let header = |s: &'static str| -> El<'a> { container(txt(tr(s), 12.0).color(p.sub)).padding(pad(8.0, 16.0, 4.0, 16.0)).into() };
         let mut rows: Vec<El<'a>> = Vec::new();
         let taken = |c: &Chat| d.chats.contains(&c.id);
         if searching {
             if !picked.is_empty() {
                 rows.push(header("Selected"));
                 let chips = picked.iter().map(|c| -> El<'a> {
-                    button(self.chat_avatar(c, 40.0, 1.25))
-                        .bare(p.strong)
-                        .on_press(edit(MergeEdit::Toggle(c.id.clone())))
-                        .into()
+                    button(self.chat_avatar(c, 40.0, 1.25)).bare(p.strong).on_press(edit(MergeEdit::Toggle(c.id.clone()))).into()
                 });
                 let strip = iced::widget::Row::with_children(chips).spacing(10).wrap();
                 rows.push(container(strip).padding(pad(4.0, 13.0, 8.0, 13.0)).into());
             }
             let q = d.search.trim().to_lowercase();
-            let hits: Vec<&Chat> =
-                pool.iter().copied().filter(|c| !taken(c) && c.title.to_lowercase().contains(&q)).collect();
+            let hits: Vec<&Chat> = pool.iter().copied().filter(|c| !taken(c) && c.title.to_lowercase().contains(&q)).collect();
             rows.push(header(if hits.is_empty() { "No matching chats found" } else { "Search results" }));
             rows.extend(hits.into_iter().map(|c| self.merge_row(&st, c, false)));
         } else {
@@ -480,8 +461,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let edit = |e| UiMessage::Merged(merged::Msg::Edit(e));
         let members: Vec<&Chat> = d.chats.iter().filter_map(|c| st.find_chat(c)).collect();
-        let preview =
-            container(self.merge_photo(&st, d, &d.photo, 88.0)).style(glow_box(CLEAR, p.shadow, 44.0, 4.0, 8.0));
+        let preview = container(self.merge_photo(&st, d, &d.photo, 88.0)).style(glow_box(CLEAR, p.shadow, 44.0, 4.0, 8.0));
         let name = text_input(tr("Name"), &d.title)
             .id("merge-title")
             .on_input(move |t| edit(MergeEdit::Title(t)))
@@ -494,8 +474,8 @@ impl BeeperGuiApp {
             .style(input_style(p.chip, p.strong, p.sub, p.accent, 16.0));
         let center = column![preview, container(name).padding(Padding::ZERO.top(-4.0))].align_x(Center);
         // Desktop's `qft`: the initials, then the member chats with a photo, with a ring around the choice.
-        let choices = std::iter::once(Photo::Auto)
-            .chain(members.iter().filter(|c| member_photo(c).is_some()).map(|c| Photo::Member(c.id.clone())));
+        let choices =
+            std::iter::once(Photo::Auto).chain(members.iter().filter(|c| member_photo(c).is_some()).map(|c| Photo::Member(c.id.clone())));
         let options = choices.map(|choice| -> El<'a> {
             let on = choice == d.photo;
             let face = self.merge_photo(&st, d, &choice, 40.0);
@@ -507,15 +487,12 @@ impl BeeperGuiApp {
         let options = container(options).center_x(Fill).padding([8, 26]);
         let default = members.iter().find(|c| Some(&c.id) == d.default.as_ref());
         let select = default.map_or_else(|| tr("Select").to_string(), |c| network_name(&c.account_id).to_string());
-        let select = row![txt(select, 12.0).color(p.accent), ic(icon::EXPAND_MORE, 14.0).color(p.accent)]
-            .spacing(4)
-            .align_y(Center);
+        let select = row![txt(select, 12.0).color(p.accent), ic(icon::EXPAND_MORE, 14.0).color(p.accent)].spacing(4).align_y(Center);
         let select = button(select)
             .padding([4, 6])
             .style(btn_style([CLEAR, p.chip, p.chip], [p.accent; 3], 20.0))
             .on_press(edit(MergeEdit::DefaultMenu(!d.default_menu)));
-        let row =
-            row![semi(tr("Default chat"), 12.0).color(p.strong), Space::new().width(Fill), select].align_y(Center);
+        let row = row![semi(tr("Default chat"), 12.0).color(p.strong), Space::new().width(Fill), select].align_y(Center);
         let row = container(row).padding(pad(24.0, 24.0, 30.0, 24.0));
         let body = column![container(center).center(Fill), options, row];
         // Desktop's `st` menu of the member chats, "name · network".
@@ -524,12 +501,8 @@ impl BeeperGuiApp {
                 let label = format!("{} · {}", c.title, network_name(&c.account_id));
                 menu_item(p, None, label, "", Some(edit(MergeEdit::Default(c.id.clone()))))
             });
-            let menu = container(Column::with_children(items).padding([4, 0])).width(240).style(shadow_box(
-                p.menu,
-                p.menu_border,
-                6.0,
-                16.0,
-            ));
+            let menu =
+                container(Column::with_children(items).padding([4, 0])).width(240).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
             container(menu).align_right(Fill).align_bottom(Fill).padding(pad(0.0, 16.0, 60.0, 0.0))
         });
         stack![body].push(menu).into()
@@ -592,11 +565,9 @@ mod tests {
         let c = st.find_chat(&open).expect("the merged chat");
         assert_eq!((c.title.as_str(), st.chat(KAI).merged_into_chat_id.as_deref()), ("Friends", Some(c.id.as_str())));
         assert_eq!(c.merge.as_ref().and_then(|m| m.default_chat_id.as_deref()), Some(LENA));
-        let union = |o: &Outgoing| matches!(o, Outgoing::CreateUnion { title: Some(t), rooms, .. } if t == "Friends" && rooms == &[KAI, LENA]);
-        assert!(
-            st.outbox.iter().any(|(_, chat, o)| *chat == c.id && union(o)),
-            "the union room comes with its children"
-        );
+        let union =
+            |o: &Outgoing| matches!(o, Outgoing::CreateUnion { title: Some(t), rooms, .. } if t == "Friends" && rooms == &[KAI, LENA]);
+        assert!(st.outbox.iter().any(|(_, chat, o)| *chat == c.id && union(o)), "the union room comes with its children");
         assert_eq!(app.status_banner, "You can now message Friends across 2 chats from one conversation.");
         assert!(st.settings.merge_intro_seen, "the intro shows once");
     }
@@ -621,11 +592,7 @@ mod tests {
         }
         let _ = app.update(UiMessage::Merged(merged::Msg::Open(Some(id.clone()), Vec::new())));
         let d = app.merge_window.as_ref().unwrap();
-        assert_eq!(
-            (d.step, d.chats.len(), d.title.as_str()),
-            (MergeStep::Pick, 2, "Friends"),
-            "an edit skips the intro"
-        );
+        assert_eq!((d.step, d.chats.len(), d.title.as_str()), (MergeStep::Pick, 2, "Friends"), "an edit skips the intro");
         assert!(view(&app).find("Merged Chats").is_ok());
         edit(&mut app, MergeEdit::Toggle(LENA.into()));
         edit(&mut app, MergeEdit::Toggle(SAM.into()));

@@ -1,9 +1,7 @@
 //! The command table: each row is one command id of the upstream CLI with its args, flags, and handler.
 
 use super::render;
-use super::{
-    arg, config, config_dir, js_string, obj, opt_arg, write_json, CliError, Cmd, Ctx, Flag, Kind, Res, BIN, GLOBAL,
-};
+use super::{arg, config, config_dir, js_string, obj, opt_arg, write_json, CliError, Cmd, Ctx, Flag, Kind, Res, BIN, GLOBAL};
 use serde_json::{json, Value};
 
 /// The topics: the name, the description, and the command that runs for the topic alone.
@@ -200,9 +198,7 @@ pub fn live_status(c: &mut Ctx) -> Res<Value> {
     let base = c.base_url()?;
     let target = c.target()?.clone();
     let client = beeper_api::client::BeeperClient::try_new(&base, "").map_err(CliError::bug)?;
-    let reply = c.block(async {
-        tokio::time::timeout(std::time::Duration::from_secs(3), client.fetch("GET", "/v1/info", None)).await
-    });
+    let reply = c.block(async { tokio::time::timeout(std::time::Duration::from_secs(3), client.fetch("GET", "/v1/info", None)).await });
     let Ok(Ok((status, bytes))) = reply else {
         return Ok(json!({ "reachable": false, "error": format!("Could not reach {base}") }));
     };
@@ -216,9 +212,8 @@ pub fn live_status(c: &mut Ctx) -> Res<Value> {
         && super::truthy(&target.get("managed").cloned().unwrap_or_default())
         && info["server"]["hostname"] == "127.0.0.1"
         && info["server"]["remote_access"] == false;
-    let bundle_type = bundle.as_str().and_then(|b| {
-        [(".server", "server"), (".desktop", "desktop")].iter().find(|(k, _)| b.contains(k)).map(|t| t.1)
-    });
+    let bundle_type =
+        bundle.as_str().and_then(|b| [(".server", "server"), (".desktop", "desktop")].iter().find(|(k, _)| b.contains(k)).map(|t| t.1));
     let actual = if managed_server { Some("server") } else { bundle_type };
     let kind = js_string(&target["type"]);
     if let Some(actual) = actual.filter(|a| kind != "remote" && *a != kind) {
@@ -232,12 +227,7 @@ pub fn live_status(c: &mut Ctx) -> Res<Value> {
         ]);
         return Ok(Value::Object(all));
     }
-    Ok(Value::Object(obj([
-        ("reachable", json!(true)),
-        ("version", version),
-        ("bundleID", bundle),
-        ("actualType", json!(actual)),
-    ])))
+    Ok(Value::Object(obj([("reachable", json!(true)), ("version", version), ("bundleID", bundle), ("actualType", json!(actual))])))
 }
 
 fn doctor(c: &mut Ctx) -> Res {
@@ -338,8 +328,7 @@ fn api_post(c: &mut Ctx) -> Res {
     let path = c.arg(0).expect("a required arg").to_string();
     c.writable()?;
     let raw = c.str("body").expect("--body has a default");
-    let body: Value =
-        serde_json::from_str(raw).map_err(|_| CliError::bug(format!("--body is not valid JSON: {raw}")))?;
+    let body: Value = serde_json::from_str(raw).map_err(|_| CliError::bug(format!("--body is not valid JSON: {raw}")))?;
     let data = match c.on("no-auth") {
         true => app_request(c, "POST", &path, Some(body), None)?,
         false => c.call("POST", &path, Some(body))?,
@@ -421,10 +410,7 @@ fn usage(cmd: &Cmd, id: &str) -> String {
             format!("[{name}{value}]")
         }
     };
-    let args =
-        cmd.args
-            .iter()
-            .map(|a| if a.required { a.name.to_uppercase() } else { format!("[{}]", a.name.to_uppercase()) });
+    let args = cmd.args.iter().map(|a| if a.required { a.name.to_uppercase() } else { format!("[{}]", a.name.to_uppercase()) });
     let parts: Vec<String> = args.chain(required.iter().chain(&optional).map(|f| element(f))).collect();
     // oclif measures the line with its `<%= command.id %>` template, and fills in the id later.
     let line = format!("$ {BIN} <%= command.id %> {}", parts.join(" "));
@@ -476,8 +462,7 @@ fn help_as(cmd: &Cmd, id: &str) -> String {
                 _ => String::new(),
             };
             let required = if f.required { "(required) " } else { "" };
-            let options =
-                if f.options.is_empty() { String::new() } else { format!("\n<options: {}>", f.options.join("|")) };
+            let options = if f.options.is_empty() { String::new() } else { format!("\n<options: {}>", f.options.join("|")) };
             (format!("{label}{value}"), format!("{required}{default}{}{options}", f.desc))
         })
         .collect();
@@ -485,16 +470,11 @@ fn help_as(cmd: &Cmd, id: &str) -> String {
     // oclif's `hideCommandSummaryInDescription` shows only the last line of the description.
     if let Some(text) = cmd.description.lines().last() {
         let text = text.replace("`beeper ", &format!("`{BIN} "));
-        out.push(format!(
-            "DESCRIPTION\n{}",
-            wrap(&text, WIDTH - 2).iter().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
-        ));
+        out.push(format!("DESCRIPTION\n{}", wrap(&text, WIDTH - 2).iter().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")));
     }
     if !cmd.examples.is_empty() {
-        let examples = cmd
-            .examples
-            .iter()
-            .map(|e| format!("  $ {BIN}{}", e.strip_prefix("beeper").expect("an example starts with beeper")));
+        let examples =
+            cmd.examples.iter().map(|e| format!("  $ {BIN}{}", e.strip_prefix("beeper").expect("an example starts with beeper")));
         out.push(format!("EXAMPLES\n{}", examples.collect::<Vec<_>>().join("\n\n")));
     }
     let topic = cmd.id.split(' ').next().expect("an id has a word");
@@ -507,10 +487,8 @@ fn help_as(cmd: &Cmd, id: &str) -> String {
 /// The nested topics and the commands of `topic`, one level down.
 fn commands_section(topic: &str) -> String {
     let child = |id: &str| id.starts_with(&format!("{topic} ")) && depth(id) == depth(topic) + 1;
-    let topics: Vec<(String, String)> =
-        TOPICS.iter().filter(|t| child(t.0)).map(|t| (t.0.to_string(), t.1.to_string())).collect();
-    let mut commands: Vec<(String, String)> =
-        all().filter(|c| child(c.id)).map(|c| (c.id.to_string(), c.summary.to_string())).collect();
+    let topics: Vec<(String, String)> = TOPICS.iter().filter(|t| child(t.0)).map(|t| (t.0.to_string(), t.1.to_string())).collect();
+    let mut commands: Vec<(String, String)> = all().filter(|c| child(c.id)).map(|c| (c.id.to_string(), c.summary.to_string())).collect();
     commands.sort();
     match topics.is_empty() {
         true => section("COMMANDS", &commands),
@@ -533,9 +511,7 @@ pub fn topic_help(t: &Topic) -> String {
 pub fn root_rows() -> Vec<(String, String)> {
     let topics = TOPICS.iter().filter(|t| depth(t.0) == 1);
     let mut rows: Vec<(String, String)> = topics.map(|t| (t.0.to_string(), t.1.to_string())).collect();
-    rows.extend(
-        all().filter(|c| !c.id.contains(' ') && topic(c.id).is_none()).map(|c| (c.id.into(), c.summary.into())),
-    );
+    rows.extend(all().filter(|c| !c.id.contains(' ') && topic(c.id).is_none()).map(|c| (c.id.into(), c.summary.into())));
     rows.sort();
     rows
 }
@@ -554,10 +530,10 @@ mod tests {
         assert!(help.contains("\n      --timeout=<value>   Maximum time to wait, such as 30s, 2m, or 1h\n"), "{help}");
         let request = all().find(|c| c.id == "api request").unwrap();
         let help = super::help(request);
-        assert!(help.contains("ARGUMENTS\n  METHOD  (GET|POST|PUT|PATCH|DELETE) HTTP method\n  PATH    API path, for example /v1/info\n"), "{help}");
         assert!(
-            help.contains("\n      --[no-]json         Print JSON\n      --no-auth           Call a public API path"),
+            help.contains("ARGUMENTS\n  METHOD  (GET|POST|PUT|PATCH|DELETE) HTTP method\n  PATH    API path, for example /v1/info\n"),
             "{help}"
         );
+        assert!(help.contains("\n      --[no-]json         Print JSON\n      --no-auth           Call a public API path"), "{help}");
     }
 }

@@ -20,9 +20,7 @@ fn resolve_account_type(items: Vec<Value>, input: &str) -> Res<Value> {
     let mut matches = matching_bridges(items, input);
     match matches.len() {
         1 => Ok(matches.remove(0)),
-        0 => Err(CliError::bug(format!(
-            "Unknown bridge \"{input}\". Run `{BIN} bridges list` to list available bridges."
-        ))),
+        0 => Err(CliError::bug(format!("Unknown bridge \"{input}\". Run `{BIN} bridges list` to list available bridges."))),
         _ => Err(CliError::bug(format!("Account type {input} is ambiguous. Use one of: {}", bridge_names(&matches)))),
     }
 }
@@ -47,8 +45,7 @@ fn multiple(b: &Value) -> &'static str {
 /// `printAvailableAccounts`: the bridges by provider, with the command that connects each available one.
 fn print_available(items: &[Value]) {
     println!("Choose a bridge to connect an account:\n");
-    let sections =
-        [("On-Device Accounts", "local"), ("Beeper Cloud Accounts", "cloud"), ("Self-Hosted Accounts", "self-hosted")];
+    let sections = [("On-Device Accounts", "local"), ("Beeper Cloud Accounts", "cloud"), ("Self-Hosted Accounts", "self-hosted")];
     for (title, provider) in sections {
         let accounts: Vec<&Value> = items.iter().filter(|b| b["provider"] == provider).collect();
         if accounts.is_empty() {
@@ -125,19 +122,13 @@ pub fn accounts_add(c: &mut Ctx) -> Res {
             if available.is_empty() {
                 return Err(CliError::bug("No available bridges to connect."));
             }
-            choose(
-                "Choose a bridge to connect an account:",
-                "Select a bridge: ",
-                "Choose one of the listed bridges.",
-                &available,
-            )?
+            choose("Choose a bridge to connect an account:", "Select a bridge: ", "Choose one of the listed bridges.", &available)?
         }
     };
     let bridge = resolve_account_type(bridges(c)?, &input)?;
     let (id, name) = (js_string(&bridge["id"]), js_string(&bridge["displayName"]));
     if bridge["status"] != "available" {
-        let suffix =
-            bridge["statusText"].as_str().filter(|s| !s.is_empty()).map_or(String::new(), |s| format!(": {s}"));
+        let suffix = bridge["statusText"].as_str().filter(|s| !s.is_empty()).map_or(String::new(), |s| format!(": {s}"));
         return Err(CliError::bug(format!("{name} is not available{suffix}")));
     }
     let path = format!("/v1/bridges/{}", url_encode(&id));
@@ -205,11 +196,7 @@ fn run_guided(c: &mut Ctx, path: &str, mut session: Value, guide: &Guide) -> Res
         let Some(step_id) = step["stepID"].as_str() else {
             return Err(CliError::bug("Account login session did not include a current step."));
         };
-        let submit = format!(
-            "{path}/login-sessions/{}/steps/{}",
-            url_encode(&js_string(&session["loginSessionID"])),
-            url_encode(step_id)
-        );
+        let submit = format!("{path}/login-sessions/{}/steps/{}", url_encode(&js_string(&session["loginSessionID"])), url_encode(step_id));
         let fields = step["fields"].as_array().cloned().unwrap_or_default();
         let body = match step["type"].as_str().unwrap_or_default() {
             "display_and_wait" => {
@@ -334,11 +321,7 @@ fn print_step(session: &Value) {
                 println!("expected_final_url_regex: {regex}");
             }
             for f in &fields {
-                println!(
-                    "cookie field {}: {}",
-                    js_string(&f["id"]),
-                    text(&f["type"]).unwrap_or_else(|| "cookie".into())
-                );
+                println!("cookie field {}: {}", js_string(&f["id"]), text(&f["type"]).unwrap_or_else(|| "cookie".into()));
             }
             if let Some(js) = text(&step["extractJS"]) {
                 println!("extract_js:\n{js}");

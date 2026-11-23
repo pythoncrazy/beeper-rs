@@ -17,11 +17,9 @@ async fn serve(store: SharedStore) -> u16 {
 
 /// One request with a token and an optional JSON body, and the status and body of the reply.
 async fn call(port: u16, token: &str, method: &str, path: &str, body: Option<&str>) -> (u16, String) {
-    let body = body
-        .map_or(String::new(), |b| format!("content-type: application/json\r\ncontent-length: {}\r\n\r\n{b}", b.len()));
+    let body = body.map_or(String::new(), |b| format!("content-type: application/json\r\ncontent-length: {}\r\n\r\n{b}", b.len()));
     let body = if body.is_empty() { "\r\n".into() } else { body };
-    let req =
-        format!("{method} {path} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n{body}");
+    let req = format!("{method} {path} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n{body}");
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     stream.write_all(req.as_bytes()).await.unwrap();
     let mut out = String::new();
@@ -181,17 +179,10 @@ async fn the_proxy_passes_requests_to_the_homeserver_like_desktop() {
 
     let joined = (200, json!({ "room_id": "!new:x" }));
     assert_eq!(call("POST", "/join/%23alias%3Ax?server_name=x", None).await, joined);
-    assert!(
-        last().1.starts_with("/_matrix/client/v3/join/#alias:x?") && last().1.contains("server_name=x"),
-        "{last:?}",
-        last = last()
-    );
+    assert!(last().1.starts_with("/_matrix/client/v3/join/#alias:x?") && last().1.contains("server_name=x"), "{last:?}", last = last());
     let bad_json = (400, matrix_error("M_BAD_JSON", "Content could not be parsed as JSON"));
     assert_eq!(call("POST", "/join/!other:x", Some("[1]")).await, bad_json);
-    assert_eq!(
-        call("POST", "/join/!other:x", Some(r#"{"server_name":"y"}"#)).await,
-        (200, json!({ "room_id": "!other:x" }))
-    );
+    assert_eq!(call("POST", "/join/!other:x", Some(r#"{"server_name":"y"}"#)).await, (200, json!({ "room_id": "!other:x" })));
     assert_eq!(call("POST", "/rooms/!room:x/leave", Some("{")).await, (200, json!({})), "leave reads no body");
     assert_eq!(last().1, "/_matrix/client/v3/rooms/!room:x/leave");
 

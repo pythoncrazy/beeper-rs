@@ -33,15 +33,9 @@ fn bad_command_lines_print_the_usage_and_exit_with_the_oclif_codes() {
     assert_eq!(run(&["chatz"]), (Some(127), String::new(), not_found.into()));
     let (code, help, _) = run(&["help"]);
     assert!(code == Some(0) && help.starts_with("Beeper chat app"), "{help}");
-    assert!(
-        help.contains("\n  chats     List, search, manage, and modify chats\n"),
-        "the root help lists the client topics: {help}"
-    );
+    assert!(help.contains("\n  chats     List, search, manage, and modify chats\n"), "the root help lists the client topics: {help}");
     let (code, help, _) = run(&["help", "send", "text"]);
-    assert!(
-        code == Some(0) && help.starts_with("Send a text message\n\nUSAGE\n  $ beeper-rs send text --to <value>"),
-        "{help}"
-    );
+    assert!(code == Some(0) && help.starts_with("Send a text message\n\nUSAGE\n  $ beeper-rs send text --to <value>"), "{help}");
     let (code, version, _) = run(&["-V"]);
     assert!(code == Some(0) && version.starts_with("beeper-rs/"), "{version}");
 }
@@ -106,31 +100,19 @@ impl Out {
 fn cli_status_doctor_config_and_api_match_upstream() {
     let d = demo("core");
     let status = d.run(&["status"]);
-    assert_eq!(
-        (status.code, status.stdout),
-        (0, format!("▎ Ready  ready\n  target      custom\n  endpoint    {}\n", d.base))
-    );
+    assert_eq!((status.code, status.stdout), (0, format!("▎ Ready  ready\n  target      custom\n  endpoint    {}\n", d.base)));
     let status = d.run(&["status", "--json"]).json();
     assert_eq!((status["success"].clone(), status["error"].clone()), (json!(true), Value::Null));
     assert_eq!(status["data"]["readiness"]["actions"], json!(["chats list", "messages list", "send text"]));
     let doctor = d.run(&["doctor", "--json"]).json();
-    assert_eq!(
-        (doctor["data"]["ok"].clone(), doctor["data"]["checks"]["target"]["reachable"].clone()),
-        (json!(true), json!(true))
-    );
+    assert_eq!((doctor["data"]["ok"].clone(), doctor["data"]["checks"]["target"]["reachable"].clone()), (json!(true), json!(true)));
     let version = d.run(&["version"]).stdout;
     assert_eq!(version, format!("▎ beeper-rs\n  version  {}\n\n", beeper_core::config::APP_VERSION));
 
     let empty = d.run(&["config", "get"]).stdout;
-    assert!(
-        empty.starts_with("▎ No config set\n  The CLI is using defaults.\n\nTry\n  › beeper-rs config set baseURL"),
-        "{empty}"
-    );
+    assert!(empty.starts_with("▎ No config set\n  The CLI is using defaults.\n\nTry\n  › beeper-rs config set baseURL"), "{empty}");
     let set = d.run(&["config", "set", "defaultAccount", "acc_slack", "--json"]).json();
-    assert_eq!(
-        set["data"],
-        json!({ "message": "Set defaultAccount", "detail": "acc_slack", "defaultAccount": "acc_slack" })
-    );
+    assert_eq!(set["data"], json!({ "message": "Set defaultAccount", "detail": "acc_slack", "defaultAccount": "acc_slack" }));
     assert_eq!(d.run(&["config", "get", "defaultAccount", "--json"]).json()["data"], "acc_slack");
     assert_eq!(d.run(&["config", "path"]).stdout, format!("{}\n", d.config.join("config.json").display()));
     let ro = d.run(&["config", "reset", "--read-only", "--json"]);
@@ -218,42 +200,27 @@ fn cli_lists_searches_sends_and_exports_messages() {
     assert_eq!(body, format!("{text}  msg_1000b  in !wa_eric:beeper.com\n\n"));
 
     let none = d.run(&["messages", "search", "zzzz"]);
-    assert!(
-        none.stdout.starts_with("▎ No messages matched\n  Nothing found for \"zzzz\".\n\nTry\n"),
-        "{}",
-        none.stdout
-    );
+    assert!(none.stdout.starts_with("▎ No messages matched\n  Nothing found for \"zzzz\".\n\nTry\n"), "{}", none.stdout);
     assert_eq!(none.stderr, "✓ 0 matches\n");
     let usage = d.run(&["messages", "search"]);
-    let wrapped =
-        "    AbortError: Provide a search query or at least one filter flag (--chat, \n    --sender, --media, etc.).\n";
+    let wrapped = "    AbortError: Provide a search query or at least one filter flag (--chat, \n    --sender, --media, etc.).\n";
     assert_eq!((usage.code, usage.stderr), (1, wrapped.to_string()));
     assert_eq!(d.run(&["messages", "search", "--json"]).code, 2, "with --json the exit code is the code of the error");
 
     let sent = d.run(&["send", "text", "--to", "local_x7", "--message", "hi", "--json"]).json();
     assert_eq!((sent["data"]["state"].clone(), sent["data"]["chatID"].clone()), (json!("accepted"), json!("local_x7")));
     let waited = d.run(&["send", "text", "--to", "local_x7", "--message", "hello there", "--wait", "--json"]).json();
-    assert_eq!(
-        (waited["data"]["state"].clone(), waited["data"]["message"]["text"].clone()),
-        (json!("resolved"), json!("hello there"))
-    );
+    assert_eq!((waited["data"]["state"].clone(), waited["data"]["message"]["text"].clone()), (json!("resolved"), json!("hello there")));
     let file = d.config.with_file_name("note.txt");
     std::fs::write(&file, "a note\n").unwrap();
     let sent = d.run(&["send", "file", "--to", "local_x7", "--file", file.to_str().unwrap(), "--json"]).json();
     assert_eq!(sent["data"]["accepted"], true);
     let missing = d.run(&["send", "file", "--to", "local_x7", "--file", "/nonexistent/x.txt"]);
-    assert!(
-        missing.stderr.contains("│   ENOENT: no such file or directory, open '/nonexistent/x.txt'\n"),
-        "{}",
-        missing.stderr
-    );
-    let react =
-        d.run(&["send", "react", "--to", "local_wa_eric", "--id", "msg_1001", "--reaction", "👍", "--json"]).json();
+    assert!(missing.stderr.contains("│   ENOENT: no such file or directory, open '/nonexistent/x.txt'\n"), "{}", missing.stderr);
+    let react = d.run(&["send", "react", "--to", "local_wa_eric", "--id", "msg_1001", "--reaction", "👍", "--json"]).json();
     assert_eq!(react["data"]["reactionKey"], "👍");
 
-    let export: Value =
-        serde_json::from_str(&d.run(&["messages", "export", "--chat", "local_wa_eric", "--limit", "2"]).stdout)
-            .unwrap();
+    let export: Value = serde_json::from_str(&d.run(&["messages", "export", "--chat", "local_wa_eric", "--limit", "2"]).stdout).unwrap();
     assert_eq!((export["chatID"].clone(), export["count"].clone()), (json!("local_wa_eric"), json!(2)));
 }
 
@@ -274,10 +241,7 @@ fn cli_lists_accounts_contacts_and_bridges() {
     let default = d.run(&["accounts", "list", "--json"]).json();
     assert_eq!(default["data"][2]["default"], true, "the default account has the default mark");
     let chats = d.run(&["chats", "list", "--json"]).json();
-    assert!(
-        chats["data"].as_array().unwrap().iter().all(|c| c["accountID"] == "acc_telegram"),
-        "the default account limits the chats"
-    );
+    assert!(chats["data"].as_array().unwrap().iter().all(|c| c["accountID"] == "acc_telegram"), "the default account limits the chats");
     d.run(&["accounts", "use", ""]);
 
     let search = d.run(&["contacts", "search", "tulir"]);
@@ -297,24 +261,14 @@ fn cli_lists_accounts_contacts_and_bridges() {
 fn cli_watches_the_websocket_and_runs_rpc_lines() {
     use std::io::{BufRead, Write};
     let d = demo("stream");
-    let mut watch = d
-        .command(&["watch", "--json", "-c", "!wa_eric:beeper.com"])
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut watch = d.command(&["watch", "--json", "-c", "!wa_eric:beeper.com"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
     let mut lines = std::io::BufReader::new(watch.stdout.take().unwrap()).lines();
     let mut next = || serde_json::from_str::<Value>(&lines.next().unwrap().unwrap()).unwrap();
     assert_eq!(next()["type"], "ready");
-    assert_eq!(
-        next(),
-        json!({ "type": "subscriptions.updated", "chatIDs": ["!wa_eric:beeper.com"], "app": { "state": false } })
-    );
+    assert_eq!(next(), json!({ "type": "subscriptions.updated", "chatIDs": ["!wa_eric:beeper.com"], "app": { "state": false } }));
     d.run(&["send", "text", "--to", "local_wa_eric", "--message", "during watch"]);
     let event = next();
-    assert_eq!(
-        (event["type"].clone(), event["entries"][0]["text"].clone()),
-        (json!("message.upserted"), json!("during watch"))
-    );
+    assert_eq!((event["type"].clone(), event["entries"][0]["text"].clone()), (json!("message.upserted"), json!("during watch")));
     // Windows has no SIGINT to send to another process.
     #[cfg(unix)]
     {
@@ -327,8 +281,7 @@ fn cli_watches_the_websocket_and_runs_rpc_lines() {
         watch.wait().unwrap();
     }
 
-    let mut rpc =
-        d.command(&["rpc"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let mut rpc = d.command(&["rpc"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
     let lines = [
         format!("{{\"id\":1,\"command\":\"accounts --ids --base-url {}\"}}", d.base),
         "{\"id\":2,\"args\":[\"rpc\"]}".into(),
@@ -364,24 +317,16 @@ fn cli_manages_targets_and_downloads_and_exports() {
     assert_eq!(status, format!("▎ Ready  ready\n  target      home\n  endpoint    {}\n", d.base));
     let list = plain(&["targets", "--json"]).json();
     let row = &list["data"][0];
-    assert_eq!(
-        (row["id"].clone(), row["default"].clone(), row["reachable"].clone()),
-        (json!("home"), json!(true), json!(true))
-    );
+    assert_eq!((row["id"].clone(), row["default"].clone(), row["reachable"].clone()), (json!("home"), json!(true), json!(true)));
     assert_eq!(plain(&["chats", "list", "--limit", "1", "--ids"]).stdout, "local_tg_rust\n");
     let logout = plain(&["auth", "logout"]);
-    assert!(
-        logout.stderr.contains("│ auth logout cannot clear BEEPER_ACCESS_TOKEN from the environment;"),
-        "{}",
-        logout.stderr
-    );
+    assert!(logout.stderr.contains("│ auth logout cannot clear BEEPER_ACCESS_TOKEN from the environment;"), "{}", logout.stderr);
     assert_eq!(plain(&["targets", "remove", "home"]).stdout, "✓ Removed target: home\n");
     assert!(!d.config.join("targets/home.json").exists());
 
     let file = d.config.with_file_name("note.txt");
     std::fs::write(&file, "a note\n").unwrap();
-    let sent =
-        d.run(&["send", "file", "--to", "local_x7", "--file", file.to_str().unwrap(), "--wait", "--json"]).json();
+    let sent = d.run(&["send", "file", "--to", "local_x7", "--file", file.to_str().unwrap(), "--wait", "--json"]).json();
     let url = sent["data"]["message"]["attachments"][0]["srcURL"].as_str().unwrap().to_string();
     assert_eq!(d.run(&["media", "download", &url, "-o", "-"]).stdout, "a note\n");
     let out = d.config.with_file_name("media");
@@ -393,9 +338,7 @@ fn cli_manages_targets_and_downloads_and_exports() {
     let export = d.run(&["export", "-o", dir.to_str().unwrap(), "--chat", "local_x0", "--no-attachments"]);
     assert_eq!(export.stdout, format!("Exported 1 chats, 1 messages, 0 attachments to {}\n", dir.display()));
     assert!(
-        export.stderr.ends_with(
-            "[1/1] Family (WhatsApp) complete: 1 messages, 0 attachments\nDone: 1 chats, 1 messages, 0 attachments\n"
-        ),
+        export.stderr.ends_with("[1/1] Family (WhatsApp) complete: 1 messages, 0 attachments\nDone: 1 chats, 1 messages, 0 attachments\n"),
         "{}",
         export.stderr
     );
@@ -403,18 +346,11 @@ fn cli_manages_targets_and_downloads_and_exports() {
     let markdown = std::fs::read_to_string(chat.join("messages.markdown")).unwrap();
     assert!(markdown.starts_with("# Family\n\n- Chat ID: `!wa_family:beeper.com`\n- Account ID: `acc_whatsapp`\n- Network: WhatsApp\n- Type: group\n- Messages: 1\n\n## Messages\n\n### Mom - "), "{markdown}");
     let html = std::fs::read_to_string(chat.join("messages.html")).unwrap();
-    assert!(
-        html.contains("      <article class=\"message\">\n        <header><strong>Mom</strong><time datetime="),
-        "{html}"
-    );
+    assert!(html.contains("      <article class=\"message\">\n        <header><strong>Mom</strong><time datetime="), "{html}");
     let manifest: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
     assert_eq!((manifest["chatCount"].clone(), manifest["messageCount"].clone()), (json!(1), json!(1)));
     let again = d.run(&["export", "-o", dir.to_str().unwrap(), "--chat", "local_x0", "--no-attachments"]);
-    assert!(
-        again.stderr.contains("[1/1] Family (WhatsApp) already complete\n"),
-        "the state file resumes: {}",
-        again.stderr
-    );
+    assert!(again.stderr.contains("[1/1] Family (WhatsApp) already complete\n"), "the state file resumes: {}", again.stderr);
 }
 
 /// A stub Desktop API on a free port: `route` answers each request from its method, path, and body, and the stub
@@ -512,10 +448,7 @@ fn cli_signs_in_with_oauth_pkce_like_upstream() {
             let verifier = query_value(&form, "code_verifier");
             let s256 = beeper_api::codec::base64_encode_url_nopad(&beeper_api::codec::sha256(verifier.as_bytes()));
             match s256 == *wanted.lock().unwrap() && query_value(&form, "code") == "code_1" {
-                true => (
-                    200,
-                    json!({ "access_token": "tok_oauth", "token_type": "Bearer", "expires_in": 3600, "scope": "read write" }),
-                ),
+                true => (200, json!({ "access_token": "tok_oauth", "token_type": "Bearer", "expires_in": 3600, "scope": "read write" })),
                 false => (400, json!({ "error": "invalid_grant" })),
             }
         }
@@ -531,13 +464,9 @@ fn cli_signs_in_with_oauth_pkce_like_upstream() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let url = std::fs::read_to_string(&opened).unwrap().trim().to_string();
-    let authorize =
-        format!("{}/oauth/authorize?client_id=cli_stub&redirect_uri=http%3A%2F%2F127.0.0.1%3A", desktop.base);
+    let authorize = format!("{}/oauth/authorize?client_id=cli_stub&redirect_uri=http%3A%2F%2F127.0.0.1%3A", desktop.base);
     assert!(url.starts_with(&authorize), "{url}");
-    assert_eq!(
-        (query_value(&url, "scope"), query_value(&url, "code_challenge_method")),
-        ("read write".into(), "S256".into())
-    );
+    assert_eq!((query_value(&url, "scope"), query_value(&url, "code_challenge_method")), ("read write".into(), "S256".into()));
     *challenge.lock().unwrap() = query_value(&url, "code_challenge");
     // The browser follows the redirect of the approved page to the callback of the CLI.
     let redirect = query_value(&url, "redirect_uri");
@@ -584,13 +513,10 @@ fn cli_signs_in_by_email_and_registers() {
     let desktop = stub(|_, path, _| match path {
         "/v1/app/setup/start" => (200, json!({ "setupRequestID": "req_1", "signInMethods": ["email"] })),
         "/v1/app/setup/email" => (204, Value::Null),
-        "/v1/app/setup/response" => (
-            200,
-            json!({ "registrationRequired": true, "setupRequestID": "req_1", "leadToken": "lead", "usernameSuggestions": ["alex"] }),
-        ),
-        "/v1/app/setup/register" => {
-            (200, json!({ "matrix": { "accessToken": "tok_email" }, "session": { "state": "ready" } }))
+        "/v1/app/setup/response" => {
+            (200, json!({ "registrationRequired": true, "setupRequestID": "req_1", "leadToken": "lead", "usernameSuggestions": ["alex"] }))
         }
+        "/v1/app/setup/register" => (200, json!({ "matrix": { "accessToken": "tok_email" }, "session": { "state": "ready" } })),
         "/v1/app/setup" => (200, json!({ "state": "ready" })),
         "/v1/accounts" => (200, json!({ "items": [{ "network": "WhatsApp" }] })),
         _ => (404, json!({ "message": "Not found" })),
@@ -609,10 +535,7 @@ fn cli_signs_in_by_email_and_registers() {
     let auth = json!({ "source": "manual", "tokenType": "Bearer" });
     let target = json!({ "id": "custom", "type": "desktop", "baseURL": desktop.base, "auth": auth });
     let readiness = json!({ "state": "ready", "app": { "state": "ready" }, "actions": ["chats list", "messages list", "send text"] });
-    assert_eq!(
-        done,
-        json!({ "accounts": ["WhatsApp"], "authSource": "manual", "readiness": readiness, "target": target })
-    );
+    assert_eq!(done, json!({ "accounts": ["WhatsApp"], "authSource": "manual", "readiness": readiness, "target": target }));
     let register = desktop.requests().into_iter().find(|r| r.contains("/register")).unwrap();
     let body = "{\"acceptTerms\":true,\"leadToken\":\"lead\",\"setupRequestID\":\"req_1\",\"username\":\"alex\"}";
     assert_eq!(register, format!("POST /v1/app/setup/register - {body}"));
@@ -658,15 +581,10 @@ fn cli_adds_accounts_through_bridge_login_steps() {
         Out::of(command.env("BEEPER_ACCESS_TOKEN", "tok").output().unwrap())
     };
     let list = run(&["accounts", "add"]).stdout;
-    let cloud =
-        "\n\nBeeper Cloud Accounts\n  Stub Net (stubnet) - single account\n    beeper-rs accounts add stubnet\n\n";
+    let cloud = "\n\nBeeper Cloud Accounts\n  Stub Net (stubnet) - single account\n    beeper-rs accounts add stubnet\n\n";
     assert!(list.starts_with(&format!("Choose a bridge to connect an account:{cloud}")), "{list}");
     let many = run(&["accounts", "add", "stub", "--non-interactive", "--json"]);
-    assert!(
-        many.stderr.contains("Multiple sign-in methods are available for Stub Net. Pass --flow."),
-        "{}",
-        many.stderr
-    );
+    assert!(many.stderr.contains("Multiple sign-in methods are available for Stub Net. Pass --flow."), "{}", many.stderr);
     let waiting = run(&["accounts", "add", "stubnet", "--flow", "qr", "--non-interactive"]).stdout;
     let step = "status: in_progress\nstep: display_and_wait\nstep_id: q1\ndisplay: code\n1234-5678\n";
     assert_eq!(waiting, step.repeat(2), "the guide shows the step, and then prints the session it stops at");
@@ -700,10 +618,7 @@ fn cli_setup_and_verify_follow_the_app_state() {
     let found = Out::of(d.command(&["setup", "--json"]).env("BEEPER_USER_DATA_DIR", &data).output().unwrap());
     let found = found.json()["data"].clone();
     assert_eq!(found["state"], "desktop-ready");
-    assert_eq!(
-        found["recommendedAction"],
-        json!({ "id": "use-desktop-session", "command": "beeper-rs setup -t custom --local" })
-    );
+    assert_eq!(found["recommendedAction"], json!({ "id": "use-desktop-session", "command": "beeper-rs setup -t custom --local" }));
     assert_eq!(found["localDesktop"]["signedInAs"], "@alex:beeper.com");
     let mut elsewhere = d.command(&["setup", "--json"]);
     elsewhere.env("BEEPER_USER_DATA_DIR", d.config.with_file_name("none"));
@@ -712,10 +627,7 @@ fn cli_setup_and_verify_follow_the_app_state() {
     assert_eq!(elsewhere["recommendedAction"]["command"], "beeper-rs setup --oauth --yes");
     let local = d.command(&["setup", "--local", "--json"]).env("BEEPER_USER_DATA_DIR", &data).output().unwrap();
     let local = Out::of(local).json()["data"].clone();
-    assert_eq!(
-        (local["authSource"].clone(), local["readiness"]["state"].clone()),
-        (json!("desktop-db"), json!("ready"))
-    );
+    assert_eq!((local["authSource"].clone(), local["readiness"]["state"].clone()), (json!("desktop-db"), json!("ready")));
     assert_eq!(local["target"]["auth"], json!({ "source": "desktop-db", "tokenType": "Bearer" }));
     // The stored token of the new `desktop` target works without BEEPER_ACCESS_TOKEN.
     let mut plain = Command::new(env!("CARGO_BIN_EXE_beeper-rs"));
@@ -773,8 +685,7 @@ fn cli_runs_managed_server_targets_with_beeper_rs() {
         Out::of(command.output().unwrap())
     };
     let added = run(&["targets", "add", "server", "home", "--port", &port.to_string(), "--json"]).json();
-    let (base, data_dir) =
-        (format!("http://127.0.0.1:{port}"), config.join("profiles/server/home").display().to_string());
+    let (base, data_dir) = (format!("http://127.0.0.1:{port}"), config.join("profiles/server/home").display().to_string());
     assert_eq!(
         added["data"],
         json!({
@@ -796,22 +707,15 @@ fn cli_runs_managed_server_targets_with_beeper_rs() {
     assert!(run(&["targets", "stop", "home"]).stderr.contains("│ Profile \"home\" is not running.\n"));
     let log = config.join("logs/profiles/home.err.log");
     std::fs::write(&log, "one\ntwo\nthree\n").unwrap();
-    assert_eq!(
-        run(&["targets", "logs", "home", "--lines", "2"]).stdout,
-        format!("\n==> {} <==\ntwo\nthree\n", log.display())
-    );
+    assert_eq!(run(&["targets", "logs", "home", "--lines", "2"]).stdout, format!("\n==> {} <==\ntwo\nthree\n", log.display()));
 
     let enabled = run(&["targets", "enable", "home", "--json"]).json()["data"].clone();
     let unit = home.join(".config/systemd/user/beeper-profile-home.service");
     assert_eq!(enabled["path"], unit.display().to_string());
     let text = std::fs::read_to_string(&unit).unwrap();
     let program = env!("CARGO_BIN_EXE_beeper-rs");
-    let exec =
-        format!("ExecStart={program} --host=127.0.0.1 --port={port} --data-dir={data_dir} --server-env=production\n");
-    assert!(
-        text.contains(&exec) && text.contains(&format!("Environment=BEEPER_SERVER_DATA_DIR={data_dir}\n")),
-        "{text}"
-    );
+    let exec = format!("ExecStart={program} --host=127.0.0.1 --port={port} --data-dir={data_dir} --server-env=production\n");
+    assert!(text.contains(&exec) && text.contains(&format!("Environment=BEEPER_SERVER_DATA_DIR={data_dir}\n")), "{text}");
     run(&["targets", "disable", "home"]);
     assert!(!unit.exists());
     let calls = "--user daemon-reload\n--user enable --now beeper-profile-home.service\n--user disable --now beeper-profile-home.service\n--user daemon-reload\n";

@@ -182,14 +182,10 @@ fn contacts_list(c: &mut Ctx) -> Res {
         }
     };
     if c.on("ids") {
-        let ids: Vec<Value> = items
-            .iter()
-            .map(|u| json!({ "id": if u["userID"].is_null() { &u["id"] } else { &u["userID"] } }))
-            .collect();
+        let ids: Vec<Value> = items.iter().map(|u| json!({ "id": if u["userID"].is_null() { &u["id"] } else { &u["userID"] } })).collect();
         return c.print_ids(&ids);
     }
-    let subtitle =
-        c.str("query").map_or("This account has no contacts to list.".into(), |q| format!("Nothing matched \"{q}\"."));
+    let subtitle = c.str("query").map_or("This account has no contacts to list.".into(), |q| format!("Nothing matched \"{q}\"."));
     let empty = Empty::new("No contacts found", subtitle)
         .try_("contacts search <query>", "narrow with a search")
         .try_("accounts", "check the account is online");
@@ -203,9 +199,7 @@ fn contacts_search(c: &mut Ctx) -> Res {
         let mut all: Vec<Value> = Vec::new();
         for id in &ids {
             // Some networks reject exact lookups for some identifiers, so the search goes on with the other accounts.
-            if let Ok(mut found) =
-                c.get(&query_string(&format!("/v1/accounts/{}/contacts", url_encode(id)), &[("query", &q)]))
-            {
+            if let Ok(mut found) = c.get(&query_string(&format!("/v1/accounts/{}/contacts", url_encode(id)), &[("query", &q)])) {
                 let items = found["items"].as_array_mut().map(std::mem::take).unwrap_or_default();
                 all.extend(items.into_iter().map(|mut u| (u["accountID"] = json!(id), u).1));
             }
@@ -232,9 +226,7 @@ fn contacts_show(c: &mut Ctx) -> Res {
     for id in resolve_accounts(c, &inputs, true, true)? {
         let path = format!("/v1/accounts/{}/contacts/list", url_encode(&id));
         let page = c.collect(&path, &[("query", wanted.clone())], 10, |_| true)?;
-        if let Some(contact) =
-            page.into_iter().find(|u| ["userID", "id", "name", "displayName"].iter().any(|k| u[*k] == wanted))
-        {
+        if let Some(contact) = page.into_iter().find(|u| ["userID", "id", "name", "displayName"].iter().any(|k| u[*k] == wanted)) {
             return c.print(&json!({ "accountID": id, "contact": contact }));
         }
     }
@@ -268,8 +260,7 @@ fn letters(v: &Value) -> String {
 pub fn matching_bridges(items: Vec<Value>, input: &str) -> Vec<Value> {
     let wanted = letters(&json!(input));
     let keys = ["id", "displayName", "network", "type"];
-    let (exact, rest): (Vec<Value>, Vec<Value>) =
-        items.into_iter().partition(|b| keys.iter().any(|k| letters(&b[*k]) == wanted));
+    let (exact, rest): (Vec<Value>, Vec<Value>) = items.into_iter().partition(|b| keys.iter().any(|k| letters(&b[*k]) == wanted));
     let partial = |b: &Value| keys.iter().any(|k| letters(&b[*k]).contains(&wanted));
     if exact.is_empty() {
         rest.into_iter().filter(partial).collect()
@@ -299,8 +290,7 @@ fn bridges_show(c: &mut Ctx) -> Res {
     let listed = resolve_bridge(bridges(c)?, &input)?;
     let path = format!("/v1/bridges/{}", url_encode(&js_string(&listed["id"])));
     let mut bridge = c.get(&path).unwrap_or(listed);
-    let flows =
-        c.get(&format!("{path}/login-flows")).ok().map(|f| if f["items"].is_null() { f } else { f["items"].clone() });
+    let flows = c.get(&format!("{path}/login-flows")).ok().map(|f| if f["items"].is_null() { f } else { f["items"].clone() });
     let capabilities = c.get(&format!("{path}/capabilities")).ok();
     let object = bridge.as_object_mut().expect("a bridge is an object");
     for (key, value) in [("loginFlows", flows), ("capabilities", capabilities)] {

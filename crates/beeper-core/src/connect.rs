@@ -145,14 +145,7 @@ impl Connect {
         let now = now_ms();
         let id = random_id();
         let expires_at = (expires_secs > 0).then(|| now + expires_secs * 1000);
-        let entry = Token {
-            id: id.clone(),
-            token_hash: hash(&token),
-            created_at: now,
-            scopes,
-            expires_at,
-            client_info: client,
-        };
+        let entry = Token { id: id.clone(), token_hash: hash(&token), created_at: now, scopes, expires_at, client_info: client };
         self.tokens.insert(id, entry);
         token
     }
@@ -168,14 +161,7 @@ impl Connect {
             };
             let scopes = vec![READ.into(), WRITE.into()];
             let id = if user_id.is_empty() { "matrix" } else { user_id }.into();
-            return Ok(Token {
-                id,
-                token_hash: hash(token),
-                created_at: now_ms(),
-                scopes,
-                expires_at: None,
-                client_info: Some(client),
-            });
+            return Ok(Token { id, token_hash: hash(token), created_at: now_ms(), scopes, expires_at: None, client_info: Some(client) });
         }
         let hashed = hash(token);
         let found = self.tokens.values().find(|t| t.token_hash == hashed).ok_or("Invalid token")?;
@@ -197,23 +183,14 @@ impl Connect {
     ) -> (String, bool, oneshot::Receiver<Option<String>>) {
         let (tx, rx) = oneshot::channel();
         let same = |r: &&mut Request| {
-            r.client.client_id.is_some()
-                && r.client.client_id == client.client_id
-                && r.redirect_uri == redirect_uri
-                && r.scopes == scopes
+            r.client.client_id.is_some() && r.client.client_id == client.client_id && r.redirect_uri == redirect_uri && r.scopes == scopes
         };
         if let Some(r) = self.requests.iter_mut().find(same) {
             r.waiters.push(tx);
             return (r.id.clone(), false, rx);
         }
         let id = random_id();
-        self.requests.push(Request {
-            id: id.clone(),
-            client,
-            scopes,
-            redirect_uri: redirect_uri.into(),
-            waiters: vec![tx],
-        });
+        self.requests.push(Request { id: id.clone(), client, scopes, redirect_uri: redirect_uri.into(), waiters: vec![tx] });
         (id, true, rx)
     }
 
@@ -236,9 +213,7 @@ impl Connect {
         self.requests.len() < before
     }
 
-    pub fn store_code(
-        &mut self, token: String, client_id: String, challenge: String, resource: Option<String>,
-    ) -> String {
+    pub fn store_code(&mut self, token: String, client_id: String, challenge: String, resource: Option<String>) -> String {
         let code = random_id();
         self.codes.insert(code.clone(), Code { token, client_id, challenge, resource, created_at: now_ms() });
         code
@@ -264,11 +239,7 @@ impl Connect {
             return Err(("invalid_grant", "Resource parameter mismatch"));
         }
         let hashed = hash(&c.token);
-        let entry = self
-            .tokens
-            .values()
-            .find(|t| t.token_hash == hashed)
-            .ok_or(("server_error", "Failed to retrieve token details"))?;
+        let entry = self.tokens.values().find(|t| t.token_hash == hashed).ok_or(("server_error", "Failed to retrieve token details"))?;
         Ok((c.token, entry.clone()))
     }
 }

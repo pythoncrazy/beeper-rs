@@ -56,8 +56,7 @@ impl BeeperGuiApp {
                 }
                 drop(st);
                 let (old, new) = (format!("label:{}", l.id), format!("label:{id}"));
-                let order =
-                    order.into_iter().map(|o| if o.id == old { SpaceOrder { id: new.clone(), ..o } } else { o });
+                let order = order.into_iter().map(|o| if o.id == old { SpaceOrder { id: new.clone(), ..o } } else { o });
                 self.patch_settings(|s| s.spaces_order = order.collect());
             }
             Msg::Restore(l) => {
