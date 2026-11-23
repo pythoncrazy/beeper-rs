@@ -261,7 +261,7 @@ fn cli_lists_searches_sends_and_exports_messages() {
 fn cli_lists_accounts_contacts_and_bridges() {
     let d = demo("accounts");
     let ids = d.run(&["accounts", "--ids"]).stdout;
-    assert_eq!(ids, "acc_whatsapp\nacc_imessage\nacc_telegram\nacc_signal\nacc_instagram\nacc_slack\n");
+    assert_eq!(ids, "acc_whatsapp\nacc_imessage\nacc_telegram\nacc_signal\nacc_instagram\nacc_slack\nacc_discord\n");
     let show = d.run(&["accounts", "show", "telegram"]).stdout;
     assert_eq!(show, "▎ Telegram  telegram\n  acc_telegram  bridge telegram cloud telegram\n\n");
     let missing = d.run(&["accounts", "show", "zzz", "--json"]);
@@ -282,7 +282,7 @@ fn cli_lists_accounts_contacts_and_bridges() {
 
     let search = d.run(&["contacts", "search", "tulir"]);
     assert_eq!(search.stdout, "▎ Tulir Asokan\n  @tulir  tulir@example.com\n  @tulir:beeper.com  on acc_telegram\n\n");
-    assert_eq!(search.stderr, "✓ 1 match across 6 accounts\n");
+    assert_eq!(search.stderr, "✓ 1 match across 7 accounts\n");
     let contact = d.run(&["contacts", "show", "@tulir:beeper.com", "--account", "telegram", "--json"]).json();
     assert_eq!(
         (contact["data"]["accountID"].clone(), contact["data"]["contact"]["fullName"].clone()),
@@ -338,7 +338,7 @@ fn cli_watches_the_websocket_and_runs_rpc_lines() {
     rpc.stdin.take().unwrap().write_all(lines.join("\n").as_bytes()).unwrap();
     let out = Out::of(rpc.wait_with_output().unwrap());
     let replies: Vec<Value> = out.stdout.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-    let accounts = "acc_whatsapp\nacc_imessage\nacc_telegram\nacc_signal\nacc_instagram\nacc_slack\n";
+    let accounts = "acc_whatsapp\nacc_imessage\nacc_telegram\nacc_signal\nacc_instagram\nacc_slack\nacc_discord\n";
     let want = [
         json!({ "id": 1, "ok": true, "code": 0, "signal": null, "stdout": accounts, "stderr": "" }),
         json!({ "id": 2, "ok": false, "error": "Unsupported nested command: rpc" }),
