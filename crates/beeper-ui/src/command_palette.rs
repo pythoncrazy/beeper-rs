@@ -104,7 +104,7 @@ impl BeeperGuiApp {
         let input = text_input(&placeholder, &self.command_palette_query)
             .id("cmd-palette-input")
             .on_input(|a0| UiMessage::CommandBar(commands::Msg::Query(a0)))
-            .size(13)
+            .size(rem(13.0))
             .padding([6, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let kbd = |label: &'static str| {
@@ -298,23 +298,23 @@ impl BeeperGuiApp {
                 }
             };
             let head = row![
-                txt(label, 11.0).line_height(Pixels(7.0)).color(p.text),
+                txt(label, 11.0).line_height(Pixels(rem(7.0))).color(p.text),
                 Space::new().width(Fill),
-                txt(list_ts(&m.timestamp, h24), 11.0).line_height(Pixels(7.0)).color(p.text)
+                txt(list_ts(&m.timestamp, h24), 11.0).line_height(Pixels(rem(7.0))).color(p.text)
             ];
             let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.received, p.strong) };
             let body = clamped(m.text.as_deref().expect("text message"), 554.0, 3, 13.0, Weight::Normal);
             let lower = body.to_ascii_lowercase();
             let (mut spans, mut at): (Vec<iced::widget::text::Span<()>>, _) = (Vec::new(), 0);
             for (k, hit) in lower.match_indices(&needle) {
-                spans.push(span(body[at..k].to_string()).size(13.0).color(fg));
-                let mark = span(body[k..k + hit.len()].to_string()).size(13.0);
+                spans.push(span(body[at..k].to_string()).size(rem(13.0)).color(fg));
+                let mark = span(body[k..k + hit.len()].to_string()).size(rem(13.0));
                 spans.push(mark.color(hex(0x202124)).background(hex(0xf6ce46)));
                 at = k + hit.len();
             }
-            spans.push(span(body[at..].to_string()).size(13.0).color(fg));
+            spans.push(span(body[at..].to_string()).size(rem(13.0)).color(fg));
             let bubble = rich_text(spans)
-                .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
+                .line_height(iced::widget::text::LineHeight::Absolute(rem(16.0).into()))
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
             let bubble = container(container(bubble).padding([8, 11]).style(fill_box(bg, 17.0)))
                 .width(Fill)
@@ -329,8 +329,10 @@ impl BeeperGuiApp {
         let tiles = media.iter().map(|m| -> El<'_> {
             let c = st.chat(&m.chat_id);
             let card = |title: String, sub: El<'static>| -> El<'static> {
-                let body =
-                    column![clamp(&title, 94.0, 3, 10.0, Weight::Normal).line_height(Pixels(12.0)).color(p.text), sub];
+                let body = column![
+                    clamp(&title, 94.0, 3, 10.0, Weight::Normal).line_height(Pixels(rem(12.0))).color(p.text),
+                    sub
+                ];
                 container(body).align_bottom(Fill).width(Fill).padding(8).style(fill_box(p.window, 8.0)).into()
             };
             let thumb = m.attachments.iter().find(|a| matches!(a.attachment_type.as_str(), "img" | "video"));

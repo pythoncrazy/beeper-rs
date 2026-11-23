@@ -2,6 +2,7 @@
 
 use crate::i18n::{tr, trf, trx, trxf};
 use crate::settings;
+use crate::style::rem;
 use crate::style::{
     bold, bordered_box, btn_style, fill_box, fw, ic, icon, med, semi, shadow_box, txt, Bare, Palette, CLEAR,
 };
@@ -297,7 +298,7 @@ impl BeeperGuiApp {
         let field = |label: &'static str, value: String, on: Option<fn(String) -> Msg>| -> El<'a> {
             let input = text_input("", &value)
                 .on_input_maybe(on.map(|on| move |v| UiMessage::Profile(on(v))))
-                .size(14)
+                .size(rem(14.0))
                 .font(fw(Weight::Semibold))
                 .padding(Padding::new(8.0).right(30.0))
                 .style(profile_input(p));
@@ -387,7 +388,7 @@ impl BeeperGuiApp {
             row![Space::new().width(Fill), cancel, ok].spacing(8)
         };
         let input = |value: &str, hint: &str, on: Box<dyn Fn(String) -> UiMessage>| {
-            text_input(hint, value).on_input(on).size(13).padding(8).style(outline_input(p))
+            text_input(hint, value).on_input(on).size(rem(13.0)).padding(8).style(outline_input(p))
         };
         if let Some((typed, busy, error)) = &f.delete {
             let username = st.me().username.clone().unwrap_or_default();
@@ -404,7 +405,7 @@ impl BeeperGuiApp {
             let content = column![
                 bold(tr("Delete account"), 17.0).color(p.strong),
                 rich_text![span::<(), _>(strong.to_string()).font(fw(Weight::Bold)), span(rest.to_string())]
-                    .size(13)
+                    .size(rem(13.0))
                     .color(p.text),
                 Column::with_children([
                     item("Your account will be permanently deleted"),
@@ -516,7 +517,7 @@ impl BeeperGuiApp {
             .style(btn_style([p.accent; 3], [Color::WHITE; 3], 8.0))
             .on_press(UiMessage::Profile(Msg::SaveKeyNow));
         let banner = column![
-            semi(tr("If you lose your device..."), 16.0).line_height(Pixels(20.0)).color(p.accent),
+            semi(tr("If you lose your device..."), 16.0).line_height(Pixels(rem(20.0))).color(p.accent),
             txt(tr("You'll need your recovery key to access your encrypted data."), 11.0).color(p.strong).center(),
             save,
         ]

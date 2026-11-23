@@ -405,8 +405,8 @@ impl BeeperGuiApp {
         let input = text_input(tr("Search contact"), &d.search)
             .id("merge-search")
             .on_input(move |q| edit(MergeEdit::Search(q)))
-            .size(14)
-            .line_height(Pixels(18.0))
+            .size(rem(14.0))
+            .line_height(Pixels(rem(18.0)))
             .padding([17, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let searching = !d.search.trim().is_empty();
@@ -499,8 +499,8 @@ impl BeeperGuiApp {
             .id("merge-title")
             .on_input(move |t| edit(MergeEdit::Title(t)))
             .on_submit(edit(MergeEdit::Submit))
-            .size(14)
-            .line_height(Pixels(18.0))
+            .size(rem(14.0))
+            .line_height(Pixels(rem(18.0)))
             .padding([7, 14])
             .align_x(Center)
             .width(200)

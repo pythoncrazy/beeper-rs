@@ -5,13 +5,14 @@ use crate::chat_list::preview_body;
 use crate::commands;
 use crate::i18n::{tr, trf, trn};
 use crate::message;
+use crate::style::rem;
 use crate::style::{
     bordered_btn, brand_svg, btn_style, ell, fill_box, ic, icon, scroll_style, semi, shadow_box, txt, CLEAR,
 };
 use crate::time::format_short_ts;
 use crate::{
-    activates, brand_key, composer_with, membership, menu_item, menu_rule, tinted, BeeperGuiApp, El, Pane, UiMessage,
-    BUBBLE_PAD_X, CHEVRON_FORWARD, MENU_ITEM, MIN_PANE_W,
+    activates, brand_key, composer_with, membership, menu_item, menu_pitch, menu_rule, tinted, BeeperGuiApp, El, Pane,
+    UiMessage, BUBBLE_PAD_X, CHEVRON_FORWARD, MIN_PANE_W,
 };
 use beeper_core::models::*;
 use beeper_core::store::BeeperStore;
@@ -264,7 +265,10 @@ impl BeeperGuiApp {
         ]);
         let read = unread.then(|| {
             [
-                (menu_item(p, None, tr("Mark as Read").into(), "", Some(UiMessage::Thread(Msg::MarkRead))), MENU_ITEM),
+                (
+                    menu_item(p, None, tr("Mark as Read").into(), "", Some(UiMessage::Thread(Msg::MarkRead))),
+                    menu_pitch(),
+                ),
                 (menu_rule(p), 11.0),
             ]
         });
@@ -276,9 +280,9 @@ impl BeeperGuiApp {
             .into_iter()
             .flatten()
             .chain([
-                (follow, MENU_ITEM),
-                (menu_item(p, None, tr("Open in New Window").into(), "", Some(window)), MENU_ITEM),
-                (menu_item(p, None, tr("View in Chat").into(), "", Some(view)), MENU_ITEM),
+                (follow, menu_pitch()),
+                (menu_item(p, None, tr("Open in New Window").into(), "", Some(window)), menu_pitch()),
+                (menu_item(p, None, tr("View in Chat").into(), "", Some(view)), menu_pitch()),
             ])
             .collect();
         let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
@@ -326,7 +330,7 @@ impl BeeperGuiApp {
         let label = trn("Mark %d Thread as Read", "Mark %d Threads as Read", n, &[&n]);
         let col = column![menu_item(p, None, label, "", Some(UiMessage::Thread(Msg::MarkAllRead)))];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-        (menu.into(), at.x, at.y.min(self.pane().size.height - 8.0 - MENU_ITEM - 8.0))
+        (menu.into(), at.x, at.y.min(self.pane().size.height - 8.0 - menu_pitch() - 8.0))
     }
 
     /// Desktop's `UnreadThreads` view: the unread followed threads as cards, newest first, and the thread pane of the
@@ -336,7 +340,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let threads = self.unread_threads(&st, true);
         let open = self.pane.thread.as_ref().map(|t| (t.selected_chat_id.clone(), t.thread_root.clone()));
-        let title = semi(tr("Unread threads"), 14.0).line_height(Pixels(18.0)).color(p.text);
+        let title = semi(tr("Unread threads"), 14.0).line_height(Pixels(rem(18.0))).color(p.text);
         let count = (!threads.is_empty())
             .then(|| container(semi(threads.len().to_string(), 14.0).color(p.tertiary)).padding([0, 6]));
         let header = row![container(title).width(Fill)].push(count).align_y(Center).padding([12, 16]);
@@ -443,7 +447,7 @@ impl BeeperGuiApp {
         let faces =
             faces.take(3).map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or(&u.id), 16.0, 0.5));
         let n = replies.len();
-        let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).line_height(Pixels(15.0)).color(p.text);
+        let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).line_height(Pixels(rem(15.0))).color(p.text);
         let (unread, at) = if st.follows_thread(chat, root) { st.thread_unread(chat, root) } else { (0, 0) };
         let badge = thread_badge(p.accent, unread, at);
         let chevron = container(tinted(&CHEVRON_FORWARD, 14.0, p.tertiary)).padding(Padding::ZERO.right(2.0));
@@ -464,7 +468,7 @@ impl BeeperGuiApp {
         let room = 300.0 - 2.0 * BUBBLE_PAD_X - crate::style::text_width(&label, 11.0, Weight::Semibold);
         let line = row![
             semi(label, 11.0).color(p.sub),
-            ell(&preview, room, 11.0, Weight::Normal).line_height(Pixels(14.0)).color(p.sub)
+            ell(&preview, room, 11.0, Weight::Normal).line_height(Pixels(rem(14.0))).color(p.sub)
         ];
         let line = container(line)
             .max_width(300)

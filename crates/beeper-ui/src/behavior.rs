@@ -233,7 +233,7 @@ impl BeeperGuiApp {
         let line = b.line(st.settings.pref("timeFormat") == 1)?;
         let dim = p.sub;
         let text =
-            txt(line, 12.0).line_height(Pixels(15.0)).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
+            txt(line, 12.0).line_height(Pixels(rem(15.0))).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
         let label =
             row![tinted(b.icon(), 14.0, dim), text, tinted(&CHEVRON_FORWARD, 10.0, dim)].spacing(5).align_y(Center);
         let open = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{BEHAVIOR_MENU}{}", chat.id)));
@@ -250,7 +250,7 @@ impl BeeperGuiApp {
         let close = |msg| UiMessage::Commands(vec![UiMessage::ChatList(chat_list::Msg::CloseMenu), msg]);
         let heading = tr("Visibility and Notifications").to_string();
         let mut width = text_width(&heading, 11.0, Weight::Medium) + 26.0;
-        let mut rows = vec![(menu_heading(p, heading), MENU_ITEM)];
+        let mut rows = vec![(menu_heading(p, heading), menu_pitch())];
         let Some(b) = behavior(st, c) else { return (rows, width) };
         for entry in &b.contributors {
             let s = &entry.source;
@@ -270,7 +270,13 @@ impl BeeperGuiApp {
             };
             let sub = sublabel(entry, st, b.snoozed, h24);
             width = width.max(
-                16.0 + 5.0 + text_width(&name, 13.0, Weight::Normal).max(text_width(&sub, 11.0, Weight::Normal)) + 26.0,
+                16.0 + 5.0
+                    + text_width(&name, 13.0, Weight::Normal).max(crate::style::fixed_width(
+                        &sub,
+                        11.0,
+                        Weight::Normal,
+                    ))
+                    + 26.0,
             );
             // Desktop's `CO` opens the Label Settings of a label, and `M0e` the settings of an account.
             let msg = match s.kind {
@@ -278,9 +284,12 @@ impl BeeperGuiApp {
                 Kind::Network => UiMessage::Accounts(accounts::Msg::OpenSettings(s.id.clone())),
                 Kind::Snooze | Kind::Chat => UiMessage::ChatList(chat_list::Msg::CloseMenu),
             };
-            let stack = column![txt(name, 13.0).line_height(Pixels(MENU_LINE)), txt(sub, 11.0).color(p.sub)];
+            let stack = column![
+                txt(name, 13.0).line_height(Pixels(rem(MENU_LINE))),
+                crate::style::fixed(sub, 11.0, Weight::Normal).color(p.sub)
+            ];
             let line = row![container(icon).center_x(16), stack].spacing(14);
-            rows.push((menu_line(p, line, Some(close(msg))), MENU_ITEM + 11.0 * 1.4));
+            rows.push((menu_line(p, line, Some(close(msg))), menu_pitch() + 11.0 * 1.4));
         }
         let how = tr("How It Works");
         width = width.max(14.0 + 14.0 + text_width(how, 13.0, Weight::Normal) + 26.0);
@@ -292,7 +301,7 @@ impl BeeperGuiApp {
             "",
             Some(close(UiMessage::Info(info::Msg::HowItWorks(true)))),
         );
-        rows.extend([(menu_rule(p), 11.0), (how, MENU_ITEM)]);
+        rows.extend([(menu_rule(p), 11.0), (how, menu_pitch())]);
         (rows, width.clamp(160.0, 360.0))
     }
 
@@ -321,16 +330,16 @@ impl BeeperGuiApp {
         let rows = rules.into_iter().map(|(icon, title, body)| -> El<'_> {
             let icon = container(tinted(icon, 18.0, p.strong)).center(28);
             let text = column![
-                med(title, 13.0).line_height(Pixels(16.0)).color(p.strong),
-                txt(body, 13.0).line_height(Pixels(16.0)).color(p.sub)
+                med(title, 13.0).line_height(Pixels(rem(16.0))).color(p.strong),
+                txt(body, 13.0).line_height(Pixels(rem(16.0))).color(p.sub)
             ]
             .spacing(2)
             .padding(Padding::ZERO.left(4.0).top(5.0));
             row![icon, text].into()
         });
         let head = column![
-            semi(tr("How It Works"), 15.0).line_height(Pixels(20.0)).color(p.strong),
-            txt(tr("Visibility and Notifications"), 13.0).line_height(Pixels(16.0)).color(p.sub)
+            semi(tr("How It Works"), 15.0).line_height(Pixels(rem(20.0))).color(p.strong),
+            txt(tr("Visibility and Notifications"), 13.0).line_height(Pixels(rem(16.0))).color(p.sub)
         ];
         let body = column![head, Column::with_children(rows).spacing(16).padding(Padding::ZERO.top(16.0))].padding(16);
         let done = button(med(tr("Done"), 13.0).color(Color::WHITE))

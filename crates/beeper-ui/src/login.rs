@@ -1,6 +1,7 @@
 use crate::accounts;
 use crate::focus::Focus;
 use crate::i18n::{tr, trx, trxf};
+use crate::style::rem;
 use crate::style::{
     bold, bordered_box, btn_style, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi, shadow_box,
     txt, Bare, Palette, CLEAR,
@@ -584,7 +585,7 @@ fn card_style(bg: Color) -> impl Fn(&Theme) -> container::Style {
 /// Desktop's `showToast`: a neutral toast with centered text and no close button, which goes after 3 s.
 fn toast<'a>(p: &Palette, text: &'a str, error: bool) -> El<'a> {
     let (bg, fg) = if error { (ERROR_RED, Color::WHITE) } else { (p.card, p.strong) };
-    let text = txt(text, 13.0).line_height(iced::Pixels(16.0)).color(fg).width(Fill);
+    let text = txt(text, 13.0).line_height(iced::Pixels(rem(16.0))).color(fg).width(Fill);
     let line: El<'a> = match error {
         true => {
             let close = button(ic(icon::CLOSE, 14.0).color(fg))
@@ -603,7 +604,8 @@ fn toast<'a>(p: &Palette, text: &'a str, error: bool) -> El<'a> {
 fn bubble(text: &str) -> El<'_> {
     let mark =
         container(bold("!", 15.0).color(Color::WHITE)).center(22).style(fill_box(Color::from_rgb8(232, 89, 12), 2.0));
-    let line = row![mark, txt(text, 14.0).line_height(iced::Pixels(16.0)).color(Color::BLACK).width(Fill)].spacing(8);
+    let line =
+        row![mark, txt(text, 14.0).line_height(iced::Pixels(rem(16.0))).color(Color::BLACK).width(Fill)].spacing(8);
     let card = container(line).padding(8).width(162).style(shadow_box(
         Color::WHITE,
         Color::from_rgb8(160, 160, 160),
@@ -691,7 +693,7 @@ pub(crate) fn actions(items: Vec<El<'_>>, bottom: f32) -> El<'_> {
 
 /// The content of a `BrandButton`: 13 px medium text, after an 18 px icon with an 8 px gap.
 fn label<'a>(s: impl iced::widget::text::IntoFragment<'a>, lead: Option<El<'a>>) -> El<'a> {
-    let text = med(s, 13.0).line_height(iced::Pixels(14.95));
+    let text = med(s, 13.0).line_height(iced::Pixels(rem(14.95)));
     row![].push(lead).push(text).spacing(8).align_y(Center).into()
 }
 
@@ -740,7 +742,7 @@ fn field_with_icons<'a, M: Into<UiMessage> + 'a>(
     let input = stack![input].push(icons);
     // `translate(26px, -60%) scale(0.6875)` of the label, with its origin at the left middle of the field.
     let chip = (!value.is_empty()).then(|| {
-        let hint = txt(hint, 14.0 * 0.6875).line_height(iced::Pixels(18.0 * 0.6875)).color(p.on_secondary);
+        let hint = txt(hint, 14.0 * 0.6875).line_height(iced::Pixels(rem(18.0 * 0.6875))).color(p.on_secondary);
         let chip = container(hint).padding([10.0 * 0.6875, 12.0 * 0.6875]).style(fill_box(p.card, 99.0));
         container(chip).padding(Padding::ZERO.left(26))
     });
@@ -758,8 +760,8 @@ fn brand_input<'a, M: Into<UiMessage> + 'a>(
     text_input(hint, value)
         .id(id)
         .on_input_maybe(on.map(|on| move |v| on(v).into()))
-        .size(14)
-        .line_height(iced::Pixels(18.0))
+        .size(rem(14.0))
+        .line_height(iced::Pixels(rem(18.0)))
         .padding(Padding::new(10.0).left(12.0).right(12.0))
         .style(input_style(p.chip, p.on_secondary, p.on_secondary, p.accent, 19.0))
 }
@@ -1248,8 +1250,8 @@ impl BeeperGuiApp {
                 let plain = sentence.replace("%1$s", terms_label).replace("%2$s", privacy_label);
                 let terms = rich_text(spans)
                     .on_link_click(|m: UiMessage| m)
-                    .size(11)
-                    .line_height(iced::widget::text::LineHeight::Absolute(14.0.into()))
+                    .size(rem(11.0))
+                    .line_height(iced::widget::text::LineHeight::Absolute(rem(14.0).into()))
                     .width(crate::style::balanced_width(&plain, 278.0, 11.0))
                     .center();
                 let terms = container(terms).center_x(Fill);
@@ -1343,7 +1345,7 @@ impl BeeperGuiApp {
                         .code
                         .chars()
                         .nth(i)
-                        .map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(36.0)).color(ink).into());
+                        .map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(rem(36.0))).color(ink).into());
                     let at = focused && i == l.slot;
                     let caret = (at && i >= l.code.len())
                         .then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
@@ -1365,7 +1367,7 @@ impl BeeperGuiApp {
                     .id(CODE_INPUT)
                     .on_input(|v| LoginMsg::Slot(v, false).into())
                     .on_paste(|v| LoginMsg::Slot(v, true).into())
-                    .size(28)
+                    .size(rem(28.0))
                     .padding(14)
                     .style(input_style(CLEAR, CLEAR, CLEAR, CLEAR, 0.0));
                 let press = mouse_area(container(Space::new()).width(Fill).height(60))
@@ -1382,8 +1384,8 @@ impl BeeperGuiApp {
                     span(trx("Resend", "button label")).color(p.accent).link(UiMessage::Login(LoginMsg::Resend))
                 ]
                 .on_link_click(move |m: UiMessage| if l.busy { UiMessage::Noop } else { m })
-                .size(11)
-                .line_height(iced::Pixels(14.0));
+                .size(rem(11.0))
+                .line_height(iced::Pixels(rem(14.0)));
                 // iced finds the link of a rich text as if its line started at the left of the text, so the line takes
                 // its own width and the container centers it: a wider centered text would take the clicks on
                 // "Resend" somewhere left of it.
@@ -1405,7 +1407,7 @@ impl BeeperGuiApp {
                         vec![
                             container(
                                 txt(info, 13.0)
-                                    .line_height(iced::Pixels(16.0))
+                                    .line_height(iced::Pixels(rem(16.0)))
                                     .color(p.on_secondary)
                                     .center()
                                     .width(Fill)

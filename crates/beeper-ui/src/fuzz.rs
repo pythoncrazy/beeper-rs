@@ -4351,8 +4351,11 @@ fn zoom_keys_like_desktop() {
         let _ = app.update(UiMessage::KeyPressed(Key::Character(key.into()), Modifiers::CTRL));
         assert_eq!(app.zoom, zoom, "ctrl {key}");
     }
+    // Desktop's Font size sets the root font (`--custom-font-size`), which only the text in rem follows.
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 0)));
-    assert_eq!(app.zoom, 0.75, "the font size 9 is a root font of 12 px, as in Desktop");
+    assert_eq!((app.zoom, crate::style::rem(16.0)), (1.0, 12.0), "the font size 9 is a root font of 12 px");
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("=".into()), Modifiers::CTRL));
+    assert_eq!((app.zoom, crate::style::rem(16.0)), (1.1, 12.0), "the zoom keeps the root font");
 }
 
 /// Desktop's windows open at their size in screen pixels whatever the zoom and the font size, and iced opens a
@@ -4360,23 +4363,31 @@ fn zoom_keys_like_desktop() {
 #[test]
 fn windows_open_at_their_size_at_any_zoom_like_desktop() {
     use iced::futures::StreamExt;
+    use iced::keyboard::{Key, Modifiers};
+    let opened = |app: &mut BeeperGuiApp| {
+        let task = app.open_settings(SettingsTab::General);
+        let actions = iced_runtime::task::into_stream(task).expect("a window opens");
+        iced::futures::executor::block_on(
+            actions
+                .filter_map(|a| async move {
+                    match a {
+                        iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s.size),
+                        _ => None,
+                    }
+                })
+                .boxed()
+                .next(),
+        )
+    };
     let mut app = demo_app("zoomed-windows");
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 8)));
-    assert_eq!(app.zoom, 1.25, "the font size 17 is a root font of 20 px");
-    let task = app.open_settings(SettingsTab::General);
-    let actions = iced_runtime::task::into_stream(task).expect("a window opens");
-    let size = iced::futures::executor::block_on(
-        actions
-            .filter_map(|a| async move {
-                match a {
-                    iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s.size),
-                    _ => None,
-                }
-            })
-            .boxed()
-            .next(),
-    );
-    assert_eq!(size, Some(SETTINGS_SIZE * 0.8), "800 by 740 screen pixels");
+    assert_eq!(opened(&mut app), Some(SETTINGS_SIZE), "the font size 17 does not zoom the window");
+    app.settings_window = None;
+    for _ in 0..10 {
+        let _ = app.update(UiMessage::KeyPressed(Key::Character("=".into()), Modifiers::CTRL));
+    }
+    assert_eq!(app.zoom, 2.0);
+    assert_eq!(opened(&mut app), Some(SETTINGS_SIZE / 2.0), "800 by 740 screen pixels at 200%");
 }
 
 /// The sizes of the windows are in iced's logical pixels, which the zoom scales like Desktop's CSS pixels: the
@@ -4403,6 +4414,110 @@ fn the_zoom_resizes_the_viewport_like_desktop() {
     assert!(app.pane.size.width < 600.0 && app.sidebar_hidden, "a zoom in narrows it, at {}", app.zoom);
     zoom(&mut app, "0");
     assert_eq!((app.pane.size.width.round(), app.sidebar_hidden), (704.0, false));
+}
+
+/// Sets Desktop's Font size (9 to 36) and zoom (in percent) of `app`.
+fn font_and_zoom(app: &mut BeeperGuiApp, font: u8, zoom: u16) {
+    app.store.write().settings.zoom_percent = zoom;
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", font - 9)));
+    assert_eq!((app.zoom, crate::style::rem(16.0)), (f32::from(zoom) / 100.0, f32::from(font) + 3.0));
+}
+
+/// Desktop's Font size is its root font (`--custom-font-size`), which only the sizes in rem follow: the text, not the
+/// space bar, whose buttons are in px. Only the zoom scales those, and the viewport with them.
+#[test]
+fn the_font_size_scales_the_text_and_not_the_space_bar_like_desktop() {
+    let mut app = demo_app("font-size-rail");
+    let main = app.main_window.expect("the main window");
+    let bounds = |sim: &mut Simulator<UiMessage>, id: &'static str| {
+        sim.find(iced::widget::Id::new(id)).unwrap_or_else(|_| panic!("{id} shows")).bounds()
+    };
+    for zoom in [50, 100, 150, 200] {
+        let mut rail = None;
+        for font in [13, 9, 10, 12, 14, 16, 18, 20, 22, 24] {
+            font_and_zoom(&mut app, font, zoom);
+            let size = app.pane.size;
+            let viewport = MAIN_SIZE * (100.0 / f32::from(zoom));
+            assert_eq!(
+                (size.width.round(), size.height.round()),
+                (viewport.width.round(), viewport.height.round()),
+                "the viewport"
+            );
+            let mut sim = Simulator::with_size(Default::default(), size, app.view(main));
+            let (more, media) = (bounds(&mut sim, "rail-more"), bounds(&mut sim, "rail-media"));
+            let rail = *rail.get_or_insert((more, media));
+            assert_eq!((more, media), rail, "the space bar at font {font} and {zoom}% is the one of font 13");
+            let label = sim.find("Unread threads").expect("the unread threads pill").bounds();
+            assert_eq!(label.height, crate::style::rem(16.0), "its text in rem at font {font}");
+        }
+    }
+    // At 24 the Media button still draws its icon, which the spaces above it used to cover.
+    font_and_zoom(&mut app, 24, 100);
+    let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+    let media = bounds(&mut sim, "rail-media");
+    let shot = crate::message::tests::pixels(&mut sim);
+    let k = shot.width() as f32 / app.pane.size.width;
+    let dark = (0..36).flat_map(|y| (0..36).map(move |x| (x, y))).any(|(x, y)| {
+        let px = shot.get_pixel(((media.x + x as f32) * k) as u32, ((media.y + y as f32) * k) as u32).0;
+        px[..3].iter().all(|&c| c < 100)
+    });
+    assert!(dark, "the Media icon draws at font 24");
+}
+
+/// Desktop's settings row (`.label-wrapper label`) keeps its label, which wraps anywhere (`overflow-wrap: anywhere`)
+/// and shrinks (`min-width: 0`), before its select (`flex: 0 0 auto`), at any font size and zoom.
+#[test]
+fn settings_labels_stay_clear_of_their_selects_at_any_font_size_like_desktop() {
+    let mut app = demo_app("font-size-settings");
+    let _ = app.open_settings(SettingsTab::Appearance);
+    let id = app.settings_window.expect("the settings window");
+    for zoom in [50, 100, 150, 200] {
+        for font in [9, 13, 16, 20, 24] {
+            font_and_zoom(&mut app, font, zoom);
+            let size = SETTINGS_SIZE * (100.0 / f32::from(zoom));
+            let mut sim = Simulator::with_size(Default::default(), size, app.view(id));
+            let label = sim.find("Badge count").expect("the label").bounds();
+            let select = sim.find(iced::widget::Id::new("select-badgeCount")).expect("the select").bounds();
+            let at = format!("at font {font} and {zoom}%: {label:?} {select:?}");
+            assert!(label.x + label.width <= select.x, "the label ends before the select {at}");
+            assert!((select.center_y() - label.center_y()).abs() < 1.0, "the select centers on the label {at}");
+            let line = crate::style::rem(16.0);
+            let whole = crate::style::text_width("Badge count", 13.0, Weight::Normal);
+            let room = select.x - 6.0 - label.x;
+            // The Font size alone leaves the row its width, so the label keeps its line, as in Desktop.
+            assert!(zoom > 100 || room >= whole, "the label has its room {at}");
+            if room >= whole {
+                assert!(label.width >= whole - 0.5 && label.height == line, "the label on one line {at}");
+            } else if room >= crate::style::text_width("Badge", 13.0, Weight::Normal) {
+                assert!(label.height == 2.0 * line, "the label wraps between its words {at}");
+            }
+        }
+    }
+}
+
+/// Desktop's `.message .timestamp` is 11 px, so the time of a message keeps its size while the text follows the Font
+/// size.
+#[test]
+fn message_times_keep_their_px_size_like_desktop() {
+    let mut app = demo_app("font-size-times");
+    let main = app.main_window.expect("the main window");
+    let (chat, time) = {
+        let st = app.store.read();
+        let chat = st.chats.iter().find(|c| c.title == "Note to self").expect("the demo note").id.clone();
+        let last = st.chat_timeline(&chat).into_iter().last().expect("a message").timestamp.clone();
+        (chat, crate::time::format_short_ts(&last, false))
+    };
+    let _ = app.update(UiMessage::SelectChat(chat));
+    for font in [9, 13, 24] {
+        font_and_zoom(&mut app, font, 100);
+        let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+        let at = sim.find(time.as_str()).expect("the time of the last message").bounds();
+        let px = crate::style::fixed_width(&time, 11.0, Weight::Normal);
+        assert_eq!(at.width, px, "11 px text at font {font}: {time} {at:?}");
+        // The read receipt is `--semantic-typo-size-label-sm` text, in rem.
+        let sent = sim.find("Sent").expect("the receipt").bounds();
+        assert_eq!(sent.height, crate::style::rem(15.0), "rem text at font {font}");
+    }
 }
 
 #[test]

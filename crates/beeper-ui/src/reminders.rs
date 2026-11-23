@@ -225,7 +225,8 @@ impl BeeperGuiApp {
         let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
         let can = st.feature("remind-later").on;
         let close = |msg: UiMessage| UiMessage::Message(message::Msg::Menu(Box::new(msg)));
-        let item = |label: String, at: String, msg: Option<UiMessage>| (menu_item(p, None, label, at, msg), MENU_ITEM);
+        let item =
+            |label: String, at: String, msg: Option<UiMessage>| (menu_item(p, None, label, at, msg), menu_pitch());
         let set = |at: i64| can.then(|| close(UiMessage::Reminders(Msg::Message(mid.into(), Some(at)))));
         let upgrade = (!can).then(|| {
             let open = close(UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus)));
@@ -260,14 +261,15 @@ impl BeeperGuiApp {
         let chats: Vec<&Chat> = ids.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect();
         let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
         let can = can_snooze(st, &chats);
-        let item = |label: String, at: String, msg: Option<UiMessage>| (menu_item(p, None, label, at, msg), MENU_ITEM);
+        let item =
+            |label: String, at: String, msg: Option<UiMessage>| (menu_item(p, None, label, at, msg), menu_pitch());
         let snooze = |at: Option<i64>| UiMessage::Reminders(Msg::Snooze(ids.to_vec(), at));
         let upgrade = snooze_upgrade(st, &chats).then(|| {
             let open = UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus));
             [item(tr("Upgrade to Beeper Plus").into(), String::new(), Some(open)), (menu_rule(p), 11.0)]
         });
         let until = chats.first().filter(|_| chats.len() == 1).and_then(|c| snoozed_until(st, c));
-        let heading = until.map(|at| (menu_heading(p, snoozed_label(at, h24)), MENU_ITEM));
+        let heading = until.map(|at| (menu_heading(p, snoozed_label(at, h24)), menu_pitch()));
         let last = last_used_of(&st.settings.snooze_last_time, now)
             .map(|at| item(tr("Last Used").into(), last_used_label(at, h24), can.then(|| snooze(Some(at)))));
         let presets = remind_presets(&st.settings, now).into_iter().map(|(label, at)| {
