@@ -1595,6 +1595,18 @@ impl BeeperGuiApp {
         container(pane).width(Fill).height(Fill).clip(true).style(pane_card(p.card)).into()
     }
 
+    /// Desktop's `MessageErrorTooltip`: the label, and the error icon whose tooltip is the error of the send.
+    fn error_tooltip<'a>(&self, e: &beeper_core::models::SendError, label: &'a str) -> El<'a> {
+        let icon = svg(ERROR_OUTLINE.clone()).width(20).height(20);
+        let icon = icon.style(|_, _| svg::Style { color: Some(ON_ERROR_CONTAINER) });
+        let error = e.message.clone().unwrap_or_else(|| tr("Unknown error occurred").into());
+        let tip = self.tip(icon.into(), error, vec![], tooltip::Position::Left);
+        row![crate::style::fixed(label, 11.0, Weight::Normal).color(ON_ERROR_CONTAINER), tip]
+            .spacing(4)
+            .align_y(Center)
+            .into()
+    }
+
     /// Desktop's `jumpToMessage` and `revealMessage`: shows message `mid` of chat `cid` in the timeline of the pane,
     /// and a reply only in a thread in the thread pane. The thread pane jumps in its own thread.
     pub(crate) fn jump_to(&mut self, cid: String, mid: String) -> Task<UiMessage> {
@@ -2208,6 +2220,25 @@ impl BeeperGuiApp {
         if m.view_once() {
             parts = parts.push(self.view_once_pill(m, (bg, fg)));
         }
+        // Desktop's `message-attachment-failed`: a failed message without text shows "Not sent" at its attachments,
+        // over the bottom right of a lone photo or video, else in a row under them.
+        let attached = ms.len() == 1 && !m.view_once() && !m.attachments.is_empty();
+        let failed_files = failed.filter(|_| attached && m.text.as_deref().is_none_or(str::is_empty));
+        let lone_media = matches!(&m.attachments[..], [a] if a.attachment_type == "img" || a.attachment_type == "video"
+            || a.mime_type.as_deref().is_some_and(|t| t.starts_with("image/")));
+        let not_sent = |content: El<'a>| -> El<'a> {
+            match failed_files.filter(|_| lone_media) {
+                Some(e) => stack![
+                    content,
+                    container(self.error_tooltip(e, tr("Not sent")))
+                        .align_right(Fill)
+                        .align_bottom(Fill)
+                        .padding(Padding::ZERO.right(12.0))
+                ]
+                .into(),
+                None => content,
+            }
+        };
         for (ai, a) in m.attachments.iter().enumerate().filter(|_| ms.len() == 1 && !m.view_once()) {
             let name = attachment_name(a);
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
@@ -2285,7 +2316,7 @@ impl BeeperGuiApp {
                             )
                         } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
                             let video = self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai));
-                            parts = parts.push(dimmed(video, selected));
+                            parts = parts.push(not_sent(dimmed(video, selected)));
                             continue;
                         } else if is_video && a.is_gif != Some(true) {
                             (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
@@ -2315,7 +2346,12 @@ impl BeeperGuiApp {
                     self.view_file_row(m, ai, a, timer)
                 }
             };
-            parts = parts.push(dimmed(content, selected));
+            parts = parts.push(not_sent(dimmed(content, selected)));
+        }
+        if let Some(e) = failed_files.filter(|_| !lone_media) {
+            // The column puts it at the right of an own message.
+            parts =
+                parts.push(container(self.error_tooltip(e, tr("Not sent"))).padding(Padding::ZERO.right(BUBBLE_PAD_X)));
         }
         if let Some(poll) = poll {
             parts = parts.push(self.view_poll(st, chat, m, poll, (bg, fg)));
@@ -2403,18 +2439,7 @@ impl BeeperGuiApp {
             let (room, time) = match failed {
                 Some(e) => {
                     let label = if m.edited() { tr("Failed to edit") } else { tr("Not sent") };
-                    let icon = svg(ERROR_OUTLINE.clone()).width(20).height(20);
-                    let icon = icon.style(|_, _| svg::Style { color: Some(ON_ERROR_CONTAINER) });
-                    let tip = self.tip(
-                        icon.into(),
-                        e.message.clone().unwrap_or_else(|| tr("Unknown error occurred").into()),
-                        vec![],
-                        tooltip::Position::Left,
-                    );
-                    let meta = row![crate::style::fixed(label, 11.0, Weight::Normal).color(ON_ERROR_CONTAINER), tip]
-                        .spacing(4)
-                        .align_y(Center);
-                    (crate::style::fixed_width(label, 11.0, Weight::Normal) + 28.0, Some(meta.into()))
+                    (crate::style::fixed_width(label, 11.0, Weight::Normal) + 28.0, Some(self.error_tooltip(e, label)))
                 }
                 // Desktop's `BookmarkIndicator` and `ReminderIndicator` (`E3`) go before the time.
                 None => {
