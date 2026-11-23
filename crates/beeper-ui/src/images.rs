@@ -91,6 +91,18 @@ impl<V: Weigh> Images<V> {
         }
     }
 
+    /// Keeps the images for which `keep` holds.
+    pub fn retain(&mut self, mut keep: impl FnMut(&str, &Option<V>) -> bool) {
+        let bytes = &mut self.bytes;
+        self.map.retain(|url, (v, size, _)| {
+            let kept = keep(url, v);
+            if !kept {
+                *bytes -= *size;
+            }
+            kept
+        });
+    }
+
     pub fn extend(&mut self, items: impl IntoIterator<Item = (String, Option<V>)>) {
         for (url, v) in items {
             self.insert(url, v);

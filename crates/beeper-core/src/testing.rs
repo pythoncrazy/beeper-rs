@@ -26,8 +26,11 @@ pub fn demo_store(name: &str) -> SharedStore {
     StoreLock::shared(BeeperStore::from_config(demo_config(name)))
 }
 
-/// A signed-in store in `dir` with a Matrix client that synced the stub homeserver at `url`.
-pub async fn stub_store(dir: &std::path::Path, url: &str) -> crate::store::SharedStore {
+/// How long a stub client may take to set up its key backup or to sync once, before the test fails.
+const STUB_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A signed-in store in `dir` with a Matrix client of the stub homeserver at `url`, before its first sync.
+pub async fn stub_client(dir: &std::path::Path, url: &str) -> (SharedStore, matrix_sdk::Client) {
     crate::cloud::install_tls();
     let cfg = crate::config::CentralConfig::new(dir.into(), "127.0.0.1".into(), 23392, None);
     let mut st = crate::store::BeeperStore::from_config(cfg.clone());
@@ -41,7 +44,20 @@ pub async fn stub_store(dir: &std::path::Path, url: &str) -> crate::store::Share
     }
     let store = crate::store::StoreLock::shared(st);
     let client = crate::matrix::connect(&store).await.expect("connect to the stub homeserver");
-    client.sync_once(matrix_sdk::config::SyncSettings::default()).await.expect("sync with the stub homeserver");
+    // matrix-sdk sets up the key backup in a task of `restore_session`. Without a backup on the stub, the task creates
+    // one, and its signature of the backup can deadlock in the crypto store with the upload of the device keys of a
+    // sync, which left tests waiting for good. So the client waits for the setup before it syncs.
+    let encryption = client.encryption();
+    let setup = tokio::time::timeout(STUB_WAIT, encryption.wait_for_e2ee_initialization_tasks());
+    setup.await.expect("the key backup setup ends in time");
+    (store, client)
+}
+
+/// A signed-in store in `dir` with a Matrix client that synced the stub homeserver at `url`.
+pub async fn stub_store(dir: &std::path::Path, url: &str) -> SharedStore {
+    let (store, client) = stub_client(dir, url).await;
+    let sync = tokio::time::timeout(STUB_WAIT, client.sync_once(matrix_sdk::config::SyncSettings::default()));
+    sync.await.expect("the first sync ends in time").expect("sync with the stub homeserver");
     store.write().matrix = Some(client);
     store
 }
