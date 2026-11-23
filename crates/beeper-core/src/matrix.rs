@@ -230,17 +230,14 @@ fn visibility_key(account_id: &str) -> &str {
 /// spaces, which has only "all" and "none".
 pub fn inbox_rule<'a>(rules: &'a Value, account_id: &str, bridge: &str, network: Option<&str>) -> (String, &'a str) {
     let vis = |key: &str| visibility(rules, key);
-    match network.filter(|_| !matches!(bridge, "slackgo" | "whatsapp" | "telegram")) {
-        Some(n) => {
-            let key = network_key(account_id, n);
-            let option = vis(&key).filter(|&o| o != "dmOnly").unwrap_or("none");
-            (canonical_key(&key), option)
-        }
-        None => {
-            let default = if matches!(bridge, "slackgo" | "discordgo") { "dmOnly" } else { "all" };
-            let key = visibility_key(account_id);
-            (key.into(), vis(key).unwrap_or(default))
-        }
+    if let Some(n) = network.filter(|_| !matches!(bridge, "slackgo" | "whatsapp" | "telegram")) {
+        let key = network_key(account_id, n);
+        let option = vis(&key).filter(|&o| o != "dmOnly").unwrap_or("none");
+        (canonical_key(&key), option)
+    } else {
+        let default = if matches!(bridge, "slackgo" | "discordgo") { "dmOnly" } else { "all" };
+        let key = visibility_key(account_id);
+        (key.into(), vis(key).unwrap_or(default))
     }
 }
 
@@ -1064,14 +1061,13 @@ async fn op(
     // Desktop's `actionButtonsFrom`: only the messages of the system user have buttons.
     let buttons = if system_user(&sender) { ActionButton::list(&c["com.beeper.buttons"]) } else { Vec::new() };
     let user = matrix_sdk::ruma::UserId::parse(&sender).expect("sender is a user ID");
-    let name = match names.get(&sender) {
-        Some(name) => name.clone(),
-        None => {
-            let member = room.get_member_no_sync(&user).await.expect("read room member");
-            let name = member.map(|m| m.name().to_string());
-            names.insert(sender.clone(), name.clone());
-            name
-        }
+    let name = if let Some(name) = names.get(&sender) {
+        name.clone()
+    } else {
+        let member = room.get_member_no_sync(&user).await.expect("read room member");
+        let name = member.map(|m| m.name().to_string());
+        names.insert(sender.clone(), name.clone());
+        name
     };
     // Desktop's `key || ""`, and its reaction of a custom emoji: its shortcode as the key and its image.
     let key = rel["key"].as_str().unwrap_or_default();
@@ -1950,26 +1946,24 @@ async fn sync_room_after(
     };
     // SQLite keeps the fresh reads and members of a joined room for the next start.
     let mut keep_reads = false;
-    let mut reads = match cached {
-        Some(r) => r,
-        None => {
-            let r = Arc::new(RoomReads::read(room, Some(create_event)).await);
-            store.write().room_reads.put(id, epoch, r.clone());
-            keep_reads = joined;
-            r
-        }
+    let mut reads = if let Some(r) = cached {
+        r
+    } else {
+        let r = Arc::new(RoomReads::read(room, Some(create_event)).await);
+        store.write().room_reads.put(id, epoch, r.clone());
+        keep_reads = joined;
+        r
     };
     let chat_id = reads.chat_id(room);
     let note = chat_id == NOTE_CHAT_ID;
     let accounts = store.read().bridge_accounts.clone();
     let rules = store.read().inbox_rules.clone();
     let read;
-    let globals = match globals {
-        Some(g) => g,
-        None => {
-            read = Globals::read(&room.client()).await;
-            &read
-        }
+    let globals = if let Some(g) = globals {
+        g
+    } else {
+        read = Globals::read(&room.client()).await;
+        &read
     };
     let rank = globals.pin_rank(id);
     let known = match known {
@@ -1989,13 +1983,12 @@ async fn sync_room_after(
     };
     let keeps_members = union.is_none() && joined;
     let mut keep_members = None;
-    let known = match known.filter(|_| keeps_members) {
-        Some(k) => k,
-        None => {
-            let k = read_members(room, &reads).await;
-            keep_members = keeps_members.then(|| k.to_json());
-            k
-        }
+    let known = if let Some(k) = known.filter(|_| keeps_members) {
+        k
+    } else {
+        let k = read_members(room, &reads).await;
+        keep_members = keeps_members.then(|| k.to_json());
+        k
     };
     let mut chat = chat(room, &reads, &accounts, &rules, known, globals).await;
     // Desktop's `rT`: a merged chat is single.
@@ -2934,17 +2927,16 @@ pub enum BadAddress {
 pub fn room_address(input: &str) -> Result<(String, Vec<String>), BadAddress> {
     // Desktop's `xr`: `^(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:.]+\])(?::([0-9]{1,5}))?$` with a port up to 65535.
     fn server(s: &str) -> bool {
-        let (host_ok, port) = match s.strip_prefix('[') {
-            Some(rest) => match rest.split_once(']') {
+        let (host_ok, port) = if let Some(rest) = s.strip_prefix('[') {
+            match rest.split_once(']') {
                 Some((ip, after)) => {
                     (!ip.is_empty() && ip.chars().all(|c| c.is_ascii_hexdigit() || ":.".contains(c)), after)
                 }
                 None => return false,
-            },
-            None => {
-                let (host, port) = s.find(':').map_or((s, ""), |i| s.split_at(i));
-                (!host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || ".-".contains(c)), port)
             }
+        } else {
+            let (host, port) = s.find(':').map_or((s, ""), |i| s.split_at(i));
+            (!host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || ".-".contains(c)), port)
         };
         let port_ok = match port.strip_prefix(':') {
             Some(p) => {
@@ -3391,12 +3383,11 @@ impl Push<'_> {
 
     /// Uploads `data` of the type `mime`, encrypted when the room is.
     async fn upload(&self, data: Vec<u8>, mime: &str) -> Result<MediaSource, PushError> {
-        Ok(match self.room.latest_encryption_state().await?.is_encrypted() {
-            true => MediaSource::Encrypted(Box::new(self.client.upload_encrypted_file(&mut data.as_slice()).await?)),
-            false => {
-                let mime: mime::Mime = mime.parse().expect("a valid MIME type");
-                MediaSource::Plain(self.client.media().upload(&mime, data, None).await?.content_uri)
-            }
+        Ok(if self.room.latest_encryption_state().await?.is_encrypted() {
+            MediaSource::Encrypted(Box::new(self.client.upload_encrypted_file(&mut data.as_slice()).await?))
+        } else {
+            let mime: mime::Mime = mime.parse().expect("a valid MIME type");
+            MediaSource::Plain(self.client.media().upload(&mime, data, None).await?.content_uri)
         })
     }
 
@@ -3608,19 +3599,16 @@ impl Push<'_> {
     async fn message_reminder(&self, room_id: String, target: String, at: Option<i64>) -> Result<(), PushError> {
         let target = self.event(target)?.to_string();
         let rel = serde_json::json!({ "event_id": target, "room_id": room_id, "rel_type": MESSAGE_REMINDER });
-        match at {
-            Some(at) => {
-                let content = serde_json::json!({ "com.beeper.relates_to": rel, "remind_at_ms": at });
-                let id = self.room.send_raw(MESSAGE_REMINDER, content).await?.response.event_id;
-                self.store.write().reminder_events.insert(target, id.to_string());
-            }
-            None => {
-                let known = self.store.read().reminder_events.get(&target).cloned();
-                if let Some(id) = known {
-                    let content = serde_json::json!({ "com.beeper.relates_to": rel });
-                    redact_with(self.client, self.room, &id, content).await?;
-                    self.store.write().reminder_events.remove(&target);
-                }
+        if let Some(at) = at {
+            let content = serde_json::json!({ "com.beeper.relates_to": rel, "remind_at_ms": at });
+            let id = self.room.send_raw(MESSAGE_REMINDER, content).await?.response.event_id;
+            self.store.write().reminder_events.insert(target, id.to_string());
+        } else {
+            let known = self.store.read().reminder_events.get(&target).cloned();
+            if let Some(id) = known {
+                let content = serde_json::json!({ "com.beeper.relates_to": rel });
+                redact_with(self.client, self.room, &id, content).await?;
+                self.store.write().reminder_events.remove(&target);
             }
         }
         Ok(())
@@ -4200,16 +4188,15 @@ pub async fn create_matrix_dm(store: SharedStore, identifier: String) -> Result<
     let user = matrix_sdk::ruma::UserId::parse(&identifier).map_err(|e| e.to_string())?;
     let cached = client.encryption().get_user_devices(&user).await.map_err(|e| e.to_string())?;
     // The SDK's `FetchKeys` asks the homeserver about a user whose devices it does not track.
-    let encrypted = match cached.devices().next() {
-        Some(_) => true,
-        None => {
-            let query = serde_json::json!({ "device_keys": { user.as_str(): [] }, "timeout": 10000 });
-            let reply = client_api(&client, reqwest::Method::POST, &["keys", "query"], &[], Some(query.to_string()))
-                .await
-                .map_err(|e| format!("failed to query devices for {identifier:?}: {e}"))?;
-            let v: Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;
-            v["device_keys"][user.as_str()].as_object().is_some_and(|d| !d.is_empty())
-        }
+    let encrypted = if cached.devices().next().is_some() {
+        true
+    } else {
+        let query = serde_json::json!({ "device_keys": { user.as_str(): [] }, "timeout": 10000 });
+        let reply = client_api(&client, reqwest::Method::POST, &["keys", "query"], &[], Some(query.to_string()))
+            .await
+            .map_err(|e| format!("failed to query devices for {identifier:?}: {e}"))?;
+        let v: Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;
+        v["device_keys"][user.as_str()].as_object().is_some_and(|d| !d.is_empty())
     };
     let mut body = serde_json::json!({ "invite": [user], "preset": "trusted_private_chat", "is_direct": true });
     if encrypted {
@@ -4682,12 +4669,11 @@ fn sticker_pack(content: &Value, id: String, key: &str, source: Option<(&str, &s
     let images =
         images.filter(|(_, i)| sticker(if i["usage"].is_null() { &content["pack"]["usage"] } else { &i["usage"] }));
     for (code, (url, i)) in images.filter_map(|(c, i)| Some((c, (s(&i["url"]).filter(|u| !u.is_empty())?, i)))) {
-        match stickers.iter_mut().find(|x| x.url == url) {
-            Some(x) => x.shortcodes.push(code.clone()),
-            None => {
-                let (body, info) = (s(&i["body"]), i["info"].clone());
-                stickers.push(Sticker { url, shortcodes: vec![code.clone()], body, info, source: None });
-            }
+        if let Some(x) = stickers.iter_mut().find(|x| x.url == url) {
+            x.shortcodes.push(code.clone())
+        } else {
+            let (body, info) = (s(&i["body"]), i["info"].clone());
+            stickers.push(Sticker { url, shortcodes: vec![code.clone()], body, info, source: None });
         }
     }
     for x in &mut stickers {
@@ -5242,15 +5228,14 @@ pub async fn get_profile(client: Client, user: String) -> Result<String, String>
 pub async fn join_room(client: Client, room: String, via: String) -> Result<String, String> {
     use matrix_sdk::ruma::{OwnedServerName, RoomId, RoomOrAliasId};
     let room = RoomOrAliasId::parse(room).map_err(|e| e.to_string())?;
-    let joined = match <&RoomId>::try_from(&*room) {
-        Ok(id) => client.join_room_by_id(id).await,
-        Err(_) => {
-            let vias = match via.is_empty() {
-                true => Vec::new(),
-                false => vec![OwnedServerName::try_from(via).map_err(|e| e.to_string())?],
-            };
-            client.join_room_by_id_or_alias(&room, &vias).await
-        }
+    let joined = if let Ok(id) = <&RoomId>::try_from(&*room) {
+        client.join_room_by_id(id).await
+    } else {
+        let vias = match via.is_empty() {
+            true => Vec::new(),
+            false => vec![OwnedServerName::try_from(via).map_err(|e| e.to_string())?],
+        };
+        client.join_room_by_id_or_alias(&room, &vias).await
     };
     Ok(joined.map_err(|e| e.to_string())?.room_id().to_string())
 }
@@ -8428,13 +8413,14 @@ mod tests {
                 "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
                 "/_matrix/client/v3/sync" => (200, stub_sync()),
                 "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                p if method == "PUT" && p.contains("/state/") => match *refused.lock().unwrap() {
-                    true => (403, json!({ "errcode": "M_FORBIDDEN", "error": "not allowed" })),
-                    false => {
+                p if method == "PUT" && p.contains("/state/") => {
+                    if *refused.lock().unwrap() {
+                        (403, json!({ "errcode": "M_FORBIDDEN", "error": "not allowed" }))
+                    } else {
                         log.lock().unwrap().push((p.rsplit("/state/").next().unwrap().to_string(), body));
                         (200, json!({ "event_id": "$state" }))
                     }
-                },
+                }
                 _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
             })
             .await;

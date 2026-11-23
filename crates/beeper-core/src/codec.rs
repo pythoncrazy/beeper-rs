@@ -350,15 +350,12 @@ fn entities(s: &str) -> String {
             }
             .and_then(char::from_u32),
         });
-        match (ch, end) {
-            (Some(c), Some(e)) => {
-                out.push(c);
-                rest = &rest[e + 1..];
-            }
-            _ => {
-                out.push('&');
-                rest = &rest[1..];
-            }
+        if let (Some(c), Some(e)) = (ch, end) {
+            out.push(c);
+            rest = &rest[e + 1..];
+        } else {
+            out.push('&');
+            rest = &rest[1..];
         }
     }
     out + rest
