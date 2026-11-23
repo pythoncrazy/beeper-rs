@@ -1318,6 +1318,8 @@ pub enum Msg {
     Type(String),
     /// Tab (Shift+Tab with `back`) in the window, after a look for the caret.
     Tab(bool, Caret),
+    /// Enter without a modifier in the window, after a look for the caret.
+    Enter(Caret),
 }
 
 impl BeeperGuiApp {
@@ -1661,6 +1663,25 @@ impl BeeperGuiApp {
                 self.pane.key_focus.set(None);
                 return operation::focus(self.composer_id());
             }
+            // Desktop's `KeyboardHandlers` focus the composer at its end for Enter outside a text field, like after
+            // a click on the attachment button or a sticker. Chromium's keypress then goes to the composer, whose
+            // Enter does what it does there: it sends by default.
+            Msg::Enter(Caret::None) if self.composer_takes_keys() => {
+                self.hold_compose_target();
+                let keys = ["Message: Send Message and Archive", "Send Message", "Insert New Line"]
+                    .map(|h| self.store.read().settings.hotkey_keys(h).to_string());
+                self.pane.composer.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+                let focus = operation::focus(self.composer_id());
+                let enter = match keys.iter().position(|k| prefs::hotkey_has(k, [false; 3], "enter")) {
+                    Some(0) => self.update(UiMessage::Composer(Msg::SendAndArchive)),
+                    Some(1) => self.update(UiMessage::Composer(Msg::Submit)),
+                    _ => {
+                        self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Enter))))
+                    }
+                };
+                return Task::batch([focus, enter]);
+            }
+            Msg::Enter(_) => {}
             Msg::Paste => return Task::perform(clipboard_paste(), |r| UiMessage::Composer(Msg::Pasted(r))),
             // Desktop's `paste` handler: copied files go to the attachments, and a text goes into the composer.
             Msg::Pasted(r) => match r {
@@ -1763,7 +1784,9 @@ impl BeeperGuiApp {
             Msg::DropEnded => {
                 let paths = std::mem::take(&mut self.dropped);
                 if self.pane.selected_chat_id.is_some() {
-                    return self.update(UiMessage::Composer(Msg::FilesPicked(Ok(paths))));
+                    // Desktop's `onDrop` focuses the composer (`focusComposerFor`) before the files attach.
+                    let focus = operation::focus(self.composer_id());
+                    return Task::batch([focus, self.update(UiMessage::Composer(Msg::FilesPicked(Ok(paths))))]);
                 }
                 self.drop_send = false;
             }
