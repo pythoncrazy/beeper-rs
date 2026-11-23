@@ -424,6 +424,13 @@ impl BeeperGuiApp {
         !self.pane().composer.text().trim().is_empty() || !self.pane().attachments.is_empty() || self.recorder.is_some()
     }
 
+    /// The `FORMATS` that the open chat supports.
+    fn formats(&self) -> u16 {
+        let st = self.store.read();
+        let chat = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+        chat.map_or(ALL_FORMATS, |c| st.chats[c].formatting)
+    }
+
     /// Whether keys outside a text field go to the composer: a chat that takes messages shows, with no dialog over it.
     pub(crate) fn composer_takes_keys(&self) -> bool {
         self.can_compose()
@@ -1106,6 +1113,11 @@ impl BeeperGuiApp {
                         (Some('b'), false) => 0,
                         (Some('i'), false) => 1,
                         (Some('x'), true) => 2,
+                        // Tiptap's `Mod-Shift-b` of the quote and `Mod-Alt-c` of the code block, whose extensions
+                        // Desktop's composer loads only where the chat supports them (`Lx`). `Mod-Shift-7` and
+                        // `Mod-Shift-8` of the lists come through the hotkeys.
+                        (Some('b'), true) if formats & 1 << 6 != 0 => 6,
+                        (Some('c'), false) if k.modifiers.alt() && formats & 1 << 8 != 0 => 8,
                         _ => return text_editor::Binding::from_key_press(k),
                     };
                     Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Format(i))))
@@ -1305,6 +1317,8 @@ pub enum Msg {
     Undo(bool),
     /// Toggles a `format::LABELS` button on the composer selection.
     Format(usize),
+    /// A hotkey of a `format::LABELS` button, and where the caret was when it came.
+    FormatKey(usize, Caret),
     LinkDialog(Option<(String, String)>),
     SaveLink,
     Submit,
@@ -1561,6 +1575,11 @@ impl BeeperGuiApp {
                 self.pane.composer = composer_with(&v);
                 return self.composer_changed(old);
             }
+            // Tiptap's list keys, which work in the focused composer of a chat that supports the list.
+            Msg::FormatKey(i, Caret::Field) if self.formats() & 1 << i != 0 => {
+                return self.update(UiMessage::Composer(Msg::Format(i)));
+            }
+            Msg::FormatKey(..) => {}
             Msg::Format(format::CODE) if format::selection(&self.pane.composer).is_none() => {
                 let insert = text_editor::Action::Edit(text_editor::Edit::Insert('`'));
                 return self.update(UiMessage::Composer(Msg::Edit(insert)));
@@ -1573,7 +1592,16 @@ impl BeeperGuiApp {
                     self.pane.link_dialog = Some((String::new(), old[r].to_owned()));
                     return operation::focus("link-url");
                 }
-                let (text, r) = format::toggle(i, &old, r);
+                // Desktop's format keys: Tiptap's toggles of the marks that the chat supports, and else the marks as
+                // text (`_`). Inline code without that support does nothing, as `toggleCode` does not exist there.
+                let formats = self.formats();
+                let (text, r) = match i {
+                    0..=2 | format::CODE if formats & 1 << i != 0 => format::toggle_mark(i, &old, r),
+                    0..=2 => format::insert_marks(i, &old, r),
+                    format::CODE => return Task::none(),
+                    _ if r.is_empty() && i != format::LINK => format::toggle_line(i, &old, r.start),
+                    _ => format::toggle(i, &old, r),
+                };
                 self.pane.composer = format::content(&text, r);
                 return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
             }

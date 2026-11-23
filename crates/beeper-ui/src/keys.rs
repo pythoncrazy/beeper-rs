@@ -277,6 +277,18 @@ impl BeeperGuiApp {
         if let Some(task) = window.filter(|_| asking || free).and_then(|w| self.focus_key(w, key, mods, defaults)) {
             return Some(task);
         }
+        // Tiptap's `Mod-Shift-7` and `Mod-Shift-8` of the lists, which `cursor::Root` keeps from the composer as
+        // shortcuts on digits.
+        let list = match key.as_ref() {
+            Key::Character("7" | "&") => Some(5),
+            Key::Character("8" | "*") => Some(4),
+            _ => None,
+        };
+        let shortcut = mods.command() && mods.shift() && !mods.alt() && self.composer_takes_keys();
+        if let Some((window, i)) = window.zip(list).filter(|_| shortcut) {
+            let caret = focus::caret(window, self.composer_id());
+            return Some(caret.map(move |at| UiMessage::Composer(composer::Msg::FormatKey(i, at))));
+        }
         let window = window.filter(|_| self.composer_takes_keys() && (mods - Modifiers::SHIFT).is_empty())?;
         match key.as_ref() {
             Key::Named(Named::Tab) => {
