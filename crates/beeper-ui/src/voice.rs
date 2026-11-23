@@ -10,7 +10,7 @@ use iced::font::Weight;
 use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, mouse_area, row, slider, stack, svg, Column, Row, Space};
 use iced::{Center, Color, Fill, Padding, Pixels, Point, Subscription, Task};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -408,18 +408,15 @@ impl BeeperGuiApp {
         self.audio.clip(url).map(|_| (t.chat.clone(), id.to_string(), url.to_string()))
     }
 
-    /// Fetch and decode the audio of the open chat.
+    /// Fetch and decode the audio of the open chat and of the shown players.
     pub(crate) fn load_audio(&mut self) -> Task<UiMessage> {
         let st = self.store.read();
+        // Without a client, the asked URLs stay asked, so the frames do not ask for them again.
         let Some(client) = st.matrix.clone() else { return Task::none() };
+        let shown = std::mem::take(&mut *self.wants.audio.borrow_mut());
         let chat = self.pane.selected_chat_id.as_ref().map(|c| st.timeline_indices(c));
-        let urls: Vec<String> = chat
-            .into_iter()
-            .flatten()
-            .filter_map(|&i| audio_url(&st.messages[i]))
-            .filter(|u| !self.audio.clips.contains_key(*u))
-            .map(str::to_string)
-            .collect();
+        let timeline = chat.into_iter().flatten().filter_map(|&i| audio_url(&st.messages[i]).map(str::to_string));
+        let urls: BTreeSet<String> = timeline.chain(shown).filter(|u| !self.audio.clips.contains_key(u)).collect();
         drop(st);
         self.audio.clips.extend(urls.iter().map(|u| (u.clone(), None)));
         Task::batch(urls.into_iter().map(|url| {
@@ -473,6 +470,11 @@ impl BeeperGuiApp {
         bg: Color,
     ) -> El<'a> {
         let url = a.src_url.clone().expect("a playable attachment has a URL");
+        // Desktop's player loads its audio when it shows. A message that comes with a sync starts no load, so the
+        // next frame asks `load_audio` for it.
+        if !self.audio.clips.contains_key(&url) {
+            self.wants.ask(&self.wants.audio, url.as_str());
+        }
         let clip = self.audio.clip(&url);
         let track = self.audio.now.as_ref().filter(|t| t.mid == m.id);
         let ready = track.filter(|_| clip.is_some());
@@ -861,6 +863,8 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iced::Size;
+    use iced_test::simulator::Simulator;
 
     #[test]
     fn formats_and_draws_like_desktop() {
@@ -875,6 +879,34 @@ mod tests {
 
     /// Desktop's transcript: in quotes, with room for the time after it, and a click on it does nothing. Over 40
     /// lines it is clamped, and "Show more" shows all of it.
+    /// Desktop's player loads its audio when it shows: a voice note that comes with a sync, which starts no load of
+    /// its own, gets its waveform and plays without another event.
+    #[test]
+    fn shown_players_ask_for_their_audio() {
+        let mut app = crate::fuzz::demo_app("voice-shown");
+        let _ = app.update(UiMessage::SelectChat("!wa_eric:beeper.com".into()));
+        let url = {
+            let st = app.store.read();
+            let i = st.messages.iter().position(|m| m.id == "msg_1000c").expect("the demo voice note");
+            audio_url(&st.messages[i]).expect("a voice note has a URL").to_string()
+        };
+        app.audio.clips.remove(&url);
+        let frame = |app: &BeeperGuiApp| {
+            let id = app.main_window.expect("a main window");
+            let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id));
+            let _ = sim.simulate([iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now()))]);
+            sim.into_messages().collect::<Vec<_>>()
+        };
+        let msgs = frame(&app);
+        assert!(app.wants.audio.borrow().contains(&url), "the player asks for its audio");
+        assert!(msgs.iter().any(|m| matches!(m, UiMessage::LoadWanted)), "the frame starts the load");
+        for m in msgs {
+            let _ = app.update(m);
+        }
+        let again = frame(&app);
+        assert!(!again.iter().any(|m| matches!(m, UiMessage::LoadWanted)), "an asked player does not ask again");
+    }
+
     #[test]
     fn transcripts_like_desktop() {
         use beeper_core::models::Transcription;
