@@ -224,24 +224,13 @@ fn stream(path: &Path, from: f32, (w, h): (u32, u32)) -> Receiver<image::Handle>
 impl Video {
     /// A video of message `mid` that plays as soon as it loads.
     fn new(mid: String, url: String, size: (u32, u32)) -> Self {
-        Video {
+        beeper_core::with_defaults!(Video {
             mid,
             url,
             size,
-            media: None,
-            at: 0.0,
             since: Some(Instant::now()),
-            frames: None,
-            start: 0.0,
-            shown: 0,
-            frame: None,
             rate: 1.0,
-            muted: false,
-            full: None,
-            inline: None,
-            sub: false,
-            failed: false,
-        }
+        }, default: media, at, frames, start, shown, frame, muted, full, inline, sub, failed)
     }
 
     pub fn playing(&self) -> bool {

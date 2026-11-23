@@ -232,29 +232,12 @@ pub(crate) struct MediaWindow {
 impl MediaWindow {
     /// A Media window of `size` on the newest images and videos, before its first load.
     fn new(id: window::Id, size: Size) -> Self {
-        Self {
+        beeper_core::with_defaults!(Self {
             id,
-            tab: 0,
             size,
-            sent_by: 0,
-            oldest: false,
-            search: None,
-            query: String::new(),
-            typed: 0,
-            items: Vec::new(),
             more: true,
-            cursor: None,
-            loading: None,
-            generation: 0,
-            advance: false,
-            tab_at: None,
-            menu: None,
-            viewer: None,
-            item_menu: None,
-            select: false,
-            picked: Vec::new(),
-            deleting: None,
-        }
+        }, default: tab, sent_by, oldest, search, query, typed, items, cursor, loading, generation, advance, tab_at,
+            menu, viewer, item_menu, select, picked, deleting)
     }
 
     /// The loaded message `mid`.
@@ -1495,17 +1478,12 @@ impl BeeperGuiApp {
                 if in_media {
                     self.media_mut().advance = false;
                 }
-                *self.carousel_mut() = Some(Carousel {
+                *self.carousel_mut() = Some(beeper_core::with_defaults!(Carousel {
                     mid,
                     ai,
-                    turns: 0,
-                    turned: None,
                     in_media,
-                    resume: None,
-                    menu: None,
-                    strip: None,
                     page: 1,
-                });
+                }, default: turns, turned, resume, menu, strip));
                 self.fit_carousel_video();
                 self.reload_failed();
                 return Task::batch([self.load_media(), self.media_viewer_more()]);

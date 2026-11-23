@@ -316,32 +316,17 @@ impl BeeperGuiApp {
             position: window::Position::Centered,
             ..Self::window_settings(SIZE)
         });
-        self.add_accounts.push(AddAccount {
+        self.add_accounts.push(beeper_core::with_defaults!(AddAccount {
             id,
             network,
             bridge,
             login: login.unwrap_or_default(),
             who,
-            flows: Vec::new(),
-            flow: String::new(),
-            process: None,
-            step: None,
-            error: None,
-            failed: None,
             busy: true,
-            menu: false,
-            values: BTreeMap::new(),
-            touched: BTreeSet::new(),
-            phones: BTreeMap::new(),
-            shown: BTreeSet::new(),
-            qr: None,
-            emoji: None,
-            run: 0,
-            android: false,
-            status: None,
             remote: Remote::Open,
             browser: Browser::Closed,
-        });
+        }, default: flows, flow, process, step, error, failed, menu, values, touched, phones, shown, qr, emoji, run,
+            android, status));
         let p = self.add_provision(self.add_accounts.len() - 1);
         let status = beeper_core::cloud::platform_status(self.cloud.app_api.clone(), p.access_token.clone());
         let status = Task::perform(status, move |r| UiMessage::AddAccount(id, AddMsg::Status(r)));
