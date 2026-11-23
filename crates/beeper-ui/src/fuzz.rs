@@ -4395,6 +4395,22 @@ fn search_finds_custom_items_like_desktop() {
     let _ = simulator(app.view_settings());
 }
 
+/// Desktop's Settings is a new window each time it opens, so a search typed before it closed does not hide the
+/// sections of the next one.
+#[test]
+fn settings_search_starts_empty_like_desktop() {
+    let mut app = demo_app("search-reopen");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Query("time formatminimized".into())));
+    assert!(simulator(app.view_settings()).find("Notifications").is_err(), "a search without hits hides the sections");
+    let id = app.settings_window.expect("the Settings window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
+    assert_eq!(app.settings_query, "");
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("time formatminimized").is_err() && sim.find("Notifications").is_ok(), "the sections show again");
+}
+
 #[test]
 fn settings_nav_follows_the_plan() {
     let mut app = demo_app("settings-nav");
