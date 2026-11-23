@@ -1652,6 +1652,9 @@ impl BeeperGuiApp {
                 10.0,
                 0.0,
             ));
+            // Desktop's overlay is over the chat (`z-index: 10`): it takes the pointer, so the buttons under it lose
+            // their hover and the tooltip of a hovered button closes.
+            let zone = mouse_area(zone).interaction(mouse::Interaction::Idle);
             container(zone).padding(Padding { top: 39.0, right: 13.0, bottom: 6.5, left: 6.5 })
         });
         let wallpaper =
@@ -2332,6 +2335,8 @@ impl BeeperGuiApp {
                     let (w, h, cover) = media_box(self.pane().size.width, size, share);
                     // Desktop plays a video with `isGif` inline like a GIF, without sound, again and again.
                     let looped = is_video && a.is_gif == Some(true) && m.unresolved_media.is_none();
+                    // Desktop's `Lottie` plays an animated sticker itself, not its still thumbnail.
+                    let lottie = a.mime_type.as_deref().is_some_and(beeper_core::media::animated);
                     let thumb_url = match looped {
                         // The local echo of a GIF plays the frames of its poster until the homeserver has it.
                         true => a
@@ -2339,6 +2344,7 @@ impl BeeperGuiApp {
                             .as_ref()
                             .map(|u| format!("{u}{}", crate::media_view::LOOP))
                             .or_else(|| a.poster_img.clone()),
+                        false if lottie => a.src_url.clone(),
                         false => a.poster_img.clone().or_else(|| a.src_url.clone()),
                     };
                     let pill = |label: &'a str, alpha: f32| -> El<'a> {
@@ -2355,7 +2361,7 @@ impl BeeperGuiApp {
                     };
                     // A cropped still shows from a baked cut (the renderer draws `Cover` and crops past their box).
                     let cut = |u: &String| self.cover_tile(u, (w.round() as u32, h.round() as u32));
-                    let cut = thumb_url.as_ref().filter(|_| cover && !looped).and_then(cut);
+                    let cut = thumb_url.as_ref().filter(|_| cover && !looped && !lottie).and_then(cut);
                     // Desktop's `<img>`, whose right click gives the menu its image items.
                     let img = !is_video && matches!(thumb_url.as_ref().and_then(|u| self.media_at(u)), Some(Ok(_)));
                     let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media_at(u)) {
@@ -2370,7 +2376,7 @@ impl BeeperGuiApp {
                             let gif = anim::gif(frames, play, start, move |f| {
                                 image(f).width(w).height(h).border_radius(17.0)
                             });
-                            match !autoplay && frames.len() > 1 {
+                            match !autoplay && frames.animated() {
                                 true => gif_toggle(gif, played.is_some(), Msg::ToggleGif(m.id.clone(), ai)),
                                 false => gif,
                             }
@@ -3052,8 +3058,9 @@ impl BeeperGuiApp {
                     .on_press_maybe(ready.then_some(msg))
                     .into()
             });
-            // `@container messageContainer (max-width: 24rem)`: a narrow chat shows the first two items only.
-            let room = if self.pane().size.width - 24.0 <= 384.0 { 2 } else { usize::MAX };
+            // `@container messageContainer (max-width: 24rem)`: a narrow chat shows the first two items only. The
+            // `.message-container` is as wide as the chat less 8 px.
+            let room = if self.conversation_width() - 8.0 <= 384.0 { 2 } else { usize::MAX };
             let flyover: Vec<El<'a>> = flyover.into_iter().chain(quick).take(room).collect();
             let flyover = (!flyover.is_empty()).then(|| -> El<'a> {
                 let row = match mine {
@@ -4069,12 +4076,14 @@ impl BeeperGuiApp {
             Msg::RetrySend(id) => {
                 self.store.write().retry_send(&id);
                 // Desktop's `retryErroredMessage` closes the error toast of the send.
-                if self.send_toast.take_if(|(m, _)| *m == id).is_some_and(|(_, t)| t == self.status_banner) {
-                    (self.status_banner, self.sticky_banner) = (String::new(), None);
-                }
+                self.remove_toast(&id);
                 self.retried.insert(id);
             }
-            Msg::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
+            Msg::RemoveUnsent(id) => {
+                self.store.write().remove_unsent(&id);
+                // So does its `removeErroredMessage`.
+                self.remove_toast(&id);
+            }
             Msg::ToggleClamp(mid) => {
                 if !self.pane.unclamped.remove(&mid) {
                     self.pane.unclamped.insert(mid);
@@ -5073,6 +5082,8 @@ pub(crate) mod tests {
     /// of an animation, or never.
     fn next_redraw(app: &BeeperGuiApp) -> window::RedrawRequest {
         use iced::advanced::renderer::Headless as _;
+        // The frame starts before its view and its layout.
+        let now = std::time::Instant::now();
         let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
             iced::Font::DEFAULT,
             Pixels(13.0),
@@ -5082,7 +5093,7 @@ pub(crate) mod tests {
         let view = app.view(app.main_window.expect("the main window"));
         let size = Size::new(1200.0, 800.0);
         let mut ui = iced_runtime::UserInterface::build(view, size, Default::default(), &mut renderer);
-        let redraw = [iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))];
+        let redraw = [iced::Event::Window(window::Event::RedrawRequested(now))];
         let (state, _) = ui.update(
             &redraw,
             mouse::Cursor::Unavailable,
@@ -5182,6 +5193,152 @@ pub(crate) mod tests {
         assert_eq!(crate::media_view::animated(&webp), Some(crate::media_view::Animated::WebP));
         webp[20] = 0;
         assert_eq!(crate::media_view::animated(&webp), None, "a WebP without the animation flag");
+    }
+
+    /// When the view of `mid` alone asks to be drawn again after a frame.
+    fn alone_redraw(app: &BeeperGuiApp, mid: &str) -> window::RedrawRequest {
+        use iced::advanced::renderer::Headless as _;
+        let now = std::time::Instant::now();
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            iced::Font::DEFAULT,
+            Pixels(13.0),
+            Some("tiny-skia"),
+        ))
+        .expect("a headless renderer");
+        let st = app.store.read();
+        let m = st.message(mid);
+        let flags = (true, true, Chain::default(), false, false);
+        let view = app.view_message(&st, st.chat(&m.chat_id), &[m], flags, (None, 0), Column::new());
+        let size = Size::new(900.0, 400.0);
+        let mut ui = iced_runtime::UserInterface::build(view, size, Default::default(), &mut renderer);
+        let redraw = [iced::Event::Window(window::Event::RedrawRequested(now))];
+        let (state, _) = ui.update(
+            &redraw,
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut vec![],
+        );
+        match state {
+            iced_runtime::user_interface::State::Updated { redraw_request, .. } => redraw_request,
+            iced_runtime::user_interface::State::Outdated => panic!("the interface is up to date"),
+        }
+    }
+
+    /// The demo's animated Telegram sticker, decoded like its load: an orange ball that goes right and turns teal
+    /// in its first half second.
+    fn demo_sticker(app: &mut BeeperGuiApp) -> std::sync::Arc<crate::lottie::Animation> {
+        let url = app.store.read().message(TGS_STICKER).attachments[0].src_url.clone().expect("a sticker URL");
+        let bytes = iced::futures::executor::block_on(beeper_core::matrix::media(None, url.clone())).unwrap();
+        let frames = crate::media_view::decode_media(bytes).expect("the sticker decodes");
+        let a = frames.animation().expect("a Lottie sticker").clone();
+        app.media.insert(url, Some(Ok(frames)));
+        a
+    }
+
+    const TGS_STICKER: &str = "msg_x6s";
+
+    /// Waits until the workers drew the frames that `redraw` asks for `ms` into the animations, and gives true when
+    /// they are frame `due` or one of the next three, which a slow draw of a debug build may reach.
+    fn drawn_at(
+        app: &mut BeeperGuiApp,
+        a: &crate::lottie::Animation,
+        (ms, due): (u64, Option<u64>),
+        redraw: fn(&BeeperGuiApp),
+    ) -> bool {
+        app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+        redraw(app);
+        let t = std::time::Instant::now();
+        while !a.idle() {
+            assert!(t.elapsed().as_secs() < 20, "a worker draws the frame");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        due.is_none_or(|due| a.shown().iter().all(|n| (due..=due + 3).contains(n)))
+    }
+
+    /// The sticker message alone `ms` into its animation, once its worker drew frame `due`.
+    fn sticker_at(app: &mut BeeperGuiApp, a: &crate::lottie::Animation, ms: u64, due: u64) -> ::image::RgbaImage {
+        let redraw = |app: &BeeperGuiApp| _ = alone_redraw(app, TGS_STICKER);
+        assert!((0..20).any(|_| drawn_at(app, a, (ms, Some(due)), redraw)), "the frame that is due draws");
+        pixels(&mut alone(app, TGS_STICKER))
+    }
+
+    /// Desktop's `Lottie` of an animated Telegram sticker (`application/x-tgsticker`, a gzipped Lottie) in a
+    /// message, an `EnhancedImg` with `playable`: with "Autoplay GIFs" it plays from its first frame, drawn by a
+    /// worker at the size that shows, and asks for the next one. Without the setting it shows its first frame with
+    /// the play button, and asks for no frames until the button plays it.
+    #[test]
+    fn tgs_stickers_play_like_desktop() {
+        let (orange, teal) = (0xff9f1c, 0x22b8cf);
+        let mean_x = |at: &[(u32, u32)]| at.iter().map(|p| p.0 as usize).sum::<usize>() / at.len().max(1);
+        let mut app = crate::fuzz::demo_app("tgs-sticker");
+        app.pane.size = Size::new(900.0, 700.0);
+        let a = demo_sticker(&mut app);
+        // rlottie draws the out point too, which the ball's layer covers, so the loop does not blink.
+        let image::Handle::Rgba { pixels, .. } = a.render(60, (64, 64)) else { panic!("an RGBA frame") };
+        assert!(pixels.chunks(4).filter(|p| p[3] > 0).count() > 500, "the last frame draws the ball");
+        let first = sticker_at(&mut app, &a, 0, 0);
+        let ball = spots(&first, orange);
+        assert!(ball.len() > 2000 && spots(&first, teal).is_empty(), "the orange ball of the first frame");
+        let half = sticker_at(&mut app, &a, 500, 30);
+        let moved = spots(&half, teal);
+        assert!(moved.len() > 2000 && count(&half, &ball, orange) * 10 < ball.len(), "the ball moved and turned");
+        assert!(mean_x(&moved) > mean_x(&ball) + 200, "to the right");
+        assert!(matches!(alone_redraw(&app, TGS_STICKER), window::RedrawRequest::At(_)), "the next frame is due");
+
+        let mut app = crate::fuzz::demo_app("tgs-sticker-still");
+        app.pane.size = Size::new(900.0, 700.0);
+        app.store.write().settings.set_pref("autoplayGifs", 0);
+        let a = demo_sticker(&mut app);
+        let still = sticker_at(&mut app, &a, 500, 0);
+        assert!(count(&still, &ball, orange) * 20 > ball.len() * 19, "the first frame, drawn at its size");
+        assert!(spots(&still, 0xefeff0).len() > 1000, "the play button");
+        assert_eq!(alone_redraw(&app, TGS_STICKER), window::RedrawRequest::Wait, "a still sticker asks for nothing");
+        let _ = app.update(UiMessage::Message(Msg::ToggleGif(TGS_STICKER.into(), 0)));
+        assert!(matches!(alone_redraw(&app, TGS_STICKER), window::RedrawRequest::At(_)), "the button plays it");
+    }
+
+    /// Desktop's `StickerImage`, an `EnhancedImg` with `isEmoji`: an animated sticker of the sticker picker plays
+    /// with "Animate avatars and emoji", whatever "Autoplay GIFs" says.
+    #[test]
+    fn picked_tgs_stickers_animate_like_emoji() {
+        let mut app = crate::fuzz::demo_app("tgs-picker");
+        let _ = app.update(UiMessage::SelectChat("!tg_pebble:beeper.com".into()));
+        let a = demo_sticker(&mut app);
+        let url = app.store.read().message(TGS_STICKER).attachments[0].src_url.clone().unwrap();
+        let sticker = beeper_core::models::Sticker {
+            url,
+            shortcodes: vec!["bounce".into()],
+            body: None,
+            info: serde_json::json!({ "mimetype": "application/x-tgsticker", "w": 512, "h": 512 }),
+            source: None,
+        };
+        {
+            let mut st = app.store.write();
+            st.settings.recent_stickers = vec![sticker];
+            st.settings.set_pref("autoplayGifs", 0);
+        }
+        // Maya's chat, in the archive, takes her animated avatar off the chat list.
+        let idx = app.store.read().chat_idx(ANIMATED_CHAT);
+        app.store.write().update_chat(idx, |c| c.is_archived = Some(true));
+        // The view asks for the frames that show, and draws them once the workers drew them.
+        let settle = |app: &mut BeeperGuiApp, due: Option<u64>| {
+            let redraw = |app: &BeeperGuiApp| _ = next_redraw(app);
+            assert!((0..20).any(|_| drawn_at(app, &a, (0, due), redraw)), "the frame that is due draws");
+            let main = app.main_window.expect("the main window");
+            pixels(&mut iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view(main)))
+        };
+        let before = spots(&settle(&mut app, Some(0)), 0xff9f1c);
+        assert_eq!(next_redraw(&app), window::RedrawRequest::Wait, "nothing plays without the picker");
+        app.pane.picker = Some(crate::Picker::Sticker);
+        // The orange ball of the first frame.
+        let ball = spots(&settle(&mut app, Some(0)), 0xff9f1c).into_iter().filter(|p| !before.contains(p)).count();
+        assert!(ball > 1000, "the sticker shows in the picker: {ball}");
+        assert!(matches!(next_redraw(&app), window::RedrawRequest::At(_)), "the picker plays it");
+        app.store.write().settings.set_pref("animateAvatars", 0);
+        // Like Desktop's paused Lottie, it keeps the frame that it shows.
+        settle(&mut app, None);
+        assert_eq!(next_redraw(&app), window::RedrawRequest::Wait, "with both settings off, nothing plays");
     }
 
     /// Desktop's emoji message: the bubble's padding without its bottom, its time in a tooltip, and at 80% brightness

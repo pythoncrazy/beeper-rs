@@ -2897,8 +2897,6 @@ pub struct BeeperGuiApp {
     notified: HashSet<String>,
     /// The failed sends that Retry sent again: Desktop shows their error again when they fail again.
     retried: HashSet<String>,
-    /// The failed send whose error toast shows, and its text: Desktop's `retryErroredMessage` closes it.
-    send_toast: Option<(String, String)>,
     notifications: HashMap<u32, (String, String)>,
     pending: notify::Pending,
     pub gif_query: String,
@@ -3238,7 +3236,6 @@ impl BeeperGuiApp {
             focused: false,
             notified: HashSet::new(),
             retried: HashSet::new(),
-            send_toast: None,
             notifications: HashMap::new(),
             pending,
             gif_query: String::new(),
@@ -3672,20 +3669,12 @@ impl BeeperGuiApp {
     /// Opens the windows of the last session, like Desktop's `setupSubwindowRestoreHandler`.
     fn restore_subwindows(&mut self) -> Task<UiMessage> {
         let path = self.store.read().config.data_dir.join("subwindow-state.json");
-        let json = match std::fs::read_to_string(path) {
-            Ok(json) => json,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Task::none(),
-            Err(e) => panic!("read the subwindow state: {e}"),
-        };
-        let state: serde_json::Value = serde_json::from_str(&json).expect("a valid subwindow state");
-        let open = state["openSubwindows"].as_array().expect("a list of subwindows").clone();
-        let tasks = open.into_iter().filter_map(|w| match w["type"].as_str().expect("a subwindow type") {
-            "thread" => {
-                let id = w["threadId"].as_str().expect("a thread window has a chat").to_owned();
+        let tasks = windows::read_subwindows(&path).into_iter().filter_map(|w| match w {
+            windows::Subwindow::Thread(id) => {
                 let known = self.store.read().resolve_chat_idx(&id).is_some();
                 known.then(|| self.update(UiMessage::Window(windows::Msg::OpenChat(id))))
             }
-            _ => Some(self.open_settings(self.active_settings_tab)),
+            windows::Subwindow::Prefs => Some(self.open_settings(self.active_settings_tab)),
         });
         Task::batch(tasks.collect::<Vec<_>>())
     }
@@ -4148,6 +4137,32 @@ impl BeeperGuiApp {
         }
     }
 
+    /// The room of the open chat and Chat Info in the main window (Desktop's `.subheader-content`): the window less
+    /// the sidebar, or the 8 px frame where it hides, the 8 px frame on the right, and the 8 px gap between the two.
+    fn chat_room(&self) -> f32 {
+        let left = if self.sidebar_shown() { self.left_width() } else { 8.0 };
+        self.pane.size.width - left - 8.0 - 8.0
+    }
+
+    /// The width of Desktop's `.thread-info` beside the chat: it shares the room with the chat (`flex: 1` both),
+    /// up to its `max-width: 300px`, so a narrow window gives each half of it.
+    pub(crate) fn info_width(&self) -> f32 {
+        (self.chat_room() / 2.0).clamp(0.0, 300.0)
+    }
+
+    /// The width of Desktop's `.conversation` of the pane that `view` draws: in the main window, the room less Chat
+    /// Info while it shows; in a chat window or beside a thread, the window less its 8 px frame.
+    pub(crate) fn conversation_width(&self) -> f32 {
+        let main = self.drawing.get().is_none() && !self.drawing_thread.get();
+        if !main || self.pane.thread.is_some() || !self.selection.is_empty() {
+            return self.pane().size.width - 16.0;
+        }
+        match self.show_right_panel {
+            true => self.chat_room() - self.info_width(),
+            false => self.chat_room() + 8.0,
+        }
+    }
+
     /// The width of the chat list: Desktop's `threads` width, which takes the space of a hidden space bar.
     fn list_width(&self, st: &BeeperStore) -> f32 {
         self.sidebar_width + if st.settings.on("showSidebar") && !self.list().locked { 0.0 } else { 68.0 }
@@ -4337,8 +4352,16 @@ impl BeeperGuiApp {
         let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
         let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
-        let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
+        // A toast with the same text replaces the shown one, unless Desktop's toast ID tells them apart.
+        let replaced = |t: &(Toast, Duration)| {
+            let id = self.toast.as_ref().filter(|n| n.text == self.status_banner).and_then(|n| n.id.as_ref());
+            !self.status_banner.is_empty() && (t.0.text != self.status_banner || t.0.id.as_ref() != id)
+        };
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
+            // A toast that stays keeps its place in the stack, under the new one.
+            if t.0.stays && self.sticky_banner.as_ref() == Some(&t.0.text) && self.status_banner != t.0.text {
+                self.sticky_banner = None;
+            }
             // It is older than the toasts that this message stacked.
             self.older_toasts.insert(stacked.min(self.older_toasts.len()), t);
             self.trim_older_toasts();

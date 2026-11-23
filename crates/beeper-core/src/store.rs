@@ -1080,22 +1080,24 @@ impl BeeperStore {
 
     /// Drops the messages of the chats that are not loaded, and the removed messages, from `messages`.
     fn compact(&mut self) {
-        let messages = std::mem::take(&mut self.messages);
-        let before = messages.len();
-        let mut moved = vec![usize::MAX; messages.len()];
-        for (i, m) in messages.into_iter().enumerate() {
-            if self.chat_msg_indices.contains_key(&m.chat_id) && self.msg_idx_by_id.get(&m.id) == Some(&i) {
-                moved[i] = self.messages.len();
-                self.messages.push(m);
-            }
+        // The messages that stay are the ones that the timelines of the loaded chats list, which `msg_idx_by_id`
+        // finds too, so the messages move up in place without a lookup of each.
+        let before = self.messages.len();
+        let mut keep = vec![false; before];
+        self.chat_msg_indices.values().flatten().for_each(|&i| keep[i] = true);
+        let (mut moved, mut kept) = (vec![usize::MAX; keep.len()], 0);
+        for (i, _) in keep.iter().enumerate().filter(|k| *k.1) {
+            (moved[i], kept) = (kept, kept + 1);
         }
+        let mut keep = keep.into_iter();
+        self.messages.retain(|_| keep.next().expect("a flag for each message"));
         self.msg_idx_by_id.retain(|_, i| {
             *i = moved[*i];
             *i != usize::MAX
         });
+        assert_eq!(self.msg_idx_by_id.len(), kept, "each loaded message is in the timeline of its chat");
         for i in self.chat_msg_indices.values_mut().flatten() {
             *i = moved[*i];
-            assert_ne!(*i, usize::MAX, "a listed message stays");
         }
         self.thread_msg_indices.retain(|_, list| {
             list.iter_mut().for_each(|i| *i = moved[*i]);
