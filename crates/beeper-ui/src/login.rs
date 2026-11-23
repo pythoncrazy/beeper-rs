@@ -71,14 +71,14 @@ static BUBBLE_ARROW: LazyLock<svg::Handle> = LazyLock::new(|| {
 });
 
 /// Desktop's Lottie animations `username.json`, `email.json`, `lock.json` and `key.json`.
-static ART: LazyLock<[crate::lottie::Animation; 4]> = LazyLock::new(|| {
+static ART: LazyLock<[Arc<crate::lottie::Animation>; 4]> = LazyLock::new(|| {
     [
         include_bytes!("../assets/onboarding/username.json").as_slice(),
         include_bytes!("../assets/onboarding/email.json"),
         include_bytes!("../assets/onboarding/lock.json"),
         include_bytes!("../assets/onboarding/key.json"),
     ]
-    .map(crate::lottie::Animation::new)
+    .map(|json| Arc::new(crate::lottie::Animation::new(json)))
 });
 
 static GOOGLE: LazyLock<svg::Handle> = LazyLock::new(|| svg::Handle::from_memory(GOOGLE_G.as_bytes()));

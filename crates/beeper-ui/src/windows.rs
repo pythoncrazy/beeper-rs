@@ -12,6 +12,8 @@ pub enum Msg {
     /// Whether the main window is minimized, as the window manager says after the window lost the focus.
     Minimized(bool),
     Opened(window::Id),
+    /// The scale factor of the screen of a window, as it opens or moves to another screen.
+    Scale(f32),
     /// A window drew a frame, after which its screenshot has content.
     Drawn(window::Id),
     Relaunch,
@@ -80,6 +82,7 @@ impl BeeperGuiApp {
             // A focus that came back while the window manager answered wins.
             Msg::Minimized(minimized) => self.minimized = minimized && !self.focused,
             Msg::Opened(id) => {
+                let scale = window::scale_factor(id).map(|s| UiMessage::Window(Msg::Scale(s)));
                 // The serials of the input that the window gets from now on let the app raise its windows later.
                 #[cfg(target_os = "linux")]
                 let track = self.unmaps().then(|| window::run(id, activation::track).discard());
@@ -93,9 +96,11 @@ impl BeeperGuiApp {
                 }
                 #[cfg(target_os = "linux")]
                 if let Some(track) = track {
-                    return track;
+                    return Task::batch([scale, track]);
                 }
+                return scale;
             }
+            Msg::Scale(scale) => self.screen_scale = scale,
             Msg::Drawn(id) if self.shot == Some(id) => {
                 self.shot = None;
                 return window::screenshot(id).map(move |s| UiMessage::Window(Msg::ScreenshotCaptured(id, s)));
