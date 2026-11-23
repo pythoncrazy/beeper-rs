@@ -481,7 +481,6 @@ name = "beeper-api"
 version = "4.3.308"
 dependencies = [
  "beeper-core",
- "foldhash 0.2.0",
  "serde",
  "serde_json",
  "tokio",
