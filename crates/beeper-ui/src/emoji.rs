@@ -773,7 +773,10 @@ impl BeeperGuiApp {
                     .into(),
                 EmojiMsg::Pick(i),
             ),
-            Item::Custom(i) => (self.custom_image(&custom[i].url, 24.0), EmojiMsg::PickCustom(custom[i].clone())),
+            // emoji-mart's own `<img>`, which plays whatever the settings.
+            Item::Custom(i) => {
+                (self.custom_image(&custom[i].url, 24.0, self.shows()), EmojiMsg::PickCustom(custom[i].clone()))
+            }
         };
         let b = button(container(glyph).center(CELL)).padding(0).style(move |_, s| button::Style {
             background: (selected || matches!(s, button::Status::Hovered | button::Status::Pressed))
@@ -790,15 +793,17 @@ impl BeeperGuiApp {
     /// The emoji of a quick reaction button of Settings (Desktop's `e1e`): a custom emoji's image 16 px square.
     pub(crate) fn quick_glyph(&self, e: &str) -> El<'static> {
         match is_mxc(e) {
-            true => self.custom_image(e, 16.0),
+            true => self.custom_image(e, 16.0, self.animate.get()),
             false => txt(e.to_string(), 16.0).into(),
         }
     }
 
-    /// A custom emoji's image in a `size` box once it has loaded, its shape kept.
-    pub(crate) fn custom_image(&self, url: &str, size: f32) -> El<'static> {
-        match self.still(url) {
-            Some(frame) => image(frame).width(size).height(size).content_fit(iced::ContentFit::Contain).into(),
+    /// A custom emoji's image in a `size` box once it has loaded, its shape kept, playing when `play`.
+    pub(crate) fn custom_image(&self, url: &str, size: f32, play: bool) -> El<'static> {
+        match self.frames(url) {
+            Some(f) => crate::anim::gif(&f, play, self.started, move |h| {
+                image(h).width(size).height(size).content_fit(iced::ContentFit::Contain)
+            }),
             None => Space::new().width(size).height(size).into(),
         }
     }
@@ -857,7 +862,7 @@ impl BeeperGuiApp {
             container(b).center(CELL)
         });
         let glyph: El<'static> = match is_mxc(&glyph) {
-            true => self.custom_image(&glyph, 36.0),
+            true => self.custom_image(&glyph, 36.0, self.shows()),
             false => {
                 crate::style::fixed(glyph, 36.0, iced::font::Weight::Normal).line_height(1.0).font(EMOJI_FONT).into()
             }

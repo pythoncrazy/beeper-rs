@@ -261,7 +261,8 @@ impl BeeperGuiApp {
         };
         let picture = |url: &str, w: Length, h: f32| -> El<'a> {
             match self.media_at(url) {
-                Some(Ok(frames)) => anim::gif(frames, self.started, move |f| {
+                // Desktop's `StickerImage`, an `EnhancedImg` with `isEmoji`.
+                Some(Ok(frames)) => anim::gif(frames, self.animate.get(), self.started, move |f| {
                     image(f).width(w).height(h).content_fit(iced::ContentFit::Contain)
                 }),
                 _ => Space::new().width(w).height(h).into(),
