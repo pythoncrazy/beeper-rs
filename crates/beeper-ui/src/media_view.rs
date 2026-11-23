@@ -1368,12 +1368,19 @@ impl BeeperGuiApp {
     }
 
     /// The square cover crop of an image or video poster, or an empty tile while it loads.
+    /// Like Desktop's `MediaImg`, a media that loads has the shimmering `--skeleton-bg` over its tile, and one that
+    /// failed has `ImageError`.
     pub(crate) fn thumb<'a>(&self, a: &Attachment, size: f32, r: f32) -> El<'a> {
+        let p = &self.pal;
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
-        match url.and_then(|u| self.thumb_tile(u, size.round() as u32, r.round() as u8)) {
-            Some(tile) => image(tile.clone()).width(size).height(size).into(),
-            None => container(Space::new()).width(size).height(size).style(fill_box(self.pal.chip, r)).into(),
+        if let Some(tile) = url.and_then(|u| self.thumb_tile(u, size.round() as u32, r.round() as u8)) {
+            return image(tile.clone()).width(size).height(size).into();
         }
+        if let Some(Some(Err(_))) = url.and_then(|u| self.media.get(u)) {
+            return self.image_error(size, size, r);
+        }
+        let loading = url.map(|_| anim::skeleton(Fill, Fill, r, p.skeleton, self.started));
+        container(loading).width(size).height(size).style(fill_box(p.chip, r)).into()
     }
 
     /// The name Desktop shows for the sender of a message.

@@ -463,7 +463,9 @@ impl BeeperGuiApp {
                 }
                 None => {
                     let fill = if video { Color::BLACK } else { p.chip };
-                    let tile = container(Space::new()).width(w).height(h);
+                    // Desktop's `img.loading` of the image of a tile: the shimmering `--skeleton-bg` over the tile.
+                    let loading = (!video).then(|| crate::anim::skeleton(Fill, Fill, RADIUS, p.skeleton, self.started));
+                    let tile = container(loading).width(w).height(h);
                     container(tile.style(bordered_box(fill, p.prefs_border, 0.5, RADIUS)))
                         .center(bw)
                         .center_y(bh)

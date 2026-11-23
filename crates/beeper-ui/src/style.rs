@@ -1057,6 +1057,8 @@ palette! {
     border_weak: Color = hexa(0x000000, 0.05), hexa(0xffffff, 0.05);
     /// `--color-border-translucent-strong`.
     menu_border: Color = hexa(0x000000, 0.15), hexa(0xffffff, 0.15);
+    /// The fill of `--skeleton-bg`, the box of a media that loads.
+    skeleton: Color = hexa(0x000000, 0.1), hexa(0xffffff, 0.15);
     /// `--color-background-menu-option-hover`.
     menu_hover: Color = hex(0x007aff), hex(0x005bb8);
     /// `--color-on-secondary-container`.
