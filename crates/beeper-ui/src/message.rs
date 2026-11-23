@@ -2457,307 +2457,7 @@ impl BeeperGuiApp {
             let body = column![].push(inside).push(row![line].push(time).spacing(4).align_y(Bottom));
             parts = parts.push(container(body).padding([BUBBLE_PAD_Y, BUBBLE_PAD_X]).style(fill_box(bg, 17.0)));
         } else if !text.is_empty() && poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
-            let ts = shows_time.then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
-            let room = ts.as_deref().map_or(0.0, |t| crate::style::fixed_width(t, 11.0, Weight::Normal) + 4.0);
-            let time: Option<El<'a>> =
-                ts.map(|t| crate::style::fixed(t, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.sub }).into());
-            // Desktop's `MessageErrorTooltip` takes the place of the time.
-            let (room, time) = match failed {
-                Some(e) => {
-                    let label = if m.edited() { tr("Failed to edit") } else { tr("Not sent") };
-                    (crate::style::fixed_width(label, 11.0, Weight::Normal) + 28.0, Some(self.error_tooltip(e, label)))
-                }
-                // Desktop's `BookmarkIndicator` and `ReminderIndicator` (`E3`) go before the time.
-                None => {
-                    let color = if mine { sent_meta } else { p.sub };
-                    let marker = |handle: &svg::Handle, color: Color, label: String| {
-                        let icon = svg(handle.clone()).width(10).height(10);
-                        let icon = icon.style(move |_, _| svg::Style { color: Some(color) });
-                        self.tip(icon.into(), label, vec![], tooltip::Position::Left)
-                    };
-                    let bookmark = (m.is_bookmarked == Some(true)).then(|| marker(&BOOKMARK_ICON, color, tr("Bookmarked").into()));
-                    let reminder = st.message_reminders.get(&m.id).filter(|_| crate::reminders::message_reminders_on(st));
-                    let reminder = reminder.filter(|_| m.is_deleted != Some(true)).map(|r| {
-                        let at = r.remind_at_ms;
-                        let h24 = st.settings.pref("timeFormat") == 1;
-                        let label = trf("Reminder: %1$s %2$s", &[&reminder_day(at), &clock(at, h24)]);
-                        // Desktop's `ReminderIndicator-module__due`: a due reminder takes the warning color.
-                        marker(&OUTLINE_CLOCK, if at <= now_unix_millis() { ORANGE } else { color }, label)
-                    });
-                    // Desktop's disappearing timer goes after the time.
-                    let timer = disappears(chat, m).map(|label| marker(&TIMER, color, label));
-                    let n = [bookmark.is_some(), reminder.is_some(), timer.is_some()].into_iter().filter(|&b| b).count();
-                    match n {
-                        0 => (room, time),
-                        n => {
-                            let meta = row![].push(bookmark).push(reminder).push(time).push(timer);
-                            let meta = meta.spacing(4).align_y(Center);
-                            (room + 14.0 * n as f32, Some(meta.into()))
-                        }
-                    }
-                }
-            };
-            let me = |id: &str| id == st.beeper_state.user_id;
-            // Desktop's `DJ`: "@room" in a message that mentions the room, or has no `m.mentions`, is a highlighted
-            // mention.
-            let room_mention = m.text.as_deref().is_some_and(|t| t.contains(ROOM_MENTION))
-                && m.mentions.as_ref().is_none_or(|ids| ids.iter().any(|id| id == ROOM_MENTION));
-            let highlighted = |s: iced::widget::text::Span<'a, String>| {
-                let pill = if mine { Color { a: 0.3, ..fg } } else { p.accent };
-                s.font(crate::style::fw(Weight::Bold)).color(Color::WHITE).background(pill).border(border::rounded(4)).padding(2)
-            };
-            // Desktop's `.ext-link-with-icon:after`: the arrow at 0.7 opacity, 2 px from the link and the text after it.
-            let arrow = || {
-                let arrow = span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(rem(11.0));
-                arrow.color(fg.scale_alpha(0.7)).padding(Padding::from([0, 2]))
-            };
-            let rich = |(r, room): (beeper_core::codec::Run, bool)| {
-                if r.emoticon.is_some() {
-                    return [Some(span(crate::selectable::IMAGE_SLOT).size(rem(13.0))), None].into_iter().flatten();
-                }
-                // Desktop's `--font-weight-emphasized` bold, and its inline `code`: `--font-family-mono` at 0.9em and
-                // weight 500, on `--color-on-surface` at 0.1 with a 4 px radius and `.1em .33em` of padding.
-                let style = if r.italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
-                let font = match r.code {
-                    true => iced::Font { weight: Weight::Medium, ..iced::Font::MONOSPACE },
-                    false => iced::Font { style, ..crate::style::fw(if r.bold { Weight::Semibold } else { Weight::Normal }) },
-                };
-                let mention = r.link.as_deref().and_then(mentioned_user);
-                // Desktop's `data-mx-color` paints the text.
-                let ink = r.color.as_deref().and_then(|c| c.parse::<Color>().ok()).unwrap_or(fg);
-                let s = span(r.text).size(rem(13.0)).color(ink).font(font).strikethrough(r.strike).underline(r.underline);
-                let s = match r.code {
-                    true => s
-                        .size(rem(13.0 * 0.9))
-                        .background(Color { a: 0.1, ..p.strong })
-                        .border(border::rounded(4))
-                        .padding(Padding::from([0.1 * 13.0 * 0.9, 0.33 * 13.0 * 0.9])),
-                    false => s,
-                };
-                // Desktop's `.spoiler`: black with the text hidden, and after a click white on 30% black.
-                let s = match (r.spoiler, self.pane().spoilers.contains(&m.id)) {
-                    (true, false) => s
-                        .color(Color::TRANSPARENT)
-                        .background(Color::BLACK)
-                        .border(border::rounded(2))
-                        .padding(Padding::from([1, 2]))
-                        .link(format!("{}{}", crate::SPOILER, m.id)),
-                    (true, true) => s.color(Color::WHITE).background(Color::BLACK.scale_alpha(0.3)).padding(Padding::from([1, 2])),
-                    _ => s,
-                };
-                if r.spoiler {
-                    return [Some(s), None].into_iter().flatten();
-                }
-                let bold = crate::style::fw(Weight::Bold);
-                // Desktop's `.mention-hover-card-trigger` is not an external link, so it has no arrow.
-                let external = mention.is_none();
-                let s = match mention {
-                    _ if room => highlighted(s),
-                    Some(id) if me(&id) => highlighted(s),
-                    Some(id) => s.font(bold).color(if mine { fg } else { p.accent }).link(format!("{}{} {id}", crate::MENTION, m.chat_id)),
-                    None => s.underline(r.underline || r.link.is_some()).link_maybe(r.link.clone()),
-                };
-                let arrow = (external && s.link.is_some()).then(arrow);
-                [Some(s), arrow].into_iter().flatten()
-            };
-            let word = |w: &str| span(w.to_string()).size(rem(13.0)).color(fg);
-            // The words of plain text, with a highlighted "@room".
-            let words = |text: &str| -> Vec<iced::widget::text::Span<'a, String>> {
-                let parts = if room_mention { room_parts(text) } else { vec![(text, false)] };
-                parts
-                    .into_iter()
-                    .flat_map(|(t, room)| match room {
-                        true => vec![highlighted(word(t))],
-                        false => t.split_inclusive(' ').map(word).collect(),
-                    })
-                    .collect()
-            };
-            // Plain text with Desktop's linkify links: each with its underline and arrow, the rest word by word.
-            let plain = |text: &str| {
-                let mut spans = Vec::new();
-                let mut at = 0;
-                for (range, href) in crate::linkify::links(text) {
-                    spans.extend(words(&text[at..range.start]));
-                    spans.push(span(text[range.clone()].to_string()).size(rem(13.0)).color(fg).underline(true).link(href));
-                    spans.push(arrow());
-                    at = range.end;
-                }
-                spans.extend(words(&text[at..]));
-                spans
-            };
-            // Each block: its list marker, spans, plain text, blockquote depth, heading level and custom emoji.
-            // Each block: its list marker, spans, plain text, blockquote depth, heading level, custom emoji and whether it
-            // is a code block.
-            type Block<'s> = (
-                Option<String>,
-                Vec<iced::widget::text::Span<'s, String>>,
-                String,
-                u8,
-                u8,
-                Vec<(Option<crate::Frames>, Option<String>, String)>,
-                bool,
-            );
-            let blocks: Vec<Block> = match m.html.as_deref() {
-                Some(html) => beeper_core::codec::html_blocks(html)
-                    .into_iter()
-                    .map(|mut b| {
-                        at_mentions(&mut b.runs);
-                        let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
-                        // Each custom emoji's image, `title` and `data-original-src`.
-                        let images = b.runs.iter().filter_map(|r| Some((r.emoticon.as_deref()?, r.title.clone())));
-                        let images = images.map(|(u, title)| (self.frames(u), title, u.to_string())).collect();
-                        let runs = b.runs.into_iter().flat_map(|r| match room_mention && r.link.is_none() && !r.code {
-                            true => room_parts(&r.text)
-                                .into_iter()
-                                .map(|(t, room)| (beeper_core::codec::Run { text: t.into(), ..r.clone() }, room))
-                                .collect(),
-                            false => vec![(r, false)],
-                        });
-                        let mut spans = with_emoji_font(runs.flat_map(rich).collect());
-                        // Desktop's `pre code` is one padded block, so its spans have no box of their own.
-                        if b.pre {
-                            for s in &mut spans {
-                                (s.highlight, s.padding) = (None, Padding::ZERO);
-                            }
-                        }
-                        (b.marker, heading(spans, b.heading), plain, b.quote, b.heading, images, b.pre)
-                    })
-                    .collect(),
-                None => {
-                    let spans = with_emoji_font(plain(&text));
-                    vec![(None, spans, text.clone(), 0, 0, Vec::new(), false)]
-                }
-            };
-            let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
-            // Desktop's `.message-text` clamps a message at 40 lines, and "Show more" opens it. The whole blocks that
-            // fit show as they are, and the block that crosses the limit shows its first lines as plain text.
-            let clamp = clamp_blocks(blocks.iter().map(|b| b.2.as_str()), max);
-            let open = self.pane().unclamped.contains(&m.id);
-            // Desktop's `pre code` is a block as wide as its longest line, and the time floats under a last one.
-            let code_pad = 0.75 * 13.0 * 0.9;
-            let code_lines = blocks.iter().filter(|b| b.6).flat_map(|b| b.2.lines());
-            let code_w = code_lines.map(|l| l.chars().count() as f32 * 0.6 * 13.0 * 0.9 + 2.0 * code_pad).fold(0.0, f32::max);
-            let last_pre = blocks.last().is_some_and(|b| b.6);
-            let (room, time, footer_time) = match clamp {
-                Some(_) => (0.0, None, time),
-                None if last_pre => (0.0, None, time),
-                None => (room, time, None),
-            };
-            let (footer_time, below) = if clamp.is_some() { (footer_time, None) } else { (None, footer_time) };
-            let (blocks, cut) = match clamp {
-                Some((whole, left)) if !open => {
-                    let cut = blocks.get(whole).map(|b| b.2.clone()).filter(|_| left > 0);
-                    (blocks.into_iter().take(whole).collect(), cut.map(|t| (t, left)))
-                }
-                _ => (blocks, None),
-            };
-            let (mut prev_item, last) = (None, blocks.len().saturating_sub(1));
-            let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
-            let pad = "\u{a0}".repeat((room / nbsp).ceil() as usize);
-            // Desktop's `message-text--balanced`: CSS `text-wrap: balance`, then the bubble shrinks to its widest line.
-            // A message with block HTML wraps as usual. A wrapped message without balance takes the whole width.
-            // The layout lets trailing spaces hang past the width, so the room of the time is measured with digits.
-            let zero = crate::style::text_width("0", 13.0, Weight::Normal);
-            let padded = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
-            let blocks_html = m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
-            let width = match code_w > 0.0 || crate::style::wraps(&padded, max, 13.0) {
-                _ if code_w > 0.0 => {
-                    let lines = blocks.iter().filter(|b| !b.6).flat_map(|b| b.2.lines());
-                    let text_w = lines.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
-                    Length::Fixed(code_w.max(text_w).min(max))
-                }
-                false => Length::Shrink,
-                true if st.settings.on("balanceText") && !blocks_html => Length::Fixed(crate::style::balanced_width(&padded, max, 13.0)),
-                true => Length::Fixed(max),
-            };
-            // Desktop's `ol` indent: `max(1.8em, var(--ol-number-digits) * 1ch + 0.65em)`, with the digits of its
-            // longest number.
-            let digits = blocks.iter().filter_map(|b| b.0.as_deref()?.strip_suffix('.')).map(str::len).max().unwrap_or(1);
-            let ol_indent = (1.8 * 13.0f32).max(digits as f32 * crate::style::text_width("0", 13.0, Weight::Normal) + 0.65 * 13.0);
-            let items: Vec<(u8, El<'_>)> = blocks
-                .into_iter()
-                .enumerate()
-                .map(|(i, (marker, mut spans, _, quote, level, images, pre))| {
-                    // iced does not draw an empty last line.
-                    if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
-                        spans.push(span("\u{200b}").size(rem(13.0)));
-                    }
-                    if i == last && room > 0.0 {
-                        spans.push(span(pad.clone()).size(rem(13.0)));
-                    }
-                    let id = m.id.clone();
-                    let tipped = tipped_links(&spans, m.html.is_some());
-                    let tip = move |href: &String| -> Option<El<'a>> {
-                        let host = url_host(href).filter(|_| tipped.contains(href) && !self.menu_open())?;
-                        Some(self.tip_card(med(host, 13.0).color(p.strong)).into())
-                    };
-                    let line = crate::selectable::selectable(spans)
-                        .key(vlist::key((&m.id, i)))
-                        .images(images.iter().map(|i| i.0.clone()).collect(), self.animate.get().then_some(self.started))
-                        .on_image_menu({
-                            let (id, images) = (m.id.clone(), images);
-                            move |k| {
-                                let (_, title, src) = images[k].clone();
-                                UiMessage::Message(Msg::EmoticonMenu(id.clone(), title, src))
-                            }
-                        })
-                        .line_height(iced::widget::text::LineHeight::Absolute(rem(16.0).into()))
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                        .on_link_click(UiMessage::OpenUrl)
-                        .on_link_menu(move |href| UiMessage::Message(Msg::LinkMenu(id.clone(), href)))
-                        .link_tip(tip);
-                    let gap = match (prev_item.replace(marker.is_some()), marker.is_some()) {
-                        (None, _) => 0.0,
-                        (Some(true), true) => 6.0,
-                        _ => 9.0,
-                    } + if level > 0 { 9.0 } else { 0.0 };
-                    let indent = |m: &String| if m == "•" { 15.6 } else { ol_indent };
-                    // Desktop's `pre code`: a block on the code background, 0.75em around the text.
-                    let line: El<'_> = match pre {
-                        true => {
-                            container(line).padding(0.75 * 13.0 * 0.9).width(Fill).style(fill_box(Color { a: 0.1, ..p.strong }, 4.0)).into()
-                        }
-                        false => line.into(),
-                    };
-                    let marker = marker.map(|m| {
-                        let w = indent(&m);
-                        container(txt(m, 13.0).color(fg)).width(w).align_right(w).padding(Padding::ZERO.right(5.0))
-                    });
-                    (quote, container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into())
-                })
-                .collect();
-            // Desktop's `dir="auto"`: a right-to-left text starts its lines at the right of the bubble, and its time
-            // floats to its left, where its room is.
-            let rtl = right_to_left(&text);
-            let start = if rtl { Right } else { iced::Left };
-            let body = Column::with_children(quotes(items, 0, p.strong)).width(width).align_x(start);
-            let cut =
-                cut.map(|(t, left)| txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph));
-            let body = stack![column![body].push(cut).align_x(start)].push(time.map(|t| match rtl {
-                true => container(t).align_left(Fill).align_bottom(Fill),
-                false => container(t).align_right(Fill).align_bottom(Fill),
-            }));
-            // Desktop's `read-more-button`: the primary color, white on a sent bubble, with the time at its end.
-            let more = clamp.map(|_| {
-                let label = semi(if open { tr("Show less") } else { tr("Show more") }, 14.0);
-                let color = if mine { fg } else { p.accent };
-                let toggle = button(label.line_height(lh(18.0)).color(color)).bare(color);
-                let toggle = toggle.on_press(UiMessage::Message(Msg::ToggleClamp(m.id.clone())));
-                // A Fill gap would widen the bubble past its text, so the time follows the label.
-                row![toggle].push(footer_time).spacing(8).align_y(Bottom)
-            });
-            parts = parts.push(
-                container(
-                    column![]
-                        .push(inside)
-                        .push(body)
-                        .push(below.map(|t| container(t).align_right(width).padding(Padding::ZERO.top(4.0))))
-                        .push(more),
-                )
-                .padding([BUBBLE_PAD_Y, BUBBLE_PAD_X])
-                .max_width(0.45 * self.pane().size.width)
-                .style(fill_box(bg, 17.0)),
-            );
+            parts = parts.push(self.view_text_bubble(st, chat, (m, &text), inside, failed, (mine, fg, bg, sent_meta, shows_time)));
         }
         let label = |t: String| txt(t, 12.0).color(muted);
         // Desktop's `EditedLabel` shows on an edited message that is not deleted, failed or retrying.
@@ -2878,119 +2578,8 @@ impl BeeperGuiApp {
             .push(transcribe)
             .align_x(if mine { Right } else { iced::Left });
         // Desktop's flyover and download button do not show on a call.
-        let tools = (self.pane().hovered_msg.as_ref() == Some(&m.id) && m.call.is_none()).then(|| {
-            // Desktop's flyover (`Yfe`): its items appear one after another, each from 85% of its size and clear to
-            // its full size in 0.2 s, the next one once the one before is a quarter in. The quick reactions follow
-            // once the pointer is on the flyover.
-            let shown = |at: Option<std::time::Instant>, k: usize| {
-                let t = at.map_or(1.0, |at| at.elapsed().as_secs_f32() - k as f32 * FLYOVER_STAGGER) / 0.2;
-                crate::cubic_bezier(t.clamp(0.0, 1.0), [0.0, 0.0, 0.58, 1.0])
-            };
-            let hover_at = self.pane().hover_msg_at;
-            // Desktop's flyover buttons: a 20 px Material icon, drawn at its 1.2 scale, in 6 px of padding.
-            let b = |c: char, msg: UiMessage, v: f32| -> El<'a> {
-                let style = move |_: &Theme, s| button::Style {
-                    text_color: match s {
-                        button::Status::Hovered => brightness(muted, 0.8),
-                        _ => muted,
-                    }
-                    .scale_alpha(v),
-                    ..Default::default()
-                };
-                let glyph = ic(c, 20.0 * 1.2 * (0.85 + 0.15 * v));
-                button(container(glyph).center(32)).padding(0).style(style).on_press(msg).into()
-            };
-            let live = m.is_deleted != Some(true);
-            // Desktop's flyover shows on no pending message, has no items on a gallery, and only React in the
-            // thread pane.
-            let items = !pending && ms.len() == 1;
-            let base = [
-                (items && !in_pane && chat.messages.reply && live).then_some(0),
-                (items && !in_pane && can_thread(st, chat, m)).then_some(1),
-                (items && chat.messages.react && m.reactable()).then_some(2),
-            ];
-            let base: Vec<u8> = base.into_iter().flatten().collect();
-            let item = |kind: u8, k: usize| -> El<'a> {
-                let v = shown(hover_at, k);
-                let (b, tip) = match kind {
-                    0 => (b(icon::REPLY, UiMessage::Composer(composer::Msg::StartReply(m.id.clone())), v), trx("Reply", "message command")),
-                    1 => (
-                        b(icon::VIEW_SIDEBAR, UiMessage::Thread(threads::Msg::Show(m.id.clone())), v),
-                        trx("Reply in thread", "message command"),
-                    ),
-                    _ => (b(icon::MOOD, UiMessage::Message(Msg::React(m.id.clone())), v), trx("React", "attachment carousel action")),
-                };
-                // Desktop's `q3t`: the tooltips of the flyover wait a second.
-                self.tip(b, tip, vec![], tooltip::Position::Top).delay(std::time::Duration::from_secs(1)).into()
-            };
-            let flyover: Vec<El<'a>> = base.iter().enumerate().map(|(k, &kind)| item(kind, k)).collect();
-            // Desktop's quick reactions go only on received messages, after the other items.
-            let quick = (self.quick_open && st.settings.on("quickReactions") && !mine && !in_pane && base.contains(&2))
-                .then(|| crate::emoji::quick_reactions(st, &chat.allowed_reactions, chat.custom_emoji));
-            let quick: Vec<String> = quick.unwrap_or_default();
-            let after = hover_at.map(|t| t + std::time::Duration::from_secs_f32(base.len() as f32 * FLYOVER_STAGGER));
-            let start = self.pane().flyover_at.max(after);
-            // `disableReactions`: a quick reaction takes clicks 120 ms after the last one is in.
-            let ready =
-                start.is_none_or(|t| t.elapsed().as_secs_f32() > (quick.len().saturating_sub(1) as f32 * FLYOVER_STAGGER) + 0.2 + 0.12);
-            // The animation clock runs until the last item is in and the quick reactions take clicks.
-            let last = |at: Option<std::time::Instant>, n: usize, then: f32| {
-                let span = |n: usize| (n - 1) as f32 * FLYOVER_STAGGER + 0.2 + then;
-                at.filter(|_| n > 0).map(|t| t + std::time::Duration::from_secs_f32(span(n)))
-            };
-            let end = last(hover_at, base.len(), 0.0).max(last(start, quick.len(), 0.12));
-            self.pane().flyover_end.set(Some(((hover_at, self.pane().flyover_at), end)));
-            let quick = quick.into_iter().enumerate().map(|(j, e)| -> El<'a> {
-                let v = shown(start, j);
-                let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
-                // Desktop's custom emoji among the quick reactions: its image 16 px square.
-                let glyph: El<'a> = match crate::emoji::is_mxc(&e) {
-                    true => match self.frames(&e) {
-                        Some(f) => {
-                            self.emoji(&f, move |h| image(h).width(16.0 * (0.85 + 0.15 * v)).height(16.0 * (0.85 + 0.15 * v)).opacity(v))
-                        }
-                        None => Space::new().width(16.0).height(16.0).into(),
-                    },
-                    false => txt(e, 20.0 * (0.85 + 0.15 * v)).font(EMOJI_FONT).color(p.text.scale_alpha(v)).into(),
-                };
-                button(container(glyph).center(32)).bare(p.text).on_press_maybe(ready.then_some(msg)).into()
-            });
-            // `@container messageContainer (max-width: 24rem)`: a narrow chat shows the first two items only. The
-            // `.message-container` is as wide as the chat less 8 px.
-            let room = if self.conversation_width() - 8.0 <= 384.0 { 2 } else { usize::MAX };
-            let flyover: Vec<El<'a>> = flyover.into_iter().chain(quick).take(room).collect();
-            let flyover = (!flyover.is_empty()).then(|| -> El<'a> {
-                let row = match mine {
-                    true => Row::with_children(flyover.into_iter().rev()),
-                    false => Row::with_children(flyover),
-                };
-                mouse_area(row).on_enter(UiMessage::Message(Msg::ShowQuickReactions)).into()
-            });
-            // Desktop's download button beside an attachment, and the time of a message without text in its flyover.
-            // The items of a gallery open in the carousel, so a gallery has no download button here.
-            let file =
-                m.attachments.first().filter(|a| live && ms.len() == 1 && a.attachment_type != "audio" && a.is_voice_note != Some(true));
-            let download = file.map(|a| -> El<'a> {
-                let tip = match a.file_size {
-                    Some(n) => trf("Download - %s", &[&human_size(n)]),
-                    None => trx("Download", "message attachment action").into(),
-                };
-                let button =
-                    button(ic(icon::DOWNLOAD, 20.0)).bare(p.action).on_press(UiMessage::Message(Msg::Download(m.id.clone(), Some(0))));
-                let gap = if mine { Padding::ZERO.right(12.0) } else { Padding::ZERO.left(12.0) };
-                container(self.tip(button.into(), tip, vec![], tooltip::Position::Top)).padding(gap).into()
-            });
-            let time = (file.is_some() && text.is_empty() && shows_time).then(|| -> El<'a> {
-                crate::style::fixed(format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1), 11.0, Weight::Normal)
-                    .color(muted)
-                    .into()
-            });
-            let all: Vec<El<'a>> = match mine {
-                true => [flyover, time, download].into_iter().flatten().collect(),
-                false => [download, time, flyover].into_iter().flatten().collect(),
-            };
-            Row::with_children(all)
-        });
+        let tools = (self.pane().hovered_msg.as_ref() == Some(&m.id) && m.call.is_none())
+            .then(|| self.view_flyover(st, chat, ms, (mine, pending, in_pane), muted, text.is_empty() && shows_time));
         let side = (group && !mine).then(|| -> El<'a> {
             if face {
                 let url = chat.participants.items.iter().find(|u| u.id == m.sender_id).and_then(|u| u.img_url.as_deref());
@@ -3051,6 +2640,431 @@ impl BeeperGuiApp {
             .on_right_press(menu)
             .on_double_click(UiMessage::Message(Msg::DoubleClick(m.id.clone())));
         column![head].push(versions).push(line).into()
+    }
+
+    /// The bubble of a text message: its rich text, clamped at 40 lines with Show more, its links, mentions and custom
+    /// emoji, and its time, markers or send error at the end of its last line.
+    fn view_text_bubble<'a>(
+        &'a self, st: &BeeperStore, chat: &Chat, (m, text): (&Message, &str), inside: Option<container::Container<'a, UiMessage>>,
+        failed: Option<&SendError>, (mine, fg, bg, sent_meta, shows_time): (bool, Color, Color, Color, bool),
+    ) -> El<'a> {
+        let p = &self.pal;
+        let ts = shows_time.then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
+        let room = ts.as_deref().map_or(0.0, |t| crate::style::fixed_width(t, 11.0, Weight::Normal) + 4.0);
+        let time: Option<El<'a>> =
+            ts.map(|t| crate::style::fixed(t, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.sub }).into());
+        // Desktop's `MessageErrorTooltip` takes the place of the time.
+        let (room, time) = match failed {
+            Some(e) => {
+                let label = if m.edited() { tr("Failed to edit") } else { tr("Not sent") };
+                (crate::style::fixed_width(label, 11.0, Weight::Normal) + 28.0, Some(self.error_tooltip(e, label)))
+            }
+            // Desktop's `BookmarkIndicator` and `ReminderIndicator` (`E3`) go before the time.
+            None => {
+                let color = if mine { sent_meta } else { p.sub };
+                let marker = |handle: &svg::Handle, color: Color, label: String| {
+                    let icon = svg(handle.clone()).width(10).height(10);
+                    let icon = icon.style(move |_, _| svg::Style { color: Some(color) });
+                    self.tip(icon.into(), label, vec![], tooltip::Position::Left)
+                };
+                let bookmark = (m.is_bookmarked == Some(true)).then(|| marker(&BOOKMARK_ICON, color, tr("Bookmarked").into()));
+                let reminder = st.message_reminders.get(&m.id).filter(|_| crate::reminders::message_reminders_on(st));
+                let reminder = reminder.filter(|_| m.is_deleted != Some(true)).map(|r| {
+                    let at = r.remind_at_ms;
+                    let h24 = st.settings.pref("timeFormat") == 1;
+                    let label = trf("Reminder: %1$s %2$s", &[&reminder_day(at), &clock(at, h24)]);
+                    // Desktop's `ReminderIndicator-module__due`: a due reminder takes the warning color.
+                    marker(&OUTLINE_CLOCK, if at <= now_unix_millis() { ORANGE } else { color }, label)
+                });
+                // Desktop's disappearing timer goes after the time.
+                let timer = disappears(chat, m).map(|label| marker(&TIMER, color, label));
+                let n = [bookmark.is_some(), reminder.is_some(), timer.is_some()].into_iter().filter(|&b| b).count();
+                match n {
+                    0 => (room, time),
+                    n => {
+                        let meta = row![].push(bookmark).push(reminder).push(time).push(timer);
+                        let meta = meta.spacing(4).align_y(Center);
+                        (room + 14.0 * n as f32, Some(meta.into()))
+                    }
+                }
+            }
+        };
+        let me = |id: &str| id == st.beeper_state.user_id;
+        // Desktop's `DJ`: "@room" in a message that mentions the room, or has no `m.mentions`, is a highlighted
+        // mention.
+        let room_mention = m.text.as_deref().is_some_and(|t| t.contains(ROOM_MENTION))
+            && m.mentions.as_ref().is_none_or(|ids| ids.iter().any(|id| id == ROOM_MENTION));
+        let highlighted = |s: iced::widget::text::Span<'a, String>| {
+            let pill = if mine { Color { a: 0.3, ..fg } } else { p.accent };
+            s.font(crate::style::fw(Weight::Bold)).color(Color::WHITE).background(pill).border(border::rounded(4)).padding(2)
+        };
+        // Desktop's `.ext-link-with-icon:after`: the arrow at 0.7 opacity, 2 px from the link and the text after it.
+        let arrow = || {
+            let arrow = span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(rem(11.0));
+            arrow.color(fg.scale_alpha(0.7)).padding(Padding::from([0, 2]))
+        };
+        let rich = |(r, room): (beeper_core::codec::Run, bool)| {
+            if r.emoticon.is_some() {
+                return [Some(span(crate::selectable::IMAGE_SLOT).size(rem(13.0))), None].into_iter().flatten();
+            }
+            // Desktop's `--font-weight-emphasized` bold, and its inline `code`: `--font-family-mono` at 0.9em and
+            // weight 500, on `--color-on-surface` at 0.1 with a 4 px radius and `.1em .33em` of padding.
+            let style = if r.italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
+            let font = match r.code {
+                true => iced::Font { weight: Weight::Medium, ..iced::Font::MONOSPACE },
+                false => iced::Font { style, ..crate::style::fw(if r.bold { Weight::Semibold } else { Weight::Normal }) },
+            };
+            let mention = r.link.as_deref().and_then(mentioned_user);
+            // Desktop's `data-mx-color` paints the text.
+            let ink = r.color.as_deref().and_then(|c| c.parse::<Color>().ok()).unwrap_or(fg);
+            let s = span(r.text).size(rem(13.0)).color(ink).font(font).strikethrough(r.strike).underline(r.underline);
+            let s = match r.code {
+                true => s
+                    .size(rem(13.0 * 0.9))
+                    .background(Color { a: 0.1, ..p.strong })
+                    .border(border::rounded(4))
+                    .padding(Padding::from([0.1 * 13.0 * 0.9, 0.33 * 13.0 * 0.9])),
+                false => s,
+            };
+            // Desktop's `.spoiler`: black with the text hidden, and after a click white on 30% black.
+            let s = match (r.spoiler, self.pane().spoilers.contains(&m.id)) {
+                (true, false) => s
+                    .color(Color::TRANSPARENT)
+                    .background(Color::BLACK)
+                    .border(border::rounded(2))
+                    .padding(Padding::from([1, 2]))
+                    .link(format!("{}{}", crate::SPOILER, m.id)),
+                (true, true) => s.color(Color::WHITE).background(Color::BLACK.scale_alpha(0.3)).padding(Padding::from([1, 2])),
+                _ => s,
+            };
+            if r.spoiler {
+                return [Some(s), None].into_iter().flatten();
+            }
+            let bold = crate::style::fw(Weight::Bold);
+            // Desktop's `.mention-hover-card-trigger` is not an external link, so it has no arrow.
+            let external = mention.is_none();
+            let s = match mention {
+                _ if room => highlighted(s),
+                Some(id) if me(&id) => highlighted(s),
+                Some(id) => s.font(bold).color(if mine { fg } else { p.accent }).link(format!("{}{} {id}", crate::MENTION, m.chat_id)),
+                None => s.underline(r.underline || r.link.is_some()).link_maybe(r.link.clone()),
+            };
+            let arrow = (external && s.link.is_some()).then(arrow);
+            [Some(s), arrow].into_iter().flatten()
+        };
+        let word = |w: &str| span(w.to_string()).size(rem(13.0)).color(fg);
+        // The words of plain text, with a highlighted "@room".
+        let words = |text: &str| -> Vec<iced::widget::text::Span<'a, String>> {
+            let parts = if room_mention { room_parts(text) } else { vec![(text, false)] };
+            parts
+                .into_iter()
+                .flat_map(|(t, room)| match room {
+                    true => vec![highlighted(word(t))],
+                    false => t.split_inclusive(' ').map(word).collect(),
+                })
+                .collect()
+        };
+        // Plain text with Desktop's linkify links: each with its underline and arrow, the rest word by word.
+        let plain = |text: &str| {
+            let mut spans = Vec::new();
+            let mut at = 0;
+            for (range, href) in crate::linkify::links(text) {
+                spans.extend(words(&text[at..range.start]));
+                spans.push(span(text[range.clone()].to_string()).size(rem(13.0)).color(fg).underline(true).link(href));
+                spans.push(arrow());
+                at = range.end;
+            }
+            spans.extend(words(&text[at..]));
+            spans
+        };
+        // Each block: its list marker, spans, plain text, blockquote depth, heading level and custom emoji.
+        // Each block: its list marker, spans, plain text, blockquote depth, heading level, custom emoji and whether it
+        // is a code block.
+        type Block<'s> = (
+            Option<String>,
+            Vec<iced::widget::text::Span<'s, String>>,
+            String,
+            u8,
+            u8,
+            Vec<(Option<crate::Frames>, Option<String>, String)>,
+            bool,
+        );
+        let blocks: Vec<Block> = match m.html.as_deref() {
+            Some(html) => beeper_core::codec::html_blocks(html)
+                .into_iter()
+                .map(|mut b| {
+                    at_mentions(&mut b.runs);
+                    let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
+                    // Each custom emoji's image, `title` and `data-original-src`.
+                    let images = b.runs.iter().filter_map(|r| Some((r.emoticon.as_deref()?, r.title.clone())));
+                    let images = images.map(|(u, title)| (self.frames(u), title, u.to_string())).collect();
+                    let runs = b.runs.into_iter().flat_map(|r| match room_mention && r.link.is_none() && !r.code {
+                        true => room_parts(&r.text)
+                            .into_iter()
+                            .map(|(t, room)| (beeper_core::codec::Run { text: t.into(), ..r.clone() }, room))
+                            .collect(),
+                        false => vec![(r, false)],
+                    });
+                    let mut spans = with_emoji_font(runs.flat_map(rich).collect());
+                    // Desktop's `pre code` is one padded block, so its spans have no box of their own.
+                    if b.pre {
+                        for s in &mut spans {
+                            (s.highlight, s.padding) = (None, Padding::ZERO);
+                        }
+                    }
+                    (b.marker, heading(spans, b.heading), plain, b.quote, b.heading, images, b.pre)
+                })
+                .collect(),
+            None => {
+                let spans = with_emoji_font(plain(text));
+                vec![(None, spans, text.to_string(), 0, 0, Vec::new(), false)]
+            }
+        };
+        let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
+        // Desktop's `.message-text` clamps a message at 40 lines, and "Show more" opens it. The whole blocks that
+        // fit show as they are, and the block that crosses the limit shows its first lines as plain text.
+        let clamp = clamp_blocks(blocks.iter().map(|b| b.2.as_str()), max);
+        let open = self.pane().unclamped.contains(&m.id);
+        // Desktop's `pre code` is a block as wide as its longest line, and the time floats under a last one.
+        let code_pad = 0.75 * 13.0 * 0.9;
+        let code_lines = blocks.iter().filter(|b| b.6).flat_map(|b| b.2.lines());
+        let code_w = code_lines.map(|l| l.chars().count() as f32 * 0.6 * 13.0 * 0.9 + 2.0 * code_pad).fold(0.0, f32::max);
+        let last_pre = blocks.last().is_some_and(|b| b.6);
+        let (room, time, footer_time) = match clamp {
+            Some(_) => (0.0, None, time),
+            None if last_pre => (0.0, None, time),
+            None => (room, time, None),
+        };
+        let (footer_time, below) = if clamp.is_some() { (footer_time, None) } else { (None, footer_time) };
+        let (blocks, cut) = match clamp {
+            Some((whole, left)) if !open => {
+                let cut = blocks.get(whole).map(|b| b.2.clone()).filter(|_| left > 0);
+                (blocks.into_iter().take(whole).collect(), cut.map(|t| (t, left)))
+            }
+            _ => (blocks, None),
+        };
+        let (mut prev_item, last) = (None, blocks.len().saturating_sub(1));
+        let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
+        let pad = "\u{a0}".repeat((room / nbsp).ceil() as usize);
+        // Desktop's `message-text--balanced`: CSS `text-wrap: balance`, then the bubble shrinks to its widest line.
+        // A message with block HTML wraps as usual. A wrapped message without balance takes the whole width.
+        // The layout lets trailing spaces hang past the width, so the room of the time is measured with digits.
+        let zero = crate::style::text_width("0", 13.0, Weight::Normal);
+        let padded = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
+        let blocks_html = m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
+        let width = match code_w > 0.0 || crate::style::wraps(&padded, max, 13.0) {
+            _ if code_w > 0.0 => {
+                let lines = blocks.iter().filter(|b| !b.6).flat_map(|b| b.2.lines());
+                let text_w = lines.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
+                Length::Fixed(code_w.max(text_w).min(max))
+            }
+            false => Length::Shrink,
+            true if st.settings.on("balanceText") && !blocks_html => Length::Fixed(crate::style::balanced_width(&padded, max, 13.0)),
+            true => Length::Fixed(max),
+        };
+        // Desktop's `ol` indent: `max(1.8em, var(--ol-number-digits) * 1ch + 0.65em)`, with the digits of its
+        // longest number.
+        let digits = blocks.iter().filter_map(|b| b.0.as_deref()?.strip_suffix('.')).map(str::len).max().unwrap_or(1);
+        let ol_indent = (1.8 * 13.0f32).max(digits as f32 * crate::style::text_width("0", 13.0, Weight::Normal) + 0.65 * 13.0);
+        let items: Vec<(u8, El<'_>)> = blocks
+            .into_iter()
+            .enumerate()
+            .map(|(i, (marker, mut spans, _, quote, level, images, pre))| {
+                // iced does not draw an empty last line.
+                if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
+                    spans.push(span("\u{200b}").size(rem(13.0)));
+                }
+                if i == last && room > 0.0 {
+                    spans.push(span(pad.clone()).size(rem(13.0)));
+                }
+                let id = m.id.clone();
+                let tipped = tipped_links(&spans, m.html.is_some());
+                let tip = move |href: &String| -> Option<El<'a>> {
+                    let host = url_host(href).filter(|_| tipped.contains(href) && !self.menu_open())?;
+                    Some(self.tip_card(med(host, 13.0).color(p.strong)).into())
+                };
+                let line = crate::selectable::selectable(spans)
+                    .key(vlist::key((&m.id, i)))
+                    .images(images.iter().map(|i| i.0.clone()).collect(), self.animate.get().then_some(self.started))
+                    .on_image_menu({
+                        let (id, images) = (m.id.clone(), images);
+                        move |k| {
+                            let (_, title, src) = images[k].clone();
+                            UiMessage::Message(Msg::EmoticonMenu(id.clone(), title, src))
+                        }
+                    })
+                    .line_height(iced::widget::text::LineHeight::Absolute(rem(16.0).into()))
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                    .on_link_click(UiMessage::OpenUrl)
+                    .on_link_menu(move |href| UiMessage::Message(Msg::LinkMenu(id.clone(), href)))
+                    .link_tip(tip);
+                let gap = match (prev_item.replace(marker.is_some()), marker.is_some()) {
+                    (None, _) => 0.0,
+                    (Some(true), true) => 6.0,
+                    _ => 9.0,
+                } + if level > 0 { 9.0 } else { 0.0 };
+                let indent = |m: &String| if m == "•" { 15.6 } else { ol_indent };
+                // Desktop's `pre code`: a block on the code background, 0.75em around the text.
+                let line: El<'_> = match pre {
+                    true => {
+                        container(line).padding(0.75 * 13.0 * 0.9).width(Fill).style(fill_box(Color { a: 0.1, ..p.strong }, 4.0)).into()
+                    }
+                    false => line.into(),
+                };
+                let marker = marker.map(|m| {
+                    let w = indent(&m);
+                    container(txt(m, 13.0).color(fg)).width(w).align_right(w).padding(Padding::ZERO.right(5.0))
+                });
+                (quote, container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into())
+            })
+            .collect();
+        // Desktop's `dir="auto"`: a right-to-left text starts its lines at the right of the bubble, and its time
+        // floats to its left, where its room is.
+        let rtl = right_to_left(text);
+        let start = if rtl { Right } else { iced::Left };
+        let body = Column::with_children(quotes(items, 0, p.strong)).width(width).align_x(start);
+        let cut = cut.map(|(t, left)| txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph));
+        let body = stack![column![body].push(cut).align_x(start)].push(time.map(|t| match rtl {
+            true => container(t).align_left(Fill).align_bottom(Fill),
+            false => container(t).align_right(Fill).align_bottom(Fill),
+        }));
+        // Desktop's `read-more-button`: the primary color, white on a sent bubble, with the time at its end.
+        let more = clamp.map(|_| {
+            let label = semi(if open { tr("Show less") } else { tr("Show more") }, 14.0);
+            let color = if mine { fg } else { p.accent };
+            let toggle = button(label.line_height(lh(18.0)).color(color)).bare(color);
+            let toggle = toggle.on_press(UiMessage::Message(Msg::ToggleClamp(m.id.clone())));
+            // A Fill gap would widen the bubble past its text, so the time follows the label.
+            row![toggle].push(footer_time).spacing(8).align_y(Bottom)
+        });
+
+        container(
+            column![]
+                .push(inside)
+                .push(body)
+                .push(below.map(|t| container(t).align_right(width).padding(Padding::ZERO.top(4.0))))
+                .push(more),
+        )
+        .padding([BUBBLE_PAD_Y, BUBBLE_PAD_X])
+        .max_width(0.45 * self.pane().size.width)
+        .style(fill_box(bg, 17.0))
+        .into()
+    }
+
+    /// Desktop's flyover of a hovered message: Reply, Reply in thread and React, then the quick reactions, with the
+    /// download button of an attachment and the time of a message without text.
+    fn view_flyover<'a>(
+        &'a self, st: &BeeperStore, chat: &Chat, ms: &[&Message], (mine, pending, in_pane): (bool, bool, bool), muted: Color, time: bool,
+    ) -> Row<'a, UiMessage> {
+        let (p, m) = (&self.pal, ms[0]);
+        // Desktop's flyover (`Yfe`): its items appear one after another, each from 85% of its size and clear to
+        // its full size in 0.2 s, the next one once the one before is a quarter in. The quick reactions follow
+        // once the pointer is on the flyover.
+        let shown = |at: Option<std::time::Instant>, k: usize| {
+            let t = at.map_or(1.0, |at| at.elapsed().as_secs_f32() - k as f32 * FLYOVER_STAGGER) / 0.2;
+            crate::cubic_bezier(t.clamp(0.0, 1.0), [0.0, 0.0, 0.58, 1.0])
+        };
+        let hover_at = self.pane().hover_msg_at;
+        // Desktop's flyover buttons: a 20 px Material icon, drawn at its 1.2 scale, in 6 px of padding.
+        let b = |c: char, msg: UiMessage, v: f32| -> El<'a> {
+            let style = move |_: &Theme, s| button::Style {
+                text_color: match s {
+                    button::Status::Hovered => brightness(muted, 0.8),
+                    _ => muted,
+                }
+                .scale_alpha(v),
+                ..Default::default()
+            };
+            let glyph = ic(c, 20.0 * 1.2 * (0.85 + 0.15 * v));
+            button(container(glyph).center(32)).padding(0).style(style).on_press(msg).into()
+        };
+        let live = m.is_deleted != Some(true);
+        // Desktop's flyover shows on no pending message, has no items on a gallery, and only React in the
+        // thread pane.
+        let items = !pending && ms.len() == 1;
+        let base = [
+            (items && !in_pane && chat.messages.reply && live).then_some(0),
+            (items && !in_pane && can_thread(st, chat, m)).then_some(1),
+            (items && chat.messages.react && m.reactable()).then_some(2),
+        ];
+        let base: Vec<u8> = base.into_iter().flatten().collect();
+        let item = |kind: u8, k: usize| -> El<'a> {
+            let v = shown(hover_at, k);
+            let (b, tip) = match kind {
+                0 => (b(icon::REPLY, UiMessage::Composer(composer::Msg::StartReply(m.id.clone())), v), trx("Reply", "message command")),
+                1 => (
+                    b(icon::VIEW_SIDEBAR, UiMessage::Thread(threads::Msg::Show(m.id.clone())), v),
+                    trx("Reply in thread", "message command"),
+                ),
+                _ => (b(icon::MOOD, UiMessage::Message(Msg::React(m.id.clone())), v), trx("React", "attachment carousel action")),
+            };
+            // Desktop's `q3t`: the tooltips of the flyover wait a second.
+            self.tip(b, tip, vec![], tooltip::Position::Top).delay(std::time::Duration::from_secs(1)).into()
+        };
+        let flyover: Vec<El<'a>> = base.iter().enumerate().map(|(k, &kind)| item(kind, k)).collect();
+        // Desktop's quick reactions go only on received messages, after the other items.
+        let quick = (self.quick_open && st.settings.on("quickReactions") && !mine && !in_pane && base.contains(&2))
+            .then(|| crate::emoji::quick_reactions(st, &chat.allowed_reactions, chat.custom_emoji));
+        let quick: Vec<String> = quick.unwrap_or_default();
+        let after = hover_at.map(|t| t + std::time::Duration::from_secs_f32(base.len() as f32 * FLYOVER_STAGGER));
+        let start = self.pane().flyover_at.max(after);
+        // `disableReactions`: a quick reaction takes clicks 120 ms after the last one is in.
+        let ready = start.is_none_or(|t| t.elapsed().as_secs_f32() > (quick.len().saturating_sub(1) as f32 * FLYOVER_STAGGER) + 0.2 + 0.12);
+        // The animation clock runs until the last item is in and the quick reactions take clicks.
+        let last = |at: Option<std::time::Instant>, n: usize, then: f32| {
+            let span = |n: usize| (n - 1) as f32 * FLYOVER_STAGGER + 0.2 + then;
+            at.filter(|_| n > 0).map(|t| t + std::time::Duration::from_secs_f32(span(n)))
+        };
+        let end = last(hover_at, base.len(), 0.0).max(last(start, quick.len(), 0.12));
+        self.pane().flyover_end.set(Some(((hover_at, self.pane().flyover_at), end)));
+        let quick = quick.into_iter().enumerate().map(|(j, e)| -> El<'a> {
+            let v = shown(start, j);
+            let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
+            // Desktop's custom emoji among the quick reactions: its image 16 px square.
+            let glyph: El<'a> = match crate::emoji::is_mxc(&e) {
+                true => match self.frames(&e) {
+                    Some(f) => {
+                        self.emoji(&f, move |h| image(h).width(16.0 * (0.85 + 0.15 * v)).height(16.0 * (0.85 + 0.15 * v)).opacity(v))
+                    }
+                    None => Space::new().width(16.0).height(16.0).into(),
+                },
+                false => txt(e, 20.0 * (0.85 + 0.15 * v)).font(EMOJI_FONT).color(p.text.scale_alpha(v)).into(),
+            };
+            button(container(glyph).center(32)).bare(p.text).on_press_maybe(ready.then_some(msg)).into()
+        });
+        // `@container messageContainer (max-width: 24rem)`: a narrow chat shows the first two items only. The
+        // `.message-container` is as wide as the chat less 8 px.
+        let room = if self.conversation_width() - 8.0 <= 384.0 { 2 } else { usize::MAX };
+        let flyover: Vec<El<'a>> = flyover.into_iter().chain(quick).take(room).collect();
+        let flyover = (!flyover.is_empty()).then(|| -> El<'a> {
+            let row = match mine {
+                true => Row::with_children(flyover.into_iter().rev()),
+                false => Row::with_children(flyover),
+            };
+            mouse_area(row).on_enter(UiMessage::Message(Msg::ShowQuickReactions)).into()
+        });
+        // Desktop's download button beside an attachment, and the time of a message without text in its flyover.
+        // The items of a gallery open in the carousel, so a gallery has no download button here.
+        let file = m.attachments.first().filter(|a| live && ms.len() == 1 && a.attachment_type != "audio" && a.is_voice_note != Some(true));
+        let download = file.map(|a| -> El<'a> {
+            let tip = match a.file_size {
+                Some(n) => trf("Download - %s", &[&human_size(n)]),
+                None => trx("Download", "message attachment action").into(),
+            };
+            let button = button(ic(icon::DOWNLOAD, 20.0)).bare(p.action).on_press(UiMessage::Message(Msg::Download(m.id.clone(), Some(0))));
+            let gap = if mine { Padding::ZERO.right(12.0) } else { Padding::ZERO.left(12.0) };
+            container(self.tip(button.into(), tip, vec![], tooltip::Position::Top)).padding(gap).into()
+        });
+        let time = (file.is_some() && time).then(|| -> El<'a> {
+            crate::style::fixed(format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1), 11.0, Weight::Normal)
+                .color(muted)
+                .into()
+        });
+        let all: Vec<El<'a>> = match mine {
+            true => [flyover, time, download].into_iter().flatten().collect(),
+            false => [download, time, flyover].into_iter().flatten().collect(),
+        };
+        Row::with_children(all)
     }
 
     /// Desktop's `MessageEditHistory` (`x6t`) above an expanded edited message: its earlier versions oldest first,
