@@ -3946,6 +3946,9 @@ impl BeeperGuiApp {
         if !self.cycling {
             self.push_history(chat_id);
         }
+        // Desktop's timeline mounts new `<img>`s, which load a media that failed again: one that waits for the user to
+        // ask for it stays.
+        self.media.retain(|_, m| !matches!(m, Some(Err(e)) if !beeper_core::matrix::reload_needed(e)));
         let mut st = self.store.write();
         self.leave_chat(&mut st, Some(chat_id));
         if let Some(old) = self.pane.selected_chat_id.clone() {

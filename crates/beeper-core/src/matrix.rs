@@ -3235,18 +3235,60 @@ fn attachment_info(info: MediaInfo, len: usize, mime: &str) -> matrix_sdk::attac
 const ENCRYPTED_FILE: &str = "encryptedFileInfoJSON";
 
 /// The bytes of a Matrix (`mxc://`) or web (`https://`) media URL. A bridge that needs the user to ask for the media
-/// fails the load with [`MEDIA_RELOAD_NEEDED`].
+/// fails the load with [`MEDIA_RELOAD_NEEDED`]. A failed load logs its URL, without the keys of an encrypted one,
+/// and why it failed, like Desktop's `pas: matrix asset error`.
 pub async fn media(client: Option<Client>, src: String) -> Result<Vec<u8>, String> {
     if src.starts_with("https://") {
-        return crate::cloud::http_bytes(&src).await;
+        let r = crate::cloud::http_bytes(&src).await;
+        if let Err(e) = &r {
+            eprintln!("media load failed: {}: {e}", src.split(['?', '#']).next().unwrap_or_default());
+        }
+        return r;
     }
     // The demo seed has its photos inline.
     if let Some((_, b64)) = src.strip_prefix("data:").and_then(|s| s.split_once(";base64,")) {
         return vodozemac::base64_decode(b64).map_err(|e| e.to_string());
     }
     let client = client.ok_or("Not connected to Matrix")?;
-    let request = MediaRequestParameters { source: media_source(src)?, format: MediaFormat::File };
-    client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
+    let source = media_source(src.clone()).inspect_err(|e| eprintln!("media load failed: {}: {e}", logged(&src)))?;
+    fetch(&client, source, false).await
+}
+
+/// The media URL for the log: its `mxc://` URI, without the keys of an encrypted one.
+pub fn logged(src: &str) -> String {
+    match src.split_once(&format!("?{ENCRYPTED_FILE}=")) {
+        Some((uri, _)) => format!("{uri} (encrypted)"),
+        None => src.to_string(),
+    }
+}
+
+/// Desktop's `getAsset`: the media of `source` from the cache, or else downloaded like Desktop's SDK and cached.
+async fn fetch(client: &Client, source: MediaSource, interactive: bool) -> Result<Vec<u8>, String> {
+    let request = MediaRequestParameters { source, format: MediaFormat::File };
+    let uri = crate::download::uri(&request.source).to_string();
+    let shown = match &request.source {
+        MediaSource::Encrypted(_) => format!("{uri} (encrypted)"),
+        MediaSource::Plain(_) => uri,
+    };
+    let cache = client.media_store();
+    if let Ok(cache) = cache.lock().await {
+        if let Ok(Some(bytes)) = cache.get_media_content(&request).await {
+            return Ok(bytes);
+        }
+    }
+    let token = client.access_token().ok_or("Not signed in to Matrix")?;
+    let tried = |n, e: &str| eprintln!("media load {n}/{} failed, trying again: {shown}: {e}", crate::download::TRIES);
+    let bytes = crate::download::download(&client.homeserver(), &token, &request.source, interactive, tried)
+        .await
+        .inspect_err(|e| eprintln!("media load failed: {shown}: {e}"))?;
+    let keep = matrix_sdk::media::store::IgnoreMediaRetentionPolicy::No;
+    if let Ok(cache) = cache.lock().await {
+        // The bytes load even when the cache cannot keep them.
+        if let Err(e) = cache.add_media_content(&request, bytes.clone(), keep).await {
+            eprintln!("media cache failed: {shown}: {e}");
+        }
+    }
+    Ok(bytes)
 }
 
 /// The error code of a download that a bridge only answers when the user asks for it, like media that only the phone
@@ -3262,40 +3304,7 @@ pub fn reload_needed(error: &str) -> bool {
 /// lets the bridge fetch it from the phone, and caches it for the next [`media`] load.
 pub async fn media_interactive(client: Option<Client>, src: String) -> Result<(), String> {
     let client = client.ok_or("Not connected to Matrix")?;
-    let source = media_source(src)?;
-    let uri = match &source {
-        MediaSource::Plain(uri) => uri,
-        MediaSource::Encrypted(file) => &file.url,
-    };
-    let (server, id) = uri.parts().map_err(|e| e.to_string())?;
-    let mut url = client.homeserver();
-    let path = ["_matrix", "client", "v1", "media", "download", server.as_str(), id];
-    url.path_segments_mut().expect("a base URL").pop_if_empty().extend(path);
-    url.query_pairs_mut().append_pair("com.beeper.interactive_download_request", "true");
-    let token = client.access_token().ok_or("Not signed in to Matrix")?;
-    let resp = crate::cloud::wait_client().get(url.as_str()).bearer_auth(token).send().await;
-    let resp = resp.map_err(|e| e.without_url().to_string())?;
-    let status = resp.status();
-    let body = resp.bytes().await.map_err(|e| e.without_url().to_string())?.to_vec();
-    if !status.is_success() {
-        return Err(matrix_error(status, &serde_json::from_slice(&body).unwrap_or_default()));
-    }
-    let content = match &source {
-        MediaSource::Encrypted(file) => {
-            let mut cursor = std::io::Cursor::new(body);
-            let info = file.as_ref().clone().into();
-            let mut plain = Vec::new();
-            matrix_sdk_crypto::AttachmentDecryptor::new(&mut cursor, info)
-                .map_err(|e| e.to_string())
-                .and_then(|mut r| std::io::Read::read_to_end(&mut r, &mut plain).map_err(|e| e.to_string()))?;
-            plain
-        }
-        MediaSource::Plain(_) => body,
-    };
-    let request = MediaRequestParameters { source, format: MediaFormat::File };
-    let cache = client.media_store().lock().await.map_err(|e| e.to_string())?;
-    let keep = matrix_sdk::media::store::IgnoreMediaRetentionPolicy::No;
-    cache.add_media_content(&request, content, keep).await.map_err(|e| e.to_string())
+    fetch(&client, media_source(src)?, true).await.map(drop)
 }
 
 /// The Matrix media of a source URL, with the encrypted file info of its `encryptedFileInfoJSON` query.
@@ -3308,7 +3317,12 @@ fn media_source(src: String) -> Result<MediaSource, String> {
                 false => vodozemac::base64_decode(json.trim_end_matches('=').replace('-', "+").replace('_', "/"))
                     .map_err(|e| e.to_string())?,
             };
-            MediaSource::Encrypted(Box::new(serde_json::from_slice(&json).map_err(|e| e.to_string())?))
+            // The files of other encryptions, like the `com.beeper.floe.v1` of the WhatsApp bridge, say so.
+            let v: Value = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
+            if let Some(other) = v["v"].as_str().filter(|v| *v != "v2") {
+                return Err(format!("unsupported file encryption {other}"));
+            }
+            MediaSource::Encrypted(Box::new(serde_json::from_value(v).map_err(|e| e.to_string())?))
         }
         None => MediaSource::Plain(src.into()),
     })
@@ -5401,6 +5415,88 @@ mod tests {
         assert_eq!(load().await.expect("the cached media"), b"\"the photo\"", "the next load reads the cache");
         let e = super::media_interactive(client.clone(), "mxc://x/gone".into()).await.expect_err("missing media");
         assert!(!super::reload_needed(&e) && e.contains("M_NOT_FOUND"), "{e}");
+    }
+
+    /// Like Desktop's SDK, a load asks the authenticated endpoint even when `/versions` does not list it, with
+    /// `com.beeper.interactive_download_request=false`; follows a redirect to another host without the token; takes
+    /// headers that are not ASCII; decrypts an encrypted file; tries a failure 3 more times; and fails a missing
+    /// media at once.
+    #[tokio::test]
+    async fn media_loads_like_desktop() {
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        use std::sync::{Arc, Mutex, OnceLock};
+        let photo = b"the photo".to_vec();
+        let (secret, info) = {
+            let mut plain = std::io::Cursor::new(b"the secret photo".to_vec());
+            let mut enc = matrix_sdk_crypto::AttachmentEncryptor::new(&mut plain);
+            let mut secret = Vec::new();
+            std::io::Read::read_to_end(&mut enc, &mut secret).expect("encrypt");
+            (secret, serde_json::to_value(enc.finish()).expect("the encryption info"))
+        };
+        let me: Arc<OnceLock<String>> = Arc::default();
+        let (seen, tries) = (Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(AtomicUsize::new(0)));
+        let (me2, seen2, tries2) = (me.clone(), seen.clone(), tries.clone());
+        let (photo2, secret2) = (photo.clone(), secret.clone());
+        let url = crate::bridge_stub::serve_raw(move |_, path, headers: &HashMap<String, String>, _| {
+            let json = |code, v: Value| {
+                (code, vec![("content-type".into(), b"application/json".to_vec())], v.to_string().into_bytes())
+            };
+            let auth = headers.get("authorization").is_some_and(|a| a == "Bearer token");
+            let (path, query) = path.split_once('?').unwrap_or((path, ""));
+            if path.contains("/media/") || path.starts_with("/blob") {
+                seen2.lock().expect("the requests").push(format!("{path}?{query} auth={auth}"));
+            }
+            let ok = auth && query == "com.beeper.interactive_download_request=false";
+            match path {
+                // A homeserver without authenticated media in `/versions`, where the SDK asks `/_matrix/media/v3`.
+                "/_matrix/client/versions" => json(200, json!({ "versions": ["v1.1"] })),
+                "/_matrix/client/v3/keys/upload" => json(200, json!({ "one_time_key_counts": {} })),
+                "/_matrix/client/v3/sync" => json(200, crate::testing::stub_sync()),
+                "/_matrix/client/v1/media/download/x/cdn" if ok => {
+                    let to = me2.get().expect("the stub URL").replace("127.0.0.1", "localhost");
+                    (307, vec![("location".into(), format!("{to}/blob?sig=1").into_bytes())], Vec::new())
+                }
+                "/blob" => {
+                    let name = "inline; filename=\"café ü.jpg\"".as_bytes().to_vec();
+                    (
+                        200,
+                        vec![("content-type".into(), b"image/jpeg".to_vec()), ("content-disposition".into(), name)],
+                        photo2.clone(),
+                    )
+                }
+                "/_matrix/client/v1/media/download/x/secret" if ok => (200, Vec::new(), secret2.clone()),
+                "/_matrix/client/v1/media/download/x/flaky" if ok && tries2.fetch_add(1, Relaxed) < 2 => {
+                    json(502, json!({ "errcode": "M_UNKNOWN", "error": "bad gateway" }))
+                }
+                "/_matrix/client/v1/media/download/x/flaky" if ok => (200, Vec::new(), b"at last".to_vec()),
+                _ => json(404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            }
+        })
+        .await;
+        me.set(url.clone()).expect("set the stub URL once");
+        let store = stub_store(&crate::testing::temp_dir("media-like-desktop"), &url).await;
+        let client = store.read().matrix.clone();
+        let load = |src: &str| super::media(client.clone(), src.into());
+        assert_eq!(load("mxc://x/cdn").await.expect("the redirected media"), photo);
+        let blob = seen.lock().expect("the requests").iter().find(|r| r.starts_with("/blob")).cloned();
+        assert_eq!(blob.as_deref(), Some("/blob?sig=1 auth=false"), "another host gets no token");
+        let mut file = info;
+        file["url"] = json!("mxc://x/secret");
+        let src = format!("mxc://x/secret?encryptedFileInfoJSON={}", crate::codec::url_encode(&file.to_string()));
+        assert_eq!(load(&src).await.expect("the decrypted media"), b"the secret photo");
+        let floe = json!({ "url": "mxc://x/floe", "v": "com.beeper.floe.v1", "floe_key": "k", "floe_header": "h" });
+        let floe = format!("mxc://x/floe?encryptedFileInfoJSON={}", crate::codec::url_encode(&floe.to_string()));
+        let e = load(&floe).await.expect_err("another encryption");
+        assert_eq!(e, "unsupported file encryption com.beeper.floe.v1");
+        assert_eq!(load("mxc://x/flaky").await.expect("the third try"), b"at last");
+        assert_eq!(tries.load(Relaxed), 3, "two failures and the success");
+        seen.lock().expect("the requests").clear();
+        let e = load("mxc://x/gone").await.expect_err("missing media");
+        assert!(e.contains("M_NOT_FOUND") && e.contains("404"), "{e}");
+        assert_eq!(seen.lock().expect("the requests").len(), 1, "a missing media is not asked again");
+        assert_eq!(load("mxc://x/cdn").await.expect("the cached media"), photo, "the next load reads the cache");
+        assert_eq!(seen.lock().expect("the requests").len(), 1, "the cache answers");
     }
 
     /// Like Desktop's SDK on Linux, a start sets the device metadata when the stored one is missing or differs, and
