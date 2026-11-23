@@ -2482,7 +2482,14 @@ impl BeeperGuiApp {
             let glyphs: Vec<El<'a>> = runs
                 .map(|r| match r.emoticon.as_deref() {
                     Some(url) => {
+                        // A selected animation plays dimmed once a worker dimmed its frames, and shows its first
+                        // frame dimmed until then.
+                        let dimmed = |f: &crate::Frames| match f.len() > 1 {
+                            true => self.dimmed_frames(url).map(|d| self.emoji(d, |h| image(h).height(48.0))),
+                            false => None,
+                        };
                         let img: El<'a> = match self.frames(url) {
+                            Some(f) if selected && let Some(d) = dimmed(&f) => d,
                             Some(f) if selected => image(crate::style::dimmed_image(&f[0].0, 0.8)).height(48.0).into(),
                             Some(f) => self.emoji(&f, |h| image(h).height(48.0)),
                             None => Space::new().width(48.0).height(48.0).into(),
@@ -4976,8 +4983,8 @@ pub(crate) mod tests {
         let whole = at(&mut app, 0);
         assert!((70..=90).contains(&wide(&whole, red)), "the whole GIF while its cut waits: {}", wide(&whole, red));
         let wanted: Vec<_> = std::mem::take(&mut *app.wants.cuts.borrow_mut()).into_iter().collect();
-        assert_eq!(wanted, [(url.clone(), 160, 400)], "the view asks for the cut");
-        let k = format!("160x400 {url}");
+        assert_eq!(wanted, [(url.clone(), crate::gallery::Cut::Cover(160, 400))], "the view asks for the cut");
+        let k = format!("Cover(160, 400) {url}");
         app.cuts.insert(k, Some(crate::gallery::cut_frames(&frames, (160, 400))));
         let first = at(&mut app, 0);
         assert!((300..=322).contains(&wide(&first, red)), "the cut fills the box: {}", wide(&first, red));
@@ -4985,7 +4992,7 @@ pub(crate) mod tests {
         assert!((300..=322).contains(&wide(&second, blue)) && spots(&second, red).is_empty(), "and plays");
         assert!(matches!(alone_redraw(&app, &mid), window::RedrawRequest::At(_)), "the next frame is due");
         let iced::advanced::image::Handle::Rgba { pixels, .. } =
-            &app.cuts.get(&format!("160x400 {url}")).unwrap().as_ref().unwrap()[0].0
+            &app.cuts.get(&format!("Cover(160, 400) {url}")).unwrap().as_ref().unwrap()[0].0
         else {
             panic!("RGBA")
         };
@@ -5286,6 +5293,40 @@ pub(crate) mod tests {
         assert!(red(&app) > 250);
         app.pane.selected_msgs = vec![mid.clone()];
         assert!(red(&app).abs_diff(204) <= 2, "brightness(0.8)");
+    }
+
+    /// Desktop's `filter: brightness(0.8)` of a selected emoji message dims an animated custom emoji, which goes on
+    /// playing: a worker dims its frames, and its first frame shows dimmed until then.
+    #[test]
+    fn selected_big_custom_emoji_play_like_desktop() {
+        let mut app = crate::fuzz::demo_app("jumbo-animated");
+        app.pane.size = Size::new(900.0, 700.0);
+        let mid = plain_received(&app, ":party:");
+        let url = "mxc://x/party".to_string();
+        change(&app, &mid, |m| {
+            m.html = Some(format!(r#"<img data-mx-emoticon src="{url}" alt=":party:" title=":party:" height="32">"#));
+        });
+        let fill = |c: [u8; 4]| image::Handle::from_rgba(48, 48, c.repeat(48 * 48));
+        let frames = crate::Frames::from([(fill([255, 0, 0, 255]), 1000), (fill([0, 0, 255, 255]), 1000)]);
+        app.media.insert(url.clone(), Some(Ok(frames.clone())));
+        // The brightest red and blue of the message at `ms` into the animation.
+        let at = |app: &mut BeeperGuiApp, ms: u64| {
+            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            let shot = pixels(&mut alone(app, &mid));
+            let most = |c: usize| shot.pixels().filter(|p| p[(c + 2) % 3] < 40 && p[3] > 0).map(|p| p[c]).max();
+            (most(0).unwrap_or(0), most(2).unwrap_or(0))
+        };
+        assert_eq!(at(&mut app, 1100), (0, 255), "the emoji plays");
+        app.pane.selected_msgs = vec![mid.clone()];
+        let (red, _) = at(&mut app, 1100);
+        assert!(red.abs_diff(204) <= 2, "the dimmed first frame while the worker dims the frames");
+        let wanted: Vec<_> = std::mem::take(&mut *app.wants.cuts.borrow_mut()).into_iter().collect();
+        assert_eq!(wanted, [(url.clone(), crate::gallery::Cut::Dim)], "the view asks for the dimmed frames");
+        app.cuts.insert(format!("Dim {url}"), Some(crate::gallery::dim_frames(&frames, 0.8)));
+        assert!(at(&mut app, 0).0.abs_diff(204) <= 2, "the first frame, dimmed");
+        let (red, blue) = at(&mut app, 1100);
+        assert!(red == 0 && blue.abs_diff(204) <= 2, "the second frame, dimmed: {red} {blue}");
+        assert!(matches!(alone_redraw(&app, &mid), window::RedrawRequest::At(_)), "it goes on playing");
     }
 
     /// Desktop's reaction pill (`.message-reaction-avatars`): up to 3 faces, each 6 px over the next one, and "+N" in
