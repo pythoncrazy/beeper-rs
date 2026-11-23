@@ -1801,7 +1801,14 @@ impl BeeperGuiApp {
         });
         let head = row![search, Space::new().width(Fill), revert].align_y(Center).padding(Padding::ZERO.bottom(10.0));
         let line = container(Space::new()).width(Fill).height(1).style(fill_box(edge, 0.0));
-        let card = column![head, line, Space::new().height(6)].extend(groups);
+        // Desktop's `.footer-row`: a rule 1em below the list, then the button 10 px under it at the left.
+        let texts = button(txt(tr("Switch to Texts.app keybindings"), 13.0).line_height(lh(15.0)))
+            .padding([4, 6])
+            .style(pill_style(p))
+            .on_press(UiMessage::Hotkeys(hotkeys::Msg::TextsKeys));
+        let rule = container(Space::new()).width(Fill).height(1).style(fill_box(edge, 0.0));
+        let foot = column![rule, texts].spacing(10).padding(Padding::ZERO.top(13.0).bottom(13.0));
+        let card = column![head, line, Space::new().height(6)].extend(groups).push(foot);
         container(card).width(Fill).padding(14).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0)).into()
     }
 
@@ -1817,7 +1824,8 @@ impl BeeperGuiApp {
             .iter()
             .filter(|h| !modifier_only(h.2) && hotkey_shown(&st, h.0))
             .map(|h| (h.0, h.1, st.settings.hotkey_keys(h.0)));
-        let all = all.chain(prefs::FIXED_HOTKEYS.iter().copied()).map(|(n, g, k)| (n, g, k.to_string()));
+        let fixed = prefs::FIXED_HOTKEYS.iter().map(|h| (h.0, h.1, st.settings.hotkey_keys(h.0)));
+        let all = all.chain(fixed).map(|(n, g, k)| (n, g, k.to_string()));
         let shown = prefs::match_sort(all, query, |h| tr(h.0).into());
         drop(st);
         let row = |(name, _, keys): &(&'static str, &str, String)| -> El<'_> {

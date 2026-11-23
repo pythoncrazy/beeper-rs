@@ -1832,6 +1832,37 @@ fn sticker_picker_like_desktop() {
     assert_eq!(echo.attachments[0].is_sticker, Some(true));
 }
 
+/// Desktop's "Switch to Texts.app keybindings" under the hotkey list gives the hotkeys the keys of Texts.app, turns
+/// Italicize Text Selection off so that Ctrl I edits, and asks for a relaunch.
+#[test]
+fn texts_keybindings_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("texts-keys");
+    let _ = app.open_settings(SettingsTab::Hotkeys);
+    let msgs: Vec<UiMessage> = {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1024.0, 8000.0), app.view_settings());
+        sim.click("Switch to Texts.app keybindings").expect("the button under the list");
+        sim.into_messages().collect()
+    };
+    msgs.into_iter().for_each(|m| drop(app.update(m)));
+    assert_eq!(app.relaunch_toast, Some(HOTKEYS_RELAUNCH));
+    let s = app.store.read().settings.clone();
+    s.assert_valid();
+    for (name, keys) in [
+        ("Message: Edit", "ctrl+i"),
+        ("Italicize Text Selection", "disabled"),
+        ("Select Next Chat", "ctrl+], ctrl+tab"),
+        ("Chat: Toggle Archive", "ctrl+e, ctrl+shift+e"),
+        ("Switch First 9 Spaces Modifier", "ctrl"),
+        ("Chat: Archive All Read", "disabled"),
+    ] {
+        assert_eq!(s.hotkey_keys(name), keys, "{name}");
+    }
+    assert_eq!(s.hotkey_keys("Search"), "ctrl+k", "the other hotkeys keep their keys");
+    let edit = app.find_hotkey(&Key::Character("i".into()), Modifiers::CTRL).map(|h| h.0);
+    assert_eq!(edit, Some("Message: Edit"));
+}
+
 /// Desktop's composer button selects (`Aee` of `sFt`): each leaves out the pick of the other button unless it is None,
 /// and offers the Sticker Picker before None only with sticker packs on, which puts "Add a sticker" in the pill.
 #[test]
