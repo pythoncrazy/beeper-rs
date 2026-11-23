@@ -24,7 +24,7 @@ const WIDTH: f32 = 280.0;
 const GAP: f32 = 6.0;
 const RADIUS: f32 = 14.0;
 /// The scale of a baked tile, so that it stays sharp on a 2x screen.
-const BAKE: f32 = 2.0;
+pub(crate) const BAKE: f32 = 2.0;
 
 /// How a baked tile looks: a gallery tile with its ring (selected or not), or an inline image cropped like Desktop's
 /// `object-fit: cover` in the 17 px corners of a bubble.
