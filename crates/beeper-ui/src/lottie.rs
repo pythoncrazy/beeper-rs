@@ -1,6 +1,6 @@
 //! Desktop's `Lottie` player: it loops a Lottie animation at its frame rate while the animation is on screen, from
 //! its first frame when it shows. velato reads the animation, and vello_cpu, which hayro brings for PDFs, draws each
-//! frame.
+//! frame on a worker, at the size that it shows on the screen, so the window draws on while a frame takes tens of ms.
 //!
 //! The animated stickers of Telegram (TGS, gzipped Lottie) play the same way. Like Desktop's rlottie workers, a few
 //! threads draw their frames as they are due, at the size that they show, and keep no other frames.
@@ -13,13 +13,29 @@ use iced::advanced::{mouse, renderer, Clipboard, Shell};
 use iced::widget::image;
 use iced::{window, Element, Event, Length, Rectangle, Renderer, Size, Theme};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use velato::model::{fixed, Content, ImageAsset};
 use velato::{Composition, RenderSink};
 
-/// The width and height of the frames in pixels: Desktop's 314 px wide illustrations on a 2x screen.
+/// The largest side of the frames of Desktop's animations in pixels: its 314 px wide illustrations on a 2x screen.
 const PIXELS: u16 = 628;
+
+/// The screen pixels of a layout pixel of the windows: the scale factor of the screen times the zoom. Until a window
+/// says, a 2x screen.
+static SCALE: AtomicU32 = AtomicU32::new(0x4000_0000);
+
+/// Takes the screen pixels of a layout pixel, [`SCALE`].
+pub fn set_scale(scale: f32) {
+    if scale.is_finite() && scale > 0.0 {
+        SCALE.store(scale.to_bits(), Ordering::Relaxed);
+    }
+}
+
+fn scale() -> f32 {
+    f32::from_bits(SCALE.load(Ordering::Relaxed))
+}
 
 /// The longest side of the first frame that a sticker keeps, which shows until a worker draws the size that shows.
 pub const STILL: u16 = 256;
@@ -58,7 +74,6 @@ struct State {
     renderer: velato::Renderer,
     ctx: Option<((u16, u16), RenderContext)>,
     resources: Resources,
-    last: Option<(u64, image::Handle)>,
 }
 
 impl Animation {
@@ -87,14 +102,7 @@ impl Animation {
             return Err("The Lottie animation has no frames".into());
         }
         let frames = ((last - first) as u64 + 1).min(100_000);
-        let state = State {
-            comp,
-            subtract,
-            renderer: velato::Renderer::new(),
-            ctx: None,
-            resources: Resources::new(),
-            last: None,
-        };
+        let state = State { comp, subtract, renderer: velato::Renderer::new(), ctx: None, resources: Resources::new() };
         let slots = Mutex::new(Vec::new());
         Ok(Animation { state: Mutex::new(state), first, frames, rate, size, json: json.len(), slots })
     }
@@ -103,17 +111,6 @@ impl Animation {
     pub fn frame(&self, t: Duration) -> (u64, Duration) {
         let n = (t.as_secs_f64() * self.rate) as u64;
         (n % self.frames, Duration::from_secs_f64((n + 1) as f64 / self.rate).saturating_sub(t))
-    }
-
-    /// The image of frame `n`, `PIXELS` square.
-    pub fn image(&self, n: u64) -> image::Handle {
-        let mut st = self.state.lock().expect("no frame panicked");
-        if let Some((_, h)) = st.last.as_ref().filter(|(at, _)| *at == n) {
-            return h.clone();
-        }
-        let h = st.render(self.first + n as f64, (PIXELS, PIXELS), f64::from(PIXELS) / self.size.0);
-        st.last = Some((n, h.clone()));
-        h
     }
 
     /// The width and the height of the composition.
@@ -322,19 +319,23 @@ impl RenderSink for Sink<'_> {
 }
 
 /// `animation`, `height` high and fit in the width, looping from its first frame when it shows.
-pub fn lottie<'a, M: 'a>(animation: &'a Animation, height: impl Into<Length>) -> Element<'a, M> {
+pub fn lottie<'a, M: 'a>(animation: &'a Arc<Animation>, height: impl Into<Length>) -> Element<'a, M> {
     Element::new(Lottie { animation, height: height.into() })
 }
 
 struct Lottie<'a> {
-    animation: &'a Animation,
+    animation: &'a Arc<Animation>,
     height: Length,
 }
 
 impl Lottie<'_> {
-    fn image(&self, tree: &widget::Tree) -> image::Image {
-        let start = *tree.state.downcast_ref::<Instant>();
-        image(self.animation.image(self.animation.frame(start.elapsed()).0)).width(Length::Fill).height(self.height)
+    /// The pixel size of the frames in `bounds` at `scale` screen pixels a layout pixel ([`SCALE`]): the screen pixels
+    /// that the animation fits in, in steps of 16 px, and at most [`PIXELS`].
+    fn pixels(&self, bounds: Rectangle, scale: f32) -> (u16, u16) {
+        let (w, h, scale) = (self.animation.size.0, self.animation.size.1, f64::from(scale));
+        let k = (f64::from(bounds.width) / w).min(f64::from(bounds.height) / h);
+        let longest = (w.max(h) * k * scale / 16.0).ceil() * 16.0;
+        self.animation.fit(longest.clamp(16.0, f64::from(PIXELS)) as u16)
     }
 }
 
@@ -352,8 +353,8 @@ impl<M> Widget<M, Theme, Renderer> for Lottie<'_> {
         Size::new(Length::Fill, self.height)
     }
 
-    fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        Widget::<M, Theme, Renderer>::layout(&mut self.image(tree), tree, renderer, limits)
+    fn layout(&mut self, _: &mut widget::Tree, _: &Renderer, limits: &layout::Limits) -> layout::Node {
+        layout::atomic(limits, Length::Fill, self.height)
     }
 
     fn update(
@@ -369,8 +370,11 @@ impl<M> Widget<M, Theme, Renderer> for Lottie<'_> {
     ) {
         let Event::Window(window::Event::RedrawRequested(now)) = event else { return };
         if layout.bounds().intersects(viewport) {
+            // A worker draws the frame that is due, which shows from the next redraw on.
             let start = *tree.state.downcast_ref::<Instant>();
-            shell.request_redraw_at(*now + self.animation.frame(now.duration_since(start)).1);
+            let (n, left) = self.animation.frame(now.duration_since(start));
+            self.animation.want(n, self.pixels(layout.bounds(), scale()));
+            shell.request_redraw_at(*now + left);
         }
     }
 
@@ -384,7 +388,10 @@ impl<M> Widget<M, Theme, Renderer> for Lottie<'_> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        Widget::<M, Theme, Renderer>::draw(&self.image(tree), tree, renderer, theme, style, layout, cursor, viewport);
+        // Nothing shows until a worker drew the first frame, like an animation that loads.
+        let Some((_, frame)) = self.animation.drawn(self.pixels(layout.bounds(), scale())) else { return };
+        let image = image(frame).width(Length::Fill).height(self.height);
+        Widget::<M, Theme, Renderer>::draw(&image, tree, renderer, theme, style, layout, cursor, viewport);
     }
 }
 
@@ -395,7 +402,7 @@ mod tests {
 
     /// The pixel at `x`, `y` of frame `n`.
     fn pixel(a: &Animation, n: u64, x: u32, y: u32) -> [u8; 4] {
-        let iced::advanced::image::Handle::Rgba { pixels, .. } = a.image(n) else { panic!("an RGBA frame") };
+        let iced::advanced::image::Handle::Rgba { pixels, .. } = a.render(n, (PIXELS, PIXELS)) else { panic!("RGBA") };
         let at = ((y * u32::from(PIXELS) + x) * 4) as usize;
         pixels[at..at + 4].try_into().expect("four bytes")
     }
@@ -412,7 +419,8 @@ mod tests {
         // rlottie draws the out point too, so the loop has no empty frame.
         let email = Animation::new(include_bytes!("../assets/onboarding/email.json"));
         for a in [&key, &lock, &email] {
-            let iced::advanced::image::Handle::Rgba { pixels, .. } = a.image(a.frames - 1) else { panic!("RGBA") };
+            let last = a.render(a.frames - 1, (PIXELS, PIXELS));
+            let iced::advanced::image::Handle::Rgba { pixels, .. } = last else { panic!("RGBA") };
             assert!(pixels.chunks(4).filter(|p| p[3] > 0).count() > 10_000, "the last frame is drawn");
         }
         let (n, next) = lock.frame(Duration::from_secs(1));
@@ -438,6 +446,21 @@ mod tests {
         assert!(super::sniff(json).is_some_and(|a| a.is_ok()), "Lottie JSON");
         assert!(super::sniff(b"GIF89a").is_none() && super::sniff(br#"{"a":1}"#).is_none(), "no Lottie");
         assert!(super::sniff(&tgs[..tgs.len() / 2]).is_some_and(|a| a.is_err()), "a cut TGS");
+    }
+
+    /// Desktop's illustrations draw at the size that they fit in on the screen, at most 628 px, so a smaller box or
+    /// screen costs less.
+    #[test]
+    fn illustrations_draw_at_their_size_on_the_screen() {
+        let a = std::sync::Arc::new(Animation::new(include_bytes!("../assets/onboarding/key.json")));
+        let at = |w, h, scale| {
+            let bounds = iced::Rectangle::new(iced::Point::ORIGIN, iced::Size::new(w, h));
+            super::Lottie { animation: &a, height: iced::Length::Fixed(h) }.pixels(bounds, scale)
+        };
+        assert_eq!(at(330.0, 240.0, 2.0), (480, 480), "the key of the recovery key screen");
+        assert_eq!(at(330.0, 314.0, 2.0), (628, 628), "the 314 px illustrations");
+        assert_eq!(at(800.0, 700.0, 2.0), (628, 628), "at most 628 px");
+        assert_eq!(at(330.0, 314.0, 1.0), (320, 320), "on a 1x screen, in steps of 16 px");
     }
 
     /// Like Desktop's rlottie workers, a worker draws the frame that a view wants at its size, once.

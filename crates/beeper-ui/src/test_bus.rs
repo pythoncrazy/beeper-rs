@@ -3,7 +3,7 @@
 //! A test serves a name of its own with [`serve`].
 use iced::futures::channel::mpsc;
 use iced::futures::StreamExt;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 use zbus::message::{Flags, Type};
 use zbus::{Connection, Message};
 
@@ -16,14 +16,18 @@ static SERVED: Mutex<Vec<(String, mpsc::UnboundedSender<Message>)>> = Mutex::new
 /// The bus end of the app's connection, which answers the calls to the names that tests serve.
 static BUS: OnceLock<Connection> = OnceLock::new();
 
+/// The runtime of both ends, which outlives the runtime of any one test.
+static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().expect("a tokio runtime")
+});
+
 /// Connects the app to the bus: a socket pair whose other end answers `org.freedesktop.DBus` like a bus daemon, and
 /// `ServiceUnknown` to the calls to names that nothing serves.
 pub(crate) async fn connect() -> zbus::Result<Connection> {
-    let (app, bus) = std::os::unix::net::UnixStream::pair()?;
-    let guid = zbus::Guid::generate();
-    let bus = zbus::connection::Builder::async_io_unix_stream(bus).server(guid)?.p2p();
-    std::thread::spawn(move || {
-        iced::futures::executor::block_on(async move {
+    let app = RUNTIME.spawn(async {
+        let (app, bus) = tokio::net::UnixStream::pair()?;
+        let bus = zbus::connection::Builder::unix_stream(bus).server(zbus::Guid::generate())?.p2p();
+        tokio::spawn(async move {
             // The stream exists before the socket reader runs, so it has the `Hello` of the app's handshake.
             let mut calls = bus.build_message_stream().await.expect("the bus end of the socket pair");
             let conn = BUS.get_or_init(|| Connection::from(&calls)).clone();
@@ -31,8 +35,9 @@ pub(crate) async fn connect() -> zbus::Result<Connection> {
                 answer(&conn, m).await;
             }
         });
+        zbus::connection::Builder::unix_stream(app).build().await
     });
-    zbus::connection::Builder::async_io_unix_stream(app).build().await
+    app.await.expect("the test bus connects")
 }
 
 async fn answer(conn: &Connection, m: Message) {

@@ -426,12 +426,11 @@ mod tests {
 
     /// A portal on the bus answers with a file, at the request path of the app's unique name and the token.
     #[cfg(target_os = "linux")]
-    #[test]
-    fn file_chooser_talks_to_the_portal() {
-        use iced::futures::executor::block_on;
+    #[tokio::test]
+    async fn file_chooser_talks_to_the_portal() {
         use iced::futures::StreamExt;
         let name = "org.beeper.rs.TestPortal";
-        let (mut calls, conn) = block_on(crate::test_bus::serve(name));
+        let (mut calls, conn) = crate::test_bus::serve(name).await;
         let serve = async {
             let call = calls.next().await.expect("the call of the file chooser");
             assert_eq!(call.header().member().map(|m| m.to_string()).as_deref(), Some("OpenFile"));
@@ -447,8 +446,7 @@ mod tests {
             let iface = "org.freedesktop.portal.Request";
             conn.emit_signal(Some(me), &path, iface, "Response", &(0u32, results)).await.unwrap();
         };
-        let (_, got) =
-            block_on(iced::futures::future::join(serve, open_files(name.into(), "Open".into(), Pick::Files)));
+        let (_, got) = iced::futures::future::join(serve, open_files(name.into(), "Open".into(), Pick::Files)).await;
         assert_eq!(got, Ok(vec![PathBuf::from("/tmp/x.txt")]));
     }
 }

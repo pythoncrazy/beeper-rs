@@ -220,17 +220,14 @@ fn draw(
                         .map(|c| c.a() as f32 / 255.0)
                         .unwrap_or(1.0);
 
-                pixels.draw_pixmap(
+                crate::blit::draw(
+                    pixels,
                     physical_glyph.x + placement.left,
                     physical_glyph.y - placement.top
                         + (run.line_y * transformation.scale_factor()).round()
                             as i32,
                     pixmap,
-                    &tiny_skia::PixmapPaint {
-                        opacity,
-                        ..tiny_skia::PixmapPaint::default()
-                    },
-                    tiny_skia::Transform::identity(),
+                    opacity,
                     clip_mask,
                 );
             }
