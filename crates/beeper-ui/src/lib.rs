@@ -4169,8 +4169,11 @@ impl BeeperGuiApp {
 
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
         let (shown, dismissals) = (self.stackable_toast(), self.toast_dismissals);
+        // The windows that `handle` swaps in follow their own chat lists there.
+        let pointed = self.swapped.is_none().then(|| self.pointed());
         let task = self.handle(msg);
-        let task = Task::batch([task, self.view_requests(), self.pip()]);
+        let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
+        let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
         let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
@@ -4836,7 +4839,9 @@ impl BeeperGuiApp {
                 }
                 self.swap_window(id);
                 let outer = self.swapped.replace(id);
+                let pointed = self.is_space_window(id).then(|| self.pointed());
                 let task = self.handle(*msg);
+                let task = Task::batch([task, pointed.map_or_else(Task::none, |p| self.reveal_pointed(p))]);
                 self.swapped = outer;
                 self.swap_window(id);
                 let task = task.map(move |m| UiMessage::InWindow(id, Box::new(m)));
