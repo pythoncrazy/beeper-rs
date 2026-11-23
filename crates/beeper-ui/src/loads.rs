@@ -4,7 +4,7 @@ use super::*;
 
 #[derive(Clone)]
 pub enum Msg {
-    Avatar(String, Result<image::Handle, String>),
+    Avatar(String, Result<Frames, String>),
     Media(String, Result<Frames, String>),
     /// A contact card of the timeline, read from its `.vcf` file.
     VCard(String, Result<crate::vcard::VCard, String>),

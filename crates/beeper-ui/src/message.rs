@@ -29,11 +29,11 @@ use crate::{
     anim, badged, brightness, can_thread, chat_theme, commands, copy_text, delete_dialog, distance, downloads_dir,
     ease_out, edit_open, editable, enter_key, feedback_btn, file_icon, fmt_phone, gallery, handle, has_older,
     hotkey_caps, hotkey_text, lift, locate, member_name, membership, menu_item, menu_pitch, menu_rule, network_bot,
-    pending, pill_btn, portal, profile_link, reply_root, safe_file_name, send_rise, sender_label, short_title,
-    still_sending_at, stored, tinted, unavailable, unused_path, video, vlist, BeeperGuiApp, El, PillLook, UiMessage,
-    ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, BUBBLE_PAD_Y, CHEVRON_DOWN, CHEVRON_FORWARD,
-    CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK, POLL_CHECK,
-    POLL_ENDED, TIMER, TRASH,
+    pending, pill_btn, portal, profile_link, reply_root, reply_root_with, safe_file_name, send_rise, sender_label,
+    short_title, still_sending_at, stored, tinted, unavailable, unused_path, video, vlist, BeeperGuiApp, El, PillLook,
+    UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, BUBBLE_PAD_Y, CHEVRON_DOWN,
+    CHEVRON_FORWARD, CHEVRON_RIGHT, COMPOSER_ICONS, ERROR_OUTLINE, ISSUES_URL, MESSAGE_MENU_W, ORANGE, OUTLINE_CLOCK,
+    POLL_CHECK, POLL_ENDED, TIMER, TRASH,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::matrix::{Pressed, ROOM_MENTION};
@@ -687,7 +687,7 @@ pub(crate) struct Rows {
     /// The first message of the membership event run of each message.
     run_start: Vec<usize>,
     last_live: Option<usize>,
-    any_pending: bool,
+    pub(crate) any_pending: bool,
     /// For each person other than you and the sender, the newest message that the person saw before a reply of the
     /// person, and the time.
     last_seen: HashMap<String, (usize, String)>,
@@ -701,6 +701,56 @@ pub(crate) struct Rows {
     keys: Vec<u64>,
     /// The messages that start a day, which show its date.
     days: Vec<usize>,
+    /// The message IDs that the reply chains look up outside the chats of the messages.
+    links: Vec<String>,
+}
+
+/// What the rows of a pane read from the store, so that the pane keeps them while it stays the same: the timelines of
+/// the chats of the rows, the lookups of their reply chains, and the values that pick and mark their messages.
+#[derive(PartialEq)]
+pub(crate) struct RowsKey {
+    /// The store, and its count of moves of message indices.
+    store: (u64, u64),
+    /// The chat and the thread root of the pane, and the member chats of a merged chat.
+    pane: (String, Option<String>, Vec<String>),
+    /// The chats of the rows with their timeline revisions, whether they show threads, and where their older messages
+    /// load from.
+    chats: Vec<(String, u64, bool, Older)>,
+    /// Whether the thread root of a thread pane is loaded, and its loaded replies.
+    thread: Option<(bool, usize)>,
+    /// The chat and its timeline revision of each message of `Rows::links`, while it is loaded.
+    links: Vec<(String, Option<(String, u64)>)>,
+    /// `hideDeleted` and `membershipEvents`.
+    settings: (bool, bool),
+    /// The Matrix client and the demo, which pick the messages and their pending state, and the sent local messages.
+    matrix: (bool, bool, usize),
+    /// Your user ID, and the UTC offset of the local time zone, which places the days.
+    me: (String, i64),
+}
+
+impl RowsKey {
+    fn of(st: &BeeperStore, pane: &crate::Pane, chat: &Chat, chats: &[&str], links: &[String]) -> Self {
+        let rev = |c: &str| st.timeline_rev(c);
+        let members = st.members(st.chat_idx(&chat.id)).into_iter().map(|i| st.chats[i].id.clone()).collect();
+        let chats = chats.iter().map(|&c| {
+            let (threads, older) =
+                st.find_chat(c).map_or((false, Older::Unknown), |c| (st.threaded(c), c.older.clone()));
+            (c.to_string(), rev(c), threads, older)
+        });
+        let thread = pane.thread_root.as_deref().map(|r| (st.loaded(r).is_some(), st.thread_replies(r).count()));
+        let link = |r: &String| (r.clone(), st.loaded(r).map(|m| (m.chat_id.clone(), rev(&m.chat_id))));
+        let now = now_unix_millis();
+        Self {
+            store: (st.instance, st.message_moves()),
+            pane: (chat.id.clone(), pane.thread_root.clone(), members),
+            chats: chats.collect(),
+            thread,
+            links: links.iter().map(link).collect(),
+            settings: (st.settings.on("hideDeleted"), st.settings.on("membershipEvents")),
+            matrix: (st.matrix.is_some(), st.config.demo, st.sent.len()),
+            me: (st.me().id.clone(), beeper_core::config::local_millis(now) - now),
+        }
+    }
 }
 
 /// The first message of the membership event run of each message: Desktop's `MembershipGrouper` groups the member
@@ -737,7 +787,16 @@ impl Rows {
                 replied.insert(m.sender_id.as_str());
             }
         }
-        let roots: Vec<&str> = msgs.iter().map(|m| reply_root(st, m)).collect();
+        let chats: HashSet<&str> = msgs.iter().map(|m| m.chat_id.as_str()).collect();
+        let mut links = Vec::new();
+        let mut look = |r: &str, m: Option<&Message>| {
+            if m.is_none_or(|m| !chats.contains(m.chat_id.as_str())) {
+                links.push(r.to_string());
+            }
+        };
+        let roots: Vec<&str> = msgs.iter().map(|m| reply_root_with(st, m, &mut look)).collect();
+        links.sort_unstable();
+        links.dedup();
         let mut later: HashMap<&str, usize> = HashMap::new();
         let mut counts = vec![0; n];
         let day: Vec<i64> = msgs.iter().map(|m| day_num(&m.timestamp)).collect();
@@ -756,6 +815,7 @@ impl Rows {
             counts,
             keys: msgs.iter().map(|m| vlist::key(&m.id)).collect(),
             days: (0..n).filter(|&i| i == 0 || day[i - 1] != day[i]).collect(),
+            links,
         }
     }
 }
@@ -1010,6 +1070,10 @@ impl BeeperGuiApp {
             !mine && sender && others > 1 && m.is_deleted != Some(true) && self.can(&m.account_id, "create_dm");
         // Desktop's `D`: the items that act on a message hide while you edit it.
         let editing = self.pane().editing_message_id.as_ref() == Some(&mid);
+        // Desktop's `isPending` (its `pendingMessages`): a send that the homeserver has not taken yet, or that failed,
+        // has no Edit, Reply, Reply in thread, Bookmark, Mark as Unread, End Poll, Delete or voice items, and its
+        // React is off. Copy, Forward and "Sent at" stay.
+        let queued = pending(&st, m);
         // Desktop's detected-data items (phone, address, date, flight) above these come from the macOS-only
         // TextsSwift `detectData`; on Linux it returns nothing, so they never show (App:48518, 96520).
         let before: Vec<(El, f32)> = [
@@ -1034,19 +1098,19 @@ impl BeeperGuiApp {
                 let load = UiMessage::Loaded(loads::Msg::ResolveMedia(m.account_id.clone(), mid.clone(), raw.clone()));
                 vec![item(label.into(), "", (state != Some(&true)).then_some(load)), rule()]
             }),
-            (editable(m, chat) && !editing).then(|| {
+            (editable(m, chat) && !editing && !queued).then(|| {
                 let edit =
                     edit_open(m, rules).then(|| UiMessage::Composer(composer::Msg::StartEdit(mid.clone(), text)));
                 vec![item(tr("Edit…").into(), &key("Message: Edit"), edit)]
             }),
-            (rules.reply && live && !editing).then(|| {
+            (rules.reply && live && !editing && !queued).then(|| {
                 vec![item(
                     tr("Reply…").into(),
                     &key("Message: Quote & Reply"),
                     Some(UiMessage::Composer(composer::Msg::StartReply(mid.clone()))),
                 )]
             }),
-            (self.pane().thread_root.is_none() && !editing && can_thread(&st, chat, m)).then(|| {
+            (self.pane().thread_root.is_none() && !editing && !queued && can_thread(&st, chat, m)).then(|| {
                 let label = tr("Reply in thread…").into();
                 vec![item(label, &key("Show Replies"), Some(UiMessage::Thread(threads::Msg::Show(mid.clone()))))]
             }),
@@ -1064,7 +1128,7 @@ impl BeeperGuiApp {
                 )]
             }),
             (rules.react && !editing).then(|| {
-                let react = m.reactable().then(|| UiMessage::Message(Msg::ReactOn(mid.clone())));
+                let react = (m.reactable() && !queued).then(|| UiMessage::Message(Msg::ReactOn(mid.clone())));
                 vec![item(tr("React…").into(), "", react)]
             }),
             bookmarkable(&st, m)
@@ -1089,7 +1153,7 @@ impl BeeperGuiApp {
                 let read = UiMessage::Message(Msg::MarkReadThrough(cid.clone(), mid.clone()));
                 vec![item(tr("Mark as Read").into(), "", Some(read))]
             }),
-            (unread_from(&st, m) && !pending(&st, m)).then(|| {
+            (unread_from(&st, m) && !queued).then(|| {
                 vec![item(
                     tr("Mark as Unread").into(),
                     "",
@@ -1100,6 +1164,7 @@ impl BeeperGuiApp {
                 && m.poll.as_ref().is_some_and(|p| !p.ended)
                 && m.is_deleted != Some(true)
                 && !editing
+                && !queued
                 && st.feature("enable-polls").on
                 && st.chat(&cid).polls.is_some_and(|r| r.end))
             .then(|| {
@@ -1131,7 +1196,8 @@ impl BeeperGuiApp {
         // Desktop's `Zit`: no Delete… for the message that you edit.
         let delete = (!editing && delete_dialog(&st, &[m]).is_some())
             .then(|| item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(vec![mid.clone()])))));
-        let tail: Vec<(El, f32)> = self.voice_menu_rows(&st, m).into_iter().chain(delete).collect();
+        let voice = if queued { Vec::new() } else { self.voice_menu_rows(&st, m) };
+        let tail: Vec<(El, f32)> = voice.into_iter().chain(delete.filter(|_| !queued)).collect();
         let rows: Vec<(El, f32)> = [
             Some(head),
             (!tail.is_empty()).then(|| std::iter::once(rule()).chain(tail).collect()),
@@ -1595,6 +1661,18 @@ impl BeeperGuiApp {
         container(pane).width(Fill).height(Fill).clip(true).style(pane_card(p.card)).into()
     }
 
+    /// Desktop's `MessageErrorTooltip`: the label, and the error icon whose tooltip is the error of the send.
+    fn error_tooltip<'a>(&self, e: &beeper_core::models::SendError, label: &'a str) -> El<'a> {
+        let icon = svg(ERROR_OUTLINE.clone()).width(20).height(20);
+        let icon = icon.style(|_, _| svg::Style { color: Some(ON_ERROR_CONTAINER) });
+        let error = e.message.clone().unwrap_or_else(|| tr("Unknown error occurred").into());
+        let tip = self.tip(icon.into(), error, vec![], tooltip::Position::Left);
+        row![crate::style::fixed(label, 11.0, Weight::Normal).color(ON_ERROR_CONTAINER), tip]
+            .spacing(4)
+            .align_y(Center)
+            .into()
+    }
+
     /// Desktop's `jumpToMessage` and `revealMessage`: shows message `mid` of chat `cid` in the timeline of the pane,
     /// and a reply only in a thread in the thread pane. The thread pane jumps in its own thread.
     pub(crate) fn jump_to(&mut self, cid: String, mid: String) -> Task<UiMessage> {
@@ -1732,20 +1810,30 @@ impl BeeperGuiApp {
 
     /// Desktop's `MessageList`: the messages in timeline order. In a reply chain, the quotes, the reply lines,
     /// the replies buttons and the unread divider do not show.
-    /// The rows of the messages of the conversation of the pane. The pane keeps them until the store changes, so that a
-    /// frame of a long chat does not read all its messages.
+    /// The rows of the messages of the conversation of the pane. The pane keeps them until what they are made from
+    /// changes (`RowsKey`), so that a frame of a long chat does not read all its messages, also after a write to
+    /// another chat.
     fn conversation_rows(&self, st: &BeeperStore, chat: &Chat) -> Rc<Rows> {
-        let (memo, generation) = (&self.pane().rows, self.store.generation().expect("a view holds a read lock"));
-        if let Some((_, _, rows)) = memo.borrow().as_ref().filter(|(g, c, _)| *g == generation && *c == chat.id) {
-            return rows.clone();
+        let (pane, memo) = (self.pane(), &self.pane().rows);
+        let kept = memo.borrow().as_ref().and_then(|(key, rows)| {
+            let chats: Vec<&str> = key.chats.iter().map(|c| c.0.as_str()).collect();
+            (*key == RowsKey::of(st, pane, chat, &chats, &rows.links)).then(|| rows.clone())
+        });
+        if let Some(rows) = kept {
+            return rows;
         }
         let (hide, members) = (st.settings.on("hideDeleted"), st.settings.on("membershipEvents"));
         let msgs: Vec<&Message> = self.pane_msgs(st);
+        let mut chats = vec![chat.id.as_str()];
+        chats.extend(st.members(st.chat_idx(&chat.id)).into_iter().map(|i| st.chats[i].id.as_str()));
+        chats.extend(msgs.iter().map(|m| m.chat_id.as_str()));
+        chats.sort_unstable();
+        chats.dedup();
         // Desktop shows expired view-once media even when it hides deleted messages.
         let hidden = |m: &Message| hide && m.is_deleted == Some(true) && !m.view_once_expired();
         let msgs: Vec<&Message> = msgs.into_iter().filter(|m| !hidden(m) && (members || !membership(m))).collect();
         let rows = Rc::new(Rows::of(st, &msgs));
-        *memo.borrow_mut() = Some((generation, chat.id.clone(), rows.clone()));
+        *memo.borrow_mut() = Some((RowsKey::of(st, pane, chat, &chats, &rows.links), rows.clone()));
         rows
     }
 
@@ -2208,6 +2296,25 @@ impl BeeperGuiApp {
         if m.view_once() {
             parts = parts.push(self.view_once_pill(m, (bg, fg)));
         }
+        // Desktop's `message-attachment-failed`: a failed message without text shows "Not sent" at its attachments,
+        // over the bottom right of a lone photo or video, else in a row under them.
+        let attached = ms.len() == 1 && !m.view_once() && !m.attachments.is_empty();
+        let failed_files = failed.filter(|_| attached && m.text.as_deref().is_none_or(str::is_empty));
+        let lone_media = matches!(&m.attachments[..], [a] if a.attachment_type == "img" || a.attachment_type == "video"
+            || a.mime_type.as_deref().is_some_and(|t| t.starts_with("image/")));
+        let not_sent = |content: El<'a>| -> El<'a> {
+            match failed_files.filter(|_| lone_media) {
+                Some(e) => stack![
+                    content,
+                    container(self.error_tooltip(e, tr("Not sent")))
+                        .align_right(Fill)
+                        .align_bottom(Fill)
+                        .padding(Padding::ZERO.right(12.0))
+                ]
+                .into(),
+                None => content,
+            }
+        };
         for (ai, a) in m.attachments.iter().enumerate().filter(|_| ms.len() == 1 && !m.view_once()) {
             let name = attachment_name(a);
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
@@ -2251,11 +2358,13 @@ impl BeeperGuiApp {
                         Some(Ok(frames)) => {
                             let autoplay = st.settings.on("autoplayGifs");
                             let played = self.pane().played_gifs.get(&(m.id.clone(), ai)).filter(|_| !autoplay);
-                            let (shown, start) = match played {
-                                Some(&at) => (&frames[..], at),
-                                None => (anim::playing(frames, autoplay), self.started),
+                            let (play, start) = match played {
+                                Some(&at) => (self.shows(), at),
+                                None => (self.autoplays(st), self.started),
                             };
-                            let gif = anim::gif(shown, start, move |f| image(f).width(w).height(h).border_radius(17.0));
+                            let gif = anim::gif(frames, play, start, move |f| {
+                                image(f).width(w).height(h).border_radius(17.0)
+                            });
                             match !autoplay && frames.len() > 1 {
                                 true => gif_toggle(gif, played.is_some(), Msg::ToggleGif(m.id.clone(), ai)),
                                 false => gif,
@@ -2285,7 +2394,7 @@ impl BeeperGuiApp {
                             )
                         } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
                             let video = self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai));
-                            parts = parts.push(dimmed(video, selected));
+                            parts = parts.push(not_sent(dimmed(video, selected)));
                             continue;
                         } else if is_video && a.is_gif != Some(true) {
                             (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
@@ -2315,7 +2424,12 @@ impl BeeperGuiApp {
                     self.view_file_row(m, ai, a, timer)
                 }
             };
-            parts = parts.push(dimmed(content, selected));
+            parts = parts.push(not_sent(dimmed(content, selected)));
+        }
+        if let Some(e) = failed_files.filter(|_| !lone_media) {
+            // The column puts it at the right of an own message.
+            parts =
+                parts.push(container(self.error_tooltip(e, tr("Not sent"))).padding(Padding::ZERO.right(BUBBLE_PAD_X)));
         }
         if let Some(poll) = poll {
             parts = parts.push(self.view_poll(st, chat, m, poll, (bg, fg)));
@@ -2363,11 +2477,9 @@ impl BeeperGuiApp {
             let glyphs: Vec<El<'a>> = runs
                 .map(|r| match r.emoticon.as_deref() {
                     Some(url) => {
-                        let img: El<'a> = match self.still(url) {
-                            Some(frame) if selected => {
-                                image(crate::style::dimmed_image(&frame, 0.8)).height(48.0).into()
-                            }
-                            Some(frame) => image(frame).height(48.0).into(),
+                        let img: El<'a> = match self.frames(url) {
+                            Some(f) if selected => image(crate::style::dimmed_image(&f[0].0, 0.8)).height(48.0).into(),
+                            Some(f) => self.emoji(&f, |h| image(h).height(48.0)),
                             None => Space::new().width(48.0).height(48.0).into(),
                         };
                         let menu = Msg::EmoticonMenu(m.id.clone(), r.title.clone(), url.to_string());
@@ -2403,18 +2515,7 @@ impl BeeperGuiApp {
             let (room, time) = match failed {
                 Some(e) => {
                     let label = if m.edited() { tr("Failed to edit") } else { tr("Not sent") };
-                    let icon = svg(ERROR_OUTLINE.clone()).width(20).height(20);
-                    let icon = icon.style(|_, _| svg::Style { color: Some(ON_ERROR_CONTAINER) });
-                    let tip = self.tip(
-                        icon.into(),
-                        e.message.clone().unwrap_or_else(|| tr("Unknown error occurred").into()),
-                        vec![],
-                        tooltip::Position::Left,
-                    );
-                    let meta = row![crate::style::fixed(label, 11.0, Weight::Normal).color(ON_ERROR_CONTAINER), tip]
-                        .spacing(4)
-                        .align_y(Center);
-                    (crate::style::fixed_width(label, 11.0, Weight::Normal) + 28.0, Some(meta.into()))
+                    (crate::style::fixed_width(label, 11.0, Weight::Normal) + 28.0, Some(self.error_tooltip(e, label)))
                 }
                 // Desktop's `BookmarkIndicator` and `ReminderIndicator` (`E3`) go before the time.
                 None => {
@@ -2561,7 +2662,7 @@ impl BeeperGuiApp {
                 String,
                 u8,
                 u8,
-                Vec<(Option<image::Handle>, Option<String>, String)>,
+                Vec<(Option<crate::Frames>, Option<String>, String)>,
                 bool,
             );
             let blocks: Vec<Block> = match m.html.as_deref() {
@@ -2572,7 +2673,7 @@ impl BeeperGuiApp {
                         let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
                         // Each custom emoji's image, `title` and `data-original-src`.
                         let images = b.runs.iter().filter_map(|r| Some((r.emoticon.as_deref()?, r.title.clone())));
-                        let images = images.map(|(u, title)| (self.still(u), title, u.to_string())).collect();
+                        let images = images.map(|(u, title)| (self.frames(u), title, u.to_string())).collect();
                         let runs = b.runs.into_iter().flat_map(|r| match room_mention && r.link.is_none() && !r.code {
                             true => room_parts(&r.text)
                                 .into_iter()
@@ -2665,7 +2766,10 @@ impl BeeperGuiApp {
                         Some(self.tip_card(med(host, 13.0).color(p.strong)).into())
                     };
                     let line = crate::selectable::selectable(spans)
-                        .images(images.iter().map(|i| i.0.clone()).collect())
+                        .images(
+                            images.iter().map(|i| i.0.clone()).collect(),
+                            self.animate.get().then_some(self.started),
+                        )
                         .on_image_menu({
                             let (id, images) = (m.id.clone(), images);
                             move |k| {
@@ -2929,12 +3033,10 @@ impl BeeperGuiApp {
                 let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
                 // Desktop's custom emoji among the quick reactions: its image 16 px square.
                 let glyph: El<'a> = match crate::emoji::is_mxc(&e) {
-                    true => match self.still(&e) {
-                        Some(frame) => image(frame)
-                            .width(16.0 * (0.85 + 0.15 * v))
-                            .height(16.0 * (0.85 + 0.15 * v))
-                            .opacity(v)
-                            .into(),
+                    true => match self.frames(&e) {
+                        Some(f) => self.emoji(&f, move |h| {
+                            image(h).width(16.0 * (0.85 + 0.15 * v)).height(16.0 * (0.85 + 0.15 * v)).opacity(v)
+                        }),
                         None => Space::new().width(16.0).height(16.0).into(),
                     },
                     false => txt(e, 20.0 * (0.85 + 0.15 * v)).font(EMOJI_FONT).color(p.text.scale_alpha(v)).into(),
@@ -3379,9 +3481,9 @@ impl BeeperGuiApp {
             .into()
     }
 
-    /// The first frame of the image at `url`, once it has loaded.
-    pub(crate) fn still(&self, url: &str) -> Option<image::Handle> {
-        self.media_at(url).and_then(|m| m.as_ref().ok()).and_then(|f| f.first()).map(|f| f.0.clone())
+    /// The frames of the image at `url`, once it has loaded.
+    pub(crate) fn frames(&self, url: &str) -> Option<crate::Frames> {
+        self.media_at(url).and_then(|m| m.as_ref().ok()).cloned()
     }
 
     /// Desktop's `Tfe`: a custom emoji's image 16 high, or the emoji.
@@ -3389,8 +3491,8 @@ impl BeeperGuiApp {
         // A key that is itself an image, as stored before keys had their shortcode, shows the image too.
         let url = x.img_url.as_deref().or(Some(x.reaction_key.as_str()).filter(|k| k.starts_with("mxc://")));
         match url {
-            Some(url) => match self.still(url) {
-                Some(frame) => image(frame).height(16.0).into(),
+            Some(url) => match self.frames(url) {
+                Some(f) => self.emoji(&f, |h| image(h).height(16.0)),
                 None => Space::new().width(16.0).height(16.0).into(),
             },
             None => txt(x.reaction_key.clone(), size).line_height(Pixels(rem(line))).font(EMOJI_FONT).into(),
@@ -3959,7 +4061,14 @@ impl BeeperGuiApp {
             Msg::AskDelete(mids) => {
                 (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mids.join(" ")))
             }
-            Msg::RetrySend(id) => self.store.write().retry_send(&id),
+            Msg::RetrySend(id) => {
+                self.store.write().retry_send(&id);
+                // Desktop's `retryErroredMessage` closes the error toast of the send.
+                if self.send_toast.take_if(|(m, _)| *m == id).is_some_and(|(_, t)| t == self.status_banner) {
+                    (self.status_banner, self.sticky_banner) = (String::new(), None);
+                }
+                self.retried.insert(id);
+            }
             Msg::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
             Msg::ToggleClamp(mid) => {
                 if !self.pane.unclamped.remove(&mid) {
@@ -4845,7 +4954,8 @@ pub(crate) mod tests {
             }];
         });
         let fill = |c: [u8; 4]| image::Handle::from_rgba(200, 100, c.repeat(200 * 100));
-        app.media.insert(url.clone(), Some(Ok(vec![(fill([255, 0, 0, 255]), 100), (fill([0, 0, 255, 255]), 100)])));
+        let frames = [(fill([255, 0, 0, 255]), 100), (fill([0, 0, 255, 255]), 100)];
+        app.media.insert(url.clone(), Some(Ok(crate::Frames::from(frames))));
         // The 36 px circle of the button in the middle of the 200 by 100 image, left of its icon.
         let (circle, corner) = ((2 * (100 - 13), 2 * 50), (2 * 20, 2 * 20));
         let button = |sim: &mut iced_test::Simulator<'_, UiMessage>| {
@@ -4868,11 +4978,205 @@ pub(crate) mod tests {
             assert!(button(&mut sim), "the pause button");
         }
 
-        app.media.insert(url, Some(Ok(vec![(fill([255; 4]), 0)])));
+        app.media.insert(url, Some(Ok(crate::Frames::from([(fill([255; 4]), 0)]))));
         let white = |app: &BeeperGuiApp| pixels(&mut alone(app, &mid)).get_pixel(corner.0, corner.1).0[0];
         assert_eq!(white(&app), 255);
         app.pane.selected_msgs = vec![mid.clone()];
         assert!(white(&app).abs_diff(204) <= 1, "brightness(0.8)");
+    }
+
+    /// The demo chat with the animations: Maya's GIF avatar, her GIF, the custom emoji in her text and Alex's
+    /// custom emoji reaction to the GIF.
+    const ANIMATED_CHAT: &str = "!ig_design:beeper.com";
+
+    /// The demo app with the animated chat open, its inline avatars and media decoded like their loads.
+    fn animated_demo(name: &str) -> BeeperGuiApp {
+        let mut app = crate::fuzz::demo_app(name);
+        let _ = app.update(UiMessage::SelectChat(ANIMATED_CHAT.into()));
+        let bytes = |u: &str| iced::futures::executor::block_on(beeper_core::matrix::media(None, u.into())).unwrap();
+        for _ in 0..2 {
+            drop(app.view(app.main_window.expect("the main window")));
+            for u in std::mem::take(&mut *app.wants.avatars.borrow_mut()) {
+                let frames = crate::round_avatar(&bytes(&u));
+                app.avatars.insert(u, Some(frames.expect("the demo avatar decodes")));
+            }
+            for u in std::mem::take(&mut *app.wants.media.borrow_mut()).into_iter().filter(|u| u.starts_with("data:")) {
+                let frames = crate::media_view::decode_media(bytes(&u));
+                app.media.insert(u, Some(frames));
+            }
+        }
+        // The frames of the demo, slowed to `SLOW` each, so that a slow draw of a debug build lands in the frame
+        // that it is meant to draw.
+        let slow = |f: &crate::Frames| -> crate::Frames {
+            f.iter().map(|(h, d)| (h.clone(), if f.len() > 1 { SLOW } else { *d })).collect()
+        };
+        let avatars: Vec<(String, crate::Frames)> = (app.store.read().chat(ANIMATED_CHAT).participants.items.iter())
+            .filter_map(|u| u.img_url.clone())
+            .filter_map(|u| Some((u.clone(), app.avatars.get(&u)?.as_ref()?.clone())))
+            .collect();
+        for (u, f) in avatars {
+            assert!(f.len() > 1, "Maya's avatar keeps its frames");
+            app.avatars.insert(u, Some(slow(&f)));
+        }
+        let media: Vec<(String, crate::Frames)> = (app.store.read().messages.iter())
+            .filter(|m| m.chat_id == ANIMATED_CHAT)
+            .flat_map(|m| {
+                m.attachments
+                    .iter()
+                    .filter_map(|a| a.src_url.clone())
+                    .chain(m.reactions.iter().filter_map(|r| r.img_url.clone()))
+            })
+            .filter_map(|u| Some((u.clone(), app.media.get(&u)?.as_ref()?.as_ref().ok()?.clone())))
+            .collect();
+        for (u, f) in media {
+            assert!(f.len() > 1, "the GIF and the custom emoji keep their frames");
+            app.media.insert(u, Some(Ok(slow(&f))));
+        }
+        app
+    }
+
+    /// The delay of each frame of the demo's animations in these tests.
+    const SLOW: u128 = 2000;
+
+    /// The main window of `app` as the simulator draws it `ms` into the animations; a draw that takes so long that
+    /// it may have drawn the next frame draws again.
+    fn main_at(app: &mut BeeperGuiApp, ms: u64) -> ::image::RgbaImage {
+        let end = u128::from(ms) / SLOW * SLOW + SLOW;
+        for _ in 0..5 {
+            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            let main = app.main_window.expect("the main window");
+            let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view(main));
+            let shot = pixels(&mut sim);
+            if app.started.elapsed().as_millis() < end {
+                return shot;
+            }
+        }
+        panic!("five draws took more than {} ms each", end - u128::from(ms));
+    }
+
+    /// The places of the pixels of `shot` in the color `c`.
+    fn spots(shot: &::image::RgbaImage, c: u32) -> Vec<(u32, u32)> {
+        shot.enumerate_pixels().filter(|(_, _, px)| near(px.0, hex(c))).map(|(x, y, _)| (x, y)).collect()
+    }
+
+    /// How many of the places `at` of `shot` are in the color `c`.
+    fn count(shot: &::image::RgbaImage, at: &[(u32, u32)], c: u32) -> usize {
+        at.iter().filter(|&&(x, y)| near(shot.get_pixel(x, y).0, hex(c))).count()
+    }
+
+    /// When the window that `app` draws asks to be drawn again after a frame, with the pointer away: the next frame
+    /// of an animation, or never.
+    fn next_redraw(app: &BeeperGuiApp) -> window::RedrawRequest {
+        use iced::advanced::renderer::Headless as _;
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            iced::Font::DEFAULT,
+            Pixels(13.0),
+            Some("tiny-skia"),
+        ))
+        .expect("a headless renderer");
+        let view = app.view(app.main_window.expect("the main window"));
+        let size = Size::new(1200.0, 800.0);
+        let mut ui = iced_runtime::UserInterface::build(view, size, Default::default(), &mut renderer);
+        let redraw = [iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))];
+        let (state, _) = ui.update(
+            &redraw,
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut Vec::new(),
+        );
+        match state {
+            iced_runtime::user_interface::State::Updated { redraw_request, .. } => redraw_request,
+            iced_runtime::user_interface::State::Outdated => panic!("the interface is up to date"),
+        }
+    }
+
+    /// Desktop's "Animate avatars and emoji" (`animateAvatarsAndEmoji`): the still image (`rs`) of an avatar, a custom
+    /// emoji in a message and a custom emoji reaction plays its frames, which advance, and shows only its first
+    /// frame while the setting is off. It does not touch the GIFs of attachments, which "Autoplay GIFs" plays.
+    #[test]
+    fn avatars_and_emoji_animate_like_desktop() {
+        let mut app = animated_demo("animate-avatars");
+        // The purple and teal frames of Maya's avatar, and the orange and green ones of the custom emoji: the places
+        // of the first frames take the third ones.
+        let (purple, teal, orange, green) = (0x7c5cff, 0x22b8cf, 0xff9f1c, 0x8ce99a);
+        let first = main_at(&mut app, 500);
+        let (avatar, emoji) = (spots(&first, purple), spots(&first, orange));
+        assert!(avatar.len() > 400 && emoji.len() > 100, "the avatars and the emoji show");
+        let third = main_at(&mut app, 4500);
+        // Most of them: the purple of a still logo stays.
+        let most = |n: usize, of: &[(u32, u32)]| n * 10 > of.len() * 8;
+        assert!(most(count(&third, &avatar, teal), &avatar), "the avatars play");
+        assert!(most(count(&third, &emoji, green), &emoji), "the emoji play");
+        assert!(matches!(next_redraw(&app), window::RedrawRequest::At(_)), "the next frame is due");
+        app.store.write().settings.set_pref("animateAvatars", 0);
+        let still = main_at(&mut app, 4500);
+        assert_eq!(count(&still, &avatar, purple), avatar.len(), "the first frame of the avatars");
+        assert_eq!(count(&still, &emoji, orange), emoji.len(), "the first frame of the emoji");
+        assert!(matches!(next_redraw(&app), window::RedrawRequest::At(_)), "the GIF attachment still plays");
+        app.store.write().settings.set_pref("autoplayGifs", 0);
+        assert_eq!(next_redraw(&app), window::RedrawRequest::Wait, "nothing plays, so nothing ticks");
+    }
+
+    /// Like Chromium's frames of a minimized or hidden window, the animations wait while the main window is
+    /// minimized or in the tray, and a chat without animations asks for no frames.
+    #[test]
+    fn animations_wait_while_nothing_animated_shows() {
+        let mut app = animated_demo("animate-waits");
+        let avatar = spots(&main_at(&mut app, 500), 0x7c5cff);
+        assert!(matches!(next_redraw(&app), window::RedrawRequest::At(_)));
+        app.minimized = true;
+        assert_eq!(next_redraw(&app), window::RedrawRequest::Wait, "minimized");
+        assert_eq!(count(&main_at(&mut app, 2500), &avatar, 0x7c5cff), avatar.len(), "the first frame shows");
+        app.minimized = false;
+        let _ = app.update(UiMessage::Window(crate::windows::Msg::Minimized(true)));
+        assert!(app.minimized, "the window manager minimized the window");
+        let _ = app.update(UiMessage::Window(crate::windows::Msg::Focused(true)));
+        assert!(!app.minimized, "a focused window is not minimized");
+        app.hidden = true;
+        assert_eq!(next_redraw(&app), window::RedrawRequest::Wait, "in the tray");
+        app.hidden = false;
+        // Maya's chat, in the archive, takes her avatar off the chat list.
+        let idx = app.store.read().chat_idx(ANIMATED_CHAT);
+        app.store.write().update_chat(idx, |c| c.is_archived = Some(true));
+        let _ = app.update(UiMessage::SelectChat("!wa_eric:beeper.com".into()));
+        assert_eq!(next_redraw(&app), window::RedrawRequest::Wait, "no animation shows");
+    }
+
+    /// The frames of an animated GIF, PNG and WebP decode once into the cache, and an avatar keeps at most
+    /// `AVATAR_FRAMES` of them, each delay summed into the one it keeps, so that it plays as long.
+    #[test]
+    fn animated_images_decode_their_frames() {
+        use ::image::codecs::gif::{GifEncoder, Repeat};
+        use ::image::{Delay, Frame, Rgba, RgbaImage};
+        let gif = |n: usize, ms: u32| {
+            let mut out = Vec::new();
+            let mut enc = GifEncoder::new(&mut out);
+            enc.set_repeat(Repeat::Infinite).unwrap();
+            let frames = (0..n).map(|i| {
+                let px = RgbaImage::from_pixel(8, 8, Rgba([(i % 25) as u8 * 10, 0, 0, 255]));
+                Frame::from_parts(px, 0, 0, Delay::from_numer_denom_ms(ms, 1))
+            });
+            enc.encode_frames(frames).unwrap();
+            drop(enc);
+            out
+        };
+        let two = crate::media_view::decode_media(gif(2, 70)).unwrap();
+        assert_eq!(two.iter().map(|f| f.1).collect::<Vec<_>>(), [70, 70]);
+        assert_eq!(crate::media_view::decode_media(gif(2, 0)).unwrap()[0].1, 100, "browsers play 0 ms at 100 ms");
+        let long = crate::round_avatar(&gif(250, 20)).unwrap();
+        assert_eq!(long.len(), 84, "every third frame of 250");
+        assert_eq!(long.iter().map(|f| f.1).sum::<u128>(), 250 * 20, "as long as the GIF");
+        let png = RgbaImage::from_pixel(4, 4, Rgba([0, 0, 255, 255]));
+        let mut still = Vec::new();
+        png.write_to(&mut std::io::Cursor::new(&mut still), ::image::ImageFormat::Png).unwrap();
+        assert_eq!(crate::media_view::animated(&still), None, "a PNG without acTL");
+        assert_eq!(crate::round_avatar(&still).unwrap().len(), 1);
+        let mut webp = b"RIFF\0\0\0\0WEBPVP8X\x0a\0\0\0\x02".to_vec();
+        webp.resize(30, 0);
+        assert_eq!(crate::media_view::animated(&webp), Some(crate::media_view::Animated::WebP));
+        webp[20] = 0;
+        assert_eq!(crate::media_view::animated(&webp), None, "a WebP without the animation flag");
     }
 
     /// Desktop's emoji message: the bubble's padding without its bottom, its time in a tooltip, and at 80% brightness

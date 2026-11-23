@@ -141,7 +141,7 @@ use rail::{SpacesDraft, SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
 use reminders::{remind_label, reminder_day};
 use scheduled::next_send;
 use time::{clock, day_label, day_num, day_of, locale_string, today, WEEKDAYS};
-use toasts::{Toast, TOASTS_SHOWN, TOAST_TICK};
+use toasts::{Toast, TOAST_TICK};
 use units::human_size;
 use user_card::UserHover;
 use vcard::VCard;
@@ -990,20 +990,40 @@ fn avatar<'a>(name: &str, size: f32, ls: f32, alpha: f32, p: &Palette) -> El<'a>
         .into()
 }
 
-fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
+/// The frames of an avatar, each cut to a 96 px circle. Like Desktop's avatar thumbnail, an animated GIF, PNG or
+/// WebP keeps its frames, at most [`AVATAR_FRAMES`] of them: a longer one keeps every second frame, or third, with
+/// their delays added up, so that it plays as long.
+fn round_avatar(bytes: &[u8]) -> Result<Frames, String> {
     const S: u32 = 96;
-    let img = beeper_core::media::decode_upright(bytes)?;
-    let mut px = img.resize_to_fill(S, S, ::image::imageops::FilterType::Triangle).into_rgba8();
-    let r = S as f32 / 2.0;
-    for (x, y, p) in px.enumerate_pixels_mut() {
-        let d = (x as f32 + 0.5 - r).hypot(y as f32 + 0.5 - r);
-        p[3] = (f32::from(p[3]) * (r - d + 0.5).clamp(0.0, 1.0)) as u8;
+    let round = |img: ::image::DynamicImage| {
+        let mut px = img.resize_to_fill(S, S, ::image::imageops::FilterType::Triangle).into_rgba8();
+        let r = S as f32 / 2.0;
+        for (x, y, p) in px.enumerate_pixels_mut() {
+            let d = (x as f32 + 0.5 - r).hypot(y as f32 + 0.5 - r);
+            p[3] = (f32::from(p[3]) * (r - d + 0.5).clamp(0.0, 1.0)) as u8;
+        }
+        image::Handle::from_rgba(S, S, px.into_raw())
+    };
+    let Some(frames) = media_view::animation(bytes) else {
+        return Ok(Frames::from([(round(beeper_core::media::decode_upright(bytes)?), 0)]));
+    };
+    let frames = frames?;
+    let step = frames.len().div_ceil(AVATAR_FRAMES);
+    let mut kept: Vec<(image::Handle, u128)> = Vec::new();
+    for (i, (px, ms)) in frames.into_iter().enumerate() {
+        match kept.last_mut().filter(|_| i % step != 0) {
+            Some(last) => last.1 += ms,
+            None => kept.push((round(::image::DynamicImage::ImageRgba8(px)), ms)),
+        }
     }
-    Ok(image::Handle::from_rgba(S, S, px.into_raw()))
+    Ok(kept.into())
 }
 
+/// The most frames that an animated avatar keeps: 36 KB each at 96 px.
+const AVATAR_FRAMES: usize = 120;
+
 /// Image frames with their delays in milliseconds; a still image has one frame.
-pub type Frames = Vec<anim::Frame>;
+pub type Frames = anim::Frames;
 type Png = (Vec<u8>, (u32, u32));
 
 /// Desktop's `queuedPendingMessages`: the sends of a chat that wait for "Allow undo send", and the composer to
@@ -1066,17 +1086,29 @@ pub enum Clip {
     Text,
 }
 
+/// Whether arboard's `error` leaves the paste to iced's clipboard, which pastes the text if there is one. arboard reads
+/// the clipboard through X11 on GNOME, whose compositor has no data-control protocol, so on a Wayland session without
+/// Xwayland it reaches no clipboard at all, where iced, which speaks Wayland, still pastes the text like Desktop.
+fn paste_text_instead(error: &arboard::Error) -> bool {
+    matches!(
+        error,
+        arboard::Error::ContentNotAvailable | arboard::Error::ClipboardNotSupported | arboard::Error::Unknown { .. }
+    )
+}
+
 async fn clipboard_paste() -> Result<Clip, String> {
     let read = || {
-        let mut c = arboard::Clipboard::new().map_err(|e| format!("Could not read the clipboard: {e}"))?;
+        let mut c = match arboard::Clipboard::new() {
+            Err(e) if paste_text_instead(&e) => return Ok(Clip::Text),
+            c => c.map_err(|e| format!("Could not read the clipboard: {e}"))?,
+        };
         // The `text/uri-list` of a file manager. iced's X11 clipboard answers every target with its text, which
         // has no `file://` lines.
         if let Some(files) = c.get().file_list().ok().filter(|f| !f.is_empty()) {
             return Ok(Clip::Files(files));
         }
         let img = match c.get_image() {
-            Err(arboard::Error::ContentNotAvailable) => return Ok(Clip::Text),
-            Err(arboard::Error::Unknown { .. }) if c.get_text().is_ok() => return Ok(Clip::Text),
+            Err(e) if paste_text_instead(&e) => return Ok(Clip::Text),
             r => r.map_err(|e| format!("Could not read the clipboard: {e}"))?,
         };
         let size = (u32::try_from(img.width).unwrap(), u32::try_from(img.height).unwrap());
@@ -1873,11 +1905,22 @@ fn stored(st: &BeeperStore, id: &str) -> Message {
 }
 
 /// Desktop's `rootMessageIDs`: the first message of the reply chain of `m`, which can be a message that is not loaded.
-fn reply_root<'s>(st: &'s BeeperStore, mut m: &'s Message) -> &'s str {
+fn reply_root<'s>(st: &'s BeeperStore, m: &'s Message) -> &'s str {
+    reply_root_with(st, m, |_, _| ())
+}
+
+/// [`reply_root`], which shows `look` each message ID that the chain looks up, and the message when it is loaded.
+fn reply_root_with<'s>(
+    st: &'s BeeperStore,
+    mut m: &'s Message,
+    mut look: impl FnMut(&'s str, Option<&'s Message>),
+) -> &'s str {
     let mut seen = HashSet::new();
     while m.thread_root.is_none() {
         let Some(r) = m.linked_message_id.as_deref().filter(|r| *r != m.id && seen.insert(&m.id)) else { return &m.id };
-        match st.loaded(r) {
+        let next = st.loaded(r);
+        look(r, next);
+        match next {
             Some(next) => m = next,
             None => return r,
         }
@@ -2090,27 +2133,55 @@ enum Align {
 
 /// Finds the offset of a scrollable that shows a container where `Align` puts it. The offset of the timeline counts
 /// from its bottom, because it is anchored there.
-struct Locate(
-    iced::widget::Id,
-    Option<(iced::Rectangle, iced::Rectangle, f32)>,
-    Option<iced::Rectangle>,
-    Align,
-    &'static str,
-);
-
-fn locate(target: impl Into<iced::widget::Id>, scroll: &'static str, align: Align) -> Task<UiMessage> {
-    iced::advanced::widget::operate(Locate(target.into(), None, None, align, scroll))
-        .then(move |y| operation::scroll_to(scroll, operation::AbsoluteOffset { x: 0.0, y }))
+///
+/// Operations go through the widgets of every window, and each chat window has its own "timeline": it takes the
+/// scrollable of the window of the container. It finds nothing when no window shows the container yet, as a window
+/// that is still opening.
+struct Locate {
+    target: iced::widget::Id,
+    scroll: &'static str,
+    align: Align,
+    /// The window whose widgets the operation goes through now, by its [`focus::WindowMark`].
+    window: Option<window::Id>,
+    /// The scrollables named `scroll`, with their window, bounds, content bounds and offset.
+    scrollables: Vec<(Option<window::Id>, iced::Rectangle, iced::Rectangle, f32)>,
+    /// The container and its window.
+    found: Option<(Option<window::Id>, iced::Rectangle)>,
 }
 
-impl iced::advanced::widget::Operation<f32> for Locate {
-    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<f32>)) {
+impl Locate {
+    fn new(target: iced::widget::Id, scroll: &'static str, align: Align) -> Self {
+        Self { target, scroll, align, window: None, scrollables: Vec::new(), found: None }
+    }
+}
+
+fn locate(target: impl Into<iced::widget::Id>, scroll: &'static str, align: Align) -> Task<UiMessage> {
+    iced::advanced::widget::operate(Locate::new(target.into(), scroll, align))
+        .then(move |(window, y)| iced::advanced::widget::operate(ScrollIn { window, scroll, y, inside: false }))
+}
+
+/// Takes the window of the widgets that follow a [`focus::WindowMark`].
+fn window_mark(state: &mut dyn std::any::Any) -> Option<window::Id> {
+    state.downcast_ref::<focus::WindowMark>().map(|m| m.0)
+}
+
+impl iced::advanced::widget::Operation<(Option<window::Id>, f32)> for Locate {
+    fn traverse(
+        &mut self,
+        operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<(Option<window::Id>, f32)>),
+    ) {
         operate(self)
     }
 
+    fn custom(&mut self, _: Option<&iced::widget::Id>, _: iced::Rectangle, state: &mut dyn std::any::Any) {
+        if let Some(window) = window_mark(state) {
+            self.window = Some(window);
+        }
+    }
+
     fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
-        if id == Some(&self.0) {
-            self.2 = Some(bounds);
+        if id == Some(&self.target) && self.found.is_none() {
+            self.found = Some((self.window, bounds));
         }
     }
 
@@ -2122,24 +2193,62 @@ impl iced::advanced::widget::Operation<f32> for Locate {
         at: iced::Vector,
         _: &mut dyn iced::advanced::widget::operation::Scrollable,
     ) {
-        if id == Some(&iced::widget::Id::new(self.4)) {
-            self.1 = Some((bounds, content, at.y));
+        if id == Some(&iced::widget::Id::new(self.scroll)) {
+            self.scrollables.push((self.window, bounds, content, at.y));
         }
     }
 
-    fn finish(&self) -> iced::advanced::widget::operation::Outcome<f32> {
-        let (view, content, at) = self.1.unwrap_or_else(|| panic!("{} is shown", self.4));
-        let msg = self.2.unwrap_or_else(|| panic!("{:?} is in {}", self.0, self.4));
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<(Option<window::Id>, f32)> {
+        use iced::advanced::widget::operation::Outcome;
+        let Some((window, msg)) = self.found else { return Outcome::None };
+        let Some(&(_, view, content, at)) = self.scrollables.iter().find(|s| s.0 == window) else {
+            return Outcome::None;
+        };
         let max = (content.height - view.height).max(0.0);
         let y = msg.y - content.y;
-        let top = match self.3 {
+        let top = match self.align {
             Align::Nearest => at.max(y + msg.height - view.height).min(y),
             Align::Center => y - (view.height - msg.height) / 2.0,
             Align::Start(gap) => y - gap,
         };
         let top = top.clamp(0.0, max);
-        let anchored = matches!(self.4, "timeline" | "thread-timeline");
-        iced::advanced::widget::operation::Outcome::Some(if anchored { max - top } else { top })
+        let anchored = matches!(self.scroll, "timeline" | "thread-timeline");
+        Outcome::Some((window, if anchored { max - top } else { top }))
+    }
+}
+
+/// Scrolls the scrollable named `scroll` of `window` to `y`, and not those of the same name in other windows.
+struct ScrollIn {
+    window: Option<window::Id>,
+    scroll: &'static str,
+    y: f32,
+    inside: bool,
+}
+
+impl<T> iced::advanced::widget::Operation<T> for ScrollIn {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<T>)) {
+        operate(self)
+    }
+
+    fn custom(&mut self, _: Option<&iced::widget::Id>, _: iced::Rectangle, state: &mut dyn std::any::Any) {
+        if let Some(window) = window_mark(state) {
+            self.inside = Some(window) == self.window;
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        _: iced::Rectangle,
+        _: iced::Rectangle,
+        _: iced::Vector,
+        state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        // Without window marks (the tests' simulator draws no window root), the only window is the one.
+        let here = self.inside || self.window.is_none();
+        if here && id == Some(&iced::widget::Id::new(self.scroll)) {
+            state.scroll_to(operation::AbsoluteOffset { x: Some(0.0), y: Some(self.y) });
+        }
     }
 }
 
@@ -2567,8 +2676,8 @@ pub struct Pane {
     pub top: TopOfThread,
     timeline: vlist::VList,
     thread_list: vlist::VList,
-    /// The messages of the conversation and their rows, for a store generation and a chat.
-    rows: std::cell::RefCell<Option<(u64, String, Rc<Rows>)>>,
+    /// The messages of the conversation and their rows, with what they were made from.
+    rows: std::cell::RefCell<Option<(message::RowsKey, Rc<Rows>)>>,
     /// Desktop's `stopTypingTimeout`: the chat with a typing notice, and the time of the last key.
     pub typing: Option<(String, std::time::Instant)>,
     /// The mention pills of the composer text, which Desktop sends as `mentionedUserIDs`.
@@ -2732,6 +2841,8 @@ pub struct BeeperGuiApp {
     pub dark: bool,
     pub zoom: f32,
     zoom_drag: Option<f32>,
+    /// The windows that opened maximized, to maximize again once the window manager places them.
+    maximize_when_placed: Vec<window::Id>,
     pub pal: Palette,
     /// The chat list of the main window, or of the space window whose messages `update` handles.
     pub list: chat_list::ListState,
@@ -2752,6 +2863,9 @@ pub struct BeeperGuiApp {
     /// Desktop's `FileDropOverlay` shows, and Shift was down at a drop, so the dropped files are sent.
     dropping: bool,
     drop_send: bool,
+    /// The files of a drop so far: winit gives each file of a drop in its own event, and Desktop's `onDrop` attaches
+    /// them all at once.
+    dropped: Vec<std::path::PathBuf>,
     hotkeys_scrolled: bool,
     /// Chats picked by Begin Selecting; selection mode is on while this is not empty.
     pub selection: Vec<String>,
@@ -2781,6 +2895,10 @@ pub struct BeeperGuiApp {
     booted: String,
     focused: bool,
     notified: HashSet<String>,
+    /// The failed sends that Retry sent again: Desktop shows their error again when they fail again.
+    retried: HashSet<String>,
+    /// The failed send whose error toast shows, and its text: Desktop's `retryErroredMessage` closes it.
+    send_toast: Option<(String, String)>,
     notifications: HashMap<u32, (String, String)>,
     pending: notify::Pending,
     pub gif_query: String,
@@ -2989,7 +3107,7 @@ pub struct BeeperGuiApp {
     pub reauth: reauth::Reauth,
     pub enter_key: enter_key::EnterKey,
     pub cloud: Arc<Cloud>,
-    pub avatars: images::Images<image::Handle>,
+    pub avatars: images::Images<Frames>,
     wants: wants::Wants,
     pub media: images::Images<Result<Frames, String>>,
     /// The contact cards of `.vcf` attachments by URL, `None` while they load.
@@ -3010,6 +3128,13 @@ pub struct BeeperGuiApp {
     video: Option<video::Video>,
     view_once: view_once::ViewOnce,
     started: std::time::Instant,
+    /// Desktop's `animateAvatarsAndEmoji` while the window that `view` draws shows, which `view` reads from the
+    /// settings so that the avatars and the custom emoji need no lock of the store.
+    animate: std::cell::Cell<bool>,
+    /// The main window is minimized, so its animations wait, like Chromium's in a minimized window.
+    minimized: bool,
+    /// The changes of the windows' sizes and places, so that only the last one saves them.
+    state_changes: u64,
 }
 
 impl BeeperGuiApp {
@@ -3079,6 +3204,7 @@ impl BeeperGuiApp {
             dark: theme,
             zoom: 1.0,
             zoom_drag: None,
+            maximize_when_placed: Vec::new(),
             list: chat_list::ListState { filters, ..Default::default() },
             seen_requests: Vec::new(),
             pip: None,
@@ -3091,6 +3217,7 @@ impl BeeperGuiApp {
             hotkeys_modal: None,
             dropping: false,
             drop_send: false,
+            dropped: vec![],
             hotkeys_scrolled: false,
             chat_sub: None,
             reminded: HashMap::new(),
@@ -3110,6 +3237,8 @@ impl BeeperGuiApp {
             booted: beeper_core::config::now_rfc3339_millis(),
             focused: false,
             notified: HashSet::new(),
+            retried: HashSet::new(),
+            send_toast: None,
             notifications: HashMap::new(),
             pending,
             gif_query: String::new(),
@@ -3262,6 +3391,9 @@ impl BeeperGuiApp {
             video: None,
             view_once: Default::default(),
             started: std::time::Instant::now(),
+            animate: std::cell::Cell::new(true),
+            minimized: false,
+            state_changes: 0,
             last_click: None,
             cycling: false,
         };
@@ -3304,10 +3436,13 @@ impl BeeperGuiApp {
         (app, Task::batch(tasks.into_iter().chain(cloud).chain(restore).chain(link).chain(onboard)))
     }
 
-    /// Starts the loads of the avatars that a view asked for, when a client can load them.
+    /// Starts the loads of the avatars that a view asked for, when a client can load them. The inline avatars of the
+    /// demo need none.
     fn load_avatars(&mut self) -> Task<UiMessage> {
-        let Some(client) = self.store.read().matrix.clone() else { return Task::none() };
-        let urls = std::mem::take(&mut *self.wants.avatars.borrow_mut());
+        let client = self.store.read().matrix.clone();
+        let loadable = |u: &String| client.is_some() || u.starts_with("data:");
+        let (urls, rest) = std::mem::take(&mut *self.wants.avatars.borrow_mut()).into_iter().partition(loadable);
+        *self.wants.avatars.borrow_mut() = rest;
         let urls: Vec<String> = urls.into_iter().filter(|u| !self.avatars.contains_key(u)).collect();
         self.avatars.extend(urls.iter().map(|u| (u.clone(), None)));
         Task::batch(urls.into_iter().map(|url| {
@@ -3315,7 +3450,10 @@ impl BeeperGuiApp {
             Task::perform(
                 async move {
                     let _slot = AVATAR_SLOTS.acquire().await.expect("the avatar semaphore stays open");
-                    let bytes = beeper_core::matrix::thumbnail(client, u).await?;
+                    let bytes = match client.filter(|_| !u.starts_with("data:")) {
+                        Some(client) => beeper_core::matrix::thumbnail(client, u).await?,
+                        None => beeper_core::matrix::media(None, u).await?,
+                    };
                     tokio::task::spawn_blocking(move || round_avatar(&bytes)).await.expect("avatar worker thread")
                 },
                 move |r| UiMessage::Loaded(loads::Msg::Avatar(url, r)),
@@ -3330,16 +3468,38 @@ impl BeeperGuiApp {
     /// [`Self::face`] at the opacity `alpha`.
     fn face_alpha<'a>(&self, url: Option<&str>, name: &str, size: f32, ls: f32, alpha: f32) -> El<'a> {
         let loaded = url.and_then(|u| match self.avatars.get(u) {
-            Some(h) => h.clone(),
+            Some(frames) => frames.as_ref(),
             None => {
                 self.wants.ask(&self.wants.avatars, u);
                 None
             }
         });
         match loaded {
-            Some(h) => image(h).width(size).height(size).opacity(alpha).into(),
+            Some(frames) => self.emoji(frames, move |h| image(h).width(size).height(size).opacity(alpha)),
             None => avatar(name, size, ls, alpha, &self.pal),
         }
+    }
+
+    /// The main window shows: it is neither hidden in the tray nor minimized. Chromium draws no frames for a hidden
+    /// or minimized window, so the animations of Desktop wait, and those of the app ask for no redraws.
+    pub(crate) fn shows(&self) -> bool {
+        !self.hidden && !self.minimized
+    }
+
+    /// Desktop's `EnhancedImg` of an attachment with "Autoplay GIFs": its animation plays by itself while the window
+    /// shows.
+    pub(crate) fn autoplays(&self, st: &BeeperStore) -> bool {
+        st.settings.on("autoplayGifs") && self.shows()
+    }
+
+    /// An avatar or a custom emoji, as Desktop's still image (`rs`, and `EnhancedImg` with `isEmoji`) draws it: it
+    /// plays with "Animate avatars and emoji" while the window shows, and shows its first frame otherwise.
+    pub(crate) fn emoji<'a>(
+        &self,
+        frames: &Frames,
+        make: impl Fn(image::Handle) -> iced::widget::Image + 'a,
+    ) -> El<'a> {
+        anim::gif(frames, self.animate.get(), self.started, make)
     }
 
     fn typing_badge<'a>(&self) -> El<'a> {
@@ -4031,6 +4191,7 @@ impl BeeperGuiApp {
     fn leave_chat(&self, st: &mut BeeperStore, next: Option<&str>) {
         let Some(prev) = self.pane().selected_chat_id.as_deref().filter(|&p| Some(p) != next) else { return };
         save_draft(st, self.pane());
+        st.leave_draft(prev);
         let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
         if !st.incognito() && !st.chats[idx].flag(ChatFlag::MarkedUnread) {
             st.mark_chat_read(prev, true);
@@ -4168,18 +4329,19 @@ impl BeeperGuiApp {
     }
 
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
-        let (shown, dismissals) = (self.stackable_toast(), self.toast_dismissals);
+        let (shown, dismissals, stacked) = (self.stackable_toast(), self.toast_dismissals, self.older_toasts.len());
         // The windows that `handle` swaps in follow their own chat lists there.
         let pointed = self.swapped.is_none().then(|| self.pointed());
         let task = self.handle(msg);
+        self.link_drafts();
         let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
         let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
         let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
-            self.older_toasts.push(t);
-            let extra = self.older_toasts.len().saturating_sub(TOASTS_SHOWN - 1);
-            self.older_toasts.drain(..extra);
+            // It is older than the toasts that this message stacked.
+            self.older_toasts.insert(stacked.min(self.older_toasts.len()), t);
+            self.trim_older_toasts();
         }
         if self.status_banner.is_empty() && self.older_toasts.is_empty() {
             self.toast_clock.1 = false;
@@ -4192,6 +4354,35 @@ impl BeeperGuiApp {
             return task;
         }
         Task::batch([task, badge_sync(now.0, now.1)])
+    }
+
+    /// Tells the drafts sync which chats are open and whether their composers take a synced draft, and shows the
+    /// synced drafts that replaced the drafts of open chats.
+    fn link_drafts(&mut self) {
+        use beeper_core::drafts::Composer;
+        let st = self.store.read();
+        let link = st.drafts.link.clone();
+        let mut open = HashMap::new();
+        for (i, p) in self.panes().enumerate() {
+            let Some(idx) = p.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)) else { continue };
+            // The recorder belongs to the composer of the main window.
+            let unsyncable = p.editing_message_id.is_some() || (i == 0 && self.recorder.is_some());
+            let accepts = !unsyncable && p.attachments.is_empty() && !p.draft_due;
+            open.insert(st.chats[idx].id.clone(), Composer { accepts, unsyncable });
+        }
+        let applied = {
+            let mut l = link.lock().unwrap();
+            if l.open != open {
+                l.open = open;
+            }
+            std::mem::take(&mut l.applied)
+        };
+        for chat in applied {
+            composer::show_synced_draft(&st, &mut self.pane, &chat);
+            for w in &mut self.chat_windows {
+                composer::show_synced_draft(&st, &mut w.1, &chat);
+            }
+        }
     }
 
     /// Desktop's `updateAppBadgeCount`: the unread chats in all chats or in the chat list, by "Badge count".
@@ -5003,6 +5194,10 @@ impl BeeperGuiApp {
                                 self.pane.key_focus.set(None);
                                 return self.update(press);
                             }
+                            if !self.popup_menu_open() && self.pane.picker.is_none() {
+                                return focus::caret(window, self.composer_id())
+                                    .map(|at| UiMessage::Composer(composer::Msg::Enter(at)));
+                            }
                         }
                         _ => {}
                     }
@@ -5180,9 +5375,9 @@ impl BeeperGuiApp {
 
     pub fn subscription(&self) -> Subscription<UiMessage> {
         let frame_ready = Subscription::run(|| {
-            iced::futures::stream::once(async {
+            iced::futures::stream::unfold((), |()| async {
                 FRAME_READY.notified().await;
-                UiMessage::Noop
+                Some((UiMessage::Noop, ()))
             })
         });
         let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
@@ -5208,6 +5403,7 @@ impl BeeperGuiApp {
             Event::Window(window::Event::Closed) => Some(UiMessage::Window(windows::Msg::Closed(id))),
             Event::Window(window::Event::CloseRequested) => Some(UiMessage::Window(windows::Msg::CloseRequested(id))),
             Event::Window(window::Event::Resized(size)) => Some(UiMessage::Window(windows::Msg::Resized(id, size))),
+            Event::Window(window::Event::Moved(_)) => Some(UiMessage::Window(windows::Msg::Moved(id))),
             Event::Window(window::Event::Focused) => Some(UiMessage::Window(windows::Msg::Focused(true))),
             Event::Window(window::Event::Unfocused) => Some(UiMessage::Window(windows::Msg::Focused(false))),
             Event::Window(window::Event::FileHovered(_)) => {
@@ -5500,7 +5696,10 @@ impl BeeperGuiApp {
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {
-        let arrow = !self.store.read().settings.on("pointerCursor");
+        let st = self.store.read();
+        let arrow = !st.settings.on("pointerCursor");
+        self.animate.set(st.settings.on("animateAvatars") && self.shows());
+        drop(st);
         self.drawing.set(self.chat_windows.iter().any(|w| w.0 == id).then_some(id));
         self.in_media.set(self.media_window.as_ref().is_some_and(|w| w.id == id));
         let el = cursor::root(self.view_window(id), arrow, &self.cursor, id);
@@ -6690,6 +6889,12 @@ impl BeeperGuiApp {
 
     /// Whether one of the main window's menus is open.
     fn menu_open(&self) -> bool {
+        self.popup_menu_open() || self.pane.show_attach_menu
+    }
+
+    /// Whether one of the main window's menus is open, other than the unveiled actions of the composer, which are
+    /// part of Desktop's composer row.
+    fn popup_menu_open(&self) -> bool {
         self.list().show_filter_menu
             || self.list().chat_menu.is_some()
             || self.pane.message_menu.is_some()
@@ -6700,7 +6905,6 @@ impl BeeperGuiApp {
             || self.list().reminder_menu.is_some()
             || self.audio.menu.is_some()
             || self.selection_menu.is_some()
-            || self.pane.show_attach_menu
     }
 
     fn tip<'a>(
@@ -7030,14 +7234,25 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .title(BeeperGuiApp::title)
         .subscription(BeeperGuiApp::subscription)
         .theme(|a: &BeeperGuiApp, _| a.iced_theme())
-        .scale_factor(|a: &BeeperGuiApp, _| a.zoom)
+        .scale_factor(|a: &BeeperGuiApp, _| a.zoom * text_scale())
         .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.window, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
     app.run()
 }
 
-/// Woken once GTK opens to draw the title bars, so that the windows draw their frames again with the GTK theme.
+/// Woken once GTK opens to draw the title bars, and whenever GTK's settings change, so that the windows lay out and
+/// draw their frames again with the GTK theme and settings.
 pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// GNOME's `text-scaling-factor` on Wayland, which Chromium applies to the whole of each window like a zoom, the size
+/// of the window included: Desktop's device scale is the screen's times it. On X11 the scale of the window already
+/// has it, from `Xft.dpi`.
+pub static TEXT_SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
+/// [`TEXT_SCALE`], or 1.
+fn text_scale() -> f32 {
+    TEXT_SCALE.get().copied().unwrap_or(1.0)
+}
 
 /// People, each with the account to reach them on.
 pub type People = Vec<(String, User)>;
@@ -7055,6 +7270,19 @@ mod perf;
 mod tests {
     use super::*;
     use crate::media_view::{filmstrip, slide};
+
+    /// A paste whose clipboard arboard cannot reach, as on Wayland without Xwayland, or that has no image, pastes
+    /// the text through iced's clipboard instead of failing with "Could not read the clipboard".
+    #[test]
+    fn a_paste_without_arboard_pastes_the_text() {
+        let unreachable = arboard::Error::Unknown {
+            description: "X11 server connection timed out because it was unreachable".into(),
+        };
+        assert!(paste_text_instead(&unreachable));
+        assert!(paste_text_instead(&arboard::Error::ContentNotAvailable), "a text has no image");
+        assert!(paste_text_instead(&arboard::Error::ClipboardNotSupported));
+        assert!(!paste_text_instead(&arboard::Error::ConversionFailure), "an image that does not decode is an error");
+    }
 
     #[test]
     fn gui_tasks_run_on_the_runtime_of_the_caller() {

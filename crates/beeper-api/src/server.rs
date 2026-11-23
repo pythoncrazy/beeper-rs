@@ -2734,7 +2734,7 @@ fn focus_page(st: &mut BeeperStore, path: &[&str], r: &Req) -> Reply {
     if let (Some(i), Some(text)) = (idx, draft) {
         let ts = Some(beeper_core::config::now_unix_millis());
         let draft = ChatDraft { text: Some(text.into()), ts, ..ChatDraft::default() };
-        st.update_chat(i, |c| c.draft = Some(draft));
+        st.put_draft(i, Some(draft));
     }
     st.focus_tx.send(idx.map(|i| st.chats[i].id.clone())).ok();
     let body = r#"<div class="message">You can close this window</div><div class="hint">Having issues? Contact help@beeper.com.</div>"#;
@@ -2916,7 +2916,7 @@ fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
             path.into_iter().map(|p| ChatDraftAttachment { upload_id: p.clone(), file_name: Some(p), mime_type: None });
         let ts = Some(beeper_core::config::now_unix_millis());
         let draft = ChatDraft { text, attachments: attachments.collect(), ts, ..ChatDraft::default() };
-        st.update_chat(idx, |c| c.draft = Some(draft));
+        st.put_draft(idx, Some(draft));
     }
     st.focus_tx.send(idx.map(|i| st.chats[i].id.clone())).ok();
     ok(&json!({ "success": true }))

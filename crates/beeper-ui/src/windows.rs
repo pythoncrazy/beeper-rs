@@ -9,6 +9,8 @@ pub enum Msg {
     ToggleMaximize(Option<window::Id>),
     /// The Minimize item of the Window menu.
     Minimize(window::Id),
+    /// Whether the main window is minimized, as the window manager says after the window lost the focus.
+    Minimized(bool),
     Opened(window::Id),
     /// A window drew a frame, after which its screenshot has content.
     Drawn(window::Id),
@@ -21,6 +23,9 @@ pub enum Msg {
     Tray(Result<tray::Event, String>),
     TrayFailed(String),
     Resized(window::Id, Size),
+    Moved(window::Id),
+    /// Desktop's window state keeper saves a second after the last change, if no later change came (`.1`).
+    SaveState(window::Id, u64),
     ScreenshotCaptured(window::Id, window::Screenshot),
     FocusRequested(Option<String>),
     /// Desktop's `second-instance` event with the arguments of the later launch.
@@ -35,6 +40,18 @@ impl BeeperGuiApp {
             }
             Msg::Focused(focused) => {
                 self.focused = focused;
+                // A window that the window manager minimizes loses the focus, and one that it restores gains it.
+                let minimized = match (focused, self.main_window) {
+                    (false, Some(main)) => {
+                        let later = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
+                        let ask = Task::perform(later, |()| ()).then(move |()| window::is_minimized(main));
+                        ask.map(|m| UiMessage::Window(Msg::Minimized(m == Some(true))))
+                    }
+                    _ => {
+                        self.minimized = false;
+                        Task::none()
+                    }
+                };
                 self.read_open_chat();
                 let screen = self.login.screen;
                 let clipboard = matches!(screen, login::Screen::RecoveryKey | login::Screen::Code);
@@ -42,13 +59,18 @@ impl BeeperGuiApp {
                     .then(|| iced::clipboard::read().map(|t| LoginMsg::KeyOnFocus(t).into()));
                 let modal = (focused && self.enter_key.window.is_some())
                     .then(|| iced::clipboard::read().map(|t| enter_key::KeyMsg::OnFocus(t).into()));
-                return Task::batch([self.close_notifications()].into_iter().chain(key).chain(modal));
+                return Task::batch([self.close_notifications(), minimized].into_iter().chain(key).chain(modal));
             }
             Msg::Relaunch => {
                 RELAUNCH.store(true, std::sync::atomic::Ordering::Relaxed);
                 return self.quit();
             }
-            Msg::Minimize(id) => return window::minimize(id, true),
+            Msg::Minimize(id) => {
+                self.minimized |= Some(id) == self.main_window;
+                return window::minimize(id, true);
+            }
+            // A focus that came back while the window manager answered wins.
+            Msg::Minimized(minimized) => self.minimized = minimized && !self.focused,
             Msg::Opened(id) => {
                 let key = if Some(id) == self.settings_window {
                     "BEEPER_SCREENSHOT_SETTINGS"
@@ -64,7 +86,15 @@ impl BeeperGuiApp {
                 return window::screenshot(id).map(move |s| UiMessage::Window(Msg::ScreenshotCaptured(id, s)));
             }
             Msg::Drawn(_) => {}
-            Msg::Resized(id, size) => self.resized(id, size),
+            Msg::Resized(id, size) => {
+                self.resized(id, size);
+                return Task::batch([self.maximize_if_placed(id), self.save_soon(id)]);
+            }
+            Msg::Moved(id) => return Task::batch([self.maximize_if_placed(id), self.save_soon(id)]),
+            Msg::SaveState(id, n) if n == self.state_changes => {
+                return self.state_key(id).map_or_else(Task::none, |key| self.save_window(id, key));
+            }
+            Msg::SaveState(..) => {}
             Msg::Tray(Ok(tray::Event::Up)) => self.tray_sent = (None, true),
             // Electron cannot pop up the tray menu on Linux, so Desktop's click on a focused window does nothing.
             Msg::Tray(Ok(tray::Event::Activate)) if !self.hidden && self.focused => {}
@@ -87,16 +117,10 @@ impl BeeperGuiApp {
                 return match (primary, self.quit_on_close) {
                     (true, false) => self.set_hidden(true),
                     (true, true) => self.save_main_window().chain(window::close(id)),
-                    _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
-                        self.save_window(id, "media-viewer").chain(window::close(id))
-                    }
-                    _ if self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none() && !w.1.info)
-                        && !self.is_space_window(id)
-                        && self.carousel_opener(id).is_none() =>
-                    {
-                        self.save_window(id, POP_OUT).chain(window::close(id))
-                    }
-                    (false, _) => window::close(id),
+                    (false, _) => match self.state_key(id) {
+                        Some(key) => self.save_window(id, key).chain(window::close(id)),
+                        None => window::close(id),
+                    },
                 };
             }
             Msg::OpenChat(cid) => {
@@ -115,7 +139,8 @@ impl BeeperGuiApp {
                 let near = self.cascade(id);
                 let select = self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(cid))));
                 self.save_subwindows();
-                return Task::batch([open.discard(), near, select]);
+                // The window shows the chat once it opens: the scroll to its unread divider needs the window's widgets.
+                return Task::batch([open.discard().chain(select), near]);
             }
             Msg::OpenSpace(entry) => {
                 self.list.chat_menu = None;
@@ -140,7 +165,7 @@ impl BeeperGuiApp {
                 };
                 self.swap_window(id);
                 let select = chat.map(|c| self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(c)))));
-                return Task::batch([open.discard()].into_iter().chain(select));
+                return open.discard().chain(select.unwrap_or_else(Task::none));
             }
             Msg::Closed(id) if self.add_accounts.iter().any(|a| a.id == id) => {
                 return self.add_account_closed(id);
@@ -159,7 +184,11 @@ impl BeeperGuiApp {
                 // A thread window closes its "Media in %s" window.
                 tasks.extend(self.carousel_windows.iter().filter(|w| w.1 == id).map(|w| window::close(w.0)));
                 if let Some(w) = self.chat_windows.iter().find(|w| w.0 == id) {
-                    save_draft(&mut self.store.write(), &w.1);
+                    let mut st = self.store.write();
+                    save_draft(&mut st, &w.1);
+                    if let Some(chat) = w.1.selected_chat_id.as_deref() {
+                        st.leave_draft(chat);
+                    }
                 }
                 self.chat_windows.retain(|w| w.0 != id);
                 self.space_windows.retain(|w| w.0 != id);
@@ -306,11 +335,54 @@ pub(crate) fn grown(at: Point, old: Size, size: Size, screen: Size) -> (Point, S
 impl BeeperGuiApp {
     /// Opens a window of `settings.size` screen pixels, like Desktop's windows, whose size does not follow the zoom.
     /// iced opens a window at its size times the scale factor, which is the zoom.
-    pub(crate) fn open_window(&self, settings: window::Settings) -> (window::Id, Task<window::Id>) {
-        window::open(window::Settings { size: settings.size * (1.0 / self.zoom), ..settings })
+    ///
+    /// A window that opens maximized maximizes again once the window manager has it, like Desktop's
+    /// `deferMaximize`: iced maps each window only after its first frame, and an X11 window manager ignores the
+    /// maximized state that winit asks for before then, so on X11 the window opened at its restored size.
+    pub(crate) fn open_window(&mut self, settings: window::Settings) -> (window::Id, Task<window::Id>) {
+        let maximize = settings.maximized && settings.visible;
+        let (id, open) = window::open(window::Settings { size: settings.size * (1.0 / self.zoom), ..settings });
+        if maximize {
+            self.maximize_when_placed.push(id);
+        }
+        (id, open)
+    }
+
+    /// Maximizes window `id` if it opened maximized and the window manager has just placed it, which it reports with
+    /// the first move or resize.
+    fn maximize_if_placed(&mut self, id: window::Id) -> Task<UiMessage> {
+        let before = self.maximize_when_placed.len();
+        self.maximize_when_placed.retain(|w| *w != id);
+        match self.maximize_when_placed.len() < before {
+            true => window::maximize(id, true),
+            false => Task::none(),
+        }
     }
 
     /// The size of a window in iced's logical pixels, which the zoom scales like Desktop's CSS pixels.
+    /// The key of window `id` in `window.json`: the main window, the media viewer and a chat in its own window.
+    fn state_key(&self, id: window::Id) -> Option<&'static str> {
+        let chat = self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none() && !w.1.info);
+        match () {
+            () if Some(id) == self.main_window => Some("main"),
+            () if self.media_window.as_ref().is_some_and(|w| w.id == id) => Some("media-viewer"),
+            () if chat && !self.is_space_window(id) && self.carousel_opener(id).is_none() => Some(POP_OUT),
+            () => None,
+        }
+    }
+
+    /// Desktop's `windowStateKeeper`, which saves the state of a window a second after it resizes, moves, maximizes or
+    /// minimizes, so that a crash or a logout keeps it, not only a close.
+    fn save_soon(&mut self, id: window::Id) -> Task<UiMessage> {
+        if self.state_key(id).is_none() {
+            return Task::none();
+        }
+        self.state_changes += 1;
+        let n = self.state_changes;
+        let wait = async { tokio::time::sleep(std::time::Duration::from_secs(1)).await };
+        Task::perform(wait, move |()| UiMessage::Window(Msg::SaveState(id, n)))
+    }
+
     fn resized(&mut self, id: window::Id, size: Size) {
         // Desktop's `KeyboardSensor` cancels on a resize of the window.
         self.key_sort.take_if(|s| s.window == id);
@@ -351,7 +423,7 @@ impl BeeperGuiApp {
     }
 
     /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.
-    pub(crate) fn open_child(&self, size: Size) -> (window::Id, Task<UiMessage>) {
+    pub(crate) fn open_child(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
         let (id, open) =
             self.open_window(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
         // The main window, or the sign-in window of the onboarding.

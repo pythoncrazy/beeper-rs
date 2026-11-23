@@ -2051,6 +2051,8 @@ pub enum Outgoing {
     Reminder(Option<ChatReminder>),
     /// Desktop's `com.beeper.thread_follows` room account data with a new `com.beeper.revision_id`.
     ThreadFollows(ThreadFollows),
+    /// Desktop's `pushDraftStateNow`: the chat's draft as `com.beeper.draft`, or its removal (see [`crate::drafts`]).
+    Draft,
     DeleteChat {
         for_everyone: bool,
     },
@@ -2334,6 +2336,12 @@ async fn push_loop(store: SharedStore) {
     let ready = store.read().outbox_ready.clone();
     let mut wait = None;
     loop {
+        // The drafts whose push time came join the outbox (Desktop's `pushTimers`).
+        let due = store.read().drafts.timers.values().min().copied();
+        let next = match due {
+            Some(t) if t <= std::time::Instant::now() => store.write().queue_due_drafts(),
+            t => t,
+        };
         match flush(store.clone()).await {
             Ok(()) => wait = None,
             Err(e) if e.transient => wait = Some(wait.map_or(1, |w: u64| (w * 2).min(60))),
@@ -2342,8 +2350,9 @@ async fn push_loop(store: SharedStore) {
                 wait = None;
             }
         }
-        match wait {
-            Some(s) => drop(tokio::time::timeout(std::time::Duration::from_secs(s), ready.notified()).await),
+        let until = next.map(|t| t.saturating_duration_since(std::time::Instant::now()));
+        match wait.map(std::time::Duration::from_secs).into_iter().chain(until).min() {
+            Some(d) => drop(tokio::time::timeout(d, ready.notified()).await),
             None => ready.notified().await,
         }
     }
@@ -2653,7 +2662,7 @@ fn text_content(text: String, mentions: &[Mention], reply_to: Option<&str>) -> R
 
 /// The Markdown of Desktop's mention pills: each "@label" of `users` becomes `[@label](https://matrix.to/#/id)`, the
 /// longest label first.
-fn mention_links(text: &str, users: &[&Mention]) -> String {
+pub(crate) fn mention_links(text: &str, users: &[&Mention]) -> String {
     let (mut md, mut rest) = (String::with_capacity(text.len()), text);
     while let Some(i) = rest.find('@') {
         md.push_str(&rest[..i]);
@@ -2704,6 +2713,13 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
     }
     if let Outgoing::CreateUnion { title, rooms, avatar } = out {
         return Ok(create_union(store, &client, &chat, title, rooms, avatar).await?);
+    }
+    // Desktop's `pushDraftStateNow` only logs a failed push: the next change of the draft goes again.
+    if let Outgoing::Draft = out {
+        if let Err(e) = push_draft(store, &client, &chat).await {
+            eprintln!("[drafts-sync] push failed for {chat}: {e}");
+        }
+        return Ok(());
     }
     let chat = store.read().sent.get(&chat).cloned().unwrap_or(chat);
     let room = chat_room(&client, &chat).await?;
@@ -2974,6 +2990,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         }
         Outgoing::CreateLabel(_) => unreachable!("a label has no room before it is created"),
         Outgoing::CreateUnion { .. } => unreachable!("a merged chat has no room before it is created"),
+        Outgoing::Draft => unreachable!("a draft goes before the room lookup"),
         Outgoing::EditLabel(label, changes) => {
             let state = |kind: &'static str, content: Value| room.send_state_event_raw(kind, "", content);
             state("m.room.name", serde_json::json!({ "name": label.name })).await.map_err(e)?;
@@ -3560,9 +3577,13 @@ pub async fn set_room_avatar(store: SharedStore, room: String, bytes: Vec<u8>, m
     client_api(&client, reqwest::Method::PUT, &path, &[], Some(content)).await.map(drop)
 }
 
+/// The 96 px avatar thumbnail of `url`. Like Desktop's `getAvatarThumbnail`, which keeps the frames of an animated
+/// avatar (`sharp(…, { animated: true })`), it asks the homeserver for an animated thumbnail.
 pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
     let size = matrix_sdk::ruma::uint!(96);
-    let format = MediaFormat::Thumbnail(MediaThumbnailSettings::with_method(Method::Crop, size, size));
+    let mut settings = MediaThumbnailSettings::with_method(Method::Crop, size, size);
+    settings.animated = true;
+    let format = MediaFormat::Thumbnail(settings);
     let request = MediaRequestParameters { source: MediaSource::Plain(url.into()), format };
     client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
 }
@@ -3803,6 +3824,91 @@ pub async fn set_bridge_account_name(
         };
     }
     Err(format!("bridge account overrides kept changing after {OVERRIDE_TRIES} attempts"))
+}
+
+/// Desktop's `setRoomDraftAccountData`: the chat's draft record, encrypted with MSC4483 like every
+/// `com.beeper.draft` of Desktop's SDK (in plaintext without the key), written when the homeserver still has the
+/// revision that this device last read. When another device wrote first, its record reconciles with the draft here.
+async fn push_draft(store: &SharedStore, client: &Client, chat: &str) -> Result<(), String> {
+    let Some((record, expected)) = store.read().draft_push(chat) else { return Ok(()) };
+    let room = chat_room(client, chat).await?;
+    let kind = crate::drafts::DRAFT;
+    let key = account_data_key(client, store, true).await;
+    let body = match &key {
+        Ok(k) => crate::msc4483::encrypt(k, kind, &record),
+        Err(e) => {
+            eprintln!("Cannot encrypt account data, falling back to plaintext: {e}");
+            record.clone()
+        }
+    };
+    let me = own_id(client);
+    let path = ["user", &me, "rooms", room.room_id().as_str(), "account_data", kind];
+    let query = [("com.beeper.expect_revision_id", expected.as_str())];
+    let (status, text) = client_request(client, reqwest::Method::PUT, &path, &query, Some(body.to_string())).await?;
+    if status.is_success() {
+        store.write().draft_pushed(chat, record);
+        return Ok(());
+    }
+    let v: Value = serde_json::from_str(&text).unwrap_or_default();
+    match (v["errcode"].as_str(), v.get("com.beeper.current_content")) {
+        (Some(REVISION_MISMATCH), Some(current)) => {
+            eprintln!("[drafts-sync] push rejected by CAS for {chat}, reconciling server record");
+            let current = match (crate::msc4483::is_encrypted(current), &key) {
+                (true, Ok(k)) => crate::msc4483::decrypt(k, kind, current)?,
+                (true, Err(e)) => return Err(e.clone()),
+                (false, _) => current.clone(),
+            };
+            store.write().draft_received(chat, current);
+            Ok(())
+        }
+        _ => Err(matrix_error(status, &v)),
+    }
+}
+
+/// Desktop SDK's `MaybeDecryptAccountData` of a synced `com.beeper.draft` of `room`, then the handler of the room.
+/// A record that cannot be decrypted yet waits for the key.
+async fn sync_draft(client: &Client, store: &SharedStore, room: &Room, content: Value) {
+    if !content.is_object() {
+        return;
+    }
+    let kind = crate::drafts::DRAFT;
+    let id = room.room_id().to_string();
+    let record = match crate::msc4483::is_encrypted(&content) {
+        true => {
+            let key = account_data_key(client, store, false).await;
+            match key.and_then(|k| crate::msc4483::decrypt(&k, kind, &content)) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[drafts-sync] Skipping still-encrypted draft record: {e}");
+                    store.write().drafts.undecrypted.insert(id);
+                    return;
+                }
+            }
+        }
+        false => content,
+    };
+    store.write().drafts.undecrypted.remove(&id);
+    let chat = chat_id(room).await;
+    store.write().draft_received(&chat, record);
+}
+
+/// The synced drafts that waited for the MSC4483 key, once secret storage gives it.
+async fn retry_drafts(client: &Client, store: &SharedStore) {
+    let rooms: Vec<String> = store.read().drafts.undecrypted.iter().cloned().collect();
+    if rooms.is_empty() || account_data_key(client, store, false).await.is_err() {
+        return;
+    }
+    for id in rooms {
+        let room = matrix_sdk::ruma::RoomId::parse(&id).ok().and_then(|r| client.get_room(&r));
+        let content = match &room {
+            Some(room) => account_data(room, crate::drafts::DRAFT).await,
+            None => None,
+        };
+        match (room, content) {
+            (Some(room), Some(content)) => sync_draft(client, store, &room, content).await,
+            _ => drop(store.write().drafts.undecrypted.remove(&id)),
+        }
+    }
 }
 
 /// Desktop's room image pack event types (`_u`): the stable type, and the older type that it replaces (`MR`).
@@ -5069,6 +5175,12 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 let state_changed = state || update.timeline.events.iter().any(state_key);
                 let prev_batch = update.timeline.prev_batch;
                 sync_room_after(store, &room, update.timeline.events, Some(Update { prev_batch, state_changed })).await;
+                for e in &update.account_data {
+                    let v: Value = e.deserialize_as().expect("room account data JSON");
+                    if v["type"] == crate::drafts::DRAFT {
+                        sync_draft(client, store, &room, v["content"].clone()).await;
+                    }
+                }
                 if let Some(from) = gap {
                     tokio::spawn(fill_gap(store.clone(), room.clone(), from));
                 }
@@ -5095,7 +5207,10 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                     }
                 }
             }
-            store.write().synced();
+            retry_drafts(client, store).await;
+            let mut st = store.write();
+            st.replay_drafts();
+            st.synced();
         }
     }
     true
@@ -6826,6 +6941,115 @@ mod tests {
         let plain = crate::msc4483::decrypt(&key, kind, &body).expect("the body decrypts with the key");
         assert_eq!(plain["accounts"], json!({ "telegram": { "t": { "name": "Phone" } } }), "an empty name removes it");
         assert_eq!(store.read().custom_name("whatsapp"), None);
+    }
+
+    /// Desktop's drafts sync: a synced `com.beeper.draft` of a room is encrypted with the MSC4483 key, and becomes
+    /// the draft of a chat without one. A changed draft goes 10 s after its save, or when its chat closes, with the
+    /// revision that this device last read. When another device wrote first, the homeserver answers with its record,
+    /// which waits while the draft here differs; nothing goes while it waits, and it comes once the draft here went.
+    /// Then the removal of that draft goes as a tombstone.
+    #[tokio::test]
+    async fn drafts_sync_as_encrypted_room_account_data_like_desktop() {
+        use crate::drafts::{DRAFT, REVISION};
+        use matrix_sdk::ruma::events::secret::request::SecretName;
+        let ssss = matrix_sdk_crypto::secret_storage::SecretStorageKey::new();
+        let key = [9; 32];
+        let name = SecretName::from(crate::msc4483::KEY_SECRET);
+        let secret = ssss.encrypt(vodozemac::base64_encode(key).into_bytes(), &name);
+        let secret = json!({ "encrypted": { ssss.key_id(): secret } });
+        let default_key = json!({ "key": ssss.key_id() });
+        let key_info = serde_json::to_value(ssss.event_content()).expect("the key info JSON");
+        let key_path = format!("/_matrix/client/v3/user/@me:x/account_data/m.secret_storage.key.{}", ssss.key_id());
+        let html = r#"<strong>hi</strong> <a href="https://matrix.to/#/@vic:x" class="mention">@Vic</a>"#;
+        let theirs = json!({ REVISION: "r1", "device_id": "PHONE", "ts": 5, "send_room_id": null, "send_later": null,
+            "contents": [{ "msgtype": "m.text", "body": "hi @Vic", "format": "org.matrix.custom.html",
+                "formatted_body": html, "m.mentions": { "user_ids": ["@vic:x"] } }] });
+        let first = json!({ REVISION: "r2", "device_id": "PHONE", "ts": 6,
+            "contents": [{ "msgtype": "m.text", "body": "from the phone" }] });
+        let mut sync = stub_sync();
+        let event = json!({ "type": DRAFT, "content": crate::msc4483::encrypt(&key, DRAFT, &theirs) });
+        sync["rooms"]["join"]["!room:x"]["account_data"] = json!({ "events": [event] });
+        sync["next_batch"] = json!("s2");
+        let syncs = std::sync::atomic::AtomicUsize::new(0);
+        let flags = json!({ "features": { "*": { "drafts-sync": true } } });
+        sync["account_data"] = json!({ "events": [{ "type": "com.beeper.feature_flags", "content": flags }] });
+        let conflict = json!({ "errcode": "COM.BEEPER.REVISION_ID_MISMATCH", "error": "revision mismatch",
+            "com.beeper.current_content": crate::msc4483::encrypt(&key, DRAFT, &first) });
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| {
+            match (method, path.split_once('?').map_or(path, |p| p.0)) {
+                (_, "/_matrix/client/versions") => (200, json!({ "versions": ["v1.11"] })),
+                // The first sync has the room, and the next one its synced draft.
+                (_, "/_matrix/client/v3/sync") => match syncs.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => (200, stub_sync()),
+                    _ => (200, sync.clone()),
+                },
+                (_, "/_matrix/client/v3/keys/upload") => (200, json!({ "one_time_key_counts": {} })),
+                ("GET", "/_matrix/client/v3/user/@me:x/account_data/m.secret_storage.default_key") => {
+                    (200, default_key.clone())
+                }
+                ("GET", p) if p == key_path => (200, key_info.clone()),
+                ("GET", "/_matrix/client/v3/user/@me:x/account_data/dev.zirco.msc4483.account_data.key") => {
+                    (200, secret.clone())
+                }
+                ("PUT", "/_matrix/client/v3/user/@me:x/rooms/!room:x/account_data/com.beeper.draft") => {
+                    let mut log = log.lock().unwrap();
+                    log.push((path.to_string(), body));
+                    match log.len() {
+                        1 => (409, conflict.clone()),
+                        _ => (200, json!({})),
+                    }
+                }
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            }
+        })
+        .await;
+        let store = crate::testing::stub_room_store(&crate::testing::temp_dir("drafts-sync"), &url).await;
+        {
+            let mut st = store.write();
+            st.features.flags = json!({ "features": { "*": { "drafts-sync": true } } });
+            st.beeper_state.secrets.recovery_code = ssss.to_base58();
+        }
+        let client = store.read().matrix.clone().expect("a client");
+        super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await;
+        let draft = |store: &crate::store::SharedStore| store.read().chat("!room:x").draft.clone();
+        let got = draft(&store).expect("the synced draft");
+        assert_eq!(got.text.as_deref(), Some("**hi** @Vic"), "the decrypted HTML as composer Markdown");
+        assert_eq!(got.mentions, [("Vic".to_string(), "@vic:x".to_string())]);
+        assert_eq!(got.revision_id.as_deref(), Some("r1"));
+        let idx = store.read().chat_idx("!room:x");
+        let mine = crate::models::ChatDraft { text: Some("mine".into()), ts: Some(8), ..Default::default() };
+        store.write().put_draft(idx, Some(mine));
+        assert!(store.read().outbox.is_empty() && store.read().drafts.timers.contains_key("!room:x"), "it waits");
+        store.write().leave_draft("!room:x");
+        super::flush(store.clone()).await.expect("the push");
+        let puts = sent.lock().unwrap().clone();
+        assert_eq!(puts.len(), 1);
+        assert_eq!(puts[0].0.split_once('?').expect("a query").1, "com.beeper.expect_revision_id=r1");
+        let fields: Vec<&String> = puts[0].1.as_object().expect("an object").keys().collect();
+        assert_eq!(fields, [REVISION, "encrypted"], "only the revision stays in plaintext");
+        let pushed = crate::msc4483::decrypt(&key, DRAFT, &puts[0].1).expect("the body decrypts with the key");
+        assert_eq!((&pushed["device_id"], &pushed["ts"]), (&json!("DEV"), &json!(8)));
+        assert_eq!(pushed["contents"], json!([{ "msgtype": "m.text", "body": "mine" }]));
+        let synced = store.read().chat("!room:x").synced_draft.clone().expect("the record of the conflict");
+        assert_eq!((synced.record[REVISION].as_str(), synced.applied), (Some("r2"), false), "it waits");
+        assert_eq!(draft(&store).and_then(|d| d.text).as_deref(), Some("mine"), "the draft here wins");
+        store.write().put_draft(idx, None);
+        super::flush(store.clone()).await.expect("no push");
+        assert_eq!(sent.lock().unwrap().len(), 1, "nothing goes while a record waits");
+        store.write().leave_draft("!room:x");
+        assert_eq!(draft(&store).and_then(|d| d.text).as_deref(), Some("from the phone"), "the waiting record");
+        store.write().put_draft(idx, None);
+        super::flush(store.clone()).await.expect("the removal");
+        let puts = sent.lock().unwrap().clone();
+        assert_eq!(puts.len(), 2);
+        assert_eq!(puts[1].0.split_once('?').expect("a query").1, "com.beeper.expect_revision_id=r2");
+        let gone = crate::msc4483::decrypt(&key, DRAFT, &puts[1].1).expect("the tombstone decrypts");
+        assert_eq!(gone["device_id"], "DEV");
+        assert!(gone.get("contents").is_none() && gone[REVISION].as_str().is_some_and(|r| r != "r2"));
+        let synced = store.read().chat("!room:x").synced_draft.clone().expect("the tombstone");
+        assert_eq!((synced.record, synced.applied), (gone, true));
     }
 
     /// Desktop's SDK reports `initialized` after it reads the encryption state, and an account without cross-signing

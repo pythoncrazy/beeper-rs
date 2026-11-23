@@ -56,7 +56,7 @@ impl BeeperGuiApp {
     /// The image of a link at `w` by `h`, cut to cover, or an empty space while it loads.
     fn link_image<'a>(&'a self, url: Option<&str>, (w, h): (f32, f32), radius: border::Radius) -> El<'a> {
         match url.and_then(|u| self.media_at(u)) {
-            Some(Ok(frames)) => anim::gif(frames, self.started, move |f| {
+            Some(Ok(frames)) => anim::gif(frames, self.shows(), self.started, move |f| {
                 image(f).width(w).height(h).content_fit(ContentFit::Cover).border_radius(radius)
             }),
             _ => Space::new().width(w).height(h).into(),

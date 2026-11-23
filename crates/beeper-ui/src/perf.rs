@@ -248,6 +248,85 @@ fn a_message_in_another_chat_keeps_the_memo_of_the_views() {
     assert_eq!(app.store.generation(), generation, "the updates do not write to the store");
 }
 
+/// The rows that the view of the open chat made.
+fn rows_of(app: &BeeperGuiApp) -> Rc<message::Rows> {
+    frame(app);
+    app.pane.rows.borrow().as_ref().expect("the view made the rows").1.clone()
+}
+
+/// Runs `change` on the store, and tells whether the view made the rows of the open chat again, which show its
+/// messages either way.
+fn rows_changed(app: &BeeperGuiApp, kept: &mut Rc<message::Rows>, change: impl FnOnce(&mut BeeperStore)) -> bool {
+    change(&mut app.store.write());
+    let next = rows_of(app);
+    let st = app.store.read();
+    let ids: Vec<&str> = next.msgs.iter().map(|&i| st.messages[i].id.as_str()).collect();
+    let (hide, members) = (st.settings.on("hideDeleted"), st.settings.on("membershipEvents"));
+    let hidden = |m: &Message| hide && m.is_deleted == Some(true) && !m.view_once_expired();
+    let shown = app.pane_msgs(&st).into_iter().filter(|m| !hidden(m) && (members || !membership(m)));
+    assert_eq!(ids, shown.map(|m| m.id.as_str()).collect::<Vec<_>>(), "the rows show the messages");
+    drop(st);
+    !Rc::ptr_eq(&std::mem::replace(kept, next), kept)
+}
+
+/// A new message `id` in `chat`.
+fn new_message(st: &BeeperStore, id: &str, chat: &str) -> Message {
+    let template = st.stored_message("$large_66").expect("a message of the large chat");
+    let (chat_id, account_id) = (chat.to_string(), st.chat(chat).account_id.clone());
+    let sort_key = beeper_core::store::sort_key(1_000_000 + st.messages.len() as i64);
+    Message { id: id.into(), chat_id, account_id, sort_key, ..template }
+}
+
+/// The rows of the open chat stay over the writes to other chats, and each change that they show makes them again.
+#[test]
+fn the_rows_of_the_open_chat_follow_its_messages() {
+    let mut app = BeeperGuiApp::boot(sized_store("perf-rows", 200, 1_000)).0;
+    let _ = app.update(UiMessage::SelectChat(LARGE_OPEN.into()));
+    let other = large_id(7);
+    let upsert =
+        |id: &'static str, chat: String| move |st: &mut BeeperStore| st.upsert_message(new_message(st, id, &chat));
+    let edit = |id: &'static str| {
+        move |st: &mut BeeperStore| drop(st.update_message(st.message_idx(id), |m| m.text = Some("edited".into())))
+    };
+    let flip = |key: &'static str| move |st: &mut BeeperStore| st.settings.set_pref(key, (!st.settings.on(key)).into());
+    let threads = |chat: String| {
+        move |st: &mut BeeperStore| {
+            st.features.flags["features"]["*"]["enable-threads"] = true.into();
+            drop(st.update_chat(st.chat_idx(&chat), |c| c.threads = true));
+        }
+    };
+    let kept = &mut rows_of(&app);
+    assert!(!rows_changed(&app, kept, |_| ()), "a write lock alone keeps the rows");
+    assert!(!rows_changed(&app, kept, upsert("$other", other.clone())), "a new message in another chat keeps them");
+    assert!(!rows_changed(&app, kept, edit("$other")), "an edit in another chat keeps them");
+    assert!(!rows_changed(&app, kept, |st| drop(st.remove_message(&large_id(7), "$other"))), "so does a removal");
+    assert!(!rows_changed(&app, kept, threads(other.clone())), "and threads in another chat");
+    assert!(rows_changed(&app, kept, upsert("$open", LARGE_OPEN.into())), "a new message in the open chat makes them");
+    assert!(rows_changed(&app, kept, edit("$open")), "an edit");
+    assert!(rows_changed(&app, kept, |st| drop(st.remove_message(LARGE_OPEN, "$open"))), "a removal");
+    assert!(rows_changed(&app, kept, flip("hideDeleted")), "hideDeleted");
+    assert!(rows_changed(&app, kept, flip("membershipEvents")), "membershipEvents");
+    assert!(rows_changed(&app, kept, threads(LARGE_OPEN.into())), "the threads of the chat");
+    // A removed chat compacts the loaded messages, which moves their indices.
+    let moves = app.store.read().message_moves();
+    assert!(rows_changed(&app, kept, |st| st.remove_chat(&other)), "a move of the messages");
+    assert!(app.store.read().message_moves() > moves, "the removal moved the messages");
+    app.store.write().config.demo = false;
+    let local = app.store.write().send_message(LARGE_OPEN, Some("hi".into()), None, None).expect("a send").2.id;
+    assert!(rows_changed(&app, kept, |_| ()) && kept.any_pending, "the local echo is pending");
+    assert!(rows_changed(&app, kept, |st| drop(st.sent.insert(local, "$sent".into()))), "its send");
+    assert!(!kept.any_pending, "the sent message is not pending");
+    let merged = "!large_union_0:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(merged.into()));
+    let member = {
+        let st = app.store.read();
+        st.chats[st.members(st.chat_idx(merged))[0]].id.clone()
+    };
+    let kept = &mut rows_of(&app);
+    assert!(!rows_changed(&app, kept, upsert("$other2", large_id(8))), "a merged chat keeps its rows");
+    assert!(rows_changed(&app, kept, upsert("$member", member)), "but not over a message of a member chat");
+}
+
 /// The space bar counts the unread chats of each space from the chats it counts, which it finds again after a write
 /// to the store.
 #[test]
