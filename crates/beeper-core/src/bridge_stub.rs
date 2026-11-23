@@ -24,6 +24,7 @@ pub async fn serve_raw(
     reply: impl Fn(&str, &str, &HashMap<String, String>, Value) -> RawReply + Send + Sync + 'static,
 ) -> String {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    crate::matrix::STUB_CLIENTS.store(true, std::sync::atomic::Ordering::Relaxed);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind the stub server");
     let url = format!("http://{}", listener.local_addr().expect("the stub address"));
     let reply = Arc::new(reply);
