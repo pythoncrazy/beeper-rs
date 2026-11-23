@@ -82,9 +82,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Zoom<'_, M> {
         tree::State::new(State { key: self.key, ..State::default() })
     }
 
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
+    crate::delegate::delegate!(children);
 
     fn diff(&self, tree: &mut Tree) {
         let state = tree.state.downcast_mut::<State>();

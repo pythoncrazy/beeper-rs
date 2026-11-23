@@ -14,6 +14,7 @@ pub mod composer;
 mod cursor;
 mod dashed;
 mod deeplink;
+mod delegate;
 mod dialogs;
 pub mod emoji;
 mod enter_key;
