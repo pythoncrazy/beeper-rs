@@ -8,9 +8,9 @@ use crate::models::{
     VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS,
     BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS,
     DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE,
-    MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, MSG_MENTION, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR,
-    PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION,
-    TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, MSG_MENTION, MSG_NUDGE, NOTIFICATION_SOUND, NO_UNBLOCK,
+    PERSONAL_AVATAR, PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED,
+    TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -908,7 +908,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         flags: match c["m.mentions"]["user_ids"].as_array() {
             Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
             _ => 0,
-        },
+        } | if c["com.beeper.nudge"] == true { MSG_NUDGE } else { 0 },
         ..Default::default()
     });
     match reaction {
@@ -2071,6 +2071,8 @@ pub enum Outgoing {
     },
     /// Leaves the room, and forgets it for Desktop's `deleteLabel`.
     Leave(bool),
+    /// Desktop's `sendNudge`: an `m.notice` with `com.beeper.nudge` and the body, without a local echo.
+    Nudge(String),
     /// A state event with an empty state key.
     State(String, Value),
     /// Desktop's `removeParticipant`: a leave membership for the user.
@@ -2831,6 +2833,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         }
         Outgoing::Poll { txn, poll } => {
             send_txn(store, &room, "org.matrix.msc3381.poll.start", poll_start(&poll), txn).await?
+        }
+        Outgoing::Nudge(body) => {
+            let content = serde_json::json!({ "msgtype": "m.notice", "body": body, "com.beeper.nudge": true });
+            room.send_raw("m.room.message", content).await.map_err(|_| "Failed to send nudge".to_string())?;
         }
         Outgoing::EndPoll { target } => {
             let content = serde_json::json!({

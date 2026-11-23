@@ -3531,6 +3531,20 @@ impl BeeperStore {
         self.queue(&chat_id, Outgoing::Poll { txn, poll });
     }
 
+    /// Desktop's `sendNudge`: "{name} sent you a nudge" as an `m.notice` with `com.beeper.nudge`, named like
+    /// `getLocalSenderDisplayName`.
+    pub fn send_nudge(&mut self, chat_id: &str) {
+        let me = self.me();
+        let full = me.full_name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+        let user = me.username.as_deref().map(str::trim).filter(|n| !n.is_empty());
+        let local = || {
+            let id = me.id.strip_prefix('@')?;
+            Some(id.split_once(':').filter(|(l, _)| !l.is_empty()).map_or(id, |(l, _)| l))
+        };
+        let name = full.or(user).or_else(local).unwrap_or("Someone").to_string();
+        self.queue(chat_id, Outgoing::Nudge(format!("{name} sent you a nudge")));
+    }
+
     /// Desktop's `endPoll`: ends the own poll `message_id`, here and on the homeserver.
     pub fn end_poll(&mut self, chat_id: &str, message_id: &str) {
         self.update_poll(message_id, |p| p.ended = true);

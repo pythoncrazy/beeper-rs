@@ -1426,9 +1426,11 @@ impl BeeperGuiApp {
                 .on_show(|_| UiMessage::Timeline(timeline::Msg::Scrolled(false)))
                 .on_hide(UiMessage::Timeline(timeline::Msg::Scrolled(true))),
         );
+        // Desktop's `beeper-nudge-active` shakes the scrolling container of the chat that a nudge came to.
+        let (dx, dy) = self.nudges.offset(st.resolve_canonical_chat_id(&chat.id).as_deref());
         let up = self.pane().scrolled_up.is_some_and(|s| s.0);
         let held = timeline::hold(scroller(col).id(self.pane().scroll_id()), up).glide(self.pane().glide);
-        let list = lift::tight(held);
+        let list = lift::tight(held).shift(dx, dy);
         let opened = self.pane().reply_opened.map_or(1.0, |at| at.elapsed().as_secs_f32());
         let (shown, below) = replies_reveal(opened);
         let replies = self.pane().reply_thread.as_ref().map(|id| {

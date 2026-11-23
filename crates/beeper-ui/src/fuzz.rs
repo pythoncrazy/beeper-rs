@@ -1720,9 +1720,9 @@ fn pickers_check_the_network_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(wa));
     let _ = app.update(UiMessage::Composer(composer::Msg::TogglePicker(Picker::Sticker)));
     assert_eq!((app.pane.picker, app.status_banner.as_str()), (None, ""), "the picker needs Use sticker packs");
-    assert!(!hidden_actions(&app.store.read()).contains(&7));
+    assert!(!hidden_actions(&app.store.read(), false).contains(&7));
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("stickerPacks", 1)));
-    assert_eq!(hidden_actions(&app.store.read())[0], 7, "Add a sticker follows the emoji button");
+    assert_eq!(hidden_actions(&app.store.read(), false)[0], 7, "Add a sticker follows the emoji button");
     let cmds = app.commands(&app.store.read(), "");
     assert_eq!(cmds.iter().find(|c| c.title == "Send Sticker").and_then(|c| c.hotkey), Some("Message: Send Sticker"));
     let _ = app.update(UiMessage::Composer(composer::Msg::TogglePicker(Picker::Sticker)));
@@ -1815,7 +1815,7 @@ fn mentions_like_desktop() {
         rows.into_iter()
             .map(|s| match s {
                 Suggestion::Mention(label, id, _) => (label, id),
-                Suggestion::Emoji(..) => panic!("an emoji row for @"),
+                Suggestion::Emoji(..) | Suggestion::Command(_) => panic!("another row for @"),
             })
             .collect::<Vec<_>>()
     };
@@ -5547,7 +5547,7 @@ fn polls_like_desktop() {
 fn poll_creator_like_desktop() {
     let mut app = demo_app("poll-creator");
     let chat = "!tg_rust:beeper.com".to_string();
-    assert!(hidden_actions(&app.store.read()).contains(&6), "Create Poll is behind the plus button");
+    assert!(hidden_actions(&app.store.read(), false).contains(&6), "Create Poll is behind the plus button");
     let i = app.store.read().chat_idx(&chat);
     let rules = PollRules { hidden_votes: false, end: true, duplicates: false, max_options: 3, max_length: 200 };
     app.store.write().update_chat(i, |c| c.polls = Some(rules));
@@ -10192,7 +10192,7 @@ fn custom_emoji_composer_like_desktop() {
         let rows = app.suggestions(&st).map_or_else(Vec::new, |(_, rows)| rows);
         let emoji = |s| match s {
             Suggestion::Emoji(c, name) => Some((c, name)),
-            Suggestion::Mention(..) => None,
+            Suggestion::Mention(..) | Suggestion::Command(_) => None,
         };
         rows.into_iter().filter_map(emoji).collect::<Vec<_>>()
     };
