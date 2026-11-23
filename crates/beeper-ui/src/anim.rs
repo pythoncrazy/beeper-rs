@@ -1,3 +1,4 @@
+use crate::lottie;
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, renderer, Clipboard, Renderer as _, Shell};
@@ -24,18 +25,73 @@ pub struct Gif<'a> {
 /// The time of Desktop's `.2s transform` transition.
 const TURN_MS: f32 = 200.0;
 
-/// The frames of an image, shared with the cache that decoded them: a still image has one frame.
-pub type Frames = Arc<[Frame]>;
+/// How often a Lottie animation that does not play looks for its frame while a worker draws it.
+const POLL: Duration = Duration::from_millis(16);
+
+/// The frames of an image, shared with the cache that decoded them: a still image has one frame. A Lottie
+/// animation, like an animated sticker, has its first frame, and workers draw its frames when they are due.
+#[derive(Clone, Default)]
+pub struct Frames(Arc<[Frame]>, Option<Arc<lottie::Animation>>);
+
+impl Frames {
+    /// The Lottie animation `a`, whose first frame is `still`.
+    pub fn lottie(still: image::Handle, a: lottie::Animation) -> Self {
+        Frames(Arc::new([(still, 0)]), Some(Arc::new(a)))
+    }
+
+    /// The Lottie animation of the frames.
+    pub fn animation(&self) -> Option<&Arc<lottie::Animation>> {
+        self.1.as_ref()
+    }
+
+    /// Whether the image moves: it has more than one frame, or it is a Lottie animation.
+    pub fn animated(&self) -> bool {
+        self.0.len() > 1 || self.1.is_some()
+    }
+}
+
+impl std::ops::Deref for Frames {
+    type Target = [Frame];
+
+    fn deref(&self) -> &[Frame] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Frames {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Frames").field(&self.0.len()).field(&self.1.is_some()).finish()
+    }
+}
+
+impl<const N: usize> From<[Frame; N]> for Frames {
+    fn from(frames: [Frame; N]) -> Self {
+        Frames(Arc::new(frames), None)
+    }
+}
+
+impl From<Vec<Frame>> for Frames {
+    fn from(frames: Vec<Frame>) -> Self {
+        Frames(frames.into(), None)
+    }
+}
+
+impl FromIterator<Frame> for Frames {
+    fn from_iter<I: IntoIterator<Item = Frame>>(frames: I) -> Self {
+        Frames(frames.into_iter().collect(), None)
+    }
+}
 
 /// `frames` as `make` draws them, playing from `start` when `play`. A still image, or an animation that does not
-/// play, is the plain image of its first frame, so it adds no work to the frames of the window.
+/// play, is the plain image of its first frame, so it adds no work to the frames of the window. A Lottie animation
+/// draws at the size that it shows, so it stays an animation that does not play.
 pub fn gif<'a, M: 'a>(
     frames: &Frames,
     play: bool,
     start: Instant,
     make: impl Fn(image::Handle) -> Image + 'a,
 ) -> Element<'a, M> {
-    match plays(frames, play) {
+    match plays(frames, play) || frames.animation().is_some() {
         false => make(frames[0].0.clone()).into(),
         true => {
             let turn = (0.0, 0.0, start);
@@ -56,15 +112,22 @@ pub fn turning<'a, M: 'a>(
     Element::new(Gif { frames: frames.clone(), play, start, make: Box::new(make), turn })
 }
 
-/// Whether an animation of `frames` moves when it is to `play`: it has more than one frame.
-pub fn plays(frames: &[Frame], play: bool) -> bool {
-    play && frames.len() > 1
+/// Whether an animation of `frames` moves when it is to `play`.
+pub fn plays(frames: &Frames, play: bool) -> bool {
+    play && frames.animated()
 }
 
 /// The time of the frame after the one that is due at `now`, of an animation that plays from `start`.
 pub fn next(frames: &[Frame], start: Instant, now: Instant) -> Instant {
     let (_, left) = frame(frames, now.saturating_duration_since(start).as_millis());
     now + Duration::from_millis(left as u64)
+}
+
+/// The pixel size that a Lottie animation draws at in `bounds`: twice their size for a 2x screen, in steps of 16 px,
+/// and at most 512 px, the size of a Telegram sticker.
+pub fn lottie_size(a: &lottie::Animation, bounds: Rectangle) -> (u16, u16) {
+    let longest = (bounds.width.max(bounds.height) * 2.0 / 16.0).ceil() * 16.0;
+    a.fit(longest.clamp(16.0, 512.0) as u16)
 }
 
 impl Gif<'_> {
@@ -118,6 +181,20 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
         }
         if self.image(self.frames[0].0.clone()).1 {
             shell.request_redraw();
+        }
+        if let Some(a) = self.frames.animation() {
+            // A worker draws the frame that is due, which shows from the next redraw on. Like Desktop's paused
+            // Lottie, an animation that stops keeps the frame that it shows.
+            let size = lottie_size(a, layout.bounds());
+            match self.play {
+                true => {
+                    let (n, left) = a.frame(now.saturating_duration_since(self.start));
+                    a.want(n, size);
+                    shell.request_redraw_at(*now + left);
+                }
+                false if a.drawn(size).is_none() && !a.want(0, size) => shell.request_redraw_at(*now + POLL),
+                false => {}
+            }
         } else if plays(&self.frames, self.play) {
             shell.request_redraw_at(next(&self.frames, self.start, *now));
         }
@@ -133,12 +210,15 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        // A still image has one frame without a delay.
-        let h = match plays(&self.frames, self.play) {
-            false => &self.frames[0].0,
-            true => frame(&self.frames, self.start.elapsed().as_millis()).0,
+        // A still image has one frame without a delay. The first frame of a Lottie animation shows until a worker
+        // draws its frames at the size that it shows.
+        let first = || self.frames[0].0.clone();
+        let h = match (self.frames.animation(), plays(&self.frames, self.play)) {
+            (Some(a), _) => a.drawn(lottie_size(a, layout.bounds())).map_or_else(first, |d| d.1),
+            (None, false) => first(),
+            (None, true) => frame(&self.frames, self.start.elapsed().as_millis()).0.clone(),
         };
-        let (image, _) = self.image(h.clone());
+        let (image, _) = self.image(h);
         Widget::<M, Theme, Renderer>::draw(&image, tree, renderer, theme, style, layout, cursor, viewport);
     }
 }
@@ -210,7 +290,7 @@ mod tests {
     #[test]
     fn turns_like_desktop() {
         assert!((crate::cubic_bezier(0.5, [0.25, 0.1, 0.25, 1.0]) - 0.802).abs() < 5e-3, "the CSS ease curve");
-        let frames: Frames = Arc::new([(image::Handle::from_rgba(1, 1, vec![0; 4]), 0)]);
+        let frames = Frames::from([(image::Handle::from_rgba(1, 1, vec![0; 4]), 0)]);
         let start = Instant::now();
         let gif = |turn| Gif { frames: frames.clone(), play: true, start, make: Box::new(image), turn };
         let h = || frames[0].0.clone();

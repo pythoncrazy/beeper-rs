@@ -4604,9 +4604,9 @@ fn attachments_show_download_and_time_on_hover_like_desktop() {
         let st = app.store.read();
         let m = st.messages.iter().rev().find(|m| {
             m.text.as_deref().is_none_or(str::is_empty)
-                && m.attachments.first().is_some_and(|a| a.attachment_type == "img")
+                && m.attachments.first().is_some_and(|a| a.attachment_type == "img" && a.is_sticker != Some(true))
         });
-        let m = m.expect("a demo image message");
+        let m = m.expect("a demo photo message");
         (m.chat_id.clone(), m.id.clone(), format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1))
     };
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
