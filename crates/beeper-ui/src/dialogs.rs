@@ -314,17 +314,11 @@ pub enum PollEdit {
 impl PollDraft {
     pub(crate) fn new(id: window::Id, chat: String) -> Self {
         let options = vec![(1, String::new()), (2, String::new())];
-        Self {
+        beeper_core::with_defaults!(Self {
             id,
             chat,
-            question: String::new(),
             options,
-            multiple: false,
-            hidden: false,
-            discarding: false,
-            hovered: None,
-            dragging: None,
-        }
+        }, default: question, multiple, hidden, discarding, hovered, dragging)
     }
 
     fn answers(&self) -> Vec<String> {
@@ -1224,17 +1218,13 @@ impl BeeperGuiApp {
         drop(st);
         let topic = text_editor::Content::new();
         let personal = true;
-        self.group_window = Some(GroupDraft {
+        self.group_window = Some(beeper_core::with_defaults!(GroupDraft {
             id,
             chat,
             title,
             topic,
-            photo: None,
-            hover: false,
             personal,
-            saving: false,
-            dropping: false,
-        });
+        }, default: photo, hover, saving, dropping));
         open.chain(operation::focus(PERSONAL_INPUT)).chain(operation::select_all(PERSONAL_INPUT))
     }
 
