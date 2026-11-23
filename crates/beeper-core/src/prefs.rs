@@ -699,8 +699,18 @@ pub fn hotkey_has(keys: &str, mods: [bool; 3], key: &str) -> bool {
         })
 }
 
+/// The preference `key`. The views look up their preferences each time they draw, so the first lookup indexes them.
 pub fn find(key: &str) -> &'static Pref {
-    all().map(|(_, p)| p).find(|p| p.key == key).unwrap_or_else(|| panic!("unknown pref {key}"))
+    static BY_KEY: std::sync::OnceLock<std::collections::HashMap<&'static str, &'static Pref>> =
+        std::sync::OnceLock::new();
+    let by_key = BY_KEY.get_or_init(|| {
+        let mut by_key = std::collections::HashMap::new();
+        for (_, p) in all() {
+            by_key.entry(p.key).or_insert(p);
+        }
+        by_key
+    });
+    by_key.get(key).copied().unwrap_or_else(|| panic!("unknown pref {key}"))
 }
 
 /// Desktop's global account data with the preferences that sync between devices.
@@ -887,6 +897,15 @@ pub fn synced(key: &str) -> Option<Ad> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The index of `find` gives each key the first row of the key, as a walk over the rows does.
+    #[test]
+    fn find_takes_the_first_row_of_a_key() {
+        for (_, p) in all() {
+            let first = all().map(|(_, q)| q).find(|q| q.key == p.key).expect("a row");
+            assert!(std::ptr::eq(find(p.key), first), "{}", p.key);
+        }
+    }
 
     #[test]
     fn synced_prefs_cover_every_option() {
