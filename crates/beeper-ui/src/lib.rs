@@ -40,6 +40,7 @@ pub mod login;
 mod lottie;
 mod media_view;
 mod members;
+mod menu_keys;
 mod menubar;
 mod merge_editor;
 mod merge_suggest;
@@ -708,7 +709,8 @@ fn menu_item<'a>(
 fn menu_line<'a>(p: &Palette, line: Row<'a, UiMessage>, msg: Option<UiMessage>) -> El<'a> {
     let style = btn_style([CLEAR, p.menu_hover, p.menu_hover], [p.text, Color::WHITE, Color::WHITE], 4.0);
     let line = line.align_y(Center);
-    container(button(line).padding([3, 8]).width(Fill).style(style).on_press_maybe(msg)).padding([1, 5]).into()
+    let line = button(line).padding([3, 8]).width(Fill).style(style).on_press_maybe(msg.clone());
+    container(menu_keys::row(line, msg)).padding([1, 5]).into()
 }
 
 /// Desktop's `menu-item section-header`: a grey heading row of a menu, as high as a menu row, in 11 px text.
@@ -5698,9 +5700,10 @@ impl BeeperGuiApp {
         });
         let main_menu = filter_menu.or(reminder_menu).filter(|_| in_list).or(rate_menu.filter(|_| in_main));
         let main_menu = main_menu.or(chat_menu.filter(|_| in_list));
+        // Desktop's native menus take the arrows, Home, End and Enter.
         let layer = |(m, x, y): (El<'a>, f32, f32), close: UiMessage| -> El<'a> {
             mouse_area(
-                container(mouse_area(m).on_press(UiMessage::Noop))
+                container(mouse_area(menu_keys::menu(m)).on_press(UiMessage::Noop))
                     .padding(Padding::ZERO.left(x).top(y))
                     .width(Fill)
                     .height(Fill),
@@ -6558,6 +6561,12 @@ impl BeeperGuiApp {
     /// Whether one of the main window's menus is open.
     fn menu_open(&self) -> bool {
         self.popup_menu_open() || self.pane.show_attach_menu
+    }
+
+    /// Whether one of the main window's menus is open, rather than a hover card, which shows in the same place.
+    fn native_menu_open(&self) -> bool {
+        let card = |c: &str| c.starts_with("card:") || c == SWITCH_CARD;
+        self.popup_menu_open() && !self.list().chat_menu.as_ref().is_some_and(|(c, _)| card(c))
     }
 
     /// Whether one of the main window's menus is open, other than the unveiled actions of the composer, which are
