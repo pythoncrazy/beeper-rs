@@ -537,6 +537,10 @@ pub struct BeeperStore {
     pub pin_rank: HashMap<String, usize>,
     pub recent_chat_ids: Vec<String>,
     pub network_spaces: Vec<NetworkSpace>,
+    /// Desktop's `subAccounts` of each account: the servers of a Discord login.
+    pub sub_accounts: HashMap<String, Vec<crate::matrix::SubAccount>>,
+    /// The servers that the demo's Discord bridge has, which connect and disconnect in the store.
+    pub demo_servers: Vec<crate::matrix::SubAccount>,
     pub contacts: Vec<User>,
     pub bridge_sessions: HashMap<String, BridgeLoginSession>,
     pub accounts: Vec<Account>,
@@ -787,7 +791,7 @@ impl BeeperStore {
             features,
             next_seq: 1000,
         }, default: setup, settings, verification, bridge_accounts, pin_rank, recent_chat_ids, network_spaces,
-            contacts, bridge_sessions, accounts, labels, chats, chat_changes, chat_idx_by_id, chat_order,
+            sub_accounts, demo_servers, contacts, bridge_sessions, accounts, labels, chats, chat_changes, chat_idx_by_id, chat_order,
             local_chat_idx_by_id, messages, msg_idx_by_id, chat_msg_indices, loaded, unloaded, shown,
             thread_msg_indices, timeline_revs, timeline_writes, moves, assets, assets_by_mxc, connect, matrix,
             matrix_error, sync_failing, session_ended, syncing, sas_confirm, pending_recovery_key, ui_auth_token,
@@ -1656,6 +1660,26 @@ impl BeeperStore {
             bridge_id,
             login_id,
         }
+    }
+
+    /// Desktop's `fetchSubAccounts` of an account, and the spaces of `allSpaces`: a connected server is a space of the
+    /// account, also before its space room syncs, and a server that is not connected is none.
+    pub fn set_sub_accounts(&mut self, account_id: &str, servers: Vec<crate::matrix::SubAccount>) {
+        for s in &servers {
+            let at = self.network_spaces.iter().position(|n| n.id == s.id && n.account_id == account_id);
+            match (s.connected, at) {
+                (true, None) => self.network_spaces.push(NetworkSpace {
+                    id: s.id.clone(),
+                    account_id: account_id.into(),
+                    name: s.name.clone(),
+                    avatar: s.avatar.clone().filter(|u| u.starts_with("mxc://") || u.starts_with("data:")),
+                }),
+                (false, Some(i)) => _ = self.network_spaces.remove(i),
+                _ => {}
+            }
+        }
+        self.sub_accounts.insert(account_id.into(), servers);
+        self.chat_changes += 1;
     }
 
     pub fn set_contacts(&mut self, contacts: Vec<User>) {

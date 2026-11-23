@@ -758,6 +758,8 @@ const ASK_LOGOUT_DEVICE: u8 = 23;
 const ASK_ROOM_ENCRYPTION: u8 = 24;
 /// Desktop's `confirmUnmergeUnion` of a merged chat.
 const ASK_UNMERGE: u8 = 25;
+/// Desktop's "Disconnect Discord Server?" before the switch of a connected Discord server turns off.
+const ASK_DISCONNECT_SERVER: u8 = 26;
 /// Desktop's "Remove %s?" of an installed sticker pack that a bridge imported.
 const ASK_REMOVE_PACK: u8 = 27;
 /// Desktop opens its `prefs` window at 800 x 740, in the middle of the screen.
@@ -3241,6 +3243,10 @@ pub struct BeeperGuiApp {
     pub(crate) quotes: HashMap<String, Option<Result<Message, String>>>,
     /// Desktop's `dismissError`: the accounts whose disconnected banner was dismissed this session.
     dismissed_errors: HashSet<String>,
+    /// The accounts whose servers load (Desktop's spinning Refresh List), and when the load started.
+    servers_loading: HashMap<String, std::time::Instant>,
+    /// The account and the server of the "Disconnect Discord Server?" dialog.
+    server_target: Option<(String, String)>,
     /// Desktop's `StickerPacksPreference`: the installed sticker packs once they load, the parts (room and state key)
     /// that "Use in all chats" turned off, and the pack that Remove removes.
     installed_packs: Option<Vec<InstalledPack>>,
@@ -3376,7 +3382,7 @@ impl BeeperGuiApp {
             labels_windows, label_settings, delete_in, poll_windows, label_window, group_window, blocked_window,
             how_window, nickname_windows, add_accounts, info_desc, info_more, info_all, info_bookmarks, hydrating,
             restoring_bookmarks, info_media, info_zoom, info_query, spaces_window, merge_window, vote_windows, shot,
-            verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, installed_packs, packs_off, pack_removing, resolving_media, needs_download,
+            verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, servers_loading, server_target, installed_packs, packs_off, pack_removing, resolving_media, needs_download,
             fetching, video, view_once, minimized, state_changes, last_click, cycling, timers);
         app.store.write().load_recent();
         if let Some(id) = first_chat {
@@ -4349,10 +4355,12 @@ impl BeeperGuiApp {
         let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
         let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
-        // A toast with the same text replaces the shown one, unless Desktop's toast ID tells them apart.
+        // A toast with the same text replaces the shown one, unless Desktop's toast ID tells them apart, and so does
+        // one with the same ID, like Desktop's `addToast` with the ID of a toast.
         let replaced = |t: &(Toast, Duration)| {
             let id = self.toast.as_ref().filter(|n| n.text == self.status_banner).and_then(|n| n.id.as_ref());
-            !self.status_banner.is_empty() && (t.0.text != self.status_banner || t.0.id.as_ref() != id)
+            let same = id.is_some() && t.0.id.as_ref() == id;
+            !self.status_banner.is_empty() && !same && (t.0.text != self.status_banner || t.0.id.as_ref() != id)
         };
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
             // A toast that stays keeps its place in the stack, under the new one.
@@ -4954,6 +4962,7 @@ impl BeeperGuiApp {
                 .chain(self.desktop_events())
                 .chain(self.audio_ticks())
                 .chain(self.transcribe_ticks())
+                .chain(self.server_ticks())
                 .chain(self.audio_drag())
                 .chain(self.record_events())
                 .chain(self.video_ticks())

@@ -610,7 +610,7 @@ async fn lifecycle() {
 
     let (_, port, store, client) = spawn_e2e_beeper_instance("master", None).await;
     assert_eq!(store.read().beeper_state.user_id, "@alex:beeper.com");
-    assert_eq!(store.read().bridge_accounts.len(), 6);
+    assert_eq!(store.read().bridge_accounts.len(), 7);
 
     let info = client.info().await;
     let (_, raw) = client.send("GET", "/v1/info", &[], None).await;
