@@ -21,6 +21,7 @@ use smithay_client_toolkit::shm::{slot::SlotPool, Shm};
 use smithay_client_toolkit::subcompositor::SubcompositorState;
 use smithay_client_toolkit::subcompositor::SubsurfaceData;
 
+pub mod activation;
 mod buttons;
 mod config;
 mod gtk;

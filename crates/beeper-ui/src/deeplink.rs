@@ -14,6 +14,10 @@ use std::collections::HashMap;
 
 pub const SCHEME: &str = "beeper://";
 
+/// The argument that carries the `XDG_ACTIVATION_TOKEN` of a later launch to the running app, so that the app can
+/// raise its window with it on Wayland.
+pub const ACTIVATION_TOKEN_ARG: &str = "--xdg-activation-token=";
+
 /// The networks whose Desktop platform name (`platform.name` without `bridge-`, Desktop's `Uae`) is not the
 /// beeper-rs bridge ID.
 const PLATFORMS: [(&str, &str); 7] = [
@@ -121,7 +125,12 @@ pub fn register() -> Result<(), String> {
 
 impl BeeperGuiApp {
     /// Desktop's `second-instance` event: opens the last argument as a link, and shows the main window.
-    pub(crate) fn second_instance(&mut self, args: Vec<String>) -> Task<UiMessage> {
+    pub(crate) fn second_instance(&mut self, mut args: Vec<String>) -> Task<UiMessage> {
+        // The later launch passes its launcher's activation token, which raises the window on Wayland.
+        let token = args.iter().position(|a| a.starts_with(ACTIVATION_TOKEN_ARG)).map(|i| args.remove(i));
+        if let Some(token) = token {
+            self.activation_token = Some(token[ACTIVATION_TOKEN_ARG.len()..].to_owned()).filter(|t| !t.is_empty());
+        }
         let link = args.last().map_or_else(Task::none, |l| self.open_link(l));
         Task::batch([link, self.show_main()])
     }

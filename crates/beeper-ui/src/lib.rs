@@ -14,6 +14,7 @@ pub mod composer;
 mod cursor;
 mod dashed;
 mod deeplink;
+pub use deeplink::ACTIVATION_TOKEN_ARG;
 mod delegate;
 mod dialogs;
 pub mod emoji;
@@ -2844,6 +2845,9 @@ pub struct BeeperGuiApp {
     opened: Vec<(window::Id, window::Settings)>,
     /// The widget that had the keyboard focus when the main window hid on Wayland, to focus it again in the new one.
     unmapped_focus: Option<iced::widget::Id>,
+    /// The activation token of the later launch or the notification that shows a window next, which raises it on
+    /// Wayland.
+    pub(crate) activation_token: Option<String>,
     /// The unread count and window state last sent to the tray and the app badge, and whether they can be stale.
     tray_sent: (Option<(u32, bool)>, bool),
     pub system_dark: bool,
@@ -3210,6 +3214,7 @@ impl BeeperGuiApp {
             unmapped: Vec::new(),
             opened: Vec::new(),
             unmapped_focus: None,
+            activation_token: None,
             tray_sent: (None, true),
             pal: crate::style::palette(theme),
             system_dark: false,
@@ -5664,9 +5669,8 @@ impl BeeperGuiApp {
             Subscription::run_with(keys, tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0)))
         });
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
-        let notes = (!self.notifications.is_empty() || self.verify.note.is_some()).then(|| {
-            Subscription::run(notify::events).map(|(id, action)| UiMessage::Notify(notify::Msg::Event(id, action)))
-        });
+        let notes = (!self.notifications.is_empty() || self.verify.note.is_some())
+            .then(|| Subscription::run(notify::events).map(UiMessage::Notify));
         let toast =
             self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::Toast(toasts::Msg::Tick)));
         let tick =

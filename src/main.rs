@@ -303,6 +303,10 @@ fn main() {
     let command = if command == Command::Gui && server_dir.is_some() { Command::Serve } else { command };
     let profile = profile.or_else(|| var("BEEPER_PROFILE"));
     let data_dir = data_dir.or_else(|| server_dir.or_else(|| var("BEEPER_USER_DATA_DIR")).map(PathBuf::from));
+    // The launcher's activation token, before `display::setup` hands it to the first window: a later launch passes it
+    // on to the running app, which raises its window with it on Wayland.
+    #[cfg(target_os = "linux")]
+    let launch_token = var("XDG_ACTIVATION_TOKEN");
     // Only Linux has a choice of display server.
     #[cfg(target_os = "linux")]
     if let Command::Gui = command {
@@ -334,7 +338,11 @@ fn main() {
     #[cfg(target_os = "linux")]
     let first = match std::env::var("ALLOW_MULTIPLE_INSTANCES").as_deref() {
         Ok("true") => None,
-        _ => Some(beeper_core::platform::single_instance(&data_dir, &std::env::args().skip(1).collect::<Vec<_>>())),
+        _ => {
+            let token = launch_token.map(|t| format!("{}{t}", beeper_ui::ACTIVATION_TOKEN_ARG));
+            let args: Vec<String> = token.into_iter().chain(std::env::args().skip(1)).collect();
+            Some(beeper_core::platform::single_instance(&data_dir, &args))
+        }
     };
     #[cfg(target_os = "linux")]
     if let Some(None) = first {
