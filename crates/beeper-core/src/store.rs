@@ -458,6 +458,8 @@ pub struct OutFile {
     pub voice: Option<Vec<f32>>,
     /// The URL that the local echo shows until the homeserver has the file.
     pub echo_url: Option<String>,
+    /// The URL of the first frame that the local echo of a video shows until the homeserver has the file.
+    pub echo_poster: Option<String>,
 }
 
 impl OutFile {
@@ -489,6 +491,7 @@ impl OutFile {
             mime_type: Some(self.mime.clone()),
             size: self.size.map(|(w, h)| AttachmentSize { width: Some(w), height: Some(h) }),
             src_url: self.echo_url.clone(),
+            poster_img: self.echo_poster.clone(),
             ..Attachment::default()
         }
     }
@@ -1077,22 +1080,24 @@ impl BeeperStore {
 
     /// Drops the messages of the chats that are not loaded, and the removed messages, from `messages`.
     fn compact(&mut self) {
-        let messages = std::mem::take(&mut self.messages);
-        let before = messages.len();
-        let mut moved = vec![usize::MAX; messages.len()];
-        for (i, m) in messages.into_iter().enumerate() {
-            if self.chat_msg_indices.contains_key(&m.chat_id) && self.msg_idx_by_id.get(&m.id) == Some(&i) {
-                moved[i] = self.messages.len();
-                self.messages.push(m);
-            }
+        // The messages that stay are the ones that the timelines of the loaded chats list, which `msg_idx_by_id`
+        // finds too, so the messages move up in place without a lookup of each.
+        let before = self.messages.len();
+        let mut keep = vec![false; before];
+        self.chat_msg_indices.values().flatten().for_each(|&i| keep[i] = true);
+        let (mut moved, mut kept) = (vec![usize::MAX; keep.len()], 0);
+        for (i, _) in keep.iter().enumerate().filter(|k| *k.1) {
+            (moved[i], kept) = (kept, kept + 1);
         }
+        let mut keep = keep.into_iter();
+        self.messages.retain(|_| keep.next().expect("a flag for each message"));
         self.msg_idx_by_id.retain(|_, i| {
             *i = moved[*i];
             *i != usize::MAX
         });
+        assert_eq!(self.msg_idx_by_id.len(), kept, "each loaded message is in the timeline of its chat");
         for i in self.chat_msg_indices.values_mut().flatten() {
             *i = moved[*i];
-            assert_ne!(*i, usize::MAX, "a listed message stays");
         }
         self.thread_msg_indices.retain(|_, list| {
             list.iter_mut().for_each(|i| *i = moved[*i]);
@@ -2097,9 +2102,12 @@ impl BeeperStore {
             }
         };
         merge(&mut new);
-        // Each sync upserts its rooms, mostly unchanged: those write nothing, and the views keep what they found.
+        // Each sync upserts its rooms, mostly unchanged: those write nothing, and the views keep what they found. The
+        // `manage` bits of the members are not in the JSON, and a chat loaded from SQLite has none until a sync sets
+        // them.
         let json = |c: &Chat| serde_json::to_string(c).expect("chat JSON");
-        if json(&new) != json(&self.chats[idx]) {
+        let manage = |c: &Chat| c.participants.items.iter().map(|u| u.manage).collect::<Vec<_>>();
+        if json(&new) != json(&self.chats[idx]) || manage(&new) != manage(&self.chats[idx]) {
             self.update_chat(idx, |c| *c = new);
         }
     }
@@ -4063,6 +4071,19 @@ mod tests {
         st.upsert_chat(later);
         assert_eq!(st.chat("!later:x").merged_into_chat_id.as_deref(), Some(chat.id.as_str()));
         assert_eq!(st.members(idx).len(), 3);
+    }
+
+    /// The `manage` bits of the members are not stored, so a chat loaded from SQLite has none: an upsert that brings
+    /// them changes the chat, though its JSON is the same.
+    #[test]
+    fn an_upsert_brings_the_manage_bits_of_a_loaded_chat() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("upsert-manage"));
+        let chat = st.chats[0].clone();
+        assert!(chat.participants.items.iter().all(|u| u.manage == 0), "a loaded chat has no manage bits");
+        let mut managed = chat.clone();
+        managed.participants.items.iter_mut().for_each(|u| u.manage = 3);
+        st.upsert_chat(managed);
+        assert!(st.chat(&chat.id).participants.items.iter().all(|u| u.manage == 3));
     }
 
     /// A sync upserts each of its rooms: an unchanged room writes nothing, so it sends no event and keeps what the
