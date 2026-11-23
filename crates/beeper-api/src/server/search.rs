@@ -5,7 +5,8 @@
 use beeper_core::config::account_network;
 use beeper_core::models::{member_order, Chat};
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::hash::{BuildHasher, Hash, Hasher};
+use std::sync::{Arc, Mutex, OnceLock};
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
@@ -16,8 +17,9 @@ fn latin(s: &str) -> String {
         let entry = |l: &'static str| l.split_once('\t').map(|(k, v)| (k.chars().next().expect("a character"), v));
         include_str!("latin.tsv").lines().map(|l| entry(l).expect("a tab-separated entry")).collect()
     });
+    // The table has no ASCII characters.
     s.chars().fold(String::with_capacity(s.len()), |mut out, c| {
-        match table.get(&c) {
+        match (!c.is_ascii()).then(|| table.get(&c)).flatten() {
             Some(v) => out.push_str(v),
             None => out.push(c),
         }
@@ -59,34 +61,89 @@ fn has_symbol(phrase: &str) -> bool {
     })
 }
 
+/// A value of the search fields, in Latin letters and lowercase, with its forms for `contains` and Fuse.js.
+struct Text {
+    /// The value for `contains`, which takes the Latin letters of the lowercase value again.
+    plain: String,
+    /// The value for Fuse.js, which skips a blank value.
+    fuse: Option<Vec<u16>>,
+}
+
+impl Text {
+    fn of(s: &str) -> Self {
+        let value = latin(s).to_lowercase();
+        Text { plain: latin(&value).to_lowercase(), fuse: (!js_trim(&value).is_empty()).then(|| fuse_text(&value)) }
+    }
+}
+
 /// The search fields of a chat, Desktop's `Sd`: its title, its network, and the names, usernames, emails and phone
 /// digits of its first 50 present participants in Desktop's order, each in Latin letters and lowercase.
 struct Fields {
-    title: String,
-    network: String,
-    participants: Vec<String>,
+    title: Text,
+    network: Text,
+    participants: Vec<Text>,
 }
 
 impl Fields {
     fn of(c: &Chat) -> Self {
-        let lower = |s: &str| latin(s).to_lowercase();
         let mut members: Vec<_> = c.participants.items.iter().filter(|u| u.has_exited != Some(true)).collect();
-        members.sort_by(|a, b| member_order(a, b));
+        // The order only picks the first 50: a match of any participant counts the same.
+        if members.len() > 50 {
+            members.sort_by(|a, b| member_order(a, b));
+        }
         let person = |u: &beeper_core::models::User| {
             let digits = u.phone_number.as_ref().map(|p| p.chars().filter(char::is_ascii_digit).collect::<String>());
             let names = [&u.full_name, &u.custom_nickname, &u.username, &u.email, &digits];
-            let names: Vec<String> = names.into_iter().flatten().filter(|n| !n.is_empty()).map(|n| lower(n)).collect();
-            (!names.is_empty()).then(|| names.join(" "))
+            let names: Vec<&str> = names.into_iter().flatten().filter(|n| !n.is_empty()).map(String::as_str).collect();
+            (!names.is_empty()).then(|| Text::of(&names.join(" ")))
         };
         let network = c.network_name.as_deref().unwrap_or(account_network(&c.account_id).display_name);
         Fields {
-            title: lower(&c.title),
-            network: lower(network),
+            title: Text::of(&c.title),
+            network: Text::of(network),
             participants: members.into_iter().take(50).filter_map(person).collect(),
         }
     }
 
-    fn values(&self, field: Field) -> &[String] {
+    /// A hash of what the fields of `c` come from.
+    fn source(c: &Chat) -> u64 {
+        let mut h = foldhash::fast::FixedState::default().build_hasher();
+        (&c.title, &c.network_name, &c.account_id).hash(&mut h);
+        for u in &c.participants.items {
+            (u.has_exited, u.is_self, u.is_network_bot, u.is_admin, u.is_pending, &u.id).hash(&mut h);
+            (&u.full_name, &u.custom_nickname, &u.username, &u.email, &u.phone_number).hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// The fields of each chat, from the fields of the last search for the chats that did not change since.
+    fn all<'a>(chats: impl Iterator<Item = &'a Chat>) -> Vec<(&'a Chat, Arc<Fields>)> {
+        type Cache = HashMap<String, (u64, Arc<Fields>), foldhash::fast::RandomState>;
+        static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+        let mut cache = CACHE.get_or_init(Default::default).lock().expect("the chat search cache");
+        let all: Vec<_> = chats
+            .map(|c| {
+                let source = Fields::source(c);
+                let fields = match cache.get(&c.id) {
+                    Some((s, f)) if *s == source => f.clone(),
+                    _ => {
+                        let f = Arc::new(Fields::of(c));
+                        cache.insert(c.id.clone(), (source, f.clone()));
+                        f
+                    }
+                };
+                (c, fields)
+            })
+            .collect();
+        // The chats that left, or are past a filter of this search.
+        if cache.len() > 2 * all.len() {
+            let ids: HashSet<&str> = all.iter().map(|(c, _)| c.id.as_str()).collect();
+            cache.retain(|id, _| ids.contains(id.as_str()));
+        }
+        all
+    }
+
+    fn values(&self, field: Field) -> &[Text] {
         match field {
             Field::Title => std::slice::from_ref(&self.title),
             Field::Network => std::slice::from_ref(&self.network),
@@ -104,9 +161,9 @@ enum Field {
 
 /// Desktop's `jr`: whether a value of the field contains the trimmed word, as an exact, a prefix, a word, a token prefix
 /// or a substring match.
-fn contains(values: &[String], word: &str) -> bool {
+fn contains(values: &[Text], word: &str) -> bool {
     let word = js_trim(word);
-    values.iter().any(|v| !v.is_empty() && !word.is_empty() && latin(v).to_lowercase().contains(word))
+    !word.is_empty() && values.iter().any(|v| v.plain.contains(word))
 }
 
 /// The UTF-16 code units of a text for Fuse.js, lowercase and without diacritics (`ignoreDiacritics`).
@@ -118,9 +175,8 @@ fn fuse_text(s: &str) -> Vec<u16> {
 const MAX_BITS: usize = 32;
 
 /// Fuse.js's `BitapSearch.searchIn` with Desktop's options (`ignoreLocation`, a threshold of 0.32): whether `pattern`
-/// matches `text`, in chunks of 32 code units.
-fn fuse_match(pattern: &str, text: &str) -> bool {
-    let (pattern, text) = (fuse_text(pattern), fuse_text(text));
+/// matches `text`, in chunks of 32 code units, both in the form of `fuse_text`.
+fn fuse_match(pattern: &[u16], text: &[u16]) -> bool {
     if pattern == text {
         return true;
     }
@@ -128,11 +184,12 @@ fn fuse_match(pattern: &str, text: &str) -> bool {
     let starts: Vec<usize> = match len {
         0 => Vec::new(),
         1..=MAX_BITS => vec![0],
-        _ => {
-            (0..len - len % MAX_BITS).step_by(MAX_BITS).chain((len % MAX_BITS != 0).then_some(len - MAX_BITS)).collect()
-        }
+        _ => (0..len - len % MAX_BITS)
+            .step_by(MAX_BITS)
+            .chain((!len.is_multiple_of(MAX_BITS)).then_some(len - MAX_BITS))
+            .collect(),
     };
-    starts.into_iter().any(|at| bitap(&text, &pattern[at..len.min(at + MAX_BITS)], at))
+    starts.into_iter().any(|at| bitap(text, &pattern[at..len.min(at + MAX_BITS)], at))
 }
 
 /// Fuse.js's `search` of a bitap chunk with `ignoreLocation`, so that each error costs `1 / pattern.len()`: whether the
@@ -147,10 +204,16 @@ fn bitap(text: &[u16], pattern: &[u16], location: usize) -> bool {
         threshold = threshold.min(score(0));
         from += at + pattern.len();
     }
-    let mut alphabet: HashMap<u16, i32> = HashMap::new();
+    // The bits of each code unit of the pattern, which has at most 32.
+    let mut alphabet: Vec<(u16, i32)> = Vec::with_capacity(pattern.len());
     for (i, &c) in pattern.iter().enumerate() {
-        *alphabet.entry(c).or_default() |= 1i32.wrapping_shl((d - i as isize - 1) as u32);
+        let bit = 1i32.wrapping_shl((d - i as isize - 1) as u32);
+        match alphabet.iter_mut().find(|(k, _)| *k == c) {
+            Some((_, bits)) => *bits |= bit,
+            None => alphabet.push((c, bit)),
+        }
     }
+    let bits_of = |c: u16| alphabet.iter().find(|(k, _)| *k == c).map_or(0, |&(_, bits)| bits);
     let (mut best, mut last, mut bin_max) = (-1, Vec::<i32>::new(), d + p);
     let mask = 1i32.wrapping_shl(d as u32 - 1);
     let at = |bits: &[i32], i: isize| bits.get(i as usize).copied().unwrap_or(0);
@@ -171,7 +234,7 @@ fn bitap(text: &[u16], pattern: &[u16], location: usize) -> bool {
         bits[finish as usize + 1] = 1i32.wrapping_shl(errors as u32).wrapping_sub(1);
         let mut j = finish;
         while j >= start {
-            let found = text.get(j as usize - 1).and_then(|c| alphabet.get(c)).copied().unwrap_or(0);
+            let found = text.get(j as usize - 1).map_or(0, |&c| bits_of(c));
             bits[j as usize] = (at(&bits, j + 1).wrapping_shl(1) | 1) & found;
             if errors > 0 {
                 bits[j as usize] |= (at(&last, j + 1) | at(&last, j)).wrapping_shl(1) | 1 | at(&last, j + 1);
@@ -198,7 +261,7 @@ fn bitap(text: &[u16], pattern: &[u16], location: usize) -> bool {
 /// (`score.title.hits`).
 pub(super) fn search<'a>(chats: impl Iterator<Item = &'a Chat>, query: &str, people: bool) -> Vec<(&'a Chat, usize)> {
     let fields: &[Field] = if people { &[Field::Participants] } else { &[Field::Title, Field::Network] };
-    let chats: Vec<(&Chat, Fields)> = chats.map(|c| (c, Fields::of(c))).collect();
+    let chats = Fields::all(chats);
     let whole = phrase(query);
     if !people && has_symbol(&whole) {
         let found: Vec<_> = chats
@@ -214,13 +277,14 @@ pub(super) fn search<'a>(chats: impl Iterator<Item = &'a Chat>, query: &str, peo
     let required: Vec<&String> = all.iter().filter(|w| *w != "and").collect();
     let terms: Vec<&String> = if required.is_empty() { all.iter().collect() } else { required.clone() };
     let mut found = Vec::new();
+    let patterns: Vec<(&String, Vec<u16>)> = terms.iter().map(|&t| (t, fuse_text(t))).collect();
     for (c, f) in &chats {
         let (mut matched, mut hits) = (HashSet::new(), 0);
-        for &term in &terms {
+        for &(term, ref pattern) in &patterns {
             for &k in fields {
                 let values = f.values(k);
                 let fuzzy = || term.encode_utf16().count() >= 4;
-                let fuse = values.iter().any(|v| !js_trim(v).is_empty() && fuse_match(term, v));
+                let fuse = values.iter().any(|v| v.fuse.as_ref().is_some_and(|text| fuse_match(pattern, text)));
                 if fuse && (contains(values, term) || fuzzy()) {
                     matched.insert(term);
                     hits += (k == Field::Title) as usize;
@@ -291,7 +355,7 @@ mod tests {
             ("opz", "signal security ops", false),
         ];
         for (pattern, text, want) in cases {
-            assert_eq!(fuse_match(pattern, text), want, "{pattern} in {text}");
+            assert_eq!(fuse_match(&fuse_text(pattern), &fuse_text(text)), want, "{pattern} in {text}");
         }
     }
 
@@ -366,5 +430,23 @@ mod tests {
             found.sort();
             assert_eq!(found, want, "{query} {people}");
         }
+    }
+
+    /// A search takes the fields of a chat again when what they come from changes, and only the first 50 members
+    /// in Desktop's order.
+    #[test]
+    fn the_index_follows_changed_chats() {
+        let st = beeper_core::store::BeeperStore::from_config(beeper_core::testing::demo_config("chat-index-cache"));
+        let person = |name: String| User { full_name: Some(name), ..User::default() };
+        let mut c = st.chats[0].clone();
+        (c.id, c.title) = ("!cache:x".into(), "Old Title".into());
+        c.participants.items = (0..60).map(|i| person(format!("Member {i:02}"))).collect();
+        let found = |c: &Chat, q: &str, people: bool| search(std::iter::once(c), q, people).len();
+        assert_eq!((found(&c, "old", false), found(&c, "member 49", true), found(&c, "member 50", true)), (1, 1, 0));
+        c.title = "New Title".into();
+        c.participants.items[0].full_name = Some("Ann".into());
+        let found =
+            [found(&c, "old", false), found(&c, "new", false), found(&c, "member 00", true), found(&c, "ann", true)];
+        assert_eq!(found, [0, 1, 0, 1]);
     }
 }

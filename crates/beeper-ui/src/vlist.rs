@@ -16,8 +16,12 @@ use std::hash::{Hash, Hasher};
 const OVERSCAN: usize = 15;
 /// How long a list counts as scrolling after its visible span last moved, like `virtua`'s `isScrolling`.
 const SCROLL_IDLE: std::time::Duration = std::time::Duration::from_millis(150);
-/// How far a section start may go above the top before its label floats: the height of Desktop's date pill.
+/// The height of a section label, Desktop's date pill with its margin: a label floats while the next one is further
+/// below the line.
 const LABEL: f32 = 32.0;
+/// How far above the line a section start may be for its label to float while the list stands still: Desktop hides a
+/// date (`i + 20 < scrollOffset`) once its row is 20 px under the 36 px header, 64 px above its 48 px sticky top.
+const IDLE: f32 = 64.0;
 /// The visible height that a list uses before a frame measures it.
 const FIRST_SPAN: f32 = 1600.0;
 
@@ -83,7 +87,11 @@ struct Inner {
     stale: bool,
     /// The rows that start a section, as ascending indices of the keys: the days of Desktop's messages list.
     sections: Vec<usize>,
-    /// The start of the section whose label floats over the top while the list scrolls.
+    /// How far below the top of the viewport a floating label goes.
+    line: f32,
+    /// The last section that starts above the line, whose own label the list covers.
+    covered: Option<usize>,
+    /// The start of the section whose label floats at the line.
     sticky: Option<usize>,
     /// When the visible span last moved.
     moved: Option<std::time::Instant>,
@@ -156,13 +164,22 @@ impl VList {
         })
     }
 
-    /// Sets the rows that start the sections, as ascending indices of the keys of the next views.
-    pub fn sections(&self, starts: Vec<usize>) {
-        self.0.borrow_mut().sections = starts;
+    /// Sets the rows that start the sections, as ascending indices of the keys of the next views, and how far below
+    /// the top of the viewport their labels float.
+    pub fn sections(&self, starts: Vec<usize>, line: f32) {
+        let mut inner = self.0.borrow_mut();
+        (inner.sections, inner.line) = (starts, line);
     }
 
-    /// Desktop's `sticky-date-container`: while the list scrolls, the start of the section at the top, whose label has
-    /// gone above the top. A frame where it changes publishes the list message.
+    /// The last section that starts above the line. Like Desktop, whose dates are all `sticky-date-container`s, its
+    /// label shows only at the line, so the view leaves it out of its row.
+    pub fn covered(&self) -> Option<usize> {
+        self.0.borrow().covered
+    }
+
+    /// Desktop's `sticky-date-container`: the start of the covered section, whose label floats at the line while the
+    /// list scrolls, or while its start is less than `IDLE` above the line. A frame where it or the covered section
+    /// changes publishes the list message.
     pub fn sticky(&self) -> Option<usize> {
         self.0.borrow().sticky
     }
@@ -313,14 +330,18 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
         }
         inner.seen = Some((at, viewport.height));
         let scrolling = inner.moved.is_some_and(|t| now.duration_since(t) < SCROLL_IDLE);
-        // The row at the top of the viewport, and how far the top is into it.
-        let first = rows(layout).enumerate().find(|(_, r)| r.bounds().y + r.bounds().height > viewport.y);
-        let first = first.map(|(j, r)| (self.base + j, viewport.y - r.bounds().y));
-        let sticky = first.filter(|_| scrolling).and_then(|(row, into)| {
-            let start = inner.sections[..inner.sections.partition_point(|&s| s <= row)].last().copied()?;
-            (start < row || into > LABEL).then_some(start)
+        // How far below the line each built row starts. A row above the built ones starts above it.
+        let tops: Vec<f32> = rows(layout).map(|r| r.bounds().y - viewport.y - inner.line).collect();
+        let top = |row: usize| row.checked_sub(self.base).and_then(|j| tops.get(j)).copied();
+        let above = |row: usize| top(row).map_or(row < self.base, |y| y < 0.0);
+        let covered = inner.sections.iter().rposition(|&s| above(s));
+        let sticky = covered.filter(|&k| {
+            let next_clear = inner.sections.get(k + 1).and_then(|&s| top(s)).is_none_or(|y| y >= LABEL);
+            next_clear && (scrolling || top(inner.sections[k]).is_some_and(|y| y >= -IDLE))
         });
-        let sticky_changed = std::mem::replace(&mut inner.sticky, sticky) != sticky;
+        let (covered, sticky) = (covered.map(|k| inner.sections[k]), sticky.map(|k| inner.sections[k]));
+        let sticky_changed = (std::mem::replace(&mut inner.sticky, sticky) != sticky)
+            | (std::mem::replace(&mut inner.covered, covered) != covered);
         // `virtua`'s `onRangeChange` once the scroll stops, for the timeline to read through its last row in view.
         let settled = !scrolling && inner.moved.take().is_some();
         if changed || sticky_changed || settled || at < inner.safe.0 || at + viewport.height > inner.safe.1 {
@@ -388,5 +409,29 @@ mod tests {
             list.0.borrow_mut().seen = Some((at, 50.0));
             assert_eq!(list.last_seen(), Some(want), "anchored at the end: {end}, {at} px in");
         }
+    }
+
+    /// Like Desktop's dates, which all are `sticky-date-container`s, the label of a section that starts above the
+    /// line shows only at the line: while the list stands still, only when its start is less than 64 px above the
+    /// line, and never while the next label is less than a label below the line.
+    #[test]
+    fn labels_float_at_the_line_like_desktop() {
+        // 20 rows of 50 px at the bottom of a 300 px viewport: rows 14 to 19 show, and row 15 starts 50 px down.
+        let keys: Vec<u64> = (0..20).collect();
+        let float = |sections: Vec<usize>| {
+            let list = VList::default();
+            list.sections(sections, 76.0);
+            let rows = list.view(&keys, true, 50.0, (), |_| iced::widget::Space::new().height(50).into());
+            let view = iced::widget::scrollable(rows).anchor_bottom().height(Length::Fill);
+            let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(400.0, 300.0), view);
+            let _ = sim.simulate([Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))]);
+            drop(sim);
+            (list.covered(), list.sticky())
+        };
+        assert_eq!(float(vec![0, 16]), (Some(0), None), "a day that starts 24 px under the line keeps its label");
+        assert_eq!(float(vec![0, 17]), (Some(0), None), "a day that starts far above hides its label");
+        assert_eq!(float(vec![0, 15]), (Some(15), Some(15)), "26 px above the line, its label floats");
+        assert_eq!(float(vec![0, 15, 16]), (Some(15), None), "the next label pushes it away");
+        assert_eq!(float(vec![0, 14]), (Some(14), None), "76 px above the line, it hides");
     }
 }

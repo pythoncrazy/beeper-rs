@@ -2,6 +2,9 @@ This directory is iced_tiny_skia 0.14.1 from crates.io with these changes:
 
 - The iced commit 0553559827c99b8c80563375f5fa6bbe1edce597 ("Clip quad shadows in `tiny-skia` renderer").
 - `draw_quad` computes the shadow pixels only in the clip bounds and not under the fill of an opaque quad, and fills only the visible rectangle of a quad when the clip bounds miss its rounded corners.
+- The SVG cache parses SVGs with an empty font database instead of loading the system fonts, since the app's SVGs have no text.
 - The damage of two lists of layers, quads, text, primitives or images skips the items that both lists start or end with.
+- `raster::Pipeline::draw` puts an image at its exact bounds: the integer offset in image pixels moved a scaled up image to the left and up by up to its scale.
+- `vector::Pipeline::draw` draws an SVG with its rotation: it read the scale from `sx` and `sy`, which are 0 or negative when the SVG is turned, so a turned SVG was not drawn.
 
 Delete this directory and its [patch.crates-io] entry in the root Cargo.toml when an iced release contains these changes.

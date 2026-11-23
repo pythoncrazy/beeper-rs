@@ -516,4 +516,36 @@ mod tests {
         assert_eq!(labels(&app).first().map(String::as_str), Some("last used"));
         assert_eq!(labels(&app).last().map(String::as_str), Some("dismiss snooze"));
     }
+
+    /// Desktop's reminder orders by message take the time of the last message of each chat (`sortTimestamp`), not
+    /// of its draft (`activityTimestamp`), oldest or newest first.
+    #[test]
+    fn reminders_order_by_message_like_desktop() {
+        let mut app = crate::fuzz::demo_app("reminder-orders");
+        let (old, new) = {
+            let st = app.store.read();
+            let mut chats: Vec<&Chat> = st.chats.iter().filter(|c| c.last_activity.is_some() && c.listed()).collect();
+            chats.sort_by(|a, b| a.last_activity.cmp(&b.last_activity));
+            (chats[0].id.clone(), chats[chats.len() - 1].id.clone())
+        };
+        let at = now_unix_millis() + 3_600_000;
+        app.set_reminder(&old, Some(at), None);
+        app.set_reminder(&new, Some(at + 60_000), None);
+        {
+            let mut st = app.store.write();
+            let i = st.chat_idx(&old);
+            let draft = ChatDraft { text: Some("later".into()), ts: Some(now_unix_millis()), ..Default::default() };
+            st.update_chat(i, |c| c.draft = Some(draft));
+        }
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Reminders)));
+        let mut order = |i: u8| {
+            let _ = app.update(UiMessage::Reminders(Msg::Order(i)));
+            let st = app.store.read();
+            let ids = app.visible_chats(&st).into_iter().map(|c| c.id.clone());
+            ids.filter(|id| *id == old || *id == new).collect::<Vec<_>>()
+        };
+        assert_eq!(order(2), [old.clone(), new.clone()], "the oldest message first, whatever the draft");
+        assert_eq!(order(3), [new.clone(), old.clone()], "the newest message first");
+        assert_eq!(order(0), [old.clone(), new.clone()], "the least time remaining first");
+    }
 }

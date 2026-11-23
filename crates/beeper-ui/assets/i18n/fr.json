@@ -595,6 +595,7 @@
 "Instead of getting notified for each message, delay and batch notifications for successive texts from someone. OTP/2FA codes are always notified immediately.":["Au lieu d’être notifiés pour chaque message, différez et groupez les notifications pour les messages texte successifs d’une personne. Les codes OTP/2FA sont toujours notifiés immédiatement."],
 "Integrations":["Intégrations"],
 "Internal error logging in":["Erreur interne de connexion"],
+"Invalid code. Please try again or contact support.":["Code non valide. Réessayez ultérieurement ou contactez l’assistance."],
 "Invalid code. Please try again.":["Code non valide. Veuillez réessayer."],
 "Invalid deep link":["Lien profond non valide."],
 "Invalid format":["Format non valide"],

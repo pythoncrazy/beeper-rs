@@ -387,7 +387,7 @@ impl BeeperGuiApp {
             let text = if reconnect { "Reconnected to %s" } else { "Connected to %s" };
             let toast = Toast::new(trf(text, &[&a.network.display_name]));
             let show = step.step_id == DONE_STEP && !step.instructions.is_empty();
-            a.process = None;
+            (a.process, a.qr) = (None, None);
             a.step = Some(step);
             self.show(toast);
             let refresh = self.refresh_cloud_accounts();
@@ -1324,6 +1324,26 @@ mod tests {
             .await;
         settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
         assert_eq!(app.toast.as_ref().map(|t| t.text.as_str()), Some("Reconnected to WhatsApp"));
+    }
+
+    /// Desktop shows the QR code only in the `scan-qr` stage: once Viber's QR login completes, the window that stays
+    /// open with "Connected to Viber" and the history steps shows the Viber mark.
+    #[test]
+    fn a_completed_qr_login_shows_the_network_mark() {
+        let mut app = crate::fuzz::demo_app("complete-mark");
+        let _ = app.open_add_account("viber", None);
+        let a = &mut app.add_accounts[0];
+        (a.process, a.qr) = (Some("process".into()), Some(qr_svg("viber://pair")));
+        let done = Step {
+            kind: "complete".into(),
+            step_id: DONE_STEP.into(),
+            instructions: "Logged in".into(),
+            ..Step::default()
+        };
+        let _ = app.show_step(0, done);
+        assert!(app.add_accounts[0].qr.is_none(), "no QR code");
+        let mut sim = iced_test::simulator(app.view_add_account(&app.add_accounts[0]));
+        assert!(sim.find("Connected to Viber").is_ok() && sim.find("Done").is_ok());
     }
 
     /// Desktop's `network-status` banner, the Reconnect button of the account page and the Reconnect item of the

@@ -5415,6 +5415,36 @@ async fn the_demo_removes_an_account_without_the_cloud() {
     assert!(app.store.read().bridge_accounts.iter().all(|b| b.account_id != account), "the account is gone");
 }
 
+/// Desktop's `AccountActions` of an account page: the chevron in the corner of the account card opens `rj` without
+/// Account Settings…, with Edit Account Nickname… and Add/Remove Accounts….
+#[test]
+fn account_pages_have_the_account_actions_like_desktop() {
+    let mut app = demo_app("account-page-actions");
+    let account = app.store.read().bridge_accounts[0].account_id.clone();
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::Open(Some(account.clone()))));
+    let open: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_settings());
+        let at = sim.find(iced::widget::Id::new("account-actions")).expect("the actions of the page").bounds().center();
+        sim.point_at(at);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+        let _ = sim.simulate(iced_test::simulator::click());
+        sim.into_messages().collect()
+    };
+    let want = format!("account-actions:{account}");
+    assert!(matches!(&open[..], [UiMessage::ChatList(chat_list::Msg::OpenMenu(m))] if *m == want), "{:?}", open.len());
+    let _ = app.update(open.into_iter().next().unwrap());
+    let mut sim = simulator(app.view_settings());
+    for item in ["Show in Inbox", "Mute Space", "Edit Spaces…", "Edit Account Nickname…", "Add/Remove Accounts…"]
+    {
+        assert!(sim.find(item).is_ok(), "{item}");
+    }
+    assert!(sim.find("Account Settings…").is_err() && sim.find("Remove Account…").is_err());
+    let _ = sim.click("Edit Account Nickname…").expect("the nickname item");
+    let nick = sim.into_messages().any(|m| matches!(m, UiMessage::Nickname(nickname::Msg::Open(a)) if a == account));
+    assert!(nick, "the item edits the nickname of the account");
+}
+
 #[test]
 fn sidebar_menus_open_accounts_like_desktop() {
     let mut app = demo_app("rail-menus");
@@ -5738,6 +5768,10 @@ fn chat_list_mutes_receipts_and_errors_like_desktop() {
     let mut m = st.messages[st.timeline_indices(&c.id)[0]].clone();
     (m.id, m.sender_id, m.seen) = ("$event".into(), me, Default::default());
     assert_eq!(receipt_tip(&st, &c, &m).as_deref(), Some("Sent"));
+    let own = Message { is_sender: Some(true), ..m.clone() };
+    assert!(chat_list::read_icon(&own), "an own message shows its read icon");
+    let left = Message { message_type: Some("MEMBERSHIP".into()), text: Some("You left the chat".into()), ..own };
+    assert!(!chat_list::read_icon(&left), "Desktop's `getReadIcon` shows none for an action");
     m.seen.insert(others[0].clone(), String::new());
     assert_eq!(receipt_tip(&st, &c, &m), Some(format!("Seen by 1 of {}", others.len())));
     m.id = "msg_1_1".into();
@@ -7483,6 +7517,8 @@ fn new_chat_reaches_matrix_users_like_desktop() {
         Box::new(beeper_core::matrix::bridge_user(&vic)),
     )));
     let n = app.creating_chat.expect("a draft");
+    // A toast that stays, like a verification request, does not stop the chat from being made.
+    app.sticky_banner = Some("Verification request from Pixel".into());
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
     assert_eq!(app.status_banner, "Composing chat...", "the Matrix client creates the direct chat");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::DmCreated(Some(n), matrix.clone(), None, Ok("!dm:x".into()))));
@@ -7528,6 +7564,8 @@ fn new_chat_reaches_matrix_users_like_desktop() {
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), keyboard::Modifiers::empty()));
     assert!(app.confirm.is_none(), "Enter in the step starts the group");
     assert_eq!(app.status_banner, "Creating group chat...", "the Matrix client creates the group");
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), keyboard::Modifiers::empty()));
+    assert!(app.confirm.is_none(), "Desktop's `isCreatingThread`: Enter does not make a second group");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::GroupCreated(n, matrix, Ok("!group:x".into()))));
     assert!(app.new_chats.iter().all(|d| d.id != n) && app.pending_dm == Some(("!group:x".into(), None)));
 }
@@ -9315,4 +9353,18 @@ fn failed_sends_show_their_icon_in_the_chat_list_like_desktop() {
         m.send_error = Some(beeper_core::models::SendError { message: Some("not connected".into()), retrying: false });
     });
     assert!(red(&app) > before + 20, "the row shows the red icon");
+}
+
+/// Like Electron's native menus, the chat menu fits its longest row: a long hotkey, or a longer translation such as
+/// German's "Als ungelesen markieren  Ctrl Shift U", widens it past Desktop's 233 px instead of wrapping the row.
+#[test]
+fn the_chat_menu_fits_its_rows() {
+    let app = demo_app("chat-menu-width");
+    assert_eq!(chat_list::chat_menu_w(&app.store.read()), 233.0);
+    let keys = ("Chat: Toggle Mark As Read".to_string(), "ctrl+shift+alt+backspace".to_string());
+    app.store.write().settings.keybindings.extend([keys]);
+    let w = |s: &str| style::text_width(s, 13.0, iced::font::Weight::Normal);
+    let row = 26.0 + w("Mark as Unread") + 16.0 + w("Ctrl Shift Alt Backspace");
+    let menu = chat_list::chat_menu_w(&app.store.read());
+    assert!(row > 233.0 && menu >= row, "{menu} fits {row}");
 }
