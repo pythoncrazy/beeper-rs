@@ -256,6 +256,11 @@ impl MediaWindow {
     fn message(&self, mid: &str) -> Option<&Arc<Message>> {
         self.items.iter().find(|(m, _)| m.id == mid).map(|(m, _)| m)
     }
+
+    /// Whether the item `k` of the message `mid` is picked.
+    fn is_picked(&self, mid: &str, k: usize) -> bool {
+        self.picked.iter().any(|(m, i)| m == mid && *i == k)
+    }
 }
 
 /// The time of the slide of Desktop's `BrandSegmentControl` highlight, in seconds.
@@ -970,210 +975,13 @@ impl BeeperGuiApp {
     pub(crate) fn view_media<'a>(&'a self, w: &MediaWindow) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
-        let [file_icon, video_icon, link_icon, _, tune_icon, search_icon, done_icon] = &*MEDIA_ICONS;
-        let picking = w.select || self.mods.control();
-        let picked = |mid: &str, k: usize| w.picked.iter().any(|(m, i)| m == mid && *i == k);
-        let check = |on: bool| -> El<'a> {
-            let (bg, edge) = if on { (p.accent, p.accent) } else { (Color::BLACK.scale_alpha(0.25), Color::WHITE) };
-            let mark = on.then(|| tinted(done_icon, 14.0, Color::WHITE));
-            container(mark).center(20).style(bordered_box(bg, edge, 1.5, 10.0)).into()
-        };
-        // Desktop's `label-sm` (11/14) and `body-sm` (13/16) type of the Media window.
-        let sub = |s: String| txt(s, 11.0).color(p.on_secondary);
-        // Desktop's `BrandSegmentControl`: the highlight slides to the selected tab in `0.25s`.
-        let widths = MEDIA_TABS.map(|l| text_width(tr(l), 11.0, Weight::Normal) + 16.0);
-        let (from, t) = w.tab_at.map_or((w.tab, 1.0), |(from, at)| (from, at.elapsed().as_secs_f32() / TAB_SLIDE));
-        let (x, hw) = slide(&widths, (from, w.tab), t);
-        let highlight = container(Space::new().width(hw).height(18)).style(fill_box(p.chip, 20.0));
-        let tabs = MEDIA_TABS.iter().zip(widths).enumerate().map(|(i, (label, width))| -> El<'a> {
-            let label = txt(tr(label), 11.0).color(p.strong);
-            button(container(label).center_x(Fill))
-                .width(width)
-                .padding([2, 8])
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 20.0))
-                .on_press(UiMessage::Media(Msg::Tab(i)))
-                .into()
-        });
-        // The highlight layer comes first, under the labels, so it sets the size of the stack.
-        let total = widths.iter().sum::<f32>() + 4.0 * (widths.len() - 1) as f32;
-        let under = container(highlight).padding(Padding::ZERO.left(x)).width(total);
-        let tabs = stack![under, Row::with_children(tabs).spacing(4)];
-        let tabs = container(tabs).padding(4).style(fill_box(p.card, 20.0));
-        let control = |glyph: &svg::Handle, size: f32, on: bool, msg| -> El<'a> {
-            let (bg, fg) = if on { (p.chip, p.strong) } else { (CLEAR, p.on_secondary) };
-            let b = button(container(tinted(glyph, size, fg)).center(28)).padding(0);
-            b.style(btn_style([bg, p.chip, p.chip], [fg; 3], 12.0)).on_press(msg).into()
-        };
-        let search = UiMessage::Media(Msg::Search(w.search.is_none().then(String::new)));
-        let controls = row![
-            self.tip(
-                control(done_icon, 18.0, w.select, UiMessage::Media(Msg::Select(!w.select))),
-                tr("Select"),
-                vec![],
-                tooltip::Position::Bottom
-            ),
-            self.tip(
-                control(tune_icon, 18.0, false, UiMessage::Media(Msg::Menu(true))),
-                tr("Filter"),
-                vec![],
-                tooltip::Position::Bottom
-            ),
-            self.tip(
-                control(search_icon, 18.0, w.search.is_some(), search),
-                tr("Search"),
-                vec![],
-                tooltip::Position::Bottom
-            ),
-        ]
-        .spacing(4);
-        let header = container(row![tabs, Space::new().width(Fill), controls].spacing(8).align_y(Center))
-            .padding([8, 10])
-            .center_y(52);
+        let header = self.media_header(w);
         let rule = || container(Space::new()).width(Fill).height(0.5).style(fill_box(p.chip, 0.0));
-        let search_row = w.search.as_deref().map(|q| {
-            let input = text_input(tr("Search by caption"), q)
-                .id("media-search")
-                .on_input(|q| UiMessage::Media(Msg::Search(Some(q))))
-                .size(13)
-                .padding(0)
-                .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
-            let close = self.tip(
-                control(&ROW_ACTIONS[6], 16.0, false, UiMessage::Media(Msg::Search(None))),
-                tr("Close"),
-                vec![],
-                tooltip::Position::Bottom,
-            );
-            let line = row![tinted(search_icon, 16.0, p.on_secondary), input, close].spacing(6).align_y(Center);
-            column![container(line).padding([6, 10]), rule()]
-        });
+        let search_row = w.search.as_deref().map(|q| column![self.media_search_row(q), rule()]);
         let inner = w.size.width - 16.0;
         let cols = ((inner / 160.0) as usize).max(3);
         let tile = (inner - 20.0 - 4.0 * (cols - 1) as f32) / cols as f32;
-        let text_w = inner - 20.0 - 48.0 - 8.0 - 150.0;
-        let mut groups: Vec<(String, Vec<(&Message, usize)>)> = Vec::new();
-        for (m, k) in &w.items {
-            let label = media_group(day_num(&m.timestamp));
-            match groups.last_mut() {
-                Some((l, g)) if *l == label => g.push((m, *k)),
-                _ => groups.push((label, vec![(m, *k)])),
-            }
-        }
-        let body = groups.iter().fold(Column::new(), |col, (label, group)| {
-            let days = group.iter().map(|&(m, _)| day_num(&m.timestamp));
-            let (lo, hi) = (days.clone().min().expect("a group has items"), days.max().expect("a group has items"));
-            let full = |d| i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0));
-            let range = if lo == hi { full(lo) } else { format!("{} - {}", full(lo), full(hi)) };
-            let head = column![semi(label.clone(), 15.0).line_height(Pixels(rem(20.0))).color(p.strong), sub(range)];
-            let col = col.push(container(head).padding(Padding::new(6.0).top(12.0).left(10.0).right(10.0)));
-            match w.tab {
-                0 => group.chunks(cols).fold(col, |col, chunk| {
-                    let tiles = chunk.iter().map(|&(m, k)| -> El<'a> {
-                        let a = &m.attachments[k];
-                        let badge = match (a.is_gif == Some(true), a.attachment_type == "video") {
-                            (true, _) => Some(row![semi(tr("GIF"), 11.0)]),
-                            (false, true) => {
-                                let time = a.duration.map(|d| semi(voice::clock(d as f32), 11.0));
-                                Some(row![tinted(video_icon, 12.0, Color::WHITE)].push(time).spacing(2).align_y(Center))
-                            }
-                            _ => None,
-                        };
-                        let badge = badge.map(|b| {
-                            let b = container(b).padding([1, 4]).style(move |_: &Theme| container::Style {
-                                text_color: Some(Color::WHITE),
-                                ..fill_box(Color::BLACK.scale_alpha(0.55), 8.0)(&Theme::Dark)
-                            });
-                            container(b).padding(4)
-                        });
-                        let fade = iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
-                            .add_stop(0.0, CLEAR)
-                            .add_stop(1.0, Color::BLACK.scale_alpha(0.55));
-                        let name =
-                            ell(Self::sender_name(&st, m), tile - 12.0, 11.0, Weight::Semibold).color(Color::WHITE);
-                        let name =
-                            container(name).width(Fill).padding(Padding::new(4.0).top(10.0).left(6.0).right(6.0));
-                        let name = container(name.style(move |_| container::Style {
-                            background: Some(fade.into()),
-                            border: border::rounded(border::Radius::default().bottom(8)),
-                            ..Default::default()
-                        }))
-                        .align_bottom(Fill);
-                        let on = picked(&m.id, k);
-                        let mark = w.select.then(|| container(check(on)).align_right(Fill).padding(4));
-                        let ring = on.then(|| {
-                            container(Space::new())
-                                .width(Fill)
-                                .height(Fill)
-                                .style(bordered_box(CLEAR, p.accent, 2.0, 8.0))
-                        });
-                        let face = stack![self.thumb(a, tile, 8.0)].push(badge).push(name).push(mark).push(ring);
-                        let face = face.width(tile).height(tile);
-                        let open = match picking {
-                            true => UiMessage::Media(Msg::Pick(m.id.clone(), k)),
-                            false => UiMessage::Media(Msg::OpenCarousel(m.id.clone(), k, true)),
-                        };
-                        let b = button(face).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 8.0));
-                        mouse_area(b.on_press(open))
-                            .on_right_press(UiMessage::Media(Msg::ItemMenu(Some((m.id.clone(), k)))))
-                            .into()
-                    });
-                    col.push(
-                        container(Row::with_children(tiles).spacing(4))
-                            .padding(Padding::new(0.0).bottom(4.0).left(10.0).right(10.0)),
-                    )
-                }),
-                _ => group.iter().fold(col, |col, &(m, k)| {
-                    let icon = |glyph, size| -> El<'a> {
-                        container(tinted(glyph, size, p.on_secondary)).center(40).style(fill_box(p.chip, 8.0)).into()
-                    };
-                    let (thumb, title, line, press) = match w.tab {
-                        // Desktop's link thumb: the preview image of the link, or the link icon.
-                        1 => {
-                            let l = &m.links[k];
-                            let title = crate::links::shown_title(l);
-                            let thumb = match l.img.as_deref().map(|u| self.media_at(u)) {
-                                Some(Some(Ok(frames))) => image(frames[0].0.clone())
-                                    .width(40)
-                                    .height(40)
-                                    .content_fit(iced::ContentFit::Cover)
-                                    .border_radius(8.0)
-                                    .into(),
-                                Some(_) => {
-                                    container(Space::new()).width(40).height(40).style(fill_box(p.chip, 8.0)).into()
-                                }
-                                None => icon(link_icon, 16.0),
-                            };
-                            (thumb, title, l.url.clone(), UiMessage::OpenUrl(l.url.clone()))
-                        }
-                        _ => {
-                            let a = &m.attachments[k];
-                            let kind = file_kind(a.mime_type.as_deref());
-                            let line = std::iter::once(kind.to_string()).chain(a.file_size.map(human_size));
-                            let name = a.file_name.clone().unwrap_or_else(|| tr("Attachment").into());
-                            (
-                                icon(file_icon, 18.0),
-                                name,
-                                line.collect::<Vec<_>>().join(" · "),
-                                UiMessage::Message(message::Msg::Download(m.id.clone(), Some(k))),
-                            )
-                        }
-                    };
-                    let text = column![
-                        ell(&title, text_w, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(p.strong),
-                        ell(&line, text_w, 11.0, Weight::Normal).line_height(Pixels(rem(14.0))).color(p.on_secondary),
-                    ]
-                    .width(Fill);
-                    let meta = column![sub(Self::sender_name(&st, m).to_string()), sub(relative_date(&m.timestamp))]
-                        .align_x(Right);
-                    let on = picked(&m.id, k);
-                    let line = row![thumb, text, meta].push(w.select.then(|| check(on))).spacing(8).align_y(Center);
-                    let press = if picking { UiMessage::Media(Msg::Pick(m.id.clone(), k)) } else { press };
-                    let bg = if on { p.chip } else { CLEAR };
-                    let b = button(line).padding([6, 10]).width(Fill);
-                    let b = b.style(btn_style([bg, p.chip, p.chip], [p.strong; 3], 0.0)).on_press(press);
-                    col.push(mouse_area(b).on_right_press(UiMessage::Media(Msg::ItemMenu(Some((m.id.clone(), k))))))
-                }),
-            }
-        });
+        let body = self.media_groups(&st, w, cols, tile);
         // Desktop loads more items when the list shows one of its last 8 rows, and again when a load adds rows.
         let row_h = if w.tab == 0 { tile + 4.0 } else { 52.0 };
         let end = (w.more && w.viewer.is_none()).then(|| {
@@ -1203,123 +1011,336 @@ impl BeeperGuiApp {
                 .into(),
         };
         let title = container(semi(tr("Media"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
-        let footer = w.select.then(|| {
-            let bytes: u64 = match w.tab {
-                1 => 0,
-                _ => {
-                    let shown = w.items.iter().filter(|(m, k)| picked(&m.id, *k));
-                    shown.filter_map(|(m, k)| m.attachments[*k].file_size).sum()
-                }
-            };
-            let n = w.picked.len();
-            let count = match bytes {
-                0 => trn("%d selected", "%d selected", n, &[&n]),
-                _ => trn("%1$d selected (%2$s)", "%1$d selected (%2$s)", n, &[&n, &human_size(bytes)]),
-            };
-            let act = |label, msg: Option<UiMessage>| -> El<'a> {
-                let a = if msg.is_some() { 1.0 } else { 0.5 };
-                let b = button(semi(label, 11.0).color(p.strong.scale_alpha(a))).padding([4, 8]);
-                b.style(btn_style([p.chip.scale_alpha(a); 3], [p.strong; 3], 12.0)).on_press_maybe(msg).into()
-            };
-            let picked = w.picked.clone();
-            let bar = row![
-                semi(count, 13.0).color(p.strong),
-                Space::new().width(Fill),
-                act(tr("Delete"), (n > 0).then(|| UiMessage::Media(Msg::AskDelete(picked)))),
-                act(tr("Save"), (n > 0 && w.tab != 1).then_some(UiMessage::Media(Msg::Save))),
-                act(tr("Select all"), Some(UiMessage::Media(Msg::PickAll))),
-                act(tr("Cancel"), Some(UiMessage::Media(Msg::Select(false)))),
-            ]
-            .spacing(4)
-            .align_y(Center);
-            column![rule(), container(bar).padding([8, 10]).center_y(44)]
-        });
+        let footer = w.select.then(|| column![rule(), self.media_footer(w)]);
         let pane = column![header, rule()].push(search_row).push(list).push(footer);
         let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.card, 12.0));
         let base = container(column![title, pane]).padding(8).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
-        // A filter change can drop the item of an open menu.
-        let item_menu = w.item_menu.as_ref().and_then(|(mid, k, at)| {
-            let m = w.message(mid)?;
-            let act = |label: &str, msg| {
-                menu_item(p, None, label.into(), "", Some(UiMessage::Media(Msg::ItemAct(Box::new(msg)))))
-            };
-            let go = act(tr("Go to Message"), UiMessage::Message(message::Msg::GoTo(m.chat_id.clone(), mid.clone())));
-            let mut actions = match w.tab {
-                1 => vec![act(tr("Copy Link"), UiMessage::Message(message::Msg::CopyLink(m.links[*k].url.clone())))],
-                _ => std::iter::once(act(
-                    tr("Download"),
-                    UiMessage::Message(message::Msg::Download(mid.clone(), Some(*k))),
-                ))
-                .chain(
-                    (m.attachments[*k].attachment_type == "img")
-                        .then(|| act(tr("Copy Image"), UiMessage::Message(message::Msg::CopyImage(mid.clone(), *k)))),
-                )
-                .collect(),
-            };
-            actions.extend(
-                deletable(&st, m)
-                    .then(|| act(tr("Delete…"), UiMessage::Media(Msg::AskDelete(vec![(mid.clone(), *k)])))),
-            );
-            let h = 8.0 + menu_pitch() * (1 + actions.len()) as f32 + 11.0;
-            let col = Column::with_children([go, menu_rule(p)].into_iter().chain(actions));
-            let menu = crate::menu_card(p, col, 180);
-            let at = Padding::ZERO.left(at.x.min(w.size.width - 180.0 - 8.0)).top(at.y.min(w.size.height - h - 8.0));
-            let menu = container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill);
-            Some(
-                mouse_area(menu)
-                    .on_press(UiMessage::Media(Msg::ItemMenu(None)))
-                    .on_right_press(UiMessage::Media(Msg::ItemMenu(None))),
-            )
-        });
-        // Desktop's filter menu is a native menu at the cursor.
-        let menu = w.menu.map(|at| {
-            let heading = |label| container(med(label, 11.0).color(p.sub)).padding([6, 13]);
-            let radio = |label: &str, on: bool, msg| {
-                let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22);
-                menu_item(p, Some(lead.into()), label.into(), "", Some(msg))
-            };
-            let col = column![
-                heading(tr("Sent By")),
-                radio(tr("All"), w.sent_by == 0, UiMessage::Media(Msg::SentBy(0))),
-                radio(tr("You"), w.sent_by == 1, UiMessage::Media(Msg::SentBy(1))),
-                radio(tr("Others"), w.sent_by == 2, UiMessage::Media(Msg::SentBy(2))),
-                menu_rule(p),
-                heading(tr("Sort by")),
-                radio(tr("Newest"), !w.oldest, UiMessage::Media(Msg::Oldest(false))),
-                radio(tr("Oldest"), w.oldest, UiMessage::Media(Msg::Oldest(true))),
-            ];
-            let menu = crate::menu_card(p, col, 180);
-            let at = Padding::ZERO.top(at.y).left(at.x.min(w.size.width - 8.0 - 180.0));
-            mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
-                .on_press(UiMessage::Media(Msg::Menu(false)))
-        });
+        let item_menu = self.media_item_menu(&st, w);
+        let menu = w.menu.map(|at| self.media_filter_menu(w, at));
         drop(st);
         // The viewer handles its messages as the Media window, whose carousel it is.
         let id = w.id;
         let carousel = w.viewer.as_ref().and_then(|c| self.view_carousel(c));
         let carousel = carousel.map(|c| c.map(move |m| UiMessage::InWindow(id, Box::new(m))));
-        let ask = w.deleting.as_ref().map(|(pairs, _)| {
-            let n = pairs.len();
-            let body = match n {
-                1 => tr("Are you sure you want to delete this message?").to_string(),
-                _ => trn(
-                    "Are you sure you want to delete %d message?",
-                    "Are you sure you want to delete %d messages?",
-                    n,
-                    &[&n],
-                ),
-            };
-            let title = trn("Delete message", "Delete messages", n, &[]);
-            self.dialog(
-                None,
-                title,
-                body,
-                vec![(tr("Delete"), UiMessage::Media(Msg::Delete(true)))],
-                (tr("Cancel"), UiMessage::Media(Msg::Delete(false))),
-            )
-        });
+        let ask = w.deleting.as_ref().map(|(pairs, _)| self.media_delete_ask(pairs.len()));
         // The menus and the delete dialog of the viewer show over it.
         stack![base].push(self.view_toast(false)).push(carousel).push(menu).push(item_menu).push(ask).into()
+    }
+
+    /// A round button of the header of the Media window, filled while it is on.
+    fn media_control<'a>(&self, glyph: &svg::Handle, size: f32, on: bool, msg: UiMessage) -> El<'a> {
+        let p = &self.pal;
+        let (bg, fg) = if on { (p.chip, p.strong) } else { (CLEAR, p.on_secondary) };
+        let b = button(container(tinted(glyph, size, fg)).center(28)).padding(0);
+        b.style(btn_style([bg, p.chip, p.chip], [fg; 3], 12.0)).on_press(msg).into()
+    }
+
+    /// The header of the Media window: Desktop's `BrandSegmentControl` of the tabs, whose highlight slides to the
+    /// selected tab in `0.25s`, and Select, Filter and Search.
+    fn media_header<'a>(&'a self, w: &MediaWindow) -> El<'a> {
+        let p = &self.pal;
+        let [_, _, _, _, tune_icon, search_icon, done_icon] = &*MEDIA_ICONS;
+        let widths = MEDIA_TABS.map(|l| text_width(tr(l), 11.0, Weight::Normal) + 16.0);
+        let (from, t) = w.tab_at.map_or((w.tab, 1.0), |(from, at)| (from, at.elapsed().as_secs_f32() / TAB_SLIDE));
+        let (x, hw) = slide(&widths, (from, w.tab), t);
+        let highlight = container(Space::new().width(hw).height(18)).style(fill_box(p.chip, 20.0));
+        let tabs = MEDIA_TABS.iter().zip(widths).enumerate().map(|(i, (label, width))| -> El<'a> {
+            let label = txt(tr(label), 11.0).color(p.strong);
+            button(container(label).center_x(Fill))
+                .width(width)
+                .padding([2, 8])
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 20.0))
+                .on_press(UiMessage::Media(Msg::Tab(i)))
+                .into()
+        });
+        // The highlight layer comes first, under the labels, so it sets the size of the stack.
+        let total = widths.iter().sum::<f32>() + 4.0 * (widths.len() - 1) as f32;
+        let under = container(highlight).padding(Padding::ZERO.left(x)).width(total);
+        let tabs = stack![under, Row::with_children(tabs).spacing(4)];
+        let tabs = container(tabs).padding(4).style(fill_box(p.card, 20.0));
+        let tip = |el, label| self.tip(el, label, vec![], tooltip::Position::Bottom);
+        let search = UiMessage::Media(Msg::Search(w.search.is_none().then(String::new)));
+        let controls = row![
+            tip(self.media_control(done_icon, 18.0, w.select, UiMessage::Media(Msg::Select(!w.select))), tr("Select")),
+            tip(self.media_control(tune_icon, 18.0, false, UiMessage::Media(Msg::Menu(true))), tr("Filter")),
+            tip(self.media_control(search_icon, 18.0, w.search.is_some(), search), tr("Search")),
+        ]
+        .spacing(4);
+        container(row![tabs, Space::new().width(Fill), controls].spacing(8).align_y(Center))
+            .padding([8, 10])
+            .center_y(52)
+            .into()
+    }
+
+    /// The caption search field of the Media window, with its Close button.
+    fn media_search_row<'a>(&'a self, q: &str) -> El<'a> {
+        let p = &self.pal;
+        let input = text_input(tr("Search by caption"), q)
+            .id("media-search")
+            .on_input(|q| UiMessage::Media(Msg::Search(Some(q))))
+            .size(13)
+            .padding(0)
+            .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
+        let close = self.media_control(&ROW_ACTIONS[6], 16.0, false, UiMessage::Media(Msg::Search(None)));
+        let close = self.tip(close, tr("Close"), vec![], tooltip::Position::Bottom);
+        let line = row![tinted(&MEDIA_ICONS[5], 16.0, p.on_secondary), input, close].spacing(6).align_y(Center);
+        container(line).padding([6, 10]).into()
+    }
+
+    /// The items of the Media window by Desktop's groups of days, each under its label and its dates: rows of
+    /// `cols` tiles on the Media tab, else a row for each link or file.
+    fn media_groups<'a>(&'a self, st: &BeeperStore, w: &MediaWindow, cols: usize, tile: f32) -> Column<'a, UiMessage> {
+        let p = &self.pal;
+        let mut groups: Vec<(String, Vec<(&Message, usize)>)> = Vec::new();
+        for (m, k) in &w.items {
+            let label = media_group(day_num(&m.timestamp));
+            match groups.last_mut() {
+                Some((l, g)) if *l == label => g.push((m, *k)),
+                _ => groups.push((label, vec![(m, *k)])),
+            }
+        }
+        groups.iter().fold(Column::new(), |col, (label, group)| {
+            let days = group.iter().map(|&(m, _)| day_num(&m.timestamp));
+            let (lo, hi) = (days.clone().min().expect("a group has items"), days.max().expect("a group has items"));
+            let full = |d| i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0));
+            let range = if lo == hi { full(lo) } else { format!("{} - {}", full(lo), full(hi)) };
+            let range = txt(range, 11.0).color(p.on_secondary);
+            let head = column![semi(label.clone(), 15.0).line_height(Pixels(rem(20.0))).color(p.strong), range];
+            let col = col.push(container(head).padding(Padding::new(6.0).top(12.0).left(10.0).right(10.0)));
+            match w.tab {
+                0 => group.chunks(cols).fold(col, |col, chunk| {
+                    let tiles = chunk.iter().map(|&(m, k)| self.media_tile(st, w, m, k, tile));
+                    col.push(
+                        container(Row::with_children(tiles).spacing(4))
+                            .padding(Padding::new(0.0).bottom(4.0).left(10.0).right(10.0)),
+                    )
+                }),
+                _ => group.iter().fold(col, |col, &(m, k)| col.push(self.media_row(st, w, m, k))),
+            }
+        })
+    }
+
+    /// The check mark of an item of the Media window while it selects.
+    fn media_check<'a>(&self, on: bool) -> El<'a> {
+        let p = &self.pal;
+        let (bg, edge) = if on { (p.accent, p.accent) } else { (Color::BLACK.scale_alpha(0.25), Color::WHITE) };
+        let mark = on.then(|| tinted(&MEDIA_ICONS[6], 14.0, Color::WHITE));
+        container(mark).center(20).style(bordered_box(bg, edge, 1.5, 10.0)).into()
+    }
+
+    /// A tile of the Media tab: the image or video `k` of `m`, with its GIF or video badge and its sender, which
+    /// opens the viewer, or picks it while the window selects.
+    fn media_tile<'a>(&'a self, st: &BeeperStore, w: &MediaWindow, m: &Message, k: usize, tile: f32) -> El<'a> {
+        let p = &self.pal;
+        let a = &m.attachments[k];
+        let badge = match (a.is_gif == Some(true), a.attachment_type == "video") {
+            (true, _) => Some(row![semi(tr("GIF"), 11.0)]),
+            (false, true) => {
+                let time = a.duration.map(|d| semi(voice::clock(d as f32), 11.0));
+                Some(row![tinted(&MEDIA_ICONS[1], 12.0, Color::WHITE)].push(time).spacing(2).align_y(Center))
+            }
+            _ => None,
+        };
+        let badge = badge.map(|b| {
+            let b = container(b).padding([1, 4]).style(move |_: &Theme| container::Style {
+                text_color: Some(Color::WHITE),
+                ..fill_box(Color::BLACK.scale_alpha(0.55), 8.0)(&Theme::Dark)
+            });
+            container(b).padding(4)
+        });
+        let fade = iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
+            .add_stop(0.0, CLEAR)
+            .add_stop(1.0, Color::BLACK.scale_alpha(0.55));
+        let name = ell(Self::sender_name(st, m), tile - 12.0, 11.0, Weight::Semibold).color(Color::WHITE);
+        let name = container(name).width(Fill).padding(Padding::new(4.0).top(10.0).left(6.0).right(6.0));
+        let name = container(name.style(move |_| container::Style {
+            background: Some(fade.into()),
+            border: border::rounded(border::Radius::default().bottom(8)),
+            ..Default::default()
+        }))
+        .align_bottom(Fill);
+        let on = w.is_picked(&m.id, k);
+        let mark = w.select.then(|| container(self.media_check(on)).align_right(Fill).padding(4));
+        let ring =
+            on.then(|| container(Space::new()).width(Fill).height(Fill).style(bordered_box(CLEAR, p.accent, 2.0, 8.0)));
+        let face = stack![self.thumb(a, tile, 8.0)].push(badge).push(name).push(mark).push(ring);
+        let face = face.width(tile).height(tile);
+        let open = match w.select || self.mods.control() {
+            true => UiMessage::Media(Msg::Pick(m.id.clone(), k)),
+            false => UiMessage::Media(Msg::OpenCarousel(m.id.clone(), k, true)),
+        };
+        let b = button(face).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 8.0));
+        mouse_area(b.on_press(open)).on_right_press(UiMessage::Media(Msg::ItemMenu(Some((m.id.clone(), k))))).into()
+    }
+
+    /// A row of the Links or Docs tab: the link `k` of `m`, which opens, or its file, which downloads, with the sender
+    /// and the date, or which it picks while the window selects.
+    fn media_row<'a>(&'a self, st: &BeeperStore, w: &MediaWindow, m: &Message, k: usize) -> El<'a> {
+        let p = &self.pal;
+        let text_w = w.size.width - 16.0 - 20.0 - 48.0 - 8.0 - 150.0;
+        let sub = |s: String| txt(s, 11.0).color(p.on_secondary);
+        let icon = |glyph, size| -> El<'a> {
+            container(tinted(glyph, size, p.on_secondary)).center(40).style(fill_box(p.chip, 8.0)).into()
+        };
+        let (thumb, title, line, press) = match w.tab {
+            // Desktop's link thumb: the preview image of the link, or the link icon.
+            1 => {
+                let l = &m.links[k];
+                let title = crate::links::shown_title(l);
+                let thumb = match l.img.as_deref().map(|u| self.media_at(u)) {
+                    Some(Some(Ok(frames))) => image(frames[0].0.clone())
+                        .width(40)
+                        .height(40)
+                        .content_fit(iced::ContentFit::Cover)
+                        .border_radius(8.0)
+                        .into(),
+                    Some(_) => container(Space::new()).width(40).height(40).style(fill_box(p.chip, 8.0)).into(),
+                    None => icon(&MEDIA_ICONS[2], 16.0),
+                };
+                (thumb, title, l.url.clone(), UiMessage::OpenUrl(l.url.clone()))
+            }
+            _ => {
+                let a = &m.attachments[k];
+                let kind = file_kind(a.mime_type.as_deref());
+                let line = std::iter::once(kind.to_string()).chain(a.file_size.map(human_size));
+                let name = a.file_name.clone().unwrap_or_else(|| tr("Attachment").into());
+                let download = UiMessage::Message(message::Msg::Download(m.id.clone(), Some(k)));
+                (icon(&MEDIA_ICONS[0], 18.0), name, line.collect::<Vec<_>>().join(" · "), download)
+            }
+        };
+        let text = column![
+            ell(&title, text_w, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(p.strong),
+            ell(&line, text_w, 11.0, Weight::Normal).line_height(Pixels(rem(14.0))).color(p.on_secondary),
+        ]
+        .width(Fill);
+        let meta = column![sub(Self::sender_name(st, m).to_string()), sub(relative_date(&m.timestamp))].align_x(Right);
+        let on = w.is_picked(&m.id, k);
+        let line = row![thumb, text, meta].push(w.select.then(|| self.media_check(on))).spacing(8).align_y(Center);
+        let picking = w.select || self.mods.control();
+        let press = if picking { UiMessage::Media(Msg::Pick(m.id.clone(), k)) } else { press };
+        let bg = if on { p.chip } else { CLEAR };
+        let b = button(line).padding([6, 10]).width(Fill);
+        let b = b.style(btn_style([bg, p.chip, p.chip], [p.strong; 3], 0.0)).on_press(press);
+        mouse_area(b).on_right_press(UiMessage::Media(Msg::ItemMenu(Some((m.id.clone(), k))))).into()
+    }
+
+    /// The bar of the Media window while it selects: the count and size of the picked items, Delete, Save, Select
+    /// all and Cancel.
+    fn media_footer<'a>(&self, w: &MediaWindow) -> El<'a> {
+        let p = &self.pal;
+        let bytes: u64 = match w.tab {
+            1 => 0,
+            _ => {
+                let shown = w.items.iter().filter(|(m, k)| w.is_picked(&m.id, *k));
+                shown.filter_map(|(m, k)| m.attachments[*k].file_size).sum()
+            }
+        };
+        let n = w.picked.len();
+        let count = match bytes {
+            0 => trn("%d selected", "%d selected", n, &[&n]),
+            _ => trn("%1$d selected (%2$s)", "%1$d selected (%2$s)", n, &[&n, &human_size(bytes)]),
+        };
+        let act = |label, msg: Option<UiMessage>| -> El<'a> {
+            let a = if msg.is_some() { 1.0 } else { 0.5 };
+            let b = button(semi(label, 11.0).color(p.strong.scale_alpha(a))).padding([4, 8]);
+            b.style(btn_style([p.chip.scale_alpha(a); 3], [p.strong; 3], 12.0)).on_press_maybe(msg).into()
+        };
+        let picked = w.picked.clone();
+        let bar = row![
+            semi(count, 13.0).color(p.strong),
+            Space::new().width(Fill),
+            act(tr("Delete"), (n > 0).then(|| UiMessage::Media(Msg::AskDelete(picked)))),
+            act(tr("Save"), (n > 0 && w.tab != 1).then_some(UiMessage::Media(Msg::Save))),
+            act(tr("Select all"), Some(UiMessage::Media(Msg::PickAll))),
+            act(tr("Cancel"), Some(UiMessage::Media(Msg::Select(false)))),
+        ]
+        .spacing(4)
+        .align_y(Center);
+        container(bar).padding([8, 10]).center_y(44).into()
+    }
+
+    /// The context menu of an item of the Media window: Go to Message, Copy Link or Download and Copy Image, and
+    /// Delete. A filter change can drop the item of an open menu.
+    fn media_item_menu<'a>(&self, st: &BeeperStore, w: &MediaWindow) -> Option<El<'a>> {
+        let p = &self.pal;
+        let (mid, k, at) = w.item_menu.as_ref()?;
+        let m = w.message(mid)?;
+        let act = |label: &str, msg| {
+            menu_item(p, None, label.into(), "", Some(UiMessage::Media(Msg::ItemAct(Box::new(msg)))))
+        };
+        let go = act(tr("Go to Message"), UiMessage::Message(message::Msg::GoTo(m.chat_id.clone(), mid.clone())));
+        let mut actions = match w.tab {
+            1 => vec![act(tr("Copy Link"), UiMessage::Message(message::Msg::CopyLink(m.links[*k].url.clone())))],
+            _ => {
+                std::iter::once(act(tr("Download"), UiMessage::Message(message::Msg::Download(mid.clone(), Some(*k)))))
+                    .chain(
+                        (m.attachments[*k].attachment_type == "img").then(|| {
+                            act(tr("Copy Image"), UiMessage::Message(message::Msg::CopyImage(mid.clone(), *k)))
+                        }),
+                    )
+                    .collect()
+            }
+        };
+        actions.extend(
+            deletable(st, m).then(|| act(tr("Delete…"), UiMessage::Media(Msg::AskDelete(vec![(mid.clone(), *k)])))),
+        );
+        let h = 8.0 + menu_pitch() * (1 + actions.len()) as f32 + 11.0;
+        let col = Column::with_children([go, menu_rule(p)].into_iter().chain(actions));
+        let menu = crate::menu_card(p, col, 180);
+        let at = Padding::ZERO.left(at.x.min(w.size.width - 180.0 - 8.0)).top(at.y.min(w.size.height - h - 8.0));
+        let menu = container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill);
+        Some(
+            mouse_area(menu)
+                .on_press(UiMessage::Media(Msg::ItemMenu(None)))
+                .on_right_press(UiMessage::Media(Msg::ItemMenu(None)))
+                .into(),
+        )
+    }
+
+    /// Desktop's filter menu of the Media window, a native menu at the cursor: Sent By and Sort by.
+    fn media_filter_menu<'a>(&self, w: &MediaWindow, at: Point) -> El<'a> {
+        let p = &self.pal;
+        let heading = |label| container(med(label, 11.0).color(p.sub)).padding([6, 13]);
+        let radio = |label: &str, on: bool, msg| {
+            let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22);
+            menu_item(p, Some(lead.into()), label.into(), "", Some(msg))
+        };
+        let col = column![
+            heading(tr("Sent By")),
+            radio(tr("All"), w.sent_by == 0, UiMessage::Media(Msg::SentBy(0))),
+            radio(tr("You"), w.sent_by == 1, UiMessage::Media(Msg::SentBy(1))),
+            radio(tr("Others"), w.sent_by == 2, UiMessage::Media(Msg::SentBy(2))),
+            menu_rule(p),
+            heading(tr("Sort by")),
+            radio(tr("Newest"), !w.oldest, UiMessage::Media(Msg::Oldest(false))),
+            radio(tr("Oldest"), w.oldest, UiMessage::Media(Msg::Oldest(true))),
+        ];
+        let menu = crate::menu_card(p, col, 180);
+        let at = Padding::ZERO.top(at.y).left(at.x.min(w.size.width - 8.0 - 180.0));
+        mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+            .on_press(UiMessage::Media(Msg::Menu(false)))
+            .into()
+    }
+
+    /// The dialog that asks to delete the `n` messages of the picked items.
+    fn media_delete_ask<'a>(&'a self, n: usize) -> El<'a> {
+        let body = match n {
+            1 => tr("Are you sure you want to delete this message?").to_string(),
+            _ => trn(
+                "Are you sure you want to delete %d message?",
+                "Are you sure you want to delete %d messages?",
+                n,
+                &[&n],
+            ),
+        };
+        let title = trn("Delete message", "Delete messages", n, &[]);
+        self.dialog(
+            None,
+            title,
+            body,
+            vec![(tr("Delete"), UiMessage::Media(Msg::Delete(true)))],
+            (tr("Cancel"), UiMessage::Media(Msg::Delete(false))),
+        )
     }
 
     pub(crate) fn view_quick_look<'a>(&self, title: &str, detail: &str) -> El<'a> {
