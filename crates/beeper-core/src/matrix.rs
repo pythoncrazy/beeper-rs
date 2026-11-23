@@ -2251,7 +2251,10 @@ async fn flush(store: SharedStore) -> Result<(), PushError> {
             Outgoing::Flag(f, on) => Some((chat.clone(), f, on)),
             _ => None,
         };
-        let r = push(&store, chat, out).await;
+        let r = match push(&store, chat, out).await {
+            Err(e) if !e.transient => Err(PushError { transient: unreachable(&store).await, ..e }),
+            r => r,
+        };
         let mut st = store.write();
         match (r, message) {
             (Ok(()), message) => {
@@ -2295,6 +2298,20 @@ async fn push_loop(store: SharedStore) {
             Some(s) => drop(tokio::time::timeout(std::time::Duration::from_secs(s), ready.notified()).await),
             None => ready.notified().await,
         }
+    }
+}
+
+/// Whether the homeserver cannot be reached now. Some calls of a push, like a redaction or the push rules of a mute,
+/// lose the kind of their error, so a failed push asks the homeserver again: a change that failed while it is offline
+/// waits for it like a send, instead of being dropped.
+async fn unreachable(store: &SharedStore) -> bool {
+    let client = store.read().matrix.clone().expect("flush checks the Matrix client");
+    // One try: the push loop tries the change again later.
+    let once = matrix_sdk::config::RequestConfig::new().retry_limit(1);
+    let whoami = matrix_sdk::ruma::api::client::account::whoami::v3::Request::new();
+    match client.send(whoami).with_request_config(once).await {
+        Ok(_) => false,
+        Err(h) => PushError::from(matrix_sdk::Error::from(h)).transient,
     }
 }
 
@@ -6944,6 +6961,50 @@ mod tests {
         pushed_until(&store, |st| st.sent.contains_key(&txn)).await;
         assert!(store.read().stored_message(&txn).expect("the echo").send_error.is_none());
         assert!(tries.load(Relaxed) >= 3 && store.read().outbox.is_empty(), "the third try went through");
+    }
+
+    /// A delete for everyone and a mute while the homeserver cannot be reached wait in the outbox, like a send, and go
+    /// when it answers again. Before, the redaction and the push rules lost the kind of their error and were dropped,
+    /// so the message stayed for everyone else and the mute came back.
+    #[tokio::test]
+    async fn changes_made_offline_wait_for_the_homeserver() {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+        let down = std::sync::Arc::new(AtomicBool::new(false));
+        let pushed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (offline, seen) = (down.clone(), pushed.clone());
+        let url = crate::bridge_stub::serve(move |method, path, _| {
+            let path = path.split('?').next().expect("a path");
+            // The connection closes without an answer.
+            if offline.load(Relaxed) && path != "/_matrix/client/v3/sync" {
+                return (0, Value::Null);
+            }
+            match path {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, stub_sync()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                "/_matrix/client/v3/account/whoami" => (200, json!({ "user_id": "@me:x" })),
+                p if method == "PUT" && (p.contains("/redact/") || p.contains("/pushrules/")) => {
+                    seen.lock().unwrap().push(if p.contains("/redact/") { "redact" } else { "pushrules" });
+                    (200, json!({ "event_id": "$redaction" }))
+                }
+                p if method == "PUT" && p.contains("/account_data/") => (200, json!({})),
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            }
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("outbox-offline"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        down.store(true, Relaxed);
+        store.write().queue("!room:x", super::Outgoing::Redact { target: "$e1".into() });
+        store.write().queue("!room:x", super::Outgoing::Flag(super::ChatFlag::Muted, true));
+        let e = super::flush(store.clone()).await.expect_err("the homeserver is offline");
+        assert!(e.transient, "{e:?}");
+        assert_eq!(store.read().outbox.len(), 2, "both changes wait");
+        assert!(pushed.lock().unwrap().is_empty());
+        down.store(false, Relaxed);
+        super::flush(store.clone()).await.expect("the homeserver takes the changes");
+        assert!(store.read().outbox.is_empty());
+        assert_eq!(*pushed.lock().unwrap(), ["redact", "pushrules"], "in the order they were made");
     }
 
     #[tokio::test]
