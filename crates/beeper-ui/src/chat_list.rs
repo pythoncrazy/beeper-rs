@@ -29,6 +29,16 @@ pub struct ListState {
     /// Desktop's `threadCursorID`: the chat that ↑, ↓, J and K point at while no chat is open, which shows as
     /// selected and which Enter opens.
     pub(crate) cursor: Option<String>,
+    /// The id of the list's scrollable, its own in each window.
+    pub(crate) scroll: ListScroll,
+}
+
+pub(crate) struct ListScroll(pub(crate) iced::widget::Id);
+
+impl Default for ListScroll {
+    fn default() -> Self {
+        Self(iced::widget::Id::unique())
+    }
 }
 
 impl ListState {
@@ -655,6 +665,25 @@ impl BeeperGuiApp {
         if let Some(id) = to.and_then(|i| ids.get(i)) {
             self.list.cursor = Some(id.clone());
         }
+    }
+
+    /// The open chat and the chat of the cursor, which [`Self::reveal_pointed`] follows.
+    pub(crate) fn pointed(&self) -> (Option<String>, Option<String>) {
+        (self.pane.selected_chat_id.clone(), self.list.cursor.clone())
+    }
+
+    /// Desktop's `scrollThreadsListToItem`, which `bringThreadToViewOnSelection` and `setThreadCursorID` call: when the
+    /// open chat or the cursor moved from `before` to another chat, the list scrolls that chat into view with the
+    /// least scroll (`align: "nearest"`). A pinned tile brings the top of the list, where Desktop's first item holds
+    /// the whole pinned grid.
+    pub(crate) fn reveal_pointed(&self, before: (Option<String>, Option<String>)) -> Task<UiMessage> {
+        let (open, cursor) = self.pointed();
+        let moved = |now: Option<String>, was: Option<String>| now.filter(|n| was.as_ref() != Some(n));
+        let Some(id) = moved(open, before.0).or_else(|| moved(cursor, before.1)) else { return Task::none() };
+        let pinned = self.pins_and_rows(&self.store.read()).0.iter().any(|c| c.id == id);
+        let to = self.list.rows.nearest((!pinned).then(|| vlist::key(&id)));
+        let scroll = self.list.scroll.0.clone();
+        to.map_or_else(Task::none, |y| operation::scroll_to(scroll, operation::AbsoluteOffset { x: 0.0, y }))
     }
 
     /// The selected chats that still exist: the sync task can drop one before StoreChanged reaches update.
@@ -1920,6 +1949,7 @@ impl BeeperGuiApp {
                 Some(i) => chat_row(rest[i - tiles - drafts]).into(),
             });
             scrollable(container(rows).padding(Padding::ZERO.right(bar_pad + GUTTER)))
+                .id(self.list().scroll.0.clone())
                 .direction(stable_bar())
                 .height(Fill)
                 .style(scroll_style(p.scroll))
