@@ -64,6 +64,8 @@ pub enum Item {
     Heading(&'static str),
     Group(&'static [Pref]),
     Theme,
+    /// Desktop's Theme Color Selector (`vFt`), in the group of [`Item::Theme`].
+    ThemeColor,
     /// Desktop's `ChatAppearancePicker` of the default chat theme.
     ChatTheme,
     /// Desktop's zoom slider, with a text below it.
@@ -349,6 +351,7 @@ pub const APPEARANCE: &[Item] = &[
     ]),
     Item::Heading("Theme"),
     Item::Theme,
+    Item::ThemeColor,
     Item::Heading("Chat Appearance"),
     Item::ChatTheme,
     Item::Heading("Zoom"),
@@ -505,6 +508,7 @@ impl Item {
     pub fn custom(&self) -> Option<(&'static str, &'static [&'static str])> {
         match self {
             Item::Theme => Some(("Theme Selector", &["light mode", "dark mode", "system mode"])),
+            Item::ThemeColor => Some(("Theme Color Selector", &[])),
             Item::ChatTheme => Some(("Default chat theme", &["wallpaper", "background", "bubble color", "chat theme"])),
             Item::Zoom(..) => Some(("Zoom Controls", &[])),
             Item::TimeSuggestions => Some(("Time suggestions", &[])),

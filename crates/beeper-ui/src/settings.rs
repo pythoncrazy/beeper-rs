@@ -2058,7 +2058,13 @@ impl BeeperGuiApp {
                         None => g,
                     })
                 }
-                prefs::Item::Theme => out.push(group(p, heading.take(), vec![theme_cards(self, s.theme)])),
+                // Desktop's Theme group has the Theme Selector and the Theme Color Selector, which flash on their own.
+                prefs::Item::Theme => {
+                    let cards = self.flashing("Theme Selector", theme_cards(self, s.theme));
+                    let colors = self.flashing("Theme Color Selector", self.theme_colors(s.ui_theme));
+                    out.push(group(p, heading.take(), vec![cards, colors]))
+                }
+                prefs::Item::ThemeColor => continue,
                 prefs::Item::ChatTheme => out.push(group(p, heading.take(), vec![self.chat_theme_picker(st, None)])),
                 prefs::Item::TimeSuggestions => {
                     out.push(group(p, heading.take(), vec![self.view_time_suggestions(st)]))
@@ -2067,7 +2073,7 @@ impl BeeperGuiApp {
                     out.push(group(p, heading.take(), vec![self.zoom_slider(s.zoom_percent, pref_text(s, t, args))]))
                 }
             }
-            if let Some(name) = custom {
+            if let Some(name) = custom.filter(|_| !matches!(item, prefs::Item::Theme)) {
                 let el = out.pop().expect("a custom item is a group");
                 out.push(self.flashing(name, el));
             }
@@ -2390,6 +2396,10 @@ pub enum Msg {
     /// Desktop's suggestion of the empty search at this index.
     Suggest(usize),
     SelectTheme(ThemeChoice),
+    /// Desktop's `localPrefsStore.set(UI_THEME, ...)`: a theme color, or none for Desktop's own colors.
+    SelectUiTheme(Option<beeper_core::models::UiTheme>),
+    /// Desktop's 36 s `setTimeout`, which moves the rich gradient.
+    ThemeTick,
     SystemTheme(iced::theme::Mode),
     SetPref(&'static str, u8),
     /// A slider moves; Desktop saves its value on release (`SlideTo` then `SetPref`).
@@ -2570,6 +2580,12 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             Msg::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
+            Msg::SelectUiTheme(theme) => self.patch_settings(|s| s.ui_theme = theme),
+            Msg::ThemeTick => {
+                if let Some(b) = self.pal.backdrop.as_mut().filter(|b| b.rich) {
+                    b.offset = crate::ui_theme::rich_offset(beeper_core::config::now_unix_millis());
+                }
+            }
             Msg::ToggleSetting(flip) => self.patch_settings(flip),
             Msg::SetQuickEmoji(0, e) => {
                 self.patch_settings(|s| s.quick_reaction = e);

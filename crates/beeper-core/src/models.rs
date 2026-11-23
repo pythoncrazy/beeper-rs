@@ -2016,10 +2016,89 @@ impl ThemeChoice {
     }
 }
 
+/// Desktop 4.3.308's local `ui_theme` (`Ls` in sentry-common): the theme color of Settings > Appearance > Theme, four
+/// monochrome hues and five rich gradients, by Desktop's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UiTheme {
+    MonochromeRed,
+    MonochromeGreen,
+    MonochromeBlue,
+    MonochromePurple,
+    RichRed,
+    RichGreen,
+    RichBlue,
+    RichPurple,
+    RichGrey,
+}
+
+impl UiTheme {
+    /// Desktop's order of the swatches.
+    pub const ALL: [Self; 9] = [
+        Self::MonochromeRed,
+        Self::MonochromeGreen,
+        Self::MonochromeBlue,
+        Self::MonochromePurple,
+        Self::RichRed,
+        Self::RichGreen,
+        Self::RichBlue,
+        Self::RichPurple,
+        Self::RichGrey,
+    ];
+
+    /// Desktop's `id`, the stored value.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::MonochromeRed => "monochrome-red",
+            Self::MonochromeGreen => "monochrome-green",
+            Self::MonochromeBlue => "monochrome-blue",
+            Self::MonochromePurple => "monochrome-purple",
+            Self::RichRed => "rich-red",
+            Self::RichGreen => "rich-green",
+            Self::RichBlue => "rich-blue",
+            Self::RichPurple => "rich-purple",
+            Self::RichGrey => "rich-grey",
+        }
+    }
+
+    /// Desktop's `name`, which "Set theme to %s" names.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::MonochromeRed => "Red",
+            Self::MonochromeGreen => "Green",
+            Self::MonochromeBlue => "Blue",
+            Self::MonochromePurple => "Purple",
+            Self::RichRed => "Rich Red",
+            Self::RichGreen => "Rich Green",
+            Self::RichBlue => "Rich Blue",
+            Self::RichPurple => "Rich Purple",
+            Self::RichGrey => "Rich Grey",
+        }
+    }
+
+    /// Desktop's `ite.find(({ id }) => id === ...)`: an id that no theme has is no theme.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.id() == id)
+    }
+
+    /// The `hue` of a `monochrome` theme, or `None` for a `rich` one.
+    pub const fn hue(self) -> Option<u16> {
+        match self {
+            Self::MonochromeRed => Some(0),
+            Self::MonochromeGreen => Some(120),
+            Self::MonochromeBlue => Some(210),
+            Self::MonochromePurple => Some(270),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BeeperSettings {
     pub theme: ThemeChoice,
+    /// Desktop's local `ui_theme`: the theme color, or `None` for Desktop's own colors.
+    pub ui_theme: Option<UiTheme>,
     pub zoom_percent: u16,
     pub enable_pas_api: bool,
     /// Desktop's `desktop_api_remote_access`: serve the Desktop API on all interfaces from the next launch.

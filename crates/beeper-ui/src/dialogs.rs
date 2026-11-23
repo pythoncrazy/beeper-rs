@@ -1436,7 +1436,7 @@ impl BeeperGuiApp {
                 .width(Fill)
                 .padding([10, 12])
                 .style(move |_: &Theme, _| button::Style {
-                    background: Some(if gradient { login::brand_gradient() } else { p.chip.into() }),
+                    background: Some(if gradient { login::brand_gradient(p) } else { p.chip.into() }),
                     border: border::rounded(9999),
                     ..Default::default()
                 })

@@ -1596,6 +1596,7 @@ impl BeeperStore {
         if let Some(theme) = data.theme {
             self.settings.theme = theme;
         }
+        self.settings.ui_theme = data.ui_theme;
         self.settings.spaces_order = data.spaces_order;
         self.settings.ever_labeled = data.ever_labeled;
         self.persist_state_to_sqlite();

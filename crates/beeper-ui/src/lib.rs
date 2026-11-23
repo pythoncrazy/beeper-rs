@@ -100,6 +100,7 @@ mod tray {
 }
 pub mod style;
 pub mod threads;
+mod ui_theme;
 mod units;
 mod user_card;
 mod vcard;
@@ -726,7 +727,6 @@ pub(crate) const ISSUES_URL: &str = "https://github.com/pythoncrazy/beeper-rs/is
 pub(crate) const CHANGELOG_URL: &str = "https://www.beeper.com/changelog/desktop";
 const FEEDBACK: &str = "Tell us what to improve in beeper-rs.";
 const ORANGE: Color = Color::from_rgb8(245, 76, 3);
-const CHECKED: Color = Color::from_rgb8(14, 77, 242);
 const ASK_LOGOUT: u8 = 0;
 const ASK_DISMISS_REMINDERS: u8 = 1;
 const ASK_DELETE_CHAT: u8 = 2;
@@ -811,7 +811,7 @@ fn has_flag(c: &Chat, flag: ChatFlag) -> bool {
 }
 
 fn checkbox<'a>(p: &Palette, on: bool) -> El<'a> {
-    let (bg, ring) = if on { (CHECKED, CLEAR) } else { (CLEAR, Color { a: 0.3, ..p.strong }) };
+    let (bg, ring) = if on { (p.checked, CLEAR) } else { (CLEAR, Color { a: 0.3, ..p.strong }) };
     let check = on.then(|| ic(icon::CHECK, 12.0).color(Color::WHITE));
     container(check).center(16).style(bordered_box(bg, ring, 1.5, 8.0)).into()
 }
@@ -2460,6 +2460,9 @@ fn brightness(c: Color, k: f32) -> Color {
 struct PillLook {
     group: bool,
     own: Color,
+    /// The gradient of your own reactions under a monochrome theme, `--color-highlight-reaction:
+    /// var(--theme-background-gradient)`, instead of `own`.
+    own_bg: Option<crate::ui_theme::Backdrop>,
     other: Color,
     hover: Option<Color>,
     fg: (Color, Color),
@@ -3316,7 +3319,7 @@ impl BeeperGuiApp {
             os,
             display_server,
             tray_sent: (None, true),
-            pal: crate::style::palette(theme),
+            pal: crate::style::palette(theme, None, 0),
             dark: theme,
             zoom: 1.0,
             text_scale: text_scale(),
@@ -3750,7 +3753,7 @@ impl BeeperGuiApp {
     pub fn refresh_theme_and_tray(&mut self) {
         let st = self.store.read();
         self.dark = st.settings.theme.is_dark(self.system_dark);
-        self.pal = crate::style::palette(self.dark);
+        self.pal = crate::style::palette(self.dark, st.settings.ui_theme, now_unix_millis());
         // Desktop's Font size sets the root font, which only the sizes in rem follow, and its zoom
         // (`webFrame.setZoomFactor`) scales everything.
         crate::style::set_font_size(st.settings.choice("fontSize").parse().expect("a number option"));
@@ -4955,6 +4958,7 @@ impl BeeperGuiApp {
                 .chain(self.record_events())
                 .chain(self.video_ticks())
                 .chain(self.view_once_ticks())
+                .chain(self.theme_ticks())
                 .chain(self.idle_events()),
         )
     }
@@ -5305,12 +5309,15 @@ impl BeeperGuiApp {
             None => Row::new().push(rail).push(sidebar).into(),
         };
         let body = Row::new().push(left).push(stack![right, grip]);
-        let body = container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
+        let body = crate::ui_theme::window_bg(container(body).width(Fill).height(Fill), p.backdrop, p.window);
         // Desktop's `hoveringTrigger`: with the space bar hidden, the 20px at the left edge slide it in over the list.
         let float = (!shown && !self.sidebar_hidden).then(|| -> El<'_> {
             match self.rail_float {
                 true => {
-                    let rail = container(self.view_rail()).height(Fill).style(|_: &Theme| container::Style {
+                    // A rich theme's floating `account-switcher` shows `--theme-bg` the size of the window.
+                    let rich = p.backdrop.filter(|b| b.rich);
+                    let rail = crate::ui_theme::window_bg(self.view_rail(), rich, CLEAR).frame(self.pane.size);
+                    let rail = container(rail).height(Fill).style(|_: &Theme| container::Style {
                         shadow: Shadow {
                             color: Color::BLACK.scale_alpha(0.2),
                             offset: Vector::ZERO,
@@ -5362,16 +5369,15 @@ impl BeeperGuiApp {
         let base = match (in_main, self.list().locked) {
             (true, _) => self.view_full_video(false).unwrap_or_else(|| self.view_body(open)),
             (false, true) => self.view_space_window(shown),
-            (false, false) => container(match shown {
-                true if self.pane().thread_root.is_some() => self.view_thread_window(),
-                true => self.view_conversation(),
-                false => Space::new().into(),
-            })
-            .padding(8)
-            .width(Fill)
-            .height(Fill)
-            .style(fill_box(self.pal.window, 0.0))
-            .into(),
+            (false, false) => {
+                let body = container(match shown {
+                    true if self.pane().thread_root.is_some() => self.view_thread_window(),
+                    true => self.view_conversation(),
+                    false => Space::new().into(),
+                });
+                let body = body.padding(8).width(Fill).height(Fill);
+                crate::ui_theme::window_bg(body, self.pal.backdrop, self.pal.window).into()
+            }
         };
         let (base, menu_drop) = match in_main {
             true => self.with_menu_bar(base),

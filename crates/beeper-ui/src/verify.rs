@@ -308,7 +308,9 @@ impl BeeperGuiApp {
             .padding(Padding::new(24.0).top(36.0))
             .style(fill_box(p.primary_container, 8.0));
         let card = mouse_area(card).on_press(UiMessage::Noop);
-        mouse_area(container(card).padding(8).style(fill_box(p.window, 0.0))).on_press(VerifyMsg::Outside.into()).into()
+        // `VerificationModal` is `--left-pane-bg`.
+        let frame = crate::ui_theme::window_bg(container(card).padding(8), p.backdrop, p.window);
+        mouse_area(frame).on_press(VerifyMsg::Outside.into()).into()
     }
 }
 
@@ -517,7 +519,7 @@ impl BeeperGuiApp {
             }
             (false, None, Some(qr)) => {
                 let plate = container(qr_code(&qr.data)).padding(11).style(|_: &Theme| container::Style {
-                    background: Some(brand_gradient()),
+                    background: Some(brand_gradient(p)),
                     border: border::rounded(12),
                     ..Default::default()
                 });
