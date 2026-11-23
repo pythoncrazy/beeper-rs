@@ -342,10 +342,7 @@ impl BeeperGuiApp {
             txt(tr("Visibility and Notifications"), 13.0).line_height(Pixels(rem(16.0))).color(p.sub)
         ];
         let body = column![head, Column::with_children(rows).spacing(16).padding(Padding::ZERO.top(16.0))].padding(16);
-        let done = button(med(tr("Done"), 13.0).color(Color::WHITE))
-            .padding([6, 14])
-            .style(btn_style([p.accent; 3], [Color::WHITE; 3], 999.0))
-            .on_press(UiMessage::Info(info::Msg::HowItWorks(false)));
+        let done = done_btn(p).on_press(UiMessage::Info(info::Msg::HowItWorks(false)));
         let footer = container(done).align_right(Fill).align_bottom(Fill).padding(12);
         let card = stack![scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill), footer];
         let card = container(card).height(Fill).clip(true).style(fill_box(p.card, 12.0));

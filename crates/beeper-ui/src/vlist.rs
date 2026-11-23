@@ -198,6 +198,27 @@ impl VList {
         }
     }
 
+    /// `virtua`'s `scrollToIndex` with `align: "nearest"` in a list anchored at its top: the scroll offset that brings
+    /// the row of `key`, or the first row for `None`, into the last visible span with the least scroll. `None` when
+    /// the row shows already, or the last view did not have it.
+    pub fn nearest(&self, key: Option<u64>) -> Option<f32> {
+        let inner = self.0.borrow();
+        let (keys, end, _, starts) = &inner.starts;
+        assert!(!end, "a list anchored at its top");
+        let k = match key {
+            Some(key) => keys.iter().position(|&k| k == key)?,
+            None => 0,
+        };
+        let (top, bottom) = (*starts.get(k)?, *starts.get(k + 1)?);
+        let (at, len) = inner.seen?;
+        let at = at.clamp(0.0, (starts[keys.len()] - len).max(0.0));
+        match (top < at, bottom > at + len) {
+            (true, _) => Some(top),
+            (false, true) => Some(bottom - len),
+            (false, false) => None,
+        }
+    }
+
     /// Makes the next view build the row of `key` in the middle of the visible span.
     pub fn reveal(&self, key: u64) {
         self.0.borrow_mut().target = Some(key);
@@ -409,6 +430,27 @@ mod tests {
             list.0.borrow_mut().seen = Some((at, 50.0));
             assert_eq!(list.last_seen(), Some(want), "anchored at the end: {end}, {at} px in");
         }
+    }
+
+    /// Like `virtua`'s `align: "nearest"`, a row above the visible span comes to its top, a row below it to its bottom,
+    /// and a row in it does not scroll.
+    #[test]
+    fn nearest_scrolls_the_least() {
+        let keys: Vec<u64> = (0..20).collect();
+        let list = VList::default();
+        let rows = list.view(&keys, false, 50.0, (), |_| iced::widget::Space::new().height(50).into());
+        let view = iced::widget::scrollable(rows).height(Length::Fill);
+        let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(400.0, 300.0), view);
+        let _ = sim.simulate([Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))]);
+        drop(sim);
+        assert_eq!(list.nearest(Some(3)), None, "row 3 shows in the first 300 px");
+        assert_eq!(list.nearest(Some(6)), Some(50.0), "row 6 comes to the bottom");
+        assert_eq!(list.nearest(Some(19)), Some(700.0), "the last row ends the list");
+        assert_eq!(list.nearest(Some(99)), None, "a row that the list does not have");
+        list.0.borrow_mut().seen = Some((400.0, 300.0));
+        assert_eq!(list.nearest(Some(2)), Some(100.0), "row 2 comes to the top");
+        assert_eq!(list.nearest(None), Some(0.0), "the first row comes to the top");
+        assert_eq!(list.nearest(Some(10)), None);
     }
 
     /// Like Desktop's dates, which all are `sticky-date-container`s, the label of a section that starts above the

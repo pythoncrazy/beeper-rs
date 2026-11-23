@@ -234,10 +234,9 @@ impl BeeperGuiApp {
             }
             Msg::AvatarPicked(n, Ok(paths)) => {
                 let Some(path) = paths.into_iter().next() else { return Task::none() };
-                let load = async move {
-                    tokio::task::spawn_blocking(move || portal::load_file(&path)).await.expect("file load thread")
-                };
-                return Task::perform(load, move |r| UiMessage::NewChat(Msg::AvatarLoaded(n, r)));
+                return Task::perform(portal::load_off_thread(path), move |r| {
+                    UiMessage::NewChat(Msg::AvatarLoaded(n, r))
+                });
             }
             Msg::AvatarPicked(_, Err(e)) | Msg::AvatarLoaded(_, Err(e)) => self.fail(Toast::new(e)),
             Msg::AvatarLoaded(n, Ok(m)) => match round_avatar(&m.bytes) {

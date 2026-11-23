@@ -132,10 +132,7 @@ impl BeeperGuiApp {
             }
             Msg::AvatarPicked(Ok(paths)) => {
                 let Some(path) = paths.into_iter().next() else { return Task::none() };
-                let load = async move {
-                    tokio::task::spawn_blocking(move || portal::load_file(&path)).await.expect("file load thread")
-                };
-                return Task::perform(load, |r| UiMessage::Profile(Msg::AvatarLoaded(r)));
+                return Task::perform(portal::load_off_thread(path), |r| UiMessage::Profile(Msg::AvatarLoaded(r)));
             }
             Msg::AvatarPicked(Err(e)) | Msg::AvatarLoaded(Err(e)) => self.fail(Toast::new(e)),
             Msg::AvatarLoaded(Ok(m)) => match round_avatar(&m.bytes) {
@@ -346,7 +343,7 @@ impl BeeperGuiApp {
                 .push(key.then(|| menu_rule(p)))
                 .push(menu_item(p, None, tr("Logout").into(), "", Some(UiMessage::Logout)))
                 .push(item("Delete account", Msg::Delete(Some(String::new()))));
-            let menu = container(items.padding([4, 0])).width(200).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let menu = crate::menu_card(p, items, 200);
             let menu = container(mouse_area(menu).on_press(UiMessage::Noop)).align_right(Fill).padding([64, 34]);
             return Some(
                 mouse_area(container(menu).width(Fill).height(Fill)).on_press(UiMessage::Profile(Msg::Menu)).into(),

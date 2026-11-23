@@ -4,7 +4,7 @@ use crate::bridge_texts::{bridge_error, bridge_text};
 use crate::i18n::{tr, trf, trx};
 use crate::phone::{self, KeyOutcome, Phone, PhoneMsg};
 use crate::style::rem;
-use crate::style::{brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, Palette, CLEAR};
+use crate::style::{brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, txt, Palette, CLEAR};
 use crate::{menu_item, BeeperGuiApp, El, Toast, UiMessage, ERROR_CIRCLE};
 use beeper_core::bridge_login::{self, Field, Flow, Step};
 use beeper_core::browser_login::{self, BrowserLogin, Outcome};
@@ -957,8 +957,7 @@ impl BeeperGuiApp {
                 });
                 menu_item(p, None, label, "", (!a.busy).then(|| go(AddMsg::Flow(f.id.clone()))))
             });
-            let list = container(Column::with_children(items).padding([4, 0])).width(200);
-            let list = list.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let list = crate::menu_card(p, Column::with_children(items), 200);
             mouse_area(container(list).align_right(Fill).height(Fill).padding(Padding::ZERO.top(30).right(8)))
                 .on_press(go(AddMsg::Menu))
         });

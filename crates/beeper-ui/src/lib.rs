@@ -148,10 +148,10 @@ use vcard::VCard;
 use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZE};
 
 use crate::style::{
-    bar, bordered_box, bordered_btn, brand_gray, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded,
-    fill_box, fw, glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style, pick_style, rem,
-    scroll_style, semi, shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER,
-    SOLID_BARS,
+    bar, bordered_box, bordered_btn, brand_gray, brand_svg, btn_style, clamp, clamped, done_btn, editor_style, ell,
+    ensure_fonts_loaded, fill_box, fw, glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style,
+    pick_style, rem, scroll_style, semi, shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS,
+    CLEAR, GUTTER, SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -535,7 +535,9 @@ fn several_accounts(st: &BeeperStore, account_id: &str) -> bool {
 /// Desktop's `composeSwitchTargets` of the account variant: in a single chat on an account with other accounts of its
 /// bridge, the chat and the chats with the same person on those accounts (`getAltAccountThreads`).
 fn switch_targets(st: &BeeperStore, chat: &Chat) -> Option<Vec<String>> {
-    let other = |c: &Chat| c.participants.items.iter().find(|u| u.is_self != Some(true)).cloned();
+    fn other(c: &Chat) -> Option<&User> {
+        c.participants.items.iter().find(|u| u.is_self != Some(true))
+    }
     let them = other(chat).filter(|_| chat.chat_type == "single" && several_accounts(st, &chat.account_id))?;
     let kind = st.bridge_accounts.iter().find(|b| b.account_id == chat.account_id).map(|b| &b.bridge_type);
     let alts: Vec<&str> = st
@@ -547,13 +549,18 @@ fn switch_targets(st: &BeeperStore, chat: &Chat) -> Option<Vec<String>> {
     // Desktop's `findMostRecentSingleThread` of each account, by the username, the phone, the email, then the ID.
     let keys: [fn(&User) -> Option<&str>; 4] =
         [|u| u.username.as_deref(), |u| u.phone_number.as_deref(), |u| u.email.as_deref(), |u| Some(u.id.as_str())];
+    // The direct chats of the other accounts, from one pass over the chats, since the composer looks each frame.
+    let singles: Vec<(&Chat, &User)> = (st.chats.iter())
+        .filter(|c| c.chat_type == "single" && alts.contains(&c.account_id.as_str()))
+        .filter_map(|c| Some((c, other(c)?)))
+        .collect();
     let newest = |account: &str, same: &dyn Fn(&User) -> bool| {
-        let single = st.chats.iter().filter(|c| c.account_id == account && c.chat_type == "single");
-        single.filter(|c| other(c).is_some_and(|u| same(&u))).max_by(|a, b| a.last_activity.cmp(&b.last_activity))
+        let single = singles.iter().filter(|(c, u)| c.account_id == account && same(u)).map(|(c, _)| *c);
+        single.max_by(|a, b| a.last_activity.cmp(&b.last_activity))
     };
     let mut found: Vec<&Chat> = keys
         .iter()
-        .filter_map(|k| Some((k, k(&them).filter(|v| !v.is_empty())?)))
+        .filter_map(|k| Some((k, k(them).filter(|v| !v.is_empty())?)))
         .map(|(k, v)| alts.iter().filter_map(|a| newest(a, &|u: &User| k(u) == Some(v))).collect())
         .find(|f: &Vec<&Chat>| !f.is_empty())
         .unwrap_or_default();
@@ -805,6 +812,25 @@ fn checkbox_plus<'a>(p: &Palette, on: bool) -> El<'a> {
             container(ic(icon::PLUS, 10.0).color(p.sub)).center(16).style(bordered_box(CLEAR, p.sub, 1.5, 8.0)).into()
         }
     }
+}
+
+/// Desktop's context menu: `items` with 4 px above and below them, in a shadowed card `w` wide.
+fn menu_card<'a>(
+    p: &Palette,
+    items: Column<'a, UiMessage>,
+    w: impl Into<Length>,
+) -> iced::widget::Container<'a, UiMessage> {
+    container(items.padding([4, 0])).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
+}
+
+/// [`menu_card`] of rows with their heights, and the height of the menu.
+fn menu_rows<'a>(
+    p: &Palette,
+    rows: Vec<(El<'a>, f32)>,
+    w: impl Into<Length>,
+) -> (iced::widget::Container<'a, UiMessage>, f32) {
+    let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
+    (menu_card(p, Column::with_children(rows.into_iter().map(|r| r.0)), w), h)
 }
 
 fn menu_rule<'a>(p: &Palette) -> El<'a> {
@@ -1874,6 +1900,16 @@ fn network_label(account_id: &str) -> &'static str {
 fn chat_network(c: &Chat) -> String {
     let plat = if c.merge.is_some() { merged::chat_platform(c) } else { network_label(&c.account_id) };
     c.network_name.as_deref().map_or_else(|| plat.to_string(), |n| format!("{n} • {plat}"))
+}
+
+/// The title of a chat in the search results: its name, then its handle or network in the secondary color.
+fn chat_search_title<'a>(p: &Palette, c: &Chat) -> iced::widget::Row<'a, UiMessage> {
+    row![
+        ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
+        ell(&chat_search_subtitle(c), 220.0, 13.0, Weight::Normal).color(p.sub),
+    ]
+    .spacing(4)
+    .align_y(Center)
 }
 
 fn chat_search_subtitle(c: &Chat) -> String {
@@ -4133,8 +4169,11 @@ impl BeeperGuiApp {
 
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
         let (shown, dismissals) = (self.stackable_toast(), self.toast_dismissals);
+        // The windows that `handle` swaps in follow their own chat lists there.
+        let pointed = self.swapped.is_none().then(|| self.pointed());
         let task = self.handle(msg);
-        let task = Task::batch([task, self.view_requests(), self.pip()]);
+        let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
+        let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
         let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
@@ -4807,7 +4846,9 @@ impl BeeperGuiApp {
                 }
                 self.swap_window(id);
                 let outer = self.swapped.replace(id);
+                let pointed = self.is_space_window(id).then(|| self.pointed());
                 let task = self.handle(*msg);
+                let task = Task::batch([task, pointed.map_or_else(Task::none, |p| self.reveal_pointed(p))]);
                 self.swapped = outer;
                 self.swap_window(id);
                 let task = task.map(move |m| UiMessage::InWindow(id, Box::new(m)));

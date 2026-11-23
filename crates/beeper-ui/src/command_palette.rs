@@ -13,12 +13,8 @@ impl BeeperGuiApp {
             let lead = container(on.then(|| ic(icon::CHECK, 14.0))).center_x(14).padding(Padding::ZERO.right(6.0));
             menu_item(p, Some(lead.into()), label.into(), "", pick(m))
         };
-        let menu = |items: Vec<El<'static>>| -> El<'static> {
-            container(Column::with_children(items).padding([4, 0]))
-                .width(233)
-                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-                .into()
-        };
+        let menu =
+            |items: Vec<El<'static>>| -> El<'static> { crate::menu_card(p, Column::with_children(items), 233).into() };
         let brand = |options: Vec<(String, bool, SearchPick)>| -> El<'static> {
             let any = options.iter().any(|o| o.1);
             let widest = options.iter().map(|o| crate::style::text_width(&o.0, 11.0, Weight::Semibold));
@@ -347,8 +343,7 @@ impl BeeperGuiApp {
                     _ => Space::new().into(),
                 },
                 (None, Some(l), _) => {
-                    let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
-                    let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
+                    let title = crate::links::shown_title(l);
                     let sub = row![
                         ic(icon::LINK, 12.0).color(p.text),
                         ell(&l.url, 77.0, 10.0, Weight::Semibold).color(p.text)
@@ -422,13 +417,7 @@ impl BeeperGuiApp {
             [("Recent chats", &recent), ("Last archived", &archived), ("Chats", &chats), ("In Groups", &in_groups)];
         let lead = sections.iter().find(|s| !s.1.is_empty()).map(|s| s.0);
         let chat = |label: &'static str, i: usize, c: &Chat| -> El<'_> {
-            let sub = chat_search_subtitle(c);
-            let title = row![
-                ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
-                ell(&sub, 220.0, 13.0, Weight::Normal).color(p.sub),
-            ]
-            .spacing(4)
-            .align_y(Center);
+            let title = crate::chat_search_title(p, c);
             let line = row![
                 self.chat_avatar(c, 28.0, 0.0),
                 title,

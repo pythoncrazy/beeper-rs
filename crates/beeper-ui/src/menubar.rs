@@ -3,7 +3,7 @@
 use crate::composer;
 use crate::i18n::{tr, trf, trx};
 use crate::settings;
-use crate::style::{fill_box, shadow_box, text_width, txt};
+use crate::style::{fill_box, text_width, txt};
 use crate::windows;
 use crate::{menu_item, menu_rule, BeeperGuiApp, El, SettingsTab, UiMessage, ASK_LOGOUT};
 use iced::widget::{column, container, mouse_area, row, text_editor, Column};
@@ -171,8 +171,8 @@ impl BeeperGuiApp {
             }
             None => menu_rule(p),
         });
-        let menu = container(Column::with_children(rows).padding([4, 0]));
-        (menu.width(MENU_W).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into(), x)
+        let menu = Column::with_children(rows);
+        (crate::menu_card(p, menu, MENU_W).into(), x)
     }
 }
 

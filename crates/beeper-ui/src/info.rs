@@ -384,13 +384,7 @@ impl BeeperGuiApp {
                     .size(rem(11.0))
                     .line_height(Pixels(rem(14.0)))
                     .padding(8)
-                    .style(move |_: &Theme, _| text_editor::Style {
-                        background: p.chip.into(),
-                        border: border::rounded(8),
-                        placeholder: p.sub,
-                        value: p.strong,
-                        selection: p.accent.scale_alpha(0.3),
-                    });
+                    .style(editor_style(p, 8.0));
                 let input =
                     if can_desc { input.on_action(|a| UiMessage::Info(info::Msg::Desc(Some(a)))) } else { input };
                 Some(
@@ -644,13 +638,7 @@ impl BeeperGuiApp {
             .padding([8, 11])
             .min_height(128)
             .max_height(self.pane().size.height / 2.0)
-            .style(move |_: &Theme, _| text_editor::Style {
-                background: p.chip.into(),
-                border: border::rounded(10),
-                placeholder: p.sub,
-                value: p.strong,
-                selection: p.accent.scale_alpha(0.3),
-            });
+            .style(editor_style(p, 10.0));
         let body = column![header]
             .push(behavior)
             .push(self.view_merge_promo(&st, chat))
@@ -803,8 +791,7 @@ impl BeeperGuiApp {
                     }
                 });
                 let urls = m.links.iter().filter(|_| links).map(|l| {
-                    let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
-                    let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
+                    let title = crate::links::shown_title(l);
                     let url =
                         ell(&l.url, TILE - 29.0, 10.0, Weight::Semibold).line_height(Pixels(rem(12.0))).color(p.strong);
                     file(title, row![tinted(&MEDIA_ICONS[2], 12.0, p.strong), url].align_y(Center).into())

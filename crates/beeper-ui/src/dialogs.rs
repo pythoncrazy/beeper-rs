@@ -17,8 +17,8 @@ use crate::reminders;
 use crate::settings;
 use crate::style::rem;
 use crate::style::{
-    bar, bold, bordered_box, btn_style, ell, fill_box, fw, ic, icon, input_style, med, mix, scroll_style, semi,
-    shadow_box, text_width, txt, Bare, CLEAR,
+    bar, bold, bordered_box, btn_style, done_btn, editor_style, ell, fill_box, fw, ic, icon, input_style, med, mix,
+    scroll_style, semi, shadow_box, text_width, txt, Bare, CLEAR,
 };
 use crate::units::human_size;
 use crate::{
@@ -911,10 +911,7 @@ impl BeeperGuiApp {
             container(delete).padding(Padding::ZERO.top(16.0)),
         ]
         .padding(Padding::new(16.0).bottom(80.0));
-        let done = button(med(tr("Done"), 13.0).color(Color::WHITE))
-            .padding([6, 14])
-            .style(btn_style([p.accent; 3], [Color::WHITE; 3], 999.0))
-            .on_press(pane(LabelPane::Done));
+        let done = done_btn(p).on_press(pane(LabelPane::Done));
         let done = target("done", done.into(), Keys::press(pane(LabelPane::Done)), Look::button(p, 999.0));
         let footer = container(done).align_right(Fill).align_bottom(Fill).padding(Padding::new(16.0).top(12.0));
         let card = stack![scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill), footer];
@@ -930,8 +927,7 @@ impl BeeperGuiApp {
                 ]);
                 menu_item(p, Some(lead), inbox_name(o, label).into(), "", Some(msg))
             });
-            let menu = container(Column::with_children(items).padding([4, 0])).width(ACCOUNT_SUB_W);
-            let menu = menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let menu = crate::menu_card(p, Column::with_children(items), ACCOUNT_SUB_W);
             stack![
                 mouse_area(Space::new().width(Fill).height(Fill)).on_press(pane(LabelPane::Menu(false))),
                 container(menu).align_right(Fill).padding(Padding::ZERO.top(LABEL_INBOX_MENU_Y).right(24.0)),
@@ -1277,10 +1273,9 @@ impl BeeperGuiApp {
             GroupEdit::Picked(Ok(paths)) => {
                 let Some(path) = paths.into_iter().next() else { return Task::none() };
                 let url = format!("file://{}", path.display());
-                let load = async move {
-                    tokio::task::spawn_blocking(move || portal::load_file(&path)).await.expect("file load thread")
-                };
-                return Task::perform(load, move |r| UiMessage::Group(GroupEdit::Loaded(url.clone(), r)));
+                return Task::perform(portal::load_off_thread(path), move |r| {
+                    UiMessage::Group(GroupEdit::Loaded(url.clone(), r))
+                });
             }
             GroupEdit::Picked(Err(e)) | GroupEdit::Loaded(_, Err(e)) => self.fail(Toast::new(e)),
             GroupEdit::Loaded(url, Ok(m)) => match (round_avatar(&m.bytes), self.group_window.as_mut()) {
@@ -1417,13 +1412,7 @@ impl BeeperGuiApp {
             .line_height(Pixels(rem(16.0)))
             .padding([8, 11])
             .height(120)
-            .style(move |_: &Theme, _| text_editor::Style {
-                background: p.chip.into(),
-                border: border::rounded(10),
-                placeholder: p.sub,
-                value: p.strong,
-                selection: p.accent.scale_alpha(0.3),
-            });
+            .style(editor_style(p, 10.0));
         let topic = if can(2) { topic.on_action(move |a| edit(GroupEdit::Topic(a))) } else { topic };
         let topic = (!d.personal).then_some(topic);
         let note = match d.personal {
@@ -1542,10 +1531,7 @@ impl BeeperGuiApp {
         };
         let body = column![title, list].spacing(10).padding(Padding::new(12.0).bottom(0.0)).height(Fill);
         let close = UiMessage::Blocking(blocking::Msg::CloseList);
-        let done = button(med(tr("Done"), 13.0).color(Color::WHITE))
-            .padding([6, 14])
-            .style(btn_style([p.accent; 3], [Color::WHITE; 3], 999.0))
-            .on_press(close.clone());
+        let done = done_btn(p).on_press(close.clone());
         let done = self.target(self.blocked_window, "done", done, Keys::press(close), Look::button(p, 999.0));
         let footer = container(done).align_right(Fill).padding(Padding::new(12.0).top(10.0));
         container(column![body, footer]).width(Fill).height(Fill).style(fill_box(p.elevated, 0.0)).into()

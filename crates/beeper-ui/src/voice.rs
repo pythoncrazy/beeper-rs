@@ -555,10 +555,7 @@ impl BeeperGuiApp {
         let items = RATES.map(|r| {
             menu_item(p, lead(self.audio.rate == r), format!("{r}x"), "", Some(UiMessage::Voice(Msg::Rate(r))))
         });
-        container(Column::with_children(items).padding([4, 0]))
-            .width(rate_menu_w())
-            .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-            .into()
+        crate::menu_card(p, Column::with_children(items), rate_menu_w()).into()
     }
 
     /// The "Playback Speed" row of the message menu of a playable audio message, and its "Transcription Language"
@@ -649,8 +646,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_pill_menu(&self, top: f32) -> El<'_> {
         let (p, open) = (&self.pal, UiMessage::Voice(Msg::Sub));
         let item = mouse_area(menu_item(p, None, tr("Playback Speed").into(), "›", Some(open.clone()))).on_enter(open);
-        let menu =
-            container(column![item].padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_card(p, column![item], 233);
         row![column![Space::new().height(top), menu]].push(self.audio.sub.then(|| self.view_rate_menu())).into()
     }
 }
