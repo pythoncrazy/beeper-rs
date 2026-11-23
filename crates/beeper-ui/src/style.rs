@@ -226,6 +226,11 @@ pub fn rem(px: f32) -> f32 {
     px * REM.get()
 }
 
+/// A CSS `line-height` of `px` at the root font size, as [`rem`] scales it.
+pub fn lh(px: f32) -> iced::Pixels {
+    iced::Pixels(rem(px))
+}
+
 pub const fn fw(weight: Weight) -> Font {
     Font { family: Family::Name("Inter"), weight, ..Font::DEFAULT }
 }
@@ -721,6 +726,11 @@ pub fn brand_badge(bridge_id: &str) -> svg::Handle {
 /// The logo clipped to a circle, like Desktop's `.ThreadListItem-module__platformIcon .is-badge`.
 pub fn brand_round(bridge_id: &str) -> svg::Handle {
     BRAND_SVGS[bridge_id][2].clone()
+}
+
+/// CSS `padding: top right bottom left`.
+pub const fn pad(top: f32, right: f32, bottom: f32, left: f32) -> iced::Padding {
+    iced::Padding { top, right, bottom, left }
 }
 
 pub fn fill_box(bg: Color, r: impl Into<border::Radius>) -> impl Fn(&Theme) -> container::Style + Copy {

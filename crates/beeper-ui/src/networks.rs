@@ -205,11 +205,7 @@ impl BeeperGuiApp {
             (true, false) => Some(Msg::Menu(Some(id))),
             (true, true) => None,
         };
-        let tile = button(tile)
-            .padding(8)
-            .width(75)
-            .style(btn_style([CLEAR; 3], [p.fg; 3], 10.0))
-            .on_press_maybe(press.map(UiMessage::Networks));
+        let tile = button(tile).bare(p.fg).padding(8).width(75).on_press_maybe(press.map(UiMessage::Networks));
         let tip = container(txt(e.tip(), 13.0).color(p.strong))
             .padding([6, 12])
             .style(shadow_box(p.elevated, p.chip, 16.0, 10.0));
@@ -289,7 +285,7 @@ impl BeeperGuiApp {
             .padding(Padding::ZERO.left(at.x).top(at.y))
             .width(Fill)
             .height(Fill);
-        Some(mouse_area(layer).on_press(close.clone()).on_right_press(close).into())
+        Some(crate::backdrop(layer).on_press(close.clone()).on_right_press(close).into())
     }
 
     /// Desktop's `fVt`: the accounts that the plan still allows, and "Upgrade to %s for more" with a plan above

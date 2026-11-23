@@ -7,7 +7,7 @@ use crate::loads;
 use crate::message;
 use crate::style::rem;
 use crate::style::{
-    bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, med, scroll_style, semi, shadow_box,
+    bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, lh, med, scroll_style, semi, shadow_box,
     text_width, txt, Bare, CLEAR, GUTTER,
 };
 use crate::time::{day_num, format_short_ts, iso_millis, today};
@@ -26,7 +26,7 @@ use iced::keyboard::{self, key::Named, Key};
 use iced::widget::{
     button, column, container, image, mouse_area, row, scrollable, stack, svg, text_input, tooltip, Column, Row, Space,
 };
-use iced::{border, mouse, window, Center, Color, Fill, Padding, Pixels, Point, Right, Size, Task, Theme};
+use iced::{border, mouse, window, Center, Color, Fill, Padding, Point, Right, Size, Task, Theme};
 use std::sync::Arc;
 
 /// ffmpeg over `bytes`, which it reads from a temporary file of its own: an MP4 or M4A with its `moov` atom at the
@@ -232,29 +232,12 @@ pub(crate) struct MediaWindow {
 impl MediaWindow {
     /// A Media window of `size` on the newest images and videos, before its first load.
     fn new(id: window::Id, size: Size) -> Self {
-        Self {
+        beeper_core::with_defaults!(Self {
             id,
-            tab: 0,
             size,
-            sent_by: 0,
-            oldest: false,
-            search: None,
-            query: String::new(),
-            typed: 0,
-            items: Vec::new(),
             more: true,
-            cursor: None,
-            loading: None,
-            generation: 0,
-            advance: false,
-            tab_at: None,
-            menu: None,
-            viewer: None,
-            item_menu: None,
-            select: false,
-            picked: Vec::new(),
-            deleting: None,
-        }
+        }, default: tab, sent_by, oldest, search, query, typed, items, cursor, loading, generation, advance, tab_at,
+            menu, viewer, item_menu, select, picked, deleting)
     }
 
     /// The loaded message `mid`.
@@ -914,7 +897,7 @@ impl BeeperGuiApp {
                 let face = container(self.thumb(a, 44.0, 6.0)).padding(2);
                 let face = face.style(bordered_box(white.scale_alpha(0.1), edge, 2.0, 8.0));
                 let open = UiMessage::Media(Msg::OpenCarousel(mid.clone(), *ai, true));
-                button(face).padding(0).style(btn_style([CLEAR; 3], [white; 3], 8.0)).on_press(open).into()
+                button(face).bare(white).on_press(open).into()
             });
             let row = container(Row::with_children(thumbs).spacing(4)).padding([6, 10]).width(Fill);
             let scroll = |d: mouse::ScrollDelta| {
@@ -1008,7 +991,7 @@ impl BeeperGuiApp {
         let menu = crate::menu_card(p, Column::with_children(rows), 180);
         let area = self.carousel_area();
         let at = Padding::ZERO.left(at.x.min(area.width - 188.0)).top(at.y.min(area.height - h - 8.0));
-        mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+        crate::backdrop(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
             .on_press(UiMessage::Media(Msg::CarouselMenu(false)))
             .on_right_press(UiMessage::Media(Msg::CarouselMenu(false)))
             .into()
@@ -1060,8 +1043,8 @@ impl BeeperGuiApp {
             let label = txt(tr(label), 11.0).color(p.strong);
             button(container(label).center_x(Fill))
                 .width(width)
+                .bare(p.strong)
                 .padding([2, 8])
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 20.0))
                 .on_press(UiMessage::Media(Msg::Tab(i)))
                 .into()
         });
@@ -1156,7 +1139,7 @@ impl BeeperGuiApp {
             let full = |d| i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0));
             let range = if lo == hi { full(lo) } else { format!("{} - {}", full(lo), full(hi)) };
             let range = txt(range, 11.0).color(p.on_secondary).wrapping(iced::widget::text::Wrapping::None);
-            let head = column![semi(label.clone(), 15.0).line_height(Pixels(rem(20.0))).color(p.strong), range];
+            let head = column![semi(label.clone(), 15.0).line_height(lh(20.0)).color(p.strong), range];
             let col = col.push(container(head).padding(Padding::new(6.0).top(12.0).left(10.0).right(10.0)));
             match w.tab {
                 0 => group.chunks(cols).fold(col, |col, chunk| {
@@ -1220,7 +1203,7 @@ impl BeeperGuiApp {
             true => UiMessage::Media(Msg::Pick(m.id.clone(), k)),
             false => UiMessage::Media(Msg::OpenCarousel(m.id.clone(), k, true)),
         };
-        let b = button(face).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 8.0));
+        let b = button(face).bare(p.strong);
         mouse_area(b.on_press(open)).on_right_press(UiMessage::Media(Msg::ItemMenu(Some((m.id.clone(), k))))).into()
     }
 
@@ -1260,8 +1243,8 @@ impl BeeperGuiApp {
             }
         };
         let text = column![
-            ell(&title, text_w, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(p.strong),
-            ell(&line, text_w, 11.0, Weight::Normal).line_height(Pixels(rem(14.0))).color(p.on_secondary),
+            ell(&title, text_w, 13.0, Weight::Semibold).line_height(lh(16.0)).color(p.strong),
+            ell(&line, text_w, 11.0, Weight::Normal).line_height(lh(14.0)).color(p.on_secondary),
         ]
         .width(Fill);
         let meta = column![sub(Self::sender_name(st, m).to_string()), sub(relative_date(&m.timestamp))].align_x(Right);
@@ -1341,7 +1324,7 @@ impl BeeperGuiApp {
         let at = Padding::ZERO.left(at.x.min(w.size.width - 180.0 - 8.0)).top(at.y.min(w.size.height - h - 8.0));
         let menu = container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill);
         Some(
-            mouse_area(menu)
+            crate::backdrop(menu)
                 .on_press(UiMessage::Media(Msg::ItemMenu(None)))
                 .on_right_press(UiMessage::Media(Msg::ItemMenu(None)))
                 .into(),
@@ -1368,7 +1351,7 @@ impl BeeperGuiApp {
         ];
         let menu = crate::menu_card(p, col, 180);
         let at = Padding::ZERO.top(at.y).left(at.x.min(w.size.width - 8.0 - 180.0));
-        mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+        crate::backdrop(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
             .on_press(UiMessage::Media(Msg::Menu(false)))
             .into()
     }
@@ -1495,17 +1478,12 @@ impl BeeperGuiApp {
                 if in_media {
                     self.media_mut().advance = false;
                 }
-                *self.carousel_mut() = Some(Carousel {
+                *self.carousel_mut() = Some(beeper_core::with_defaults!(Carousel {
                     mid,
                     ai,
-                    turns: 0,
-                    turned: None,
                     in_media,
-                    resume: None,
-                    menu: None,
-                    strip: None,
                     page: 1,
-                });
+                }, default: turns, turned, resume, menu, strip));
                 self.fit_carousel_video();
                 self.reload_failed();
                 return Task::batch([self.load_media(), self.media_viewer_more()]);

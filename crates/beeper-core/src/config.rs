@@ -109,38 +109,17 @@ impl CentralConfig {
 
 impl Default for BeeperSettings {
     fn default() -> Self {
-        Self {
+        crate::with_defaults!(Self {
             theme: ThemeChoice::System,
             zoom_percent: 100,
-            enable_pas_api: false,
-            remote_access: false,
-            prefs: Default::default(),
-            keybindings: Default::default(),
-            reminders_order: 0,
-            microphone: String::new(),
-            accounts: Default::default(),
-            last_time: String::new(),
-            snooze_last_time: String::new(),
-            chat_appearance: Default::default(),
-            spaces_order: Vec::new(),
-            accounts_order: Default::default(),
-            ever_labeled: false,
-            labels_intro_seen: false,
-            merge_intro_seen: false,
-            merge_suggestion_dismissed_keys: Vec::new(),
-            merge_suggestion_seen_rooms: Vec::new(),
-            chat_info_merge_promo_dismissed: false,
-            target_switcher_nudge_seen_rooms: Vec::new(),
-            target_switcher_nudge_dismissed: false,
-            has_seen_first_nudge: false,
-            recovery_reminder_dismissed_at: 0,
-            downloads_dir: String::new(),
             quick_reaction: "❤️".into(),
             quick_reactions: ["👍", "❤️", "😂"].map(String::from).to_vec(),
-            recent_stickers: Vec::new(),
-            time_suggestions: Vec::new(),
-            quick_replies: Vec::new(),
-        }
+        }, default: enable_pas_api, remote_access, prefs, keybindings, reminders_order, microphone, accounts,
+            last_time, snooze_last_time, chat_appearance, spaces_order, accounts_order, ever_labeled,
+            labels_intro_seen, merge_intro_seen, merge_suggestion_dismissed_keys, merge_suggestion_seen_rooms,
+            chat_info_merge_promo_dismissed, target_switcher_nudge_seen_rooms, target_switcher_nudge_dismissed,
+            has_seen_first_nudge, recovery_reminder_dismissed_at, downloads_dir, recent_stickers, time_suggestions,
+            quick_replies)
     }
 }
 

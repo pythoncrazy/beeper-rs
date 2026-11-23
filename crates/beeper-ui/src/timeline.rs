@@ -2,7 +2,7 @@
 //! view while it is above its bottom.
 
 use super::*;
-use iced::advanced::widget::{operation as op, tree, Operation, Tree};
+use iced::advanced::widget::{operation as op, Operation, Tree};
 use iced::advanced::{layout, Layout};
 use iced::Rectangle;
 
@@ -204,15 +204,7 @@ impl Hold<'_> {
 }
 
 impl iced::advanced::Widget<UiMessage, Theme, iced::Renderer> for Hold<'_> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Anchor>()
-    }
-
-    fn state(&self) -> tree::State {
-        tree::State::new(Anchor::default())
-    }
-
-    crate::delegate::delegate!(children, diff, size, mouse_interaction, draw, overlay(UiMessage));
+    crate::delegate::delegate!(state(Anchor), children, diff, size, mouse_interaction, draw, overlay(UiMessage));
 
     /// An operation may scroll the timeline, as a jump to a message: the view that it leaves is the one to hold.
     fn operate(
@@ -331,30 +323,12 @@ impl Veil<'_> {
 }
 
 impl iced::advanced::Widget<UiMessage, Theme, iced::Renderer> for Veil<'_> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Option<Rectangle>>()
-    }
-
-    fn state(&self) -> tree::State {
-        tree::State::new(None::<Rectangle>)
-    }
-
-    crate::delegate::delegate!(children, diff, size, overlay(UiMessage));
+    crate::delegate::delegate!(state(Option<Rectangle>), children, diff, size, operate, overlay(UiMessage));
 
     fn layout(&mut self, tree: &mut Tree, renderer: &iced::Renderer, limits: &layout::Limits) -> layout::Node {
         let node = self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits);
         self.find(tree, Layout::new(&node), renderer);
         node
-    }
-
-    fn operate(
-        &mut self,
-        tree: &mut Tree,
-        layout: Layout<'_>,
-        renderer: &iced::Renderer,
-        operation: &mut dyn Operation,
-    ) {
-        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
     }
 
     fn update(
