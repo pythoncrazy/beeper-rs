@@ -921,7 +921,7 @@ impl BeeperGuiApp {
             .id("spaces-search")
             .on_input(move |q| edit(SpacesEdit::Search(q)))
             .size(rem(13.0))
-            .line_height(Pixels(rem(16.0)))
+            .line_height(lh(16.0))
             .padding([14, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         // Desktop's controls of the sheet: plain `<button>`s whose focus does not show, and the `dnd-kit` handles,
@@ -1047,7 +1047,7 @@ impl BeeperGuiApp {
             .push(mouse_area(header(tr("Hidden")).width(Fill)).on_enter(edit(SpacesEdit::Over(SPACES_DIVIDER.into()))))
             .push(empty)
             .extend(group(hidden))
-            .padding(Padding { top: 0.0, right: 13.0, bottom: 30.0, left: 13.0 });
+            .padding(pad(0.0, 13.0, 30.0, 13.0));
         let list = scrollable(list)
             .direction(Direction::Vertical(Scrollbar::hidden()))
             .height(Fill)
@@ -1065,7 +1065,7 @@ impl BeeperGuiApp {
             // Desktop's `Button` with `rounded`.
             let keys = Keys::press(edit(SpacesEdit::NewLabel));
             let link = self.target(window, "new-label", link, keys, Look::button(p, 9999.0));
-            container(link).center_x(Fill).padding(Padding { top: 8.0, right: 0.0, bottom: 4.0, left: 0.0 })
+            container(link).center_x(Fill).padding(pad(8.0, 0.0, 4.0, 0.0))
         });
         let head = container(semi(tr("Edit Spaces"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
         let window = container(column![head, card].push(new)).padding(8).style(fill_box(p.window, 0.0));
@@ -1085,7 +1085,7 @@ impl BeeperGuiApp {
             let m = mouse_area(m.map(act)).on_press(UiMessage::Noop);
             container(m).padding(Padding::ZERO.left(x).top(y)).into()
         };
-        let close = mouse_area(container(Space::new()).width(Fill).height(Fill))
+        let close = crate::backdrop(container(Space::new()).width(Fill).height(Fill))
             .on_press(edit(SpacesEdit::Menu(None)))
             .on_right_press(edit(SpacesEdit::Menu(None)));
         stack![window, close, place(menu, x)].push(sub.map(|s| place(s, sub_x))).into()

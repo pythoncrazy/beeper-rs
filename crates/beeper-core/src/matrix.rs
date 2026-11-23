@@ -13,7 +13,7 @@ use crate::models::{
     TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
-use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
+use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID, TYPING_DURATION};
 use futures_util::StreamExt;
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::config::SyncSettings;
@@ -1287,12 +1287,21 @@ async fn fill_gap(store: SharedStore, room: Room, from: String) {
     }
 }
 
+/// Desktop's `m.typing`: the users type for [`TYPING_DURATION`] at most, unless another update comes.
 async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
     let me = room.own_user_id().as_str();
     let ids: Vec<String> = ids.as_array().expect("typing user IDs").iter().map(|i| s(i).expect("a user ID")).collect();
     let ids: Vec<String> = ids.into_iter().filter(|i| i != me).collect();
     let chat = chat_id(room).await;
-    store.write().set_typing(&chat, ids);
+    let typing = !ids.is_empty();
+    let n = store.write().typing_update(&chat, ids);
+    if typing {
+        let store = store.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(TYPING_DURATION).await;
+            store.write().typing_timeout(&chat, n);
+        });
+    }
 }
 
 async fn sync_receipts(store: &SharedStore, room: &Room, only: Option<&HashSet<String>>) {

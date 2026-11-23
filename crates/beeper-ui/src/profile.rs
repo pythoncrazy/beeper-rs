@@ -4,7 +4,7 @@ use crate::i18n::{tr, trf, trx, trxf};
 use crate::settings;
 use crate::style::rem;
 use crate::style::{
-    bold, bordered_box, btn_style, fill_box, fw, ic, icon, med, semi, shadow_box, txt, Bare, Palette, CLEAR,
+    bold, bordered_box, btn_style, fill_box, fw, ic, icon, lh, med, semi, shadow_box, txt, Bare, Palette, CLEAR,
 };
 use crate::{
     menu_item, menu_rule, outline_input, pill_style, plan_pill, portal, round_avatar, tinted, BeeperGuiApp, El,
@@ -18,7 +18,7 @@ use iced::font::Weight;
 use iced::widget::{
     button, column, container, hover, image, mouse_area, rich_text, row, span, text_editor, text_input, Column, Space,
 };
-use iced::{Center, Color, Fill, Padding, Pixels, Task, Theme};
+use iced::{Center, Color, Fill, Padding, Task, Theme};
 use std::path::PathBuf;
 
 /// The edits and the open prompts of the Beeper Profile page.
@@ -346,7 +346,9 @@ impl BeeperGuiApp {
             let menu = crate::menu_card(p, items, 200);
             let menu = container(mouse_area(menu).on_press(UiMessage::Noop)).align_right(Fill).padding([64, 34]);
             return Some(
-                mouse_area(container(menu).width(Fill).height(Fill)).on_press(UiMessage::Profile(Msg::Menu)).into(),
+                crate::backdrop(container(menu).width(Fill).height(Fill))
+                    .on_press(UiMessage::Profile(Msg::Menu))
+                    .into(),
             );
         }
         if f.leaving.is_some() {
@@ -364,7 +366,7 @@ impl BeeperGuiApp {
         let card = |content: El<'a>, width: f32, close: UiMessage| -> El<'a> {
             let card =
                 container(content).width(width).padding(20).style(shadow_box(p.elevated, p.menu_border, 12.0, 24.0));
-            mouse_area(
+            crate::backdrop(
                 container(mouse_area(card).on_press(UiMessage::Noop))
                     .center(Fill)
                     .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.45), 0.0)),
@@ -514,7 +516,7 @@ impl BeeperGuiApp {
             .style(btn_style([p.accent; 3], [Color::WHITE; 3], 8.0))
             .on_press(UiMessage::Profile(Msg::SaveKeyNow));
         let banner = column![
-            semi(tr("If you lose your device..."), 16.0).line_height(Pixels(rem(20.0))).color(p.accent),
+            semi(tr("If you lose your device..."), 16.0).line_height(lh(20.0)).color(p.accent),
             txt(tr("You'll need your recovery key to access your encrypted data."), 11.0).color(p.strong).center(),
             save,
         ]

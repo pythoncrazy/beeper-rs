@@ -219,12 +219,7 @@ impl BeeperGuiApp {
                         .push((!s.canceled).then(|| tinted(&COMPOSER_ICONS[6], 12.0, fg)))
                         .push(txt(text, 11.0).font(fw(weight)).color(fg))
                         .push(edit);
-                    container(line.spacing(4).align_y(Center)).center_x(Fill).padding(Padding {
-                        top: 4.0,
-                        right: 8.0,
-                        bottom: 8.0,
-                        left: 8.0,
-                    })
+                    container(line.spacing(4).align_y(Center)).center_x(Fill).padding(pad(4.0, 8.0, 8.0, 8.0))
                 });
                 column![].push(date).push(self.view_scheduled_bubble(st, s, bg)).into()
             });

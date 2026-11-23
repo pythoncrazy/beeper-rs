@@ -1,12 +1,11 @@
 //! Desktop's link previews of a message (`LinkPreview` and `VideoEmbed` in `MessageContent.tsx`): a card with the
 //! preview image, the title, the summary and the host, or a YouTube card with the video thumbnail.
-use crate::style::rem;
-use crate::style::{clamp, fill_box, ic, icon, text_width, txt};
+use crate::style::{clamp, fill_box, ic, icon, lh, text_width, txt};
 use crate::{anim, BeeperGuiApp, El, UiMessage, BUBBLE_PAD_X};
 use beeper_core::models::MessageLink;
 use iced::font::Weight;
 use iced::widget::{column, container, hover, image, mouse_area, row, stack, svg, Space};
-use iced::{border, Center, Color, ContentFit, Fill, Length, Padding, Pixels};
+use iced::{border, Center, Color, ContentFit, Fill, Length, Padding};
 use std::sync::LazyLock;
 
 /// The title that a link shows: its own, or the host of its URL when it has none.
@@ -109,7 +108,7 @@ impl BeeperGuiApp {
         let summary = |w: f32| {
             link.summary
                 .as_deref()
-                .map(|s| clamp(s, w, 3, 13.0, Weight::Normal).line_height(Pixels(rem(16.0))).color(dim(p.strong)))
+                .map(|s| clamp(s, w, 3, 13.0, Weight::Normal).line_height(lh(16.0)).color(dim(p.strong)))
         };
         let card: El<'a> = if narrow {
             // `.narrow`: a 120 px high row, with the image at the left and the title on one line.
@@ -117,7 +116,7 @@ impl BeeperGuiApp {
             let iw = if square { 120.0 } else { (w as f32).clamp(60.0, 120.0) };
             let text = (natural + 2.0 * BUBBLE_PAD_X).min(max - iw);
             let title = clamp(&link.title, text - 2.0 * BUBBLE_PAD_X, 1, 13.0, Weight::Semibold);
-            let body = column![title.line_height(Pixels(rem(16.0))).color(dim(p.strong))]
+            let body = column![title.line_height(lh(16.0)).color(dim(p.strong))]
                 .push(summary(text - 2.0 * BUBBLE_PAD_X))
                 .push(Space::new().height(Fill))
                 .push(meta)
@@ -136,7 +135,7 @@ impl BeeperGuiApp {
             }
             .min(max);
             let tw = w - 2.0 * BUBBLE_PAD_X;
-            let title = clamp(&link.title, tw, 3, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0)));
+            let title = clamp(&link.title, tw, 3, 13.0, Weight::Semibold).line_height(lh(16.0));
             let radius = border::Radius::default().top_left(RADIUS).top_right(RADIUS);
             let image = link.img.as_ref().map(|u| self.link_image(Some((mid, autoplay)), Some(u), (w, 160.0), radius));
             let text = column![title.color(dim(p.strong))].push(summary(tw)).push(meta).spacing(8);
@@ -166,9 +165,9 @@ impl BeeperGuiApp {
         let w = (0.45 * self.pane().size.width).min(400.0).min(max);
         let title = (!link.title.is_empty()).then(|| {
             let t = clamp(&link.title, w - 2.0 * BUBBLE_PAD_X, 3, 13.0, Weight::Semibold);
-            t.line_height(Pixels(rem(16.0))).color(dim(p.strong))
+            t.line_height(lh(16.0)).color(dim(p.strong))
         });
-        let name = crate::style::semi("YouTube", 11.0).line_height(Pixels(rem(14.0))).color(dim(p.sub));
+        let name = crate::style::semi("YouTube", 11.0).line_height(lh(14.0)).color(dim(p.sub));
         // Only the title is Desktop's link there.
         let title = title.map(|t| mouse_area(t).on_right_press(menu));
         let meta = column![name].push(title).spacing(8).padding([8.0, BUBBLE_PAD_X]);

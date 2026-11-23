@@ -104,7 +104,7 @@ impl BeeperGuiApp {
         let head = strip(head.spacing(12).align_y(Center).into(), border::Radius::default().top(18)).center_y(44);
         let pills = f.picked.iter().map(|cid| -> El<'a> {
             let c = st.chat(cid);
-            let label = semi(c.title.clone(), 14.0).line_height(Pixels(rem(16.0))).color(p.strong);
+            let label = semi(c.title.clone(), 14.0).line_height(lh(16.0)).color(p.strong);
             let pill = row![self.chat_avatar(c, 16.0, 0.0), label].spacing(4).align_y(Center);
             container(pill).padding(Padding::new(2.0).right(8.0)).style(fill_box(shade, 20.0)).into()
         });

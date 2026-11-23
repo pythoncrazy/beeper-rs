@@ -624,10 +624,7 @@ pub(crate) static TAG_ICONS: std::sync::LazyLock<[svg::Handle; 10]> = std::sync:
         "M360-400h400L622-580l-92 120-62-80-108 140Zm-40 160q-33 0-56.5-23.5T240-320v-480q0-33 23.5-56.5T320-880h480q33 0 56.5 23.5T880-800v480q0 33-23.5 56.5T800-240H320Zm0-80h480v-480H320v480ZM160-80q-33 0-56.5-23.5T80-160v-560h80v560h560v80H160Zm160-720v480-480Z",
         "M798-120q-125 0-247-54.5T329-329Q229-429 174.5-551T120-798q0-18 12-30t30-12h162q14 0 25 9.5t13 22.5l26 140q2 16-1 27t-11 19l-97 98q20 37 47.5 71.5T387-386q31 31 65 57.5t72 48.5l94-94q9-9 23.5-13.5T670-390l138 28q14 4 23 14.5t9 23.5v162q0 18-12 30t-30 12ZM241-600l66-66-17-94h-89q5 41 14 81t26 79Zm358 358q39 17 79.5 27t81.5 13v-88l-94-19-67 67ZM241-600Zm358 358Z",
     ]
-    .map(|d| {
-        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="80 -880 800 800"><path d="{d}"/></svg>"#);
-        svg::Handle::from_memory(svg.into_bytes())
-    })
+    .map(|d| crate::path_svg("80 -880 800 800", d))
 });
 
 impl BeeperGuiApp {
@@ -1919,7 +1916,7 @@ impl BeeperGuiApp {
                 let rest = s.strip_prefix(label).expect("the draft label fits").to_string();
                 rich_text![span::<(), _>(label).font(fw(Weight::Semibold)).color(p.accent), span(rest).color(fg)]
                     .size(rem(13.0))
-                    .line_height(Pixels(rem(16.0)))
+                    .line_height(lh(16.0))
                     .width(width)
             }))
             .push(Space::new().width(Fill))
@@ -1970,11 +1967,11 @@ fn preview_line<'a>(b: &str, width: f32, lines: usize, font: iced::Font, fg: Col
     let shown = crate::style::clamped(b, width, lines, 13.0, Weight::Normal);
     if !shown.contains('\u{fe0f}') {
         let text = clamp(b, width, lines, 13.0, Weight::Normal);
-        return text.width(width).line_height(Pixels(rem(16.0))).font(font).color(fg).into();
+        return text.width(width).line_height(lh(16.0)).font(font).color(fg).into();
     }
     let spans = crate::emoji::with_emoji_font(vec![span::<(), _>(shown.to_string()).font(font)]);
     let wrap = if lines == 1 { iced::widget::text::Wrapping::None } else { iced::widget::text::Wrapping::WordOrGlyph };
-    rich_text(spans).size(rem(13.0)).line_height(Pixels(rem(16.0))).color(fg).width(width).wrapping(wrap).into()
+    rich_text(spans).size(rem(13.0)).line_height(lh(16.0)).color(fg).width(width).wrapping(wrap).into()
 }
 
 /// The settings, sizes and selection that every row of the chat list reads.

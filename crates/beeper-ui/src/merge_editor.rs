@@ -295,7 +295,7 @@ impl BeeperGuiApp {
                 Some(row![back, Space::new().width(Fill), pill(label, true, submit)].into())
             }
         };
-        let footer = footer.map(|f| container(f).padding(Padding { top: 16.0, right: 12.0, bottom: 10.0, left: 12.0 }));
+        let footer = footer.map(|f| container(f).padding(pad(16.0, 12.0, 10.0, 12.0)));
         let card = container(column![container(body).height(Fill)].push(footer)).height(Fill).clip(true);
         let card = card.style(fill_box(p.card, 14.0));
         let head = container(semi(Self::merge_title(d), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
@@ -305,7 +305,7 @@ impl BeeperGuiApp {
                 .bare(p.accent)
                 .on_press(UiMessage::OpenUrl(MERGE_HELP.into()));
             let line = row![txt(tr("You can separate merged chats anytime"), 12.0).color(p.sub), link].spacing(4);
-            container(line).center_x(Fill).padding(Padding { top: 8.0, right: 0.0, bottom: 2.0, left: 0.0 })
+            container(line).center_x(Fill).padding(pad(8.0, 0.0, 2.0, 0.0))
         });
         let window = column![head, card].push(outside);
         container(window).padding(8).style(fill_box(p.window, 0.0)).into()
@@ -361,12 +361,8 @@ impl BeeperGuiApp {
             let action = action.style(fill_box(p.strong, 999.0));
             let card = row![text, action].spacing(10).align_y(Center).padding(12);
             let card = button(card).bare(p.strong).on_press(edit(MergeEdit::Upgrade));
-            container(container(card).style(bordered_box(CLEAR, p.prefs_border, 0.5, 10.0))).padding(Padding {
-                top: 0.0,
-                right: 16.0,
-                bottom: 16.0,
-                left: 16.0,
-            })
+            container(container(card).style(bordered_box(CLEAR, p.prefs_border, 0.5, 10.0)))
+                .padding(pad(0.0, 16.0, 16.0, 16.0))
         });
         let plus = container(badge(p, prefs::Badge::Plus)).align_right(Fill).padding(Padding::new(12.0).right(14.0));
         let body = column![container(intro).center(Fill)].push(upsell);
@@ -382,8 +378,7 @@ impl BeeperGuiApp {
         let text = column![name].push(identifier(c).map(|i| ell(&i, 220.0, 13.0, Weight::Normal).color(p.sub)));
         let line =
             row![face, text.spacing(4).width(Fill), container(checkbox(p, on)).padding(Padding::ZERO.right(16.0))];
-        let line =
-            line.spacing(10).align_y(Center).padding(Padding { top: 10.0, right: 8.0, bottom: 10.0, left: 16.0 });
+        let line = line.spacing(10).align_y(Center).padding(pad(10.0, 8.0, 10.0, 16.0));
         button(line)
             .bare(p.strong)
             .width(Fill)
@@ -401,22 +396,20 @@ impl BeeperGuiApp {
             .id("merge-search")
             .on_input(move |q| edit(MergeEdit::Search(q)))
             .size(rem(14.0))
-            .line_height(Pixels(rem(18.0)))
+            .line_height(lh(18.0))
             .padding([17, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let searching = !d.search.trim().is_empty();
         let clear =
             searching.then(|| icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, edit(MergeEdit::Search(String::new()))));
         let search = row![ic(icon::SEARCH, 16.0).color(p.sub), input].push(clear).spacing(10).align_y(Center);
-        let search = container(search).padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 16.0 });
+        let search = container(search).padding(pad(0.0, 8.0, 0.0, 16.0));
         let picked: Vec<&Chat> = d.chats.iter().filter_map(|c| st.find_chat(c)).collect();
         // Desktop's `se`: the mergeable chats, and the member chats of the edited merged chat.
         let pool: Vec<&Chat> =
             st.chats.iter().filter(|c| mergeable(c) || picked.iter().any(|m| m.id == c.id)).collect();
         let header = |s: &'static str| -> El<'a> {
-            container(txt(tr(s), 12.0).color(p.sub))
-                .padding(Padding { top: 8.0, right: 16.0, bottom: 4.0, left: 16.0 })
-                .into()
+            container(txt(tr(s), 12.0).color(p.sub)).padding(pad(8.0, 16.0, 4.0, 16.0)).into()
         };
         let mut rows: Vec<El<'a>> = Vec::new();
         let taken = |c: &Chat| d.chats.contains(&c.id);
@@ -430,7 +423,7 @@ impl BeeperGuiApp {
                         .into()
                 });
                 let strip = iced::widget::Row::with_children(chips).spacing(10).wrap();
-                rows.push(container(strip).padding(Padding { top: 4.0, right: 13.0, bottom: 8.0, left: 13.0 }).into());
+                rows.push(container(strip).padding(pad(4.0, 13.0, 8.0, 13.0)).into());
             }
             let q = d.search.trim().to_lowercase();
             let hits: Vec<&Chat> =
@@ -494,7 +487,7 @@ impl BeeperGuiApp {
             .on_input(move |t| edit(MergeEdit::Title(t)))
             .on_submit(edit(MergeEdit::Submit))
             .size(rem(14.0))
-            .line_height(Pixels(rem(18.0)))
+            .line_height(lh(18.0))
             .padding([7, 14])
             .align_x(Center)
             .width(200)
@@ -523,7 +516,7 @@ impl BeeperGuiApp {
             .on_press(edit(MergeEdit::DefaultMenu(!d.default_menu)));
         let row =
             row![semi(tr("Default chat"), 12.0).color(p.strong), Space::new().width(Fill), select].align_y(Center);
-        let row = container(row).padding(Padding { top: 24.0, right: 24.0, bottom: 30.0, left: 24.0 });
+        let row = container(row).padding(pad(24.0, 24.0, 30.0, 24.0));
         let body = column![container(center).center(Fill), options, row];
         // Desktop's `st` menu of the member chats, "name · network".
         let menu = d.default_menu.then(|| {
@@ -537,12 +530,7 @@ impl BeeperGuiApp {
                 6.0,
                 16.0,
             ));
-            container(menu).align_right(Fill).align_bottom(Fill).padding(Padding {
-                top: 0.0,
-                right: 16.0,
-                bottom: 60.0,
-                left: 0.0,
-            })
+            container(menu).align_right(Fill).align_bottom(Fill).padding(pad(0.0, 16.0, 60.0, 0.0))
         });
         stack![body].push(menu).into()
     }

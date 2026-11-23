@@ -130,9 +130,8 @@ impl BeeperGuiApp {
         for (i, label) in shown.into_iter().enumerate() {
             // Desktop's `Drag` fades the dragged row to 0.4.
             let fade = if e.drag.as_ref().is_some_and(|d| d.0 == i) { 0.4 } else { 1.0 };
-            let date = parse_when_millis(&label, now).map(|at| {
-                txt(suggestion_date(at), 10.0).line_height(Pixels(rem(12.0))).color(p.weak.scale_alpha(fade))
-            });
+            let date = parse_when_millis(&label, now)
+                .map(|at| txt(suggestion_date(at), 10.0).line_height(lh(12.0)).color(p.weak.scale_alpha(fade)));
             let name = semi(label.clone(), 13.0).color(p.text.scale_alpha(fade));
             let labels = row![name].push(date).spacing(8).align_y(Center).width(Fill);
             let shows = e.hovered == Some(i) || e.drag.is_some();
@@ -163,7 +162,7 @@ impl BeeperGuiApp {
                     .on_input(move |t| edit(Msg::Input(t)))
                     .on_submit(edit(Msg::Save))
                     .size(rem(13.0))
-                    .line_height(Pixels(rem(16.0)))
+                    .line_height(lh(16.0))
                     .padding([8, 8])
                     .width(Fill)
                     .style(outline_input(p));
@@ -176,7 +175,7 @@ impl BeeperGuiApp {
                 .spacing(6)
                 .align_y(Center);
                 let at = Some(text.trim()).filter(|t| !t.is_empty()).and_then(|t| parse_when_millis(t, now));
-                let preview = at.map(|at| txt(suggestion_date(at), 10.0).line_height(Pixels(rem(12.0))).color(p.weak));
+                let preview = at.map(|at| txt(suggestion_date(at), 10.0).line_height(lh(12.0)).color(p.weak));
                 let preview = container(preview).height(24).padding([4, 6]).align_y(Center);
                 column![add, preview].padding(Padding::ZERO.top(8.0)).into()
             }
