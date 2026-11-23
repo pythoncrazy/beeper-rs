@@ -3751,6 +3751,18 @@ pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
     client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
 }
 
+/// Whether this process serves a stub homeserver of the tests ([`crate::bridge_stub::serve`]), whose Matrix clients
+/// take [`stub_requests`].
+#[cfg(any(test, feature = "stub"))]
+pub static STUB_CLIENTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The requests of a Matrix client of the tests: one try each, with a short timeout. matrix-sdk retries a 5xx or a 429
+/// for up to 15 minutes, and a test with a lost answer would wait that long instead of failing.
+#[cfg(any(test, feature = "stub"))]
+fn stub_requests() -> matrix_sdk::config::RequestConfig {
+    matrix_sdk::config::RequestConfig::new().timeout(std::time::Duration::from_secs(15)).disable_retry()
+}
+
 pub(crate) async fn connect(store: &SharedStore) -> Result<Client, String> {
     let (s, dir) = {
         let st = store.read();
@@ -3761,13 +3773,14 @@ pub(crate) async fn connect(store: &SharedStore) -> Result<Client, String> {
         backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
         auto_enable_backups: true,
     };
-    let client = Client::builder()
-        .homeserver_url(&s.homeserver)
-        .sqlite_store(dir, None)
-        .with_encryption_settings(encryption)
-        .build()
-        .await
-        .map_err(|e| e.to_string())?;
+    let builder = Client::builder().homeserver_url(&s.homeserver).sqlite_store(dir, None);
+    let builder = builder.with_encryption_settings(encryption);
+    #[cfg(any(test, feature = "stub"))]
+    let builder = match STUB_CLIENTS.load(std::sync::atomic::Ordering::Relaxed) {
+        true => builder.request_config(stub_requests()),
+        false => builder,
+    };
+    let client = builder.build().await.map_err(|e| e.to_string())?;
     let meta = SessionMeta {
         user_id: s.user_id.parse().map_err(|e| format!("bad Matrix user ID {}: {e}", s.user_id))?,
         device_id: s.device_id.into(),
@@ -7716,6 +7729,29 @@ mod tests {
         pushed_until(&store, |st| st.sent.contains_key(&txn)).await;
         assert!(store.read().stored_message(&txn).expect("the echo").send_error.is_none());
         assert!(tries.load(Relaxed) >= 3 && store.read().outbox.is_empty(), "the third try went through");
+    }
+
+    /// A client of a stub homeserver tries each request once, with a short timeout. matrix-sdk retries a 5xx for up to
+    /// 15 minutes, which a test that gets one waited out instead of failing.
+    #[tokio::test]
+    async fn stub_clients_try_each_request_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let tries = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = tries.clone();
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split('?').next().expect("a path") {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => {
+                counted.fetch_add(1, Relaxed);
+                (503, json!({ "errcode": "M_UNKNOWN", "error": "stub overload" }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let (_store, client) = crate::testing::stub_client(&crate::testing::temp_dir("stub-once"), &url).await;
+        let started = std::time::Instant::now();
+        assert!(client.sync_once(super::SyncSettings::default()).await.is_err(), "the homeserver is overloaded");
+        assert_eq!(tries.load(Relaxed), 1, "one try");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "no backoff");
     }
 
     /// A delete for everyone and a mute while the homeserver cannot be reached wait in the outbox, like a send, and go
