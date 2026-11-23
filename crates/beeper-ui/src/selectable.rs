@@ -99,6 +99,7 @@ pub fn selectable<'a, Link: Clone + 'static, Message>(
         link_tip: None,
         tip: None,
         images: Vec::new(),
+        playing: None,
     }
 }
 
@@ -115,7 +116,9 @@ pub struct Selectable<'a, Link: Clone + 'static, Message> {
     link_tip: Option<LinkTip<'a, Link, Message>>,
     /// The tooltip of the hovered link, made for the overlay.
     tip: Option<Element<'a, Message>>,
-    images: Vec<Option<core_image::Handle>>,
+    images: Vec<Option<crate::Frames>>,
+    /// When the animated images started to play, if they play.
+    playing: Option<Instant>,
 }
 
 impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
@@ -169,10 +172,20 @@ impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
         self
     }
 
-    /// The images of the [`IMAGE_SLOT`] spans in order, each drawn 1em high in its slot once it has loaded.
-    pub fn images(mut self, images: Vec<Option<core_image::Handle>>) -> Self {
+    /// The images of the [`IMAGE_SLOT`] spans in order, each drawn 1em high in its slot once it has loaded. The
+    /// animated ones play from `playing`, if they play, and show their first frame otherwise.
+    pub fn images(mut self, images: Vec<Option<crate::Frames>>, playing: Option<Instant>) -> Self {
         self.images = images;
+        self.playing = playing;
         self
+    }
+
+    /// The frame of an image that is due now.
+    fn frame(&self, frames: &[crate::anim::Frame]) -> core_image::Handle {
+        match self.playing.filter(|_| frames.len() > 1) {
+            Some(start) => crate::anim::frame(frames, start.elapsed().as_millis()).0.clone(),
+            None => frames[0].0.clone(),
+        }
     }
 
     fn spans(&self) -> &[Span<'a, Link, Font>] {
@@ -359,10 +372,11 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
         }
         // Desktop's `.custom-emoji img`: 1em high, at the bottom of the text, raised by 0.075em.
         let slots = self.spans().iter().enumerate().filter(|(_, s)| s.text == IMAGE_SLOT);
-        for ((index, span), handle) in slots.zip(&self.images) {
-            let (Some(handle), Some(region)) = (handle, state.paragraph.span_bounds(index).first().copied()) else {
+        for ((index, span), frames) in slots.zip(&self.images) {
+            let (Some(frames), Some(region)) = (frames, state.paragraph.span_bounds(index).first().copied()) else {
                 continue;
             };
+            let handle = &self.frame(frames);
             let em = span.size.unwrap_or(size).0;
             let line_height = span.line_height.unwrap_or(self.line_height).to_absolute(Pixels(em)).0;
             let bottom = region.y + (line_height + em) / 2.0 - em * 0.075;
@@ -385,9 +399,16 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
         _renderer: &Renderer,
         _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
-        _viewport: &Rectangle,
+        viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
+        // The animated images ask for a redraw at their next frame while the text is on screen.
+        if let (Event::Window(iced::window::Event::RedrawRequested(now)), Some(start)) = (event, self.playing) {
+            let next = self.images.iter().flatten().filter(|f| f.len() > 1).map(|f| crate::anim::next(f, start, *now));
+            if let Some(at) = next.min().filter(|_| bounds.intersects(viewport)) {
+                shell.request_redraw_at(at);
+            }
+        }
         let state = tree.state.downcast_mut::<State<Link>>();
         let inside = cursor.position_in(bounds);
 

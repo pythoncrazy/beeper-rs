@@ -161,9 +161,9 @@ pub fn load_file(path: &Path) -> Result<PendingMedia, String> {
     let frames = match mime.starts_with("video/") {
         true => video_frames(path, false).unwrap_or_else(|e| {
             eprintln!("processAttachment: could not read the first frame of {name}: {e}");
-            vec![]
+            crate::Frames::from([])
         }),
-        false => vec![],
+        false => crate::Frames::from([]),
     };
     Ok(PendingMedia { bytes, name, mime: mime.into(), is_gif: false, size, frames, duration, sticker: None })
 }
@@ -351,7 +351,7 @@ mod tests {
             mime: mime.into(),
             is_gif: false,
             size,
-            frames: vec![],
+            frames: crate::Frames::from([]),
             duration,
             sticker: None,
         };

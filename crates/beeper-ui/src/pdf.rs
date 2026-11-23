@@ -68,7 +68,7 @@ fn render(doc: &Pdf, n: usize) -> Result<Frames, String> {
     let px = hayro::render(page, &hayro::RenderCache::new(), &Default::default(), &Default::default(), &settings);
     let (w, h) = (u32::from(px.width()), u32::from(px.height()));
     let rgba = px.take_rgba8(hayro::vello_cpu::peniko::ImageAlphaType::AlphaPremultiplied);
-    Ok(vec![(image::Handle::from_rgba(w, h, rgba), 0)])
+    Ok(Frames::from([(image::Handle::from_rgba(w, h, rgba), 0)]))
 }
 
 /// The size of a page of `w` × `h` points in a carousel of `area`: its size in CSS pixels, like react-pdf's canvas at
@@ -154,7 +154,7 @@ impl BeeperGuiApp {
                         let size = fit(page.render_dimensions(), area);
                         // The page is white while it draws, like react-pdf's page under its canvas.
                         let page: El<'a> = match self.media_at(&page_key(url, n)) {
-                            Some(Ok(frames)) => anim::turning(frames, self.started, turn, move |f| {
+                            Some(Ok(frames)) => anim::turning(frames, false, self.started, turn, move |f| {
                                 image(f).width(size.width).height(size.height)
                             }),
                             _ => container(Space::new())
