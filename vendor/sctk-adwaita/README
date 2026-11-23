@@ -14,4 +14,8 @@ This directory is sctk-adwaita 0.10.1 from crates.io with these changes:
 - The buttons are placed again when the compositor's capabilities change, instead of at the left edge until the next
   resize.
 - The colors follow the desktop rather than the application's theme, like Electron's frame.
+- From weather-rs: the title bar's metrics, button layout, click actions and header-bar colors are cached in
+  `$XDG_CACHE_HOME/beeper-rs/gtk-frame-v1.cache`, so the first frames draw without waiting for GTK to open, and a
+  frame draws again with GTK once it is ready (`on_ready`). GTK warms up its styles, fonts and icons on its thread.
+- The first window takes the launcher's `xdg_activation_v1` token (`set_activation_token`), so it gets the focus.
 - Lifetimes that newer compilers warn about are spelled out.
