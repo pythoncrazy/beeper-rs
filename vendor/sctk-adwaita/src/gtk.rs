@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_double, c_int, c_void, CString};
 use std::path::PathBuf;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 
 use smithay_client_toolkit::reexports::csd_frame::WindowState;
@@ -79,6 +79,7 @@ api! {
     g_free: fn(Ptr);
     g_object_unref: fn(Ptr);
     g_main_context_iteration: fn(Ptr, c_int) -> c_int;
+    g_main_context_wakeup: fn(Ptr);
     gtk_widget_path_new: fn() -> Ptr;
     gtk_widget_path_copy: fn(Ptr) -> Ptr;
     gtk_widget_path_free: fn(Ptr);
@@ -190,6 +191,16 @@ struct Opened {
     border_rgb: u32,
 }
 
+/// GTK's settings that the frame follows while it runs, like Chromium's `GtkUi`, which listens
+/// to `notify::gtk-decoration-layout` and the theme's settings.
+#[derive(Clone, PartialEq)]
+struct Settings {
+    layout: Option<(String, String)>,
+    titlebar: TitlebarActions,
+    /// `gtk-theme-name` and `gtk-application-prefer-dark-theme`, whose change redraws the frames.
+    theme: (Option<String>, bool),
+}
+
 fn cache_path() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("XDG_CACHE_HOME") {
         if !dir.is_empty() {
@@ -279,7 +290,13 @@ struct Worker {
 
 static WORKER: OnceLock<Worker> = OnceLock::new();
 static READY: AtomicBool = AtomicBool::new(false);
-static ON_READY: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
+static ON_READY: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
+/// GTK's settings as they are now, once GTK is open.
+static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
+/// Counts the changes of [`SETTINGS`]; a frame whose count is behind lays out and draws again.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// `g_main_context_wakeup`, which other threads call to hand the GTK thread a job.
+static WAKEUP: OnceLock<unsafe extern "C" fn(Ptr)> = OnceLock::new();
 
 /// Starts opening GTK in the background, so the first window's frame finds it ready.
 pub fn preload() {
@@ -287,20 +304,44 @@ pub fn preload() {
     worker();
 }
 
-/// Registers a one-shot callback invoked when GTK finishes initializing and warming up.
-pub fn on_ready(cb: impl FnOnce() + Send + 'static) {
-    if READY.load(Ordering::Acquire) {
-        cb();
-        return;
-    }
+/// Registers a callback invoked when GTK finishes initializing and warming up, and again
+/// whenever GTK's settings change (the title bar's buttons, its click actions or the theme), so
+/// that the application wakes its event loop and the frames draw again.
+pub fn on_ready(cb: impl Fn() + Send + 'static) {
+    let ready = READY.load(Ordering::Acquire);
     if let Ok(mut slot) = ON_READY.lock() {
-        *slot = Some(Box::new(cb));
-    }
-    if READY.load(Ordering::Acquire) {
-        if let Some(cb) = ON_READY.lock().ok().and_then(|mut g| g.take()) {
+        let cb = slot.insert(Box::new(cb));
+        if ready {
             cb();
         }
     }
+}
+
+/// Runs the callback of [`on_ready`], if there is one.
+fn notify_ready() {
+    if let Ok(slot) = ON_READY.lock() {
+        if let Some(cb) = slot.as_ref() {
+            cb();
+        }
+    }
+}
+
+/// How many times GTK's settings have changed; see [`GENERATION`].
+pub(crate) fn generation() -> u64 {
+    GENERATION.load(Ordering::Acquire)
+}
+
+/// Takes GTK's `settings`; the frames lay out and draw again when they changed. Returns the
+/// settings from before.
+fn publish(settings: Settings) -> Option<Option<Settings>> {
+    let mut current = SETTINGS.lock().ok()?;
+    if current.as_ref() == Some(&settings) {
+        return None;
+    }
+    let old = current.replace(settings);
+    drop(current);
+    GENERATION.fetch_add(1, Ordering::AcqRel);
+    Some(old)
 }
 
 fn worker() -> &'static Worker {
@@ -311,19 +352,36 @@ fn worker() -> &'static Worker {
             let Some(mut gtk) = Gtk::open() else {
                 return;
             };
+            let _ = WAKEUP.set(gtk.api.g_main_context_wakeup);
             let metrics = gtk.metrics();
-            let layout = gtk.setting(c"gtk-decoration-layout").map(|layout| split_layout(&layout));
-            let titlebar = gtk.titlebar_actions();
+            let settings = gtk.settings();
             let (headerbar_rgb, border_rgb) = gtk.warmup(&metrics);
-            let info = Opened { metrics, layout, titlebar, headerbar_rgb, border_rgb };
+            let (layout, titlebar) = (settings.layout.clone(), settings.titlebar);
+            let mut info = Opened { metrics, layout, titlebar, headerbar_rgb, border_rgb };
             save_cache(&info);
-            let _ = opened.send(info);
+            let _ = opened.send(info.clone());
+            // The frames that opened before GTK did took the cached settings, which may be stale.
+            publish(settings);
             READY.store(true, Ordering::Release);
-            if let Some(cb) = ON_READY.lock().ok().and_then(|mut g| g.take()) {
-                cb();
-            }
-            for job in queue {
-                job(&mut gtk);
+            notify_ready();
+            // GTK's main context wakes up for jobs (`call` wakes it) and for GDK's events, among
+            // them the changes of the desktop's settings, which come over D-Bus.
+            loop {
+                while let Ok(job) = queue.try_recv() {
+                    job(&mut gtk);
+                }
+                let settings = gtk.settings();
+                let theme = settings.theme.clone();
+                (info.layout, info.titlebar) = (settings.layout.clone(), settings.titlebar);
+                if let Some(old) = publish(settings) {
+                    if old.is_some_and(|old| old.theme != theme) {
+                        gtk.forget_icons();
+                    }
+                    save_cache(&info);
+                    notify_ready();
+                }
+                // SAFETY: GTK's thread blocks in its own main context until an event or a wakeup.
+                unsafe { (gtk.api.g_main_context_iteration)(null_mut(), 1) };
             }
         });
         Worker { jobs: Mutex::new(jobs), opening: Mutex::new(Some(opening)), opened: OnceLock::new() }
@@ -360,6 +418,11 @@ fn call<R: Send>(job: impl FnOnce(&mut Gtk) -> R + Send) -> Option<R> {
     // before this returns: `result` yields once the job has run or been dropped.
     let job: Job = unsafe { std::mem::transmute(job) };
     worker.jobs.lock().ok()?.send(job).ok()?;
+    if let Some(wakeup) = WAKEUP.get() {
+        // SAFETY: `g_main_context_wakeup` is thread safe, and a wakeup before GTK's thread
+        // blocks makes its next iteration return at once.
+        unsafe { wakeup(null_mut()) };
+    }
     result.recv().ok()
 }
 
@@ -371,12 +434,23 @@ pub(crate) fn metrics() -> Option<Metrics> {
 /// GTK's `gtk-decoration-layout` (`org.gnome.desktop.wm.preferences button-layout`): the
 /// buttons left and right of the title, which Electron's frame shows.
 pub(crate) fn decoration_layout() -> Option<(String, String)> {
-    worker().metadata()?.layout.clone()
+    match live() {
+        Some(settings) => settings.layout,
+        None => worker().metadata()?.layout.clone(),
+    }
 }
 
 /// What clicks on the title bar do, by GTK's settings.
 pub(crate) fn titlebar_actions() -> Option<TitlebarActions> {
-    Some(worker().metadata()?.titlebar)
+    match live() {
+        Some(settings) => Some(settings.titlebar),
+        None => Some(worker().metadata()?.titlebar),
+    }
+}
+
+/// GTK's settings now, once GTK is open.
+fn live() -> Option<Settings> {
+    SETTINGS.lock().ok()?.clone()
 }
 
 /// Whether GTK has finished opening and warming up and can draw immediately without stalling.
@@ -458,6 +532,37 @@ impl Gtk {
             let text = std::ffi::CStr::from_ptr(value).to_string_lossy().into_owned();
             (api.g_free)(value.cast());
             Some(text)
+        }
+    }
+
+    /// The settings the frame follows, as GTK has them now.
+    fn settings(&self) -> Settings {
+        Settings {
+            layout: self.setting(c"gtk-decoration-layout").map(|layout| split_layout(&layout)),
+            titlebar: self.titlebar_actions(),
+            theme: (self.setting(c"gtk-theme-name"), self.flag(c"gtk-application-prefer-dark-theme")),
+        }
+    }
+
+    /// A boolean setting of GTK's.
+    fn flag(&self, name: &std::ffi::CStr) -> bool {
+        let mut value: c_int = 0;
+        // SAFETY: a boolean property, written to `value`.
+        unsafe {
+            let settings = (self.api.gtk_settings_get_default)();
+            if settings.is_null() {
+                return false;
+            }
+            (self.api.g_object_get)(settings, name.as_ptr(), &mut value as *mut c_int, null_mut::<c_void>());
+        }
+        value != 0
+    }
+
+    /// Drops the icons drawn in the colors of the theme from before.
+    fn forget_icons(&mut self) {
+        for (_, surface) in self.icons.drain().filter(|(_, surface)| !surface.is_null()) {
+            // SAFETY: each surface was made for the cache, which held the only reference.
+            unsafe { (self.api.cairo_surface_destroy)(surface) };
         }
     }
 
@@ -840,5 +945,29 @@ fn backdrop(state: WindowState) -> u32 {
         0
     } else {
         STATE_BACKDROP
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A change of GTK's settings counts once, so the frames lay out again once, and the same
+    /// settings again change nothing.
+    #[test]
+    fn publish_counts_each_change_once() {
+        let settings = |layout: &str| Settings {
+            layout: Some(split_layout(layout)),
+            titlebar: TitlebarActions::default(),
+            theme: (Some("Adwaita".into()), false),
+        };
+        let start = generation();
+        assert!(publish(settings("menu:close")).is_some());
+        assert!(publish(settings("menu:close")).is_none(), "the same settings again are no change");
+        assert_eq!(generation(), start + 1);
+        let old = publish(settings("close,minimize:")).expect("a new layout is a change");
+        assert_eq!(old.and_then(|s| s.layout), Some(("menu".into(), "close".into())));
+        assert_eq!(generation(), start + 2);
+        assert_eq!(decoration_layout(), Some(("close,minimize".into(), String::new())), "the frames read it");
     }
 }

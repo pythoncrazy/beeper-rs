@@ -1070,6 +1070,10 @@ impl BeeperGuiApp {
             !mine && sender && others > 1 && m.is_deleted != Some(true) && self.can(&m.account_id, "create_dm");
         // Desktop's `D`: the items that act on a message hide while you edit it.
         let editing = self.pane().editing_message_id.as_ref() == Some(&mid);
+        // Desktop's `isPending` (its `pendingMessages`): a send that the homeserver has not taken yet, or that failed,
+        // has no Edit, Reply, Reply in thread, Bookmark, Mark as Unread, End Poll, Delete or voice items, and its
+        // React is off. Copy, Forward and "Sent at" stay.
+        let queued = pending(&st, m);
         // Desktop's detected-data items (phone, address, date, flight) above these come from the macOS-only
         // TextsSwift `detectData`; on Linux it returns nothing, so they never show (App:48518, 96520).
         let before: Vec<(El, f32)> = [
@@ -1094,19 +1098,19 @@ impl BeeperGuiApp {
                 let load = UiMessage::Loaded(loads::Msg::ResolveMedia(m.account_id.clone(), mid.clone(), raw.clone()));
                 vec![item(label.into(), "", (state != Some(&true)).then_some(load)), rule()]
             }),
-            (editable(m, chat) && !editing).then(|| {
+            (editable(m, chat) && !editing && !queued).then(|| {
                 let edit =
                     edit_open(m, rules).then(|| UiMessage::Composer(composer::Msg::StartEdit(mid.clone(), text)));
                 vec![item(tr("Edit…").into(), &key("Message: Edit"), edit)]
             }),
-            (rules.reply && live && !editing).then(|| {
+            (rules.reply && live && !editing && !queued).then(|| {
                 vec![item(
                     tr("Reply…").into(),
                     &key("Message: Quote & Reply"),
                     Some(UiMessage::Composer(composer::Msg::StartReply(mid.clone()))),
                 )]
             }),
-            (self.pane().thread_root.is_none() && !editing && can_thread(&st, chat, m)).then(|| {
+            (self.pane().thread_root.is_none() && !editing && !queued && can_thread(&st, chat, m)).then(|| {
                 let label = tr("Reply in thread…").into();
                 vec![item(label, &key("Show Replies"), Some(UiMessage::Thread(threads::Msg::Show(mid.clone()))))]
             }),
@@ -1124,7 +1128,7 @@ impl BeeperGuiApp {
                 )]
             }),
             (rules.react && !editing).then(|| {
-                let react = m.reactable().then(|| UiMessage::Message(Msg::ReactOn(mid.clone())));
+                let react = (m.reactable() && !queued).then(|| UiMessage::Message(Msg::ReactOn(mid.clone())));
                 vec![item(tr("React…").into(), "", react)]
             }),
             bookmarkable(&st, m)
@@ -1149,7 +1153,7 @@ impl BeeperGuiApp {
                 let read = UiMessage::Message(Msg::MarkReadThrough(cid.clone(), mid.clone()));
                 vec![item(tr("Mark as Read").into(), "", Some(read))]
             }),
-            (unread_from(&st, m) && !pending(&st, m)).then(|| {
+            (unread_from(&st, m) && !queued).then(|| {
                 vec![item(
                     tr("Mark as Unread").into(),
                     "",
@@ -1160,6 +1164,7 @@ impl BeeperGuiApp {
                 && m.poll.as_ref().is_some_and(|p| !p.ended)
                 && m.is_deleted != Some(true)
                 && !editing
+                && !queued
                 && st.feature("enable-polls").on
                 && st.chat(&cid).polls.is_some_and(|r| r.end))
             .then(|| {
@@ -1191,7 +1196,8 @@ impl BeeperGuiApp {
         // Desktop's `Zit`: no Delete… for the message that you edit.
         let delete = (!editing && delete_dialog(&st, &[m]).is_some())
             .then(|| item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(vec![mid.clone()])))));
-        let tail: Vec<(El, f32)> = self.voice_menu_rows(&st, m).into_iter().chain(delete).collect();
+        let voice = if queued { Vec::new() } else { self.voice_menu_rows(&st, m) };
+        let tail: Vec<(El, f32)> = voice.into_iter().chain(delete.filter(|_| !queued)).collect();
         let rows: Vec<(El, f32)> = [
             Some(head),
             (!tail.is_empty()).then(|| std::iter::once(rule()).chain(tail).collect()),

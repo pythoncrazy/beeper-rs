@@ -1086,17 +1086,29 @@ pub enum Clip {
     Text,
 }
 
+/// Whether arboard's `error` leaves the paste to iced's clipboard, which pastes the text if there is one. arboard reads
+/// the clipboard through X11 on GNOME, whose compositor has no data-control protocol, so on a Wayland session without
+/// Xwayland it reaches no clipboard at all, where iced, which speaks Wayland, still pastes the text like Desktop.
+fn paste_text_instead(error: &arboard::Error) -> bool {
+    matches!(
+        error,
+        arboard::Error::ContentNotAvailable | arboard::Error::ClipboardNotSupported | arboard::Error::Unknown { .. }
+    )
+}
+
 async fn clipboard_paste() -> Result<Clip, String> {
     let read = || {
-        let mut c = arboard::Clipboard::new().map_err(|e| format!("Could not read the clipboard: {e}"))?;
+        let mut c = match arboard::Clipboard::new() {
+            Err(e) if paste_text_instead(&e) => return Ok(Clip::Text),
+            c => c.map_err(|e| format!("Could not read the clipboard: {e}"))?,
+        };
         // The `text/uri-list` of a file manager. iced's X11 clipboard answers every target with its text, which
         // has no `file://` lines.
         if let Some(files) = c.get().file_list().ok().filter(|f| !f.is_empty()) {
             return Ok(Clip::Files(files));
         }
         let img = match c.get_image() {
-            Err(arboard::Error::ContentNotAvailable) => return Ok(Clip::Text),
-            Err(arboard::Error::Unknown { .. }) if c.get_text().is_ok() => return Ok(Clip::Text),
+            Err(e) if paste_text_instead(&e) => return Ok(Clip::Text),
             r => r.map_err(|e| format!("Could not read the clipboard: {e}"))?,
         };
         let size = (u32::try_from(img.width).unwrap(), u32::try_from(img.height).unwrap());
@@ -2121,27 +2133,55 @@ enum Align {
 
 /// Finds the offset of a scrollable that shows a container where `Align` puts it. The offset of the timeline counts
 /// from its bottom, because it is anchored there.
-struct Locate(
-    iced::widget::Id,
-    Option<(iced::Rectangle, iced::Rectangle, f32)>,
-    Option<iced::Rectangle>,
-    Align,
-    &'static str,
-);
-
-fn locate(target: impl Into<iced::widget::Id>, scroll: &'static str, align: Align) -> Task<UiMessage> {
-    iced::advanced::widget::operate(Locate(target.into(), None, None, align, scroll))
-        .then(move |y| operation::scroll_to(scroll, operation::AbsoluteOffset { x: 0.0, y }))
+///
+/// Operations go through the widgets of every window, and each chat window has its own "timeline": it takes the
+/// scrollable of the window of the container. It finds nothing when no window shows the container yet, as a window
+/// that is still opening.
+struct Locate {
+    target: iced::widget::Id,
+    scroll: &'static str,
+    align: Align,
+    /// The window whose widgets the operation goes through now, by its [`focus::WindowMark`].
+    window: Option<window::Id>,
+    /// The scrollables named `scroll`, with their window, bounds, content bounds and offset.
+    scrollables: Vec<(Option<window::Id>, iced::Rectangle, iced::Rectangle, f32)>,
+    /// The container and its window.
+    found: Option<(Option<window::Id>, iced::Rectangle)>,
 }
 
-impl iced::advanced::widget::Operation<f32> for Locate {
-    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<f32>)) {
+impl Locate {
+    fn new(target: iced::widget::Id, scroll: &'static str, align: Align) -> Self {
+        Self { target, scroll, align, window: None, scrollables: Vec::new(), found: None }
+    }
+}
+
+fn locate(target: impl Into<iced::widget::Id>, scroll: &'static str, align: Align) -> Task<UiMessage> {
+    iced::advanced::widget::operate(Locate::new(target.into(), scroll, align))
+        .then(move |(window, y)| iced::advanced::widget::operate(ScrollIn { window, scroll, y, inside: false }))
+}
+
+/// Takes the window of the widgets that follow a [`focus::WindowMark`].
+fn window_mark(state: &mut dyn std::any::Any) -> Option<window::Id> {
+    state.downcast_ref::<focus::WindowMark>().map(|m| m.0)
+}
+
+impl iced::advanced::widget::Operation<(Option<window::Id>, f32)> for Locate {
+    fn traverse(
+        &mut self,
+        operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<(Option<window::Id>, f32)>),
+    ) {
         operate(self)
     }
 
+    fn custom(&mut self, _: Option<&iced::widget::Id>, _: iced::Rectangle, state: &mut dyn std::any::Any) {
+        if let Some(window) = window_mark(state) {
+            self.window = Some(window);
+        }
+    }
+
     fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
-        if id == Some(&self.0) {
-            self.2 = Some(bounds);
+        if id == Some(&self.target) && self.found.is_none() {
+            self.found = Some((self.window, bounds));
         }
     }
 
@@ -2153,24 +2193,62 @@ impl iced::advanced::widget::Operation<f32> for Locate {
         at: iced::Vector,
         _: &mut dyn iced::advanced::widget::operation::Scrollable,
     ) {
-        if id == Some(&iced::widget::Id::new(self.4)) {
-            self.1 = Some((bounds, content, at.y));
+        if id == Some(&iced::widget::Id::new(self.scroll)) {
+            self.scrollables.push((self.window, bounds, content, at.y));
         }
     }
 
-    fn finish(&self) -> iced::advanced::widget::operation::Outcome<f32> {
-        let (view, content, at) = self.1.unwrap_or_else(|| panic!("{} is shown", self.4));
-        let msg = self.2.unwrap_or_else(|| panic!("{:?} is in {}", self.0, self.4));
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<(Option<window::Id>, f32)> {
+        use iced::advanced::widget::operation::Outcome;
+        let Some((window, msg)) = self.found else { return Outcome::None };
+        let Some(&(_, view, content, at)) = self.scrollables.iter().find(|s| s.0 == window) else {
+            return Outcome::None;
+        };
         let max = (content.height - view.height).max(0.0);
         let y = msg.y - content.y;
-        let top = match self.3 {
+        let top = match self.align {
             Align::Nearest => at.max(y + msg.height - view.height).min(y),
             Align::Center => y - (view.height - msg.height) / 2.0,
             Align::Start(gap) => y - gap,
         };
         let top = top.clamp(0.0, max);
-        let anchored = matches!(self.4, "timeline" | "thread-timeline");
-        iced::advanced::widget::operation::Outcome::Some(if anchored { max - top } else { top })
+        let anchored = matches!(self.scroll, "timeline" | "thread-timeline");
+        Outcome::Some((window, if anchored { max - top } else { top }))
+    }
+}
+
+/// Scrolls the scrollable named `scroll` of `window` to `y`, and not those of the same name in other windows.
+struct ScrollIn {
+    window: Option<window::Id>,
+    scroll: &'static str,
+    y: f32,
+    inside: bool,
+}
+
+impl<T> iced::advanced::widget::Operation<T> for ScrollIn {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<T>)) {
+        operate(self)
+    }
+
+    fn custom(&mut self, _: Option<&iced::widget::Id>, _: iced::Rectangle, state: &mut dyn std::any::Any) {
+        if let Some(window) = window_mark(state) {
+            self.inside = Some(window) == self.window;
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        _: iced::Rectangle,
+        _: iced::Rectangle,
+        _: iced::Vector,
+        state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        // Without window marks (the tests' simulator draws no window root), the only window is the one.
+        let here = self.inside || self.window.is_none();
+        if here && id == Some(&iced::widget::Id::new(self.scroll)) {
+            state.scroll_to(operation::AbsoluteOffset { x: Some(0.0), y: Some(self.y) });
+        }
     }
 }
 
@@ -2763,6 +2841,8 @@ pub struct BeeperGuiApp {
     pub dark: bool,
     pub zoom: f32,
     zoom_drag: Option<f32>,
+    /// The windows that opened maximized, to maximize again once the window manager places them.
+    maximize_when_placed: Vec<window::Id>,
     pub pal: Palette,
     /// The chat list of the main window, or of the space window whose messages `update` handles.
     pub list: chat_list::ListState,
@@ -3126,6 +3206,7 @@ impl BeeperGuiApp {
             dark: theme,
             zoom: 1.0,
             zoom_drag: None,
+            maximize_when_placed: Vec::new(),
             list: chat_list::ListState { filters, ..Default::default() },
             seen_requests: Vec::new(),
             pip: None,
@@ -5116,6 +5197,10 @@ impl BeeperGuiApp {
                                 self.pane.key_focus.set(None);
                                 return self.update(press);
                             }
+                            if !self.popup_menu_open() && self.pane.picker.is_none() {
+                                return focus::caret(window, self.composer_id())
+                                    .map(|at| UiMessage::Composer(composer::Msg::Enter(at)));
+                            }
                         }
                         _ => {}
                     }
@@ -5293,9 +5378,9 @@ impl BeeperGuiApp {
 
     pub fn subscription(&self) -> Subscription<UiMessage> {
         let frame_ready = Subscription::run(|| {
-            iced::futures::stream::once(async {
+            iced::futures::stream::unfold((), |()| async {
                 FRAME_READY.notified().await;
-                UiMessage::Noop
+                Some((UiMessage::Noop, ()))
             })
         });
         let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
@@ -6807,6 +6892,12 @@ impl BeeperGuiApp {
 
     /// Whether one of the main window's menus is open.
     fn menu_open(&self) -> bool {
+        self.popup_menu_open() || self.pane.show_attach_menu
+    }
+
+    /// Whether one of the main window's menus is open, other than the unveiled actions of the composer, which are
+    /// part of Desktop's composer row.
+    fn popup_menu_open(&self) -> bool {
         self.list().show_filter_menu
             || self.list().chat_menu.is_some()
             || self.pane.message_menu.is_some()
@@ -6817,7 +6908,6 @@ impl BeeperGuiApp {
             || self.list().reminder_menu.is_some()
             || self.audio.menu.is_some()
             || self.selection_menu.is_some()
-            || self.pane.show_attach_menu
     }
 
     fn tip<'a>(
@@ -7147,14 +7237,25 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .title(BeeperGuiApp::title)
         .subscription(BeeperGuiApp::subscription)
         .theme(|a: &BeeperGuiApp, _| a.iced_theme())
-        .scale_factor(|a: &BeeperGuiApp, _| a.zoom)
+        .scale_factor(|a: &BeeperGuiApp, _| a.zoom * text_scale())
         .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.window, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
     app.run()
 }
 
-/// Woken once GTK opens to draw the title bars, so that the windows draw their frames again with the GTK theme.
+/// Woken once GTK opens to draw the title bars, and whenever GTK's settings change, so that the windows lay out and
+/// draw their frames again with the GTK theme and settings.
 pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// GNOME's `text-scaling-factor` on Wayland, which Chromium applies to the whole of each window like a zoom, the size
+/// of the window included: Desktop's device scale is the screen's times it. On X11 the scale of the window already
+/// has it, from `Xft.dpi`.
+pub static TEXT_SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
+/// [`TEXT_SCALE`], or 1.
+fn text_scale() -> f32 {
+    TEXT_SCALE.get().copied().unwrap_or(1.0)
+}
 
 /// People, each with the account to reach them on.
 pub type People = Vec<(String, User)>;
@@ -7172,6 +7273,19 @@ mod perf;
 mod tests {
     use super::*;
     use crate::media_view::{filmstrip, slide};
+
+    /// A paste whose clipboard arboard cannot reach, as on Wayland without Xwayland, or that has no image, pastes
+    /// the text through iced's clipboard instead of failing with "Could not read the clipboard".
+    #[test]
+    fn a_paste_without_arboard_pastes_the_text() {
+        let unreachable = arboard::Error::Unknown {
+            description: "X11 server connection timed out because it was unreachable".into(),
+        };
+        assert!(paste_text_instead(&unreachable));
+        assert!(paste_text_instead(&arboard::Error::ContentNotAvailable), "a text has no image");
+        assert!(paste_text_instead(&arboard::Error::ClipboardNotSupported));
+        assert!(!paste_text_instead(&arboard::Error::ConversionFailure), "an image that does not decode is an error");
+    }
 
     #[test]
     fn gui_tasks_run_on_the_runtime_of_the_caller() {
