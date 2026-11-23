@@ -55,6 +55,20 @@ pub enum Suggestion {
     Mention(String, String, Option<Box<User>>),
 }
 
+/// Where a pasted text goes when it is one link and nothing else, like linkifyjs's `find(...).isLink && value ===
+/// text` in Desktop's `handlePasteLink`, with the `defaultProtocol` of `https` for a bare domain.
+fn pasted_link(t: &str) -> Option<String> {
+    if t.contains(char::is_whitespace) {
+        return None;
+    }
+    let (r, href) = crate::linkify::link(t).filter(|(r, _)| *r == (0..t.len()))?;
+    let bare = !t[r].to_lowercase().starts_with("http://");
+    Some(match href.strip_prefix("http://").filter(|_| bare) {
+        Some(rest) => format!("https://{rest}"),
+        None => href,
+    })
+}
+
 /// Desktop's `xk`: the label of a mention of `u`.
 pub(crate) fn mention_label(u: &User) -> String {
     let username = u.username.as_deref().map(|n| n.strip_prefix('@').unwrap_or(n));
@@ -1298,6 +1312,8 @@ pub enum Msg {
     /// Ctrl+V and "Paste": Desktop's `paste` handler reads the clipboard.
     Paste,
     Pasted(Result<Clip, String>),
+    /// The text of the clipboard, which a paste puts in the composer.
+    PasteText(String),
     DiscardAttachment(usize),
     /// Desktop's `openAttachmentPicker`.
     PickFiles,
@@ -1700,15 +1716,31 @@ impl BeeperGuiApp {
                 Ok(Clip::Text) => {
                     let id = self.composer_id();
                     let paste = iced::clipboard::read().map(|t| match t {
-                        Some(t) => UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(
-                            t.into(),
-                        )))),
+                        Some(t) => UiMessage::Composer(Msg::PasteText(t)),
                         None => UiMessage::Noop,
                     });
                     return Task::batch([paste, operation::focus(id)]);
                 }
                 Err(e) => self.status_banner = e,
             },
+            // Desktop's `linkOnPaste` (`handlePasteLink`): a link pasted over selected text links the text, in a
+            // chat whose messages take links.
+            Msg::PasteText(t) => {
+                let old = self.pane.composer.text();
+                let st = self.store.read();
+                let chat = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+                let links = chat.is_some_and(|i| st.chats[i].formatting & (1 << format::LINK) != 0);
+                drop(st);
+                let link =
+                    format::selection(&self.pane.composer).filter(|r| links && !r.is_empty()).zip(pasted_link(&t));
+                let Some((r, href)) = link else {
+                    let paste = text_editor::Action::Edit(text_editor::Edit::Paste(t.into()));
+                    return self.update(UiMessage::Composer(Msg::Edit(paste)));
+                };
+                let (text, r) = format::link(&old, r.clone(), &href, &old[r]);
+                self.pane.composer = format::content(&text, r);
+                return self.composer_changed(old);
+            }
             Msg::DiscardAttachment(i) => {
                 self.pane.attachments.remove(i);
                 (self.pane.att_focus, self.pane.quick_look) = (None, None);
@@ -1897,5 +1929,32 @@ impl BeeperGuiApp {
             }
         }
         self.settle()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Desktop's `linkOnPaste`: a link pasted over selected text links the text, with `https` for a bare domain, in
+    /// a chat whose messages take links. Without a selection, or with more than a link, the text goes in as it is.
+    #[test]
+    fn a_link_pasted_over_text_links_it_like_desktop() {
+        let mut app = crate::fuzz::demo_app("paste-link");
+        let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
+        let paste = |app: &mut BeeperGuiApp, text: &str, sel: std::ops::Range<usize>, clip: &str| {
+            app.pane.composer = format::content(text, sel);
+            let _ = app.update(UiMessage::Composer(Msg::PasteText(clip.into())));
+            app.pane.composer.text()
+        };
+        assert_eq!(paste(&mut app, "see docs", 4..8, "https://example.com/a"), "see [docs](https://example.com/a)");
+        assert_eq!(paste(&mut app, "see docs", 4..8, "example.com"), "see [docs](https://example.com)");
+        assert_eq!(paste(&mut app, "mail me", 0..4, "a@example.com"), "[mail](mailto:a@example.com) me");
+        assert_eq!(paste(&mut app, "see docs", 4..8, "the docs"), "see the docs", "more than a link");
+        assert_eq!(paste(&mut app, "see ", 4..4, "https://example.com/a"), "see https://example.com/a");
+        let note = app.store.read().resolve_chat_idx(beeper_core::store::NOTE_CHAT_ID).expect("the note chat");
+        app.store.write().update_chat(note, |c| c.formatting &= !(1 << format::LINK));
+        let plain = paste(&mut app, "see docs", 4..8, "https://example.com/a");
+        assert_eq!(plain, "see https://example.com/a", "a chat without links");
     }
 }
