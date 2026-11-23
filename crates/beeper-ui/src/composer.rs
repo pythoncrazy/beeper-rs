@@ -1277,6 +1277,8 @@ pub enum Msg {
     /// A file drag enters (true) or leaves a window.
     FileHover(window::Id, bool),
     FileDropped(window::Id, std::path::PathBuf),
+    /// The files dropped so far attach together, in their order.
+    DropEnded,
     LinkPreviewLoaded(String, Result<Option<beeper_core::cloud::PagePreview>, String>),
     RemoveLinkPreview(String),
     /// Picks a row of the composer autocomplete.
@@ -1708,11 +1710,13 @@ impl BeeperGuiApp {
                 Err(e) => self.status_banner = e,
             },
             Msg::FilesLoaded(_) if self.pane.editing_message_id.is_some() => {
+                self.drop_send = false;
                 self.status_banner = tr("Attachments can't be added while editing a message").into();
             }
             Msg::FilesLoaded(files) => {
                 self.attach_files(files);
-                if self.drop_send {
+                // Desktop's `onDrop` sends once, after the files of a drop with Shift attach.
+                if std::mem::take(&mut self.drop_send) {
                     self.submit_composer(false);
                 }
             }
@@ -1723,7 +1727,18 @@ impl BeeperGuiApp {
             Msg::FileDropped(id, path) if Some(id) == self.main_window && self.pane.selected_chat_id.is_some() => {
                 self.dropping = false;
                 self.drop_send |= self.mods.shift();
-                return self.update(UiMessage::Composer(Msg::FilesPicked(Ok(vec![path]))));
+                self.dropped.push(path);
+                // The other files of the drop come in the same batch of events, before this task's message.
+                if self.dropped.len() == 1 {
+                    return Task::done(UiMessage::Composer(Msg::DropEnded));
+                }
+            }
+            Msg::DropEnded => {
+                let paths = std::mem::take(&mut self.dropped);
+                if self.pane.selected_chat_id.is_some() {
+                    return self.update(UiMessage::Composer(Msg::FilesPicked(Ok(paths))));
+                }
+                self.drop_send = false;
             }
             // Desktop's Edit Group window takes a dropped image for the avatar.
             Msg::FileHover(id, on) if self.group_window.as_ref().is_some_and(|d| d.id == id) => {
