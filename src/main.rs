@@ -200,9 +200,12 @@ mod display {
             let (globals, _) = wayland_client::globals::registry_queue_init::<Probe>(&c).ok()?;
             Some(globals.contents().with_list(|l| l.iter().map(|g| g.interface.clone()).collect::<Vec<_>>()))
         });
+        let x11 = std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty());
         // Chromium's `--ozone-platform=x11` keeps the app on X11, under XWayland on a Wayland desktop.
-        let wayland = wayland.filter(|_| ozone != Some("x11") || std::env::var_os("DISPLAY").is_none());
-        if wayland.is_none() && ozone == Some("x11") {
+        let wayland = wayland.filter(|_| ozone != Some("x11") || !x11);
+        // winit picks Wayland whenever `WAYLAND_DISPLAY` is set, and panics when nothing answers there (a stale
+        // variable in an SSH or tmux session, or a compositor that is gone), where Chromium falls back to X11.
+        if wayland.is_none() && x11 {
             unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
         }
         let has = |interface: &str| wayland.iter().flatten().any(|g| g == interface);
