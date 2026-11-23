@@ -270,18 +270,44 @@ pub(crate) const MAIN_SIZE: Size = Size::new(1200.0, 800.0);
 /// Desktop's `windowStateKeeper` key of the chat windows (`w2` of a window ID that starts with `thread-`).
 pub(crate) const POP_OUT: &str = "pop-out-thread";
 
+/// Desktop's FastConf `getInitialStore`: the JSON object of the store at `path`, or an empty store before the first
+/// save. A file that is not a JSON object also reads as an empty store, like FastConf's `clearInvalidConfig`, and the
+/// error goes to the log.
+pub(crate) fn read_store(path: &std::path::Path) -> serde_json::Value {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return serde_json::json!({}),
+        Err(e) => panic!("read {}: {e}", path.display()),
+    };
+    match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(store) if store.is_object() => store,
+        Ok(_) => {
+            eprintln!("{} is not a JSON object, so the app uses the defaults", path.display());
+            serde_json::json!({})
+        }
+        Err(e) => {
+            eprintln!("{} is not valid JSON ({e}), so the app uses the defaults", path.display());
+            serde_json::json!({})
+        }
+    }
+}
+
 /// Desktop's `window.json`, or an empty state before the first save.
 pub(crate) fn read_window_state(path: &std::path::Path) -> serde_json::Value {
-    match std::fs::read_to_string(path) {
-        Ok(json) => serde_json::from_str(&json).expect("a valid window state"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
-        Err(e) => panic!("read {}: {e}", path.display()),
-    }
+    read_store(path)
 }
 
 pub(crate) fn write_window_state(path: &std::path::Path, key: &str, maximized: bool, size: Size, at: Option<Point>) {
     let mut state = read_window_state(path);
+    // FastConf's `set` of a dotted key replaces what is not an object on its way.
+    let object = |v: &mut serde_json::Value| {
+        if !v.is_object() {
+            *v = serde_json::json!({});
+        }
+    };
+    object(&mut state["windowState"]);
     let main = &mut state["windowState"][key];
+    object(main);
     if !maximized {
         *main = serde_json::json!({ "width": size.width, "height": size.height });
         if let Some(at) = at {
@@ -290,6 +316,36 @@ pub(crate) fn write_window_state(path: &std::path::Path, key: &str, maximized: b
     }
     main["isMaximized"] = maximized.into();
     std::fs::write(path, state.to_string()).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+}
+
+/// A window of Desktop's `subwindow-state.json` to open again at launch.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Subwindow {
+    /// A chat in its own window.
+    Thread(String),
+    /// The Settings window.
+    Prefs,
+}
+
+/// Desktop's `restoreWindowsFromState` of the `openSubwindows` in `subwindow-state.json`, which skips the entries it
+/// does not know and logs those that are not objects.
+pub(crate) fn read_subwindows(path: &std::path::Path) -> Vec<Subwindow> {
+    let store = read_store(path);
+    let Some(open) = store["openSubwindows"].as_array() else { return Vec::new() };
+    let known = |w: &serde_json::Value| match (w["type"].as_str(), w["threadId"].as_str()) {
+        (Some("thread"), Some(chat)) if !chat.is_empty() => Some(Subwindow::Thread(chat.to_owned())),
+        (Some("thread"), _) => None,
+        // Desktop's other windows are parts of its settings: a subview, or an account to add or manage.
+        (Some(kind), _) if kind == "prefs" || kind.starts_with("prefs-") => Some(Subwindow::Prefs),
+        _ => None,
+    };
+    let entry = |w: &serde_json::Value| {
+        if !w.is_object() {
+            eprintln!("{}: skipped a subwindow that is not an object: {w}", path.display());
+        }
+        known(w)
+    };
+    open.iter().filter_map(entry).collect()
 }
 
 /// Desktop's `setAppBadgeCount` and `setTrayUnreadStatus`: the unread count and the window state on the tray icon and
