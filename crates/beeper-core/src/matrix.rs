@@ -2863,10 +2863,22 @@ pub fn room_address(input: &str) -> Result<(String, Vec<String>), BadAddress> {
     Err(BadAddress::Invalid)
 }
 
-/// Desktop's `sendActivityIndicator`: a typing notice that fails, for example offline, only goes to the log.
+/// How long Desktop's typing notice lasts on the homeserver: `userTyping(roomID, true, 30000)`.
+const TYPING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Desktop's `sendActivityIndicator`: a typing notice that lasts 30 seconds, and its end, each sent at once. A
+/// notice that fails, for example offline, only goes to the log.
+///
+/// matrix-sdk's `typing_notice` asks for 4 seconds, which ended the notice while you still typed, since the composer
+/// sends one notice when you start to type, like Desktop; it also skips the end of a notice older than 4 seconds.
 pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) {
+    use matrix_sdk::ruma::api::client::typing::create_typing_event::v3::{Request, Typing, TypingInfo};
     let sent = match joined_room(&client, &chat).await {
-        Ok(room) => room.typing_notice(on).await.map_err(|e| e.to_string()),
+        Ok(room) => {
+            let typing = if on { Typing::Yes(TypingInfo::new(TYPING_TIMEOUT)) } else { Typing::No };
+            let request = Request::new(room.own_user_id().to_owned(), room.room_id().to_owned(), typing);
+            client.send(request).await.map(drop).map_err(|e| e.to_string())
+        }
         Err(e) => Err(e),
     };
     if let Err(e) = sent {
@@ -5953,6 +5965,35 @@ mod tests {
         assert_eq!(load().await.expect("the cached media"), b"\"the photo\"", "the next load reads the cache");
         let e = super::media_interactive(client.clone(), "mxc://x/gone".into()).await.expect_err("missing media");
         assert!(!super::reload_needed(&e) && e.contains("M_NOT_FOUND"), "{e}");
+    }
+
+    /// Desktop's `userTyping`: a typing notice lasts 30 seconds on the homeserver, and its end goes out at once, also
+    /// right after the start and long after it.
+    #[tokio::test]
+    async fn typing_notices_like_desktop() {
+        use std::sync::{Arc, Mutex};
+        let sent = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let sent2 = sent.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').unwrap_or((path, "")) {
+                ("/_matrix/client/versions", _) => (200, json!({ "versions": ["v1.11"] })),
+                ("/_matrix/client/v3/keys/upload", _) => (200, json!({ "one_time_key_counts": {} })),
+                ("/_matrix/client/v3/sync", _) => (200, crate::testing::stub_sync()),
+                ("/_matrix/client/v3/rooms/!room:x/typing/@me:x", _) if method == "PUT" => {
+                    sent2.lock().expect("the notices").push(body);
+                    (200, json!({}))
+                }
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            })
+            .await;
+        let store = stub_store(&crate::testing::temp_dir("typing-notices"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        for on in [true, false, true, true, false] {
+            super::typing(client.clone(), "!room:x".into(), on).await;
+        }
+        let start = json!({ "typing": true, "timeout": 30_000 });
+        let end = json!({ "typing": false });
+        assert_eq!(*sent.lock().expect("the notices"), [&start, &end, &start, &start, &end].map(Value::clone));
     }
 
     /// Like Desktop's SDK, a load asks the authenticated endpoint even when `/versions` does not list it, with
