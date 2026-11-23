@@ -520,7 +520,11 @@ static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::con
 /// Notification servers send the click signals to the connection that showed the notification.
 #[cfg(target_os = "linux")]
 pub(crate) async fn bus() -> Result<&'static zbus::Connection, String> {
-    BUS.get_or_try_init(zbus::Connection::session).await.map_err(|e| e.to_string())
+    #[cfg(not(test))]
+    let connect = zbus::Connection::session;
+    #[cfg(test)]
+    let connect = crate::test_bus::connect;
+    BUS.get_or_try_init(connect).await.map_err(|e| e.to_string())
 }
 
 /// Shows a notification that a click opens, and returns its ID.

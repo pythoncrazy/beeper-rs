@@ -424,41 +424,31 @@ mod tests {
         assert_eq!(url(&rules), None);
     }
 
-    /// A portal on the session bus under a private name answers with a file.
+    /// A portal on the bus answers with a file, at the request path of the app's unique name and the token.
     #[cfg(target_os = "linux")]
     #[test]
-    #[ignore = "needs a D-Bus session bus"]
     fn file_chooser_talks_to_the_portal() {
-        use iced::futures::StreamExt;
-        let name = format!("org.beeper.rs.TestPortal{}", std::process::id());
         use iced::futures::executor::block_on;
-        let conn = block_on(async {
-            let conn = zbus::Connection::session().await.unwrap();
-            conn.request_name(name.as_str()).await.unwrap();
-            conn
-        });
-        let mut calls = zbus::MessageStream::from(&conn);
+        use iced::futures::StreamExt;
+        let name = "org.beeper.rs.TestPortal";
+        let (mut calls, conn) = block_on(crate::test_bus::serve(name));
         let serve = async {
-            let call = loop {
-                let m = calls.next().await.unwrap().unwrap();
-                if m.header().member().is_some_and(|n| n == "OpenFile") {
-                    break m;
-                }
-            };
+            let call = calls.next().await.expect("the call of the file chooser");
+            assert_eq!(call.header().member().map(|m| m.to_string()).as_deref(), Some("OpenFile"));
             let (_, _, options): (String, String, std::collections::HashMap<String, zbus::zvariant::OwnedValue>) =
                 call.body().deserialize().unwrap();
             let token = String::try_from(options["handle_token"].try_clone().unwrap()).unwrap();
-            let sender = call.header().sender().unwrap().to_owned();
-            let path = format!("/org/freedesktop/portal/desktop/request/{}/{token}", sender[1..].replace('.', "_"));
+            let me = crate::test_bus::ME;
+            let path = format!("/org/freedesktop/portal/desktop/request/{}/{token}", me[1..].replace('.', "_"));
             let path = zbus::zvariant::ObjectPath::try_from(path).unwrap();
             conn.reply(&call.header(), &path).await.unwrap();
             let uris = zbus::zvariant::Value::from(vec!["file:///tmp/x.txt"]);
             let results = std::collections::HashMap::from([("uris", uris)]);
             let iface = "org.freedesktop.portal.Request";
-            conn.emit_signal(Some(sender), &path, iface, "Response", &(0u32, results)).await.unwrap();
+            conn.emit_signal(Some(me), &path, iface, "Response", &(0u32, results)).await.unwrap();
         };
         let (_, got) =
-            block_on(iced::futures::future::join(serve, open_files(name.clone(), "Open".into(), Pick::Files)));
+            block_on(iced::futures::future::join(serve, open_files(name.into(), "Open".into(), Pick::Files)));
         assert_eq!(got, Ok(vec![PathBuf::from("/tmp/x.txt")]));
     }
 }

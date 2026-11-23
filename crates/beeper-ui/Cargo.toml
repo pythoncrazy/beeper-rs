@@ -48,3 +48,7 @@ beeper-core = { workspace = true, features = ["stub"] }
 iced_test = "0.14.0"
 iced_tiny_skia = { version = "0.14.1", default-features = false }
 tiny-skia = { version = "0.11.4", default-features = false, features = ["std"] }
+
+# The tests' own session bus (`test_bus`) answers like a bus daemon over a socket pair.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus = { version = "5.19", default-features = false, features = ["async-io", "bus-impl"] }
