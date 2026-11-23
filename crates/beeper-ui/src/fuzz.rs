@@ -3009,6 +3009,48 @@ fn search_sections_like_desktop() {
     assert!(hits(&app, "eric").chats.is_empty(), "a media filter shows no chats");
 }
 
+/// Desktop's `threadSearcher` also finds the chats that All Chats hides, after the others by `computeStatePenalty`:
+/// low priority adds 120 and a chat hidden from the inbox (snoozed, or hidden by a label or by the "Show in Inbox" of
+/// its account) adds 80. A member of a merged chat is `isHidden` and does not show.
+#[test]
+fn search_shows_hidden_chats_lower_like_desktop() {
+    let mut app = demo_app("search-hidden");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    // Six chats named Zulu, newest first.
+    let zulu: Vec<String> = {
+        let mut st = app.store.write();
+        let mut chats: Vec<&Chat> = st.chats.iter().filter(|c| c.listed() && c.flags == 0).collect();
+        chats.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+        let ids: Vec<String> = chats.iter().take(6).map(|c| c.id.clone()).collect();
+        assert_eq!(ids.len(), 6, "the demo has six plain chats");
+        for (n, id) in ids.iter().enumerate() {
+            let idx = st.chat_idx(id);
+            st.update_chat(idx, |c| c.title = format!("Zulu {n}"));
+        }
+        ids
+    };
+    let (low, label, account, snoozed, merged) = (&zulu[0], &zulu[1], &zulu[2], &zulu[3], &zulu[4]);
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(low.clone(), ChatFlag::LowPriority)));
+    let _ = app.update(UiMessage::Labels(labels::Msg::Switch("lbl_work".into(), label.clone(), true)));
+    let _ = app.update(UiMessage::Labels(labels::Msg::SetInbox("lbl_work".into(), Some("none"))));
+    {
+        let mut st = app.store.write();
+        st.features.internal = true;
+        st.features.flags["features"]["*"]["snooze"] = serde_json::json!(true);
+        let (a, s, m) = (st.chat_idx(account), st.chat_idx(snoozed), st.chat_idx(merged));
+        st.update_chat(a, |c| c.is_hidden_from_inbox = Some(true));
+        st.update_chat(s, |c| c.snoozed_until_ms = Some(now_unix_millis() + 3_600_000));
+        st.update_chat(m, |c| c.merged_into_chat_id = Some(low.clone()));
+    }
+    let st = app.store.read();
+    for id in [label, account] {
+        assert_ne!(st.find_chat(id).unwrap().flags & CHAT_HIDDEN, 0, "All Chats hides {id}");
+    }
+    let found: Vec<&str> = app.search_hits(&st, "zulu").chats.iter().map(|&i| st.chats[i].title.as_str()).collect();
+    let order = ["Zulu 5", "Zulu 1", "Zulu 2", "Zulu 3", "Zulu 0"];
+    assert_eq!(found, order, "the shown chat, the hidden ones, then low priority, and no merged member");
+}
+
 /// Desktop's `Hct` operators in the query and in the filters, and its partial matches toggle.
 #[test]
 fn search_operators_and_partial_matches_like_desktop() {
