@@ -1643,6 +1643,19 @@ impl BeeperGuiApp {
                     None => Task::none(),
                 };
             }
+            // Desktop's Enter hotkey of the forms of `AwaitRecoveryCode`, `AwaitNewRecoveryCode` and
+            // `ConfirmResetRecoveryCode` (`o1`), which `mousetrap` runs in the key box too, without its newline: it
+            // submits the key as it is, compares the confirmed key, or resets.
+            Key::Named(Named::Enter)
+                if mods.is_empty() && matches!(l.screen, Screen::RecoveryKey | Screen::ConfirmKey | Screen::Reset) =>
+            {
+                return match (l.busy, l.screen) {
+                    (true, _) => Task::none(),
+                    (_, Screen::RecoveryKey) => self.update_login(LoginMsg::SubmitRecoveryKey),
+                    (_, Screen::ConfirmKey) => self.update_login(LoginMsg::SubmitConfirmKey),
+                    _ => self.update_login(LoginMsg::ConfirmReset),
+                };
+            }
             Key::Named(Named::Enter) if mods.is_empty() => {
                 let stop = l.stop().or(l.screen.field().map(|_| Stop::Field));
                 return stop.and_then(|s| self.login_act(s)).map_or_else(Task::none, |m| self.update(m));
