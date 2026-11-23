@@ -3577,9 +3577,13 @@ pub async fn set_room_avatar(store: SharedStore, room: String, bytes: Vec<u8>, m
     client_api(&client, reqwest::Method::PUT, &path, &[], Some(content)).await.map(drop)
 }
 
+/// The 96 px avatar thumbnail of `url`. Like Desktop's `getAvatarThumbnail`, which keeps the frames of an animated
+/// avatar (`sharp(…, { animated: true })`), it asks the homeserver for an animated thumbnail.
 pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
     let size = matrix_sdk::ruma::uint!(96);
-    let format = MediaFormat::Thumbnail(MediaThumbnailSettings::with_method(Method::Crop, size, size));
+    let mut settings = MediaThumbnailSettings::with_method(Method::Crop, size, size);
+    settings.animated = true;
+    let format = MediaFormat::Thumbnail(settings);
     let request = MediaRequestParameters { source: MediaSource::Plain(url.into()), format };
     client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
 }
