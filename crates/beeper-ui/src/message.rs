@@ -3053,8 +3053,9 @@ impl BeeperGuiApp {
                     .on_press_maybe(ready.then_some(msg))
                     .into()
             });
-            // `@container messageContainer (max-width: 24rem)`: a narrow chat shows the first two items only.
-            let room = if self.pane().size.width - 24.0 <= 384.0 { 2 } else { usize::MAX };
+            // `@container messageContainer (max-width: 24rem)`: a narrow chat shows the first two items only. The
+            // `.message-container` is as wide as the chat less 8 px.
+            let room = if self.conversation_width() - 8.0 <= 384.0 { 2 } else { usize::MAX };
             let flyover: Vec<El<'a>> = flyover.into_iter().chain(quick).take(room).collect();
             let flyover = (!flyover.is_empty()).then(|| -> El<'a> {
                 let row = match mine {
