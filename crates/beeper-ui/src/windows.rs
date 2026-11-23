@@ -21,6 +21,9 @@ pub enum Msg {
     Tray(Result<tray::Event, String>),
     TrayFailed(String),
     Resized(window::Id, Size),
+    Moved(window::Id),
+    /// Desktop's window state keeper saves a second after the last change, if no later change came (`.1`).
+    SaveState(window::Id, u64),
     ScreenshotCaptured(window::Id, window::Screenshot),
     FocusRequested(Option<String>),
     /// Desktop's `second-instance` event with the arguments of the later launch.
@@ -64,7 +67,15 @@ impl BeeperGuiApp {
                 return window::screenshot(id).map(move |s| UiMessage::Window(Msg::ScreenshotCaptured(id, s)));
             }
             Msg::Drawn(_) => {}
-            Msg::Resized(id, size) => self.resized(id, size),
+            Msg::Resized(id, size) => {
+                self.resized(id, size);
+                return self.save_soon(id);
+            }
+            Msg::Moved(id) => return self.save_soon(id),
+            Msg::SaveState(id, n) if n == self.state_changes => {
+                return self.state_key(id).map_or_else(Task::none, |key| self.save_window(id, key));
+            }
+            Msg::SaveState(..) => {}
             Msg::Tray(Ok(tray::Event::Up)) => self.tray_sent = (None, true),
             // Electron cannot pop up the tray menu on Linux, so Desktop's click on a focused window does nothing.
             Msg::Tray(Ok(tray::Event::Activate)) if !self.hidden && self.focused => {}
@@ -87,16 +98,10 @@ impl BeeperGuiApp {
                 return match (primary, self.quit_on_close) {
                     (true, false) => self.set_hidden(true),
                     (true, true) => self.save_main_window().chain(window::close(id)),
-                    _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
-                        self.save_window(id, "media-viewer").chain(window::close(id))
-                    }
-                    _ if self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none() && !w.1.info)
-                        && !self.is_space_window(id)
-                        && self.carousel_opener(id).is_none() =>
-                    {
-                        self.save_window(id, POP_OUT).chain(window::close(id))
-                    }
-                    (false, _) => window::close(id),
+                    (false, _) => match self.state_key(id) {
+                        Some(key) => self.save_window(id, key).chain(window::close(id)),
+                        None => window::close(id),
+                    },
                 };
             }
             Msg::OpenChat(cid) => {
@@ -311,6 +316,29 @@ impl BeeperGuiApp {
     }
 
     /// The size of a window in iced's logical pixels, which the zoom scales like Desktop's CSS pixels.
+    /// The key of window `id` in `window.json`: the main window, the media viewer and a chat in its own window.
+    fn state_key(&self, id: window::Id) -> Option<&'static str> {
+        let chat = self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none() && !w.1.info);
+        match () {
+            () if Some(id) == self.main_window => Some("main"),
+            () if self.media_window.as_ref().is_some_and(|w| w.id == id) => Some("media-viewer"),
+            () if chat && !self.is_space_window(id) && self.carousel_opener(id).is_none() => Some(POP_OUT),
+            () => None,
+        }
+    }
+
+    /// Desktop's `windowStateKeeper`, which saves the state of a window a second after it resizes, moves, maximizes or
+    /// minimizes, so that a crash or a logout keeps it, not only a close.
+    fn save_soon(&mut self, id: window::Id) -> Task<UiMessage> {
+        if self.state_key(id).is_none() {
+            return Task::none();
+        }
+        self.state_changes += 1;
+        let n = self.state_changes;
+        let wait = async { tokio::time::sleep(std::time::Duration::from_secs(1)).await };
+        Task::perform(wait, move |()| UiMessage::Window(Msg::SaveState(id, n)))
+    }
+
     fn resized(&mut self, id: window::Id, size: Size) {
         // Desktop's `KeyboardSensor` cancels on a resize of the window.
         self.key_sort.take_if(|s| s.window == id);

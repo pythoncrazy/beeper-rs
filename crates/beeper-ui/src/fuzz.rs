@@ -8599,6 +8599,25 @@ fn the_window_grows_around_its_center_like_desktop() {
     assert_eq!(back.0, Point::new(555.0, 140.0), "and back around the same center");
 }
 
+/// Desktop's `windowStateKeeper` saves a window's state a second after its last resize or move, so a crash keeps it,
+/// and only the windows with a state save.
+#[test]
+fn window_changes_save_the_state_after_the_last_one_like_desktop() {
+    let mut app = demo_app("windowsave");
+    let main = app.main_window.expect("a main window");
+    let resize =
+        |app: &mut BeeperGuiApp| app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(900.0, 700.0))));
+    assert!(resize(&mut app).units() > 0, "a resize waits to save");
+    assert!(app.update(UiMessage::Window(windows::Msg::Moved(main))).units() > 0, "so does a move");
+    let n = app.state_changes;
+    let save = |app: &mut BeeperGuiApp, n| app.update(UiMessage::Window(windows::Msg::SaveState(main, n))).units();
+    assert_eq!(save(&mut app, n - 1), 0, "a later change replaces the save of an earlier one");
+    assert!(save(&mut app, n) > 0, "the last change saves");
+    let other = window::Id::unique();
+    let task = app.update(UiMessage::Window(windows::Msg::Moved(other)));
+    assert_eq!((task.units(), app.state_changes), (0, n), "a window without a state saves nothing");
+}
+
 #[test]
 fn main_window_keeps_its_state_like_desktop() {
     let mut app = demo_app("windowstate");
