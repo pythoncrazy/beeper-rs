@@ -1039,7 +1039,22 @@ pub(crate) fn quick_reactions(st: &BeeperStore, allowed: &[String], custom: bool
         out.retain(|e| allowed_reaction(allowed, e).is_some());
     }
     out.truncate(3);
-    out
+    // Each in the own skin tone when the network takes any emoji (`canReactWithAllEmojis`), else in the default one.
+    let tone = if allowed.is_empty() { st.skin_tone } else { 0 };
+    out.into_iter().map(|e| if is_mxc(&e) { e } else { toned(&e, tone).unwrap_or(e) }).collect()
+}
+
+/// emoji-mart's skin `tone` of the emoji `e`, in any tone (`skins[tone]` of Desktop's `U3t`): none when it is not
+/// one of its emoji, or when it has no skin tones and `tone` is not the default.
+pub(crate) fn toned(e: &str, tone: u8) -> Option<String> {
+    let emoji = &DATA.emojis[*DATA.natives.get(&bare(e))?];
+    (emoji.skin != 0 || tone == 0).then(|| emoji.skinned(tone))
+}
+
+/// Desktop's `Af`: the emoji `e` in skin `tone` when it has skin tones.
+pub(crate) fn with_skin_tone(e: &str, tone: u8) -> Option<String> {
+    let emoji = &DATA.emojis[*DATA.natives.get(&bare(e))?];
+    (emoji.skin != 0).then(|| emoji.skinned(tone))
 }
 
 /// Desktop's reaction of a network that takes only the `allowed` ones: the allowed reaction that is `emoji` without

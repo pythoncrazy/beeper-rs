@@ -254,18 +254,31 @@ fn file_label(a: &Attachment) -> Option<String> {
 }
 
 /// Desktop's click on a reaction pill of a message or a gallery: it removes your reactions of the group from all the
-/// messages that have them, or adds the group's reaction to all the messages that have the group.
-fn toggle_reaction(st: &BeeperStore, chat: &str, ms: &[&Message], group: &str) -> UiMessage {
+/// messages that have them, or adds the group's reaction to all the messages that have the group. An emoji it adds
+/// has no skin tone, or your own when the network takes any emoji (`canReactWithAnyEmoji`).
+fn toggle_reaction(st: &BeeperStore, chat: &Chat, ms: &[&Message], group: &str) -> UiMessage {
     let in_group = |r: &&Reaction| reaction_group(&r.reaction_key) == group;
     let own = |r: &&Reaction| in_group(r) && st.is_me(&r.participant_id);
     let mine = ms.iter().any(|m| m.reactions.iter().any(|r| own(&r)));
     let toggle =
-        |m: &Message, key: &str| UiMessage::Message(Msg::ToggleReaction(chat.into(), m.id.clone(), key.into()));
+        |m: &Message, key: &str| UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), key.into()));
+    // Desktop's `Dte`, then `D3e` in the own tone.
+    let add = |key: &str| match crate::emoji::is_emoji(key) {
+        true => {
+            let plain: String = key.chars().filter(|c| !('\u{1f3fb}'..='\u{1f3ff}').contains(c)).collect();
+            let any = chat.messages.react && chat.allowed_reactions.is_empty();
+            any.then(|| crate::emoji::with_skin_tone(&plain, st.skin_tone)).flatten().unwrap_or(plain)
+        }
+        false => key.to_string(),
+    };
+    let key = ms.iter().flat_map(|m| &m.reactions).find(in_group).map(|r| add(&r.reaction_key));
     let toggles: Vec<UiMessage> = ms
         .iter()
         .flat_map(|m| match mine {
             true => m.reactions.iter().filter(own).map(|r| toggle(m, &r.reaction_key)).collect::<Vec<_>>(),
-            false => m.reactions.iter().find(in_group).map(|r| toggle(m, &r.reaction_key)).into_iter().collect(),
+            false => {
+                m.reactions.iter().find(in_group).zip(key.as_deref()).map(|(_, k)| toggle(m, k)).into_iter().collect()
+            }
         })
         .collect();
     match <[UiMessage; 1]>::try_from(toggles) {
@@ -3651,7 +3664,7 @@ impl BeeperGuiApp {
             let hover = look.hover.unwrap_or(fill);
             let style = bordered_btn([fill, hover, hover], [look.fg.0; 3], look.ring.0, look.ring.1, 14.0);
             let pill = button(pill).padding([4.0 + look.ring.1, 5.0 + look.ring.1]).style(style);
-            let pill = pill.on_press(toggle_reaction(st, &chat.id, ms, &group));
+            let pill = pill.on_press(toggle_reaction(st, chat, ms, &group));
             // Desktop's `.message-reaction-container` of a custom emoji: its right click has the item that adds it.
             let custom = keys.first().and_then(|x| Some((x.reaction_key.clone(), x.img_url.clone()?)));
             match (custom.filter(|(_, u)| crate::emoji::is_mxc(u)), ms.first()) {
@@ -5640,8 +5653,30 @@ pub(crate) mod tests {
             UiMessage::Message(Msg::ToggleReaction(_, _, key)) => key,
             _ => panic!("one toggle"),
         };
-        assert_eq!(removes(toggle_reaction(&st, "c", &[&m], "👍")), "👍️", "a click removes your own reaction");
-        assert_eq!(removes(toggle_reaction(&st, "c", &[&m], "😂")), "😂", "or adds the group's");
+        let mut chat = st.chats[0].clone();
+        chat.messages.react = true;
+        assert_eq!(removes(toggle_reaction(&st, &chat, &[&m], "👍")), "👍️", "a click removes your own reaction");
+        assert_eq!(removes(toggle_reaction(&st, &chat, &[&m], "😂")), "😂", "or adds the group's");
+        // Desktop's `Dte` and `D3e`: an emoji added from a pill is in your own skin tone, not the first reactor's.
+        m.reactions.retain(|r| r.participant_id != me);
+        assert_eq!(removes(toggle_reaction(&st, &chat, &[&m], "👍")), "👍", "the default tone");
+        drop(st);
+        app.store.write().skin_tone = 2;
+        let st = app.store.read();
+        assert_eq!(removes(toggle_reaction(&st, &chat, &[&m], "👍")), "👍🏼", "your own tone");
+        chat.allowed_reactions = vec!["👍".into()];
+        assert_eq!(removes(toggle_reaction(&st, &chat, &[&m], "👍")), "👍", "none where the network takes only some");
+    }
+
+    /// Desktop's `U3t`: the quick reactions of the flyover are in your skin tone when the network takes any emoji.
+    #[test]
+    fn quick_reactions_skin_tone_like_desktop() {
+        let app = crate::fuzz::demo_app("quick-tone");
+        app.store.write().skin_tone = 4;
+        let st = app.store.read();
+        assert_eq!(crate::emoji::quick_reactions(&st, &[], true), ["👍🏾", "❤️", "😂"]);
+        let allowed = ["👍".to_string(), "😂".to_string()];
+        assert_eq!(crate::emoji::quick_reactions(&st, &allowed, true), ["👍", "😂"]);
     }
 
     /// Desktop's `Seen by` of a group: the newest reader first, by first name when no other member has it, and all the
