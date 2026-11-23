@@ -9867,3 +9867,18 @@ fn the_chat_menu_fits_its_rows() {
     let menu = chat_list::chat_menu_w(&app.store.read());
     assert!(row > 233.0 && menu >= row, "{menu} fits {row}");
 }
+
+/// An image that covers its box, wider than the box, is cut at the box in the software renderer as in wgpu: the
+/// media of the info pane, the attachments of the composer and link previews are `ContentFit::Cover`.
+#[test]
+fn a_covering_image_stays_in_its_box() {
+    use iced::widget::{image, row};
+    let red = image::Handle::from_rgba(40, 10, [255u8, 0, 0, 255].repeat(400));
+    let covered = image(red).content_fit(iced::ContentFit::Cover).width(20).height(20);
+    let view: El<'_> = row![Space::new().width(20), covered, Space::new().width(20)].into();
+    let shot = crate::focus::tests::shot(view, Size::new(60.0, 20.0), "cover");
+    let k = shot.width() / 60;
+    let red_at = |x: u32| shot.get_pixel(x * k, 10 * k).0 == [255, 0, 0, 255];
+    assert!(red_at(30), "the image fills its box");
+    assert!(!red_at(10) && !red_at(50), "and nothing beside it");
+}
