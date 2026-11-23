@@ -4125,8 +4125,9 @@ mod tests {
     fn a_demo_data_folder_stays_offline_without_the_demo_flag() {
         let config = crate::config::CentralConfig { demo: false, ..crate::testing::demo_config("demo-folder") };
         assert!(!super::BeeperStore::from_config(config.clone()).config.demo, "a signed-out folder is not a demo");
-        // A new demo config deletes the folder, and the demo store writes its data.
-        drop(super::BeeperStore::from_config(crate::testing::demo_config("demo-folder")));
+        // The demo store writes its data into the emptied folder.
+        std::fs::remove_dir_all(&config.data_dir).expect("empty the folder");
+        drop(super::BeeperStore::from_config(crate::config::CentralConfig { demo: true, ..config.clone() }));
         let st = super::BeeperStore::from_config(config);
         assert!(st.config.demo && st.signed_in(), "the demo account does not start the Matrix sync");
     }
