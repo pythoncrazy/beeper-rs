@@ -5,8 +5,9 @@ use crate::chat_list::preview_body;
 use crate::commands;
 use crate::i18n::{tr, trf, trn};
 use crate::message;
-use crate::style::rem;
-use crate::style::{bordered_btn, brand_svg, btn_style, ell, fill_box, ic, icon, scroll_style, semi, txt, CLEAR};
+use crate::style::{
+    bordered_btn, brand_svg, btn_style, ell, fill_box, ic, icon, lh, pad, scroll_style, semi, txt, CLEAR,
+};
 use crate::time::format_short_ts;
 use crate::{
     activates, brand_key, composer_with, membership, menu_item, menu_pitch, menu_rule, tinted, BeeperGuiApp, El, Pane,
@@ -16,7 +17,7 @@ use beeper_core::models::*;
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, stack, svg, tooltip, Column, Row, Space};
-use iced::{mouse, Center, Color, Element, Fill, Padding, Pixels, Point, Right, Size, Task};
+use iced::{mouse, Center, Color, Element, Fill, Padding, Point, Right, Size, Task};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -305,7 +306,7 @@ impl BeeperGuiApp {
         let bg = if self.unread_view { p.selected } else { CLEAR };
         let edge = if self.unread_view { CLEAR } else { p.divider };
         let pill = button(row![label, count].spacing(8).align_y(Center))
-            .padding(Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 12.0 })
+            .padding(pad(6.0, 8.0, 6.0, 12.0))
             .width(Fill)
             .style(bordered_btn([bg, p.hover, p.hover], [p.text; 3], edge, 1.0, 999.0))
             .on_press(UiMessage::Thread(Msg::ShowUnread));
@@ -340,7 +341,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let threads = self.unread_threads(&st, true);
         let open = self.pane.thread.as_ref().map(|t| (t.selected_chat_id.clone(), t.thread_root.clone()));
-        let title = semi(tr("Unread threads"), 14.0).line_height(Pixels(rem(18.0))).color(p.text);
+        let title = semi(tr("Unread threads"), 14.0).line_height(lh(18.0)).color(p.text);
         let count = (!threads.is_empty())
             .then(|| container(semi(threads.len().to_string(), 14.0).color(p.tertiary)).padding([0, 6]));
         let header = row![container(title).width(Fill)].push(count).align_y(Center).padding([12, 16]);
@@ -447,7 +448,7 @@ impl BeeperGuiApp {
         let faces =
             faces.take(3).map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or(&u.id), 16.0, 0.5));
         let n = replies.len();
-        let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).line_height(Pixels(rem(15.0))).color(p.text);
+        let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).line_height(lh(15.0)).color(p.text);
         let (unread, at) = if st.follows_thread(chat, root) { st.thread_unread(chat, root) } else { (0, 0) };
         let badge = thread_badge(p.accent, unread, at);
         let chevron = container(tinted(&CHEVRON_FORWARD, 14.0, p.tertiary)).padding(Padding::ZERO.right(2.0));
@@ -468,7 +469,7 @@ impl BeeperGuiApp {
         let room = 300.0 - 2.0 * BUBBLE_PAD_X - crate::style::text_width(&label, 11.0, Weight::Semibold);
         let line = row![
             semi(label, 11.0).color(p.sub),
-            ell(&preview, room, 11.0, Weight::Normal).line_height(Pixels(rem(14.0))).color(p.sub)
+            ell(&preview, room, 11.0, Weight::Normal).line_height(lh(14.0)).color(p.sub)
         ];
         let line = container(line)
             .max_width(300)

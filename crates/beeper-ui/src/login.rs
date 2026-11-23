@@ -1227,7 +1227,7 @@ impl BeeperGuiApp {
                 .push(last.map(|(label, msg)| item(label, String::new(), msg)));
             let items = crate::menu_card(p, items, 240);
             let at = Padding::ZERO.top(34.0 + pad).right(6.0 + pad);
-            mouse_area(container(items).align_right(Fill).height(Fill).padding(at)).on_press(LoginMsg::Menu.into())
+            crate::backdrop(container(items).align_right(Fill).height(Fill).padding(at)).on_press(LoginMsg::Menu.into())
         });
         let window = stack![container(page).padding(pad).style(fill_box(frame, 0.0))]
             .push(l.toast.as_deref().map(|t| toast(p, t, true)))

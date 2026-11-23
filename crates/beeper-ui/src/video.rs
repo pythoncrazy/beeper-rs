@@ -40,7 +40,7 @@ pub(crate) static GLYPHS: LazyLock<[svg::Handle; 6]> = LazyLock::new(|| {
 
 /// Desktop's `VideoRenderErrorIcon`, the Material `error_outline`.
 static ERROR: LazyLock<svg::Handle> = LazyLock::new(|| {
-    glyph_in("0 0 24 24", "M11 15h2v2h-2zm0-8h2v6h-2zm.99-5C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z")
+    crate::path_svg("0 0 24 24", "M11 15h2v2h-2zm0-8h2v6h-2zm.99-5C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z")
 });
 
 /// Desktop's `speed025` to `speed2`, the icons of `voice::RATES`.
@@ -59,12 +59,7 @@ static SPEEDS: LazyLock<[svg::Handle; 8]> = LazyLock::new(|| {
 });
 
 fn glyph(d: &str) -> svg::Handle {
-    glyph_in("0 0 20 20", d)
-}
-
-fn glyph_in(view: &str, d: &str) -> svg::Handle {
-    let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path d="{d}"/></svg>"#);
-    svg::Handle::from_memory(svg.into_bytes())
+    crate::path_svg("0 0 20 20", d)
 }
 
 /// Where a video shows: in the timeline as attachment `ai` of its message, in the carousel, or on the full screen.
@@ -224,24 +219,13 @@ fn stream(path: &Path, from: f32, (w, h): (u32, u32)) -> Receiver<image::Handle>
 impl Video {
     /// A video of message `mid` that plays as soon as it loads.
     fn new(mid: String, url: String, size: (u32, u32)) -> Self {
-        Video {
+        beeper_core::with_defaults!(Video {
             mid,
             url,
             size,
-            media: None,
-            at: 0.0,
             since: Some(Instant::now()),
-            frames: None,
-            start: 0.0,
-            shown: 0,
-            frame: None,
             rate: 1.0,
-            muted: false,
-            full: None,
-            inline: None,
-            sub: false,
-            failed: false,
-        }
+        }, default: media, at, frames, start, shown, frame, muted, full, inline, sub, failed)
     }
 
     pub fn playing(&self) -> bool {
@@ -694,7 +678,7 @@ impl BeeperGuiApp {
             let sub_x = if right { x + PIP_MENU_W } else { x - SPEED_MENU_W };
             placed(sub_x, (y + 3.0 * menu_pitch()).min(h - speed_menu_h()), sub)
         });
-        let close = mouse_area(Space::new().width(Fill).height(Fill))
+        let close = crate::backdrop(Space::new().width(Fill).height(Fill))
             .on_press(UiMessage::Video(Msg::PipMenu(false)))
             .on_right_press(UiMessage::Video(Msg::PipMenu(false)));
         stack![video, close, placed(x, y, menu.into())].push(sub).into()
