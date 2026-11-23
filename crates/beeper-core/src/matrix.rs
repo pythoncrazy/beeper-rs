@@ -4734,13 +4734,9 @@ fn begin(store: &SharedStore, request: VerificationRequest, purpose: &'static st
             purpose,
             direction: if from.is_some() { "incoming" } else { "outgoing" },
             state: "requested",
-            methods: Vec::new(),
-            available_actions: Vec::new(),
             other_user_id: from.is_some().then(|| request.other_user_id().to_string()),
             other_device: from,
-            qr: None,
-            sas: None,
-            error: None,
+            ..Default::default()
         });
         st.sas_confirm = Some(tx);
     }

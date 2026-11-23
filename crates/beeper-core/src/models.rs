@@ -1780,7 +1780,7 @@ pub struct VerificationError {
 }
 
 /// Desktop's `AppVerification`: the progress of a trusted device verification.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppVerification {
     pub id: String,

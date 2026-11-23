@@ -1641,12 +1641,10 @@ impl BeeperGuiApp {
                 Ok(Clip::Image((png, size))) => self.attach_files(vec![Ok(PendingMedia {
                     name: "image.png".into(),
                     mime: "image/png".into(),
-                    is_gif: false,
                     size,
                     frames: vec![(image::Handle::from_bytes(png.clone()), 0)],
                     bytes: png,
-                    duration: None,
-                    sticker: None,
+                    ..Default::default()
                 })]),
                 Ok(Clip::Text) => {
                     let id = self.composer_id();

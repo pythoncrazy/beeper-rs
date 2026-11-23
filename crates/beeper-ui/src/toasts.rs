@@ -94,7 +94,7 @@ pub(crate) static TOAST_ICONS: std::sync::LazyLock<[svg::Handle; 6]> = std::sync
 });
 
 /// Desktop's `Toast`, which shows while `status_banner` is its text.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Toast {
     pub text: String,
     /// The index of the icon in `TOAST_ICONS`.
@@ -118,17 +118,7 @@ pub struct Toast {
 
 impl Toast {
     pub fn new(text: String) -> Self {
-        Toast {
-            text,
-            icon: None,
-            strong: false,
-            buttons: Vec::new(),
-            right: None,
-            open: None,
-            error: false,
-            dismiss: None,
-            links: Vec::new(),
-        }
+        Toast { text, ..Default::default() }
     }
 }
 
