@@ -212,6 +212,13 @@ mod display {
         if wayland.is_some() && !has("wp_cursor_shape_manager_v1") {
             cursor_theme();
         }
+        // On X11 the scale of the window has the text scaling already, from GNOME's `Xft.dpi`.
+        if wayland.is_some() {
+            let scale = gsetting("text-scaling-factor").and_then(|v| text_scale(&v));
+            if let Some(scale) = scale {
+                let _ = beeper_ui::TEXT_SCALE.set(scale);
+            }
+        }
         let gpu_display = match wayland.is_some() {
             true => has("zwp_linux_dmabuf_v1"),
             false => x11rb::connect(None).is_ok_and(|(c, _)| {
@@ -250,19 +257,26 @@ mod display {
     /// draws it from `XCURSOR_THEME` and `XCURSOR_SIZE`, which GNOME does not set. GTK and Chromium read the
     /// cursor of the desktop settings, so this passes those on.
     fn cursor_theme() {
-        let get = |key: &str| {
-            let out =
-                std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", key]).output();
-            let out = out.ok().filter(|o| o.status.success())?;
-            let value = String::from_utf8(out.stdout).ok()?.trim().trim_matches('\'').to_string();
-            Some(value).filter(|v| !v.is_empty())
-        };
         let unset = [("XCURSOR_THEME", "cursor-theme"), ("XCURSOR_SIZE", "cursor-size")]
             .into_iter()
             .filter(|(var, _)| std::env::var_os(var).is_none());
-        for (var, value) in unset.filter_map(|(var, key)| Some((var, get(key)?))) {
+        for (var, value) in unset.filter_map(|(var, key)| Some((var, gsetting(key)?))) {
             unsafe { std::env::set_var(var, value) };
         }
+    }
+
+    /// A key of GNOME's `org.gnome.desktop.interface` settings.
+    fn gsetting(key: &str) -> Option<String> {
+        let out = std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", key]).output();
+        let out = out.ok().filter(|o| o.status.success())?;
+        let value = String::from_utf8(out.stdout).ok()?.trim().trim_matches('\'').to_string();
+        Some(value).filter(|v| !v.is_empty())
+    }
+
+    /// GNOME's `text-scaling-factor`, which GTK turns into `gtk-xft-dpi` and Chromium on Wayland applies to the
+    /// whole window, in the range of GNOME's setting.
+    pub(crate) fn text_scale(value: &str) -> Option<f32> {
+        value.trim().parse::<f32>().ok().filter(|s| (0.5..=3.0).contains(s))
     }
 }
 
@@ -502,6 +516,15 @@ mod tests {
         for (argv, error, code) in cases {
             assert_eq!(run(argv), Err((error, code)), "{argv:?}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn text_scaling_reads_gnome_s_setting() {
+        assert_eq!(display::text_scale("1.25\n"), Some(1.25));
+        assert_eq!(display::text_scale("1.0"), Some(1.0));
+        assert_eq!(display::text_scale("0.1"), None, "below GNOME's range");
+        assert_eq!(display::text_scale("'big'"), None);
     }
 
     #[test]

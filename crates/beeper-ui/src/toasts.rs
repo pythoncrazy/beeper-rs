@@ -34,7 +34,7 @@ impl BeeperGuiApp {
                 for t in &mut self.older_toasts {
                     t.1 += TOAST_TICK;
                 }
-                self.older_toasts.retain(|t| t.1 < TOAST_TIMEOUT);
+                self.older_toasts.retain(|t| t.0.stays || t.1 < TOAST_TIMEOUT);
                 if !self.newest_toast_running() {
                     return Task::none();
                 }
@@ -114,6 +114,10 @@ pub struct Toast {
     pub dismiss: Option<UiMessage>,
     /// The links in the text, in their order: each word opens its URL, in the color of the text like Desktop's `a`.
     pub links: Vec<(&'static str, &'static str)>,
+    /// Desktop's `timeout: -1`: the toast stays until it is closed, also under newer toasts.
+    pub stays: bool,
+    /// Desktop's toast `id`, which `removeToast` closes.
+    pub id: Option<String>,
 }
 
 impl Toast {
@@ -143,7 +147,7 @@ impl BeeperGuiApp {
     /// The toast timeouts run while a window is focused and the pointer is not on the toasts.
     pub(crate) fn toast_running(&self) -> bool {
         let hovered = self.toast_clock.0 == self.status_banner && self.toast_clock.1;
-        let shown = self.newest_toast_running() || !self.older_toasts.is_empty();
+        let shown = self.newest_toast_running() || self.older_toasts.iter().any(|t| !t.0.stays);
         self.relaunch_toast.is_none() && self.focused && !hovered && shown
     }
 
@@ -163,14 +167,24 @@ impl BeeperGuiApp {
         self.fail(Toast::new(last.clone()));
     }
 
+    /// Desktop's `removeToast` of the toast with ID `id`, the newest one or an older one.
+    pub(crate) fn remove_toast(&mut self, id: &str) {
+        self.older_toasts.retain(|t| t.0.id.as_deref() != Some(id));
+        if self.shown_toast().is_some_and(|t| t.id.as_deref() == Some(id)) {
+            self.sticky_banner.take_if(|t| *t == self.status_banner);
+            self.status_banner.clear();
+        }
+    }
+
     pub(crate) fn newest_toast_running(&self) -> bool {
         !self.status_banner.is_empty() && self.sticky_banner.as_ref() != Some(&self.status_banner)
     }
 
     /// The newest toast and the time it showed, which moves up in Desktop's `toasts-list` when a new toast comes.
-    /// Sticky toasts and "Undo:" notes are replaced instead.
+    /// Sticky toasts that do not stay and "Undo:" notes are replaced instead.
     pub(crate) fn stackable_toast(&self) -> Option<(Toast, Duration)> {
-        if !self.newest_toast_running() || self.relaunch_toast.is_some() || self.shown_note() {
+        let stays = self.shown_toast().is_some_and(|t| t.stays);
+        if !(self.newest_toast_running() || stays) || self.relaunch_toast.is_some() || self.shown_note() {
             return None;
         }
         let t = self.shown_toast().cloned().unwrap_or_else(|| Toast::new(self.status_banner.clone()));

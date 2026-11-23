@@ -2522,12 +2522,7 @@ fn carousel_tooltips_like_desktop() {
     sim.point_at(close);
     let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: close })]);
     // The simulator does not find the text of overlays, so the test reads the pixels of the tooltip.
-    let dir = std::env::temp_dir().join(format!("beeper-rs-tip-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("tip"));
-    let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-    let shot = ::image::open(&png).unwrap().into_rgba8();
-    std::fs::remove_dir_all(&dir).unwrap();
+    let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "tip");
     let k = shot.width() / 1000;
     assert_eq!(shot.get_pixel(887 * k, 45 * k).0, [255; 4], "the Close tooltip shows under the button");
 }
@@ -3806,6 +3801,150 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     assert!(st.loaded(&id).is_none() && st.outbox.is_empty(), "Remove drops the echo and its send");
 }
 
+/// Desktop's local echo of a video plays the local file in a `<video>`, so it shows the first frame on its way and
+/// after it failed, in place of a grey placeholder.
+#[test]
+fn local_videos_show_their_first_frame_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("failed-video");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let frame = vec![(image::Handle::from_rgba(2, 2, vec![255; 16]), 0)];
+    let video = PendingMedia {
+        bytes: vec![0; 8],
+        name: "clip.mp4".into(),
+        mime: "video/mp4".into(),
+        size: (2, 2),
+        frames: frame.into(),
+        duration: Some(2.0),
+        ..Default::default()
+    };
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(vec![Ok(video)])));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
+    let poster = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        let id = st.outbox.first().and_then(|o| o.2.message().map(str::to_string));
+        let m = st.messages.iter().rev().find(|m| m.chat_id == note && m.attachments.len() == 1).unwrap();
+        let a = &m.attachments[0];
+        assert_eq!((a.attachment_type.as_str(), a.src_url.as_ref()), ("video", None), "no file to play yet");
+        let url = a.poster_img.clone().expect("the poster of the local echo");
+        (id, matches!(app.media_at(&url), Some(Ok(f)) if f.len() == 1))
+    };
+    let (id, shown) = poster(&app);
+    assert!(shown, "the video on its way shows its first frame");
+    {
+        let mut st = app.store.write();
+        let (row, _, _) = st.outbox.remove(0);
+        st.pushed(row, id.as_deref(), Some(("M_TOO_LARGE: too big".into(), true)));
+    }
+    assert!(poster(&app).1, "and so does the failed video");
+    assert!(simulator(app.view_main()).find("Not sent").is_ok());
+}
+
+/// Desktop's toast of a failed send has the ID of the message and no timeout (`-1`): it stays in `toasts-list` under
+/// newer toasts, one for each failed send, while the toasts with a timeout go. Retry and Remove close the toast of
+/// their send wherever it is (`removeToast`), and Copy Error copies Desktop's `sendMessage:` JSON of the error.
+#[test]
+fn failed_send_toasts_stay_in_the_stack_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("failed-toasts");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let fail = |app: &mut BeeperGuiApp, text: &str, error: &str| {
+        let _ = app.update(UiMessage::Composer(composer::Msg::Changed(text.into())));
+        let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+        let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
+        let failed = {
+            let mut st = app.store.write();
+            // The send of this text, after the failed sends that wait for Retry.
+            let at = st.outbox.len() - 1;
+            let (row, _, out) = st.outbox.remove(at);
+            let id = out.message().expect("a send has a local echo").to_string();
+            st.pushed(row, Some(&id), Some((error.into(), true)));
+            st.loaded(&id).expect("the local echo").clone()
+        };
+        let id = failed.id.clone();
+        let _ = app.update(UiMessage::Upserted(Box::new(failed)));
+        id
+    };
+    let first = fail(&mut app, "a", "M_FORBIDDEN: refused");
+    let copy = app.shown_toast().expect("the toast of the failed send").buttons[0].1.clone();
+    let json = format!(
+        r#"sendMessage:{{"errorName":"Error","errorMessage":"M_FORBIDDEN: refused","appVersion":"{}"}}"#,
+        beeper_core::config::APP_VERSION
+    );
+    assert!(matches!(copy, UiMessage::Message(message::Msg::CopyText(t)) if t == json), "Copy Error");
+    let _ = app.update(UiMessage::Message(message::Msg::CopyLink("https://a".into())));
+    assert_eq!(app.status_banner, "Copied to clipboard!");
+    let older = |app: &BeeperGuiApp| app.older_toasts.iter().map(|t| t.0.text.clone()).collect::<Vec<_>>();
+    let stacked = older(&app);
+    assert!(stacked.len() == 1 && stacked[0].ends_with("\nM_FORBIDDEN: refused"), "a new toast stacks it: {stacked:?}");
+    for _ in 0..(2 * TOAST_TIMEOUT.as_millis() / crate::toasts::TOAST_TICK.as_millis()) {
+        let _ = app.update(UiMessage::Toast(toasts::Msg::Tick));
+    }
+    assert!(app.status_banner.is_empty() && older(&app) == stacked, "the new toast goes, the failed send's stays");
+    let second = fail(&mut app, "b", "M_TOO_LARGE: too big");
+    assert!(app.status_banner.ends_with("\nM_TOO_LARGE: too big") && older(&app) == stacked, "a toast each");
+    let _ = app.update(UiMessage::Message(message::Msg::RetrySend(first)));
+    assert!(older(&app).is_empty() && !app.status_banner.is_empty(), "Retry closes the toast of its send only");
+    let _ = app.update(UiMessage::Message(message::Msg::RemoveUnsent(second)));
+    assert!(app.status_banner.is_empty() && app.sticky_banner.is_none(), "and Remove closes the toast of its send");
+}
+
+/// Desktop's `.thread-info` shares `.subheader-content` with the chat (`flex: 1` both, `max-width: 300px`, an 8 px
+/// gap): Chat Info is 300 px wide in a wide window, and half of the room in a narrow one, where the chat keeps the
+/// other half instead of a sliver. The sidebar hides under 600 px.
+#[test]
+fn chat_info_shares_a_narrow_window_like_desktop() {
+    let mut app = demo_app("info-narrow");
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::ToggleRightPanel);
+    assert!(app.show_right_panel);
+    let at = |app: &mut BeeperGuiApp, w: f32| {
+        let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(w, 800.0))));
+        let mut sim = Simulator::with_size(Default::default(), Size::new(w, 800.0), app.view_main());
+        assert!(sim.find("Note to self").is_ok(), "Chat Info shows at {w} px");
+        (app.conversation_width(), app.info_width())
+    };
+    let (chat, info) = at(&mut app, 1200.0);
+    assert_eq!(info, 300.0);
+    assert_eq!(chat, 1200.0 - 68.0 - app.sidebar_width - 8.0 - 8.0 - 300.0, "the chat takes the rest");
+    let (chat, info) = at(&mut app, 800.0);
+    let room = 800.0 - 68.0 - app.sidebar_width - 16.0;
+    assert!(!app.sidebar_hidden && info < 300.0 && chat == info && info == room / 2.0, "{chat} {info}");
+    let (chat, info) = at(&mut app, 400.0);
+    assert!(app.sidebar_hidden, "the sidebar hides under 600 px");
+    assert!(chat == info && info == (400.0 - 8.0 - 16.0) / 2.0, "{chat} {info}");
+    let _ = app.update(UiMessage::ToggleRightPanel);
+    assert_eq!(app.conversation_width(), 400.0 - 16.0, "without Chat Info the chat fills the window");
+}
+
+/// Desktop's drop overlay (`.dropping`, `z-index: 10`) is over the chat: while a file drag is over the window, the
+/// messages under it take no pointer, so the buttons of a hovered message lose their hover and their tooltips close.
+#[test]
+fn the_drop_zone_takes_the_pointer_like_desktop() {
+    let mut app = demo_app("drop-cover");
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let mid = app.store.read().messages.iter().rev().find(|m| m.chat_id == NOTE_CHAT_ID).unwrap().id.clone();
+    let clicks = |app: &BeeperGuiApp| {
+        let mut sim = simulator(app.view_main());
+        let row = sim.find(iced::widget::Id::from(format!("msg-{mid}"))).expect("the message");
+        let at = row.visible_bounds().expect("the message is on screen").center();
+        sim.point_at(at);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+        let _ = sim.simulate(iced_test::simulator::click());
+        sim.into_messages().count()
+    };
+    assert!(clicks(&app) > 0, "a message takes the pointer");
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(main, true)));
+    assert_eq!(clicks(&app), 0, "the drop zone over it takes the pointer");
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(main, false)));
+    assert!(clicks(&app) > 0, "and gives it back when the drag leaves");
+}
+
 /// Desktop's message menu of a pending message (`isPending`, a send of `pendingMessages`): on its way or failed, it
 /// has no Edit, Reply, Reply in thread, Delete or Bookmark, and React is off. Copy, Forward and "Sent at" stay. A
 /// message that the homeserver took has them all.
@@ -4604,9 +4743,9 @@ fn attachments_show_download_and_time_on_hover_like_desktop() {
         let st = app.store.read();
         let m = st.messages.iter().rev().find(|m| {
             m.text.as_deref().is_none_or(str::is_empty)
-                && m.attachments.first().is_some_and(|a| a.attachment_type == "img")
+                && m.attachments.first().is_some_and(|a| a.attachment_type == "img" && a.is_sticker != Some(true))
         });
-        let m = m.expect("a demo image message");
+        let m = m.expect("a demo photo message");
         (m.chat_id.clone(), m.id.clone(), format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1))
     };
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
@@ -7471,6 +7610,44 @@ fn chat_info_contact_like_desktop() {
     assert!(matches!(&msgs[..], [UiMessage::SelectChat(c)] if c == "!sg_lena:beeper.com"));
 }
 
+/// Desktop's identity header of a DM (`v0e`): the username, the phone number and the email each start a line, since
+/// the phone number and the email are `div`s, and a click on the email opens its `EmailAddress` menu. A merged chat
+/// shows none of them.
+#[test]
+fn chat_info_identifiers_like_desktop() {
+    let mut app = demo_app("chat-info-identifiers");
+    let id = "!im_jordan:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(id.into()));
+    {
+        let mut st = app.store.write();
+        let i = st.chat_idx(id);
+        let u = st.chats[i].participants.items.iter_mut().find(|u| u.is_self != Some(true)).expect("Jordan");
+        u.phone_number = Some("+14155550123".into());
+    }
+    let msgs: Vec<UiMessage> = {
+        let mut sim = tall(app.view_info());
+        let mut y = |s: &str| sim.find(s).unwrap_or_else(|_| panic!("{s} shows")).bounds().y;
+        let (name, phone, email) = (y("@jordan"), y(&fmt_phone("+14155550123")), y("jordan@example.com"));
+        assert!(name < phone && phone < email, "one line each: {name} {phone} {email}");
+        let _ = sim.click("jordan@example.com").expect("the email");
+        sim.into_messages().collect()
+    };
+    let menu = format!("contact:{id} email");
+    assert!(matches!(&msgs[..], [UiMessage::ChatList(chat_list::Msg::OpenMenu(m))] if *m == menu));
+    {
+        let mut st = app.store.write();
+        let i = st.chat_idx(id);
+        let merge = ChatMergeInfo { chat_ids: vec![id.into(), "!sg_lena:beeper.com".into()], default_chat_id: None };
+        st.update_chat(i, |c| c.merge = Some(merge));
+    }
+    let mut sim = tall(app.view_info());
+    let below = |sim: &mut Simulator<'_, UiMessage>, s: &str| {
+        let contact = sim.find("Contact").map_or(0.0, |c| c.bounds().y);
+        sim.find(s).map_or(true, |e| e.bounds().y > contact)
+    };
+    assert!(below(&mut sim, "@jordan") && below(&mut sim, "jordan@example.com"), "a merged chat has no identity line");
+}
+
 #[test]
 fn chat_info_media_like_desktop() {
     let mut app = demo_app("chat-info-media");
@@ -8897,6 +9074,50 @@ fn x11_hides_windows_in_place() {
     assert!(app.unmapped.is_empty() && app.opened.is_empty());
 }
 
+/// A `window.json` or `subwindow-state.json` that is not a JSON object reads as an empty store, like Desktop's
+/// FastConf with `clearInvalidConfig`, and the entries of `openSubwindows` that Desktop does not know are skipped,
+/// instead of a panic at launch.
+#[test]
+fn malformed_window_stores_read_as_defaults() {
+    use crate::windows::{read_subwindows, Subwindow};
+    let mut app = demo_app("malformed-window-stores");
+    let dir = app.store.read().config.data_dir.clone();
+    let subs = dir.join("subwindow-state.json");
+    let bad: [&[u8]; 9] = [
+        b"{",
+        b"",
+        b"[1, 2]",
+        b"null",
+        b"{\"openSubwindows\": 5}",
+        b"{\"openSubwindows\": {\"type\": \"prefs\"}}",
+        br#"{"openSubwindows": [7, null, "prefs", {}, {"type": "thread"}, {"type": "thread", "threadId": 3}, {"type": 3}]}"#,
+        br#"{"openSubwindows": [{"type": "thread", "threadId": ""}, {"type": "popover"}]}"#,
+        b"{\"openSubwindows\": [\xff]}",
+    ];
+    for json in bad {
+        std::fs::write(&subs, json).unwrap();
+        assert_eq!(read_subwindows(&subs), [], "{}", String::from_utf8_lossy(json));
+        let _ = app.restore_subwindows();
+    }
+    assert!(app.chat_windows.is_empty() && app.settings_window.is_none(), "nothing opens");
+    let good = br#"{"openSubwindows": [{"type": "thread", "threadId": "c"}, 1, {"type": "prefs"},
+        {"type": "prefs-subview", "subView": "notifications"}]}"#;
+    std::fs::write(&subs, good).unwrap();
+    assert_eq!(read_subwindows(&subs), [Subwindow::Thread("c".into()), Subwindow::Prefs, Subwindow::Prefs]);
+
+    let path = dir.join("window.json");
+    let bad = ["{", "[]", "3", "{\"windowState\": 5}", "{\"windowState\": {\"main\": 5}}", "{\"windowState\": []}"];
+    for json in bad {
+        std::fs::write(&path, json).unwrap();
+        let s = app.main_window_settings();
+        assert_eq!((s.size, s.maximized), (Size::new(1200.0, 800.0), false), "{json}");
+        assert!(matches!(s.position, window::Position::Centered), "{json}");
+        // FastConf's `set` replaces what is in its way.
+        write_window_state(&path, "main", true, Size::new(900.0, 700.0), None);
+        assert!(app.main_window_settings().maximized, "{json}");
+    }
+}
+
 #[test]
 fn main_window_keeps_its_state_like_desktop() {
     let mut app = demo_app("windowstate");
@@ -8961,13 +9182,7 @@ pub(crate) fn signed_out_app(name: &str) -> BeeperGuiApp {
 /// The pixels of the sign-in window at points of its 330x620 layout.
 fn login_pixels(app: &BeeperGuiApp, points: &[(u32, u32)]) -> Vec<Color> {
     let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 620.0), app.view_login());
-    let dir =
-        std::env::temp_dir().join(format!("beeper-rs-login-{}-{:?}", std::process::id(), std::thread::current().id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let _ = sim.snapshot(&app.iced_theme()).unwrap().matches_image(dir.join("login"));
-    let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-    let shot = ::image::open(&png).unwrap().into_rgba8();
-    std::fs::remove_dir_all(&dir).unwrap();
+    let shot = crate::focus::tests::pixels(&mut sim, &app.iced_theme(), "login");
     let k = shot.width() / 330;
     points
         .iter()
@@ -9275,12 +9490,7 @@ fn brand_buttons_shrink_while_pressed_like_desktop() {
         if press {
             let _ = sim.simulate([iced::Event::Mouse(iced::mouse::Event::ButtonPressed(Button::Left))]);
         }
-        let dir = std::env::temp_dir().join(format!("beeper-rs-press-{}-{press}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let _ = sim.snapshot(&app.iced_theme()).unwrap().matches_image(dir.join("press"));
-        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-        let shot = ::image::open(&png).unwrap().into_rgba8();
-        std::fs::remove_dir_all(&dir).unwrap();
+        let shot = crate::focus::tests::pixels(&mut sim, &app.iced_theme(), "press");
         let k = shot.width() / 330;
         let [r, g, b, _] = shot[(28 * k, 570 * k)].0;
         Color::from_rgb8(r, g, b)
@@ -9620,12 +9830,7 @@ fn no_tooltip_over_an_open_menu_like_desktop() {
         let at = Point::new(235.0, 26.0);
         sim.point_at(at);
         let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
-        let dir = std::env::temp_dir().join(format!("beeper-rs-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("tip"));
-        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-        let shot = ::image::open(&png).unwrap().into_rgba8();
-        std::fs::remove_dir_all(&dir).unwrap();
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, name);
         let k = shot.width() / 1200;
         shot.get_pixel(214 * k, 57 * k).0
     };
@@ -9828,12 +10033,7 @@ fn the_header_shows_the_disappearing_timer_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
     let header = |app: &BeeperGuiApp| {
         let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_conversation());
-        let dir = std::env::temp_dir().join(format!("beeper-rs-header-timer-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("header"));
-        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-        let shot = ::image::open(&png).unwrap().into_rgba8();
-        std::fs::remove_dir_all(&dir).unwrap();
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "header-timer");
         // The row of the name pill, under the avatar.
         let k = shot.width() / 1200;
         (0..shot.width()).filter(|&x| shot.get_pixel(x, 62 * k).0 != shot.get_pixel(0, 62 * k).0).count()
@@ -9922,14 +10122,7 @@ fn custom_emoji_chat(app: &mut BeeperGuiApp, takes: bool) -> (String, String) {
 
 /// The pixels of a frame of `sim`, at its scale of 2.
 fn custom_emoji_pixels(sim: &mut Simulator<'_, UiMessage>) -> ::image::RgbaImage {
-    let thread = std::thread::current().id();
-    let dir = std::env::temp_dir().join(format!("beeper-rs-custom-emoji-{}-{thread:?}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("shot"));
-    let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-    let shot = ::image::open(&png).unwrap().into_rgba8();
-    std::fs::remove_dir_all(&dir).unwrap();
-    shot
+    crate::focus::tests::pixels(sim, &iced::Theme::Light, "custom-emoji")
 }
 
 /// Desktop's emoji picker with `customEmojisForReactions`: the own pack's images in emoji-mart's "Custom" category
