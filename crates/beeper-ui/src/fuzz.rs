@@ -1067,6 +1067,110 @@ fn command_bar_opens_empty_like_desktop() {
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
 }
 
+/// Desktop's chat hotkeys take `selectedOrCursorThread`, so Ctrl E and E archive the chat of the cursor while no chat
+/// is open. `toggleThreadArchive` first moves the cursor to the next chat, and a pinned chat stays with the toast
+/// "Pinned chats can't be archived".
+#[test]
+fn archive_keys_take_the_chat_of_the_cursor_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("archivecursor");
+    let main = app.main_window.expect("a main window");
+    let ids = app.list_ids(&app.store.read());
+    let flag = |app: &BeeperGuiApp, id: &str, f: ChatFlag| app.store.read().find_chat(id).expect("a chat").flag(f);
+    assert!(flag(&app, &ids[0], ChatFlag::Pinned), "the demo list starts with a pinned chat");
+    let _ = app.update(UiMessage::SelectChat(ids[0].clone()));
+    let _ = app.update(UiMessage::WindowKey(main, Key::Named(Named::Escape), Modifiers::empty()));
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[0]));
+    let _ = app.update(UiMessage::WindowKey(main, Key::Character("e".into()), Modifiers::CTRL));
+    assert_eq!(app.status_banner, "Pinned chats can't be archived");
+    assert!(!flag(&app, &ids[0], ChatFlag::Archived), "the pinned chat stays");
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[1]), "the cursor moves to the next chat");
+    let row = ids.iter().position(|id| !flag(&app, id, ChatFlag::Pinned)).expect("a chat that is not pinned");
+    app.list.cursor = Some(ids[row].clone());
+    let _ = app.update(UiMessage::WindowText(main, "e".into()));
+    assert!(flag(&app, &ids[row], ChatFlag::Archived), "E archives the chat of the cursor");
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[row + 1]));
+    assert_eq!(app.pane.selected_chat_id, None, "archiving the chat of the cursor opens no chat");
+    let _ = app.update(UiMessage::RunHotkey("Chat: Toggle Pin"));
+    assert!(flag(&app, &ids[row + 1], ChatFlag::Pinned), "Ctrl P pins the chat of the cursor");
+    let _ = app.update(UiMessage::SelectChat(ids[row + 2].clone()));
+    let _ = app.update(UiMessage::WindowText(main, "e".into()));
+    assert_eq!(app.pane.composer.text(), "e", "with a chat open, E types in the composer");
+    assert!(!flag(&app, &ids[row + 2], ChatFlag::Archived));
+}
+
+/// Desktop's `scrollThreadsListToItem` with `align: "nearest"`: the chat list scrolls the chat of the cursor and the
+/// open chat into view with the least scroll, for ↓ and ↑, Ctrl ] and Ctrl 1 to 9. A pinned tile brings the top of the
+/// list, where the pinned grid is.
+#[test]
+fn chat_list_scrolls_to_the_pointed_chat_like_desktop() {
+    use iced::advanced::widget::operation::scrollable::{AbsoluteOffset, RelativeOffset, Scrollable};
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    use iced::Rectangle;
+    struct Offset(Option<f32>);
+    impl Scrollable for Offset {
+        fn snap_to(&mut self, _: RelativeOffset<Option<f32>>) {}
+        fn scroll_to(&mut self, to: AbsoluteOffset<Option<f32>>) {
+            self.0 = to.y;
+        }
+        fn scroll_by(&mut self, _: AbsoluteOffset, _: Rectangle, _: Rectangle) {}
+    }
+    let mut app = demo_app("listreveal");
+    let main = app.main_window.expect("a main window");
+    let ids = app.list_ids(&app.store.read());
+    let scroll = app.list.scroll.0.clone();
+    // Where the task scrolls the chat list to.
+    let scrolled = |task: Task<UiMessage>| -> Option<f32> {
+        let actions = iced::futures::executor::block_on(task_actions(task));
+        let mut offset = Offset(None);
+        for a in actions {
+            if let iced_runtime::Action::Widget(mut op) = a {
+                op.scrollable(Some(&scroll), Rectangle::default(), Rectangle::default(), Vector::ZERO, &mut offset);
+            }
+        }
+        offset.0
+    };
+    // A frame of the main window, 450 px high, after the wheel moved the list `wheel` px down.
+    let draw = |app: &BeeperGuiApp, wheel: f32| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 450.0), app.view(main));
+        sim.point_at(Point::new(290.0, 300.0));
+        let delta = ScrollDelta::Pixels { x: 0.0, y: -wheel };
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::WheelScrolled { delta })]);
+        let _ = sim.simulate([iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))]);
+    };
+    let key =
+        |app: &mut BeeperGuiApp, k: Named| app.update(UiMessage::WindowKey(main, Key::Named(k), Modifiers::empty()));
+    let _ = app.update(UiMessage::SelectChat(ids[2].clone()));
+    let _ = key(&mut app, Named::Escape);
+    draw(&app, 0.0);
+    assert_eq!(scrolled(key(&mut app, Named::ArrowDown)), None, "a chat in view does not scroll the list");
+    let mut offsets = Vec::new();
+    while let Some(next) = ids.get(ids.iter().position(|i| Some(i) == app.list.cursor.as_ref()).unwrap() + 1) {
+        let y = scrolled(key(&mut app, Named::ArrowDown));
+        assert_eq!(app.list.cursor.as_ref(), Some(next));
+        offsets.extend(y);
+    }
+    assert!(!offsets.is_empty(), "the chats below the list scroll it");
+    assert!(offsets.is_sorted() && offsets[0] > 0.0, "each next chat ends at the bottom: {offsets:?}");
+    let _ = app.update(UiMessage::SelectChat(ids[6].clone()));
+    draw(&app, 0.0);
+    let mut by_hotkey = Vec::new();
+    for _ in 0..ids.len() {
+        by_hotkey.extend(scrolled(app.update(UiMessage::RunHotkey("Select Next Chat"))));
+    }
+    assert_eq!(app.pane.selected_chat_id.as_ref(), ids.last());
+    assert!(!by_hotkey.is_empty() && by_hotkey.is_sorted(), "Ctrl ] scrolls like the cursor: {by_hotkey:?}");
+    draw(&app, 5000.0);
+    let first = app.update(UiMessage::KeyPressed(Key::Character("1".into()), Modifiers::CTRL));
+    assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&ids[0]));
+    assert_eq!(scrolled(first), Some(0.0), "Ctrl 1 on a pinned tile scrolls to the top");
+    draw(&app, 5000.0);
+    let ninth = scrolled(app.update(UiMessage::KeyPressed(Key::Character("9".into()), Modifiers::CTRL)));
+    assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&ids[8]));
+    let end = *offsets.last().unwrap();
+    assert!(ninth.is_some_and(|y| y > 0.0 && y < end), "Ctrl 9 brings a chat above the list to its top: {ninth:?}");
+}
+
 #[test]
 fn menu_accelerators_work_like_desktop() {
     use iced::keyboard::{Key, Modifiers};
