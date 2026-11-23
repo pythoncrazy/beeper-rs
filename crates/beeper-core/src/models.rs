@@ -215,6 +215,8 @@ pub const MSG_EDITED: u16 = 1 << 5;
 pub const MSG_DELETED: u16 = 1 << 6;
 /// The message mentions the user in `m.mentions`.
 pub const MSG_MENTION: u16 = 1 << 7;
+/// Desktop's `extra.isNudge`: the message is a nudge (`com.beeper.nudge`).
+pub const MSG_NUDGE: u16 = 1 << 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NetworkKind {
@@ -1750,6 +1752,7 @@ impl Message {
             (self.edited(), MSG_EDITED),
             (self.is_deleted == Some(true), MSG_DELETED),
             (self.flags & MSG_MENTION != 0, MSG_MENTION),
+            (self.flags & MSG_NUDGE != 0, MSG_NUDGE),
         ]);
     }
 }
@@ -2048,6 +2051,8 @@ pub struct BeeperSettings {
     pub target_switcher_nudge_seen_rooms: Vec<String>,
     /// Desktop's local `target_switcher_nudge_dismissed`.
     pub target_switcher_nudge_dismissed: bool,
+    /// Desktop's local `has_seen_first_nudge`: "You got nudged! Want to disable nudges?" showed.
+    pub has_seen_first_nudge: bool,
     /// Desktop's local `recovery_code_reminder_dismissed_at`: the time in ms when the user closed the recovery key
     /// reminder, or 0.
     pub recovery_reminder_dismissed_at: i64,

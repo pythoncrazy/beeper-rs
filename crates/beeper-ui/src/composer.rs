@@ -53,6 +53,8 @@ pub(crate) type Typo = (std::ops::Range<usize>, Vec<String>);
 pub enum Suggestion {
     Emoji(String, String),
     Mention(String, String, Option<Box<User>>),
+    /// A slash command, by its index in [`SLASH_COMMANDS`].
+    Command(usize),
     /// A quick reply, by its index in the quick replies of the settings.
     QuickReply(usize),
 }
@@ -75,6 +77,14 @@ pub(crate) fn quick_reply_text(text: &str, other: Option<&User>) -> String {
         None => t,
     })
 }
+
+/// Desktop's slash commands (`createSlashCommandTriggerSettings`): the ID, the label, the description, and the icon
+/// in `COMPOSER_ICONS`.
+pub(crate) const SLASH_COMMANDS: [(&str, &str, &str, usize); 3] = [
+    ("gif", "GIF", "Search and send a GIF", 4),
+    ("voice", "Voice memo", "Record a voice message", 7),
+    ("nudge", "Nudge", "Shake the chat to get their attention", 10),
+];
 
 /// Where a pasted text goes when it is one link and nothing else, like linkifyjs's `find(...).isLink && value ===
 /// text` in Desktop's `handlePasteLink`, with the `defaultProtocol` of `https` for a bare domain.
@@ -355,7 +365,7 @@ pub(crate) fn stored_text(pane: &mut Pane, md: &str) -> String {
     text
 }
 
-const ATTACH_BUTTONS: [u8; 8] = [0, 7, 3, 5, 2, 1, 4, 6];
+const ATTACH_BUTTONS: [u8; 9] = [0, 7, 3, 5, 2, 1, 4, 8, 6];
 
 /// Desktop's composer action state (`rIt`, `_R` and `oIt`): the tooltip, the hotkey that it shows, and whether the
 /// button works. Talk to Type is the only action while you edit a message.
@@ -385,7 +395,7 @@ pub(crate) fn composer_action(
 }
 
 /// Desktop's composer action configs (`Ome`) by composer button: the label, the hotkey, and the Beeper Plus feature.
-const COMPOSER_ACTION_INFO: [(&str, Option<&str>, Option<&str>); 8] = [
+const COMPOSER_ACTION_INFO: [(&str, Option<&str>, Option<&str>); 9] = [
     ("Add Emoji", None, None),
     ("Talk to Type", None, Some("talk-to-type")),
     ("Add GIF", Some("Message: Send GIF"), None),
@@ -394,15 +404,17 @@ const COMPOSER_ACTION_INFO: [(&str, Option<&str>, Option<&str>); 8] = [
     ("Record Audio", Some("Message: Record Audio"), None),
     ("Create Poll", None, None),
     ("Add a sticker", Some("Message: Send Sticker"), None),
+    ("Send a nudge", None, None),
 ];
 
-/// Desktop's `ComposerHiddenActions`: the actions behind the plus button. Create Poll needs `enable-polls`, and
-/// "Add a sticker" needs "Use sticker packs".
-pub(crate) fn hidden_actions(st: &BeeperStore) -> Vec<u8> {
+/// Desktop's `ComposerHiddenActions`: the actions behind the plus button. Create Poll needs `enable-polls`,
+/// "Add a sticker" needs "Use sticker packs", and "Send a nudge" needs `nudge` (`canNudge`).
+pub(crate) fn hidden_actions(st: &BeeperStore, nudge: bool) -> Vec<u8> {
     let (pri, sec) = composer_buttons(st);
     let shown = |x: u8| match x {
         6 => st.feature("enable-polls").on,
         7 => st.settings.on("stickerPacks"),
+        8 => nudge,
         _ => true,
     };
     ATTACH_BUTTONS.into_iter().filter(|&x| Some(x) != pri && Some(x) != sec && shown(x)).collect()
@@ -426,6 +438,7 @@ fn action_msg(id: u8, chat: &str) -> Option<UiMessage> {
         5 => Some(UiMessage::Record(record::Msg::Start)),
         6 => Some(UiMessage::OpenPollCreator(chat.into())),
         7 => Some(UiMessage::Composer(Msg::TogglePicker(Picker::Sticker))),
+        8 => Some(UiMessage::Nudge(crate::nudge::Msg::Send)),
         _ => None,
     }
 }
@@ -451,9 +464,29 @@ impl BeeperGuiApp {
         }
     }
 
+    /// The actions behind the plus button of the pane's composer.
+    pub(crate) fn pane_actions(&self, st: &BeeperStore) -> Vec<u8> {
+        let chat = self.pane().selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+        hidden_actions(st, chat.is_some_and(|i| self.nudge_target(st, &st.chats[i]).is_some()))
+    }
+
+    /// Desktop's slash commands of `chat` (`n()` of `createSlashCommandTriggerSettings`): `/gif` and `/voice` where
+    /// the chat takes GIFs and voice notes, and `/nudge` where `canNudge`.
+    fn slash_commands(&self, st: &BeeperStore, chat: &Chat) -> Vec<usize> {
+        let on = [chat.takes(FILE_GIF), chat.takes(FILE_VOICE), self.nudge_target(st, chat).is_some()];
+        (0..SLASH_COMMANDS.len()).filter(|&i| on[i]).collect()
+    }
+
     /// Desktop's `hasDraft` of the send button: a text, an attachment, or a recording.
     fn has_draft(&self) -> bool {
         !self.pane().composer.text().trim().is_empty() || !self.pane().attachments.is_empty() || self.recorder.is_some()
+    }
+
+    /// The `FORMATS` that the open chat supports.
+    fn formats(&self) -> u16 {
+        let st = self.store.read();
+        let chat = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+        chat.map_or(ALL_FORMATS, |c| st.chats[c].formatting)
     }
 
     /// Whether keys outside a text field go to the composer: a chat that takes messages shows, with no dialog over it.
@@ -477,7 +510,7 @@ impl BeeperGuiApp {
         };
         let editing = pane.editing_message_id.is_some();
         let works = |id: &u8| *id != 0 && composer_action(&st, chat, *id, editing).2;
-        let hidden = if pane.show_attach_menu { hidden_actions(&st) } else { Vec::new() };
+        let hidden = if pane.show_attach_menu { self.pane_actions(&st) } else { Vec::new() };
         let (pri, sec) = composer_buttons(&st);
         let inline = [pri, sec].into_iter().flatten().filter(works).map(Stop::Action);
         let send = (editing || self.has_draft()).then_some(Stop::Send);
@@ -549,7 +582,7 @@ impl BeeperGuiApp {
         let pane = self.pane();
         let text = pane.composer.text();
         let before = &text[..format::offset(&text, pane.composer.cursor().position)];
-        let at = before.rfind(['@', ':', ';', '\n']).filter(|_| pane.suggest_hidden.as_ref() != Some(&text))?;
+        let at = before.rfind(['@', ':', ';', '/', '\n']).filter(|_| pane.suggest_hidden.as_ref() != Some(&text))?;
         let query = &before[at + 1..];
         // Desktop's `findSuggestionMatch` (`[\p{L}\d+\-_]*` after the trigger): ":)" or "@a.b" suggest nothing.
         let word = |c: char| c.is_alphabetic() || c.is_ascii_digit() || "+-_".contains(c);
@@ -560,6 +593,18 @@ impl BeeperGuiApp {
                 let replies = st.settings.quick_replies.iter().enumerate();
                 let found = prefs::match_sort(replies, query, |(_, r)| r.title.clone()).into_iter();
                 found.map(|(i, _)| Suggestion::QuickReply(i)).collect()
+            }
+            // Desktop's `allow` of the slash commands: with `slash-commands-available`, not while editing, and only
+            // when the composer is the command, with the caret at its end.
+            b'/' => {
+                let whole = text.trim_end_matches('\n');
+                let alone = at == 0 && before.len() == whole.len() && !whole.contains('\n');
+                let on = st.feature("slash-commands-available").on && pane.editing_message_id.is_none();
+                let chat = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+                let (Some(chat), true) = (chat, alone && on) else { return None };
+                let q = query.to_lowercase();
+                let commands = self.slash_commands(st, &st.chats[chat]).into_iter();
+                commands.filter(|&i| SLASH_COMMANDS[i].0.starts_with(&q)).map(Suggestion::Command).collect()
             }
             b'@' => {
                 let chat = &st.chats[st.resolve_chat_idx(pane.selected_chat_id.as_deref()?).expect("the open chat")];
@@ -593,11 +638,12 @@ impl BeeperGuiApp {
             Suggestion::Emoji(c, name) if emoji::is_mxc(c) => format!(" {name}"),
             Suggestion::Emoji(c, name) => format!("{c} {name}"),
             Suggestion::Mention(label, ..) => format!("@{label}"),
+            Suggestion::Command(i) => tr(SLASH_COMMANDS[*i].1).to_string(),
             Suggestion::QuickReply(i) => quick_reply_row(&st.settings.quick_replies[*i]).0,
         };
         let face = |s: &Suggestion| match s {
             Suggestion::Emoji(c, _) if emoji::is_mxc(c) => Some(self.custom_image(c, 13.0, self.animate.get())),
-            Suggestion::Emoji(..) | Suggestion::QuickReply(_) => None,
+            Suggestion::Emoji(..) | Suggestion::Command(_) | Suggestion::QuickReply(_) => None,
             Suggestion::Mention(_, _, Some(u)) => {
                 Some(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 32.0, 0.0))
             }
@@ -612,8 +658,21 @@ impl BeeperGuiApp {
             _ if picks.iter().any(|s| matches!(s, Suggestion::Emoji(c, _) if emoji::is_mxc(c))) => 13.0,
             _ => 0.0,
         };
-        let width =
-            picks.iter().map(|s| text_width(&label(s), 13.0, Weight::Normal)).fold(0.0, f32::max) + 12.0 + faces;
+        // Desktop's `SlashCommandItem`: the 20 px icon, the label in 500, and the description at 0.6 that ends in an
+        // ellipsis, 8 px apart in a row from 240 to 320 px wide.
+        let command = |i: usize| {
+            let (_, name, desc, icon) = SLASH_COMMANDS[i];
+            let (name, desc) = (tr(name), tr(desc));
+            let named = text_width(name, 13.0, Weight::Medium);
+            (name, desc, icon, named, 20.0 + 8.0 + named + 8.0 + text_width(desc, 13.0, Weight::Normal))
+        };
+        let commands =
+            picks.iter().filter_map(|s| if let Suggestion::Command(i) = s { Some(command(*i).4) } else { None });
+        let row_width = commands.fold(0.0, f32::max).clamp(240.0, 320.0);
+        let width = match &picks[0] {
+            Suggestion::Command(_) => row_width + 12.0,
+            _ => picks.iter().map(|s| text_width(&label(s), 13.0, Weight::Normal)).fold(0.0, f32::max) + 12.0 + faces,
+        };
         let items = picks.iter().enumerate().map(|(i, s)| {
             let (bg, fg) = if i == at { (p.accent, Color::WHITE) } else { (CLEAR, p.text) };
             // Desktop's `QuickReplyItem`: the title in 500, a dash, and the text at 0.75, cut at 100 characters.
@@ -625,6 +684,17 @@ impl BeeperGuiApp {
                     .align_y(Center);
                 let b = button(line).padding([4, 6]).width(width).style(btn_style([bg; 3], [fg; 3], 4.0));
                 return b.on_press(UiMessage::Composer(Msg::PickSuggestion(i))).into();
+            }
+            if let Suggestion::Command(c) = s {
+                let (name, desc, icon, named, _) = command(*c);
+                let desc = clamp(desc, (row_width - 36.0 - named).max(0.0), 1, 13.0, Weight::Normal)
+                    .color(fg.scale_alpha(0.6));
+                let line = row![tinted(&COMPOSER_ICONS[icon], 20.0, fg), crate::med(name, 13.0).color(fg), desc];
+                let b = button(line.spacing(8).align_y(Center)).padding([4, 6]).width(width);
+                return b
+                    .style(btn_style([bg; 3], [fg; 3], 4.0))
+                    .on_press(UiMessage::Composer(Msg::PickSuggestion(i)))
+                    .into();
             }
             let name = txt(label(s), 13.0).wrapping(iced::widget::text::Wrapping::None);
             let gap = if matches!(s, Suggestion::Mention(..)) { 4.0 } else { 0.0 };
@@ -644,7 +714,7 @@ impl BeeperGuiApp {
             ..container::Style::default()
         };
         let list = container(Column::with_children(items).padding([4, 4])).style(card);
-        let unveiled = hidden_actions(st).len() as f32;
+        let unveiled = self.pane_actions(st).len() as f32;
         let plus = if self.pane().show_attach_menu { 36.0 + 6.0 + 2.0 + unveiled * 30.0 - 2.0 } else { 36.0 };
         let text = self.pane().composer.text();
         let line = &text[text[..trigger].rfind('\n').map_or(0, |i| i + 1)..trigger];
@@ -1155,6 +1225,11 @@ impl BeeperGuiApp {
                         (Some('b'), false) => 0,
                         (Some('i'), false) => 1,
                         (Some('x'), true) => 2,
+                        // Tiptap's `Mod-Shift-b` of the quote and `Mod-Alt-c` of the code block, whose extensions
+                        // Desktop's composer loads only where the chat supports them (`Lx`). `Mod-Shift-7` and
+                        // `Mod-Shift-8` of the lists come through the hotkeys.
+                        (Some('b'), true) if formats & 1 << 6 != 0 => 6,
+                        (Some('c'), false) if k.modifiers.alt() && formats & 1 << 8 != 0 => 8,
                         _ => return text_editor::Binding::from_key_press(k),
                     };
                     Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::Format(i))))
@@ -1218,7 +1293,7 @@ impl BeeperGuiApp {
             .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
             .on_press(UiMessage::Composer(Msg::ToggleAttachMenu));
         let unveiled = self.pane().show_attach_menu.then(|| {
-            Row::with_children(hidden_actions(st).into_iter().map(&action_btn))
+            Row::with_children(self.pane_actions(st).into_iter().map(&action_btn))
                 .spacing(2)
                 .padding([0, 1])
                 .align_y(Center)
@@ -1354,6 +1429,8 @@ pub enum Msg {
     Undo(bool),
     /// Toggles a `format::LABELS` button on the composer selection.
     Format(usize),
+    /// A hotkey of a `format::LABELS` button, and where the caret was when it came.
+    FormatKey(usize, Caret),
     LinkDialog(Option<(String, String)>),
     SaveLink,
     Submit,
@@ -1610,6 +1687,11 @@ impl BeeperGuiApp {
                 self.pane.composer = composer_with(&v);
                 return self.composer_changed(old);
             }
+            // Tiptap's list keys, which work in the focused composer of a chat that supports the list.
+            Msg::FormatKey(i, Caret::Field) if self.formats() & 1 << i != 0 => {
+                return self.update(UiMessage::Composer(Msg::Format(i)));
+            }
+            Msg::FormatKey(..) => {}
             Msg::Format(format::CODE) if format::selection(&self.pane.composer).is_none() => {
                 let insert = text_editor::Action::Edit(text_editor::Edit::Insert('`'));
                 return self.update(UiMessage::Composer(Msg::Edit(insert)));
@@ -1622,7 +1704,16 @@ impl BeeperGuiApp {
                     self.pane.link_dialog = Some((String::new(), old[r].to_owned()));
                     return operation::focus("link-url");
                 }
-                let (text, r) = format::toggle(i, &old, r);
+                // Desktop's format keys: Tiptap's toggles of the marks that the chat supports, and else the marks as
+                // text (`_`). Inline code without that support does nothing, as `toggleCode` does not exist there.
+                let formats = self.formats();
+                let (text, r) = match i {
+                    0..=2 | format::CODE if formats & 1 << i != 0 => format::toggle_mark(i, &old, r),
+                    0..=2 => format::insert_marks(i, &old, r),
+                    format::CODE => return Task::none(),
+                    _ if r.is_empty() && i != format::LINK => format::toggle_line(i, &old, r.start),
+                    _ => format::toggle(i, &old, r),
+                };
                 self.pane.composer = format::content(&text, r);
                 return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
             }
@@ -1676,6 +1767,25 @@ impl BeeperGuiApp {
                 let Some((at, picks)) = self.suggestions(&self.store.read()) else { return Task::none() };
                 let mut text = self.pane.composer.text();
                 let caret = format::offset(&text, self.pane.composer.cursor().position);
+                // Desktop's `execute` of a slash command: the command leaves the composer, then it runs.
+                if let Suggestion::Command(c) = picks[i.min(picks.len() - 1)] {
+                    text.replace_range(at..caret, "");
+                    self.pane.composer = format::content(&text, at..at);
+                    let changed = self.composer_effects();
+                    let run = match SLASH_COMMANDS[c].0 {
+                        // Desktop's `setPicker(GIF)` opens the picker, which takes the keys.
+                        "gif" if self.pane.picker == Some(Picker::Gif) => Task::none(),
+                        "gif" => {
+                            return Task::batch([
+                                changed,
+                                self.update(UiMessage::Composer(Msg::TogglePicker(Picker::Gif))),
+                            ])
+                        }
+                        "voice" => self.update(UiMessage::Record(record::Msg::Start)),
+                        _ => self.update(UiMessage::Nudge(crate::nudge::Msg::Send)),
+                    };
+                    return Task::batch([changed, operation::focus("composer-input"), run]);
+                }
                 let pick = match &picks[i.min(picks.len() - 1)] {
                     // Desktop's `#[name](url)` node of a custom emoji, which the composer shows as ":name:".
                     Suggestion::Emoji(c, name) if emoji::is_mxc(c) => {
@@ -1694,6 +1804,7 @@ impl BeeperGuiApp {
                         let other = people.iter().find(|u| u.is_self != Some(true));
                         format!("{} ", quick_reply_text(&st.settings.quick_replies[*q].text, other))
                     }
+                    Suggestion::Command(_) => unreachable!("a slash command runs above"),
                 };
                 text.replace_range(at..caret, &pick);
                 self.pane.composer = format::content(&text, at + pick.len()..at + pick.len());

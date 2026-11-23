@@ -78,7 +78,7 @@ impl BeeperGuiApp {
         // Desktop's `onEscapePressed` of the Picture in Picture window.
         if escape && self.pip.as_ref().is_some_and(|p| p.0 == id) {
             return match self.pip_menu.take() {
-                None => window::close(id),
+                None => self.close_window(id),
                 Some(_) => self.settle(),
             };
         }
@@ -108,8 +108,8 @@ impl BeeperGuiApp {
     fn child_window_key(&mut self, id: window::Id, key: Key, mods: Modifiers) -> Task<UiMessage> {
         if self.label_settings.iter().any(|w| w.id == id) || Some(id) == self.how_window {
             return match key {
-                Key::Named(Named::Escape) => window::close(id),
-                Key::Named(Named::Enter) if mods.command() => window::close(id),
+                Key::Named(Named::Escape) => self.close_window(id),
+                Key::Named(Named::Enter) if mods.command() => self.close_window(id),
                 _ => Task::none(),
             };
         }
@@ -127,12 +127,12 @@ impl BeeperGuiApp {
             || self.nickname_windows.iter().any(|d| d.id == id)
             || self.add_accounts.iter().any(|a| a.id == id)
         {
-            return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
+            return if key == Key::Named(Named::Escape) { self.close_window(id) } else { Task::none() };
         }
         // Desktop's `onEscapePressed` closes the Add an Account window, after the menu of a network.
         if self.networks.window == Some(id) {
             if key == Key::Named(Named::Escape) && self.networks.menu.take().is_none() {
-                return window::close(id);
+                return self.close_window(id);
             }
             return Task::none();
         }
@@ -144,7 +144,7 @@ impl BeeperGuiApp {
         }
         if self.label_window.as_ref().is_some_and(|d| d.id == id) {
             return match key {
-                Key::Named(Named::Escape) => window::close(id),
+                Key::Named(Named::Escape) => self.close_window(id),
                 Key::Named(Named::Enter) if mods.command() => self.label_edit(LabelEdit::Advance),
                 _ => Task::none(),
             };
@@ -241,7 +241,9 @@ impl BeeperGuiApp {
                 return Some(task);
             }
         }
-        let n = self.suggestions(&self.store.read()).map_or(0, |(_, picks)| picks.len());
+        let picks = self.suggestions(&self.store.read());
+        let command = picks.as_ref().is_some_and(|(_, p)| matches!(p[0], composer::Suggestion::Command(_)));
+        let n = picks.map_or(0, |(_, picks)| picks.len());
         if n == 0 || !mods.is_empty() {
             return None;
         }
@@ -249,7 +251,12 @@ impl BeeperGuiApp {
         match key.as_ref() {
             Key::Named(Named::ArrowUp | Named::ArrowDown) => {
                 let down = *key == Key::Named(Named::ArrowDown);
-                self.pane.suggest = if down { (at + 1) % n } else { (at + n - 1) % n };
+                // Desktop's ↑ stops at the first slash command, and goes around the other lists.
+                self.pane.suggest = match (down, command) {
+                    (true, _) => (at + 1) % n,
+                    (false, true) => at.saturating_sub(1),
+                    (false, false) => (at + n - 1) % n,
+                };
                 Some(Task::none())
             }
             Key::Named(Named::Tab) => Some(self.update(UiMessage::Composer(composer::Msg::PickSuggestion(at)))),
@@ -276,6 +283,18 @@ impl BeeperGuiApp {
         let defaults = asking && self.creating_chat.is_none();
         if let Some(task) = window.filter(|_| asking || free).and_then(|w| self.focus_key(w, key, mods, defaults)) {
             return Some(task);
+        }
+        // Tiptap's `Mod-Shift-7` and `Mod-Shift-8` of the lists, which `cursor::Root` keeps from the composer as
+        // shortcuts on digits.
+        let list = match key.as_ref() {
+            Key::Character("7" | "&") => Some(5),
+            Key::Character("8" | "*") => Some(4),
+            _ => None,
+        };
+        let shortcut = mods.command() && mods.shift() && !mods.alt() && self.composer_takes_keys();
+        if let Some((window, i)) = window.zip(list).filter(|_| shortcut) {
+            let caret = focus::caret(window, self.composer_id());
+            return Some(caret.map(move |at| UiMessage::Composer(composer::Msg::FormatKey(i, at))));
         }
         let window = window.filter(|_| self.composer_takes_keys() && (mods - Modifiers::SHIFT).is_empty())?;
         match key.as_ref() {

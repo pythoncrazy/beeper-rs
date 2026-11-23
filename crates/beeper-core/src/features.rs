@@ -234,7 +234,12 @@ impl Flags {
             | "personal-room-overrides"
             | "drafts-sync"
             | "deferred-recovery-code-setup" => self.flag(key),
-            "archive-as-unread" | "enable-threads" | "block-users" | "delete-chats" => {
+            "archive-as-unread"
+            | "enable-threads"
+            | "block-users"
+            | "delete-chats"
+            | "nudge"
+            | "slash-commands-available" => {
                 let on = self.flag(key).on;
                 Feature { show: on, on, upgrade: false }
             }
