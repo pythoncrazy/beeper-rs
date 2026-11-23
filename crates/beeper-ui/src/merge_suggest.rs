@@ -323,12 +323,7 @@ impl BeeperGuiApp {
     /// Desktop's `MergeSuggestionNetworkIcons`: the icon of each network of the chats, `size` px, each over 6 px of
     /// the one before in a cutout of the `ring` color, and past `max` icons a "+N" in the place of the last ones.
     fn suggestion_networks<'a>(
-        &self,
-        st: &BeeperStore,
-        s: &Suggestion,
-        size: f32,
-        max: Option<usize>,
-        ring: Color,
+        &self, st: &BeeperStore, s: &Suggestion, size: f32, max: Option<usize>, ring: Color,
     ) -> El<'a> {
         let p = &self.pal;
         let mut brands: Vec<&'static str> = Vec::new();

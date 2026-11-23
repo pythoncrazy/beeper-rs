@@ -554,12 +554,7 @@ impl BeeperGuiApp {
     /// when it comes into view and leaves it, like Desktop's `VisibilityMonitor`, an `IntersectionObserver` without
     /// a threshold.
     pub(crate) fn view_video<'a>(
-        &self,
-        mid: &str,
-        url: &str,
-        poster: El<'a>,
-        size: (f32, f32),
-        place: Place,
+        &self, mid: &str, url: &str, poster: El<'a>, size: (f32, f32), place: Place,
     ) -> El<'a> {
         let video = self.view_video_at(mid, url, poster, size, place);
         match place {

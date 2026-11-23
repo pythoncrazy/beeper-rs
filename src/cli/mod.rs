@@ -485,11 +485,7 @@ impl Ctx {
 
     /// The items of a cursor list like the SDK page iterator, which asks for the next page at `oldestCursor`.
     pub fn collect(
-        &mut self,
-        path: &str,
-        query: &[(&str, String)],
-        limit: usize,
-        keep: impl Fn(&Value) -> bool,
+        &mut self, path: &str, query: &[(&str, String)], limit: usize, keep: impl Fn(&Value) -> bool,
     ) -> Res<Vec<Value>> {
         let mut items = Vec::new();
         let mut cursor: Option<String> = None;
@@ -511,10 +507,7 @@ impl Ctx {
     /// `withSpinner`: runs `run`, then shows its result line on stderr like the last frame of the ink spinner, before
     /// the output of the command, unless `--quiet`.
     pub fn spinner<T>(
-        &mut self,
-        label: &str,
-        run: impl FnOnce(&mut Self) -> Res<T>,
-        done: impl Fn(&T) -> String,
+        &mut self, label: &str, run: impl FnOnce(&mut Self) -> Res<T>, done: impl Fn(&T) -> String,
     ) -> Res<T> {
         let quiet = self.on("quiet");
         let result = run(self);

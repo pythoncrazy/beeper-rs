@@ -228,11 +228,7 @@ pub fn push_decision(local: Option<&ChatDraft>, synced: Option<&SyncedDraft>, un
 
 /// Desktop's `UKt`: what a synced `record` does to the draft here, which last took `synced`.
 pub fn reconcile_decision(
-    record: &Value,
-    local: Option<&ChatDraft>,
-    synced: Option<&SyncedDraft>,
-    own_device: &str,
-    can_apply: bool,
+    record: &Value, local: Option<&ChatDraft>, synced: Option<&SyncedDraft>, own_device: &str, can_apply: bool,
 ) -> Reconcile {
     let rev = revision(record);
     let known = rev.is_some() && synced.is_some_and(|s| s.applied && revision(&s.record) == rev);

@@ -252,9 +252,7 @@ pub struct WindowBg<'a, Message> {
 
 /// `content` over the theme's backdrop, or over `fill` without a theme color.
 pub fn window_bg<'a, Message>(
-    content: impl Into<Element<'a, Message>>,
-    backdrop: Option<Backdrop>,
-    fill: Color,
+    content: impl Into<Element<'a, Message>>, backdrop: Option<Backdrop>, fill: Color,
 ) -> WindowBg<'a, Message> {
     WindowBg { content: content.into(), backdrop, fill, radius: 0.0, frame: None }
 }
@@ -274,14 +272,8 @@ impl<Message> Widget<Message, Theme, Renderer> for WindowBg<'_, Message> {
     delegate!(children, diff, size, layout, operate, update(Message), mouse_interaction, overlay(Message));
 
     fn draw(
-        &self,
-        tree: &widget::Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
+        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
         let border = border::rounded(self.radius);

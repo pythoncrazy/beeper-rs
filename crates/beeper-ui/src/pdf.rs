@@ -130,11 +130,7 @@ impl BeeperGuiApp {
     /// `.pdf-carousel-controls`, 40 px above the bottom of the first and 40 px left of its middle, which goes over the
     /// zoom of the carousel.
     pub(crate) fn view_pdf<'a>(
-        &'a self,
-        url: &str,
-        n: usize,
-        turn: (f32, f32, Instant),
-        area: Size,
+        &'a self, url: &str, n: usize, turn: (f32, f32, Instant), area: Size,
     ) -> (El<'a>, El<'a>) {
         let white = Color::WHITE;
         // react-pdf's messages, which Desktop does not translate, and the error in the 16 px type of the carousel.

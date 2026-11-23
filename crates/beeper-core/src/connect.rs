@@ -193,10 +193,7 @@ impl Connect {
     /// Adds a token request, or joins the request of the same client, redirect and scopes. The receiver gets the
     /// token after an approval, `None` after a rejection, and an error when the request ends without an answer.
     pub fn request(
-        &mut self,
-        client: ClientInfo,
-        scopes: Vec<String>,
-        redirect_uri: &str,
+        &mut self, client: ClientInfo, scopes: Vec<String>, redirect_uri: &str,
     ) -> (String, bool, oneshot::Receiver<Option<String>>) {
         let (tx, rx) = oneshot::channel();
         let same = |r: &&mut Request| {
@@ -240,11 +237,7 @@ impl Connect {
     }
 
     pub fn store_code(
-        &mut self,
-        token: String,
-        client_id: String,
-        challenge: String,
-        resource: Option<String>,
+        &mut self, token: String, client_id: String, challenge: String, resource: Option<String>,
     ) -> String {
         let code = random_id();
         self.codes.insert(code.clone(), Code { token, client_id, challenge, resource, created_at: now_ms() });
@@ -254,11 +247,7 @@ impl Connect {
     /// Desktop's `handleOAuth2TokenRequest` for a code: the token and its stored entry, or the OAuth error code and
     /// description.
     pub fn exchange(
-        &mut self,
-        code: &str,
-        verifier: &str,
-        client_id: Option<&str>,
-        resource: Option<&str>,
+        &mut self, code: &str, verifier: &str, client_id: Option<&str>, resource: Option<&str>,
     ) -> Result<(String, Token), (&'static str, &'static str)> {
         let now = now_ms();
         self.codes.retain(|_, c| c.created_at + CODE_MS >= now);

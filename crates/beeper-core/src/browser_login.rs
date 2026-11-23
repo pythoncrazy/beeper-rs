@@ -427,8 +427,7 @@ fn domain_matches(domain: &str, wanted: &str) -> bool {
 
 /// The first source of the type of each field that has one.
 fn sourced<'a>(
-    fields: &'a [CookieField],
-    kind: &'a str,
+    fields: &'a [CookieField], kind: &'a str,
 ) -> impl Iterator<Item = (&'a CookieField, &'a crate::bridge_login::CookieSource)> {
     fields.iter().filter_map(move |f| f.sources.iter().find(|s| s.kind == kind).map(|s| (f, s)))
 }
@@ -497,11 +496,7 @@ async fn set_up(cdp: Arc<Cdp>, win: Shared, session: String, main: bool, agent: 
 
 /// Follows the events of the browser until it closes.
 async fn follow(
-    cdp: Arc<Cdp>,
-    win: Shared,
-    login: BrowserLogin,
-    agent: Option<String>,
-    mut events: mpsc::UnboundedReceiver<Value>,
+    cdp: Arc<Cdp>, win: Shared, login: BrowserLogin, agent: Option<String>, mut events: mpsc::UnboundedReceiver<Value>,
 ) {
     let mut extra: HashMap<(String, String), Map<String, Value>> = HashMap::new();
     while let Some(e) = events.recv().await {
@@ -586,8 +581,7 @@ async fn wait(win: &Shared, d: Duration) -> bool {
 /// Desktop's `Am` on a protocol connection to a browser that has just started: loads the login page in the
 /// browser's page, reads the fields of the login every 100 ms, and closes the browser when it has them all.
 pub async fn drive(
-    input: impl AsyncRead + Unpin + Send + 'static,
-    output: impl AsyncWrite + Unpin + Send + 'static,
+    input: impl AsyncRead + Unpin + Send + 'static, output: impl AsyncWrite + Unpin + Send + 'static,
     login: &BrowserLogin,
 ) -> Result<Outcome, String> {
     let final_url = match login.final_url.as_str() {

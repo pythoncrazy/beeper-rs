@@ -206,9 +206,7 @@ pub fn widen_large(st: &mut BeeperStore) {
 
 /// The chats and messages of `sized_store` on the accounts `accounts`.
 fn large_data(
-    accounts: &[String],
-    chats: usize,
-    messages: usize,
+    accounts: &[String], chats: usize, messages: usize,
 ) -> (Vec<crate::models::Chat>, Vec<crate::models::Message>) {
     let (count, people) = (chats, chats * 2 / 5);
     let name = |p: usize| format!("Person{p} Family{}", p % 97);

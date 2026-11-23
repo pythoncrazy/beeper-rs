@@ -303,10 +303,7 @@ fn load_upload(st: &BeeperStore, id: &str) -> Result<PendingMedia, String> {
 /// The draft of the scheduled message `s` with `reply_to`: its text, and its stored upload, which "Clear storage" can
 /// remove before the send.
 pub(crate) fn scheduled_draft(
-    media: &mut images::Images<Result<Frames, String>>,
-    st: &mut BeeperStore,
-    s: &Scheduled,
-    reply_to: Option<String>,
+    media: &mut images::Images<Result<Frames, String>>, st: &mut BeeperStore, s: &Scheduled, reply_to: Option<String>,
 ) -> Result<Draft, String> {
     let files = match &s.upload {
         None => Vec::new(),
@@ -372,10 +369,7 @@ const ATTACH_BUTTONS: [u8; 9] = [0, 7, 3, 5, 2, 1, 4, 8, 6];
 /// Desktop's composer action state (`rIt`, `_R` and `oIt`): the tooltip, the hotkey that it shows, and whether the
 /// button works. Talk to Type is the only action while you edit a message.
 pub(crate) fn composer_action(
-    st: &BeeperStore,
-    chat: &Chat,
-    id: u8,
-    editing: bool,
+    st: &BeeperStore, chat: &Chat, id: u8, editing: bool,
 ) -> (String, Option<&'static str>, bool) {
     let (label, hotkey, plus) = COMPOSER_ACTION_INFO[usize::from(id)];
     let supported = match id {
@@ -1380,10 +1374,7 @@ impl BeeperGuiApp {
     /// The pill of the composer around the quote, attachments and links above the text field, with the banner of
     /// the time of a scheduled send above them.
     fn view_composer_pill<'a>(
-        &'a self,
-        st: &BeeperStore,
-        external: Option<iced::widget::Container<'a, UiMessage>>,
-        line: Row<'a, UiMessage>,
+        &'a self, st: &BeeperStore, external: Option<iced::widget::Container<'a, UiMessage>>, line: Row<'a, UiMessage>,
     ) -> El<'a> {
         let p = &self.pal;
         // The text field keeps its place in the tree, and so its focus, as the quote, the attachments, the links and

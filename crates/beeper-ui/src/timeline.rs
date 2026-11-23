@@ -109,11 +109,7 @@ impl Operation for Measure {
     }
 
     fn scrollable(
-        &mut self,
-        _: Option<&iced::widget::Id>,
-        bounds: Rectangle,
-        content: Rectangle,
-        at: Vector,
+        &mut self, _: Option<&iced::widget::Id>, bounds: Rectangle, content: Rectangle, at: Vector,
         _: &mut dyn op::Scrollable,
     ) {
         self.scroll.get_or_insert((bounds, content, at.y));
@@ -142,12 +138,7 @@ impl Operation for SetOffset {
     }
 
     fn scrollable(
-        &mut self,
-        _: Option<&iced::widget::Id>,
-        _: Rectangle,
-        _: Rectangle,
-        _: Vector,
-        state: &mut dyn op::Scrollable,
+        &mut self, _: Option<&iced::widget::Id>, _: Rectangle, _: Rectangle, _: Vector, state: &mut dyn op::Scrollable,
     ) {
         if let Some(y) = self.0.take() {
             state.scroll_to(op::scrollable::AbsoluteOffset { x: None, y: Some(y) });
@@ -163,11 +154,7 @@ impl Hold<'_> {
 
     /// The frame of the glide at `now`, which asks for the next frame until the glide ends.
     fn glide_frame(
-        &mut self,
-        tree: &mut Tree,
-        layout: Layout<'_>,
-        renderer: &iced::Renderer,
-        now: std::time::Instant,
+        &mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &iced::Renderer, now: std::time::Instant,
         shell: &mut iced::advanced::Shell<'_, UiMessage>,
     ) {
         let state = tree.state.downcast_ref::<Anchor>();
@@ -199,11 +186,7 @@ impl Hold<'_> {
 
     /// Passes over the timeline, for the container `target`.
     fn measure(
-        &mut self,
-        tree: &mut Tree,
-        layout: Layout<'_>,
-        renderer: &iced::Renderer,
-        target: Option<iced::widget::Id>,
+        &mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &iced::Renderer, target: Option<iced::widget::Id>,
     ) -> Measure {
         let mut m = Measure { target, scroll: None, found: None, first: None };
         self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, &mut m);
@@ -223,11 +206,7 @@ impl iced::advanced::Widget<UiMessage, Theme, iced::Renderer> for Hold<'_> {
 
     /// An operation may scroll the timeline, as a jump to a message: the view that it leaves is the one to hold.
     fn operate(
-        &mut self,
-        tree: &mut Tree,
-        layout: Layout<'_>,
-        renderer: &iced::Renderer,
-        operation: &mut dyn Operation,
+        &mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &iced::Renderer, operation: &mut dyn Operation,
     ) {
         self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
         self.note(tree, layout, renderer);
@@ -254,15 +233,9 @@ impl iced::advanced::Widget<UiMessage, Theme, iced::Renderer> for Hold<'_> {
     }
 
     fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &iced::Renderer,
-        clipboard: &mut dyn iced::advanced::Clipboard,
-        shell: &mut iced::advanced::Shell<'_, UiMessage>,
-        viewport: &Rectangle,
+        &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
+        renderer: &iced::Renderer, clipboard: &mut dyn iced::advanced::Clipboard,
+        shell: &mut iced::advanced::Shell<'_, UiMessage>, viewport: &Rectangle,
     ) {
         let child = &mut tree.children[0];
         self.content.as_widget_mut().update(child, event, layout, cursor, renderer, clipboard, shell, viewport);
@@ -311,10 +284,7 @@ pub(crate) const VEIL_ALPHA: f32 = 0.6;
 
 /// The timeline `content` under a [`Veil`] with a hole for the container `target`, from `since`.
 pub(crate) fn veil<'a>(
-    content: impl Into<Element<'a, UiMessage>>,
-    target: iced::widget::Id,
-    since: std::time::Instant,
-    color: Color,
+    content: impl Into<Element<'a, UiMessage>>, target: iced::widget::Id, since: std::time::Instant, color: Color,
     on_press: UiMessage,
 ) -> Veil<'a> {
     Veil { content: content.into(), target, since, color, on_press }
@@ -347,15 +317,9 @@ impl iced::advanced::Widget<UiMessage, Theme, iced::Renderer> for Veil<'_> {
     }
 
     fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &iced::Renderer,
-        clipboard: &mut dyn iced::advanced::Clipboard,
-        shell: &mut iced::advanced::Shell<'_, UiMessage>,
-        viewport: &Rectangle,
+        &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
+        renderer: &iced::Renderer, clipboard: &mut dyn iced::advanced::Clipboard,
+        shell: &mut iced::advanced::Shell<'_, UiMessage>, viewport: &Rectangle,
     ) {
         if let Event::Window(window::Event::RedrawRequested(_)) = event {
             // A jump to the edited message scrolls the timeline before the frame.
@@ -381,12 +345,7 @@ impl iced::advanced::Widget<UiMessage, Theme, iced::Renderer> for Veil<'_> {
     }
 
     fn mouse_interaction(
-        &self,
-        tree: &Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-        renderer: &iced::Renderer,
+        &self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle, renderer: &iced::Renderer,
     ) -> mouse::Interaction {
         match Self::on_veil(tree, layout, cursor) {
             true => mouse::Interaction::None,
@@ -395,14 +354,8 @@ impl iced::advanced::Widget<UiMessage, Theme, iced::Renderer> for Veil<'_> {
     }
 
     fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut iced::Renderer,
-        theme: &Theme,
-        style: &iced::advanced::renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, tree: &Tree, renderer: &mut iced::Renderer, theme: &Theme, style: &iced::advanced::renderer::Style,
+        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         use iced::advanced::Renderer as _;
         let on_veil = Self::on_veil(tree, layout, cursor);
@@ -464,11 +417,7 @@ mod tests {
         }
 
         fn scrollable(
-            &mut self,
-            id: Option<&iced::widget::Id>,
-            view: Rectangle,
-            content: Rectangle,
-            at: Vector,
+            &mut self, id: Option<&iced::widget::Id>, view: Rectangle, content: Rectangle, at: Vector,
             _: &mut dyn op::Scrollable,
         ) {
             if id == Some(&iced::widget::Id::new("timeline")) {
@@ -532,10 +481,7 @@ mod tests {
 
         /// A frame of `app` where `then` operates, and how far under the top of the timeline `target` shows after.
         fn shown_at(
-            &mut self,
-            app: &BeeperGuiApp,
-            target: &str,
-            then: impl FnOnce(&mut Ui<'_>, &iced::Renderer),
+            &mut self, app: &BeeperGuiApp, target: &str, then: impl FnOnce(&mut Ui<'_>, &iced::Renderer),
         ) -> Option<f32> {
             let main = app.main_window.expect("the main window");
             let cache = self.cache.take().expect("a cache");

@@ -98,12 +98,7 @@ pub(crate) fn bubble_text(c: &Chat, launched: i64, now: i64) -> Option<String> {
 /// Desktop's `PinnedThreadListItem` bubble: at most 8em wide, from 3px right of the avatar's top right corner,
 /// centered on the avatar when wider than it, with a half disc below.
 pub(crate) fn pin_bubble<'a>(
-    text: &str,
-    mention: bool,
-    (bg, fg): (Color, Color),
-    cell: f32,
-    av: f32,
-    compact: bool,
+    text: &str, mention: bool, (bg, fg): (Color, Color), cell: f32, av: f32, compact: bool,
 ) -> El<'a> {
     let max = rem(80.0).min(cell - 4.0);
     let at_w = if mention { 14.0 } else { 0.0 };

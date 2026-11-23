@@ -174,10 +174,7 @@ fn contact_name(file: &str) -> String {
 
 /// A surface of Desktop's header card: its fill, its radius, an outline, and a black shadow `(y, blur, alpha byte)`.
 pub(crate) fn raised(
-    bg: Color,
-    radius: f32,
-    outline: Option<Color>,
-    (y, blur, a): (f32, f32, u8),
+    bg: Color, radius: f32, outline: Option<Color>, (y, blur, a): (f32, f32, u8),
 ) -> impl Fn(&Theme) -> container::Style + Copy {
     move |_| container::Style {
         background: Some(bg.into()),
@@ -220,8 +217,7 @@ fn quotes<'a>(items: Vec<(u8, El<'a>)>, level: u8, ink: Color) -> Vec<El<'a>> {
 
 /// Desktop's `.message-contents h1` to `h6`: the title and body type sizes, at 590 for `h1` and 510 for the rest.
 fn heading<'a>(
-    spans: Vec<iced::advanced::text::Span<'a, String>>,
-    level: u8,
+    spans: Vec<iced::advanced::text::Span<'a, String>>, level: u8,
 ) -> Vec<iced::advanced::text::Span<'a, String>> {
     let (size, line, weight) = match level {
         0 => return spans,
@@ -1986,12 +1982,7 @@ impl BeeperGuiApp {
     }
 
     fn view_messages<'a>(
-        &'a self,
-        st: &BeeperStore,
-        chat: &Chat,
-        msgs: &[&Message],
-        rows: &Rows,
-        thread: bool,
+        &'a self, st: &BeeperStore, chat: &Chat, msgs: &[&Message], rows: &Rows, thread: bool,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
         let Rows { run_start, last_live, any_pending, last_seen, chained, counts, gallery, keys, days, .. } = rows;
@@ -2278,13 +2269,9 @@ impl BeeperGuiApp {
 
     /// A message, or the gallery of the messages `ms`.
     fn view_message<'a>(
-        &'a self,
-        st: &BeeperStore,
-        chat: &Chat,
-        ms: &[&Message],
+        &'a self, st: &BeeperStore, chat: &Chat, ms: &[&Message],
         (first, last, chain, thread, hide_time): (bool, bool, Chain, bool, bool),
-        (status, replies): (Option<(String, Option<String>)>, usize),
-        head: Column<'a, UiMessage>,
+        (status, replies): (Option<(String, Option<String>)>, usize), head: Column<'a, UiMessage>,
     ) -> El<'a> {
         let (p, m) = (&self.pal, ms[0]);
         let (sent, sent_fg, sent_meta) = self.sent_colors(st, Some(&chat.id));
@@ -3380,12 +3367,7 @@ impl BeeperGuiApp {
     /// attachments and its deletion, over a box of its text with the spaces collapsed and cut at 128 characters. A
     /// group names the sender above media, else at the top of the text. A deleted hidden message shows nothing.
     fn linked_message<'a>(
-        &'a self,
-        chat: &Chat,
-        q: &Message,
-        group: bool,
-        on_wall: Option<Color>,
-        bubble: Option<chat_theme::Pair>,
+        &'a self, chat: &Chat, q: &Message, group: bool, on_wall: Option<Color>, bubble: Option<chat_theme::Pair>,
     ) -> Option<Column<'a, UiMessage>> {
         let p = &self.pal;
         let deleted = q.is_deleted == Some(true);
@@ -3588,12 +3570,7 @@ impl BeeperGuiApp {
     /// emails, which start a chat on an account that can message them and else open their Call or Email and Copy menu,
     /// and its Download button.
     fn view_contact_attachment<'a>(
-        &self,
-        m: &Message,
-        ai: usize,
-        card: &crate::vcard::VCard,
-        mine: bool,
-        (bg, fg): (Color, Color),
+        &self, m: &Message, ai: usize, card: &crate::vcard::VCard, mine: bool, (bg, fg): (Color, Color),
     ) -> El<'a> {
         let p = &self.pal;
         let account = m.account_id.clone();
@@ -3687,11 +3664,7 @@ impl BeeperGuiApp {
     /// Desktop's `MessageReactions` pills of messages `ms`: each key with up to three faces when `look.group` or when
     /// several people reacted, and "+N" for more. A click adds or removes your reaction on all the messages.
     pub(crate) fn reaction_pills<'a>(
-        &self,
-        st: &BeeperStore,
-        chat: &Chat,
-        ms: &[&Message],
-        look: &PillLook,
+        &self, st: &BeeperStore, chat: &Chat, ms: &[&Message], look: &PillLook,
     ) -> Row<'a, UiMessage> {
         reaction_groups(ms).into_iter().fold(Row::new().spacing(look.gap), |r, (group, mut reactors)| {
             // Desktop's `Tfe` for each key of the group: a custom emoji's image, or the emoji.
@@ -4336,12 +4309,7 @@ impl BeeperGuiApp {
     /// Desktop's `ScheduledMessages`: the canceled messages, the "Send Later" toggle, then the messages to send.
     /// Desktop's `Poll` message, for a chat that can vote.
     pub(crate) fn view_poll<'a>(
-        &'a self,
-        st: &BeeperStore,
-        chat: &Chat,
-        m: &Message,
-        poll: &PollData,
-        (bg, fg): (Color, Color),
+        &'a self, st: &BeeperStore, chat: &Chat, m: &Message, poll: &PollData, (bg, fg): (Color, Color),
     ) -> El<'a> {
         let p = &self.pal;
         let mine = m.is_sender == Some(true);
@@ -5562,10 +5530,7 @@ pub(crate) mod tests {
     /// Waits until the workers drew the frames that `redraw` asks for `ms` into the animations, and gives true when
     /// they are frame `due` or one of the next three, which a slow draw of a debug build may reach.
     fn drawn_at(
-        app: &mut BeeperGuiApp,
-        a: &crate::lottie::Animation,
-        (ms, due): (u64, Option<u64>),
-        redraw: fn(&BeeperGuiApp),
+        app: &mut BeeperGuiApp, a: &crate::lottie::Animation, (ms, due): (u64, Option<u64>), redraw: fn(&BeeperGuiApp),
     ) -> bool {
         app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
         redraw(app);

@@ -270,11 +270,7 @@ pub struct Upload {
 /// Desktop's `uploadMediaForCloudRoom` before the upload: converts the file in the new folder `dir` for the room,
 /// measures what is missing, and checks the result. It gives the bytes and the facts to upload, and removes `dir`.
 pub fn prepare_upload(
-    dir: &Path,
-    bytes: &[u8],
-    f: Upload,
-    rules: &FileRules,
-    sent: Sent,
+    dir: &Path, bytes: &[u8], f: Upload, rules: &FileRules, sent: Sent,
 ) -> Result<(Vec<u8>, Upload), String> {
     let io = |e: std::io::Error| e.to_string();
     let path = dir.join("original").join(safe(&f.name));
@@ -546,12 +542,7 @@ fn image_size(path: &Path) -> Result<(u32, u32), String> {
 
 /// Desktop's `Yf` on Linux: an H.264 MP4 that fits in the largest size of the compression or of the room.
 fn video(
-    src: &Path,
-    stem: &str,
-    dir: &Path,
-    strong: bool,
-    max: Option<u32>,
-    rules: &FileRules,
+    src: &Path, stem: &str, dir: &Path, strong: bool, max: Option<u32>, rules: &FileRules,
 ) -> Result<Upload, String> {
     let meta = video_meta(src)?;
     let (audio_rate, dim) = if strong { ("96k", 848) } else { ("128k", 960) };
@@ -653,13 +644,7 @@ fn audio(src: &Path, stem: &str, dir: &Path, format: usize) -> Result<Upload, St
 /// Desktop's `hw` with the `image` codecs instead of sharp: the image turned by its EXIF orientation, fit in the
 /// largest size, as a JPEG (quality 75), PNG or WebP that the room takes. The `image` WebP encoder is lossless.
 fn image(
-    src: &Path,
-    stem: &str,
-    dir: &Path,
-    strong: bool,
-    max: Option<u32>,
-    format: Option<&str>,
-    rules: &FileRules,
+    src: &Path, stem: &str, dir: &Path, strong: bool, max: Option<u32>, format: Option<&str>, rules: &FileRules,
 ) -> Result<Upload, String> {
     use image::ImageDecoder;
     let rule = rules.get(FILE_IMAGE);

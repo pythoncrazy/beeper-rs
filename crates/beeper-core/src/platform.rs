@@ -126,10 +126,7 @@ pub fn open_url_or_path_command(os: OsKind, target: &str) -> (String, Vec<String
 }
 
 pub fn resolve_original_beeper_data_dir(
-    os: OsKind,
-    profile: Option<&str>,
-    env_vars: &HashMap<String, String>,
-    home_dir: &Path,
+    os: OsKind, profile: Option<&str>, env_vars: &HashMap<String, String>, home_dir: &Path,
 ) -> PathBuf {
     resolve_original_data_dir_for_os(os.node_platform_str(), profile, env_vars, home_dir)
 }
@@ -140,10 +137,7 @@ pub fn current_original_beeper_data_dir(profile: Option<&str>) -> PathBuf {
 }
 
 pub fn resolve_desktop_data_dir(
-    os: OsKind,
-    profile: Option<&str>,
-    env_vars: &HashMap<String, String>,
-    home_dir: &Path,
+    os: OsKind, profile: Option<&str>, env_vars: &HashMap<String, String>, home_dir: &Path,
 ) -> PathBuf {
     resolve_data_dir_for_os(os.node_platform_str(), profile, env_vars, home_dir)
 }

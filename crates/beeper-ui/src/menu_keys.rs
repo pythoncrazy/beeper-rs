@@ -40,11 +40,7 @@ impl Widget<UiMessage, Theme, Renderer> for Row<'_> {
     );
 
     fn operate(
-        &mut self,
-        tree: &mut advanced::Tree,
-        layout: Layout<'_>,
-        renderer: &Renderer,
-        operation: &mut dyn Operation,
+        &mut self, tree: &mut advanced::Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation,
     ) {
         operation.custom(None, layout.bounds(), &mut Mark(self.msg.clone()));
         self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
@@ -114,15 +110,8 @@ impl Widget<UiMessage, Theme, Renderer> for Menu<'_> {
     );
 
     fn update(
-        &mut self,
-        tree: &mut advanced::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, UiMessage>,
-        viewport: &Rectangle,
+        &mut self, tree: &mut advanced::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
+        renderer: &Renderer, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, UiMessage>, viewport: &Rectangle,
     ) {
         match event {
             Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(k), modifiers, .. })
@@ -170,14 +159,8 @@ impl Widget<UiMessage, Theme, Renderer> for Menu<'_> {
     }
 
     fn draw(
-        &self,
-        tree: &advanced::Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, tree: &advanced::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
+        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         // A row that the keyboard selected draws as the pointer over it draws it.
         let keyed = tree.state.downcast_ref::<Selection>().keyed;

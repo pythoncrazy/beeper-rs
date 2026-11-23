@@ -121,10 +121,7 @@ pub type Pair = (Color, Color);
 
 /// Desktop's `resolvedThemeFor`: the wallpaper with its text color, and the color and text color of sent bubbles.
 pub fn resolve(
-    a: &ChatAppearance,
-    chat: Option<&str>,
-    dark: bool,
-    data_dir: &Path,
+    a: &ChatAppearance, chat: Option<&str>, dark: bool, data_dir: &Path,
 ) -> (Option<(Paint, Color)>, Option<Pair>) {
     let theme = a.theme(chat);
     let bubble = match theme.bubble {

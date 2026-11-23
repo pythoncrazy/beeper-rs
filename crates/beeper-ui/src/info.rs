@@ -117,9 +117,7 @@ impl BeeperGuiApp {
 /// `copy:<chat>`, the menu of the clicked title, adds "Copy <title>" above them. `copy:<chat>\n<text>` copies the
 /// clicked line instead.
 pub(crate) fn info_menu(
-    st: &BeeperStore,
-    key: &str,
-    dm: impl Fn(&str) -> bool,
+    st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool,
 ) -> Vec<Option<(String, Option<UiMessage>)>> {
     // Desktop's `hj` and `pj` menus of a phone number or an email of a contact card.
     if let Some((kind, v)) = key.strip_prefix("vcard:").and_then(|k| k.split_once(' ')) {

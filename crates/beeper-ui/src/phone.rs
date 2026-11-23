@@ -509,12 +509,8 @@ impl BeeperGuiApp {
     /// The selector is a 32 px `--color-bg-fill-primary` button with the 14 px flag 9 px in and the dial code 27 px in,
     /// and the input is the login form's field.
     pub(crate) fn view_phone<'a>(
-        &'a self,
-        phone: &'a Phone,
-        ids: (String, String),
-        placeholder: &str,
-        go: impl Fn(PhoneMsg) -> UiMessage + Clone + 'a,
-        submit: UiMessage,
+        &'a self, phone: &'a Phone, ids: (String, String), placeholder: &str,
+        go: impl Fn(PhoneMsg) -> UiMessage + Clone + 'a, submit: UiMessage,
     ) -> El<'a> {
         let p = &self.pal;
         let c = &COUNTRIES[phone.country];
@@ -626,11 +622,7 @@ impl Widget<UiMessage, Theme, Renderer> for Anchored<'_> {
     crate::delegate::delegate!(size, layout, update(UiMessage), mouse_interaction, draw, operate);
 
     fn overlay<'b>(
-        &'b mut self,
-        tree: &'b mut widget::Tree,
-        layout: Layout<'b>,
-        renderer: &Renderer,
-        viewport: &Rectangle,
+        &'b mut self, tree: &'b mut widget::Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, UiMessage, Theme, Renderer>> {
         let (content, rest) = tree.children.split_first_mut().expect("the field has a tree");

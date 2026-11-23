@@ -721,12 +721,7 @@ impl Globals {
 }
 
 async fn chat(
-    room: &Room,
-    reads: &RoomReads,
-    accounts: &[BridgeAccountInfo],
-    rules: &Value,
-    known: Known,
-    globals: &Globals,
+    room: &Room, reads: &RoomReads, accounts: &[BridgeAccountInfo], rules: &Value, known: Known, globals: &Globals,
 ) -> Chat {
     let bridge = &reads.bridge;
     let Known { participants: mut items, title, dm } = known;
@@ -961,12 +956,7 @@ fn unresolved_media(c: &Value) -> Option<String> {
 /// The store operation for a timeline event. With `hidden`, the events that Desktop hides become `HIDDEN` rows.
 /// `names` keeps the names of the senders that it looked up, for the next events of the room.
 async fn op(
-    room: &Room,
-    chat_id: &str,
-    account_id: &str,
-    e: &Value,
-    hidden: bool,
-    names: &mut HashMap<String, Option<String>>,
+    room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: bool, names: &mut HashMap<String, Option<String>>,
 ) -> Option<Op> {
     let deleted = e["unsigned"].get("redacted_because").is_some();
     let (c, rel) = (&e["content"], &e["content"]["m.relates_to"]);
@@ -1259,9 +1249,7 @@ const MIN_SAFE_INTEGER: i64 = -9_007_199_254_740_991;
 /// One page of the room timeline back from `from`, oldest first, and the token of the page before it, or `None`
 /// at the start of the room.
 async fn page(
-    room: &Room,
-    from: Option<String>,
-    limit: u32,
+    room: &Room, from: Option<String>, limit: u32,
 ) -> matrix_sdk::Result<(Vec<TimelineEvent>, Option<String>)> {
     let mut opts = MessagesOptions::backward();
     (opts.from, opts.limit) = (from, limit.into());
@@ -1513,11 +1501,7 @@ async fn union_rooms(room: &Room) -> Vec<String> {
 /// Desktop's `createUnion`: a private `com.beeper.union` room with the name and the member rooms as `m.space.child`
 /// state, then its photo (`setUnionAvatarMxc`).
 async fn create_union(
-    store: &SharedStore,
-    client: &Client,
-    draft: &str,
-    title: Option<String>,
-    rooms: Vec<String>,
+    store: &SharedStore, client: &Client, draft: &str, title: Option<String>, rooms: Vec<String>,
     avatar: Option<String>,
 ) -> Result<(), String> {
     let name =
@@ -1873,10 +1857,7 @@ enum Pass {
 /// The page of history that [`sync_room_after`] loads for a room of a sync that has no chat yet: the events before
 /// those of the sync, up to `HISTORY` with them. None for a room that has a chat, or that is not a chat.
 async fn first_page(
-    store: &SharedStore,
-    room: &Room,
-    events: usize,
-    prev_batch: &Option<String>,
+    store: &SharedStore, room: &Room, events: usize, prev_batch: &Option<String>,
 ) -> Option<(Option<String>, u32)> {
     let id = room.room_id().as_str();
     let seen = |chat: &str| {
@@ -1913,11 +1894,7 @@ impl Drop for AbortPage {
 }
 
 async fn sync_room_after(
-    store: &SharedStore,
-    room: &Room,
-    mut events: Vec<TimelineEvent>,
-    pass: Pass,
-    globals: Option<&Globals>,
+    store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, pass: Pass, globals: Option<&Globals>,
 ) {
     let joined = room.state() == RoomState::Joined;
     // A sync reads the receipts of its receipt events after it. Those that the SDK's store holds at the start are of
@@ -2624,10 +2601,7 @@ impl Outgoing {
 
 /// matrix-sdk's `make_media_type` without a thumbnail: the message of an uploaded file, with the caption as the body.
 fn media_type(
-    mime: &mime::Mime,
-    name: String,
-    source: MediaSource,
-    caption: Option<String>,
+    mime: &mime::Mime, name: String, source: MediaSource, caption: Option<String>,
     info: matrix_sdk::attachment::AttachmentInfo,
 ) -> matrix_sdk::ruma::events::room::message::MessageType {
     use matrix_sdk::attachment::AttachmentInfo;
@@ -2683,12 +2657,7 @@ fn media_type(
 
 /// Desktop's `prepareOutgoingMedia` for a room with room features, on a worker thread: the file to upload and its info.
 async fn prepare_media(
-    store: &SharedStore,
-    chat: &str,
-    txn: &str,
-    data: Vec<u8>,
-    (name, mime): (String, String),
-    info: MediaInfo,
+    store: &SharedStore, chat: &str, txn: &str, data: Vec<u8>, (name, mime): (String, String), info: MediaInfo,
     sticker: bool,
 ) -> Result<(Vec<u8>, String, String, MediaInfo), String> {
     use crate::media::Sent;
@@ -3077,10 +3046,7 @@ pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) {
 /// the mentioned users, the sender of `reply_to`, and "@room".
 /// Uploads the image of a link preview: the key of the preview that names it, and its value.
 async fn preview_image(
-    client: &Client,
-    room: &Room,
-    p: &Value,
-    bytes: Vec<u8>,
+    client: &Client, room: &Room, p: &Value, bytes: Vec<u8>,
 ) -> Result<(&'static str, Value), String> {
     let e = |x: &dyn std::fmt::Display| x.to_string();
     if room.latest_encryption_state().await.map_err(|x| e(&x))?.is_encrypted() {
@@ -3095,8 +3061,7 @@ async fn preview_image(
 /// Desktop's `getCaptionEditableAttachmentContent`: the media fields of the attachment message `target` (as last
 /// edited), which an edit of its caption keeps.
 async fn caption_attachment(
-    room: &Room,
-    target: &matrix_sdk::ruma::EventId,
+    room: &Room, target: &matrix_sdk::ruma::EventId,
 ) -> Result<serde_json::Map<String, Value>, String> {
     let unavailable = || "Attachment event content is unavailable".to_string();
     let event = room.event(target, None).await.map_err(|_| unavailable())?;
@@ -3119,9 +3084,7 @@ async fn caption_attachment(
 /// Desktop's `editMessage` content: the new text in `m.new_content`, with the media of an attachment whose caption
 /// it is (an empty caption leaves the file name), and the plain text as the fallback, without a `* ` prefix.
 fn edit_content(
-    target: &matrix_sdk::ruma::EventId,
-    text: String,
-    mentions: &[Mention],
+    target: &matrix_sdk::ruma::EventId, text: String, mentions: &[Mention],
     attachment: Option<serde_json::Map<String, Value>>,
 ) -> Result<Value, String> {
     let caption = text.trim().is_empty().then(|| attachment.as_ref().map(|a| a["filename"].clone())).flatten();
@@ -3196,10 +3159,7 @@ async fn timer_for_messages(room: &Room) -> Option<Value> {
 /// Desktop's `updateGroup` from the Edit Group window: the name, the topic and the avatar of a group sent now, so the
 /// window learns whether the homeserver took them.
 pub async fn update_group(
-    store: SharedStore,
-    chat: String,
-    title: Option<String>,
-    topic: Option<String>,
+    store: SharedStore, chat: String, title: Option<String>, topic: Option<String>,
     avatar: Option<Option<(Vec<u8>, String)>>,
 ) -> Result<(), String> {
     let name = title.map(|name| Outgoing::State("m.room.name".into(), serde_json::json!({ "name": name })));
@@ -3442,11 +3402,7 @@ impl Push<'_> {
 
     /// The content of a text message: its mentions, and its reply or its thread relation.
     fn text_message(
-        &self,
-        text: String,
-        reply_to: Option<String>,
-        mentions: &[Mention],
-        thread: Option<ThreadSend>,
+        &self, text: String, reply_to: Option<String>, mentions: &[Mention], thread: Option<ThreadSend>,
     ) -> Result<Value, String> {
         // Desktop mentions the sender of the quoted message, but not of the fallback reply of a thread reply.
         let sender = reply_to.as_ref().filter(|_| thread.as_ref().is_none_or(|t| t.chosen)).and_then(|r| {
@@ -3494,17 +3450,8 @@ impl Push<'_> {
     /// Sends a file, a GIF or a sticker, with its caption, and as a reply or in a thread.
     #[allow(clippy::too_many_arguments)]
     async fn media(
-        &self,
-        txn: String,
-        data: Vec<u8>,
-        name: String,
-        mime: String,
-        info: MediaInfo,
-        caption: Option<String>,
-        reply_to: Option<String>,
-        thread: Option<ThreadSend>,
-        gif: bool,
-        sticker: Option<Box<Sticker>>,
+        &self, txn: String, data: Vec<u8>, name: String, mime: String, info: MediaInfo, caption: Option<String>,
+        reply_to: Option<String>, thread: Option<ThreadSend>, gif: bool, sticker: Option<Box<Sticker>>,
     ) -> Result<(), PushError> {
         let (store, room) = (self.store, self.room);
         // Desktop's `Kf`: a sticker goes as `m.sticker` when the room features take its type, else as an image.
@@ -3564,12 +3511,7 @@ impl Push<'_> {
 
     /// Sends the content of the event `id` of the chat `from` again, with the current text and HTML of a text message.
     async fn forward(
-        &self,
-        txn: String,
-        from: &str,
-        id: String,
-        text: Option<String>,
-        html: Option<String>,
+        &self, txn: String, from: &str, id: String, text: Option<String>, html: Option<String>,
     ) -> Result<(), PushError> {
         let source = joined_room(self.client, from).await?.event(&self.event(id)?, None).await?;
         let mut ev: Value = source.raw().deserialize_as().map_err(|x| x.to_string())?;
@@ -4280,10 +4222,7 @@ pub async fn create_matrix_dm(store: SharedStore, identifier: String) -> Result<
 /// a new private room with the users, encrypted unless it is an `unencrypted_group`, and named when `name` is not
 /// empty. It returns the room ID.
 pub async fn create_matrix_group(
-    store: SharedStore,
-    kind: String,
-    name: String,
-    users: Vec<String>,
+    store: SharedStore, kind: String, name: String, users: Vec<String>,
 ) -> Result<String, String> {
     let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
     for (i, u) in users.iter().enumerate() {
@@ -4532,10 +4471,7 @@ async fn sync_account_overrides(client: &Client, store: &SharedStore) {
 /// in the encrypted overrides. The write expects the revision that it read. When another device wrote first, the
 /// homeserver answers with the current content, and the name goes on that, up to 5 tries.
 pub async fn set_bridge_account_name(
-    store: SharedStore,
-    bridge: String,
-    account: String,
-    name: String,
+    store: SharedStore, bridge: String, account: String, name: String,
 ) -> Result<(), String> {
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     let mut current = store.read().account_overrides.clone();
@@ -5074,9 +5010,7 @@ async fn sync_profile(client: &Client, store: &SharedStore) {
 /// Desktop's `userProfileStore.setAvatar` and `setFullName`: uploads the avatar image with its MIME type, sets the
 /// name, and reads the profile again.
 pub async fn set_profile(
-    store: SharedStore,
-    name: Option<String>,
-    avatar: Option<(Vec<u8>, String)>,
+    store: SharedStore, name: Option<String>, avatar: Option<(Vec<u8>, String)>,
 ) -> Result<(), String> {
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     let e = |e: &dyn std::fmt::Display| e.to_string();
@@ -5188,11 +5122,7 @@ pub async fn set_global(client: Client, kind: &'static str, content: Value) -> R
 /// proxy of the Desktop API, which passes bodies and replies through as they are. Gives the body of the reply, or the
 /// Matrix error of the homeserver as `M_CODE (HTTP 404): error`.
 async fn client_api(
-    client: &Client,
-    method: reqwest::Method,
-    path: &[&str],
-    query: &[(&str, &str)],
-    body: Option<String>,
+    client: &Client, method: reqwest::Method, path: &[&str], query: &[(&str, &str)], body: Option<String>,
 ) -> Result<String, String> {
     let (status, text) = client_request(client, method, path, query, body).await?;
     match status.is_success() {
@@ -5239,11 +5169,7 @@ pub async fn press_button(url: reqwest::Url, token: String) -> Pressed {
 
 /// The status and the body of a request of the client-server API at `/_matrix/client/v3/{path}`.
 async fn client_request(
-    client: &Client,
-    method: reqwest::Method,
-    path: &[&str],
-    query: &[(&str, &str)],
-    body: Option<String>,
+    client: &Client, method: reqwest::Method, path: &[&str], query: &[(&str, &str)], body: Option<String>,
 ) -> Result<(reqwest::StatusCode, String), String> {
     let mut url = client.homeserver();
     url.path_segments_mut().expect("a base URL").pop_if_empty().extend(["_matrix", "client", "v3"]).extend(path);
@@ -5813,9 +5739,7 @@ fn begin(store: &SharedStore, request: VerificationRequest, purpose: &'static st
 
 /// Runs a verification to its end. `confirm` carries the answer of the user to the emojis.
 async fn run_verification(
-    store: &SharedStore,
-    request: VerificationRequest,
-    confirm: oneshot::Receiver<bool>,
+    store: &SharedStore, request: VerificationRequest, confirm: oneshot::Receiver<bool>,
 ) -> Result<(), String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let id = request.flow_id().to_string();
@@ -6750,9 +6674,7 @@ mod tests {
     /// A store with the stub rooms `!room:x`, whose history is `events`, and `other.0`, whose history is `other.1`.
     /// The stub also gives each event of `events` and sends any event.
     async fn stub_history(
-        name: &str,
-        events: Vec<Value>,
-        other: (&'static str, Vec<Value>),
+        name: &str, events: Vec<Value>, other: (&'static str, Vec<Value>),
     ) -> crate::store::SharedStore {
         let mut sync = stub_sync();
         sync["rooms"]["join"][other.0] = sync["rooms"]["join"]["!room:x"].clone();

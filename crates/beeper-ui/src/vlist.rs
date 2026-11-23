@@ -102,12 +102,7 @@ impl VList {
     /// list at its bottom. `estimate` is the height of a row before the first measurement. `row` builds a row from
     /// its index, and the list publishes `relist` when it must build other rows.
     pub fn view<'a, M: Clone + 'a>(
-        &'a self,
-        keys: &[u64],
-        end: bool,
-        estimate: f32,
-        relist: M,
-        mut row: impl FnMut(usize) -> Element<'a, M>,
+        &'a self, keys: &[u64], end: bool, estimate: f32, relist: M, mut row: impl FnMut(usize) -> Element<'a, M>,
     ) -> Element<'a, M> {
         let mut guard = self.0.borrow_mut();
         let inner = &mut *guard;
@@ -310,15 +305,8 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
     }
 
     fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, M>,
-        viewport: &Rectangle,
+        &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         for ((child, state), layout) in self.children.iter_mut().zip(&mut tree.children).zip(rows(layout)) {
             child.as_widget_mut().update(state, event, layout, cursor, renderer, clipboard, shell, viewport);
@@ -371,12 +359,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
     }
 
     fn mouse_interaction(
-        &self,
-        tree: &Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-        renderer: &Renderer,
+        &self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle, renderer: &Renderer,
     ) -> mouse::Interaction {
         (self.children.iter().zip(&tree.children).zip(rows(layout)))
             .map(|((child, state), layout)| {
@@ -387,14 +370,8 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
     }
 
     fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, tree: &Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         for ((child, state), layout) in self.children.iter().zip(&tree.children).zip(rows(layout)) {
             if layout.bounds().intersects(viewport) {
@@ -404,11 +381,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
     }
 
     fn overlay<'b>(
-        &'b mut self,
-        tree: &'b mut Tree,
-        layout: Layout<'b>,
-        renderer: &Renderer,
-        viewport: &Rectangle,
+        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
         let rows = layout.children().next().expect("the rows node");

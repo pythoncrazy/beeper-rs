@@ -17,10 +17,7 @@ pub struct Root<'a, Message> {
 }
 
 pub fn root<'a, Message>(
-    content: impl Into<Element<'a, Message>>,
-    arrow: bool,
-    at: &'a Cell<Point>,
-    window: window::Id,
+    content: impl Into<Element<'a, Message>>, arrow: bool, at: &'a Cell<Point>, window: window::Id,
 ) -> Root<'a, Message> {
     Root { content: content.into(), arrow, at, window }
 }
@@ -51,10 +48,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
     crate::delegate::delegate!(children, diff, size, layout, draw);
 
     fn operate(
-        &mut self,
-        tree: &mut widget::Tree,
-        layout: Layout<'_>,
-        renderer: &Renderer,
+        &mut self, tree: &mut widget::Tree, layout: Layout<'_>, renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
         operation.custom(None, layout.bounds(), &mut crate::focus::WindowMark(self.window));
@@ -62,15 +56,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
     }
 
     fn update(
-        &mut self,
-        tree: &mut widget::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
-        viewport: &Rectangle,
+        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor,
+        renderer: &Renderer, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>, viewport: &Rectangle,
     ) {
         record(self.at, event);
         if shortcut(event) {
@@ -81,11 +68,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
     }
 
     fn mouse_interaction(
-        &self,
-        tree: &widget::Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, tree: &widget::Tree, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
         unpoint(
@@ -95,11 +78,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
     }
 
     fn overlay<'b>(
-        &'b mut self,
-        tree: &'b mut widget::Tree,
-        layout: Layout<'b>,
-        renderer: &Renderer,
-        viewport: &Rectangle,
+        &'b mut self, tree: &'b mut widget::Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let inner =
@@ -120,13 +99,8 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for RootOverlay<'_, Mes
     }
 
     fn update(
-        &mut self,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
+        &mut self, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>,
     ) {
         record(self.2, event);
         if shortcut(event) {
@@ -140,20 +114,14 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for RootOverlay<'_, Mes
     }
 
     fn draw(
-        &self,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
+        &self, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
         cursor: mouse::Cursor,
     ) {
         self.0.as_overlay().draw(renderer, theme, style, layout, cursor);
     }
 
     fn overlay<'b>(
-        &'b mut self,
-        layout: Layout<'b>,
-        renderer: &Renderer,
+        &'b mut self, layout: Layout<'b>, renderer: &Renderer,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let inner = self.0.as_overlay_mut().overlay(layout, renderer);
         inner.map(|o| overlay::Element::new(Box::new(RootOverlay(o, self.1, self.2))))

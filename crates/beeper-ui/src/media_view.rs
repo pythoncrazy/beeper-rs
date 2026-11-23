@@ -1126,11 +1126,7 @@ impl BeeperGuiApp {
     /// The items of the Media window by Desktop's groups of days, each under its label and its dates: rows of
     /// `cols` tiles on the Media tab, else a row for each link or file.
     fn media_groups<'a>(
-        &'a self,
-        st: &BeeperStore,
-        w: &MediaWindow,
-        groups: &[(String, Vec<(&Message, usize)>)],
-        cols: usize,
+        &'a self, st: &BeeperStore, w: &MediaWindow, groups: &[(String, Vec<(&Message, usize)>)], cols: usize,
         tile: f32,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;

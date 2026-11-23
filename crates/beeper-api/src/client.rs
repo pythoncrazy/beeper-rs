@@ -99,11 +99,7 @@ impl BeeperClient {
 
     /// Like [`Self::fetch`], with the headers, and the content type and the bytes of the body.
     pub async fn request_raw(
-        &self,
-        method: &str,
-        path: &str,
-        headers: &[(&str, &str)],
-        body: Option<(String, Vec<u8>)>,
+        &self, method: &str, path: &str, headers: &[(&str, &str)], body: Option<(String, Vec<u8>)>,
     ) -> Result<(u16, Vec<u8>), ApiError> {
         let (status, bytes) =
             self.try_send(method, path, headers, body).await.map_err(|_| ApiError("Connection error.".into()))?;
@@ -139,11 +135,7 @@ impl BeeperClient {
 
     /// Sends one request with its content type and body, and reads the reply.
     async fn try_send(
-        &self,
-        method: &str,
-        path: &str,
-        headers: &[(&str, &str)],
-        body: Option<(String, Vec<u8>)>,
+        &self, method: &str, path: &str, headers: &[(&str, &str)], body: Option<(String, Vec<u8>)>,
     ) -> std::io::Result<(StatusCode, Vec<u8>)> {
         let len = body.as_ref().map_or(0, |b| b.1.len());
         let mut head = format!(

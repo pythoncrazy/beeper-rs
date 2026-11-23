@@ -262,10 +262,7 @@ fn bitap(text: &[u16], pattern: &[u16], location: usize) -> bool {
 /// (`score.title.hits`). Without `fuzzy`, like the index of the command bar (`fuzzy: false`), a word matches only as
 /// a substring.
 pub fn search<'a>(
-    chats: impl Iterator<Item = &'a Chat>,
-    query: &str,
-    people: bool,
-    fuzzy: bool,
+    chats: impl Iterator<Item = &'a Chat>, query: &str, people: bool, fuzzy: bool,
 ) -> Vec<(&'a Chat, usize)> {
     let chats = Fields::all(chats);
     matches(chats.iter().map(|(c, f)| (*c, &**f)).collect(), query, people, fuzzy)
@@ -274,11 +271,7 @@ pub fn search<'a>(
 /// [`search`] of the chats of the store `st` that `keep` takes. The fields of its chats hold while its chats stay the
 /// same (`chat_changes`), so a key of the command bar only matches them.
 pub fn search_in<'a>(
-    st: &'a BeeperStore,
-    keep: impl Fn(&Chat) -> bool,
-    query: &str,
-    people: bool,
-    fuzzy: bool,
+    st: &'a BeeperStore, keep: impl Fn(&Chat) -> bool, query: &str, people: bool, fuzzy: bool,
 ) -> Vec<(&'a Chat, usize)> {
     type ByChat = (Option<(u64, u64)>, Vec<Arc<Fields>>);
     static FIELDS: OnceLock<Mutex<ByChat>> = OnceLock::new();

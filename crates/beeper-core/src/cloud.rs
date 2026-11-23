@@ -166,11 +166,7 @@ impl Cloud {
     }
 
     fn send(
-        &self,
-        method: reqwest::Method,
-        url: &str,
-        token: Option<&str>,
-        body: Option<&Value>,
+        &self, method: reqwest::Method, url: &str, token: Option<&str>, body: Option<&Value>,
     ) -> Result<Value, CloudError> {
         if self.offline {
             return Err(fail(0, crate::net::OFFLINE_ERROR));
@@ -416,10 +412,7 @@ pub const TALK_FILE: (&str, &str) = ("a.wav", "audio/wav");
 /// `base`, and the Matrix access token as the API key. The file has a name and a type: Desktop sends each voice note
 /// as [`VOICE_NOTE_FILE`] and Talk to Type as [`TALK_FILE`].
 pub async fn transcribe(
-    base: &str,
-    token: &str,
-    (audio, (name, mime)): (Vec<u8>, (&str, &str)),
-    language: Option<&str>,
+    base: &str, token: &str, (audio, (name, mime)): (Vec<u8>, (&str, &str)), language: Option<&str>,
 ) -> Result<String, String> {
     let b = matrix_sdk::ruma::TransactionId::new();
     let part =

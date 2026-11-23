@@ -86,10 +86,7 @@ impl FromIterator<Frame> for Frames {
 /// play, is the plain image of its first frame, so it adds no work to the frames of the window. A Lottie animation
 /// draws at the size that it shows, so it stays an animation that does not play.
 pub fn gif<'a, M: 'a>(
-    frames: &Frames,
-    play: bool,
-    start: Instant,
-    make: impl Fn(image::Handle) -> Image + 'a,
+    frames: &Frames, play: bool, start: Instant, make: impl Fn(image::Handle) -> Image + 'a,
 ) -> Element<'a, M> {
     match plays(frames, play) || frames.animation().is_some() {
         false => make(frames[0].0.clone()).into(),
@@ -103,11 +100,7 @@ pub fn gif<'a, M: 'a>(
 /// `gif`, turned from the first angle to the second one in radians, from the time on, with the CSS `ease` curve.
 /// The turned image fits in its bounds.
 pub fn turning<'a, M: 'a>(
-    frames: &Frames,
-    play: bool,
-    start: Instant,
-    turn: (f32, f32, Instant),
-    make: impl Fn(image::Handle) -> Image + 'a,
+    frames: &Frames, play: bool, start: Instant, turn: (f32, f32, Instant), make: impl Fn(image::Handle) -> Image + 'a,
 ) -> Element<'a, M> {
     Element::new(Gif { frames: frames.clone(), play, start, make: Box::new(make), turn })
 }
@@ -165,15 +158,8 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
     }
 
     fn update(
-        &mut self,
-        _: &mut widget::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Renderer,
-        _: &mut dyn Clipboard,
-        shell: &mut Shell<'_, M>,
-        viewport: &Rectangle,
+        &mut self, _: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer,
+        _: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         let Event::Window(window::Event::RedrawRequested(now)) = event else { return };
         if !layout.bounds().intersects(viewport) {
@@ -201,14 +187,8 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
     }
 
     fn draw(
-        &self,
-        tree: &widget::Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style,
+        layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         // A still image has one frame without a delay. The first frame of a Lottie animation shows until a worker
         // draws its frames at the size that it shows.
@@ -247,15 +227,8 @@ impl<M> Widget<M, Theme, Renderer> for Dot {
     }
 
     fn update(
-        &mut self,
-        _: &mut widget::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Renderer,
-        _: &mut dyn Clipboard,
-        shell: &mut Shell<'_, M>,
-        viewport: &Rectangle,
+        &mut self, _: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer,
+        _: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         if matches!(event, Event::Window(window::Event::RedrawRequested(_))) && layout.bounds().intersects(viewport) {
             shell.request_redraw();
@@ -263,14 +236,8 @@ impl<M> Widget<M, Theme, Renderer> for Dot {
     }
 
     fn draw(
-        &self,
-        _: &widget::Tree,
-        renderer: &mut Renderer,
-        _: &Theme,
-        _: &renderer::Style,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Rectangle,
+        &self, _: &widget::Tree, renderer: &mut Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>,
+        _: mouse::Cursor, _: &Rectangle,
     ) {
         let t = ((self.start.elapsed().as_millis() + 1000 - self.delay) % 1000) as f32 / 1000.0;
         let quad = renderer::Quad {
@@ -326,11 +293,7 @@ pub struct Skeleton {
 }
 
 pub fn skeleton<'a, M: 'a>(
-    width: impl Into<Length>,
-    height: impl Into<Length>,
-    radius: f32,
-    color: Color,
-    start: Instant,
+    width: impl Into<Length>, height: impl Into<Length>, radius: f32, color: Color, start: Instant,
 ) -> Element<'a, M> {
     Element::new(Skeleton { width: width.into(), height: height.into(), radius, color, start })
 }
@@ -364,15 +327,8 @@ impl<M> Widget<M, Theme, Renderer> for Skeleton {
     }
 
     fn update(
-        &mut self,
-        _: &mut widget::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Renderer,
-        _: &mut dyn Clipboard,
-        shell: &mut Shell<'_, M>,
-        viewport: &Rectangle,
+        &mut self, _: &mut widget::Tree, event: &Event, layout: Layout<'_>, _: mouse::Cursor, _: &Renderer,
+        _: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         if matches!(event, Event::Window(window::Event::RedrawRequested(_))) && layout.bounds().intersects(viewport) {
             shell.request_redraw();
@@ -380,14 +336,8 @@ impl<M> Widget<M, Theme, Renderer> for Skeleton {
     }
 
     fn draw(
-        &self,
-        _: &widget::Tree,
-        renderer: &mut Renderer,
-        _: &Theme,
-        _: &renderer::Style,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Rectangle,
+        &self, _: &widget::Tree, renderer: &mut Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>,
+        _: mouse::Cursor, _: &Rectangle,
     ) {
         let quad = renderer::Quad {
             bounds: layout.bounds(),

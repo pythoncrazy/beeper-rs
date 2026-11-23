@@ -59,15 +59,8 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Watch<'_, M> {
     crate::delegate::delegate!(children, diff, size, layout, operate, mouse_interaction, draw, overlay(M));
 
     fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, M>,
-        viewport: &Rectangle,
+        &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         let tree = &mut tree.children[0];
         self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
