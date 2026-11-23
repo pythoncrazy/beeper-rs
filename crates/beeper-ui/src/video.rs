@@ -40,7 +40,7 @@ pub(crate) static GLYPHS: LazyLock<[svg::Handle; 6]> = LazyLock::new(|| {
 
 /// Desktop's `VideoRenderErrorIcon`, the Material `error_outline`.
 static ERROR: LazyLock<svg::Handle> = LazyLock::new(|| {
-    glyph_in("0 0 24 24", "M11 15h2v2h-2zm0-8h2v6h-2zm.99-5C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z")
+    crate::path_svg("0 0 24 24", "M11 15h2v2h-2zm0-8h2v6h-2zm.99-5C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z")
 });
 
 /// Desktop's `speed025` to `speed2`, the icons of `voice::RATES`.
@@ -59,12 +59,7 @@ static SPEEDS: LazyLock<[svg::Handle; 8]> = LazyLock::new(|| {
 });
 
 fn glyph(d: &str) -> svg::Handle {
-    glyph_in("0 0 20 20", d)
-}
-
-fn glyph_in(view: &str, d: &str) -> svg::Handle {
-    let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path d="{d}"/></svg>"#);
-    svg::Handle::from_memory(svg.into_bytes())
+    crate::path_svg("0 0 20 20", d)
 }
 
 /// Where a video shows: in the timeline as attachment `ai` of its message, in the carousel, or on the full screen.

@@ -940,10 +940,7 @@ fn material_icons(share: f32) -> HashMap<&'static str, svg::Handle> {
         let box_of = view.split(' ').map(|v| v.parse::<f32>().expect("a view box number")).collect::<Vec<_>>();
         let [x, y, w, h] = box_of[..] else { panic!("a view box") };
         let (x, y, w, h) = (x + w * (1.0 - share) / 2.0, y + h * (1.0 - share) / 2.0, w * share, h * share);
-        let svg = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x} {y} {w} {h}"><path fill="currentColor" d="{d}"/></svg>"#
-        );
-        (name, svg::Handle::from_memory(svg.into_bytes()))
+        (name, path_icon(&format!("{x} {y} {w} {h}"), d))
     };
     include_str!("../assets/material_icons.tsv").lines().map(icon).collect()
 }
@@ -1539,9 +1536,7 @@ static DEVICE_ICONS: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock
         ("0 0 17 10", "M0.570801 8.96777C0.570801 8.76725 0.642415 8.59538 0.785645 8.45215C0.932454 8.30534 1.10612 8.23193 1.30664 8.23193H2.41309V1.92627C2.41309 1.47868 2.53662 1.13672 2.78369 0.900391C3.03434 0.664062 3.3763 0.545898 3.80957 0.545898H13.3916C13.8392 0.545898 14.1829 0.664062 14.4229 0.900391C14.6628 1.13672 14.7827 1.47868 14.7827 1.92627V8.23193H15.8892C16.0933 8.23193 16.2669 8.30534 16.4102 8.45215C16.557 8.59538 16.6304 8.76725 16.6304 8.96777C16.6304 9.17188 16.557 9.34554 16.4102 9.48877C16.2669 9.63558 16.0933 9.70898 15.8892 9.70898H1.30664C1.10612 9.70898 0.932454 9.63558 0.785645 9.48877C0.642415 9.34554 0.570801 9.17188 0.570801 8.96777ZM3.61084 8.23193H13.5903V2.22705C13.5903 2.06234 13.5492 1.94059 13.4668 1.86182C13.3844 1.77946 13.2627 1.73828 13.1016 1.73828H4.09961C3.93848 1.73828 3.81673 1.77946 3.73438 1.86182C3.65202 1.94059 3.61084 2.06234 3.61084 2.22705V8.23193Z"),
         ("0 0 12 19", "M2.92041 18.2891C2.24528 18.2891 1.7002 18.0898 1.28516 17.6914C0.870117 17.2985 0.662598 16.7783 0.662598 16.1309V2.87451C0.662598 2.22705 0.870117 1.70687 1.28516 1.31396C1.7002 0.915527 2.24528 0.716309 2.92041 0.716309H9.07129C9.75195 0.716309 10.297 0.915527 10.7065 1.31396C11.1216 1.70687 11.3291 2.22705 11.3291 2.87451V16.1309C11.3291 16.7783 11.1216 17.2985 10.7065 17.6914C10.297 18.0898 9.75195 18.2891 9.07129 18.2891H2.92041ZM3.09473 16.9526H8.90527C9.25391 16.9526 9.5223 16.8613 9.71045 16.6787C9.8986 16.5016 9.99268 16.2471 9.99268 15.915V3.09033C9.99268 2.7583 9.8986 2.50374 9.71045 2.32666C9.5223 2.14404 9.25391 2.05273 8.90527 2.05273H3.09473C2.74056 2.05273 2.4694 2.14404 2.28125 2.32666C2.0931 2.50374 1.99902 2.7583 1.99902 3.09033V15.915C1.99902 16.2471 2.0931 16.5016 2.28125 16.6787C2.4694 16.8613 2.74056 16.9526 3.09473 16.9526ZM4.24023 16.3467C4.12956 16.3467 4.03548 16.3107 3.95801 16.2388C3.88607 16.1668 3.8501 16.0728 3.8501 15.9565C3.8501 15.8403 3.88607 15.7463 3.95801 15.6743C4.03548 15.6079 4.12956 15.5747 4.24023 15.5747H7.76807C7.87874 15.5747 7.97005 15.6079 8.04199 15.6743C8.11393 15.7463 8.1499 15.8403 8.1499 15.9565C8.1499 16.0728 8.11393 16.1668 8.04199 16.2388C7.97005 16.3107 7.87874 16.3467 7.76807 16.3467H4.24023ZM4.99561 3.8125C4.82959 3.8125 4.68848 3.75716 4.57227 3.64648C4.46159 3.53027 4.40625 3.38916 4.40625 3.22314C4.40625 3.06266 4.46159 2.92708 4.57227 2.81641C4.68848 2.7002 4.82959 2.64209 4.99561 2.64209H7.00439C7.16488 2.64209 7.30046 2.7002 7.41113 2.81641C7.52734 2.92708 7.58545 3.06266 7.58545 3.22314C7.58545 3.38916 7.52734 3.53027 7.41113 3.64648C7.30046 3.75716 7.16488 3.8125 7.00439 3.8125H4.99561Z"),
     ]
-    .map(|(view, d)| {
-        svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path d="{d}"/></svg>"#).into_bytes())
-    })
+    .map(|(view, d)| path_svg(view, d))
 });
 svg_static!(QR_CODE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>"##);
 svg_static!(BELL_OFF, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/></svg>"##);
@@ -1572,6 +1567,20 @@ svg_static!(POLL_CHECK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 svg_static!(CHEVRON_DOWN, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="m10 10.5 3.833-3.833L15 7.834l-5 5-5-5 1.167-1.167z"/></svg>"#);
 svg_static!(TRASH, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="currentColor" d="M432 32H312l-9.4-18.7A24 24 0 0 0 281.1 0H166.8a23.72 23.72 0 0 0-21.4 13.3L136 32H16A16 16 0 0 0 0 48v32a16 16 0 0 0 16 16h416a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16zM53.2 467a48 48 0 0 0 47.9 45h245.8a48 48 0 0 0 47.9-45L416 128H32z"/></svg>"#);
 
+/// An icon of one path, in the box `view`.
+pub(crate) fn path_svg(view: &str, d: &str) -> svg::Handle {
+    let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path d="{d}"/></svg>"#);
+    svg::Handle::from_memory(svg.into_bytes())
+}
+
+/// An icon of one path in `currentColor`, in the box `view`.
+fn path_icon(view: &str, d: &str) -> svg::Handle {
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path fill="currentColor" d="{d}"/></svg>"#
+    );
+    svg::Handle::from_memory(svg.into_bytes())
+}
+
 /// Chat row hover actions: archive, unarchive, mark read, mark unread, context menu and delete draft.
 static ROW_ACTIONS: std::sync::LazyLock<[svg::Handle; 7]> = std::sync::LazyLock::new(|| {
     [
@@ -1583,12 +1592,7 @@ static ROW_ACTIONS: std::sync::LazyLock<[svg::Handle; 7]> = std::sync::LazyLock:
         ("0 0 20 20", "M7.042 13.999 6 12.957l2.938-2.958L6 7.06 7.042 6.02 10 8.957l2.938-2.937 1.041 1.041L11.042 10l2.937 2.958-1.041 1.042L10 11.06z"),
         ("0 0 20 20", "m5.333 15.834-1.166-1.167L8.833 10 4.167 5.334l1.166-1.167L10 8.834l4.667-4.667 1.166 1.167L11.167 10l4.666 4.667-1.166 1.167L10 11.167z"),
     ]
-    .map(|(vb, d)| {
-        svg::Handle::from_memory(
-            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}"><path fill="currentColor" d="{d}"/></svg>"#)
-                .into_bytes(),
-        )
-    })
+    .map(|(vb, d)| path_icon(vb, d))
 });
 
 /// Selection bar icons: archive, unarchive, mute, unmute, low priority, inbox, remind me and more.
@@ -1603,12 +1607,7 @@ static SELECTION_ICONS: std::sync::LazyLock<[svg::Handle; 8]> = std::sync::LazyL
         ("0 0 20 20", "m12.75 13.917 1.167-1.167-3.084-3.083V5.834H9.167v4.5zM10 18.334a8.1 8.1 0 0 1-3.25-.657 8.4 8.4 0 0 1-2.646-1.78 8.4 8.4 0 0 1-1.781-2.647A8.1 8.1 0 0 1 1.667 10q0-1.729.656-3.25a8.4 8.4 0 0 1 1.781-2.646 8.4 8.4 0 0 1 2.646-1.78A8.1 8.1 0 0 1 10 1.666q1.73 0 3.25.656a8.4 8.4 0 0 1 2.646 1.781 8.4 8.4 0 0 1 1.781 2.646 8.1 8.1 0 0 1 .656 3.25 8.1 8.1 0 0 1-.656 3.25 8.4 8.4 0 0 1-1.781 2.646 8.4 8.4 0 0 1-2.646 1.781 8.1 8.1 0 0 1-3.25.657m0-1.667q2.77 0 4.719-1.948 1.947-1.947 1.948-4.719 0-2.77-1.948-4.718T10 3.334 5.281 5.282Q3.334 7.229 3.333 10t1.948 4.72T10 16.666"),
         ("0 0 20 20", "m10 10.5 3.833-3.833L15 7.834l-5 5-5-5 1.167-1.167z"),
     ]
-    .map(|(vb, d)| {
-        svg::Handle::from_memory(
-            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}"><path fill="currentColor" d="{d}"/></svg>"#)
-                .into_bytes(),
-        )
-    })
+    .map(|(vb, d)| path_icon(vb, d))
 });
 
 svg_static!(DROP_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M12.625 14.375 17 10l-4.375-4.375-1.062 1.063 2.562 2.562H4.5V7H3v3.75h11.125l-2.562 2.563z"/></svg>"##);
@@ -1635,12 +1634,7 @@ static MEDIA_ICONS: std::sync::LazyLock<[svg::Handle; 7]> = std::sync::LazyLock:
         "m16.333 17.5-5.25-5.25a5.08 5.08 0 0 1-3.167 1.083q-2.27 0-3.843-1.573T2.5 7.917t1.573-3.844T7.917 2.5t3.843 1.573 1.573 3.844a5.08 5.08 0 0 1-1.083 3.166l5.25 5.25zm-8.416-5.833q1.562 0 2.656-1.094t1.094-2.656-1.094-2.657Q9.478 4.167 7.917 4.167T5.26 5.26Q4.167 6.355 4.167 7.917t1.093 2.656 2.657 1.094",
         "m7.958 15-4.75-4.75 1.188-1.187 3.562 3.562 7.646-7.646 1.188 1.188z",
     ]
-    .map(|d| {
-        svg::Handle::from_memory(
-            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="{d}"/></svg>"#)
-                .into_bytes(),
-        )
-    })
+    .map(|d| path_icon("0 0 20 20", d))
 });
 
 /// Desktop's file row icons: Material draft, csv, folder_zip and audio_file.
@@ -1651,12 +1645,7 @@ static FILE_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock::
         "M640-480v-80h80v80h-80Zm0 80h-80v-80h80v80Zm0 80v-80h80v80h-80ZM447-640l-80-80H160v480h400v-80h80v80h160v-400H640v80h-80v-80H447ZM160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Zm0-80v-480 480Z",
         "M430-200q38 0 64-26t26-64v-150h120v-80H480v155q-11-8-23.5-11.5T430-380q-38 0-64 26t-26 64q0 38 26 64t64 26ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z",
     ]
-    .map(|d| {
-        svg::Handle::from_memory(
-            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path fill="currentColor" d="{d}"/></svg>"#)
-                .into_bytes(),
-        )
-    })
+    .map(|d| path_icon("0 -960 960 960", d))
 });
 
 // Desktop's `download` icon, the Material `download`.
@@ -2244,6 +2233,20 @@ impl iced::advanced::widget::Operation<(Option<window::Id>, f32)> for Locate {
         let top = top.clamp(0.0, max);
         let anchored = matches!(self.scroll, "timeline" | "thread-timeline");
         Outcome::Some((window, if anchored { max - top } else { top }))
+    }
+}
+
+/// A press of the left mouse button.
+fn left_press(e: &Event) -> bool {
+    matches!(e, Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)))
+}
+
+/// A drag of the mouse: where the cursor moved to, or `None` for the release of a button.
+pub(crate) fn drag_event(e: &Event) -> Option<Option<Point>> {
+    match e {
+        Event::Mouse(mouse::Event::CursorMoved { position }) => Some(Some(*position)),
+        Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(None),
+        _ => None,
     }
 }
 
@@ -4968,14 +4971,8 @@ impl BeeperGuiApp {
 
     /// The presses of the mouse while they do something.
     fn press_events(&self) -> impl Iterator<Item = Subscription<UiMessage>> {
-        let rail_press = (self.rail_hover.is_some() && self.rail_drag.is_none()).then(|| {
-            iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                    Some(UiMessage::Rail(rail::Msg::Press))
-                }
-                _ => None,
-            })
-        });
+        let rail_press = (self.rail_hover.is_some() && self.rail_drag.is_none())
+            .then(|| iced::event::listen_with(|e, _, _| left_press(&e).then_some(UiMessage::Rail(rail::Msg::Press))));
         // Chromium moves the keyboard focus away from the focused control on a mouse press.
         let focus_press = self.key_focused().then(|| {
             iced::event::listen_with(|e, _, id| match e {
@@ -4983,67 +4980,40 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
-        let pin_press = (self.pin_hover.is_some() && self.pin_drag.is_none()).then(|| {
-            iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                    Some(UiMessage::Pins(pins::Msg::Press))
-                }
-                _ => None,
-            })
-        });
+        let pin_press = (self.pin_hover.is_some() && self.pin_drag.is_none())
+            .then(|| iced::event::listen_with(|e, _, _| left_press(&e).then_some(UiMessage::Pins(pins::Msg::Press))));
         rail_press.into_iter().chain(focus_press).chain(pin_press)
     }
 
     /// The moves and releases of the mouse while something drags.
     fn drag_events(&self) -> impl Iterator<Item = Subscription<UiMessage>> {
         let drag = self.dragging.then(|| {
-            iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                    Some(UiMessage::Rail(rail::Msg::ResizeMoved(position)))
-                }
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Rail(rail::Msg::ResizeEnd)),
-                _ => None,
+            iced::event::listen_with(|e, _, _| {
+                Some(UiMessage::Rail(drag_event(&e)?.map_or(rail::Msg::ResizeEnd, rail::Msg::ResizeMoved)))
             })
         });
-        let thread_drag = self.thread_drag.then(|| {
-            iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                    Some(UiMessage::Thread(threads::Msg::Drag(Some(position))))
-                }
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Thread(threads::Msg::Drag(None))),
-                _ => None,
-            })
-        });
+        let thread_drag = self
+            .thread_drag
+            .then(|| iced::event::listen_with(|e, _, _| Some(UiMessage::Thread(threads::Msg::Drag(drag_event(&e)?)))));
         let pin_drag = self.pin_drag.is_some().then(|| {
-            iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                    Some(UiMessage::Pins(pins::Msg::DragMoved(position)))
-                }
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Pins(pins::Msg::DragEnd)),
-                _ => None,
+            iced::event::listen_with(|e, _, _| {
+                Some(UiMessage::Pins(drag_event(&e)?.map_or(pins::Msg::DragEnd, pins::Msg::DragMoved)))
             })
         });
         let rail_drag = self.rail_drag.is_some().then(|| {
-            iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                    Some(UiMessage::Rail(rail::Msg::DragMoved(position)))
-                }
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Rail(rail::Msg::DragEnd)),
-                _ => None,
+            iced::event::listen_with(|e, _, _| {
+                Some(UiMessage::Rail(drag_event(&e)?.map_or(rail::Msg::DragEnd, rail::Msg::DragMoved)))
             })
         });
         let poll_drag = self.poll_windows.iter().any(|d| d.dragging.is_some()).then(|| {
-            iced::event::listen_with(|e, _, id| match e {
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Poll(id, PollEdit::Grab(None))),
-                _ => None,
+            iced::event::listen_with(|e, _, id| {
+                drag_event(&e)?.is_none().then_some(UiMessage::Poll(id, PollEdit::Grab(None)))
             })
         });
         let time_drag = self.time_edit.drag.is_some().then(|| {
-            iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::ButtonReleased(_)) => {
-                    Some(UiMessage::TimeSuggestions(time_suggestions::Msg::Grab(None)))
-                }
-                _ => None,
+            iced::event::listen_with(|e, _, _| {
+                let end = UiMessage::TimeSuggestions(time_suggestions::Msg::Grab(None));
+                drag_event(&e)?.is_none().then_some(end)
             })
         });
         let drags = drag.into_iter().chain(thread_drag).chain(pin_drag).chain(rail_drag);
