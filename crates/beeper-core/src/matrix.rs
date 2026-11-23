@@ -2,15 +2,15 @@ use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
     system_user, timer_distance, ActionButton, AppVerification, Attachment, AttachmentSize, Bookmark,
-    BridgeAccountInfo, Chat, ChatFlag, ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message,
-    MessageLink, MessageReminder, MessageRules, MessageTimer, Older, PollData, PollOption, PollRules, Reaction,
-    SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers, Transcription, User, VerificationDevice,
-    VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS,
-    BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS,
-    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE,
-    MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME,
-    REMINDERS_ROOM, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION, TRANSCRIPTIONS_ROOM,
-    USER_BLOCKED,
+    BridgeAccountInfo, Chat, ChatFlag, ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, InstalledPack,
+    Label, Message, MessageLink, MessageReminder, MessageRules, MessageTimer, Older, PollData, PollOption, PollRules,
+    Reaction, SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers, Transcription, User,
+    VerificationDevice, VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS,
+    ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS,
+    DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK,
+    MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR,
+    PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION,
+    TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID, TYPING_DURATION};
@@ -4551,7 +4551,7 @@ pub async fn sticker_packs(store: SharedStore, room: String) -> Result<Vec<Stick
         packs.extend(room_packs(&client, r).await);
     }
     // Desktop's `withGlobalPacks`: the packs of other rooms that you added to all rooms.
-    let global_rooms = global(&client, "m.image_pack.rooms").await;
+    let global_rooms = global(&client, IMAGE_PACK_ROOMS).await;
     for (r, keys) in global_rooms["rooms"].as_object().into_iter().flatten() {
         let keys = keys.as_object();
         for p in room_packs(&client, r).await {
@@ -4628,6 +4628,183 @@ fn sticker_pack(content: &Value, id: String, key: &str, source: Option<(&str, &s
     StickerPack { id, title, avatar: s(&content["pack"]["avatar_url"]), stickers }
 }
 
+/// Desktop's `IMAGE_PACK_ROOMS`: the packs of rooms that show in every chat, as `rooms.<room>.<state key>`.
+pub const IMAGE_PACK_ROOMS: &str = "m.image_pack.rooms";
+
+/// Desktop's `PCt` and `V0e`: whether `m.image_pack.rooms` lists the pack of `room` with `key`.
+pub fn pack_in_all_chats(rooms: &Value, room: &str, key: &str) -> bool {
+    rooms["rooms"][room].as_object().is_some_and(|keys| keys.contains_key(key))
+}
+
+/// Desktop's `W0e` with `$Ct`: `m.image_pack.rooms` with the parts of a pack in it or out of it. A room without packs
+/// leaves the list.
+pub fn with_pack_rooms(mut rooms: Value, parts: &[(String, String)], on: bool) -> Value {
+    if !rooms.is_object() {
+        rooms = serde_json::json!({});
+    }
+    if !rooms["rooms"].is_object() {
+        rooms["rooms"] = serde_json::json!({});
+    }
+    let list = rooms["rooms"].as_object_mut().expect("an object");
+    for (room, key) in parts {
+        let mut keys = list.get(room).and_then(Value::as_object).cloned().unwrap_or_default();
+        match on {
+            true => _ = keys.insert(key.clone(), serde_json::json!({})),
+            false => _ = keys.remove(key),
+        }
+        match keys.is_empty() {
+            true => _ = list.remove(room),
+            false => _ = list.insert(room.clone(), Value::Object(keys)),
+        }
+    }
+    rooms
+}
+
+/// A pack event of Desktop's `mx_image_packs` (`OCt`): the room, the event type, the state key and the content.
+type PackEvent = (String, &'static str, String, Value);
+
+/// Desktop's `getInstalledImagePacks` and `StickerPacksPreference`: the image packs of the personal spaces of the
+/// bridges (`personal_filtering_space`) and of `m.image_pack.rooms` (`withGlobalPacks`), where the stable event type
+/// replaces the older one (`qCt`) and the parts of a combined pack are one pack (`BCt`), with the packs that have
+/// stickers.
+pub async fn installed_packs(store: SharedStore) -> Result<Vec<InstalledPack>, String> {
+    // Desktop reads the packs from its database, which has none before Matrix syncs, like the demo's.
+    let Some(client) = store.read().matrix.clone() else { return Ok(Vec::new()) };
+    let mut events: Vec<PackEvent> = Vec::new();
+    for room in client.joined_rooms().into_iter().filter(|r| r.is_space()) {
+        let bridge = state(&room, "m.bridge").await.unwrap_or(Value::Null);
+        if bridge["com.beeper.room_type.v2"] == "personal_filtering_space" {
+            events.extend(room_packs(&client, room.room_id().as_str()).await);
+        }
+    }
+    // The list of the store, which a change of "Use in all chats" sets before the homeserver echoes it.
+    let stored = store.read().image_pack_rooms.clone();
+    let global_rooms = match stored {
+        Value::Null => global(&client, IMAGE_PACK_ROOMS).await,
+        rooms => rooms,
+    };
+    for (r, keys) in global_rooms["rooms"].as_object().into_iter().flatten() {
+        for p in room_packs(&client, r).await {
+            let known = events.iter().any(|q| (&q.0, &q.1, &q.2) == (&p.0, &p.1, &p.2));
+            if keys.as_object().is_some_and(|k| k.contains_key(&p.2)) && !known {
+                events.push(p);
+            }
+        }
+    }
+    Ok(group_packs(&events))
+}
+
+/// The installed packs of the pack events, like Desktop's `qCt`, `BCt` and its filter of packs with stickers.
+fn group_packs(events: &[PackEvent]) -> Vec<InstalledPack> {
+    let stable = |p: &PackEvent| p.1 == PACK_TYPES[0];
+    let replaced: HashSet<(&str, &str)> =
+        events.iter().filter(|p| stable(p)).map(|p| (p.0.as_str(), p.2.as_str())).collect();
+    let packs: Vec<&PackEvent> =
+        events.iter().filter(|p| stable(p) || !replaced.contains(&(p.0.as_str(), p.2.as_str()))).collect();
+    // Desktop's `pX`: the combined pack of a part, by its room, event type and `fi.mau.combined_pack_key`.
+    let combined = |p: &PackEvent| s(&p.3["fi.mau.combined_pack_key"]).map(|k| format!("{}|{}|{k}", p.0, p.1));
+    let index = |p: &PackEvent| p.3["fi.mau.combined_pack_index"].as_i64();
+    let mut groups: HashMap<String, Vec<&PackEvent>> = HashMap::new();
+    for p in &packs {
+        if let Some(k) = combined(p) {
+            groups.entry(k).or_default().push(p);
+        }
+    }
+    // Desktop's `FCt`: the parts make a combined pack when they are all there, each index once.
+    let whole = |parts: &[&PackEvent]| {
+        let Some(n) = parts.iter().find(|p| Some(p.2.as_str()) == p.3["fi.mau.combined_pack_key"].as_str()) else {
+            return false;
+        };
+        let n = n.3["fi.mau.combined_pack_count"].as_i64().unwrap_or(0);
+        let indexes: HashSet<i64> = parts.iter().filter_map(|p| index(p)).collect();
+        n >= 2 && parts.len() as i64 == n && indexes.len() as i64 == n && (0..n).all(|i| indexes.contains(&i))
+    };
+    let mut done = HashSet::new();
+    let mut out = Vec::new();
+    for p in &packs {
+        let key = combined(p);
+        let parts: Vec<&PackEvent> = match key.as_ref().and_then(|k| groups.get(k)).filter(|g| whole(g)) {
+            None => vec![p],
+            Some(_) if !done.insert(key.clone()) => continue,
+            Some(g) => {
+                let mut g = g.clone();
+                g.sort_by_key(|p| index(p).unwrap_or(0));
+                g
+            }
+        };
+        let is_whole = parts.len() > 1;
+        let primary = match is_whole {
+            true => parts.iter().find(|p| Some(p.2.as_str()) == p.3["fi.mau.combined_pack_key"].as_str()).unwrap(),
+            false => &parts[0],
+        };
+        let pack = &primary.3["pack"];
+        let name = s(&pack["display_name"]).filter(|n| !n.is_empty());
+        let name = match is_whole {
+            true => name.map(|n| strip_part_one(&n)),
+            false => name,
+        };
+        let stickers: Vec<Sticker> =
+            parts.iter().flat_map(|p| sticker_pack(&p.3, String::new(), "", None).stickers).collect();
+        if stickers.is_empty() {
+            continue;
+        }
+        let first = stickers.first().map(|x| (x.url.clone(), s(&x.info["mimetype"])));
+        let refs: Vec<(String, String)> = parts.iter().map(|p| (p.0.clone(), p.2.clone())).collect();
+        let events = events.iter().filter(|e| refs.iter().any(|(r, k)| (r, k) == (&e.0, &e.2)));
+        out.push(InstalledPack {
+            id: format!("{}|{}|{}", primary.1, primary.0, primary.2),
+            name: name.filter(|n| !n.is_empty()).unwrap_or_else(|| primary.2.clone()),
+            icon: s(&pack["avatar_url"]).filter(|u| !u.is_empty()).map(|u| (u, None)).or(first),
+            attribution: s(&pack["attribution"]).filter(|a| !a.is_empty()),
+            bridged: truthy(&pack["fi.mau.bridged_pack"]),
+            events: events.map(|e| (e.0.clone(), e.1.to_string(), e.2.clone())).collect(),
+            parts: refs,
+        });
+    }
+    out
+}
+
+/// Whether a JSON value is true in JavaScript.
+fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0),
+        Value::String(s) => !s.is_empty(),
+        _ => true,
+    }
+}
+
+/// Desktop's `jCt`: the name of a combined pack without the " (part 1)" of its first part, in any case.
+fn strip_part_one(name: &str) -> String {
+    let trimmed = name.trim_end();
+    let lower = trimmed.to_lowercase();
+    let Some(at) = lower.rfind("(part") else { return name.into() };
+    let rest = lower[at + 5..].trim_start();
+    match rest.strip_prefix('1').map(str::trim_start) {
+        Some(")") if lower.is_char_boundary(at) => trimmed[..at].trim_end().to_string(),
+        _ => name.into(),
+    }
+}
+
+/// Desktop's `hTt`: the removal of an installed pack from every device. It leaves `m.image_pack.rooms` when any part
+/// was there, then empties each pack event of the parts, which drops the pack (`applyPackEvent`).
+pub async fn remove_pack(store: SharedStore, pack: InstalledPack) -> Result<(), String> {
+    let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
+    let rooms = store.read().image_pack_rooms.clone();
+    if pack.parts.iter().any(|(r, k)| pack_in_all_chats(&rooms, r, k)) {
+        let rooms = with_pack_rooms(rooms, &pack.parts, false);
+        set_global(client.clone(), IMAGE_PACK_ROOMS, rooms.clone()).await?;
+        store.write().image_pack_rooms = rooms;
+    }
+    for (room, kind, key) in &pack.events {
+        let id = matrix_sdk::ruma::RoomId::parse(room).map_err(|e| e.to_string())?;
+        let room = client.get_room(&id).ok_or_else(|| format!("not in {room}"))?;
+        room.send_state_event_raw(kind, key, serde_json::json!({})).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Desktop's `k.IMAGE_PACK`: the own image pack of the global account data, whose images are the custom emoji.
 pub const IMAGE_PACK: &str = "m.image_pack";
 
@@ -4679,6 +4856,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     let recent = recent.collect();
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
     let pack = global(client, IMAGE_PACK).await;
+    let pack_rooms = global(client, IMAGE_PACK_ROOMS).await;
     let (flags, usage) = (global(client, crate::features::FLAGS).await, global(client, crate::features::USAGE).await);
     let summary = global(client, crate::features::SUMMARY).await;
     let bridges = global(client, BRIDGE_STATE).await;
@@ -4716,6 +4894,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     st.recent_emoji = recent;
     st.skin_tone = tone;
     st.image_pack = pack;
+    st.image_pack_rooms = pack_rooms;
     // The flags and the account limits decide what the windows show (polls, Send Later, the networks one can add,
     // ...), so a change draws them again.
     let f = &st.features;
@@ -7881,6 +8060,128 @@ mod tests {
         assert!(
             matches!(&outs[..], [(x, d1), (y, d2), ("!union:x", l)] if (*x, *y) == (a, b) && deleted(d1) && deleted(d2) && left(l))
         );
+    }
+
+    /// Desktop's "Installed sticker packs": the packs with stickers of the personal spaces of the bridges and of
+    /// `m.image_pack.rooms`, the parts of a combined pack as one pack, "Use in all chats", and the removal of a bridged
+    /// pack, which leaves `m.image_pack.rooms` and empties each pack event.
+    #[tokio::test]
+    async fn installed_sticker_packs_like_desktop() {
+        let state = |kind: &str, key: &str, content: Value| {
+            json!({ "type": kind, "state_key": key, "sender": "@bot:x", "event_id": format!("${kind}{key}"),
+                "origin_server_ts": 1, "content": content })
+        };
+        let img = |url: &str| json!({ "url": url, "body": "b", "info": { "mimetype": "image/webp" } });
+        let member = state("m.room.member", "@me:x", json!({ "membership": "join" }));
+        let joined = |events: Vec<Value>| json!({ "state": { "events": events }, "timeline": { "events": [] } });
+        let space = json!({ "creator": "@bot:x", "room_version": "10", "type": "m.space" });
+        let part = |i: i64, name: &str, url: &str| {
+            json!({ "pack": { "display_name": name, "fi.mau.bridged_pack": true },
+                "images": { format!("s{i}"): img(url) },
+                "fi.mau.combined_pack_key": "cats", "fi.mau.combined_pack_index": i, "fi.mau.combined_pack_count": 2 })
+        };
+        let mut sync = stub_sync();
+        sync["rooms"]["join"]["!personal:x"] = joined(vec![
+            state("m.room.create", "", space.clone()),
+            member.clone(),
+            state("m.bridge", "", json!({ "com.beeper.room_type.v2": "personal_filtering_space" })),
+            state("m.room.image_pack", "cats", part(0, "Cats (part 1)", "mxc://x/c0")),
+            state("m.room.image_pack", "cats-1", part(1, "Cats (part 2)", "mxc://x/c1")),
+            state("im.ponies.room_emotes", "cats", json!({ "images": { "old": img("mxc://x/old") } })),
+            state(
+                "m.room.image_pack",
+                "emoji",
+                json!({ "pack": { "usage": ["emoticon"] }, "images": { "e": img("mxc://x/e") } }),
+            ),
+        ]);
+        sync["rooms"]["join"]["!space:x"] = joined(vec![
+            state("m.room.create", "", space),
+            member.clone(),
+            state("m.room.image_pack", "", json!({ "images": { "fox": img("mxc://x/fox") } })),
+        ]);
+        let create = state("m.room.create", "", json!({ "creator": "@me:x", "room_version": "10" }));
+        sync["rooms"]["join"]["!other:x"] = joined(vec![
+            create,
+            member,
+            state(
+                "m.room.image_pack",
+                "g",
+                json!({ "pack": { "display_name": "Owls", "avatar_url": "mxc://x/av",
+                "attribution": "by Owl" }, "images": { "owl": img("mxc://x/owl") } }),
+            ),
+            state("m.room.image_pack", "h", json!({ "images": { "bat": img("mxc://x/bat") } })),
+        ]);
+        sync["account_data"] = json!({ "events": [
+            { "type": "m.image_pack.rooms", "content": { "rooms": { "!other:x": { "g": {} } }, "other": 1 } },
+        ] });
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, sync.clone()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+                p => {
+                    log.lock().unwrap().push((method.to_string(), p.to_string(), body));
+                    (200, json!({ "event_id": "$sent" }))
+                }
+            })
+            .await;
+        let store = stub_store(&crate::testing::temp_dir("installed-stickers"), &url).await;
+        let packs = super::installed_packs(store.clone()).await.expect("the packs");
+        let names: Vec<(&str, &str)> = packs.iter().map(|p| (p.id.as_str(), p.name.as_str())).collect();
+        let want = [("m.room.image_pack|!personal:x|cats", "Cats"), ("m.room.image_pack|!other:x|g", "Owls")];
+        assert_eq!(names, want, "one combined pack, no emoji-only pack, no pack of a plain space, and the global pack");
+        let cats = &packs[0];
+        assert_eq!(cats.parts, [("!personal:x".into(), "cats".into()), ("!personal:x".into(), "cats-1".into())]);
+        assert_eq!(cats.icon, Some(("mxc://x/c0".into(), Some("image/webp".into()))), "the first sticker");
+        assert!(cats.bridged && !packs[1].bridged);
+        assert_eq!(cats.events.len(), 3, "both parts, and the older event of the first part");
+        assert_eq!(
+            (packs[1].icon.clone(), packs[1].attribution.as_deref()),
+            (Some(("mxc://x/av".into(), None)), Some("by Owl"))
+        );
+        // "Use in all chats".
+        let client = store.read().matrix.clone().unwrap();
+        let rooms = super::global(&client, super::IMAGE_PACK_ROOMS).await;
+        store.write().image_pack_rooms = rooms;
+        let rooms = store.read().image_pack_rooms.clone();
+        assert!(
+            super::pack_in_all_chats(&rooms, "!other:x", "g")
+                && !super::pack_in_all_chats(&rooms, "!personal:x", "cats")
+        );
+        let on = super::with_pack_rooms(rooms.clone(), &cats.parts, true);
+        assert_eq!(on["rooms"]["!personal:x"], json!({ "cats": {}, "cats-1": {} }));
+        assert_eq!(on["other"], 1, "the rest of the account data stays");
+        let off = super::with_pack_rooms(on.clone(), &packs[1].parts, false);
+        assert!(off["rooms"].get("!other:x").is_none(), "a room without packs leaves the list");
+        // Remove: the pack leaves the list of all chats, then each event of the pack is emptied.
+        store.write().image_pack_rooms = on;
+        super::remove_pack(store.clone(), cats.clone()).await.expect("the pack goes");
+        let sent: Vec<_> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.1.contains("image_pack") || s.1.contains("emotes"))
+            .cloned()
+            .collect();
+        let paths: Vec<(&str, &str)> = sent.iter().map(|(m, p, _)| (m.as_str(), p.as_str())).collect();
+        assert_eq!(paths[0], ("PUT", "/_matrix/client/v3/user/@me:x/account_data/m.image_pack.rooms"));
+        assert_eq!(sent[0].2, json!({ "rooms": { "!other:x": { "g": {} } }, "other": 1 }));
+        let emptied: Vec<&str> = paths[1..].iter().map(|p| p.1).collect();
+        assert_eq!(
+            emptied,
+            [
+                "/_matrix/client/v3/rooms/!personal:x/state/m.room.image_pack/cats",
+                "/_matrix/client/v3/rooms/!personal:x/state/m.room.image_pack/cats-1",
+                "/_matrix/client/v3/rooms/!personal:x/state/im.ponies.room_emotes/cats",
+            ]
+        );
+        assert!(sent[1..].iter().all(|s| s.2 == json!({})));
+        assert_eq!(super::strip_part_one("Cats (Part 1) "), "Cats");
+        assert_eq!(super::strip_part_one("Cats (part 2)"), "Cats (part 2)");
     }
 
     /// Desktop's sticker packs: the packs of the room, its space, the rooms of `m.image_pack.rooms` and the account,

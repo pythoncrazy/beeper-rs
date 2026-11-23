@@ -915,6 +915,7 @@ impl BeeperGuiApp {
             let look = PillLook {
                 group: c.chat_type == "group",
                 own: Color { a: 0.6, ..p.accent },
+                own_bg: None,
                 other: Color::BLACK.scale_alpha(0.6),
                 hover: None,
                 fg: (white, white),

@@ -28,9 +28,9 @@ use crate::{
     ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_BLOCK, ASK_BLOCK_OFFLINE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT,
     ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE, ASK_DISCONNECT_SERVER,
     ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ,
-    ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REMOVE_MEMBER, ASK_REVOKE_CONNECTION, ASK_ROOM_ENCRYPTION,
-    ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE, ASK_UNMERGE, DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS,
-    LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
+    ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REMOVE_MEMBER, ASK_REMOVE_PACK, ASK_REVOKE_CONNECTION,
+    ASK_ROOM_ENCRYPTION, ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE, ASK_UNMERGE, DELETE, DRAG_HANDLE,
+    INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
@@ -599,6 +599,17 @@ impl BeeperGuiApp {
                     tr("Disconnect Discord Server?").into(),
                     tr(body).into(),
                     vec![(tr("Disconnect"), UiMessage::Accounts(accounts::Msg::SetServer(id, server)))],
+                )
+            }
+            ASK_REMOVE_PACK => {
+                let id = self.delete_target.clone().expect("a sticker pack to remove");
+                let pack = self.installed_packs.iter().flatten().find(|p| p.id == id);
+                let name = pack.map_or("", |p| p.name.as_str());
+                let name = if name.is_empty() { tr("Sticker pack").to_string() } else { name.to_string() };
+                (
+                    trf("Remove %s?", &[&name]),
+                    tr("This removes the pack from your account on every device.").into(),
+                    vec![(tr("Remove"), UiMessage::Settings(settings::Msg::RemovePack(id)))],
                 )
             }
             ASK_UNMERGE => {
@@ -1434,7 +1445,7 @@ impl BeeperGuiApp {
                 .width(Fill)
                 .padding([10, 12])
                 .style(move |_: &Theme, _| button::Style {
-                    background: Some(if gradient { login::brand_gradient() } else { p.chip.into() }),
+                    background: Some(if gradient { login::brand_gradient(p) } else { p.chip.into() }),
                     border: border::rounded(9999),
                     ..Default::default()
                 })

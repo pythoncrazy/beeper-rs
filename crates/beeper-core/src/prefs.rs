@@ -22,6 +22,9 @@ pub enum Control {
     /// Desktop's `QuickReactionsSettings` under "Show quick reactions": the frequent emoji, or the
     /// [`crate::models::BeeperSettings::quick_reactions`] that the toggle picks.
     QuickReactions(&'static Pref),
+    /// Desktop's `StickerPacksPreference` under "Use sticker packs": the installed sticker packs, each with "Use in all
+    /// chats" and the Remove of a bridged pack.
+    StickerPacks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +64,8 @@ pub enum Item {
     Heading(&'static str),
     Group(&'static [Pref]),
     Theme,
+    /// Desktop's Theme Color Selector (`vFt`), in the group of [`Item::Theme`].
+    ThemeColor,
     /// Desktop's `ChatAppearancePicker` of the default chat theme.
     ChatTheme,
     /// Desktop's zoom slider, with a text below it.
@@ -253,9 +258,12 @@ pub const GENERAL: &[Item] = &[
         s("upArrow", "Press ↑ in the composer to:", &["Move focus to the message list", "Edit your last message"], 0),
     ]),
     Item::Heading("Sticker packs"),
-    Item::Group(&[t("stickerPacks", "Use sticker packs", false)
-        .badge(Badge::Labs)
-        .desc("Send stickers from your Telegram, Signal and WhatsApp packs, and from Matrix sticker packs.")]),
+    Item::Group(&[
+        t("stickerPacks", "Use sticker packs", false)
+            .badge(Badge::Labs)
+            .desc("Send stickers from your Telegram, Signal and WhatsApp packs, and from Matrix sticker packs."),
+        custom("installedStickerPacks", "Installed sticker packs", Control::StickerPacks),
+    ]),
     Item::Heading("Time Suggestions"),
     Item::TimeSuggestions,
     Item::Group(&[
@@ -343,6 +351,7 @@ pub const APPEARANCE: &[Item] = &[
     ]),
     Item::Heading("Theme"),
     Item::Theme,
+    Item::ThemeColor,
     Item::Heading("Chat Appearance"),
     Item::ChatTheme,
     Item::Heading("Zoom"),
@@ -499,6 +508,7 @@ impl Item {
     pub fn custom(&self) -> Option<(&'static str, &'static [&'static str])> {
         match self {
             Item::Theme => Some(("Theme Selector", &["light mode", "dark mode", "system mode"])),
+            Item::ThemeColor => Some(("Theme Color Selector", &[])),
             Item::ChatTheme => Some(("Default chat theme", &["wallpaper", "background", "bubble color", "chat theme"])),
             Item::Zoom(..) => Some(("Zoom Controls", &[])),
             Item::TimeSuggestions => Some(("Time suggestions", &[])),
@@ -605,9 +615,26 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Send Message", "Composer", "enter"),
 ];
 
+/// The default keys of a hotkey of either list. A fixed hotkey cannot be reassigned, but Desktop's Texts.app
+/// keybindings turn Italicize Text Selection off.
 pub fn hotkey_default(name: &str) -> &'static str {
-    HOTKEYS.iter().find(|h| h.0 == name).unwrap_or_else(|| panic!("unknown hotkey {name}")).2
+    HOTKEYS.iter().chain(FIXED_HOTKEYS).find(|h| h.0 == name).unwrap_or_else(|| panic!("unknown hotkey {name}")).2
 }
+
+/// Desktop's "Switch to Texts.app keybindings" (`o` of `HotkeysPrefsSubView`): the keys that it gives each hotkey.
+pub const TEXTS_KEYBINDINGS: &[(&str, &str)] = &[
+    ("Message: Edit", "ctrl+i"),
+    ("Italicize Text Selection", "disabled"),
+    ("Select Previous Chat", "ctrl+[, ctrl+shift+tab"),
+    ("Select Next Chat", "ctrl+], ctrl+tab"),
+    ("Chat: Toggle Mark As Read", "ctrl+u"),
+    ("Chat: Toggle Archive", "ctrl+e, ctrl+shift+e"),
+    ("Switch First 9 Chats Modifier", "ctrl+alt"),
+    ("Switch First 9 Spaces Modifier", "ctrl"),
+    ("History: Previous Chat", "ctrl+alt+left"),
+    ("History: Next Chat", "ctrl+alt+right"),
+    ("Chat: Archive All Read", "disabled"),
+];
 
 /// The hotkeys that Desktop's Keyboard Shortcuts list shows, but that you cannot reassign.
 pub const FIXED_HOTKEYS: &[(&str, &str, &str)] = &[
