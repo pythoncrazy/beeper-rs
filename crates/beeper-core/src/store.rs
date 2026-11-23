@@ -50,6 +50,11 @@ impl StoreLock {
     pub fn generation(&self) -> Option<u64> {
         Some(self.1.load(Ordering::Acquire)).filter(|g| g % 2 == 0)
     }
+
+    /// Whether a thread panicked while it held the write lock, so that the store cannot be locked again.
+    pub fn poisoned(&self) -> bool {
+        self.0.is_poisoned()
+    }
 }
 
 impl<G> Drop for Locked<'_, G> {
@@ -590,6 +595,8 @@ pub struct BeeperStore {
     pub removals: Option<HashMap<String, Vec<String>>>,
     /// Wakes the push task of the Matrix sync loop when the outbox has a new change.
     pub(crate) outbox_ready: std::sync::Arc<tokio::sync::Notify>,
+    /// A sync response holds the SQLite transaction of [`Self::begin_sync`].
+    sync_tx: bool,
     /// Flags whose change the homeserver has, with the value and the sync after which a sync shows the change.
     pub sent_flags: HashMap<(String, ChatFlag), (bool, u64)>,
     /// The number of syncs of the Matrix sync loop.
@@ -779,6 +786,7 @@ impl BeeperStore {
             reminder_events: HashMap::new(),
             removals: None,
             outbox_ready: Default::default(),
+            sync_tx: false,
             sent_flags: HashMap::new(),
             syncs: 0,
             sent: HashMap::new(),
@@ -1345,6 +1353,28 @@ impl BeeperStore {
             self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit a batch");
         }
         r
+    }
+
+    /// Opens one SQLite transaction for the writes of the rooms of a sync response, which their `batch` joins, so that
+    /// they make one commit and not one each. The sync does not hold the store lock while it reads the Matrix state of
+    /// the next room, and the writes of the windows meanwhile go into the transaction too: they share the connection,
+    /// so they read what they wrote, and they commit with the sync. So the sync commits before it waits for the
+    /// homeserver, see [`Self::commit_sync`].
+    pub fn begin_sync(&mut self) {
+        let db = self.db.lock().unwrap();
+        if !self.sync_tx && db.is_autocommit() {
+            db.execute_batch("BEGIN IMMEDIATE;").expect("begin the writes of a sync");
+            self.sync_tx = true;
+        }
+    }
+
+    /// Commits the transaction of [`Self::begin_sync`], and returns whether it was open.
+    pub fn commit_sync(&mut self) -> bool {
+        let open = std::mem::take(&mut self.sync_tx);
+        if open {
+            self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit the writes of a sync");
+        }
+        open
     }
 
     /// Adds new chats and their messages in one SQLite transaction. A message without a sort key takes the next one.
@@ -3766,6 +3796,35 @@ mod tests {
         assert_eq!((t.engine.as_str(), t.language), ("unknown", None));
         assert!(t.transcription.starts_with("Native Rust"));
         assert_eq!(found(&st, "instantaneous"), HashSet::from(["msg_1000c".to_string()]));
+    }
+
+    /// A sync response keeps the writes of its rooms in one SQLite transaction, which their batches join, and commits
+    /// them at once.
+    #[test]
+    fn a_sync_commits_its_rooms_at_once() {
+        let config = crate::testing::demo_config("sync-tx");
+        let mut st = super::BeeperStore::from_config(config.clone());
+        let other = rusqlite::Connection::open(&config.db_path).expect("a second connection");
+        let committed = |id: &str| {
+            let q = "SELECT count(*) FROM messages WHERE id = ?1";
+            other.query_row(q, [id], |r| r.get::<_, i64>(0)).expect("count a message") == 1
+        };
+        let chats: Vec<String> = st.chats.iter().take(2).map(|c| c.id.clone()).collect();
+        let template = st.stored("1 LIMIT 1", []).pop().expect("a stored message");
+        let upsert = |st: &mut super::BeeperStore, n: usize| {
+            let (id, chat_id) = (format!("$sync{n}"), chats[n % 2].clone());
+            let m = super::Message { id, chat_id, sort_key: super::sort_key(9_000_000 + n as i64), ..template.clone() };
+            st.batch(|st| st.upsert_message(m));
+        };
+        st.begin_sync();
+        upsert(&mut st, 0);
+        upsert(&mut st, 1);
+        assert!(!committed("$sync0") && !committed("$sync1"), "the rooms of the sync wait for its commit");
+        assert!(st.stored_message("$sync1").is_some(), "the store reads its own writes");
+        assert!(st.commit_sync() && committed("$sync0") && committed("$sync1"), "the sync commits them once");
+        assert!(!st.commit_sync(), "the transaction is closed");
+        upsert(&mut st, 2);
+        assert!(committed("$sync2"), "a batch without a sync commits on its own");
     }
 
     /// A start loads no messages. A chat loads its stored messages on first use, and the chats that were used least

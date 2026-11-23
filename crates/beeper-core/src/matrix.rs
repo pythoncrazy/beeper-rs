@@ -1594,7 +1594,8 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
     } else if !seen {
         let known: HashSet<String> = events.iter().filter_map(|e| Some(e.event_id()?.to_string())).collect();
         // Without the page, `older` stays unknown and the next load of older messages tries again.
-        if let Ok((page, end)) = page(room, prev_batch, wanted).await.inspect_err(|e| drop(no_history(room, e))) {
+        let page = outside_sync_tx(store, page(room, prev_batch, wanted)).await;
+        if let Ok((page, end)) = page.inspect_err(|e| drop(no_history(room, e))) {
             older = Some(end.map_or(Older::Start, Older::From));
             let page = page.into_iter().filter(|e| e.event_id().is_some_and(|id| !known.contains(id.as_str())));
             events = page.chain(events).collect();
@@ -5107,6 +5108,37 @@ pub async fn run(store: SharedStore) {
         .expect("Matrix sync loop");
 }
 
+/// The SQLite transaction of the rooms of a sync response ([`BeeperStore::begin_sync`]). It commits when it ends,
+/// also when the sync stops with a panic or its task is canceled, so that the writes after it do not stay in it.
+struct SyncTx<'a>(&'a SharedStore);
+
+impl<'a> SyncTx<'a> {
+    fn begin(store: &'a SharedStore) -> Self {
+        store.write().begin_sync();
+        Self(store)
+    }
+}
+
+impl Drop for SyncTx<'_> {
+    fn drop(&mut self) {
+        // A panic with the store locked leaves the store unusable, and SQLite drops the transaction at the exit.
+        if !self.0.poisoned() {
+            self.0.write().commit_sync();
+        }
+    }
+}
+
+/// Runs `f`, which waits for the homeserver, outside the transaction of a sync response, which then goes on: the
+/// writes of the windows meanwhile commit at once.
+async fn outside_sync_tx<T>(store: &SharedStore, f: impl std::future::Future<Output = T>) -> T {
+    let open = store.write().commit_sync();
+    let r = f.await;
+    if open {
+        store.write().begin_sync();
+    }
+    r
+}
+
 /// Applies a response of the Matrix sync loop: the account data, the rooms, the invites, and the left rooms. False
 /// when the session has ended, which stops the loop.
 async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<matrix_sdk::sync::SyncResponse>) -> bool {
@@ -5148,6 +5180,8 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             sync_account_data(client, store).await;
             sync_prefs(client, store).await;
             sync_rules(client, store).await;
+            // The writes of the rooms make one SQLite commit.
+            let tx = SyncTx::begin(store);
             for id in resp.rooms.invited.keys() {
                 sync_invite(store, &client.get_room(id).expect("an invited room is known")).await;
             }
@@ -5207,6 +5241,7 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                     }
                 }
             }
+            drop(tx);
             retry_drafts(client, store).await;
             let mut st = store.write();
             st.replay_drafts();
