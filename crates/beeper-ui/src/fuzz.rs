@@ -8899,6 +8899,44 @@ fn reply_privately_like_desktop() {
     assert!(app.pane.composer.text().starts_with(&quote), "the composer quotes the message");
 }
 
+/// Desktop's command bar: "Reply privately" for a picked group message from someone else, and the developer links of
+/// the chat.
+#[test]
+fn reply_privately_and_chat_links_in_the_command_bar_like_desktop() {
+    let mut app = demo_app("reply-privately-cmd");
+    let group = "!tg_rust:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(group.into()));
+    let (theirs, mine) = {
+        let st = app.store.read();
+        let c = st.chat(group);
+        let msgs = st.timeline(group).filter(|m| m.text.is_some() && m.is_deleted != Some(true));
+        let from = |m: &&Message| c.participants.items.iter().any(|u| u.id == m.sender_id);
+        let theirs = msgs.clone().find(|m| m.is_sender != Some(true) && from(m)).expect("a message from someone");
+        let mine = msgs.clone().find(|m| m.is_sender == Some(true)).map(|m| m.id.clone());
+        (theirs.id.clone(), mine)
+    };
+    let titles = |app: &BeeperGuiApp| -> Vec<String> {
+        let cmds = app.commands(&app.store.read(), "");
+        let has = |t: &str| cmds.iter().any(|c| c.title == t);
+        ["Reply privately", "Copy chat deep link"].into_iter().filter(|t| has(t)).map(String::from).collect()
+    };
+    let _ = app.update(UiMessage::Message(message::Msg::Select(vec![theirs.clone()])));
+    assert_eq!(titles(&app), ["Reply privately", "Copy chat deep link"]);
+    let reply = app.commands(&app.store.read(), "").into_iter().find(|c| c.title == "Reply privately");
+    let msg = reply.and_then(|c| c.msg).expect("the command works");
+    assert!(matches!(msg, UiMessage::ChatList(chat_list::Msg::ReplyPrivately(ref m)) if *m == theirs));
+    let found = app.commands(&app.store.read(), "reply priv");
+    assert!(simulator(app.view_commands(&app.store.read(), &found)).find("Reply privately").is_ok());
+    if let Some(mine) = mine {
+        let _ = app.update(UiMessage::Message(message::Msg::Select(vec![mine])));
+        assert_eq!(titles(&app), ["Copy chat deep link"], "not for your own messages");
+    }
+    let link = app.commands(&app.store.read(), "").into_iter().find(|c| c.title == "Copy chat deep link");
+    let account = app.store.read().chat(group).account_id.clone();
+    let want = format!("beeper://select-thread/bridge-telegram/{group}?accountID={account}");
+    assert!(matches!(link.and_then(|c| c.msg), Some(UiMessage::Message(message::Msg::CopyText(t))) if t == want));
+}
+
 #[test]
 fn message_actions_follow_room_features_like_desktop() {
     let mut app = demo_app("message-rules");
