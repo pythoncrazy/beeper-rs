@@ -93,6 +93,9 @@ pub struct Renderer {
     image_cache: std::cell::RefCell<image::Cache>,
 
     staging_belt: wgpu::util::StagingBelt,
+
+    /// What the last presented frame drew.
+    presented: Vec<layer::Drawn>,
 }
 
 impl Renderer {
@@ -128,7 +131,23 @@ impl Renderer {
             ),
 
             engine,
+            presented: Vec::new(),
         }
+    }
+
+    /// Whether the layers drawn since the last present draw what that present did, so that presenting them would
+    /// show the same frame again.
+    pub fn draws_presented(&mut self) -> bool {
+        layer::Stack::merge(&mut self.layers);
+
+        let layers = self.layers.as_slice();
+
+        !self.presented.is_empty()
+            && layers.len() == self.presented.len()
+            && layers
+                .iter()
+                .zip(&self.presented)
+                .all(|(layer, drawn)| layer.draws(drawn))
     }
 
     fn draw(
@@ -170,6 +189,10 @@ impl Renderer {
         viewport: &Viewport,
     ) -> wgpu::SubmissionIndex {
         let encoder = self.draw(clear_color, frame, viewport);
+
+        self.presented.clear();
+        self.presented
+            .extend(self.layers.as_slice().iter().map(Layer::drawn));
 
         self.staging_belt.finish();
         let submission = self.engine.queue.submit([encoder.finish()]);

@@ -15,7 +15,7 @@ const INITIAL_VERTEX_COUNT: usize = 1_000;
 
 pub type Batch = Vec<Item>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Item {
     Group {
         transformation: Transformation,
@@ -25,6 +25,39 @@ pub enum Item {
         transformation: Transformation,
         cache: mesh::Cache,
     },
+}
+
+impl Item {
+    /// Whether the item draws the same meshes as `other`.
+    pub fn same(&self, other: &Item) -> bool {
+        match (self, other) {
+            (
+                Item::Group {
+                    transformation,
+                    meshes,
+                },
+                Item::Group {
+                    transformation: t,
+                    meshes: m,
+                },
+            ) => transformation == t && meshes == m,
+            (
+                Item::Cached {
+                    transformation,
+                    cache,
+                },
+                Item::Cached {
+                    transformation: t,
+                    cache: c,
+                },
+            ) => {
+                transformation == t
+                    && cache.id() == c.id()
+                    && cache.version() == c.version()
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug)]

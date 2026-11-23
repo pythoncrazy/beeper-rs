@@ -244,7 +244,7 @@ impl Layer {
 }
 
 /// A group of [`Quad`]s rendered together.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Batch {
     /// The solid quads of the [`Layer`].
     solids: Vec<Solid>,
@@ -303,6 +303,15 @@ impl Batch {
         self.solids.clear();
         self.gradients.clear();
         self.order.clear();
+    }
+
+    /// Whether the batch draws the same quads, in the same order, as `other`.
+    pub fn same(&self, other: &Batch) -> bool {
+        self.order == other.order
+            && bytemuck::cast_slice::<Solid, u8>(&self.solids)
+                == bytemuck::cast_slice::<Solid, u8>(&other.solids)
+            && bytemuck::cast_slice::<Gradient, u8>(&self.gradients)
+                == bytemuck::cast_slice::<Gradient, u8>(&other.gradients)
     }
 
     pub fn append(&mut self, batch: &mut Batch) {

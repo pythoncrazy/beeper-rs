@@ -48,6 +48,8 @@ pub struct Renderer {
     default_text_size: Pixels,
     layers: layer::Stack,
     engine: Engine, // TODO: Shared engine
+    /// The layers of the last presented frame.
+    presented: Vec<Layer>,
 }
 
 impl Renderer {
@@ -57,12 +59,37 @@ impl Renderer {
             default_text_size,
             layers: layer::Stack::new(),
             engine: Engine::new(),
+            presented: Vec::new(),
         }
     }
 
     pub fn layers(&mut self) -> &[Layer] {
         self.layers.flush();
         self.layers.as_slice()
+    }
+
+    /// Whether the layers drawn since the last present draw what that present did, so that presenting them would
+    /// show the same frame again.
+    pub fn draws_presented(&mut self) -> bool {
+        self.layers.flush();
+
+        let layers = self.layers.as_slice();
+
+        !self.presented.is_empty()
+            && layers.len() == self.presented.len()
+            && crate::layer::diff(
+                &self.presented,
+                layers,
+                |layer| vec![layer.bounds],
+                Layer::damage,
+            )
+            .is_empty()
+    }
+
+    /// Keeps the layers of the frame being presented for [`Self::draws_presented`].
+    pub(crate) fn keep_presented(&mut self) {
+        self.presented.clear();
+        self.presented.extend_from_slice(self.layers.as_slice());
     }
 
     pub fn draw(

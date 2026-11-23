@@ -80,6 +80,8 @@ where
                 renderer,
                 mouse_interaction: mouse::Interaction::None,
                 redraw_at: None,
+                presented_background: None,
+                input_at: None,
                 preedit: None,
                 ime_state: None,
             },
@@ -171,6 +173,10 @@ where
     pub surface_version: u64,
     pub renderer: P::Renderer,
     pub redraw_at: Option<Instant>,
+    /// The background of the last frame that the window presented.
+    pub presented_background: Option<Color>,
+    /// When the window last had a mouse, keyboard, touch or input method event.
+    pub input_at: Option<Instant>,
     preedit: Option<Preedit<P::Renderer>>,
     ime_state: Option<(Rectangle, input_method::Purpose)>,
 }
