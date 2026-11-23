@@ -8719,6 +8719,32 @@ fn main_window_keeps_its_state_like_desktop() {
     assert_eq!(app.title(main), format!("Beeper | {title}"));
 }
 
+/// A window that opens maximized maximizes again once the window manager places it, like Desktop's `deferMaximize`:
+/// an X11 window manager ignores the maximized state of a window that iced has not mapped yet.
+#[test]
+fn a_maximized_window_maximizes_once_it_is_placed() {
+    let mut app = demo_app("window-maximize");
+    let maximizes = |task: Task<UiMessage>| {
+        let actions = iced::futures::executor::block_on(task_actions(task));
+        let max = |a: &iced_runtime::Action<UiMessage>| {
+            matches!(a, iced_runtime::Action::Window(iced_runtime::window::Action::Maximize(_, true)))
+        };
+        actions.iter().filter(|a| max(a)).count()
+    };
+    let restored = BeeperGuiApp::window_settings(MAIN_SIZE);
+    let maximized = window::Settings { maximized: true, ..restored.clone() };
+    let (normal, _) = app.open_window(restored);
+    let (max, _) = app.open_window(maximized.clone());
+    let (hidden, _) = app.open_window(window::Settings { visible: false, ..maximized.clone() });
+    let (resized, _) = app.open_window(maximized);
+    let mut moved = |id| maximizes(app.update(UiMessage::Window(windows::Msg::Moved(id))));
+    assert_eq!(moved(max), 1, "the first move maximizes the window that opened maximized");
+    assert_eq!(moved(max), 0, "once");
+    assert_eq!((moved(normal), moved(hidden)), (0, 0), "a restored or a hidden window stays as it is");
+    let task = app.update(UiMessage::Window(windows::Msg::Resized(resized, Size::new(1600.0, 960.0))));
+    assert_eq!(maximizes(task), 1, "or the first resize");
+}
+
 /// A new install on the sign-in window.
 pub(crate) fn signed_out_app(name: &str) -> BeeperGuiApp {
     let config = CentralConfig::new(beeper_core::testing::temp_dir(name), "127.0.0.1".into(), 23391, None);

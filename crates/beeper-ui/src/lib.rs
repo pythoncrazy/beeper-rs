@@ -2743,6 +2743,8 @@ pub struct BeeperGuiApp {
     pub dark: bool,
     pub zoom: f32,
     zoom_drag: Option<f32>,
+    /// The windows that opened maximized, to maximize again once the window manager places them.
+    maximize_when_placed: Vec<window::Id>,
     pub pal: Palette,
     /// The chat list of the main window, or of the space window whose messages `update` handles.
     pub list: chat_list::ListState,
@@ -3099,6 +3101,7 @@ impl BeeperGuiApp {
             dark: theme,
             zoom: 1.0,
             zoom_drag: None,
+            maximize_when_placed: Vec::new(),
             list: chat_list::ListState { filters, ..Default::default() },
             seen_requests: Vec::new(),
             pip: None,
