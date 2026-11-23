@@ -1206,6 +1206,24 @@ mod tests {
         pixmap
     }
 
+    /// A shadowed card that shrinks, like the mention list when the typed name leaves one person, damages its old
+    /// shadow too. The software renderer left that shadow, and the old card under it, as a white card above the list.
+    #[test]
+    fn a_shrinking_card_damages_its_old_shadow() {
+        use iced::{Point, Rectangle, Size};
+        let layer = |height: f32| {
+            let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, 16.into());
+            let style = shadow_box(Color::WHITE, CLEAR, 6.0, 16.0)(&Theme::Light);
+            let card = Rectangle::new(Point::new(40.0, 100.0 - height), Size::new(120.0, height));
+            container::draw_background(&mut renderer, &style, card);
+            renderer.layers()[0].clone()
+        };
+        let damage = iced_tiny_skia::Layer::damage(&layer(100.0), &layer(30.0));
+        // Left of the old card, in its shadow only.
+        let shadow = Point::new(30.0, 30.0);
+        assert!(damage.iter().any(|d| d.contains(shadow)), "{damage:?}");
+    }
+
     #[test]
     fn caret_redraws_keep_the_shadowed_card_outside_the_damage() {
         use iced::{Point, Rectangle, Size};

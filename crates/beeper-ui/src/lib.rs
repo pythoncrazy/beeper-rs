@@ -2700,6 +2700,8 @@ pub struct Pane {
     /// Desktop's `preventAutoMarkAsRead`: a "Mark as Unread" from a message keeps the open chat unread until you
     /// leave it (`onThreadDeselected`).
     pub keep_unread: bool,
+    /// When the last smooth scroll to the bottom of the timeline started (see [`timeline::Hold`]).
+    pub glide: Option<std::time::Instant>,
     /// Desktop's `unreadDividerMessageSortKey`: the message after the read position of the chat when it opened,
     /// which keeps the "New" divider in place while the chat is read.
     pub unread_divider: Option<String>,
