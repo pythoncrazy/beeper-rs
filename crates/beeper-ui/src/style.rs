@@ -5,7 +5,7 @@ use iced::font::{Family, Font, Weight};
 use iced::overlay::menu;
 use iced::widget::{button, container, pick_list, scrollable, slider, svg, text, text_input};
 use iced::{border, Border, Color, Shadow, Theme, Vector};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -211,6 +211,21 @@ fn woff_to_sfnt(woff: &[u8]) -> Vec<u8> {
     out
 }
 
+thread_local!(static REM: Cell<f32> = const { Cell::new(1.0) });
+
+/// Sets Desktop's root font from the Font size: `--custom-font-size` is the Font size plus 3 px, and the root font of
+/// 16 px is the default.
+pub fn set_font_size(font_size: f32) {
+    REM.set((font_size + 3.0) / 16.0);
+}
+
+/// A size that Desktop gives in `rem`, from its px at the default root font of 16 px: the text sizes and line heights
+/// (`--semantic-typo-size-*`, `--semantic-typo-line-height-*`), which follow the Font size. The sizes in px, most
+/// spaces, icons and avatars, do not, and the zoom scales both.
+pub fn rem(px: f32) -> f32 {
+    px * REM.get()
+}
+
 pub const fn fw(weight: Weight) -> Font {
     Font { family: Family::Name("Inter"), weight, ..Font::DEFAULT }
 }
@@ -257,6 +272,7 @@ fn memo<K: std::hash::Hash + Eq, V: Clone>(
 /// The width of a text, and the end and the x position after each glyph.
 type Glyphs = Rc<(f32, Vec<(usize, f32)>)>;
 
+/// The glyphs of `s` at `size` px, already in rem.
 fn glyphs(s: &str, size: f32, w: Weight) -> Glyphs {
     thread_local!(static MEMO: Memo<(String, u32, Weight), Glyphs> = RefCell::default());
     memo(&MEMO, (s.to_owned(), size.to_bits(), w), || {
@@ -274,7 +290,7 @@ fn glyphs(s: &str, size: f32, w: Weight) -> Glyphs {
 
 /// The x position and wrapped row of each (line, byte) caret in `s` wrapped at `width`.
 pub fn carets(s: &str, size: f32, width: f32, at: impl IntoIterator<Item = (usize, usize)>) -> Vec<(f32, usize)> {
-    shape(s, size, Weight::Normal, Some(width), |buf| {
+    shape(s, rem(size), Weight::Normal, Some(width), |buf| {
         let at = at.into_iter().map(|(line, byte)| {
             let mut end = (0.0, 0);
             for (row, r) in buf.layout_runs().enumerate().filter(|(_, r)| r.line_i == line) {
@@ -291,6 +307,7 @@ pub fn carets(s: &str, size: f32, width: f32, at: impl IntoIterator<Item = (usiz
 
 /// CSS `text-wrap: balance`: the narrowest width up to `max` that wraps `s` into as many lines as `max` does.
 pub fn balanced_width(s: &str, max: f32, size: f32) -> f32 {
+    let size = rem(size);
     thread_local!(static MEMO: Memo<(String, u32, u32), f32> = RefCell::default());
     memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || {
         let lines = |w: f32| shape(s, size, Weight::Normal, Some(w), |b| b.layout_runs().count());
@@ -325,6 +342,7 @@ fn surely_fits(s: &str, max: f32, size: f32) -> bool {
 
 /// Whether `s` at `size` takes more than one line at `max` width: a line of the text makes more than one layout run.
 pub fn wraps(s: &str, max: f32, size: f32) -> bool {
+    let size = rem(size);
     thread_local!(static MEMO: Memo<(String, u32, u32), bool> = RefCell::default());
     if surely_fits(s, max, size) {
         return false;
@@ -339,6 +357,7 @@ pub fn wraps(s: &str, max: f32, size: f32) -> bool {
 
 /// The lines of `s` wrapped at `max`, as the text widgets lay it out.
 pub fn line_count(s: &str, max: f32, size: f32) -> usize {
+    let size = rem(size);
     thread_local!(static MEMO: Memo<(String, u32, u32), usize> = RefCell::default());
     if surely_fits(s, max, size) {
         return 1;
@@ -349,7 +368,7 @@ pub fn line_count(s: &str, max: f32, size: f32) -> usize {
 }
 
 pub fn text_width(s: &str, size: f32, w: Weight) -> f32 {
-    glyphs(s, size, w).0
+    glyphs(s, rem(size), w).0
 }
 
 fn ell_line(s: &str, max: f32, size: f32, w: Weight) -> String {
@@ -358,7 +377,7 @@ fn ell_line(s: &str, max: f32, size: f32, w: Weight) -> String {
     if total <= max {
         return s.into();
     }
-    let cut = max - text_width("…", size, w);
+    let cut = max - glyphs("…", size, w).0;
     let end = gs.get(gs.partition_point(|g| g.1 <= cut).wrapping_sub(1)).map_or(0, |g| g.0);
     format!("{}…", &s[..end])
 }
@@ -379,6 +398,7 @@ pub fn clamp<'a>(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> text:
 pub fn clamped(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> Rc<str> {
     thread_local!(static MEMO: Memo<(String, u32, u32, Weight, usize), Rc<str>> = RefCell::default());
     assert!(lines > 0, "clamp to zero lines");
+    let size = rem(size);
     memo(&MEMO, (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), w, lines), || {
         let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
         let starts: Vec<usize> = shape(&s, size, w, Some(max.max(0.0)), |buf| {
@@ -395,7 +415,7 @@ pub fn clamped(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> Rc<str>
 /// fit on the first line, and the rest clamped to the other lines.
 pub fn flow(s: &str, indent: f32, max: f32, lines: usize, size: f32, w: Weight) -> (String, Rc<str>) {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    let gs = glyphs(&s, size, w);
+    let gs = glyphs(&s, rem(size), w);
     let gs = &gs.1;
     let width = |i: usize| gs.get(gs.partition_point(|g| g.0 <= i).wrapping_sub(1)).map_or(0.0, |g| g.1);
     let breaks = s.match_indices(' ').map(|(i, _)| i).chain([s.len()]);
@@ -403,10 +423,21 @@ pub fn flow(s: &str, indent: f32, max: f32, lines: usize, size: f32, w: Weight) 
     (s[..fit].to_string(), clamped(s[fit..].trim_start(), max, lines - 1, size, w))
 }
 
-/// Text in the app font. Its line height of `round(size * 1.24)` is Desktop's `--semantic-typo-line-height-*` for the
-/// 10, 11, 12, 13 and 16 px sizes, so only other pairs (14/18, 15/20, 17/24, ...) set their own.
+/// Text in the app font at `size` px in rem. Its line height of `round(size * 1.24)` is Desktop's
+/// `--semantic-typo-line-height-*` for the 10, 11, 12, 13 and 16 px sizes, so only other pairs (14/18, 15/20, 17/24,
+/// ...) set their own.
 pub fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
+    text(s).size(rem(size)).font(fw(w)).line_height(text::LineHeight::Absolute(rem((size * 1.24).round()).into()))
+}
+
+/// Text at `size` px that Desktop gives in px, like `.message .timestamp`, which the Font size does not change.
+pub fn fixed<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
     text(s).size(size).font(fw(w)).line_height(text::LineHeight::Absolute((size * 1.24).round().into()))
+}
+
+/// The width of a [`fixed`] text.
+pub fn fixed_width(s: &str, size: f32, w: Weight) -> f32 {
+    glyphs(s, size, w).0
 }
 
 pub fn txt<'a>(s: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {

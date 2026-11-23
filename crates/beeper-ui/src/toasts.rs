@@ -240,7 +240,7 @@ impl BeeperGuiApp {
             if let Some(what) = self.undo_note.as_ref().filter(|_| self.shown_note()) {
                 let glyph = container(tinted(&TOAST_ICONS[3], 16.0, p.strong)).center_x(16).center_y(20);
                 let text = rich_text![span::<(), _>(tr("Undo:")).font(fw(Weight::Bold)), span(format!(" {what}"))]
-                    .size(13.0)
+                    .size(rem(13.0))
                     .color(p.strong);
                 let card = row![glyph, text, close].spacing(8).align_y(Center);
                 return container(card).padding([6, 8]).style(toast_box(p.card, p)).into();
@@ -282,7 +282,7 @@ impl BeeperGuiApp {
             false => (p.card, p.strong),
         };
         let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {
-            let label = semi(*label, 13.0).line_height(Pixels(18.0)).color(fg);
+            let label = semi(*label, 13.0).line_height(Pixels(rem(18.0))).color(fg);
             let action = match t.dismiss {
                 Some(_) => msg.clone(),
                 None => UiMessage::Toast(toasts::Msg::Action(older, Box::new(msg.clone()))),
@@ -305,11 +305,11 @@ impl BeeperGuiApp {
                     rest = after;
                 }
                 spans.push(span(rest.to_string()));
-                rich_text(spans).on_link_click(|m: UiMessage| m).size(13.0).color(fg).wrapping(wrap).into()
+                rich_text(spans).on_link_click(|m: UiMessage| m).size(rem(13.0)).color(fg).wrapping(wrap).into()
             }
         };
         let below = (!t.buttons.is_empty()).then(|| {
-            let dot = || -> El { semi(" • ", 13.0).line_height(Pixels(18.0)).color(fg).into() };
+            let dot = || -> El { semi(" • ", 13.0).line_height(Pixels(rem(18.0))).color(fg).into() };
             let mut buttons = t.buttons.iter().map(|b| -> El { btn(b, fg).into() });
             let first = buttons.next().expect("a button");
             Row::with_children(std::iter::once(first).chain(buttons.flat_map(|b| [dot(), b])))

@@ -347,7 +347,7 @@ impl BeeperGuiApp {
         let mut slots: Vec<El<'a>> =
             brands.iter().map(|b| svg(crate::style::brand_svg(b)).width(size).height(size).into()).collect();
         if more > 0 {
-            let plus = semi(format!("+{more}"), 10.0).line_height(Pixels(12.0)).color(p.muted);
+            let plus = semi(format!("+{more}"), 10.0).line_height(Pixels(rem(12.0))).color(p.muted);
             slots.push(container(plus).center(size).style(fill_box(p.prefs_group, 8.0)).into());
         }
         let step = size - ICON_OVERLAP;
@@ -379,7 +379,10 @@ impl BeeperGuiApp {
         let (merge, merge_w) = small_button(p, tr("Merge options"), msg(Msg::Merge(s.rooms.clone(), s.keys.clone())));
         let w = (16.0 + body_w + 12.0 + merge_w + 12.0 + 28.0 + 12.0).clamp(310.0, 360.0);
         let body = column![
-            semi(title, 13.0).line_height(Pixels(16.0)).wrapping(iced::widget::text::Wrapping::None).color(p.strong),
+            semi(title, 13.0)
+                .line_height(Pixels(rem(16.0)))
+                .wrapping(iced::widget::text::Wrapping::None)
+                .color(p.strong),
             self.suggestion_networks(st, &s, 20.0, Some(BANNER_ICONS), p.elevated),
         ]
         .spacing(6)
@@ -417,7 +420,7 @@ impl BeeperGuiApp {
             true => tr("View all your chats with this person as one conversation").to_string(),
             false => trf("View all your chats with %s as one conversation", &[&s.title]),
         };
-        let headline = semi(headline, 15.0).line_height(Pixels(20.0)).color(p.strong).align_x(Center).width(Fill);
+        let headline = semi(headline, 15.0).line_height(Pixels(rem(20.0))).color(p.strong).align_x(Center).width(Fill);
         let open = UiMessage::Merged(merged::Msg::Open(None, s.rooms.clone()));
         let rest = column![
             self.suggestion_networks(st, &s, 20.0, None, p.chip),
@@ -439,13 +442,15 @@ impl BeeperGuiApp {
         let s = st.settings.chat_info_merge_promo_dismissed.then(|| self.suggestion_of(st, &chat.id))??;
         let p = &self.pal;
         // The pill reaches 5 px over and under the 14 px line of the title.
-        let head =
-            row![txt(tr("Merged Chats"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
-                .push(bold_pill())
-                .align_y(Center)
-                .padding(Padding { top: 9.0, right: 8.0, bottom: 5.0, left: 8.0 });
+        let head = row![
+            txt(tr("Merged Chats"), 11.0).line_height(Pixels(rem(14.0))).color(p.strong),
+            Space::new().width(Fill)
+        ]
+        .push(bold_pill())
+        .align_y(Center)
+        .padding(Padding { top: 9.0, right: 8.0, bottom: 5.0, left: 8.0 });
         let body = column![
-            txt(tr("View all these chats together"), 12.0).line_height(Pixels(15.0)).color(p.strong),
+            txt(tr("View all these chats together"), 12.0).line_height(Pixels(rem(15.0))).color(p.strong),
             self.suggestion_networks(st, &s, 20.0, None, p.chip),
         ]
         .spacing(8)
@@ -461,7 +466,7 @@ impl BeeperGuiApp {
         ]
         .on_link_click(|m: UiMessage| m)
         .size(12.0)
-        .line_height(Pixels(15.0))
+        .line_height(Pixels(rem(15.0)))
         .color(p.sub);
         let footer = container(footer).padding(Padding { top: 6.0, right: 8.0, bottom: 8.0, left: 8.0 });
         Some(column![head, card, footer].into())
@@ -475,7 +480,7 @@ impl BeeperGuiApp {
         self.merged_targets(st).filter(|t| shown && t.len() >= 2)?;
         let p = &self.pal;
         let (bg, fg) = (p.elevated, p.strong);
-        let label = txt(tr("Click the avatar to change chat."), 13.0).line_height(Pixels(16.0)).color(fg);
+        let label = txt(tr("Click the avatar to change chat."), 13.0).line_height(Pixels(rem(16.0))).color(fg);
         let bubble =
             button(label).padding([14, 16]).on_press(UiMessage::MergeSuggest(Msg::DismissNudge)).style(move |_, _| {
                 button::Style {

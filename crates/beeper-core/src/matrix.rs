@@ -74,6 +74,9 @@ enum Op {
         /// The buttons of an edit by the system user, which replace those of its own message.
         buttons: Option<Vec<ActionButton>>,
     },
+    /// Desktop's `handlePollEdit`: an `m.replace` of a poll start, which applies only to a poll of its own sender. It
+    /// has the poll, the sender, the new poll and the time of the edit unless it is not shown.
+    PollEdit(String, String, Box<PollData>, Option<String>),
     /// The `com.beeper.disappearing_timer` of an edit without content, and the sender of the edit.
     Timer(String, String, MessageTimer),
     /// A redaction, and whether the bridge redacted view-once media after its last view.
@@ -356,8 +359,25 @@ async fn power_levels(room: &Room) -> Value {
     levels
 }
 
-async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Chat {
-    let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
+/// What a chat keeps from the members of its room while their state does not change: the participants, the title and
+/// whether it is a DM. Reading thousands of members for each message of a big group took most of its sync.
+pub(crate) struct Known {
+    participants: Vec<User>,
+    title: String,
+    dm: bool,
+}
+
+/// The `MEMBER_ACTIONS` bits that the room features allow, all of them without room features.
+fn member_actions(features: Option<&Value>) -> u8 {
+    features.map_or(ALL_MEMBER_ACTIONS, |f| {
+        let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
+        MEMBER_ACTIONS.iter().enumerate().filter(|(_, k)| on(k)).fold(0, |m, (i, _)| m | 1 << i)
+    })
+}
+
+/// The participants of a room from its members, its title and whether it is a DM, like Desktop's `buildTitle` and
+/// thread type.
+async fn members(room: &Room, bridge: &Value) -> (Vec<User>, String, bool) {
     let service = room.service_members().unwrap_or_default();
     let bot = s(&bridge["bridgebot"]);
     let me = room.own_user_id();
@@ -367,12 +387,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let levels = power_levels(room).await;
     let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
     let features = state(room, "com.beeper.room_features").await;
-    let (file, room_features) = file_features(features.as_ref(), &bridge);
-    let tombstone = state(room, "m.room.tombstone").await;
-    let member_actions = features.as_ref().map_or(ALL_MEMBER_ACTIONS, |f| {
-        let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
-        MEMBER_ACTIONS.iter().enumerate().filter(|(_, k)| on(k)).fold(0, |m, (i, _)| m | 1 << i)
-    });
+    let member_actions = member_actions(features.as_ref());
     let contents: HashMap<String, Value> = states(room, StateEventType::RoomMember)
         .await
         .into_iter()
@@ -412,7 +427,6 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         })
         .collect();
     items.sort_by(crate::models::member_order);
-    let tags = room.tags().await.expect("read room tags").unwrap_or_default();
     // Desktop's thread type (`rT`): a note to self is single, a declared DM is single up to two people, and a room
     // with a name or a declared group DM is a group.
     let note = state(room, "com.beeper.rooms.note_to_self").await.is_some();
@@ -446,6 +460,22 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             .expect("a chat with other members")
         }
     });
+    (items, title, dm)
+}
+
+async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value, known: Option<Known>) -> Chat {
+    let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
+    let (mut items, title, dm) = match known {
+        Some(k) => (k.participants, k.title, k.dm),
+        None => members(room, &bridge).await,
+    };
+    let me = room.own_user_id();
+    let features = state(room, "com.beeper.room_features").await;
+    let (file, room_features) = file_features(features.as_ref(), &bridge);
+    let tombstone = state(room, "m.room.tombstone").await;
+    let levels = power_levels(room).await;
+    let member_actions = member_actions(features.as_ref());
+    let tags = room.tags().await.expect("read room tags").unwrap_or_default();
     let account_id = account_id(&bridge, accounts);
     // Desktop's `hasExited`: in a room that the user left, the own member stays, exited, and does not count above.
     if room.state() == RoomState::Left {
@@ -484,10 +514,8 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         is_pinned: Some(tags.contains_key(&TagName::Favorite)),
         is_low_priority: Some(tags.contains_key(&TagName::LowPriority)),
         reminder: account_data(room, REMINDER).await.and_then(|r| {
-            Some(ChatReminder {
-                remind_at_ms: r["remind_at_ms"].as_i64().filter(|&ms| ms > 0)?,
-                dismiss_on_incoming_message: r["dismiss_on_incoming_message"] == true,
-            })
+            let at = r["remind_at_ms"].as_i64().filter(|&ms| ms > 0)?;
+            Some(ChatReminder::new(at, r["dismiss_on_incoming_message"] == true))
         }),
         // Desktop's `com.beeper.chats.snoozed` handler keeps a snooze that ends in the future.
         snoozed_until_ms: account_data(room, SNOOZED)
@@ -635,6 +663,22 @@ fn poll(c: &Value) -> Option<PollData> {
     })
 }
 
+/// Desktop's `handlePollEdit` of the poll message `m`: the edit takes the question, the answers, the kind, the number
+/// of selections and the fallback text, and keeps whether the poll ended. The votes for the answers that the edit
+/// keeps stay, as Desktop counts the responses by answer ID.
+fn edit_poll(m: &mut Message, mut poll: PollData, timestamp: Option<String>) {
+    let old = m.poll.take().expect("an edited poll");
+    for o in &mut poll.options {
+        o.voter_ids = old.options.iter().find(|x| x.id == o.id).map(|x| x.voter_ids.clone()).unwrap_or_default();
+    }
+    poll.ended = old.ended;
+    let prev = m.text.replace(poll.question.clone()).unwrap_or_default();
+    if let Some(timestamp) = timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t)) {
+        m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
+    }
+    m.poll = Some(poll);
+}
+
 /// Desktop's poll response answers.
 fn poll_answers(c: &Value) -> Vec<String> {
     let answers =
@@ -721,6 +765,17 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
             let timer = MessageTimer::of(&c["disappearing_timer"], order)
                 .filter(|_| c["status"] == "SUCCESS" && rel["rel_type"] == "m.reference" && local);
             return Some(Op::SendStatus(s(&rel["event_id"])?, delivered, error, Box::new(status), timer));
+        }
+        // Desktop's `handlePollEdit`: the edit changes the poll, and is no message of its own.
+        "org.matrix.msc3381.poll.start" | "m.poll.start" if rel["rel_type"] == "m.replace" => {
+            let ts = e["origin_server_ts"].as_i64().expect("event timestamp");
+            let timestamp = (c["com.beeper.dont_render_edited"] != true).then(|| rfc3339_from_millis(ts));
+            return Some(Op::PollEdit(
+                s(&rel["event_id"])?,
+                sender,
+                Box::new(self::poll(&c["m.new_content"])?),
+                timestamp,
+            ));
         }
         "org.matrix.msc3381.poll.response" | "m.poll.response" => {
             return Some(Op::Vote(s(&rel["event_id"])?, sender, poll_answers(c)));
@@ -1053,16 +1108,20 @@ async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
     }
 }
 
-async fn sync_receipts(store: &SharedStore, room: &Room) {
+async fn sync_receipts(store: &SharedStore, room: &Room, only: Option<&HashSet<String>>) {
     let chat = chat_id(room).await;
+    let me = room.own_user_id().to_string();
+    // Each receipt is a read of the state store, so a receipt event reads only the receipts of its users, not those of
+    // the thousands of members of a big group.
+    let wanted = |u: &String| only.is_none_or(|o| o.contains(u));
     let peers: Vec<String> = {
         let st = store.read();
         let Some(&idx) = st.chat_idx_by_id.get(&chat) else { return };
-        st.chats[idx].participants.items.iter().filter(|u| u.is_self != Some(true)).map(|u| u.id.clone()).collect()
+        let peers = st.chats[idx].participants.items.iter().filter(|u| u.is_self != Some(true));
+        peers.map(|u| u.id.clone()).chain([me.clone()]).filter(wanted).collect()
     };
     let mut updates = Vec::new();
-    let me = room.own_user_id().to_string();
-    for uid in peers.into_iter().chain([me.clone()]) {
+    for uid in peers {
         let Ok(parsed) = matrix_sdk::ruma::UserId::parse(&uid) else { continue };
         let receipt = room.load_user_receipt(ReceiptType::Read, &ReceiptThread::Unthreaded, &parsed).await;
         if let Some((ev, r)) = receipt.expect("read receipt") {
@@ -1412,7 +1471,7 @@ async fn sync_invite(store: &SharedStore, room: &Room) {
         let st = store.read();
         (st.bridge_accounts.clone(), st.inbox_rules.clone())
     };
-    let mut chat = chat(room, &accounts, &rules).await;
+    let mut chat = chat(room, &accounts, &rules, None).await;
     // Desktop lists the own invite as a pending member that the inviter added.
     if let Ok(invite) = room.invite_details().await {
         let me = invite.invitee;
@@ -1466,9 +1525,19 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, events: Vec<Time
     sync_room_after(store, room, events, None).await;
 }
 
-/// [`sync_room`] with `prev_batch`, the token of the events before `events` that a sync gives, so that a new room
-/// loads only the older events that its first page needs, not the newest ones again.
-async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, prev_batch: Option<String>) {
+/// What a sync gives with the events of a room.
+struct Update {
+    /// The token of the events before those of the sync, so that a new room loads only the older events that its
+    /// first page needs, not the newest ones again.
+    prev_batch: Option<String>,
+    /// Whether the sync changed a state of the room. Without a change, a chat keeps what it found from the members.
+    state_changed: bool,
+}
+
+/// [`sync_room`] with the `update` of a sync, which reads the receipts of its receipt events after it.
+async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>, update: Option<Update>) {
+    let from_sync = update.is_some();
+    let (prev_batch, state_changed) = update.map_or((None, true), |u| (u.prev_batch, u.state_changed));
     match room.room_id().as_str() {
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
         TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
@@ -1499,7 +1568,13 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
     let rules = store.read().inbox_rules.clone();
     let pins = global(&room.client(), "com.beeper.favourites_order").await;
     let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
-    let mut chat = chat(room, &accounts, &rules).await;
+    let known = (!state_changed && union.is_none() && room.state() == RoomState::Joined).then(|| {
+        let st = store.read();
+        // A chat that no sync made yet, like one copied from Desktop, reads its members.
+        let c = st.chat_idx_by_id.get(&chat_id).map(|&i| &st.chats[i]).filter(|c| c.notifiable.is_some())?;
+        Some(Known { participants: c.participants.items.clone(), title: c.title.clone(), dm: c.chat_type == "single" })
+    });
+    let mut chat = chat(room, &accounts, &rules, known.flatten()).await;
     // Desktop's `rT`: a merged chat is single.
     if union.is_some() {
         chat.chat_type = "single".into();
@@ -1572,6 +1647,7 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
                 }
             } else {
                 let i = st.chat_idx(NOTE_CHAT_ID);
+                chat.reminder = ChatReminder::synced(chat.reminder.take(), st.chats[i].reminder.as_ref());
                 let room = |c: &Chat| {
                     (
                         c.img_url.clone(),
@@ -1624,6 +1700,11 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
                         st.update_poll(&target, |p| p.ended = true);
                     }
                     Op::Vote(..) | Op::EndPoll(..) => {}
+                    Op::PollEdit(target, sender, poll, timestamp) => {
+                        if let Some(i) = mine(st, &target, &sender).filter(|&i| st.messages[i].poll.is_some()) {
+                            st.update_message(i, |m| edit_poll(m, *poll, timestamp));
+                        }
+                    }
                     Op::SendStatus(target, delivered, error, status, timer) => {
                         let i = here(st, &target);
                         if let Some((i, timer)) = i.zip(timer) {
@@ -1762,7 +1843,9 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
         });
     }
     sync_thread_reads(store, room, roots).await;
-    sync_receipts(store, room).await;
+    if !from_sync {
+        sync_receipts(store, room, None).await;
+    }
 }
 
 /// Desktop's `applyDisappearingTimer`: the timer of a later event replaces the one of the message.
@@ -4575,16 +4658,49 @@ const METHODS: [VerificationMethod; 4] = [
     VerificationMethod::ReciprocateV1,
 ];
 
-/// Desktop's `startVerification`: asks the other devices of the account to verify this device.
+/// How long this device waits for an answer to its verification request before it sends the request again.
+///
+/// The other devices see a new device in the same sync as its first request, and the crypto machine of matrix-sdk 0.19
+/// drops a request from a device that it does not know yet ("Could not retrieve the device data for the incoming
+/// verification request"). The first request after a sign-in then reaches no device, and the one sent again does.
+const UNANSWERED: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Desktop's `startVerification`: asks the other devices of the account to verify this device. A request that no
+/// device accepted or answered after `UNANSWERED` is cancelled and sent once more.
 pub async fn start_verification(store: &SharedStore, purpose: &'static str) -> Result<(), String> {
+    let request = request_verification(store).await?;
+    begin(store, request.clone(), purpose, None);
+    let store = store.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(UNANSWERED).await;
+        if !unanswered(store.read().verification.as_ref(), request.flow_id(), &request.state()) {
+            return;
+        }
+        // The old request ends first: the crypto machine cancels both requests when a second one starts beside it.
+        if let Err(e) = request.cancel().await {
+            eprintln!("Could not cancel the unanswered verification request: {e}");
+        }
+        match request_verification(&store).await {
+            Ok(again) => begin(&store, again, purpose, None),
+            Err(e) => store.write().matrix_error = Some(e),
+        }
+    });
+    Ok(())
+}
+
+/// Sends a verification request to the other devices of the account.
+async fn request_verification(store: &SharedStore) -> Result<VerificationRequest, String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     let me = client.user_id().expect("signed-in client has a user ID").to_owned();
     let identity = client.encryption().get_user_identity(&me).await.map_err(|x| e(&x))?;
     let identity = identity.ok_or("this account has no cross-signing identity")?;
-    let request = identity.request_verification_with_methods(METHODS.to_vec()).await;
-    begin(store, request.map_err(|x| e(&x))?, purpose, None);
-    Ok(())
+    identity.request_verification_with_methods(METHODS.to_vec()).await.map_err(|x| e(&x))
+}
+
+/// Whether the request `id` that this device sent still shows and no device accepted, answered or cancelled it.
+fn unanswered(shown: Option<&AppVerification>, id: &str, state: &VerificationRequestState) -> bool {
+    shown.is_some_and(|v| v.id == id) && matches!(state, VerificationRequestState::Created { .. })
 }
 
 /// A verification request from another device of the account: Desktop's `VERIFICATION_REQUESTED`.
@@ -4924,7 +5040,14 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 if gap.is_some() && !synced_before(store, &room).await {
                     gap = None;
                 }
-                sync_room_after(store, &room, update.timeline.events, update.timeline.prev_batch).await;
+                // A state event in the state of the update or in its timeline can change the members.
+                let state = match &update.state {
+                    matrix_sdk::sync::State::Before(e) | matrix_sdk::sync::State::After(e) => !e.is_empty(),
+                };
+                let state_key = |e: &TimelineEvent| e.raw().get_field::<String>("state_key").ok().flatten().is_some();
+                let state_changed = state || update.timeline.events.iter().any(state_key);
+                let prev_batch = update.timeline.prev_batch;
+                sync_room_after(store, &room, update.timeline.events, Some(Update { prev_batch, state_changed })).await;
                 if let Some(from) = gap {
                     tokio::spawn(fill_gap(store.clone(), room.clone(), from));
                 }
@@ -4933,7 +5056,10 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                     if v["type"] == "m.typing" {
                         set_typing(store, &room, &v["content"]["user_ids"]).await;
                     } else if v["type"] == "m.receipt" {
-                        sync_receipts(store, &room).await;
+                        let receipts = v["content"].as_object().into_iter().flatten();
+                        let users = receipts.flat_map(|(_, r)| r["m.read"].as_object().into_iter().flatten());
+                        let users: HashSet<String> = users.map(|(u, _)| u.clone()).collect();
+                        sync_receipts(store, &room, Some(&users)).await;
                         let me = room.own_user_id().as_str();
                         let receipts = v["content"].as_object().into_iter().flatten();
                         if receipts.into_iter().any(|(_, r)| r["m.read"].get(me).is_some()) {
@@ -4958,6 +5084,32 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
 mod tests {
     use crate::testing::{stub_message, stub_page, stub_store, stub_sync};
     use serde_json::{json, Value};
+
+    /// The request of a new device is sent again only while it shows and no device took it: not after the other
+    /// device accepted it or it ended, and not when the user moved on to another verification.
+    #[test]
+    fn only_a_shown_request_without_answer_is_sent_again() {
+        use super::{unanswered, VerificationRequestState as S, METHODS};
+        use crate::models::AppVerification;
+        let shown = |id: &str| AppVerification {
+            id: id.into(),
+            purpose: "login",
+            direction: "outgoing",
+            state: "requested",
+            methods: Vec::new(),
+            available_actions: Vec::new(),
+            other_user_id: None,
+            other_device: None,
+            qr: None,
+            sas: None,
+            error: None,
+        };
+        let waiting = S::Created { our_methods: METHODS.to_vec() };
+        assert!(unanswered(Some(&shown("$a")), "$a", &waiting), "no device took the request");
+        assert!(!unanswered(Some(&shown("$b")), "$a", &waiting), "another verification shows");
+        assert!(!unanswered(None, "$a", &waiting), "no verification shows");
+        assert!(!unanswered(Some(&shown("$a")), "$a", &S::Done), "the verification ended");
+    }
 
     /// Desktop keeps a chat that the user was removed from: its own member has exited, the removal previews it, and
     /// it stays muted. A chat that was deleted here stays deleted when the leave of its room comes.
@@ -5240,6 +5392,48 @@ mod tests {
         let texts: Vec<_> = st.chat_timeline("!room:x").iter().filter_map(|m| m.text.clone()).collect();
         assert_eq!(texts, (41..=70).map(|i| format!("m{i}")).collect::<Vec<_>>());
         assert_eq!(st.chat("!room:x").older, crate::models::Older::From("t40".into()));
+    }
+
+    /// A sync that changes no state of a room keeps the members that its chat found, without reading them and their
+    /// receipts again, and a member that joins in a later sync shows.
+    #[tokio::test]
+    async fn a_sync_without_state_keeps_the_members() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let syncs = AtomicUsize::new(0);
+        let member = |u: &str| {
+            json!({ "type": "m.room.member", "state_key": u, "sender": u, "event_id": format!("$join{u}"),
+                "origin_server_ts": 1, "content": { "membership": "join", "displayname": format!("{u} name") } })
+        };
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => {
+                let n = syncs.fetch_add(1, Relaxed) + 1;
+                let mut sync = stub_sync();
+                sync["next_batch"] = json!(format!("s{n}"));
+                let room = &mut sync["rooms"]["join"]["!room:x"];
+                // The sync of `stub_store`, then one with Ann, one without a state, and one with Bob.
+                match n {
+                    1 | 2 => room["state"]["events"].as_array_mut().expect("state events").push(member("@ann:x")),
+                    3 => room["state"] = json!({ "events": [] }),
+                    _ => room["state"] = json!({ "events": [member("@bob:x")] }),
+                }
+                room["timeline"] = json!({ "events": [stub_message(i64::try_from(n).unwrap())], "prev_batch": "t0" });
+                (200, sync)
+            }
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("keep-members"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        for want in [vec!["@ann:x", "@me:x"], vec!["@ann:x", "@me:x"], vec!["@ann:x", "@bob:x", "@me:x"]] {
+            assert!(super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await);
+            let st = store.read();
+            let mut got: Vec<&str> = st.chat("!room:x").participants.items.iter().map(|u| u.id.as_str()).collect();
+            got.sort_unstable();
+            assert_eq!(got, want);
+        }
     }
 
     /// Desktop's `lastReadMessageSortKey` of a room: the order of the event of your own read receipt, which a read
@@ -5677,6 +5871,55 @@ mod tests {
         let m = st.message("$note");
         assert!(m.is_deleted.is_none() && m.text.as_deref() == Some("Q") && m.reactions.is_empty());
         assert_eq!(m.poll.as_ref().map(|p| p.voters()), Some(0));
+    }
+
+    /// Desktop's `handlePollEdit`: an `m.replace` of a poll start changes the poll and shows no poll of its own. The
+    /// votes for the answers that stay are kept, and an edit by another sender is ignored.
+    #[tokio::test]
+    async fn poll_edits_change_the_poll_of_their_sender_like_desktop() {
+        let answer = |id: &str, text: &str| json!({ "id": id, "org.matrix.msc1767.text": text });
+        let start = |question: &str, answers: Value| json!({ "org.matrix.msc3381.poll.start": { "question": { "body": question }, "answers": answers } });
+        let edit = |id: &str, sender: &str, target: &str| {
+            let new = start("Q2", json!([answer("1", "A2"), answer("3", "C")]));
+            let mut content = start("* Q2", json!([answer("1", "A2"), answer("3", "C")]));
+            content["m.new_content"] = new;
+            content["m.relates_to"] = json!({ "rel_type": "m.replace", "event_id": target });
+            let mut e = stub_event(id, "org.matrix.msc3381.poll.start", content);
+            e["sender"] = json!(sender);
+            e
+        };
+        let vote = {
+            let rel = json!({ "rel_type": "m.reference", "event_id": "$p" });
+            let content = json!({ "m.relates_to": rel, "org.matrix.msc3381.poll.response": { "answers": ["1"] } });
+            let mut e = stub_event("$v", "org.matrix.msc3381.poll.response", content);
+            e["sender"] = json!("@vic:x");
+            e
+        };
+        let mut vics = stub_event("$vp", "org.matrix.msc3381.poll.start", start("V", json!([answer("1", "A")])));
+        vics["sender"] = json!("@vic:x");
+        let events = vec![
+            stub_event("$p", "org.matrix.msc3381.poll.start", start("Q", json!([answer("1", "A"), answer("2", "B")]))),
+            vote,
+            vics,
+            edit("$e1", "@me:x", "$p"),
+            edit("$e2", "@vic:x", "$p"),
+            edit("$e3", "@me:x", "$vp"),
+        ];
+        let store = stub_history("poll-edits", events, ("!other:x", Vec::new())).await;
+        sync_stub_room(&store, "!room:x").await;
+        let st = store.read();
+        for id in ["$e1", "$e2", "$e3"] {
+            assert!(st.loaded_idx(id).is_none(), "the edit {id} is no poll of its own");
+        }
+        let m = st.message("$p");
+        let p = m.poll.as_ref().expect("a poll");
+        assert_eq!((p.question.as_str(), m.text.as_deref()), ("Q2", Some("Q2")));
+        let options: Vec<_> = p.options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.voter_ids.len())).collect();
+        assert_eq!(options, [("1", "A2", 1), ("3", "C", 0)], "vic's vote for the kept answer stays");
+        assert_eq!(m.edit_history.len(), 1, "vic's edit of my poll is ignored");
+        assert_eq!(m.edit_history[0].text, "Q");
+        let v = st.message("$vp");
+        assert_eq!(v.poll.as_ref().map(|p| p.question.as_str()), Some("V"), "my edit of vic's poll is ignored");
     }
 
     /// The Matrix spec ignores an edit whose sender is not the sender of the message, and MSC3381 a poll end from

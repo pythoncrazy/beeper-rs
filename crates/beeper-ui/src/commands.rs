@@ -12,6 +12,7 @@ use crate::rail;
 use crate::reminders;
 use crate::scheduled;
 use crate::settings;
+use crate::style::rem;
 use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
 use crate::threads;
 use crate::windows;
@@ -888,7 +889,7 @@ impl BeeperGuiApp {
                 && (i == 0 || cmds[i - 1].category != c.category))
                 .then(|| {
                     let head = semi(if c.category.is_empty() { "Commands" } else { c.category }, 12.0);
-                    container(head.line_height(Pixels(15.0)).color(p.sub))
+                    container(head.line_height(Pixels(rem(15.0))).color(p.sub))
                         .center_y(32)
                         .padding(Padding::ZERO.left(12.0).right(4.0))
                 });
@@ -1014,8 +1015,10 @@ impl BeeperGuiApp {
         match msg {
             Msg::ChatSub(sub) => self.chat_sub = sub,
             Msg::TogglePalette => {
+                // Desktop's `reset` empties the input each time the bar closes, so it opens empty.
                 if !self.show_command_palette {
                     self.search_filters = SearchFilters::default();
+                    self.command_palette_query.clear();
                 }
                 self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
                 (self.cmd_bar_commands_mode, self.cmd_index, self.cmd_submenu) = (false, 0, None);
@@ -1026,6 +1029,11 @@ impl BeeperGuiApp {
                 }
             }
             Msg::SearchRoom(cid) => {
+                // Desktop's `showSearch` keeps the text of an open bar, but resets a submenu, and `reset` emptied a
+                // closed bar.
+                if !self.show_command_palette || self.cmd_submenu.is_some() {
+                    self.command_palette_query.clear();
+                }
                 (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, false, None);
                 (self.search_room, self.list.chat_menu) = (Some(cid), None);
                 self.search_filters.accounts.clear();

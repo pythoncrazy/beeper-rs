@@ -11,6 +11,7 @@ use crate::i18n::{tr, trf, trn, trnx, trs, trx};
 use crate::integrations;
 use crate::rail::SpaceMenu;
 use crate::sortable;
+use crate::style::rem;
 use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, ell, fill_box, fw, glow_box, gutter_style, hex, ic,
     icon, input_style, med, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
@@ -20,12 +21,12 @@ use crate::windows;
 use crate::zoom;
 use crate::{
     ago, badge, brand_key, checkbox, distance, divider, downloads_dir, duration, ease_out, feedback_btn, first_groups,
-    fmt_phone, group, icon_btn, inbox_label, locate, outline_input, pill_btn, pill_style, plan_pill, portal, pref_row,
-    reconnect, record, select, slider_style, status_text, style, svg_size, theme_cards, tinted, toggle, toggle_faded,
-    BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT,
-    ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REVOKE_CONNECTION,
-    CHANGELOG_URL, CHEVRON_DOWN, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS,
-    ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM, ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE,
+    fmt_phone, group, icon_btn, inbox_label, locate, menu_pitch, outline_input, pill_btn, pill_style, plan_pill,
+    portal, pref_row, reconnect, record, select, slider_style, status_text, style, svg_size, theme_cards, tinted,
+    toggle, toggle_faded, BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE,
+    ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT,
+    ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_DOWN, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO,
+    DEVICE_ICONS, ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE,
     TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
 };
 use beeper_core::config::{now_unix_millis, now_unix_secs, APP_VERSION};
@@ -724,8 +725,8 @@ impl BeeperGuiApp {
             .id("settings-search")
             .on_input(|a0| UiMessage::Settings(Msg::Query(a0)))
             .on_submit_maybe(hits.get(self.settings_focus).map(|&h| UiMessage::Settings(Msg::Pick(h))))
-            .size(13)
-            .line_height(Pixels(16.0))
+            .size(rem(13.0))
+            .line_height(Pixels(rem(16.0)))
             .padding(0)
             .style(input_style(CLEAR, p.strong, p.text, p.accent, 0.0));
         let clear = (!self.settings_query.is_empty()).then(|| {
@@ -765,11 +766,11 @@ impl BeeperGuiApp {
         let profile = || {
             row![
                 container(self.face(me.img_url.as_deref(), &name, av, 0.0)).height(34),
-                column![ell(&name, detail_w, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong)]
+                column![ell(&name, detail_w, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(p.strong)]
                     .push(
-                        me.email
-                            .as_deref()
-                            .map(|e| ell(e, detail_w, 10.0, Weight::Normal).line_height(Pixels(12.0)).color(p.strong))
+                        me.email.as_deref().map(|e| ell(e, detail_w, 10.0, Weight::Normal)
+                            .line_height(Pixels(rem(12.0)))
+                            .color(p.strong))
                     )
                     .width(Fill),
                 plan_pill(p, st.whoami.plan).0
@@ -826,8 +827,8 @@ impl BeeperGuiApp {
                 span(s[a..b].to_string()).color(hi),
                 span(s[b..].to_string()).color(base)
             ]
-            .size(13)
-            .line_height(Pixels(16.0))
+            .size(rem(13.0))
+            .line_height(Pixels(rem(16.0)))
             .wrapping(iced::widget::text::Wrapping::None)
         };
         let results = hits.iter().enumerate().fold(Column::new(), |c, (i, &hit)| {
@@ -904,7 +905,7 @@ impl BeeperGuiApp {
             let (menu, sub) = self.account_menu(id, kind);
             let size = self.settings_size;
             let items = if crate::nickname::can_nickname(&self.store.read(), id) { 5.0 } else { 4.0 };
-            let (w, h) = (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + items * MENU_ITEM + 11.0);
+            let (w, h) = (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + items * menu_pitch() + 11.0);
             let (x, y) = (at.x.min(size.width - w - 8.0), at.y.min(size.height - h - 8.0));
             let menu = container(mouse_area(row![menu].push(sub)).on_press(UiMessage::Noop))
                 .padding(Padding::ZERO.left(x).top(y))
@@ -933,7 +934,7 @@ impl BeeperGuiApp {
                     .id("token-name")
                     .on_input(|a0| UiMessage::Integrations(integrations::Msg::AddName(a0)))
                     .on_submit(UiMessage::Integrations(integrations::Msg::Create))
-                    .size(12)
+                    .size(rem(12.0))
                     .width(200)
                     .padding([4, 6])
                     .style(outline_input(p));
@@ -973,10 +974,10 @@ impl BeeperGuiApp {
                 let (strong, rest) = note.split_once("</strong>").expect("the note has a bold part");
                 let note =
                     rich_text![span::<(), _>(strong.trim_start_matches("<strong>")).font(fw(Weight::Bold)), span(rest)]
-                        .size(13.0)
-                        .line_height(Pixels(16.0))
+                        .size(rem(13.0))
+                        .line_height(Pixels(rem(16.0)))
                         .color(p.text);
-                let shown = container(semi(token.as_str(), 15.0).line_height(Pixels(20.0)).color(p.strong))
+                let shown = container(semi(token.as_str(), 15.0).line_height(Pixels(rem(20.0))).color(p.strong))
                     .padding([8, 16])
                     .style(fill_box(p.chip, 8.0));
                 let icon = if a.copied { &COPIED_ICON } else { &COPY_ICON };
@@ -1336,7 +1337,7 @@ impl BeeperGuiApp {
         let mut mcp: Vec<El<'a>> = Vec::new();
         for ((name, label), logo) in MCP_CLIENTS.into_iter().zip([&*CLAUDE_LOGO, &*CURSOR_LOGO, &*VSCODE_LOGO]) {
             let connect =
-                button(txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(Pixels(16.0)).color(p.accent))
+                button(txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(Pixels(rem(16.0))).color(p.accent))
                     .padding([4, 8])
                     .style(btn_style([CLEAR; 3], [p.accent; 3], 20.0))
                     .on_press(UiMessage::Integrations(integrations::Msg::McpInstall(name)));
@@ -1358,7 +1359,7 @@ impl BeeperGuiApp {
         );
         let blue = if self.dark { Color::from_rgb8(10, 132, 255) } else { Color::from_rgb8(0, 122, 255) };
         let install = matches!(target, "Claude Code" | "Codex").then(|| {
-            let label = semi(tr("Copy Command"), 11.0).line_height(Pixels(12.0)).color(Color::WHITE);
+            let label = semi(tr("Copy Command"), 11.0).line_height(Pixels(rem(12.0))).color(Color::WHITE);
             container(
                 button(label)
                     .padding([4, 8])
@@ -1374,7 +1375,7 @@ impl BeeperGuiApp {
         };
         let code = txt(value.clone(), 12.0)
             .font(iced::Font::MONOSPACE)
-            .line_height(Pixels(16.0))
+            .line_height(Pixels(rem(16.0)))
             .color(p.text)
             .wrapping(iced::widget::text::Wrapping::Glyph);
         let code = stack![
@@ -1414,7 +1415,7 @@ impl BeeperGuiApp {
                     let mut name = name.unwrap_or_else(|| tr("Unnamed Client").into());
                     name.extend(c.version.map(|v| format!(" v{v}")));
                     let tag = t.scopes.iter().any(|s| s == beeper_core::connect::WRITE).then(|| {
-                        container(txt(tr("Sensitive actions"), 12.0).line_height(Pixels(14.0)).color(p.text))
+                        container(txt(tr("Sensitive actions"), 12.0).line_height(Pixels(rem(14.0))).color(p.text))
                             .padding([1, 4])
                             .style(fill_box(p.chip, 4.0))
                     });
@@ -1652,12 +1653,12 @@ impl BeeperGuiApp {
         let edge = p.neutral_border;
         let search = text_input(tr("Search hotkeys..."), &self.hotkey_query)
             .on_input(|a0| UiMessage::Hotkeys(hotkeys::Msg::Query(a0)))
-            .size(13)
-            .line_height(Pixels(15.0))
+            .size(rem(13.0))
+            .line_height(Pixels(rem(15.0)))
             .padding([4, 7])
             .width(219)
             .style(outline_input(p));
-        let revert = button(txt(tr("Revert all"), 13.0).line_height(Pixels(15.0)).width(Fill).align_x(Center))
+        let revert = button(txt(tr("Revert all"), 13.0).line_height(Pixels(rem(15.0))).width(Fill).align_x(Center))
             .width(100)
             .padding([4, 6])
             .style(pill_style(p))
@@ -1676,7 +1677,7 @@ impl BeeperGuiApp {
                 };
                 let label: El<'_> = match prefs::hotkey_label(&shown) {
                     l if l.is_empty() => txt(tr("Record Shortcut"), 11.0).color(p.muted).into(),
-                    l => txt(l, 13.0).line_height(Pixels(18.0)).color(ink).into(),
+                    l => txt(l, 13.0).line_height(Pixels(rem(18.0))).color(ink).into(),
                 };
                 let buttons = match rec {
                     Some(_) => row![]
@@ -1791,8 +1792,8 @@ impl BeeperGuiApp {
         let search = text_input(tr("Search..."), query)
             .id("hotkeys-search")
             .on_input(|q| UiMessage::Hotkeys(hotkeys::Msg::Modal(Some(q))))
-            .size(13)
-            .line_height(Pixels(18.2))
+            .size(rem(13.0))
+            .line_height(Pixels(rem(18.2)))
             .padding([3, 6])
             .style(outline_input(p));
         let rule = p.fg.scale_alpha(if self.hotkeys_scrolled { 0.1 } else { 0.0 });
@@ -1962,7 +1963,7 @@ impl BeeperGuiApp {
                     let g = group(p, heading.take(), rows);
                     out.push(match lead.take() {
                         Some(t) => {
-                            let t = txt(t, 13.0).line_height(Pixels(18.0)).color(p.sub);
+                            let t = txt(t, 13.0).line_height(Pixels(rem(18.0))).color(p.sub);
                             column![container(t).padding(Padding::new(13.0).top(7.0).bottom(0.0)), g].spacing(19).into()
                         }
                         None => g,
@@ -2208,7 +2209,7 @@ impl BeeperGuiApp {
                 let keys = Keys::step(value.checked_sub(10).map(set), (value < 100).then(|| set(value + 10)));
                 let bar = self.target(self.settings_window, format!("slider-{key}"), bar, keys, Look::Auto);
                 let body = column![
-                    txt(tr(r.label), 13.0).line_height(Pixels(18.0)).color(p.text),
+                    txt(tr(r.label), 13.0).line_height(Pixels(rem(18.0))).color(p.text),
                     container(bar).padding([0, 2])
                 ]
                 .spacing(13)
@@ -2566,6 +2567,28 @@ mod tests {
 
     fn shows(app: &BeeperGuiApp, text: &str) -> bool {
         simulator(app.view_settings()).find(text).is_ok()
+    }
+
+    /// A demo account adds no account: a network that it has no account on, picked in the search of the settings or
+    /// in the command palette, opens the Accounts tab and no Add Account window, whose login would ask the Beeper
+    /// servers.
+    #[test]
+    fn a_demo_network_hit_opens_no_add_account_window() {
+        let mut app = crate::fuzz::demo_app("settings-demo-network");
+        let st = app.store.read();
+        let has = |n: &beeper_core::models::NetworkSpec| {
+            let mut ids = st.bridge_accounts.iter().map(|a| beeper_core::config::account_network(&a.bridge_id));
+            ids.any(|a| a.bridge_id == n.bridge_id)
+        };
+        let names: Vec<_> =
+            crate::networks::addable(&st.features).filter(|n| !has(n)).map(|n| n.display_name).collect();
+        drop(st);
+        assert!(names.contains(&"Google Messages"), "the demo has no Google Messages account: {names:?}");
+        for name in names {
+            let _ = app.update(UiMessage::Settings(Msg::Pick(SettingsHit::Network(name))));
+            assert!(app.add_accounts.is_empty(), "no Add Account window for {name}");
+            assert_eq!(app.active_settings_tab, SettingsTab::Accounts);
+        }
     }
 
     /// Desktop's `QLt` and `LLt`: the add button and "Add an Account" open the Add an Account window, the accounts
