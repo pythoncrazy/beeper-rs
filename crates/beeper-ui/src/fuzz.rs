@@ -3054,7 +3054,7 @@ fn timeline_rows_stay_until_the_store_changes() {
     let id = app.main_window.expect("a main window");
     let rows = |app: &BeeperGuiApp| {
         drop(Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id)));
-        app.pane.rows.borrow().clone().expect("the view made the rows").2
+        app.pane.rows.borrow().as_ref().expect("the view made the rows").1.clone()
     };
     let first = rows(&app);
     assert!(!first.msgs.is_empty(), "the note chat has messages");
