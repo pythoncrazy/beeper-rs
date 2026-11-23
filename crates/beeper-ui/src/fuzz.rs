@@ -6976,6 +6976,46 @@ fn deleting_selected_chats_like_desktop() {
     assert!(!gone(&app, &ids[2]) && !gone(&app, &ids[3]));
 }
 
+/// Desktop's keyboard selection of chats (`KeyboardHandlers`): with no chat open, Shift+↓ selects the chat of the
+/// cursor and the next one, and X the chat of the cursor. In the selection mode ↓ and ↑ select the chat after or before
+/// the lowest selected chat alone, Shift adds the chat after the lowest or before the highest, and J and K do the same.
+#[test]
+fn chats_select_with_the_keyboard_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("chat-keys");
+    let main = app.main_window.expect("the main window");
+    let key = |app: &mut BeeperGuiApp, k: Named, m: Modifiers| _ = app.update(UiMessage::KeyPressed(Key::Named(k), m));
+    let text = |app: &mut BeeperGuiApp, t: &str| _ = app.update(UiMessage::WindowText(main, t.into()));
+    key(&mut app, Named::Escape, Modifiers::empty());
+    assert!(app.pane.selected_chat_id.is_none() && app.list.cursor.is_some(), "Escape leaves the cursor on the chat");
+    let ids = app.list_ids(&app.store.read());
+    let at = ids.iter().position(|c| Some(c) == app.list.cursor.as_ref()).expect("the cursor is in the list");
+    let picked = |app: &BeeperGuiApp| {
+        let mut on: Vec<usize> = app.selection.iter().map(|c| ids.iter().position(|i| i == c).unwrap()).collect();
+        on.sort();
+        on
+    };
+    key(&mut app, Named::ArrowDown, Modifiers::SHIFT);
+    assert_eq!(picked(&app), [at, at + 1]);
+    key(&mut app, Named::ArrowDown, Modifiers::empty());
+    assert_eq!(picked(&app), [at + 2], "↓ selects the chat after the lowest one alone");
+    key(&mut app, Named::ArrowUp, Modifiers::SHIFT);
+    assert_eq!(picked(&app), [at + 1, at + 2], "Shift+↑ adds the chat before the highest one");
+    key(&mut app, Named::ArrowUp, Modifiers::empty());
+    assert_eq!(picked(&app), [at + 1], "↑ goes from the lowest one");
+    text(&mut app, "J");
+    assert_eq!(picked(&app), [at + 1, at + 2], "Shift+J grows it");
+    text(&mut app, "j");
+    assert_eq!(picked(&app), [at + 3]);
+    assert!(app.pane.selected_chat_id.is_none(), "the keys open no chat");
+    key(&mut app, Named::Escape, Modifiers::empty());
+    assert!(app.selection.is_empty() && !app.select_mode, "Escape ends the selection");
+    app.list.cursor = Some(ids[at].clone());
+    text(&mut app, "x");
+    assert_eq!(picked(&app), [at], "X selects the chat of the cursor");
+    assert!(app.list.cursor.is_none(), "the selection mode drops the cursor");
+}
+
 /// Desktop's thread header (`ij`) returns nothing in `threadSelectionMode`, which selecting chats turns on.
 #[test]
 fn selecting_chats_hides_the_thread_header_like_desktop() {

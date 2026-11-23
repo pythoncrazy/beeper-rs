@@ -20,6 +20,19 @@ impl BeeperGuiApp {
         {
             return self.focus_space(id, false).unwrap_or_else(Task::none);
         }
+        // Desktop's J and K move or grow the selection of chats like ↓ and ↑ in the selection mode while no chat is
+        // open, with Shift for J and K.
+        let main = Some(id) == self.main_window && self.pane.selected_chat_id.is_none();
+        if matches!(text.as_str(), "j" | "k" | "J" | "K") && main && self.selection_keys() {
+            let arrow = Key::Named(if text.eq_ignore_ascii_case("j") { Named::ArrowDown } else { Named::ArrowUp });
+            let shift = if text.chars().all(char::is_uppercase) { Modifiers::SHIFT } else { Modifiers::empty() };
+            return self.update(UiMessage::WindowKey(id, arrow, shift));
+        }
+        // Desktop's X with no chat open selects the chat of the cursor, which starts the selection mode.
+        if text == "x" && Some(id) == self.main_window && self.points_chats() {
+            self.begin_chat_selection();
+            return Task::none();
+        }
         // Desktop's J and K move the cursor of the chat list like ↓ and ↑ while no chat is open.
         if matches!(text.as_str(), "j" | "k") && self.window_points_chats(id) {
             let arrow = Key::Named(if text == "j" { Named::ArrowDown } else { Named::ArrowUp });
@@ -326,6 +339,16 @@ impl BeeperGuiApp {
         let plain = mods.is_empty() || mods == keyboard::Modifiers::SHIFT;
         Some(match key.as_ref() {
             Key::Named(Named::Escape) => self.update(UiMessage::CloseModals),
+            // Desktop's `handleThreadSelection`: in the selection mode the arrows move or grow the selection of
+            // chats, wherever the keyboard is.
+            Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if plain && self.selection_keys() => {
+                self.select_chat_key(mods.shift(), k == Named::ArrowDown)
+            }
+            // Desktop's Shift+↓ and Shift+↑ with no chat open select the chat of the cursor and the next one.
+            Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if mods == Modifiers::SHIFT && self.points_chats() => {
+                self.begin_chat_selection();
+                self.select_chat_key(true, k == Named::ArrowDown)
+            }
             Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if mods.is_empty() && self.points_chats() => {
                 self.point_chat(k == Named::ArrowDown);
                 Task::none()
