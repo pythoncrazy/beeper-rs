@@ -316,32 +316,17 @@ impl BeeperGuiApp {
             position: window::Position::Centered,
             ..Self::window_settings(SIZE)
         });
-        self.add_accounts.push(AddAccount {
+        self.add_accounts.push(beeper_core::with_defaults!(AddAccount {
             id,
             network,
             bridge,
             login: login.unwrap_or_default(),
             who,
-            flows: Vec::new(),
-            flow: String::new(),
-            process: None,
-            step: None,
-            error: None,
-            failed: None,
             busy: true,
-            menu: false,
-            values: BTreeMap::new(),
-            touched: BTreeSet::new(),
-            phones: BTreeMap::new(),
-            shown: BTreeSet::new(),
-            qr: None,
-            emoji: None,
-            run: 0,
-            android: false,
-            status: None,
             remote: Remote::Open,
             browser: Browser::Closed,
-        });
+        }, default: flows, flow, process, step, error, failed, menu, values, touched, phones, shown, qr, emoji, run,
+            android, status));
         let p = self.add_provision(self.add_accounts.len() - 1);
         let status = beeper_core::cloud::platform_status(self.cloud.app_api.clone(), p.access_token.clone());
         let status = Task::perform(status, move |r| UiMessage::AddAccount(id, AddMsg::Status(r)));
@@ -1063,6 +1048,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fuzz::clicks;
     use crate::fuzz::task_messages as run;
 
     #[test]
@@ -1481,9 +1467,7 @@ mod tests {
         let m = click(&app, id, "+44");
         let _ = send(&mut app, m).await;
         // A press on the selector only toggles the dropdown, and a press on the input closes it like Desktop's blur.
-        let mut sim = iced_test::simulator(app.view(id));
-        sim.click("+44").expect("the selector");
-        let msgs: Vec<_> = sim.into_messages().collect();
+        let msgs: Vec<UiMessage> = clicks(app.view(id), "+44");
         assert!(matches!(msgs.as_slice(), [UiMessage::AddAccount(_, AddMsg::Phone(_, PhoneMsg::Toggle))]));
         let mut sim = iced_test::simulator(app.view(id));
         sim.click(iced::widget::Id::from(phone::input_id(id, field))).expect("the input");

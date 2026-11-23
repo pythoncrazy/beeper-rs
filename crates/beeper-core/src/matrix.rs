@@ -1292,11 +1292,7 @@ async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
     let ids: Vec<String> = ids.as_array().expect("typing user IDs").iter().map(|i| s(i).expect("a user ID")).collect();
     let ids: Vec<String> = ids.into_iter().filter(|i| i != me).collect();
     let chat = chat_id(room).await;
-    let mut st = store.write();
-    let old = if ids.is_empty() { st.typing.remove(&chat) } else { st.typing.insert(chat.clone(), ids.clone()) };
-    if old.unwrap_or_default() != ids {
-        st.emit_ws("chat.typing", &chat, None, None, None);
-    }
+    store.write().set_typing(&chat, ids);
 }
 
 async fn sync_receipts(store: &SharedStore, room: &Room, only: Option<&HashSet<String>>) {
@@ -1777,6 +1773,8 @@ async fn sync_room_after(
         Pass::Sync(_) => Some(false),
         Pass::Start(_) => None,
     };
+    // The events of a sync are new, unlike those of a page of history or of the start pass.
+    let live = matches!(pass, Pass::Sync(_));
     // The members that the start pass kept, or whether a sync kept those of the chat.
     let (prev_batch, cache, known) = match pass {
         Pass::Fresh => (None, false, Kept::None),
@@ -1920,6 +1918,14 @@ async fn sync_room_after(
     let reacted =
         ops.iter().filter_map(|o| if let Op::React(_, _, m) = o { Some(m.sort_key.clone()) } else { None }).max();
     let redacted = ops.iter().any(|o| matches!(o, Op::Redact(..)));
+    // The senders of the new messages of a sync, who stop typing.
+    let senders: Vec<String> = ops
+        .iter()
+        .filter_map(|o| match o {
+            Op::Upsert(m) if live && m.is_sender != Some(true) => Some(m.sender_id.clone()),
+            _ => None,
+        })
+        .collect();
     // The stored messages that the events change, besides those that they upsert.
     let targets: Vec<String> =
         ops.iter().filter_map(Op::target).map(str::to_string).chain(non_messages.clone()).collect();
@@ -2144,6 +2150,7 @@ async fn sync_room_after(
                 }
             });
         });
+        st.stop_typing(&chat_id, &senders);
     }
     sync_thread_reads(store, room, roots).await;
     if receipts {
@@ -2863,10 +2870,22 @@ pub fn room_address(input: &str) -> Result<(String, Vec<String>), BadAddress> {
     Err(BadAddress::Invalid)
 }
 
-/// Desktop's `sendActivityIndicator`: a typing notice that fails, for example offline, only goes to the log.
+/// How long Desktop's typing notice lasts on the homeserver: `userTyping(roomID, true, 30000)`.
+const TYPING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Desktop's `sendActivityIndicator`: a typing notice that lasts 30 seconds, and its end, each sent at once. A
+/// notice that fails, for example offline, only goes to the log.
+///
+/// matrix-sdk's `typing_notice` asks for 4 seconds, which ended the notice while you still typed, since the composer
+/// sends one notice when you start to type, like Desktop; it also skips the end of a notice older than 4 seconds.
 pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) {
+    use matrix_sdk::ruma::api::client::typing::create_typing_event::v3::{Request, Typing, TypingInfo};
     let sent = match joined_room(&client, &chat).await {
-        Ok(room) => room.typing_notice(on).await.map_err(|e| e.to_string()),
+        Ok(room) => {
+            let typing = if on { Typing::Yes(TypingInfo::new(TYPING_TIMEOUT)) } else { Typing::No };
+            let request = Request::new(room.own_user_id().to_owned(), room.room_id().to_owned(), typing);
+            client.send(request).await.map(drop).map_err(|e| e.to_string())
+        }
         Err(e) => Err(e),
     };
     if let Err(e) = sent {
@@ -5955,6 +5974,35 @@ mod tests {
         assert!(!super::reload_needed(&e) && e.contains("M_NOT_FOUND"), "{e}");
     }
 
+    /// Desktop's `userTyping`: a typing notice lasts 30 seconds on the homeserver, and its end goes out at once, also
+    /// right after the start and long after it.
+    #[tokio::test]
+    async fn typing_notices_like_desktop() {
+        use std::sync::{Arc, Mutex};
+        let sent = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let sent2 = sent.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').unwrap_or((path, "")) {
+                ("/_matrix/client/versions", _) => (200, json!({ "versions": ["v1.11"] })),
+                ("/_matrix/client/v3/keys/upload", _) => (200, json!({ "one_time_key_counts": {} })),
+                ("/_matrix/client/v3/sync", _) => (200, crate::testing::stub_sync()),
+                ("/_matrix/client/v3/rooms/!room:x/typing/@me:x", _) if method == "PUT" => {
+                    sent2.lock().expect("the notices").push(body);
+                    (200, json!({}))
+                }
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            })
+            .await;
+        let store = stub_store(&crate::testing::temp_dir("typing-notices"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        for on in [true, false, true, true, false] {
+            super::typing(client.clone(), "!room:x".into(), on).await;
+        }
+        let start = json!({ "typing": true, "timeout": 30_000 });
+        let end = json!({ "typing": false });
+        assert_eq!(*sent.lock().expect("the notices"), [&start, &end, &start, &start, &end].map(Value::clone));
+    }
+
     /// Like Desktop's SDK, a load asks the authenticated endpoint even when `/versions` does not list it, with
     /// `com.beeper.interactive_download_request=false`; follows a redirect to another host without the token; takes
     /// headers that are not ASCII; decrypts an encrypted file; tries a failure 3 more times; and fails a missing
@@ -6261,6 +6309,38 @@ mod tests {
         let texts: Vec<_> = st.chat_timeline("!room:x").iter().filter_map(|m| m.text.clone()).collect();
         assert_eq!(texts, (41..=70).map(|i| format!("m{i}")).collect::<Vec<_>>());
         assert_eq!(st.chat("!room:x").older, crate::models::Older::From("t40".into()));
+    }
+
+    /// Desktop's `onUserActivityStopped`: a new message of a user who types ends their typing, also when their client
+    /// left the notice on, and the others still type.
+    #[tokio::test]
+    async fn a_new_message_ends_the_typing_of_its_sender_like_desktop() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let syncs = AtomicUsize::new(0);
+        let room = |batch: &str, v: Value| json!({ "next_batch": batch, "rooms": { "join": { "!room:x": v } } });
+        let typing = json!({ "events": [{ "type": "m.typing", "content": { "user_ids": ["@bo:x", "@cy:x"] } }] });
+        let mut message = crate::testing::stub_message(1);
+        message["sender"] = json!("@bo:x");
+        let sent = room("s3", json!({ "timeline": { "events": [message] } }));
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').unwrap_or((path, "")).0 {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => match syncs.fetch_add(1, Relaxed) {
+                0 => (200, stub_sync()),
+                1 => (200, room("s2", json!({ "ephemeral": typing }))),
+                _ => (200, sent.clone()),
+            },
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("typing-ends-with-message"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        let typing = || store.read().typing.get("!room:x").cloned().unwrap_or_default();
+        assert!(super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await);
+        assert_eq!(typing(), ["@bo:x", "@cy:x"]);
+        assert!(super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await);
+        assert_eq!(typing(), ["@cy:x"], "Bo sent a message");
+        assert_eq!(store.read().chat_timeline("!room:x").len(), 1);
     }
 
     /// A sync that changes no state of a room keeps the members that its chat found, without reading them and their

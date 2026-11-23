@@ -170,6 +170,7 @@ use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_c
 use beeper_core::prefs;
 use beeper_core::search::{self, Search};
 use beeper_core::store::{BeeperStore, NetworkSpace, Query, SharedStore, NOTE_CHAT_ID};
+use beeper_core::with_defaults;
 use iced::font::Weight;
 use iced::gradient::Linear;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
@@ -1320,8 +1321,7 @@ fn toggle_faded<'a>(p: &Palette, on: bool, msg: Option<UiMessage>, alpha: f32) -
     let track =
         container(knob).width(36).height(24).padding(4).align_y(Center).align_x(if on { Right } else { iced::Left });
     button(track.style(bordered_box(CLEAR, p.toggle_off.scale_alpha(alpha), 2.0, 12.0)))
-        .padding(0)
-        .style(btn_style([CLEAR; 3], [p.text; 3], 12.0))
+        .bare(p.text)
         .on_press_maybe(msg)
         .into()
 }
@@ -3248,234 +3248,72 @@ impl BeeperGuiApp {
             Err(e) => panic!("read sidebar-hidden: {e}"),
         };
         let quit_on_close = store.read().settings.on("quitOnClose");
-        let mut app = Self {
+        let mut app = with_defaults!(Self {
             pane: Pane { size: MAIN_SIZE, ..Pane::default() },
-            chat_windows: Vec::new(),
-            space_windows: Vec::new(),
-            carousel_windows: Vec::new(),
-            drawing: Default::default(),
-            drawing_thread: Default::default(),
             thread_fraction,
-            open_threads: HashMap::new(),
-            thread_area: Default::default(),
-            thread_drag: false,
-            unread_view: false,
-            unread_menu: None,
             store,
             os,
             display_server,
-            hidden: false,
-            unmapped: Vec::new(),
-            opened: Vec::new(),
-            unmapped_focus: None,
-            activation_token: None,
             tray_sent: (None, true),
             pal: crate::style::palette(theme),
-            system_dark: false,
             dark: theme,
             zoom: 1.0,
-            zoom_drag: None,
             text_scale: text_scale(),
-            maximize_when_placed: Vec::new(),
             list: chat_list::ListState { filters, ..Default::default() },
-            seen_requests: Vec::new(),
-            pip: None,
-            pip_wanted: false,
-            pip_manual: false,
-            pip_menu: None,
-            hotkey_query: String::new(),
-            hotkey_rec: None,
-            profile: profile::ProfileForm::default(),
-            hotkeys_modal: None,
-            dropping: false,
-            drop_send: false,
-            dropped: vec![],
-            hotkeys_scrolled: false,
-            chat_sub: None,
-            reminded: HashMap::new(),
             snooze_clock: now_unix_millis(),
-            search_room: None,
-            search_filters: SearchFilters::default(),
-            search_select: None,
-            cursor: Default::default(),
-            image_clipboard: None,
-            pressing: HashSet::new(),
-            forward: None,
-            media_window: None,
-            in_media: Default::default(),
             mods: keyboard::Modifiers::empty(),
-            emoji_gen: 0,
-            emoji_hovered: [false; 2],
             booted: beeper_core::config::now_rfc3339_millis(),
-            focused: false,
-            idle: false,
-            notified: HashSet::new(),
-            retried: HashSet::new(),
-            notifications: HashMap::new(),
             pending,
-            gif_query: String::new(),
-            gifs: Vec::new(),
-            gif_loading: false,
-            gif_error: None,
-            gif_next: String::new(),
-            gif_sel: None,
-            gif_view: (0.0, 0.0),
-            command_palette_query: String::new(),
-            cmd_bar_commands_mode: false,
-            cmd_submenu: None,
             cmd_no_reply: true,
-            cmd_index: 0,
-            search_index: None,
-            search_expanded: HashSet::new(),
-            recent_searches: Vec::new(),
             search_partial: true,
-            last_archived: Default::default(),
-            creating_chat: None,
-            new_chats: Vec::new(),
-            command_list: vlist::VList::default(),
-            memo: Memo::default(),
-            pending_dm: None,
             caps: resolve,
-            contact_networks: None,
-            new_chat_lookup: None,
-            new_chat_search: None,
-            new_chat_results_expanded: false,
-            new_chat_account: None,
-            new_chat_accounts_open: false,
-            new_chat_query: String::new(),
-            new_chat_expanded: false,
-            new_chat_chats_expanded: false,
-            join_matrix_mode: false,
             group_encrypted: true,
-            join_room: (false, None),
-            devices: None,
-            mics: None,
-            confirm: None,
-            delete_target: None,
-            delete_chats: Vec::new(),
-            devices_busy: false,
-            report_spam: false,
-            time_edit: Default::default(),
             audio,
-            recorder: None,
-            talk: None,
-            queued: Vec::new(),
-            selection: Vec::new(),
-            select_mode: false,
-            selection_menu: None,
-            show_command_palette: false,
             active_settings_tab: SettingsTab::General,
-            settings_query: String::new(),
-            settings_slider: None,
-            settings_focus: 0,
-            settings_search_on: false,
-            settings_pick: None,
-            pref_flash: None,
-            networks: Default::default(),
-            app_qr: false,
             storage: StoragePage { ages: [1; 2], kinds: [0b1111, 0b11111], ..Default::default() },
-            integrations: IntegrationsPage::default(),
-            token_ask: None,
-            account_page: None,
             show_right_panel: panel,
-            quick_look_target: None,
-            quick_open: false,
-            hovered_chat: None,
-            hover_at: None,
-            unhovered: None,
-            flash: None,
-            typing_shown: HashMap::new(),
-            status_banner: String::new(),
-            relaunch_toast: None,
             quit_on_close,
-            key_banner_closed: false,
-            toast: None,
-            older_toasts: Vec::new(),
-            nudges: Default::default(),
-            toast_dismissals: 0,
-            undo_stack: Vec::new(),
-            undo_note: None,
             toast_clock: (String::new(), false, Duration::ZERO),
             online: true,
-            pill_hover: false,
-            sticky_banner: None,
-            mobile_apps_toast: false,
             sidebar_width,
-            rail_float: false,
             sidebar_hidden,
-            sidebar_slide: None,
-            dragging: false,
-            rail_hover: None,
-            header_hover: (false, 0),
-            menu_bar: None,
-            alt_alone: false,
-            pin_hover: None,
-            pin_drag: None,
-            pin_slides: HashMap::new(),
             pin_grid: std::cell::Cell::new((1, 0.0, 0.0)),
-            key_sort: None,
-            user_hover: UserHover::default(),
-            rail_drag: None,
-            rail_press: None,
-            main_window: None,
-            key_targets: HashMap::new(),
-            swapped: None,
-            settings_window: None,
             settings_size: SETTINGS_SIZE,
-            login_window: None,
-            theme_windows: Vec::new(),
-            labels_windows: Vec::new(),
-            label_settings: Vec::new(),
-            delete_in: None,
-            poll_windows: Vec::new(),
-            label_window: None,
-            group_window: None,
-            blocked_window: None,
-            how_window: None,
-            nickname_windows: Vec::new(),
-            add_accounts: Vec::new(),
             find_browser: if cfg!(test) { || None } else { beeper_core::browser_login::find_browser },
-            info_desc: None,
-            info_more: false,
-            info_all: false,
-            info_bookmarks: false,
-            hydrating: HashSet::new(),
-            restoring_bookmarks: false,
-            info_media: None,
-            info_zoom: false,
-            info_query: String::new(),
             info_note: text_editor::Content::new(),
-            spaces_window: None,
-            merge_window: None,
-            vote_windows: Vec::new(),
-            shot: None,
             login: Login::new(source),
-            verify: Default::default(),
-            reauth: Default::default(),
-            enter_key: Default::default(),
             cloud,
             avatars: images::Images::new(64 << 20),
-            wants: wants::Wants::default(),
             media: images::Images::new(512 << 20),
-            vcards: HashMap::new(),
-            pdfs: HashMap::new(),
             tiles: images::Images::new(64 << 20),
             cuts: images::Images::new(128 << 20),
-            quotes: HashMap::new(),
-            dismissed_errors: HashSet::new(),
-            resolving_media: HashMap::new(),
-            needs_download: HashSet::new(),
-            fetching: HashSet::new(),
-            video: None,
-            view_once: Default::default(),
             started: std::time::Instant::now(),
             animate: std::cell::Cell::new(true),
-            minimized: false,
             screen_scale: 2.0,
-            state_changes: 0,
-            last_click: None,
-            cycling: false,
-        };
+        }, default: chat_windows, space_windows, carousel_windows, drawing, drawing_thread, open_threads, thread_area,
+            thread_drag, unread_view, unread_menu, hidden, unmapped, opened, unmapped_focus, activation_token,
+            system_dark, zoom_drag, maximize_when_placed, seen_requests, pip, pip_wanted, pip_manual, pip_menu,
+            hotkey_query, hotkey_rec, profile, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
+            reminded, search_room, search_filters, search_select, cursor, image_clipboard, pressing, forward,
+            media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, notifications,
+            gif_query, gifs, gif_loading, gif_error, gif_next, gif_sel, gif_view, command_palette_query,
+            cmd_bar_commands_mode, cmd_submenu, cmd_index, search_index, search_expanded, recent_searches,
+            last_archived, creating_chat, new_chats, command_list, memo, pending_dm, contact_networks, new_chat_lookup,
+            new_chat_search, new_chat_results_expanded, new_chat_account, new_chat_accounts_open, new_chat_query,
+            new_chat_expanded, new_chat_chats_expanded, join_matrix_mode, join_room, devices, mics, confirm,
+            delete_target, delete_chats, devices_busy, report_spam, time_edit, recorder, talk, queued, selection,
+            select_mode, selection_menu, show_command_palette, settings_query, settings_slider, settings_focus,
+            settings_search_on, settings_pick, pref_flash, networks, app_qr, integrations, token_ask, account_page,
+            quick_look_target, quick_open, hovered_chat, hover_at, unhovered, flash, typing_shown, status_banner,
+            relaunch_toast, key_banner_closed, toast, older_toasts, nudges, toast_dismissals, undo_stack, undo_note,
+            pill_hover, sticky_banner, mobile_apps_toast, rail_float, sidebar_slide, dragging, rail_hover,
+            header_hover, menu_bar, alt_alone, pin_hover, pin_drag, pin_slides, key_sort, user_hover, rail_drag,
+            rail_press, main_window, key_targets, swapped, settings_window, login_window, theme_windows,
+            labels_windows, label_settings, delete_in, poll_windows, label_window, group_window, blocked_window,
+            how_window, nickname_windows, add_accounts, info_desc, info_more, info_all, info_bookmarks, hydrating,
+            restoring_bookmarks, info_media, info_zoom, info_query, spaces_window, merge_window, vote_windows, shot,
+            verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, resolving_media, needs_download,
+            fetching, video, view_once, minimized, state_changes, last_click, cycling);
         app.store.write().load_recent();
         if let Some(id) = first_chat {
             app.select_chat(&id);
@@ -4685,17 +4523,12 @@ impl BeeperGuiApp {
                 let (title, topic) =
                     (c.room_title().to_string(), composer_with(c.description.as_deref().unwrap_or_default()));
                 drop(st);
-                self.group_window = Some(GroupDraft {
+                self.group_window = Some(with_defaults!(GroupDraft {
                     id,
                     chat,
                     title,
                     topic,
-                    photo: None,
-                    hover: false,
-                    personal: false,
-                    saving: false,
-                    dropping: false,
-                });
+                }, default: photo, hover, personal, saving, dropping));
                 return open;
             }
             UiMessage::OpenEditForMe(chat) => return self.open_edit_for_me(chat),
@@ -6462,7 +6295,7 @@ impl BeeperGuiApp {
     ) -> El<'a> {
         let p = &self.pal;
         let icon = tinted(&ROW_ACTIONS[glyph], size * (0.3 + 0.7 * t), p.strong.scale_alpha(t));
-        let btn = button(container(icon).center(size)).padding(6).style(btn_style([CLEAR; 3], [p.strong; 3], 0.0));
+        let btn = button(container(icon).center(size)).bare(p.strong).padding(6);
         let tip = self.tip_caps(btn.on_press(msg).into(), label, keys, tooltip::Position::Right);
         let top = 22f32.min(51.0 - 12.0 - size);
         container(tip.delay(std::time::Duration::from_secs(1)))
@@ -6726,8 +6559,8 @@ impl BeeperGuiApp {
                 let icon = svg(crate::style::brand_svg(brand_key(&c.account_id))).width(16).height(16);
                 let name = txt(account_display_name(st, &c.account_id, &accounts), 13.0);
                 button(row![icon, name.color(p.strong)].spacing(4).align_y(Center))
+                    .bare(p.strong)
                     .padding([4, 0])
-                    .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
                     .on_press(UiMessage::SelectChat(c.id.clone()))
                     .into()
             });
@@ -6977,6 +6810,9 @@ mod fuzz;
 
 #[cfg(test)]
 mod perf;
+
+#[cfg(all(test, target_os = "linux"))]
+mod test_bus;
 
 #[cfg(test)]
 mod tests {

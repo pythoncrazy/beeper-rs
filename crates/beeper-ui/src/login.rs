@@ -3,8 +3,8 @@ use crate::focus::Focus;
 use crate::i18n::{tr, trx, trxf};
 use crate::style::rem;
 use crate::style::{
-    bold, bordered_box, btn_style, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi, shadow_box,
-    txt, Bare, Palette, CLEAR,
+    bold, bordered_box, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi, shadow_box, txt, Bare,
+    Palette, CLEAR,
 };
 use crate::verify::Brand;
 use crate::{BeeperGuiApp, El, UiMessage};
@@ -588,10 +588,8 @@ fn toast<'a>(p: &Palette, text: &'a str, error: bool) -> El<'a> {
     let text = txt(text, 13.0).line_height(iced::Pixels(rem(16.0))).color(fg).width(Fill);
     let line: El<'a> = match error {
         true => {
-            let close = button(ic(icon::CLOSE, 14.0).color(fg))
-                .padding(3)
-                .style(btn_style([CLEAR; 3], [fg; 3], 4.0))
-                .on_press(LoginMsg::CloseToast.into());
+            let close =
+                button(ic(icon::CLOSE, 14.0).color(fg)).bare(fg).padding(3).on_press(LoginMsg::CloseToast.into());
             row![ic(icon::INFO, 20.0).color(fg), text, close].spacing(6).align_y(Center).into()
         }
         false => text.center().into(),
@@ -1210,10 +1208,7 @@ impl BeeperGuiApp {
         };
         let ink = p.text;
         let chevron = svg(ICONS[1].clone()).width(18).height(18).style(move |_, _| svg::Style { color: Some(ink) });
-        let chevron = button(container(chevron).center(28))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.text; 3], 6.0))
-            .on_press(LoginMsg::Menu.into());
+        let chevron = button(container(chevron).center(28)).bare(p.text).on_press(LoginMsg::Menu.into());
         let controls = container(chevron).align_right(Fill).height(36).padding(Padding::ZERO.top(2).right(2));
         let onboarding = l.screen == Screen::Accounts;
         let page = container(column![controls, body]).width(Fill).height(Fill);
@@ -1525,11 +1520,7 @@ impl BeeperGuiApp {
             let glyph =
                 svg(ICONS[i].clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) });
             match msg {
-                Some(m) => button(container(glyph).center(20))
-                    .padding(0)
-                    .style(btn_style([CLEAR; 3], [color; 3], 4.0))
-                    .on_press(m)
-                    .into(),
+                Some(m) => button(container(glyph).center(20)).bare(color).on_press(m).into(),
                 None => container(glyph).center(20).into(),
             }
         };

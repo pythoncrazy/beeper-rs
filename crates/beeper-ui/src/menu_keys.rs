@@ -28,22 +28,16 @@ struct Row<'a> {
 struct Mark(Option<UiMessage>);
 
 impl Widget<UiMessage, Theme, Renderer> for Row<'_> {
-    crate::delegate::delegate!(children, diff, size, layout, mouse_interaction, draw, overlay(UiMessage));
-
-    fn update(
-        &mut self,
-        tree: &mut advanced::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, UiMessage>,
-        viewport: &Rectangle,
-    ) {
-        let content = &mut tree.children[0];
-        self.content.as_widget_mut().update(content, event, layout, cursor, renderer, clipboard, shell, viewport);
-    }
+    crate::delegate::delegate!(
+        children,
+        diff,
+        size,
+        layout,
+        update(UiMessage),
+        mouse_interaction,
+        draw,
+        overlay(UiMessage)
+    );
 
     fn operate(
         &mut self,
@@ -108,15 +102,16 @@ impl Menu<'_> {
 }
 
 impl Widget<UiMessage, Theme, Renderer> for Menu<'_> {
-    crate::delegate::delegate!(children, diff, size, layout, operate, mouse_interaction, overlay(UiMessage));
-
-    fn tag(&self) -> advanced::tree::Tag {
-        advanced::tree::Tag::of::<Selection>()
-    }
-
-    fn state(&self) -> advanced::tree::State {
-        advanced::tree::State::new(Selection::default())
-    }
+    crate::delegate::delegate!(
+        state(Selection),
+        children,
+        diff,
+        size,
+        layout,
+        operate,
+        mouse_interaction,
+        overlay(UiMessage)
+    );
 
     fn update(
         &mut self,
