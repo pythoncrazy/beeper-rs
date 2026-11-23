@@ -3766,6 +3766,37 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     assert!(st.loaded(&id).is_none() && st.outbox.is_empty(), "Remove drops the echo and its send");
 }
 
+/// Desktop's `message-attachment-failed`: a failed send of a file without text shows "Not sent" under the file.
+#[test]
+fn failed_files_show_not_sent_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("failed-file");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let pdf = PendingMedia {
+        bytes: b"%PDF".to_vec(),
+        name: "b.pdf".into(),
+        mime: "application/pdf".into(),
+        is_gif: false,
+        size: (0, 0),
+        frames: vec![],
+        duration: None,
+        sticker: None,
+    };
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(vec![Ok(pdf)])));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
+    assert!(simulator(app.view_main()).find("Not sent").is_err(), "a send on its way is not failed");
+    {
+        let mut st = app.store.write();
+        let (row, _, out) = st.outbox.remove(0);
+        let id = out.message().expect("a send has a local echo").to_string();
+        st.pushed(row, Some(&id), Some(("M_TOO_LARGE: too big".into(), true)));
+    }
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("Not sent").is_ok() && sim.find("Retry").is_ok(), "the file shows that it was not sent");
+}
+
 #[test]
 fn own_messages_show_their_send_status_like_desktop() {
     let note = "!note_self:beeper.com";
