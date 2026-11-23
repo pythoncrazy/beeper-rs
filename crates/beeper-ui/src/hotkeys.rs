@@ -83,13 +83,15 @@ impl BeeperGuiApp {
 
     pub(crate) fn run_hotkey(&mut self, name: &str, digit: usize) -> Task<UiMessage> {
         let chat = self.pane.selected_chat_id.clone();
-        let flag = |f: ChatFlag| chat.clone().map(|c| UiMessage::ChatList(chat_list::Msg::ToggleFlag(c, f)));
+        // Desktop's `selectedOrCursorThread`: the chat hotkeys work on the open chat, else on the chat of the cursor.
+        let pointed = chat.clone().or_else(|| self.list.cursor.clone());
+        let flag = |f: ChatFlag| pointed.clone().map(|c| UiMessage::ChatList(chat_list::Msg::ToggleFlag(c, f)));
         let selected = self.single_msg().cloned().filter(|_| chat.is_some());
         let msg = match name {
             "Chat: Archive All Read" => Some(UiMessage::Ask(Some(ASK_ARCHIVE_READ))),
             "Chat: Start New" => Some(UiMessage::NewChat(new_chat::Msg::Open)),
             "Chat: Toggle Archive" => flag(ChatFlag::Archived),
-            "Chat: Toggle Mark As Read" => chat.map(|a0| UiMessage::ChatList(chat_list::Msg::ToggleRead(a0))),
+            "Chat: Toggle Mark As Read" => pointed.map(|a0| UiMessage::ChatList(chat_list::Msg::ToggleRead(a0))),
             "Chat: Toggle Mute" => flag(ChatFlag::Muted),
             "Chat: Toggle Pin" => flag(ChatFlag::Pinned),
             CYCLE => {

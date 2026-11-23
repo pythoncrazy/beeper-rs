@@ -4394,6 +4394,13 @@ impl BeeperGuiApp {
                 let arrow = Key::Named(if text == "j" { Named::ArrowDown } else { Named::ArrowUp });
                 return self.update(UiMessage::WindowKey(id, arrow, Modifiers::empty()));
             }
+            // Desktop's hotkeys without a modifier, like the "e" of Chat: Toggle Archive, while no chat is open.
+            UiMessage::WindowText(id, text)
+                if self.find_hotkey(&Key::Character(text.as_str().into()), Modifiers::empty()).is_some()
+                    && self.window_points_chats(id) =>
+            {
+                return self.update(UiMessage::WindowKey(id, Key::Character(text.into()), Modifiers::empty()));
+            }
             UiMessage::WindowText(id, text) if self.chat_windows.iter().any(|w| w.0 == id) => {
                 return self.update(UiMessage::InWindow(id, Box::new(UiMessage::Composer(composer::Msg::Type(text)))));
             }
