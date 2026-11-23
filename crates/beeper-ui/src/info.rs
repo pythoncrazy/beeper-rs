@@ -308,7 +308,8 @@ impl BeeperGuiApp {
         let detached = self.pane().info;
         let card = container(column![pane_head, scroll, toolbar]).height(Fill).style(fill_box(p.card, 10.0));
         match detached {
-            true => container(card.width(Fill)).padding(8).style(fill_box(p.window, 0.0)).into(),
+            // `ThreadInfoBrowserWindow` is `--left-pane-bg`.
+            true => crate::ui_theme::window_bg(container(card.width(Fill)).padding(8), p.backdrop, p.window).into(),
             false => container(card.width(self.info_width())).padding(Padding::new(8.0).left(0.0)).into(),
         }
     }

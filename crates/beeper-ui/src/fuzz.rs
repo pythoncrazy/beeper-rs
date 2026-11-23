@@ -63,6 +63,7 @@ fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
                     | prefs::Control::BlockedUsers
                     | prefs::Control::ReactionEmoji { .. }
                     | prefs::Control::QuickReactions(_)
+                    | prefs::Control::StickerPacks
             )
         })
         .filter(|(_, p)| p.key != "appLanguage")
@@ -1830,6 +1831,37 @@ fn sticker_picker_like_desktop() {
     assert_eq!(sent, Some((Some(Box::new(cat)), "cat.png".into())), "the attachment goes as a sticker");
     let echo = st.messages.iter().rev().find(|m| m.chat_id == chat).unwrap();
     assert_eq!(echo.attachments[0].is_sticker, Some(true));
+}
+
+/// Desktop's "Switch to Texts.app keybindings" under the hotkey list gives the hotkeys the keys of Texts.app, turns
+/// Italicize Text Selection off so that Ctrl I edits, and asks for a relaunch.
+#[test]
+fn texts_keybindings_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("texts-keys");
+    let _ = app.open_settings(SettingsTab::Hotkeys);
+    let msgs: Vec<UiMessage> = {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1024.0, 8000.0), app.view_settings());
+        sim.click("Switch to Texts.app keybindings").expect("the button under the list");
+        sim.into_messages().collect()
+    };
+    msgs.into_iter().for_each(|m| drop(app.update(m)));
+    assert_eq!(app.relaunch_toast, Some(HOTKEYS_RELAUNCH));
+    let s = app.store.read().settings.clone();
+    s.assert_valid();
+    for (name, keys) in [
+        ("Message: Edit", "ctrl+i"),
+        ("Italicize Text Selection", "disabled"),
+        ("Select Next Chat", "ctrl+], ctrl+tab"),
+        ("Chat: Toggle Archive", "ctrl+e, ctrl+shift+e"),
+        ("Switch First 9 Spaces Modifier", "ctrl"),
+        ("Chat: Archive All Read", "disabled"),
+    ] {
+        assert_eq!(s.hotkey_keys(name), keys, "{name}");
+    }
+    assert_eq!(s.hotkey_keys("Search"), "ctrl+k", "the other hotkeys keep their keys");
+    let edit = app.find_hotkey(&Key::Character("i".into()), Modifiers::CTRL).map(|h| h.0);
+    assert_eq!(edit, Some("Message: Edit"));
 }
 
 /// Desktop's composer button selects (`Aee` of `sFt`): each leaves out the pick of the other button unless it is None,
@@ -5552,6 +5584,36 @@ fn settings_nav_follows_the_plan() {
     assert!(SettingsTab::listed(&app.store.read()).all(|t| t != SettingsTab::BeeperPlus));
 }
 
+/// Desktop's global hotkeys "Focus App" and "Focus App and Command Bar": off by default, with the "Global" tag in
+/// Settings > Hotkeys, and the window shows (with the command bar) when one fires.
+#[test]
+fn global_focus_hotkeys_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("global-hotkeys");
+    for name in crate::global_keys::GLOBAL {
+        assert_eq!(prefs::HOTKEYS.iter().find(|h| h.0 == name).map(|h| (h.1, h.2)), Some(("App", "disabled")));
+        assert_eq!(app.store.read().settings.hotkey_keys(name), "disabled");
+    }
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Hotkeys)));
+    {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1024.0, 4000.0), app.view_settings());
+        assert!(sim.find("Focus App and Command Bar").is_ok() && sim.find("Global").is_ok());
+    }
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Toggle("Focus App and Command Bar")));
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Record("Focus App and Command Bar")));
+    let _ = app.settings_key(Key::Character("b".into()), Modifiers::CTRL | Modifiers::SHIFT);
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Recorder(true)));
+    let keys = app.store.read().settings.hotkey_keys("Focus App and Command Bar").to_string();
+    assert_eq!(crate::global_keys::combination(&keys), Some((4 | 1, u32::from(b'b'))), "{keys} is grabbed on X11");
+    app.hidden = true;
+    let _ = app.update(UiMessage::RunHotkey("Focus App"));
+    assert!(!app.hidden && !app.show_command_palette, "Focus App shows the window");
+    let _ = app.update(UiMessage::RunHotkey("Focus App and Command Bar"));
+    assert!(app.show_command_palette && app.cmd_bar_commands_mode, "and the command bar");
+    let _ = app.update(UiMessage::RunHotkey("Focus App and Command Bar"));
+    assert!(app.show_command_palette, "an open bar stays open");
+}
+
 #[test]
 fn hotkey_recorder_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
@@ -6539,6 +6601,91 @@ fn accounts_settings_rows_have_the_account_menu_like_desktop() {
     let mut sim = simulator(app.view_settings());
     let _ = sim.click("Remove Account…").expect("Desktop's Remove Account item of the Beeper account");
     assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::ChatList(chat_list::Msg::CloseMenu)]));
+}
+
+/// Desktop's `RemoteSubView` of a Discord account, on the demo's Discord bridge: the servers show once the bridge sent
+/// them, each with its Show in Inbox (only for a connected server) and its switch. A connected server is a space; its
+/// switch asks before it disconnects, turns at once with a "Disconnecting" toast, and the reply replaces the toast.
+#[tokio::test(flavor = "multi_thread")]
+async fn discord_servers_connect_like_desktop() {
+    let mut app = demo_app("discord-servers");
+    let account = "acc_discord".to_string();
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
+    let task = app.update(UiMessage::Accounts(accounts::Msg::Open(Some(account.clone()))));
+    assert!(simulator(app.view_settings()).find("Servers").is_err(), "no servers before the bridge sends them");
+    assert!(app.servers_loading.contains_key(&account), "the account page fetches the servers");
+    for m in task_messages(task).await {
+        let _ = app.update(m);
+    }
+    assert!(app.servers_loading.is_empty());
+    {
+        let mut sim = simulator(app.view_settings());
+        for text in ["Servers", "Beeper Community", "Rust Programming Language", "Pebble Developers", "Linux Gaming"] {
+            assert!(sim.find(text).is_ok(), "{text}");
+        }
+    }
+    let spaces: Vec<String> = app.store.read().network_spaces.iter().map(|n| n.name.clone()).collect();
+    assert_eq!(spaces, ["Beeper Community", "Rust Programming Language"], "the connected servers are spaces");
+    assert!(rail_accounts(&app.store.read()).contains(&"1100000000000000001".to_string()));
+    // Show in Inbox of a connected server.
+    let (key, _) =
+        beeper_core::matrix::inbox_rule(&serde_json::Value::Null, &account, "discordgo", Some("1100000000000000001"));
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::SetInboxVisibility(key, "all")));
+    let rule = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        beeper_core::matrix::inbox_rule(&st.inbox_rules, &account, "discordgo", Some("1100000000000000001"))
+            .1
+            .to_string()
+    };
+    assert_eq!(rule(&app), "all", "the demo keeps the rule");
+    // Connect a server.
+    let pebble = "1100000000000000003".to_string();
+    let task = app.update(UiMessage::Accounts(accounts::Msg::ToggleServer(account.clone(), pebble.clone())));
+    assert_eq!(app.confirm, None, "connecting asks nothing");
+    assert_eq!(app.status_banner, "Connecting Pebble Developers...");
+    assert!(app.store.read().network_spaces.iter().any(|n| n.id == pebble), "the switch turns at once");
+    for m in task_messages(task).await {
+        let more = app.update(m);
+        for m in task_messages(more).await {
+            let _ = app.update(m);
+        }
+    }
+    assert_eq!(app.status_banner, "Connected Pebble Developers");
+    assert!(app.older_toasts.iter().all(|t| !t.0.text.starts_with("Connecting")), "the reply replaces the toast");
+    // Disconnect one: Desktop asks first for a Discord server.
+    let rust = "1100000000000000002".to_string();
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::ToggleServer(account.clone(), rust.clone())));
+    assert_eq!(app.confirm, Some(ASK_DISCONNECT_SERVER));
+    let set = {
+        let mut sim = simulator(app.view_settings());
+        assert!(sim.find("Disconnect Discord Server?").is_ok());
+        let _ = sim.click("Disconnect").expect("the confirm button");
+        sim.into_messages().collect::<Vec<_>>()
+    };
+    assert!(matches!(&set[..], [UiMessage::Accounts(accounts::Msg::SetServer(a, s))] if *a == account && *s == rust));
+    let task = app.update(set.into_iter().next().unwrap());
+    assert_eq!((app.confirm, app.status_banner.as_str()), (None, "Disconnecting Rust Programming Language..."));
+    assert!(app.store.read().network_spaces.iter().all(|n| n.id != rust), "the space goes at once");
+    for m in task_messages(task).await {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.status_banner, "Disconnected Rust Programming Language");
+    // A failed change: Desktop's "Something went wrong" toast, then the servers again.
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::ServerSet(
+        account.clone(),
+        rust,
+        true,
+        Err("Guild not found".into()),
+    )));
+    assert_eq!(app.status_banner, "Something went wrong: Guild not found");
+    assert!(app.servers_loading.contains_key(&account), "the servers load again");
+    // The servers stay through an error of the list, like Desktop's `fetchSubAccounts`.
+    let _ = app.update(UiMessage::Accounts(accounts::Msg::Servers(account.clone(), Err("offline".into()))));
+    assert!(app.servers_loading.is_empty() && simulator(app.view_settings()).find("Linux Gaming").is_ok());
+    // A broken connection locks the switches.
+    app.store.write().bridge_accounts.iter_mut().find(|b| b.account_id == account).unwrap().remote_error =
+        Some("x".into());
+    assert!(simulator(app.view_settings()).find("Linux Gaming").is_ok());
 }
 
 /// The demo has no Beeper Cloud: Remove Account takes the account out of the demo without a request to the Beeper
@@ -8897,6 +9044,82 @@ fn json_copies_in_the_command_bar_like_desktop() {
     assert_eq!(parse(&app, commands::JsonCopy::Selected)["message"]["id"], ids[0], "one message is an object");
     let _ = app.update(UiMessage::CommandBar(commands::Msg::CopyJson(commands::JsonCopy::Selected)));
     assert_eq!(app.status_banner, "Copied to clipboard!");
+}
+
+/// Desktop's chat commands of the command bar: "Message on %s" for the same person on another account (`Message Other
+/// Account`), "Change message expiry timer" with the timers of `Sit`, and "Refresh chat", which waits for a load of
+/// messages to end.
+#[test]
+fn refresh_expiry_and_other_accounts_in_the_command_bar_like_desktop() {
+    let mut app = demo_app("cmd-chat-more");
+    let (sarah, lena) = ("!im_sarah:beeper.com", "!sg_lena:beeper.com");
+    {
+        let mut st = app.store.write();
+        let other = |c: &Chat| c.participants.items.iter().position(|u| u.is_self != Some(true)).expect("a member");
+        let from = st.chat(sarah);
+        let user = from.participants.items[other(from)].clone();
+        let to = st.chat_idx(lena);
+        let at = other(&st.chats[to]);
+        st.chats[to].participants.items[at] = user;
+    }
+    let _ = app.update(UiMessage::SelectChat(sarah.into()));
+    let command =
+        |app: &BeeperGuiApp, title: &str| app.commands(&app.store.read(), "").into_iter().find(|c| c.title == title);
+    let other = command(&app, "Message on Signal").expect("the chat on the other account");
+    assert_eq!((other.category, other.chat.as_deref()), ("Message Other Account", Some(lena)));
+    assert!(matches!(other.msg, Some(UiMessage::SelectChat(ref c)) if c == lena));
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("message on".into())));
+    assert!(simulator(app.view_main()).find("Message Other Account").is_ok(), "the heading of the row");
+    let _ = app.update(UiMessage::CloseModals);
+
+    let group = "!tg_rust:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(group.into()));
+    let idx = app.store.read().chat_idx(group);
+    app.store.write().chats[idx].timers.as_mut().expect("disappearing timers").can_set = false;
+    assert!(command(&app, "Change message expiry timer").is_none(), "the chat cannot set its timer");
+    app.store.write().chats[idx].timers.as_mut().expect("disappearing timers").can_set = true;
+    let expiry = command(&app, "Change message expiry timer").expect("the expiry command");
+    assert_eq!((expiry.category, &expiry.keywords[..]), ("Chat", &["set", "disappearing"][..]));
+    let _ = app.update(expiry.msg.expect("an action"));
+    assert_eq!(app.cmd_submenu, Some(commands::SubMenu::Expiry(group.into())));
+    let titles = |app: &BeeperGuiApp, q: &str| -> Vec<String> {
+        app.commands(&app.store.read(), q).iter().map(|c| c.title.clone()).collect()
+    };
+    assert_eq!(titles(&app, ""), ["No expiry", "1 day", "7 days", "28 days", "3 months"]);
+    assert_eq!(
+        titles(&app, "2"),
+        [
+            "No expiry",
+            "2 seconds",
+            "2 minutes",
+            "1 day",
+            "2 days",
+            "7 days",
+            "14 days",
+            "28 days",
+            "2 months",
+            "3 months"
+        ],
+        "a typed number in each unit, which does not filter the rows"
+    );
+    assert!(simulator(app.view_main()).find("Set message expiry timer").is_ok());
+    let week = app.commands(&app.store.read(), "").into_iter().find(|c| c.title == "7 days").expect("a week");
+    let _ = app.update(UiMessage::Commands(vec![UiMessage::CloseModals, week.msg.expect("an action")]));
+    assert_eq!(app.store.read().chat(group).disappearing, Some(604_800_000));
+    assert!(!app.show_command_palette, "the pick closes the bar");
+    app.cmd_submenu = None;
+    let refresh = command(&app, "Refresh chat").expect("the refresh command");
+    assert_eq!(refresh.category, "Chat");
+    let _ = app.update(refresh.msg.expect("an action"));
+    assert!(app.pane.top.loading.is_some(), "the refresh runs as a load");
+    assert!(command(&app, "Refresh chat").expect("the refresh command").msg.is_none(), "disabled while it runs");
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Refreshed(Ok(()))));
+    assert!(app.pane.top.loading.is_none());
+    let _ = app.update(command(&app, "Refresh chat").and_then(|c| c.msg).expect("an action"));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Refreshed(Err("offline".into()))));
+    let toast = app.toast.as_ref().expect("an error toast");
+    assert!(toast.text.starts_with("Something went wrong refreshing chat (") && toast.text.ends_with(")\noffline"));
 }
 
 #[test]
