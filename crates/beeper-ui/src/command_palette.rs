@@ -90,7 +90,6 @@ impl BeeperGuiApp {
     pub(crate) fn view_command_palette<'a>(&'a self) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
-        let room = self.search_room.as_deref();
         let inputs = self.palette_inputs();
         let q = self.command_palette_query.trim().to_lowercase();
         if self.cmd_bar_commands_mode {
@@ -98,54 +97,28 @@ impl BeeperGuiApp {
         }
         let hint = self.palette_hint(&st);
         let chips = self.palette_chips();
-        let f = &self.search_filters;
-        let raw = self.command_palette_query.trim();
-        let blank = room.is_none() && q.is_empty() && *f == SearchFilters::default();
-        let (recent, archived) = self.palette_recent(&st, blank);
-        let hits = self.search_hits(&st, raw);
-        let chats: Vec<&Chat> = hits.chats.iter().map(|&i| &st.chats[i]).collect();
-        let in_groups: Vec<&Chat> = hits.in_groups.iter().map(|&i| &st.chats[i]).collect();
-        let (bookmarks, media, found) = (&hits.bookmarks, &hits.media, &hits.messages);
-        let any = [&recent, &archived, &chats, &in_groups].iter().any(|l| !l.is_empty())
-            || !(bookmarks.is_empty() && media.is_empty() && found.is_empty());
-        let none = !any && (raw.chars().count() > 1 || !f.media.is_empty());
         let needle = q.to_ascii_lowercase();
-        let message = |m: &Message| self.palette_message(&st, m, &needle);
-        let media_grid = (!media.is_empty()).then(|| self.palette_media(&st, media));
+        let hits = self.search_hits(&st, self.command_palette_query.trim());
+        let (list, none) = self.search_list(&st, &hits);
+        let lit = self.search_lit(&list);
         let empty = none.then(|| self.palette_empty());
-        let partial = if self.search_partial { tr("Hide partial matches") } else { tr("Show partial matches") };
-        let partial = Some((partial, commands::Msg::TogglePartialMatches));
-        // Desktop's `Jqt`: the Messages heading stays without messages while partial matches are hidden.
-        let messages = (!found.is_empty() || (!raw.is_empty() && any && !self.search_partial))
-            .then(|| column![self.palette_heading("Messages", partial)].extend(found.iter().map(&message)));
-        let (marked, more_marked) = self.palette_rows("Bookmarks", bookmarks.len());
-        let bookmarks = (!bookmarks.is_empty()).then(|| {
-            let rows = bookmarks.iter().take(marked).map(&message);
-            column![self.palette_heading("Bookmarks", self.palette_more("Bookmarks", more_marked))].extend(rows)
-        });
-        // Desktop's `Jqt` order of the chat sections, before the bookmarks, the media and the messages.
-        let sections =
-            [("Recent chats", &recent), ("Last archived", &archived), ("Chats", &chats), ("In Groups", &in_groups)];
-        let lead = sections.iter().find(|s| !s.1.is_empty()).map(|s| s.0);
-        let results = sections.into_iter().filter(|s| !s.1.is_empty()).fold(Column::new(), |col, (label, list)| {
-            let (n, has_more) = match label {
-                "Last archived" => (1, false),
-                _ => self.palette_rows(label, list.len()),
+        let (mut results, mut tiles) = (Column::new(), Vec::new());
+        for (i, hit) in list.iter().enumerate() {
+            let row = match hit {
+                Hit::Media(m) => {
+                    tiles.push(self.palette_media_tile(&st, i, m, lit));
+                    continue;
+                }
+                Hit::Heading(label, action, reach) => self.palette_heading(i, label, action, *reach, lit),
+                Hit::Chat(c) => self.palette_chat(i, c, lit),
+                Hit::Message(m) => self.palette_message(&st, i, m, &needle, lit),
             };
-            let col = col.push(self.palette_heading(label, self.palette_more(label, has_more)));
-            // Desktop highlights the first result.
-            col.extend(
-                list.iter().take(n).enumerate().map(|(i, c)| self.palette_chat(c, lead == Some(label) && i == 0)),
-            )
-        });
-        let results = results.push(bookmarks).push(media_grid).push(messages);
-        self.palette_frame(
-            column![inputs]
-                .push(hint)
-                .push(chips)
-                .push(empty)
-                .push((!none).then(|| scrollable(results).direction(bar()).height(Fill).style(scroll_style(p.scroll)))),
-        )
+            results = results.push(media_grid(std::mem::take(&mut tiles))).push(row);
+        }
+        let results = results.push(media_grid(tiles));
+        self.palette_frame(column![inputs].push(hint).push(chips).push(empty).push(
+            (!none).then(|| scrollable(results).id(SEARCH).direction(bar()).height(Fill).style(scroll_style(p.scroll))),
+        ))
     }
 
     /// Desktop's `results` without a query or filters (`blank`): the recent chats but the open one, and the chat
@@ -179,12 +152,6 @@ impl BeeperGuiApp {
     fn palette_rows(&self, s: &str, n: usize) -> (usize, bool) {
         let (collapsed, open) = if s == "Bookmarks" { (3, 100) } else { (5, 12) };
         (if self.search_expanded.contains(s) { open } else { collapsed }, n > collapsed)
-    }
-
-    /// The Show more or Show less action of a section of the results that has `more` rows.
-    fn palette_more(&self, s: &'static str, more: bool) -> Option<(&'static str, commands::Msg)> {
-        let label = if self.search_expanded.contains(s) { tr("Show less") } else { tr("Show more") };
-        more.then_some((label, commands::Msg::ToggleSearchExpanded(s)))
     }
 
     /// The card of the command palette.
@@ -331,33 +298,49 @@ impl BeeperGuiApp {
         .into()
     }
 
-    /// The heading of a section of the search results, with its action on the right.
+    /// The heading of a section of the search results (row `i`), with its action on the right: Desktop's
+    /// `.category`, whose action button fades while the heading is highlighted (`lit`).
     fn palette_heading(
         &self,
+        i: usize,
         label: &'static str,
-        action: Option<(&'static str, commands::Msg)>,
-    ) -> iced::widget::Row<'_, UiMessage> {
+        action: &Option<commands::Msg>,
+        reach: bool,
+        lit: Option<usize>,
+    ) -> El<'_> {
         let p = &self.pal;
         let title = match label {
             "Chats" | "Messages" | "Media" => trx(label, "command bar category"),
             _ => tr(label),
         };
-        row![txt(title, 12.0).color(p.sub), Space::new().width(Fill)]
-            .push(action.map(|(text, msg)| {
-                button(semi(text, 11.0).color(p.accent))
-                    .padding(0)
-                    .style(ghost(p, 4.0))
-                    .on_press(UiMessage::CommandBar(msg))
+        let text = match action {
+            Some(commands::Msg::ToggleSearchExpanded(s)) if self.search_expanded.contains(s) => tr("Show less"),
+            Some(commands::Msg::ToggleSearchExpanded(_)) => tr("Show more"),
+            Some(_) if self.search_partial => tr("Hide partial matches"),
+            Some(_) => tr("Show partial matches"),
+            None => "",
+        };
+        let fg = if lit == Some(i) { p.accent.scale_alpha(0.5) } else { p.accent };
+        let line = row![txt(title, 12.0).color(p.sub), Space::new().width(Fill)]
+            .push(action.clone().map(|m| {
+                button(semi(text, 11.0).color(fg)).padding(0).style(ghost(p, 4.0)).on_press(UiMessage::CommandBar(m))
             }))
             .align_y(Center)
-            .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
+            .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0));
+        let line = container(line).id(format!("search-{i}"));
+        match reach {
+            true => mouse_area(line).on_enter(search_hover(i)).into(),
+            false => line.into(),
+        }
     }
 
-    /// Desktop's `SelectMessageCommand`: a found message in its bubble, with `needle` marked, under its chat and time.
-    fn palette_message(&self, st: &BeeperStore, m: &Message, needle: &str) -> El<'_> {
+    /// Desktop's `SelectMessageCommand`: a found message in its bubble, with `needle` marked, under its chat and time,
+    /// darker while highlighted (`filter: brightness(0.8)`).
+    fn palette_message(&self, st: &BeeperStore, i: usize, m: &Message, needle: &str, lit: Option<usize>) -> El<'_> {
         let p = &self.pal;
         let c = st.chat(&m.chat_id);
         let mine = m.is_sender == Some(true);
+        let dim = |c: Color| if lit == Some(i) { brightness(c, 0.8) } else { c };
         let label = match (c.chat_type == "group", mine) {
             (false, _) => c.title.clone(),
             (true, true) => format!("{} • {}", c.title, chat_network(c)),
@@ -367,18 +350,19 @@ impl BeeperGuiApp {
         };
         let h24 = st.settings.pref("timeFormat") == 1;
         let head = row![
-            txt(label, 11.0).line_height(Pixels(rem(7.0))).color(p.text),
+            txt(label, 11.0).line_height(Pixels(rem(7.0))).color(dim(p.text)),
             Space::new().width(Fill),
-            txt(list_ts(&m.timestamp, h24), 11.0).line_height(Pixels(rem(7.0))).color(p.text)
+            txt(list_ts(&m.timestamp, h24), 11.0).line_height(Pixels(rem(7.0))).color(dim(p.text))
         ];
         let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.received, p.strong) };
+        let (bg, fg) = (dim(bg), dim(fg));
         let body = clamped(m.text.as_deref().expect("text message"), 554.0, 3, 13.0, Weight::Normal);
         let lower = body.to_ascii_lowercase();
         let (mut spans, mut at): (Vec<iced::widget::text::Span<()>>, _) = (Vec::new(), 0);
         for (k, hit) in lower.match_indices(needle) {
             spans.push(span(body[at..k].to_string()).size(rem(13.0)).color(fg));
             let mark = span(body[k..k + hit.len()].to_string()).size(rem(13.0));
-            spans.push(mark.color(hex(0x202124)).background(hex(0xf6ce46)));
+            spans.push(mark.color(dim(hex(0x202124))).background(dim(hex(0xf6ce46))));
             at = k + hit.len();
         }
         spans.push(span(body[at..].to_string()).size(rem(13.0)).color(fg));
@@ -388,26 +372,18 @@ impl BeeperGuiApp {
         let bubble = container(container(bubble).padding([8, 11]).style(fill_box(bg, 17.0)))
             .width(Fill)
             .align_x(if mine { Right } else { iced::Left });
-        button(column![head, bubble].spacing(6))
+        let row = button(column![head, bubble].spacing(6))
             .padding([4, 13])
             .width(Fill)
             .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
-            .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone())))
-            .into()
+            .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone())));
+        mouse_area(container(row).id(format!("search-{i}"))).on_enter(search_hover(i)).into()
     }
 
-    /// The Media section of the search results: rows of five tiles with the image, link or file of each message.
-    fn palette_media(&self, st: &BeeperStore, media: &[Message]) -> Column<'_, UiMessage> {
-        let mut grid = Column::new().spacing(6.5).padding(Padding::new(0.0).left(13.0).right(13.0).bottom(4.0));
-        let mut tiles = media.iter().map(|m| self.palette_media_tile(st, m)).peekable();
-        while tiles.peek().is_some() {
-            grid = grid.push(Row::with_children(tiles.by_ref().take(5)).spacing(6.5));
-        }
-        column![self.palette_heading("Media", None), grid]
-    }
-
-    /// A tile of the Media section, with the avatar of its chat, which jumps to its message.
-    fn palette_media_tile(&self, st: &BeeperStore, m: &Message) -> El<'_> {
+    /// A tile of the Media section, with the avatar of its chat, which jumps to its message: Desktop's
+    /// `SelectMediaCommand`, which the pointer does not highlight (`dontHighlightOnHover`), in a 3 px ring of
+    /// `--color-outline` while highlighted.
+    fn palette_media_tile(&self, st: &BeeperStore, i: usize, m: &Message, lit: Option<usize>) -> El<'_> {
         let p = &self.pal;
         let c = st.chat(&m.chat_id);
         let card = |title: String, sub: El<'static>| -> El<'static> {
@@ -415,6 +391,7 @@ impl BeeperGuiApp {
                 column![clamp(&title, 94.0, 3, 10.0, Weight::Normal).line_height(Pixels(rem(12.0))).color(p.text), sub];
             container(body).align_bottom(Fill).width(Fill).padding(8).style(fill_box(p.window, 8.0)).into()
         };
+        let ring = if lit == Some(i) { 3.0 } else { 0.0 };
         let thumb = m.attachments.iter().find(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
         let body: El<'_> = match (thumb, m.links.first(), m.attachments.first()) {
             (Some(a), _, _) => match a.poster_img.as_ref().or(a.src_url.as_ref()).and_then(|u| self.media_at(u)) {
@@ -422,7 +399,7 @@ impl BeeperGuiApp {
                     .width(Fill)
                     .height(Fill)
                     .content_fit(iced::ContentFit::Cover)
-                    .border_radius(8.0)
+                    .border_radius(8.0 - 2.0 * ring / 3.0)
                     .into(),
                 _ => Space::new().into(),
             },
@@ -444,13 +421,14 @@ impl BeeperGuiApp {
         };
         let face =
             container(self.chat_avatar(c, 24.0, 0.0)).padding(2).style(bordered_box(CLEAR, Color::WHITE, 2.0, 14.0));
-        let tile = stack![container(body).width(110).height(110).style(fill_box(p.chip, 8.0))]
+        let tile = stack![container(body).width(Fill).height(Fill).style(fill_box(p.chip, 8.0))]
             .push(container(face).padding(6));
-        button(tile)
+        let tile = container(tile).width(110).height(110).padding(ring).style(fill_box(p.rule, 8.0));
+        let tile = button(tile)
             .padding(0)
             .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
-            .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone())))
-            .into()
+            .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone())));
+        container(tile).id(format!("search-{i}")).into()
     }
 
     /// Desktop's `Eqt`: no message matches the search, with "Show partial matches" while they are hidden.
@@ -475,9 +453,9 @@ impl BeeperGuiApp {
         .padding(Padding::new(0.0).left(44.0).right(44.0).bottom(64.0))
     }
 
-    /// A chat of the search results, which opens on a click and has its menu on a right click; Desktop highlights
-    /// the first result (`first`).
-    fn palette_chat(&self, c: &Chat, first: bool) -> El<'_> {
+    /// A chat of the search results (row `i`), which opens on a click and has its menu on a right click, and which
+    /// is highlighted while it is the highlighted row (`lit`).
+    fn palette_chat(&self, i: usize, c: &Chat, lit: Option<usize>) -> El<'_> {
         let p = &self.pal;
         let title = crate::chat_search_title(p, c);
         let line = row![
@@ -488,19 +466,152 @@ impl BeeperGuiApp {
         ]
         .spacing(8)
         .align_y(Center);
-        let bg = if first { p.chip } else { CLEAR };
-        container(
-            mouse_area(
-                button(line)
-                    .height(36)
-                    .padding([0, 6])
-                    .width(Fill)
-                    .style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0))
-                    .on_press(UiMessage::CommandBar(commands::Msg::ExecuteChat(c.id.clone()))),
-            )
-            .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone()))),
+        let bg = if lit == Some(i) { p.chip } else { CLEAR };
+        let row = mouse_area(
+            button(line)
+                .height(36)
+                .padding([0, 6])
+                .width(Fill)
+                .style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0))
+                .on_press(UiMessage::CommandBar(commands::Msg::ExecuteChat(c.id.clone()))),
         )
-        .padding([0, 6])
-        .into()
+        .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(c.id.clone())))
+        .on_enter(search_hover(i));
+        container(row).padding([0, 6]).id(format!("search-{i}")).into()
     }
+
+    /// Desktop's search results of the command bar (`Jqt`), each section's heading before its rows, and whether
+    /// nothing matches the query (`Eqt`).
+    fn search_list<'a>(&'a self, st: &'a BeeperStore, hits: &'a Found) -> (Vec<Hit<'a>>, bool) {
+        let room = self.search_room.as_deref();
+        let raw = self.command_palette_query.trim();
+        let f = &self.search_filters;
+        let blank = room.is_none() && raw.is_empty() && *f == SearchFilters::default();
+        let (recent, archived) = self.palette_recent(st, blank);
+        let chats: Vec<&Chat> = hits.chats.iter().map(|&i| &st.chats[i]).collect();
+        let in_groups: Vec<&Chat> = hits.in_groups.iter().map(|&i| &st.chats[i]).collect();
+        let any = [&recent, &archived, &chats, &in_groups].iter().any(|l| !l.is_empty())
+            || !(hits.bookmarks.is_empty() && hits.media.is_empty() && hits.messages.is_empty());
+        let mut list = Vec::new();
+        if !any && (raw.chars().count() > 1 || !f.media.is_empty()) {
+            return (list, true);
+        }
+        let toggle = |label: &'static str, more: bool| more.then_some(commands::Msg::ToggleSearchExpanded(label));
+        // Desktop's `Jqt` order of the chat sections, before the bookmarks, the media and the messages. The arrow
+        // keys reach the headings of the sections with an action (`qct`), also without "Show more".
+        let sections =
+            [("Recent chats", recent), ("Last archived", archived), ("Chats", chats), ("In Groups", in_groups)];
+        for (label, chats) in sections.into_iter().filter(|s| !s.1.is_empty()) {
+            let (n, more) = match label {
+                "Last archived" => (1, false),
+                _ => self.palette_rows(label, chats.len()),
+            };
+            list.push(Hit::Heading(label, toggle(label, more), label != "Last archived"));
+            list.extend(chats.into_iter().take(n).map(Hit::Chat));
+        }
+        if !hits.bookmarks.is_empty() {
+            let (n, more) = self.palette_rows("Bookmarks", hits.bookmarks.len());
+            list.push(Hit::Heading("Bookmarks", toggle("Bookmarks", more), true));
+            list.extend(hits.bookmarks.iter().take(n).map(Hit::Message));
+        }
+        if !hits.media.is_empty() {
+            list.push(Hit::Heading("Media", None, false));
+            list.extend(hits.media.iter().map(Hit::Media));
+        }
+        // Desktop's `Jqt`: the Messages heading stays without messages while partial matches are hidden.
+        if !hits.messages.is_empty() || (!raw.is_empty() && any && !self.search_partial) {
+            list.push(Hit::Heading("Messages", Some(commands::Msg::TogglePartialMatches), true));
+            list.extend(hits.messages.iter().map(Hit::Message));
+        }
+        (list, false)
+    }
+
+    /// Desktop's highlighted search row: the one of the arrow keys or the pointer, or else the first row that is not
+    /// a heading (`defaultHighlightedIndex`).
+    fn search_lit(&self, list: &[Hit]) -> Option<usize> {
+        let first = list.iter().position(|h| !matches!(h, Hit::Heading(..)));
+        self.search_index.filter(|&i| list.get(i).is_some_and(Hit::reach)).or(first)
+    }
+
+    /// Desktop's `CommandBarContainer` keys of the search: ↓ and ↑ move the highlight over the rows that they reach
+    /// and stop at the ends (`gqt`), and Enter picks the highlighted row, which for a heading is its action.
+    pub(crate) fn search_key(&mut self, key: &Key) -> Option<Task<UiMessage>> {
+        let down = match key.as_ref() {
+            Key::Named(Named::ArrowDown) => true,
+            Key::Named(Named::ArrowUp) => false,
+            Key::Named(Named::Enter) => {
+                let pick = {
+                    let st = self.store.read();
+                    let hits = self.search_hits(&st, self.command_palette_query.trim());
+                    let (list, _) = self.search_list(&st, &hits);
+                    self.search_lit(&list).and_then(|i| list[i].pick(&st))
+                };
+                return Some(pick.map_or_else(Task::none, |m| self.update(UiMessage::CommandBar(m))));
+            }
+            _ => return None,
+        };
+        let (to, first) = {
+            let st = self.store.read();
+            let hits = self.search_hits(&st, self.command_palette_query.trim());
+            let (list, _) = self.search_list(&st, &hits);
+            let Some(lit) = self.search_lit(&list) else { return Some(Task::none()) };
+            let to = match down {
+                true => (lit + 1..list.len()).find(|&i| list[i].reach()),
+                false => (0..lit).rev().find(|&i| list[i].reach()),
+            };
+            (to.unwrap_or(lit), list.iter().position(|h| !matches!(h, Hit::Heading(..))).unwrap_or(0))
+        };
+        self.search_index = Some(to);
+        // Desktop's `rUt`: the rows up to the first one scroll the results to their top.
+        Some(match to <= first {
+            true => operation::scroll_to(SEARCH, operation::AbsoluteOffset { x: 0.0, y: 0.0 }),
+            false => locate(format!("search-{to}"), SEARCH, Align::Nearest),
+        })
+    }
+}
+
+/// The scrollable of the search results.
+const SEARCH: &str = "search-results";
+
+/// The media of the search, five to a row.
+fn media_grid(tiles: Vec<El<'_>>) -> Option<El<'_>> {
+    let mut tiles = tiles.into_iter().peekable();
+    tiles.peek()?;
+    let mut grid = Column::new().spacing(6.5).padding(Padding::new(0.0).left(13.0).right(13.0).bottom(4.0));
+    while tiles.peek().is_some() {
+        grid = grid.push(Row::with_children(tiles.by_ref().take(5)).spacing(6.5));
+    }
+    Some(grid.into())
+}
+
+/// A row of the command bar search.
+enum Hit<'a> {
+    /// A section heading, its action, and whether the arrow keys reach it.
+    Heading(&'static str, Option<commands::Msg>, bool),
+    Chat(&'a Chat),
+    /// A bookmark or a message.
+    Message(&'a Message),
+    Media(&'a Message),
+}
+
+impl Hit<'_> {
+    fn reach(&self) -> bool {
+        !matches!(self, Hit::Heading(_, _, false))
+    }
+
+    /// What Enter on the row does.
+    fn pick(&self, st: &BeeperStore) -> Option<commands::Msg> {
+        match self {
+            Hit::Heading(_, action, _) => action.clone(),
+            Hit::Chat(c) => Some(commands::Msg::ExecuteChat(c.id.clone())),
+            Hit::Message(m) | Hit::Media(m) => {
+                Some(commands::Msg::JumpTo(st.chat(&m.chat_id).id.clone(), m.id.clone()))
+            }
+        }
+    }
+}
+
+/// Highlights the row `i` of the search under the pointer.
+fn search_hover(i: usize) -> UiMessage {
+    UiMessage::CommandBar(commands::Msg::HighlightResult(i))
 }

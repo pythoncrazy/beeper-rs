@@ -47,8 +47,8 @@ use iced::widget::{
     Row, Space, Stack,
 };
 use iced::{
-    border, mouse, window, Bottom, Center, Color, Fill, Length, Padding, Pixels, Point, Right, Shadow, Size, Task,
-    Theme, Vector,
+    border, mouse, Bottom, Center, Color, Fill, Length, Padding, Pixels, Point, Right, Shadow, Size, Task, Theme,
+    Vector,
 };
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -677,7 +677,10 @@ pub(crate) fn divider_at(st: &BeeperStore, chat: &Chat, msgs: &[&Message]) -> Op
     let read = chat.last_read_message_sort_key.as_ref().filter(|k| Some(*k) < last);
     let after = read.and_then(|r| msgs.windows(2).position(|w| w[0].sort_key <= *r && w[1].sort_key > *r));
     let at = after.map(|i| i + 1);
-    let at = at.or_else(|| msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)));
+    // The unread marks of the messages count only while the chat is unread: a read through the bottom of the
+    // timeline leaves them, and leaving the chat reads nothing.
+    let marked = |m: &&&Message| m.is_deleted != Some(true) && m.is_unread == Some(true);
+    let at = at.or_else(|| msgs.iter().position(|m| chat.is_unread() && marked(&m)));
     at.map(|i| msgs[i].id.clone())
 }
 
@@ -1426,10 +1429,12 @@ impl BeeperGuiApp {
                 .on_show(|_| UiMessage::Timeline(timeline::Msg::Scrolled(false)))
                 .on_hide(UiMessage::Timeline(timeline::Msg::Scrolled(true))),
         );
+        // Desktop's `beeper-nudge-active` shakes the scrolling container of the chat that a nudge came to.
+        let (dx, dy) = self.nudges.offset(st.resolve_canonical_chat_id(&chat.id).as_deref());
         let up = self.pane().scrolled_up.is_some_and(|s| s.0);
         let held = timeline::hold(scroller(col).id(self.pane().scroll_id()), up).glide(self.pane().glide);
         // Chromium scrolls the timeline while a drag that selects its text holds the pointer past its top or bottom.
-        let list = lift::tight(crate::selectable::autoscroll(held, self.pane().scroll_id(), true));
+        let list = lift::tight(crate::selectable::autoscroll(held, self.pane().scroll_id(), true)).shift(dx, dy);
         let opened = self.pane().reply_opened.map_or(1.0, |at| at.elapsed().as_secs_f32());
         let (shown, below) = replies_reveal(opened);
         let replies = self.pane().reply_thread.as_ref().map(|id| {
@@ -2383,29 +2388,42 @@ impl BeeperGuiApp {
                         .style(fill_box(Color::BLACK.scale_alpha(alpha), 17.0))
                         .into()
                     };
-                    // A cropped still shows from a baked cut (the renderer draws `Cover` and crops past their box).
-                    let cut = |u: &String| self.cover_tile(u, (w.round() as u32, h.round() as u32));
-                    let cut = thumb_url.as_ref().filter(|_| cover && !looped && !lottie).and_then(cut);
                     // Desktop's `<img>`, whose right click gives the menu its image items.
                     let img = !is_video && matches!(thumb_url.as_ref().and_then(|u| self.media_at(u)), Some(Ok(_)));
-                    let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media_at(u)) {
-                        Some(Ok(_)) if let Some(t) = cut => image(t.clone()).width(w).height(h).into(),
-                        Some(Ok(frames)) => {
+                    // A cropped image shows from a baked cut, as the renderer draws `Cover` past its box: a still, or
+                    // the frames of an animation once a worker cut them. Until then the whole image shows.
+                    let px = (w.round() as u32, h.round() as u32);
+                    let base: El<'_> = match thumb_url.as_ref().and_then(|u| Some((u, self.media_at(u)?))) {
+                        Some((url, Ok(frames)))
+                            if cover
+                                && !lottie
+                                && frames.len() == 1
+                                && let Some(t) = self.cover_tile(url, px) =>
+                        {
+                            image(t.clone()).width(w).height(h).into()
+                        }
+                        Some((url, Ok(frames))) => {
+                            let cut =
+                                (cover && !lottie && frames.len() > 1).then(|| self.cover_frames(url, px)).flatten();
                             let autoplay = st.settings.on("autoplayGifs");
                             let played = self.pane().played_gifs.get(&(m.id.clone(), ai)).filter(|_| !autoplay);
                             let (play, start) = match played {
                                 Some(&at) => (self.shows(), at),
                                 None => (self.autoplays(st), self.started),
                             };
-                            let gif = anim::gif(frames, play, start, move |f| {
-                                image(f).width(w).height(h).border_radius(17.0)
-                            });
+                            let gif = match cut {
+                                // The cut has the corners of the bubble.
+                                Some(cut) => anim::gif(cut, play, start, move |f| image(f).width(w).height(h)),
+                                None => anim::gif(frames, play, start, move |f| {
+                                    image(f).width(w).height(h).border_radius(17.0)
+                                }),
+                            };
                             match !autoplay && frames.animated() {
                                 true => gif_toggle(gif, played.is_some(), Msg::ToggleGif(m.id.clone(), ai)),
                                 false => gif,
                             }
                         }
-                        Some(Err(_)) if m.unresolved_media.is_none() => self.image_error(w, h, 17.0),
+                        Some((_, Err(_))) if m.unresolved_media.is_none() => self.image_error(w, h, 17.0),
                         _ => container(ic(icon::IMAGE, 28.0).color(p.sub))
                             .center_x(w)
                             .center_y(h)
@@ -3741,7 +3759,12 @@ impl BeeperGuiApp {
                 self.store.write().toggle_bookmark(&mid);
             }
             Msg::MarkUnreadFromHere(cid, mid) => {
-                self.store.write().mark_unread_from_message(&cid, &mid);
+                let mut st = self.store.write();
+                st.mark_unread_from_message(&cid, &mid);
+                // Desktop's `preventAutoMarkAsRead`: the open chat stays unread until you leave it.
+                let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+                self.pane.keep_unread |= open.is_some() && open == st.resolve_chat_idx(&cid);
+                drop(st);
                 self.refresh_theme_and_tray();
             }
             Msg::MarkReadThrough(cid, mid) => {
@@ -3761,7 +3784,7 @@ impl BeeperGuiApp {
             Msg::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
             Msg::OpenPollVotes(chat, mid) => {
                 if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
-                    return window::gain_focus(w.0);
+                    return self.raise(w.0);
                 }
                 let (id, open) = self.open_child(Size::new(342.0, 563.0));
                 self.vote_windows.push((id, chat, mid));
@@ -4016,7 +4039,7 @@ impl BeeperGuiApp {
                 return iced::clipboard::write(url);
             }
             Msg::GoTo(chat, mid) => {
-                let main = window::gain_focus(self.main_window.expect("the main window is open"));
+                let main = self.raise(self.main_window.expect("the main window is open"));
                 // Desktop's `jumpToMessage` of the media viewer selects the message and does not flash it.
                 return Task::batch([self.reveal(chat, mid, false), main]);
             }
@@ -4327,6 +4350,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use iced::window;
     use iced_test::simulator::simulator;
 
     /// Desktop's right click on a selection: it acts on all the selected messages, and a right click outside the
@@ -4971,6 +4995,60 @@ pub(crate) mod tests {
         let see_through = mix(Color::WHITE, app.pal.link_card, 0.5);
         assert!(close((6, 16), see_through) && close((6, 50), see_through), "Desktop's half gray-40 bubbles");
         assert!(close((6, 84), app.pal.received));
+    }
+
+    /// Desktop's `object-fit: cover` of a very tall GIF (`kf`): the 160 by 400 box is full, and the GIF plays. A worker
+    /// cuts its frames to the box with the corners of the bubble, and until then the whole GIF shows.
+    #[test]
+    fn cropped_gifs_play_like_desktop() {
+        let mut app = crate::fuzz::demo_app("cropped-gif");
+        app.pane.size = Size::new(900.0, 700.0);
+        let mid = plain_received(&app, "");
+        let url = "mxc://x/tall-gif".to_string();
+        change(&app, &mid, |m| {
+            m.text = None;
+            m.attachments = vec![Attachment {
+                attachment_type: "img".into(),
+                mime_type: Some("image/gif".into()),
+                src_url: Some(url.clone()),
+                size: Some(AttachmentSize { width: Some(100), height: Some(1000) }),
+                ..Default::default()
+            }];
+        });
+        assert_eq!(media_box(900.0, Some((100.0, 1000.0)), 0.45), (160.0, 400.0, true), "a very tall GIF crops");
+        let fill = |c: [u8; 4]| image::Handle::from_rgba(100, 1000, c.repeat(100 * 1000));
+        let (red, blue) = (0xff0000, 0x0000ff);
+        let frames = crate::Frames::from([(fill([255, 0, 0, 255]), 1000), (fill([0, 0, 255, 255]), 1000)]);
+        app.media.insert(url.clone(), Some(Ok(frames.clone())));
+        // The width of the pixels of a color, at 2x.
+        let wide = |shot: &::image::RgbaImage, c: u32| {
+            let xs: Vec<u32> = spots(shot, c).into_iter().map(|p| p.0).collect();
+            xs.iter().max().zip(xs.iter().min()).map_or(0, |(a, b)| a - b + 1)
+        };
+        let at = |app: &mut BeeperGuiApp, ms: u64| {
+            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            pixels(&mut alone(app, &mid))
+        };
+        let whole = at(&mut app, 0);
+        assert!((70..=90).contains(&wide(&whole, red)), "the whole GIF while its cut waits: {}", wide(&whole, red));
+        let wanted: Vec<_> = std::mem::take(&mut *app.wants.cuts.borrow_mut()).into_iter().collect();
+        assert_eq!(wanted, [(url.clone(), 160, 400)], "the view asks for the cut");
+        let k = format!("160x400 {url}");
+        app.cuts.insert(k, Some(crate::gallery::cut_frames(&frames, (160, 400))));
+        let first = at(&mut app, 0);
+        assert!((300..=322).contains(&wide(&first, red)), "the cut fills the box: {}", wide(&first, red));
+        let second = at(&mut app, 1100);
+        assert!((300..=322).contains(&wide(&second, blue)) && spots(&second, red).is_empty(), "and plays");
+        assert!(matches!(alone_redraw(&app, &mid), window::RedrawRequest::At(_)), "the next frame is due");
+        let iced::advanced::image::Handle::Rgba { pixels, .. } =
+            &app.cuts.get(&format!("160x400 {url}")).unwrap().as_ref().unwrap()[0].0
+        else {
+            panic!("RGBA")
+        };
+        assert_eq!(pixels[3], 0, "a round corner");
+        app.store.write().settings.set_pref("autoplayGifs", 0);
+        let paused = at(&mut app, 1100);
+        assert!(spots(&paused, 0xefeff0).len() > 1000 && spots(&paused, blue).is_empty(), "the first frame, to play");
     }
 
     /// Desktop's link preview image (`LinkPreview.Image`), an `EnhancedImg playable`: a GIF plays with "Autoplay

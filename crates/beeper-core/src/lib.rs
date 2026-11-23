@@ -11,6 +11,7 @@ mod download;
 pub mod drafts;
 mod error;
 pub mod features;
+mod floe;
 pub mod import;
 pub mod matrix;
 pub mod media;

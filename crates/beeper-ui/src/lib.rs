@@ -25,6 +25,7 @@ mod gallery;
 mod gifs;
 pub mod hotkeys;
 mod i18n;
+mod idle;
 mod images;
 mod info;
 mod integrations;
@@ -47,6 +48,7 @@ pub mod networks;
 pub mod new_chat;
 mod nickname;
 mod notify;
+mod nudge;
 mod pdf;
 mod phone;
 mod pins;
@@ -382,6 +384,7 @@ pub enum UiMessage {
     Members(members::Msg),
     /// Desktop's block and unblock of a direct chat, with Report spam, and the Blocked users window.
     Blocking(blocking::Msg),
+    Nudge(nudge::Msg),
     /// Desktop's merged chats: Unmerge.
     Merged(merged::Msg),
     /// Desktop's merge suggestions and the nudge of the composer switcher of a merged chat.
@@ -417,6 +420,8 @@ pub enum UiMessage {
     Pushed(Result<(), String>),
     /// The scroll of the timeline: the jump to its bottom, and the load of older messages at its top.
     Timeline(timeline::Msg),
+    /// Desktop's idle state, which stops the open chat from reading what comes in.
+    Idle(idle::Msg),
     Ask(Option<u8>),
     /// The close of Desktop's recovery key reminder (`dismissRecoveryCodeReminder`).
     DismissRecoveryReminder,
@@ -1527,7 +1532,7 @@ static DEVICE_ICONS: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock
 svg_static!(QR_CODE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>"##);
 svg_static!(BELL_OFF, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/></svg>"##);
 
-static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 10]> = std::sync::LazyLock::new(|| {
+static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 11]> = std::sync::LazyLock::new(|| {
     [
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M9.167 10.833h-5V9.166h5v-5h1.666v5h5v1.667h-5v5H9.167z"/></svg>"##[..],
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path transform="rotate(45 10 10)" fill="currentColor" d="M9.167 10.833h-5V9.166h5v-5h1.666v5h5v1.667h-5v5H9.167z"/></svg>"##[..],
@@ -1539,6 +1544,8 @@ static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 10]> = std::sync::LazyL
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M14.167 14.5v-9H12.5v9zm-3.334 3.833V1.667H9.167v16.666zm6.667-6.666V8.333h-1.667v3.333zM7.5 13.5v-7H5.833v7zm-3.333-1.834V8.333H2.5v3.333z"/></svg>"##[..],
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M4.214 8.874q.65 0 1.182.322.536.323.859.86t.322 1.187q0 .645-.322 1.182a2.5 2.5 0 0 1-.86.86 2.24 2.24 0 0 1-1.181.321q-.645 0-1.182-.322a2.5 2.5 0 0 1-.86-.86 2.26 2.26 0 0 1-.321-1.18q0-.646.316-1.182a2.5 2.5 0 0 1 .86-.86 2.24 2.24 0 0 1 1.187-.328m0 .902q-.398 0-.73.204-.334.199-.533.533a1.4 1.4 0 0 0-.198.73q0 .398.198.73.2.334.532.532.333.199.73.2.4-.002.731-.2.333-.2.532-.531.198-.333.199-.73 0-.4-.2-.731-.198-.333-.53-.533a1.37 1.37 0 0 0-.731-.204m9.432.962q.208 0 .354.15.15.146.15.355 0 .205-.15.355a.48.48 0 0 1-.354.144H8.3a.495.495 0 0 1-.499-.499q0-.21.144-.354.145-.15.355-.15zM4.214 2.66q.65 0 1.182.322.536.317.859.854t.322 1.187q0 .645-.322 1.182a2.5 2.5 0 0 1-.86.864 2.24 2.24 0 0 1-1.181.323q-.645 0-1.182-.323a2.5 2.5 0 0 1-.86-.864 2.26 2.26 0 0 1-.321-1.182q0-.65.316-1.187.322-.537.86-.854a2.27 2.27 0 0 1 1.187-.322m.924 1.197q-.156 0-.258.162l-.956 1.536-.414-.52a.4.4 0 0 0-.118-.103.27.27 0 0 0-.14-.033.27.27 0 0 0-.198.086.3.3 0 0 0-.086.215q0 .124.08.215l.601.726a.6.6 0 0 0 .124.112q.07.043.162.043a.33.33 0 0 0 .29-.161l1.143-1.778a.43.43 0 0 0 .07-.225.25.25 0 0 0-.091-.194.3.3 0 0 0-.21-.08m8.508.666q.209.001.354.146.15.146.15.354 0 .21-.15.36a.48.48 0 0 1-.354.15H8.3a.47.47 0 0 1-.355-.15.5.5 0 0 1-.144-.36q0-.21.144-.354a.48.48 0 0 1 .355-.146z"/></svg>"##[..],
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M10.417 2.084A8.333 8.333 0 0 0 9.129 18.65a1.62 1.62 0 0 0 1.39-.464l7.668-7.672c.348-.348.546-.857.463-1.39a8.335 8.335 0 0 0-8.233-7.041M3.75 10.417a6.667 6.667 0 0 1 12.852-2.493 8.333 8.333 0 0 0-8.678 8.678 6.67 6.67 0 0 1-4.174-6.185m5.852 6.33 7.142-7.145a6.667 6.667 0 0 0-7.142 7.146"/></svg>"##[..],
+        // Desktop's `nudge` system icon.
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M7.5 3a1 1 0 1 1 2 0v.65a3.75 3.75 0 0 1 2.75 3.6v2.92l1 1.58v.5h-9.5v-.5l1-1.58V7.25a3.75 3.75 0 0 1 2.75-3.6zM6.25 13.75a2.25 2.25 0 0 0 4.5 0z"/><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" d="M14.5 8.5q.75-1.5 1.5 0t1.5 0 1.5 0"/></svg>"##[..],
     ]
     .map(svg::Handle::from_memory)
 });
@@ -2694,6 +2701,9 @@ pub struct Pane {
     pub draft_due: bool,
     /// Desktop's `ScrollToBottom`: whether you scrolled up from the bottom of the timeline, and since when.
     pub scrolled_up: Option<(bool, std::time::Instant)>,
+    /// Desktop's `preventAutoMarkAsRead`: a "Mark as Unread" from a message keeps the open chat unread until you
+    /// leave it (`onThreadDeselected`).
+    pub keep_unread: bool,
     /// When the last smooth scroll to the bottom of the timeline started (see [`timeline::Hold`]).
     pub glide: Option<std::time::Instant>,
     /// Desktop's `unreadDividerMessageSortKey`: the message after the read position of the chat when it opened,
@@ -2840,6 +2850,15 @@ pub struct BeeperGuiApp {
     pub display_server: DisplayServerKind,
     /// The main window is hidden in the tray.
     pub hidden: bool,
+    /// The windows that hid on Wayland, each with the settings, in screen pixels, to open it again under its ID.
+    /// winit cannot hide a window there, where Electron's `hide` unmaps the window, so the app closes it in iced and
+    /// keeps all its state.
+    pub unmapped: Vec<(window::Id, window::Settings)>,
+    /// The settings, in screen pixels and without the icon, that the open windows opened with on Wayland, to open
+    /// them again after they hide.
+    opened: Vec<(window::Id, window::Settings)>,
+    /// The widget that had the keyboard focus when the main window hid on Wayland, to focus it again in the new one.
+    unmapped_focus: Option<iced::widget::Id>,
     /// The unread count and window state last sent to the tray and the app badge, and whether they can be stale.
     tray_sent: (Option<(u32, bool)>, bool),
     pub system_dark: bool,
@@ -2899,6 +2918,8 @@ pub struct BeeperGuiApp {
     emoji_hovered: [bool; 2],
     booted: String,
     focused: bool,
+    /// Desktop's `idleState`: 5 minutes passed without input (see [`idle`]).
+    pub(crate) idle: bool,
     notified: HashSet<String>,
     /// The failed sends that Retry sent again: Desktop shows their error again when they fail again.
     retried: HashSet<String>,
@@ -2921,6 +2942,8 @@ pub struct BeeperGuiApp {
     pub cmd_no_reply: bool,
     /// The highlighted command.
     pub cmd_index: usize,
+    /// The search row of the arrow keys or the pointer; `None` highlights the first row that is not a heading.
+    pub search_index: Option<usize>,
     /// Desktop's `expandedCategories`: the search sections that show more.
     pub search_expanded: HashSet<&'static str>,
     /// Desktop's `partialMatchesEnabled` of the message search.
@@ -3013,6 +3036,8 @@ pub struct BeeperGuiApp {
     toast: Option<Toast>,
     /// The earlier toasts of Desktop's `toasts-list` that still show above the newest, each with the time it showed.
     older_toasts: Vec<(Toast, Duration)>,
+    /// The nudges that came in and went out, and the shake of the timeline.
+    nudges: nudge::Nudges,
     /// How many times the newest toast was dismissed, so that a dismissed toast does not move up.
     toast_dismissals: u32,
     /// Desktop's action stack `Jv`: what each action did and the message that undoes it.
@@ -3119,6 +3144,8 @@ pub struct BeeperGuiApp {
     pub(crate) pdfs: HashMap<String, Option<Result<pdf::Doc, String>>>,
     /// The baked gallery tiles (`gallery.rs`).
     tiles: images::Images<image::Handle>,
+    /// The frames of the animations cut to their inline box (`gallery.rs`).
+    cuts: images::Images<Frames>,
     /// Desktop's account `messages` cache for quotes: a quoted message out of the timeline, `None` while it loads.
     pub(crate) quotes: HashMap<String, Option<Result<Message, String>>>,
     /// Desktop's `dismissError`: the accounts whose disconnected banner was dismissed this session.
@@ -3201,6 +3228,9 @@ impl BeeperGuiApp {
             os,
             display_server,
             hidden: false,
+            unmapped: Vec::new(),
+            opened: Vec::new(),
+            unmapped_focus: None,
             tray_sent: (None, true),
             pal: crate::style::palette(theme),
             system_dark: false,
@@ -3239,6 +3269,7 @@ impl BeeperGuiApp {
             emoji_hovered: [false; 2],
             booted: beeper_core::config::now_rfc3339_millis(),
             focused: false,
+            idle: false,
             notified: HashSet::new(),
             retried: HashSet::new(),
             notifications: HashMap::new(),
@@ -3255,6 +3286,7 @@ impl BeeperGuiApp {
             cmd_submenu: None,
             cmd_no_reply: true,
             cmd_index: 0,
+            search_index: None,
             search_expanded: HashSet::new(),
             search_partial: true,
             last_archived: Default::default(),
@@ -3318,6 +3350,7 @@ impl BeeperGuiApp {
             key_banner_closed: false,
             toast: None,
             older_toasts: Vec::new(),
+            nudges: Default::default(),
             toast_dismissals: 0,
             undo_stack: Vec::new(),
             undo_note: None,
@@ -3385,6 +3418,7 @@ impl BeeperGuiApp {
             vcards: HashMap::new(),
             pdfs: HashMap::new(),
             tiles: images::Images::new(64 << 20),
+            cuts: images::Images::new(128 << 20),
             quotes: HashMap::new(),
             dismissed_errors: HashSet::new(),
             resolving_media: HashMap::new(),
@@ -3422,7 +3456,16 @@ impl BeeperGuiApp {
         app.hidden = signed_in && st.settings.on("startMinimized");
         drop(st);
         settings.visible = !app.hidden;
-        let (id, open) = app.open_window(settings);
+        let (id, open) = match app.hidden && app.unmaps() {
+            // Electron maps no window that starts hidden on Wayland, where winit would show it: the main window opens
+            // when the app shows.
+            true => {
+                let id = window::Id::unique();
+                app.unmapped.push((id, window::Settings { visible: true, icon: None, ..settings }));
+                (id, Task::none())
+            }
+            false => app.open_window(settings),
+        };
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
         let open = open.then(move |id| Task::done(id).chain(Self::keep_on_screen(id)));
         let cloud = (signed_in && !app.store.read().config.demo).then(|| app.refresh_cloud_accounts());
@@ -3941,6 +3984,8 @@ impl BeeperGuiApp {
     }
 
     pub fn select_chat(&mut self, chat_id: &str) {
+        // Desktop's `onThreadDeselected` lets a chat that you leave read again.
+        self.pane.keep_unread &= self.pane.selected_chat_id.as_deref() == Some(chat_id);
         self.leave_draft();
         // Desktop's `setSelectedThread` gives the keyboard to the composer (`focusMessageInput`), and drops the cursor
         // of the chat list.
@@ -3966,7 +4011,7 @@ impl BeeperGuiApp {
         st.load_chat(&id);
         self.pane.unread_divider = message::divider_at(&st, &st.chats[idx], &self.pane_msgs(&st));
         // Desktop reads a chat with an unread divider from there, through the last message in view (`onRangeChange`).
-        if !st.incognito() && self.pane.unread_divider.is_none() {
+        if !st.incognito() && self.pane.unread_divider.is_none() && !self.pane.keep_unread {
             st.mark_read(idx, false);
         }
         let chat = st.chats[idx].clone();
@@ -4210,15 +4255,14 @@ impl BeeperGuiApp {
             && (!self.pane().selected_msgs.is_empty() || self.pane().composer.is_empty())
     }
 
-    /// Leave the selected chat for `next`: save its draft, mark it read, and drop its elapsed reminder.
+    /// Leave the selected chat for `next`: save its draft, and drop its elapsed reminder (`onNavigateAwayFrom`).
+    /// Like Desktop's `onThreadDeselected`, leaving does not read the chat: what came in while you were not there,
+    /// or below the view, stays unread.
     fn leave_chat(&self, st: &mut BeeperStore, next: Option<&str>) {
         let Some(prev) = self.pane().selected_chat_id.as_deref().filter(|&p| Some(p) != next) else { return };
         save_draft(st, self.pane());
         st.leave_draft(prev);
         let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
-        if !st.incognito() && !st.chats[idx].flag(ChatFlag::MarkedUnread) {
-            st.mark_chat_read(prev, true);
-        }
         if self.expired(&st.chats[idx]) {
             st.set_reminder(idx, None);
         }
@@ -4478,6 +4522,7 @@ impl BeeperGuiApp {
             UiMessage::Accounts(msg) => return self.accounts(msg),
             UiMessage::Networks(msg) => return self.networks(msg),
             UiMessage::Blocking(msg) => return self.blocking(msg),
+            UiMessage::Nudge(msg) => return self.nudge(msg),
             UiMessage::Merged(msg) => return self.merged(msg),
             UiMessage::MergeSuggest(msg) => return self.merge_suggest(msg),
             UiMessage::Nickname(msg) => return self.nickname(msg),
@@ -4510,6 +4555,7 @@ impl BeeperGuiApp {
             UiMessage::Settings(msg) => return self.settings(msg),
             UiMessage::Thread(msg) => return self.threads(msg),
             UiMessage::Timeline(msg) => return self.timeline_scroll(msg),
+            UiMessage::Idle(msg) => return self.idle(msg),
             UiMessage::Toast(msg) => return self.toasts(msg),
             UiMessage::UserCard(msg) => return self.user_card(msg),
             UiMessage::Video(msg) => return self.video(msg),
@@ -4562,7 +4608,7 @@ impl BeeperGuiApp {
             UiMessage::SaveDrafts => self.save_drafts(),
             UiMessage::OpenPollCreator(chat) => {
                 if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
-                    return window::gain_focus(d.id);
+                    return self.raise(d.id);
                 }
                 let (id, open) = self.open_child(Size::new(400.0, 620.0));
                 let question = format!("poll-{chat}");
@@ -4573,7 +4619,7 @@ impl BeeperGuiApp {
             UiMessage::OpenEditSpaces => {
                 self.list.chat_menu = None;
                 if let Some(d) = &self.spaces_window {
-                    return window::gain_focus(d.id);
+                    return self.raise(d.id);
                 }
                 let (id, open) = self.open_child(SPACES_SIZE);
                 let st = self.store.read();
@@ -4588,7 +4634,7 @@ impl BeeperGuiApp {
             UiMessage::OpenEditGroup(chat) => {
                 self.list.chat_menu = None;
                 if let Some(d) = &self.group_window {
-                    return window::gain_focus(d.id);
+                    return self.raise(d.id);
                 }
                 let (id, open) = self.open_child(GROUP_SIZE);
                 let st = self.store.read();
@@ -4667,7 +4713,7 @@ impl BeeperGuiApp {
             UiMessage::LoggedOut(Ok(())) => restart(),
             UiMessage::LoggedOut(Err(e)) => self.fail(Toast::new(format!("Could not log out: {e}"))),
             // Desktop's "Close Chat Info" of a detached Chat Info closes its window.
-            UiMessage::ToggleRightPanel if self.pane.info => return window::close(self.swapped.expect("a window")),
+            UiMessage::ToggleRightPanel if self.pane.info => return self.close_window(self.swapped.expect("a window")),
             UiMessage::ToggleRightPanel => {
                 // Desktop shows Chat Info or the thread pane, not both.
                 let closed = self.pane.thread.take().is_some();
@@ -4694,7 +4740,8 @@ impl BeeperGuiApp {
                 // Desktop's thread pane reads a new reply that comes into view at the bottom of the thread.
                 let thread =
                     self.pane.thread.as_ref().filter(|t| t.thread_root.is_some() && t.thread_root == m.thread_root);
-                let read_thread = self.focused && thread.is_some_and(|t| t.scrolled_up.is_none_or(|(up, _)| !up));
+                let read_thread =
+                    self.focused && !self.idle && thread.is_some_and(|t| t.scrolled_up.is_none_or(|(up, _)| !up));
                 let st = self.store.read();
                 let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_canonical_chat_id(c));
                 // A write lock moves the store generation, which empties the memo of the views, so only a change
@@ -4720,6 +4767,7 @@ impl BeeperGuiApp {
                 }
                 self.send_scheduled(due);
                 self.message_sound(&m);
+                self.maybe_nudge(&m);
                 let note = self.notify_message(&m);
                 let failed = self.notify_failed(&m);
                 return Task::batch([self.update(UiMessage::StoreChanged), note, failed]);
@@ -4845,7 +4893,7 @@ impl BeeperGuiApp {
                     None => pane.selected_chat_id.is_none() && !space,
                 };
                 if close {
-                    return Task::batch([task, window::close(id)]);
+                    return Task::batch([task, self.close_window(id)]);
                 }
                 // Desktop's thread window shows its carousel in its "Media in %s" window.
                 let thread = pane.thread_root.is_some();
@@ -5204,6 +5252,7 @@ impl BeeperGuiApp {
             || !self.fetching.is_empty()
             || self.group_window.as_ref().is_some_and(|d| d.saving)
             || self.hover_fading()
+            || self.nudges.shaking()
             || self.sidebar_progress().is_some()
             || self
                 .panes()
@@ -5267,7 +5316,8 @@ impl BeeperGuiApp {
                 .chain(self.audio_drag())
                 .chain(self.record_events())
                 .chain(self.video_ticks())
-                .chain(self.view_once_ticks()),
+                .chain(self.view_once_ticks())
+                .chain(self.idle_events()),
         )
     }
 
@@ -5997,10 +6047,12 @@ impl BeeperGuiApp {
 
     /// Desktop's timeline effect (`markAsRead` through the last message in view, from `onRangeChange`): while its
     /// window is focused, the open chat is read through the bottom message on screen, all of it at the bottom of the
-    /// timeline, except in incognito mode.
+    /// timeline, except in incognito mode, while the app is idle, and after a "Mark as Unread" from a message of the
+    /// chat (`preventAutoMarkAsRead`) until you leave it.
     fn read_open_chat(&self) {
         let at_bottom = self.pane.scrolled_up.is_none_or(|(up, _)| !up);
         let shows = self.focused && self.pane.thread_root.is_none() && !self.pane.info;
+        let shows = shows && !self.idle && !self.pane.keep_unread;
         let Some(id) = self.pane.selected_chat_id.clone().filter(|_| shows) else {
             return;
         };
@@ -6417,7 +6469,7 @@ impl BeeperGuiApp {
             }
             let id = *id;
             (self.pip, self.pip_manual, self.pip_menu) = (None, false, None);
-            return window::close(id);
+            return self.close_window(id);
         }
         let Some(v) = self.video.as_mut().filter(|_| std::mem::take(&mut self.pip_wanted)) else {
             return Task::none();

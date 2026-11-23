@@ -142,7 +142,7 @@ impl BeeperGuiApp {
         if let Some((id, _)) =
             self.chat_windows.iter().find(|w| w.1.info && w.1.selected_chat_id.as_ref() == Some(&chat))
         {
-            return window::gain_focus(*id);
+            return self.raise(*id);
         }
         self.store.write().load_chat(&chat);
         let size = Size::new(330.0, 560.0);

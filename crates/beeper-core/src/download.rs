@@ -4,7 +4,7 @@
 //! stalls instead of one that takes long, and tries 3 more times before it fails.
 
 use matrix_sdk::ruma::events::room::MediaSource;
-use matrix_sdk::ruma::MxcUri;
+use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
 use reqwest::{StatusCode, Url};
 use serde_json::Value;
 use std::time::Duration;
@@ -48,11 +48,78 @@ fn client() -> &'static reqwest::Client {
     })
 }
 
-/// The `mxc://` URI of a source, without the keys of an encrypted one, for the log.
-pub(crate) fn uri(source: &MediaSource) -> &MxcUri {
-    match source {
-        MediaSource::Plain(uri) => uri,
-        MediaSource::Encrypted(file) => &file.url,
+/// The media of a download and how it decrypts.
+#[derive(Clone, Debug)]
+pub(crate) enum Source {
+    /// Plain media, or media with the `v2` AES-CTR encryption of the spec.
+    Matrix(MediaSource),
+    /// Media with the `com.beeper.floe.v1` encryption of MSC4571, which matrix-sdk does not know.
+    Floe(OwnedMxcUri, crate::floe::File),
+}
+
+impl Source {
+    /// The `mxc://` URI of the media, without the keys of an encrypted one, for the log.
+    pub(crate) fn uri(&self) -> &MxcUri {
+        match self {
+            Self::Matrix(MediaSource::Plain(uri)) | Self::Floe(uri, _) => uri,
+            Self::Matrix(MediaSource::Encrypted(file)) => &file.url,
+        }
+    }
+
+    pub(crate) fn encrypted(&self) -> bool {
+        !matches!(self, Self::Matrix(MediaSource::Plain(_)))
+    }
+
+    /// The key of the media cache, which matrix-sdk makes of the URI alone, and where the bytes are decrypted.
+    pub(crate) fn cache_key(&self) -> MediaSource {
+        match self {
+            Self::Matrix(source) => source.clone(),
+            Self::Floe(uri, _) => MediaSource::Plain(uri.clone()),
+        }
+    }
+}
+
+/// The bytes of a body as they download: kept as they come, or decrypted a FLOE segment at a time.
+enum Sink {
+    Whole(Vec<u8>),
+    Floe(Box<crate::floe::Stream>, Vec<u8>),
+}
+
+impl Sink {
+    /// A FLOE stream checks its key and header before the download, and a wrong one is not tried again.
+    fn new(source: &Source) -> Result<Self, Failure> {
+        match source {
+            Source::Matrix(_) => Ok(Self::Whole(Vec::new())),
+            Source::Floe(_, file) => crate::floe::Stream::new(file)
+                .map(|s| Self::Floe(Box::new(s), Vec::new()))
+                .map_err(|e| Failure { again: false, ..Failure::new(format!("decrypt: {e}")) }),
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) -> Result<(), String> {
+        match self {
+            Self::Whole(bytes) => {
+                bytes.extend_from_slice(chunk);
+                Ok(())
+            }
+            Self::Floe(stream, plain) => stream.push(chunk, plain),
+        }
+    }
+
+    /// The bytes of the media, decrypted when it is encrypted.
+    fn finish(self, source: &Source) -> Result<Vec<u8>, String> {
+        match (self, source) {
+            (Self::Floe(stream, mut plain), _) => (*stream).finish(&mut plain).map(|()| plain),
+            (Self::Whole(bytes), Source::Matrix(MediaSource::Encrypted(file))) => {
+                let mut cursor = std::io::Cursor::new(bytes);
+                let mut plain = Vec::new();
+                matrix_sdk_crypto::AttachmentDecryptor::new(&mut cursor, file.as_ref().clone().into())
+                    .map_err(|e| e.to_string())
+                    .and_then(|mut r| std::io::Read::read_to_end(&mut r, &mut plain).map_err(|e| e.to_string()))?;
+                Ok(plain)
+            }
+            (Self::Whole(bytes), _) => Ok(bytes),
+        }
     }
 }
 
@@ -91,14 +158,16 @@ fn network(e: reqwest::Error) -> Failure {
     }
 }
 
-/// One try of the download of `source`: its bytes, decrypted when it is encrypted.
+/// One try of the download of `source`: its bytes, decrypted when it is encrypted. A FLOE body decrypts a segment at
+/// a time as it downloads, like the SDK's `FLOEStream`.
 pub(crate) async fn once(
     homeserver: &Url,
     token: &str,
-    source: &MediaSource,
+    source: &Source,
     interactive: bool,
 ) -> Result<Vec<u8>, Failure> {
-    let first = url(homeserver, uri(source), interactive)?;
+    let mut sink = Sink::new(source)?;
+    let first = url(homeserver, source.uri(), interactive)?;
     let (mut at, mut trail) = (first.clone(), Vec::new());
     let resp = loop {
         let mut req = client().get(at.clone());
@@ -120,25 +189,19 @@ pub(crate) async fn once(
         false => format!(" (after {})", trail.join(", ")),
     };
     let status = resp.status();
-    let body = resp.bytes().await.map_err(|e| {
+    let broken = |e: reqwest::Error| {
         let f = network(e);
         Failure { error: format!("{}{via}", f.error), ..f }
-    })?;
+    };
     if !status.is_success() {
-        return Err(refused(status, &body, &via));
+        return Err(refused(status, &resp.bytes().await.map_err(broken)?, &via));
     }
-    match source {
-        MediaSource::Plain(_) => Ok(body.to_vec()),
-        MediaSource::Encrypted(file) => {
-            let mut cursor = std::io::Cursor::new(body);
-            let mut plain = Vec::new();
-            matrix_sdk_crypto::AttachmentDecryptor::new(&mut cursor, file.as_ref().clone().into())
-                .map_err(|e| e.to_string())
-                .and_then(|mut r| std::io::Read::read_to_end(&mut r, &mut plain).map_err(|e| e.to_string()))
-                .map_err(|e| Failure::new(format!("decrypt: {e}{via}")))?;
-            Ok(plain)
-        }
+    let decrypt = |e: String| Failure::new(format!("decrypt: {e}{via}"));
+    let mut resp = resp;
+    while let Some(chunk) = resp.chunk().await.map_err(broken)? {
+        sink.push(&chunk).map_err(decrypt)?;
     }
+    sink.finish(source).map_err(decrypt)
 }
 
 /// The failure of an answer that is not a success: its Matrix error, which `getAsset` does not try again when the
@@ -161,7 +224,7 @@ fn refused(status: StatusCode, body: &[u8], via: &str) -> Failure {
 pub(crate) async fn download(
     homeserver: &Url,
     token: &str,
-    source: &MediaSource,
+    source: &Source,
     interactive: bool,
     mut tried: impl FnMut(u32, &str),
 ) -> Result<Vec<u8>, String> {

@@ -8,7 +8,7 @@ use crate::message;
 use crate::style::rem;
 use crate::style::{bordered_box, btn_style, fill_box, semi, Palette};
 use crate::time::iso_millis;
-use crate::{deletable, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, UiMessage};
+use crate::{deletable, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, Frames, UiMessage};
 use crate::{hotkey_text, menu_pitch, MESSAGE_MENU_W};
 use beeper_core::models::{AttachmentSize, Message};
 use beeper_core::store::BeeperStore;
@@ -143,30 +143,52 @@ fn turned((w, h): (f32, f32), turn: f32) -> (f32, f32) {
     (w * cos + h * sin, w * sin + h * cos)
 }
 
-/// A tile image: `src` cut to cover a `w` by `h` tile, at `BAKE` times its size, with the round corners and the
+/// A tile image: `src` cut to cover a `w` by `h` tile, at `scale` times its size, with the round corners and the
 /// `ring` of Desktop's `.tile`: its half pixel border, or the 2 px outline of a selected tile. iced can turn an image,
 /// but it cuts and rounds an image only along the screen axes, so the tile has its corners in its pixels.
-fn bake(src: &image::Handle, (w, h): (u32, u32), (border, thick): (Color, f32), radius: f32) -> image::Handle {
+fn bake(
+    src: &image::Handle,
+    (w, h): (u32, u32),
+    (border, thick): (Color, f32),
+    radius: f32,
+    scale: f32,
+) -> image::Handle {
     let image::Handle::Rgba { width, height, pixels, .. } = src else { unreachable!("decoded media is RGBA") };
     let full = ::image::RgbaImage::from_raw(*width, *height, pixels.to_vec()).expect("RGBA pixels fill the image");
-    let (tw, th) = ((w as f32 * BAKE) as u32, (h as f32 * BAKE) as u32);
+    let (tw, th) = (((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1));
     let k = (*width as f32 / tw as f32).min(*height as f32 / th as f32);
     let (cw, ch) = (((tw as f32 * k) as u32).max(1), ((th as f32 * k) as u32).max(1));
     let cut = ::image::imageops::crop_imm(&full, (width - cw) / 2, (height - ch) / 2, cw, ch).to_image();
     let mut out = ::image::imageops::resize(&cut, tw, th, ::image::imageops::FilterType::Triangle);
-    let (r, half) = (radius * BAKE, [tw as f32 / 2.0, th as f32 / 2.0]);
+    let (r, half) = (radius * scale, [tw as f32 / 2.0, th as f32 / 2.0]);
     let edge = border.into_rgba8();
     for (x, y, px) in out.enumerate_pixels_mut() {
         // The signed distance from the rounded edge, negative inside.
         let q = [(x as f32 + 0.5 - half[0]).abs() - half[0] + r, (y as f32 + 0.5 - half[1]).abs() - half[1] + r];
         let d = q[0].max(0.0).hypot(q[1].max(0.0)) + q[0].max(q[1]).min(0.0) - r;
-        let ring = (0.5 + d + thick * BAKE).clamp(0.0, 1.0) * f32::from(edge[3]) / 255.0;
+        let ring = (0.5 + d + thick * scale).clamp(0.0, 1.0) * f32::from(edge[3]) / 255.0;
         for c in 0..3 {
             px[c] = (f32::from(px[c]) * (1.0 - ring) + f32::from(edge[c]) * ring).round() as u8;
         }
         px[3] = (f32::from(px[3]) * (0.5 - d).clamp(0.0, 1.0)).round() as u8;
     }
     image::Handle::from_rgba(tw, th, out.into_raw())
+}
+
+/// The frames of an animation cut like `bake` cuts an inline image, at `BAKE` times the size of the box or the size
+/// of the frames if they are smaller, so that the cut takes no more memory than the frames.
+pub(crate) fn cut_frames(frames: &Frames, (w, h): (u32, u32)) -> Frames {
+    let (fw, fh) = match &frames[0].0 {
+        image::Handle::Rgba { width, height, .. } => (*width as f32, *height as f32),
+        _ => unreachable!("decoded media is RGBA"),
+    };
+    let scale = BAKE.min(fw / w.max(1) as f32).min(fh / h.max(1) as f32).max(0.1);
+    frames.iter().map(|(f, ms)| (bake(f, (w, h), (Color::TRANSPARENT, 0.0), 17.0, scale), *ms)).collect()
+}
+
+/// The key of the cut frames of an animation in `BeeperGuiApp::cuts`.
+fn cut_key(url: &str, (w, h): (u32, u32)) -> String {
+    format!("{w}x{h} {url}")
 }
 
 /// The key of a baked tile in `BeeperGuiApp::tiles`.
@@ -318,6 +340,40 @@ impl BeeperGuiApp {
         baked.and_then(Option::as_ref)
     }
 
+    /// The frames of an animated inline image cut to `size` like Desktop's `object-fit: cover`, with the corners of a
+    /// bubble, once a worker cut them: a view asks for them.
+    pub(crate) fn cover_frames(&self, url: &str, size: (u32, u32)) -> Option<&Frames> {
+        let Some(Ok(_)) = self.media_at(url) else { return None };
+        let cut = self.cuts.get(&cut_key(url, size));
+        if cut.is_none() {
+            self.wants.ask(&self.wants.cuts, &(url.to_string(), size.0, size.1));
+        }
+        cut.and_then(Option::as_ref)
+    }
+
+    /// Cuts the frames of the animations that a view asked for, on worker threads.
+    pub(crate) fn cut_animations(&mut self) -> Task<UiMessage> {
+        let wanted = std::mem::take(&mut *self.wants.cuts.borrow_mut());
+        let tasks: Vec<_> = (wanted.into_iter())
+            .filter_map(|(url, w, h)| {
+                let k = cut_key(&url, (w, h));
+                // A view asks again for a cut whose media went out of the cache.
+                let Some(Some(Ok(frames))) = self.media.get(&url) else { return None };
+                let frames = frames.clone();
+                (!self.cuts.contains_key(&k)).then(|| {
+                    let cut = move || cut_frames(&frames, (w, h));
+                    (k, async move { tokio::task::spawn_blocking(cut).await.expect("animation cut task") })
+                })
+            })
+            .collect();
+        self.cuts.extend(tasks.iter().map(|(k, _)| (k.clone(), None)));
+        Task::batch(
+            tasks
+                .into_iter()
+                .map(|(k, task)| Task::perform(task, move |f| UiMessage::Loaded(loads::Msg::Cut(k.clone(), f)))),
+        )
+    }
+
     /// Bakes the tiles that a view asked for, on worker threads.
     pub(crate) fn bake_tiles(&mut self) -> Task<UiMessage> {
         let wanted = std::mem::take(&mut *self.wants.tiles.borrow_mut());
@@ -335,7 +391,7 @@ impl BeeperGuiApp {
                 let Some(Some(Ok(frames))) = self.media.get(&url) else { return None };
                 let src = frames[0].0.clone();
                 (!self.tiles.contains_key(&k)).then(|| {
-                    let bake = move || bake(&src, (w, h), ring, radius);
+                    let bake = move || bake(&src, (w, h), ring, radius, BAKE);
                     let task = async move { tokio::task::spawn_blocking(bake).await.expect("tile bake task") };
                     (k, task)
                 })
@@ -462,7 +518,7 @@ mod tests {
     #[test]
     fn baked_tiles_have_round_corners() {
         let src = image::Handle::from_rgba(40, 20, vec![255; 40 * 20 * 4]);
-        let image::Handle::Rgba { width, height, pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 0.5), RADIUS)
+        let image::Handle::Rgba { width, height, pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 0.5), RADIUS, BAKE)
         else {
             unreachable!()
         };
@@ -472,7 +528,7 @@ mod tests {
         assert_eq!(at(30, 30), [255; 4], "the middle keeps the image");
         assert_eq!(at(30, 0), [0, 0, 0, 255], "the edge has the border");
         assert_eq!(at(30, 2), [255; 4], "the half pixel border is thin");
-        let image::Handle::Rgba { pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 2.0), RADIUS) else {
+        let image::Handle::Rgba { pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 2.0), RADIUS, BAKE) else {
             unreachable!()
         };
         assert_eq!(

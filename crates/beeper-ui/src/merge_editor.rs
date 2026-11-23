@@ -110,7 +110,7 @@ impl BeeperGuiApp {
         self.list.chat_menu = None;
         self.show_command_palette = false;
         if let Some(d) = &self.merge_window {
-            return window::gain_focus(d.id);
+            return self.raise(d.id);
         }
         let st = self.store.read();
         let intro = union.is_none() && (!st.settings.merge_intro_seen || !st.can_create_union());
@@ -229,7 +229,7 @@ impl BeeperGuiApp {
             self.select_chat(&id);
             let text = trf("You can now message %1$s across %2$d chats from one conversation.", &[&title, &n]);
             self.show(Toast { strong: true, ..Toast::new(text) });
-            return window::close(window);
+            return self.close_window(window);
         };
         let had_photo = st.find_chat(&union).is_some_and(|c| c.img_url.is_some());
         st.update_union(&union, &title, chats, default);
@@ -245,7 +245,7 @@ impl BeeperGuiApp {
             let id = st.chats[idx].id.clone();
             st.queue(&id, beeper_core::matrix::Outgoing::State("m.room.avatar".into(), content));
         }
-        window::close(window)
+        self.close_window(window)
     }
 
     /// Desktop's `qe`: the title bar of the editor.
