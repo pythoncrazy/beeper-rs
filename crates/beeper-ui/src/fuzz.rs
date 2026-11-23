@@ -11232,3 +11232,136 @@ fn backdrops_take_the_pointer_like_desktop() {
         assert_eq!(cursor, mouse::Interaction::Idle, "{name} sets the cursor");
     }
 }
+
+/// A listener on a free loopback port that counts the connections that reach it, and its URL.
+fn connection_counter() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let url = format!("http://{}", listener.local_addr().expect("a bound port"));
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = count.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(stream);
+        }
+    });
+    (url, count)
+}
+
+/// Sends `msg`, then the messages that its tasks output within a few seconds, for a few rounds, like the iced runtime.
+/// The messages that leave the process, like a browser, are not sent.
+fn drive(app: &mut BeeperGuiApp, msg: UiMessage) {
+    use iced::futures::StreamExt;
+    let mut round = vec![msg];
+    for _ in 0..4 {
+        let tasks: Vec<_> = round.drain(..).map(|m| app.update(m)).collect();
+        let out = task_runtime().block_on(async {
+            let mut out = Vec::new();
+            let Some(stream) = iced_runtime::task::into_stream(Task::batch(tasks)) else { return out };
+            let mut stream = std::pin::pin!(stream);
+            let deadline = tokio::time::sleep(std::time::Duration::from_secs(3));
+            let mut deadline = std::pin::pin!(deadline);
+            loop {
+                tokio::select! {
+                    a = stream.next() => match a {
+                        Some(iced_runtime::Action::Output(m)) => out.push(m),
+                        Some(_) => {}
+                        None => break,
+                    },
+                    () = &mut deadline => break,
+                }
+            }
+            out
+        });
+        round = out.into_iter().filter(local).collect();
+        if round.is_empty() {
+            break;
+        }
+    }
+}
+
+/// The demo reaches no server. With every URL of the account at a listener that counts its connections, the flows
+/// that once called Beeper's homeserver with the demo's made-up token, KLIPY and web pages make no connection: a
+/// direct chat, Reply Privately, a new group, a sent link and its preview, Add Account and a GIF search.
+#[test]
+fn demo_flows_make_no_requests() {
+    let (url, connections) = connection_counter();
+    let mut app = demo_app("demo-no-requests");
+    {
+        let mut st = app.store.write();
+        (st.config.api_url, st.config.homeserver, st.beeper_state.homeserver) = (url.clone(), url.clone(), url.clone());
+    }
+    let cloud = beeper_core::cloud::Cloud::of(&app.store.read().config);
+    app.cloud = Arc::new(beeper_core::cloud::Cloud { app_api: url.clone(), klipy_api: url.clone(), ..cloud });
+    let group = "!tg_rust:beeper.com";
+    let (account, people) = {
+        let st = app.store.read();
+        let c = st.chat(group);
+        (
+            c.account_id.clone(),
+            c.participants.items.iter().filter(|u| u.is_self != Some(true)).cloned().collect::<Vec<_>>(),
+        )
+    };
+    let chats = |app: &BeeperGuiApp| app.store.read().chats.len();
+
+    // A direct chat with a new phone number is a local chat of the account.
+    let before = chats(&app);
+    let phone = User { id: "+15550123".into(), phone_number: Some("+15550123".into()), ..Default::default() };
+    let open = app.open_dm(account.clone(), phone, None, None);
+    let out = task_runtime().block_on(task_messages(open));
+    assert!(matches!(&out[..], [UiMessage::NewChat(new_chat::Msg::DmCreated(_, _, _, Ok(_)))]), "{out:?}");
+    out.into_iter().for_each(|m| drive(&mut app, m));
+    assert_eq!(chats(&app), before + 1, "the demo makes the chat");
+    let dm = app.pane.selected_chat_id.clone().expect("the new chat is open");
+    assert_eq!(app.store.read().chat(&dm).account_id, account);
+
+    // Reply Privately to someone without a direct chat makes one with them, with the quote.
+    let theirs = {
+        let st = app.store.read();
+        let has_dm = |u: &User| {
+            let single = st.chats.iter().filter(|c| c.account_id == account && c.chat_type == "single");
+            single.clone().any(|c| c.participants.items.iter().any(|p| p.id == u.id))
+        };
+        let lonely: Vec<&User> = people.iter().filter(|u| !has_dm(u)).collect();
+        let msgs: Vec<_> = st.timeline(group).filter(|m| m.text.is_some() && m.is_deleted != Some(true)).collect();
+        let m = msgs.iter().find(|m| lonely.iter().any(|u| u.id == m.sender_id)).or(msgs.first());
+        m.expect("a message of the group").id.clone()
+    };
+    let _ = app.update(UiMessage::SelectChat(group.into()));
+    drive(&mut app, UiMessage::ChatList(chat_list::Msg::ReplyPrivately(theirs)));
+    assert_ne!(app.pane.selected_chat_id.as_deref(), Some(group), "a direct chat opens");
+    assert!(app.pane.composer.text().starts_with("> "), "with the quote");
+
+    // A named group of two people is a local group.
+    let before = chats(&app);
+    drive(&mut app, UiMessage::NewChat(new_chat::Msg::Open));
+    drive(&mut app, UiMessage::NewChat(new_chat::Msg::NewGroup));
+    for u in &people[..2] {
+        drive(&mut app, UiMessage::NewChat(new_chat::Msg::PickUser(account.clone(), Box::new(u.clone()))));
+    }
+    drive(&mut app, UiMessage::NewChat(new_chat::Msg::GroupTitle("Offline crew".into())));
+    drive(&mut app, UiMessage::NewChat(new_chat::Msg::Start));
+    assert_eq!(chats(&app), before + 1, "the demo makes the group");
+    let made = app.pane.selected_chat_id.clone().expect("the new group is open");
+    assert_eq!(app.store.read().chat(&made).title, "Offline crew");
+
+    // A link in the composer gets no preview, and goes out as a local message.
+    let link = format!("{url}/page");
+    drive(&mut app, UiMessage::SelectChat(group.into()));
+    drive(&mut app, UiMessage::Composer(composer::Msg::Changed(format!("look {link}"))));
+    let links: Vec<_> =
+        app.pane.composer_links.iter().map(|(u, s)| (u.clone(), matches!(s, LinkState::Discarded))).collect();
+    assert_eq!(links, [(link.clone(), true)], "no preview loads");
+    drive(&mut app, UiMessage::Composer(composer::Msg::Submit));
+    let sent = app.store.read().timeline(group).last().and_then(|m| m.text.clone());
+    assert_eq!(sent, Some(format!("look {link}")));
+
+    // Add Account opens nothing, and a GIF search fails like Desktop without the network.
+    drive(&mut app, UiMessage::OpenAddAccount("telegram".into(), None));
+    drive(&mut app, UiMessage::OpenAddAccount("whatsapp".into(), Some("15550100".into())));
+    drive(&mut app, UiMessage::Gifs(gifs::Msg::Query("cat".into())));
+    drive(&mut app, UiMessage::Gifs(gifs::Msg::Search("cat".into())));
+    assert_eq!(app.gif_error.as_deref(), Some(beeper_core::cloud::FAILED_TO_FETCH));
+
+    assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 0, "the demo connected to {url}");
+}

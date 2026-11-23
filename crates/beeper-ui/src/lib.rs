@@ -3286,7 +3286,7 @@ impl BeeperGuiApp {
             // Desktop's `InnerApp` shows the home page at start only when the onboarding is done.
             let first = (st.signed_in() && st.beeper_state.stage() == "done").then(|| NOTE_CHAT_ID.to_string());
             let s = &st.settings;
-            let cloud = Arc::new(Cloud::new(&st.config.api_url, &st.config.homeserver));
+            let cloud = Arc::new(Cloud::of(&st.config));
             let source = st
                 .setup
                 .is_none()
@@ -3296,12 +3296,8 @@ impl BeeperGuiApp {
         };
         let pending = notify::Pending::new(&store.read().chats);
         let st = store.read();
-        let demo = serde_json::json!({
-            "resolve_identifier": { "create_dm": true, "any_phone": true },
-            "group_creation": { "group": { "name": { "allowed": true }, "participants": { "min_length": 2 } } },
-        });
-        let resolve =
-            st.bridge_accounts.iter().filter(|_| st.config.demo).map(|b| (b.account_id.clone(), demo.clone()));
+        let demo = beeper_core::matrix::demo_capabilities;
+        let resolve = st.bridge_accounts.iter().filter(|_| st.config.demo).map(|b| (b.account_id.clone(), demo()));
         // Desktop's `loadProvisioningCapabilities` gives the Matrix account those of the SDK's `matrix` pseudo-bridge.
         let matrix = ("hungryserv".to_string(), beeper_core::matrix::matrix_capabilities());
         let resolve = resolve.chain([matrix]).collect();
@@ -4054,7 +4050,8 @@ impl BeeperGuiApp {
         self.sticky_banner = Some(self.status_banner.clone());
         let bridge = self.bridge(&account);
         let id = match bridge {
-            beeper_core::matrix::ChatBridge::Matrix(_) => user.id,
+            // The demo's chats know the person by the ID.
+            beeper_core::matrix::ChatBridge::Matrix(_) | beeper_core::matrix::ChatBridge::Demo(..) => user.id,
             beeper_core::matrix::ChatBridge::Cloud(_) => phone.unwrap_or(user.id),
         };
         let done = move |r| UiMessage::NewChat(new_chat::Msg::DmCreated(draft, account.clone(), quote.clone(), r));

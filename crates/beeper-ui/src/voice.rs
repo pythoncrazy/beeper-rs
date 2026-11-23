@@ -766,9 +766,14 @@ impl BeeperGuiApp {
         drop(st);
         self.audio.transcribing.insert(mid.clone(), (language.clone(), false));
         let url = a.src_url.clone().expect("an audio attachment has a URL");
+        // The demo has no Whisper: Beeper's AI services would get its made-up token.
+        let offline = self.cloud.offline;
         let run = async move {
             let toast = move |t: String| (!quiet).then_some(t);
             let failed = |_| toast(tr("Failed to transcribe audio message").into());
+            if offline {
+                return Err(toast(tr("Failed to transcribe audio message").into()));
+            }
             let bytes = beeper_core::matrix::media(client, url).await.map_err(failed)?;
             let ext = audio_ext(&a);
             let mp3 = tokio::task::spawn_blocking(move || whisper_audio(bytes, &ext));
