@@ -709,16 +709,13 @@ impl BeeperGuiApp {
             others.and_then(|o| o.first().and_then(|u| u.img_url.clone()))
         });
         drop(st);
-        let full = url.as_deref().and_then(|u| self.still(u));
+        let full = url.as_deref().and_then(|u| self.frames(u));
         let shown = iced::widget::responsive(move |area| {
             let size = 0.9 * area.width.min(area.height);
             let avatar: El = match &full {
-                Some(h) => image(h.clone())
-                    .width(size)
-                    .height(size)
-                    .content_fit(iced::ContentFit::Cover)
-                    .border_radius(size / 2.0)
-                    .into(),
+                Some(f) => self.emoji(f, move |h| {
+                    image(h).width(size).height(size).content_fit(iced::ContentFit::Cover).border_radius(size / 2.0)
+                }),
                 None => self.chat_avatar(&chat, size, 1.25),
             };
             let avatar = mouse_area(avatar).interaction(mouse::Interaction::ZoomOut);

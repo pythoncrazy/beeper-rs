@@ -377,7 +377,7 @@ pub struct NewChat {
     /// The group name of Desktop's `GroupTitleBar`.
     pub title: String,
     /// The group avatar of Desktop's `GroupTitleBar` (`imgURL`): the image, its MIME type and its round picture.
-    pub photo: Option<(Vec<u8>, String, image::Handle)>,
+    pub photo: Option<(Vec<u8>, String, crate::Frames)>,
 }
 
 impl BeeperGuiApp {
@@ -735,7 +735,7 @@ impl BeeperGuiApp {
         let title = draft.filter(|_| group && named).map(|d| {
             // Desktop's `ThreadAvatar` of the `GroupTitleBar`: the picked image, the members, or an empty circle.
             let face: El<'_> = match (&d.photo, d.users.is_empty()) {
-                (Some((.., h)), _) => image(h.clone()).width(28).height(28).into(),
+                (Some((.., f)), _) => self.emoji(f, |h| image(h).width(28).height(28)),
                 (None, false) => {
                     let members: Vec<User> = d.users.iter().map(|(_, u)| u.clone()).collect();
                     self.people_avatar(None, "", true, &members, 28.0, 0.0)

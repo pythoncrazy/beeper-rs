@@ -952,20 +952,40 @@ fn avatar<'a>(name: &str, size: f32, ls: f32, alpha: f32, p: &Palette) -> El<'a>
         .into()
 }
 
-fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
+/// The frames of an avatar, each cut to a 96 px circle. Like Desktop's avatar thumbnail, an animated GIF, PNG or
+/// WebP keeps its frames, at most [`AVATAR_FRAMES`] of them: a longer one keeps every second frame, or third, with
+/// their delays added up, so that it plays as long.
+fn round_avatar(bytes: &[u8]) -> Result<Frames, String> {
     const S: u32 = 96;
-    let img = beeper_core::media::decode_upright(bytes)?;
-    let mut px = img.resize_to_fill(S, S, ::image::imageops::FilterType::Triangle).into_rgba8();
-    let r = S as f32 / 2.0;
-    for (x, y, p) in px.enumerate_pixels_mut() {
-        let d = (x as f32 + 0.5 - r).hypot(y as f32 + 0.5 - r);
-        p[3] = (f32::from(p[3]) * (r - d + 0.5).clamp(0.0, 1.0)) as u8;
+    let round = |img: ::image::DynamicImage| {
+        let mut px = img.resize_to_fill(S, S, ::image::imageops::FilterType::Triangle).into_rgba8();
+        let r = S as f32 / 2.0;
+        for (x, y, p) in px.enumerate_pixels_mut() {
+            let d = (x as f32 + 0.5 - r).hypot(y as f32 + 0.5 - r);
+            p[3] = (f32::from(p[3]) * (r - d + 0.5).clamp(0.0, 1.0)) as u8;
+        }
+        image::Handle::from_rgba(S, S, px.into_raw())
+    };
+    let Some(frames) = media_view::animation(bytes) else {
+        return Ok(Frames::from([(round(beeper_core::media::decode_upright(bytes)?), 0)]));
+    };
+    let frames = frames?;
+    let step = frames.len().div_ceil(AVATAR_FRAMES);
+    let mut kept: Vec<(image::Handle, u128)> = Vec::new();
+    for (i, (px, ms)) in frames.into_iter().enumerate() {
+        match kept.last_mut().filter(|_| i % step != 0) {
+            Some(last) => last.1 += ms,
+            None => kept.push((round(::image::DynamicImage::ImageRgba8(px)), ms)),
+        }
     }
-    Ok(image::Handle::from_rgba(S, S, px.into_raw()))
+    Ok(kept.into())
 }
 
+/// The most frames that an animated avatar keeps: 36 KB each at 96 px.
+const AVATAR_FRAMES: usize = 120;
+
 /// Image frames with their delays in milliseconds; a still image has one frame.
-pub type Frames = Vec<anim::Frame>;
+pub type Frames = anim::Frames;
 type Png = (Vec<u8>, (u32, u32));
 
 /// Desktop's `queuedPendingMessages`: the sends of a chat that wait for "Allow undo send", and the composer to
@@ -2934,7 +2954,7 @@ pub struct BeeperGuiApp {
     pub reauth: reauth::Reauth,
     pub enter_key: enter_key::EnterKey,
     pub cloud: Arc<Cloud>,
-    pub avatars: images::Images<image::Handle>,
+    pub avatars: images::Images<Frames>,
     wants: wants::Wants,
     pub media: images::Images<Result<Frames, String>>,
     /// The contact cards of `.vcf` attachments by URL, `None` while they load.
@@ -2955,6 +2975,11 @@ pub struct BeeperGuiApp {
     video: Option<video::Video>,
     view_once: view_once::ViewOnce,
     started: std::time::Instant,
+    /// Desktop's `animateAvatarsAndEmoji` while the window that `view` draws shows, which `view` reads from the
+    /// settings so that the avatars and the custom emoji need no lock of the store.
+    animate: std::cell::Cell<bool>,
+    /// The main window is minimized, so its animations wait, like Chromium's in a minimized window.
+    minimized: bool,
 }
 
 impl BeeperGuiApp {
@@ -3205,6 +3230,8 @@ impl BeeperGuiApp {
             video: None,
             view_once: Default::default(),
             started: std::time::Instant::now(),
+            animate: std::cell::Cell::new(true),
+            minimized: false,
             last_click: None,
             cycling: false,
         };
@@ -3247,10 +3274,13 @@ impl BeeperGuiApp {
         (app, Task::batch(tasks.into_iter().chain(cloud).chain(restore).chain(link).chain(onboard)))
     }
 
-    /// Starts the loads of the avatars that a view asked for, when a client can load them.
+    /// Starts the loads of the avatars that a view asked for, when a client can load them. The inline avatars of the
+    /// demo need none.
     fn load_avatars(&mut self) -> Task<UiMessage> {
-        let Some(client) = self.store.read().matrix.clone() else { return Task::none() };
-        let urls = std::mem::take(&mut *self.wants.avatars.borrow_mut());
+        let client = self.store.read().matrix.clone();
+        let loadable = |u: &String| client.is_some() || u.starts_with("data:");
+        let (urls, rest) = std::mem::take(&mut *self.wants.avatars.borrow_mut()).into_iter().partition(loadable);
+        *self.wants.avatars.borrow_mut() = rest;
         let urls: Vec<String> = urls.into_iter().filter(|u| !self.avatars.contains_key(u)).collect();
         self.avatars.extend(urls.iter().map(|u| (u.clone(), None)));
         Task::batch(urls.into_iter().map(|url| {
@@ -3258,7 +3288,10 @@ impl BeeperGuiApp {
             Task::perform(
                 async move {
                     let _slot = AVATAR_SLOTS.acquire().await.expect("the avatar semaphore stays open");
-                    let bytes = beeper_core::matrix::thumbnail(client, u).await?;
+                    let bytes = match client.filter(|_| !u.starts_with("data:")) {
+                        Some(client) => beeper_core::matrix::thumbnail(client, u).await?,
+                        None => beeper_core::matrix::media(None, u).await?,
+                    };
                     tokio::task::spawn_blocking(move || round_avatar(&bytes)).await.expect("avatar worker thread")
                 },
                 move |r| UiMessage::Loaded(loads::Msg::Avatar(url, r)),
@@ -3273,16 +3306,38 @@ impl BeeperGuiApp {
     /// [`Self::face`] at the opacity `alpha`.
     fn face_alpha<'a>(&self, url: Option<&str>, name: &str, size: f32, ls: f32, alpha: f32) -> El<'a> {
         let loaded = url.and_then(|u| match self.avatars.get(u) {
-            Some(h) => h.clone(),
+            Some(frames) => frames.as_ref(),
             None => {
                 self.wants.ask(&self.wants.avatars, u);
                 None
             }
         });
         match loaded {
-            Some(h) => image(h).width(size).height(size).opacity(alpha).into(),
+            Some(frames) => self.emoji(frames, move |h| image(h).width(size).height(size).opacity(alpha)),
             None => avatar(name, size, ls, alpha, &self.pal),
         }
+    }
+
+    /// The main window shows: it is neither hidden in the tray nor minimized. Chromium draws no frames for a hidden
+    /// or minimized window, so the animations of Desktop wait, and those of the app ask for no redraws.
+    pub(crate) fn shows(&self) -> bool {
+        !self.hidden && !self.minimized
+    }
+
+    /// Desktop's `EnhancedImg` of an attachment with "Autoplay GIFs": its animation plays by itself while the window
+    /// shows.
+    pub(crate) fn autoplays(&self, st: &BeeperStore) -> bool {
+        st.settings.on("autoplayGifs") && self.shows()
+    }
+
+    /// An avatar or a custom emoji, as Desktop's still image (`rs`, and `EnhancedImg` with `isEmoji`) draws it: it
+    /// plays with "Animate avatars and emoji" while the window shows, and shows its first frame otherwise.
+    pub(crate) fn emoji<'a>(
+        &self,
+        frames: &Frames,
+        make: impl Fn(image::Handle) -> iced::widget::Image + 'a,
+    ) -> El<'a> {
+        anim::gif(frames, self.animate.get(), self.started, make)
     }
 
     fn typing_badge<'a>(&self) -> El<'a> {
@@ -5401,7 +5456,10 @@ impl BeeperGuiApp {
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {
-        let arrow = !self.store.read().settings.on("pointerCursor");
+        let st = self.store.read();
+        let arrow = !st.settings.on("pointerCursor");
+        self.animate.set(st.settings.on("animateAvatars") && self.shows());
+        drop(st);
         self.drawing.set(self.chat_windows.iter().any(|w| w.0 == id).then_some(id));
         self.in_media.set(self.media_window.as_ref().is_some_and(|w| w.id == id));
         let el = cursor::root(self.view_window(id), arrow, &self.cursor, id);

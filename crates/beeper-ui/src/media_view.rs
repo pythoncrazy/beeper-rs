@@ -76,12 +76,16 @@ pub(crate) fn decode_loop(bytes: &[u8]) -> Result<Frames, String> {
     }
     match frames.is_empty() {
         true => Err("The video has no frames".into()),
-        false => Ok(frames),
+        false => Ok(frames.into()),
     }
 }
 
+/// The handle of the pixels of a decoded image.
+pub(crate) fn handle(px: ::image::RgbaImage) -> image::Handle {
+    image::Handle::from_rgba(px.width(), px.height(), px.into_raw())
+}
+
 pub(crate) fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
-    use ::image::AnimationDecoder;
     // A decode here, on a worker thread, keeps the full size decode out of the first frame that draws the image.
     let still = |bytes: &[u8]| -> Result<Frames, String> {
         let px = beeper_core::media::decode_upright(bytes).or_else(|e| {
@@ -90,29 +94,72 @@ pub(crate) fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
                 .map_err(|_| e)?;
             beeper_core::media::decode_upright(&png)
         })?;
-        let px = px.into_rgba8();
-        Ok(vec![(image::Handle::from_rgba(px.width(), px.height(), px.into_raw()), 0)])
+        Ok(Frames::from([(handle(px.into_rgba8()), 0)]))
     };
     if bytes.get(4..8) == Some(b"ftyp") {
         return still(&run_ffmpeg(&bytes, &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"])?);
     }
-    if !bytes.starts_with(b"GIF8") {
-        return still(&bytes);
+    match animation(&bytes) {
+        None => still(&bytes),
+        Some(frames) => Ok(frames?.into_iter().map(|(px, ms)| (handle(px), ms)).collect()),
     }
-    let gif = ::image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    let frames = gif.into_frames().collect_frames().map_err(|e| format!("Could not decode the GIF: {e}"))?;
-    assert!(!frames.is_empty(), "a decoded GIF has frames");
+}
+
+/// The kind of animation that `bytes` start with, like Desktop's `RAe` sniff: a GIF, an APNG with its `acTL` chunk
+/// before its image data, or a WebP with the animation flag of its `VP8X` header.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Animated {
+    Gif,
+    Png,
+    WebP,
+}
+
+pub(crate) fn animated(bytes: &[u8]) -> Option<Animated> {
+    if bytes.starts_with(b"GIF8") {
+        return Some(Animated::Gif);
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let mut at = 8;
+        while let Some(head) = bytes.get(at..at + 8) {
+            match &head[4..] {
+                b"acTL" => return Some(Animated::Png),
+                b"IDAT" => return None,
+                _ => at += 12 + u32::from_be_bytes(head[..4].try_into().expect("4 bytes")) as usize,
+            }
+        }
+        return None;
+    }
+    let webp = bytes.len() >= 21 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP";
+    (webp && &bytes[12..16] == b"VP8X" && bytes[20] & 2 != 0).then_some(Animated::WebP)
+}
+
+/// The frames of an animated GIF, PNG or WebP, whole and in order, with their delays in milliseconds, or `None`
+/// for any other image. A GIF of one frame has one frame.
+pub(crate) fn animation(bytes: &[u8]) -> Option<Result<Vec<(::image::RgbaImage, u128)>, String>> {
+    use ::image::AnimationDecoder;
+    let kind = animated(bytes)?;
+    let r = std::io::Cursor::new(bytes);
+    let frames = match kind {
+        Animated::Gif => ::image::codecs::gif::GifDecoder::new(r).map(|d| d.into_frames().collect_frames()),
+        Animated::Png => {
+            ::image::codecs::png::PngDecoder::new(r).and_then(|d| d.apng()).map(|d| d.into_frames().collect_frames())
+        }
+        Animated::WebP => ::image::codecs::webp::WebPDecoder::new(r).map(|d| d.into_frames().collect_frames()),
+    };
+    let frames = frames.and_then(|f| f).map_err(|e| format!("Could not decode the animation: {e}"));
     let frame = |f: ::image::Frame| {
         let (n, d) = f.delay().numer_denom_ms();
-        let px = f.into_buffer();
         // Browsers play delays of 10 ms or less at 100 ms.
-        let ms = match n / d {
+        let ms = match n / d.max(1) {
             0..=10 => 100,
             ms => ms,
         };
-        (image::Handle::from_rgba(px.width(), px.height(), px.into_raw()), u128::from(ms))
+        (f.into_buffer(), u128::from(ms))
     };
-    Ok(frames.into_iter().map(frame).collect())
+    Some(frames.and_then(|f| match f.is_empty() {
+        true => Err("The animation has no frames".into()),
+        false => Ok(f.into_iter().map(frame).collect()),
+    }))
 }
 
 /// The attachment that a carousel shows, its quarter turns and when the last one started, if it shows the Media window items, the inline size of
@@ -750,8 +797,10 @@ impl BeeperGuiApp {
             ("img" | "video", ..) => {
                 let shown: El<'a> = match frames {
                     Some(frames) => {
-                        let frames = anim::playing(frames, st.settings.on("autoplayGifs"));
-                        anim::turning(frames, self.started, turn, |f| image(f).content_fit(iced::ContentFit::ScaleDown))
+                        let play = self.autoplays(&st);
+                        anim::turning(frames, play, self.started, turn, |f| {
+                            image(f).content_fit(iced::ContentFit::ScaleDown)
+                        })
                     }
                     None => Space::new().into(),
                 };

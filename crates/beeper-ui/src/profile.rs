@@ -27,7 +27,7 @@ pub struct ProfileForm {
     pub name: Option<String>,
     pub email: Option<String>,
     /// The picked avatar: the image, its MIME type and the round preview.
-    avatar: Option<(Vec<u8>, String, image::Handle)>,
+    avatar: Option<(Vec<u8>, String, crate::Frames)>,
     saving: bool,
     pub menu: bool,
     /// Desktop's `DeleteAccountPrompt`: the typed username, whether the deletion runs, and its error.
@@ -279,7 +279,7 @@ impl BeeperGuiApp {
             .spacing(8)
             .align_y(Center);
         let face: El<'a> = match &f.avatar {
-            Some((_, _, h)) => image(h.clone()).width(52).height(52).into(),
+            Some((_, _, f)) => self.emoji(f, |h| image(h).width(52).height(52)),
             None => self.face(me.img_url.as_deref(), &name, 52.0, 0.0),
         };
         let edit = container(txt(trx("Edit", "button label"), 13.0).color(Color::WHITE))

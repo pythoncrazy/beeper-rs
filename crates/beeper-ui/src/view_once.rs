@@ -643,7 +643,8 @@ impl BeeperGuiApp {
             (Some(Shown::Image(frames)), _) => {
                 let (mw, mh) = ((0.9 * self.pane.size.width).min(720.0), (self.pane.size.height - 150.0).max(1.0));
                 let still = move |f| image(f).content_fit(iced::ContentFit::ScaleDown).border_radius(24.0);
-                container(anim::gif(frames, self.started, still)).max_width(mw).max_height(mh).into()
+                // Desktop's `still: false`: it plays whatever the settings.
+                container(anim::gif(frames, self.shows(), self.started, still)).max_width(mw).max_height(mh).into()
             }
         };
         let card = mouse_area(stack![media, top]).on_press(UiMessage::Noop);

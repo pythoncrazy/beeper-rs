@@ -2200,7 +2200,7 @@ fn carousel_zooms_like_desktop() {
         let m = st.messages.iter().find(|m| m.attachments.iter().any(|a| a.attachment_type == "img")).unwrap();
         (m.chat_id.clone(), m.id.clone(), m.attachments[0].src_url.clone().unwrap())
     };
-    let frames = vec![(image::Handle::from_rgba(200, 100, vec![255; 200 * 100 * 4]), 0)];
+    let frames = Frames::from([(image::Handle::from_rgba(200, 100, vec![255; 200 * 100 * 4]), 0)]);
     app.media.insert(url, Some(Ok(frames)));
     let _ = app.update(UiMessage::SelectChat(chat));
     let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, 0, false)));
@@ -9046,7 +9046,8 @@ fn view_once_media_like_desktop() {
     let _ = app.update(open[0].clone());
     assert!(app.view_once.shows("vo_1"), "the viewer opens while the media loads");
     let frame = (iced::widget::image::Handle::from_rgba(1, 1, vec![0; 4]), 0);
-    let shown = |mid: &str| UiMessage::ViewOnce(Msg::Loaded(mid.into(), Ok(Shown::Image(vec![frame.clone()]))));
+    let shown =
+        |mid: &str| UiMessage::ViewOnce(Msg::Loaded(mid.into(), Ok(Shown::Image(Frames::from([frame.clone()])))));
     let _ = app.update(shown("vo_1"));
     let _ = simulator(app.view_main());
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Escape), Modifiers::empty()));
@@ -9245,7 +9246,7 @@ fn custom_emoji_picker_like_desktop() {
     let mut app = demo_app("custom-emoji-picker");
     let (_, mid) = custom_emoji_chat(&mut app, true);
     let red = image::Handle::from_rgba(8, 8, [255, 0, 0, 255].repeat(64));
-    app.media.insert("mxc://x/parrot".into(), Some(Ok(vec![(red, 0)])));
+    app.media.insert("mxc://x/parrot".into(), Some(Ok(Frames::from([(red, 0)]))));
     let _ = app.update(UiMessage::Message(message::Msg::React(mid.clone())));
     let custom = |app: &BeeperGuiApp| {
         let st = app.store.read();

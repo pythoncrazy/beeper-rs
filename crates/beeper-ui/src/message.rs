@@ -2263,11 +2263,13 @@ impl BeeperGuiApp {
                         Some(Ok(frames)) => {
                             let autoplay = st.settings.on("autoplayGifs");
                             let played = self.pane().played_gifs.get(&(m.id.clone(), ai)).filter(|_| !autoplay);
-                            let (shown, start) = match played {
-                                Some(&at) => (&frames[..], at),
-                                None => (anim::playing(frames, autoplay), self.started),
+                            let (play, start) = match played {
+                                Some(&at) => (self.shows(), at),
+                                None => (self.autoplays(st), self.started),
                             };
-                            let gif = anim::gif(shown, start, move |f| image(f).width(w).height(h).border_radius(17.0));
+                            let gif = anim::gif(frames, play, start, move |f| {
+                                image(f).width(w).height(h).border_radius(17.0)
+                            });
                             match !autoplay && frames.len() > 1 {
                                 true => gif_toggle(gif, played.is_some(), Msg::ToggleGif(m.id.clone(), ai)),
                                 false => gif,
@@ -2375,11 +2377,9 @@ impl BeeperGuiApp {
             let glyphs: Vec<El<'a>> = runs
                 .map(|r| match r.emoticon.as_deref() {
                     Some(url) => {
-                        let img: El<'a> = match self.still(url) {
-                            Some(frame) if selected => {
-                                image(crate::style::dimmed_image(&frame, 0.8)).height(48.0).into()
-                            }
-                            Some(frame) => image(frame).height(48.0).into(),
+                        let img: El<'a> = match self.frames(url) {
+                            Some(f) if selected => image(crate::style::dimmed_image(&f[0].0, 0.8)).height(48.0).into(),
+                            Some(f) => self.emoji(&f, |h| image(h).height(48.0)),
                             None => Space::new().width(48.0).height(48.0).into(),
                         };
                         let menu = Msg::EmoticonMenu(m.id.clone(), r.title.clone(), url.to_string());
@@ -2566,7 +2566,7 @@ impl BeeperGuiApp {
                 String,
                 u8,
                 u8,
-                Vec<(Option<image::Handle>, Option<String>, String)>,
+                Vec<(Option<crate::Frames>, Option<String>, String)>,
                 bool,
             );
             let blocks: Vec<Block> = match m.html.as_deref() {
@@ -2577,7 +2577,7 @@ impl BeeperGuiApp {
                         let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
                         // Each custom emoji's image, `title` and `data-original-src`.
                         let images = b.runs.iter().filter_map(|r| Some((r.emoticon.as_deref()?, r.title.clone())));
-                        let images = images.map(|(u, title)| (self.still(u), title, u.to_string())).collect();
+                        let images = images.map(|(u, title)| (self.frames(u), title, u.to_string())).collect();
                         let runs = b.runs.into_iter().flat_map(|r| match room_mention && r.link.is_none() && !r.code {
                             true => room_parts(&r.text)
                                 .into_iter()
@@ -2670,7 +2670,10 @@ impl BeeperGuiApp {
                         Some(self.tip_card(med(host, 13.0).color(p.strong)).into())
                     };
                     let line = crate::selectable::selectable(spans)
-                        .images(images.iter().map(|i| i.0.clone()).collect())
+                        .images(
+                            images.iter().map(|i| i.0.clone()).collect(),
+                            self.animate.get().then_some(self.started),
+                        )
                         .on_image_menu({
                             let (id, images) = (m.id.clone(), images);
                             move |k| {
@@ -2934,12 +2937,10 @@ impl BeeperGuiApp {
                 let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
                 // Desktop's custom emoji among the quick reactions: its image 16 px square.
                 let glyph: El<'a> = match crate::emoji::is_mxc(&e) {
-                    true => match self.still(&e) {
-                        Some(frame) => image(frame)
-                            .width(16.0 * (0.85 + 0.15 * v))
-                            .height(16.0 * (0.85 + 0.15 * v))
-                            .opacity(v)
-                            .into(),
+                    true => match self.frames(&e) {
+                        Some(f) => self.emoji(&f, move |h| {
+                            image(h).width(16.0 * (0.85 + 0.15 * v)).height(16.0 * (0.85 + 0.15 * v)).opacity(v)
+                        }),
                         None => Space::new().width(16.0).height(16.0).into(),
                     },
                     false => txt(e, 20.0 * (0.85 + 0.15 * v)).font(EMOJI_FONT).color(p.text.scale_alpha(v)).into(),
@@ -3376,9 +3377,9 @@ impl BeeperGuiApp {
             .into()
     }
 
-    /// The first frame of the image at `url`, once it has loaded.
-    pub(crate) fn still(&self, url: &str) -> Option<image::Handle> {
-        self.media_at(url).and_then(|m| m.as_ref().ok()).and_then(|f| f.first()).map(|f| f.0.clone())
+    /// The frames of the image at `url`, once it has loaded.
+    pub(crate) fn frames(&self, url: &str) -> Option<crate::Frames> {
+        self.media_at(url).and_then(|m| m.as_ref().ok()).cloned()
     }
 
     /// Desktop's `Tfe`: a custom emoji's image 16 high, or the emoji.
@@ -3386,8 +3387,8 @@ impl BeeperGuiApp {
         // A key that is itself an image, as stored before keys had their shortcode, shows the image too.
         let url = x.img_url.as_deref().or(Some(x.reaction_key.as_str()).filter(|k| k.starts_with("mxc://")));
         match url {
-            Some(url) => match self.still(url) {
-                Some(frame) => image(frame).height(16.0).into(),
+            Some(url) => match self.frames(url) {
+                Some(f) => self.emoji(&f, |h| image(h).height(16.0)),
                 None => Space::new().width(16.0).height(16.0).into(),
             },
             None => txt(x.reaction_key.clone(), size).line_height(Pixels(line)).font(EMOJI_FONT).into(),
@@ -4842,7 +4843,8 @@ mod tests {
             }];
         });
         let fill = |c: [u8; 4]| image::Handle::from_rgba(200, 100, c.repeat(200 * 100));
-        app.media.insert(url.clone(), Some(Ok(vec![(fill([255, 0, 0, 255]), 100), (fill([0, 0, 255, 255]), 100)])));
+        let frames = [(fill([255, 0, 0, 255]), 100), (fill([0, 0, 255, 255]), 100)];
+        app.media.insert(url.clone(), Some(Ok(crate::Frames::from(frames))));
         // The 36 px circle of the button in the middle of the 200 by 100 image, left of its icon.
         let (circle, corner) = ((2 * (100 - 13), 2 * 50), (2 * 20, 2 * 20));
         let button = |sim: &mut iced_test::Simulator<'_, UiMessage>| {
@@ -4865,11 +4867,205 @@ mod tests {
             assert!(button(&mut sim), "the pause button");
         }
 
-        app.media.insert(url, Some(Ok(vec![(fill([255; 4]), 0)])));
+        app.media.insert(url, Some(Ok(crate::Frames::from([(fill([255; 4]), 0)]))));
         let white = |app: &BeeperGuiApp| pixels(&mut alone(app, &mid)).get_pixel(corner.0, corner.1).0[0];
         assert_eq!(white(&app), 255);
         app.pane.selected_msgs = vec![mid.clone()];
         assert!(white(&app).abs_diff(204) <= 1, "brightness(0.8)");
+    }
+
+    /// The demo chat with the animations: Maya's GIF avatar, her GIF, the custom emoji in her text and Alex's
+    /// custom emoji reaction to the GIF.
+    const ANIMATED_CHAT: &str = "!ig_design:beeper.com";
+
+    /// The demo app with the animated chat open, its inline avatars and media decoded like their loads.
+    fn animated_demo(name: &str) -> BeeperGuiApp {
+        let mut app = crate::fuzz::demo_app(name);
+        let _ = app.update(UiMessage::SelectChat(ANIMATED_CHAT.into()));
+        let bytes = |u: &str| iced::futures::executor::block_on(beeper_core::matrix::media(None, u.into())).unwrap();
+        for _ in 0..2 {
+            drop(app.view(app.main_window.expect("the main window")));
+            for u in std::mem::take(&mut *app.wants.avatars.borrow_mut()) {
+                let frames = crate::round_avatar(&bytes(&u));
+                app.avatars.insert(u, Some(frames.expect("the demo avatar decodes")));
+            }
+            for u in std::mem::take(&mut *app.wants.media.borrow_mut()).into_iter().filter(|u| u.starts_with("data:")) {
+                let frames = crate::media_view::decode_media(bytes(&u));
+                app.media.insert(u, Some(frames));
+            }
+        }
+        // The frames of the demo, slowed to `SLOW` each, so that a slow draw of a debug build lands in the frame
+        // that it is meant to draw.
+        let slow = |f: &crate::Frames| -> crate::Frames {
+            f.iter().map(|(h, d)| (h.clone(), if f.len() > 1 { SLOW } else { *d })).collect()
+        };
+        let avatars: Vec<(String, crate::Frames)> = (app.store.read().chat(ANIMATED_CHAT).participants.items.iter())
+            .filter_map(|u| u.img_url.clone())
+            .filter_map(|u| Some((u.clone(), app.avatars.get(&u)?.as_ref()?.clone())))
+            .collect();
+        for (u, f) in avatars {
+            assert!(f.len() > 1, "Maya's avatar keeps its frames");
+            app.avatars.insert(u, Some(slow(&f)));
+        }
+        let media: Vec<(String, crate::Frames)> = (app.store.read().messages.iter())
+            .filter(|m| m.chat_id == ANIMATED_CHAT)
+            .flat_map(|m| {
+                m.attachments
+                    .iter()
+                    .filter_map(|a| a.src_url.clone())
+                    .chain(m.reactions.iter().filter_map(|r| r.img_url.clone()))
+            })
+            .filter_map(|u| Some((u.clone(), app.media.get(&u)?.as_ref()?.as_ref().ok()?.clone())))
+            .collect();
+        for (u, f) in media {
+            assert!(f.len() > 1, "the GIF and the custom emoji keep their frames");
+            app.media.insert(u, Some(Ok(slow(&f))));
+        }
+        app
+    }
+
+    /// The delay of each frame of the demo's animations in these tests.
+    const SLOW: u128 = 2000;
+
+    /// The main window of `app` as the simulator draws it `ms` into the animations; a draw that takes so long that
+    /// it may have drawn the next frame draws again.
+    fn main_at(app: &mut BeeperGuiApp, ms: u64) -> ::image::RgbaImage {
+        let end = u128::from(ms) / SLOW * SLOW + SLOW;
+        for _ in 0..5 {
+            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            let main = app.main_window.expect("the main window");
+            let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view(main));
+            let shot = pixels(&mut sim);
+            if app.started.elapsed().as_millis() < end {
+                return shot;
+            }
+        }
+        panic!("five draws took more than {} ms each", end - u128::from(ms));
+    }
+
+    /// The places of the pixels of `shot` in the color `c`.
+    fn spots(shot: &::image::RgbaImage, c: u32) -> Vec<(u32, u32)> {
+        shot.enumerate_pixels().filter(|(_, _, px)| near(px.0, hex(c))).map(|(x, y, _)| (x, y)).collect()
+    }
+
+    /// How many of the places `at` of `shot` are in the color `c`.
+    fn count(shot: &::image::RgbaImage, at: &[(u32, u32)], c: u32) -> usize {
+        at.iter().filter(|&&(x, y)| near(shot.get_pixel(x, y).0, hex(c))).count()
+    }
+
+    /// When the window that `app` draws asks to be drawn again after a frame, with the pointer away: the next frame
+    /// of an animation, or never.
+    fn next_redraw(app: &BeeperGuiApp) -> window::RedrawRequest {
+        use iced::advanced::renderer::Headless as _;
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            iced::Font::DEFAULT,
+            Pixels(13.0),
+            Some("tiny-skia"),
+        ))
+        .expect("a headless renderer");
+        let view = app.view(app.main_window.expect("the main window"));
+        let size = Size::new(1200.0, 800.0);
+        let mut ui = iced_runtime::UserInterface::build(view, size, Default::default(), &mut renderer);
+        let redraw = [iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))];
+        let (state, _) = ui.update(
+            &redraw,
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut Vec::new(),
+        );
+        match state {
+            iced_runtime::user_interface::State::Updated { redraw_request, .. } => redraw_request,
+            iced_runtime::user_interface::State::Outdated => panic!("the interface is up to date"),
+        }
+    }
+
+    /// Desktop's "Animate avatars and emoji" (`animateAvatarsAndEmoji`): the still image (`rs`) of an avatar, a custom
+    /// emoji in a message and a custom emoji reaction plays its frames, which advance, and shows only its first
+    /// frame while the setting is off. It does not touch the GIFs of attachments, which "Autoplay GIFs" plays.
+    #[test]
+    fn avatars_and_emoji_animate_like_desktop() {
+        let mut app = animated_demo("animate-avatars");
+        // The purple and teal frames of Maya's avatar, and the orange and green ones of the custom emoji: the places
+        // of the first frames take the third ones.
+        let (purple, teal, orange, green) = (0x7c5cff, 0x22b8cf, 0xff9f1c, 0x8ce99a);
+        let first = main_at(&mut app, 500);
+        let (avatar, emoji) = (spots(&first, purple), spots(&first, orange));
+        assert!(avatar.len() > 400 && emoji.len() > 100, "the avatars and the emoji show");
+        let third = main_at(&mut app, 4500);
+        // Most of them: the purple of a still logo stays.
+        let most = |n: usize, of: &[(u32, u32)]| n * 10 > of.len() * 8;
+        assert!(most(count(&third, &avatar, teal), &avatar), "the avatars play");
+        assert!(most(count(&third, &emoji, green), &emoji), "the emoji play");
+        assert!(matches!(next_redraw(&app), window::RedrawRequest::At(_)), "the next frame is due");
+        app.store.write().settings.set_pref("animateAvatars", 0);
+        let still = main_at(&mut app, 4500);
+        assert_eq!(count(&still, &avatar, purple), avatar.len(), "the first frame of the avatars");
+        assert_eq!(count(&still, &emoji, orange), emoji.len(), "the first frame of the emoji");
+        assert!(matches!(next_redraw(&app), window::RedrawRequest::At(_)), "the GIF attachment still plays");
+        app.store.write().settings.set_pref("autoplayGifs", 0);
+        assert_eq!(next_redraw(&app), window::RedrawRequest::Wait, "nothing plays, so nothing ticks");
+    }
+
+    /// Like Chromium's frames of a minimized or hidden window, the animations wait while the main window is
+    /// minimized or in the tray, and a chat without animations asks for no frames.
+    #[test]
+    fn animations_wait_while_nothing_animated_shows() {
+        let mut app = animated_demo("animate-waits");
+        let avatar = spots(&main_at(&mut app, 500), 0x7c5cff);
+        assert!(matches!(next_redraw(&app), window::RedrawRequest::At(_)));
+        app.minimized = true;
+        assert_eq!(next_redraw(&app), window::RedrawRequest::Wait, "minimized");
+        assert_eq!(count(&main_at(&mut app, 2500), &avatar, 0x7c5cff), avatar.len(), "the first frame shows");
+        app.minimized = false;
+        let _ = app.update(UiMessage::Window(crate::windows::Msg::Minimized(true)));
+        assert!(app.minimized, "the window manager minimized the window");
+        let _ = app.update(UiMessage::Window(crate::windows::Msg::Focused(true)));
+        assert!(!app.minimized, "a focused window is not minimized");
+        app.hidden = true;
+        assert_eq!(next_redraw(&app), window::RedrawRequest::Wait, "in the tray");
+        app.hidden = false;
+        // Maya's chat, in the archive, takes her avatar off the chat list.
+        let idx = app.store.read().chat_idx(ANIMATED_CHAT);
+        app.store.write().update_chat(idx, |c| c.is_archived = Some(true));
+        let _ = app.update(UiMessage::SelectChat("!wa_eric:beeper.com".into()));
+        assert_eq!(next_redraw(&app), window::RedrawRequest::Wait, "no animation shows");
+    }
+
+    /// The frames of an animated GIF, PNG and WebP decode once into the cache, and an avatar keeps at most
+    /// `AVATAR_FRAMES` of them, each delay summed into the one it keeps, so that it plays as long.
+    #[test]
+    fn animated_images_decode_their_frames() {
+        use ::image::codecs::gif::{GifEncoder, Repeat};
+        use ::image::{Delay, Frame, Rgba, RgbaImage};
+        let gif = |n: usize, ms: u32| {
+            let mut out = Vec::new();
+            let mut enc = GifEncoder::new(&mut out);
+            enc.set_repeat(Repeat::Infinite).unwrap();
+            let frames = (0..n).map(|i| {
+                let px = RgbaImage::from_pixel(8, 8, Rgba([(i % 25) as u8 * 10, 0, 0, 255]));
+                Frame::from_parts(px, 0, 0, Delay::from_numer_denom_ms(ms, 1))
+            });
+            enc.encode_frames(frames).unwrap();
+            drop(enc);
+            out
+        };
+        let two = crate::media_view::decode_media(gif(2, 70)).unwrap();
+        assert_eq!(two.iter().map(|f| f.1).collect::<Vec<_>>(), [70, 70]);
+        assert_eq!(crate::media_view::decode_media(gif(2, 0)).unwrap()[0].1, 100, "browsers play 0 ms at 100 ms");
+        let long = crate::round_avatar(&gif(250, 20)).unwrap();
+        assert_eq!(long.len(), 84, "every third frame of 250");
+        assert_eq!(long.iter().map(|f| f.1).sum::<u128>(), 250 * 20, "as long as the GIF");
+        let png = RgbaImage::from_pixel(4, 4, Rgba([0, 0, 255, 255]));
+        let mut still = Vec::new();
+        png.write_to(&mut std::io::Cursor::new(&mut still), ::image::ImageFormat::Png).unwrap();
+        assert_eq!(crate::media_view::animated(&still), None, "a PNG without acTL");
+        assert_eq!(crate::round_avatar(&still).unwrap().len(), 1);
+        let mut webp = b"RIFF\0\0\0\0WEBPVP8X\x0a\0\0\0\x02".to_vec();
+        webp.resize(30, 0);
+        assert_eq!(crate::media_view::animated(&webp), Some(crate::media_view::Animated::WebP));
+        webp[20] = 0;
+        assert_eq!(crate::media_view::animated(&webp), None, "a WebP without the animation flag");
     }
 
     /// Desktop's emoji message: the bubble's padding without its bottom, its time in a tooltip, and at 80% brightness

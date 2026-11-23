@@ -9,6 +9,8 @@ pub enum Msg {
     ToggleMaximize(Option<window::Id>),
     /// The Minimize item of the Window menu.
     Minimize(window::Id),
+    /// Whether the main window is minimized, as the window manager says after the window lost the focus.
+    Minimized(bool),
     Opened(window::Id),
     /// A window drew a frame, after which its screenshot has content.
     Drawn(window::Id),
@@ -35,6 +37,18 @@ impl BeeperGuiApp {
             }
             Msg::Focused(focused) => {
                 self.focused = focused;
+                // A window that the window manager minimizes loses the focus, and one that it restores gains it.
+                let minimized = match (focused, self.main_window) {
+                    (false, Some(main)) => {
+                        let later = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
+                        let ask = Task::perform(later, |()| ()).then(move |()| window::is_minimized(main));
+                        ask.map(|m| UiMessage::Window(Msg::Minimized(m == Some(true))))
+                    }
+                    _ => {
+                        self.minimized = false;
+                        Task::none()
+                    }
+                };
                 self.read_open_chat();
                 let screen = self.login.screen;
                 let clipboard = matches!(screen, login::Screen::RecoveryKey | login::Screen::Code);
@@ -42,13 +56,18 @@ impl BeeperGuiApp {
                     .then(|| iced::clipboard::read().map(|t| LoginMsg::KeyOnFocus(t).into()));
                 let modal = (focused && self.enter_key.window.is_some())
                     .then(|| iced::clipboard::read().map(|t| enter_key::KeyMsg::OnFocus(t).into()));
-                return Task::batch([self.close_notifications()].into_iter().chain(key).chain(modal));
+                return Task::batch([self.close_notifications(), minimized].into_iter().chain(key).chain(modal));
             }
             Msg::Relaunch => {
                 RELAUNCH.store(true, std::sync::atomic::Ordering::Relaxed);
                 return self.quit();
             }
-            Msg::Minimize(id) => return window::minimize(id, true),
+            Msg::Minimize(id) => {
+                self.minimized |= Some(id) == self.main_window;
+                return window::minimize(id, true);
+            }
+            // A focus that came back while the window manager answered wins.
+            Msg::Minimized(minimized) => self.minimized = minimized && !self.focused,
             Msg::Opened(id) => {
                 let key = if Some(id) == self.settings_window {
                     "BEEPER_SCREENSHOT_SETTINGS"

@@ -216,7 +216,7 @@ pub struct GroupDraft {
     pub title: String,
     pub topic: text_editor::Content,
     /// The new avatar: `Some(None)` removes it, and `Some(Some(_))` is a picked image with its file URL.
-    pub photo: Option<Option<(String, PendingMedia, image::Handle)>>,
+    pub photo: Option<Option<(String, PendingMedia, crate::Frames)>>,
     /// The pointer is on the avatar, so it shows "Edit".
     pub hover: bool,
     /// Desktop's `mode === "personal"`: the Edit Chat for Me window, which sets the personal name and photo.
@@ -1371,7 +1371,7 @@ impl BeeperGuiApp {
         let can = |i: usize| d.personal || c.edits & (1 << i) != 0;
         let edit = UiMessage::Group;
         let face = match &d.photo {
-            Some(Some((_, _, h))) => image(h.clone()).width(64).height(64).into(),
+            Some(Some((_, _, f))) => self.emoji(f, |h| image(h).width(64).height(64)),
             Some(None) => {
                 let img_url = c.room_img_url().filter(|_| d.personal).map(str::to_string);
                 self.chat_avatar(&Chat { img_url, personal: None, ..c.clone() }, 64.0, 0.0)
