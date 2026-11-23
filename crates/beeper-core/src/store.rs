@@ -92,6 +92,10 @@ pub struct StoredAsset {
 }
 
 pub const NOTE_CHAT_ID: &str = "!note_self:beeper.com";
+
+/// How long a typing update shows its users at most: Desktop's `durationMs: 6e4` of a `m.typing`, whatever the
+/// timeout that the typing users sent.
+pub const TYPING_DURATION: std::time::Duration = std::time::Duration::from_secs(60);
 /// Logout writes this file and the next start deletes the local data, because
 /// Windows can't delete the databases while this process has them open.
 pub const LOGGED_OUT: &str = "logged-out";
@@ -629,7 +633,10 @@ pub struct BeeperStore {
     pub syncs: u64,
     /// The Matrix IDs of sent events and created labels by their local IDs.
     pub sent: HashMap<String, String>,
+    /// Who types in each chat, by its Matrix `m.typing`.
     pub typing: HashMap<String, Vec<String>>,
+    /// The number of `m.typing` updates of each chat, which a typing timeout compares with its own.
+    pub typing_updates: HashMap<String, u64>,
     /// `io.element.recent_emoji` keys (emoji or emoji-mart ids) with their use counts.
     pub recent_emoji: Vec<(String, u64)>,
     /// Desktop's `accountDataStore.imagePack`: the own `m.image_pack`, whose images are the custom emoji, or null.
@@ -822,6 +829,7 @@ impl BeeperStore {
             syncs: 0,
             sent: HashMap::new(),
             typing: HashMap::new(),
+            typing_updates: HashMap::new(),
             recent_emoji: Vec::new(),
             image_pack: serde_json::Value::Null,
             scheduled: Vec::new(),
@@ -2489,6 +2497,11 @@ impl BeeperStore {
             removed_from_beeper(&mut msg);
         }
         let Some(idx) = found else {
+            let newest = self.chat_idx_by_id.get(&msg.chat_id).and_then(|&c| self.chats[c].preview.as_ref());
+            if newest.is_none_or(|p| p.sort_key < msg.sort_key) {
+                let (chat, sender) = (msg.chat_id.clone(), msg.sender_id.clone());
+                self.sender_stops_typing(&chat, &sender);
+            }
             let idx = self.push_message(msg, true);
             let m = self.messages[idx].clone();
             return self.emit_ws("message.upserted", &m.chat_id, Some(&m.id), None, Some(m.clone()));
@@ -3402,6 +3415,42 @@ impl BeeperStore {
     /// Desktop's `showIncognitoModeIndicator`.
     pub fn incognito_indicator(&self) -> bool {
         self.incognito() && self.settings.on("incognitoIndicator")
+    }
+
+    /// Desktop's `m.typing` of `chat`: `ids` type, and each of them for [`TYPING_DURATION`] at most unless an update
+    /// comes again (`USER_ACTIVITY` with `durationMs: 6e4`). Returns the number of the update, which
+    /// [`Self::typing_timeout`] takes.
+    pub fn set_typing(&mut self, chat: &str, ids: Vec<String>) -> u64 {
+        let n = self.typing_updates.entry(chat.to_string()).or_default();
+        *n += 1;
+        let n = *n;
+        let old = match ids.is_empty() {
+            true => self.typing.remove(chat),
+            false => self.typing.insert(chat.to_string(), ids.clone()),
+        };
+        if old.unwrap_or_default() != ids {
+            self.emit_ws("chat.typing", chat, None, None, None);
+        }
+        n
+    }
+
+    /// Desktop's `deleteUserActivity` when the activity of a typing update `n` of `chat` times out: whoever it said
+    /// types stops, unless a later update came.
+    pub fn typing_timeout(&mut self, chat: &str, n: u64) {
+        if self.typing_updates.get(chat) == Some(&n) && self.typing.remove(chat).is_some() {
+            self.emit_ws("chat.typing", chat, None, None, None);
+        }
+    }
+
+    /// Desktop's `onUserActivityStopped` for the sender of a new message that is newer than the messages of its
+    /// chat (`onNewMessages`).
+    fn sender_stops_typing(&mut self, chat: &str, sender: &str) {
+        let Some(ids) = self.typing.get_mut(chat).filter(|ids| ids.iter().any(|i| i == sender)) else { return };
+        ids.retain(|i| i != sender);
+        if ids.is_empty() {
+            self.typing.remove(chat);
+        }
+        self.emit_ws("chat.typing", chat, None, None, None);
     }
 
     /// Desktop's `showTypingIndicator`: typing notices go out, unless incognito mode turned them off.
@@ -4421,6 +4470,40 @@ mod tests {
         managed.participants.items.iter_mut().for_each(|u| u.manage = 3);
         st.upsert_chat(managed);
         assert!(st.chat(&chat.id).participants.items.iter().all(|u| u.manage == 3));
+    }
+
+    /// Desktop's typing users: each `m.typing` shows its users for 60 s at most, which a later update starts again,
+    /// and a new message of a typing user stops them, but an older one, like a page of the history, does not.
+    #[test]
+    fn typing_times_out_like_desktop() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("typing-timeout"));
+        let template = st.stored("1 ORDER BY sort_key DESC LIMIT 1", []).pop().expect("a stored message");
+        let chat = template.chat_id.clone();
+        let mut rx = st.ws_tx.subscribe();
+        let typing = |st: &super::BeeperStore| st.typing.get(&chat).cloned().unwrap_or_default();
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let first = st.set_typing(&chat, ids(&["@a:x", "@b:x"]));
+        assert_eq!(rx.try_recv().expect("an event").event_type, "chat.typing");
+        let again = st.set_typing(&chat, ids(&["@a:x", "@b:x"]));
+        assert!(rx.try_recv().is_err(), "the same users send no event");
+        st.typing_timeout(&chat, first);
+        assert_eq!(typing(&st), ids(&["@a:x", "@b:x"]), "the timeout of an older update keeps them");
+        st.typing_timeout(&chat, again);
+        assert!(typing(&st).is_empty(), "that of the last update stops them");
+        assert_eq!(rx.try_recv().expect("an event").event_type, "chat.typing");
+        let _ = st.set_typing(&chat, ids(&["@a:x", "@b:x"]));
+        let message = |id: &str, sender: &str, key: i64| super::Message {
+            id: id.into(),
+            sender_id: sender.into(),
+            sort_key: super::sort_key(key),
+            ..template.clone()
+        };
+        st.upsert_message(message("$old", "@a:x", 1));
+        assert_eq!(typing(&st), ids(&["@a:x", "@b:x"]), "an older message keeps its sender typing");
+        st.upsert_message(message("$new", "@a:x", 9_000_000_000));
+        assert_eq!(typing(&st), ids(&["@b:x"]), "a new one stops its sender");
+        st.upsert_message(message("$newer", "@b:x", 9_000_000_001));
+        assert!(!st.typing.contains_key(&chat), "and the last typing user");
     }
 
     /// A sync upserts each of its rooms: an unchanged room writes nothing, so it sends no event and keeps what the
