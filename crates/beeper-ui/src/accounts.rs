@@ -18,6 +18,12 @@ pub enum Msg {
     AskRemove(String),
     Remove(String),
     Removed(String, Result<(), String>),
+    /// Desktop's "Message yourself" of an account (`createThread(account.user)`).
+    MessageSelf(String),
+    /// Desktop's "Send a link to %s" of Settings > Devices on an account.
+    SendLink(String),
+    /// The dropdown of "Send a link to %s" with several phone numbers.
+    ToggleLinkMenu,
     /// Desktop's `fetchSubAccounts` of an account: its "Refresh List", and the servers that the bridge sent.
     FetchServers(String),
     Servers(String, Result<Vec<beeper_core::matrix::SubAccount>, String>),
@@ -93,6 +99,16 @@ impl BeeperGuiApp {
             }
             Msg::Cloud(Err(e)) => self.fail(Toast::new(format!("Could not load your chat accounts: {e}"))),
             Msg::DismissError(id) => _ = self.dismissed_errors.insert(id),
+            Msg::MessageSelf(account) => return self.message_self(account, false),
+            Msg::SendLink(account) => {
+                self.link_pick = (Some(account.clone()), false);
+                let send = self.message_self(account, true);
+                // Desktop's "Link sent to %s" goes back to "Send a link to %s" after 3 s.
+                let back =
+                    Task::perform(async { tokio::time::sleep(Duration::from_secs(3)).await }, |()| UiMessage::Noop);
+                return Task::batch([send, back]);
+            }
+            Msg::ToggleLinkMenu => self.link_pick.1 ^= true,
             Msg::ShowAppQr => self.app_qr = true,
             Msg::OpenSettings(id) => {
                 self.list.chat_menu = None;
