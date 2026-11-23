@@ -4029,7 +4029,10 @@ impl BeeperGuiApp {
             Msg::AskDelete(mids) => {
                 (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mids.join(" ")))
             }
-            Msg::RetrySend(id) => self.store.write().retry_send(&id),
+            Msg::RetrySend(id) => {
+                self.store.write().retry_send(&id);
+                self.retried.insert(id);
+            }
             Msg::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
             Msg::ToggleClamp(mid) => {
                 if !self.pane.unclamped.remove(&mid) {
