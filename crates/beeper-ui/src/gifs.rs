@@ -285,9 +285,8 @@ impl BeeperGuiApp {
                 let rows = shown.chunks(4).map(|row| {
                     let cells = row.iter().map(|x| {
                         button(picture(&x.url, Fill, cell))
-                            .padding(0)
+                            .bare(p.text)
                             .width(Fill)
-                            .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
                             .on_press(UiMessage::Gifs(gifs::Msg::PickSticker(x.clone())))
                             .into()
                     });

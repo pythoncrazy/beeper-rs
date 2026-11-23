@@ -387,8 +387,7 @@ impl BeeperGuiApp {
         .spacing(6)
         .width(Fill);
         let close = button(container(ic(icon::CLOSE, 16.0).color(p.muted)).center(28))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.muted; 3], 8.0))
+            .bare(p.muted)
             .on_press(msg(Msg::Dismiss(s.keys.clone())));
         let line = row![body, merge, close].spacing(12).align_y(Center);
         let card = container(line)
@@ -406,8 +405,7 @@ impl BeeperGuiApp {
         let s = (!st.settings.chat_info_merge_promo_dismissed).then(|| self.suggestion_of(st, &chat.id))??;
         let p = &self.pal;
         let close = button(container(ic(icon::CLOSE, 16.0).color(p.muted)).center(34))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.muted; 3], 17.0))
+            .bare(p.muted)
             .on_press(UiMessage::MergeSuggest(Msg::DismissPromo));
         let top = row![bold_pill(), Space::new().width(Fill), close].align_y(Center).padding(Padding {
             top: 8.0,
