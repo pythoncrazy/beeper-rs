@@ -481,6 +481,16 @@ pub(crate) fn media_box(window_w: f32, size: Option<(f32, f32)>, share: f32) -> 
     }
 }
 
+/// Desktop's box of a sticker of known size: at most 400 px high and `share` of the window wide, never upscaled, and
+/// never cropped (`object-fit: contain`), however tall or wide it is.
+pub(crate) fn sticker_box(window_w: f32, (w, h): (f32, f32), share: f32) -> (f32, f32, bool) {
+    if w <= 0.0 || h <= 0.0 {
+        return media_box(window_w, None, share);
+    }
+    let k = 1f32.min(400.0 / h).min((share * window_w).max(1.0) / w);
+    (w * k, h * k, false)
+}
+
 /// Desktop's `--cv-avatar-size` and the margin of `.sender-img-container`: the sender avatar of a group message.
 const FACE: f32 = 34.0;
 const FACE_GAP: f32 = 8.0;
@@ -2364,7 +2374,10 @@ impl BeeperGuiApp {
                     let is_video = a.attachment_type == "video";
                     let size = a.size.as_ref().and_then(|s| Some((s.width? as f32, s.height? as f32)));
                     let share = if self.sidebar_hidden { 0.85 } else { 0.45 };
-                    let (w, h, cover) = media_box(self.pane().size.width, size, share);
+                    let (w, h, cover) = match size.filter(|_| a.is_sticker == Some(true)) {
+                        Some(size) => sticker_box(self.pane().size.width, size, share),
+                        None => media_box(self.pane().size.width, size, share),
+                    };
                     // Desktop plays a video with `isGif` inline like a GIF, without sound, again and again.
                     let looped = is_video && a.is_gif == Some(true) && m.unresolved_media.is_none();
                     // Desktop's `Lottie` plays an animated sticker itself, not its still thumbnail.
