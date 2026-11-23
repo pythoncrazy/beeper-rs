@@ -222,7 +222,23 @@ mod display {
         }
         // Without server-side decorations the window draws its own title bar, with the GTK theme like Electron's.
         if wayland.is_some() && !has("zxdg_decoration_manager_v1") {
+            // GTK only paints the frame off screen, so its accessibility bridge would register on a bus that nothing
+            // pumps.
+            if std::env::var_os("NO_AT_BRIDGE").is_none() {
+                unsafe { std::env::set_var("NO_AT_BRIDGE", "1") };
+            }
+            // The launcher's activation token belongs to the first window, which takes the focus with it, and not
+            // to the GTK that draws the frames.
+            let var = |k: &&str| std::env::var(k).ok().filter(|v| !v.is_empty());
+            let token = ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"].iter().find_map(var);
+            if let Some(token) = token {
+                sctk_adwaita::set_activation_token(token);
+                unsafe { std::env::remove_var("XDG_ACTIVATION_TOKEN") };
+                unsafe { std::env::remove_var("DESKTOP_STARTUP_ID") };
+            }
             sctk_adwaita::preload();
+            // The first frames draw from the cached theme; once GTK opens, the windows draw again with it.
+            sctk_adwaita::on_ready(|| beeper_ui::FRAME_READY.notify_one());
         }
     }
 

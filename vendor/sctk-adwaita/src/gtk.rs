@@ -12,7 +12,9 @@
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_double, c_int, c_void, CString};
+use std::path::PathBuf;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 
 use smithay_client_toolkit::reexports::csd_frame::WindowState;
@@ -179,10 +181,90 @@ struct Gtk {
 type Job = Box<dyn FnOnce(&mut Gtk) + Send>;
 
 /// What the GTK thread reports once GTK is open.
+#[derive(Clone)]
 struct Opened {
     metrics: Metrics,
     layout: Option<(String, String)>,
     titlebar: TitlebarActions,
+    headerbar_rgb: u32,
+    border_rgb: u32,
+}
+
+fn cache_path() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_CACHE_HOME") {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir).join("beeper-rs").join("gtk-frame-v1.cache"));
+        }
+    }
+    Some(PathBuf::from(std::env::var_os("HOME")?).join(".cache").join("beeper-rs").join("gtk-frame-v1.cache"))
+}
+
+fn action_to_str(a: TitlebarAction) -> &'static str {
+    match a {
+        TitlebarAction::None => "none",
+        TitlebarAction::ToggleMaximize => "toggle-maximize",
+        TitlebarAction::Minimize => "minimize",
+        TitlebarAction::Menu => "menu",
+    }
+}
+
+fn load_cache() -> Option<Opened> {
+    let raw = std::fs::read_to_string(cache_path()?).ok()?;
+    let p: Vec<&str> = raw.trim().split('\t').collect();
+    if p.len() < 13 {
+        return None;
+    }
+    let metrics = Metrics {
+        header: p[0].parse().ok()?,
+        button: (p[1].parse().ok()?, p[2].parse().ok()?),
+        button_top: p[3].parse().ok()?,
+        inset: (p[4].parse().ok()?, p[5].parse().ok()?),
+        spacing: p[6].parse().ok()?,
+    };
+    let layout = if p[7].is_empty() && p[8].is_empty() {
+        None
+    } else {
+        Some((p[7].to_owned(), p[8].to_owned()))
+    };
+    let defaults = TitlebarActions::default();
+    let titlebar = TitlebarActions {
+        double_click: TitlebarAction::parse(p[9], defaults.double_click),
+        right_click: TitlebarAction::parse(p[10], defaults.right_click),
+    };
+    let headerbar_rgb = u32::from_str_radix(p[11], 16).ok()?;
+    let border_rgb = u32::from_str_radix(p[12], 16).ok()?;
+    Some(Opened { metrics, layout, titlebar, headerbar_rgb, border_rgb })
+}
+
+fn save_cache(o: &Opened) {
+    let Some(path) = cache_path() else { return };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let (l, r) = o.layout.as_ref().map_or(("", ""), |(a, b)| (a.as_str(), b.as_str()));
+    let body = format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{l}\t{r}\t{}\t{}\t{:06x}\t{:06x}\n",
+        o.metrics.header,
+        o.metrics.button.0,
+        o.metrics.button.1,
+        o.metrics.button_top,
+        o.metrics.inset.0,
+        o.metrics.inset.1,
+        o.metrics.spacing,
+        action_to_str(o.titlebar.double_click),
+        action_to_str(o.titlebar.right_click),
+        o.headerbar_rgb & 0x00ff_ffff,
+        o.border_rgb & 0x00ff_ffff,
+    );
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, body).and_then(|()| std::fs::rename(&tmp, &path)).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+fn cached() -> Option<&'static Opened> {
+    static CACHED: OnceLock<Option<Opened>> = OnceLock::new();
+    CACHED.get_or_init(load_cache).as_ref()
 }
 
 /// The thread that owns GTK. GTK is not thread safe, so every call happens there; frames hand
@@ -196,10 +278,29 @@ struct Worker {
 }
 
 static WORKER: OnceLock<Worker> = OnceLock::new();
+static READY: AtomicBool = AtomicBool::new(false);
+static ON_READY: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
 
 /// Starts opening GTK in the background, so the first window's frame finds it ready.
 pub fn preload() {
+    let _ = cached();
     worker();
+}
+
+/// Registers a one-shot callback invoked when GTK finishes initializing and warming up.
+pub fn on_ready(cb: impl FnOnce() + Send + 'static) {
+    if READY.load(Ordering::Acquire) {
+        cb();
+        return;
+    }
+    if let Ok(mut slot) = ON_READY.lock() {
+        *slot = Some(Box::new(cb));
+    }
+    if READY.load(Ordering::Acquire) {
+        if let Some(cb) = ON_READY.lock().ok().and_then(|mut g| g.take()) {
+            cb();
+        }
+    }
 }
 
 fn worker() -> &'static Worker {
@@ -210,11 +311,17 @@ fn worker() -> &'static Worker {
             let Some(mut gtk) = Gtk::open() else {
                 return;
             };
-            let _ = opened.send(Opened {
-                metrics: gtk.metrics(),
-                layout: gtk.setting(c"gtk-decoration-layout").map(|layout| split_layout(&layout)),
-                titlebar: gtk.titlebar_actions(),
-            });
+            let metrics = gtk.metrics();
+            let layout = gtk.setting(c"gtk-decoration-layout").map(|layout| split_layout(&layout));
+            let titlebar = gtk.titlebar_actions();
+            let (headerbar_rgb, border_rgb) = gtk.warmup(&metrics);
+            let info = Opened { metrics, layout, titlebar, headerbar_rgb, border_rgb };
+            save_cache(&info);
+            let _ = opened.send(info);
+            READY.store(true, Ordering::Release);
+            if let Some(cb) = ON_READY.lock().ok().and_then(|mut g| g.take()) {
+                cb();
+            }
             for job in queue {
                 job(&mut gtk);
             }
@@ -227,6 +334,17 @@ impl Worker {
     /// Waits for GTK to open; `None` when it cannot.
     fn opened(&self) -> Option<&Opened> {
         self.opened.get_or_init(|| self.opening.lock().ok()?.take()?.recv().ok()).as_ref()
+    }
+
+    /// Non-blocking check for live GTK state, falling back to cached metrics if available.
+    fn metadata(&self) -> Option<&Opened> {
+        if READY.load(Ordering::Acquire) {
+            return self.opened();
+        }
+        if let Some(c) = cached() {
+            return Some(c);
+        }
+        self.opened()
     }
 }
 
@@ -245,24 +363,46 @@ fn call<R: Send>(job: impl FnOnce(&mut Gtk) -> R + Send) -> Option<R> {
     result.recv().ok()
 }
 
-/// The theme's title bar sizes, once GTK has opened; `None` without GTK.
+/// The theme's title bar sizes, once GTK has opened (or from cache); `None` without GTK.
 pub(crate) fn metrics() -> Option<Metrics> {
-    worker().opened().map(|opened| opened.metrics)
+    worker().metadata().map(|opened| opened.metrics)
 }
 
 /// GTK's `gtk-decoration-layout` (`org.gnome.desktop.wm.preferences button-layout`): the
 /// buttons left and right of the title, which Electron's frame shows.
 pub(crate) fn decoration_layout() -> Option<(String, String)> {
-    worker().opened()?.layout.clone()
+    worker().metadata()?.layout.clone()
 }
 
 /// What clicks on the title bar do, by GTK's settings.
 pub(crate) fn titlebar_actions() -> Option<TitlebarActions> {
-    Some(worker().opened()?.titlebar)
+    Some(worker().metadata()?.titlebar)
 }
 
-/// Whether frames draw with GTK.
+/// Whether GTK has finished opening and warming up and can draw immediately without stalling.
+pub(crate) fn ready() -> bool {
+    let _ = worker();
+    READY.load(Ordering::Acquire)
+}
+
+/// Whether frames are expected to draw with GTK (ready now or cached from a previous run).
+pub(crate) fn expected() -> bool {
+    ready() || cached().is_some()
+}
+
+/// Cached GTK headerbar & border colors (`0xRRGGBB`) for instant zero-flash first frame.
+pub(crate) fn cached_colors() -> Option<(u32, u32)> {
+    worker().metadata().map(|o| (o.headerbar_rgb, o.border_rgb))
+}
+
+/// Whether frames draw with GTK (blocks only if no cache exists yet).
 pub(crate) fn active() -> bool {
+    if ready() {
+        return true;
+    }
+    if cached().is_some() {
+        return false;
+    }
     worker().opened().is_some()
 }
 
@@ -328,6 +468,47 @@ impl Gtk {
             double_click: action(c"gtk-titlebar-double-click", defaults.double_click),
             right_click: action(c"gtk-titlebar-right-click", defaults.right_click),
         }
+    }
+
+    /// Pre-warms style contexts, Pango/FontConfig, and button symbolic icons on the background
+    /// thread so the first live `draw_header` takes < 1 ms, and samples the theme's headerbar
+    /// background & bottom-border colors (`0xRRGGBB`) for instant zero-flash Frame 0 rendering.
+    fn warmup(&mut self, metrics: &Metrics) -> (u32, u32) {
+        let h = metrics.header.max(1);
+        let w = 64_u32;
+        let mut pixels = vec![0_u8; (w * h * 4) as usize];
+        let header = HeaderDraw {
+            state: WindowState::ACTIVATED,
+            title: "W".into(),
+            buttons: vec![
+                ButtonDraw { kind: ButtonKind::Minimize, x: 0.0, look: ButtonLook::Normal },
+                ButtonDraw { kind: ButtonKind::Maximize, x: 20.0, look: ButtonLook::Normal },
+                ButtonDraw { kind: ButtonKind::Close, x: 40.0, look: ButtonLook::Normal },
+            ],
+            title_room: (0.0, 64.0),
+            window_height: h + 100,
+        };
+        let canvas = Canvas { pixels: &mut pixels, width: w, height: h, scale: 1 };
+        self.with_cairo(canvas, |gtk, cr| {
+            let bar = gtk.context(&format!("{} {HEADER}", window_node(WindowState::ACTIVATED)), 0);
+            // SAFETY: rendering into a live cairo context.
+            unsafe {
+                (gtk.api.gtk_render_background)(bar, cr, 0., 0., f64::from(w), f64::from(h));
+                (gtk.api.gtk_render_frame)(bar, cr, 0., 0., f64::from(w), f64::from(h));
+            }
+        });
+        let sample = |row: u32| -> u32 {
+            // Cairo ARGB32 on little-endian is BGRA in memory.
+            let off = ((row.min(h - 1) * w + (w / 2)) * 4) as usize;
+            let (b, g, r) = (pixels[off] as u32, pixels[off + 1] as u32, pixels[off + 2] as u32);
+            (r << 16) | (g << 8) | b
+        };
+        let hdr_rgb = sample(h / 2);
+        let border_rgb = sample(h - 1);
+        // Warm Pango + button symbolic icons off the main thread.
+        let canvas = Canvas { pixels: &mut pixels, width: w, height: h, scale: 1 };
+        self.draw_header(canvas, &header);
+        (hdr_rgb, border_rgb)
     }
 
     /// Handles GDK's pending display events (theme and setting changes) without blocking.

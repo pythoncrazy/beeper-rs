@@ -1302,6 +1302,30 @@ mod tests {
         assert!(quarter(20, 14) && !quarter(20, 26), "a quarter turn clockwise fills the top half");
     }
 
+    /// A vector drawn in a translucent color keeps the color's alpha, like the faint Beeper logo at the start of a
+    /// chat, which the renderer drew opaque.
+    #[test]
+    fn translucent_icons_stay_translucent_in_the_software_renderer() {
+        use iced::advanced::svg::{Renderer as _, Svg};
+        use iced::{Point, Rectangle, Size};
+        let square =
+            br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect width="20" height="20"/></svg>"#;
+        let square = svg::Handle::from_memory(square.as_slice());
+        let red_at = |alpha: f32| {
+            let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, 16.into());
+            let bounds = Rectangle::new(Point::new(10.0, 10.0), Size::new(20.0, 20.0));
+            renderer.draw_svg(Svg::new(square.clone()).color(Color::BLACK.scale_alpha(alpha)), bounds, bounds);
+            let (mut pixmap, mut mask) =
+                (tiny_skia::Pixmap::new(40, 40).unwrap(), tiny_skia::Mask::new(40, 40).unwrap());
+            let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(Size::new(40, 40), 1.0);
+            let screen = Rectangle::with_size(Size::new(40.0, 40.0));
+            renderer.draw(&mut pixmap.as_mut(), &mut mask, &viewport, &[screen], Color::WHITE);
+            pixmap.pixel(20, 20).expect("a pixel in the pixmap").red()
+        };
+        assert!(red_at(1.0) < 5, "an opaque icon is black");
+        assert!((220..=235).contains(&red_at(0.1)), "10% black over white is light grey, not {}", red_at(0.1));
+    }
+
     #[test]
     fn palette_matches_desktop_tokens() {
         let rows: [(&str, Token, Color, Color); 10] = [

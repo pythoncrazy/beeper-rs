@@ -186,7 +186,12 @@ impl BeeperGuiApp {
     /// message, and not for messages from before the start.
     pub(crate) fn notify_failed(&mut self, m: &Message) -> Task<UiMessage> {
         let failed = m.is_sender == Some(true) && m.send_error.as_ref().is_some_and(|e| !e.retrying);
-        if !failed || m.timestamp <= self.booted || !self.notified.insert(format!("failed:{}", m.id)) {
+        if !failed {
+            return Task::none();
+        }
+        // Desktop notifies at each failed attempt: the first one of a new send, and each one after a Retry.
+        let retried = self.retried.remove(&m.id);
+        if !retried && (m.timestamp <= self.booted || !self.notified.insert(format!("failed:{}", m.id))) {
             return Task::none();
         }
         let st = self.store.read();
@@ -195,7 +200,22 @@ impl BeeperGuiApp {
         let body = if here { "Message failed to send" } else { "Message may have failed to send" };
         let toast = Toast { title: chat.title.clone(), body: body.into(), ..Toast::default() };
         let note = Note { chat: chat.id.clone(), message: m.id.clone(), toast };
+        // Desktop's `sendQueuedMessages` also shows the error of a send of this device in a toast that stays.
+        let error = here.then(|| {
+            let e = m.send_error.as_ref().and_then(|e| e.message.clone()).unwrap_or_default();
+            let at: [&dyn std::fmt::Display; 3] = [&chat.title, &crate::network_name(&chat.account_id), &e];
+            (crate::trf("Something went wrong sending message to %1$s (%2$s)\n%3$s", &at), e)
+        });
         drop(st);
+        if let Some((text, e)) = error {
+            let buttons = vec![
+                (crate::tr("Copy Error"), UiMessage::Message(message::Msg::CopyText(e))),
+                (crate::tr("Show"), UiMessage::SelectChat(note.chat.clone())),
+                (crate::tr("Retry"), UiMessage::Message(message::Msg::RetrySend(m.id.clone()))),
+            ];
+            self.show(crate::toasts::Toast { buttons, ..crate::toasts::Toast::new(text.clone()) });
+            self.sticky_banner = Some(text);
+        }
         self.show_note(note, false)
     }
 

@@ -175,6 +175,11 @@ impl BeeperGuiApp {
                 }
             }
             Msg::ToggleFlag(cid, flag) => {
+                // Desktop's `toggleThreadArchive` first moves the cursor from the chat to the next one, also when the
+                // chat is pinned and stays.
+                if flag == ChatFlag::Archived && self.list.cursor.as_ref() == Some(&cid) {
+                    self.point_chat(true);
+                }
                 let at = self.list_ids(&self.store.read()).iter().position(|c| *c == cid);
                 let mut st = self.store.write();
                 let idx = st.resolve_chat_idx(&cid).expect("chat exists");

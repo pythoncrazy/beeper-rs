@@ -483,13 +483,22 @@ fn attachments_send_like_desktop() {
     let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(id, true)));
     assert!(simulator(app.view_main()).find("Drop files here to attach").is_ok(), "a drag shows the drop zone");
     let _ = app.update(UiMessage::Modifiers(Modifiers::SHIFT));
-    let _ = app.update(UiMessage::Composer(composer::Msg::FileDropped(id, "/none".into())));
-    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files[1..].iter().cloned().map(Ok).collect())));
+    // winit gives each file of a drop in its own event; Desktop's `onDrop` attaches them together, in their order.
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileDropped(id, "/a".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileDropped(id, "/b".into())));
+    assert_eq!(app.dropped, ["/a", "/b"].map(std::path::PathBuf::from), "the files of a drop wait for each other");
+    let _ = app.update(UiMessage::Composer(composer::Msg::DropEnded));
+    assert!(app.dropped.is_empty(), "the drop loads its files at once");
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files.iter().cloned().map(Ok).collect())));
     assert!(!app.dropping && app.pane.attachments.is_empty(), "a drop with Shift sends");
-    assert_eq!(last(&app, 1), [(None, vec!["unknown".into()])]);
+    assert_eq!(last(&app, 2), [(None, vec!["img".into()]), (None, vec!["unknown".into()])], "all the files at once");
     let _ = app.update(UiMessage::Modifiers(Modifiers::empty()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files[1..].iter().cloned().map(Ok).collect())));
+    assert_eq!(app.pane.attachments.len(), 1, "a file picked after a drop with Shift waits for the send");
+    let _ = app.update(UiMessage::Composer(composer::Msg::DiscardAttachment(0)));
     let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(id, true)));
     let _ = app.update(UiMessage::Composer(composer::Msg::FileDropped(id, "/none".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::DropEnded));
     let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(files[1..].iter().cloned().map(Ok).collect())));
     assert_eq!(app.pane.attachments.len(), 1, "a drop attaches");
     let _ = app.update(UiMessage::Composer(composer::Msg::DiscardAttachment(0)));
@@ -515,6 +524,16 @@ fn attachments_send_like_desktop() {
     assert_eq!(app.status_banner, "File size (4 B) exceeds the maximum allowed size (3 B)");
     let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(vec![Err("Couldn't attach c.mp4".into())])));
     assert_eq!(app.status_banner, "Couldn't attach c.mp4");
+    // Desktop's `attachFiles` adds a toast for each file that does not attach, and they stack.
+    let two = vec![Err("Couldn't attach d.mp4".into()), Err("Couldn't attach e.mp4".into())];
+    let _ = app.update(UiMessage::Composer(composer::Msg::FilesLoaded(two)));
+    assert_eq!(app.status_banner, "Couldn't attach e.mp4", "the last file's toast is the newest");
+    let older: Vec<&str> = app.older_toasts.iter().map(|t| t.0.text.as_str()).collect();
+    assert!(
+        older.ends_with(&["Couldn't attach c.mp4", "Couldn't attach d.mp4"]),
+        "the others stack in order: {older:?}"
+    );
+    assert!(app.older_toasts.last().is_some_and(|t| t.0.error), "an error toast");
 }
 
 #[test]
@@ -1065,6 +1084,38 @@ fn command_bar_opens_empty_like_desktop() {
     let _ = app.update(UiMessage::CloseModals);
     let _ = app.update(UiMessage::RunHotkey("Search: Room"));
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
+}
+
+/// Desktop's chat hotkeys take `selectedOrCursorThread`, so Ctrl E and E archive the chat of the cursor while no chat
+/// is open. `toggleThreadArchive` first moves the cursor to the next chat, and a pinned chat stays with the toast
+/// "Pinned chats can't be archived".
+#[test]
+fn archive_keys_take_the_chat_of_the_cursor_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("archivecursor");
+    let main = app.main_window.expect("a main window");
+    let ids = app.list_ids(&app.store.read());
+    let flag = |app: &BeeperGuiApp, id: &str, f: ChatFlag| app.store.read().find_chat(id).expect("a chat").flag(f);
+    assert!(flag(&app, &ids[0], ChatFlag::Pinned), "the demo list starts with a pinned chat");
+    let _ = app.update(UiMessage::SelectChat(ids[0].clone()));
+    let _ = app.update(UiMessage::WindowKey(main, Key::Named(Named::Escape), Modifiers::empty()));
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[0]));
+    let _ = app.update(UiMessage::WindowKey(main, Key::Character("e".into()), Modifiers::CTRL));
+    assert_eq!(app.status_banner, "Pinned chats can't be archived");
+    assert!(!flag(&app, &ids[0], ChatFlag::Archived), "the pinned chat stays");
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[1]), "the cursor moves to the next chat");
+    let row = ids.iter().position(|id| !flag(&app, id, ChatFlag::Pinned)).expect("a chat that is not pinned");
+    app.list.cursor = Some(ids[row].clone());
+    let _ = app.update(UiMessage::WindowText(main, "e".into()));
+    assert!(flag(&app, &ids[row], ChatFlag::Archived), "E archives the chat of the cursor");
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[row + 1]));
+    assert_eq!(app.pane.selected_chat_id, None, "archiving the chat of the cursor opens no chat");
+    let _ = app.update(UiMessage::RunHotkey("Chat: Toggle Pin"));
+    assert!(flag(&app, &ids[row + 1], ChatFlag::Pinned), "Ctrl P pins the chat of the cursor");
+    let _ = app.update(UiMessage::SelectChat(ids[row + 2].clone()));
+    let _ = app.update(UiMessage::WindowText(main, "e".into()));
+    assert_eq!(app.pane.composer.text(), "e", "with a chat open, E types in the composer");
+    assert!(!flag(&app, &ids[row + 2], ChatFlag::Archived));
 }
 
 /// Desktop's `scrollThreadsListToItem` with `align: "nearest"`: the chat list scrolls the chat of the cursor and the
@@ -3013,7 +3064,7 @@ fn timeline_rows_stay_until_the_store_changes() {
     let id = app.main_window.expect("a main window");
     let rows = |app: &BeeperGuiApp| {
         drop(Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id)));
-        app.pane.rows.borrow().clone().expect("the view made the rows").2
+        app.pane.rows.borrow().as_ref().expect("the view made the rows").1.clone()
     };
     let first = rows(&app);
     assert!(!first.msgs.is_empty(), "the note chat has messages");
@@ -3680,12 +3731,36 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
         st.pushed(row, Some(&id), Some(("M_FORBIDDEN: refused".into(), true)));
         id
     };
+    // Desktop's `sendQueuedMessages` shows the error in a toast that stays, with Copy Error, Show and Retry.
+    let failed = app.store.read().loaded(&id).expect("the local echo").clone();
+    let _ = app.update(UiMessage::Upserted(Box::new(failed)));
+    let toast = app.shown_toast().expect("a toast of the failed send");
+    assert!(
+        toast.text.starts_with("Something went wrong sending message to ")
+            && toast.text.ends_with("\nM_FORBIDDEN: refused")
+    );
+    let labels: Vec<&str> = toast.buttons.iter().map(|b| b.0).collect();
+    assert_eq!(labels, ["Copy Error", "Show", "Retry"]);
+    assert!(matches!(&toast.buttons[2].1, UiMessage::Message(message::Msg::RetrySend(m)) if *m == id));
+    assert_eq!(app.sticky_banner.as_ref(), Some(&app.status_banner), "the toast stays until it is closed");
     let mut sim = simulator(app.view_main());
     assert!(sim.find("Not sent").is_ok() && sim.find("Remove").is_ok(), "a failed send shows its error and actions");
     let _ = sim.click("Retry");
     assert!(matches!(sim.into_messages().last(), Some(UiMessage::Message(message::Msg::RetrySend(m))) if *m == id));
+    let _ = app.update(UiMessage::Toast(toasts::Msg::DismissBanner));
     let _ = app.update(UiMessage::Message(message::Msg::RetrySend(id.clone())));
     assert!(simulator(app.view_main()).find("Retrying ...").is_ok(), "Retry waits for the homeserver");
+    let again = {
+        let mut st = app.store.write();
+        let (row, _, _) = st.outbox.remove(0);
+        st.pushed(row, Some(&id), Some(("M_TOO_LARGE: too big".into(), true)));
+        st.loaded(&id).expect("the local echo").clone()
+    };
+    let _ = app.update(UiMessage::Upserted(Box::new(again.clone())));
+    assert!(app.status_banner.ends_with("\nM_TOO_LARGE: too big"), "a retry that fails shows its error again");
+    let _ = app.update(UiMessage::Toast(toasts::Msg::DismissBanner));
+    let _ = app.update(UiMessage::Upserted(Box::new(again)));
+    assert!(app.status_banner.is_empty(), "the same failure shows once");
     let _ = app.update(UiMessage::Message(message::Msg::RemoveUnsent(id.clone())));
     let st = app.store.read();
     assert!(st.loaded(&id).is_none() && st.outbox.is_empty(), "Remove drops the echo and its send");
@@ -8565,6 +8640,25 @@ fn the_window_grows_around_its_center_like_desktop() {
     assert_eq!(small, (Point::ORIGIN, Size::new(1024.0, 700.0)), "no bigger than the screen");
     let back = crate::grown(Point::new(120.0, 50.0), Size::new(1200.0, 800.0), Size::new(330.0, 620.0), screen);
     assert_eq!(back.0, Point::new(555.0, 140.0), "and back around the same center");
+}
+
+/// Desktop's `windowStateKeeper` saves a window's state a second after its last resize or move, so a crash keeps it,
+/// and only the windows with a state save.
+#[test]
+fn window_changes_save_the_state_after_the_last_one_like_desktop() {
+    let mut app = demo_app("windowsave");
+    let main = app.main_window.expect("a main window");
+    let resize =
+        |app: &mut BeeperGuiApp| app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(900.0, 700.0))));
+    assert!(resize(&mut app).units() > 0, "a resize waits to save");
+    assert!(app.update(UiMessage::Window(windows::Msg::Moved(main))).units() > 0, "so does a move");
+    let n = app.state_changes;
+    let save = |app: &mut BeeperGuiApp, n| app.update(UiMessage::Window(windows::Msg::SaveState(main, n))).units();
+    assert_eq!(save(&mut app, n - 1), 0, "a later change replaces the save of an earlier one");
+    assert!(save(&mut app, n) > 0, "the last change saves");
+    let other = window::Id::unique();
+    let task = app.update(UiMessage::Window(windows::Msg::Moved(other)));
+    assert_eq!((task.units(), app.state_changes), (0, n), "a window without a state saves nothing");
 }
 
 #[test]

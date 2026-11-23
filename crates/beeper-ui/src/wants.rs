@@ -18,6 +18,8 @@ pub struct Wants {
     pub tiles: RefCell<BTreeSet<(String, u32, u32, crate::gallery::Look)>>,
     /// The quoted messages that the timeline does not have, as (chat, message).
     pub quotes: RefCell<BTreeSet<(String, String)>>,
+    /// The URLs of the shown audio players whose audio no load fetches yet.
+    pub audio: RefCell<BTreeSet<String>>,
     /// The shown voice notes to transcribe automatically.
     pub transcribe: RefCell<BTreeSet<String>>,
     /// The URLs of the shown contact cards (`.vcf` attachments) to read.

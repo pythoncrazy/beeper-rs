@@ -166,6 +166,12 @@ impl Flags {
         Some((left > 0, left))
     }
 
+    /// Desktop's `freebieStore.stateFor(name).eligible`: the plan does not include the freebie `name`, which it
+    /// defines.
+    pub fn has_freebie(&self, name: &str) -> bool {
+        self.free(name).is_some()
+    }
+
     /// Desktop's `freebieStore.stateFor` of the count freebie of the feature `key`, when the plan does not include the
     /// feature: the free uses that are used, and the limit.
     pub fn free_uses(&self, key: &str) -> Option<(i64, i64)> {

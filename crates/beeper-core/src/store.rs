@@ -522,6 +522,7 @@ pub struct BeeperStore {
     chat_order: BTreeSet<(i64, String)>,
     local_chat_idx_by_id: HashMap<String, usize>,
     /// The messages of the loaded chats. SQLite keeps all messages, and `load_chat` loads the messages of a chat.
+    /// `update_message` changes one, which moves the timeline revision of its chat.
     pub messages: Vec<Message>,
     pub(crate) msg_idx_by_id: HashMap<String, usize>,
     /// The messages of each loaded chat in timeline order. A chat that is not loaded has no entry.
@@ -532,6 +533,13 @@ pub struct BeeperStore {
     pub shown: Vec<String>,
     /// The replies of each thread in timeline order, by the ID of the thread root.
     thread_msg_indices: HashMap<String, Vec<usize>>,
+    /// The timeline revision of each chat whose messages changed: the count of `timeline_writes` at the last message
+    /// that was added to the chat, changed or removed, so that a view can keep what it finds from the messages of a
+    /// chat until they change.
+    timeline_revs: HashMap<String, u64>,
+    timeline_writes: u64,
+    /// Counts the compactions of `messages` that moved the indices of messages.
+    moves: u64,
     pub assets: HashMap<String, StoredAsset>,
     assets_by_mxc: HashMap<String, String>,
     pub connect: crate::connect::Connect,
@@ -614,6 +622,8 @@ pub struct BeeperStore {
     pub requests_viewed: HashMap<String, i64>,
     pub features: crate::features::Flags,
     pub whoami: Profile,
+    /// The state of the drafts sync of `com.beeper.draft` (see [`crate::drafts`]).
+    pub drafts: crate::drafts::DraftSync,
     next_seq: i64,
 }
 
@@ -739,6 +749,9 @@ impl BeeperStore {
             loaded: Vec::new(),
             shown: Vec::new(),
             thread_msg_indices: HashMap::new(),
+            timeline_revs: HashMap::new(),
+            timeline_writes: 0,
+            moves: 0,
             assets: HashMap::new(),
             assets_by_mxc: HashMap::new(),
             connect: crate::connect::Connect::default(),
@@ -783,6 +796,7 @@ impl BeeperStore {
             requests_viewed: HashMap::new(),
             features,
             whoami: Profile::default(),
+            drafts: Default::default(),
             next_seq: 1000,
         };
         store.load_from_sqlite();
@@ -955,7 +969,28 @@ impl BeeperStore {
         let old: HashSet<String> = old.cloned().collect();
         self.loaded.retain(|c| !old.contains(c));
         self.chat_msg_indices.retain(|c, _| !old.contains(c));
+        old.iter().for_each(|c| self.touch_timeline(c));
         self.compact();
+    }
+
+    /// Moves the timeline revision of the chat after a change of its messages.
+    fn touch_timeline(&mut self, chat: &str) {
+        self.timeline_writes += 1;
+        match self.timeline_revs.get_mut(chat) {
+            Some(rev) => *rev = self.timeline_writes,
+            None => drop(self.timeline_revs.insert(chat.into(), self.timeline_writes)),
+        }
+    }
+
+    /// The timeline revision of the chat, which moves whenever a message of the chat is added, changed or removed,
+    /// or the chat unloads.
+    pub fn timeline_rev(&self, chat: &str) -> u64 {
+        self.timeline_revs.get(chat).copied().unwrap_or(0)
+    }
+
+    /// Counts the changes that moved the indices of `messages`.
+    pub fn message_moves(&self) -> u64 {
+        self.moves
     }
 
     /// The index in `messages` of the message with the ID, or `None` when it is not in memory. [`Self::find_message`]
@@ -1043,6 +1078,7 @@ impl BeeperStore {
     /// Drops the messages of the chats that are not loaded, and the removed messages, from `messages`.
     fn compact(&mut self) {
         let messages = std::mem::take(&mut self.messages);
+        let before = messages.len();
         let mut moved = vec![usize::MAX; messages.len()];
         for (i, m) in messages.into_iter().enumerate() {
             if self.chat_msg_indices.contains_key(&m.chat_id) && self.msg_idx_by_id.get(&m.id) == Some(&i) {
@@ -1062,6 +1098,9 @@ impl BeeperStore {
             list.iter_mut().for_each(|i| *i = moved[*i]);
             !list.contains(&usize::MAX)
         });
+        if self.messages.len() != before {
+            self.moves += 1;
+        }
     }
 
     fn load_from_sqlite(&mut self) {
@@ -1771,6 +1810,7 @@ impl BeeperStore {
         for list in std::iter::once(chat).chain(thread) {
             list.insert(list.partition_point(|&i| self.messages[i].sort_key <= msg.sort_key), idx);
         }
+        self.touch_timeline(&msg.chat_id);
         self.messages.push(msg);
         idx
     }
@@ -2036,6 +2076,7 @@ impl BeeperStore {
         let merge = |c: &mut Chat| {
             *c = Chat {
                 draft: c.draft.take(),
+                synced_draft: c.synced_draft.take(),
                 label_ids: std::mem::take(&mut c.label_ids),
                 last_activity: c.last_activity.take().or(chat.last_activity.clone()),
                 local_chat_id: c.local_chat_id.take(),
@@ -2101,6 +2142,7 @@ impl BeeperStore {
         }
         self.loaded.retain(|c| c != id);
         if self.chat_msg_indices.remove(id).is_some() {
+            self.touch_timeline(id);
             self.compact();
         }
         self.exec("DELETE FROM messages WHERE chat_id = ?1", params![id]);
@@ -2251,8 +2293,14 @@ impl BeeperStore {
     }
 
     pub fn update_message(&mut self, idx: usize, f: impl FnOnce(&mut Message)) -> Message {
+        let chat = self.messages[idx].chat_id.clone();
         f(&mut self.messages[idx]);
         self.messages[idx].sync_flags();
+        self.touch_timeline(&chat);
+        if self.messages[idx].chat_id != chat {
+            let now = self.messages[idx].chat_id.clone();
+            self.touch_timeline(&now);
+        }
         self.persist_message(idx);
         let msg = self.messages[idx].clone();
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
@@ -2586,7 +2634,8 @@ impl BeeperStore {
         if let Some(merge) = new_merge {
             self.set_merge(idx, merge);
         }
-        Ok(self.update_chat(idx, |c| c.draft = draft))
+        self.put_draft(idx, draft);
+        Ok(self.chats[idx].clone())
     }
 
     /// Sends a draft: writes its local echoes and queues them for the homeserver. Returns the chat ID of the send and
@@ -2871,6 +2920,7 @@ impl BeeperStore {
         if let Some(root) = &self.messages[m_idx].thread_root {
             self.thread_msg_indices.get_mut(root).expect("a thread has replies").retain(|&i| i != m_idx);
         }
+        self.touch_timeline(&chat_id);
         self.exec("DELETE FROM messages WHERE id = ?1", params![message_id]);
         let c_idx = self.chat_idx_by_id[&chat_id];
         if self.chats[c_idx].preview.as_ref().is_some_and(|p| p.id == message_id) {

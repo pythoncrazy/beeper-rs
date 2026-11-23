@@ -454,22 +454,33 @@ fn klipy_key() -> String {
 /// One page of KLIPY's featured GIFs, or of a search, from the position `pos`, and the position of the next page,
 /// which is empty after the last page.
 pub async fn klipy_gifs(query: String, pos: String) -> Result<(Vec<KlipyGif>, String), String> {
+    klipy_gifs_at("https://api.klipy.com/v2", query, pos).await
+}
+
+/// Chromium's message of the `TypeError` of a `fetch` that gets no answer, which Desktop's GIF picker shows.
+const FAILED_TO_FETCH: &str = "Failed to fetch";
+
+async fn klipy_gifs_at(api: &str, query: String, pos: String) -> Result<(Vec<KlipyGif>, String), String> {
     let key = klipy_key();
     let q = query.trim();
     let url = match q.is_empty() {
         true => format!(
-            "https://api.klipy.com/v2/featured?key={key}&limit=10&contentfilter=high&media_filter=gif,tinygif,mp4,tinymp4&pos={}",
+            "{api}/featured?key={key}&limit=10&contentfilter=high&media_filter=gif,tinygif,mp4,tinymp4&pos={}",
             crate::codec::url_encode(&pos)
         ),
         false => format!(
-            "https://api.klipy.com/v2/search?key={key}&limit=10&contentfilter=high&media_filter=gif,tinygif,mp4,tinymp4&q={}&pos={}",
+            "{api}/search?key={key}&limit=10&contentfilter=high&media_filter=gif,tinygif,mp4,tinymp4&q={}&pos={}",
             crate::codec::url_encode(q),
             crate::codec::url_encode(&pos)
         ),
     };
-    let resp = http_client().get(&url).send().await.map_err(|e| e.without_url().to_string())?;
+    let failed = |e: reqwest::Error| {
+        eprintln!("KLIPY: {}", e.without_url());
+        FAILED_TO_FETCH.to_string()
+    };
+    let resp = http_client().get(&url).send().await.map_err(failed)?;
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| e.without_url().to_string())?;
+    let text = resp.text().await.map_err(failed)?;
     if !status.is_success() {
         return Err(format!("HTTP {}: {text}", status.as_u16()));
     }
@@ -720,6 +731,15 @@ mod tests {
         let base = format!("{url}/proxy/_/v1");
         assert_eq!(transcribe(&base, "t", (b"OggS".to_vec(), VOICE_NOTE_FILE), Some("de")).await, Ok("Hallo".into()));
         assert_eq!(transcribe(&base, "t", (b"OggS".to_vec(), TALK_FILE), None).await, Err("Invalid token".into()));
+    }
+
+    /// Desktop's `fetch` of KLIPY fails with Chromium's "Failed to fetch" when KLIPY cannot be reached.
+    #[tokio::test]
+    async fn klipy_unreachable_fails_to_fetch_like_desktop() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = format!("http://{}/v2", closed.local_addr().unwrap());
+        drop(closed);
+        assert_eq!(klipy_gifs_at(&api, "cat".into(), String::new()).await, Err("Failed to fetch".into()));
     }
 
     #[tokio::test]

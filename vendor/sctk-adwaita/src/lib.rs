@@ -29,7 +29,80 @@ mod pointer;
 mod shadow;
 pub mod theme;
 
-pub use gtk::preload;
+pub use gtk::{on_ready, preload};
+
+static ACTIVATION_TOKEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Saves a Wayland startup activation token (`XDG_ACTIVATION_TOKEN` / `DESKTOP_STARTUP_ID`)
+/// so the first created window immediately consumes it via `xdg_activation_v1.activate`.
+pub fn set_activation_token(token: String) {
+    if !token.is_empty() {
+        if let Ok(mut slot) = ACTIVATION_TOKEN.lock() {
+            *slot = Some(token);
+        }
+    }
+}
+
+fn consume_activation_token(surface: &WlSurface) {
+    use smithay_client_toolkit::reexports::client::{protocol::wl_registry, Connection};
+    use smithay_client_toolkit::reexports::protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1;
+
+    let token = ACTIVATION_TOKEN
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+        .or_else(|| {
+            std::env::var("XDG_ACTIVATION_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| std::env::var("DESKTOP_STARTUP_ID").ok().filter(|s| !s.is_empty()))
+        });
+    let Some(token) = token else { return };
+    let Some(backend) = surface.backend().upgrade() else { return };
+
+    struct ActivationBind {
+        activation: Option<XdgActivationV1>,
+    }
+    impl Dispatch<wl_registry::WlRegistry, ()> for ActivationBind {
+        fn event(
+            state: &mut Self,
+            reg: &wl_registry::WlRegistry,
+            event: wl_registry::Event,
+            _: &(),
+            _: &Connection,
+            qh: &QueueHandle<Self>,
+        ) {
+            if let wl_registry::Event::Global { name, interface, .. } = event {
+                if interface == XdgActivationV1::interface().name && state.activation.is_none() {
+                    state.activation = Some(reg.bind::<XdgActivationV1, _, _>(name, 1, qh, ()));
+                }
+            }
+        }
+    }
+    impl Dispatch<XdgActivationV1, ()> for ActivationBind {
+        fn event(
+            _: &mut Self,
+            _: &XdgActivationV1,
+            _: <XdgActivationV1 as Proxy>::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    let conn = Connection::from_backend(backend);
+    let mut eq = conn.new_event_queue::<ActivationBind>();
+    let qh = eq.handle();
+    let _reg = conn.display().get_registry(&qh, ());
+    let mut state = ActivationBind { activation: None };
+    let _ = eq.roundtrip(&mut state);
+    if let Some(act) = state.activation {
+        act.activate(token, surface);
+        act.destroy();
+        let _ = conn.flush();
+    }
+}
 mod title;
 mod wl_typed;
 
@@ -88,6 +161,7 @@ pub struct AdwaitaFrame<State> {
     title: Option<String>,
     title_text: Option<TitleText>,
     shadow: Shadow,
+    gtk_drawn: bool,
 }
 
 impl<State> AdwaitaFrame<State>
@@ -102,6 +176,7 @@ where
         queue_handle: QueueHandle<State>,
         frame_config: FrameConfig,
     ) -> Result<Self, Box<dyn Error>> {
+        consume_activation_token(base_surface.wl_surface());
         let base_surface = WlTyped::wrap::<State>(base_surface.wl_surface().clone());
         // Opens GTK, when there is one to draw with, before anything is sized.
         theme::metrics();
@@ -123,7 +198,9 @@ where
             scale_factor: 1,
             should_sync: true,
             title: None,
-            title_text: TitleText::new(theme.active.font_color),
+            title_text: (!gtk::expected())
+                .then(|| TitleText::new(theme.active.font_color))
+                .flatten(),
             theme,
             buttons: Buttons::new(gtk::decoration_layout().or_else(get_button_layout_config)),
             mouse: MouseState::new(gtk::titlebar_actions().unwrap_or_default()),
@@ -131,6 +208,7 @@ where
             wm_capabilities: WindowManagerCapabilities::all(),
             resizable: true,
             shadow: Shadow::default(),
+            gtk_drawn: false,
         })
     }
 
@@ -249,6 +327,9 @@ where
         };
         let border_paint = colors.border_paint();
         let gtk = gtk::active();
+        if gtk {
+            self.gtk_drawn = true;
+        }
         let window_width = decorations.header().surface_rect.width;
         let window_height = decorations.side_height();
         let header = header_size();
@@ -523,7 +604,7 @@ where
     }
 
     fn is_dirty(&self) -> bool {
-        self.dirty
+        self.dirty || (!self.gtk_drawn && gtk::ready())
     }
 
     fn is_hidden(&self) -> bool {
@@ -569,7 +650,16 @@ impl FrameConfig {
 /// Electron's frame, which Beeper Desktop never themes. GTK's theme decides them when GTK draws:
 /// Electron does not follow the portal's color scheme either, only the GTK theme.
 fn system_theme(_config: FrameConfig) -> ColorTheme {
-    if gtk::active() {
+    if let Some((hdr_rgb, border_rgb)) = gtk::cached_colors() {
+        let rgb = |v: u32| Color::from_rgba8(((v >> 16) & 0xff) as u8, ((v >> 8) & 0xff) as u8, (v & 0xff) as u8, 255);
+        let luma = ((hdr_rgb >> 16) & 0xff) * 3 + ((hdr_rgb >> 8) & 0xff) * 6 + (hdr_rgb & 0xff);
+        let mut t = if luma < 1280 { ColorTheme::dark() } else { ColorTheme::light() };
+        t.active.headerbar = rgb(hdr_rgb);
+        t.inactive.headerbar = rgb(hdr_rgb);
+        t.active.border_color = rgb(border_rgb);
+        t.inactive.border_color = rgb(border_rgb);
+        t
+    } else if gtk::active() {
         // GTK's theme draws the frame; skip asking the desktop again.
         ColorTheme::light()
     } else {

@@ -193,17 +193,18 @@ impl Cache {
                 log::warn!("SVG rendering for {handle:?} panicked: {error:?}");
             }
 
-            if let Some([r, g, b, _]) = key.color {
-                // Apply color filter
+            if let Some([r, g, b, a]) = key.color {
+                // Apply color filter, with the color's alpha over the coverage of the vector
                 for pixel in
                     bytemuck::cast_slice_mut::<u8, u32>(image.data_mut())
                 {
+                    let coverage = u32::from((*pixel >> 24) as u8);
                     *pixel = bytemuck::cast(
                         tiny_skia::ColorU8::from_rgba(
                             b,
                             g,
                             r,
-                            (*pixel >> 24) as u8,
+                            ((coverage * u32::from(a) + 127) / 255) as u8,
                         )
                         .premultiply(),
                     );

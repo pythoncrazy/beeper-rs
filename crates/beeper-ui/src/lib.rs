@@ -141,7 +141,7 @@ use rail::{SpacesDraft, SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
 use reminders::{remind_label, reminder_day};
 use scheduled::next_send;
 use time::{clock, day_label, day_num, day_of, locale_string, today, WEEKDAYS};
-use toasts::{Toast, TOASTS_SHOWN, TOAST_TICK};
+use toasts::{Toast, TOAST_TICK};
 use units::human_size;
 use user_card::UserHover;
 use vcard::VCard;
@@ -1893,11 +1893,22 @@ fn stored(st: &BeeperStore, id: &str) -> Message {
 }
 
 /// Desktop's `rootMessageIDs`: the first message of the reply chain of `m`, which can be a message that is not loaded.
-fn reply_root<'s>(st: &'s BeeperStore, mut m: &'s Message) -> &'s str {
+fn reply_root<'s>(st: &'s BeeperStore, m: &'s Message) -> &'s str {
+    reply_root_with(st, m, |_, _| ())
+}
+
+/// [`reply_root`], which shows `look` each message ID that the chain looks up, and the message when it is loaded.
+fn reply_root_with<'s>(
+    st: &'s BeeperStore,
+    mut m: &'s Message,
+    mut look: impl FnMut(&'s str, Option<&'s Message>),
+) -> &'s str {
     let mut seen = HashSet::new();
     while m.thread_root.is_none() {
         let Some(r) = m.linked_message_id.as_deref().filter(|r| *r != m.id && seen.insert(&m.id)) else { return &m.id };
-        match st.loaded(r) {
+        let next = st.loaded(r);
+        look(r, next);
+        match next {
             Some(next) => m = next,
             None => return r,
         }
@@ -2587,8 +2598,8 @@ pub struct Pane {
     pub top: TopOfThread,
     timeline: vlist::VList,
     thread_list: vlist::VList,
-    /// The messages of the conversation and their rows, for a store generation and a chat.
-    rows: std::cell::RefCell<Option<(u64, String, Rc<Rows>)>>,
+    /// The messages of the conversation and their rows, with what they were made from.
+    rows: std::cell::RefCell<Option<(message::RowsKey, Rc<Rows>)>>,
     /// Desktop's `stopTypingTimeout`: the chat with a typing notice, and the time of the last key.
     pub typing: Option<(String, std::time::Instant)>,
     /// The mention pills of the composer text, which Desktop sends as `mentionedUserIDs`.
@@ -2772,6 +2783,9 @@ pub struct BeeperGuiApp {
     /// Desktop's `FileDropOverlay` shows, and Shift was down at a drop, so the dropped files are sent.
     dropping: bool,
     drop_send: bool,
+    /// The files of a drop so far: winit gives each file of a drop in its own event, and Desktop's `onDrop` attaches
+    /// them all at once.
+    dropped: Vec<std::path::PathBuf>,
     hotkeys_scrolled: bool,
     /// Chats picked by Begin Selecting; selection mode is on while this is not empty.
     pub selection: Vec<String>,
@@ -2801,6 +2815,8 @@ pub struct BeeperGuiApp {
     booted: String,
     focused: bool,
     notified: HashSet<String>,
+    /// The failed sends that Retry sent again: Desktop shows their error again when they fail again.
+    retried: HashSet<String>,
     notifications: HashMap<u32, (String, String)>,
     pending: notify::Pending,
     pub gif_query: String,
@@ -3035,6 +3051,8 @@ pub struct BeeperGuiApp {
     animate: std::cell::Cell<bool>,
     /// The main window is minimized, so its animations wait, like Chromium's in a minimized window.
     minimized: bool,
+    /// The changes of the windows' sizes and places, so that only the last one saves them.
+    state_changes: u64,
 }
 
 impl BeeperGuiApp {
@@ -3116,6 +3134,7 @@ impl BeeperGuiApp {
             hotkeys_modal: None,
             dropping: false,
             drop_send: false,
+            dropped: vec![],
             hotkeys_scrolled: false,
             chat_sub: None,
             reminded: HashMap::new(),
@@ -3135,6 +3154,7 @@ impl BeeperGuiApp {
             booted: beeper_core::config::now_rfc3339_millis(),
             focused: false,
             notified: HashSet::new(),
+            retried: HashSet::new(),
             notifications: HashMap::new(),
             pending,
             gif_query: String::new(),
@@ -3289,6 +3309,7 @@ impl BeeperGuiApp {
             started: std::time::Instant::now(),
             animate: std::cell::Cell::new(true),
             minimized: false,
+            state_changes: 0,
             last_click: None,
             cycling: false,
         };
@@ -4086,6 +4107,7 @@ impl BeeperGuiApp {
     fn leave_chat(&self, st: &mut BeeperStore, next: Option<&str>) {
         let Some(prev) = self.pane().selected_chat_id.as_deref().filter(|&p| Some(p) != next) else { return };
         save_draft(st, self.pane());
+        st.leave_draft(prev);
         let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
         if !st.incognito() && !st.chats[idx].flag(ChatFlag::MarkedUnread) {
             st.mark_chat_read(prev, true);
@@ -4223,18 +4245,19 @@ impl BeeperGuiApp {
     }
 
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
-        let (shown, dismissals) = (self.stackable_toast(), self.toast_dismissals);
+        let (shown, dismissals, stacked) = (self.stackable_toast(), self.toast_dismissals, self.older_toasts.len());
         // The windows that `handle` swaps in follow their own chat lists there.
         let pointed = self.swapped.is_none().then(|| self.pointed());
         let task = self.handle(msg);
+        self.link_drafts();
         let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
         let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
         let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
-            self.older_toasts.push(t);
-            let extra = self.older_toasts.len().saturating_sub(TOASTS_SHOWN - 1);
-            self.older_toasts.drain(..extra);
+            // It is older than the toasts that this message stacked.
+            self.older_toasts.insert(stacked.min(self.older_toasts.len()), t);
+            self.trim_older_toasts();
         }
         if self.status_banner.is_empty() && self.older_toasts.is_empty() {
             self.toast_clock.1 = false;
@@ -4247,6 +4270,35 @@ impl BeeperGuiApp {
             return task;
         }
         Task::batch([task, badge_sync(now.0, now.1)])
+    }
+
+    /// Tells the drafts sync which chats are open and whether their composers take a synced draft, and shows the
+    /// synced drafts that replaced the drafts of open chats.
+    fn link_drafts(&mut self) {
+        use beeper_core::drafts::Composer;
+        let st = self.store.read();
+        let link = st.drafts.link.clone();
+        let mut open = HashMap::new();
+        for (i, p) in self.panes().enumerate() {
+            let Some(idx) = p.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)) else { continue };
+            // The recorder belongs to the composer of the main window.
+            let unsyncable = p.editing_message_id.is_some() || (i == 0 && self.recorder.is_some());
+            let accepts = !unsyncable && p.attachments.is_empty() && !p.draft_due;
+            open.insert(st.chats[idx].id.clone(), Composer { accepts, unsyncable });
+        }
+        let applied = {
+            let mut l = link.lock().unwrap();
+            if l.open != open {
+                l.open = open;
+            }
+            std::mem::take(&mut l.applied)
+        };
+        for chat in applied {
+            composer::show_synced_draft(&st, &mut self.pane, &chat);
+            for w in &mut self.chat_windows {
+                composer::show_synced_draft(&st, &mut w.1, &chat);
+            }
+        }
     }
 
     /// Desktop's `updateAppBadgeCount`: the unread chats in all chats or in the chat list, by "Badge count".
@@ -4509,6 +4561,13 @@ impl BeeperGuiApp {
             UiMessage::WindowText(id, text) if matches!(text.as_str(), "j" | "k") && self.window_points_chats(id) => {
                 let arrow = Key::Named(if text == "j" { Named::ArrowDown } else { Named::ArrowUp });
                 return self.update(UiMessage::WindowKey(id, arrow, Modifiers::empty()));
+            }
+            // Desktop's hotkeys without a modifier, like the "e" of Chat: Toggle Archive, while no chat is open.
+            UiMessage::WindowText(id, text)
+                if self.find_hotkey(&Key::Character(text.as_str().into()), Modifiers::empty()).is_some()
+                    && self.window_points_chats(id) =>
+            {
+                return self.update(UiMessage::WindowKey(id, Key::Character(text.into()), Modifiers::empty()));
             }
             UiMessage::WindowText(id, text) if self.chat_windows.iter().any(|w| w.0 == id) => {
                 return self.update(UiMessage::InWindow(id, Box::new(UiMessage::Composer(composer::Msg::Type(text)))));
@@ -5227,6 +5286,12 @@ impl BeeperGuiApp {
     }
 
     pub fn subscription(&self) -> Subscription<UiMessage> {
+        let frame_ready = Subscription::run(|| {
+            iced::futures::stream::once(async {
+                FRAME_READY.notified().await;
+                UiMessage::Noop
+            })
+        });
         let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
             feed(f.0.read().ws_tx.subscribe(), |e| match (e.event_type.as_str(), e.message, e.chat) {
                 ("message.upserted", Some(m), _) => UiMessage::Upserted(Box::new(m)),
@@ -5250,6 +5315,7 @@ impl BeeperGuiApp {
             Event::Window(window::Event::Closed) => Some(UiMessage::Window(windows::Msg::Closed(id))),
             Event::Window(window::Event::CloseRequested) => Some(UiMessage::Window(windows::Msg::CloseRequested(id))),
             Event::Window(window::Event::Resized(size)) => Some(UiMessage::Window(windows::Msg::Resized(id, size))),
+            Event::Window(window::Event::Moved(_)) => Some(UiMessage::Window(windows::Msg::Moved(id))),
             Event::Window(window::Event::Focused) => Some(UiMessage::Window(windows::Msg::Focused(true))),
             Event::Window(window::Event::Unfocused) => Some(UiMessage::Window(windows::Msg::Focused(false))),
             Event::Window(window::Event::FileHovered(_)) => {
@@ -5505,7 +5571,7 @@ impl BeeperGuiApp {
             })
         });
         Subscription::batch(
-            [changes, focus, tokens, launches, keys, system]
+            [changes, focus, tokens, launches, keys, system, frame_ready]
                 .into_iter()
                 .chain(drag)
                 .chain(thread_drag)
@@ -7080,6 +7146,9 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .default_font(fw(Weight::Normal));
     app.run()
 }
+
+/// Woken once GTK opens to draw the title bars, so that the windows draw their frames again with the GTK theme.
+pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// People, each with the account to reach them on.
 pub type People = Vec<(String, User)>;
