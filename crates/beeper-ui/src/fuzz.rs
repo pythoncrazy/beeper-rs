@@ -3835,6 +3835,30 @@ fn chat_info_shares_a_narrow_window_like_desktop() {
     assert_eq!(app.conversation_width(), 400.0 - 16.0, "without Chat Info the chat fills the window");
 }
 
+/// Desktop's drop overlay (`.dropping`, `z-index: 10`) is over the chat: while a file drag is over the window, the
+/// messages under it take no pointer, so the buttons of a hovered message lose their hover and their tooltips close.
+#[test]
+fn the_drop_zone_takes_the_pointer_like_desktop() {
+    let mut app = demo_app("drop-cover");
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let mid = app.store.read().messages.iter().rev().find(|m| m.chat_id == NOTE_CHAT_ID).unwrap().id.clone();
+    let clicks = |app: &BeeperGuiApp| {
+        let mut sim = simulator(app.view_main());
+        let row = sim.find(iced::widget::Id::from(format!("msg-{mid}"))).expect("the message");
+        let at = row.visible_bounds().expect("the message is on screen").center();
+        sim.point_at(at);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+        let _ = sim.simulate(iced_test::simulator::click());
+        sim.into_messages().count()
+    };
+    assert!(clicks(&app) > 0, "a message takes the pointer");
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(main, true)));
+    assert_eq!(clicks(&app), 0, "the drop zone over it takes the pointer");
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(main, false)));
+    assert!(clicks(&app) > 0, "and gives it back when the drag leaves");
+}
+
 /// Desktop's message menu of a pending message (`isPending`, a send of `pendingMessages`): on its way or failed, it
 /// has no Edit, Reply, Reply in thread, Delete or Bookmark, and React is off. Copy, Forward and "Sent at" stay. A
 /// message that the homeserver took has them all.
@@ -4633,9 +4657,9 @@ fn attachments_show_download_and_time_on_hover_like_desktop() {
         let st = app.store.read();
         let m = st.messages.iter().rev().find(|m| {
             m.text.as_deref().is_none_or(str::is_empty)
-                && m.attachments.first().is_some_and(|a| a.attachment_type == "img")
+                && m.attachments.first().is_some_and(|a| a.attachment_type == "img" && a.is_sticker != Some(true))
         });
-        let m = m.expect("a demo image message");
+        let m = m.expect("a demo photo message");
         (m.chat_id.clone(), m.id.clone(), format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1))
     };
     let _ = app.update(UiMessage::SelectChat(chat.clone()));

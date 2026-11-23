@@ -100,6 +100,12 @@ pub(crate) fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
     if bytes.get(4..8) == Some(b"ftyp") {
         return still(&run_ffmpeg(&bytes, &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"])?);
     }
+    // Desktop's `Lottie` of an animated sticker: a TGS, or Lottie JSON.
+    if let Some(a) = crate::lottie::sniff(&bytes) {
+        let a = a?;
+        let still = a.render(0, a.fit(crate::lottie::STILL));
+        return Ok(Frames::lottie(still, a));
+    }
     match animation(&bytes) {
         None => still(&bytes),
         Some(frames) => Ok(frames?.into_iter().map(|(px, ms)| (handle(px), ms)).collect()),
