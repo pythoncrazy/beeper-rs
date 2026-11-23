@@ -4621,6 +4621,12 @@ fn media_boxes_like_desktop() {
     assert_eq!(at(300.0, 900.0), (160.0, 400.0, true), "a very tall one is 160 by 400, cropped");
     assert_eq!(at(4000.0, 100.0), (450.0, 80.0, true), "a very wide one is an 80 px strip, cropped");
     assert_eq!(media_box(1000.0, Some((2000.0, 1000.0)), 0.85).0, 800.0, "a hidden sidebar gives 0.85");
+    // Desktop's sticker style: `width: w * min(1, 400 / h, max(1, 0.45 * width) / w)`, kept whole.
+    let sticker = |w, h| crate::message::sticker_box(1000.0, (w, h), 0.45);
+    assert_eq!(sticker(512.0, 512.0), (400.0, 400.0, false), "a square sticker like an image");
+    assert_eq!(sticker(100.0, 1000.0), (40.0, 400.0, false), "a very tall sticker is not cropped");
+    assert_eq!(sticker(900.0, 60.0), (450.0, 30.0, false), "a very wide sticker is not cropped");
+    assert_eq!(sticker(64.0, 64.0), (64.0, 64.0, false), "a small sticker is not upscaled");
 }
 
 /// Desktop's `.spoiler`: a click shows the spoilers of a message, and the chat list hides them as blocks.
