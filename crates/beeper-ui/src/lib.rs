@@ -6901,14 +6901,19 @@ impl iced::Executor for Executor {
     }
 }
 
-/// Runs the GUI on the tokio runtime that the calling thread entered.
+/// Desktop's `app.disableHardwareAcceleration()`: without hardware acceleration the windows draw with the CPU
+/// renderer. It sets an environment variable, so call it before the threads that read the environment start, such as
+/// the one of [`style::ensure_fonts_loaded`].
+pub fn pick_renderer(settings: &beeper_core::models::BeeperSettings) {
+    if !settings.on("hwAcceleration") {
+        std::env::set_var("ICED_BACKEND", "tiny-skia");
+    }
+}
+
+/// Runs the GUI on the tokio runtime that the calling thread entered, after [`pick_renderer`].
 pub fn run_native_gui(store: SharedStore) -> iced::Result {
     let st = store.read();
     i18n::set(st.settings.pref("appLanguage"));
-    if !st.settings.on("hwAcceleration") {
-        // Desktop's `app.disableHardwareAcceleration()`: draw with the CPU renderer.
-        std::env::set_var("ICED_BACKEND", "tiny-skia");
-    }
     if st.settings.on("spellcheck") {
         let custom = st.config.data_dir.join("Custom Dictionary.txt");
         std::thread::spawn(|| spell::load(custom));
