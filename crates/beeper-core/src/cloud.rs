@@ -61,6 +61,10 @@ pub struct Cloud {
     pub homeserver: String,
     /// Desktop's app API, [`crate::config::APP_API_URL`].
     pub app_api: String,
+    /// KLIPY's GIF API, [`KLIPY_API`].
+    pub klipy_api: String,
+    /// The demo's: each call fails at once with [`crate::net::OFFLINE_ERROR`], without a request.
+    pub offline: bool,
 }
 
 fn field(v: &Value, k: &str) -> Option<String> {
@@ -147,7 +151,13 @@ fn block_on<F: Future>(f: F) -> F::Output {
 impl Cloud {
     pub fn new(api_url: &str, homeserver: &str) -> Self {
         install_tls();
-        Self { api_url: api_url.into(), homeserver: homeserver.into(), app_api: crate::config::APP_API_URL.into() }
+        let (api_url, homeserver, app_api) = (api_url.into(), homeserver.into(), crate::config::APP_API_URL.into());
+        Self { api_url, homeserver, app_api, klipy_api: KLIPY_API.into(), offline: false }
+    }
+
+    /// The cloud of a config, offline in the demo.
+    pub fn of(config: &crate::config::CentralConfig) -> Self {
+        Self { offline: config.demo, ..Self::new(&config.api_url, &config.homeserver) }
     }
 
     fn call(&self, url: &str, token: Option<&str>, body: Option<&Value>) -> Result<Value, CloudError> {
@@ -162,6 +172,9 @@ impl Cloud {
         token: Option<&str>,
         body: Option<&Value>,
     ) -> Result<Value, CloudError> {
+        if self.offline {
+            return Err(fail(0, crate::net::OFFLINE_ERROR));
+        }
         let req = http_client().request(method, url);
         let req = match body {
             Some(b) => req.header("content-type", "application/json").body(b.to_string()),
@@ -364,9 +377,8 @@ pub struct KlipyGif {
 
 fn shared(cell: &'static OnceLock<reqwest::Client>, timeout: Option<Duration>) -> &'static reqwest::Client {
     cell.get_or_init(|| {
-        install_tls();
-        let builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(20));
-        timeout.into_iter().fold(builder, |b, t| b.timeout(t)).build().expect("build the HTTP client")
+        let builder = crate::net::builder().connect_timeout(Duration::from_secs(20));
+        crate::net::client(timeout.into_iter().fold(builder, |b, t| b.timeout(t)))
     })
 }
 
@@ -385,11 +397,7 @@ pub(crate) fn wait_client() -> &'static reqwest::Client {
 /// The HTTP client that follows no redirect, for Desktop's `fetch` with `redirect: "error"`.
 pub(crate) fn no_redirect_client() -> &'static reqwest::Client {
     static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
-    HTTP.get_or_init(|| {
-        install_tls();
-        let builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
-        builder.build().expect("build the HTTP client")
-    })
+    HTTP.get_or_init(|| crate::net::client(crate::net::builder().redirect(reqwest::redirect::Policy::none())))
 }
 
 /// Desktop's OpenAI `baseURL` (`uke`): Beeper's proxy beside the homeserver, with "matrix." changed to "ai-services.".
@@ -451,16 +459,15 @@ fn klipy_key() -> String {
     KLIPY_KEY.iter().zip(b"beeper-rs".iter().cycle()).map(|(k, m)| char::from(k ^ m)).collect()
 }
 
-/// One page of KLIPY's featured GIFs, or of a search, from the position `pos`, and the position of the next page,
-/// which is empty after the last page.
-pub async fn klipy_gifs(query: String, pos: String) -> Result<(Vec<KlipyGif>, String), String> {
-    klipy_gifs_at("https://api.klipy.com/v2", query, pos).await
-}
+/// KLIPY's API, which Desktop's GIF picker asks.
+pub const KLIPY_API: &str = "https://api.klipy.com/v2";
 
 /// Chromium's message of the `TypeError` of a `fetch` that gets no answer, which Desktop's GIF picker shows.
-const FAILED_TO_FETCH: &str = "Failed to fetch";
+pub const FAILED_TO_FETCH: &str = "Failed to fetch";
 
-async fn klipy_gifs_at(api: &str, query: String, pos: String) -> Result<(Vec<KlipyGif>, String), String> {
+/// One page of KLIPY's featured GIFs, or of a search at `api`, from the position `pos`, and the position of the next
+/// page, which is empty after the last page.
+pub async fn klipy_gifs(api: String, query: String, pos: String) -> Result<(Vec<KlipyGif>, String), String> {
     let key = klipy_key();
     let q = query.trim();
     let url = match q.is_empty() {
@@ -742,7 +749,7 @@ mod tests {
         let closed = tokio::net::TcpSocket::new_v4().unwrap();
         closed.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let api = format!("http://{}/v2", closed.local_addr().unwrap());
-        assert_eq!(klipy_gifs_at(&api, "cat".into(), String::new()).await, Err("Failed to fetch".into()));
+        assert_eq!(klipy_gifs(api, "cat".into(), String::new()).await, Err("Failed to fetch".into()));
     }
 
     #[tokio::test]
@@ -750,11 +757,12 @@ mod tests {
         let key = klipy_key();
         assert!(key.len() == 64 && key.bytes().all(|b| b.is_ascii_alphanumeric()));
         if std::env::var_os("KLIPY_LIVE").is_some() {
-            let (featured, next) = klipy_gifs(String::new(), String::new()).await.expect("KLIPY featured");
+            let (featured, next) =
+                klipy_gifs(KLIPY_API.into(), String::new(), String::new()).await.expect("KLIPY featured");
             assert!(!featured.is_empty() && !next.is_empty(), "a first page has a next page");
-            let (more, _) = klipy_gifs(String::new(), next).await.expect("KLIPY featured page 2");
+            let (more, _) = klipy_gifs(KLIPY_API.into(), String::new(), next).await.expect("KLIPY featured page 2");
             assert!(!more.is_empty(), "the next page has GIFs");
-            let (search, _) = klipy_gifs("cat".into(), String::new()).await.expect("KLIPY search");
+            let (search, _) = klipy_gifs(KLIPY_API.into(), "cat".into(), String::new()).await.expect("KLIPY search");
             assert!(!search.is_empty());
             let g = &search[0];
             let tiny = http_bytes(&g.preview_url).await.expect("download tinygif");

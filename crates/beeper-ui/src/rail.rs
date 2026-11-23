@@ -429,14 +429,16 @@ impl BeeperGuiApp {
             false => vec![],
         };
         let numbers = st.settings.on("showUnreadCount");
-        let badge = |btn: El<'static>, n: usize, number: bool| -> El<'static> {
+        // A dark rich theme's `AccountBadge` dot is white with the text in `--color-from`.
+        let (dot_bg, dot_fg) = p.badge.map_or((p.accent, Color::WHITE), |from| (Color::WHITE, from));
+        let badge = move |btn: El<'static>, n: usize, number: bool| -> El<'static> {
             let dot = match number && numbers {
-                true => container(semi(unread_label(n), 10.0).color(Color::WHITE))
+                true => container(semi(unread_label(n), 10.0).color(dot_fg))
                     .padding([0, 4])
                     .center_y(14)
                     .width(Shrink)
-                    .style(fill_box(p.accent, 8.0)),
-                false => container(Space::new()).width(8).height(8).style(fill_box(p.accent, 4.0)),
+                    .style(fill_box(dot_bg, 8.0)),
+                false => container(Space::new()).width(8).height(8).style(fill_box(dot_bg, 4.0)),
             };
             let corner = (n > 0).then(|| container(dot).align_right(36).padding(Padding::ZERO.top(2.0).right(2.0)));
             stack![btn].push(corner).into()

@@ -16,6 +16,10 @@ pub enum Msg {
     LoadOlder,
     /// A load of older messages ended.
     LoadedOlder(Result<(), String>),
+    /// Desktop's "Refresh chat" of a chat.
+    Refresh(String),
+    /// A refresh ended.
+    Refreshed(Result<(), String>),
 }
 
 impl BeeperGuiApp {
@@ -36,6 +40,17 @@ impl BeeperGuiApp {
                 return self.load_older();
             }
             Msg::LoadedOlder(r) => return self.loaded_older(r),
+            Msg::Refresh(chat) => return self.refresh_chat(chat),
+            Msg::Refreshed(Err(e)) => {
+                let (_, chat, _) = self.pane.top.loading.take().expect("a refresh ran");
+                let st = self.store.read();
+                let user = st.resolve_chat_idx(&chat).map(|i| account_user(&st, &st.chats[i].account_id));
+                let user = user.unwrap_or_default();
+                drop(st);
+                // Desktop's `showErrorToast` of `wrapPlatformAPICall`.
+                self.fail(Toast::new(trf("Something went wrong %1$s (%2$s)\n%3$s", &[&"refreshing chat", &user, &e])));
+            }
+            Msg::Refreshed(Ok(())) => return self.loaded_older(Ok(())),
         }
         self.settle()
     }
