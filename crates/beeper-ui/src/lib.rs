@@ -2766,6 +2766,7 @@ impl Pane {
                 links: std::mem::take(&mut self.composer_links),
                 send_later: self.send_later.take(),
                 mentions: std::mem::take(&mut self.mentions),
+                since: std::time::Instant::now(),
             });
         }
         self.editing_message_id = Some(mid);

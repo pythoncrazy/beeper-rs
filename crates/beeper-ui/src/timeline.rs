@@ -285,6 +285,168 @@ impl iced::advanced::Widget<UiMessage, Theme, iced::Renderer> for Hold<'_> {
     }
 }
 
+/// Desktop's `editing-message` of the chat's `panes`: while you edit a message, the timeline is under a backdrop
+/// (`.panes:after`, a 4 px blur that fades in over 0.12 s) that only the edited message (`.is-editing`, z-index
+/// 99999) is above. The timeline does not scroll (`overflow: hidden`), and a click on the backdrop ends the edit
+/// (`clearEditingMessage` of its `onClick`). iced has no backdrop blur, so the backdrop is the chat's background at
+/// [`VEIL_ALPHA`], and the messages under it take no pointer.
+pub(crate) struct Veil<'a> {
+    content: Element<'a, UiMessage>,
+    /// The container of the edited message, and when the edit started.
+    target: iced::widget::Id,
+    since: std::time::Instant,
+    color: Color,
+    on_press: UiMessage,
+}
+
+/// How much of the chat's background covers what the 4 px blur of Desktop's backdrop blurs.
+pub(crate) const VEIL_ALPHA: f32 = 0.6;
+
+/// The timeline `content` under a [`Veil`] with a hole for the container `target`, from `since`.
+pub(crate) fn veil<'a>(
+    content: impl Into<Element<'a, UiMessage>>,
+    target: iced::widget::Id,
+    since: std::time::Instant,
+    color: Color,
+    on_press: UiMessage,
+) -> Veil<'a> {
+    Veil { content: content.into(), target, since, color, on_press }
+}
+
+impl Veil<'_> {
+    /// Finds where the edited message shows, in the viewport of the timeline.
+    fn find(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &iced::Renderer) {
+        let mut m = Measure { target: Some(self.target.clone()), scroll: None, found: None, first: None };
+        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, &mut m);
+        let hole =
+            m.found.zip(m.scroll).and_then(|(b, (view, _, at))| Rectangle { y: b.y - at, ..b }.intersection(&view));
+        *tree.state.downcast_mut::<Option<Rectangle>>() = hole;
+    }
+
+    /// Whether the pointer is on the backdrop, not on the edited message.
+    fn on_veil(tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor) -> bool {
+        let hole = *tree.state.downcast_ref::<Option<Rectangle>>();
+        cursor.is_over(layout.bounds()) && !hole.is_some_and(|h| cursor.is_over(h))
+    }
+}
+
+impl iced::advanced::Widget<UiMessage, Theme, iced::Renderer> for Veil<'_> {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<Option<Rectangle>>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(None::<Rectangle>)
+    }
+
+    crate::delegate::delegate!(children, diff, size, overlay(UiMessage));
+
+    fn layout(&mut self, tree: &mut Tree, renderer: &iced::Renderer, limits: &layout::Limits) -> layout::Node {
+        let node = self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits);
+        self.find(tree, Layout::new(&node), renderer);
+        node
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn iced::advanced::Clipboard,
+        shell: &mut iced::advanced::Shell<'_, UiMessage>,
+        viewport: &Rectangle,
+    ) {
+        if let Event::Window(window::Event::RedrawRequested(_)) = event {
+            // A jump to the edited message scrolls the timeline before the frame.
+            self.find(tree, layout, renderer);
+            if self.since.elapsed() < std::time::Duration::from_millis(120) {
+                shell.request_redraw();
+            }
+        }
+        let on_veil = Self::on_veil(tree, layout, cursor);
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(_)) if on_veil => {
+                shell.publish(self.on_press.clone());
+                return shell.capture_event();
+            }
+            Event::Mouse(mouse::Event::WheelScrolled { .. }) if cursor.is_over(layout.bounds()) => {
+                return shell.capture_event();
+            }
+            _ => {}
+        }
+        let cursor = if on_veil { mouse::Cursor::Unavailable } else { cursor };
+        let child = &mut tree.children[0];
+        self.content.as_widget_mut().update(child, event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        match Self::on_veil(tree, layout, cursor) {
+            true => mouse::Interaction::None,
+            false => self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer),
+        }
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &iced::advanced::renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        use iced::advanced::Renderer as _;
+        let on_veil = Self::on_veil(tree, layout, cursor);
+        let inner = if on_veil { mouse::Cursor::Unavailable } else { cursor };
+        self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, inner, viewport);
+        let b = layout.bounds();
+        // `backdrop-blur-in`: 0.12 s, `ease`.
+        let t = (self.since.elapsed().as_secs_f32() / 0.12).min(1.0);
+        let color = self.color.scale_alpha(VEIL_ALPHA * crate::style::cubic_bezier(t, [0.25, 0.1, 0.25, 1.0]));
+        let hole = *tree.state.downcast_ref::<Option<Rectangle>>();
+        let parts = match hole {
+            Some(h) => vec![
+                Rectangle { height: h.y - b.y, ..b },
+                Rectangle { y: h.y + h.height, height: b.y + b.height - (h.y + h.height), ..b },
+                Rectangle { x: b.x, y: h.y, width: h.x - b.x, height: h.height },
+                Rectangle { x: h.x + h.width, y: h.y, width: b.x + b.width - (h.x + h.width), height: h.height },
+            ],
+            None => vec![b],
+        };
+        renderer.with_layer(b, |r| {
+            for bounds in parts.into_iter().filter(|r| r.width > 0.0 && r.height > 0.0) {
+                r.fill_quad(iced::advanced::renderer::Quad { bounds, ..Default::default() }, color);
+            }
+        });
+    }
+}
+
+impl<'a> From<Veil<'a>> for Element<'a, UiMessage> {
+    fn from(v: Veil<'a>) -> Self {
+        Element::new(v)
+    }
+}
+
 impl<'a> From<Hold<'a>> for Element<'a, UiMessage> {
     fn from(h: Hold<'a>) -> Self {
         Element::new(h)
