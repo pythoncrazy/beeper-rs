@@ -477,6 +477,10 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value, known:
     let member_actions = member_actions(features.as_ref());
     let tags = room.tags().await.expect("read room tags").unwrap_or_default();
     let account_id = account_id(&bridge, accounts);
+    // Kept members come from a chat that SQLite loaded without their `manage` bits, which the power levels give.
+    for u in &mut items {
+        u.manage = manage(&levels, member_actions, me.as_str(), &u.id, !bridge.is_null());
+    }
     // Desktop's `hasExited`: in a room that the user left, the own member stays, exited, and does not count above.
     if room.state() == RoomState::Left {
         items.push(User { id: me.to_string(), is_self: Some(true), has_exited: Some(true), ..Default::default() });

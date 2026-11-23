@@ -2102,9 +2102,12 @@ impl BeeperStore {
             }
         };
         merge(&mut new);
-        // Each sync upserts its rooms, mostly unchanged: those write nothing, and the views keep what they found.
+        // Each sync upserts its rooms, mostly unchanged: those write nothing, and the views keep what they found. The
+        // `manage` bits of the members are not in the JSON, and a chat loaded from SQLite has none until a sync sets
+        // them.
         let json = |c: &Chat| serde_json::to_string(c).expect("chat JSON");
-        if json(&new) != json(&self.chats[idx]) {
+        let manage = |c: &Chat| c.participants.items.iter().map(|u| u.manage).collect::<Vec<_>>();
+        if json(&new) != json(&self.chats[idx]) || manage(&new) != manage(&self.chats[idx]) {
             self.update_chat(idx, |c| *c = new);
         }
     }
@@ -4068,6 +4071,19 @@ mod tests {
         st.upsert_chat(later);
         assert_eq!(st.chat("!later:x").merged_into_chat_id.as_deref(), Some(chat.id.as_str()));
         assert_eq!(st.members(idx).len(), 3);
+    }
+
+    /// The `manage` bits of the members are not stored, so a chat loaded from SQLite has none: an upsert that brings
+    /// them changes the chat, though its JSON is the same.
+    #[test]
+    fn an_upsert_brings_the_manage_bits_of_a_loaded_chat() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("upsert-manage"));
+        let chat = st.chats[0].clone();
+        assert!(chat.participants.items.iter().all(|u| u.manage == 0), "a loaded chat has no manage bits");
+        let mut managed = chat.clone();
+        managed.participants.items.iter_mut().for_each(|u| u.manage = 3);
+        st.upsert_chat(managed);
+        assert!(st.chat(&chat.id).participants.items.iter().all(|u| u.manage == 3));
     }
 
     /// A sync upserts each of its rooms: an unchanged room writes nothing, so it sends no event and keeps what the
