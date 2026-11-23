@@ -61,10 +61,23 @@ fn parse(link: &str) -> Option<(Vec<String>, HashMap<String, String>)> {
 fn desktop_entry(exe: &str, icon: &str) -> String {
     use beeper_core::config::{INSTALL_ID, INSTALL_NAME};
     format!(
-        "[Desktop Entry]\nName={INSTALL_NAME}\nExec=\"{exe}\" %u\nType=Application\nTerminal=false\n\
+        "[Desktop Entry]\nName={INSTALL_NAME}\nExec={} %u\nType=Application\nTerminal=false\n\
          Comment=The ultimate messaging app\nCategories=Network;Chat;\nMimeType=x-scheme-handler/beeper;\n\
-         StartupWMClass={INSTALL_ID}\nStartupNotify=true\nIcon={icon}\n"
+         StartupWMClass={INSTALL_ID}\nStartupNotify=true\nIcon={icon}\n",
+        exec_program(exe)
     )
+}
+
+/// The program of the `Exec` key: as it is, like Desktop's, unless it has a character that the desktop entry spec
+/// reserves, which needs quotes. xdg-open without a desktop that it knows (`open_generic`, as under sway or i3) runs
+/// the first word of `Exec` as it is, so it cannot start a quoted program.
+#[cfg(target_os = "linux")]
+fn exec_program(exe: &str) -> String {
+    let reserved = |c: char| c.is_whitespace() || "\"'\\><~|&;$*?#()`".contains(c);
+    match exe.contains(reserved) {
+        true => format!("\"{exe}\""),
+        false => exe.to_string(),
+    }
 }
 
 /// Removes the entry that older builds installed in `apps` under Desktop's name, which hid Desktop's own entry. Only
@@ -349,6 +362,11 @@ mod tests {
         assert_eq!(chat_link("acc_instagram", "!r:beeper.com"), "beeper://select-thread/instagramgo/!r%3Abeeper.com");
         #[cfg(target_os = "linux")]
         assert!(desktop_entry("/a b/beeper-rs", "/i.png").contains("\nExec=\"/a b/beeper-rs\" %u\n"));
+        #[cfg(target_os = "linux")]
+        assert!(
+            desktop_entry("/opt/beeper-rs/beeper-rs", "/i.png").contains("\nExec=/opt/beeper-rs/beeper-rs %u\n"),
+            "xdg-open's generic mode runs the first word of Exec, so a plain path has no quotes, like Desktop's"
+        );
     }
 
     /// beeper-rs installs as Beeper-RS next to Desktop, and takes back the entry that older builds wrote under
