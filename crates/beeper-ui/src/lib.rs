@@ -14,6 +14,7 @@ pub mod composer;
 mod cursor;
 mod dashed;
 mod deeplink;
+pub use deeplink::ACTIVATION_TOKEN_ARG;
 mod delegate;
 mod dialogs;
 pub mod emoji;
@@ -1991,6 +1992,14 @@ pub struct SearchFilters {
     pub media: Vec<usize>,
 }
 
+impl SearchFilters {
+    /// The filters that are set, like the keys of Desktop's `searchFilters`.
+    pub fn count(&self) -> usize {
+        let set = [self.accounts.is_empty(), self.sent.is_none(), self.group.is_none(), self.period.is_none()];
+        set.into_iter().chain([self.media.is_empty()]).filter(|&empty| !empty).count()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SearchPick {
     Account(String),
@@ -2859,12 +2868,17 @@ pub struct BeeperGuiApp {
     opened: Vec<(window::Id, window::Settings)>,
     /// The widget that had the keyboard focus when the main window hid on Wayland, to focus it again in the new one.
     unmapped_focus: Option<iced::widget::Id>,
+    /// The activation token of the later launch or the notification that shows a window next, which raises it on
+    /// Wayland.
+    pub(crate) activation_token: Option<String>,
     /// The unread count and window state last sent to the tray and the app badge, and whether they can be stale.
     tray_sent: (Option<(u32, bool)>, bool),
     pub system_dark: bool,
     pub dark: bool,
     pub zoom: f32,
     zoom_drag: Option<f32>,
+    /// GNOME's text scaling on Wayland that the windows have; see [`TEXT_SCALE`].
+    pub text_scale: f32,
     /// The windows that opened maximized, to maximize again once the window manager places them.
     maximize_when_placed: Vec<window::Id>,
     pub pal: Palette,
@@ -2946,6 +2960,8 @@ pub struct BeeperGuiApp {
     pub search_index: Option<usize>,
     /// Desktop's `expandedCategories`: the search sections that show more.
     pub search_expanded: HashSet<&'static str>,
+    /// Desktop's `recentSearches`: the searches with filters that the bar closed on, the newest first.
+    pub recent_searches: Vec<(String, SearchFilters)>,
     /// Desktop's `partialMatchesEnabled` of the message search.
     pub search_partial: bool,
     /// Desktop's `lastArchivedThread`: the chat that was archived or unarchived last.
@@ -3231,12 +3247,14 @@ impl BeeperGuiApp {
             unmapped: Vec::new(),
             opened: Vec::new(),
             unmapped_focus: None,
+            activation_token: None,
             tray_sent: (None, true),
             pal: crate::style::palette(theme),
             system_dark: false,
             dark: theme,
             zoom: 1.0,
             zoom_drag: None,
+            text_scale: text_scale(),
             maximize_when_placed: Vec::new(),
             list: chat_list::ListState { filters, ..Default::default() },
             seen_requests: Vec::new(),
@@ -3288,6 +3306,7 @@ impl BeeperGuiApp {
             cmd_index: 0,
             search_index: None,
             search_expanded: HashSet::new(),
+            recent_searches: Vec::new(),
             search_partial: true,
             last_archived: Default::default(),
             creating_chat: None,
@@ -5001,7 +5020,7 @@ impl BeeperGuiApp {
         let frame_ready = Subscription::run(|| {
             iced::futures::stream::unfold((), |()| async {
                 FRAME_READY.notified().await;
-                Some((UiMessage::Noop, ()))
+                Some((UiMessage::Window(windows::Msg::FrameReady), ()))
             })
         });
         let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
@@ -5268,9 +5287,8 @@ impl BeeperGuiApp {
             Subscription::run_with(keys, tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0)))
         });
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
-        let notes = (!self.notifications.is_empty() || self.verify.note.is_some()).then(|| {
-            Subscription::run(notify::events).map(|(id, action)| UiMessage::Notify(notify::Msg::Event(id, action)))
-        });
+        let notes = (!self.notifications.is_empty() || self.verify.note.is_some())
+            .then(|| Subscription::run(notify::events).map(UiMessage::Notify));
         let toast =
             self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::Toast(toasts::Msg::Tick)));
         let tick =
@@ -6862,24 +6880,31 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .title(BeeperGuiApp::title)
         .subscription(BeeperGuiApp::subscription)
         .theme(|a: &BeeperGuiApp, _| a.iced_theme())
-        .scale_factor(|a: &BeeperGuiApp, _| a.zoom * text_scale())
+        .scale_factor(|a: &BeeperGuiApp, _| a.zoom * a.text_scale)
         .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.window, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
     app.run()
 }
 
 /// Woken once GTK opens to draw the title bars, and whenever GTK's settings change, so that the windows lay out and
-/// draw their frames again with the GTK theme and settings.
+/// draw their frames again with the GTK theme and settings, and follow the text scaling.
 pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
-/// GNOME's `text-scaling-factor` on Wayland, which Chromium applies to the whole of each window like a zoom, the size
-/// of the window included: Desktop's device scale is the screen's times it. On X11 the scale of the window already
-/// has it, from `Xft.dpi`.
-pub static TEXT_SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+/// GNOME's `text-scaling-factor` on Wayland, as the bits of an `f32`, which Chromium applies to the whole of each
+/// window like a zoom, the size of the window included: Desktop's device scale is the screen's times it. On X11 the
+/// scale of the window already has it, from `Xft.dpi`.
+static TEXT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
 
-/// [`TEXT_SCALE`], or 1.
+/// Takes GNOME's text scaling, at launch and when it changes; the windows follow it once [`FRAME_READY`] wakes them.
+pub fn set_text_scale(scale: f32) {
+    if scale.is_finite() && scale > 0.0 {
+        TEXT_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// [`TEXT_SCALE`].
 fn text_scale() -> f32 {
-    TEXT_SCALE.get().copied().unwrap_or(1.0)
+    f32::from_bits(TEXT_SCALE.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// People, each with the account to reach them on.

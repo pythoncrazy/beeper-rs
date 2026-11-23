@@ -111,6 +111,7 @@ impl BeeperGuiApp {
                 }
                 Hit::Heading(label, action, reach) => self.palette_heading(i, label, action, *reach, lit),
                 Hit::Chat(c) => self.palette_chat(i, c, lit),
+                Hit::RecentSearch(r) => self.palette_recent_search(i, *r, lit),
                 Hit::Message(m) => self.palette_message(&st, i, m, &needle, lit),
             };
             results = results.push(media_grid(std::mem::take(&mut tiles))).push(row);
@@ -152,6 +153,22 @@ impl BeeperGuiApp {
     fn palette_rows(&self, s: &str, n: usize) -> (usize, bool) {
         let (collapsed, open) = if s == "Bookmarks" { (3, 100) } else { (5, 12) };
         (if self.search_expanded.contains(s) { open } else { collapsed }, n > collapsed)
+    }
+
+    /// Desktop's `SelectRecentSearchCommand`: the `schedule` icon in `--color-on-surface-variant`, then the text of
+    /// the search and its count of filters.
+    fn palette_recent_search(&self, i: usize, search: usize, lit: Option<usize>) -> El<'_> {
+        let p = &self.pal;
+        let (term, f) = &self.recent_searches[search];
+        let n = f.count();
+        let filters = if n > 0 { trn(" (%d filter)", " (%d filters)", n, &[&n]) } else { String::new() };
+        let line = row![tinted(&COMPOSER_ICONS[6], 20.0, p.sub), txt(format!("{term}{filters}"), 13.0).color(p.text)];
+        let bg = if lit == Some(i) { p.chip } else { CLEAR };
+        let b =
+            button(container(line.spacing(8).align_y(Center)).center_y(Fill)).height(36).padding([0, 6]).width(Fill);
+        let b = b.style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0));
+        let row = mouse_area(b.on_press(UiMessage::CommandBar(commands::Msg::RestoreSearch(search))));
+        container(row.on_enter(search_hover(i))).padding([0, 6]).id(format!("search-{i}")).into()
     }
 
     /// The card of the command palette.
@@ -490,11 +507,18 @@ impl BeeperGuiApp {
         let (recent, archived) = self.palette_recent(st, blank);
         let chats: Vec<&Chat> = hits.chats.iter().map(|&i| &st.chats[i]).collect();
         let in_groups: Vec<&Chat> = hits.in_groups.iter().map(|&i| &st.chats[i]).collect();
+        // Desktop's `Bqt`: the recent searches lead the results while the input is empty.
+        let searches = if raw.is_empty() { self.recent_searches.len() } else { 0 };
         let any = [&recent, &archived, &chats, &in_groups].iter().any(|l| !l.is_empty())
-            || !(hits.bookmarks.is_empty() && hits.media.is_empty() && hits.messages.is_empty());
+            || !(hits.bookmarks.is_empty() && hits.media.is_empty() && hits.messages.is_empty())
+            || searches > 0;
         let mut list = Vec::new();
         if !any && (raw.chars().count() > 1 || !f.media.is_empty()) {
             return (list, true);
+        }
+        if searches > 0 {
+            list.push(Hit::Heading("Recent searches", None, false));
+            list.extend((0..searches).map(Hit::RecentSearch));
         }
         let toggle = |label: &'static str, more: bool| more.then_some(commands::Msg::ToggleSearchExpanded(label));
         // Desktop's `Jqt` order of the chat sections, before the bookmarks, the media and the messages. The arrow
@@ -589,6 +613,8 @@ enum Hit<'a> {
     /// A section heading, its action, and whether the arrow keys reach it.
     Heading(&'static str, Option<commands::Msg>, bool),
     Chat(&'a Chat),
+    /// A recent search, by its index in the recent searches.
+    RecentSearch(usize),
     /// A bookmark or a message.
     Message(&'a Message),
     Media(&'a Message),
@@ -604,6 +630,7 @@ impl Hit<'_> {
         match self {
             Hit::Heading(_, action, _) => action.clone(),
             Hit::Chat(c) => Some(commands::Msg::ExecuteChat(c.id.clone())),
+            Hit::RecentSearch(i) => Some(commands::Msg::RestoreSearch(*i)),
             Hit::Message(m) | Hit::Media(m) => {
                 Some(commands::Msg::JumpTo(st.chat(&m.chat_id).id.clone(), m.id.clone()))
             }

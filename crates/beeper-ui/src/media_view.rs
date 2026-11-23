@@ -8,7 +8,7 @@ use crate::message;
 use crate::style::rem;
 use crate::style::{
     bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, med, scroll_style, semi, shadow_box,
-    text_width, txt, Bare, CLEAR,
+    text_width, txt, Bare, CLEAR, GUTTER,
 };
 use crate::time::{day_num, format_short_ts, iso_millis, today};
 use crate::units::human_size;
@@ -414,6 +414,43 @@ fn media_group(d: i64) -> String {
         _ if d >= week - 7 => tr("Last week").into(),
         _ if ymd.0 == civil_from_days(t).0 => i18n::date(i18n::Date::Month, ymd, (0, 0)),
         _ => i18n::date(i18n::Date::MonthYear, ymd, (0, 0)),
+    }
+}
+
+/// The space under the last row of the Media window list.
+const MEDIA_END: f32 = 8.0;
+
+/// The height of a date header of the Media window: Desktop's `dateHeader` padding of 12 and 6 around its
+/// `body-lg` label and its `label-sm` dates.
+fn media_head() -> f32 {
+    18.0 + rem(20.0) + rem(14.0)
+}
+
+/// The loaded items of the Media window by Desktop's groups of days, in their order.
+fn media_day_groups(w: &MediaWindow) -> Vec<(String, Vec<(&Message, usize)>)> {
+    let mut groups: Vec<(String, Vec<(&Message, usize)>)> = Vec::new();
+    for (m, k) in &w.items {
+        let label = media_group(day_num(&m.timestamp));
+        match groups.last_mut() {
+            Some((l, g)) if *l == label => g.push((m, *k)),
+            _ => groups.push((label, vec![(m, *k)])),
+        }
+    }
+    groups
+}
+
+/// The columns and the tile size of the Media window grid in a list of `area`, whose groups have `tiles` tiles each,
+/// with `skeletons` skeleton rows under them. Like Desktop, the grid has `max(3, floor(width / 160))` columns of
+/// `1fr` with 10 px sides and 4 px gaps, measured on the grid with its scrollbar, and the rows lose the width of the
+/// solid scrollbar when they overflow the list, so that every tile has the same size.
+pub(crate) fn media_grid(area: Size, tiles: &[usize], skeletons: usize) -> (usize, f32) {
+    let cols = ((area.width / 160.0) as usize).max(3);
+    let tile = |room: f32| (room - 20.0 - 4.0 * (cols - 1) as f32) / cols as f32;
+    let rows = tiles.iter().map(|n| n.div_ceil(cols)).sum::<usize>() + skeletons;
+    let height = |tile: f32| tiles.len() as f32 * media_head() + rows as f32 * (tile + 4.0) + MEDIA_END;
+    match height(tile(area.width)) > area.height {
+        true => (cols, tile(area.width - GUTTER)),
+        false => (cols, tile(area.width)),
     }
 }
 
@@ -977,44 +1014,14 @@ impl BeeperGuiApp {
             .into()
     }
 
-    pub(crate) fn view_media<'a>(&'a self, w: &MediaWindow) -> El<'a> {
+    pub(crate) fn view_media<'a>(&'a self, w: &'a MediaWindow) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
         let header = self.media_header(w);
         let rule = || container(Space::new()).width(Fill).height(0.5).style(fill_box(p.chip, 0.0));
         let search_row = w.search.as_deref().map(|q| column![self.media_search_row(q), rule()]);
-        let inner = w.size.width - 16.0;
-        let cols = ((inner / 160.0) as usize).max(3);
-        let tile = (inner - 20.0 - 4.0 * (cols - 1) as f32) / cols as f32;
-        let body = self.media_groups(&st, w, cols, tile);
-        // Desktop loads more items when the list shows one of its last 8 rows, and again when a load adds rows.
-        let row_h = if w.tab == 0 { tile + 4.0 } else { 52.0 };
-        let end = (w.more && w.viewer.is_none()).then(|| {
-            iced::widget::sensor(Space::new().width(Fill))
-                .key((w.generation, w.items.len()))
-                .anticipate(8.0 * row_h)
-                .on_show(|_| UiMessage::Media(Msg::More))
-        });
-        // Desktop's pulsing skeleton rows while items load: three without items, else one under them.
-        let skeletons = w.loading.map_or(0, |_| if w.items.is_empty() { 3 } else { 1 });
-        let fade = w.loading.map_or(1.0, |at| pulse(at.elapsed().as_secs_f32()));
-        let skeleton = |_| -> El<'a> {
-            let tiles = (0..cols).map(|_| -> El<'a> {
-                let face = container(Space::new()).width(tile).height(tile);
-                face.style(fill_box(p.chip.scale_alpha(fade), 8.0)).into()
-            });
-            let row = container(Row::with_children(tiles).spacing(4));
-            row.padding(Padding::new(0.0).bottom(4.0).left(10.0).right(10.0)).into()
-        };
-        let body = body.push(end).extend((0..skeletons).map(skeleton));
-        let list: El<'a> = match w.items.is_empty() && w.loading.is_none() {
-            true => container(txt(tr("Nothing here"), 13.0).color(p.on_secondary)).center_x(Fill).padding(16).into(),
-            false => scrollable(body.push(Space::new().height(8)))
-                .direction(bar())
-                .height(Fill)
-                .style(scroll_style(p.scroll))
-                .into(),
-        };
+        // Like Desktop's `ResizeObserver` on the grid, the tiles follow the size of the list.
+        let list = iced::widget::responsive(move |area| self.media_list(w, area));
         let title = container(semi(tr("Media"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
         let footer = w.select.then(|| column![rule(), self.media_footer(w)]);
         let pane = column![header, rule()].push(search_row).push(list).push(footer);
@@ -1092,24 +1099,63 @@ impl BeeperGuiApp {
         container(line).padding([6, 10]).into()
     }
 
+    /// The list of the Media window in `area`: the groups of items, the skeleton rows while items load, or
+    /// "Nothing here".
+    fn media_list<'a>(&'a self, w: &'a MediaWindow, area: Size) -> El<'a> {
+        let p = &self.pal;
+        if w.items.is_empty() && w.loading.is_none() {
+            return container(txt(tr("Nothing here"), 13.0).color(p.on_secondary)).center_x(Fill).padding(16).into();
+        }
+        let groups = media_day_groups(w);
+        // Desktop's pulsing skeleton rows while items load: three without items, else one under them.
+        let skeletons = w.loading.map_or(0, |_| if w.items.is_empty() { 3 } else { 1 });
+        let sizes: Vec<usize> = groups.iter().map(|(_, g)| if w.tab == 0 { g.len() } else { 0 }).collect();
+        let (cols, tile) = media_grid(area, &sizes, skeletons);
+        let st = self.store.read();
+        let body = self.media_groups(&st, w, &groups, cols, tile);
+        drop(st);
+        // Desktop loads more items when the list shows one of its last 8 rows, and again when a load adds rows.
+        let row_h = if w.tab == 0 { tile + 4.0 } else { 52.0 };
+        let end = (w.more && w.viewer.is_none()).then(|| {
+            iced::widget::sensor(Space::new().width(Fill))
+                .key((w.generation, w.items.len()))
+                .anticipate(8.0 * row_h)
+                .on_show(|_| UiMessage::Media(Msg::More))
+        });
+        let fade = w.loading.map_or(1.0, |at| pulse(at.elapsed().as_secs_f32()));
+        let skeleton = |_| -> El<'a> {
+            let tiles = (0..cols).map(|_| -> El<'a> {
+                let face = container(Space::new()).width(tile).height(tile);
+                face.style(fill_box(p.chip.scale_alpha(fade), 8.0)).into()
+            });
+            let row = container(Row::with_children(tiles).spacing(4));
+            row.padding(Padding::new(0.0).bottom(4.0).left(10.0).right(10.0)).into()
+        };
+        let body = body.push(end).extend((0..skeletons).map(skeleton));
+        scrollable(body.push(Space::new().height(MEDIA_END)))
+            .direction(bar())
+            .height(Fill)
+            .style(scroll_style(p.scroll))
+            .into()
+    }
+
     /// The items of the Media window by Desktop's groups of days, each under its label and its dates: rows of
     /// `cols` tiles on the Media tab, else a row for each link or file.
-    fn media_groups<'a>(&'a self, st: &BeeperStore, w: &MediaWindow, cols: usize, tile: f32) -> Column<'a, UiMessage> {
+    fn media_groups<'a>(
+        &'a self,
+        st: &BeeperStore,
+        w: &MediaWindow,
+        groups: &[(String, Vec<(&Message, usize)>)],
+        cols: usize,
+        tile: f32,
+    ) -> Column<'a, UiMessage> {
         let p = &self.pal;
-        let mut groups: Vec<(String, Vec<(&Message, usize)>)> = Vec::new();
-        for (m, k) in &w.items {
-            let label = media_group(day_num(&m.timestamp));
-            match groups.last_mut() {
-                Some((l, g)) if *l == label => g.push((m, *k)),
-                _ => groups.push((label, vec![(m, *k)])),
-            }
-        }
         groups.iter().fold(Column::new(), |col, (label, group)| {
             let days = group.iter().map(|&(m, _)| day_num(&m.timestamp));
             let (lo, hi) = (days.clone().min().expect("a group has items"), days.max().expect("a group has items"));
             let full = |d| i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0));
             let range = if lo == hi { full(lo) } else { format!("{} - {}", full(lo), full(hi)) };
-            let range = txt(range, 11.0).color(p.on_secondary);
+            let range = txt(range, 11.0).color(p.on_secondary).wrapping(iced::widget::text::Wrapping::None);
             let head = column![semi(label.clone(), 15.0).line_height(Pixels(rem(20.0))).color(p.strong), range];
             let col = col.push(container(head).padding(Padding::new(6.0).top(12.0).left(10.0).right(10.0)));
             match w.tab {
@@ -1368,12 +1414,19 @@ impl BeeperGuiApp {
     }
 
     /// The square cover crop of an image or video poster, or an empty tile while it loads.
+    /// Like Desktop's `MediaImg`, a media that loads has the shimmering `--skeleton-bg` over its tile, and one that
+    /// failed has `ImageError`.
     pub(crate) fn thumb<'a>(&self, a: &Attachment, size: f32, r: f32) -> El<'a> {
+        let p = &self.pal;
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
-        match url.and_then(|u| self.thumb_tile(u, size.round() as u32, r.round() as u8)) {
-            Some(tile) => image(tile.clone()).width(size).height(size).into(),
-            None => container(Space::new()).width(size).height(size).style(fill_box(self.pal.chip, r)).into(),
+        if let Some(tile) = url.and_then(|u| self.thumb_tile(u, size.round() as u32, r.round() as u8)) {
+            return image(tile.clone()).width(size).height(size).into();
         }
+        if let Some(Some(Err(_))) = url.and_then(|u| self.media.get(u)) {
+            return self.image_error(size, size, r);
+        }
+        let loading = url.map(|_| anim::skeleton(Fill, Fill, r, p.skeleton, self.started));
+        container(loading).width(size).height(size).style(fill_box(p.chip, r)).into()
     }
 
     /// The name Desktop shows for the sender of a message.
@@ -1993,6 +2046,52 @@ mod tests {
         let _ = app.update(UiMessage::Media(Msg::Searched(last)));
         load_all_media(&mut app);
         assert_eq!(ids(&app), ["$page002"], "the search finds file names");
+    }
+
+    /// The squares that the Media window draws for its tiles that have no image yet, and its list.
+    fn grid_squares(app: &BeeperGuiApp, size: Size) -> (Vec<iced::Rectangle>, iced::Rectangle) {
+        let id = app.media_window.as_ref().unwrap().id;
+        let mut sim = Simulator::with_size(Default::default(), size, app.view(id));
+        let (mut squares, mut list) = (Vec::new(), None);
+        let _ = sim.find(|c: iced_test::selector::Candidate<'_>| -> Option<()> {
+            match c {
+                iced_test::selector::Candidate::Container { bounds, .. }
+                    if bounds.width > 60.0 && (bounds.width - bounds.height).abs() < 0.01 =>
+                {
+                    squares.push(bounds)
+                }
+                iced_test::selector::Candidate::Scrollable { bounds, .. } if list.is_none() => list = Some(bounds),
+                _ => {}
+            }
+            None
+        });
+        // A tile has a few boxes of its size.
+        squares.dedup_by(|a, b| a == b);
+        (squares, list.expect("the list"))
+    }
+
+    /// Like Desktop's `repeat(n, 1fr)` rows, every tile of the Media window has the same size at a width that does
+    /// not divide evenly, and the rows end 10 px before the scrollbar when they overflow the list, or before the
+    /// edge when they do not.
+    #[test]
+    fn media_tiles_share_the_row_like_desktop() {
+        let mut app = demo_app("media-grid");
+        photos(&app, 40, |_| None);
+        let _ = app.update(UiMessage::Media(Msg::Open));
+        let id = app.media_window.as_ref().unwrap().id;
+        finish_media_load(&mut app);
+        for (size, overflows) in [(Size::new(990.0, 700.0), true), (Size::new(990.0, 2400.0), false)] {
+            let _ = app.update(UiMessage::Window(windows::Msg::Resized(id, size)));
+            let (squares, list) = grid_squares(&app, size);
+            assert!(squares.len() >= 6, "the tiles show: {squares:?}");
+            let w = squares[0].width;
+            assert!(squares.iter().all(|b| (b.width - w).abs() < 0.01), "one size: {squares:?}");
+            assert_eq!(squares.iter().filter(|b| (b.y - squares[0].y).abs() < 0.01).count(), 6, "six columns");
+            let right = squares.iter().map(|b| b.x + b.width).fold(0.0, f32::max);
+            let gutter = if overflows { GUTTER } else { 0.0 };
+            assert!((list.x + list.width - gutter - 10.0 - right).abs() < 0.01, "{size:?}: {right} in {list:?}");
+            assert!((media_grid(list.size(), &[40], 0).1 - w).abs() < 0.01, "the grid of the list");
+        }
     }
 
     /// Desktop's skeleton tiles pulse from 0.55 to full opacity and back in 1.2 s.

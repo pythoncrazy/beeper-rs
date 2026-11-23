@@ -112,10 +112,12 @@ api! {
     cairo_create: fn(Ptr) -> Ptr;
     cairo_destroy: fn(Ptr);
     cairo_translate: fn(Ptr, c_double, c_double);
+    cairo_scale: fn(Ptr, c_double, c_double);
     pango_cairo_create_layout: fn(Ptr) -> Ptr;
     pango_cairo_context_set_resolution: fn(Ptr, c_double);
     pango_cairo_context_set_font_options: fn(Ptr, Ptr);
     pango_layout_get_context: fn(Ptr) -> Ptr;
+    pango_context_set_matrix: fn(Ptr, Ptr);
     pango_layout_context_changed: fn(Ptr);
     pango_layout_set_text: fn(Ptr, *const c_char, c_int);
     pango_layout_set_font_description: fn(Ptr, Ptr);
@@ -123,6 +125,9 @@ api! {
     pango_layout_set_width: fn(Ptr, c_int);
     pango_layout_get_pixel_size: fn(Ptr, *mut c_int, *mut c_int);
     pango_font_description_free: fn(Ptr);
+    pango_font_description_get_size: fn(Ptr) -> c_int;
+    pango_font_description_get_size_is_absolute: fn(Ptr) -> c_int;
+    pango_font_description_set_absolute_size: fn(Ptr, c_double);
 }
 
 const STATE_ACTIVE: u32 = 1 << 0;
@@ -150,7 +155,7 @@ pub(crate) struct ButtonDraw {
     pub look: ButtonLook,
 }
 
-/// Everything a header draw needs besides the buffer.
+/// Everything a header draw needs besides the buffer. Its sizes are in logical points.
 pub(crate) struct HeaderDraw {
     pub state: WindowState,
     pub title: String,
@@ -161,12 +166,22 @@ pub(crate) struct HeaderDraw {
     pub window_height: u32,
 }
 
-/// A buffer of the frame: `Argb8888` pixels and its device scale.
+/// A buffer of the frame: `Argb8888` pixels, its device scale, and the text scaling that the
+/// frame's drawing grows by ([`text_scale`]).
 pub(crate) struct Canvas<'a> {
     pub pixels: &'a mut [u8],
     pub width: u32,
     pub height: u32,
     pub scale: u32,
+    pub zoom: f64,
+}
+
+impl Canvas<'_> {
+    /// The size in GTK's CSS pixels, which the text scaling makes bigger than logical points.
+    fn css_size(&self) -> (f64, f64) {
+        let per_pixel = f64::from(self.scale) * self.zoom;
+        (f64::from(self.width) / per_pixel, f64::from(self.height) / per_pixel)
+    }
 }
 
 struct Gtk {
@@ -199,6 +214,9 @@ struct Settings {
     titlebar: TitlebarActions,
     /// `gtk-theme-name` and `gtk-application-prefer-dark-theme`, whose change redraws the frames.
     theme: (Option<String>, bool),
+    /// `gtk-xft-dpi`, in 1024ths of a dot per inch: GNOME's `text-scaling-factor` times 96 on
+    /// Wayland, which Chromium's `GtkUi` takes as its font scale.
+    xft_dpi: i32,
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -297,6 +315,29 @@ static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// `g_main_context_wakeup`, which other threads call to hand the GTK thread a job.
 static WAKEUP: OnceLock<unsafe extern "C" fn(Ptr)> = OnceLock::new();
+/// The text scaling, as the bits of an `f64`; see [`text_scale`].
+static TEXT_SCALE: AtomicU64 = AtomicU64::new(0x3ff0_0000_0000_0000);
+
+/// The desktop's text scaling (GNOME's `text-scaling-factor`) that the frames start with, before
+/// GTK opens and has its own.
+pub fn set_text_scale(scale: f64) {
+    if scale.is_finite() && scale > 0. {
+        TEXT_SCALE.store(scale.to_bits(), Ordering::Release);
+    }
+}
+
+/// The desktop's text scaling: [`set_text_scale`]'s, then GTK's `gtk-xft-dpi` over 96 once GTK is
+/// open, which follows GNOME's `text-scaling-factor` while the app runs. Chromium on Wayland makes
+/// it part of the device scale, so Electron's frame, title bar included, grows with it like the
+/// page; the frames drawn with GTK do too.
+pub fn text_scale() -> f64 {
+    f64::from_bits(TEXT_SCALE.load(Ordering::Acquire))
+}
+
+/// The text scaling of `gtk-xft-dpi`, which is not positive when GTK has none.
+fn xft_scale(xft_dpi: i32) -> Option<f64> {
+    (xft_dpi > 0).then(|| f64::from(xft_dpi) / (96. * 1024.))
+}
 
 /// Starts opening GTK in the background, so the first window's frame finds it ready.
 pub fn preload() {
@@ -305,8 +346,8 @@ pub fn preload() {
 }
 
 /// Registers a callback invoked when GTK finishes initializing and warming up, and again
-/// whenever GTK's settings change (the title bar's buttons, its click actions or the theme), so
-/// that the application wakes its event loop and the frames draw again.
+/// whenever GTK's settings change (the title bar's buttons, its click actions, the theme or the
+/// text scaling), so that the application wakes its event loop and the frames draw again.
 pub fn on_ready(cb: impl Fn() + Send + 'static) {
     let ready = READY.load(Ordering::Acquire);
     if let Ok(mut slot) = ON_READY.lock() {
@@ -337,6 +378,9 @@ fn publish(settings: Settings) -> Option<Option<Settings>> {
     let mut current = SETTINGS.lock().ok()?;
     if current.as_ref() == Some(&settings) {
         return None;
+    }
+    if let Some(scale) = xft_scale(settings.xft_dpi) {
+        set_text_scale(scale);
     }
     let old = current.replace(settings);
     drop(current);
@@ -489,13 +533,16 @@ pub(crate) fn draw_header(canvas: Canvas, header: &HeaderDraw) {
 }
 
 /// Draws the window's shadow into `canvas`, a border part whose top left corner sits at
-/// `origin` logical points from the window's top left corner (title bar included).
+/// `origin` logical points from the window's top left corner (title bar included), of a window
+/// of `window` logical points.
 pub(crate) fn draw_shadow(canvas: Canvas, origin: (i32, i32), window: (u32, u32), state: WindowState) {
+    let zoom = canvas.zoom;
+    let css = |v: i64| v as f64 / zoom;
     call(|gtk| {
         gtk.with_cairo(canvas, |gtk, cr| {
             // SAFETY: a live cairo context.
-            unsafe { (gtk.api.cairo_translate)(cr, f64::from(-origin.0), f64::from(-origin.1)) };
-            gtk.decoration(cr, window, state);
+            unsafe { (gtk.api.cairo_translate)(cr, css(-i64::from(origin.0)), css(-i64::from(origin.1))) };
+            gtk.decoration(cr, (css(window.0.into()), css(window.1.into())), state);
         });
     });
 }
@@ -540,22 +587,23 @@ impl Gtk {
         Settings {
             layout: self.setting(c"gtk-decoration-layout").map(|layout| split_layout(&layout)),
             titlebar: self.titlebar_actions(),
-            theme: (self.setting(c"gtk-theme-name"), self.flag(c"gtk-application-prefer-dark-theme")),
+            theme: (self.setting(c"gtk-theme-name"), self.number(c"gtk-application-prefer-dark-theme") != 0),
+            xft_dpi: self.number(c"gtk-xft-dpi"),
         }
     }
 
-    /// A boolean setting of GTK's.
-    fn flag(&self, name: &std::ffi::CStr) -> bool {
+    /// A boolean or integer setting of GTK's.
+    fn number(&self, name: &std::ffi::CStr) -> c_int {
         let mut value: c_int = 0;
-        // SAFETY: a boolean property, written to `value`.
+        // SAFETY: a boolean or integer property, written to `value`.
         unsafe {
             let settings = (self.api.gtk_settings_get_default)();
             if settings.is_null() {
-                return false;
+                return 0;
             }
             (self.api.g_object_get)(settings, name.as_ptr(), &mut value as *mut c_int, null_mut::<c_void>());
         }
-        value != 0
+        value
     }
 
     /// Drops the icons drawn in the colors of the theme from before.
@@ -593,7 +641,7 @@ impl Gtk {
             title_room: (0.0, 64.0),
             window_height: h + 100,
         };
-        let canvas = Canvas { pixels: &mut pixels, width: w, height: h, scale: 1 };
+        let canvas = Canvas { pixels: &mut pixels, width: w, height: h, scale: 1, zoom: 1. };
         self.with_cairo(canvas, |gtk, cr| {
             let bar = gtk.context(&format!("{} {HEADER}", window_node(WindowState::ACTIVATED)), 0);
             // SAFETY: rendering into a live cairo context.
@@ -611,7 +659,7 @@ impl Gtk {
         let hdr_rgb = sample(h / 2);
         let border_rgb = sample(h - 1);
         // Warm Pango + button symbolic icons off the main thread.
-        let canvas = Canvas { pixels: &mut pixels, width: w, height: h, scale: 1 };
+        let canvas = Canvas { pixels: &mut pixels, width: w, height: h, scale: 1, zoom: 1. };
         self.draw_header(canvas, &header);
         (hdr_rgb, border_rgb)
     }
@@ -717,7 +765,8 @@ impl Gtk {
         }
     }
 
-    /// Runs `draw` with a cairo context over `canvas`, in logical points.
+    /// Runs `draw` with a cairo context over `canvas`, in GTK's CSS pixels: logical points over
+    /// the text scaling.
     fn with_cairo(&mut self, canvas: Canvas, draw: impl FnOnce(&mut Self, Ptr)) {
         let api = &self.api;
         // SAFETY: the surface borrows `canvas.pixels` (an `Argb8888` buffer of exactly
@@ -731,7 +780,9 @@ impl Gtk {
                 canvas.width as c_int * 4,
             );
             (api.cairo_surface_set_device_scale)(surface, f64::from(canvas.scale), f64::from(canvas.scale));
-            (surface, (api.cairo_create)(surface))
+            let cr = (api.cairo_create)(surface);
+            (api.cairo_scale)(cr, canvas.zoom, canvas.zoom);
+            (surface, cr)
         };
         draw(self, cr);
         let api = &self.api;
@@ -745,27 +796,28 @@ impl Gtk {
 
     /// Chromium's `WindowFrameProviderGtk`: the `decoration` node's shadow and outline around
     /// the window box at the origin.
-    fn decoration(&mut self, cr: Ptr, (width, height): (u32, u32), state: WindowState) {
+    fn decoration(&mut self, cr: Ptr, (width, height): (f64, f64), state: WindowState) {
         let flags = backdrop(state);
         let ctx = self.context(&format!("{} decoration", window_node(state)), flags);
         // SAFETY: rendering into a live cairo context.
         unsafe {
-            (self.api.gtk_render_background)(ctx, cr, 0., 0., f64::from(width), f64::from(height));
-            (self.api.gtk_render_frame)(ctx, cr, 0., 0., f64::from(width), f64::from(height));
+            (self.api.gtk_render_background)(ctx, cr, 0., 0., width, height);
+            (self.api.gtk_render_frame)(ctx, cr, 0., 0., width, height);
         }
     }
 
     fn draw_header(&mut self, canvas: Canvas, header: &HeaderDraw) {
-        let scale = canvas.scale;
-        let width = f64::from(canvas.width / scale);
-        let height = f64::from(canvas.height / scale);
+        let zoom = canvas.zoom;
+        // The icons' pixels per CSS pixel.
+        let scale = (f64::from(canvas.scale) * zoom).ceil() as u32;
+        let (width, height) = canvas.css_size();
         self.with_cairo(canvas, |gtk, cr| {
             let state = header.state;
             let flags = backdrop(state);
             let window = window_node(state);
             // The shadow shows through the header's rounded corners.
             if !state.contains(WindowState::MAXIMIZED) {
-                gtk.decoration(cr, (width as u32, header.window_height), state);
+                gtk.decoration(cr, (width, f64::from(header.window_height) / zoom), state);
             }
             let bar = gtk.context(&format!("{window} {HEADER}"), flags);
             // SAFETY: rendering into a live cairo context.
@@ -773,22 +825,24 @@ impl Gtk {
                 (gtk.api.gtk_render_background)(bar, cr, 0., 0., width, height);
                 (gtk.api.gtk_render_frame)(bar, cr, 0., 0., width, height);
             }
-            gtk.title(cr, &format!("{window} {HEADER} label.title"), flags, header, width, height);
+            gtk.title(cr, &format!("{window} {HEADER} label.title"), flags, header, (width, height), zoom);
             for button in &header.buttons {
-                gtk.button(cr, state, button, height, scale);
+                gtk.button(cr, state, button, (f64::from(button.x) / zoom, height), scale);
             }
         });
     }
 
     /// The title, centred on the whole bar like `GtkHeaderBar` when it fits between the
-    /// buttons, else pushed beside them and ellipsized.
-    fn title(&mut self, cr: Ptr, chain: &str, flags: u32, header: &HeaderDraw, width: f64, height: f64) {
+    /// buttons, else pushed beside them and ellipsized. The bar is `width` by `height` CSS
+    /// pixels, each `zoom` logical points.
+    fn title(&mut self, cr: Ptr, chain: &str, flags: u32, header: &HeaderDraw, size: (f64, f64), zoom: f64) {
         if header.title.is_empty() {
             return;
         }
+        let (width, height) = size;
         let ctx = self.context(chain, flags);
         let api = &self.api;
-        let (start, end) = (f64::from(header.title_room.0), f64::from(header.title_room.1));
+        let (start, end) = (f64::from(header.title_room.0) / zoom, f64::from(header.title_room.1) / zoom);
         if end <= start {
             return;
         }
@@ -797,18 +851,30 @@ impl Gtk {
         unsafe {
             let layout = (api.pango_cairo_create_layout)(cr);
             let context = (api.pango_layout_get_context)(layout);
+            // `gtk_render_layout` applies the context's matrix to `cr`, which has the text scaling
+            // already.
+            (api.pango_context_set_matrix)(context, null_mut());
             let screen = (api.gdk_screen_get_default)();
+            // GDK's resolution has the text scaling too: `gtk-xft-dpi`.
+            let resolution = if screen.is_null() { -1. } else { (api.gdk_screen_get_resolution)(screen) };
+            let resolution = if resolution > 0. { resolution / zoom } else { 96. };
+            (api.pango_cairo_context_set_resolution)(context, resolution);
             if !screen.is_null() {
-                (api.pango_cairo_context_set_resolution)(context, (api.gdk_screen_get_resolution)(screen));
                 let options = (api.gdk_screen_get_font_options)(screen);
                 if !options.is_null() {
                     (api.pango_cairo_context_set_font_options)(context, options);
                 }
-                (api.pango_layout_context_changed)(layout);
             }
+            (api.pango_layout_context_changed)(layout);
             let mut font: Ptr = null_mut();
             (api.gtk_style_context_get)(ctx, flags, c"font".as_ptr(), &mut font as *mut Ptr, null_mut::<c_void>());
             if !font.is_null() {
+                // Chromium's fonts take whole pixels: Cantarell 11 is 15 px, not 14⅔.
+                if (api.pango_font_description_get_size_is_absolute)(font) == 0 {
+                    let points = f64::from((api.pango_font_description_get_size)(font));
+                    let pixels = (points * resolution / 72. / f64::from(PANGO_SCALE)).round().max(1.);
+                    (api.pango_font_description_set_absolute_size)(font, pixels * f64::from(PANGO_SCALE));
+                }
                 (api.pango_layout_set_font_description)(layout, font);
                 (api.pango_font_description_free)(font);
             }
@@ -824,7 +890,9 @@ impl Gtk {
         }
     }
 
-    fn button(&mut self, cr: Ptr, state: WindowState, button: &ButtonDraw, height: f64, scale: u32) {
+    /// Draws `button` at `x` CSS pixels from the left of a bar `height` CSS pixels high, with
+    /// its icon at `scale` pixels per CSS pixel.
+    fn button(&mut self, cr: Ptr, state: WindowState, button: &ButtonDraw, (x, height): (f64, f64), scale: u32) {
         let flags = backdrop(state)
             | match button.look {
                 ButtonLook::Normal => 0,
@@ -834,7 +902,6 @@ impl Gtk {
         let ctx = self.context(&button_chain(state, button.kind), flags);
         let (w, h) = self.size(ctx, flags);
         let (w, h) = (f64::from(w.max(ICON_SIZE)), f64::from(h.max(ICON_SIZE)));
-        let x = f64::from(button.x);
         let y = ((height - h) / 2.).floor();
         let name = icon(button.kind, state);
         let icon = self.icon(ctx, name, flags, scale);
@@ -953,21 +1020,51 @@ mod tests {
     use super::*;
 
     /// A change of GTK's settings counts once, so the frames lay out again once, and the same
-    /// settings again change nothing.
+    /// settings again change nothing. A change of the text scaling is one too, which the frames
+    /// take.
     #[test]
     fn publish_counts_each_change_once() {
-        let settings = |layout: &str| Settings {
+        let settings = |layout: &str, scale: i32| Settings {
             layout: Some(split_layout(layout)),
             titlebar: TitlebarActions::default(),
             theme: (Some("Adwaita".into()), false),
+            xft_dpi: 96 * scale,
         };
         let start = generation();
-        assert!(publish(settings("menu:close")).is_some());
-        assert!(publish(settings("menu:close")).is_none(), "the same settings again are no change");
+        assert!(publish(settings("menu:close", 1024)).is_some());
+        assert!(publish(settings("menu:close", 1024)).is_none(), "the same settings again are no change");
         assert_eq!(generation(), start + 1);
-        let old = publish(settings("close,minimize:")).expect("a new layout is a change");
+        let old = publish(settings("close,minimize:", 1024)).expect("a new layout is a change");
         assert_eq!(old.and_then(|s| s.layout), Some(("menu".into(), "close".into())));
         assert_eq!(generation(), start + 2);
         assert_eq!(decoration_layout(), Some(("close,minimize".into(), String::new())), "the frames read it");
+        assert!(publish(settings("close,minimize:", 1280)).is_some(), "GNOME's Large Text is a change");
+        assert_eq!(generation(), start + 3);
+        assert_eq!(text_scale(), 1.25, "the frames grow with it");
+        publish(settings("close,minimize:", 1024));
+        assert_eq!(text_scale(), 1.);
+    }
+
+    /// GTK has no `gtk-xft-dpi` until it reads the desktop's settings; the text scaling stays.
+    #[test]
+    fn xft_dpi_gives_the_text_scaling() {
+        assert_eq!(xft_scale(96 * 1024), Some(1.));
+        assert_eq!(xft_scale(144 * 1024), Some(1.5));
+        assert_eq!(xft_scale(-1), None);
+        assert_eq!(xft_scale(0), None);
+    }
+
+    /// Chromium's title bar grows with the text scaling and takes whole pixels down: 37 px is 46 at
+    /// GNOME's Large Text and 55 at 1.5, as Desktop's.
+    #[test]
+    fn title_bar_metrics_grow_with_the_text_scaling() {
+        let adwaita = Metrics { header: 37, button: (24., 24.), button_top: 6.5, inset: (6., 6.), spacing: 6. };
+        assert_eq!(adwaita.zoomed(1.), adwaita);
+        let large = adwaita.zoomed(1.25);
+        assert_eq!(large.header, 46);
+        assert_eq!(large.button, (30., 30.));
+        assert_eq!(large.inset, (7.5, 7.5));
+        assert_eq!(adwaita.zoomed(1.5).header, 55);
+        assert_eq!(adwaita.zoomed(2.).header, 74, "a whole number of pixels stays whole");
     }
 }

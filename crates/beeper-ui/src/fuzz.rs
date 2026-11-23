@@ -1119,6 +1119,47 @@ fn command_bar_opens_empty_like_desktop() {
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
 }
 
+/// Desktop's `onSearchClosed` and `recentSearches`: a search with a text and filters that the bar closes on leads the
+/// empty bar as a recent search, with the count of its filters, and picking it restores the search in the open bar.
+/// Filters without a text stay for the next search.
+#[test]
+fn recent_searches_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("recent-searches");
+    let search = |app: &mut BeeperGuiApp, text: &str, group: bool| {
+        let _ = app.update(UiMessage::RunHotkey("Search"));
+        assert!(app.show_command_palette);
+        let _ = app.update(UiMessage::CommandBar(commands::Msg::Query(text.into())));
+        if group {
+            let _ = app.update(UiMessage::CommandBar(commands::Msg::PickSearchFilter(SearchPick::Group(true))));
+        }
+        let _ = app.update(UiMessage::CloseModals);
+        assert!(!app.show_command_palette);
+    };
+    search(&mut app, "lena", true);
+    search(&mut app, "pebble", false);
+    let _ = app.update(UiMessage::RunHotkey("Search"));
+    let group = SearchFilters { group: Some(true), ..Default::default() };
+    assert_eq!(app.recent_searches, [("lena".to_string(), group.clone())], "only a search with filters is kept");
+    assert_eq!(app.search_filters, SearchFilters::default(), "its filters ended with it");
+    {
+        let mut ui = simulator(app.view_main());
+        assert!(ui.find("Recent searches").is_ok() && ui.find("lena (1 filter)").is_ok());
+    }
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("l".into())));
+    assert!(simulator(app.view_main()).find("Recent searches").is_err(), "only while the input is empty");
+    let _ = app.update(UiMessage::CloseModals);
+    search(&mut app, "lena", true);
+    search(&mut app, "", true);
+    let _ = app.update(UiMessage::RunHotkey("Search"));
+    assert_eq!(app.recent_searches.len(), 1, "the same search moves to the top");
+    assert_eq!(app.search_filters, group, "filters without a text stay");
+    // The recent search is the first result, which Enter picks.
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    assert!(app.show_command_palette, "the bar stays open");
+    assert_eq!((app.command_palette_query.as_str(), &app.search_filters), ("lena", &group));
+}
+
 /// Desktop's `CommandBarContainer` of the search: Enter opens the highlighted chat, at first the first result. ↓ and
 /// ↑ move over the results and the headings of the sections with an action, and stop at the ends (`gqt`). Enter on
 /// a heading runs its action and keeps the bar open, and the pointer highlights a row too.
@@ -1866,6 +1907,55 @@ fn emoticons_and_urls_suggest_nothing_like_desktop() {
     assert_eq!(picks(&mut app, "mail @a.b"), 0);
 }
 
+/// Desktop's quick reply trigger: with `quick-replies` (only the internal channel), `;` and a word list the synced
+/// quick replies whose title matches, and a pick puts the text with the variables of the other person of the chat.
+#[test]
+fn quick_replies_like_desktop() {
+    use crate::composer::{quick_reply_text, Suggestion};
+    use beeper_core::models::QuickReply;
+    let mut app = demo_app("quick-replies");
+    let chat = {
+        let st = app.store.read();
+        let single =
+            |c: &&Chat| c.chat_type == "single" && c.participants.items.iter().any(|u| u.is_self != Some(true));
+        app.visible_chats(&st).into_iter().find(single).unwrap().clone()
+    };
+    let other = chat.participants.items.iter().find(|u| u.is_self != Some(true)).unwrap().clone();
+    let reply = |title: &str, text: &str| QuickReply {
+        id: title.into(),
+        title: title.into(),
+        text: text.into(),
+        ..Default::default()
+    };
+    app.store.write().update_settings(|s| {
+        s.quick_replies = vec![reply("Thanks", "Thank you {first_name}!"), reply("Address", "{full_name}, at {email}")];
+    });
+    let _ = app.update(UiMessage::SelectChat(chat.id.clone()));
+    let titles = |app: &mut BeeperGuiApp, text: &str| {
+        let _ = app.update(UiMessage::Composer(composer::Msg::Changed(text.into())));
+        let st = app.store.read();
+        let rows = app.suggestions(&st).map_or_else(Vec::new, |(_, rows)| rows);
+        let title = |s: Suggestion| match s {
+            Suggestion::QuickReply(i) => Some(st.settings.quick_replies[i].title.clone()),
+            _ => None,
+        };
+        rows.into_iter().filter_map(title).collect::<Vec<_>>()
+    };
+    assert!(titles(&mut app, ";th").is_empty(), "only the internal channel has quick replies");
+    app.store.write().features.internal = true;
+    assert_eq!(titles(&mut app, ";th"), ["Thanks"]);
+    assert_eq!(titles(&mut app, "ok ;"), ["Address", "Thanks"], "an empty query lists them all");
+    assert!(simulator(app.view_main()).find("Thank you {first_name}!").is_ok(), "the row shows the text");
+    let _ = titles(&mut app, "ok ;tha");
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let first = other.full_name.as_deref().and_then(|n| n.split(' ').next()).unwrap_or("{first_name}");
+    assert_eq!(app.pane.composer.text().trim_end_matches('\n'), format!("ok Thank you {first}! "));
+    let nobody = quick_reply_text("Hi {first_name} {last_name} {username}", None);
+    assert_eq!(nobody, "Hi {first_name} {last_name} {username}", "no person, no change");
+    let ann = User { full_name: Some("Ann Lee Smith".into()), ..Default::default() };
+    assert_eq!(quick_reply_text("{first_name} {last_name} {email}", Some(&ann)), "Ann Smith {email}");
+}
+
 #[test]
 fn mentions_like_desktop() {
     let mut app = demo_app("mentions");
@@ -1884,7 +1974,9 @@ fn mentions_like_desktop() {
         rows.into_iter()
             .map(|s| match s {
                 Suggestion::Mention(label, id, _) => (label, id),
-                Suggestion::Emoji(..) | Suggestion::Command(_) => panic!("another row for @"),
+                Suggestion::Emoji(..) | Suggestion::Command(_) | Suggestion::QuickReply(_) => {
+                    panic!("another row for @")
+                }
             })
             .collect::<Vec<_>>()
     };
@@ -2110,7 +2202,8 @@ fn media_window_menu_and_rows_like_desktop() {
     }
     let _ = app.update(UiMessage::Media(media_view::Msg::Tab(1)));
     media_view::load_all_media(&mut app);
-    drop(app.view(id));
+    // The list builds its rows when it lays out at its size.
+    drop(simulator(app.view(id)));
     assert!(app.wants.media.borrow().contains(img), "the row loads the preview image");
 }
 
@@ -4528,6 +4621,12 @@ fn media_boxes_like_desktop() {
     assert_eq!(at(300.0, 900.0), (160.0, 400.0, true), "a very tall one is 160 by 400, cropped");
     assert_eq!(at(4000.0, 100.0), (450.0, 80.0, true), "a very wide one is an 80 px strip, cropped");
     assert_eq!(media_box(1000.0, Some((2000.0, 1000.0)), 0.85).0, 800.0, "a hidden sidebar gives 0.85");
+    // Desktop's sticker style: `width: w * min(1, 400 / h, max(1, 0.45 * width) / w)`, kept whole.
+    let sticker = |w, h| crate::message::sticker_box(1000.0, (w, h), 0.45);
+    assert_eq!(sticker(512.0, 512.0), (400.0, 400.0, false), "a square sticker like an image");
+    assert_eq!(sticker(100.0, 1000.0), (40.0, 400.0, false), "a very tall sticker is not cropped");
+    assert_eq!(sticker(900.0, 60.0), (450.0, 30.0, false), "a very wide sticker is not cropped");
+    assert_eq!(sticker(64.0, 64.0), (64.0, 64.0, false), "a small sticker is not upscaled");
 }
 
 /// Desktop's `.spoiler`: a click shows the spoilers of a message, and the chat list hides them as blocks.
@@ -9212,6 +9311,33 @@ fn wayland_hides_windows_by_closing_them_like_electron() {
     assert!(app.chat_windows.iter().all(|w| w.0 != chat) && app.unmapped.len() == 1, "the chat window is gone");
 }
 
+/// A later launch hands its launcher's activation token over, and a notification's `ActivationToken` comes before its
+/// action: the window that shows next raises with the token on Wayland. On X11, winit's focus raises the window.
+#[test]
+fn launches_and_notifications_raise_the_window_with_their_activation_token() {
+    use beeper_core::platform::DisplayServerKind;
+    let mut app = demo_app("activation-token");
+    let main = app.main_window.expect("the main window");
+    let token = format!("{}launcher-token", crate::ACTIVATION_TOKEN_ARG);
+    let _ = app.second_instance(vec![token.clone(), "beeper://no-such-link".into()]);
+    assert!(app.activation_token.is_none(), "showing the main window took the token");
+    // The link stays the last argument, and an empty token is none.
+    app.display_server = DisplayServerKind::X11;
+    let empty = crate::ACTIVATION_TOKEN_ARG.to_owned();
+    let (done, _) = run_window_actions(app.second_instance(vec![empty]), Size::new(900.0, 640.0), &[]);
+    assert_eq!(done, [format!("mode {main:?} Windowed")]);
+
+    // A notification's token waits for its action, and the token of a notification of another app does not count.
+    let _ = app.update(UiMessage::Notify(notify::Msg::Token(41, "other-app".into())));
+    assert!(app.activation_token.is_none());
+    app.notifications.insert(42, (beeper_core::store::NOTE_CHAT_ID.into(), String::new()));
+    let _ = app.update(UiMessage::Notify(notify::Msg::Token(42, "shell-token".into())));
+    assert_eq!(app.activation_token.as_deref(), Some("shell-token"));
+    let _ = app.update(UiMessage::Notify(notify::Msg::Event(42, Some("default".into()))));
+    assert!(app.activation_token.is_none(), "the click showed the window with it");
+    assert_eq!(app.pane.selected_chat_id.as_deref(), Some(beeper_core::store::NOTE_CHAT_ID));
+}
+
 /// On X11 the windows hide and show as they are.
 #[test]
 fn x11_hides_windows_in_place() {
@@ -10338,7 +10464,7 @@ fn custom_emoji_composer_like_desktop() {
         let rows = app.suggestions(&st).map_or_else(Vec::new, |(_, rows)| rows);
         let emoji = |s| match s {
             Suggestion::Emoji(c, name) => Some((c, name)),
-            Suggestion::Mention(..) | Suggestion::Command(_) => None,
+            Suggestion::Mention(..) | Suggestion::Command(_) | Suggestion::QuickReply(_) => None,
         };
         rows.into_iter().filter_map(emoji).collect::<Vec<_>>()
     };
@@ -10458,4 +10584,36 @@ fn a_covering_image_stays_in_its_box() {
     let red_at = |x: u32| shot.get_pixel(x * k, 10 * k).0 == [255, 0, 0, 255];
     assert!(red_at(30), "the image fills its box");
     assert!(!red_at(10) && !red_at(50), "and nothing beside it");
+}
+
+/// GNOME's text scaling on Wayland reaches the app with a change of GTK's settings, as Desktop's device scale: the
+/// windows take it once, and a restored one keeps its size in Desktop's pixels, so it grows with it on the screen.
+#[test]
+fn windows_follow_the_text_scaling() {
+    use iced::futures::StreamExt;
+    use iced_runtime::{window::Action as W, Action};
+    let mut app = demo_app("text-scale");
+    let main = app.main_window.expect("a main window");
+    assert_eq!(app.text_scale, 1.0);
+    let other = app.update(UiMessage::Window(windows::Msg::FrameReady));
+    let other = iced::futures::executor::block_on(task_actions(other));
+    assert!(other.is_empty(), "another change of GTK's settings changes nothing");
+    crate::set_text_scale(1.25);
+    let task = app.update(UiMessage::Window(windows::Msg::FrameReady));
+    crate::set_text_scale(1.0);
+    assert_eq!(app.text_scale, 1.25, "the windows take GNOME's Large Text");
+    let mut stream = iced_runtime::task::into_stream(task).expect("the windows resize");
+    let resized = iced::futures::executor::block_on(async {
+        while let Some(action) = stream.next().await {
+            match action {
+                Action::Window(W::GetMaximized(_, tx)) => drop(tx.send(false)),
+                // The size at the new scale, 1000x750 at the old one.
+                Action::Window(W::GetSize(_, tx)) => drop(tx.send(Size::new(800.0, 600.0))),
+                Action::Window(W::Resize(id, size)) if id == main => return Some(size),
+                _ => {}
+            }
+        }
+        None
+    });
+    assert_eq!(resized, Some(Size::new(1000.0, 750.0)), "the window keeps its size in Desktop's pixels");
 }

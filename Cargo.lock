@@ -560,6 +560,7 @@ dependencies = [
  "qrcodegen",
  "regex",
  "rodio",
+ "sctk-adwaita",
  "serde_json",
  "spellbook",
  "tiny-skia",
@@ -5770,6 +5771,7 @@ dependencies = [
  "memmap2",
  "smithay-client-toolkit 0.19.2",
  "tiny-skia",
+ "wayland-backend",
 ]
 
 [[package]]

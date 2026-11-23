@@ -16,8 +16,8 @@ pub struct Wants {
     pub media: RefCell<BTreeSet<String>>,
     /// The tiles to bake, as (media URL, width, height, look).
     pub tiles: RefCell<BTreeSet<(String, u32, u32, crate::gallery::Look)>>,
-    /// The animations to cut to their inline box, as (media URL, width, height).
-    pub cuts: RefCell<BTreeSet<(String, u32, u32)>>,
+    /// The animations to cut to their inline box or to dim, as (media URL, cut).
+    pub cuts: RefCell<BTreeSet<(String, crate::gallery::Cut)>>,
     /// The quoted messages that the timeline does not have, as (chat, message).
     pub quotes: RefCell<BTreeSet<(String, String)>>,
     /// The URLs of the shown audio players whose audio no load fetches yet.
