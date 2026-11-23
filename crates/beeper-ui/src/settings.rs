@@ -2568,6 +2568,28 @@ mod tests {
         simulator(app.view_settings()).find(text).is_ok()
     }
 
+    /// A demo account adds no account: a network that it has no account on, picked in the search of the settings or
+    /// in the command palette, opens the Accounts tab and no Add Account window, whose login would ask the Beeper
+    /// servers.
+    #[test]
+    fn a_demo_network_hit_opens_no_add_account_window() {
+        let mut app = crate::fuzz::demo_app("settings-demo-network");
+        let st = app.store.read();
+        let has = |n: &beeper_core::models::NetworkSpec| {
+            let mut ids = st.bridge_accounts.iter().map(|a| beeper_core::config::account_network(&a.bridge_id));
+            ids.any(|a| a.bridge_id == n.bridge_id)
+        };
+        let names: Vec<_> =
+            crate::networks::addable(&st.features).filter(|n| !has(n)).map(|n| n.display_name).collect();
+        drop(st);
+        assert!(names.contains(&"Google Messages"), "the demo has no Google Messages account: {names:?}");
+        for name in names {
+            let _ = app.update(UiMessage::Settings(Msg::Pick(SettingsHit::Network(name))));
+            assert!(app.add_accounts.is_empty(), "no Add Account window for {name}");
+            assert_eq!(app.active_settings_tab, SettingsTab::Accounts);
+        }
+    }
+
     /// Desktop's `QLt` and `LLt`: the add button and "Add an Account" open the Add an Account window, the accounts
     /// that remain follow the summary, and with none left the `AddMoreAccountsBanner` offers the next plan.
     #[test]

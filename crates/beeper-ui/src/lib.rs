@@ -4835,6 +4835,8 @@ impl BeeperGuiApp {
             UiMessage::Verify(m) => return self.update_verify(m),
             UiMessage::Reauth(m) => return self.update_reauth(m),
             UiMessage::EnterKey(m) => return self.update_enter_key(m),
+            // A demo account adds none, like its Add an Account window: its login would ask the Beeper servers.
+            UiMessage::OpenAddAccount(..) if self.store.read().config.demo => {}
             UiMessage::OpenAddAccount(network, login) => return self.open_add_account(&network, login),
             UiMessage::AddAccount(id, m) => return self.update_add_account(id, m),
             UiMessage::KeyPressed(Key::Named(k @ (Named::Enter | Named::Escape)), m)
