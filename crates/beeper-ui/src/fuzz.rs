@@ -8989,6 +8989,82 @@ fn new_group_avatar_and_size_like_desktop() {
     assert!(app.new_chats.iter().any(|d| d.id == m), "Desktop's `isDraftEmpty` keeps a draft with an avatar");
 }
 
+/// Desktop's chat commands of the command bar: "Message on %s" for the same person on another account (`Message Other
+/// Account`), "Change message expiry timer" with the timers of `Sit`, and "Refresh chat", which waits for a load of
+/// messages to end.
+#[test]
+fn refresh_expiry_and_other_accounts_in_the_command_bar_like_desktop() {
+    let mut app = demo_app("cmd-chat-more");
+    let (sarah, lena) = ("!im_sarah:beeper.com", "!sg_lena:beeper.com");
+    {
+        let mut st = app.store.write();
+        let other = |c: &Chat| c.participants.items.iter().position(|u| u.is_self != Some(true)).expect("a member");
+        let from = st.chat(sarah);
+        let user = from.participants.items[other(from)].clone();
+        let to = st.chat_idx(lena);
+        let at = other(&st.chats[to]);
+        st.chats[to].participants.items[at] = user;
+    }
+    let _ = app.update(UiMessage::SelectChat(sarah.into()));
+    let command =
+        |app: &BeeperGuiApp, title: &str| app.commands(&app.store.read(), "").into_iter().find(|c| c.title == title);
+    let other = command(&app, "Message on Signal").expect("the chat on the other account");
+    assert_eq!((other.category, other.chat.as_deref()), ("Message Other Account", Some(lena)));
+    assert!(matches!(other.msg, Some(UiMessage::SelectChat(ref c)) if c == lena));
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("message on".into())));
+    assert!(simulator(app.view_main()).find("Message Other Account").is_ok(), "the heading of the row");
+    let _ = app.update(UiMessage::CloseModals);
+
+    let group = "!tg_rust:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(group.into()));
+    let idx = app.store.read().chat_idx(group);
+    app.store.write().chats[idx].timers.as_mut().expect("disappearing timers").can_set = false;
+    assert!(command(&app, "Change message expiry timer").is_none(), "the chat cannot set its timer");
+    app.store.write().chats[idx].timers.as_mut().expect("disappearing timers").can_set = true;
+    let expiry = command(&app, "Change message expiry timer").expect("the expiry command");
+    assert_eq!((expiry.category, &expiry.keywords[..]), ("Chat", &["set", "disappearing"][..]));
+    let _ = app.update(expiry.msg.expect("an action"));
+    assert_eq!(app.cmd_submenu, Some(commands::SubMenu::Expiry(group.into())));
+    let titles = |app: &BeeperGuiApp, q: &str| -> Vec<String> {
+        app.commands(&app.store.read(), q).iter().map(|c| c.title.clone()).collect()
+    };
+    assert_eq!(titles(&app, ""), ["No expiry", "1 day", "7 days", "28 days", "3 months"]);
+    assert_eq!(
+        titles(&app, "2"),
+        [
+            "No expiry",
+            "2 seconds",
+            "2 minutes",
+            "1 day",
+            "2 days",
+            "7 days",
+            "14 days",
+            "28 days",
+            "2 months",
+            "3 months"
+        ],
+        "a typed number in each unit, which does not filter the rows"
+    );
+    assert!(simulator(app.view_main()).find("Set message expiry timer").is_ok());
+    let week = app.commands(&app.store.read(), "").into_iter().find(|c| c.title == "7 days").expect("a week");
+    let _ = app.update(UiMessage::Commands(vec![UiMessage::CloseModals, week.msg.expect("an action")]));
+    assert_eq!(app.store.read().chat(group).disappearing, Some(604_800_000));
+    assert!(!app.show_command_palette, "the pick closes the bar");
+    app.cmd_submenu = None;
+    let refresh = command(&app, "Refresh chat").expect("the refresh command");
+    assert_eq!(refresh.category, "Chat");
+    let _ = app.update(refresh.msg.expect("an action"));
+    assert!(app.pane.top.loading.is_some(), "the refresh runs as a load");
+    assert!(command(&app, "Refresh chat").expect("the refresh command").msg.is_none(), "disabled while it runs");
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Refreshed(Ok(()))));
+    assert!(app.pane.top.loading.is_none());
+    let _ = app.update(command(&app, "Refresh chat").and_then(|c| c.msg).expect("an action"));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Refreshed(Err("offline".into()))));
+    let toast = app.toast.as_ref().expect("an error toast");
+    assert!(toast.text.starts_with("Something went wrong refreshing chat (") && toast.text.ends_with(")\noffline"));
+}
+
 #[test]
 fn reply_privately_like_desktop() {
     let mut app = demo_app("reply-privately");

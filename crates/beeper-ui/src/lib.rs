@@ -4248,6 +4248,18 @@ impl BeeperGuiApp {
         Task::perform(load, |a0| UiMessage::Timeline(timeline::Msg::LoadedOlder(a0)))
     }
 
+    /// Desktop's `refreshMessages`: it runs as a load of older messages, so that none runs with it and the top of the
+    /// timeline loads older messages again after it.
+    fn refresh_chat(&mut self, chat: String) -> Task<UiMessage> {
+        if self.pane.top.loading.is_some() {
+            return Task::none();
+        }
+        let before = self.store.read().chat_timeline(&chat).len();
+        (self.pane.top.loading, self.pane.top.tries) = (Some((std::time::Instant::now(), chat.clone(), before)), 0);
+        let refresh = beeper_core::matrix::refresh_chat(self.store.clone(), chat);
+        Task::perform(refresh, |r| UiMessage::Timeline(timeline::Msg::Refreshed(r)))
+    }
+
     /// Desktop's `TopOfThread` loads again when the chat gets older messages while its top is on screen, as when the
     /// first sync of a joined room brings a page: in the main pane and in each chat window.
     fn load_older_everywhere(&mut self) -> Task<UiMessage> {

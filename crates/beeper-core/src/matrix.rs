@@ -1333,6 +1333,27 @@ async fn load_room_older(store: SharedStore, chat: String) -> Result<(), String>
     Ok(())
 }
 
+/// Desktop's `refreshMessages`. A chat of a cloud bridge loads its newest page again and paginates back from there
+/// (`restartRoomPagination`), which fills what an earlier sync missed. A Beeper chat and a merged chat read their newest
+/// messages again (`loadLatestMessages`), which the store already has.
+pub async fn refresh_chat(store: SharedStore, chat: String) -> Result<(), String> {
+    let client = {
+        let st = store.read();
+        let c = st.chat(&chat);
+        match st.matrix.clone() {
+            Some(client) if c.merge.is_none() && c.account_id != "hungryserv" => client,
+            _ => return Ok(()),
+        }
+    };
+    let room = chat_room(&client, &chat).await?;
+    let (events, end) = page(&room, None, HISTORY).await.map_err(|e| e.to_string())?;
+    sync_room(&store, &room, events).await;
+    let mut st = store.write();
+    let idx = st.chat_idx(&chat);
+    st.update_chat(idx, |c| c.older = end.map_or(Older::Start, Older::From));
+    Ok(())
+}
+
 /// The most pages back that fill a gap of a limited sync.
 const GAP_PAGES: usize = 10;
 
