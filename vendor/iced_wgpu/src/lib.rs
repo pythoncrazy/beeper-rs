@@ -93,6 +93,12 @@ pub struct Renderer {
     image_cache: std::cell::RefCell<image::Cache>,
 
     staging_belt: wgpu::util::StagingBelt,
+
+    /// The layers of the frame on the screen, set aside while a check draws the next frame to compare.
+    shown: layer::Stack,
+
+    /// Whether `layers` hold the frame on the screen.
+    layers_shown: bool,
 }
 
 impl Renderer {
@@ -128,7 +134,35 @@ impl Renderer {
             ),
 
             engine,
+            shown: layer::Stack::new(),
+            layers_shown: false,
         }
+    }
+
+    /// Sets the layers of the frame on the screen aside, for [`Self::draws_shown`] to compare with the frame drawn
+    /// next. False when the renderer does not hold them.
+    pub fn set_shown_aside(&mut self) -> bool {
+        if !self.layers_shown {
+            return false;
+        }
+
+        std::mem::swap(&mut self.layers, &mut self.shown);
+        self.layers_shown = false;
+
+        true
+    }
+
+    /// Whether the layers drawn since [`Self::set_shown_aside`] draw the frame on the screen, so that presenting
+    /// them would show the same frame again.
+    pub fn draws_shown(&mut self) -> bool {
+        layer::Stack::merge(&mut self.layers);
+
+        let (new, old) = (self.layers.as_slice(), self.shown.as_slice());
+
+        self.layers_shown = new.len() == old.len()
+            && new.iter().zip(old).all(|(new, old)| new.draws(old));
+
+        self.layers_shown
     }
 
     fn draw(
@@ -170,6 +204,8 @@ impl Renderer {
         viewport: &Viewport,
     ) -> wgpu::SubmissionIndex {
         let encoder = self.draw(clear_color, frame, viewport);
+
+        self.layers_shown = true;
 
         self.staging_belt.finish();
         let submission = self.engine.queue.submit([encoder.finish()]);

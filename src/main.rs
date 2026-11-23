@@ -385,6 +385,10 @@ fn main() {
         cfg.homeserver = url;
     }
     let store: SharedStore = StoreLock::shared(BeeperStore::open(cfg));
+    // The demo, from `--demo` or from its data folder, never reaches the network with its made-up account.
+    if store.read().config.demo {
+        beeper_core::net::go_offline();
+    }
     #[cfg(target_os = "linux")]
     if let Some(Some(first)) = first {
         beeper_core::platform::forward_launches(first, store.read().launch_tx.clone());

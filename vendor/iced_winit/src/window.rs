@@ -81,6 +81,8 @@ where
                 mouse_interaction: mouse::Interaction::None,
                 redraw_at: None,
                 resize_due: None,
+                presented_background: None,
+                input_at: None,
                 preedit: None,
                 ime_state: None,
             },
@@ -174,6 +176,10 @@ where
     pub redraw_at: Option<Instant>,
     /// When a resized window draws if no message has redrawn it by then.
     pub resize_due: Option<Instant>,
+    /// The background of the last frame that the window presented.
+    pub presented_background: Option<Color>,
+    /// When the window last had a mouse, keyboard, touch or input method event.
+    pub input_at: Option<Instant>,
     preedit: Option<Preedit<P::Renderer>>,
     ime_state: Option<(Rectangle, input_method::Purpose)>,
 }

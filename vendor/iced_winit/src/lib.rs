@@ -69,6 +69,7 @@ pub fn run<P>(program: P) -> Result<(), Error>
 where
     P: Program + 'static,
     P::Theme: theme::Base,
+    P::Renderer: 'static,
 {
     use winit::event_loop::EventLoop;
 
@@ -506,6 +507,7 @@ async fn run_instance<P>(
 ) where
     P: Program + 'static,
     P::Theme: theme::Base,
+    P::Renderer: 'static,
 {
     use winit::event;
     use winit::event_loop::ControlFlow;
@@ -915,7 +917,15 @@ async fn run_instance<P>(
                                     window_manager.iter_mut()
                                 {
                                     // We are already redrawing this window
-                                    if window_id == id {
+                                    if window_id == id
+                                        || draws_presented(
+                                            window,
+                                            user_interfaces
+                                                .get_mut(&window_id),
+                                            &mut clipboard,
+                                            &mut messages,
+                                        )
+                                    {
                                         continue;
                                     }
 
@@ -999,6 +1009,8 @@ async fn run_instance<P>(
                             || window.raw.pre_present_notify(),
                         ) {
                             Ok(()) => {
+                                window.presented_background =
+                                    Some(window.state.background_color());
                                 present_span.finish();
                             }
                             Err(error) => match error {
@@ -1146,6 +1158,20 @@ async fn run_instance<P>(
                                 window.state.modifiers(),
                             ) && !same_modifiers
                             {
+                                // The pointer leaving the window, say for its title bar, does not count.
+                                if matches!(
+                                    event,
+                                    core::Event::Mouse(_)
+                                        | core::Event::Keyboard(_)
+                                        | core::Event::Touch(_)
+                                        | core::Event::InputMethod(_)
+                                ) && !matches!(
+                                    event,
+                                    core::Event::Mouse(mouse::Event::CursorLeft)
+                                ) {
+                                    window.input_at = Some(Instant::now());
+                                }
+
                                 events.push((id, event));
                             }
                         }
@@ -1280,8 +1306,18 @@ async fn run_instance<P>(
                                 );
                             }
 
-                            for (_id, window) in window_manager.iter_mut() {
+                            for (id, window) in window_manager.iter_mut() {
                                 window.resize_due = None;
+
+                                if draws_presented(
+                                    window,
+                                    user_interfaces.get_mut(&id),
+                                    &mut clipboard,
+                                    &mut messages,
+                                ) {
+                                    continue;
+                                }
+
                                 window.raw.request_redraw();
                             }
                         }
@@ -1309,6 +1345,110 @@ async fn run_instance<P>(
 
 /// How long a resized window waits for the messages of its resize before it draws without them.
 const RESIZE_WAIT: crate::core::time::Duration = crate::core::time::Duration::from_millis(32);
+
+/// A step of the check of a window's frame, on its renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameCheck {
+    /// Set the layers of the frame on the screen aside before the interface draws; false if the renderer does not
+    /// hold them.
+    SetAside,
+    /// Tell whether the layers drawn since draw the frame set aside.
+    Compare,
+}
+
+/// The check of a window's frame, which the program sets with [`set_frame_check`]; without it every message redraws
+/// every window.
+static FRAME_CHECK: std::sync::OnceLock<
+    fn(&mut dyn std::any::Any, FrameCheck) -> bool,
+> = std::sync::OnceLock::new();
+
+/// How long a window counts as in use after an input event.
+const IN_USE: crate::core::time::Duration =
+    crate::core::time::Duration::from_millis(250);
+
+/// Sets the check of [`FRAME_CHECK`], which gets the renderer of a window as [`std::any::Any`].
+pub fn set_frame_check(check: fn(&mut dyn std::any::Any, FrameCheck) -> bool) {
+    let _ = FRAME_CHECK.set(check);
+}
+
+/// Whether a window that the user is not using would draw the frame it shows: its interface, rebuilt after a
+/// message, draws the same layers as the last frame it presented at the same size and background. Such a window
+/// does not redraw for the message. Its own redraws, the system's and those of its widgets, still draw. A window
+/// with input in the last [`IN_USE`] redraws without the check, which would mostly find a change there.
+fn draws_presented<P, C>(
+    window: &mut window::Window<P, C>,
+    interface: Option<&mut UserInterface<'_, P::Message, P::Theme, P::Renderer>>,
+    clipboard: &mut Clipboard,
+    messages: &mut Vec<P::Message>,
+) -> bool
+where
+    P: Program,
+    C: Compositor<Renderer = P::Renderer>,
+    P::Theme: theme::Base,
+    P::Renderer: 'static,
+{
+    let (Some(check), Some(interface)) = (FRAME_CHECK.get(), interface) else {
+        return false;
+    };
+
+    if window.input_at.is_some_and(|at| at.elapsed() < IN_USE)
+        || window.surface_version != window.state.surface_version()
+        || window.presented_background
+            != Some(window.state.background_color())
+    {
+        return false;
+    }
+
+    // What a redraw does before it draws: the widgets take the redraw event, which updates their status and
+    // animations. A widget that sends a message or lays out again then has the window redraw.
+    let cursor = window.state.cursor();
+    let redraw =
+        core::Event::Window(window::Event::RedrawRequested(Instant::now()));
+    let count = messages.len();
+
+    let (state, _) = interface.update(
+        slice::from_ref(&redraw),
+        cursor,
+        &mut window.renderer,
+        clipboard,
+        messages,
+    );
+
+    let user_interface::State::Updated {
+        redraw_request,
+        mouse_interaction,
+        ..
+    } = state
+    else {
+        return false;
+    };
+
+    if messages.len() != count || state.has_layout_changed() {
+        return false;
+    }
+
+    if !check(&mut window.renderer, FrameCheck::SetAside) {
+        return false;
+    }
+
+    interface.draw(
+        &mut window.renderer,
+        window.state.theme(),
+        &renderer::Style {
+            text_color: window.state.text_color(),
+        },
+        cursor,
+    );
+
+    if !check(&mut window.renderer, FrameCheck::Compare) {
+        return false;
+    }
+
+    window.request_redraw(redraw_request);
+    window.update_mouse(mouse_interaction);
+
+    true
+}
 
 /// Builds a window's [`UserInterface`] for the [`Program`].
 fn build_user_interface<'a, P: Program>(
