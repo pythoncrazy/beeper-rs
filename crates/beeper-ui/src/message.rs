@@ -3752,7 +3752,12 @@ impl BeeperGuiApp {
                 self.store.write().toggle_bookmark(&mid);
             }
             Msg::MarkUnreadFromHere(cid, mid) => {
-                self.store.write().mark_unread_from_message(&cid, &mid);
+                let mut st = self.store.write();
+                st.mark_unread_from_message(&cid, &mid);
+                // Desktop's `preventAutoMarkAsRead`: the open chat stays unread until you leave it.
+                let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+                self.pane.keep_unread |= open.is_some() && open == st.resolve_chat_idx(&cid);
+                drop(st);
                 self.refresh_theme_and_tray();
             }
             Msg::MarkReadThrough(cid, mid) => {
