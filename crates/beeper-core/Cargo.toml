@@ -22,6 +22,9 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 mime = "0.3.17"
 imagesize = "0.13"
 image.workspace = true
+# HEIC and HEIF photos, which ffmpeg 6 cannot read, in pure Rust: no libheif to install. Without the `parallel`
+# feature, which pulls in rayon.
+heic-rs = { version = "0.1.5", default-features = false, features = ["std"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
 ring = { version = "0.17.14", default-features = false }
 aes = "0.9.4"

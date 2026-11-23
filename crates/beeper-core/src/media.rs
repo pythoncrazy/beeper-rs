@@ -494,9 +494,30 @@ pub fn audio_duration(path: &Path) -> Result<f64, String> {
     Ok(number(&v["streams"][0]["duration"]).or(number(&v["format"]["duration"])).unwrap_or(0.0))
 }
 
+/// Whether `bytes` are a HEIF file by the major brand of its `ftyp` box: file-type's `image/heic`, `image/heif` and
+/// their sequences, which Desktop's `transcodeImage` decodes with libheif since Chromium and sharp cannot.
+pub fn heif(bytes: &[u8]) -> bool {
+    bytes.get(4..8) == Some(b"ftyp")
+        && matches!(bytes.get(8..12), Some(b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1"))
+}
+
+/// Desktop's HEIC worker: the primary image of a HEIF file with its rotation, mirror and crop, as RGBA, and at most 100
+/// million pixels.
+fn decode_heif(bytes: &[u8]) -> Result<image::DynamicImage, String> {
+    let options =
+        heic_rs::DecodeOptions::default().with_layout(heic_rs::PixelLayout::Rgba8).with_max_pixels(Some(100_000_000));
+    let px = heic_rs::decode(bytes, &options).map_err(|e| format!("Could not decode the HEIF image: {e}"))?;
+    let img = image::RgbaImage::from_raw(px.width, px.height, px.data).ok_or("The HEIF image has a wrong size")?;
+    Ok(image::DynamicImage::ImageRgba8(img))
+}
+
 /// An image decoded upright: its EXIF orientation applied, as Chromium draws images and sharp's `rotate()` turns them.
+/// A HEIF image is upright by its own transformations.
 pub fn decode_upright(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     use image::ImageDecoder;
+    if heif(bytes) {
+        return decode_heif(bytes);
+    }
     let e = |e: image::ImageError| format!("Could not decode the image: {e}");
     let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().expect("in memory");
     let mut decoder = reader.into_decoder().map_err(e)?;
@@ -697,6 +718,36 @@ mod tests {
         assert!(!takes_caption(&rules, "application/pdf", false, false), "no caption level is no caption");
         assert!(!takes_caption(&FileRules::new(), "image/png", false, false));
         assert!(takes_caption(&crate::models::beeper_files(), "application/pdf", false, false), "Beeper's defaults");
+    }
+
+    /// HEIC photos that libheif and x265 made (pillow-heif 1.8.1), in 4:2:0 like a phone's, which Desktop's libheif
+    /// shows with these colors away from the edge between them, where chroma upsampling differs.
+    #[test]
+    fn heif_photos_decode_like_libheif() {
+        let near = |img: &image::RgbaImage, x, y, want: [u8; 4]| {
+            let got = img.get_pixel(x, y).0;
+            assert!(got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 3), "({x}, {y}): {got:?} for {want:?}");
+        };
+        // Red on the left and blue on the right, with the top right quarter half transparent.
+        let alpha = include_bytes!("../tests/heic/alpha.heic");
+        assert!(heif(alpha));
+        let img = decode_upright(alpha).expect("the HEIC photo").into_rgba8();
+        assert_eq!(img.dimensions(), (64, 32));
+        near(&img, 0, 0, [220, 30, 30, 255]);
+        near(&img, 63, 0, [31, 30, 220, 128]);
+        near(&img, 0, 31, [220, 30, 30, 255]);
+        near(&img, 63, 31, [31, 30, 220, 255]);
+        // Stored sideways, 32 by 64 with red on top, and turned upright by its `irot`.
+        let rotated = include_bytes!("../tests/heic/rotated.heic");
+        let img = decode_upright(rotated).expect("the rotated HEIC photo").into_rgba8();
+        assert_eq!(img.dimensions(), (64, 32), "upright");
+        near(&img, 0, 0, [220, 30, 30, 255]);
+        near(&img, 63, 31, [31, 30, 220, 255]);
+        let cut = &alpha[..alpha.len() / 2];
+        assert!(decode_upright(cut).expect_err("a cut photo").starts_with("Could not decode the HEIF image"));
+        let mut avif = alpha.to_vec();
+        avif[8..12].copy_from_slice(b"avif");
+        assert!(!heif(&avif) && !heif(b"\x89PNG\r\n\x1a\n"), "only HEIF brands");
     }
 
     /// A phone photo stores its pixels sideways with an EXIF orientation; Chromium shows it upright.
