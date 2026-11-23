@@ -216,7 +216,8 @@ mod display {
         if wayland.is_some() {
             let scale = gsetting("text-scaling-factor").and_then(|v| text_scale(&v));
             if let Some(scale) = scale {
-                let _ = beeper_ui::TEXT_SCALE.set(scale);
+                beeper_ui::set_text_scale(scale);
+                sctk_adwaita::set_text_scale(f64::from(scale));
             }
         }
         let gpu_display = match wayland.is_some() {
@@ -248,8 +249,12 @@ mod display {
             }
             sctk_adwaita::preload();
             // The first frames draw from the cached theme; once GTK opens, and whenever its settings change, the
-            // windows draw again with it.
-            sctk_adwaita::on_ready(|| beeper_ui::FRAME_READY.notify_one());
+            // windows draw again with it. GTK follows the text scaling while the app runs, as Chromium's `GtkUi`
+            // does for Desktop's device scale.
+            sctk_adwaita::on_ready(|| {
+                beeper_ui::set_text_scale(sctk_adwaita::text_scale() as f32);
+                beeper_ui::FRAME_READY.notify_one();
+            });
         }
     }
 

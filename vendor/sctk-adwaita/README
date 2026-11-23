@@ -21,5 +21,11 @@ This directory is sctk-adwaita 0.10.1 from crates.io with these changes:
   (`call` wakes it for a job), and when `gtk-decoration-layout`, the title bar's click actions or the theme change,
   each frame lays its buttons out again and draws again (`generation`), and the `on_ready` callback, which now runs
   on every change, wakes the application. A frame that opened with stale cached settings takes GTK's once GTK opens.
+- The frames drawn with GTK grow with the desktop's text scaling (`text_scale`: GNOME's `text-scaling-factor`, from
+  `set_text_scale` at launch and then GTK's `gtk-xft-dpi`, which follows it live), like Electron's frame on Wayland,
+  whose device scale has it: the title bar's metrics are the theme's times the scaling, its height taken down to whole
+  points like Chromium's pixels, and cairo draws the theme's CSS pixels that much bigger. A change counts as a change
+  of GTK's settings: the frames place their parts again and draw.
+- The title's font takes whole pixels, as Chromium's does: Cantarell 11 is 15 px.
 - The first window takes the launcher's `xdg_activation_v1` token (`set_activation_token`), so it gets the focus.
 - Lifetimes that newer compilers warn about are spelled out.

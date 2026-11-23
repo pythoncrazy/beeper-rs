@@ -29,7 +29,7 @@ mod pointer;
 mod shadow;
 pub mod theme;
 
-pub use gtk::{on_ready, preload};
+pub use gtk::{on_ready, preload, set_text_scale, text_scale};
 
 static ACTIVATION_TOKEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -317,11 +317,14 @@ where
         self.gtk_settings = generation;
         self.buttons = Buttons::new(gtk::decoration_layout().or_else(get_button_layout_config));
         self.buttons.update_wm_capabilities(self.wm_capabilities);
-        if let Some(decorations) = &self.decorations {
+        if let Some(decorations) = &mut self.decorations {
+            // The title bar's height follows the text scaling.
+            decorations.relayout();
             self.buttons.arrange(decorations.header().surface_rect.width, get_margin_h_lp(&self.state));
         }
         self.mouse.titlebar = gtk::titlebar_actions().unwrap_or_default();
         self.dirty = true;
+        self.should_sync = true;
     }
 
     fn redraw_inner(&mut self) -> Option<bool> {
@@ -356,6 +359,7 @@ where
         let window_width = decorations.header().surface_rect.width;
         let window_height = decorations.side_height();
         let header = header_size();
+        let zoom = gtk::text_scale();
         let header_draw = gtk.then(|| self.header_draw(window_width, window_height));
 
         // Draw the borders.
@@ -388,7 +392,7 @@ where
 
             if gtk {
                 canvas.fill(0);
-                let canvas = gtk::Canvas { pixels: canvas, width: rect.width, height: rect.height, scale };
+                let canvas = gtk::Canvas { pixels: canvas, width: rect.width, height: rect.height, scale, zoom };
                 if let (DecorationParts::HEADER, Some(header_draw)) = (idx, &header_draw) {
                     gtk::draw_header(canvas, header_draw);
                 } else {
