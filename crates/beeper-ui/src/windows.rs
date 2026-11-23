@@ -249,6 +249,7 @@ impl BeeperGuiApp {
                     self.time_edit = Default::default();
                     // Desktop's Settings is a new window each time, so its search starts empty.
                     (self.settings_query, self.settings_focus, self.settings_pick) = (String::new(), 0, None);
+                    self.settings_search_on = false;
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
                     self.media_window = None;
                 } else if [self.main_window, self.login_window].contains(&Some(id)) {

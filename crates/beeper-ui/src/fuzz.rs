@@ -5208,6 +5208,55 @@ fn search_finds_custom_items_like_desktop() {
     let _ = simulator(app.view_settings());
 }
 
+/// Desktop's `SearchSuggestions`: the focused empty search of Settings shows suggestions, which the pointer and ↑ ↓
+/// pick from, and one opens its section with its row highlighted and gives the focus back; a typed query shows the
+/// results instead.
+#[test]
+fn settings_search_suggests_like_desktop() {
+    let mut app = demo_app("search-suggestions");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Appearance)));
+    assert!(simulator(app.view_settings()).find("Suggestions").is_err(), "nothing before the search has the focus");
+    let focused: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_settings());
+        let _ = sim.click(iced::widget::Id::new("settings-search")).expect("the search field");
+        sim.into_messages().collect()
+    };
+    assert!(
+        focused.iter().any(|m| matches!(m, UiMessage::Settings(settings::Msg::SearchFocus(true)))),
+        "the field tells that it took the focus"
+    );
+    for m in focused {
+        let _ = app.update(m);
+    }
+    let labels = ["Suggestions", "Add an Account", "Incognito Mode", "Show Recipients I'm Typing"];
+    let mut sim = simulator(app.view_settings());
+    assert!(labels.iter().all(|l| sim.find(*l).is_ok()), "the suggestions show");
+    assert!(sim.find("Group Message Notifications").is_ok() && sim.find("Subscribe to Beeper Plus").is_ok());
+    drop(sim);
+    let _ = app.update(UiMessage::Settings(settings::Msg::Step(1)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Step(1)));
+    let submit: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_settings());
+        let _ = sim.click(iced::widget::Id::new("settings-search"));
+        sim.tap_key(iced::keyboard::key::Named::Enter);
+        sim.into_messages().collect()
+    };
+    assert!(
+        submit.iter().any(|m| matches!(m, UiMessage::Settings(settings::Msg::Suggest(2)))),
+        "Enter takes the third suggestion after ↓ ↓"
+    );
+    let _ = app.update(UiMessage::Settings(settings::Msg::Suggest(2)));
+    assert_eq!(app.active_settings_tab, SettingsTab::General);
+    assert_eq!(app.pref_flash.map(|f| f.0), Some("typingIndicators"), "its row is highlighted");
+    assert!(simulator(app.view_settings()).find("Suggestions").is_err(), "the search gives the focus back");
+    let _ = app.update(UiMessage::Settings(settings::Msg::SearchFocus(true)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Query("incog".into())));
+    assert!(simulator(app.view_settings()).find("Suggestions").is_err(), "a query shows the results");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Query(String::new())));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Suggest(4)));
+    assert_eq!(app.active_settings_tab, SettingsTab::BeeperPlus, "a free account can subscribe");
+}
+
 /// Desktop's Settings is a new window each time it opens, so a search typed before it closed does not hide the
 /// sections of the next one.
 #[test]

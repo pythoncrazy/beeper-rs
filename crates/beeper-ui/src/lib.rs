@@ -3000,6 +3000,8 @@ pub struct BeeperGuiApp {
     pub settings_slider: Option<(&'static str, u8)>,
     /// The focused row of the settings search results, and the last opened one.
     settings_focus: usize,
+    /// The settings search has the keyboard focus, which shows Desktop's suggestions while it is empty.
+    settings_search_on: bool,
     settings_pick: Option<SettingsHit>,
     /// The pref that a search result opened, which flashes for 2 s.
     pref_flash: Option<(&'static str, std::time::Instant)>,
@@ -3328,6 +3330,7 @@ impl BeeperGuiApp {
             settings_query: String::new(),
             settings_slider: None,
             settings_focus: 0,
+            settings_search_on: false,
             settings_pick: None,
             pref_flash: None,
             networks: Default::default(),
@@ -4690,8 +4693,10 @@ impl BeeperGuiApp {
             UiMessage::InputEscape(id) if Some(id) == self.settings_window && self.integrations.add.is_some() => {
                 self.integrations.add = None;
             }
+            // Desktop's Escape in the search clears it, and Escape in a field of Settings takes the focus away.
             UiMessage::InputEscape(id) if Some(id) == self.settings_window => {
-                return self.update(UiMessage::Settings(settings::Msg::Query(String::new())));
+                let clear = self.update(UiMessage::Settings(settings::Msg::Query(String::new())));
+                return Task::batch([clear, focus::blur()]);
             }
             UiMessage::InputEscape(id) => {
                 return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
