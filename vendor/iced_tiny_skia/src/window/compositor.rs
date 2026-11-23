@@ -215,7 +215,7 @@ pub fn present(
         );
     }
 
-    renderer.keep_presented();
+    renderer.shown();
     on_pre_present();
     buffer.present().map_err(|_| compositor::SurfaceError::Lost)
 }

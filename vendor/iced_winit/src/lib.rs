@@ -1323,17 +1323,28 @@ async fn run_instance<P>(
     let _ = ManuallyDrop::into_inner(user_interfaces);
 }
 
-/// Tells whether a renderer's layers, drawn since its last present, draw what that present did. The program sets it
-/// with [`set_frame_check`]; without it every message redraws every window.
-static FRAME_CHECK: std::sync::OnceLock<fn(&mut dyn std::any::Any) -> bool> =
-    std::sync::OnceLock::new();
+/// A step of the check of a window's frame, on its renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameCheck {
+    /// Set the layers of the frame on the screen aside before the interface draws; false if the renderer does not
+    /// hold them.
+    SetAside,
+    /// Tell whether the layers drawn since draw the frame set aside.
+    Compare,
+}
+
+/// The check of a window's frame, which the program sets with [`set_frame_check`]; without it every message redraws
+/// every window.
+static FRAME_CHECK: std::sync::OnceLock<
+    fn(&mut dyn std::any::Any, FrameCheck) -> bool,
+> = std::sync::OnceLock::new();
 
 /// How long a window counts as in use after an input event.
 const IN_USE: crate::core::time::Duration =
     crate::core::time::Duration::from_millis(250);
 
 /// Sets the check of [`FRAME_CHECK`], which gets the renderer of a window as [`std::any::Any`].
-pub fn set_frame_check(check: fn(&mut dyn std::any::Any) -> bool) {
+pub fn set_frame_check(check: fn(&mut dyn std::any::Any, FrameCheck) -> bool) {
     let _ = FRAME_CHECK.set(check);
 }
 
@@ -1393,6 +1404,10 @@ where
         return false;
     }
 
+    if !check(&mut window.renderer, FrameCheck::SetAside) {
+        return false;
+    }
+
     interface.draw(
         &mut window.renderer,
         window.state.theme(),
@@ -1402,7 +1417,7 @@ where
         cursor,
     );
 
-    if !check(&mut window.renderer) {
+    if !check(&mut window.renderer, FrameCheck::Compare) {
         return false;
     }
 

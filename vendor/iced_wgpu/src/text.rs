@@ -21,7 +21,7 @@ const COLOR_MODE: cryoglyph::ColorMode = if color::GAMMA_CORRECTION {
 
 pub type Batch = Vec<Item>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Item {
     Group {
         transformation: Transformation,

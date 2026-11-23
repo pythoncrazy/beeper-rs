@@ -27,44 +27,21 @@ pub struct Layer {
     pending_text: Vec<Text>,
 }
 
-/// What a layer of a presented frame drew, to tell whether a later frame draws the same.
-#[derive(Debug)]
-pub struct Drawn {
-    bounds: Rectangle,
-    quads: quad::Batch,
-    triangles: triangle::Batch,
-    images: image::Batch,
-    text: text::Batch,
-    primitives: usize,
-}
-
 impl Layer {
-    /// What the layer draws, once its pending meshes and text are flushed.
-    pub fn drawn(&self) -> Drawn {
-        Drawn {
-            bounds: self.bounds,
-            quads: self.quads.clone(),
-            triangles: self.triangles.clone(),
-            images: self.images.clone(),
-            text: self.text.clone(),
-            primitives: self.primitives.len(),
-        }
-    }
-
-    /// Whether the layer, once its pending meshes and text are flushed, draws what `drawn` did. A layer with a
-    /// custom primitive, which cannot be compared, never does.
-    pub fn draws(&self, drawn: &Drawn) -> bool {
+    /// Whether the layer draws what `other` does. A layer with a custom primitive, which cannot be compared, never
+    /// does.
+    pub fn draws(&self, other: &Layer) -> bool {
         fn all<T>(a: &[T], b: &[T], same: impl Fn(&T, &T) -> bool) -> bool {
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b))
         }
 
         self.primitives.is_empty()
-            && drawn.primitives == 0
-            && self.bounds == drawn.bounds
-            && self.quads.same(&drawn.quads)
-            && all(&self.triangles, &drawn.triangles, triangle::Item::same)
-            && self.images == drawn.images
-            && all(&self.text, &drawn.text, text::Item::same)
+            && other.primitives.is_empty()
+            && self.bounds == other.bounds
+            && self.quads.same(&other.quads)
+            && all(&self.triangles, &other.triangles, triangle::Item::same)
+            && self.images == other.images
+            && all(&self.text, &other.text, text::Item::same)
     }
 
     pub fn is_empty(&self) -> bool {

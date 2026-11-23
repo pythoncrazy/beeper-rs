@@ -244,7 +244,7 @@ impl Layer {
 }
 
 /// A group of [`Quad`]s rendered together.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug)]
 pub struct Batch {
     /// The solid quads of the [`Layer`].
     solids: Vec<Solid>,
