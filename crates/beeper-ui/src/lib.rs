@@ -5915,12 +5915,15 @@ impl BeeperGuiApp {
         if let Some((_, hits)) = memo.and_then(|m| m.hits.borrow().clone()).filter(|(k, _)| *k == key) {
             return hits;
         }
-        let shown =
-            |c: &&Chat| c.flags & CHAT_HIDDEN == 0 && (f.accounts.is_empty() || f.accounts.contains(&c.account_id));
-        // Desktop's `computeStatePenalty`: a low priority chat, then a chat that All Chats does not show.
+        // Desktop's `searchableThreads`: the chats that are not `isHidden`, no member of a merged chat and no hidden
+        // merged chat. A chat that All Chats hides stays, further down.
+        let shown = |c: &&Chat| c.listed() && (f.accounts.is_empty() || f.accounts.contains(&c.account_id));
+        // Desktop's `computeStatePenalty`: a low priority chat, then a chat that All Chats does not show
+        // (`!shouldShowInAllChats`): snoozed, or hidden by a label or by the "Show in Inbox" of its account, unless a
+        // message reminder of it is due.
         let penalty = |c: &Chat| {
-            let snoozed = reminders::snoozed_until(st, c).is_some() && !self.due_message_reminder(st, c);
-            (c.flags & CHAT_LOW_PRIORITY != 0, snoozed)
+            let hidden = c.flags & CHAT_HIDDEN != 0 || reminders::snoozed_until(st, c).is_some();
+            (c.flags & CHAT_LOW_PRIORITY != 0, hidden && !self.due_message_reminder(st, c))
         };
         // Desktop's `threadSearcher`, whose index does not take fuzzy matches, and its `sortResults`: a chat that
         // matches by its network only comes last, then by the penalty, newest first.
