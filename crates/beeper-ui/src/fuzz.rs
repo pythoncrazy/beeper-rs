@@ -5584,6 +5584,36 @@ fn settings_nav_follows_the_plan() {
     assert!(SettingsTab::listed(&app.store.read()).all(|t| t != SettingsTab::BeeperPlus));
 }
 
+/// Desktop's global hotkeys "Focus App" and "Focus App and Command Bar": off by default, with the "Global" tag in
+/// Settings > Hotkeys, and the window shows (with the command bar) when one fires.
+#[test]
+fn global_focus_hotkeys_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("global-hotkeys");
+    for name in crate::global_keys::GLOBAL {
+        assert_eq!(prefs::HOTKEYS.iter().find(|h| h.0 == name).map(|h| (h.1, h.2)), Some(("App", "disabled")));
+        assert_eq!(app.store.read().settings.hotkey_keys(name), "disabled");
+    }
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Hotkeys)));
+    {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1024.0, 4000.0), app.view_settings());
+        assert!(sim.find("Focus App and Command Bar").is_ok() && sim.find("Global").is_ok());
+    }
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Toggle("Focus App and Command Bar")));
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Record("Focus App and Command Bar")));
+    let _ = app.settings_key(Key::Character("b".into()), Modifiers::CTRL | Modifiers::SHIFT);
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Recorder(true)));
+    let keys = app.store.read().settings.hotkey_keys("Focus App and Command Bar").to_string();
+    assert_eq!(crate::global_keys::combination(&keys), Some((4 | 1, u32::from(b'b'))), "{keys} is grabbed on X11");
+    app.hidden = true;
+    let _ = app.update(UiMessage::RunHotkey("Focus App"));
+    assert!(!app.hidden && !app.show_command_palette, "Focus App shows the window");
+    let _ = app.update(UiMessage::RunHotkey("Focus App and Command Bar"));
+    assert!(app.show_command_palette && app.cmd_bar_commands_mode, "and the command bar");
+    let _ = app.update(UiMessage::RunHotkey("Focus App and Command Bar"));
+    assert!(app.show_command_palette, "an open bar stays open");
+}
+
 #[test]
 fn hotkey_recorder_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};

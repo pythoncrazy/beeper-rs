@@ -1785,7 +1785,17 @@ impl BeeperGuiApp {
                     container(buttons.spacing(6).align_y(Center)).align_right(160).center_y(20).padding([0, 2]);
                 container(stack![label, buttons]).style(bordered_box(CLEAR, border, 1.0, 4.0))
             });
-            let line = row![ell(tr(name), 226.0, 13.0, Weight::Normal).color(p.text).width(Fill)]
+            // Desktop's `Global` tag (`.tag`) of a global hotkey, with its tooltip.
+            let global = ["Focus App", "Focus App and Command Bar"].contains(&name).then(|| {
+                let tag = container(txt(trx("Global", "hotkey scope tag"), 12.0).color(p.text))
+                    .padding([1, 4])
+                    .style(fill_box(p.strong.scale_alpha(0.1), 4.0));
+                let tip =
+                    trf("Global hotkeys will work when any app is active, as long as %s is running", &[&"Beeper"]);
+                container(self.tip(tag.into(), tip, vec![], tooltip::Position::Top)).padding(Padding::ZERO.left(6.0))
+            });
+            let title = row![ell(tr(name), 226.0, 13.0, Weight::Normal).color(p.text)].push(global).align_y(Center);
+            let line = row![container(title).width(Fill)]
                 .push(recorder)
                 .push(toggle(p, keys != "disabled", Some(UiMessage::Hotkeys(hotkeys::Msg::Toggle(name)))))
                 .spacing(6)
