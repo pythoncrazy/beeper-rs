@@ -385,6 +385,9 @@ fn main() {
         cfg.homeserver = url;
     }
     let store: SharedStore = StoreLock::shared(BeeperStore::open(cfg));
+    if let Command::Gui = command {
+        beeper_ui::pick_renderer(&store.read().settings);
+    }
     #[cfg(target_os = "linux")]
     if let Some(Some(first)) = first {
         beeper_core::platform::forward_launches(first, store.read().launch_tx.clone());
@@ -416,13 +419,13 @@ fn main() {
     if !loading.config.demo {
         rt.spawn(beeper_core::matrix::run(store.clone()));
     }
-    // The GUI loads its fonts while the chats load. The join comes before the GUI sets its environment variables.
-    let fonts = server.is_none().then(|| std::thread::spawn(beeper_ui::style::ensure_fonts_loaded));
+    // The GUI loads its fonts while the chats load and the event loop of its windows starts. The app waits for them
+    // when it lays out its first window.
+    if server.is_none() {
+        std::thread::spawn(beeper_ui::style::ensure_fonts_loaded);
+    }
     loading.load_chats();
     drop(loading);
-    if let Some(fonts) = fonts {
-        fonts.join().expect("load the fonts");
-    }
     if let Some(server) = server {
         return rt.block_on(server).expect("serve the Desktop API");
     }
