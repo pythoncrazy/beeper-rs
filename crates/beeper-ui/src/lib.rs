@@ -2916,6 +2916,8 @@ pub struct BeeperGuiApp {
     pub cmd_no_reply: bool,
     /// The highlighted command.
     pub cmd_index: usize,
+    /// The search row of the arrow keys or the pointer; `None` highlights the first row that is not a heading.
+    pub search_index: Option<usize>,
     /// Desktop's `expandedCategories`: the search sections that show more.
     pub search_expanded: HashSet<&'static str>,
     /// Desktop's `partialMatchesEnabled` of the message search.
@@ -3250,6 +3252,7 @@ impl BeeperGuiApp {
             cmd_submenu: None,
             cmd_no_reply: true,
             cmd_index: 0,
+            search_index: None,
             search_expanded: HashSet::new(),
             search_partial: true,
             last_archived: Default::default(),
@@ -5244,6 +5247,12 @@ impl BeeperGuiApp {
                         self.command_list.reveal(cmds[self.cmd_index].key());
                         return locate(format!("cmd-{}", self.cmd_index), commands::COMMANDS, Align::Nearest);
                     }
+                }
+                // Desktop's `CommandBarContainer` of the search, whose filter menus take the keys while open.
+                let searching =
+                    self.show_command_palette && !self.cmd_bar_commands_mode && self.search_select.is_none();
+                if let Some(task) = (searching && mods.is_empty()).then(|| self.search_key(&key)).flatten() {
+                    return task;
                 }
                 match key.as_ref() {
                     Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),

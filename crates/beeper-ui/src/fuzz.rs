@@ -1086,6 +1086,75 @@ fn command_bar_opens_empty_like_desktop() {
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
 }
 
+/// Desktop's `CommandBarContainer` of the search: Enter opens the highlighted chat, at first the first result. ↓ and
+/// ↑ move over the results and the headings of the sections with an action, and stop at the ends (`gqt`). Enter on
+/// a heading runs its action and keeps the bar open, and the pointer highlights a row too.
+#[test]
+fn command_bar_search_keys_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("cmdbarkeys");
+    let key =
+        |app: &mut BeeperGuiApp, k: Named| drop(app.update(UiMessage::KeyPressed(Key::Named(k), Modifiers::empty())));
+    let title = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        app.pane.selected_chat_id.as_deref().map(|id| st.chat(id).title.clone())
+    };
+    let search = |app: &mut BeeperGuiApp, q: &str| {
+        let _ = app.update(UiMessage::RunHotkey("Search"));
+        let _ = app.update(UiMessage::CommandBar(commands::Msg::Query(q.into())));
+    };
+    search(&mut app, "eric");
+    key(&mut app, Named::Enter);
+    assert!(!app.show_command_palette, "Enter closes the bar");
+    assert_eq!(title(&app).as_deref(), Some("Eric Migicovsky"), "the first chat");
+    // Chats: Eric. In Groups: the chats with Eric among their members.
+    let groups = {
+        let st = app.store.read();
+        app.search_hits(&st, "eric").in_groups.iter().map(|&i| st.chats[i].title.clone()).collect::<Vec<_>>()
+    };
+    search(&mut app, "eric");
+    key(&mut app, Named::ArrowDown);
+    assert_eq!(app.search_index, Some(2), "the In Groups heading has Show more");
+    key(&mut app, Named::ArrowDown);
+    key(&mut app, Named::Enter);
+    assert_eq!(title(&app), groups.first().cloned(), "the first chat of In Groups");
+    search(&mut app, "eric");
+    key(&mut app, Named::ArrowUp);
+    key(&mut app, Named::ArrowUp);
+    assert_eq!(app.search_index, Some(0), "↑ stops at the Chats heading");
+    key(&mut app, Named::Enter);
+    assert!(app.show_command_palette, "a heading without Show more keeps the bar open");
+    for _ in 0..40 {
+        key(&mut app, Named::ArrowDown);
+    }
+    let last = app.search_index.expect("a row");
+    key(&mut app, Named::ArrowDown);
+    assert_eq!(app.search_index, Some(last), "↓ stops at the last row");
+    // The chats with an "a", five of them until Show more.
+    let _ = app.update(UiMessage::CloseModals);
+    search(&mut app, "a");
+    assert!(search_view(&app).find("Show more").is_ok());
+    key(&mut app, Named::ArrowUp);
+    key(&mut app, Named::Enter);
+    assert!(app.show_command_palette && app.search_expanded.contains("Chats"), "Enter shows more");
+    assert_eq!(app.search_index, Some(0), "the heading stays highlighted");
+    // The pointer on a group.
+    let _ = app.update(UiMessage::CloseModals);
+    search(&mut app, "eric");
+    let at = groups.iter().position(|g| g != "Eric Migicovsky").expect("a group with Eric");
+    let msgs: Vec<UiMessage> = {
+        let mut sim = search_view(&app);
+        let row = sim.find(groups[at].as_str()).expect("the group").bounds();
+        sim.point_at(row.center());
+        let _ = sim.simulate([iced::Event::Mouse(iced::mouse::Event::CursorMoved { position: row.center() })]);
+        sim.into_messages().collect()
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.search_index, Some(3 + at), "the pointer highlights the row");
+}
+
 /// Desktop's chat hotkeys take `selectedOrCursorThread`, so Ctrl E and E archive the chat of the cursor while no chat
 /// is open. `toggleThreadArchive` first moves the cursor to the next chat, and a pinned chat stays with the toast
 /// "Pinned chats can't be archived".
