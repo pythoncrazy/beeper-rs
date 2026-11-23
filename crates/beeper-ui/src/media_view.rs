@@ -678,8 +678,12 @@ impl BeeperGuiApp {
         };
         let title = row![]
             .push(face)
-            .push(ell(name, 600.0, 14.0, Weight::Medium).color(white))
-            .push(txt(format_short_ts(&m.timestamp, h24), 12.0).color(white.scale_alpha(0.7)))
+            // `.carousel-thread-title` and `.carousel-timestamp` are 14 px and 12 px.
+            .push(crate::style::fixed_ell(name, 600.0, 14.0, Weight::Medium).color(white))
+            .push(
+                crate::style::fixed(format_short_ts(&m.timestamp, h24), 12.0, Weight::Normal)
+                    .color(white.scale_alpha(0.7)),
+            )
             .spacing(8)
             .align_y(Center);
         let go = car.in_media.then(|| {

@@ -435,6 +435,12 @@ pub fn fixed<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::
     text(s).size(size).font(fw(w)).line_height(text::LineHeight::Absolute((size * 1.24).round().into()))
 }
 
+/// A [`fixed`] text on one line of at most `max` width, with "…" at its end when it is wider, like [`ell`].
+pub fn fixed_ell<'a>(s: &str, max: f32, size: f32, w: Weight) -> text::Text<'a> {
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    fixed(ell_line(&s, max, size, w), size, w).wrapping(text::Wrapping::None)
+}
+
 /// The width of a [`fixed`] text.
 pub fn fixed_width(s: &str, size: f32, w: Weight) -> f32 {
     glyphs(s, size, w).0

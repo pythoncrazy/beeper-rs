@@ -1151,8 +1151,9 @@ pub(crate) fn contact_card<'a>(
     limit: usize,
     entry: &dyn Fn(bool, &str) -> El<'a>,
 ) -> Column<'a, UiMessage> {
-    let line = |s: String| txt(s, 12.0).line_height(Pixels(rem(16.0))).color(fg);
-    let medium = |s: String| txt(s, 14.0).font(fw(Weight::Medium)).color(fg);
+    // `.contact-attachment-meta` and `-org` are 12 px, `-name` and `-org.no-name` 14 px, and its `h4` 12 px.
+    let line = |s: String| crate::style::fixed(s, 12.0, Weight::Normal).line_height(Pixels(rem(16.0))).color(fg);
+    let medium = |s: String| crate::style::fixed(s, 14.0, Weight::Medium).color(fg);
     let mut meta = Column::new().push((!c.name.is_empty()).then(|| medium(c.name.clone())));
     if let Some(org) = &c.org {
         meta = meta.push(match c.name.is_empty() {
@@ -1161,7 +1162,7 @@ pub(crate) fn contact_card<'a>(
         });
     }
     let list = |items: &[String], title: String, more: &'static str, phone: bool| {
-        let head = semi(title, 12.0).line_height(Pixels(rem(16.0))).color(fg);
+        let head = crate::style::fixed(title, 12.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(fg);
         let rest = items.len().saturating_sub(limit);
         let more = (rest > 0).then(|| line(trn(more, more, rest, &[&rest])));
         let col = column![container(head).padding(Padding::ZERO.top(6.0).bottom(4.0))];
@@ -1406,7 +1407,8 @@ fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
             container(label.spacing(2).align_y(Center).padding([4, 6])).style(fill_box(p.chip, 25.0)).into()
         }
         prefs::Badge::Labs => {
-            let tag = txt("🧪 Labs", 12.0).color(p.strong);
+            // `.tag` is 12 px.
+            let tag = crate::style::fixed("🧪 Labs", 12.0, Weight::Normal).color(p.strong);
             container(tag).padding([1, 4]).style(fill_box(p.strong.scale_alpha(0.1), 4.0)).into()
         }
         prefs::Badge::PlusLabs => {
