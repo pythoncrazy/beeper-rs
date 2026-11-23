@@ -8,9 +8,9 @@ use crate::models::{
     VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS,
     BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, CHAT_SOUNDS, DEFAULT_TIMERS,
     DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE,
-    MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, MSG_MENTION, MSG_NUDGE, NOTIFICATION_SOUND, NO_UNBLOCK,
-    PERSONAL_AVATAR, PERSONAL_NAME, REMINDERS_ROOM, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED,
-    TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    MEMBER_ACTIONS, MEMBER_KICK, MESSAGE_REMINDER, NOTIFICATION_SOUND, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME,
+    REMINDERS_ROOM, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM, SNOOZED, TRANSCRIPTION, TRANSCRIPTIONS_ROOM,
+    USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID, TYPING_DURATION};
@@ -1050,10 +1050,7 @@ async fn op(
         view_limit: c.get("com.beeper.view_limited").filter(|l| l.is_object() && !deleted).cloned(),
         view_expired: deleted && e["unsigned"]["redacted_because"]["content"]["com.beeper.view_limited"] == true,
         buttons,
-        flags: match c["m.mentions"]["user_ids"].as_array() {
-            Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
-            _ => 0,
-        } | if c["com.beeper.nudge"] == true { MSG_NUDGE } else { 0 },
+        nudge: c["com.beeper.nudge"] == true,
         ..Default::default()
     });
     match reaction {

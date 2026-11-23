@@ -658,6 +658,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             seen: seen_by,
             broadcast: thread_root.is_some() && m.pointer("/extra/broadcastOutsideThread") == Some(&Value::Bool(true)),
             fallback: m.pointer("/extra/isReplyFallback") == Some(&Value::Bool(true)),
+            nudge: m.pointer("/extra/isNudge") == Some(&Value::Bool(true)),
             thread_root,
             mentions: m
                 .get("mentions")
