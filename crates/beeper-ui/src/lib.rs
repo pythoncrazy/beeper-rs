@@ -683,6 +683,9 @@ fn ghost(p: &Palette, r: f32) -> impl Fn(&Theme, button::Status) -> button::Styl
     btn_style([CLEAR, p.hover, p.selected], [p.text; 3], r)
 }
 
+/// The time from one frame of the animation clock to the next: 50 frames a second.
+const FRAME: Duration = Duration::from_millis(20);
+
 /// Desktop's `--animation-timing`, in seconds.
 const HOVER_FADE: f32 = 0.1;
 
@@ -2681,6 +2684,9 @@ pub struct Pane {
     /// When `hovered_msg` began, and when the pointer entered its flyover, for the flyover's staggered reveal.
     pub hover_msg_at: Option<std::time::Instant>,
     pub flyover_at: Option<std::time::Instant>,
+    /// What the view of the flyover found: the `hover_msg_at` and `flyover_at` that it drew, and when its last item is
+    /// in and its quick reactions take clicks, or `None` without items.
+    pub flyover_end: std::cell::Cell<Option<message::FlyoverEnd>>,
     /// The selected emoji autocomplete row.
     pub suggest: usize,
     pub history: History,
@@ -5112,21 +5118,22 @@ impl BeeperGuiApp {
             queued.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Composer(composer::Msg::SendQueued(None))));
         let toast =
             self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::Toast(toasts::Msg::Tick)));
-        let tick = self
-            .animated()
-            .then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
+        let tick = self.animated().then(|| iced::time::every(FRAME).map(|_| UiMessage::AnimationTick));
+        // The scroll button that waits to fade in wakes the animation clock at the end of the wait.
+        let now = std::time::Instant::now();
+        let wake = self.panes().filter_map(message::scroll_fade_due).filter(|&at| at > now).min();
+        let wake = wake.map(|at| iced::time::every(at - now).map(|_| UiMessage::AnimationTick));
         let due = self.panes().any(|p| p.draft_due);
         let drafts = due.then(|| iced::time::every(std::time::Duration::from_secs(5)).map(|_| UiMessage::SaveDrafts));
         let timers = remind.into_iter().chain(late).chain(expiry).chain(send).chain(queued).chain(typing);
-        timers.chain(drafts).chain(toast).chain(tick)
+        timers.chain(drafts).chain(toast).chain(tick).chain(wake)
     }
 
     /// An animation goes on, which redraws at 50 frames a second.
     fn animated(&self) -> bool {
-        // The loading of older messages and the fade of the scroll button, in each chat window too: 50 ms and 0.15 s
-        // in, or 0.15 s out.
-        let fade = |(up, at): (bool, std::time::Instant)| at.elapsed().as_secs_f32() < if up { 0.2 } else { 0.15 };
-        let moving = |p: &Pane| p.top.loading.is_some() || p.scrolled_up.is_some_and(fade);
+        // The loading of older messages and the fade of the scroll button, in each chat window too.
+        let now = std::time::Instant::now();
+        let moving = |p: &Pane| p.top.loading.is_some() || message::scroll_fade_due(p).is_some_and(|at| at <= now);
         // The fade-in of the reply chain, in the thread panes too.
         let replies =
             |p: &Pane| p.reply_thread.is_some() && p.reply_opened.is_some_and(|t| t.elapsed() < message::REPLIES_RISE);
