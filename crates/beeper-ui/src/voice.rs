@@ -34,10 +34,7 @@ pub(crate) static ICONS: LazyLock<[svg::Handle; 5]> = LazyLock::new(|| {
         ("0.5 0 20 20", "M14.25 15V5h1.667v10zm-9.167 0V5l7.5 5z"),
         ("0 0 20 20", "m5.333 15.834-1.166-1.167L8.833 10 4.167 5.334l1.166-1.167L10 8.834l4.667-4.667 1.166 1.167L11.167 10l4.666 4.667-1.166 1.167L10 11.167z"),
     ]
-    .map(|(view, d)| {
-        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path d="{d}"/></svg>"#);
-        svg::Handle::from_memory(svg.into_bytes())
-    })
+    .map(|(view, d)| crate::path_svg(view, d))
 });
 /// `GlobalAudioControls` hides after a track ends and nothing plays for this long.
 const HIDE_AFTER: Duration = Duration::from_secs(10);
@@ -449,12 +446,8 @@ impl BeeperGuiApp {
     /// The cursor moves and the release while the global player is pressed.
     pub(crate) fn audio_drag(&self) -> Option<Subscription<UiMessage>> {
         self.audio.grab.map(|_| {
-            iced::event::listen_with(|e, _, _| match e {
-                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-                    Some(UiMessage::Voice(Msg::Drag(position.y)))
-                }
-                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => Some(UiMessage::Voice(Msg::Drop)),
-                _ => None,
+            iced::event::listen_with(|e, _, _| {
+                Some(UiMessage::Voice(crate::drag_event(&e)?.map_or(Msg::Drop, |p| Msg::Drag(p.y))))
             })
         })
     }
@@ -746,10 +739,7 @@ static TRANSCRIBE_ICONS: LazyLock<[svg::Handle; 2]> = LazyLock::new(|| {
         ("0 0 12 15", "M6.855 14.08a.35.35 0 0 1-.251-.1.46.46 0 0 1-.135-.257 17 17 0 0 0-.3-1.582q-.157-.639-.41-1.05a1.95 1.95 0 0 0-.655-.655q-.405-.247-1.038-.399a15 15 0 0 0-1.552-.275.42.42 0 0 1-.27-.13.38.38 0 0 1-.1-.263q0-.152.1-.264a.42.42 0 0 1 .27-.128 15 15 0 0 0 1.558-.24q.639-.147 1.05-.4a2 2 0 0 0 .661-.667q.252-.415.404-1.06.159-.65.282-1.594a.4.4 0 0 1 .129-.252q.111-.1.257-.1.153 0 .258.1a.43.43 0 0 1 .135.252q.135.943.293 1.588t.404 1.06q.252.416.662.668.411.246 1.038.393.631.14 1.558.252a.42.42 0 0 1 .264.134q.1.106.1.258a.37.37 0 0 1-.106.264.4.4 0 0 1-.258.129q-.925.105-1.564.252-.633.14-1.043.386a1.9 1.9 0 0 0-.662.668q-.252.417-.405 1.06-.152.651-.28 1.595a.46.46 0 0 1-.136.257.35.35 0 0 1-.258.1M2.742 7.57q-.21 0-.234-.228a8 8 0 0 0-.153-.903q-.075-.333-.246-.498-.17-.17-.51-.252a10 10 0 0 0-.925-.181q-.24-.036-.24-.24 0-.205.21-.24.604-.112.944-.2.345-.093.516-.252.175-.164.251-.486.083-.323.153-.902.023-.23.234-.229.217 0 .24.223.077.591.153.925.081.334.252.504.17.171.51.252.339.083.943.164a.24.24 0 0 1 .152.077.22.22 0 0 1 .065.164q0 .198-.211.24-.61.11-.95.205-.339.087-.51.252-.17.164-.251.492-.076.322-.153.897a.26.26 0 0 1-.076.158.24.24 0 0 1-.164.058M5.59 3.434q-.135 0-.152-.141-.064-.357-.112-.557a.63.63 0 0 0-.152-.31.66.66 0 0 0-.31-.164 5 5 0 0 0-.58-.13q-.147-.023-.147-.152 0-.128.14-.152.375-.076.586-.135a.66.66 0 0 0 .31-.164.6.6 0 0 0 .153-.304q.047-.2.112-.551.017-.147.152-.147.13 0 .152.141.059.357.106.562A.7.7 0 0 0 6 1.541q.106.105.31.164.211.052.592.123.141.024.141.152 0 .129-.14.153-.375.07-.587.135a.66.66 0 0 0-.31.164.7.7 0 0 0-.152.31 6 6 0 0 0-.112.551q-.023.14-.152.14"),
         ("0 0 24 24", "M2.629 13.569a.792.792 0 1 0 1.562-.26A7.917 7.917 0 1 1 12 19.917a.792.792 0 1 0-.001 1.583 9.5 9.5 0 1 0-9.371-7.931"),
     ]
-    .map(|(view, d)| {
-        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path d="{d}"/></svg>"#);
-        svg::Handle::from_memory(svg.into_bytes())
-    })
+    .map(|(view, d)| crate::path_svg(view, d))
 });
 /// `.spin-icon` turns once in 1.2 s.
 const SPIN: Duration = Duration::from_millis(1200);

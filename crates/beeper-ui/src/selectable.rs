@@ -89,19 +89,9 @@ thread_local! {
 pub fn selectable<'a, Link: Clone + 'static, Message>(
     spans: impl AsRef<[Span<'a, Link, Font>]> + 'a,
 ) -> Selectable<'a, Link, Message> {
-    Selectable {
+    beeper_core::with_defaults!(Selectable {
         spans: Box::new(spans),
-        line_height: LineHeight::default(),
-        wrapping: Wrapping::default(),
-        on_link_click: None,
-        on_link_menu: None,
-        on_image_menu: None,
-        link_tip: None,
-        tip: None,
-        images: Vec::new(),
-        playing: None,
-        key: None,
-    }
+    }, default: line_height, wrapping, on_link_click, on_link_menu, on_image_menu, link_tip, tip, images, playing, key)
 }
 
 pub struct Selectable<'a, Link: Clone + 'static, Message> {
