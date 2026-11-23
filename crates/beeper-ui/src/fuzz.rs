@@ -3079,6 +3079,52 @@ fn typing_notices_like_desktop() {
     assert_eq!(typing(&app), None, "the notice ends 3 seconds after the last key");
 }
 
+/// The thread composer keeps the focus as its first key shows "Also send to chat" above the text field, so the next
+/// keys go on in the thread composer, not to the chat's composer, which takes the keys typed outside a text field.
+#[test]
+fn the_thread_composer_keeps_the_focus_as_it_grows() {
+    use iced::advanced::renderer::Headless as _;
+    use iced_test::simulator::typewrite;
+    let mut app = demo_app("thread-focus");
+    let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
+    app.select_chat(chat);
+    let _ = app.update(UiMessage::Thread(threads::Msg::Show(root.into())));
+    let main = app.main_window.expect("the main window");
+    let size = Size::new(1200.0, 800.0);
+    let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+        iced::Font::DEFAULT,
+        iced::Pixels(13.0),
+        Some("tiny-skia"),
+    ))
+    .expect("a headless renderer");
+    let mut cache = iced_runtime::user_interface::Cache::default();
+    for (k, key) in ["x", "y", "z"].into_iter().enumerate() {
+        let mut ui = iced_runtime::UserInterface::build(app.view(main), size, cache, &mut renderer);
+        if k == 0 {
+            ui.operate(
+                &renderer,
+                &mut iced::advanced::widget::operation::focusable::focus("thread-composer-input".into()),
+            );
+        }
+        let mut messages = Vec::new();
+        let events: Vec<iced::Event> = typewrite(key).collect();
+        let _ = ui.update(
+            &events,
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut messages,
+        );
+        cache = ui.into_cache();
+        for m in messages {
+            let _ = app.update(m);
+        }
+    }
+    let thread = app.pane.thread.as_ref().expect("the thread pane");
+    assert_eq!(thread.composer.text(), "xyz", "the keys go on in the thread composer");
+    assert_eq!(app.pane.composer.text(), "", "and not to the chat's composer");
+}
+
 #[test]
 fn composer_undo_groups_like_prosemirror() {
     let mut app = demo_app("undo");

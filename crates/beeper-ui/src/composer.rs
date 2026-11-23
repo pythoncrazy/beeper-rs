@@ -1375,8 +1375,11 @@ impl BeeperGuiApp {
         line: Row<'a, UiMessage>,
     ) -> El<'a> {
         let p = &self.pal;
+        // The text field keeps its place in the tree, and so its focus, as the quote, the attachments, the links and
+        // "Also send to chat" come and go above it.
+        let external: El<'a> = external.map_or_else(|| Space::new().into(), El::from);
         let Some((at, no_reply)) = self.pane().send_later else {
-            return container(column![].push(external).push(line)).width(Fill).style(fill_box(p.input, 18.0)).into();
+            return container(column![external, line]).width(Fill).style(fill_box(p.input, 18.0)).into();
         };
         let when = send_day(at, st.settings.pref("timeFormat") == 1);
         let when = if no_reply { trf("%s if no reply", &[&when]) } else { when };
@@ -1394,7 +1397,7 @@ impl BeeperGuiApp {
             .padding(2)
             .style(fill_box(blue, 20.0));
         let banner = container(banner).padding(Padding::new(8.0).bottom(0.0).left(12.0));
-        let body = container(column![banner].push(external).push(line)).width(Fill).style(fill_box(p.card, 18.0));
+        let body = container(column![banner, external, line]).width(Fill).style(fill_box(p.card, 18.0));
         stack![body, dashed::dashes(hex(0x808080), 18.0, 1.0)].into()
     }
 }
