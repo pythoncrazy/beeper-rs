@@ -186,9 +186,31 @@ pub(crate) fn cut_frames(frames: &Frames, (w, h): (u32, u32)) -> Frames {
     frames.iter().map(|(f, ms)| (bake(f, (w, h), (Color::TRANSPARENT, 0.0), 17.0, scale), *ms)).collect()
 }
 
+/// The frames of an animation at `k` times their brightness, like CSS `filter: brightness(k)`.
+pub(crate) fn dim_frames(frames: &Frames, k: f32) -> Frames {
+    let dim = |h: &image::Handle| match h {
+        image::Handle::Rgba { width, height, pixels, .. } => {
+            let c = |c: u8| (f32::from(c) * k).round() as u8;
+            let px: Vec<u8> =
+                pixels.as_chunks::<4>().0.iter().flat_map(|&[r, g, b, a]| [c(r), c(g), c(b), a]).collect();
+            image::Handle::from_rgba(*width, *height, px)
+        }
+        _ => unreachable!("decoded media is RGBA"),
+    };
+    frames.iter().map(|(h, ms)| (dim(h), *ms)).collect()
+}
+
+/// How a worker changes the frames of an animation: cut to cover an inline box of a width and a height, or at 80%
+/// brightness like a selected emoji message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Cut {
+    Cover(u32, u32),
+    Dim,
+}
+
 /// The key of the cut frames of an animation in `BeeperGuiApp::cuts`.
-fn cut_key(url: &str, (w, h): (u32, u32)) -> String {
-    format!("{w}x{h} {url}")
+fn cut_key(url: &str, cut: Cut) -> String {
+    format!("{cut:?} {url}")
 }
 
 /// The key of a baked tile in `BeeperGuiApp::tiles`.
@@ -343,25 +365,37 @@ impl BeeperGuiApp {
     /// The frames of an animated inline image cut to `size` like Desktop's `object-fit: cover`, with the corners of a
     /// bubble, once a worker cut them: a view asks for them.
     pub(crate) fn cover_frames(&self, url: &str, size: (u32, u32)) -> Option<&Frames> {
+        self.cut(url, Cut::Cover(size.0, size.1))
+    }
+
+    /// The frames of an animated emoji at 80% brightness, once a worker dimmed them: a view asks for them.
+    pub(crate) fn dimmed_frames(&self, url: &str) -> Option<&Frames> {
+        self.cut(url, Cut::Dim)
+    }
+
+    fn cut(&self, url: &str, how: Cut) -> Option<&Frames> {
         let Some(Ok(_)) = self.media_at(url) else { return None };
-        let cut = self.cuts.get(&cut_key(url, size));
+        let cut = self.cuts.get(&cut_key(url, how));
         if cut.is_none() {
-            self.wants.ask(&self.wants.cuts, &(url.to_string(), size.0, size.1));
+            self.wants.ask(&self.wants.cuts, &(url.to_string(), how));
         }
         cut.and_then(Option::as_ref)
     }
 
-    /// Cuts the frames of the animations that a view asked for, on worker threads.
+    /// Cuts or dims the frames of the animations that a view asked for, on worker threads.
     pub(crate) fn cut_animations(&mut self) -> Task<UiMessage> {
         let wanted = std::mem::take(&mut *self.wants.cuts.borrow_mut());
         let tasks: Vec<_> = (wanted.into_iter())
-            .filter_map(|(url, w, h)| {
-                let k = cut_key(&url, (w, h));
+            .filter_map(|(url, how)| {
+                let k = cut_key(&url, how);
                 // A view asks again for a cut whose media went out of the cache.
                 let Some(Some(Ok(frames))) = self.media.get(&url) else { return None };
                 let frames = frames.clone();
                 (!self.cuts.contains_key(&k)).then(|| {
-                    let cut = move || cut_frames(&frames, (w, h));
+                    let cut = move || match how {
+                        Cut::Cover(w, h) => cut_frames(&frames, (w, h)),
+                        Cut::Dim => dim_frames(&frames, 0.8),
+                    };
                     (k, async move { tokio::task::spawn_blocking(cut).await.expect("animation cut task") })
                 })
             })
