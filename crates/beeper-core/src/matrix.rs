@@ -2838,9 +2838,7 @@ pub fn room_address(input: &str) -> Result<(String, Vec<String>), BadAddress> {
     fn server(s: &str) -> bool {
         let (host_ok, port) = if let Some(rest) = s.strip_prefix('[') {
             match rest.split_once(']') {
-                Some((ip, after)) => {
-                    (!ip.is_empty() && ip.chars().all(|c| c.is_ascii_hexdigit() || ":.".contains(c)), after)
-                }
+                Some((ip, after)) => (!ip.is_empty() && ip.chars().all(|c| c.is_ascii_hexdigit() || ":.".contains(c)), after),
                 None => return false,
             }
         } else {
@@ -8139,22 +8137,21 @@ mod tests {
         let log = sent.clone();
         let refuse = Arc::new(Mutex::new(false));
         let refused = refuse.clone();
-        let url =
-            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
-                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/sync" => (200, stub_sync()),
-                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                p if method == "PUT" && p.contains("/state/") => {
-                    if *refused.lock().unwrap() {
-                        (403, json!({ "errcode": "M_FORBIDDEN", "error": "not allowed" }))
-                    } else {
-                        log.lock().unwrap().push((p.rsplit("/state/").next().unwrap().to_string(), body));
-                        (200, json!({ "event_id": "$state" }))
-                    }
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if method == "PUT" && p.contains("/state/") => {
+                if *refused.lock().unwrap() {
+                    (403, json!({ "errcode": "M_FORBIDDEN", "error": "not allowed" }))
+                } else {
+                    log.lock().unwrap().push((p.rsplit("/state/").next().unwrap().to_string(), body));
+                    (200, json!({ "event_id": "$state" }))
                 }
-                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
-            })
-            .await;
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
         let store = stub_store(&crate::testing::temp_dir("group-update"), &url).await;
         let update = |name: &str| super::update_group(store.clone(), "!room:x".into(), Some(name.into()), Some("Topic".into()), None);
         update("Core").await.expect("the homeserver takes the changes");
