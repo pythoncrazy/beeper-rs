@@ -98,6 +98,12 @@ impl BeeperGuiApp {
         if Some(id) == self.settings_window {
             return self.settings_key(key, mods);
         }
+        // Chromium's menus take the keyboard while they are open: their arrows and Enter move and run their selection
+        // (see `menu_keys`).
+        let menu_key = matches!(key, Key::Named(Named::ArrowUp | Named::ArrowDown | Named::Enter));
+        if menu_key && mods.is_empty() && self.native_menu_open() {
+            return self.settle();
+        }
         // Chromium's Tab, Enter and arrows in Desktop's sheets; a confirmation over Label Settings has the
         // focus on its default button.
         let sheet = self.nickname_windows.iter().any(|d| d.id == id)
