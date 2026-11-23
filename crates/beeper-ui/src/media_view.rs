@@ -560,9 +560,10 @@ impl BeeperGuiApp {
                 async move {
                     let _slot = AVATAR_SLOTS.acquire().await.expect("the media semaphore stays open");
                     let (u, looped) = u.strip_suffix(LOOP).map_or((u.clone(), false), |u| (u.to_string(), true));
-                    let bytes = beeper_core::matrix::media(client, u).await?;
+                    let bytes = beeper_core::matrix::media(client, u.clone()).await?;
                     let decode = move || if looped { decode_loop(&bytes) } else { decode_media(bytes) };
-                    tokio::task::spawn_blocking(decode).await.expect("media decode task")
+                    let frames = tokio::task::spawn_blocking(decode).await.expect("media decode task");
+                    frames.inspect_err(|e| eprintln!("media decode failed: {}: {e}", beeper_core::matrix::logged(&u)))
                 },
                 move |r| UiMessage::Loaded(loads::Msg::Media(url, r)),
             )
@@ -1893,6 +1894,22 @@ mod tests {
         assert!(app.needs_download.is_empty(), "another error needs no download");
         let car = app.pane.carousel.clone().expect("the carousel is open");
         assert!(simulator(app.view_carousel(&car).unwrap()).find("phone.jpg").is_err(), "the next item shows");
+    }
+
+    /// Desktop's timeline mounts new `<img>`s when a chat opens, which load a media that failed again; a media that
+    /// waits for the user to ask for it keeps its download button.
+    #[test]
+    fn an_opened_chat_loads_failed_media_again_like_desktop() {
+        let mut app = demo_app("failed-media-again");
+        let (ok, broken, phone) = ("mxc://x/ok", "mxc://x/broken", "mxc://x/phone");
+        let reload = format!("{} (HTTP 400): the phone has it", beeper_core::matrix::MEDIA_RELOAD_NEEDED);
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Media(ok.into(), Ok(Frames::from([])))));
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Media(broken.into(), Err("HTTP 502".into()))));
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Media(phone.into(), Err(reload))));
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        assert!(matches!(app.media.get(ok), Some(Some(Ok(_)))), "a loaded media stays");
+        assert!(!app.media.contains_key(broken), "a failed media loads again");
+        assert!(matches!(app.media.get(phone), Some(Some(Err(_)))) && app.needs_download.contains(phone));
     }
 
     /// Desktop's caption search: 300 ms after the last change of the field, the message search with partial matches
