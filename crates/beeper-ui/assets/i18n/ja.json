@@ -1129,6 +1129,7 @@
 "Start group chat":["グループチャットを開始"],
 "Start typing to search for people to add":["追加するユーザーを検索するには入力してください"],
 "Sticker":["ステッカー"],
+"Sticker Picker":["ステッカーピッカー"],
 "Stickers aren't supported on %s":["%s ではステッカーはサポートされていません"],
 "Still sending...":["まだ送信しています..."],
 "Stop Following All Threads":["すべてのスレッドのフォローを解除"],

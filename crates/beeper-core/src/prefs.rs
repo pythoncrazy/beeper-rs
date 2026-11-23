@@ -141,8 +141,23 @@ macro_rules! cmd {
 }
 
 const AFTER: &[&str] = &["Select next chat", "Select previous chat", "Close chat", "Do nothing"];
-pub const COMPOSER_ACTIONS: &[&str] =
-    &["Emoji Picker", "Talk to Type", "Record Audio", "GIF Picker", "Add Attachment", "Send Later", "None"];
+/// The values of the composer buttons. Sticker Picker came later, so it follows None to keep the stored values.
+pub const COMPOSER_ACTIONS: &[&str] = &[
+    "Emoji Picker",
+    "Talk to Type",
+    "Record Audio",
+    "GIF Picker",
+    "Add Attachment",
+    "Send Later",
+    "None",
+    "Sticker Picker",
+];
+/// The index of None in [`COMPOSER_ACTIONS`].
+pub const COMPOSER_NONE: u8 = 6;
+/// The index of Sticker Picker in [`COMPOSER_ACTIONS`].
+pub const COMPOSER_STICKERS: u8 = 7;
+/// Desktop's order of the options (`sFt`): Sticker Picker comes before None.
+pub const COMPOSER_ORDER: [u8; 8] = [0, 1, 2, 3, 4, 5, COMPOSER_STICKERS, COMPOSER_NONE];
 /// The values of "Allow undo send", in milliseconds.
 pub const UNDO_SEND_MS: &[i64] = &[0, 750, 1000, 2000, 3000, 5000, 10000];
 const UNDO_SEND_DELAYS: &[&str] =
@@ -791,7 +806,7 @@ const fn v(key: &'static str, values: &'static [&'static str]) -> Ad {
 
 const AFTER_VALUES: &[&str] = &["select_next_thread", "select_prev_thread", "close_chat", "none"];
 const COMPOSER_VALUES: &[&str] =
-    &["emoji", "talk_to_type", "record_audio", "gif_picker", "add_attachment", "send_later", "none"];
+    &["emoji", "talk_to_type", "record_audio", "gif_picker", "add_attachment", "send_later", "none", "sticker_picker"];
 
 /// The preferences that Desktop syncs through account data. The other preferences stay on this device, as in Desktop.
 pub const SYNCED: &[(&str, Ad)] = &[

@@ -1832,6 +1832,33 @@ fn sticker_picker_like_desktop() {
     assert_eq!(echo.attachments[0].is_sticker, Some(true));
 }
 
+/// Desktop's composer button selects (`Aee` of `sFt`): each leaves out the pick of the other button unless it is None,
+/// and offers the Sticker Picker before None only with sticker packs on, which puts "Add a sticker" in the pill.
+#[test]
+fn composer_button_options_like_desktop() {
+    use beeper_core::prefs::{COMPOSER_ACTIONS, COMPOSER_NONE, COMPOSER_STICKERS};
+    let mut app = demo_app("composer-options");
+    let names = |app: &BeeperGuiApp, key| -> Vec<&str> {
+        let values = settings::select_values(key, &app.store.read().settings);
+        values.into_iter().map(|v| COMPOSER_ACTIONS[usize::from(v)]).collect()
+    };
+    let set = |app: &mut BeeperGuiApp, key, v| drop(app.update(UiMessage::Settings(settings::Msg::SetPref(key, v))));
+    let all = ["Emoji Picker", "Talk to Type", "Record Audio", "GIF Picker", "Add Attachment", "Send Later", "None"];
+    let without = |left: &str| all.iter().copied().filter(|o| *o != left).collect::<Vec<_>>();
+    assert_eq!(names(&app, "primaryComposerButton"), without("Record Audio"), "the secondary's pick is left out");
+    assert_eq!(names(&app, "secondaryComposerButton"), without("Emoji Picker"));
+    set(&mut app, "stickerPacks", 1);
+    assert_eq!(names(&app, "primaryComposerButton")[4..], ["Send Later", "Sticker Picker", "None"]);
+    set(&mut app, "secondaryComposerButton", COMPOSER_STICKERS);
+    assert!(!names(&app, "primaryComposerButton").contains(&"Sticker Picker"));
+    assert!(!hidden_actions(&app.store.read(), false).contains(&7), "Add a sticker is in the pill");
+    set(&mut app, "primaryComposerButton", COMPOSER_NONE);
+    assert_eq!(names(&app, "secondaryComposerButton").last(), Some(&"None"), "both buttons can be None");
+    set(&mut app, "stickerPacks", 0);
+    assert!(!hidden_actions(&app.store.read(), false).contains(&7), "no sticker button without sticker packs");
+    assert_eq!(app.store.read().settings.pref("secondaryComposerButton"), COMPOSER_STICKERS, "the value stays");
+}
+
 #[test]
 fn pickers_check_the_network_like_desktop() {
     let mut app = demo_app("pickers");

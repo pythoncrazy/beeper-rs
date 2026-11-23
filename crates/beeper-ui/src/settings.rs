@@ -273,6 +273,20 @@ pub(crate) fn shown(st: &BeeperStore, r: &prefs::Pref) -> bool {
     r.feature.is_none_or(|f| st.feature(f).show) && control
 }
 
+/// The values that the select of `key` offers, in Desktop's order. A composer button (Desktop's `Aee`) leaves out the
+/// pick of the other button unless it is None, and offers the Sticker Picker only with sticker packs on (`sFt`).
+pub(crate) fn select_values(key: &str, s: &BeeperSettings) -> Vec<u8> {
+    let other = match key {
+        "primaryComposerButton" => "secondaryComposerButton",
+        "secondaryComposerButton" => "primaryComposerButton",
+        _ => return (0..=prefs::find(key).max_value()).collect(),
+    };
+    let taken = s.pref(other);
+    let shown = |v: &u8| *v == prefs::COMPOSER_NONE || *v != taken;
+    let stickers = |v: &u8| *v != prefs::COMPOSER_STICKERS || s.on("stickerPacks");
+    prefs::COMPOSER_ORDER.into_iter().filter(stickers).filter(shown).collect()
+}
+
 /// A text of the settings with the values of its `%s` placeholders, where the name of a hotkey stands for its keys,
 /// like Desktop's `humanized` of a reassigned hotkey.
 fn pref_text(s: &BeeperSettings, text: &'static str, args: &[&str]) -> String {
@@ -2118,19 +2132,24 @@ impl BeeperGuiApp {
     fn pref_select(&self, r: &'static prefs::Pref, s: &BeeperSettings, works: bool) -> El<'_> {
         let prefs::Control::Select(options, _) = r.control else { panic!("{} is not a select", r.key) };
         let key = r.key;
-        let shown: Vec<String> = options
+        let values = select_values(key, s);
+        let shown: Vec<String> = values
             .iter()
+            .map(|&v| options[usize::from(v)])
             .map(|o| match (key, o.split_once(' ')) {
                 ("appLanguage", _) => o.to_string(),
                 ("chatActionButton", _) => trx(o, "primary thread action option").into(),
                 ("chatDoubleClick", _) => trx(o, "thread double-click action option").into(),
+                ("primaryComposerButton" | "secondaryComposerButton", _) => trx(o, "composer action option").into(),
                 (_, Some((n, unit))) if n.parse::<usize>().is_ok() => duration(n.parse().unwrap(), unit),
                 _ => tr(o).into(),
             })
             .collect();
-        let at = s.pref(key);
-        let picked = shown[at as usize].clone();
-        let n = shown.len() as u8;
+        // A value that is not an option shows the first option, as a `<select>` does.
+        let at = values.iter().position(|&v| v == s.pref(key)).unwrap_or(0);
+        let picked = shown[at].clone();
+        let pick_values = values.clone();
+        let set = move |i: usize| UiMessage::Settings(Msg::SetPref(key, pick_values[i]));
         let window = self.settings_window;
         let id = format!("select-{key}");
         // Desktop's `.subview-prefs select:focus-visible` takes `--select-background-focused`: the fill mixed with 10 %
@@ -2139,12 +2158,12 @@ impl BeeperGuiApp {
         if self.key_held(window, &id) {
             p.chip = style::mix(p.chip, if self.dark { Color::WHITE } else { Color::BLACK }, 0.1);
         }
-        let pick = select(&p, shown.clone(), picked, move |o| {
-            UiMessage::Settings(Msg::SetPref(key, shown.iter().position(|x| *x == o).expect("listed option") as u8))
-        });
+        let pick = {
+            let (shown, set) = (shown.clone(), set.clone());
+            select(&p, shown.clone(), picked, move |o| set(shown.iter().position(|x| *x == o).expect("listed option")))
+        };
         // Chromium's ← ↑ and → ↓ on a closed select pick the option before or after, without wrapping around.
-        let set = |v: u8| UiMessage::Settings(Msg::SetPref(key, v));
-        let keys = Keys::step(at.checked_sub(1).map(set), (at + 1 < n).then(|| set(at + 1)));
+        let keys = Keys::step(at.checked_sub(1).map(&set), (at + 1 < shown.len()).then(|| set(at + 1)));
         // A locked select of a Plus feature is `disabled`, and takes no focus.
         match works {
             true => self.target(window, id, pick, keys, Look::Hidden),
