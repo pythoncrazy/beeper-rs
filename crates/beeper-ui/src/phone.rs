@@ -13,8 +13,8 @@ use iced::font::Weight;
 use iced::keyboard::{key::Named, Key};
 use iced::widget::{button, container, row, scrollable, text_input, tooltip, Column};
 use iced::{
-    border, Border, Center, Color, Element, Event, Fill, Length, Padding, Point, Rectangle, Renderer, Shadow, Size,
-    Theme, Vector,
+    border, Border, Center, Color, Element, Event, Fill, Padding, Point, Rectangle, Renderer, Shadow, Size, Theme,
+    Vector,
 };
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -619,13 +619,7 @@ impl Widget<UiMessage, Theme, Renderer> for Anchored<'_> {
         tree.diff_children(&all);
     }
 
-    fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
-    }
-
-    fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
-    }
+    crate::delegate::delegate!(size, layout, mouse_interaction, draw, operate);
 
     fn update(
         &mut self,
@@ -640,40 +634,6 @@ impl Widget<UiMessage, Theme, Renderer> for Anchored<'_> {
     ) {
         let tree = &mut tree.children[0];
         self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
-    }
-
-    fn mouse_interaction(
-        &self,
-        tree: &widget::Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-        renderer: &Renderer,
-    ) -> mouse::Interaction {
-        self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
-    }
-
-    fn draw(
-        &self,
-        tree: &widget::Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-    ) {
-        self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
-    }
-
-    fn operate(
-        &mut self,
-        tree: &mut widget::Tree,
-        layout: Layout<'_>,
-        renderer: &Renderer,
-        operation: &mut dyn widget::Operation,
-    ) {
-        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
     }
 
     fn overlay<'b>(

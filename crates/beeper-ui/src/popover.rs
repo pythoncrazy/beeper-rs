@@ -2,7 +2,7 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::Renderer as _;
 use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
-use iced::{Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{Color, Element, Event, Point, Rectangle, Renderer, Size, Theme, Vector};
 
 /// Shows `popup` with its top-left corner at the cursor while the cursor is over `content`,
 /// or at the top-left corner of `content` while `open` is set, like Desktop's "right-start" popover.
@@ -40,13 +40,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
         widget::tree::Tag::of::<Hover>()
     }
 
-    fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
-    }
-
-    fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
-    }
+    crate::delegate::delegate!(size, layout, mouse_interaction, draw);
 
     fn update(
         &mut self,
@@ -78,30 +72,6 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
             shell,
             viewport,
         );
-    }
-
-    fn mouse_interaction(
-        &self,
-        tree: &widget::Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-        renderer: &Renderer,
-    ) -> mouse::Interaction {
-        self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
-    }
-
-    fn draw(
-        &self,
-        tree: &widget::Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-    ) {
-        self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
     }
 
     fn overlay<'b>(
@@ -205,13 +175,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Above<'_, Message> {
         tree.diff_children(&all);
     }
 
-    fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
-    }
-
-    fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
-    }
+    crate::delegate::delegate!(size, layout, mouse_interaction, operate);
 
     fn update(
         &mut self,
@@ -234,17 +198,6 @@ impl<Message> Widget<Message, Theme, Renderer> for Above<'_, Message> {
         self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
     }
 
-    fn mouse_interaction(
-        &self,
-        tree: &widget::Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-        renderer: &Renderer,
-    ) -> mouse::Interaction {
-        self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
-    }
-
     fn draw(
         &self,
         tree: &widget::Tree,
@@ -264,16 +217,6 @@ impl<Message> Widget<Message, Theme, Renderer> for Above<'_, Message> {
                 renderer.fill_quad(quad, Color::from_rgb8(255, 0, 0));
             }
         }
-    }
-
-    fn operate(
-        &mut self,
-        tree: &mut widget::Tree,
-        layout: Layout<'_>,
-        renderer: &Renderer,
-        operation: &mut dyn widget::Operation,
-    ) {
-        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
     }
 
     fn overlay<'b>(
