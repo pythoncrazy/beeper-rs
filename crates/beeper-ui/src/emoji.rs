@@ -411,12 +411,12 @@ impl BeeperGuiApp {
             EmojiMsg::Pointer(area, inside) => {
                 self.emoji_hovered[usize::from(area)] = inside;
                 self.emoji_gen += 1;
+                self.timers.emoji.cancel();
                 match inside {
                     true if on_hover && self.pane.emoji.is_none() => return self.open_emoji(None),
                     false if on_hover && self.pane.emoji.as_ref().is_none_or(|pk| pk.react.is_none()) => {
-                        let g = self.emoji_gen;
-                        let wait = tokio::time::sleep(std::time::Duration::from_millis(200));
-                        return Task::perform(wait, move |_| UiMessage::Emoji(EmojiMsg::Close(g)));
+                        let close = UiMessage::Emoji(EmojiMsg::Close(self.emoji_gen));
+                        return self.timers.emoji.after(std::time::Duration::from_millis(200), close);
                     }
                     _ => {}
                 }

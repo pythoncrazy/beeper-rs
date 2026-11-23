@@ -1093,8 +1093,8 @@ impl BeeperGuiApp {
                 (self.command_palette_query, self.cmd_index, self.search_index) = (q.clone(), 0, None);
                 if self.cmd_submenu == Some(SubMenu::AddMembers) {
                     self.new_chat_search = None;
-                    let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
-                    return Task::perform(wait, move |()| UiMessage::Members(members::Msg::Search(q.clone())));
+                    let search = UiMessage::Members(members::Msg::Search(q));
+                    return self.timers.members.after(std::time::Duration::from_millis(300), search);
                 }
             }
             Msg::Highlight(i) => self.cmd_index = i,

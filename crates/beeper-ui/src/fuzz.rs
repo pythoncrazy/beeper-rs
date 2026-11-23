@@ -9369,6 +9369,31 @@ fn window_changes_save_the_state_after_the_last_one_like_desktop() {
     assert_eq!((task.units(), app.state_changes), (0, n), "a window without a state saves nothing");
 }
 
+/// A newer timer of a debounce aborts the one before, whose message would change nothing, so that only the last one
+/// comes.
+#[test]
+fn a_debounce_sends_only_the_last_timer() {
+    use iced::futures::StreamExt;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().expect("a runtime");
+    let out = |task: Task<UiMessage>| {
+        let stream = iced_runtime::task::into_stream(task).expect("a timer");
+        let actions = rt.block_on(stream.collect::<Vec<_>>());
+        let ends = actions.into_iter().filter_map(|a| match a {
+            iced_runtime::Action::Output(UiMessage::HeaderHoverEnd(n)) => Some(n),
+            _ => None,
+        });
+        ends.collect::<Vec<u32>>()
+    };
+    let mut timer = Debounce::default();
+    let first = timer.after(Duration::from_millis(5), UiMessage::HeaderHoverEnd(1));
+    let last = timer.after(Duration::from_millis(5), UiMessage::HeaderHoverEnd(2));
+    assert_eq!(out(first), [] as [u32; 0], "the replaced timer is aborted");
+    assert_eq!(out(last), [2], "the last one comes");
+    let cancelled = timer.after(Duration::from_millis(5), UiMessage::HeaderHoverEnd(3));
+    timer.cancel();
+    assert_eq!(out(cancelled), [] as [u32; 0], "and none after a cancel");
+}
+
 /// The window actions of `task`, run like iced would with windows that are `size`, of which `maximized` are maximized,
 /// and the messages that it outputs.
 fn run_window_actions(task: Task<UiMessage>, size: Size, maximized: &[window::Id]) -> (Vec<String>, Vec<UiMessage>) {
