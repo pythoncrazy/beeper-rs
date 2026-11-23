@@ -3730,8 +3730,9 @@ impl BeeperGuiApp {
 
     pub fn select_chat(&mut self, chat_id: &str) {
         self.leave_draft();
-        // Desktop's `setSelectedThread` gives the keyboard to the composer (`focusMessageInput`).
-        (self.join_matrix_mode, self.pane.key_focus) = (false, Default::default());
+        // Desktop's `setSelectedThread` gives the keyboard to the composer (`focusMessageInput`), and drops the cursor
+        // of the chat list.
+        (self.join_matrix_mode, self.pane.key_focus, self.list.cursor) = (false, Default::default(), None);
         if !self.cycling {
             self.push_history(chat_id);
         }
@@ -4388,6 +4389,11 @@ impl BeeperGuiApp {
             {
                 return self.focus_space(id, false).unwrap_or_else(Task::none);
             }
+            // Desktop's J and K move the cursor of the chat list like ↓ and ↑ while no chat is open.
+            UiMessage::WindowText(id, text) if matches!(text.as_str(), "j" | "k") && self.window_points_chats(id) => {
+                let arrow = Key::Named(if text == "j" { Named::ArrowDown } else { Named::ArrowUp });
+                return self.update(UiMessage::WindowKey(id, arrow, Modifiers::empty()));
+            }
             UiMessage::WindowText(id, text) if self.chat_windows.iter().any(|w| w.0 == id) => {
                 return self.update(UiMessage::InWindow(id, Box::new(UiMessage::Composer(composer::Msg::Type(text)))));
             }
@@ -4672,14 +4678,18 @@ impl BeeperGuiApp {
                     self.pane.selected_chat_id = None;
                 } else if self.pane.selected_chat_id.is_some() {
                     self.leave_chat(&mut self.store.write(), None);
-                    self.pane.selected_chat_id = None;
+                    // Desktop's `pointCurrentThread`: the cursor of the list stays on the chat that was open.
+                    self.list.cursor = self.pane.selected_chat_id.take();
                     self.pane.composer = composer_with("");
                     self.refresh_theme_and_tray();
                 } else if self.list().active_tab != InboxTab::AllChats {
                     self.list.active_tab = InboxTab::AllChats;
                     self.list.space_view_account = None;
-                } else {
+                } else if !self.status_banner.is_empty() {
                     self.status_banner.clear();
+                } else {
+                    // Desktop's `setThreadCursorIDByThread` of the first chat.
+                    self.list.cursor = self.list_ids(&self.store.read()).into_iter().next();
                 }
             }
             UiMessage::Noop => {}
@@ -4949,6 +4959,16 @@ impl BeeperGuiApp {
                 }
                 match key.as_ref() {
                     Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
+                    Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if mods.is_empty() && self.points_chats() => {
+                        self.point_chat(k == Named::ArrowDown);
+                        return Task::none();
+                    }
+                    // Desktop's Enter on the chat of the cursor (`selectChatListItem`).
+                    Key::Named(Named::Enter) if mods.is_empty() && self.points_chats() => {
+                        let pointed = self.list.cursor.clone();
+                        let listed = pointed.filter(|c| self.list_ids(&self.store.read()).contains(c));
+                        return listed.map_or_else(Task::none, |c| self.update(UiMessage::SelectChat(c)));
+                    }
                     Key::Named(Named::ArrowUp | Named::ArrowDown | Named::ArrowRight)
                         if (mods.is_empty() || mods == keyboard::Modifiers::SHIFT)
                             && self.pane.thread.is_some()
