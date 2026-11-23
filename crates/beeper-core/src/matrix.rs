@@ -2723,49 +2723,12 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
     }
     let chat = store.read().sent.get(&chat).cloned().unwrap_or(chat);
     let room = chat_room(&client, &chat).await?;
-    let event = |id: String| {
-        let id = store.read().sent.get(&id).cloned().unwrap_or(id);
-        OwnedEventId::try_from(id).map_err(|e| e.to_string())
-    };
-    let e = PushError::from;
+    let p = Push { store, client: &client, room: &room, chat: &chat };
+    let event = |id| p.event(id);
     match out {
         Outgoing::Send { txn, text, reply_to, preview, mentions, thread, links } => {
-            // Desktop mentions the sender of the quoted message, but not of the fallback reply of a thread reply.
-            let sender = reply_to.as_ref().filter(|_| thread.as_ref().is_none_or(|t| t.chosen)).and_then(|r| {
-                let st = store.read();
-                let m = st.stored_message(r)?;
-                (!st.is_me(&m.sender_id)).then_some(m.sender_id)
-            });
-            let mut content = text_content(text, &mentions, sender.as_deref())?;
-            if thread.is_none() {
-                content.relates_to =
-                    reply_to.map(|r| event(r).map(|id| Relation::Reply(Reply::with_event_id(id)))).transpose()?;
-            }
-            let mut content = serde_json::to_value(content).expect("message JSON");
-            if let Some(t) = thread {
-                // Desktop's `buildThreadRelation`.
-                content["m.relates_to"] = serde_json::json!({
-                    "rel_type": "m.thread",
-                    "event_id": event(t.root)?.to_string(),
-                    "is_falling_back": !t.chosen,
-                    "m.in_reply_to": { "event_id": event(t.quoted)?.to_string() },
-                });
-                if t.broadcast {
-                    content["com.beeper.broadcast_outside_thread"] = true.into();
-                }
-            }
-            if let Some((mut p, image)) = preview {
-                // Desktop's `buildLinkPreview` sends the preview without its image when the upload fails.
-                if let Some(bytes) = image {
-                    match preview_image(&client, &room, &p, bytes).await {
-                        Ok((key, value)) => p[key] = value,
-                        Err(err) => eprintln!("link preview: dropping its image: {err}"),
-                    }
-                }
-                content["com.beeper.linkpreviews"] = Value::Array(vec![p]);
-            } else if links {
-                content["com.beeper.linkpreviews"] = Value::Array(Vec::new());
-            }
+            let mut content = p.text_message(text, reply_to, &mentions, thread)?;
+            p.link_previews(&mut content, preview, links).await;
             if let Some(timer) = timer_for_messages(&room).await {
                 content[DISAPPEARING_TIMER] = timer;
             }
@@ -2777,7 +2740,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 true => Some(caption_attachment(&room, &target).await?),
                 false => None,
             };
-            room.send_raw("m.room.message", edit_content(&target, text, &mentions, attachment)?).await.map_err(e)?;
+            room.send_raw("m.room.message", edit_content(&target, text, &mentions, attachment)?).await?;
         }
         Outgoing::Redact { target } => {
             room.redact(&event(target)?, None, None).await.map_err(|x| x.to_string())?;
@@ -2792,24 +2755,11 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         }
         Outgoing::React { txn, target, key, img_url: None } => {
             let content = ReactionEventContent::new(Annotation::new(event(target)?, key));
-            let id = room.send(content).with_transaction_id(txn.as_str().into()).await.map_err(e)?.response.event_id;
+            let id = room.send(content).with_transaction_id(txn.as_str().into()).await?.response.event_id;
             store.write().sent.insert(txn, id.to_string());
         }
         Outgoing::Poll { txn, poll } => {
-            let text = "org.matrix.msc1767.text";
-            let answers: Vec<Value> =
-                poll.options.iter().map(|o| serde_json::json!({ "id": o.id, text: o.label })).collect();
-            let kind = if poll.undisclosed { "undisclosed" } else { "disclosed" };
-            let content = serde_json::json!({
-                text: poll.question,
-                "org.matrix.msc3381.poll.start": {
-                    "answers": answers,
-                    "kind": format!("org.matrix.msc3381.poll.{kind}"),
-                    "max_selections": poll.max_selections,
-                    "question": { text: poll.question },
-                },
-            });
-            send_txn(store, &room, "org.matrix.msc3381.poll.start", content, txn).await?;
+            send_txn(store, &room, "org.matrix.msc3381.poll.start", poll_start(&poll), txn).await?
         }
         Outgoing::EndPoll { target } => {
             let content = serde_json::json!({
@@ -2817,40 +2767,344 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 "org.matrix.msc3381.poll.end": {},
                 "org.matrix.msc1767.text": "Poll ended",
             });
-            room.send_raw("org.matrix.msc3381.poll.end", content).await.map_err(e)?;
+            room.send_raw("org.matrix.msc3381.poll.end", content).await?;
         }
         Outgoing::Vote { target, answers } => {
             let content = serde_json::json!({
                 "m.relates_to": { "rel_type": "m.reference", "event_id": event(target)?.to_string() },
                 "org.matrix.msc3381.poll.response": { "answers": answers },
             });
-            room.send_raw("org.matrix.msc3381.poll.response", content).await.map_err(e)?;
+            room.send_raw("org.matrix.msc3381.poll.response", content).await?;
         }
         Outgoing::Read(target) => {
-            room.send_single_receipt(SendReceiptType::Read, ReceiptThread::Unthreaded, event(target)?)
-                .await
-                .map_err(e)?;
+            room.send_single_receipt(SendReceiptType::Read, ReceiptThread::Unthreaded, event(target)?).await?;
         }
         Outgoing::ThreadRead { root, event: target } => {
             let thread = ReceiptThread::Thread(event(root)?);
-            room.send_single_receipt(SendReceiptType::Read, thread, event(target)?).await.map_err(e)?;
+            room.send_single_receipt(SendReceiptType::Read, thread, event(target)?).await?;
         }
-        Outgoing::Flag(flag, on) => match flag {
+        Outgoing::Flag(flag, on) => p.flag(flag, on).await?,
+        Outgoing::ThreadFollows(follows) => {
+            let mut v = serde_json::to_value(follows).expect("thread follows JSON");
+            v["com.beeper.revision_id"] = matrix_sdk::ruma::TransactionId::new().to_string().into();
+            room.set_account_data_raw(THREAD_FOLLOWS.into(), raw(&v)).await?;
+        }
+        Outgoing::Reminder(at) => {
+            let v = at.map_or(serde_json::json!({}), |r| {
+                serde_json::json!({ "remind_at_ms": r.remind_at_ms, "dismiss_on_incoming_message": r.dismiss_on_incoming_message })
+            });
+            room.set_account_data_raw(REMINDER.into(), raw(&v)).await?;
+        }
+        // Desktop accepts an invite of a Matrix chat by a join, and other requests with the bridge's event.
+        Outgoing::AcceptRequest if room.state() == RoomState::Invited => room.join().await?,
+        Outgoing::AcceptRequest => {
+            room.send_raw("com.beeper.accept_message_request", serde_json::json!({})).await?;
+        }
+        Outgoing::BlockUser { block, report_spam } => {
+            let content = serde_json::json!({ "block": block, "report_spam": report_spam });
+            room.send_raw("com.beeper.block_user", content).await?;
+        }
+        // Desktop's `declineMessageRequest` of a Matrix chat leaves the room.
+        Outgoing::DeleteChat { .. } if room.state() == RoomState::Invited => room.leave().await?,
+        // Desktop's `forgetRoom`: a chat that the user left or was removed from goes with its room.
+        Outgoing::DeleteChat { .. } if room.state() == RoomState::Left => room.forget().await?,
+        Outgoing::DeleteChat { for_everyone } => {
+            let content = serde_json::json!({ "delete_for_everyone": for_everyone });
+            room.send_raw("com.beeper.delete_chat", content).await?;
+        }
+        Outgoing::Forward { txn, from, event: id, text, html } => p.forward(txn, &from, id, text, html).await?,
+        Outgoing::Media { txn, bytes, name, mime, info, caption, reply_to, thread, gif, sticker } => {
+            p.media(txn, bytes, name, mime, info, caption, reply_to, thread, gif, sticker).await?;
+        }
+        Outgoing::CreateLabel(_) => unreachable!("a label has no room before it is created"),
+        Outgoing::CreateUnion { .. } => unreachable!("a merged chat has no room before it is created"),
+        Outgoing::Draft => unreachable!("a draft goes before the room lookup"),
+        Outgoing::EditLabel(label, changes) => {
+            let state = |kind: &'static str, content: Value| room.send_state_event_raw(kind, "", content);
+            state("m.room.name", serde_json::json!({ "name": label.name })).await?;
+            state("com.beeper.label.color", serde_json::json!({ "color_index": label.color })).await?;
+            state("com.beeper.label.icon", serde_json::json!({ "icon": label.icon })).await?;
+            for (chat, add) in changes {
+                room.send_state_event_raw("m.space.child", &chat, space_child(add)).await?;
+            }
+        }
+        Outgoing::State(kind, content) => drop(room.send_state_event_raw(&kind, "", content).await?),
+        Outgoing::Invite(user) => {
+            let user = matrix_sdk::ruma::UserId::parse(&user).expect("a Matrix user ID");
+            room.invite_user_by_id(&user).await?;
+        }
+        Outgoing::Kick(user) => {
+            let content = serde_json::json!({ "membership": "leave" });
+            drop(room.send_state_event_raw("m.room.member", &user, content).await?);
+        }
+        Outgoing::Role(user, admin) => {
+            let mut levels = state(&room, "m.room.power_levels").await.unwrap_or_else(|| serde_json::json!({}));
+            let native = state(&room, "m.bridge").await.is_none();
+            match admin {
+                true => levels["users"][&user] = if native { 100 } else { 50 }.into(),
+                false => drop(levels["users"].as_object_mut().and_then(|u| u.remove(&user))),
+            }
+            drop(room.send_state_event_raw("m.room.power_levels", "", levels).await?);
+        }
+        Outgoing::Bookmark { room: chat, target, on } => p.bookmark(chat, target, on).await?,
+        Outgoing::MessageReminder { room: chat, target, at } => p.message_reminder(chat, target, at).await?,
+        // Desktop sends a pending removal again after a restart, but not when the room already has a removal.
+        Outgoing::RemoveFromBeeper { txn, room: chat, target } => {
+            let target = event(target)?.to_string();
+            if store.read().removals.as_ref().is_none_or(|r| !r.contains_key(&target)) {
+                let rel = serde_json::json!({ "event_id": target, "room_id": chat, "rel_type": REMOVED_MESSAGE });
+                let content = serde_json::json!({ "com.beeper.relates_to": rel });
+                room.send_raw(REMOVED_MESSAGE, content).with_transaction_id(txn.as_str().into()).await?;
+            }
+        }
+        Outgoing::Transcription { room: chat, target, transcription: t } => {
+            let content = serde_json::json!({
+                "msgtype": TRANSCRIPTION,
+                "com.beeper.relates_to": { "room_id": chat, "event_id": event(target)?, "rel_type": TRANSCRIPTION },
+                "com.beeper.transcription.model": t.engine,
+                "com.beeper.transcription.language": t.language,
+                "m.text": [{ "body": t.transcription }],
+            });
+            room.send_raw(TRANSCRIPTION, content).await?;
+        }
+        Outgoing::Avatar(image) => {
+            let content = match image {
+                Some((bytes, mime)) => {
+                    let mime: mime::Mime = mime.parse().expect("an image MIME type");
+                    serde_json::json!({ "url": client.media().upload(&mime, bytes, None).await?.content_uri })
+                }
+                None => serde_json::json!({}),
+            };
+            room.send_state_event_raw("m.room.avatar", "", content).await?;
+        }
+        Outgoing::RoomData(kind, content) => {
+            room.set_account_data_raw(kind.into(), raw(&content)).await?;
+        }
+        Outgoing::PersonalAvatar(image) => {
+            let content = match image {
+                Some((bytes, mime)) => {
+                    let info = serde_json::json!({ "mimetype": mime, "size": bytes.len() });
+                    match p.upload(bytes, &mime).await? {
+                        MediaSource::Encrypted(file) => serde_json::json!({ "file": file, "info": info }),
+                        MediaSource::Plain(url) => serde_json::json!({ "url": url, "info": info }),
+                    }
+                }
+                None => serde_json::json!({}),
+            };
+            room.set_account_data_raw(PERSONAL_AVATAR.into(), raw(&content)).await?;
+        }
+        Outgoing::LabelChild(chat, add) => {
+            room.send_state_event_raw("m.space.child", &chat, space_child(add)).await?;
+        }
+        Outgoing::Leave(forget) => {
+            room.leave().await?;
+            if let Some(left) = client.get_room(room.room_id()).filter(|_| forget) {
+                let _ = left.forget().await;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The room of a push, and the chat that it is the room of.
+struct Push<'a> {
+    store: &'a SharedStore,
+    client: &'a Client,
+    room: &'a Room,
+    chat: &'a str,
+}
+
+impl Push<'_> {
+    /// The event `id`, or the event that the homeserver gave the send of the transaction ID `id`.
+    fn event(&self, id: String) -> Result<OwnedEventId, String> {
+        let id = self.store.read().sent.get(&id).cloned().unwrap_or(id);
+        OwnedEventId::try_from(id).map_err(|e| e.to_string())
+    }
+
+    /// Uploads `data` of the type `mime`, encrypted when the room is.
+    async fn upload(&self, data: Vec<u8>, mime: &str) -> Result<MediaSource, PushError> {
+        Ok(match self.room.latest_encryption_state().await?.is_encrypted() {
+            true => MediaSource::Encrypted(Box::new(self.client.upload_encrypted_file(&mut data.as_slice()).await?)),
+            false => {
+                let mime: mime::Mime = mime.parse().expect("a valid MIME type");
+                MediaSource::Plain(self.client.media().upload(&mime, data, None).await?.content_uri)
+            }
+        })
+    }
+
+    /// The content of a text message: its mentions, and its reply or its thread relation.
+    fn text_message(
+        &self,
+        text: String,
+        reply_to: Option<String>,
+        mentions: &[Mention],
+        thread: Option<ThreadSend>,
+    ) -> Result<Value, String> {
+        // Desktop mentions the sender of the quoted message, but not of the fallback reply of a thread reply.
+        let sender = reply_to.as_ref().filter(|_| thread.as_ref().is_none_or(|t| t.chosen)).and_then(|r| {
+            let st = self.store.read();
+            let m = st.stored_message(r)?;
+            (!st.is_me(&m.sender_id)).then_some(m.sender_id)
+        });
+        let mut content = text_content(text, mentions, sender.as_deref())?;
+        if thread.is_none() {
+            content.relates_to =
+                reply_to.map(|r| self.event(r).map(|id| Relation::Reply(Reply::with_event_id(id)))).transpose()?;
+        }
+        let mut content = serde_json::to_value(content).expect("message JSON");
+        if let Some(t) = thread {
+            // Desktop's `buildThreadRelation`.
+            content["m.relates_to"] = serde_json::json!({
+                "rel_type": "m.thread",
+                "event_id": self.event(t.root)?.to_string(),
+                "is_falling_back": !t.chosen,
+                "m.in_reply_to": { "event_id": self.event(t.quoted)?.to_string() },
+            });
+            if t.broadcast {
+                content["com.beeper.broadcast_outside_thread"] = true.into();
+            }
+        }
+        Ok(content)
+    }
+
+    /// The link previews of a text message: the preview, or an empty list when its links go without one.
+    async fn link_previews(&self, content: &mut Value, preview: Option<crate::cloud::PagePreview>, links: bool) {
+        if let Some((mut p, image)) = preview {
+            // Desktop's `buildLinkPreview` sends the preview without its image when the upload fails.
+            if let Some(bytes) = image {
+                match preview_image(self.client, self.room, &p, bytes).await {
+                    Ok((key, value)) => p[key] = value,
+                    Err(err) => eprintln!("link preview: dropping its image: {err}"),
+                }
+            }
+            content["com.beeper.linkpreviews"] = Value::Array(vec![p]);
+        } else if links {
+            content["com.beeper.linkpreviews"] = Value::Array(Vec::new());
+        }
+    }
+
+    /// Sends a file, a GIF or a sticker, with its caption, and as a reply or in a thread.
+    #[allow(clippy::too_many_arguments)]
+    async fn media(
+        &self,
+        txn: String,
+        data: Vec<u8>,
+        name: String,
+        mime: String,
+        info: MediaInfo,
+        caption: Option<String>,
+        reply_to: Option<String>,
+        thread: Option<ThreadSend>,
+        gif: bool,
+        sticker: Option<Box<Sticker>>,
+    ) -> Result<(), PushError> {
+        let (store, room) = (self.store, self.room);
+        // Desktop's `Kf`: a sticker goes as `m.sticker` when the room features take its type, else as an image.
+        let sticker = sticker.filter(|_| {
+            let st = store.read();
+            let c = &st.chats[st.resolve_chat_idx(self.chat).expect("the chat of a send exists")];
+            c.room_features && crate::media::takes_sticker(&c.file, &mime)
+        });
+        let (data, name, mime, info) =
+            prepare_media(store, self.chat, &txn, data, (name, mime), info, sticker.is_some()).await?;
+        converted(store, &txn, &name, &mime);
+        let dims = match info {
+            MediaInfo::Image(w, h) | MediaInfo::Video(w, h, _) => Some((w, h)),
+            _ => None,
+        };
+        use matrix_sdk::room::reply::{EnforceThread, Reply};
+        use matrix_sdk::ruma::events::room::message::{AddMentions, ReplyWithinThread, RoomMessageEventContent};
+        // The thread relation of the SDK is Desktop's `buildThreadRelation`, and "Also send to chat" adds its flag.
+        let broadcast = thread.as_ref().is_some_and(|t| t.broadcast);
+        let (enforce_thread, add_mentions) = match thread.map(|t| t.chosen) {
+            Some(true) => (EnforceThread::Threaded(ReplyWithinThread::Yes), AddMentions::Yes),
+            Some(false) => (EnforceThread::Threaded(ReplyWithinThread::No), AddMentions::No),
+            None => (EnforceThread::MaybeThreaded, AddMentions::Yes),
+        };
+        let reply = reply_to
+            .map(|r| self.event(r).map(|event_id| Reply { event_id, enforce_thread, add_mentions }))
+            .transpose()?;
+        let info = attachment_info(info, data.len(), &mime);
+        let mime: mime::Mime = mime.parse().expect("valid media mime");
+        let source = self.upload(data, mime.as_ref()).await?;
+        let caption_given = caption.is_some();
+        let content = RoomMessageEventContent::new(media_type(&mime, name, source, caption, info));
+        let content = match reply {
+            Some(r) => room.make_reply_event(content.into(), r).await.map_err(|x| x.to_string())?,
+            None => content,
+        };
+        // The SDK sends this content in `send_attachment`, but its info cannot carry Desktop's GIF flag.
+        let mut content = serde_json::to_value(content).expect("message JSON");
+        if gif {
+            content["info"]["fi.mau.gif"] = true.into();
+        }
+        if broadcast {
+            content["com.beeper.broadcast_outside_thread"] = true.into();
+        }
+        if let Some(timer) = timer_for_messages(room).await {
+            content[DISAPPEARING_TIMER] = timer;
+        }
+        let kind = match sticker {
+            Some(s) => {
+                sticker_content(&mut content, s, caption_given, dims);
+                "m.sticker"
+            }
+            None => "m.room.message",
+        };
+        send_txn(store, room, kind, content, txn).await
+    }
+
+    /// Sends the content of the event `id` of the chat `from` again, with the current text and HTML of a text message.
+    async fn forward(
+        &self,
+        txn: String,
+        from: &str,
+        id: String,
+        text: Option<String>,
+        html: Option<String>,
+    ) -> Result<(), PushError> {
+        let source = joined_room(self.client, from).await?.event(&self.event(id)?, None).await?;
+        let mut ev: Value = source.raw().deserialize_as().map_err(|x| x.to_string())?;
+        let kind = ev["type"].as_str().expect("an event type").to_string();
+        // Desktop forwards any message, but a poll or a message that is not decrypted has no content to send again.
+        if !matches!(kind.as_str(), "m.room.message" | "m.sticker") {
+            return Err(format!("Cannot forward a {kind} event").into());
+        }
+        let c = ev["content"].as_object_mut().expect("event content");
+        c.remove("m.relates_to");
+        c.remove("m.mentions");
+        let typed = matches!(c.get("msgtype").and_then(Value::as_str), Some("m.text" | "m.notice" | "m.emote"));
+        if let Some(text) = text.filter(|_| typed) {
+            c.insert("body".into(), text.into());
+            c.remove("format");
+            c.remove("formatted_body");
+            if let Some(h) = html {
+                c.insert("format".into(), "org.matrix.custom.html".into());
+                c.insert("formatted_body".into(), h.into());
+            }
+        }
+        send_txn(self.store, self.room, &kind, ev["content"].take(), txn).await
+    }
+
+    /// Turns a flag of the chat on or off in the account data, the tags or the push rules of its room.
+    async fn flag(&self, flag: ChatFlag, on: bool) -> Result<(), PushError> {
+        let (client, room) = (self.client, self.room);
+        match flag {
             ChatFlag::Archived => {
                 let order = on.then(|| {
-                    let st = store.read();
-                    let last = st.stored("chat_id = ?1 ORDER BY sort_key DESC LIMIT 1", [&chat]).pop();
-                    let last = last.map(|m| m.sort_key).max(st.chat(&chat).notifiable.clone());
+                    let st = self.store.read();
+                    let last = st.stored("chat_id = ?1 ORDER BY sort_key DESC LIMIT 1", [self.chat]).pop();
+                    let last = last.map(|m| m.sort_key).max(st.chat(self.chat).notifiable.clone());
                     last.map_or(MIN_SAFE_INTEGER, |k| order_of(&k))
                 });
                 let done = inbox_done(order, now_unix_millis());
-                room.set_account_data_raw("com.beeper.inbox.done".into(), raw(&done)).await.map_err(e)?;
+                room.set_account_data_raw("com.beeper.inbox.done".into(), raw(&done)).await?;
             }
             ChatFlag::Pinned => {
-                tag(&room, TagName::Favorite, on).await.map_err(e)?;
-                edit_pins(&client, room.room_id().as_str(), on).await.map_err(e)?;
+                tag(room, TagName::Favorite, on).await?;
+                edit_pins(client, room.room_id().as_str(), on).await?;
             }
-            ChatFlag::LowPriority => tag(&room, TagName::LowPriority, on).await.map_err(e)?,
+            ChatFlag::LowPriority => tag(room, TagName::LowPriority, on).await?,
             ChatFlag::Muted => {
                 let settings = client.notification_settings().await;
                 match on {
@@ -2862,7 +3116,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 }
                 .map_err(|x| x.to_string())?;
                 // Desktop reads the mute from `com.beeper.muted`, so the room goes in or out of its list too.
-                let mut list = global(&client, MUTED).await;
+                let mut list = global(client, MUTED).await;
                 let id = room.room_id().as_str();
                 let mut ids: Vec<Value> = list["room_ids"].as_array().cloned().unwrap_or_default();
                 ids.retain(|r| r != id);
@@ -2875,244 +3129,68 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 list["room_ids"] = ids.into();
                 set_global(client.clone(), MUTED, list).await?;
             }
-            ChatFlag::MarkedUnread => room.set_unread_flag(on).await.map_err(e)?,
-        },
-        Outgoing::ThreadFollows(follows) => {
-            let mut v = serde_json::to_value(follows).expect("thread follows JSON");
-            v["com.beeper.revision_id"] = matrix_sdk::ruma::TransactionId::new().to_string().into();
-            room.set_account_data_raw(THREAD_FOLLOWS.into(), raw(&v)).await.map_err(e)?;
+            ChatFlag::MarkedUnread => room.set_unread_flag(on).await?,
         }
-        Outgoing::Reminder(at) => {
-            let v = at.map_or(serde_json::json!({}), |r| {
-                serde_json::json!({ "remind_at_ms": r.remind_at_ms, "dismiss_on_incoming_message": r.dismiss_on_incoming_message })
-            });
-            room.set_account_data_raw(REMINDER.into(), raw(&v)).await.map_err(e)?;
-        }
-        // Desktop accepts an invite of a Matrix chat by a join, and other requests with the bridge's event.
-        Outgoing::AcceptRequest if room.state() == RoomState::Invited => room.join().await.map_err(e)?,
-        Outgoing::AcceptRequest => {
-            room.send_raw("com.beeper.accept_message_request", serde_json::json!({})).await.map_err(e)?;
-        }
-        Outgoing::BlockUser { block, report_spam } => {
-            let content = serde_json::json!({ "block": block, "report_spam": report_spam });
-            room.send_raw("com.beeper.block_user", content).await.map_err(e)?;
-        }
-        // Desktop's `declineMessageRequest` of a Matrix chat leaves the room.
-        Outgoing::DeleteChat { .. } if room.state() == RoomState::Invited => room.leave().await.map_err(e)?,
-        // Desktop's `forgetRoom`: a chat that the user left or was removed from goes with its room.
-        Outgoing::DeleteChat { .. } if room.state() == RoomState::Left => room.forget().await.map_err(e)?,
-        Outgoing::DeleteChat { for_everyone } => {
-            let content = serde_json::json!({ "delete_for_everyone": for_everyone });
-            room.send_raw("com.beeper.delete_chat", content).await.map_err(e)?;
-        }
-        Outgoing::Forward { txn, from, event: id, text, html } => {
-            let source = joined_room(&client, &from).await?.event(&event(id)?, None).await.map_err(e)?;
-            let mut ev: Value = source.raw().deserialize_as().map_err(|x| x.to_string())?;
-            let kind = ev["type"].as_str().expect("an event type").to_string();
-            // Desktop forwards any message, but a poll or a message that is not decrypted has no content to send again.
-            if !matches!(kind.as_str(), "m.room.message" | "m.sticker") {
-                return Err(format!("Cannot forward a {kind} event").into());
-            }
-            let c = ev["content"].as_object_mut().expect("event content");
-            c.remove("m.relates_to");
-            c.remove("m.mentions");
-            let typed = matches!(c.get("msgtype").and_then(Value::as_str), Some("m.text" | "m.notice" | "m.emote"));
-            if let Some(text) = text.filter(|_| typed) {
-                c.insert("body".into(), text.into());
-                c.remove("format");
-                c.remove("formatted_body");
-                if let Some(h) = html {
-                    c.insert("format".into(), "org.matrix.custom.html".into());
-                    c.insert("formatted_body".into(), h.into());
-                }
-            }
-            send_txn(store, &room, &kind, ev["content"].take(), txn).await?;
-        }
-        Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to, thread, gif, sticker } => {
-            // Desktop's `Kf`: a sticker goes as `m.sticker` when the room features take its type, else as an image.
-            let sticker = sticker.filter(|_| {
-                let st = store.read();
-                let c = &st.chats[st.resolve_chat_idx(&chat).expect("the chat of a send exists")];
-                c.room_features && crate::media::takes_sticker(&c.file, &mime)
-            });
-            let (data, name, mime, info) =
-                prepare_media(store, &chat, &txn, data, (name, mime), info, sticker.is_some()).await?;
-            converted(store, &txn, &name, &mime);
-            let dims = match info {
-                MediaInfo::Image(w, h) | MediaInfo::Video(w, h, _) => Some((w, h)),
-                _ => None,
-            };
-            use matrix_sdk::room::reply::{EnforceThread, Reply};
-            use matrix_sdk::ruma::events::room::message::{AddMentions, ReplyWithinThread, RoomMessageEventContent};
-            // The thread relation of the SDK is Desktop's `buildThreadRelation`, and "Also send to chat" adds its flag.
-            let broadcast = thread.as_ref().is_some_and(|t| t.broadcast);
-            let (enforce_thread, add_mentions) = match thread.map(|t| t.chosen) {
-                Some(true) => (EnforceThread::Threaded(ReplyWithinThread::Yes), AddMentions::Yes),
-                Some(false) => (EnforceThread::Threaded(ReplyWithinThread::No), AddMentions::No),
-                None => (EnforceThread::MaybeThreaded, AddMentions::Yes),
-            };
-            let reply = reply_to
-                .map(|r| event(r).map(|event_id| Reply { event_id, enforce_thread, add_mentions }))
-                .transpose()?;
-            let info = attachment_info(info, data.len(), &mime);
-            let mime: mime::Mime = mime.parse().expect("valid media mime");
-            let source = match room.latest_encryption_state().await.map_err(e)?.is_encrypted() {
-                true => MediaSource::Encrypted(Box::new(
-                    client.upload_encrypted_file(&mut data.as_slice()).await.map_err(e)?,
-                )),
-                false => MediaSource::Plain(client.media().upload(&mime, data, None).await.map_err(e)?.content_uri),
-            };
-            let caption_given = caption.is_some();
-            let content = RoomMessageEventContent::new(media_type(&mime, name, source, caption, info));
-            let content = match reply {
-                Some(r) => room.make_reply_event(content.into(), r).await.map_err(|x| x.to_string())?,
-                None => content,
-            };
-            // The SDK sends this content in `send_attachment`, but its info cannot carry Desktop's GIF flag.
-            let mut content = serde_json::to_value(content).expect("message JSON");
-            if gif {
-                content["info"]["fi.mau.gif"] = true.into();
-            }
-            if broadcast {
-                content["com.beeper.broadcast_outside_thread"] = true.into();
-            }
-            if let Some(timer) = timer_for_messages(&room).await {
-                content[DISAPPEARING_TIMER] = timer;
-            }
-            let kind = match sticker {
-                Some(s) => {
-                    sticker_content(&mut content, s, caption_given, dims);
-                    "m.sticker"
-                }
-                None => "m.room.message",
-            };
-            send_txn(store, &room, kind, content, txn).await?;
-        }
-        Outgoing::CreateLabel(_) => unreachable!("a label has no room before it is created"),
-        Outgoing::CreateUnion { .. } => unreachable!("a merged chat has no room before it is created"),
-        Outgoing::Draft => unreachable!("a draft goes before the room lookup"),
-        Outgoing::EditLabel(label, changes) => {
-            let state = |kind: &'static str, content: Value| room.send_state_event_raw(kind, "", content);
-            state("m.room.name", serde_json::json!({ "name": label.name })).await.map_err(e)?;
-            state("com.beeper.label.color", serde_json::json!({ "color_index": label.color })).await.map_err(e)?;
-            state("com.beeper.label.icon", serde_json::json!({ "icon": label.icon })).await.map_err(e)?;
-            for (chat, add) in changes {
-                room.send_state_event_raw("m.space.child", &chat, space_child(add)).await.map_err(e)?;
-            }
-        }
-        Outgoing::State(kind, content) => drop(room.send_state_event_raw(&kind, "", content).await.map_err(e)?),
-        Outgoing::Invite(user) => {
-            let user = matrix_sdk::ruma::UserId::parse(&user).expect("a Matrix user ID");
-            room.invite_user_by_id(&user).await.map_err(e)?;
-        }
-        Outgoing::Kick(user) => {
-            let content = serde_json::json!({ "membership": "leave" });
-            drop(room.send_state_event_raw("m.room.member", &user, content).await.map_err(e)?);
-        }
-        Outgoing::Role(user, admin) => {
-            let mut levels = state(&room, "m.room.power_levels").await.unwrap_or_else(|| serde_json::json!({}));
-            let native = state(&room, "m.bridge").await.is_none();
-            match admin {
-                true => levels["users"][&user] = if native { 100 } else { 50 }.into(),
-                false => drop(levels["users"].as_object_mut().and_then(|u| u.remove(&user))),
-            }
-            drop(room.send_state_event_raw("m.room.power_levels", "", levels).await.map_err(e)?);
-        }
-        Outgoing::Bookmark { room: chat, target, on } => {
-            let target = event(target)?.to_string();
-            let known = store.read().bookmarks.get(&target).map(|b| b.event_id.clone());
-            let rel = serde_json::json!({ "com.beeper.relates_to": { "event_id": target, "room_id": chat, "rel_type": BOOKMARK } });
-            match (on, known) {
-                (true, None) => {
-                    let id = room.send_raw(BOOKMARK, rel).await.map_err(e)?.response.event_id.to_string();
-                    store.write().bookmarks.insert(target, Bookmark { room_id: chat, event_id: id, order: 0 });
-                }
-                (false, Some(id)) => {
-                    redact_with(&client, &room, &id, rel).await?;
-                    store.write().bookmarks.remove(&target);
-                }
-                _ => {}
-            }
-        }
-        // Desktop sends a new reminder event for each time, and its dismissal redacts the latest one.
-        Outgoing::MessageReminder { room: chat, target, at } => {
-            let target = event(target)?.to_string();
-            let rel = serde_json::json!({ "event_id": target, "room_id": chat, "rel_type": MESSAGE_REMINDER });
-            match at {
-                Some(at) => {
-                    let content = serde_json::json!({ "com.beeper.relates_to": rel, "remind_at_ms": at });
-                    let id = room.send_raw(MESSAGE_REMINDER, content).await.map_err(e)?.response.event_id;
-                    store.write().reminder_events.insert(target, id.to_string());
-                }
-                None => {
-                    let known = store.read().reminder_events.get(&target).cloned();
-                    if let Some(id) = known {
-                        redact_with(&client, &room, &id, serde_json::json!({ "com.beeper.relates_to": rel })).await?;
-                        store.write().reminder_events.remove(&target);
-                    }
-                }
-            }
-        }
-        // Desktop sends a pending removal again after a restart, but not when the room already has a removal.
-        Outgoing::RemoveFromBeeper { txn, room: chat, target } => {
-            let target = event(target)?.to_string();
-            if store.read().removals.as_ref().is_none_or(|r| !r.contains_key(&target)) {
-                let rel = serde_json::json!({ "event_id": target, "room_id": chat, "rel_type": REMOVED_MESSAGE });
-                let content = serde_json::json!({ "com.beeper.relates_to": rel });
-                room.send_raw(REMOVED_MESSAGE, content).with_transaction_id(txn.as_str().into()).await.map_err(e)?;
-            }
-        }
-        Outgoing::Transcription { room: chat, target, transcription: t } => {
-            let content = serde_json::json!({
-                "msgtype": TRANSCRIPTION,
-                "com.beeper.relates_to": { "room_id": chat, "event_id": event(target)?, "rel_type": TRANSCRIPTION },
-                "com.beeper.transcription.model": t.engine,
-                "com.beeper.transcription.language": t.language,
-                "m.text": [{ "body": t.transcription }],
-            });
-            room.send_raw(TRANSCRIPTION, content).await.map_err(e)?;
-        }
-        Outgoing::Avatar(image) => {
-            let content = match image {
-                Some((bytes, mime)) => {
-                    let mime: mime::Mime = mime.parse().expect("an image MIME type");
-                    serde_json::json!({ "url": client.media().upload(&mime, bytes, None).await.map_err(e)?.content_uri })
-                }
-                None => serde_json::json!({}),
-            };
-            room.send_state_event_raw("m.room.avatar", "", content).await.map_err(e)?;
-        }
-        Outgoing::RoomData(kind, content) => {
-            room.set_account_data_raw(kind.into(), raw(&content)).await.map_err(e)?;
-        }
-        Outgoing::PersonalAvatar(image) => {
-            let content = match image {
-                Some((bytes, mime)) => {
-                    let info = serde_json::json!({ "mimetype": mime, "size": bytes.len() });
-                    if room.latest_encryption_state().await.map_err(e)?.is_encrypted() {
-                        let file = client.upload_encrypted_file(&mut bytes.as_slice()).await.map_err(e)?;
-                        serde_json::json!({ "file": file, "info": info })
-                    } else {
-                        let mime: mime::Mime = mime.parse().expect("an image MIME type");
-                        let url = client.media().upload(&mime, bytes, None).await.map_err(e)?.content_uri;
-                        serde_json::json!({ "url": url, "info": info })
-                    }
-                }
-                None => serde_json::json!({}),
-            };
-            room.set_account_data_raw(PERSONAL_AVATAR.into(), raw(&content)).await.map_err(e)?;
-        }
-        Outgoing::LabelChild(chat, add) => {
-            room.send_state_event_raw("m.space.child", &chat, space_child(add)).await.map_err(e)?;
-        }
-        Outgoing::Leave(forget) => {
-            room.leave().await.map_err(e)?;
-            if let Some(left) = client.get_room(room.room_id()).filter(|_| forget) {
-                let _ = left.forget().await;
-            }
-        }
+        Ok(())
     }
-    Ok(())
+
+    /// Adds (`on`) or redacts a Desktop bookmark of the message `target` in the room `room_id`.
+    async fn bookmark(&self, room_id: String, target: String, on: bool) -> Result<(), PushError> {
+        let target = self.event(target)?.to_string();
+        let known = self.store.read().bookmarks.get(&target).map(|b| b.event_id.clone());
+        let rel = serde_json::json!({ "com.beeper.relates_to": { "event_id": target, "room_id": room_id, "rel_type": BOOKMARK } });
+        match (on, known) {
+            (true, None) => {
+                let id = self.room.send_raw(BOOKMARK, rel).await?.response.event_id.to_string();
+                self.store.write().bookmarks.insert(target, Bookmark { room_id, event_id: id, order: 0 });
+            }
+            (false, Some(id)) => {
+                redact_with(self.client, self.room, &id, rel).await?;
+                self.store.write().bookmarks.remove(&target);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Desktop sends a new reminder event of the message `target` in the room `room_id` for each time, and its
+    /// dismissal redacts the latest one.
+    async fn message_reminder(&self, room_id: String, target: String, at: Option<i64>) -> Result<(), PushError> {
+        let target = self.event(target)?.to_string();
+        let rel = serde_json::json!({ "event_id": target, "room_id": room_id, "rel_type": MESSAGE_REMINDER });
+        match at {
+            Some(at) => {
+                let content = serde_json::json!({ "com.beeper.relates_to": rel, "remind_at_ms": at });
+                let id = self.room.send_raw(MESSAGE_REMINDER, content).await?.response.event_id;
+                self.store.write().reminder_events.insert(target, id.to_string());
+            }
+            None => {
+                let known = self.store.read().reminder_events.get(&target).cloned();
+                if let Some(id) = known {
+                    let content = serde_json::json!({ "com.beeper.relates_to": rel });
+                    redact_with(self.client, self.room, &id, content).await?;
+                    self.store.write().reminder_events.remove(&target);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Desktop's `sendPoll`: the MSC3381 poll start of `poll`.
+fn poll_start(poll: &PollData) -> Value {
+    let text = "org.matrix.msc1767.text";
+    let answers: Vec<Value> = poll.options.iter().map(|o| serde_json::json!({ "id": o.id, text: o.label })).collect();
+    let kind = if poll.undisclosed { "undisclosed" } else { "disclosed" };
+    serde_json::json!({
+        text: poll.question,
+        "org.matrix.msc3381.poll.start": {
+            "answers": answers,
+            "kind": format!("org.matrix.msc3381.poll.{kind}"),
+            "max_selections": poll.max_selections,
+            "question": { text: poll.question },
+        },
+    })
 }
 
 /// Sends the event `content` with the transaction ID `txn`, and keeps the event ID that the homeserver gives it.
