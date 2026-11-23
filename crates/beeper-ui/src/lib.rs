@@ -154,9 +154,9 @@ use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZ
 
 use crate::style::{
     bar, bordered_box, bordered_btn, brand_gray, brand_svg, btn_style, clamp, clamped, done_btn, editor_style, ell,
-    ensure_fonts_loaded, fill_box, fw, glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style,
-    pick_style, rem, scroll_style, semi, shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS,
-    CLEAR, GUTTER, SOLID_BARS,
+    ensure_fonts_loaded, fill_box, fw, glow_box, hex, ic, icon, initials, input_style, lh, med, pad, pick,
+    pick_menu_style, pick_style, rem, scroll_style, semi, shadow_box, stable_bar, text_width, txt, Bare, Palette,
+    AVATAR_GRADIENTS, CLEAR, GUTTER, SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -835,6 +835,14 @@ fn checkbox_plus<'a>(p: &Palette, on: bool) -> El<'a> {
     }
 }
 
+/// The backdrop of a modal, a sheet or a menu, which fills its window: Desktop's `.portal` of a popover, its
+/// `.modal-container` and `.modal-dimmer`, and the `SheetFrame-module__scrim` of a sheet. The backdrop takes the
+/// pointer wherever the layer on it does not, so that what is under it shows no hover, takes no press or wheel and
+/// sets no cursor: an iced `Stack` levitates the cursor of its lower layers over a layer that has an interaction.
+fn backdrop<'a, M: 'a>(layer: impl Into<Element<'a, M>>) -> iced::widget::MouseArea<'a, M> {
+    mouse_area(layer).interaction(mouse::Interaction::Idle)
+}
+
 /// Desktop's context menu: `items` with 4 px above and below them, in a shadowed card `w` wide.
 fn menu_card<'a>(
     p: &Palette,
@@ -1228,7 +1236,7 @@ pub(crate) fn contact_card<'a>(
     entry: &dyn Fn(bool, &str) -> El<'a>,
 ) -> Column<'a, UiMessage> {
     // `.contact-attachment-meta` and `-org` are 12 px, `-name` and `-org.no-name` 14 px, and its `h4` 12 px.
-    let line = |s: String| crate::style::fixed(s, 12.0, Weight::Normal).line_height(Pixels(rem(16.0))).color(fg);
+    let line = |s: String| crate::style::fixed(s, 12.0, Weight::Normal).line_height(lh(16.0)).color(fg);
     let medium = |s: String| crate::style::fixed(s, 14.0, Weight::Medium).color(fg);
     let mut meta = Column::new().push((!c.name.is_empty()).then(|| medium(c.name.clone())));
     if let Some(org) = &c.org {
@@ -1238,7 +1246,7 @@ pub(crate) fn contact_card<'a>(
         });
     }
     let list = |items: &[String], title: String, more: &'static str, phone: bool| {
-        let head = crate::style::fixed(title, 12.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(fg);
+        let head = crate::style::fixed(title, 12.0, Weight::Semibold).line_height(lh(16.0)).color(fg);
         let rest = items.len().saturating_sub(limit);
         let more = (rest > 0).then(|| line(trn(more, more, rest, &[&rest])));
         let col = column![container(head).padding(Padding::ZERO.top(6.0).bottom(4.0))];
@@ -2523,7 +2531,7 @@ fn theme_cards<'a>(app: &BeeperGuiApp, current: ThemeChoice) -> El<'a> {
         let label = container(txt(t.label(), 13.0).color(fg)).padding([3, 10]).style(fill_box(edge, 12.0));
         let pick = UiMessage::Settings(settings::Msg::SelectTheme(t));
         let card = button(column![img, label].spacing(6).align_x(Center))
-            .padding(Padding { top: 7.0, right: 13.0, bottom: 9.0, left: 13.0 })
+            .padding(pad(7.0, 13.0, 9.0, 13.0))
             .style(btn_style([CLEAR, p.hover, CLEAR], [p.strong; 3], 8.0))
             .on_press_maybe((!on).then_some(pick.clone()));
         match on {
@@ -2577,8 +2585,7 @@ fn pref_row<'a>(
     // `.label-wrapper label`: `padding: 1em` of the 13 px body text, in rem.
     column![head.spacing(6).align_y(Center).padding(rem(13.0))]
         .push(desc.map(|d| {
-            let paras =
-                d.split("\n\n").map(|t| txt(t.to_string(), 13.0).line_height(Pixels(rem(18.0))).color(p.sub).into());
+            let paras = d.split("\n\n").map(|t| txt(t.to_string(), 13.0).line_height(lh(18.0)).color(p.sub).into());
             Column::with_children(paras).spacing(13).padding(Padding::new(rem(13.0)).top(0.0))
         }))
         .into()
@@ -2713,8 +2720,6 @@ pub struct Pane {
     thread_list: vlist::VList,
     /// The messages of the conversation and their rows, with what they were made from.
     rows: std::cell::RefCell<Option<(message::RowsKey, Rc<Rows>)>>,
-    /// Desktop's `stopTypingTimeout`: the chat with a typing notice, and the time of the last key.
-    pub typing: Option<(String, std::time::Instant)>,
     /// The mention pills of the composer text, which Desktop sends as `mentionedUserIDs`.
     pub mentions: Vec<Mention>,
     /// The custom emoji that the autocomplete or the picker put in the composer as ":name:", Desktop's
@@ -3091,6 +3096,9 @@ pub struct BeeperGuiApp {
     pub flash: Option<(String, std::time::Instant)>,
     /// Desktop's `BrandTypingIndicator` of each chat as it shows (`true`) or hides: who types, and since when.
     typing_shown: HashMap<String, (Vec<String>, bool, std::time::Instant)>,
+    /// Desktop's `stopTypingTimeout` of each chat, which the composers of the chat, of its threads and of its windows
+    /// share: the chats with a typing notice, and the time of their last key.
+    typing: HashMap<String, std::time::Instant>,
     last_click: Option<(String, std::time::Instant)>,
     /// While `cycling`, a selection does not reorder the history of the opened chats.
     cycling: bool,
@@ -3345,7 +3353,7 @@ impl BeeperGuiApp {
             delete_target, delete_chats, devices_busy, report_spam, time_edit, recorder, talk, queued, selection,
             select_mode, selection_menu, show_command_palette, settings_query, settings_slider, settings_focus,
             settings_search_on, settings_pick, pref_flash, networks, app_qr, integrations, token_ask, account_page,
-            quick_look_target, quick_open, hovered_chat, hover_at, unhovered, flash, typing_shown, status_banner,
+            quick_look_target, quick_open, hovered_chat, hover_at, unhovered, flash, typing_shown, typing, status_banner,
             relaunch_toast, key_banner_closed, toast, older_toasts, nudges, toast_dismissals, undo_stack, undo_note,
             pill_hover, sticky_banner, mobile_apps_toast, rail_float, sidebar_slide, dragging, rail_hover,
             header_hover, menu_bar, alt_alone, pin_hover, pin_drag, pin_slides, key_sort, user_hover, rail_drag,
@@ -4518,9 +4526,8 @@ impl BeeperGuiApp {
             UiMessage::InThread(msg) => return self.in_thread(*msg),
             UiMessage::TypingTick => {
                 let client = self.store.read().matrix.clone();
-                let panes = std::iter::once(&mut self.pane).chain(self.chat_windows.iter_mut().map(|w| &mut w.1));
                 let ended: Vec<String> =
-                    panes.filter_map(|p| p.typing.take_if(|t| t.1.elapsed() >= TYPING_STOP)).map(|t| t.0).collect();
+                    self.typing.extract_if(|_, at| at.elapsed() >= TYPING_STOP).map(|(chat, _)| chat).collect();
                 let notices = ended.into_iter().filter_map(|chat| {
                     let stop = beeper_core::matrix::typing(client.clone()?, chat, false);
                     Some(Task::future(stop).discard())
@@ -5098,7 +5105,7 @@ impl BeeperGuiApp {
         let expiry = expiry.map(|e| e.map(|_| UiMessage::AnimationTick));
         let remind = due.0.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Reminders(reminders::Msg::Check)));
         let send = due.1.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Scheduled(scheduled::Msg::Check)));
-        let typed = self.panes().filter_map(|p| p.typing.as_ref().map(|t| t.1)).min();
+        let typed = self.typing.values().min();
         let typing = typed.map(|t| {
             let left = TYPING_STOP.saturating_sub(t.elapsed()).max(Duration::from_millis(1));
             iced::time::every(left).map(|_| UiMessage::TypingTick)
@@ -5364,7 +5371,7 @@ impl BeeperGuiApp {
             (None, false) => self.forward.as_ref().map(|f| self.view_forward(f)),
         };
         let scrim = modal.filter(|_| in_main).map(|m| {
-            mouse_area(
+            backdrop(
                 container(mouse_area(m).on_press(UiMessage::Noop))
                     .center(Fill)
                     .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.2), 0.0)),
@@ -5372,7 +5379,7 @@ impl BeeperGuiApp {
             .on_press(UiMessage::CloseModals)
         });
         let select = self.search_select.filter(|_| self.show_command_palette).map(|(chip, at)| {
-            mouse_area(
+            backdrop(
                 container(mouse_area(self.view_search_select(chip, at)).on_press(UiMessage::Noop))
                     .padding(Padding::ZERO.left(at.x).top(at.y))
                     .width(Fill)
@@ -5508,7 +5515,7 @@ impl BeeperGuiApp {
         let main_menu = main_menu.or(chat_menu.filter(|_| in_list));
         // Desktop's native menus take the arrows, Home, End and Enter.
         let layer = |(m, x, y): (El<'a>, f32, f32), close: UiMessage| -> El<'a> {
-            mouse_area(
+            backdrop(
                 container(mouse_area(menu_keys::menu(m)).on_press(UiMessage::Noop))
                     .padding(Padding::ZERO.left(x).top(y))
                     .width(Fill)
@@ -5777,9 +5784,7 @@ impl BeeperGuiApp {
             );
             let info = column![
                 txt(network_name(&c.account_id).to_string(), 16.0).color(p.strong),
-                txt(account_user(&st, &c.account_id), 12.0)
-                    .line_height(Pixels(rem(16.0)))
-                    .color(p.strong.scale_alpha(0.4)),
+                txt(account_user(&st, &c.account_id), 12.0).line_height(lh(16.0)).color(p.strong.scale_alpha(0.4)),
             ];
             let check = on.then(|| ic(icon::CHECK, 13.0).color(p.strong));
             let row = row![].push(check).push(face).push(info).spacing(8).align_y(Center);
@@ -5872,7 +5877,7 @@ impl BeeperGuiApp {
         let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
         let face = container(self.face(u.img_url.as_deref(), &name, 80.0, 0.0)).padding(4).style(lifted(44.0));
         let high = CARD_H + if id.is_some() { 15.0 } else { 0.0 };
-        let info = column![semi(name, 14.0).line_height(Pixels(rem(18.0))).color(p.strong).width(Fill).align_x(Center)]
+        let info = column![semi(name, 14.0).line_height(lh(18.0)).color(p.strong).width(Fill).align_x(Center)]
             .push(id.map(|i| txt(i, 12.0).color(p.sub).width(Fill).align_x(Center)));
         let muted = btn_style([p.chip; 3], [p.strong; 3], 9999.0);
         let actions = (u.is_self != Some(true) && self.can(&c.account_id, "create_dm")).then(|| {

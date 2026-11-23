@@ -460,7 +460,7 @@ impl BeeperGuiApp {
             .id("new-chat-input")
             .on_input(|q| UiMessage::NewChat(new_chat::Msg::Query(q)))
             .size(rem(14.0))
-            .line_height(Pixels(rem(18.0)))
+            .line_height(lh(18.0))
             .padding([7, 10])
             .style(input_style(p.chip, p.strong, p.sub, p.accent, 8.0));
         let input = if joining { input } else { input.on_submit(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)) };
@@ -493,7 +493,7 @@ impl BeeperGuiApp {
                 .align_y(Center),
         )
         .height(24)
-        .padding(Padding { top: 2.0, right: 4.0, bottom: 2.0, left: 6.0 })
+        .padding(pad(2.0, 4.0, 2.0, 6.0))
         .style(btn_style([p.chip; 3], [p.strong; 3], 12.0))
         .on_press(UiMessage::NewChat(new_chat::Msg::ToggleAccounts));
         let shade = Color { a: 0.1, ..p.strong };

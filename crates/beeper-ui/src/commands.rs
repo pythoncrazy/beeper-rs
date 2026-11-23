@@ -12,8 +12,7 @@ use crate::rail;
 use crate::reminders;
 use crate::scheduled;
 use crate::settings;
-use crate::style::rem;
-use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
+use crate::style::{bar, brand_svg, ell, fill_box, lh, scroll_style, semi, text_width, txt, Palette, CLEAR};
 use crate::threads;
 use crate::windows;
 use crate::{
@@ -28,7 +27,7 @@ use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
 use iced::widget::operation;
 use iced::widget::{column, container, mouse_area, row, scrollable, svg, Row, Space};
-use iced::{Center, Fill, Padding, Pixels, Task};
+use iced::{Center, Fill, Padding, Task};
 
 /// A command: Desktop shows a disabled command, which has no message, at 70% opacity.
 #[derive(Default)]
@@ -879,7 +878,7 @@ impl BeeperGuiApp {
                 && (i == 0 || cmds[i - 1].category != c.category))
                 .then(|| {
                     let head = semi(if c.category.is_empty() { "Commands" } else { c.category }, 12.0);
-                    container(head.line_height(Pixels(rem(15.0))).color(p.sub))
+                    container(head.line_height(lh(15.0)).color(p.sub))
                         .center_y(32)
                         .padding(Padding::ZERO.left(12.0).right(4.0))
                 });

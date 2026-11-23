@@ -302,7 +302,7 @@ impl BeeperGuiApp {
             false => (p.card, p.strong),
         };
         let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {
-            let label = semi(*label, 13.0).line_height(Pixels(rem(18.0))).color(fg);
+            let label = semi(*label, 13.0).line_height(lh(18.0)).color(fg);
             let action = match t.dismiss {
                 Some(_) => msg.clone(),
                 None => UiMessage::Toast(toasts::Msg::Action(older, Box::new(msg.clone()))),
@@ -329,7 +329,7 @@ impl BeeperGuiApp {
             }
         };
         let below = (!t.buttons.is_empty()).then(|| {
-            let dot = || -> El { semi(" • ", 13.0).line_height(Pixels(rem(18.0))).color(fg).into() };
+            let dot = || -> El { semi(" • ", 13.0).line_height(lh(18.0)).color(fg).into() };
             let mut buttons = t.buttons.iter().map(|b| -> El { btn(b, fg).into() });
             let first = buttons.next().expect("a button");
             Row::with_children(std::iter::once(first).chain(buttons.flat_map(|b| [dot(), b])))

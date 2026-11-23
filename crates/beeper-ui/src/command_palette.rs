@@ -367,9 +367,9 @@ impl BeeperGuiApp {
         };
         let h24 = st.settings.pref("timeFormat") == 1;
         let head = row![
-            txt(label, 11.0).line_height(Pixels(rem(7.0))).color(dim(p.text)),
+            txt(label, 11.0).line_height(lh(7.0)).color(dim(p.text)),
             Space::new().width(Fill),
-            txt(list_ts(&m.timestamp, h24), 11.0).line_height(Pixels(rem(7.0))).color(dim(p.text))
+            txt(list_ts(&m.timestamp, h24), 11.0).line_height(lh(7.0)).color(dim(p.text))
         ];
         let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.received, p.strong) };
         let (bg, fg) = (dim(bg), dim(fg));
@@ -404,8 +404,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let c = st.chat(&m.chat_id);
         let card = |title: String, sub: El<'static>| -> El<'static> {
-            let body =
-                column![clamp(&title, 94.0, 3, 10.0, Weight::Normal).line_height(Pixels(rem(12.0))).color(p.text), sub];
+            let body = column![clamp(&title, 94.0, 3, 10.0, Weight::Normal).line_height(lh(12.0)).color(p.text), sub];
             container(body).align_bottom(Fill).width(Fill).padding(8).style(fill_box(p.window, 8.0)).into()
         };
         let ring = if lit == Some(i) { 3.0 } else { 0.0 };

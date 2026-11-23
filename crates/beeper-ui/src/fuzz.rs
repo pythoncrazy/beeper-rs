@@ -3062,21 +3062,101 @@ fn typing_notices_like_desktop() {
     let note = "!note_self:beeper.com";
     let mut app = demo_app("typing");
     let _ = app.update(UiMessage::SelectChat(note.into()));
-    let typing = |app: &BeeperGuiApp| app.pane.typing.as_ref().map(|t| t.0.clone());
+    let typing = |app: &BeeperGuiApp| app.typing.keys().cloned().collect::<Vec<_>>();
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed("a".into())));
-    assert_eq!(typing(&app), Some(note.to_string()), "a key starts the notice");
+    assert_eq!(typing(&app), [note], "a key starts the notice");
     let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
-    assert_eq!(typing(&app), None, "a send ends the notice");
+    assert!(typing(&app).is_empty(), "a send ends the notice");
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(Some((now_unix_millis() + 3_600_000, false)))));
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed("later".into())));
-    assert_eq!(typing(&app), None, "a Send Later message has no notice");
+    assert!(typing(&app).is_empty(), "a Send Later message has no notice");
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(None)));
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed("b".into())));
     let _ = app.update(UiMessage::TypingTick);
-    assert_eq!(typing(&app), Some(note.to_string()), "the notice stays for 3 seconds");
-    app.pane.typing.as_mut().unwrap().1 -= TYPING_STOP;
+    assert_eq!(typing(&app), [note], "the notice stays for 3 seconds");
+    // Desktop's `stopTypingTimeout` is that of the chat: another chat has its own, and the notice of the chat that
+    // you leave ends on its time.
+    let other = "!sl_infra:beeper.com";
+    app.select_chat(other);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("c".into())));
+    let mut both = typing(&app);
+    both.sort();
+    assert_eq!(both, [note, other], "each chat has its notice");
+    app.typing.values_mut().for_each(|at| *at -= TYPING_STOP);
+    let _ = app.update(UiMessage::TypingTick);
+    assert!(typing(&app).is_empty(), "the notices end 3 seconds after the last key");
+}
+
+/// Desktop's thread composer types in its chat (`onActivity` of `ThreadedRepliesView` is the chat's `onTyping`): the
+/// notice is that of the chat, which its composer shares, it ends 3 seconds after the last key in either of them,
+/// and a reply in the thread leaves it (`sendThreadedReply` does not call `stopTyping`).
+#[test]
+fn thread_typing_notices_like_desktop() {
+    let mut app = demo_app("thread-typing");
+    let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
+    app.select_chat(chat);
+    let _ = app.update(UiMessage::Thread(threads::Msg::Show(root.into())));
+    let typing = |app: &BeeperGuiApp| app.typing.get(chat).copied();
+    let in_thread = |app: &mut BeeperGuiApp, m: composer::Msg| {
+        let _ = app.update(UiMessage::InThread(Box::new(UiMessage::Composer(m))));
+    };
+    in_thread(&mut app, composer::Msg::Changed("a".into()));
+    let started = typing(&app).expect("a key in the thread composer starts the notice of the chat");
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("b".into())));
+    assert!(typing(&app).is_some_and(|at| at > started), "a key in the chat's composer keeps the same notice");
+    let edit = text_editor::Edit::Paste(Arc::new("reply".into()));
+    in_thread(&mut app, composer::Msg::Edit(text_editor::Action::Edit(edit)));
+    in_thread(&mut app, composer::Msg::Submit);
+    assert!(typing(&app).is_some(), "a reply in the thread keeps the notice");
+    app.typing.values_mut().for_each(|at| *at -= TYPING_STOP);
     let _ = app.update(UiMessage::TypingTick);
     assert_eq!(typing(&app), None, "the notice ends 3 seconds after the last key");
+}
+
+/// The thread composer keeps the focus as its first key shows "Also send to chat" above the text field, so the next
+/// keys go on in the thread composer, not to the chat's composer, which takes the keys typed outside a text field.
+#[test]
+fn the_thread_composer_keeps_the_focus_as_it_grows() {
+    use iced::advanced::renderer::Headless as _;
+    use iced_test::simulator::typewrite;
+    let mut app = demo_app("thread-focus");
+    let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
+    app.select_chat(chat);
+    let _ = app.update(UiMessage::Thread(threads::Msg::Show(root.into())));
+    let main = app.main_window.expect("the main window");
+    let size = Size::new(1200.0, 800.0);
+    let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+        iced::Font::DEFAULT,
+        iced::Pixels(13.0),
+        Some("tiny-skia"),
+    ))
+    .expect("a headless renderer");
+    let mut cache = iced_runtime::user_interface::Cache::default();
+    for (k, key) in ["x", "y", "z"].into_iter().enumerate() {
+        let mut ui = iced_runtime::UserInterface::build(app.view(main), size, cache, &mut renderer);
+        if k == 0 {
+            ui.operate(
+                &renderer,
+                &mut iced::advanced::widget::operation::focusable::focus("thread-composer-input".into()),
+            );
+        }
+        let mut messages = Vec::new();
+        let events: Vec<iced::Event> = typewrite(key).collect();
+        let _ = ui.update(
+            &events,
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut messages,
+        );
+        cache = ui.into_cache();
+        for m in messages {
+            let _ = app.update(m);
+        }
+    }
+    let thread = app.pane.thread.as_ref().expect("the thread pane");
+    assert_eq!(thread.composer.text(), "xyz", "the keys go on in the thread composer");
+    assert_eq!(app.pane.composer.text(), "", "and not to the chat's composer");
 }
 
 #[test]
@@ -10708,4 +10788,127 @@ fn windows_follow_the_text_scaling() {
         None
     });
     assert_eq!(resized, Some(Size::new(1000.0, 750.0)), "the window keeps its size in Desktop's pixels");
+}
+
+/// The pointer at `at` of the main window, `size` large: the messages of a move there, the cursor that it sets, and
+/// whether the wheel there scrolls the timeline, which moves the row of the message `mid`.
+fn pointer_over(app: &BeeperGuiApp, size: Size, at: Point, mid: &str) -> (Vec<UiMessage>, mouse::Interaction, bool) {
+    use iced::advanced::renderer::Headless as _;
+    let main = app.main_window.expect("the main window");
+    let moved = [iced::Event::Mouse(mouse::Event::CursorMoved { position: at })];
+    let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+        iced::Font::DEFAULT,
+        iced::Pixels(13.0),
+        Some("tiny-skia"),
+    ))
+    .expect("a headless renderer");
+    let mut ui = iced_runtime::UserInterface::build(app.view(main), size, Default::default(), &mut renderer);
+    let mut messages = Vec::new();
+    let cursor = mouse::Cursor::Available(at);
+    let (state, _) = ui.update(&moved, cursor, &mut renderer, &mut iced::advanced::clipboard::Null, &mut messages);
+    let iced_runtime::user_interface::State::Updated { mouse_interaction, .. } = state else {
+        panic!("the interface is up to date")
+    };
+    let row = iced::widget::Id::from(format!("msg-{mid}"));
+    let mut sim = Simulator::with_size(Default::default(), size, app.view(main));
+    let before = sim.find(row.clone()).expect("the message").visible_bounds();
+    sim.point_at(at);
+    let wheel = mouse::Event::WheelScrolled { delta: ScrollDelta::Lines { x: 0.0, y: 3.0 } };
+    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at }), iced::Event::Mouse(wheel)]);
+    let scrolled = sim.find(row).expect("the message").visible_bounds() != before;
+    (messages, mouse_interaction, scrolled)
+}
+
+/// Desktop's backdrops: a modal (`.modal-container`, the command bar's `.modal-dimmer`, a native message box), a
+/// menu or a picker in its popover (`.portal`) and a sheet (`SheetFrame-module__scrim`) cover the window, so that the
+/// messages under them show no hover toolbar, take no wheel and set no cursor until they close.
+#[test]
+fn backdrops_take_the_pointer_like_desktop() {
+    let size = Size::new(1200.0, 800.0);
+    let mut app = demo_app("backdrops");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    app.pane.size = size;
+    let ids: Vec<String> = app.timeline(&app.store.read()).0.iter().map(|m| m.id.clone()).collect();
+    // A message that shows under the top of the timeline, and the left and the right of its row: each modal leaves
+    // one of them bare.
+    let main = app.main_window.expect("the main window");
+    let mut sim = Simulator::with_size(Default::default(), size, app.view(main));
+    let (mid, sides) = ids
+        .iter()
+        .find_map(|id| {
+            let b = sim.find(iced::widget::Id::from(format!("msg-{id}"))).ok()?.visible_bounds()?;
+            let sides = [Point::new(b.x + 30.0, b.center_y()), Point::new(b.x + b.width - 30.0, b.center_y())];
+            (b.y > 120.0 && b.height > 30.0 && b.y + b.height < 300.0).then(|| (id.clone(), sides))
+        })
+        .expect("a message near the top");
+    let hovers = |m: &[UiMessage]| m.iter().any(|m| matches!(m, UiMessage::Message(message::Msg::HoverEnter(_))));
+    for at in sides {
+        let (moved, _, scrolled) = pointer_over(&app, size, at, &mid);
+        assert!(hovers(&moved) && scrolled, "with nothing open the message takes the pointer: {moved:?}");
+    }
+    let other = ids.last().expect("a message").clone();
+    let menu_at = Point::new(900.0, 400.0);
+    type Open<'a> = Box<dyn Fn(&mut BeeperGuiApp) + 'a>;
+    let opens: Vec<(&str, usize, Open)> = vec![
+        (
+            "the message menu",
+            0,
+            Box::new(|a: &mut BeeperGuiApp| {
+                a.cursor.set(menu_at);
+                let _ = a.update(UiMessage::Message(message::Msg::OpenMenu(other.clone())));
+            }),
+        ),
+        (
+            "the Delete dialog",
+            0,
+            Box::new(|a: &mut BeeperGuiApp| {
+                let _ = a.update(UiMessage::Message(message::Msg::AskDelete(vec![other.clone()])));
+            }),
+        ),
+        (
+            "the reaction picker",
+            0,
+            Box::new(|a: &mut BeeperGuiApp| {
+                a.cursor.set(menu_at);
+                let _ = a.update(UiMessage::Message(message::Msg::React(other.clone())));
+            }),
+        ),
+        ("the command bar", 0, Box::new(|a: &mut BeeperGuiApp| a.show_command_palette = true)),
+        (
+            "the chat menu",
+            0,
+            Box::new(|a: &mut BeeperGuiApp| {
+                a.cursor.set(menu_at);
+                let _ = a.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(NOTE_CHAT_ID.into())));
+            }),
+        ),
+        (
+            "the Keyboard Shortcuts modal",
+            0,
+            Box::new(|a: &mut BeeperGuiApp| {
+                let _ = a.update(UiMessage::Hotkeys(hotkeys::Msg::Modal(Some(String::new()))));
+            }),
+        ),
+        ("the menu bar menu", 0, Box::new(|a: &mut BeeperGuiApp| a.menu_bar = Some(Some(0)))),
+        (
+            "the forward picker",
+            1,
+            Box::new(|a: &mut BeeperGuiApp| {
+                use iced::keyboard::{key::Named, Key, Modifiers};
+                let _ = a.update(UiMessage::KeyPressed(Key::Named(Named::ArrowUp), Modifiers::empty()));
+                let _ = a.update(UiMessage::KeyPressed(Key::Character("f".into()), Modifiers::CTRL | Modifiers::SHIFT));
+                assert!(a.forward.is_some(), "the forward picker opens");
+            }),
+        ),
+    ];
+    for (k, (name, side, open)) in opens.into_iter().enumerate() {
+        let mut app = demo_app(&format!("backdrops-{k}"));
+        let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+        app.pane.size = size;
+        open(&mut app);
+        let (moved, cursor, scrolled) = pointer_over(&app, size, sides[side], &mid);
+        assert!(!hovers(&moved), "{name} keeps the hover from the message: {moved:?}");
+        assert!(!scrolled, "{name} keeps the wheel from the timeline");
+        assert_eq!(cursor, mouse::Interaction::Idle, "{name} sets the cursor");
+    }
 }
