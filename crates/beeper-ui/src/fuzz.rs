@@ -3779,7 +3779,7 @@ fn failed_files_show_not_sent_like_desktop() {
         mime: "application/pdf".into(),
         is_gif: false,
         size: (0, 0),
-        frames: vec![],
+        frames: vec![].into(),
         duration: None,
         sticker: None,
     };
