@@ -24,6 +24,8 @@ mod format;
 mod forward;
 mod gallery;
 mod gifs;
+#[cfg(target_os = "linux")]
+mod global_keys;
 pub mod hotkeys;
 mod i18n;
 mod idle;
@@ -4948,8 +4950,21 @@ impl BeeperGuiApp {
                 .chain(self.record_events())
                 .chain(self.video_ticks())
                 .chain(self.view_once_ticks())
-                .chain(self.idle_events()),
+                .chain(self.idle_events())
+                .chain(self.global_keys()),
         )
+    }
+
+    /// Desktop's global hotkeys, which it registers when they have keys.
+    fn global_keys(&self) -> Option<Subscription<UiMessage>> {
+        #[cfg(target_os = "linux")]
+        {
+            let st = self.store.read();
+            let keys = global_keys::GLOBAL.iter().map(|&n| (n, st.settings.hotkey_keys(n).to_string()));
+            Some(global_keys::subscription(keys.filter(|(_, k)| k != "disabled").collect()))
+        }
+        #[cfg(not(target_os = "linux"))]
+        None
     }
 
     /// The feeds of the store and the frames of GTK's title bars.
