@@ -274,13 +274,11 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced_test::simulator::simulator;
+    use crate::fuzz::clicks;
 
     /// The messages of a click on `label` in the menu of the scheduled message `id`.
     fn click(app: &BeeperGuiApp, id: &str, label: &str) -> Vec<UiMessage> {
-        let mut sim = simulator(app.view_scheduled_menu(&[id.to_string()], true).0);
-        let _ = sim.click(label).expect(label);
-        sim.into_messages().collect()
+        clicks(app.view_scheduled_menu(&[id.to_string()], true).0, label)
     }
 
     /// Desktop's scheduled message menu: Forward... after Copy, which forwards a copy of the message, and Reschedule

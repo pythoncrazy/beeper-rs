@@ -1139,8 +1139,8 @@ impl BeeperGuiApp {
                 _ => trf("You've reached the account limit. To add another account, either disable one of your current accounts, or upgrade to %s to raise your account limit.", &[&up]),
             };
             let upgrade = button(med(trf("Upgrade to %s", &[&up]), 13.0).color(p.strong))
+                .bare(p.strong)
                 .padding([8, 10])
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 9999.0))
                 .on_press(UiMessage::Settings(Msg::Open(SettingsTab::BeeperPlus)));
             let banner = column![
                 semi(tr("Add More Accounts"), 13.0).color(p.strong),
@@ -1339,8 +1339,8 @@ impl BeeperGuiApp {
                     let last = i == 3;
                     let link = button(container(txt(label, 13.0).color(p.link)).center_y(if last { 40 } else { 39 }))
                         .width(Fill)
+                        .bare(p.link)
                         .padding([0, 13])
-                        .style(btn_style([CLEAR; 3], [p.link; 3], 0.0))
                         .on_press(msg);
                     let line = container(Space::new()).width(Fill).height(1).style(fill_box(p.prefs_border, 0.0));
                     [Some(link.into()), (!last).then(|| line.into())].into_iter().flatten()
@@ -1364,8 +1364,8 @@ impl BeeperGuiApp {
         let copy = |i: u8, value: String| {
             let icon = if s.copied == Some(i) { &COPIED_ICON } else { &COPY_ICON };
             button(tinted(icon, 16.0, p.text))
+                .bare(p.text)
                 .padding(4)
-                .style(btn_style([CLEAR; 3], [p.text; 3], 4.0))
                 .on_press(UiMessage::Integrations(integrations::Msg::CopyField(i, value)))
         };
         let community = match (st.resolve_chat_idx(COMMUNITY_ROOM).is_some(), s.joining) {
@@ -1390,8 +1390,8 @@ impl BeeperGuiApp {
         let mut mcp: Vec<El<'a>> = Vec::new();
         for ((name, label), logo) in MCP_CLIENTS.into_iter().zip([&*CLAUDE_LOGO, &*CURSOR_LOGO, &*VSCODE_LOGO]) {
             let connect = button(txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(lh(16.0)).color(p.accent))
+                .bare(p.accent)
                 .padding([4, 8])
-                .style(btn_style([CLEAR; 3], [p.accent; 3], 20.0))
                 .on_press(UiMessage::Integrations(integrations::Msg::McpInstall(name)));
             let line = row![svg(logo.clone()).width(18).height(18), semi(name, 14.0).color(p.text)].spacing(8);
             let line = row![line.width(Fill).align_y(Center), connect]
@@ -1498,8 +1498,7 @@ impl BeeperGuiApp {
                 .collect(),
         };
         let plus = button(tinted(&ADD_ICON, 20.0, p.accent))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.accent; 3], 10.0))
+            .bare(p.accent)
             .on_press(UiMessage::Integrations(integrations::Msg::Add(true)));
         let approved = column![
             row![container(body(tr("Approved connections"), p.muted)).width(Fill), plus]
@@ -1982,9 +1981,9 @@ impl BeeperGuiApp {
         let remove = bridge.map(|_| {
             let label = semi(tr("Remove Account"), 13.0).color(p.danger).width(Fill).center();
             button(label)
+                .bare(p.danger)
                 .padding([5, 0])
                 .width(Fill)
-                .style(btn_style([CLEAR; 3], [p.danger; 3], 0.0))
                 .on_press(UiMessage::Accounts(accounts::Msg::AskRemove(id.into())))
                 .into()
         });

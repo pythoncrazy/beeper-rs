@@ -236,7 +236,7 @@ impl BeeperGuiApp {
         let label =
             row![tinted(b.icon(), 14.0, dim), text, tinted(&CHEVRON_FORWARD, 10.0, dim)].spacing(5).align_y(Center);
         let open = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{BEHAVIOR_MENU}{}", chat.id)));
-        let btn = button(label).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 0.0)).on_press(open);
+        let btn = button(label).bare(p.strong).on_press(open);
         Some(container(btn).center_x(Fill).clip(true).padding(Padding::ZERO.top(4.0).bottom(8.0)).into())
     }
 

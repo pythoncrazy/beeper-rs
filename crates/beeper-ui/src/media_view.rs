@@ -232,29 +232,12 @@ pub(crate) struct MediaWindow {
 impl MediaWindow {
     /// A Media window of `size` on the newest images and videos, before its first load.
     fn new(id: window::Id, size: Size) -> Self {
-        Self {
+        beeper_core::with_defaults!(Self {
             id,
-            tab: 0,
             size,
-            sent_by: 0,
-            oldest: false,
-            search: None,
-            query: String::new(),
-            typed: 0,
-            items: Vec::new(),
             more: true,
-            cursor: None,
-            loading: None,
-            generation: 0,
-            advance: false,
-            tab_at: None,
-            menu: None,
-            viewer: None,
-            item_menu: None,
-            select: false,
-            picked: Vec::new(),
-            deleting: None,
-        }
+        }, default: tab, sent_by, oldest, search, query, typed, items, cursor, loading, generation, advance, tab_at,
+            menu, viewer, item_menu, select, picked, deleting)
     }
 
     /// The loaded message `mid`.
@@ -914,7 +897,7 @@ impl BeeperGuiApp {
                 let face = container(self.thumb(a, 44.0, 6.0)).padding(2);
                 let face = face.style(bordered_box(white.scale_alpha(0.1), edge, 2.0, 8.0));
                 let open = UiMessage::Media(Msg::OpenCarousel(mid.clone(), *ai, true));
-                button(face).padding(0).style(btn_style([CLEAR; 3], [white; 3], 8.0)).on_press(open).into()
+                button(face).bare(white).on_press(open).into()
             });
             let row = container(Row::with_children(thumbs).spacing(4)).padding([6, 10]).width(Fill);
             let scroll = |d: mouse::ScrollDelta| {
@@ -1060,8 +1043,8 @@ impl BeeperGuiApp {
             let label = txt(tr(label), 11.0).color(p.strong);
             button(container(label).center_x(Fill))
                 .width(width)
+                .bare(p.strong)
                 .padding([2, 8])
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 20.0))
                 .on_press(UiMessage::Media(Msg::Tab(i)))
                 .into()
         });
@@ -1220,7 +1203,7 @@ impl BeeperGuiApp {
             true => UiMessage::Media(Msg::Pick(m.id.clone(), k)),
             false => UiMessage::Media(Msg::OpenCarousel(m.id.clone(), k, true)),
         };
-        let b = button(face).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 8.0));
+        let b = button(face).bare(p.strong);
         mouse_area(b.on_press(open)).on_right_press(UiMessage::Media(Msg::ItemMenu(Some((m.id.clone(), k))))).into()
     }
 
@@ -1495,17 +1478,12 @@ impl BeeperGuiApp {
                 if in_media {
                     self.media_mut().advance = false;
                 }
-                *self.carousel_mut() = Some(Carousel {
+                *self.carousel_mut() = Some(beeper_core::with_defaults!(Carousel {
                     mid,
                     ai,
-                    turns: 0,
-                    turned: None,
                     in_media,
-                    resume: None,
-                    menu: None,
-                    strip: None,
                     page: 1,
-                });
+                }, default: turns, turned, resume, menu, strip));
                 self.fit_carousel_video();
                 self.reload_failed();
                 return Task::batch([self.load_media(), self.media_viewer_more()]);

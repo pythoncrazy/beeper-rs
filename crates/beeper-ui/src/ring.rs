@@ -1,8 +1,8 @@
 use iced::advanced::layout::Layout;
+use iced::advanced::mouse;
 use iced::advanced::renderer::{self, Quad, Renderer as _};
 use iced::advanced::widget::{self, Widget};
-use iced::advanced::{mouse, Clipboard, Shell};
-use iced::{border, Background, Color, Element, Event, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{border, Background, Color, Element, Rectangle, Renderer, Size, Theme, Vector};
 
 /// CSS `box-shadow: 0 0 0 <width>px <color>`: a ring of `width` around `content`, outside its box like a spread
 /// shadow, so the layout does not move. Desktop draws its focus rings this way, or as an `outline` with an
@@ -33,22 +33,16 @@ impl<Message> Ring<'_, Message> {
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Ring<'_, Message> {
-    crate::delegate::delegate!(children, diff, size, layout, operate, mouse_interaction, overlay(Message));
-
-    fn update(
-        &mut self,
-        tree: &mut widget::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
-        viewport: &Rectangle,
-    ) {
-        let content = &mut tree.children[0];
-        self.content.as_widget_mut().update(content, event, layout, cursor, renderer, clipboard, shell, viewport);
-    }
+    crate::delegate::delegate!(
+        children,
+        diff,
+        size,
+        layout,
+        operate,
+        update(Message),
+        mouse_interaction,
+        overlay(Message)
+    );
 
     fn draw(
         &self,

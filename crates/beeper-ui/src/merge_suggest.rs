@@ -384,8 +384,7 @@ impl BeeperGuiApp {
         .spacing(6)
         .width(Fill);
         let close = button(container(ic(icon::CLOSE, 16.0).color(p.muted)).center(28))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.muted; 3], 8.0))
+            .bare(p.muted)
             .on_press(msg(Msg::Dismiss(s.keys.clone())));
         let line = row![body, merge, close].spacing(12).align_y(Center);
         let card = container(line).padding(pad(16.0, 12.0, 16.0, 16.0)).width(w).style(raised(
@@ -405,8 +404,7 @@ impl BeeperGuiApp {
         let s = (!st.settings.chat_info_merge_promo_dismissed).then(|| self.suggestion_of(st, &chat.id))??;
         let p = &self.pal;
         let close = button(container(ic(icon::CLOSE, 16.0).color(p.muted)).center(34))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.muted; 3], 17.0))
+            .bare(p.muted)
             .on_press(UiMessage::MergeSuggest(Msg::DismissPromo));
         let top = row![bold_pill(), Space::new().width(Fill), close].align_y(Center).padding(pad(8.0, 8.0, 0.0, 16.0));
         let headline = match s.title.is_empty() {
@@ -506,7 +504,8 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fuzz::demo_app;
+    use crate::fuzz::{clicks, demo_app};
+    use crate::merged::tests::merged_app;
     use beeper_core::models::{BLOCK_USER, USER_BLOCKED};
     use iced_test::simulator::simulator;
 
@@ -530,21 +529,9 @@ mod tests {
         app
     }
 
-    /// A merged chat of Kai on Instagram and Lena on Signal, open.
-    fn merged_app(name: &str) -> (BeeperGuiApp, String) {
-        let mut app = demo_app(name);
-        let members = Some(vec![KAI.to_string(), LENA.to_string()]);
-        let title = Some("Friends".to_string());
-        let (chat, _) =
-            app.store.write().create_or_start_chat("hungryserv", "single", title, vec![], None, members, None);
-        let _ = app.update(UiMessage::SelectChat(chat.id.clone()));
-        (app, chat.id)
-    }
-
+    /// Clicks `label` in the main window, and returns the messages of the click.
     fn clicked(app: &BeeperGuiApp, label: &str) -> Vec<UiMessage> {
-        let mut sim = simulator(app.view_main());
-        let _ = sim.click(label).unwrap_or_else(|_| panic!("{label}"));
-        sim.into_messages().collect()
+        clicks(app.view_main(), label)
     }
 
     /// Desktop's `mergeSuggestions`: the direct chats whose other people share a `tel:`, `mailto:` or `name:` key,

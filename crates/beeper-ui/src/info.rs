@@ -331,8 +331,8 @@ impl BeeperGuiApp {
         // A merged chat has no Leave Chat (`F0e`); Unmerge splits it.
         let leave = (chat.member_actions & MEMBER_LEAVE != 0 && chat.merge.is_none()).then(|| {
             let leave = button(semi(tr("Leave Chat"), 14.0).line_height(lh(18.0)).color(p.strong))
+                .bare(p.strong)
                 .padding([0, 8])
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
                 .on_press(UiMessage::ChatList(chat_list::Msg::AskLeave(cid.into())));
             container(leave).padding(Padding::ZERO.top(8.0)).into()
         });
@@ -843,8 +843,7 @@ impl BeeperGuiApp {
                 atts.chain(urls).map(|face| {
                     let face = stack![face].push(self.media_sender(chat, m)).width(tile).height(tile);
                     button(face)
-                        .padding(0)
-                        .style(btn_style([CLEAR; 3], [p.strong; 3], 4.0))
+                        .bare(p.strong)
                         .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(chat.id.clone(), m.id.clone())))
                         .into()
                 })
@@ -956,8 +955,8 @@ impl BeeperGuiApp {
             None if st.bookmarked.contains_key(target) => {
                 let title = semi(tr("Message unavailable"), 11.0).color(p.strong);
                 let remove = button(ic(icon::CLOSE, 16.0).color(p.sub))
+                    .bare(p.sub)
                     .padding(4)
-                    .style(btn_style([CLEAR; 3], [p.sub; 3], 8.0))
                     .on_press_maybe(restored.then(|| UiMessage::Info(info::Msg::RemoveBookmark(target.into()))));
                 let text = tr("It was deleted or is no longer available.");
                 (row![blank(), lines(title.into(), text), remove], None)
@@ -967,11 +966,7 @@ impl BeeperGuiApp {
                 (row![blank(), lines(title.into(), "")], None)
             }
         };
-        let btn = button(line.spacing(8).align_y(Center))
-            .padding(8)
-            .width(Fill)
-            .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-            .on_press_maybe(jump);
+        let btn = button(line.spacing(8).align_y(Center)).bare(p.strong).padding(8).width(Fill).on_press_maybe(jump);
         mouse_area(btn).on_right_press(menu).into()
     }
 }

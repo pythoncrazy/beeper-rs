@@ -610,8 +610,7 @@ impl BeeperGuiApp {
         let media = UiMessage::Media(media_view::Msg::Open);
         let settings = UiMessage::Settings(settings::Msg::Open(SettingsTab::General));
         let me_btn = button(self.face(me.img_url.as_deref(), me.full_name.as_deref().expect("self name"), 36.0, 0.0))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
+            .bare(p.text)
             .on_press(settings.clone());
         let me_btn = self.target(window, "rail-settings", me_btn, Keys::press(settings), Look::Hidden);
         let footer = column![
@@ -1060,8 +1059,8 @@ impl BeeperGuiApp {
             container(column![search, stack![list].push(shade)]).height(Fill).clip(true).style(fill_box(p.card, 12.0));
         let new = st.feature("labels-v2").show.then(|| {
             let link = button(txt(tr("New Label"), 13.0).color(p.accent))
+                .bare(p.accent)
                 .padding([4, 8])
-                .style(btn_style([CLEAR; 3], [p.accent; 3], 8.0))
                 .on_press(edit(SpacesEdit::NewLabel));
             // Desktop's `Button` with `rounded`.
             let keys = Keys::press(edit(SpacesEdit::NewLabel));

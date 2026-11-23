@@ -138,10 +138,7 @@ impl BeeperGuiApp {
             let handle = tinted(&DRAG_HANDLE, 16.0, handle_color.scale_alpha(if shows { fade } else { 0.0 }));
             let handle = mouse_area(handle).interaction(mouse::Interaction::Move);
             let gone = (n > 1).then(|| edit(Msg::Remove(label.clone())));
-            let remove = button(ic(icon::CLOSE, 14.0))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.text.scale_alpha(fade); 3], 0.0))
-                .on_press_maybe(gone.clone());
+            let remove = button(ic(icon::CLOSE, 14.0)).bare(p.text.scale_alpha(fade)).on_press_maybe(gone.clone());
             let remove = self.plain(format!("time-remove-{label}"), remove, gone);
             let icons = row![handle, remove].spacing(6).align_y(Center).padding(Padding::ZERO.left(8.0));
             let line = mouse_area(row![labels, icons].align_y(Center))

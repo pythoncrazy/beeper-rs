@@ -189,10 +189,7 @@ impl BeeperGuiApp {
                 false => ic(icon::EXPAND_MORE, 20.0).color(p.strong).into(),
             };
             let face = row![semi(toggle_label, 13.0), chevron].align_y(Center);
-            button(container(face).center_x(Fill))
-                .padding(2)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 9999.0))
-                .on_press(UiMessage::Info(info::Msg::All))
+            button(container(face).center_x(Fill)).bare(p.strong).padding(2).on_press(UiMessage::Info(info::Msg::All))
         });
         let list = Column::new()
             .push(search)

@@ -624,10 +624,7 @@ pub(crate) static TAG_ICONS: std::sync::LazyLock<[svg::Handle; 10]> = std::sync:
         "M360-400h400L622-580l-92 120-62-80-108 140Zm-40 160q-33 0-56.5-23.5T240-320v-480q0-33 23.5-56.5T320-880h480q33 0 56.5 23.5T880-800v480q0 33-23.5 56.5T800-240H320Zm0-80h480v-480H320v480ZM160-80q-33 0-56.5-23.5T80-160v-560h80v560h560v80H160Zm160-720v480-480Z",
         "M798-120q-125 0-247-54.5T329-329Q229-429 174.5-551T120-798q0-18 12-30t30-12h162q14 0 25 9.5t13 22.5l26 140q2 16-1 27t-11 19l-97 98q20 37 47.5 71.5T387-386q31 31 65 57.5t72 48.5l94-94q9-9 23.5-13.5T670-390l138 28q14 4 23 14.5t9 23.5v162q0 18-12 30t-30 12ZM241-600l66-66-17-94h-89q5 41 14 81t26 79Zm358 358q39 17 79.5 27t81.5 13v-88l-94-19-67 67ZM241-600Zm358 358Z",
     ]
-    .map(|d| {
-        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="80 -880 800 800"><path d="{d}"/></svg>"#);
-        svg::Handle::from_memory(svg.into_bytes())
-    })
+    .map(|d| crate::path_svg("80 -880 800 800", d))
 });
 
 impl BeeperGuiApp {
@@ -1283,8 +1280,7 @@ impl BeeperGuiApp {
             let b = button(
                 container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26),
             )
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
+            .bare(p.strong)
             .on_press(msg.clone());
             self.header_target(key, b, msg)
         };
@@ -1292,8 +1288,7 @@ impl BeeperGuiApp {
         let options = (self.list().active_tab == InboxTab::Reminders).then(|| {
             let menu = UiMessage::Reminders(reminders::Msg::Menu);
             let btn = button(container(tinted(&TUNE, 18.0, p.strong)).center_x(30).center_y(26))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
+                .bare(p.strong)
                 .on_press(menu.clone());
             below(self.header_target("list-options", btn, menu), tr("Display Options"), vec![])
         });
@@ -1367,9 +1362,8 @@ impl BeeperGuiApp {
                 n => crate::style::fixed(n.to_string(), 11.0, Weight::Normal).line_height(1.0).color(fg).into(),
             };
             let trigger = button(container(trigger).padding(Padding::ZERO.left(6.0)).center_y(20))
-                .padding(0)
+                .bare(fg)
                 .width(if active { 16 } else { 0 })
-                .style(btn_style([CLEAR; 3], [fg; 3], 0.0))
                 .on_press(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
             let pill = row![trigger, container(ic(icon::FILTER_LIST, 16.8).color(fg)).center_x(27).center_y(20)];
             let ring = if active { p.accent } else { CLEAR };

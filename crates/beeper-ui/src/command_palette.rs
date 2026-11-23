@@ -302,7 +302,7 @@ impl BeeperGuiApp {
             ]
             .spacing(4)
             .align_y(Center);
-            let chip = button(body).padding([4, 13]).style(btn_style([CLEAR; 3], [fg; 3], 20.0));
+            let chip = button(body).bare(fg).padding([4, 13]);
             container(
                 chip.on_press_maybe((!disabled).then_some(UiMessage::CommandBar(commands::Msg::OpenSearchSelect(i)))),
             )
@@ -390,9 +390,9 @@ impl BeeperGuiApp {
             .width(Fill)
             .align_x(if mine { Right } else { iced::Left });
         let row = button(column![head, bubble].spacing(6))
+            .bare(p.text)
             .padding([4, 13])
             .width(Fill)
-            .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
             .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone())));
         mouse_area(container(row).id(format!("search-{i}"))).on_enter(search_hover(i)).into()
     }
@@ -441,8 +441,7 @@ impl BeeperGuiApp {
             .push(container(face).padding(6));
         let tile = container(tile).width(110).height(110).padding(ring).style(fill_box(p.rule, 8.0));
         let tile = button(tile)
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
+            .bare(p.text)
             .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone())));
         container(tile).id(format!("search-{i}")).into()
     }
