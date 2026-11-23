@@ -3013,6 +3013,8 @@ pub struct BeeperGuiApp {
     video: Option<video::Video>,
     view_once: view_once::ViewOnce,
     started: std::time::Instant,
+    /// The changes of the windows' sizes and places, so that only the last one saves them.
+    state_changes: u64,
 }
 
 impl BeeperGuiApp {
@@ -3266,6 +3268,7 @@ impl BeeperGuiApp {
             video: None,
             view_once: Default::default(),
             started: std::time::Instant::now(),
+            state_changes: 0,
             last_click: None,
             cycling: false,
         };
@@ -5212,6 +5215,7 @@ impl BeeperGuiApp {
             Event::Window(window::Event::Closed) => Some(UiMessage::Window(windows::Msg::Closed(id))),
             Event::Window(window::Event::CloseRequested) => Some(UiMessage::Window(windows::Msg::CloseRequested(id))),
             Event::Window(window::Event::Resized(size)) => Some(UiMessage::Window(windows::Msg::Resized(id, size))),
+            Event::Window(window::Event::Moved(_)) => Some(UiMessage::Window(windows::Msg::Moved(id))),
             Event::Window(window::Event::Focused) => Some(UiMessage::Window(windows::Msg::Focused(true))),
             Event::Window(window::Event::Unfocused) => Some(UiMessage::Window(windows::Msg::Focused(false))),
             Event::Window(window::Event::FileHovered(_)) => {
