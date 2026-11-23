@@ -381,16 +381,46 @@ fn power_levels(room: &Room, reads: &RoomReads) -> Value {
 
 /// What a chat keeps from the members of its room while their state does not change: the participants, the title and
 /// whether it is a DM. Reading thousands of members for each message of a big group took most of its sync.
+#[derive(Clone)]
 pub(crate) struct Known {
     participants: Vec<User>,
     title: String,
     dm: bool,
 }
 
+/// [`Known`] as SQLite keeps it for the next start. The JSON of a [`User`] leaves out its `manage` bits.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct KeptKnown {
+    participants: Vec<User>,
+    manage: Vec<u8>,
+    title: String,
+    dm: bool,
+}
+
+impl Known {
+    fn to_json(&self) -> String {
+        let manage = self.participants.iter().map(|u| u.manage).collect();
+        let k = KeptKnown { participants: self.participants.clone(), manage, title: self.title.clone(), dm: self.dm };
+        serde_json::to_string(&k).expect("members JSON")
+    }
+
+    /// The kept members of `json`, or none from another format.
+    fn from_json(json: &str) -> Option<Self> {
+        let k: KeptKnown = serde_json::from_str(json).ok()?;
+        let mut participants = k.participants;
+        if participants.len() != k.manage.len() {
+            return None;
+        }
+        participants.iter_mut().zip(k.manage).for_each(|(u, m)| u.manage = m);
+        Some(Self { participants, title: k.title, dm: k.dm })
+    }
+}
+
 /// What the chat of a room reads from the SDK's store besides the members: its state events and its room account data.
 /// Each is a read of the SDK's SQLite on a blocking thread, about 20 of them for a chat. Only a sync changes them, so
-/// the sync of a room that brings neither keeps them from the last sync of the room ([`RoomReadsCache`]).
-#[derive(Clone)]
+/// the sync of a room that brings neither keeps them from the last sync of the room ([`RoomReadsCache`]), and SQLite
+/// keeps them for the next start ([`start_pass`]).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RoomReads {
     /// The whole `m.room.create` event, whose time dates the chat, or null in an invite without it.
     create: Value,
@@ -471,9 +501,14 @@ impl RoomReadsCache {
         }
     }
 
+    /// Whether no response changed `room` after `epoch`, so that what was read of it since then is current.
+    fn current(&self, room: &str, epoch: u64) -> bool {
+        self.changed.get(room).is_none_or(|&c| c <= epoch)
+    }
+
     /// Keeps the `reads` of `room` that began at `epoch`, unless a response changed the room after that.
     fn put(&mut self, room: &str, epoch: u64, reads: Arc<RoomReads>) {
-        if self.changed.get(room).is_none_or(|&c| c <= epoch) {
+        if self.current(room, epoch) {
             self.rooms.insert(room.into(), reads);
         }
     }
@@ -485,6 +520,12 @@ fn member_actions(features: Option<&Value>) -> u8 {
         let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
         MEMBER_ACTIONS.iter().enumerate().filter(|(_, k)| on(k)).fold(0, |m, (i, _)| m | 1 << i)
     })
+}
+
+/// [`members`] as a [`Known`].
+async fn read_members(room: &Room, reads: &RoomReads) -> Known {
+    let (participants, title, dm) = members(room, reads).await;
+    Known { participants, title, dm }
 }
 
 /// The participants of a room from its members, its title and whether it is a DM, like Desktop's `buildTitle` and
@@ -603,14 +644,11 @@ async fn chat(
     reads: &RoomReads,
     accounts: &[BridgeAccountInfo],
     rules: &Value,
-    known: Option<Known>,
+    known: Known,
     globals: &Globals,
 ) -> Chat {
     let bridge = &reads.bridge;
-    let (mut items, title, dm) = match known {
-        Some(k) => (k.participants, k.title, k.dm),
-        None => members(room, reads).await,
-    };
+    let Known { participants: mut items, title, dm } = known;
     let me = room.own_user_id();
     let features = &reads.features;
     let (file, room_features) = file_features(features.as_ref(), bridge);
@@ -1631,7 +1669,8 @@ async fn sync_invite(store: &SharedStore, room: &Room, globals: &Globals) {
         (st.bridge_accounts.clone(), st.inbox_rules.clone())
     };
     let reads = RoomReads::read(room, RoomReads::create(room).await).await;
-    let mut chat = chat(room, &reads, &accounts, &rules, None, globals).await;
+    let known = read_members(room, &reads).await;
+    let mut chat = chat(room, &reads, &accounts, &rules, known, globals).await;
     // Desktop lists the own invite as a pending member that the inviter added.
     if let Ok(invite) = room.invite_details().await {
         let me = invite.invitee;
@@ -1672,7 +1711,7 @@ async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>,
         let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
         (v["type"] == "m.room.member" && v["state_key"] == me.as_str()).then(|| s(&v["event_id"])).flatten()
     });
-    sync_room_after(store, room, events, None, Some(globals)).await;
+    sync_room_after(store, room, events, Pass::Fresh, Some(globals)).await;
     let mut st = store.write();
     // A merged chat that the user left is gone (`UNION_REMOVED`).
     let Some(idx) = st.resolve_chat_idx(&chat) else { return };
@@ -1683,12 +1722,12 @@ async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>,
 }
 
 pub(crate) async fn sync_room(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
-    sync_room_after(store, room, events, None, None).await;
+    sync_room_after(store, room, events, Pass::Fresh, None).await;
 }
 
 /// [`sync_room`] with the global account data of a pass over many rooms.
 async fn sync_room_with(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>, globals: &Globals) {
-    sync_room_after(store, room, events, None, Some(globals)).await;
+    sync_room_after(store, room, events, Pass::Fresh, Some(globals)).await;
 }
 
 /// What a sync gives with the events of a room.
@@ -1700,17 +1739,50 @@ struct Update {
     state_changed: bool,
 }
 
-/// [`sync_room`] with the `update` of a sync, which reads the receipts of its receipt events after it, and the global
-/// account data that the caller read, else read here.
+/// Where the members of a chat come from when they are not read again.
+enum Kept {
+    None,
+    /// The chat that the last sync of the room made.
+    Chat,
+    /// What the last run kept for the start pass.
+    Start(Known),
+}
+
+/// What [`sync_room_after`] takes from before instead of reading it from the SDK's store again.
+enum Pass {
+    /// Nothing: a refresh outside a sync, like [`sync_room`].
+    Fresh,
+    /// The reads and the members of a room that the sync did not change.
+    Sync(Update),
+    /// The start pass after a run that applied every sync that the SDK's store holds ([`start_pass`]): the reads that
+    /// the last run kept, which the pass put in the cache, and the members that it kept.
+    Start(Option<Known>),
+}
+
+/// [`sync_room`] with the `pass` of a sync or of the start, which reads the receipts of its receipt events after it,
+/// and the global account data that the caller read, else read here.
 async fn sync_room_after(
     store: &SharedStore,
     room: &Room,
     mut events: Vec<TimelineEvent>,
-    update: Option<Update>,
+    pass: Pass,
     globals: Option<&Globals>,
 ) {
-    let from_sync = update.is_some();
-    let (prev_batch, state_changed) = update.map_or((None, true), |u| (u.prev_batch, u.state_changed));
+    let joined = room.state() == RoomState::Joined;
+    // A sync reads the receipts of its receipt events after it. Those that the SDK's store holds at the start are of
+    // the syncs that the last run applied, after the messages that they read, so the start pass reads them only for
+    // the messages that it adds.
+    let receipts = match pass {
+        Pass::Fresh => Some(true),
+        Pass::Sync(_) => Some(false),
+        Pass::Start(_) => None,
+    };
+    // The members that the start pass kept, or whether a sync kept those of the chat.
+    let (prev_batch, cache, known) = match pass {
+        Pass::Fresh => (None, false, Kept::None),
+        Pass::Sync(u) => (u.prev_batch, true, if u.state_changed { Kept::None } else { Kept::Chat }),
+        Pass::Start(k) => (None, true, k.map_or(Kept::None, Kept::Start)),
+    };
     match room.room_id().as_str() {
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
         TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
@@ -1719,10 +1791,10 @@ async fn sync_room_after(
         id if MANAGED_ROOMS.contains(&id) => return,
         _ => {}
     }
-    // A sync takes the reads of a room that it did not change from the last sync of the room. Without one, as for
-    // [`sync_room`], they are read again, like the members.
-    let cached = from_sync && room.state() == RoomState::Joined;
-    let cached = cached.then(|| store.read().room_reads.rooms.get(room.room_id().as_str()).cloned()).flatten();
+    // A sync takes the reads of a room that it did not change from the last sync of the room, and the start pass those
+    // that the last run kept. Without them, as for [`sync_room`], they are read again, like the members.
+    let id = room.room_id().as_str();
+    let cached = (joined && cache).then(|| store.read().room_reads.rooms.get(id).cloned()).flatten();
     let epoch = store.read().room_reads.epoch;
     let create_event = match &cached {
         Some(r) => r.create.clone(),
@@ -1744,11 +1816,14 @@ async fn sync_room_after(
         true => Some(union_rooms(room).await),
         false => None,
     };
+    // SQLite keeps the fresh reads and members of a joined room for the next start.
+    let mut keep_reads = false;
     let mut reads = match cached {
         Some(r) => r,
         None => {
             let r = Arc::new(RoomReads::read(room, Some(create_event)).await);
-            store.write().room_reads.put(room.room_id().as_str(), epoch, r.clone());
+            store.write().room_reads.put(id, epoch, r.clone());
+            keep_reads = joined;
             r
         }
     };
@@ -1764,14 +1839,33 @@ async fn sync_room_after(
             &read
         }
     };
-    let rank = globals.pin_rank(room.room_id().as_str());
-    let known = (!state_changed && union.is_none() && room.state() == RoomState::Joined).then(|| {
-        let st = store.read();
-        // A chat that no sync made yet, like one copied from Desktop, reads its members.
-        let c = st.chat_idx_by_id.get(&chat_id).map(|&i| &st.chats[i]).filter(|c| c.notifiable.is_some())?;
-        Some(Known { participants: c.participants.items.clone(), title: c.title.clone(), dm: c.chat_type == "single" })
-    });
-    let mut chat = chat(room, &reads, &accounts, &rules, known.flatten(), globals).await;
+    let rank = globals.pin_rank(id);
+    let known = match known {
+        Kept::None => None,
+        Kept::Start(k) => Some(k),
+        Kept::Chat => {
+            let st = store.read();
+            // A chat that no sync made yet, like one copied from Desktop, reads its members. A personal name shows
+            // instead of the title, which stays under it.
+            let c = st.chat_idx_by_id.get(&chat_id).map(|&i| &st.chats[i]).filter(|c| c.notifiable.is_some());
+            c.map(|c| Known {
+                participants: c.participants.items.clone(),
+                title: c.room_title().to_string(),
+                dm: c.chat_type == "single",
+            })
+        }
+    };
+    let keeps_members = union.is_none() && joined;
+    let mut keep_members = None;
+    let known = match known.filter(|_| keeps_members) {
+        Some(k) => k,
+        None => {
+            let k = read_members(room, &reads).await;
+            keep_members = keeps_members.then(|| k.to_json());
+            k
+        }
+    };
+    let mut chat = chat(room, &reads, &accounts, &rules, known, globals).await;
     // Desktop's `rT`: a merged chat is single.
     if union.is_some() {
         chat.chat_type = "single".into();
@@ -1798,6 +1892,7 @@ async fn sync_room_after(
             events = page.chain(events).collect();
         }
     }
+    let receipts = receipts.unwrap_or(!events.is_empty());
     let (mut ops, mut non_messages, mut roots) = (Vec::new(), Vec::new(), BTreeSet::new());
     let hidden = store.read().settings.on("hiddenEvents");
     let mut names = reads.names.clone();
@@ -1817,8 +1912,10 @@ async fn sync_room_after(
     }
     if names.len() > reads.names.len() {
         Arc::make_mut(&mut reads).names = names;
-        store.write().room_reads.put(room.room_id().as_str(), epoch, reads.clone());
+        store.write().room_reads.put(id, epoch, reads.clone());
+        keep_reads = joined;
     }
+    let keep_reads = keep_reads.then(|| serde_json::to_string(&*reads).expect("room reads JSON"));
     let done = reads.done.as_ref().map(|d| (d["at_order"].as_i64(), d["updated_ts"].as_i64()));
     let reacted =
         ops.iter().filter_map(|o| if let Op::React(_, _, m) = o { Some(m.sort_key.clone()) } else { None }).max();
@@ -1831,6 +1928,9 @@ async fn sync_room_after(
         let mut st = store.write();
         // The writes of the room make one SQLite commit.
         st.batch(|st| {
+            if (keep_reads.is_some() || keep_members.is_some()) && st.room_reads.current(id, epoch) {
+                st.keep_room(id, keep_reads.as_deref(), keep_members.as_deref());
+            }
             // A pin changed here keeps its local place until the homeserver's `favourites_order` shows it.
             let rank = match st.local_flag(&chat_id, ChatFlag::Pinned) {
                 Some(true) => rank.or(st.pin_rank.get(&chat_id).copied()),
@@ -2046,7 +2146,7 @@ async fn sync_room_after(
         });
     }
     sync_thread_reads(store, room, roots).await;
-    if !from_sync {
+    if receipts {
         sync_receipts(store, room, None).await;
     }
 }
@@ -3944,11 +4044,6 @@ async fn chat_id(room: &Room) -> String {
     }
 }
 
-async fn has_utd(store: &SharedStore, room: &Room) -> bool {
-    let chat = chat_id(room).await;
-    !store.read().stored("chat_id = ?1 AND json ->> '$.text' = ?2 LIMIT 1", [&chat, UTD_TEXT]).is_empty()
-}
-
 async fn retry_undecrypted(client: Client, store: SharedStore) {
     let mut keys = client.encryption().room_keys_received_stream().await.expect("room key stream");
     while let Some(first) = keys.next().await {
@@ -5358,6 +5453,59 @@ pub async fn cancel_verification(store: &SharedStore, id: &str) -> Result<(), St
     }
 }
 
+/// What marks the sync that the chats show: the sync token of the SDK's store after it, and the build. [`on_sync`]
+/// marks each sync that it applied, after its writes.
+fn sync_mark(token: &str) -> String {
+    format!("{}:{token}", env!("BEEPER_CORE_SOURCE"))
+}
+
+/// The pass over the joined rooms at the start, before the first sync, which makes their chats again with the global
+/// account data, the accounts and the inbox rules of now, and loads the history of a first start or of a room with
+/// messages that wait for their keys.
+///
+/// The SDK's store holds the rooms as the last sync that it saved left them. When the last run applied that sync too
+/// ([`sync_mark`]), what it kept in SQLite of each room is current: the reads ([`RoomReads`]) of the rooms whose state
+/// and account data did not change since they were read, and the members of those whose state did not change. A sync
+/// drops what it changes ([`on_sync`]), only a sync changes them, and a read that began before such a sync is not
+/// kept. So the pass reads again from the SDK's store only what was not kept, instead of about 25 reads of the state,
+/// the account data and the members of each room. After a sync that the last run did not apply, as after a crash, or
+/// with another build, the pass reads everything again. Returns how many rooms took both their reads and their members
+/// from the last run.
+pub(crate) async fn start_pass(client: &Client, store: &SharedStore, globals: &Globals, first: bool) -> usize {
+    let token = client.state_store().get_kv_data(matrix_sdk::store::StateStoreDataKey::SyncToken).await;
+    let token = token.expect("read the sync token").and_then(|t| t.into_sync_token());
+    let kept = store.write().kept_rooms(token.map(|t| sync_mark(&t)).as_deref());
+    let current = kept.is_some();
+    let mut kept = kept.unwrap_or_default();
+    let rooms = client.joined_rooms();
+    store.write().initial_sync = (0, rooms.len());
+    let rooms = rooms.into_iter().map(|r| {
+        let (reads, members) = kept.remove(r.room_id().as_str()).unwrap_or_default();
+        let reads = reads.and_then(|r| serde_json::from_str::<RoomReads>(&r).ok());
+        (r, reads.map(Arc::new), members.as_deref().and_then(Known::from_json))
+    });
+    let rooms: Vec<_> = rooms.collect();
+    let taken = rooms.iter().filter(|(_, r, m)| r.is_some() && m.is_some()).count();
+    futures_util::stream::iter(rooms)
+        .for_each_concurrent(8, |(room, reads, members)| async move {
+            let chat = match &reads {
+                Some(r) => r.chat_id(&room),
+                None => chat_id(&room).await,
+            };
+            if let Some(r) = reads {
+                let mut st = store.write();
+                let epoch = st.room_reads.epoch;
+                st.room_reads.put(room.room_id().as_str(), epoch, r);
+            }
+            let events = if first || store.read().has_waiting(&chat) { history(&room).await } else { Vec::new() };
+            let pass = if current { Pass::Start(members) } else { Pass::Fresh };
+            sync_room_after(store, &room, events, pass, Some(globals)).await;
+            store.write().initial_sync.0 += 1;
+        })
+        .await;
+    taken
+}
+
 pub async fn run(store: SharedStore) {
     crate::cloud::install_tls();
     let mut rx = store.read().ws_tx.subscribe();
@@ -5403,18 +5551,7 @@ pub async fn run(store: SharedStore) {
         }
     }
     let first = !store.read().beeper_state.first_sync_done;
-    let rooms = client.joined_rooms();
-    store.write().initial_sync = (0, rooms.len());
-    futures_util::stream::iter(rooms)
-        .for_each_concurrent(8, |room| {
-            let (store, globals) = (store.clone(), &globals);
-            async move {
-                let events = if first || has_utd(&store, &room).await { history(&room).await } else { Vec::new() };
-                sync_room_with(&store, &room, events, globals).await;
-                store.write().initial_sync.0 += 1;
-            }
-        })
-        .await;
+    start_pass(&client, &store, &globals, first).await;
     if first {
         let mut st = store.write();
         st.beeper_state.first_sync_done = true;
@@ -5508,13 +5645,17 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             // The joined rooms whose state the response changes.
             let stateful: HashSet<String> =
                 resp.rooms.joined.iter().filter(|(_, u)| state_changed(u)).map(|(id, _)| id.to_string()).collect();
+            let mark = sync_mark(&resp.next_batch);
             {
                 let mut st = store.write();
-                // The SDK saved the response, so the reads of the rooms that it changes are read again.
+                // The SDK saved the response, so the reads of the rooms that it changes are read again, and the
+                // members of those whose state it changes.
                 let data = resp.rooms.joined.iter().filter(|(_, u)| !u.account_data.is_empty()).map(|(id, _)| id);
+                let data: Vec<String> = data.map(ToString::to_string).collect();
                 let others = resp.rooms.invited.keys().chain(resp.rooms.knocked.keys()).chain(resp.rooms.left.keys());
-                let changed = data.chain(others).map(ToString::to_string).chain(stateful.iter().cloned());
-                st.room_reads.changed(changed);
+                let members: Vec<String> = others.map(ToString::to_string).chain(stateful.iter().cloned()).collect();
+                st.drop_kept(&data, &members);
+                st.room_reads.changed(data.into_iter().chain(members));
                 // The homeserver answers again, so the changes that waited for it go now.
                 let back = std::mem::take(&mut st.sync_failing);
                 if back {
@@ -5555,7 +5696,7 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 }
                 let state_changed = stateful.contains(id.as_str());
                 let prev_batch = update.timeline.prev_batch;
-                let u = Some(Update { prev_batch, state_changed });
+                let u = Pass::Sync(Update { prev_batch, state_changed });
                 sync_room_after(store, &room, update.timeline.events, u, Some(&globals)).await;
                 for e in &update.account_data {
                     let v: Value = e.deserialize_as().expect("room account data JSON");
@@ -5590,6 +5731,8 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
                 }
             }
             drop(tx);
+            // The chats show this sync now, and what SQLite kept of the rooms is current, for the next start.
+            store.read().mark_synced(&mark);
             retry_drafts(client, store).await;
             let mut st = store.write();
             st.replay_drafts();
@@ -6252,6 +6395,165 @@ mod tests {
         assert!(cache.rooms.contains_key("!b:x"), "another room did not change");
         cache.put("!a:x", 1, reads());
         assert!(cache.rooms.contains_key("!a:x"), "a read that began after the change");
+    }
+
+    /// A sync that keeps the members of a chat keeps the title of its room under a personal name, so that the room
+    /// title shows again when the personal name goes.
+    #[tokio::test]
+    async fn a_kept_title_is_the_room_title_under_a_personal_name() {
+        use std::sync::{Arc, Mutex};
+        let next = Arc::new(Mutex::new(stub_sync()));
+        let vic = json!({ "type": "m.room.member", "state_key": "@vic:x", "sender": "@vic:x", "event_id": "$vic",
+            "origin_server_ts": 1, "content": { "membership": "join", "displayname": "Vic" } });
+        next.lock().unwrap()["rooms"]["join"]["!room:x"]["state"]["events"].as_array_mut().unwrap().push(vic);
+        let reply = next.clone();
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => (200, reply.lock().unwrap().clone()),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = crate::testing::stub_room_store(&crate::testing::temp_dir("kept-title"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        // A personal name, a message, and the personal name gone.
+        let personal =
+            |content: Value| json!({ "events": [{ "type": crate::models::PERSONAL_NAME, "content": content }] });
+        for (n, data, want) in
+            [(2, Some(json!({ "name": "Pal" })), "Pal"), (3, None, "Pal"), (4, Some(json!({})), "Vic")]
+        {
+            let mut room = json!({ "timeline": { "events": [stub_message(n)], "prev_batch": "t0" } });
+            if let Some(d) = data {
+                room["account_data"] = personal(d);
+            }
+            *next.lock().unwrap() = json!({ "next_batch": format!("s{n}"), "rooms": { "join": { "!room:x": room } } });
+            assert!(super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await);
+            assert_eq!(store.read().chat("!room:x").title, want, "after sync {n}");
+        }
+    }
+
+    /// The start pass of a run, with the global account data of now, and the room count that took what the last run
+    /// kept.
+    async fn start(store: &crate::store::SharedStore) -> usize {
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        let globals = super::Globals::read(&client).await;
+        super::start_pass(&client, store, &globals, false).await
+    }
+
+    /// Checks that reading every joined room again leaves the chats as they are.
+    async fn same_as_fresh(store: &crate::store::SharedStore, what: &str) {
+        let chats = |store: &crate::store::SharedStore| serde_json::to_value(&store.read().chats).expect("chat JSON");
+        let before = chats(store);
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        for room in client.joined_rooms() {
+            super::sync_room(store, &room, Vec::new()).await;
+        }
+        assert_eq!(before, chats(store), "{what}: the chats are those of every room read again");
+    }
+
+    /// A start takes what the last run kept of the rooms when that run applied the last sync that the SDK's store
+    /// holds, and it makes the chats that reading every room again makes. The changes from while the app was closed
+    /// come with the first sync (a member's new name, a room name, a tag and a push rule that mutes a room), and the
+    /// chats keep them at the next start. After a sync that the last run did not apply, as when the app stopped in
+    /// between, and with another build, the start reads every room again.
+    #[tokio::test]
+    async fn a_start_takes_what_the_last_run_kept() {
+        use std::sync::{Arc, Mutex};
+        let state = |kind: &str, key: &str, id: &str, content: Value| {
+            json!({ "type": kind, "state_key": key, "sender": "@me:x", "event_id": format!("${id}"),
+                "origin_server_ts": 1, "content": content })
+        };
+        let vic = move |id: &str, name: &str| {
+            state("m.room.member", "@vic:x", id, json!({ "membership": "join", "displayname": name }))
+        };
+        let response = |batch: &str, rooms: Value, data: Value| {
+            let data = json!({ "events": data });
+            json!({ "next_batch": batch, "rooms": { "join": rooms }, "account_data": data })
+        };
+        let rooms = ["!a:x", "!b:x", "!c:x", "!d:x"];
+        let mut joined = json!({});
+        for (i, id) in rooms.iter().enumerate() {
+            let create =
+                state("m.room.create", "", &format!("c{i}"), json!({ "creator": "@me:x", "room_version": "10" }));
+            let me =
+                state("m.room.member", "@me:x", &format!("m{i}"), json!({ "membership": "join", "displayname": "Me" }));
+            let events = json!([create, me, vic(&format!("v{i}"), "Vic")]);
+            joined[*id] = json!({ "state": { "events": events }, "timeline": { "events": [] } });
+        }
+        let next = Arc::new(Mutex::new(response("s1", joined, json!([]))));
+        let reply = next.clone();
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" => (200, reply.lock().unwrap().clone()),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let sync = async |store: &crate::store::SharedStore| {
+            let client = store.read().matrix.clone().expect("a Matrix client");
+            assert!(super::on_sync(&client, store, client.sync_once(super::SyncSettings::default()).await).await);
+        };
+        let dir = crate::testing::temp_dir("start-pass");
+        let reopen = || crate::testing::open_stub_store(&dir, &url);
+        // The first run, after the sign-in, has nothing kept, and its syncs mark what its chats show.
+        let store = crate::testing::stub_store(&dir, &url).await;
+        assert_eq!(start(&store).await, 0, "the first start reads every room");
+        *next.lock().unwrap() = response("s2", json!({}), json!([]));
+        sync(&store).await;
+        drop(store);
+        // While the app is closed, Vic takes a new name, a room a name, another a tag, and a push rule mutes the last.
+        let changes = json!({
+            "!a:x": { "state": { "events": [vic("v-new", "Victoria")] }, "timeline": { "events": [] } },
+            "!b:x": { "state": { "events": [state("m.room.name", "", "name", json!({ "name": "Bee" }))] },
+                "timeline": { "events": [] } },
+            "!c:x": { "account_data": { "events": [{ "type": "m.tag", "content": { "tags": { "m.favourite": {} } } }] },
+                "timeline": { "events": [] } },
+        });
+        let mute = json!({ "rule_id": "!d:x", "default": false, "enabled": true, "actions": [] });
+        let rules =
+            json!({ "global": { "override": [], "content": [], "sender": [], "underride": [], "room": [mute] } });
+        *next.lock().unwrap() = response("s3", changes, json!([{ "type": "m.push_rules", "content": rules }]));
+        let store = reopen().await;
+        assert_eq!(start(&store).await, 4, "the last run applied its last sync");
+        same_as_fresh(&store, "the start after the first run").await;
+        sync(&store).await;
+        let shown = |store: &crate::store::SharedStore| {
+            let st = store.read();
+            let a = st.chat("!a:x");
+            let vic = a.participants.items.iter().find(|u| u.id == "@vic:x").expect("Vic");
+            let (b, c, d) = (st.chat("!b:x"), st.chat("!c:x"), st.chat("!d:x"));
+            (vic.full_name.clone(), a.title.clone(), b.title.clone(), b.chat_type.clone(), c.is_pinned, d.is_muted)
+        };
+        let changed = (Some("Victoria".to_string()), "Victoria".into(), "Bee".into(), "group".into(), Some(true));
+        let (name, title, b, kind, pinned, _) = shown(&store);
+        assert_eq!((name, title, b, kind, pinned), changed, "the first sync shows the changes");
+        drop(store);
+        let store = reopen().await;
+        assert_eq!(start(&store).await, 4, "the sync of the changes kept the new reads and members");
+        let (name, title, b, kind, pinned, muted) = shown(&store);
+        assert_eq!((name, title, b, kind, pinned), changed, "the next start keeps the changes");
+        assert_eq!(muted, Some(true), "the next start shows the push rule");
+        same_as_fresh(&store, "the start after the changes").await;
+        // The SDK saves a sync that the app does not apply, as when it stops in between.
+        let a = json!({ "!a:x": { "state": { "events": [vic("v-last", "Vic 3")] }, "timeline": { "events": [] } } });
+        *next.lock().unwrap() = response("s4", a, json!([]));
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        client.sync_once(super::SyncSettings::default()).await.expect("sync with the stub homeserver");
+        drop((client, store));
+        let store = reopen().await;
+        assert_eq!(start(&store).await, 0, "the last run did not apply the last sync");
+        assert_eq!(shown(&store).0.as_deref(), Some("Vic 3"), "the start reads the sync that was not applied");
+        same_as_fresh(&store, "the start after a sync that was not applied").await;
+        // Another build keeps the same reads, but it may make other chats of them.
+        *next.lock().unwrap() = response("s5", json!({}), json!([]));
+        sync(&store).await;
+        store.read().mark_synced("another build:s5");
+        drop(store);
+        let store = reopen().await;
+        assert_eq!(start(&store).await, 0, "another build reads every room");
+        same_as_fresh(&store, "the start of another build").await;
     }
 
     /// Desktop's `lastReadMessageSortKey` of a room: the order of the event of your own read receipt, which a read

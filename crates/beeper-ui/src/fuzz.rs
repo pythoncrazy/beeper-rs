@@ -4729,14 +4729,30 @@ fn pins_drag_into_order_like_desktop() {
     let before = pins(&app);
     assert!(before.len() >= 2, "the demo has pins: {before:?}");
     let (first, last) = (before[0].clone(), before[before.len() - 1].clone());
+    drop(app.view_sidebar());
+    let (cols, cell, row) = app.pin_grid.get();
+    assert!(cols >= 2 && cell > 0.0 && row > 0.0, "the drawn grid: {:?}", app.pin_grid.get());
+    app.cursor.set(Point::new(10.0, 10.0));
     let _ = app.update(UiMessage::Pins(pins::Msg::Hover(Some(first.clone()))));
     let _ = app.update(UiMessage::Pins(pins::Msg::Press));
-    let _ = app.update(UiMessage::Pins(pins::Msg::DragMoved(Point::new(10.0, 10.0))));
     let _ = app.update(UiMessage::Pins(pins::Msg::DragMoved(Point::new(12.0, 12.0))));
+    let _ = app.update(UiMessage::Pins(pins::Msg::DragMoved(Point::new(13.0, 14.0))));
     assert_eq!(pins(&app), before, "a move under 5 px is a click");
+    assert_eq!(app.pin_ghost(), None, "nothing follows the pointer before the drag");
     let _ = app.update(UiMessage::Pins(pins::Msg::DragMoved(Point::new(40.0, 10.0))));
+    assert_eq!(app.pin_ghost(), Some(Vector::new(30.0, 0.0)), "the pin follows the pointer from its cell");
     let _ = app.update(UiMessage::Pins(pins::Msg::Hover(Some(last.clone()))));
+    let n = before.len() - 1;
+    let to = pins::slot(n, app.pin_grid.get());
+    assert_eq!(app.pin_ghost(), Some(Vector::new(30.0, 0.0) - to), "from the cell it would drop in");
+    // `rectSortingStrategy`: the pins after the dragged one each slide back one cell, from where they were.
+    let second = &before[1];
+    let from = pins::slot(1, app.pin_grid.get()) - pins::slot(0, app.pin_grid.get());
+    assert_eq!(app.pin_slides.get(second).map(|s| s.0), Some(from), "{second} slides to the first cell");
+    assert!(app.pins_sliding() && app.pin_offset(second).is_some());
+    drop(simulator(app.view_sidebar()));
     let _ = app.update(UiMessage::Pins(pins::Msg::DragEnd));
+    assert_eq!(app.pin_slides.get(&first).map(|s| s.0), Some(Vector::new(30.0, 0.0) - to), "it glides into its cell");
     let after = pins(&app);
     let want: Vec<String> = before[1..].iter().cloned().chain([first.clone()]).collect();
     assert_eq!(after, want, "the first pin goes to the place of the last");
@@ -5305,6 +5321,55 @@ fn search_finds_custom_items_like_desktop() {
     assert_eq!(app.active_settings_tab, SettingsTab::Appearance);
     assert_eq!(app.pref_flash.map(|f| f.0), Some("Default chat theme"));
     let _ = simulator(app.view_settings());
+}
+
+/// Desktop's `SearchSuggestions`: the focused empty search of Settings shows suggestions, which the pointer and ↑ ↓
+/// pick from, and one opens its section with its row highlighted and gives the focus back; a typed query shows the
+/// results instead.
+#[test]
+fn settings_search_suggests_like_desktop() {
+    let mut app = demo_app("search-suggestions");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Appearance)));
+    assert!(simulator(app.view_settings()).find("Suggestions").is_err(), "nothing before the search has the focus");
+    let focused: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_settings());
+        let _ = sim.click(iced::widget::Id::new("settings-search")).expect("the search field");
+        sim.into_messages().collect()
+    };
+    assert!(
+        focused.iter().any(|m| matches!(m, UiMessage::Settings(settings::Msg::SearchFocus(true)))),
+        "the field tells that it took the focus"
+    );
+    for m in focused {
+        let _ = app.update(m);
+    }
+    let labels = ["Suggestions", "Add an Account", "Incognito Mode", "Show Recipients I'm Typing"];
+    let mut sim = simulator(app.view_settings());
+    assert!(labels.iter().all(|l| sim.find(*l).is_ok()), "the suggestions show");
+    assert!(sim.find("Group Message Notifications").is_ok() && sim.find("Subscribe to Beeper Plus").is_ok());
+    drop(sim);
+    let _ = app.update(UiMessage::Settings(settings::Msg::Step(1)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Step(1)));
+    let submit: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_settings());
+        let _ = sim.click(iced::widget::Id::new("settings-search"));
+        sim.tap_key(iced::keyboard::key::Named::Enter);
+        sim.into_messages().collect()
+    };
+    assert!(
+        submit.iter().any(|m| matches!(m, UiMessage::Settings(settings::Msg::Suggest(2)))),
+        "Enter takes the third suggestion after ↓ ↓"
+    );
+    let _ = app.update(UiMessage::Settings(settings::Msg::Suggest(2)));
+    assert_eq!(app.active_settings_tab, SettingsTab::General);
+    assert_eq!(app.pref_flash.map(|f| f.0), Some("typingIndicators"), "its row is highlighted");
+    assert!(simulator(app.view_settings()).find("Suggestions").is_err(), "the search gives the focus back");
+    let _ = app.update(UiMessage::Settings(settings::Msg::SearchFocus(true)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Query("incog".into())));
+    assert!(simulator(app.view_settings()).find("Suggestions").is_err(), "a query shows the results");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Query(String::new())));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Suggest(4)));
+    assert_eq!(app.active_settings_tab, SettingsTab::BeeperPlus, "a free account can subscribe");
 }
 
 /// Desktop's Settings is a new window each time it opens, so a search typed before it closed does not hide the
@@ -7258,6 +7323,56 @@ fn chats_select_with_the_keyboard_like_desktop() {
     text(&mut app, "x");
     assert_eq!(picked(&app), [at], "X selects the chat of the cursor");
     assert!(app.list.cursor.is_none(), "the selection mode drops the cursor");
+}
+
+/// Desktop's selection mode with a chat open: its `ThreadComposer` is gone (`threadSelectionMode`), so J and K move
+/// the selection like ↓ and ↑ (`handleThreadSelection`) instead of typing, and the open chat reads nothing
+/// (`markAsRead`) until the mode ends.
+#[test]
+fn selection_keys_with_a_chat_open_like_desktop() {
+    let mut app = demo_app("select-open-chat");
+    let main = app.main_window.expect("the main window");
+    let ids = app.list_ids(&app.store.read());
+    let _ = app.update(UiMessage::SelectChat(ids[1].clone()));
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(true)));
+    let composer =
+        |app: &BeeperGuiApp| simulator(app.view_conversation()).find(iced::widget::Id::new("composer-input")).is_ok();
+    assert!(composer(&app), "the composer of the open chat");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::BeginSelecting(ids[1].clone())));
+    assert!(!composer(&app), "no composer in the selection mode");
+    let text = |app: &mut BeeperGuiApp, t: &str| _ = app.update(UiMessage::WindowText(main, t.into()));
+    text(&mut app, "j");
+    assert_eq!(app.selection, [ids[2].clone()], "J selects the next chat");
+    text(&mut app, "k");
+    text(&mut app, "k");
+    assert_eq!(app.selection, [ids[0].clone()], "K selects the chats before");
+    text(&mut app, "J");
+    assert_eq!(app.selection, [ids[0].clone(), ids[1].clone()], "Shift+J grows the selection");
+    assert_eq!(app.pane.composer.text(), "", "nothing is typed");
+    let arrive = |app: &mut BeeperGuiApp| {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&ids[1]).unwrap();
+        st.update_chat(idx, |c| c.unread_count = 1);
+        let m = st.messages.iter().rfind(|m| m.chat_id == ids[1]).unwrap().clone();
+        drop(st);
+        let _ = app.update(UiMessage::Upserted(Box::new(m)));
+    };
+    arrive(&mut app);
+    assert_eq!(app.store.read().chat(&ids[1]).unread_count, 1, "the open chat stays unread while selecting");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleSelected(ids[0].clone())));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleSelected(ids[1].clone())));
+    assert!(!app.selecting_chats(), "unselecting the last chat ends the selection mode");
+    assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&ids[1]));
+    assert!(composer(&app), "the composer is back");
+    arrive(&mut app);
+    assert_eq!(app.store.read().chat(&ids[1]).unread_count, 0, "and the open chat reads again");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::BeginSelecting(ids[1].clone())));
+    let escape = iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape);
+    let _ = app.update(UiMessage::KeyPressed(escape, iced::keyboard::Modifiers::empty()));
+    assert!(!app.selecting_chats(), "Escape ends the selection mode");
+    assert_eq!(app.pane.selected_chat_id, None, "and closes the open chat");
+    text(&mut app, "j");
+    assert!(app.selection.is_empty(), "J selects nothing outside the selection mode");
 }
 
 /// Desktop's thread header (`ij`) returns nothing in `threadSelectionMode`, which selecting chats turns on.

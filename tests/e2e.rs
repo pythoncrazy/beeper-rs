@@ -592,7 +592,7 @@ async fn lifecycle() {
         )
         .unwrap();
         db.execute_batch(
-            "DROP TABLE messages; DROP TABLE messages_fts; DROP TABLE outbox;
+            "DROP TABLE messages; DROP TABLE messages_fts; DROP TABLE outbox; DROP TABLE room_reads;
              CREATE TABLE messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL) STRICT;
              PRAGMA user_version = 1;",
         )
