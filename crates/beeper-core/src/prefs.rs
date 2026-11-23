@@ -561,9 +561,26 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Send Message", "Composer", "enter"),
 ];
 
+/// The default keys of a hotkey of either list. A fixed hotkey cannot be reassigned, but Desktop's Texts.app
+/// keybindings turn Italicize Text Selection off.
 pub fn hotkey_default(name: &str) -> &'static str {
-    HOTKEYS.iter().find(|h| h.0 == name).unwrap_or_else(|| panic!("unknown hotkey {name}")).2
+    HOTKEYS.iter().chain(FIXED_HOTKEYS).find(|h| h.0 == name).unwrap_or_else(|| panic!("unknown hotkey {name}")).2
 }
+
+/// Desktop's "Switch to Texts.app keybindings" (`o` of `HotkeysPrefsSubView`): the keys that it gives each hotkey.
+pub const TEXTS_KEYBINDINGS: &[(&str, &str)] = &[
+    ("Message: Edit", "ctrl+i"),
+    ("Italicize Text Selection", "disabled"),
+    ("Select Previous Chat", "ctrl+[, ctrl+shift+tab"),
+    ("Select Next Chat", "ctrl+], ctrl+tab"),
+    ("Chat: Toggle Mark As Read", "ctrl+u"),
+    ("Chat: Toggle Archive", "ctrl+e, ctrl+shift+e"),
+    ("Switch First 9 Chats Modifier", "ctrl+alt"),
+    ("Switch First 9 Spaces Modifier", "ctrl"),
+    ("History: Previous Chat", "ctrl+alt+left"),
+    ("History: Next Chat", "ctrl+alt+right"),
+    ("Chat: Archive All Read", "disabled"),
+];
 
 /// The hotkeys that Desktop's Keyboard Shortcuts list shows, but that you cannot reassign.
 pub const FIXED_HOTKEYS: &[(&str, &str, &str)] = &[

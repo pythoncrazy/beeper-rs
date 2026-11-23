@@ -1177,6 +1177,7 @@
 "Switch First 9 Chats Modifier":["Modifier les 9 premiers modificateurs de discussion"],
 "Switch First 9 Spaces Modifier":["Modifier les 9 premiers modificateurs d’espacement"],
 "Switch chats":["Changer de discussion"],
+"Switch to Texts.app keybindings":["Passer aux associations de touches Texts.app"],
 "Synced %(processed)d of %(total)d chat.":["Synchronisation de %(processed)d discussion sur %(total)d.", "Synchronisation de %(processed)d discussions sur %(total)d."],
 "Syncing your data":["Synchronisation de vos données"],
 "Syncing...":["Synchronisation…"],
