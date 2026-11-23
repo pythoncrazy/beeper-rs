@@ -21,7 +21,7 @@ use crate::{
     dashed, default_account_user, emoji, format, has_flag, hotkey_caps, hotkey_key, icon_btn, images, locate,
     menu_item, menu_pitch, menu_rule, network_name, portal, record, removable, several_accounts, spell, switch_targets,
     text_urls, tinted, toasts, truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia,
-    Picker, Queued, Toast, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MESSAGE_MENU_W, SEND_ARROW,
+    Picker, Queued, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MESSAGE_MENU_W, SEND_ARROW,
 };
 use beeper_core::codec::Emoticon;
 use beeper_core::config::{account_network, now_unix_millis};
@@ -438,12 +438,15 @@ impl BeeperGuiApp {
             .map(|f| f.and_then(|f| portal::check(&f, &chat.file, chat.room_features).map(|()| f)))
             .collect();
         drop(st);
+        let mut errors = Vec::new();
         for f in checked {
             match f {
                 Ok(f) => self.pane.attachments.push(f),
-                Err(e) => self.fail(Toast::new(e)),
+                Err(e) => errors.push(e),
             }
         }
+        // Desktop's `attachFiles` shows a toast for each file that does not attach.
+        self.fail_all(errors);
     }
 
     /// Desktop's `addFileBuffers` of a sticker, and `addRecentSticker`: the newest of 24 recent stickers.
@@ -754,7 +757,7 @@ impl BeeperGuiApp {
             st.send(&s.chat_id, draft).expect("send scheduled");
         }
         drop(st);
-        failed.into_iter().for_each(|e| self.fail(Toast::new(e)));
+        self.fail_all(failed);
         self.refresh_theme_and_tray();
     }
 

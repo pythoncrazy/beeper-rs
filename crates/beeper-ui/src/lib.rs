@@ -141,7 +141,7 @@ use rail::{SpacesDraft, SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
 use reminders::{remind_label, reminder_day};
 use scheduled::next_send;
 use time::{clock, day_label, day_num, day_of, locale_string, today, WEEKDAYS};
-use toasts::{Toast, TOASTS_SHOWN, TOAST_TICK};
+use toasts::{Toast, TOAST_TICK};
 use units::human_size;
 use user_card::UserHover;
 use vcard::VCard;
@@ -4186,7 +4186,7 @@ impl BeeperGuiApp {
     }
 
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
-        let (shown, dismissals) = (self.stackable_toast(), self.toast_dismissals);
+        let (shown, dismissals, stacked) = (self.stackable_toast(), self.toast_dismissals, self.older_toasts.len());
         // The windows that `handle` swaps in follow their own chat lists there.
         let pointed = self.swapped.is_none().then(|| self.pointed());
         let task = self.handle(msg);
@@ -4195,9 +4195,9 @@ impl BeeperGuiApp {
         self.keep_shown();
         let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
-            self.older_toasts.push(t);
-            let extra = self.older_toasts.len().saturating_sub(TOASTS_SHOWN - 1);
-            self.older_toasts.drain(..extra);
+            // It is older than the toasts that this message stacked.
+            self.older_toasts.insert(stacked.min(self.older_toasts.len()), t);
+            self.trim_older_toasts();
         }
         if self.status_banner.is_empty() && self.older_toasts.is_empty() {
             self.toast_clock.1 = false;

@@ -147,6 +147,22 @@ impl BeeperGuiApp {
         self.relaunch_toast.is_none() && self.focused && !hovered && shown
     }
 
+    /// Desktop's `toasts-list` keeps the last `TOASTS_SHOWN` toasts, with the newest one.
+    pub(crate) fn trim_older_toasts(&mut self) {
+        let extra = self.older_toasts.len().saturating_sub(TOASTS_SHOWN - 1);
+        self.older_toasts.drain(..extra);
+    }
+
+    /// Desktop's `addToast` of each error of one action: every toast shows, the last one newest.
+    pub(crate) fn fail_all(&mut self, errors: Vec<String>) {
+        let Some((last, rest)) = errors.split_last() else { return };
+        for e in rest {
+            self.older_toasts.push((Toast { error: true, ..Toast::new(e.clone()) }, Duration::ZERO));
+        }
+        self.trim_older_toasts();
+        self.fail(Toast::new(last.clone()));
+    }
+
     pub(crate) fn newest_toast_running(&self) -> bool {
         !self.status_banner.is_empty() && self.sticky_banner.as_ref() != Some(&self.status_banner)
     }

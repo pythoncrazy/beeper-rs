@@ -60,7 +60,7 @@ impl BeeperGuiApp {
                     }
                 }
                 drop(st);
-                failed.into_iter().for_each(|e| self.fail(Toast::new(e)));
+                self.fail_all(failed);
                 if let [one] = picked.as_slice() {
                     self.select_chat(one);
                 }
