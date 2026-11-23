@@ -2546,6 +2546,46 @@ fn chat_windows_that_left_their_chat_draw_nothing() {
     drop(simulator(app.view(id)));
 }
 
+/// "Open in New Window" on an unread chat scrolls the new window's timeline to its unread divider. The operation goes
+/// through every window, like iced's, and each has a "timeline": it scrolls the one of the window with the divider,
+/// and finds nothing, instead of panicking, while the new window is not built yet.
+#[test]
+fn opening_an_unread_chat_in_a_window_scrolls_that_window_to_the_divider() {
+    use iced::advanced::renderer::Headless;
+    use iced::advanced::widget::operation::{black_box, Operation, Outcome};
+    let mut app = demo_app("chat-window-unread");
+    let st = app.store.read();
+    let unread = app.visible_chats(&st).iter().find(|c| c.unread_count > 0).map(|c| c.id.clone());
+    drop(st);
+    let unread = unread.expect("a demo chat is unread");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::Window(windows::Msg::OpenChat(unread)));
+    let (main, chat) = (app.main_window.expect("the main window"), app.chat_windows[0].0);
+    let size = Size::new(1200.0, 800.0);
+    let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+        iced::Font::DEFAULT,
+        iced::Pixels(13.0),
+        Some("tiny-skia"),
+    ))
+    .expect("a headless renderer");
+    let views = [main, chat].map(|w| app.view(w));
+    let mut uis = views.map(|v| iced_runtime::UserInterface::build(v, size, Default::default(), &mut renderer));
+    let target = iced::widget::Id::new("unread-divider");
+    let locate = |uis: &mut [iced_runtime::UserInterface<'_, UiMessage, Theme, iced::Renderer>]| {
+        let mut op = Locate::new(target.clone(), "timeline", Align::Start(80.0));
+        for ui in uis {
+            ui.operate(&renderer, &mut black_box(&mut op));
+        }
+        match op.finish() {
+            Outcome::Some(found) => Some(found),
+            _ => None,
+        }
+    };
+    assert_eq!(locate(&mut uis[..1]), None, "the chat window is still opening");
+    let (window, _) = locate(&mut uis).expect("the chat window shows the unread divider");
+    assert_eq!(window, Some(chat), "the scroll is the chat window's, not the main window's");
+}
+
 /// The chats that a space window of rail space `entry` lists.
 fn space_chats(app: &mut BeeperGuiApp, entry: &str) -> Vec<String> {
     let main = std::mem::replace(&mut app.list, chat_list::ListState::space(entry));
@@ -3766,6 +3806,145 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     assert!(st.loaded(&id).is_none() && st.outbox.is_empty(), "Remove drops the echo and its send");
 }
 
+/// Desktop's toast of a failed send has the ID of the message and no timeout (`-1`): it stays in `toasts-list` under
+/// newer toasts, one for each failed send, while the toasts with a timeout go. Retry and Remove close the toast of
+/// their send wherever it is (`removeToast`), and Copy Error copies Desktop's `sendMessage:` JSON of the error.
+#[test]
+fn failed_send_toasts_stay_in_the_stack_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("failed-toasts");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let fail = |app: &mut BeeperGuiApp, text: &str, error: &str| {
+        let _ = app.update(UiMessage::Composer(composer::Msg::Changed(text.into())));
+        let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+        let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
+        let failed = {
+            let mut st = app.store.write();
+            // The send of this text, after the failed sends that wait for Retry.
+            let at = st.outbox.len() - 1;
+            let (row, _, out) = st.outbox.remove(at);
+            let id = out.message().expect("a send has a local echo").to_string();
+            st.pushed(row, Some(&id), Some((error.into(), true)));
+            st.loaded(&id).expect("the local echo").clone()
+        };
+        let id = failed.id.clone();
+        let _ = app.update(UiMessage::Upserted(Box::new(failed)));
+        id
+    };
+    let first = fail(&mut app, "a", "M_FORBIDDEN: refused");
+    let copy = app.shown_toast().expect("the toast of the failed send").buttons[0].1.clone();
+    let json = format!(
+        r#"sendMessage:{{"errorName":"Error","errorMessage":"M_FORBIDDEN: refused","appVersion":"{}"}}"#,
+        beeper_core::config::APP_VERSION
+    );
+    assert!(matches!(copy, UiMessage::Message(message::Msg::CopyText(t)) if t == json), "Copy Error");
+    let _ = app.update(UiMessage::Message(message::Msg::CopyLink("https://a".into())));
+    assert_eq!(app.status_banner, "Copied to clipboard!");
+    let older = |app: &BeeperGuiApp| app.older_toasts.iter().map(|t| t.0.text.clone()).collect::<Vec<_>>();
+    let stacked = older(&app);
+    assert!(stacked.len() == 1 && stacked[0].ends_with("\nM_FORBIDDEN: refused"), "a new toast stacks it: {stacked:?}");
+    for _ in 0..(2 * TOAST_TIMEOUT.as_millis() / crate::toasts::TOAST_TICK.as_millis()) {
+        let _ = app.update(UiMessage::Toast(toasts::Msg::Tick));
+    }
+    assert!(app.status_banner.is_empty() && older(&app) == stacked, "the new toast goes, the failed send's stays");
+    let second = fail(&mut app, "b", "M_TOO_LARGE: too big");
+    assert!(app.status_banner.ends_with("\nM_TOO_LARGE: too big") && older(&app) == stacked, "a toast each");
+    let _ = app.update(UiMessage::Message(message::Msg::RetrySend(first)));
+    assert!(older(&app).is_empty() && !app.status_banner.is_empty(), "Retry closes the toast of its send only");
+    let _ = app.update(UiMessage::Message(message::Msg::RemoveUnsent(second)));
+    assert!(app.status_banner.is_empty() && app.sticky_banner.is_none(), "and Remove closes the toast of its send");
+}
+
+/// Desktop's `.thread-info` shares `.subheader-content` with the chat (`flex: 1` both, `max-width: 300px`, an 8 px
+/// gap): Chat Info is 300 px wide in a wide window, and half of the room in a narrow one, where the chat keeps the
+/// other half instead of a sliver. The sidebar hides under 600 px.
+#[test]
+fn chat_info_shares_a_narrow_window_like_desktop() {
+    let mut app = demo_app("info-narrow");
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::ToggleRightPanel);
+    assert!(app.show_right_panel);
+    let at = |app: &mut BeeperGuiApp, w: f32| {
+        let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(w, 800.0))));
+        let mut sim = Simulator::with_size(Default::default(), Size::new(w, 800.0), app.view_main());
+        assert!(sim.find("Note to self").is_ok(), "Chat Info shows at {w} px");
+        (app.conversation_width(), app.info_width())
+    };
+    let (chat, info) = at(&mut app, 1200.0);
+    assert_eq!(info, 300.0);
+    assert_eq!(chat, 1200.0 - 68.0 - app.sidebar_width - 8.0 - 8.0 - 300.0, "the chat takes the rest");
+    let (chat, info) = at(&mut app, 800.0);
+    let room = 800.0 - 68.0 - app.sidebar_width - 16.0;
+    assert!(!app.sidebar_hidden && info < 300.0 && chat == info && info == room / 2.0, "{chat} {info}");
+    let (chat, info) = at(&mut app, 400.0);
+    assert!(app.sidebar_hidden, "the sidebar hides under 600 px");
+    assert!(chat == info && info == (400.0 - 8.0 - 16.0) / 2.0, "{chat} {info}");
+    let _ = app.update(UiMessage::ToggleRightPanel);
+    assert_eq!(app.conversation_width(), 400.0 - 16.0, "without Chat Info the chat fills the window");
+}
+
+/// Desktop's drop overlay (`.dropping`, `z-index: 10`) is over the chat: while a file drag is over the window, the
+/// messages under it take no pointer, so the buttons of a hovered message lose their hover and their tooltips close.
+#[test]
+fn the_drop_zone_takes_the_pointer_like_desktop() {
+    let mut app = demo_app("drop-cover");
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let mid = app.store.read().messages.iter().rev().find(|m| m.chat_id == NOTE_CHAT_ID).unwrap().id.clone();
+    let clicks = |app: &BeeperGuiApp| {
+        let mut sim = simulator(app.view_main());
+        let row = sim.find(iced::widget::Id::from(format!("msg-{mid}"))).expect("the message");
+        let at = row.visible_bounds().expect("the message is on screen").center();
+        sim.point_at(at);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+        let _ = sim.simulate(iced_test::simulator::click());
+        sim.into_messages().count()
+    };
+    assert!(clicks(&app) > 0, "a message takes the pointer");
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(main, true)));
+    assert_eq!(clicks(&app), 0, "the drop zone over it takes the pointer");
+    let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(main, false)));
+    assert!(clicks(&app) > 0, "and gives it back when the drag leaves");
+}
+
+/// Desktop's message menu of a pending message (`isPending`, a send of `pendingMessages`): on its way or failed, it
+/// has no Edit, Reply, Reply in thread, Delete or Bookmark, and React is off. Copy, Forward and "Sent at" stay. A
+/// message that the homeserver took has them all.
+#[test]
+fn pending_and_failed_messages_menu_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("failed-menu");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
+    let id = app.store.read().outbox[0].2.message().expect("a local echo").to_string();
+    let items = |app: &BeeperGuiApp| {
+        let mut sim = simulator(app.view_message_menu(&id).0);
+        let labels = ["Edit…", "Reply…", "Delete…", "Bookmark", "Copy", "Forward…"];
+        let shown: Vec<&str> = labels.into_iter().filter(|l| sim.find(*l).is_ok()).collect();
+        let at = app.store.read().loaded(&id).expect("the local echo").timestamp.clone();
+        let sent = sim.find(trf("Sent at %s", &[&crate::time::locale_string(&at)]).as_str()).is_ok();
+        let _ = sim.click("React…");
+        let react = sim.into_messages().any(|m| matches!(m, UiMessage::Message(message::Msg::Menu(_))));
+        (shown, sent, react)
+    };
+    let on_its_way = items(&app);
+    assert_eq!(on_its_way, (vec!["Copy", "Forward…"], true, false), "a send on its way");
+    {
+        let mut st = app.store.write();
+        let (row, _, _) = st.outbox.remove(0);
+        st.pushed(row, Some(&id), Some(("M_FORBIDDEN: refused".into(), true)));
+    }
+    assert_eq!(items(&app), on_its_way, "a failed send");
+    let mine = app.store.read().messages.iter().rev().find(|m| m.chat_id == note && m.id != id).unwrap().id.clone();
+    let mut sim = simulator(app.view_message_menu(&mine).0);
+    assert!(["Edit…", "Reply…", "Delete…", "Forward…"].iter().all(|l| sim.find(*l).is_ok()), "a sent message");
+}
+
 /// Desktop's `message-attachment-failed`: a failed send of a file without text shows "Not sent" under the file.
 #[test]
 fn failed_files_show_not_sent_like_desktop() {
@@ -4528,9 +4707,9 @@ fn attachments_show_download_and_time_on_hover_like_desktop() {
         let st = app.store.read();
         let m = st.messages.iter().rev().find(|m| {
             m.text.as_deref().is_none_or(str::is_empty)
-                && m.attachments.first().is_some_and(|a| a.attachment_type == "img")
+                && m.attachments.first().is_some_and(|a| a.attachment_type == "img" && a.is_sticker != Some(true))
         });
-        let m = m.expect("a demo image message");
+        let m = m.expect("a demo photo message");
         (m.chat_id.clone(), m.id.clone(), format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1))
     };
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
@@ -8763,6 +8942,32 @@ fn main_window_keeps_its_state_like_desktop() {
     assert_eq!(app.title(main), format!("Beeper | {title}"));
 }
 
+/// A window that opens maximized maximizes again once the window manager places it, like Desktop's `deferMaximize`:
+/// an X11 window manager ignores the maximized state of a window that iced has not mapped yet.
+#[test]
+fn a_maximized_window_maximizes_once_it_is_placed() {
+    let mut app = demo_app("window-maximize");
+    let maximizes = |task: Task<UiMessage>| {
+        let actions = iced::futures::executor::block_on(task_actions(task));
+        let max = |a: &iced_runtime::Action<UiMessage>| {
+            matches!(a, iced_runtime::Action::Window(iced_runtime::window::Action::Maximize(_, true)))
+        };
+        actions.iter().filter(|a| max(a)).count()
+    };
+    let restored = BeeperGuiApp::window_settings(MAIN_SIZE);
+    let maximized = window::Settings { maximized: true, ..restored.clone() };
+    let (normal, _) = app.open_window(restored);
+    let (max, _) = app.open_window(maximized.clone());
+    let (hidden, _) = app.open_window(window::Settings { visible: false, ..maximized.clone() });
+    let (resized, _) = app.open_window(maximized);
+    let mut moved = |id| maximizes(app.update(UiMessage::Window(windows::Msg::Moved(id))));
+    assert_eq!(moved(max), 1, "the first move maximizes the window that opened maximized");
+    assert_eq!(moved(max), 0, "once");
+    assert_eq!((moved(normal), moved(hidden)), (0, 0), "a restored or a hidden window stays as it is");
+    let task = app.update(UiMessage::Window(windows::Msg::Resized(resized, Size::new(1600.0, 960.0))));
+    assert_eq!(maximizes(task), 1, "or the first resize");
+}
+
 /// A new install on the sign-in window.
 pub(crate) fn signed_out_app(name: &str) -> BeeperGuiApp {
     let config = CentralConfig::new(beeper_core::testing::temp_dir(name), "127.0.0.1".into(), 23391, None);
@@ -9911,4 +10116,19 @@ fn the_chat_menu_fits_its_rows() {
     let row = 26.0 + w("Mark as Unread") + 16.0 + w("Ctrl Shift Alt Backspace");
     let menu = chat_list::chat_menu_w(&app.store.read());
     assert!(row > 233.0 && menu >= row, "{menu} fits {row}");
+}
+
+/// An image that covers its box, wider than the box, is cut at the box in the software renderer as in wgpu: the
+/// media of the info pane, the attachments of the composer and link previews are `ContentFit::Cover`.
+#[test]
+fn a_covering_image_stays_in_its_box() {
+    use iced::widget::{image, row};
+    let red = image::Handle::from_rgba(40, 10, [255u8, 0, 0, 255].repeat(400));
+    let covered = image(red).content_fit(iced::ContentFit::Cover).width(20).height(20);
+    let view: El<'_> = row![Space::new().width(20), covered, Space::new().width(20)].into();
+    let shot = crate::focus::tests::shot(view, Size::new(60.0, 20.0), "cover");
+    let k = shot.width() / 60;
+    let red_at = |x: u32| shot.get_pixel(x * k, 10 * k).0 == [255, 0, 0, 255];
+    assert!(red_at(30), "the image fills its box");
+    assert!(!red_at(10) && !red_at(50), "and nothing beside it");
 }

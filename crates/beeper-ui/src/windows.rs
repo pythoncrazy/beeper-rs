@@ -88,9 +88,9 @@ impl BeeperGuiApp {
             Msg::Drawn(_) => {}
             Msg::Resized(id, size) => {
                 self.resized(id, size);
-                return self.save_soon(id);
+                return Task::batch([self.maximize_if_placed(id), self.save_soon(id)]);
             }
-            Msg::Moved(id) => return self.save_soon(id),
+            Msg::Moved(id) => return Task::batch([self.maximize_if_placed(id), self.save_soon(id)]),
             Msg::SaveState(id, n) if n == self.state_changes => {
                 return self.state_key(id).map_or_else(Task::none, |key| self.save_window(id, key));
             }
@@ -139,7 +139,8 @@ impl BeeperGuiApp {
                 let near = self.cascade(id);
                 let select = self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(cid))));
                 self.save_subwindows();
-                return Task::batch([open.discard(), near, select]);
+                // The window shows the chat once it opens: the scroll to its unread divider needs the window's widgets.
+                return Task::batch([open.discard().chain(select), near]);
             }
             Msg::OpenSpace(entry) => {
                 self.list.chat_menu = None;
@@ -164,7 +165,7 @@ impl BeeperGuiApp {
                 };
                 self.swap_window(id);
                 let select = chat.map(|c| self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(c)))));
-                return Task::batch([open.discard()].into_iter().chain(select));
+                return open.discard().chain(select.unwrap_or_else(Task::none));
             }
             Msg::Closed(id) if self.add_accounts.iter().any(|a| a.id == id) => {
                 return self.add_account_closed(id);
@@ -390,8 +391,28 @@ pub(crate) fn grown(at: Point, old: Size, size: Size, screen: Size) -> (Point, S
 impl BeeperGuiApp {
     /// Opens a window of `settings.size` screen pixels, like Desktop's windows, whose size does not follow the zoom.
     /// iced opens a window at its size times the scale factor, which is the zoom.
-    pub(crate) fn open_window(&self, settings: window::Settings) -> (window::Id, Task<window::Id>) {
-        window::open(window::Settings { size: settings.size * (1.0 / self.zoom), ..settings })
+    ///
+    /// A window that opens maximized maximizes again once the window manager has it, like Desktop's
+    /// `deferMaximize`: iced maps each window only after its first frame, and an X11 window manager ignores the
+    /// maximized state that winit asks for before then, so on X11 the window opened at its restored size.
+    pub(crate) fn open_window(&mut self, settings: window::Settings) -> (window::Id, Task<window::Id>) {
+        let maximize = settings.maximized && settings.visible;
+        let (id, open) = window::open(window::Settings { size: settings.size * (1.0 / self.zoom), ..settings });
+        if maximize {
+            self.maximize_when_placed.push(id);
+        }
+        (id, open)
+    }
+
+    /// Maximizes window `id` if it opened maximized and the window manager has just placed it, which it reports with
+    /// the first move or resize.
+    fn maximize_if_placed(&mut self, id: window::Id) -> Task<UiMessage> {
+        let before = self.maximize_when_placed.len();
+        self.maximize_when_placed.retain(|w| *w != id);
+        match self.maximize_when_placed.len() < before {
+            true => window::maximize(id, true),
+            false => Task::none(),
+        }
     }
 
     /// The size of a window in iced's logical pixels, which the zoom scales like Desktop's CSS pixels.
@@ -458,7 +479,7 @@ impl BeeperGuiApp {
     }
 
     /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.
-    pub(crate) fn open_child(&self, size: Size) -> (window::Id, Task<UiMessage>) {
+    pub(crate) fn open_child(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
         let (id, open) =
             self.open_window(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
         // The main window, or the sign-in window of the onboarding.
