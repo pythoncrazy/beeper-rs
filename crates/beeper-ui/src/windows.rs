@@ -139,7 +139,8 @@ impl BeeperGuiApp {
                 let near = self.cascade(id);
                 let select = self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(cid))));
                 self.save_subwindows();
-                return Task::batch([open.discard(), near, select]);
+                // The window shows the chat once it opens: the scroll to its unread divider needs the window's widgets.
+                return Task::batch([open.discard().chain(select), near]);
             }
             Msg::OpenSpace(entry) => {
                 self.list.chat_menu = None;
@@ -164,7 +165,7 @@ impl BeeperGuiApp {
                 };
                 self.swap_window(id);
                 let select = chat.map(|c| self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(c)))));
-                return Task::batch([open.discard()].into_iter().chain(select));
+                return open.discard().chain(select.unwrap_or_else(Task::none));
             }
             Msg::Closed(id) if self.add_accounts.iter().any(|a| a.id == id) => {
                 return self.add_account_closed(id);

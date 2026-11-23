@@ -2121,27 +2121,55 @@ enum Align {
 
 /// Finds the offset of a scrollable that shows a container where `Align` puts it. The offset of the timeline counts
 /// from its bottom, because it is anchored there.
-struct Locate(
-    iced::widget::Id,
-    Option<(iced::Rectangle, iced::Rectangle, f32)>,
-    Option<iced::Rectangle>,
-    Align,
-    &'static str,
-);
-
-fn locate(target: impl Into<iced::widget::Id>, scroll: &'static str, align: Align) -> Task<UiMessage> {
-    iced::advanced::widget::operate(Locate(target.into(), None, None, align, scroll))
-        .then(move |y| operation::scroll_to(scroll, operation::AbsoluteOffset { x: 0.0, y }))
+///
+/// Operations go through the widgets of every window, and each chat window has its own "timeline": it takes the
+/// scrollable of the window of the container. It finds nothing when no window shows the container yet, as a window
+/// that is still opening.
+struct Locate {
+    target: iced::widget::Id,
+    scroll: &'static str,
+    align: Align,
+    /// The window whose widgets the operation goes through now, by its [`focus::WindowMark`].
+    window: Option<window::Id>,
+    /// The scrollables named `scroll`, with their window, bounds, content bounds and offset.
+    scrollables: Vec<(Option<window::Id>, iced::Rectangle, iced::Rectangle, f32)>,
+    /// The container and its window.
+    found: Option<(Option<window::Id>, iced::Rectangle)>,
 }
 
-impl iced::advanced::widget::Operation<f32> for Locate {
-    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<f32>)) {
+impl Locate {
+    fn new(target: iced::widget::Id, scroll: &'static str, align: Align) -> Self {
+        Self { target, scroll, align, window: None, scrollables: Vec::new(), found: None }
+    }
+}
+
+fn locate(target: impl Into<iced::widget::Id>, scroll: &'static str, align: Align) -> Task<UiMessage> {
+    iced::advanced::widget::operate(Locate::new(target.into(), scroll, align))
+        .then(move |(window, y)| iced::advanced::widget::operate(ScrollIn { window, scroll, y, inside: false }))
+}
+
+/// Takes the window of the widgets that follow a [`focus::WindowMark`].
+fn window_mark(state: &mut dyn std::any::Any) -> Option<window::Id> {
+    state.downcast_ref::<focus::WindowMark>().map(|m| m.0)
+}
+
+impl iced::advanced::widget::Operation<(Option<window::Id>, f32)> for Locate {
+    fn traverse(
+        &mut self,
+        operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<(Option<window::Id>, f32)>),
+    ) {
         operate(self)
     }
 
+    fn custom(&mut self, _: Option<&iced::widget::Id>, _: iced::Rectangle, state: &mut dyn std::any::Any) {
+        if let Some(window) = window_mark(state) {
+            self.window = Some(window);
+        }
+    }
+
     fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
-        if id == Some(&self.0) {
-            self.2 = Some(bounds);
+        if id == Some(&self.target) && self.found.is_none() {
+            self.found = Some((self.window, bounds));
         }
     }
 
@@ -2153,24 +2181,62 @@ impl iced::advanced::widget::Operation<f32> for Locate {
         at: iced::Vector,
         _: &mut dyn iced::advanced::widget::operation::Scrollable,
     ) {
-        if id == Some(&iced::widget::Id::new(self.4)) {
-            self.1 = Some((bounds, content, at.y));
+        if id == Some(&iced::widget::Id::new(self.scroll)) {
+            self.scrollables.push((self.window, bounds, content, at.y));
         }
     }
 
-    fn finish(&self) -> iced::advanced::widget::operation::Outcome<f32> {
-        let (view, content, at) = self.1.unwrap_or_else(|| panic!("{} is shown", self.4));
-        let msg = self.2.unwrap_or_else(|| panic!("{:?} is in {}", self.0, self.4));
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<(Option<window::Id>, f32)> {
+        use iced::advanced::widget::operation::Outcome;
+        let Some((window, msg)) = self.found else { return Outcome::None };
+        let Some(&(_, view, content, at)) = self.scrollables.iter().find(|s| s.0 == window) else {
+            return Outcome::None;
+        };
         let max = (content.height - view.height).max(0.0);
         let y = msg.y - content.y;
-        let top = match self.3 {
+        let top = match self.align {
             Align::Nearest => at.max(y + msg.height - view.height).min(y),
             Align::Center => y - (view.height - msg.height) / 2.0,
             Align::Start(gap) => y - gap,
         };
         let top = top.clamp(0.0, max);
-        let anchored = matches!(self.4, "timeline" | "thread-timeline");
-        iced::advanced::widget::operation::Outcome::Some(if anchored { max - top } else { top })
+        let anchored = matches!(self.scroll, "timeline" | "thread-timeline");
+        Outcome::Some((window, if anchored { max - top } else { top }))
+    }
+}
+
+/// Scrolls the scrollable named `scroll` of `window` to `y`, and not those of the same name in other windows.
+struct ScrollIn {
+    window: Option<window::Id>,
+    scroll: &'static str,
+    y: f32,
+    inside: bool,
+}
+
+impl<T> iced::advanced::widget::Operation<T> for ScrollIn {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<T>)) {
+        operate(self)
+    }
+
+    fn custom(&mut self, _: Option<&iced::widget::Id>, _: iced::Rectangle, state: &mut dyn std::any::Any) {
+        if let Some(window) = window_mark(state) {
+            self.inside = Some(window) == self.window;
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        _: iced::Rectangle,
+        _: iced::Rectangle,
+        _: iced::Vector,
+        state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        // Without window marks (the tests' simulator draws no window root), the only window is the one.
+        let here = self.inside || self.window.is_none();
+        if here && id == Some(&iced::widget::Id::new(self.scroll)) {
+            state.scroll_to(operation::AbsoluteOffset { x: Some(0.0), y: Some(self.y) });
+        }
     }
 }
 
