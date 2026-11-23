@@ -987,6 +987,47 @@ fn remind_submenu_like_desktop() {
     assert!(upgrade, "without free uses only the upgrade works");
 }
 
+/// Desktop's chat list cursor (`threadCursorID`) for the keyboard: Escape leaves the open chat with the cursor on it,
+/// a second Escape points at the first chat, ↓ and J, ↑ and K move the cursor without opening a chat, and Enter
+/// opens the chat of the cursor.
+#[test]
+fn chat_list_cursor_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("listcursor");
+    let main = app.main_window.expect("a main window");
+    let ids = app.list_ids(&app.store.read());
+    let key = |app: &mut BeeperGuiApp, k: Named| {
+        drop(app.update(UiMessage::WindowKey(main, Key::Named(k), Modifiers::empty())))
+    };
+    let text = |app: &mut BeeperGuiApp, t: &str| drop(app.update(UiMessage::WindowText(main, t.into())));
+    let _ = app.update(UiMessage::SelectChat(ids[2].clone()));
+    key(&mut app, Named::Escape);
+    assert_eq!(app.pane.selected_chat_id, None, "Escape leaves the chat");
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[2]), "the cursor stays on the chat that was open");
+    key(&mut app, Named::ArrowDown);
+    text(&mut app, "j");
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[4]), "↓ and J point at the next chats");
+    assert_eq!(app.pane.selected_chat_id, None, "pointing opens no chat");
+    text(&mut app, "k");
+    key(&mut app, Named::ArrowUp);
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[2]), "↑ and K point at the previous chats");
+    key(&mut app, Named::Escape);
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[0]), "Escape with no chat open points at the first chat");
+    key(&mut app, Named::ArrowUp);
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[0]), "the cursor stops at the first chat");
+    key(&mut app, Named::ArrowDown);
+    key(&mut app, Named::Enter);
+    assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&ids[1]), "Enter opens the chat of the cursor");
+    assert_eq!(app.list.cursor, None, "an open chat drops the cursor");
+    text(&mut app, "j");
+    assert_eq!(app.pane.composer.text(), "j", "with a chat open, J types in the composer");
+    let _ = app.update(UiMessage::SelectChat(ids[1].clone()));
+    key(&mut app, Named::Escape);
+    let _ = app.update(UiMessage::RunHotkey("Search"));
+    key(&mut app, Named::ArrowDown);
+    assert_eq!(app.list.cursor.as_ref(), Some(&ids[1]), "the command bar takes the arrows");
+}
+
 /// Desktop's `reset` empties the command bar each time it closes, so a time typed in Remind Me or a search that was
 /// closed does not come back in the next search.
 #[test]

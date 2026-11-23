@@ -26,6 +26,9 @@ pub struct ListState {
     /// Desktop's `disableSpaceSwitching`: a space window shows its space without the space bar, and its header does
     /// not switch spaces.
     pub(crate) locked: bool,
+    /// Desktop's `threadCursorID`: the chat that ↑, ↓, J and K point at while no chat is open, which shows as
+    /// selected and which Enter opens.
+    pub(crate) cursor: Option<String>,
 }
 
 impl ListState {
@@ -612,6 +615,48 @@ pub(crate) static TAG_ICONS: std::sync::LazyLock<[svg::Handle; 10]> = std::sync:
 });
 
 impl BeeperGuiApp {
+    /// Desktop's `f` of `defaultOnKeyDown`: no chat or draft is open and nothing else takes the keys, so ↑, ↓, J, K
+    /// and Enter work on the cursor of the chat list.
+    pub(crate) fn points_chats(&self) -> bool {
+        self.pane().selected_chat_id.is_none()
+            && self.creating_chat.is_none()
+            && !self.show_command_palette
+            && self.forward.is_none()
+            && self.hotkeys_modal.is_none()
+            && !self.menu_open()
+            && !self.select_mode
+            && self.selection.is_empty()
+    }
+
+    /// [`Self::points_chats`] in the main window or in a space window `id`.
+    pub(crate) fn window_points_chats(&mut self, id: window::Id) -> bool {
+        if Some(id) == self.main_window {
+            return self.points_chats();
+        }
+        if !self.space_windows.iter().any(|w| w.0 == id) {
+            return false;
+        }
+        self.swap_window(id);
+        let on = self.points_chats();
+        self.swap_window(id);
+        on
+    }
+
+    /// Desktop's `pointNextThread` and `pointPrevThread`: the cursor moves to the next or the previous chat of the
+    /// list, and from a chat that the list does not show, to the first chat.
+    pub(crate) fn point_chat(&mut self, down: bool) {
+        let ids = self.list_ids(&self.store.read());
+        let at = self.list.cursor.as_ref().and_then(|c| ids.iter().position(|i| i == c));
+        let to = match (at, down) {
+            (None, _) => Some(0),
+            (Some(i), true) => Some(i + 1),
+            (Some(i), false) => i.checked_sub(1),
+        };
+        if let Some(id) = to.and_then(|i| ids.get(i)) {
+            self.list.cursor = Some(id.clone());
+        }
+    }
+
     /// The selected chats that still exist: the sync task can drop one before StoreChanged reaches update.
     /// The chat menu rows that a selection of more chats adds: the count, and both Mark All items.
     pub(crate) fn selection_rows(&self, st: &BeeperStore) -> f32 {
@@ -1387,7 +1432,9 @@ impl BeeperGuiApp {
             .align_y(Center)
             .height(52)
             .padding(Padding::ZERO.right(8.0));
-        let selected = self.creating_chat.is_none().then_some(self.pane().selected_chat_id.as_deref()).flatten();
+        // Desktop's `isSelected` row is the open chat, or the chat of the cursor (`threadCursorID`).
+        let open = self.pane().selected_chat_id.as_deref();
+        let selected = self.creating_chat.is_none().then(|| open.or(self.list().cursor.as_deref())).flatten();
         let (mut pinned, rest) = self.pins_and_rows(&st);
         // The order of a pin drag, which moves the pins under the pointer.
         let dragged = self.pin_drag.as_ref().filter(|d| d.order.is_some()).map(|d| d.id.as_str());
