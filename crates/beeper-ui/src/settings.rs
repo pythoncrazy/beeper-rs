@@ -14,7 +14,7 @@ use crate::sortable;
 use crate::style::rem;
 use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, ell, fill_box, fw, glow_box, gutter_style, hex, ic,
-    icon, input_style, med, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
+    icon, input_style, lh, med, pad, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
 };
 use crate::units::{compact, grouped, human_size};
 use crate::windows;
@@ -42,7 +42,7 @@ use iced::widget::{
     button, column, container, mouse_area, operation, rich_text, row, scrollable, slider, span, stack, svg, text_input,
     tooltip, Column, Row, Space,
 };
-use iced::{window, Center, Color, Fill, Length, Padding, Pixels, Size, Task, Theme};
+use iced::{window, Center, Color, Fill, Length, Padding, Size, Task, Theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -753,7 +753,7 @@ impl BeeperGuiApp {
                 false => hits.get(self.settings_focus).map(|&h| UiMessage::Settings(Msg::Pick(h))),
             })
             .size(rem(13.0))
-            .line_height(Pixels(rem(16.0)))
+            .line_height(lh(16.0))
             .padding(0)
             .style(input_style(CLEAR, p.strong, p.text, p.accent, 0.0));
         let clear = (!self.settings_query.is_empty()).then(|| {
@@ -796,11 +796,11 @@ impl BeeperGuiApp {
         let profile = || {
             row![
                 container(self.face(me.img_url.as_deref(), &name, av, 0.0)).height(34),
-                column![ell(&name, detail_w, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(p.strong)]
+                column![ell(&name, detail_w, 13.0, Weight::Semibold).line_height(lh(16.0)).color(p.strong)]
                     .push(
-                        me.email.as_deref().map(|e| ell(e, detail_w, 10.0, Weight::Normal)
-                            .line_height(Pixels(rem(12.0)))
-                            .color(p.strong))
+                        me.email
+                            .as_deref()
+                            .map(|e| ell(e, detail_w, 10.0, Weight::Normal).line_height(lh(12.0)).color(p.strong))
                     )
                     .width(Fill),
                 plan_pill(p, st.whoami.plan).0
@@ -858,7 +858,7 @@ impl BeeperGuiApp {
                 span(s[b..].to_string()).color(base)
             ]
             .size(rem(13.0))
-            .line_height(Pixels(rem(16.0)))
+            .line_height(lh(16.0))
             .wrapping(iced::widget::text::Wrapping::None)
         };
         let results = hits.iter().enumerate().fold(Column::new(), |c, (i, &hit)| {
@@ -899,16 +899,15 @@ impl BeeperGuiApp {
         // Desktop's `SearchSuggestions` of the focused empty search: a card 4 px under the field, as wide as it.
         let suggested = (self.settings_search_on && self.settings_query.trim().is_empty()).then(|| {
             let gray = Color::from_rgb8(0x80, 0x80, 0x80);
-            let head =
-                row![Space::new().width(20), semi(tr("Suggestions"), 11.0).color(gray).line_height(Pixels(rem(14.0)))]
-                    .spacing(8)
-                    .padding(Padding::ZERO.bottom(4.0));
+            let head = row![Space::new().width(20), semi(tr("Suggestions"), 11.0).color(gray).line_height(lh(14.0))]
+                .spacing(8)
+                .padding(Padding::ZERO.bottom(4.0));
             let rows = suggestions(&st).into_iter().enumerate().map(|(i, (label, tab, _))| -> El<'_> {
                 let face: El<'_> = match tab {
                     SettingsTab::BeeperPlus => Space::new().width(20).into(),
                     _ => tile(tab, false, 1.0).into(),
                 };
-                let line = row![face, txt(tr(label), 13.0).color(p.strong).line_height(Pixels(rem(16.0)))]
+                let line = row![face, txt(tr(label), 13.0).color(p.strong).line_height(lh(16.0))]
                     .spacing(8)
                     .align_y(Center)
                     .padding([6, 4]);
@@ -1029,9 +1028,9 @@ impl BeeperGuiApp {
                 let note =
                     rich_text![span::<(), _>(strong.trim_start_matches("<strong>")).font(fw(Weight::Bold)), span(rest)]
                         .size(rem(13.0))
-                        .line_height(Pixels(rem(16.0)))
+                        .line_height(lh(16.0))
                         .color(p.text);
-                let shown = container(semi(token.as_str(), 15.0).line_height(Pixels(rem(20.0))).color(p.strong))
+                let shown = container(semi(token.as_str(), 15.0).line_height(lh(20.0)).color(p.strong))
                     .padding([8, 16])
                     .style(fill_box(p.chip, 8.0));
                 let icon = if a.copied { &COPIED_ICON } else { &COPY_ICON };
@@ -1390,11 +1389,10 @@ impl BeeperGuiApp {
         ];
         let mut mcp: Vec<El<'a>> = Vec::new();
         for ((name, label), logo) in MCP_CLIENTS.into_iter().zip([&*CLAUDE_LOGO, &*CURSOR_LOGO, &*VSCODE_LOGO]) {
-            let connect =
-                button(txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(Pixels(rem(16.0))).color(p.accent))
-                    .bare(p.accent)
-                    .padding([4, 8])
-                    .on_press(UiMessage::Integrations(integrations::Msg::McpInstall(name)));
+            let connect = button(txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(lh(16.0)).color(p.accent))
+                .bare(p.accent)
+                .padding([4, 8])
+                .on_press(UiMessage::Integrations(integrations::Msg::McpInstall(name)));
             let line = row![svg(logo.clone()).width(18).height(18), semi(name, 14.0).color(p.text)].spacing(8);
             let line = row![line.width(Fill).align_y(Center), connect]
                 .align_y(Center)
@@ -1413,7 +1411,7 @@ impl BeeperGuiApp {
         );
         let blue = if self.dark { Color::from_rgb8(10, 132, 255) } else { Color::from_rgb8(0, 122, 255) };
         let install = matches!(target, "Claude Code" | "Codex").then(|| {
-            let label = semi(tr("Copy Command"), 11.0).line_height(Pixels(rem(12.0))).color(Color::WHITE);
+            let label = semi(tr("Copy Command"), 11.0).line_height(lh(12.0)).color(Color::WHITE);
             container(
                 button(label)
                     .padding([4, 8])
@@ -1429,7 +1427,7 @@ impl BeeperGuiApp {
         };
         let code = txt(value.clone(), 12.0)
             .font(iced::Font::MONOSPACE)
-            .line_height(Pixels(rem(16.0)))
+            .line_height(lh(16.0))
             .color(p.text)
             .wrapping(iced::widget::text::Wrapping::Glyph);
         let code = stack![
@@ -1471,7 +1469,7 @@ impl BeeperGuiApp {
                     let tag = t.scopes.iter().any(|s| s == beeper_core::connect::WRITE).then(|| {
                         container(
                             crate::style::fixed(tr("Sensitive actions"), 12.0, Weight::Normal)
-                                .line_height(Pixels(rem(14.0)))
+                                .line_height(lh(14.0))
                                 .color(p.text),
                         )
                         .padding([1, 4])
@@ -1716,11 +1714,11 @@ impl BeeperGuiApp {
         let search = text_input(tr("Search hotkeys..."), &self.hotkey_query)
             .on_input(|a0| UiMessage::Hotkeys(hotkeys::Msg::Query(a0)))
             .size(rem(13.0))
-            .line_height(Pixels(rem(15.0)))
+            .line_height(lh(15.0))
             .padding([4, 7])
             .width(219)
             .style(outline_input(p));
-        let revert = button(txt(tr("Revert all"), 13.0).line_height(Pixels(rem(15.0))).width(Fill).align_x(Center))
+        let revert = button(txt(tr("Revert all"), 13.0).line_height(lh(15.0)).width(Fill).align_x(Center))
             .width(100)
             .padding([4, 6])
             .style(pill_style(p))
@@ -1739,7 +1737,7 @@ impl BeeperGuiApp {
                 };
                 let label: El<'_> = match prefs::hotkey_label(&shown) {
                     l if l.is_empty() => txt(tr("Record Shortcut"), 11.0).color(p.muted).into(),
-                    l => txt(l, 13.0).line_height(Pixels(rem(18.0))).color(ink).into(),
+                    l => txt(l, 13.0).line_height(lh(18.0)).color(ink).into(),
                 };
                 let buttons = match rec {
                     Some(_) => row![]
@@ -1856,7 +1854,7 @@ impl BeeperGuiApp {
             .id("hotkeys-search")
             .on_input(|q| UiMessage::Hotkeys(hotkeys::Msg::Modal(Some(q))))
             .size(rem(13.0))
-            .line_height(Pixels(rem(18.2)))
+            .line_height(lh(18.2))
             .padding([3, 6])
             .style(outline_input(p));
         let rule = p.fg.scale_alpha(if self.hotkeys_scrolled { 0.1 } else { 0.0 });
@@ -1864,7 +1862,7 @@ impl BeeperGuiApp {
             // `.modal h3` is 24 px.
             container(crate::style::fixed(tr("Keyboard Shortcuts"), 24.0, Weight::Bold).color(p.text))
                 .padding([8.0, 24.0]),
-            container(search).padding(Padding { top: 4.0, right: 22.4, bottom: 10.0, left: 22.4 }),
+            container(search).padding(pad(4.0, 22.4, 10.0, 22.4)),
             container(Space::new()).width(Fill).height(1).style(fill_box(rule, 0.0)),
             list,
         ]
@@ -2028,7 +2026,7 @@ impl BeeperGuiApp {
                     let g = group(p, heading.take(), rows);
                     out.push(match lead.take() {
                         Some(t) => {
-                            let t = txt(t, 13.0).line_height(Pixels(rem(18.0))).color(p.sub);
+                            let t = txt(t, 13.0).line_height(lh(18.0)).color(p.sub);
                             column![container(t).padding(Padding::new(13.0).top(7.0).bottom(0.0)), g].spacing(19).into()
                         }
                         None => g,
@@ -2273,12 +2271,10 @@ impl BeeperGuiApp {
                 let set = |v: u8| UiMessage::Settings(Msg::SetPref(key, v));
                 let keys = Keys::step(value.checked_sub(10).map(set), (value < 100).then(|| set(value + 10)));
                 let bar = self.target(self.settings_window, format!("slider-{key}"), bar, keys, Look::Auto);
-                let body = column![
-                    txt(tr(r.label), 13.0).line_height(Pixels(rem(18.0))).color(p.text),
-                    container(bar).padding([0, 2])
-                ]
-                .spacing(13)
-                .padding(Padding::new(13.0).bottom(14.0));
+                let body =
+                    column![txt(tr(r.label), 13.0).line_height(lh(18.0)).color(p.text), container(bar).padding([0, 2])]
+                        .spacing(13)
+                        .padding(Padding::new(13.0).bottom(14.0));
                 return column![
                     body,
                     container(Space::new()).width(Fill).height(1).style(fill_box(p.prefs_border, 0.0))

@@ -1,15 +1,16 @@
 //! Desktop's audio player (`Audio.tsx`): decoding, the waveform, playback speed, and autoplay of the next
 //! voice note.
 use crate::settings;
-use crate::style::rem;
-use crate::style::{btn_style, clamped, fill_box, hidden_slider, ic, icon, semi, shadow_box, text_width, txt, Bare};
+use crate::style::{
+    btn_style, clamped, fill_box, hidden_slider, ic, icon, lh, semi, shadow_box, text_width, txt, Bare,
+};
 use crate::{menu_item, menu_pitch, sound, tinted, tr, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS};
 use beeper_core::models::{Attachment, Message, Transcription};
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
 use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, mouse_area, row, slider, stack, svg, Column, Row, Space};
-use iced::{Center, Color, Fill, Padding, Pixels, Point, Subscription, Task};
+use iced::{Center, Color, Fill, Padding, Point, Subscription, Task};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
@@ -520,7 +521,7 @@ impl BeeperGuiApp {
                 let body = stack![body].push(float.map(|t| container(stamp(t)).align_right(Fill).align_bottom(Fill)));
                 let footer = over.then(|| {
                     let label = semi(if open { tr("Show less") } else { tr("Show more") }, 13.0);
-                    let toggle = button(label.line_height(Pixels(rem(16.0))).color(self.pal.accent))
+                    let toggle = button(label.line_height(lh(16.0)).color(self.pal.accent))
                         .padding(0)
                         .style(|_, _| button::Style::default())
                         .on_press(UiMessage::Voice(Msg::More(m.id.clone())));

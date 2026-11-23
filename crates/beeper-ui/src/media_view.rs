@@ -7,7 +7,7 @@ use crate::loads;
 use crate::message;
 use crate::style::rem;
 use crate::style::{
-    bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, med, scroll_style, semi, shadow_box,
+    bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, lh, med, scroll_style, semi, shadow_box,
     text_width, txt, Bare, CLEAR, GUTTER,
 };
 use crate::time::{day_num, format_short_ts, iso_millis, today};
@@ -26,7 +26,7 @@ use iced::keyboard::{self, key::Named, Key};
 use iced::widget::{
     button, column, container, image, mouse_area, row, scrollable, stack, svg, text_input, tooltip, Column, Row, Space,
 };
-use iced::{border, mouse, window, Center, Color, Fill, Padding, Pixels, Point, Right, Size, Task, Theme};
+use iced::{border, mouse, window, Center, Color, Fill, Padding, Point, Right, Size, Task, Theme};
 use std::sync::Arc;
 
 /// ffmpeg over `bytes`, which it reads from a temporary file of its own: an MP4 or M4A with its `moov` atom at the
@@ -1139,7 +1139,7 @@ impl BeeperGuiApp {
             let full = |d| i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0));
             let range = if lo == hi { full(lo) } else { format!("{} - {}", full(lo), full(hi)) };
             let range = txt(range, 11.0).color(p.on_secondary).wrapping(iced::widget::text::Wrapping::None);
-            let head = column![semi(label.clone(), 15.0).line_height(Pixels(rem(20.0))).color(p.strong), range];
+            let head = column![semi(label.clone(), 15.0).line_height(lh(20.0)).color(p.strong), range];
             let col = col.push(container(head).padding(Padding::new(6.0).top(12.0).left(10.0).right(10.0)));
             match w.tab {
                 0 => group.chunks(cols).fold(col, |col, chunk| {
@@ -1243,8 +1243,8 @@ impl BeeperGuiApp {
             }
         };
         let text = column![
-            ell(&title, text_w, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(p.strong),
-            ell(&line, text_w, 11.0, Weight::Normal).line_height(Pixels(rem(14.0))).color(p.on_secondary),
+            ell(&title, text_w, 13.0, Weight::Semibold).line_height(lh(16.0)).color(p.strong),
+            ell(&line, text_w, 11.0, Weight::Normal).line_height(lh(14.0)).color(p.on_secondary),
         ]
         .width(Fill);
         let meta = column![sub(Self::sender_name(st, m).to_string()), sub(relative_date(&m.timestamp))].align_x(Right);

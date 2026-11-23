@@ -1916,7 +1916,7 @@ impl BeeperGuiApp {
                 let rest = s.strip_prefix(label).expect("the draft label fits").to_string();
                 rich_text![span::<(), _>(label).font(fw(Weight::Semibold)).color(p.accent), span(rest).color(fg)]
                     .size(rem(13.0))
-                    .line_height(Pixels(rem(16.0)))
+                    .line_height(lh(16.0))
                     .width(width)
             }))
             .push(Space::new().width(Fill))
@@ -1967,11 +1967,11 @@ fn preview_line<'a>(b: &str, width: f32, lines: usize, font: iced::Font, fg: Col
     let shown = crate::style::clamped(b, width, lines, 13.0, Weight::Normal);
     if !shown.contains('\u{fe0f}') {
         let text = clamp(b, width, lines, 13.0, Weight::Normal);
-        return text.width(width).line_height(Pixels(rem(16.0))).font(font).color(fg).into();
+        return text.width(width).line_height(lh(16.0)).font(font).color(fg).into();
     }
     let spans = crate::emoji::with_emoji_font(vec![span::<(), _>(shown.to_string()).font(font)]);
     let wrap = if lines == 1 { iced::widget::text::Wrapping::None } else { iced::widget::text::Wrapping::WordOrGlyph };
-    rich_text(spans).size(rem(13.0)).line_height(Pixels(rem(16.0))).color(fg).width(width).wrapping(wrap).into()
+    rich_text(spans).size(rem(13.0)).line_height(lh(16.0)).color(fg).width(width).wrapping(wrap).into()
 }
 
 /// The settings, sizes and selection that every row of the chat list reads.

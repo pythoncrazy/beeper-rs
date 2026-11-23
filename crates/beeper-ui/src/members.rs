@@ -145,12 +145,11 @@ impl BeeperGuiApp {
             let you_w = you.as_deref().map_or(0.0, |y| crate::style::text_width(y, 13.0, Weight::Normal));
             let name = member_name(u);
             let strong = p.strong.scale_alpha(fade);
-            let label = row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold)
-                .line_height(Pixels(rem(16.0)))
-                .color(strong)]
-            .push(you.map(|y| txt(y, 13.0).color(strong)));
+            let label =
+                row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold).line_height(lh(16.0)).color(strong)]
+                    .push(you.map(|y| txt(y, 13.0).color(strong)));
             let tags = tags.into_iter().map(|t| -> El<'a> {
-                container(crate::style::t(t, 10.0, Weight::Semibold).line_height(Pixels(rem(12.0))).color(p.strong))
+                container(crate::style::t(t, 10.0, Weight::Semibold).line_height(lh(12.0)).color(p.strong))
                     .padding([2, 4])
                     .style(fill_box(p.card, 4.0))
                     .into()
@@ -172,7 +171,7 @@ impl BeeperGuiApp {
                 text_input(&trn("Search %d group member", "Search %d group members", n, &[&n]), &self.info_query)
                     .on_input(|a0| UiMessage::Info(info::Msg::Query(a0)))
                     .size(rem(13.0))
-                    .line_height(Pixels(rem(16.0)))
+                    .line_height(lh(16.0))
                     .padding([10, 12])
                     .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
             let clear = (!self.info_query.is_empty()).then(|| {

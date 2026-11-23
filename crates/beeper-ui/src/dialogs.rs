@@ -17,8 +17,8 @@ use crate::reminders;
 use crate::settings;
 use crate::style::rem;
 use crate::style::{
-    bar, bold, bordered_box, btn_style, done_btn, editor_style, ell, fill_box, fw, ic, icon, input_style, med, mix,
-    scroll_style, semi, shadow_box, text_width, txt, Bare, CLEAR,
+    bar, bold, bordered_box, btn_style, done_btn, editor_style, ell, fill_box, fw, ic, icon, input_style, lh, med, mix,
+    pad, scroll_style, semi, shadow_box, text_width, txt, Bare, CLEAR,
 };
 use crate::units::human_size;
 use crate::{
@@ -42,9 +42,7 @@ use iced::widget::{
     button, column, container, image, mouse_area, operation, row, scrollable, stack, text_editor, text_input, Column,
     Space, Stack,
 };
-use iced::{
-    border, mouse, window, Background, Center, Color, Fill, Gradient, Padding, Pixels, Radians, Size, Task, Theme,
-};
+use iced::{border, mouse, window, Background, Center, Color, Fill, Gradient, Padding, Radians, Size, Task, Theme};
 use std::collections::HashSet;
 
 /// Desktop's `cR`: the icon of a new label.
@@ -827,7 +825,7 @@ impl BeeperGuiApp {
         let edit = target("edit", edit.into(), Keys::press(open), Look::button(p, 4.0));
         let head = column![
             container(label_tile(l, 54.0, 28.0, 20.0, p.strong)).padding(Padding::ZERO.bottom(16.0)),
-            semi(l.name.clone(), 18.0).line_height(Pixels(rem(24.0))).color(p.strong).align_x(Center),
+            semi(l.name.clone(), 18.0).line_height(lh(24.0)).color(p.strong).align_x(Center),
             edit,
         ]
         .align_x(Center)
@@ -1018,7 +1016,7 @@ impl BeeperGuiApp {
             .on_input(move |n| edit(LabelEdit::Name(n)))
             .on_submit(edit(LabelEdit::Advance))
             .size(rem(12.0))
-            .line_height(Pixels(rem(16.0)))
+            .line_height(lh(16.0))
             .padding([8, 12])
             .style(input_style(p.chip, p.strong, p.sub, p.accent, 16.0));
         let body = column![
@@ -1038,7 +1036,7 @@ impl BeeperGuiApp {
             .id("label-search")
             .on_input(move |q| edit(LabelEdit::Search(q)))
             .size(rem(13.0))
-            .line_height(Pixels(rem(16.0)))
+            .line_height(lh(16.0))
             .padding([14, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let clear = (!d.search.trim().is_empty()).then(|| {
@@ -1061,14 +1059,14 @@ impl BeeperGuiApp {
                 LabelRow::Header(name, more) => {
                     let toggle = more.map(|open| {
                         let label = semi(if open { tr("Show less") } else { tr("Show more") }, 10.0);
-                        button(label.line_height(Pixels(rem(12.0))).color(p.accent))
+                        button(label.line_height(lh(12.0)).color(p.accent))
                             .bare(p.accent)
                             .on_press(edit(LabelEdit::More))
                     });
                     row![txt(tr(name), 12.0).color(p.sub).width(Fill)]
                         .push(toggle)
                         .align_y(Center)
-                        .padding(Padding { top: 8.0, right: 13.0, bottom: 4.0, left: 13.0 })
+                        .padding(pad(8.0, 13.0, 4.0, 13.0))
                         .into()
                 }
                 LabelRow::Chat(c) => {
@@ -1146,7 +1144,7 @@ impl BeeperGuiApp {
         });
         let head = column![
             self.chat_avatar(c, 64.0, 1.25),
-            ell(&c.title, 287.0, 15.0, Weight::Semibold).line_height(Pixels(rem(20.0))).color(p.strong)
+            ell(&c.title, 287.0, 15.0, Weight::Semibold).line_height(lh(20.0)).color(p.strong)
         ]
         .push(members)
         .push(sub(network_name(&c.account_id).to_string()))
@@ -1163,7 +1161,7 @@ impl BeeperGuiApp {
         labels.sort_by_cached_key(|l| l.name.to_lowercase());
         let rows = labels.iter().map(|l| {
             let on = c.label_ids.contains(&l.id);
-            let name = ell(&l.name, 183.0, 13.0, Weight::Normal).line_height(Pixels(rem(16.0))).color(p.strong);
+            let name = ell(&l.name, 183.0, 13.0, Weight::Normal).line_height(lh(16.0)).color(p.strong);
             let msg = UiMessage::Labels(labels::Msg::Switch(l.id.clone(), c.id.clone(), !on));
             row![label_icon(l, 28.0, p.strong), container(name).width(Fill), toggle(p, on, Some(msg))]
                 .spacing(4)
@@ -1396,13 +1394,13 @@ impl BeeperGuiApp {
             .on_input_maybe(can(0).then_some(move |t| edit(GroupEdit::Title(t))))
             .font(fw(Weight::Semibold))
             .size(rem(15.0))
-            .line_height(Pixels(rem(20.0)))
+            .line_height(lh(20.0))
             .padding([8, 11])
             .style(input_style(p.chip, p.strong, p.sub, p.accent, 10.0));
         let topic = text_editor(&d.topic)
             .placeholder(tr("Group Description"))
             .size(rem(13.0))
-            .line_height(Pixels(rem(16.0)))
+            .line_height(lh(16.0))
             .padding([8, 11])
             .height(120)
             .style(editor_style(p, 10.0));
@@ -1422,7 +1420,7 @@ impl BeeperGuiApp {
                 (true, false) => p.strong,
             };
             let gradient = primary && msg.is_some();
-            button(container(med(label, 14.0).line_height(Pixels(rem(20.0))).color(fg)).center_x(Fill))
+            button(container(med(label, 14.0).line_height(lh(20.0)).color(fg)).center_x(Fill))
                 .width(Fill)
                 .padding([10, 12])
                 .style(move |_: &Theme, _| button::Style {
@@ -1482,9 +1480,9 @@ impl BeeperGuiApp {
         let title = semi(tr("Blocked users"), 13.0).color(p.strong);
         let list: El<'_> = match chats.is_empty() {
             true => column![
-                semi(tr("No Blocked Users"), 18.0).line_height(Pixels(rem(26.0))).color(p.strong),
+                semi(tr("No Blocked Users"), 18.0).line_height(lh(26.0)).color(p.strong),
                 txt(tr("When you block someone from a chat, they’ll show up here."), 15.0)
-                    .line_height(Pixels(rem(20.0)))
+                    .line_height(lh(20.0))
                     .color(p.sub)
                     .align_x(Center),
             ]
@@ -1604,13 +1602,12 @@ impl BeeperGuiApp {
         let weak = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
         let total = poll.voters();
         let question = if poll.question.is_empty() { tr("Poll").into() } else { poll.question.clone() };
-        let mut body =
-            column![semi(question, 17.0).line_height(Pixels(rem(24.0))).color(p.strong)].spacing(10).padding(16);
+        let mut body = column![semi(question, 17.0).line_height(lh(24.0)).color(p.strong)].spacing(10).padding(16);
         for o in &poll.options {
             let n = o.voter_ids.len();
             let head = row![
-                semi(o.label.clone(), 15.0).line_height(Pixels(rem(20.0))).color(p.strong).width(Fill),
-                txt(n.to_string(), 17.0).line_height(Pixels(rem(24.0))).color(p.sub)
+                semi(o.label.clone(), 15.0).line_height(lh(20.0)).color(p.strong).width(Fill),
+                txt(n.to_string(), 17.0).line_height(lh(24.0)).color(p.sub)
             ]
             .spacing(10)
             .align_y(Center);
@@ -1621,7 +1618,7 @@ impl BeeperGuiApp {
                     let u = people.iter().find(|u| u.id == *id);
                     let name = u.and_then(|u| u.full_name.clone()).unwrap_or_else(|| id.clone());
                     let face = self.face(u.and_then(|u| u.img_url.as_deref()), &name, 28.0, 0.5);
-                    let line = row![face, txt(name, 14.0).line_height(Pixels(rem(18.0))).color(p.strong)].spacing(8);
+                    let line = row![face, txt(name, 14.0).line_height(lh(18.0)).color(p.strong)].spacing(8);
                     let last = i + 1 == n.min(100) && n <= 100;
                     voters = voters.push(container(line.align_y(Center)).padding(Padding::new(6.0).bottom(if last {
                         0.0
@@ -1631,8 +1628,7 @@ impl BeeperGuiApp {
                 }
                 if n > 100 {
                     let more = trf("+%d more", &[&(n - 100)]);
-                    voters = voters
-                        .push(container(txt(more, 14.0).line_height(Pixels(rem(18.0))).color(p.sub)).padding([6, 0]));
+                    voters = voters.push(container(txt(more, 14.0).line_height(lh(18.0)).color(p.sub)).padding([6, 0]));
                 }
                 let rule = container(Space::new()).width(Fill).height(1).style(fill_box(weak, 0.0));
                 section = section.push(Space::new().height(6)).push(rule).push(container(voters).padding([0, 8]));
@@ -1666,7 +1662,7 @@ impl BeeperGuiApp {
             .id(format!("poll-{}", d.chat))
             .on_input(move |q| edit(PollEdit::Question(q.chars().take(500).collect())))
             .size(rem(15.0))
-            .line_height(Pixels(rem(20.0)))
+            .line_height(lh(20.0))
             .padding([10, 11])
             .style(input_style(p.received, p.strong, p.sub, p.accent, 10.0));
         let repeats = d.repeats(rules);
@@ -1682,7 +1678,7 @@ impl BeeperGuiApp {
                 .on_input(move |v| edit(PollEdit::Option(i, v.chars().take(length).collect())))
                 .on_submit(edit(PollEdit::Next(i)))
                 .size(rem(14.0))
-                .line_height(Pixels(rem(18.0)))
+                .line_height(lh(18.0))
                 .padding([8, 0])
                 .style(input_style(CLEAR, p.strong.scale_alpha(fade), p.sub, p.accent, 0.0));
             let error = repeats[i].then(|| txt(tr("This option already exists"), 11.0).color(p.danger));
@@ -1708,8 +1704,7 @@ impl BeeperGuiApp {
             options = options.push((i > 0).then(rule)).push(line);
         }
         if rules.room(d.options.len()) {
-            let add =
-                row![txt("+", 18.0).line_height(1.0), txt(tr("Add an option"), 14.0).line_height(Pixels(rem(18.0)))];
+            let add = row![txt("+", 18.0).line_height(1.0), txt(tr("Add an option"), 14.0).line_height(lh(18.0))];
             let add = button(add.spacing(6).align_y(Center))
                 .bare(p.accent)
                 .padding(10)
@@ -1729,7 +1724,7 @@ impl BeeperGuiApp {
         // Desktop's `<label>` rows around a `Toggle`, which Space flips, with `.PollCreator-module__settingRow:has(
         // :focus-visible)`: a 2 px `--app-focus-ring` outline 2 px inside the row.
         let setting = |label: &'static str, on: bool, msg: fn(bool) -> PollEdit| {
-            let line = row![txt(tr(label), 14.0).line_height(Pixels(rem(18.0))).color(p.strong).width(Fill)]
+            let line = row![txt(tr(label), 14.0).line_height(lh(18.0)).color(p.strong).width(Fill)]
                 .push(toggle(p, on, Some(edit(msg(!on)))))
                 .spacing(10)
                 .align_y(Center)
@@ -1749,10 +1744,10 @@ impl BeeperGuiApp {
             card(settings)
         ]
         .spacing(14)
-        .padding(Padding { top: 10.0, right: 14.0, bottom: 96.0, left: 14.0 });
+        .padding(pad(10.0, 14.0, 96.0, 14.0));
         let ready = d.ready(rules);
         let bg = if ready { p.accent } else { mix(p.accent, Color::WHITE, 0.55) };
-        let send = button(container(semi(tr("Send"), 14.0).line_height(Pixels(rem(18.0)))).center_x(Fill))
+        let send = button(container(semi(tr("Send"), 14.0).line_height(lh(18.0))).center_x(Fill))
             .padding(11)
             .width(Fill)
             .style(btn_style([bg; 3], [Color::WHITE; 3], 999.0))
@@ -1765,12 +1760,10 @@ impl BeeperGuiApp {
             .add_stop(0.0, p.card)
             .add_stop(0.55, p.card)
             .add_stop(1.0, p.card.scale_alpha(0.0));
-        let footer = container(send).padding(Padding { top: 16.0, right: 14.0, bottom: 14.0, left: 14.0 }).style(
-            move |_: &Theme| container::Style {
-                background: Some(Background::Gradient(Gradient::Linear(fade))),
-                ..Default::default()
-            },
-        );
+        let footer = container(send).padding(pad(16.0, 14.0, 14.0, 14.0)).style(move |_: &Theme| container::Style {
+            background: Some(Background::Gradient(Gradient::Linear(fade))),
+            ..Default::default()
+        });
         let body = scrollable(body).direction(bar()).height(Fill).style(scroll_style(p.scroll));
         let card = container(stack![body, container(footer).align_bottom(Fill)]).style(fill_box(p.card, 12.0));
         let title = container(semi(tr("New Poll"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);

@@ -10,7 +10,7 @@ use crate::scheduled;
 use crate::scheduled::send_day;
 use crate::style::rem;
 use crate::style::{
-    bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, mix, scroll_style, semi,
+    bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, lh, mix, pad, scroll_style, semi,
     text_width, txt, Bare, CLEAR,
 };
 use crate::threads;
@@ -37,7 +37,7 @@ use iced::widget::{
     button, column, container, image, mouse_area, row, scrollable, stack, svg, text_editor, text_input, tooltip,
     Column, Row, Space,
 };
-use iced::{window, Bottom, Center, Color, Fill, Length, Padding, Pixels, Shrink, Task};
+use iced::{window, Bottom, Center, Color, Fill, Length, Padding, Shrink, Task};
 use std::collections::HashSet;
 
 /// Composer content with `text` and the cursor at the end.
@@ -1068,7 +1068,7 @@ impl BeeperGuiApp {
             [broadcast, quote, pending.map(El::from), links.map(El::from)].into_iter().flatten().collect();
         let external = (!external.is_empty()).then(|| {
             let inner = Column::with_children(external).spacing(8);
-            container(inner).padding(Padding { top: 8.0, right: 8.0, bottom: 0.0, left: 12.0 })
+            container(inner).padding(pad(8.0, 8.0, 0.0, 12.0))
         });
         let pill = self.view_composer_pill(st, external, line);
         let stickers = (self.pane().picker == Some(Picker::Sticker)).then(|| self.view_sticker_picker(st));
@@ -1230,7 +1230,7 @@ impl BeeperGuiApp {
             .key_binding(move |k| keys.binding(k))
             .highlight_with::<format::Marks>(marks, |f, _| *f)
             .size(rem(13.0))
-            .line_height(Pixels(rem(16.0)))
+            .line_height(lh(16.0))
             .padding([10, 2])
             .height(Shrink)
             .max_height(self.pane().size.height / 2.0)
@@ -1337,7 +1337,7 @@ impl BeeperGuiApp {
                     let wide = if img.is_some() { 158.0 } else { 338.0 };
                     let link = row![ic(icon::LINK, 12.0).color(p.weak), txt(host, 11.0).color(p.weak)];
                     let text = column![
-                        clamp(title, wide, 3, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(p.strong),
+                        clamp(title, wide, 3, 13.0, Weight::Semibold).line_height(lh(16.0)).color(p.strong),
                         link.spacing(4).align_y(Center)
                     ];
                     let card = container(column![].push(img).push(text.spacing(8).padding([12, 11])));
@@ -1563,14 +1563,14 @@ impl BeeperGuiApp {
         if pm.frames.is_empty() && vcard {
             let entry = |phone: bool, s: &str| -> El<'a> {
                 let s = if phone { crate::fmt_phone(s) } else { s.to_string() };
-                txt(s, 12.0).line_height(Pixels(rem(16.0))).color(p.text).into()
+                txt(s, 12.0).line_height(lh(16.0)).color(p.text).into()
             };
             let card = contact_card(p, &parse_vcard(&String::from_utf8_lossy(&pm.bytes)), p.text, 1, &entry);
             container(card).padding([8, 10]).style(fill_box(p.received, 0.0)).into()
         } else if pm.frames.is_empty() {
             let ext = std::path::Path::new(&pm.name).extension().map(|e| e.to_string_lossy().to_uppercase());
             let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();
-            let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(Pixels(rem(14.0)));
+            let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(lh(14.0));
             let info = column![name, txt(meta.join(" ・ "), 11.0)].spacing(4);
             let icon = &FILE_ICONS[if pm.mime.starts_with("audio") { 3 } else { 0 }];
             let line = row![tinted(icon, 20.0, p.strong), info].spacing(8).align_y(Center);
