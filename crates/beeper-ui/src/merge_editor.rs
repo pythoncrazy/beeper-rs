@@ -302,8 +302,7 @@ impl BeeperGuiApp {
         // Desktop's `outsideFooter` of the intro.
         let outside = (d.step == MergeStep::Intro).then(|| {
             let link = button(txt(tr("Learn more"), 12.0).color(p.accent))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                .bare(p.accent)
                 .on_press(UiMessage::OpenUrl(MERGE_HELP.into()));
             let line = row![txt(tr("You can separate merged chats anytime"), 12.0).color(p.sub), link].spacing(4);
             container(line).center_x(Fill).padding(Padding { top: 8.0, right: 0.0, bottom: 2.0, left: 0.0 })
@@ -361,10 +360,7 @@ impl BeeperGuiApp {
             let action = container(txt(tr("Upgrade"), 10.0).color(Color::WHITE)).padding([1, 6]);
             let action = action.style(fill_box(p.strong, 999.0));
             let card = row![text, action].spacing(10).align_y(Center).padding(12);
-            let card = button(card)
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 10.0))
-                .on_press(edit(MergeEdit::Upgrade));
+            let card = button(card).bare(p.strong).on_press(edit(MergeEdit::Upgrade));
             container(container(card).style(bordered_box(CLEAR, p.prefs_border, 0.5, 10.0))).padding(Padding {
                 top: 0.0,
                 right: 16.0,
@@ -389,9 +385,8 @@ impl BeeperGuiApp {
         let line =
             line.spacing(10).align_y(Center).padding(Padding { top: 10.0, right: 8.0, bottom: 10.0, left: 16.0 });
         button(line)
-            .padding(0)
+            .bare(p.strong)
             .width(Fill)
-            .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
             .on_press(UiMessage::Merged(merged::Msg::Edit(MergeEdit::Toggle(c.id.clone()))))
             .into()
     }
@@ -430,8 +425,7 @@ impl BeeperGuiApp {
                 rows.push(header("Selected"));
                 let chips = picked.iter().map(|c| -> El<'a> {
                     button(self.chat_avatar(c, 40.0, 1.25))
-                        .padding(0)
-                        .style(btn_style([CLEAR; 3], [p.strong; 3], 20.0))
+                        .bare(p.strong)
                         .on_press(edit(MergeEdit::Toggle(c.id.clone())))
                         .into()
                 });
@@ -514,11 +508,7 @@ impl BeeperGuiApp {
             let face = self.merge_photo(&st, d, &choice, 40.0);
             let ring = if on { p.accent } else { CLEAR };
             let cell = container(container(face).padding(6)).style(bordered_box(CLEAR, ring, 2.0, 28.0));
-            button(container(cell).center(56))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 28.0))
-                .on_press(edit(MergeEdit::Photo(choice)))
-                .into()
+            button(container(cell).center(56)).bare(p.strong).on_press(edit(MergeEdit::Photo(choice))).into()
         });
         let options = iced::widget::Row::with_children(options).wrap();
         let options = container(options).center_x(Fill).padding([8, 26]);
