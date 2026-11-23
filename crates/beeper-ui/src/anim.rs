@@ -282,9 +282,143 @@ impl<M> Widget<M, Theme, Renderer> for Dot {
     }
 }
 
+/// The length of a loop of Desktop's `--skeleton-bg` shimmer (`slide-across 4s ease-in-out infinite`), in seconds.
+pub const SHIMMER: f32 = 4.0;
+
+/// The alpha of the shimmer of Desktop's `--skeleton-bg` over its fill, as stops across the box from the left at `t`
+/// seconds: the fill is `color`, and its four 400% wide `#flashes` rects of the `gradient` (from clear to `color` at
+/// 0.1 at 15%, `color` from 40% to 60%, and back) at 0.5 opacity slide from `-1350%` to `-150%`, so a soft band
+/// sweeps across the box three times a loop and rests on it at each end.
+pub fn shimmer(t: f32) -> Vec<(f32, f32)> {
+    const STOPS: [(f32, f32); 6] = [(0.0, 0.0), (0.15, 0.1), (0.4, 1.0), (0.6, 1.0), (0.85, 0.1), (1.0, 0.0)];
+    let e = crate::cubic_bezier((t / SHIMMER).rem_euclid(1.0), [0.42, 0.0, 0.58, 1.0]);
+    // The left edge of the box in the units of the box width, from the left edge of the first rect.
+    let from = 13.5 - 12.0 * e;
+    let flash = |p: f32| {
+        let q = ((from + p) / 4.0).rem_euclid(1.0);
+        let i = STOPS.windows(2).position(|s| q <= s[1].0).unwrap_or(STOPS.len() - 2);
+        let ((a, x), (b, y)) = (STOPS[i], STOPS[i + 1]);
+        0.5 * (x + (y - x) * (q - a) / (b - a))
+    };
+    let mut at: Vec<f32> = vec![0.0, 1.0];
+    for k in 0..5 {
+        for (s, _) in STOPS {
+            let p = 4.0 * (k as f32 + s) - from;
+            if p > 0.0 && p < 1.0 {
+                at.push(p);
+            }
+        }
+    }
+    at.sort_by(f32::total_cmp);
+    at.dedup();
+    at.into_iter().map(|p| (p, flash(p))).collect()
+}
+
+/// Desktop's `img.loading` of a media that loads: its box of `--skeleton-bg`, `color` with the shimmer of
+/// [`shimmer`] that loops from `start`, with corners of `radius`. It redraws each frame while it is visible, without
+/// view or layout.
+pub struct Skeleton {
+    width: Length,
+    height: Length,
+    radius: f32,
+    color: Color,
+    start: Instant,
+}
+
+pub fn skeleton<'a, M: 'a>(
+    width: impl Into<Length>,
+    height: impl Into<Length>,
+    radius: f32,
+    color: Color,
+    start: Instant,
+) -> Element<'a, M> {
+    Element::new(Skeleton { width: width.into(), height: height.into(), radius, color, start })
+}
+
+impl Skeleton {
+    /// The gradient of the box at `t` seconds: the shimmer over the fill, in the color of both.
+    pub fn gradient(color: Color, t: f32) -> iced::gradient::Linear {
+        let c = color.a;
+        shimmer(t)
+            .into_iter()
+            .fold(iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2)), |g, (at, flash)| {
+                g.add_stop(at, Color { a: c + c * flash * (1.0 - c), ..color })
+            })
+    }
+}
+
+/// The state that a [`Skeleton`] shows to the operations, so that tests find it.
+pub struct Loading;
+
+impl<M> Widget<M, Theme, Renderer> for Skeleton {
+    fn size(&self) -> Size<Length> {
+        Size::new(self.width, self.height)
+    }
+
+    fn layout(&mut self, _: &mut widget::Tree, _: &Renderer, limits: &layout::Limits) -> layout::Node {
+        layout::atomic(limits, self.width, self.height)
+    }
+
+    fn operate(&mut self, _: &mut widget::Tree, layout: Layout<'_>, _: &Renderer, op: &mut dyn widget::Operation) {
+        op.custom(None, layout.bounds(), &mut Loading);
+    }
+
+    fn update(
+        &mut self,
+        _: &mut widget::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        _: mouse::Cursor,
+        _: &Renderer,
+        _: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>,
+        viewport: &Rectangle,
+    ) {
+        if matches!(event, Event::Window(window::Event::RedrawRequested(_))) && layout.bounds().intersects(viewport) {
+            shell.request_redraw();
+        }
+    }
+
+    fn draw(
+        &self,
+        _: &widget::Tree,
+        renderer: &mut Renderer,
+        _: &Theme,
+        _: &renderer::Style,
+        layout: Layout<'_>,
+        _: mouse::Cursor,
+        _: &Rectangle,
+    ) {
+        let quad = renderer::Quad {
+            bounds: layout.bounds(),
+            border: iced::border::rounded(self.radius),
+            ..Default::default()
+        };
+        let t = self.start.elapsed().as_secs_f32();
+        renderer.fill_quad(quad, iced::Background::Gradient(Self::gradient(self.color, t).into()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Desktop's `--skeleton-bg` shimmer rests its band on the box at the ends of its 4 s loop and is away halfway,
+    /// with at most the 8 stops of a gradient from the left to the right edge.
+    #[test]
+    fn skeleton_shimmers_like_desktop() {
+        for t in [0.0, 0.7, 1.3, 2.0, 2.9, 3.99] {
+            let stops = shimmer(t);
+            assert!(stops.len() <= 8 && stops[0].0 == 0.0 && stops.last().unwrap().0 == 1.0, "{t}: {stops:?}");
+            assert!(stops.windows(2).all(|s| s[0].0 < s[1].0), "{t}: {stops:?}");
+        }
+        assert!(shimmer(0.0).iter().all(|s| s.1 > 0.45), "the band is on the box at the start");
+        assert!(shimmer(SHIMMER).iter().all(|s| s.1 > 0.45), "and at the end of the loop");
+        assert!(shimmer(2.0).iter().all(|s| s.1 < 0.05), "it is away halfway");
+        let g = Skeleton::gradient(Color::from_rgba(0.0, 0.0, 0.0, 0.1), 0.0);
+        let a = g.stops.iter().flatten().map(|s| s.color.a).fold(0.0, f32::max);
+        assert!((a - 0.145).abs() < 1e-3, "the band at half opacity over the fill: {a}");
+    }
 
     /// Desktop's `.2s transform` turn with the CSS `ease` curve: it goes on for 200 ms, and only for a change.
     #[test]

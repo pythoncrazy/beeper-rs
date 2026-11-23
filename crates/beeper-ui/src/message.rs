@@ -2427,11 +2427,8 @@ impl BeeperGuiApp {
                             }
                         }
                         Some((_, Err(_))) if m.unresolved_media.is_none() => self.image_error(w, h, 17.0),
-                        _ => container(ic(icon::IMAGE, 28.0).color(p.sub))
-                            .center_x(w)
-                            .center_y(h)
-                            .style(fill_box(p.link_card, 17.0))
-                            .into(),
+                        // Desktop's `img.loading`: the shimmering `--skeleton-bg` in the box of the image.
+                        _ => anim::skeleton(w, h, 17.0, p.skeleton, self.started),
                     };
                     let (slot, press): (El<'_>, _) =
                         if let Some(raw) = m.unresolved_media.as_ref().filter(|_| !is_video) {
@@ -5923,6 +5920,35 @@ pub(crate) mod tests {
         assert_eq!(app.file_state(&a), FileState::Ready);
         assert!(app.media.get(&url).is_none(), "the image loads again, from the cache");
         assert!(simulator(app.view_conversation()).find("photo.jpg").is_err(), "the image takes its place");
+    }
+
+    /// Desktop's `img.loading`: an image that loads shows the shimmering `--skeleton-bg` in the box of the image,
+    /// which the image takes when it loads.
+    #[test]
+    fn loading_image_like_desktop() {
+        let mut app = crate::fuzz::demo_app("loading-image");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let mid = newest(&app, |m| m.is_deleted != Some(true) && m.attachments.is_empty());
+        let url = "mxc://x/photo".to_string();
+        let size = Some(AttachmentSize { width: Some(300), height: Some(200) });
+        let img = Attachment { attachment_type: "img".into(), src_url: Some(url.clone()), size, ..Default::default() };
+        change(&app, &mid, |m| (m.text, m.attachments) = (None, vec![img]));
+        let loading = |app: &BeeperGuiApp| {
+            let mut sim = alone(app, &mid);
+            sim.find(|c: iced_test::selector::Candidate<'_>| match c {
+                iced_test::selector::Candidate::Custom { bounds, state, .. } if state.is::<anim::Loading>() => {
+                    Some(bounds)
+                }
+                _ => None,
+            })
+            .ok()
+        };
+        let shown = loading(&app).expect("the skeleton");
+        assert_eq!((shown.width, shown.height), (300.0, 200.0), "the box of the image");
+        assert!(alone(&app, &mid).find(icon::IMAGE.to_string()).is_err(), "no image icon");
+        let px = crate::Frames::from([(image::Handle::from_rgba(1, 1, vec![0; 4]), 0)]);
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Media(url, Ok(px))));
+        assert!(loading(&app).is_none(), "the image takes its place");
     }
 
     /// Desktop's `ImageError`: an image that failed to load shows the info icon, not the text of unresolved media,
