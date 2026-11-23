@@ -70,16 +70,7 @@ impl Pref {
         match self.control {
             Control::Toggle(on) => on as u8,
             Control::Select(_, i) | Control::Slider(i) => i,
-            Control::Archive(..)
-            | Control::Microphone
-            | Control::Multi(_)
-            | Control::Analytics
-            | Control::Downloads
-            | Control::BlockedUsers
-            | Control::ReactionEmoji { .. }
-            | Control::QuickReactions(_) => {
-                unreachable!("the row {} has no value", self.key)
-            }
+            _ => unreachable!("the row {} has no value", self.key),
         }
     }
 
@@ -88,16 +79,7 @@ impl Pref {
             Control::Toggle(_) => 1,
             Control::Select(options, _) => options.len() as u8 - 1,
             Control::Slider(_) => 100,
-            Control::Archive(..)
-            | Control::Microphone
-            | Control::Multi(_)
-            | Control::Analytics
-            | Control::Downloads
-            | Control::BlockedUsers
-            | Control::ReactionEmoji { .. }
-            | Control::QuickReactions(_) => {
-                unreachable!("the row {} has no value", self.key)
-            }
+            _ => unreachable!("the row {} has no value", self.key),
         }
     }
 
@@ -139,17 +121,7 @@ impl Pref {
 }
 
 const fn t(key: &'static str, label: &'static str, on: bool) -> Pref {
-    Pref {
-        key,
-        label,
-        desc: None,
-        args: &[],
-        badge: None,
-        feature: None,
-        requires: None,
-        name: None,
-        control: Control::Toggle(on),
-    }
+    custom(key, label, Control::Toggle(on))
 }
 
 /// A row with its own control and no value.
@@ -159,17 +131,7 @@ const fn custom(key: &'static str, label: &'static str, control: Control) -> Pre
 
 const fn s(key: &'static str, label: &'static str, options: &'static [&'static str], default: u8) -> Pref {
     assert!((default as usize) < options.len());
-    Pref {
-        key,
-        label,
-        desc: None,
-        args: &[],
-        badge: None,
-        feature: None,
-        requires: None,
-        name: None,
-        control: Control::Select(options, default),
-    }
+    custom(key, label, Control::Select(options, default))
 }
 
 macro_rules! cmd {
@@ -223,7 +185,7 @@ pub const GENERAL: &[Item] = &[
     Item::Group(&[
         t("markReadOnArchive", "Mark unread chats as read on archive", false).gated("archive-as-unread"),
         s("afterArchive", "After archive", AFTER, 0),
-        Pref { key: "archiveOlder", label: "", desc: None, args: &[], badge: None, feature: None, requires: None, name: None, control: Control::Archive(&ARCHIVE_SCOPE, &ARCHIVE_AGE) },
+        custom("archiveOlder", "", Control::Archive(&ARCHIVE_SCOPE, &ARCHIVE_AGE)),
     ]),
     Item::Group(&[
         s("afterMarkRead", "After mark as read/unread", AFTER, 0),
@@ -245,7 +207,7 @@ pub const GENERAL: &[Item] = &[
         t("emojiAutocomplete", "Enable emoji autocomplete", true),
         t("autoSendGifs", "Automatically send GIFs after selection", false),
         t("autoPlayVoiceNotes", "Automatically play the next voice note", true),
-        Pref { key: "microphone", label: "Microphone", desc: None, args: &[], badge: None, feature: None, requires: None, name: None, control: Control::Microphone },
+        custom("microphone", "Microphone", Control::Microphone),
         t("keepEmoticons", "Disable automatic replacement of emoticons with emojis", false),
         t("autoCopyOtp", "Auto copy OTP/2FA codes", true).desc("If the chat is muted, you'll still be notified."),
         s("upArrow", "Press ↑ in the composer to:", &["Move focus to the message list", "Edit your last message"], 0),
@@ -274,17 +236,8 @@ pub const GENERAL: &[Item] = &[
         t("hiddenEvents", "Show hidden events in timeline", false),
         s("timeFormat", "Time Format", &["12-hour", "24-hour"], 0),
     ]),
-    Item::Group(&[Pref {
-        key: "analytics",
-        label: "Share Analytics",
-        desc: Some("Allow us to collect anonymous analytics to help improve the app."),
-        args: &[],
-        badge: None,
-        feature: None,
-        requires: None,
-        name: None,
-        control: Control::Analytics,
-    }]),
+    Item::Group(&[custom("analytics", "Share Analytics", Control::Analytics)
+        .desc("Allow us to collect anonymous analytics to help improve the app.")]),
 ];
 
 pub const APPEARANCE: &[Item] = &[
@@ -365,7 +318,7 @@ pub const NOTIFICATIONS: &[Item] = &[
             &["Never", "Only for sent messages", "Only for received messages", "Always"],
             0,
         ),
-        Pref { key: "soundVolume", label: "Sound effect volume", desc: None, args: &[], badge: None, feature: None, requires: None, name: Some("Sound Effect Volume"), control: Control::Slider(50) },
+        custom("soundVolume", "Sound effect volume", Control::Slider(50)).named("Sound Effect Volume"),
         t("messageNotifications", "Message notifications", true),
         s("messageSound", "Sound", SOUND, 0).named("Notification Sound"),
         t("groupNotifications", "Group message notifications", true),
@@ -386,30 +339,15 @@ pub const NOTIFICATIONS: &[Item] = &[
     ]),
 ];
 
+const TRANSLATION_LANGUAGES: &[&str] =
+    &["Arabic", "Chinese", "English", "French", "German", "Italian", "Japanese", "Portuguese", "Russian", "Spanish"];
+
 pub const AI: &[Item] = &[
     Item::Heading("General"),
-    Item::Group(&[Pref {
-        key: "translationLanguages",
-        label: "Translation Languages",
-        desc: Some("AI response quality may vary for less commonly spoken languages."),
-        args: &[],
-        badge: Some(Badge::PlusLabs),
-        feature: Some("ai-in-beeper-chats"),
-        requires: None,
-        name: None,
-        control: Control::Multi(&[
-            "Arabic",
-            "Chinese",
-            "English",
-            "French",
-            "German",
-            "Italian",
-            "Japanese",
-            "Portuguese",
-            "Russian",
-            "Spanish",
-        ]),
-    }]),
+    Item::Group(&[custom("translationLanguages", "Translation Languages", Control::Multi(TRANSLATION_LANGUAGES))
+        .desc("AI response quality may vary for less commonly spoken languages.")
+        .badge(Badge::PlusLabs)
+        .gated("ai-in-beeper-chats")]),
     Item::Heading("Voice Transcription"),
     Item::Group(&[
         t("transcribeWithOpenai", "Use OpenAI's Whisper model for Talk to Type and transcribing voice notes", false)

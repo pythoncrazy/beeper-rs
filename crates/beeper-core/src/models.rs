@@ -1189,6 +1189,15 @@ impl Chat {
         }
     }
 
+    /// Desktop's `combinedTitle`: the title, and after a bullet the network of the bridge (`computedSubtitle`), like
+    /// the name of a Slack workspace or a Discord server.
+    pub fn combined_title(&self) -> String {
+        match self.network_name.as_deref().map(str::trim_end).filter(|n| !n.is_empty()) {
+            Some(network) => format!("{} • {network}", self.title.trim_end()),
+            None => self.title.clone(),
+        }
+    }
+
     /// Whether the chat has unread messages, or the user marked it unread.
     pub fn is_unread(&self) -> bool {
         self.unread_count > 0 || self.flag(ChatFlag::MarkedUnread)

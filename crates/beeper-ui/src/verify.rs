@@ -4,7 +4,7 @@ use crate::emoji::EMOJI_FONT;
 use crate::i18n::{tr, trn_named, trx};
 use crate::login::{actions, art, brand_gradient, heading, Login, LoginMsg, Screen, H3};
 use crate::style::rem;
-use crate::style::{bold, btn_style, fill_box, fw, ic, icon, semi, shadow_box, t, txt, Bare, Palette, CLEAR};
+use crate::style::{bold, btn_style, fill_box, fw, ic, icon, lh, semi, shadow_box, t, txt, Bare, Palette, CLEAR};
 use crate::{BeeperGuiApp, El, Toast, UiMessage};
 use beeper_core::matrix::E2eeSetup;
 use beeper_core::store::SharedStore;
@@ -12,7 +12,7 @@ use iced::font::Weight;
 use iced::widget::{
     button, column, container, mouse_area, rich_text, row, span, svg, text_editor, tooltip, Column, Space,
 };
-use iced::{border, window, Center, Color, Fill, Padding, Pixels, Size, Task, Theme};
+use iced::{border, window, Center, Color, Fill, Padding, Size, Task, Theme};
 use std::sync::LazyLock;
 
 /// The size of Desktop's `VERIFICATION` modal window.
@@ -258,7 +258,7 @@ impl BeeperGuiApp {
             (None, Some(_)) => tr("QR Verification"),
             (None, None) => trx("Loading...", "verification modal title"),
         };
-        let title = t(title, 28.0, Weight::ExtraBold).line_height(Pixels(rem(38.0))).color(p.strong).center();
+        let title = t(title, 28.0, Weight::ExtraBold).line_height(lh(38.0)).color(p.strong).center();
         let code = qr.map(|qr| -> El<'_> {
             let emojis = v.is_some_and(|v| v.methods.contains(&"sas")).then(|| {
                 let label = trx("Confirm using emojis instead", "button label");
@@ -334,7 +334,7 @@ pub(crate) fn brand_btn_maybe<'a>(
     msg: Option<UiMessage>,
     loading: bool,
 ) -> El<'a> {
-    let label = t(label, 13.0, Weight::Medium).line_height(Pixels(rem(14.95)));
+    let label = t(label, 13.0, Weight::Medium).line_height(lh(14.95));
     crate::login::brand_button(p, label.into(), variant, msg, loading)
 }
 

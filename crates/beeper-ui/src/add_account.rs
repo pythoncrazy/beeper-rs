@@ -13,8 +13,7 @@ use beeper_core::matrix::Provision;
 use beeper_core::models::NetworkSpec;
 use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::{
-    button, column, container, image, mouse_area, pick_list, rich_text, row, scrollable, span, stack, svg, text_input,
-    Column,
+    button, column, container, image, pick_list, rich_text, row, scrollable, span, stack, svg, text_input, Column,
 };
 use iced::{window, Center, Color, Fill, Padding, Size, Task};
 use std::collections::{BTreeMap, BTreeSet};
@@ -316,32 +315,17 @@ impl BeeperGuiApp {
             position: window::Position::Centered,
             ..Self::window_settings(SIZE)
         });
-        self.add_accounts.push(AddAccount {
+        self.add_accounts.push(beeper_core::with_defaults!(AddAccount {
             id,
             network,
             bridge,
             login: login.unwrap_or_default(),
             who,
-            flows: Vec::new(),
-            flow: String::new(),
-            process: None,
-            step: None,
-            error: None,
-            failed: None,
             busy: true,
-            menu: false,
-            values: BTreeMap::new(),
-            touched: BTreeSet::new(),
-            phones: BTreeMap::new(),
-            shown: BTreeSet::new(),
-            qr: None,
-            emoji: None,
-            run: 0,
-            android: false,
-            status: None,
             remote: Remote::Open,
             browser: Browser::Closed,
-        });
+        }, default: flows, flow, process, step, error, failed, menu, values, touched, phones, shown, qr, emoji, run,
+            android, status));
         let p = self.add_provision(self.add_accounts.len() - 1);
         let status = beeper_core::cloud::platform_status(self.cloud.app_api.clone(), p.access_token.clone());
         let status = Task::perform(status, move |r| UiMessage::AddAccount(id, AddMsg::Status(r)));
@@ -958,7 +942,7 @@ impl BeeperGuiApp {
                 menu_item(p, None, label, "", (!a.busy).then(|| go(AddMsg::Flow(f.id.clone()))))
             });
             let list = crate::menu_card(p, Column::with_children(items), 200);
-            mouse_area(container(list).align_right(Fill).height(Fill).padding(Padding::ZERO.top(30).right(8)))
+            crate::backdrop(container(list).align_right(Fill).height(Fill).padding(Padding::ZERO.top(30).right(8)))
                 .on_press(go(AddMsg::Menu))
         });
         let window = column![title, card].padding(Padding::new(8.0).top(0.0));
@@ -1063,6 +1047,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fuzz::clicks;
     use crate::fuzz::task_messages as run;
 
     #[test]
@@ -1481,9 +1466,7 @@ mod tests {
         let m = click(&app, id, "+44");
         let _ = send(&mut app, m).await;
         // A press on the selector only toggles the dropdown, and a press on the input closes it like Desktop's blur.
-        let mut sim = iced_test::simulator(app.view(id));
-        sim.click("+44").expect("the selector");
-        let msgs: Vec<_> = sim.into_messages().collect();
+        let msgs: Vec<UiMessage> = clicks(app.view(id), "+44");
         assert!(matches!(msgs.as_slice(), [UiMessage::AddAccount(_, AddMsg::Phone(_, PhoneMsg::Toggle))]));
         let mut sim = iced_test::simulator(app.view(id));
         sim.click(iced::widget::Id::from(phone::input_id(id, field))).expect("the input");

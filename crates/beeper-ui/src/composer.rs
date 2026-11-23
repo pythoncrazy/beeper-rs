@@ -10,7 +10,7 @@ use crate::scheduled;
 use crate::scheduled::send_day;
 use crate::style::rem;
 use crate::style::{
-    bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, mix, scroll_style, semi,
+    bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, lh, mix, pad, scroll_style, semi,
     text_width, txt, Bare, CLEAR,
 };
 use crate::threads;
@@ -37,7 +37,7 @@ use iced::widget::{
     button, column, container, image, mouse_area, row, scrollable, stack, svg, text_editor, text_input, tooltip,
     Column, Row, Space,
 };
-use iced::{window, Bottom, Center, Color, Fill, Length, Padding, Pixels, Shrink, Task};
+use iced::{window, Bottom, Center, Color, Fill, Length, Padding, Shrink, Task};
 use std::collections::HashSet;
 
 /// Composer content with `text` and the cursor at the end.
@@ -775,19 +775,19 @@ impl BeeperGuiApp {
         Task::batch([typing, self.fetch_link_previews()])
     }
 
-    /// Desktop's `onTyping` and `stopTyping`: one typing notice when you start to type in a chat, and its end when
-    /// you send. [`UiMessage::TypingTick`] ends it 3 seconds after the last key.
+    /// Desktop's `onTyping` and `stopTyping` of the chat of the pane: one typing notice when you start to type in the
+    /// chat, from its composer or from that of one of its threads, and its end when you send from the chat's composer
+    /// (`sendMessage`; `sendThreadedReply` leaves it). [`UiMessage::TypingTick`] ends it 3 seconds after the last key.
     pub(crate) fn typing(&mut self, on: bool) -> Task<UiMessage> {
-        let chat = self.pane.selected_chat_id.clone().filter(|_| on);
-        // The notice of another chat, or of this chat when you stop, ends now.
-        let ended = self.pane.typing.take_if(|(c, _)| Some(&*c) != chat.as_ref()).map(|(c, _)| c);
-        let started = chat.clone().filter(|_| self.pane.typing.is_none());
-        self.pane.typing = chat.map(|c| (c, std::time::Instant::now()));
+        let Some(chat) = self.pane.selected_chat_id.clone() else { return Task::none() };
+        let notice = match on {
+            true => self.typing.insert(chat.clone(), std::time::Instant::now()).is_none(),
+            false => self.typing.remove(&chat).is_some(),
+        };
         let st = self.store.read();
-        let Some(client) = st.matrix.clone().filter(|_| st.typing_notices()) else { return Task::none() };
+        let Some(client) = st.matrix.clone().filter(|_| notice && st.typing_notices()) else { return Task::none() };
         drop(st);
-        let notice = |chat, on| Task::future(beeper_core::matrix::typing(client.clone(), chat, on)).discard();
-        Task::batch([ended.map(|c| notice(c, false)), started.map(|c| notice(c, true))].into_iter().flatten())
+        Task::future(beeper_core::matrix::typing(client, chat, on)).discard()
     }
 
     /// Desktop's `sendMessage`: a new message moves an archived chat to the inbox, unless `archive` is set.
@@ -1068,7 +1068,7 @@ impl BeeperGuiApp {
             [broadcast, quote, pending.map(El::from), links.map(El::from)].into_iter().flatten().collect();
         let external = (!external.is_empty()).then(|| {
             let inner = Column::with_children(external).spacing(8);
-            container(inner).padding(Padding { top: 8.0, right: 8.0, bottom: 0.0, left: 12.0 })
+            container(inner).padding(pad(8.0, 8.0, 0.0, 12.0))
         });
         let pill = self.view_composer_pill(st, external, line);
         let stickers = (self.pane().picker == Some(Picker::Sticker)).then(|| self.view_sticker_picker(st));
@@ -1230,7 +1230,7 @@ impl BeeperGuiApp {
             .key_binding(move |k| keys.binding(k))
             .highlight_with::<format::Marks>(marks, |f, _| *f)
             .size(rem(13.0))
-            .line_height(Pixels(rem(16.0)))
+            .line_height(lh(16.0))
             .padding([10, 2])
             .height(Shrink)
             .max_height(self.pane().size.height / 2.0)
@@ -1337,7 +1337,7 @@ impl BeeperGuiApp {
                     let wide = if img.is_some() { 158.0 } else { 338.0 };
                     let link = row![ic(icon::LINK, 12.0).color(p.weak), txt(host, 11.0).color(p.weak)];
                     let text = column![
-                        clamp(title, wide, 3, 13.0, Weight::Semibold).line_height(Pixels(rem(16.0))).color(p.strong),
+                        clamp(title, wide, 3, 13.0, Weight::Semibold).line_height(lh(16.0)).color(p.strong),
                         link.spacing(4).align_y(Center)
                     ];
                     let card = container(column![].push(img).push(text.spacing(8).padding([12, 11])));
@@ -1375,8 +1375,11 @@ impl BeeperGuiApp {
         line: Row<'a, UiMessage>,
     ) -> El<'a> {
         let p = &self.pal;
+        // The text field keeps its place in the tree, and so its focus, as the quote, the attachments, the links and
+        // "Also send to chat" come and go above it.
+        let external: El<'a> = external.map_or_else(|| Space::new().into(), El::from);
         let Some((at, no_reply)) = self.pane().send_later else {
-            return container(column![].push(external).push(line)).width(Fill).style(fill_box(p.input, 18.0)).into();
+            return container(column![external, line]).width(Fill).style(fill_box(p.input, 18.0)).into();
         };
         let when = send_day(at, st.settings.pref("timeFormat") == 1);
         let when = if no_reply { trf("%s if no reply", &[&when]) } else { when };
@@ -1394,7 +1397,7 @@ impl BeeperGuiApp {
             .padding(2)
             .style(fill_box(blue, 20.0));
         let banner = container(banner).padding(Padding::new(8.0).bottom(0.0).left(12.0));
-        let body = container(column![banner].push(external).push(line)).width(Fill).style(fill_box(p.card, 18.0));
+        let body = container(column![banner, external, line]).width(Fill).style(fill_box(p.card, 18.0));
         stack![body, dashed::dashes(hex(0x808080), 18.0, 1.0)].into()
     }
 }
@@ -1560,14 +1563,14 @@ impl BeeperGuiApp {
         if pm.frames.is_empty() && vcard {
             let entry = |phone: bool, s: &str| -> El<'a> {
                 let s = if phone { crate::fmt_phone(s) } else { s.to_string() };
-                txt(s, 12.0).line_height(Pixels(rem(16.0))).color(p.text).into()
+                txt(s, 12.0).line_height(lh(16.0)).color(p.text).into()
             };
             let card = contact_card(p, &parse_vcard(&String::from_utf8_lossy(&pm.bytes)), p.text, 1, &entry);
             container(card).padding([8, 10]).style(fill_box(p.received, 0.0)).into()
         } else if pm.frames.is_empty() {
             let ext = std::path::Path::new(&pm.name).extension().map(|e| e.to_string_lossy().to_uppercase());
             let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();
-            let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(Pixels(rem(14.0)));
+            let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(lh(14.0));
             let info = column![name, txt(meta.join(" ・ "), 11.0)].spacing(4);
             let icon = &FILE_ICONS[if pm.mime.starts_with("audio") { 3 } else { 0 }];
             let line = row![tinted(icon, 20.0, p.strong), info].spacing(8).align_y(Center);
@@ -1609,9 +1612,12 @@ impl BeeperGuiApp {
             },
             ..Default::default()
         };
+        // Desktop's `.pending-attachment-quicklook-wrapper` takes the pointer across the window, between 40 px from
+        // the top and 120 px from the bottom.
         let place = move |body: El<'a>| -> El<'a> {
             let card = container(body).padding(10).style(style);
-            container(card).center_x(Fill).center_y(Fill).padding(Padding::ZERO.top(40.0).bottom(120.0)).into()
+            let band = crate::backdrop(container(card).center_x(Fill).center_y(Fill));
+            container(band).padding(Padding::ZERO.top(40.0).bottom(120.0)).into()
         };
         let Some(frame) = pm.frames.first().map(|f| f.0.clone()) else {
             return Some(place(self.pending_preview(pm, &self.store.read())));
@@ -1813,7 +1819,10 @@ impl BeeperGuiApp {
             Msg::Submit if !self.can_compose() => {}
             Msg::Submit => {
                 self.submit_composer(false);
-                return self.typing(false);
+                return match self.pane.thread_root.is_some() {
+                    true => Task::none(),
+                    false => self.typing(false),
+                };
             }
             Msg::SendAndArchive => {
                 let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");

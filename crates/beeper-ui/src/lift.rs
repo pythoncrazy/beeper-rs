@@ -38,16 +38,8 @@ impl<Message> Lift<'_, Message> {
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
-    /// Whether a `press` lift is pressed.
-    fn tag(&self) -> widget::tree::Tag {
-        widget::tree::Tag::of::<bool>()
-    }
-
-    fn state(&self) -> widget::tree::State {
-        widget::tree::State::new(false)
-    }
-
-    crate::delegate::delegate!(children, diff, size, operate, mouse_interaction, overlay(Message));
+    // The state: whether a `press` lift is pressed.
+    crate::delegate::delegate!(state(bool), children, diff, size, operate, mouse_interaction, overlay(Message));
 
     fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
         let tight = layout::Limits::new(limits.max(), limits.max());

@@ -167,11 +167,8 @@ fn read_theme(prefs: &Value) -> Result<ThemeChoice, String> {
 }
 
 fn read_crypto(db: &Connection) -> rusqlite::Result<Option<DesktopCrypto>> {
-    let Some((user_id, device_id)) = db
-        .query_row("SELECT user_id, device_id FROM account", [], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })
-        .optional()?
+    let Some((user_id, device_id)) =
+        db.query_row("SELECT user_id, device_id FROM account", [], |r| <(String, String)>::try_from(r)).optional()?
     else {
         return Ok(None);
     };
@@ -207,8 +204,7 @@ fn read_crypto(db: &Connection) -> rusqlite::Result<Option<DesktopCrypto>> {
 fn read_participants(db: &Connection) -> rusqlite::Result<HashMap<String, Vec<User>>> {
     let mut ids: HashMap<String, [Option<String>; 3]> = HashMap::new();
     let mut id_stmt = db.prepare("SELECT participant_id, identifier, identifier_type FROM participant_identifiers")?;
-    let id_rows =
-        id_stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+    let id_rows = id_stmt.query_map([], |r| <(String, String, String)>::try_from(r))?;
     for row in id_rows {
         let (pid, val, kind) = row?;
         let slot = match kind.as_str() {
@@ -313,9 +309,7 @@ fn read_threads(db: &Connection, chats: &mut [Chat]) -> Result<(), String> {
     let mut q = db
         .prepare("SELECT roomID, rootEventID, following, lastReadHsOrder FROM mx_threads ORDER BY rowid")
         .map_err(|e| e.to_string())?;
-    let rows = q.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<bool>>(2)?, r.get::<_, i64>(3)?))
-    });
+    let rows = q.query_map([], |r| <(String, String, Option<bool>, i64)>::try_from(r));
     for row in rows.map_err(|e| e.to_string())? {
         let (room, root, following, read) = row.map_err(|e| e.to_string())?;
         let Some(&i) = idx.get(&room) else { continue };
@@ -372,16 +366,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, Option<bool>>(5)?,
-            ))
-        })
+        .query_map([], |r| <(String, Option<String>, String, Option<i64>, Option<String>, Option<bool>)>::try_from(r))
         .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
         .map_err(|e| e.to_string())?;
     rows.into_iter()
@@ -516,15 +501,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
         "SELECT roomID, COALESCE(NULLIF(lastVisibleEventID, ''), relatesToID), userID, timestamp FROM mx_read_receipts",
     )
     .and_then(|mut q| {
-        q.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-            ))
-        })?
-        .try_for_each(|x| {
+        q.query_map([], |r| <(String, Option<String>, String, Option<i64>)>::try_from(r))?.try_for_each(|x| {
             let (room, ev, user, ts) = x?;
             if let Some(ev) = ev.filter(|e| !e.is_empty()) {
                 receipts.entry((room, ev)).or_default().insert(user, rfc3339_from_millis(ts.unwrap_or(0)));
@@ -553,17 +530,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
         ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Option<i64>>(4)?,
-                r.get::<_, bool>(5)?,
-                r.get::<_, Option<String>>(6)?,
-            ))
-        })
+        .query_map([], |r| <(String, String, i64, String, Option<i64>, bool, Option<String>)>::try_from(r))
         .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
         .map_err(|e| e.to_string())?;
     let mut reactions: HashMap<String, Vec<Reaction>> = HashMap::new();
