@@ -1694,6 +1694,9 @@ impl BeeperGuiApp {
 
     /// [`Self::jump_to`], with the flash only when `highlight`.
     pub(crate) fn reveal(&mut self, cid: String, mid: String, highlight: bool) -> Task<UiMessage> {
+        if self.show_command_palette {
+            self.search_closed();
+        }
         (self.show_command_palette, self.command_palette_query, self.list.chat_menu) = (false, String::new(), None);
         if self.pane.thread_root.is_none() {
             self.select_chat(&cid);

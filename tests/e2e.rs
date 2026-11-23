@@ -1606,7 +1606,12 @@ async fn lifecycle() {
         assert_eq!(gui.search_filters.media, [3], "media kinds toggle one by one");
         let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
-        assert_eq!(gui.search_filters, SearchFilters::default(), "a new search starts without filters");
+        assert_eq!(gui.search_filters.media, [3], "the filters of a search without a text stay, like Desktop's");
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::Query("pebble".into())));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
+        assert_eq!(gui.search_filters, SearchFilters::default(), "a search with a text and filters ends them");
+        assert_eq!(gui.recent_searches.len(), 1, "and becomes a recent search");
         let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         let other = store.read().chats[1].id.clone();
         let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::Hover(cid.clone(), true)));

@@ -1991,6 +1991,14 @@ pub struct SearchFilters {
     pub media: Vec<usize>,
 }
 
+impl SearchFilters {
+    /// The filters that are set, like the keys of Desktop's `searchFilters`.
+    pub fn count(&self) -> usize {
+        let set = [self.accounts.is_empty(), self.sent.is_none(), self.group.is_none(), self.period.is_none()];
+        set.into_iter().chain([self.media.is_empty()]).filter(|&empty| !empty).count()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SearchPick {
     Account(String),
@@ -2946,6 +2954,8 @@ pub struct BeeperGuiApp {
     pub search_index: Option<usize>,
     /// Desktop's `expandedCategories`: the search sections that show more.
     pub search_expanded: HashSet<&'static str>,
+    /// Desktop's `recentSearches`: the searches with filters that the bar closed on, the newest first.
+    pub recent_searches: Vec<(String, SearchFilters)>,
     /// Desktop's `partialMatchesEnabled` of the message search.
     pub search_partial: bool,
     /// Desktop's `lastArchivedThread`: the chat that was archived or unarchived last.
@@ -3288,6 +3298,7 @@ impl BeeperGuiApp {
             cmd_index: 0,
             search_index: None,
             search_expanded: HashSet::new(),
+            recent_searches: Vec::new(),
             search_partial: true,
             last_archived: Default::default(),
             creating_chat: None,
