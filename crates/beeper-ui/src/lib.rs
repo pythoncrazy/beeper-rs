@@ -5179,6 +5179,12 @@ impl BeeperGuiApp {
     }
 
     pub fn subscription(&self) -> Subscription<UiMessage> {
+        let frame_ready = Subscription::run(|| {
+            iced::futures::stream::once(async {
+                FRAME_READY.notified().await;
+                UiMessage::Noop
+            })
+        });
         let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
             feed(f.0.read().ws_tx.subscribe(), |e| match (e.event_type.as_str(), e.message, e.chat) {
                 ("message.upserted", Some(m), _) => UiMessage::Upserted(Box::new(m)),
@@ -5457,7 +5463,7 @@ impl BeeperGuiApp {
             })
         });
         Subscription::batch(
-            [changes, focus, tokens, launches, keys, system]
+            [changes, focus, tokens, launches, keys, system, frame_ready]
                 .into_iter()
                 .chain(drag)
                 .chain(thread_drag)
@@ -7029,6 +7035,9 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .default_font(fw(Weight::Normal));
     app.run()
 }
+
+/// Woken once GTK opens to draw the title bars, so that the windows draw their frames again with the GTK theme.
+pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// People, each with the account to reach them on.
 pub type People = Vec<(String, User)>;
