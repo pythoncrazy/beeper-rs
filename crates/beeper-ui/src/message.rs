@@ -2338,7 +2338,12 @@ impl BeeperGuiApp {
                     // Desktop's `Lottie` plays an animated sticker itself, not its still thumbnail.
                     let lottie = a.mime_type.as_deref().is_some_and(beeper_core::media::animated);
                     let thumb_url = match looped {
-                        true => a.src_url.as_ref().map(|u| format!("{u}{}", crate::media_view::LOOP)),
+                        // The local echo of a GIF plays the frames of its poster until the homeserver has it.
+                        true => a
+                            .src_url
+                            .as_ref()
+                            .map(|u| format!("{u}{}", crate::media_view::LOOP))
+                            .or_else(|| a.poster_img.clone()),
                         false if lottie => a.src_url.clone(),
                         false => a.poster_img.clone().or_else(|| a.src_url.clone()),
                     };
