@@ -2546,6 +2546,46 @@ fn chat_windows_that_left_their_chat_draw_nothing() {
     drop(simulator(app.view(id)));
 }
 
+/// "Open in New Window" on an unread chat scrolls the new window's timeline to its unread divider. The operation goes
+/// through every window, like iced's, and each has a "timeline": it scrolls the one of the window with the divider,
+/// and finds nothing, instead of panicking, while the new window is not built yet.
+#[test]
+fn opening_an_unread_chat_in_a_window_scrolls_that_window_to_the_divider() {
+    use iced::advanced::renderer::Headless;
+    use iced::advanced::widget::operation::{black_box, Operation, Outcome};
+    let mut app = demo_app("chat-window-unread");
+    let st = app.store.read();
+    let unread = app.visible_chats(&st).iter().find(|c| c.unread_count > 0).map(|c| c.id.clone());
+    drop(st);
+    let unread = unread.expect("a demo chat is unread");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::Window(windows::Msg::OpenChat(unread)));
+    let (main, chat) = (app.main_window.expect("the main window"), app.chat_windows[0].0);
+    let size = Size::new(1200.0, 800.0);
+    let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+        iced::Font::DEFAULT,
+        iced::Pixels(13.0),
+        Some("tiny-skia"),
+    ))
+    .expect("a headless renderer");
+    let views = [main, chat].map(|w| app.view(w));
+    let mut uis = views.map(|v| iced_runtime::UserInterface::build(v, size, Default::default(), &mut renderer));
+    let target = iced::widget::Id::new("unread-divider");
+    let locate = |uis: &mut [iced_runtime::UserInterface<'_, UiMessage, Theme, iced::Renderer>]| {
+        let mut op = Locate::new(target.clone(), "timeline", Align::Start(80.0));
+        for ui in uis {
+            ui.operate(&renderer, &mut black_box(&mut op));
+        }
+        match op.finish() {
+            Outcome::Some(found) => Some(found),
+            _ => None,
+        }
+    };
+    assert_eq!(locate(&mut uis[..1]), None, "the chat window is still opening");
+    let (window, _) = locate(&mut uis).expect("the chat window shows the unread divider");
+    assert_eq!(window, Some(chat), "the scroll is the chat window's, not the main window's");
+}
+
 /// The chats that a space window of rail space `entry` lists.
 fn space_chats(app: &mut BeeperGuiApp, entry: &str) -> Vec<String> {
     let main = std::mem::replace(&mut app.list, chat_list::ListState::space(entry));
@@ -3766,6 +3806,42 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     assert!(st.loaded(&id).is_none() && st.outbox.is_empty(), "Remove drops the echo and its send");
 }
 
+/// Desktop's message menu of a pending message (`isPending`, a send of `pendingMessages`): on its way or failed, it
+/// has no Edit, Reply, Reply in thread, Delete or Bookmark, and React is off. Copy, Forward and "Sent at" stay. A
+/// message that the homeserver took has them all.
+#[test]
+fn pending_and_failed_messages_menu_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("failed-menu");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
+    let id = app.store.read().outbox[0].2.message().expect("a local echo").to_string();
+    let items = |app: &BeeperGuiApp| {
+        let mut sim = simulator(app.view_message_menu(&id).0);
+        let labels = ["Edit…", "Reply…", "Delete…", "Bookmark", "Copy", "Forward…"];
+        let shown: Vec<&str> = labels.into_iter().filter(|l| sim.find(*l).is_ok()).collect();
+        let at = app.store.read().loaded(&id).expect("the local echo").timestamp.clone();
+        let sent = sim.find(trf("Sent at %s", &[&crate::time::locale_string(&at)]).as_str()).is_ok();
+        let _ = sim.click("React…");
+        let react = sim.into_messages().any(|m| matches!(m, UiMessage::Message(message::Msg::Menu(_))));
+        (shown, sent, react)
+    };
+    let on_its_way = items(&app);
+    assert_eq!(on_its_way, (vec!["Copy", "Forward…"], true, false), "a send on its way");
+    {
+        let mut st = app.store.write();
+        let (row, _, _) = st.outbox.remove(0);
+        st.pushed(row, Some(&id), Some(("M_FORBIDDEN: refused".into(), true)));
+    }
+    assert_eq!(items(&app), on_its_way, "a failed send");
+    let mine = app.store.read().messages.iter().rev().find(|m| m.chat_id == note && m.id != id).unwrap().id.clone();
+    let mut sim = simulator(app.view_message_menu(&mine).0);
+    assert!(["Edit…", "Reply…", "Delete…", "Forward…"].iter().all(|l| sim.find(*l).is_ok()), "a sent message");
+}
+
 /// Desktop's `message-attachment-failed`: a failed send of a file without text shows "Not sent" under the file.
 #[test]
 fn failed_files_show_not_sent_like_desktop() {
@@ -3779,7 +3855,7 @@ fn failed_files_show_not_sent_like_desktop() {
         mime: "application/pdf".into(),
         is_gif: false,
         size: (0, 0),
-        frames: Default::default(),
+        frames: vec![].into(),
         duration: None,
         sticker: None,
     };
@@ -8719,6 +8795,32 @@ fn main_window_keeps_its_state_like_desktop() {
     assert_eq!(app.title(main), format!("Beeper | {title}"));
 }
 
+/// A window that opens maximized maximizes again once the window manager places it, like Desktop's `deferMaximize`:
+/// an X11 window manager ignores the maximized state of a window that iced has not mapped yet.
+#[test]
+fn a_maximized_window_maximizes_once_it_is_placed() {
+    let mut app = demo_app("window-maximize");
+    let maximizes = |task: Task<UiMessage>| {
+        let actions = iced::futures::executor::block_on(task_actions(task));
+        let max = |a: &iced_runtime::Action<UiMessage>| {
+            matches!(a, iced_runtime::Action::Window(iced_runtime::window::Action::Maximize(_, true)))
+        };
+        actions.iter().filter(|a| max(a)).count()
+    };
+    let restored = BeeperGuiApp::window_settings(MAIN_SIZE);
+    let maximized = window::Settings { maximized: true, ..restored.clone() };
+    let (normal, _) = app.open_window(restored);
+    let (max, _) = app.open_window(maximized.clone());
+    let (hidden, _) = app.open_window(window::Settings { visible: false, ..maximized.clone() });
+    let (resized, _) = app.open_window(maximized);
+    let mut moved = |id| maximizes(app.update(UiMessage::Window(windows::Msg::Moved(id))));
+    assert_eq!(moved(max), 1, "the first move maximizes the window that opened maximized");
+    assert_eq!(moved(max), 0, "once");
+    assert_eq!((moved(normal), moved(hidden)), (0, 0), "a restored or a hidden window stays as it is");
+    let task = app.update(UiMessage::Window(windows::Msg::Resized(resized, Size::new(1600.0, 960.0))));
+    assert_eq!(maximizes(task), 1, "or the first resize");
+}
+
 /// A new install on the sign-in window.
 pub(crate) fn signed_out_app(name: &str) -> BeeperGuiApp {
     let config = CentralConfig::new(beeper_core::testing::temp_dir(name), "127.0.0.1".into(), 23391, None);
@@ -9867,4 +9969,19 @@ fn the_chat_menu_fits_its_rows() {
     let row = 26.0 + w("Mark as Unread") + 16.0 + w("Ctrl Shift Alt Backspace");
     let menu = chat_list::chat_menu_w(&app.store.read());
     assert!(row > 233.0 && menu >= row, "{menu} fits {row}");
+}
+
+/// An image that covers its box, wider than the box, is cut at the box in the software renderer as in wgpu: the
+/// media of the info pane, the attachments of the composer and link previews are `ContentFit::Cover`.
+#[test]
+fn a_covering_image_stays_in_its_box() {
+    use iced::widget::{image, row};
+    let red = image::Handle::from_rgba(40, 10, [255u8, 0, 0, 255].repeat(400));
+    let covered = image(red).content_fit(iced::ContentFit::Cover).width(20).height(20);
+    let view: El<'_> = row![Space::new().width(20), covered, Space::new().width(20)].into();
+    let shot = crate::focus::tests::shot(view, Size::new(60.0, 20.0), "cover");
+    let k = shot.width() / 60;
+    let red_at = |x: u32| shot.get_pixel(x * k, 10 * k).0 == [255, 0, 0, 255];
+    assert!(red_at(30), "the image fills its box");
+    assert!(!red_at(10) && !red_at(50), "and nothing beside it");
 }
