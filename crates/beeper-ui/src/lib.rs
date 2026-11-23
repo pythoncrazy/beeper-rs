@@ -3128,6 +3128,8 @@ pub struct BeeperGuiApp {
     pub(crate) pdfs: HashMap<String, Option<Result<pdf::Doc, String>>>,
     /// The baked gallery tiles (`gallery.rs`).
     tiles: images::Images<image::Handle>,
+    /// The frames of the animations cut to their inline box (`gallery.rs`).
+    cuts: images::Images<Frames>,
     /// Desktop's account `messages` cache for quotes: a quoted message out of the timeline, `None` while it loads.
     pub(crate) quotes: HashMap<String, Option<Result<Message, String>>>,
     /// Desktop's `dismissError`: the accounts whose disconnected banner was dismissed this session.
@@ -3397,6 +3399,7 @@ impl BeeperGuiApp {
             vcards: HashMap::new(),
             pdfs: HashMap::new(),
             tiles: images::Images::new(64 << 20),
+            cuts: images::Images::new(128 << 20),
             quotes: HashMap::new(),
             dismissed_errors: HashSet::new(),
             resolving_media: HashMap::new(),
