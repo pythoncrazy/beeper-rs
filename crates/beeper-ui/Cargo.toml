@@ -27,7 +27,7 @@ phonenumber = "0.3.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan"] }
-zbus = { version = "5.19", default-features = false, features = ["async-io"] }
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 sctk-adwaita = { version = "0.10.1", default-features = false, features = ["ab_glyph"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
