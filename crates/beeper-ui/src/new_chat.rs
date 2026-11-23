@@ -1,7 +1,7 @@
 //! Desktop's New Chat: its drafts, the contact and user search, the networks of a contact, and the start of a chat or group.
 
 use super::*;
-use iced::widget::column;
+use iced::widget::{column, Container};
 use std::sync::LazyLock;
 
 /// The plus of Desktop's `PlusIcon` on the avatar of the `GroupTitleBar`.
@@ -394,321 +394,22 @@ impl BeeperGuiApp {
 
     pub(crate) fn view_new_chat<'a>(&'a self) -> El<'a> {
         let p = &self.pal;
+        if self.join_matrix_mode {
+            return self.view_join_matrix();
+        }
         let st = self.store.read();
-        let footer = |label: &'static str, key: &'static str, press: Option<UiMessage>| {
-            let a = if press.is_some() { 1.0 } else { 0.4 };
-            let label = row![med(label, 13.0), txt(key, 10.0).color(Color { a: 0.8 * a, ..Color::WHITE })];
-            let pill = button(label.spacing(4).align_y(Center))
-                .padding([4, 8])
-                .style(btn_style([Color { a, ..p.accent }; 3], [Color { a, ..Color::WHITE }; 3], 20.0))
-                .on_press_maybe(press);
-            row![Space::new().width(Fill), pill].padding(Padding::new(8.0).left(13.0)).align_y(Center)
-        };
         let draft = self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat);
         let users = draft.map_or(&[][..], |d| &d.users);
         let group = draft.is_some_and(|d| d.group);
         let account = users.first().map(|(a, _)| a.as_str());
-        let field = |placeholder: &'static str| {
-            text_input(placeholder, &self.new_chat_query)
-                .id("new-chat-input")
-                .on_input(|a0| UiMessage::NewChat(new_chat::Msg::Query(a0)))
-                .size(rem(13.0))
-                .padding([8, 0])
-                .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0))
-        };
-        if self.join_matrix_mode {
-            let back = button(
-                row![tinted(&SYS_ARROW_BACK, 18.0, p.strong), txt(tr("Back"), 12.0).color(p.strong)]
-                    .spacing(4)
-                    .align_y(Center),
-            )
-            .padding([4, 6])
-            .style(ghost(p, 6.0))
-            .on_press(UiMessage::NewChat(new_chat::Msg::ToggleJoinMatrix));
-            let head =
-                container(row![back, txt(tr("Join a Matrix room"), 13.0).color(p.strong)].spacing(12).align_y(Center))
-                    .width(Fill)
-                    .padding([8, 13])
-                    .style(fill_box(p.chip, 0.0));
-            let (joining, error) = (self.join_room.0, self.join_room.1.as_deref());
-            // `.joinInputs .joinInput input`: 32 px tall on the secondary container, body-md text, radius 8.
-            let input = text_input(tr("Room address or Matrix link"), &self.new_chat_query)
-                .id("new-chat-input")
-                .on_input(|q| UiMessage::NewChat(new_chat::Msg::Query(q)))
-                .size(rem(14.0))
-                .line_height(Pixels(rem(18.0)))
-                .padding([7, 10])
-                .style(input_style(p.chip, p.strong, p.sub, p.accent, 8.0));
-            let input =
-                if joining { input } else { input.on_submit(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)) };
-            // `.joinError`: under the input, 4 px above and 10 px below.
-            let error = error.map(|e| {
-                container(txt(e.to_string(), 12.0).color(p.text_danger)).padding(Padding::ZERO.top(4).bottom(10))
-            });
-            let link = container(tinted(&MAT_LINK, 18.0, p.sub)).padding(Padding::ZERO.top(7));
-            let inputs = row![link, column![input].push(error).width(Fill)]
-                .spacing(8)
-                .padding(Padding::new(6.0).left(13.0).right(8.0));
-            let ready = !joining && !self.new_chat_query.trim().is_empty();
-            let label = if joining { tr("Joining...") } else { tr("Join") };
-            let join = footer(label, "ENTER", ready.then_some(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)));
-            let body = column![head, inputs].push(Space::new().height(Fill)).push(join);
-            return container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into();
-        }
         let all = rail_accounts(&st);
         let listed: Vec<String> = match group {
             true => all.iter().filter(|a| self.can_group(a)).cloned().collect(),
             false => all.iter().filter(|a| self.can(a, "create_dm")).cloned().collect(),
         };
-        let logo = |a: &str| -> El<'_> { svg(crate::style::brand_svg(brand_key(a))).width(16).height(16).into() };
         let picked = self.new_chat_account.as_deref();
-        let label = picked.map_or_else(|| tr("All accounts").into(), |a| account_option(&st, a, &listed));
-        let all_acc = button(
-            row![]
-                .push(picked.map(logo))
-                .push(txt(label, 12.0).color(p.strong))
-                .push(ic(icon::EXPAND_MORE, 16.0).color(p.strong))
-                .spacing(4)
-                .align_y(Center),
-        )
-        .height(24)
-        .padding(Padding { top: 2.0, right: 4.0, bottom: 2.0, left: 6.0 })
-        .style(btn_style([p.chip; 3], [p.strong; 3], 12.0))
-        .on_press(UiMessage::NewChat(new_chat::Msg::ToggleAccounts));
-        let options = std::iter::once(None).chain(listed.iter().map(|a| Some(a.as_str()))).map(|a| -> El<'_> {
-            let label = a.map_or_else(|| tr("All accounts").into(), |a| account_option(&st, a, &listed));
-            let check = (a == picked).then(|| ic(icon::CHECK, 16.0).color(p.strong));
-            let line = row![]
-                .push(a.map(logo))
-                .push(ell(&label, 160.0, 13.0, Weight::Normal).color(p.strong).width(Fill))
-                .push(check)
-                .spacing(8)
-                .align_y(Center);
-            button(line)
-                .width(Fill)
-                .height(22)
-                .padding([0, 8])
-                .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 4.0))
-                .on_press(UiMessage::NewChat(new_chat::Msg::Account(a.map(str::to_string))))
-                .into()
-        });
-        let dropdown = self.new_chat_accounts_open.then(|| {
-            let menu = scrollable(Column::with_children(options.collect::<Vec<_>>())).height(Shrink);
-            let menu = container(menu).width(216).max_height(300).padding(5).style(shadow_box(
-                p.menu,
-                p.menu_border,
-                6.0,
-                22.0,
-            ));
-            stack![
-                mouse_area(Space::new().width(Fill).height(Fill))
-                    .on_press(UiMessage::NewChat(new_chat::Msg::ToggleAccounts)),
-                container(menu).align_right(Fill).padding(Padding::new(8.0).top(38.0)),
-            ]
-        });
-        let shade = Color { a: 0.1, ..p.strong };
-        let pills = users.iter().map(|(_, u)| -> El<'_> {
-            let name = u.full_name.as_deref().unwrap_or(&u.id);
-            let pill =
-                row![self.face(u.img_url.as_deref(), name, 16.0, 0.0), semi(name.to_string(), 13.0).color(p.strong)];
-            container(pill.spacing(4).align_y(Center))
-                .padding(Padding::new(2.0).right(8.0))
-                .style(fill_box(shade, 20.0))
-                .into()
-        });
-        let placeholder = if users.is_empty() { tr("Search contacts") } else { "" };
-        let inputs = Row::with_children(pills).push(field(placeholder)).spacing(4).align_y(Center);
-        let inputs = row![ic(icon::SEARCH, 16.0).color(p.sub), inputs]
-            .push(users.is_empty().then_some(all_acc))
-            .spacing(8)
-            .align_y(Center)
-            .padding(Padding::new(6.0).top(10.0).left(13.0).right(8.0));
-        let q = self.new_chat_query.trim().to_lowercase();
-        let mut col = Column::new().padding(Padding::ZERO.top(3.0));
-        if q.is_empty() && !group {
-            let group_btn = button(
-                row![ic(icon::GROUP, 20.0).color(p.accent), semi(tr("New Group"), 13.0).color(p.strong)]
-                    .spacing(7)
-                    .align_y(Center),
-            )
-            .width(Fill)
-            .height(36)
-            .padding([0, 11])
-            .style(btn_style([p.chip, p.chip, p.selected], [p.strong; 3], 6.0))
-            .on_press(UiMessage::NewChat(new_chat::Msg::NewGroup));
-            let join_btn = button(
-                row![tinted(&MAT_LINK, 20.0, p.accent), semi(tr("Join a Matrix room"), 13.0).color(p.strong)]
-                    .spacing(7)
-                    .align_y(Center),
-            )
-            .width(Fill)
-            .height(36)
-            .padding([0, 11])
-            .style(btn_style([CLEAR, p.chip, p.selected], [p.strong; 3], 6.0))
-            .on_press(UiMessage::NewChat(new_chat::Msg::ToggleJoinMatrix));
-            let group_btn = listed.iter().any(|a| self.can_group(a)).then(|| container(group_btn).padding([0, 8]));
-            col = col.push(group_btn).push(container(join_btn).padding([0, 8]));
-        }
-        let heading = |label: &str| {
-            container(txt(label.to_string(), 12.0).color(p.sub))
-                .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
-        };
-        let item = |content: El<'a>, press: Option<UiMessage>| -> El<'a> {
-            let b = button(content).height(36).padding([0, 6]).width(Fill).style(ghost(p, 8.0));
-            container(b.on_press_maybe(press)).padding([0, 6]).into()
-        };
-        // Desktop's `CommandBarUser`.
-        let person = |a: &String, u: &User| -> El<'a> {
-            // `.search-participant .small` is 12 px.
-            let small = |s: String| crate::style::fixed(s, 12.0, Weight::Normal).color(Color { a: 0.7, ..p.strong });
-            let bare = [&u.full_name, &u.username, &u.phone_number, &u.email].iter().all(|f| f.is_none());
-            let line = row![self.face(u.img_url.as_deref(), person_name(u), 28.0, 0.0)]
-                .push(u.full_name.clone().or_else(|| bare.then(|| u.id.clone())).map(|n| med(n, 13.0).color(p.strong)))
-                .push(u.username.as_ref().map(|n| small(format!("@{}", n.trim_start_matches('@')))))
-                .push(u.phone_number.as_deref().map(|n| small(fmt_phone(n))))
-                .push(u.email.clone().map(small))
-                .push(Space::new().width(Fill))
-                .push(svg(crate::style::brand_svg(brand_key(a))).width(16).height(16))
-                .spacing(6)
-                .align_y(Center);
-            item(line.into(), Some(UiMessage::NewChat(new_chat::Msg::PickUser(a.clone(), Box::new(u.clone())))))
-        };
-        let lookups: Vec<(&String, &User)> = self
-            .new_chat_lookup
-            .iter()
-            .filter(|(k, nets)| {
-                k.strip_prefix("lookup:") == Some(self.new_chat_query.trim()) && nets.iter().all(|n| n.1.is_some())
-            })
-            .flat_map(|(_, nets)| nets.iter().filter_map(|(a, n)| Some((a, n.as_ref()?.as_ref()?))))
-            .collect();
-        for (a, u) in &lookups {
-            col = col.push(person(a, u));
-        }
-        let people = if q.is_empty() { Vec::new() } else { chat_people(&st, &listed, account.or(picked), &q) };
-        if !people.is_empty() {
-            col = col.push(heading(tr("Chats")));
-            let limit = if self.new_chat_chats_expanded { people.len() } else { 10.min(people.len()) };
-            for (a, u) in people.iter().take(limit) {
-                col = col.push(person(a, u));
-            }
-            if people.len() > 10 {
-                let label = if self.new_chat_chats_expanded { tr("Show less chats") } else { tr("Show more chats") };
-                col = col.push(item(
-                    txt(label, 13.0).color(p.text).into(),
-                    Some(UiMessage::NewChat(new_chat::Msg::ToggleChats)),
-                ));
-            }
-        }
-        let search = self.new_chat_search.as_ref().filter(|(s, ..)| !q.is_empty() && *s == self.new_chat_query.trim());
-        if let Some((_, pending, found)) = search {
-            col = col.push(heading(tr("Connections")));
-            let mut seen = HashSet::new();
-            let mut results: Vec<&(String, User)> =
-                found.iter().filter(|(a, u)| seen.insert(person_key(a, u))).collect();
-            results.sort_by_cached_key(|(_, u)| {
-                let n = person_name(u).to_lowercase();
-                (n.is_empty(), n)
-            });
-            let limit = if self.new_chat_results_expanded { results.len() } else { 10.min(results.len()) };
-            for (a, u) in results.iter().take(limit).filter(|_| *pending == 0) {
-                col = col.push(person(a, u));
-            }
-            if *pending > 0 {
-                col = col.push(item(txt(tr("Searching..."), 13.0).color(p.sub).into(), None));
-            } else if results.len() > 10 {
-                let label =
-                    if self.new_chat_results_expanded { tr("Show less results") } else { tr("Show more results") };
-                col = col.push(item(
-                    txt(label, 13.0).color(p.text).into(),
-                    Some(UiMessage::NewChat(new_chat::Msg::ToggleResults)),
-                ));
-            }
-        }
-        let any = listed.iter().any(|a| self.can(a, "contact_list") || self.can(a, "any_phone"));
-        let contacts: Vec<&User> = st
-            .contacts
-            .iter()
-            .filter(|_| any)
-            .filter(|u| u.full_name.as_deref().unwrap_or_default().to_lowercase().contains(&q))
-            .collect();
-        if lookups.is_empty()
-            && people.is_empty()
-            && search.is_none_or(|(_, n, f)| *n == 0 && f.is_empty())
-            && contacts.is_empty()
-        {
-            // Desktop's "No results found" is only for a query, in a DM draft.
-            match group {
-                true => col = col.push(heading(tr("Start typing to search for people to add"))),
-                false if !q.is_empty() => col = col.push(heading(tr("No results found"))),
-                false => {}
-            }
-        }
-        if !contacts.is_empty() {
-            col = col.push(heading(tr("In your contacts")));
-            let limit = if self.new_chat_expanded || !q.is_empty() { contacts.len() } else { 10.min(contacts.len()) };
-            let mut last_cat = None;
-            for u in contacts.iter().take(limit) {
-                let name = u.full_name.as_deref().unwrap_or(&u.id);
-                let ch = name.chars().next().unwrap_or(' ').to_ascii_uppercase();
-                let cat = if ch.is_ascii_alphabetic() { ch.to_string() } else { tr("Others").to_string() };
-                if last_cat.as_deref() != Some(cat.as_str()) {
-                    col = col.push(heading(&cat));
-                    last_cat = Some(cat);
-                }
-                let nets = self.contact_networks.as_ref().filter(|(c, _)| *c == u.id).map(|(_, n)| n);
-                let line = row![
-                    self.face(u.img_url.as_deref(), name, 28.0, 0.0),
-                    semi(name.to_string(), 13.0).color(p.strong),
-                    Space::new().width(Fill),
-                    match nets {
-                        Some(_) => tinted(&MAT_EXPAND_LESS, 20.0, p.strong),
-                        None => ic(icon::EXPAND_MORE, 20.0).color(p.strong).into(),
-                    }
-                ]
-                .spacing(8)
-                .align_y(Center);
-                col = col.push(item(line.into(), Some(UiMessage::NewChat(new_chat::Msg::ToggleContact(u.id.clone())))));
-                let Some(nets) = nets else { continue };
-                if nets.iter().any(|(_, n)| n.is_none()) {
-                    let bone = |w: f32, r: f32| container(Space::new().width(w).height(if r > 8.0 { w } else { 16.0 }));
-                    let skeleton = row![
-                        bone(22.0, 11.0).style(fill_box(p.chip, 11.0)),
-                        bone(100.0, 5.0).style(fill_box(p.chip, 5.0))
-                    ];
-                    col = col.push(item(skeleton.spacing(8).align_y(Center).into(), None));
-                    continue;
-                }
-                let found: Vec<(&String, &User)> = nets
-                    .iter()
-                    .filter_map(|(a, n)| Some((a, n.as_ref()?.as_ref()?)))
-                    .filter(|(a, _)| account.or(picked).is_none_or(|b| *a == b))
-                    .collect();
-                if found.is_empty() {
-                    let none = semi(tr("No networks found"), 13.0).color(p.strong).width(Fill).align_x(Center);
-                    col = col.push(item(none.into(), None));
-                }
-                for (a, user) in found {
-                    let icon = container(svg(crate::style::brand_svg(brand_key(a))).width(20).height(20)).center(28);
-                    let line = row![icon, med(account_display_name(&st, a, &all), 13.0).color(p.strong)];
-                    let pick = UiMessage::NewChat(new_chat::Msg::PickUser(a.clone(), Box::new(user.clone())));
-                    col = col.push(item(line.spacing(8).align_y(Center).into(), Some(pick)));
-                }
-            }
-            if q.is_empty() && contacts.len() > 10 {
-                let label = if self.new_chat_expanded { tr("Show less contacts") } else { tr("Show more contacts") };
-                col = col.push(
-                    container(
-                        button(txt(label, 13.0).color(p.text))
-                            .height(36)
-                            .padding([0, 6])
-                            .width(Fill)
-                            .style(ghost(p, 8.0))
-                            .on_press(UiMessage::NewChat(new_chat::Msg::ToggleExpanded)),
-                    )
-                    .padding([0, 6]),
-                );
-            }
-        }
+        let inputs = self.view_new_chat_inputs(&st, users, &listed);
+        let col = self.view_new_chat_results(&st, &all, &listed, group, account.or(picked));
         // Desktop's `T$t`.
         let caps = account.map(|a| &self.caps[a]["group_creation"]["group"]);
         let ready = match (group, caps) {
@@ -728,51 +429,435 @@ impl BeeperGuiApp {
         let body = column![
             inputs,
             scrollable(col).direction(bar()).height(Fill).style(scroll_style(p.scroll)),
-            footer(start, "ENTER", ready.then_some(UiMessage::NewChat(new_chat::Msg::Start)))
+            new_chat_footer(p, start, "ENTER", ready.then_some(UiMessage::NewChat(new_chat::Msg::Start)))
         ];
         let panel = container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0));
         let named = caps.is_some_and(|g| g["name"]["allowed"] == true);
-        let title = draft.filter(|_| group && named).map(|d| {
-            // Desktop's `ThreadAvatar` of the `GroupTitleBar`: the picked image, the members, or an empty circle.
-            let face: El<'_> = match (&d.photo, d.users.is_empty()) {
-                (Some((.., f)), _) => self.emoji(f, |h| image(h).width(28).height(28)),
-                (None, false) => {
-                    let members: Vec<User> = d.users.iter().map(|(_, u)| u.clone()).collect();
-                    self.people_avatar(None, "", true, &members, 28.0, 0.0)
-                }
-                (None, true) => container(Space::new().width(28).height(28)).style(fill_box(p.chip, 14.0)).into(),
-            };
-            // Desktop's `PlusIcon`: a 16px badge with a white border, 5px past the right of the avatar.
-            let plus = container(svg(PLUS.clone()).width(7).height(8)).center(16).style(|_| container::Style {
-                background: Some(p.accent.into()),
-                border: iced::border::rounded(8).color(Color::WHITE).width(2),
-                ..Default::default()
-            });
-            let picker = stack![face, container(plus).padding(Padding::ZERO.top(12).left(17))].width(33).height(28);
-            let picker = mouse_area(picker)
-                .on_press(UiMessage::NewChat(new_chat::Msg::PickAvatar))
-                .interaction(mouse::Interaction::Pointer);
-            let name = text_input(tr("New Group Chat"), &d.title)
-                .on_input(|a0| UiMessage::NewChat(new_chat::Msg::GroupTitle(a0)))
-                .width(200)
-                .size(rem(13.0))
-                .padding(0)
-                .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-            let bg = if self.dark { Color::BLACK } else { Color::WHITE };
-            // The badge sticks out 5px of the 8px gap.
-            container(row![picker, name].spacing(3).align_y(Center)).center_x(Fill).center_y(38).style(move |_| {
-                container::Style {
-                    background: Some(bg.into()),
-                    border: iced::border::rounded(10),
-                    shadow: iced::Shadow {
-                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.12),
-                        blur_radius: 10.0,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }
-            })
-        });
+        let title = draft.filter(|_| group && named).map(|d| self.view_group_title(d));
+        let dropdown = self.new_chat_accounts_open.then(|| self.view_new_chat_accounts(&st, &listed));
         stack![column![].push(title).push(panel).spacing(8)].push(dropdown).into()
     }
+
+    /// Desktop's "Join a Matrix room" view of New Chat: the room address, its error, and Join.
+    fn view_join_matrix(&self) -> El<'_> {
+        let p = &self.pal;
+        let back = button(
+            row![tinted(&SYS_ARROW_BACK, 18.0, p.strong), txt(tr("Back"), 12.0).color(p.strong)]
+                .spacing(4)
+                .align_y(Center),
+        )
+        .padding([4, 6])
+        .style(ghost(p, 6.0))
+        .on_press(UiMessage::NewChat(new_chat::Msg::ToggleJoinMatrix));
+        let head =
+            container(row![back, txt(tr("Join a Matrix room"), 13.0).color(p.strong)].spacing(12).align_y(Center))
+                .width(Fill)
+                .padding([8, 13])
+                .style(fill_box(p.chip, 0.0));
+        let (joining, error) = (self.join_room.0, self.join_room.1.as_deref());
+        // `.joinInputs .joinInput input`: 32 px tall on the secondary container, body-md text, radius 8.
+        let input = text_input(tr("Room address or Matrix link"), &self.new_chat_query)
+            .id("new-chat-input")
+            .on_input(|q| UiMessage::NewChat(new_chat::Msg::Query(q)))
+            .size(rem(14.0))
+            .line_height(Pixels(rem(18.0)))
+            .padding([7, 10])
+            .style(input_style(p.chip, p.strong, p.sub, p.accent, 8.0));
+        let input = if joining { input } else { input.on_submit(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)) };
+        // `.joinError`: under the input, 4 px above and 10 px below.
+        let error = error
+            .map(|e| container(txt(e.to_string(), 12.0).color(p.text_danger)).padding(Padding::ZERO.top(4).bottom(10)));
+        let link = container(tinted(&MAT_LINK, 18.0, p.sub)).padding(Padding::ZERO.top(7));
+        let inputs = row![link, column![input].push(error).width(Fill)]
+            .spacing(8)
+            .padding(Padding::new(6.0).left(13.0).right(8.0));
+        let ready = !joining && !self.new_chat_query.trim().is_empty();
+        let label = if joining { tr("Joining...") } else { tr("Join") };
+        let join =
+            new_chat_footer(p, label, "ENTER", ready.then_some(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)));
+        let body = column![head, inputs].push(Space::new().height(Fill)).push(join);
+        container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into()
+    }
+
+    /// The search field of New Chat after the pills of the picked people, and the account picker while it has none.
+    fn view_new_chat_inputs(&self, st: &BeeperStore, users: &[(String, User)], listed: &[String]) -> El<'_> {
+        let p = &self.pal;
+        let picked = self.new_chat_account.as_deref();
+        let label = picked.map_or_else(|| tr("All accounts").into(), |a| account_option(st, a, listed));
+        let all_acc = button(
+            row![]
+                .push(picked.map(network_logo))
+                .push(txt(label, 12.0).color(p.strong))
+                .push(ic(icon::EXPAND_MORE, 16.0).color(p.strong))
+                .spacing(4)
+                .align_y(Center),
+        )
+        .height(24)
+        .padding(Padding { top: 2.0, right: 4.0, bottom: 2.0, left: 6.0 })
+        .style(btn_style([p.chip; 3], [p.strong; 3], 12.0))
+        .on_press(UiMessage::NewChat(new_chat::Msg::ToggleAccounts));
+        let shade = Color { a: 0.1, ..p.strong };
+        let pills = users.iter().map(|(_, u)| -> El<'_> {
+            let name = u.full_name.as_deref().unwrap_or(&u.id);
+            let pill =
+                row![self.face(u.img_url.as_deref(), name, 16.0, 0.0), semi(name.to_string(), 13.0).color(p.strong)];
+            container(pill.spacing(4).align_y(Center))
+                .padding(Padding::new(2.0).right(8.0))
+                .style(fill_box(shade, 20.0))
+                .into()
+        });
+        let placeholder = if users.is_empty() { tr("Search contacts") } else { "" };
+        let field = text_input(placeholder, &self.new_chat_query)
+            .id("new-chat-input")
+            .on_input(|a0| UiMessage::NewChat(new_chat::Msg::Query(a0)))
+            .size(rem(13.0))
+            .padding([8, 0])
+            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+        let inputs = Row::with_children(pills).push(field).spacing(4).align_y(Center);
+        row![ic(icon::SEARCH, 16.0).color(p.sub), inputs]
+            .push(users.is_empty().then_some(all_acc))
+            .spacing(8)
+            .align_y(Center)
+            .padding(Padding::new(6.0).top(10.0).left(13.0).right(8.0))
+            .into()
+    }
+
+    /// The menu of the account picker of New Chat: All accounts, then the accounts that can start the chat.
+    fn view_new_chat_accounts(&self, st: &BeeperStore, listed: &[String]) -> El<'_> {
+        let p = &self.pal;
+        let picked = self.new_chat_account.as_deref();
+        let options = std::iter::once(None).chain(listed.iter().map(|a| Some(a.as_str()))).map(|a| -> El<'_> {
+            let label = a.map_or_else(|| tr("All accounts").into(), |a| account_option(st, a, listed));
+            let check = (a == picked).then(|| ic(icon::CHECK, 16.0).color(p.strong));
+            let line = row![]
+                .push(a.map(network_logo))
+                .push(ell(&label, 160.0, 13.0, Weight::Normal).color(p.strong).width(Fill))
+                .push(check)
+                .spacing(8)
+                .align_y(Center);
+            button(line)
+                .width(Fill)
+                .height(22)
+                .padding([0, 8])
+                .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 4.0))
+                .on_press(UiMessage::NewChat(new_chat::Msg::Account(a.map(str::to_string))))
+                .into()
+        });
+        let menu = scrollable(Column::with_children(options.collect::<Vec<_>>())).height(Shrink);
+        let menu =
+            container(menu).width(216).max_height(300).padding(5).style(shadow_box(p.menu, p.menu_border, 6.0, 22.0));
+        stack![
+            mouse_area(Space::new().width(Fill).height(Fill))
+                .on_press(UiMessage::NewChat(new_chat::Msg::ToggleAccounts)),
+            container(menu).align_right(Fill).padding(Padding::new(8.0).top(38.0)),
+        ]
+        .into()
+    }
+
+    /// The results of New Chat: New Group and Join a Matrix room, the looked-up user, the people of the chats, the
+    /// users that the accounts found, and the contacts.
+    fn view_new_chat_results(
+        &self,
+        st: &BeeperStore,
+        all: &[String],
+        listed: &[String],
+        group: bool,
+        account: Option<&str>,
+    ) -> Column<'_, UiMessage> {
+        let p = &self.pal;
+        let q = self.new_chat_query.trim().to_lowercase();
+        let mut col = Column::new().padding(Padding::ZERO.top(3.0));
+        if q.is_empty() && !group {
+            let (group_btn, join_btn) = self.new_chat_actions(listed);
+            col = col.push(group_btn).push(join_btn);
+        }
+        let lookups: Vec<(&String, &User)> = self
+            .new_chat_lookup
+            .iter()
+            .filter(|(k, nets)| {
+                k.strip_prefix("lookup:") == Some(self.new_chat_query.trim()) && nets.iter().all(|n| n.1.is_some())
+            })
+            .flat_map(|(_, nets)| nets.iter().filter_map(|(a, n)| Some((a, n.as_ref()?.as_ref()?))))
+            .collect();
+        for (a, u) in &lookups {
+            col = col.push(self.view_person(a, u));
+        }
+        let people = if q.is_empty() { Vec::new() } else { chat_people(st, listed, account, &q) };
+        if !people.is_empty() {
+            col = col.push(new_chat_heading(p, tr("Chats")));
+            let limit = if self.new_chat_chats_expanded { people.len() } else { 10.min(people.len()) };
+            for (a, u) in people.iter().take(limit) {
+                col = col.push(self.view_person(a, u));
+            }
+            if people.len() > 10 {
+                let label = if self.new_chat_chats_expanded { tr("Show less chats") } else { tr("Show more chats") };
+                let more = Some(UiMessage::NewChat(new_chat::Msg::ToggleChats));
+                col = col.push(new_chat_item(p, txt(label, 13.0).color(p.text).into(), more));
+            }
+        }
+        let search = self.new_chat_search.as_ref().filter(|(s, ..)| !q.is_empty() && *s == self.new_chat_query.trim());
+        if let Some((_, pending, found)) = search {
+            col = self.push_connections(col, *pending, found);
+        }
+        let any = listed.iter().any(|a| self.can(a, "contact_list") || self.can(a, "any_phone"));
+        let contacts: Vec<&User> = st
+            .contacts
+            .iter()
+            .filter(|_| any)
+            .filter(|u| u.full_name.as_deref().unwrap_or_default().to_lowercase().contains(&q))
+            .collect();
+        if lookups.is_empty()
+            && people.is_empty()
+            && search.is_none_or(|(_, n, f)| *n == 0 && f.is_empty())
+            && contacts.is_empty()
+        {
+            // Desktop's "No results found" is only for a query, in a DM draft.
+            match group {
+                true => col = col.push(new_chat_heading(p, tr("Start typing to search for people to add"))),
+                false if !q.is_empty() => col = col.push(new_chat_heading(p, tr("No results found"))),
+                false => {}
+            }
+        }
+        if !contacts.is_empty() {
+            col = self.push_contacts(col, st, &contacts, all, account, q.is_empty());
+        }
+        col
+    }
+
+    /// The New Group and Join a Matrix room buttons at the top of an empty search.
+    fn new_chat_actions(&self, listed: &[String]) -> (Option<El<'_>>, El<'_>) {
+        let p = &self.pal;
+        let action = |icon: El<'static>, label, bg, msg| {
+            button(row![icon, semi(label, 13.0).color(p.strong)].spacing(7).align_y(Center))
+                .width(Fill)
+                .height(36)
+                .padding([0, 11])
+                .style(btn_style([bg, p.chip, p.selected], [p.strong; 3], 6.0))
+                .on_press(UiMessage::NewChat(msg))
+        };
+        let group_btn =
+            action(ic(icon::GROUP, 20.0).color(p.accent).into(), tr("New Group"), p.chip, new_chat::Msg::NewGroup);
+        let join_btn =
+            action(tinted(&MAT_LINK, 20.0, p.accent), tr("Join a Matrix room"), CLEAR, new_chat::Msg::ToggleJoinMatrix);
+        let group_btn = listed.iter().any(|a| self.can_group(a)).then(|| container(group_btn).padding([0, 8]).into());
+        (group_btn, container(join_btn).padding([0, 8]).into())
+    }
+
+    /// Desktop's `CommandBarUser`: a person of the New Chat results, with their handles and network.
+    fn view_person(&self, a: &str, u: &User) -> El<'_> {
+        let p = &self.pal;
+        // `.search-participant .small` is 12 px.
+        let small = |s: String| crate::style::fixed(s, 12.0, Weight::Normal).color(Color { a: 0.7, ..p.strong });
+        let bare = [&u.full_name, &u.username, &u.phone_number, &u.email].iter().all(|f| f.is_none());
+        let line = row![self.face(u.img_url.as_deref(), person_name(u), 28.0, 0.0)]
+            .push(u.full_name.clone().or_else(|| bare.then(|| u.id.clone())).map(|n| med(n, 13.0).color(p.strong)))
+            .push(u.username.as_ref().map(|n| small(format!("@{}", n.trim_start_matches('@')))))
+            .push(u.phone_number.as_deref().map(|n| small(fmt_phone(n))))
+            .push(u.email.clone().map(small))
+            .push(Space::new().width(Fill))
+            .push(svg(crate::style::brand_svg(brand_key(a))).width(16).height(16))
+            .spacing(6)
+            .align_y(Center);
+        new_chat_item(
+            p,
+            line.into(),
+            Some(UiMessage::NewChat(new_chat::Msg::PickUser(a.to_string(), Box::new(u.clone())))),
+        )
+    }
+
+    /// The Connections that the accounts found for the query, in the order of their names.
+    fn push_connections<'a>(
+        &'a self,
+        col: Column<'a, UiMessage>,
+        pending: usize,
+        found: &People,
+    ) -> Column<'a, UiMessage> {
+        let p = &self.pal;
+        let mut col = col.push(new_chat_heading(p, tr("Connections")));
+        let mut seen = HashSet::new();
+        let mut results: Vec<&(String, User)> = found.iter().filter(|(a, u)| seen.insert(person_key(a, u))).collect();
+        results.sort_by_cached_key(|(_, u)| {
+            let n = person_name(u).to_lowercase();
+            (n.is_empty(), n)
+        });
+        let limit = if self.new_chat_results_expanded { results.len() } else { 10.min(results.len()) };
+        for (a, u) in results.iter().take(limit).filter(|_| pending == 0) {
+            col = col.push(self.view_person(a, u));
+        }
+        if pending > 0 {
+            col = col.push(new_chat_item(p, txt(tr("Searching..."), 13.0).color(p.sub).into(), None));
+        } else if results.len() > 10 {
+            let label = if self.new_chat_results_expanded { tr("Show less results") } else { tr("Show more results") };
+            let more = Some(UiMessage::NewChat(new_chat::Msg::ToggleResults));
+            col = col.push(new_chat_item(p, txt(label, 13.0).color(p.text).into(), more));
+        }
+        col
+    }
+
+    /// The contacts, under the headings of their initials, with the networks of the contact that a click opened.
+    fn push_contacts<'a>(
+        &'a self,
+        mut col: Column<'a, UiMessage>,
+        st: &BeeperStore,
+        contacts: &[&User],
+        all: &[String],
+        account: Option<&str>,
+        blank: bool,
+    ) -> Column<'a, UiMessage> {
+        let p = &self.pal;
+        col = col.push(new_chat_heading(p, tr("In your contacts")));
+        let limit = if self.new_chat_expanded || !blank { contacts.len() } else { 10.min(contacts.len()) };
+        let mut last_cat = None;
+        for u in contacts.iter().take(limit) {
+            let name = u.full_name.as_deref().unwrap_or(&u.id);
+            let ch = name.chars().next().unwrap_or(' ').to_ascii_uppercase();
+            let cat = if ch.is_ascii_alphabetic() { ch.to_string() } else { tr("Others").to_string() };
+            if last_cat.as_deref() != Some(cat.as_str()) {
+                col = col.push(new_chat_heading(p, &cat));
+                last_cat = Some(cat);
+            }
+            let nets = self.contact_networks.as_ref().filter(|(c, _)| *c == u.id).map(|(_, n)| n);
+            let line = row![
+                self.face(u.img_url.as_deref(), name, 28.0, 0.0),
+                semi(name.to_string(), 13.0).color(p.strong),
+                Space::new().width(Fill),
+                match nets {
+                    Some(_) => tinted(&MAT_EXPAND_LESS, 20.0, p.strong),
+                    None => ic(icon::EXPAND_MORE, 20.0).color(p.strong).into(),
+                }
+            ]
+            .spacing(8)
+            .align_y(Center);
+            let open = Some(UiMessage::NewChat(new_chat::Msg::ToggleContact(u.id.clone())));
+            col = col.push(new_chat_item(p, line.into(), open));
+            if let Some(nets) = nets {
+                col = self.push_contact_networks(col, st, nets, all, account);
+            }
+        }
+        if blank && contacts.len() > 10 {
+            let label = if self.new_chat_expanded { tr("Show less contacts") } else { tr("Show more contacts") };
+            col = col.push(
+                container(
+                    button(txt(label, 13.0).color(p.text))
+                        .height(36)
+                        .padding([0, 6])
+                        .width(Fill)
+                        .style(ghost(p, 8.0))
+                        .on_press(UiMessage::NewChat(new_chat::Msg::ToggleExpanded)),
+                )
+                .padding([0, 6]),
+            );
+        }
+        col
+    }
+
+    /// The networks of an opened contact: skeletons while they resolve, then each account that has the contact.
+    fn push_contact_networks<'a>(
+        &'a self,
+        mut col: Column<'a, UiMessage>,
+        st: &BeeperStore,
+        nets: &Networks,
+        all: &[String],
+        account: Option<&str>,
+    ) -> Column<'a, UiMessage> {
+        let p = &self.pal;
+        if nets.iter().any(|(_, n)| n.is_none()) {
+            let bone = |w: f32, r: f32| container(Space::new().width(w).height(if r > 8.0 { w } else { 16.0 }));
+            let skeleton =
+                row![bone(22.0, 11.0).style(fill_box(p.chip, 11.0)), bone(100.0, 5.0).style(fill_box(p.chip, 5.0))];
+            return col.push(new_chat_item(p, skeleton.spacing(8).align_y(Center).into(), None));
+        }
+        let found: Vec<(&String, &User)> = nets
+            .iter()
+            .filter_map(|(a, n)| Some((a, n.as_ref()?.as_ref()?)))
+            .filter(|(a, _)| account.is_none_or(|b| *a == b))
+            .collect();
+        if found.is_empty() {
+            let none = semi(tr("No networks found"), 13.0).color(p.strong).width(Fill).align_x(Center);
+            col = col.push(new_chat_item(p, none.into(), None));
+        }
+        for (a, user) in found {
+            let icon = container(svg(crate::style::brand_svg(brand_key(a))).width(20).height(20)).center(28);
+            let line = row![icon, med(account_display_name(st, a, all), 13.0).color(p.strong)];
+            let pick = UiMessage::NewChat(new_chat::Msg::PickUser(a.clone(), Box::new(user.clone())));
+            col = col.push(new_chat_item(p, line.spacing(8).align_y(Center).into(), Some(pick)));
+        }
+        col
+    }
+
+    /// Desktop's `GroupTitleBar` of a group draft: its avatar picker and its name.
+    fn view_group_title<'a>(&'a self, d: &'a NewChat) -> Container<'a, UiMessage> {
+        let p = &self.pal;
+        // Desktop's `ThreadAvatar` of the `GroupTitleBar`: the picked image, the members, or an empty circle.
+        let face: El<'_> = match (&d.photo, d.users.is_empty()) {
+            (Some((.., f)), _) => self.emoji(f, |h| image(h).width(28).height(28)),
+            (None, false) => {
+                let members: Vec<User> = d.users.iter().map(|(_, u)| u.clone()).collect();
+                self.people_avatar(None, "", true, &members, 28.0, 0.0)
+            }
+            (None, true) => container(Space::new().width(28).height(28)).style(fill_box(p.chip, 14.0)).into(),
+        };
+        // Desktop's `PlusIcon`: a 16px badge with a white border, 5px past the right of the avatar.
+        let plus = container(svg(PLUS.clone()).width(7).height(8)).center(16).style(|_| container::Style {
+            background: Some(p.accent.into()),
+            border: iced::border::rounded(8).color(Color::WHITE).width(2),
+            ..Default::default()
+        });
+        let picker = stack![face, container(plus).padding(Padding::ZERO.top(12).left(17))].width(33).height(28);
+        let picker = mouse_area(picker)
+            .on_press(UiMessage::NewChat(new_chat::Msg::PickAvatar))
+            .interaction(mouse::Interaction::Pointer);
+        let name = text_input(tr("New Group Chat"), &d.title)
+            .on_input(|a0| UiMessage::NewChat(new_chat::Msg::GroupTitle(a0)))
+            .width(200)
+            .size(rem(13.0))
+            .padding(0)
+            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+        let bg = if self.dark { Color::BLACK } else { Color::WHITE };
+        // The badge sticks out 5px of the 8px gap.
+        container(row![picker, name].spacing(3).align_y(Center)).center_x(Fill).center_y(38).style(move |_| {
+            container::Style {
+                background: Some(bg.into()),
+                border: iced::border::rounded(10),
+                shadow: iced::Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.12),
+                    blur_radius: 10.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        })
+    }
+}
+
+/// The 16 px icon of an account's network.
+fn network_logo<'a>(a: &str) -> El<'a> {
+    svg(crate::style::brand_svg(brand_key(a))).width(16).height(16).into()
+}
+
+/// The footer of New Chat: its Start or Join pill, with the key that presses it, faded while it is off.
+fn new_chat_footer<'a>(
+    p: &Palette,
+    label: &'static str,
+    key: &'static str,
+    press: Option<UiMessage>,
+) -> Row<'a, UiMessage> {
+    let a = if press.is_some() { 1.0 } else { 0.4 };
+    let label = row![med(label, 13.0), txt(key, 10.0).color(Color { a: 0.8 * a, ..Color::WHITE })];
+    let pill = button(label.spacing(4).align_y(Center))
+        .padding([4, 8])
+        .style(btn_style([Color { a, ..p.accent }; 3], [Color { a, ..Color::WHITE }; 3], 20.0))
+        .on_press_maybe(press);
+    row![Space::new().width(Fill), pill].padding(Padding::new(8.0).left(13.0)).align_y(Center)
+}
+
+/// A heading of the New Chat results.
+fn new_chat_heading<'a>(p: &Palette, label: &str) -> Container<'a, UiMessage> {
+    container(txt(label.to_string(), 12.0).color(p.sub)).padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
+}
+
+/// A row of the New Chat results.
+fn new_chat_item<'a>(p: &Palette, content: El<'a>, press: Option<UiMessage>) -> El<'a> {
+    let b = button(content).height(36).padding([0, 6]).width(Fill).style(ghost(p, 8.0));
+    container(b.on_press_maybe(press)).padding([0, 6]).into()
 }

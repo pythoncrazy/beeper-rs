@@ -318,7 +318,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         61 => UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{}", rng.pick(&rail)))),
         62 => UiMessage::Message(message::Msg::Select(vec![msg])),
         63 => UiMessage::Message(message::Msg::CopySelected(rng.coin())),
-        _ => UiMessage::ToggleDnd,
+        _ => UiMessage::Noop,
     };
     (what, m)
 }

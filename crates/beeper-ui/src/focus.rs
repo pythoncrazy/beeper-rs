@@ -98,10 +98,6 @@ impl<S: Copy + PartialEq> Focus<S> {
         self.0
     }
 
-    pub fn is(self, stop: S) -> bool {
-        self.0 == Some(stop)
-    }
-
     pub fn set(&mut self, stop: Option<S>) {
         self.0 = stop;
     }
