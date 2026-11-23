@@ -739,7 +739,7 @@ impl BeeperGuiApp {
             .width(Fill)
             .height(Fill)
             .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.9), 0.0));
-        mouse_area(backdrop).on_press(UiMessage::Info(info::Msg::Zoom)).into()
+        crate::backdrop(backdrop).on_press(UiMessage::Info(info::Msg::Zoom)).into()
     }
 
     /// Desktop's `C0e` Media section: the newest messages with attachments or links, and when expanded all of them

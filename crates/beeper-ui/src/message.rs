@@ -1485,7 +1485,7 @@ impl BeeperGuiApp {
             let list = container(lift::lift(list, below, 1.0)).clip(true);
             // Desktop blurs the chat 8px under a 0.6 background; iced has no backdrop blur.
             let bg = p.card.scale_alpha(0.85 * shown);
-            mouse_area(container(list).width(Fill).height(Fill).style(fill_box(bg, 0.0)))
+            crate::backdrop(container(list).width(Fill).height(Fill).style(fill_box(bg, 0.0)))
                 .on_press(UiMessage::Message(Msg::HideReplies))
         });
         let close = replies.is_some().then(|| -> El<'_> {

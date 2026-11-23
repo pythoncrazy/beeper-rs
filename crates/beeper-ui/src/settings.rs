@@ -965,7 +965,7 @@ impl BeeperGuiApp {
                 .padding(Padding::ZERO.left(x).top(y))
                 .width(Fill)
                 .height(Fill);
-            mouse_area(menu)
+            crate::backdrop(menu)
                 .on_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
                 .on_right_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
         });
@@ -973,7 +973,7 @@ impl BeeperGuiApp {
         let picker = self.pane.emoji.as_ref().filter(|pk| pk.pref.is_some()).map(|_| {
             let picker = self.view_emoji_picker(&self.store.read()).expect("the picker is open");
             let picker = container(mouse_area(picker).on_press(UiMessage::Noop)).center(Fill);
-            mouse_area(picker).on_press(UiMessage::QuickEmoji(None))
+            crate::backdrop(picker).on_press(UiMessage::QuickEmoji(None))
         });
         stack![base.style(fill_box(p.window, 0.0))].push(menu).push(add).push(confirm).push(profile).push(picker).into()
     }
@@ -1052,7 +1052,7 @@ impl BeeperGuiApp {
             .padding([8, 0]);
         let pane = column![title, container(content).padding(Padding::new(16.0).top(16.0))];
         let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
-        mouse_area(container(pane).padding(8)).on_press(UiMessage::Noop).into()
+        crate::backdrop(container(pane).padding(8)).on_press(UiMessage::Noop).into()
     }
 
     /// Desktop's `TakeBeeperWithYou` card.
@@ -1872,7 +1872,7 @@ impl BeeperGuiApp {
         .padding([13, 0]);
         let card = mouse_area(container(card).style(fill_box(p.elevated, 0.0))).on_press(UiMessage::Noop);
         let shade = container(card).align_right(Fill).center_y(Fill).padding(Padding::ZERO.right(13.0));
-        mouse_area(shade.style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.4), 0.0)))
+        crate::backdrop(shade.style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.4), 0.0)))
             .on_press(UiMessage::Hotkeys(hotkeys::Msg::Modal(None)))
             .into()
     }

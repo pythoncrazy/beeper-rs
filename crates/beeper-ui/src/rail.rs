@@ -1085,7 +1085,7 @@ impl BeeperGuiApp {
             let m = mouse_area(m.map(act)).on_press(UiMessage::Noop);
             container(m).padding(Padding::ZERO.left(x).top(y)).into()
         };
-        let close = mouse_area(container(Space::new()).width(Fill).height(Fill))
+        let close = crate::backdrop(container(Space::new()).width(Fill).height(Fill))
             .on_press(edit(SpacesEdit::Menu(None)))
             .on_right_press(edit(SpacesEdit::Menu(None)));
         stack![window, close, place(menu, x)].push(sub.map(|s| place(s, sub_x))).into()

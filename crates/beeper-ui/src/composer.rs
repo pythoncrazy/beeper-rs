@@ -1609,9 +1609,12 @@ impl BeeperGuiApp {
             },
             ..Default::default()
         };
+        // Desktop's `.pending-attachment-quicklook-wrapper` takes the pointer across the window, between 40 px from
+        // the top and 120 px from the bottom.
         let place = move |body: El<'a>| -> El<'a> {
             let card = container(body).padding(10).style(style);
-            container(card).center_x(Fill).center_y(Fill).padding(Padding::ZERO.top(40.0).bottom(120.0)).into()
+            let band = crate::backdrop(container(card).center_x(Fill).center_y(Fill));
+            container(band).padding(Padding::ZERO.top(40.0).bottom(120.0)).into()
         };
         let Some(frame) = pm.frames.first().map(|f| f.0.clone()) else {
             return Some(place(self.pending_preview(pm, &self.store.read())));

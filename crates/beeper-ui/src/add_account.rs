@@ -13,8 +13,7 @@ use beeper_core::matrix::Provision;
 use beeper_core::models::NetworkSpec;
 use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::{
-    button, column, container, image, mouse_area, pick_list, rich_text, row, scrollable, span, stack, svg, text_input,
-    Column,
+    button, column, container, image, pick_list, rich_text, row, scrollable, span, stack, svg, text_input, Column,
 };
 use iced::{window, Center, Color, Fill, Padding, Size, Task};
 use std::collections::{BTreeMap, BTreeSet};
@@ -943,7 +942,7 @@ impl BeeperGuiApp {
                 menu_item(p, None, label, "", (!a.busy).then(|| go(AddMsg::Flow(f.id.clone()))))
             });
             let list = crate::menu_card(p, Column::with_children(items), 200);
-            mouse_area(container(list).align_right(Fill).height(Fill).padding(Padding::ZERO.top(30).right(8)))
+            crate::backdrop(container(list).align_right(Fill).height(Fill).padding(Padding::ZERO.top(30).right(8)))
                 .on_press(go(AddMsg::Menu))
         });
         let window = column![title, card].padding(Padding::new(8.0).top(0.0));
