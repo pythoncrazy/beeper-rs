@@ -1086,17 +1086,29 @@ pub enum Clip {
     Text,
 }
 
+/// Whether arboard's `error` leaves the paste to iced's clipboard, which pastes the text if there is one. arboard reads
+/// the clipboard through X11 on GNOME, whose compositor has no data-control protocol, so on a Wayland session without
+/// Xwayland it reaches no clipboard at all, where iced, which speaks Wayland, still pastes the text like Desktop.
+fn paste_text_instead(error: &arboard::Error) -> bool {
+    matches!(
+        error,
+        arboard::Error::ContentNotAvailable | arboard::Error::ClipboardNotSupported | arboard::Error::Unknown { .. }
+    )
+}
+
 async fn clipboard_paste() -> Result<Clip, String> {
     let read = || {
-        let mut c = arboard::Clipboard::new().map_err(|e| format!("Could not read the clipboard: {e}"))?;
+        let mut c = match arboard::Clipboard::new() {
+            Err(e) if paste_text_instead(&e) => return Ok(Clip::Text),
+            c => c.map_err(|e| format!("Could not read the clipboard: {e}"))?,
+        };
         // The `text/uri-list` of a file manager. iced's X11 clipboard answers every target with its text, which
         // has no `file://` lines.
         if let Some(files) = c.get().file_list().ok().filter(|f| !f.is_empty()) {
             return Ok(Clip::Files(files));
         }
         let img = match c.get_image() {
-            Err(arboard::Error::ContentNotAvailable) => return Ok(Clip::Text),
-            Err(arboard::Error::Unknown { .. }) if c.get_text().is_ok() => return Ok(Clip::Text),
+            Err(e) if paste_text_instead(&e) => return Ok(Clip::Text),
             r => r.map_err(|e| format!("Could not read the clipboard: {e}"))?,
         };
         let size = (u32::try_from(img.width).unwrap(), u32::try_from(img.height).unwrap());
@@ -7248,6 +7260,19 @@ mod perf;
 mod tests {
     use super::*;
     use crate::media_view::{filmstrip, slide};
+
+    /// A paste whose clipboard arboard cannot reach, as on Wayland without Xwayland, or that has no image, pastes
+    /// the text through iced's clipboard instead of failing with "Could not read the clipboard".
+    #[test]
+    fn a_paste_without_arboard_pastes_the_text() {
+        let unreachable = arboard::Error::Unknown {
+            description: "X11 server connection timed out because it was unreachable".into(),
+        };
+        assert!(paste_text_instead(&unreachable));
+        assert!(paste_text_instead(&arboard::Error::ContentNotAvailable), "a text has no image");
+        assert!(paste_text_instead(&arboard::Error::ClipboardNotSupported));
+        assert!(!paste_text_instead(&arboard::Error::ConversionFailure), "an image that does not decode is an error");
+    }
 
     #[test]
     fn gui_tasks_run_on_the_runtime_of_the_caller() {
