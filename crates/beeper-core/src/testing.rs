@@ -28,6 +28,15 @@ pub fn demo_store(name: &str) -> SharedStore {
 
 /// A signed-in store in `dir` with a Matrix client that synced the stub homeserver at `url`.
 pub async fn stub_store(dir: &std::path::Path, url: &str) -> crate::store::SharedStore {
+    let store = open_stub_store(dir, url).await;
+    let client = store.read().matrix.clone().expect("a Matrix client");
+    client.sync_once(matrix_sdk::config::SyncSettings::default()).await.expect("sync with the stub homeserver");
+    store
+}
+
+/// A signed-in store in `dir` with a Matrix client of the stub homeserver at `url`, which has not synced yet in this
+/// run, like the store of a start.
+pub async fn open_stub_store(dir: &std::path::Path, url: &str) -> crate::store::SharedStore {
     crate::cloud::install_tls();
     let cfg = crate::config::CentralConfig::new(dir.into(), "127.0.0.1".into(), 23392, None);
     let mut st = crate::store::BeeperStore::from_config(cfg.clone());
@@ -41,7 +50,6 @@ pub async fn stub_store(dir: &std::path::Path, url: &str) -> crate::store::Share
     }
     let store = crate::store::StoreLock::shared(st);
     let client = crate::matrix::connect(&store).await.expect("connect to the stub homeserver");
-    client.sync_once(matrix_sdk::config::SyncSettings::default()).await.expect("sync with the stub homeserver");
     store.write().matrix = Some(client);
     store
 }
