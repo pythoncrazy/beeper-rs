@@ -13,6 +13,7 @@ pub(crate) use crate::style::{
 pub(crate) use crate::time::{day_num, format_short_ts, iso_millis, list_ts, today};
 pub(crate) use crate::units::human_size;
 pub(crate) use crate::verify::{brand_btn_maybe, Brand};
+pub(crate) use crate::wins::Win;
 pub(crate) use crate::{
     accounts, badge, blocking, brand_key, checkbox, commands, composer_with, deletable, delete_dialog, distance, downloads_dir, ease_out,
     feedback_btn, fmt_phone, forward, has_flag, hotkey_caps, hotkey_text, icon_btn, inbox_label, integrations, loads, locate, member_name,

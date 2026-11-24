@@ -1957,12 +1957,12 @@ impl BeeperGuiApp {
                 self.drop_send = false;
             }
             // Desktop's Edit Group window takes a dropped image for the avatar.
-            Msg::FileHover(id, on) if self.group_window.as_ref().is_some_and(|d| d.id == id) => {
-                let d = self.group_window.as_mut().expect("the Edit Group window is open");
+            Msg::FileHover(id, on) if self.children.get::<crate::GroupDraft>().is_some_and(|d| d.id == id) => {
+                let d = self.children.get_mut::<crate::GroupDraft>().expect("the Edit Group window is open");
                 d.dropping = on;
             }
-            Msg::FileDropped(id, path) if self.group_window.as_ref().is_some_and(|d| d.id == id) => {
-                self.group_window.as_mut().expect("the Edit Group window is open").dropping = false;
+            Msg::FileDropped(id, path) if self.children.get::<crate::GroupDraft>().is_some_and(|d| d.id == id) => {
+                self.children.get_mut::<crate::GroupDraft>().expect("the Edit Group window is open").dropping = false;
                 return self.update(UiMessage::Group(crate::GroupEdit::Dropped(path)));
             }
             Msg::FileHover(..) | Msg::FileDropped(..) => {}

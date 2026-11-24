@@ -6134,15 +6134,15 @@ fn polls_like_desktop() {
     for m in sim.into_messages() {
         let _ = app.update(m);
     }
-    assert_eq!(app.vote_windows.len(), 1);
-    let (id, ..) = app.vote_windows[0];
+    assert_eq!(app.children.iter().filter(|w| matches!(w.1, Win::Vote(..))).count(), 1);
+    let id = app.children.find(|w| matches!(w, Win::Vote(..))).unwrap();
     assert_eq!(app.title(id), "2 votes");
     {
         let mut sim = simulator(app.view_poll_votes(chat, mid));
         assert!(sim.find("Which default dark theme do you prefer?").is_ok() && sim.find("Dark Purple").is_ok());
     }
     let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
-    assert!(app.vote_windows.is_empty());
+    assert!(app.children.find(|w| matches!(w, Win::Vote(..))).is_none());
     for m in click(&app, "Nocturne") {
         let _ = app.update(m);
     }
@@ -6180,30 +6180,30 @@ fn poll_creator_like_desktop() {
     app.store.write().update_chat(i, |c| c.polls = Some(rules));
     let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
     let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
-    assert_eq!(app.poll_windows.len(), 1, "a chat has one poll window");
-    let id = app.poll_windows[0].id;
+    assert_eq!(app.children.all::<PollDraft>().count(), 1, "a chat has one poll window");
+    let id = app.children.get::<PollDraft>().unwrap().id;
     let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Poll(id, e)));
-    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_poll_creator(&app.poll_windows[0])).find(s).is_ok();
+    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_poll_creator(app.children.get::<PollDraft>().unwrap())).find(s).is_ok();
     assert!(found(&app, "Add an option") && found(&app, "Allow multiple answers"));
     assert!(!found(&app, "Hide results until end of poll"), "the network has no hidden votes");
     edit(&mut app, PollEdit::Question("Best editor?".into()));
     edit(&mut app, PollEdit::Option(0, "Vim".into()));
     edit(&mut app, PollEdit::Option(1, " Vim".into()));
-    assert_eq!(app.poll_windows[0].options.len(), 3, "typing in the last option adds one");
+    assert_eq!(app.children.get::<PollDraft>().unwrap().options.len(), 3, "typing in the last option adds one");
     assert!(found(&app, "This option already exists"));
     let _ = app.update(UiMessage::Poll(id, PollEdit::Send));
-    assert_eq!(app.poll_windows.len(), 1, "a poll with a duplicate does not send");
+    assert_eq!(app.children.all::<PollDraft>().count(), 1, "a poll with a duplicate does not send");
     edit(&mut app, PollEdit::Option(1, "Emacs".into()));
     edit(&mut app, PollEdit::Option(2, "Helix".into()));
-    assert_eq!(app.poll_windows[0].options.len(), 3, "the network allows 3 options");
+    assert_eq!(app.children.get::<PollDraft>().unwrap().options.len(), 3, "the network allows 3 options");
     assert!(found(&app, "You have added the maximum number of options") && !found(&app, "Add an option"));
     edit(&mut app, PollEdit::Option(2, String::new()));
     edit(&mut app, PollEdit::Option(2, String::new()));
-    assert_eq!(app.poll_windows[0].options.len(), 2, "Backspace in an empty option removes it");
+    assert_eq!(app.children.get::<PollDraft>().unwrap().options.len(), 2, "Backspace in an empty option removes it");
     assert!(found(&app, "You can enter 1 more option"));
     edit(&mut app, PollEdit::Multiple(true));
     edit(&mut app, PollEdit::Send);
-    assert!(app.poll_windows.is_empty());
+    assert!(app.children.get::<PollDraft>().is_none());
     {
         let st = app.store.read();
         let m = &st.messages[*st.timeline_indices(&chat).last().expect("the sent poll")];
@@ -6231,17 +6231,17 @@ fn poll_creator_like_desktop() {
     assert!(simulator(app.view_main()).find("End Poll").is_err(), "an ended poll has no End Poll");
     assert!(simulator(app.view_main()).find("Edit…").is_err(), "a poll is not edited");
     let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
-    let id = app.poll_windows[0].id;
+    let id = app.children.get::<PollDraft>().unwrap().id;
     let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Poll(id, e)));
     edit(&mut app, PollEdit::Question("Lunch?".into()));
     let _ = app.update(UiMessage::Window(windows::Msg::CloseRequested(id)));
-    assert!(app.poll_windows[0].discarding && found(&app, "Discard poll?") && found(&app, "Keep editing"));
+    assert!(app.children.get::<PollDraft>().unwrap().discarding && found(&app, "Discard poll?") && found(&app, "Keep editing"));
     edit(&mut app, PollEdit::Discard(false));
     edit(&mut app, PollEdit::Question(String::new()));
     edit(&mut app, PollEdit::Close);
-    assert!(!app.poll_windows[0].discarding, "an empty draft closes without a question");
+    assert!(!app.children.get::<PollDraft>().unwrap().discarding, "an empty draft closes without a question");
     let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
-    assert!(app.poll_windows.is_empty());
+    assert!(app.children.get::<PollDraft>().is_none());
 }
 
 #[test]
@@ -6278,9 +6278,9 @@ fn chat_theme_like_desktop() {
     let a = app.store.read().settings.chat_appearance.clone();
     assert!(a.theme(None).bubble.is_none(), "the default bubble color clears");
     let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Open(chat.clone())));
-    assert_eq!(app.theme_windows.len(), 1);
+    assert_eq!(app.children.iter().filter(|w| matches!(w.1, Win::Theme(_))).count(), 1);
     let _ = app.update(UiMessage::ChatTheme(chat_theme::Msg::Open(chat.clone())));
-    assert_eq!(app.theme_windows.len(), 1, "a chat has one chat theme window");
+    assert_eq!(app.children.iter().filter(|w| matches!(w.1, Win::Theme(_))).count(), 1, "a chat has one chat theme window");
     {
         let mut sim = simulator(app.view_chat_theme(&chat));
         assert!(sim.find("Only you see your chat themes.").is_ok());
@@ -6361,9 +6361,9 @@ fn create_label_like_desktop() {
     let _ = app.update(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())));
     let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Labels(labels::Msg::Change(e))));
     let found = |app: &BeeperGuiApp, s: &str| {
-        simulator(app.view_create_label(app.label_window.as_ref().expect("the label window"))).find(s).is_ok()
+        simulator(app.view_create_label(app.children.get::<LabelDraft>().expect("the label window"))).find(s).is_ok()
     };
-    let step = |app: &BeeperGuiApp| app.label_window.as_ref().expect("the label window").step;
+    let step = |app: &BeeperGuiApp| app.children.get::<LabelDraft>().expect("the label window").step;
     assert!(found(&app, "Organize chats in custom spaces.") && found(&app, "Get Started"), "the intro shows first");
     assert!(app.store.read().settings.labels_intro_seen);
     edit(&mut app, LabelEdit::Advance);
@@ -6378,7 +6378,7 @@ fn create_label_like_desktop() {
     edit(&mut app, LabelEdit::Advance);
     assert!(step(&app) == LabelStep::Details && found(&app, "Back"));
     edit(&mut app, LabelEdit::Advance);
-    assert!(app.label_window.is_some(), "a label needs a name");
+    assert!(app.children.get::<LabelDraft>().is_some(), "a label needs a name");
     edit(&mut app, LabelEdit::Color(3));
     edit(&mut app, LabelEdit::Color(11));
     edit(&mut app, LabelEdit::Icon(DEFAULT_LABEL_ICON));
@@ -6386,7 +6386,7 @@ fn create_label_like_desktop() {
     edit(&mut app, LabelEdit::Icon("3257-5950"));
     edit(&mut app, LabelEdit::Name(" Friends ".into()));
     edit(&mut app, LabelEdit::Advance);
-    assert_eq!(app.label_settings.len(), 1, "a new label opens its Label Settings");
+    assert_eq!(app.children.all::<LabelSettings>().count(), 1, "a new label opens its Label Settings");
     let st = app.store.read();
     let label = st.labels.iter().find(|l| l.name == "Friends").expect("the new label");
     assert_eq!(label.rooms, chats);
@@ -6406,9 +6406,9 @@ fn edit_and_delete_labels_like_desktop() {
     let menu = |app: &BeeperGuiApp| simulator(app.view_account_menu("label:lbl_work")).find("Label Settings").is_ok();
     assert!(menu(&app));
     let _ = app.update(UiMessage::Labels(labels::Msg::Edit("lbl_work".into())));
-    let ready = |app: &BeeperGuiApp| app.label_window.as_ref().expect("the label window").ready();
-    assert_eq!(app.label_window.as_ref().map(|d| d.step), Some(LabelStep::Details), "Edit opens the Edit Label sheet");
-    simulator(app.view_create_label(app.label_window.as_ref().expect("open"))).find("Done").expect("a Done button");
+    let ready = |app: &BeeperGuiApp| app.children.get::<LabelDraft>().expect("the label window").ready();
+    assert_eq!(app.children.get::<LabelDraft>().map(|d| d.step), Some(LabelStep::Details), "Edit opens the Edit Label sheet");
+    simulator(app.view_create_label(app.children.get::<LabelDraft>().expect("open"))).find("Done").expect("a Done button");
     let _ = app.update(UiMessage::Labels(labels::Msg::Change(LabelEdit::Name(" ".into()))));
     assert!(!ready(&app), "a label needs a name");
     let _ = app.update(UiMessage::Labels(labels::Msg::Change(LabelEdit::Name("Work Team".into()))));
@@ -6425,7 +6425,7 @@ fn edit_and_delete_labels_like_desktop() {
     assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.name == "Work" && l.rooms == rooms));
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("label:lbl_work".into()))));
     let _ = app.update(UiMessage::Labels(labels::Msg::OpenSettings("lbl_work".into())));
-    let _ = app.update(UiMessage::Labels(labels::Msg::Pane(app.label_settings[0].id, LabelPane::Delete)));
+    let _ = app.update(UiMessage::Labels(labels::Msg::Pane(app.children.get::<LabelSettings>().unwrap().id, LabelPane::Delete)));
     simulator(app.view_confirm(ASK_DELETE_LABEL)).find("Delete").expect("a Delete button");
     app.store.write().set_label_muted("lbl_work", true);
     app.patch_settings(|s| s.spaces_order = vec![SpaceOrder { id: "label:lbl_work".into(), visible: true }]);
@@ -6591,7 +6591,7 @@ fn edit_spaces_like_desktop() {
         let _ = app.update(m);
     }
     fn view(app: &BeeperGuiApp) -> Simulator<'_, UiMessage> {
-        simulator(app.view_edit_spaces(app.spaces_window.as_ref().expect("open")))
+        simulator(app.view_edit_spaces(app.children.get::<SpacesDraft>().expect("open")))
     }
     {
         let mut sim = view(&app);
@@ -6599,12 +6599,12 @@ fn edit_spaces_like_desktop() {
         assert!(sim.find("Search Spaces").is_ok() && sim.find("New Label").is_ok());
     }
     let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Spaces(e)));
-    let id = app.spaces_window.as_ref().unwrap().id;
+    let id = app.children.get::<SpacesDraft>().unwrap().id;
     let wheel = mouse::Event::WheelScrolled { delta: ScrollDelta::Lines { x: 0.0, y: -5.0 } };
     for m in interact(&app, id, SPACES_SIZE, Point::new(180.0, 300.0), vec![iced::Event::Mouse(wheel)]) {
         let _ = app.update(m);
     }
-    assert!(app.spaces_window.as_ref().unwrap().scrolled, "the search row casts a shadow over a scrolled list");
+    assert!(app.children.get::<SpacesDraft>().unwrap().scrolled, "the search row casts a shadow over a scrolled list");
     edit(&mut app, SpacesEdit::Drag("reminders".into()));
     edit(&mut app, SpacesEdit::Over(String::new()));
     edit(&mut app, SpacesEdit::Drop);
@@ -6638,7 +6638,7 @@ fn edit_spaces_like_desktop() {
         let _ = app.update(m);
     }
     assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.muted));
-    assert!(app.spaces_window.as_ref().unwrap().menu.is_none(), "an item closes the menu");
+    assert!(app.children.get::<SpacesDraft>().unwrap().menu.is_none(), "an item closes the menu");
     let account = all_spaces(&app.store.read())
         .into_iter()
         .find(|s| !s.starts_with("label:") && !RAIL_VIEWS.iter().any(|v| v.0 == s) && s != LABEL_NUDGE);
@@ -6654,9 +6654,9 @@ fn edit_spaces_like_desktop() {
     }
     let _ = app.update(UiMessage::Labels(labels::Msg::Delete("lbl_work".into())));
     assert!(!app.store.read().labels.iter().any(|l| l.id == "lbl_work"));
-    assert!(!app.spaces_window.as_ref().unwrap().order.iter().any(|o| o == "label:lbl_work"));
+    assert!(!app.children.get::<SpacesDraft>().unwrap().order.iter().any(|o| o == "label:lbl_work"));
     edit(&mut app, SpacesEdit::NewLabel);
-    assert!(app.label_window.is_some());
+    assert!(app.children.get::<LabelDraft>().is_some());
 }
 
 #[test]
@@ -6814,7 +6814,7 @@ fn create_label_shows_a_draft_space_like_desktop() {
     let rail = |app: &mut BeeperGuiApp, name: &str| {
         let _ = app.update(UiMessage::Labels(labels::Msg::Change(LabelEdit::Name(name.into()))));
         let _ = app.view_rail();
-        let d = app.label_window.as_ref().expect("Create Label is open");
+        let d = app.children.get::<LabelDraft>().expect("Create Label is open");
         draft_rail_spaces(&app.store.read(), &d.name)
     };
     let _ = app.update(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())));
@@ -7259,7 +7259,7 @@ fn space_sheet_like_desktop() {
     assert_eq!(app.list.selected_account_filter.as_deref(), Some("label:lbl_work"));
     assert!(app.list.chat_menu.is_none());
     pick(&mut app, "Label Settings", &["Mute"], &["Space Options", "Delete Label"]);
-    assert!(app.label_settings.iter().any(|w| w.label == "lbl_work"));
+    assert!(app.children.all::<LabelSettings>().any(|w| w.label == "lbl_work"));
     let _ = app.update(UiMessage::CloseModals);
     let account = app.store.read().bridge_accounts[0].account_id.clone();
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some(account))));
@@ -7280,8 +7280,8 @@ fn label_settings_like_desktop() {
     for m in picked {
         let _ = app.update(m);
     }
-    assert_eq!(app.label_settings.len(), 1, "the sheet opens Label Settings");
-    let w = app.label_settings[0].id;
+    assert_eq!(app.children.all::<LabelSettings>().count(), 1, "the sheet opens Label Settings");
+    let w = app.children.get::<LabelSettings>().unwrap().id;
     let run = |app: &mut BeeperGuiApp, item: &str| {
         let picked: Vec<UiMessage> = { clicks(app.view_window(w), item) };
         for m in picked {
@@ -7297,11 +7297,11 @@ fn label_settings_like_desktop() {
     // `.LabelSettings-module__dangerRow`: `--color-text-danger` on `--semantic-colors-bg-fill-primary`.
     assert!(ink(app.view_window(w), LABEL_SETTINGS_SIZE, app.pal.text_danger) > 20, "Delete Label");
     run(&mut app, "All Messages");
-    assert!(app.label_settings[0].menu, "the pill opens the Show in Inbox menu");
+    assert!(app.children.get::<LabelSettings>().unwrap().menu, "the pill opens the Show in Inbox menu");
     run(&mut app, "Only DMs");
     let inbox = |app: &BeeperGuiApp| app.store.read().labels.iter().find(|l| l.id == "lbl_work").map(|l| l.inbox);
     assert_eq!(inbox(&app), Some(Some("dmOnly")));
-    assert!(!app.label_settings[0].menu);
+    assert!(!app.children.get::<LabelSettings>().unwrap().menu);
     run(&mut app, "Delete Label");
     assert!(app.label_asking(w), "the confirm shows in the Label Settings window");
     let ask = "Are you sure you want to delete \"Work\"? This will remove the label from all chats.";
@@ -8056,15 +8056,15 @@ fn blocked_users_like_desktop() {
     let picked: Vec<UiMessage> = { clicks(app.view_settings(), "Blocked users") };
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::OpenList)]));
     let _ = app.update(UiMessage::Blocking(blocking::Msg::OpenList));
-    assert!(app.children.find(|w| matches!(w, Win::Blocked)).is_some());
-    assert!(simulator(app.view_blocked_users()).find("No Blocked Users").is_ok());
+    let blocked = app.children.find(|w| matches!(w, Win::Blocked)).expect("Blocked users opens");
+    assert!(simulator(app.view_blocked_users(blocked)).find("No Blocked Users").is_ok());
     let (id, title) = {
         let mut st = app.store.write();
         let i = st.chats.iter().position(|c| c.chat_type == "single" && c.id != NOTE_CHAT_ID).expect("a DM");
         st.update_chat(i, |c| c.block = BLOCK_USER | USER_BLOCKED);
         (st.chats[i].id.clone(), st.chats[i].title.clone())
     };
-    let picked: Vec<UiMessage> = { clicks(app.view_blocked_users(), title.as_str()) };
+    let picked: Vec<UiMessage> = { clicks(app.view_blocked_users(blocked), title.as_str()) };
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::OpenUser(c))] if *c == id));
     let _ = app.update(UiMessage::Blocking(blocking::Msg::OpenUser(id.clone())));
     // Desktop's `BlockedUserInfoBrowserWindow`: a sheet of its own with the chat's Chat Info, not the chat.
@@ -8172,7 +8172,7 @@ fn menus_show_the_reassigned_hotkeys_like_desktop() {
 fn label_inbox_rules_like_desktop() {
     let mut app = demo_app("label-inbox");
     let _ = app.update(UiMessage::Labels(labels::Msg::OpenSettings("lbl_work".into())));
-    let w = app.label_settings[0].id;
+    let w = app.children.get::<LabelSettings>().unwrap().id;
     let _ = app.update(UiMessage::Labels(labels::Msg::Pane(w, LabelPane::Menu(true))));
     let picks: Vec<UiMessage> = { clicks(app.view_window(w), "Only DMs") };
     assert!(
@@ -8236,7 +8236,7 @@ fn label_chats_from_the_chat_menu_like_desktop() {
     assert!(labels(&app).is_empty());
     assert!(app.status_banner == "Removed from Work" && app.toast.as_ref().is_some_and(|t| t.open.is_none()));
     let _ = app.update(UiMessage::Labels(labels::Msg::OpenCreate(vec![chat.into()])));
-    assert_eq!(app.label_window.as_ref().expect("the label window").chats, [chat]);
+    assert_eq!(app.children.get::<LabelDraft>().expect("the label window").chats, [chat]);
 }
 
 /// A simulator tall enough for the whole Chat Info panel.
@@ -8260,7 +8260,7 @@ fn chat_info_labels_like_desktop() {
         let _ = app.update(m);
     }
     let _ = app.update(UiMessage::Labels(labels::Msg::OpenEdit(chat.clone())));
-    assert_eq!(app.labels_windows.len(), 1, "one window for each chat");
+    assert_eq!(app.children.iter().filter(|w| matches!(w.1, Win::Labels(_))).count(), 1, "one window for each chat");
     {
         let mut sim = simulator(app.view_edit_labels(&chat));
         assert!(sim.find("Edit Labels").is_ok() && sim.find("Work").is_ok());
@@ -9177,7 +9177,7 @@ fn mod_z_undoes_actions_like_desktop() {
     };
     let order = app.store.read().settings.spaces_order.clone();
     let _ = app.update(UiMessage::OpenEditSpaces);
-    let id = |app: &BeeperGuiApp, i: usize| app.spaces_window.as_ref().expect("Edit Spaces").order[i].clone();
+    let id = |app: &BeeperGuiApp, i: usize| app.children.get::<SpacesDraft>().expect("Edit Spaces").order[i].clone();
     let (first, second) = (id(&app, 0), id(&app, 1));
     let _ = app.update(UiMessage::Spaces(SpacesEdit::Drag(second.clone())));
     let _ = app.update(UiMessage::Spaces(SpacesEdit::Over(first.clone())));
@@ -10011,23 +10011,23 @@ fn edit_group_like_desktop() {
     set_edits(&mut app, ALL_EDITS);
     assert!(in_menu(&mut app));
     let _ = app.update(UiMessage::OpenEditGroup(id.clone()));
-    let d = app.group_window.as_ref().expect("the window opens");
+    let d = app.children.get::<GroupDraft>().expect("the window opens");
     assert!(app.list.chat_menu.is_none() && d.title == "Beeper Rust Core Team");
     assert_eq!(d.changes(&app.store.read()), (None, None, false), "nothing changed yet");
     fn view(app: &BeeperGuiApp) -> Simulator<'_, UiMessage> {
-        simulator(app.view_edit_group(app.group_window.as_ref().expect("open")))
+        simulator(app.view_edit_group(app.children.get::<GroupDraft>().expect("open")))
     }
     assert!(view(&app).find("Remove Photo").is_err(), "no photo to remove");
     let _ = app.update(UiMessage::Group(GroupEdit::Title("Core".into())));
-    app.group_window.as_mut().expect("open").topic = text_editor::Content::with_text("Our team");
+    app.children.get_mut::<GroupDraft>().expect("open").topic = text_editor::Content::with_text("Our team");
     let _ = app.update(UiMessage::Group(GroupEdit::Save));
     {
         let st = app.store.read();
         let c = &st.chats[st.resolve_chat_idx(&id).expect("the group")];
         assert_eq!((c.title.as_str(), c.description.as_deref()), ("Core", Some("Our team")));
     }
-    let _ = app.update(UiMessage::Window(windows::Msg::Closed(app.group_window.as_ref().expect("open").id)));
-    assert!(app.group_window.is_none());
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(app.children.get::<GroupDraft>().expect("open").id)));
+    assert!(app.children.get::<GroupDraft>().is_none());
     {
         let mut st = app.store.write();
         let i = st.resolve_chat_idx(&id).expect("the group");
@@ -10037,7 +10037,7 @@ fn edit_group_like_desktop() {
     let _ = app.update(UiMessage::OpenEditGroup(id.clone()));
     let _ = view(&app).click("Remove Photo").expect("an avatar editor can remove the photo");
     let _ = app.update(UiMessage::Group(GroupEdit::Remove));
-    assert_eq!(app.group_window.as_ref().expect("open").changes(&app.store.read()), (None, None, true));
+    assert_eq!(app.children.get::<GroupDraft>().expect("open").changes(&app.store.read()), (None, None, true));
     let _ = app.update(UiMessage::Group(GroupEdit::Save));
     let st = app.store.read();
     assert_eq!(st.chats[st.resolve_chat_idx(&id).expect("the group")].img_url, None, "Remove Photo clears the avatar");
@@ -10051,19 +10051,19 @@ fn edit_group_saves_like_desktop() {
     let id = "!tg_rust:beeper.com".to_string();
     let _ = app.update(UiMessage::OpenEditGroup(id.clone()));
     let _ = app.update(UiMessage::Group(GroupEdit::Title("Core".into())));
-    app.group_window.as_mut().expect("open").saving = true;
-    let view = |app: &BeeperGuiApp| simulator(app.view_edit_group(app.group_window.as_ref().expect("open"))).find("Saving").is_ok();
+    app.children.get_mut::<GroupDraft>().expect("open").saving = true;
+    let view = |app: &BeeperGuiApp| simulator(app.view_edit_group(app.children.get::<GroupDraft>().expect("open"))).find("Saving").is_ok();
     assert!(view(&app), "the save waits");
     let title = |app: &BeeperGuiApp| app.store.read().chat(&id).title.clone();
     let _ = app.update(UiMessage::Group(GroupEdit::Saved(Err("forbidden".into()))));
-    assert!(app.group_window.is_some() && app.status_banner == "Failed to update group");
+    assert!(app.children.get::<GroupDraft>().is_some() && app.status_banner == "Failed to update group");
     assert!(!view(&app) && title(&app) == "Beeper Rust Core Team", "nothing changed");
     let _ = app.update(UiMessage::Group(GroupEdit::Saved(Ok(()))));
     assert_eq!(title(&app), "Core", "the homeserver took the title");
-    let window = app.group_window.as_ref().expect("open").id;
+    let window = app.children.get::<GroupDraft>().expect("open").id;
     let _ = app.update(UiMessage::Composer(composer::Msg::FileHover(window, true)));
     let drop = |app: &BeeperGuiApp| {
-        let mut sim = simulator(app.view_edit_group(app.group_window.as_ref().expect("open")));
+        let mut sim = simulator(app.view_edit_group(app.children.get::<GroupDraft>().expect("open")));
         sim.find("Drop image here to upload").is_ok()
     };
     assert!(drop(&app), "a dragged file shows the drop zone");
@@ -10085,7 +10085,7 @@ fn edit_for_me_like_desktop() {
     };
     assert_eq!(labels(&app, &format!("info:{id}")), ["Edit Group", "Edit for Me", "Chat Theme"]);
     let _ = app.update(UiMessage::OpenEditForMe(id.clone()));
-    let d = app.group_window.as_ref().expect("the window opens");
+    let d = app.children.get::<GroupDraft>().expect("the window opens");
     assert!(d.personal && d.title.is_empty());
     assert_eq!(app.title(d.id), "Edit Chat for Me");
     {
@@ -10094,7 +10094,7 @@ fn edit_for_me_like_desktop() {
         assert!(sim.find("Remove Photo").is_err(), "no personal photo to remove");
     }
     let _ = app.update(UiMessage::Group(GroupEdit::Title(format!("  Mine{}", "x".repeat(300)))));
-    assert_eq!(app.group_window.as_ref().expect("open").title.chars().count(), PERSONAL_NAME_MAX);
+    assert_eq!(app.children.get::<GroupDraft>().expect("open").title.chars().count(), PERSONAL_NAME_MAX);
     let _ = app.update(UiMessage::Group(GroupEdit::Title("  Mine  ".into())));
     let _ = app.update(UiMessage::Group(GroupEdit::Save));
     assert_eq!((chat(&app).title.as_str(), chat(&app).room_title()), ("Mine", room));
@@ -10118,9 +10118,9 @@ fn edit_for_me_like_desktop() {
     let _ = app.update(UiMessage::UndoAction);
     assert!(chat(&app).title == room && chat(&app).personal.is_none(), "Undo removes the name");
     app.store.write().set_personal(&id, None, Some(Some(("mxc://x/me".into(), Vec::new(), "image/png".into()))));
-    let _ = app.update(UiMessage::Window(windows::Msg::Closed(app.group_window.as_ref().expect("open").id)));
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(app.children.get::<GroupDraft>().expect("open").id)));
     let _ = app.update(UiMessage::OpenEditForMe(id.clone()));
-    let _ = simulator(app.view_edit_group(app.group_window.as_ref().expect("open")))
+    let _ = simulator(app.view_edit_group(app.children.get::<GroupDraft>().expect("open")))
         .click("Remove Photo")
         .expect("the personal photo can be removed");
     let _ = app.update(UiMessage::Group(GroupEdit::Remove));
@@ -11083,12 +11083,12 @@ fn account_nickname_window_like_desktop() {
     let mut app = demo_app("nickname-window");
     let account = "acc_whatsapp";
     let _ = app.update(UiMessage::Nickname(nickname::Msg::Open(account.into())));
-    let id = app.nickname_windows.first().expect("the window opens").id;
+    let id = app.children.get::<crate::nickname::NicknameDraft>().expect("the window opens").id;
     assert_eq!(app.title(id), "Account Nickname");
     let _ = app.update(UiMessage::Nickname(nickname::Msg::Open(account.into())));
-    assert_eq!(app.nickname_windows.len(), 1, "an account has one window");
+    assert_eq!(app.children.all::<crate::nickname::NicknameDraft>().count(), 1, "an account has one window");
     {
-        let d = &app.nickname_windows[0];
+        let d = app.children.get::<crate::nickname::NicknameDraft>().unwrap();
         assert_eq!(d.name, "", "no nickname yet");
         let mut sim = simulator(app.view_nickname(d));
         let phone = fmt_phone("+14155550142");
@@ -11112,17 +11112,20 @@ fn account_nickname_window_like_desktop() {
         assert_eq!(account_display_name(&st, account, rail_accounts(&st)), "Work phone");
     }
     let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
-    assert!(app.nickname_windows.is_empty());
+    assert!(app.children.get::<crate::nickname::NicknameDraft>().is_none());
     let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
     assert!(simulator(app.view_settings()).find("Work phone").is_ok(), "the account row shows the nickname");
     let _ = app.update(UiMessage::Nickname(nickname::Msg::Open(account.into())));
-    let id = app.nickname_windows[0].id;
-    assert_eq!(app.nickname_windows[0].name, "Work phone", "the window starts with the nickname");
+    let id = app.children.get::<crate::nickname::NicknameDraft>().unwrap().id;
+    assert_eq!(app.children.get::<crate::nickname::NicknameDraft>().unwrap().name, "Work phone", "the window starts with the nickname");
     let _ = app.update(UiMessage::Nickname(nickname::Msg::Saved(id, Err("offline".into()))));
     let error = "Something went wrong: offline";
-    assert!(simulator(app.view_nickname(&app.nickname_windows[0])).find(error).is_ok(), "the error toast");
+    assert!(
+        simulator(app.view_nickname(app.children.get::<crate::nickname::NicknameDraft>().unwrap())).find(error).is_ok(),
+        "the error toast"
+    );
     let _ = app.update(UiMessage::Nickname(nickname::Msg::HideError(id, error.into())));
-    assert!(simulator(app.view_nickname(&app.nickname_windows[0])).find(error).is_err());
+    assert!(simulator(app.view_nickname(app.children.get::<crate::nickname::NicknameDraft>().unwrap())).find(error).is_err());
     let _ = app.update(UiMessage::Nickname(nickname::Msg::Name(id, String::new())));
     let _ = app.update(UiMessage::Nickname(nickname::Msg::Save(id)));
     let st = app.store.read();

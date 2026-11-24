@@ -542,7 +542,7 @@ mod tests {
         let picked = clicked(&app, "Merge options");
         let Some(UiMessage::MergeSuggest(Msg::Merge(rooms, keys))) = picked.into_iter().next() else { panic!("Merge options merges") };
         let _ = app.update(UiMessage::MergeSuggest(Msg::Merge(rooms.clone(), keys.clone())));
-        let d = app.merge_window.as_ref().expect("the merge editor opens");
+        let d = app.children.get::<crate::merge_editor::MergeDraft>().expect("the merge editor opens");
         assert_eq!(d.chats, rooms, "with the suggested chats");
         assert_eq!(app.store.read().settings.merge_suggestion_dismissed_keys, keys);
         assert!(simulator(app.view_main()).find("2 chats on").is_err(), "a dismissed suggestion goes");

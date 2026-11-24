@@ -3649,12 +3649,8 @@ impl BeeperGuiApp {
             Msg::HideReplies => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), None),
             Msg::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
             Msg::OpenPollVotes(chat, mid) => {
-                if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
-                    return self.raise(w.0);
-                }
-                let (id, open) = self.open_child(Size::new(342.0, 563.0), false);
-                self.vote_windows.push((id, chat, mid));
-                return open;
+                let open = |app: &mut Self| app.open_child(Size::new(342.0, 563.0), false);
+                return self.open_once(|w| matches!(w, Win::Vote(_, m) if *m == mid), open, |_| Win::Vote(chat, mid.clone()));
             }
             msg @ (Msg::LinkMenu(..)
             | Msg::MessageContact(..)
@@ -4503,10 +4499,7 @@ pub(crate) mod tests {
         let press = |m: &UiMessage| matches!(m, UiMessage::Message(Msg::PressButton(mid, id)) if mid == "$tip" && id == "tips");
         assert!(msgs.iter().any(press), "a press of the button");
         msgs.into_iter().for_each(|m| _ = app.update(m));
-        assert!(
-            app.children.find(|w| matches!(w, crate::wins::Win::Networks)).is_some(),
-            "the deep link of the tip opens the Add an Account window"
-        );
+        assert!(app.children.find(|w| matches!(w, Win::Networks)).is_some(), "the deep link of the tip opens the Add an Account window");
         let email = || UiMessage::Message(Msg::PressButton("$tip".into(), "email".into()));
         let _ = app.update(email());
         let _ = app.update(email());

@@ -100,12 +100,9 @@ impl BeeperGuiApp {
         }
         // Chromium's Tab, Enter and arrows in Desktop's sheets; a confirmation over Label Settings has the
         // focus on its default button.
-        let sheet = self.nickname_windows.iter().any(|d| d.id == id)
-            || self.label_settings.iter().any(|w| w.id == id)
-            || self.label_window.as_ref().is_some_and(|d| d.id == id)
-            || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
-            || matches!(self.children.at(id), Some(Win::Blocked))
-            || self.poll_windows.iter().any(|w| w.id == id);
+        let sheet = self.children.at(id);
+        let sheet =
+            matches!(sheet, Some(Win::Nickname(_) | Win::LabelSettings(_) | Win::Label(_) | Win::Spaces(_) | Win::Blocked | Win::Poll(_)));
         if let Some(task) = sheet.then(|| self.focus_key(id, &key, mods, true)).flatten() {
             return task;
         }
@@ -122,45 +119,16 @@ impl BeeperGuiApp {
         if let Some(task) = self.child_key(id, &key, mods) {
             return task;
         }
-        if self.label_settings.iter().any(|w| w.id == id) {
-            return match key {
-                Key::Named(Named::Escape) => self.close_window(id),
-                Key::Named(Named::Enter) if mods.command() => self.close_window(id),
-                _ => Task::none(),
-            };
-        }
         // The open dropdown of a phone field takes the keys, so Escape closes it and not the window.
         if self.add_account_dropdown(id) {
             return self.update_add_account(id, add_account::AddMsg::Key(key));
         }
-        if self.theme_windows.iter().any(|w| w.0 == id)
-            || self.labels_windows.iter().any(|w| w.0 == id)
-            || self.vote_windows.iter().any(|w| w.0 == id)
-            || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
-            || self.merge_window.as_ref().is_some_and(|d| d.id == id)
-            || self.group_window.as_ref().is_some_and(|d| d.id == id)
-            || self.nickname_windows.iter().any(|d| d.id == id)
-            || self.add_accounts.iter().any(|a| a.id == id)
-        {
+        if self.add_accounts.iter().any(|a| a.id == id) {
             return if key == Key::Named(Named::Escape) { self.close_window(id) } else { Task::none() };
         }
         // `DCt.onEscapePressed` closes the sheet of a blocked person.
         if key == Key::Named(Named::Escape) && self.chat_windows.iter().any(|w| w.0 == id && w.1.blocked_sheet) {
             return self.close_window(id);
-        }
-        if self.label_window.as_ref().is_some_and(|d| d.id == id) {
-            return match key {
-                Key::Named(Named::Escape) => self.close_window(id),
-                Key::Named(Named::Enter) if mods.command() => self.label_edit(LabelEdit::Advance),
-                _ => Task::none(),
-            };
-        }
-        if self.poll_windows.iter().any(|w| w.id == id) {
-            return match key {
-                Key::Named(Named::Escape) => self.poll_edit(id, PollEdit::Close),
-                Key::Named(Named::Enter) if mods.command() => self.poll_edit(id, PollEdit::Send),
-                _ => Task::none(),
-            };
         }
         if self.media_window.as_ref().is_none_or(|w| w.id != id) {
             let key = UiMessage::KeyPressed(key, mods);

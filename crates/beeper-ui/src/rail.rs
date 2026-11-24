@@ -34,7 +34,7 @@ impl BeeperGuiApp {
             }
             Msg::SetOrder(order) => {
                 self.patch_settings(|s| s.spaces_order = order);
-                if let Some(d) = self.spaces_window.as_mut() {
+                if let Some(d) = self.children.get_mut::<SpacesDraft>() {
                     let st = self.store.read();
                     d.order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st)).collect();
                 }
@@ -83,7 +83,7 @@ impl BeeperGuiApp {
                 d.at = at;
                 if d.order.is_none() && at.distance(*d.from.get_or_insert(at)) > 5.0 {
                     let st = self.store.read();
-                    let draft = self.label_window.as_ref().filter(|w| w.label.is_none());
+                    let draft = self.children.get::<LabelDraft>().filter(|w| w.label.is_none());
                     d.order = Some(draft.map_or_else(|| rail_spaces(&st), |w| draft_rail_spaces(&st, &w.name)));
                     self.list.chat_menu = None;
                 }
@@ -476,7 +476,7 @@ impl BeeperGuiApp {
             .style(btn_style([CLEAR; 3], [p.strong; 3], 14.0))
             .on_press_maybe(labels.on.then(|| UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()))));
         let mut add_label = Some(add_label);
-        let draft = self.label_window.as_ref().filter(|d| d.label.is_none());
+        let draft = self.children.get::<LabelDraft>().filter(|d| d.label.is_none());
         let draft_btn = |i: usize, d: &LabelDraft| -> El<'static> {
             let (l, fg) = (Label { name: d.name.clone(), color: d.color, icon: d.icon.clone(), ..Label::default() }, p.strong);
             let ring = svg(DRAFT_RING.clone()).width(30).height(30).style(move |_, _| svg::Style { color: Some(fg) });
@@ -787,7 +787,7 @@ impl BeeperGuiApp {
     }
 
     pub(crate) fn spaces_edit(&mut self, e: SpacesEdit) -> Task<UiMessage> {
-        let d = self.spaces_window.as_mut().expect("the Edit Spaces window is open");
+        let d = self.children.get_mut::<SpacesDraft>().expect("the Edit Spaces window is open");
         match e {
             SpacesEdit::Search(q) => d.search = q,
             SpacesEdit::Scrolled(down) => d.scrolled = down,

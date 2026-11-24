@@ -132,7 +132,9 @@ impl BeeperGuiApp {
     pub(crate) fn keep_shown(&mut self) {
         let panes = self.panes().flat_map(|p| std::iter::once(p).chain(p.thread.as_deref()));
         let chats = panes.filter_map(|p| p.selected_chat_id.as_ref());
-        let chats = chats.chain(self.vote_windows.iter().map(|w| &w.1)).chain(self.track_chat());
+        let chats = chats
+            .chain(self.children.iter().filter_map(|w| if let Win::Vote(chat, _) = &w.1 { Some(chat) } else { None }))
+            .chain(self.track_chat());
         let st = self.store.read();
         let shown: Vec<String> = chats.filter_map(|c| st.resolve_canonical_chat_id(c)).collect();
         if st.shown == shown {

@@ -8,7 +8,6 @@ use crate::labels;
 use crate::labels::label_fill;
 use crate::prelude::*;
 use crate::settings;
-use crate::wins::Win;
 use crate::{
     chat_search_subtitle, checkbox_plus, grouped_rows, label_icon, label_tile, login, portal, spread, ASK_BLOCK, ASK_BLOCK_OFFLINE,
     ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT, ASK_MAKE_ADMIN, ASK_REMOVE_MEMBER, ASK_ROOM_ENCRYPTION,
@@ -658,20 +657,20 @@ impl BeeperGuiApp {
     /// Desktop's Edit Label (`Lst`) and Chats (`Nst`) sheets of Label Settings, by their step.
     pub(crate) fn open_label_sheet(&mut self, label: String, step: LabelStep) -> Task<UiMessage> {
         self.list.chat_menu = None;
-        if let Some(d) = &self.label_window {
+        if let Some(d) = self.children.get::<LabelDraft>() {
             return self.raise(d.id);
         }
         let (id, open) = self.open_sheet(LABEL_SHEET_SIZE);
         let label = self.label_id(label);
         let st = self.store.read();
         let label = st.labels.iter().find(|l| l.id == label).expect("an edited label");
-        self.label_window = Some(LabelDraft { step, ..LabelDraft::edit(id, label) });
+        self.children.push(id, Win::Label(LabelDraft { step, ..LabelDraft::edit(id, label) }));
         drop(st);
         open.chain(operation::focus(if step == LabelStep::Details { "label-title" } else { "label-search" }))
     }
 
     pub(crate) fn label_edit(&mut self, edit: LabelEdit) -> Task<UiMessage> {
-        let d = self.label_window.as_mut().expect("the label window is open");
+        let d = self.children.get_mut::<LabelDraft>().expect("the label window is open");
         match edit {
             LabelEdit::Name(name) => d.name = name,
             LabelEdit::Search(search) => d.search = search,
@@ -1128,13 +1127,13 @@ impl BeeperGuiApp {
 
     /// Whether a confirmation dialog shows in the window: the confirmation of the app, or Discard poll.
     pub(crate) fn asking(&self, id: window::Id) -> bool {
-        self.asking_in() == Some(id) || self.poll_windows.iter().any(|d| d.id == id && d.discarding)
+        self.asking_in() == Some(id) || self.children.all::<PollDraft>().any(|d| d.id == id && d.discarding)
     }
 
     /// Desktop's `editGroup(thread, "personal")`.
     pub(crate) fn open_edit_for_me(&mut self, chat: String) -> Task<UiMessage> {
         self.list.chat_menu = None;
-        if let Some(d) = &self.group_window {
+        if let Some(d) = self.children.get::<GroupDraft>() {
             return self.raise(d.id);
         }
         let (id, open) = self.open_child(PERSONAL_SIZE, false);
@@ -1144,13 +1143,16 @@ impl BeeperGuiApp {
         drop(st);
         let topic = text_editor::Content::new();
         let personal = true;
-        self.group_window = Some(beeper_core::with_defaults!(GroupDraft {
+        self.children.push(
+            id,
+            Win::Group(beeper_core::with_defaults!(GroupDraft {
             id,
             chat,
             title,
             topic,
             personal,
-        }, default: photo, hover, saving, dropping));
+        }, default: photo, hover, saving, dropping)),
+        );
         open.chain(operation::focus(PERSONAL_INPUT)).chain(operation::select_all(PERSONAL_INPUT))
     }
 
@@ -1176,7 +1178,7 @@ impl BeeperGuiApp {
                 return Task::perform(pick, |r| UiMessage::Group(GroupEdit::Picked(r)));
             }
             GroupEdit::Dropped(path) => {
-                let d = self.group_window.as_ref().expect("the Edit Group window is open");
+                let d = self.children.get::<GroupDraft>().expect("the Edit Group window is open");
                 let st = self.store.read();
                 let edits = d.personal || st.chats[st.resolve_chat_idx(&d.chat).expect("an edited group")].edits & 2 != 0;
                 drop(st);
@@ -1188,13 +1190,13 @@ impl BeeperGuiApp {
                 return Task::perform(portal::load_off_thread(path), move |r| UiMessage::Group(GroupEdit::Loaded(url.clone(), r)));
             }
             GroupEdit::Picked(Err(e)) | GroupEdit::Loaded(_, Err(e)) => self.fail(Toast::new(e)),
-            GroupEdit::Loaded(url, Ok(m)) => match (round_avatar(&m.bytes), self.group_window.as_mut()) {
+            GroupEdit::Loaded(url, Ok(m)) => match (round_avatar(&m.bytes), self.children.get_mut::<GroupDraft>()) {
                 (Ok(h), Some(d)) => d.photo = Some(Some((url, m, h))),
                 (Ok(_), None) => {}
                 (Err(_), _) => self.fail(Toast::new(tr("Failed to upload image").into())),
             },
             GroupEdit::Saved(r) => {
-                let Some(d) = self.group_window.as_mut() else { return Task::none() };
+                let Some(d) = self.children.get_mut::<GroupDraft>() else { return Task::none() };
                 d.saving = false;
                 if let Err(e) = r {
                     eprintln!("Could not update the group: {e}");
@@ -1212,9 +1214,9 @@ impl BeeperGuiApp {
                 self.store.write().apply_group(&chat, title.as_deref(), topic.as_deref(), avatar);
                 return self.close_window(id);
             }
-            GroupEdit::Cancel => return self.close_window(self.group_window.as_ref().expect("the Edit Group window is open").id),
+            GroupEdit::Cancel => return self.close_window(self.children.get::<GroupDraft>().expect("the Edit Group window is open").id),
             GroupEdit::Save => {
-                let d = self.group_window.as_mut().expect("the Edit Group window is open");
+                let d = self.children.get_mut::<GroupDraft>().expect("the Edit Group window is open");
                 let (title, topic, photo) = d.changes(&self.store.read());
                 if title.is_none() && topic.is_none() && !photo {
                     return Task::none();
@@ -1253,7 +1255,7 @@ impl BeeperGuiApp {
                 return self.close_window(id);
             }
             edit => {
-                let d = self.group_window.as_mut().expect("the Edit Group window is open");
+                let d = self.children.get_mut::<GroupDraft>().expect("the Edit Group window is open");
                 match edit {
                     GroupEdit::Title(t) if d.personal => d.title = t.chars().take(PERSONAL_NAME_MAX).collect(),
                     GroupEdit::Title(t) => d.title = t,
@@ -1452,12 +1454,11 @@ impl BeeperGuiApp {
 
     /// An edit in the New Poll window `id`.
     pub(crate) fn poll_edit(&mut self, id: window::Id, edit: PollEdit) -> Task<UiMessage> {
-        let i = self.poll_windows.iter().position(|d| d.id == id).expect("the poll window is open");
         let st = self.store.read();
-        let rules = st.resolve_chat_idx(&self.poll_windows[i].chat).and_then(|c| st.chats[c].polls);
+        let d = self.children.all_mut::<PollDraft>().find(|d| d.id == id).expect("the poll window is open");
+        let rules = st.resolve_chat_idx(&d.chat).and_then(|c| st.chats[c].polls);
         drop(st);
         let Some(rules) = rules else { return self.close_window(id) };
-        let d = &mut self.poll_windows[i];
         let n = d.options.len();
         match edit {
             PollEdit::Question(q) => d.question = q,
@@ -1500,7 +1501,7 @@ impl BeeperGuiApp {
             PollEdit::Multiple(on) => d.multiple = on,
             PollEdit::Hidden(on) => d.hidden = on,
             PollEdit::Send if d.ready(rules) => {
-                let d = self.poll_windows.remove(i);
+                let Some(Win::Poll(d)) = self.children.remove(id) else { unreachable!("the poll window is open") };
                 let answers = d.answers();
                 self.store.write().send_poll(&d.chat, d.question.trim().into(), answers, d.multiple, d.hidden);
                 return self.close_window(id);

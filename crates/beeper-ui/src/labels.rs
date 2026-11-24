@@ -38,12 +38,8 @@ impl BeeperGuiApp {
             Msg::Switch(label, chat, add) => self.toggle_label(label, vec![chat], add, false),
             Msg::OpenEdit(chat) => {
                 self.list.chat_menu = None;
-                if let Some(&(id, _)) = self.labels_windows.iter().find(|w| w.1 == chat) {
-                    return self.raise(id);
-                }
-                let (id, open) = self.open_child(Size::new(303.0, 488.0), true);
-                self.labels_windows.push((id, chat));
-                return open;
+                let open = |app: &mut Self| app.open_child(Size::new(303.0, 488.0), true);
+                return self.open_once(|w| matches!(w, Win::Labels(c) if *c == chat), open, |_| Win::Labels(chat.clone()));
             }
             Msg::RestoreDeleted(l, order) => {
                 let mut st = self.store.write();
@@ -65,7 +61,7 @@ impl BeeperGuiApp {
             }
             Msg::OpenCreate(chats) => {
                 self.list.chat_menu = None;
-                if let Some(d) = &self.label_window {
+                if let Some(d) = self.children.get::<LabelDraft>() {
                     return self.raise(d.id);
                 }
                 let intro = !self.store.read().settings.labels_intro_seen;
@@ -74,7 +70,7 @@ impl BeeperGuiApp {
                 }
                 let (id, open) = self.open_sheet(LABEL_SETTINGS_SIZE);
                 let step = if intro { LabelStep::Intro } else { LabelStep::Pick };
-                self.label_window = Some(LabelDraft { chats, step, ..LabelDraft::new(id) });
+                self.children.push(id, Win::Label(LabelDraft { chats, step, ..LabelDraft::new(id) }));
                 return if intro { open } else { open.chain(operation::focus("label-search")) };
             }
             Msg::Edit(label) => return self.open_label_sheet(label, LabelStep::Details),
@@ -103,15 +99,12 @@ impl BeeperGuiApp {
             Msg::OpenSettings(label) => {
                 self.list.chat_menu = None;
                 let label = self.label_id(label);
-                if let Some(w) = self.label_settings.iter().find(|w| w.label == label) {
-                    return self.raise(w.id);
-                }
-                let (id, open) = self.open_sheet(LABEL_SETTINGS_SIZE);
-                self.label_settings.push(LabelSettings { id, label, menu: false });
-                return open;
+                let open = |app: &mut Self| app.open_sheet(LABEL_SETTINGS_SIZE);
+                let is = |w: &Win| matches!(w, Win::LabelSettings(s) if s.label == label);
+                return self.open_once(is, open, |id| Win::LabelSettings(LabelSettings { id, label: label.clone(), menu: false }));
             }
             Msg::Pane(id, e) => {
-                let w = self.label_settings.iter_mut().find(|w| w.id == id).expect("an open Label Settings window");
+                let w = self.children.all_mut::<LabelSettings>().find(|w| w.id == id).expect("an open Label Settings window");
                 match e {
                     LabelPane::Menu(open) => w.menu = open,
                     LabelPane::Delete => {
@@ -131,13 +124,13 @@ impl BeeperGuiApp {
                 drop(st);
                 let (what, text) = (format!("Delete label \"{}\"", label.name), format!("Deleted \"{}\"", label.name));
                 self.act(what, UiMessage::Labels(Msg::RestoreDeleted(Box::new(label), order)), Some((text, None)));
-                if let Some(d) = self.spaces_window.as_mut() {
+                if let Some(d) = self.children.get_mut::<SpacesDraft>() {
                     d.order.retain(|o| *o != format!("label:{id}"));
                 }
                 if self.list().selected_account_filter.as_deref() == Some(&format!("label:{id}")) {
                     self.list.selected_account_filter = None;
                 }
-                let shown = self.label_settings.iter().filter(|w| w.label == id);
+                let shown = self.children.all::<LabelSettings>().filter(|w| w.label == id);
                 return Task::batch(shown.map(|w| self.close_window(w.id)).collect::<Vec<_>>());
             }
             Msg::Change(edit) => return self.label_edit(edit),

@@ -3,7 +3,6 @@
 use crate::i18n::{tr, trx};
 use crate::login::field;
 use crate::prelude::*;
-use crate::wins::Win;
 use iced::widget::{column, operation};
 use iced::window;
 

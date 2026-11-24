@@ -208,12 +208,12 @@ impl BeeperGuiApp {
             // `Oft`'s `onDragEnd` moves the space in the whole order, then saves it like a drop of the mouse, and
             // focuses the window when the order changed.
             List::Spaces => {
-                let Some(d) = self.spaces_window.as_mut().filter(|d| d.id == s.window) else { return self.settle() };
+                let Some(d) = self.children.get_mut::<SpacesDraft>().filter(|d| d.id == s.window) else { return self.settle() };
                 let Some(order) = s.moved(&d.order) else { return self.settle() };
                 let before = std::mem::replace(&mut d.order, order);
                 d.drag = Some((s.id.clone(), before.clone()));
                 let task = self.spaces_edit(SpacesEdit::Drop);
-                if self.spaces_window.as_ref().is_some_and(|d| d.order != before) {
+                if self.children.get::<SpacesDraft>().is_some_and(|d| d.order != before) {
                     self.key_targets.remove(&s.window);
                 }
                 task
@@ -349,7 +349,7 @@ mod tests {
         let mut app = demo_app("sort-spaces");
         let _ = app.update(UiMessage::OpenEditSpaces);
         let (sheet, before) = {
-            let d = app.spaces_window.as_ref().expect("the Edit Spaces window");
+            let d = app.children.get::<SpacesDraft>().expect("the Edit Spaces window");
             (d.id, d.order.clone())
         };
         let size = rail::SPACES_SIZE;
@@ -358,7 +358,7 @@ mod tests {
             stops.into_iter().filter(|s| s.starts_with("handle-")).collect()
         };
         let view = |app: &BeeperGuiApp, name: &str| {
-            rings(app.view_edit_spaces(app.spaces_window.as_ref().unwrap()), size, size.width as u32, name)
+            rings(app.view_edit_spaces(app.children.get::<SpacesDraft>().unwrap()), size, size.width as u32, name)
         };
         let first = format!("handle-{}", before[0]);
         focus(&mut app, sheet, &first);
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(handles(&app)[1], first, "the space shows below the next one");
         assert_eq!(view(&app, "lifted"), 0, "and its handle hides the ring");
         key(&mut app, sheet, Named::Escape);
-        assert_eq!(app.spaces_window.as_ref().unwrap().order, before, "Escape puts it back");
+        assert_eq!(app.children.get::<SpacesDraft>().unwrap().order, before, "Escape puts it back");
         assert_eq!(held(&app, sheet), Some(first.clone()), "with the focus on its handle");
         ask(&mut app, sheet, size, None, Ask::Press(true));
         key(&mut app, sheet, Named::ArrowDown);

@@ -300,12 +300,8 @@ impl BeeperGuiApp {
                 Err(e) => self.status_banner = e,
             },
             Msg::Open(chat) => {
-                if let Some(&(id, _)) = self.theme_windows.iter().find(|w| w.1 == chat) {
-                    return self.raise(id);
-                }
-                let (id, open) = self.open_child(Size::new(380.0, 620.0), false);
-                self.theme_windows.push((id, chat));
-                return open;
+                let open = |app: &mut Self| app.open_child(Size::new(380.0, 620.0), false);
+                return self.open_once(|w| matches!(w, Win::Theme(c) if *c == chat), open, |_| Win::Theme(chat.clone()));
             }
         }
         self.settle()

@@ -158,7 +158,6 @@ use units::human_size;
 use user_card::UserHover;
 use vcard::VCard;
 use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZE};
-use wins::Win;
 
 use crate::style::{brand_gray, ensure_fonts_loaded, initials, pick_menu_style, pick_style, AVATAR_GRADIENTS, SOLID_BARS};
 use beeper_core::cloud::KlipyGif;
@@ -3195,20 +3194,8 @@ pub struct BeeperGuiApp {
     pub settings_window: Option<window::Id>,
     settings_size: Size,
     pub login_window: Option<window::Id>,
-    /// Desktop's `ChatThemeBrowserWindow`s and their chats.
-    pub theme_windows: Vec<(window::Id, String)>,
-    pub labels_windows: Vec<(window::Id, String)>,
-    pub poll_windows: Vec<PollDraft>,
-    pub label_window: Option<LabelDraft>,
-    pub label_settings: Vec<LabelSettings>,
     /// The window that shows the open Delete Label confirm, like Desktop's modal in that window.
     pub delete_in: Option<window::Id>,
-    pub spaces_window: Option<SpacesDraft>,
-    /// Desktop's merged chat editor (`D3`).
-    pub merge_window: Option<merge_editor::MergeDraft>,
-    pub group_window: Option<GroupDraft>,
-    /// Desktop's Account Nickname windows, one for each account.
-    pub nickname_windows: Vec<nickname::NicknameDraft>,
     /// The child windows and what they show (see [`wins`]).
     pub(crate) children: wins::Children,
     pub add_accounts: Vec<add_account::AddAccount>,
@@ -3232,8 +3219,6 @@ pub struct BeeperGuiApp {
     pub info_query: String,
     /// The Notes of the open chat in the Chat Info panel.
     pub info_note: text_editor::Content,
-    /// The poll votes windows with their chats and poll messages.
-    pub vote_windows: Vec<(window::Id, String, String)>,
     /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
     shot: Option<window::Id>,
     pub login: Login,
@@ -3380,10 +3365,8 @@ impl BeeperGuiApp {
             relaunch_toast, key_banner_closed, toast, older_toasts, nudges, confetti, redacted, toast_dismissals, undo_stack, undo_note,
             pill_hover, sticky_banner, mobile_apps_toast, rail_float, sidebar_slide, dragging, rail_hover,
             header_hover, menu_bar, alt_alone, pin_hover, pin_drag, pin_slides, key_sort, user_hover, rail_drag,
-            rail_press, main_window, key_targets, swapped, settings_window, login_window, theme_windows,
-            labels_windows, label_settings, delete_in, poll_windows, label_window, group_window,
-            nickname_windows, add_accounts, info_desc, info_more, info_all, info_bookmarks, hydrating,
-            restoring_bookmarks, info_media, info_zoom, info_query, spaces_window, merge_window, vote_windows, shot,
+            rail_press, main_window, key_targets, swapped, settings_window, login_window, delete_in, add_accounts,
+            info_desc, info_more, info_all, info_bookmarks, hydrating, restoring_bookmarks, info_media, info_zoom, info_query, shot,
             verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, trial_over_chat, servers_loading, server_target, installed_packs, packs_off, pack_removing, resolving_media, needs_download,
             fetching, video, view_once, minimized, state_changes, last_click, cycling, timers);
         app.store.write().load_recent();
@@ -3659,31 +3642,7 @@ impl BeeperGuiApp {
             _ if Some(id) == self.settings_window => tr("Settings"),
             // Desktop's `Gyt` title, which it does not translate.
             _ if self.pip.as_ref().is_some_and(|p| p.0 == id) => "Picture in Picture",
-            _ if self.theme_windows.iter().any(|w| w.0 == id) => tr("Chat Theme"),
-            _ if self.labels_windows.iter().any(|w| w.0 == id) => tr("Edit Labels"),
-            _ if self.label_settings.iter().any(|w| w.id == id) => tr("Label Settings"),
-            _ if self.poll_windows.iter().any(|w| w.id == id) => tr("New Poll"),
-            _ if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) => match (d.label.is_some(), d.step) {
-                (false, _) => tr("New Label"),
-                (true, LabelStep::Details) => tr("Edit Label"),
-                (true, _) => tr("Chats"),
-            },
-            _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
-            // Desktop's `D3` titles, which it does not translate.
-            _ if let Some(d) = self.merge_window.as_ref().filter(|d| d.id == id) => match d.union {
-                Some(_) => "Edit merged chat",
-                None => "Merge Chats",
-            },
-            _ if self.nickname_windows.iter().any(|d| d.id == id) => tr("Account Nickname"),
-            _ if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) => {
-                return tr(if d.personal { "Edit Chat for Me" } else { "Edit Group" }).into();
-            }
             _ if let Some(title) = self.add_account_title(id) => return title,
-            _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
-                let st = self.store.read();
-                let total = st.loaded(mid).and_then(|m| m.poll.as_ref()).map_or(0, PollData::voters);
-                return trn("%d vote", "%d votes", total, &[&total]);
-            }
             _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => tr("Media"),
             _ if self.carousel_opener(id).is_some() => {
                 let pane = &self.chat_windows.iter().find(|w| w.0 == id).expect("an open carousel window").1;
@@ -4924,18 +4883,18 @@ impl BeeperGuiApp {
     fn handle_editors(&mut self, msg: UiMessage) -> Task<UiMessage> {
         match msg {
             UiMessage::OpenPollCreator(chat) => {
-                if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
-                    return self.raise(d.id);
+                if let Some(id) = self.children.find(|w| matches!(w, Win::Poll(d) if d.chat == chat)) {
+                    return self.raise(id);
                 }
                 let (id, open) = self.open_child(Size::new(400.0, 620.0), false);
                 let question = format!("poll-{chat}");
-                self.poll_windows.push(PollDraft::new(id, chat));
+                self.children.push(id, Win::Poll(PollDraft::new(id, chat)));
                 open.chain(operation::focus(question))
             }
             UiMessage::Poll(id, edit) => self.poll_edit(id, edit),
             UiMessage::OpenEditSpaces => {
                 self.list.chat_menu = None;
-                if let Some(d) = &self.spaces_window {
+                if let Some(d) = self.children.get::<SpacesDraft>() {
                     return self.raise(d.id);
                 }
                 let (id, open) = self.open_child(SPACES_SIZE, true);
@@ -4943,13 +4902,14 @@ impl BeeperGuiApp {
                 let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
                 let order = order.collect();
                 drop(st);
-                self.spaces_window = Some(SpacesDraft { id, order, search: String::new(), drag: None, menu: None, scrolled: false });
+                self.children
+                    .push(id, Win::Spaces(SpacesDraft { id, order, search: String::new(), drag: None, menu: None, scrolled: false }));
                 open
             }
             UiMessage::Spaces(e) => self.spaces_edit(e),
             UiMessage::OpenEditGroup(chat) => {
                 self.list.chat_menu = None;
-                if let Some(d) = &self.group_window {
+                if let Some(d) = self.children.get::<GroupDraft>() {
                     return self.raise(d.id);
                 }
                 let (id, open) = self.open_child(GROUP_SIZE, false);
@@ -4957,12 +4917,15 @@ impl BeeperGuiApp {
                 let c = &st.chats[st.resolve_chat_idx(&chat).expect("an edited group")];
                 let (title, topic) = (c.room_title().to_string(), composer_with(c.description.as_deref().unwrap_or_default()));
                 drop(st);
-                self.group_window = Some(with_defaults!(GroupDraft {
+                self.children.push(
+                    id,
+                    Win::Group(with_defaults!(GroupDraft {
                     id,
                     chat,
                     title,
                     topic,
-                }, default: photo, hover, personal, saving, dropping));
+                }, default: photo, hover, personal, saving, dropping)),
+                );
                 open
             }
             UiMessage::OpenEditForMe(chat) => self.open_edit_for_me(chat),
@@ -5151,7 +5114,7 @@ impl BeeperGuiApp {
             iced::event::listen_with(|e, _, _| Some(UiMessage::Rail(drag_event(&e)?.map_or(rail::Msg::DragEnd, rail::Msg::DragMoved))))
         });
         let poll_drag =
-            self.poll_windows.iter().any(|d| d.dragging.is_some()).then(|| {
+            self.children.all::<PollDraft>().any(|d| d.dragging.is_some()).then(|| {
                 iced::event::listen_with(|e, _, id| drag_event(&e)?.is_none().then_some(UiMessage::Poll(id, PollEdit::Grab(None))))
             });
         let time_drag = self.time_edit.drag.is_some().then(|| {
@@ -5243,10 +5206,10 @@ impl BeeperGuiApp {
             || (self.login_window.is_some() && (self.login.busy || self.login.animated()))
             || self.reauth.busy
             || self.enter_key.busy
-            || self.nickname_windows.iter().any(|d| d.saving)
+            || self.children.all::<nickname::NicknameDraft>().any(|d| d.saving)
             || !self.pressing.is_empty()
             || !self.fetching.is_empty()
-            || self.group_window.as_ref().is_some_and(|d| d.saving)
+            || self.children.get::<GroupDraft>().is_some_and(|d| d.saving)
             || self.hover_fading()
             || self.nudges.shaking()
             || self.confetti.is_some()
@@ -5311,26 +5274,6 @@ impl BeeperGuiApp {
             self.view_child(id, w)
         } else if let Some(a) = self.add_accounts.iter().find(|a| a.id == id) {
             self.view_add_account(a)
-        } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {
-            self.view_chat_theme(chat)
-        } else if let Some((_, chat)) = self.labels_windows.iter().find(|w| w.0 == id) {
-            self.view_edit_labels(chat)
-        } else if let Some(d) = self.poll_windows.iter().find(|w| w.id == id) {
-            self.view_poll_creator(d)
-        } else if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) {
-            self.view_create_label(d)
-        } else if let Some(w) = self.label_settings.iter().find(|w| w.id == id) {
-            self.view_label_settings(w)
-        } else if let Some(d) = self.merge_window.as_ref().filter(|d| d.id == id) {
-            self.view_merge_editor(d)
-        } else if let Some(d) = self.spaces_window.as_ref().filter(|d| d.id == id) {
-            self.view_edit_spaces(d)
-        } else if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) {
-            self.view_edit_group(d)
-        } else if let Some(d) = self.nickname_windows.iter().find(|d| d.id == id) {
-            self.view_nickname(d)
-        } else if let Some((_, chat, mid)) = self.vote_windows.iter().find(|w| w.0 == id) {
-            self.view_poll_votes(chat, mid)
         } else if self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none())
             && !self.is_space_window(id)
             && self.carousel_opener(id).is_none()

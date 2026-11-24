@@ -651,7 +651,7 @@ pub(crate) mod tests {
         let mut app = demo_app("focus-nickname");
         let account = app.store.read().bridge_accounts[0].account_id.clone();
         let _ = app.update(UiMessage::Nickname(Nick::Open(account.clone())));
-        let id = app.nickname_windows[0].id;
+        let id = app.children.get::<crate::nickname::NicknameDraft>().unwrap().id;
         let field = Some("account-nickname");
         let survey = survey_of(&app, id, NICKNAME_SIZE, None);
         assert_eq!(ids(&survey), ["account-nickname", "cancel", "save"], "the field, Cancel and Save");
@@ -665,7 +665,7 @@ pub(crate) mod tests {
         assert_eq!(held(&app, id).as_deref(), Some("save"), "Shift+Tab goes back");
         // The buttons are 28 px high, 8 + 10 px above the bottom: their rings run along the row 2 px above them.
         let rings = |app: &BeeperGuiApp, name: &str| {
-            let shot = shot(app.view_nickname(&app.nickname_windows[0]), NICKNAME_SIZE, name);
+            let shot = shot(app.view_nickname(app.children.get::<crate::nickname::NicknameDraft>().unwrap()), NICKNAME_SIZE, name);
             let (w, h) = (NICKNAME_SIZE.width as u32, NICKNAME_SIZE.height as u32);
             let k = shot.width() / w;
             let ring = |x: u32| shot.get_pixel(x * k, (h - 18 - 28 - 2) * k).0 == [0x0d, 0x4f, 0xfb, 255];
@@ -906,14 +906,14 @@ pub(crate) mod tests {
         use crate::dialogs::{LabelEdit, LabelStep};
         let mut app = demo_app("focus-grid");
         let _ = app.update(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())));
-        let d = app.label_window.as_mut().expect("the New Label window");
+        let d = app.children.get_mut::<LabelDraft>().expect("the New Label window");
         (d.step, d.name) = (LabelStep::Details, "Work".into());
         let (id, size) = (d.id, LABEL_SETTINGS_SIZE);
         let order = ids(&survey_of(&app, id, size, None));
         assert_eq!(order[..2], ["label-title", "grid"], "the name, then the grid: {order:?}");
         ask(&mut app, id, size, Some("label-title"), Ask::Tab(false));
         assert_eq!(held(&app, id).as_deref(), Some("grid"));
-        let cell = |app: &BeeperGuiApp| app.label_window.as_ref().unwrap().cell;
+        let cell = |app: &BeeperGuiApp| app.children.get::<LabelDraft>().unwrap().cell;
         assert_eq!(cell(&app), None, "the grid starts without a cell");
         for (k, at) in [(Named::ArrowRight, 0), (Named::ArrowRight, 1), (Named::ArrowLeft, 0), (Named::ArrowUp, 0)] {
             ask(&mut app, id, size, None, Ask::Arrow(k));
@@ -923,7 +923,7 @@ pub(crate) mod tests {
         let below = cell(&app).expect("a cell");
         assert!(below > 1, "↓ goes to the next row");
         ask(&mut app, id, size, None, Ask::Press(true));
-        let d = app.label_window.as_ref().unwrap();
+        let d = app.children.get::<LabelDraft>().unwrap();
         assert!(d.color.is_some() || d.icon.is_some(), "Enter picks the cell");
         let _ = app.update(UiMessage::Labels(labels::Msg::Change(LabelEdit::Grid(None))));
         assert_eq!(cell(&app), None);
@@ -936,7 +936,7 @@ pub(crate) mod tests {
         use crate::dialogs::LabelStep;
         let mut app = demo_app("grid-pick");
         let _ = app.update(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())));
-        let d = app.label_window.as_mut().expect("the New Label window");
+        let d = app.children.get_mut::<LabelDraft>().expect("the New Label window");
         (d.step, d.color) = (LabelStep::Details, Some(0));
         let (id, size) = (d.id, LABEL_SETTINGS_SIZE);
         let shot = shot(app.view(id), size, "grid-pick");
@@ -968,7 +968,7 @@ pub(crate) mod tests {
         let mut app = demo_app("focus-sheets");
         let chat = app.store.read().chats.iter().find(|c| c.polls.is_some()).expect("a chat with polls").id.clone();
         let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
-        let (poll, size) = (app.poll_windows[0].id, Size::new(400.0, 620.0));
+        let (poll, size) = (app.children.get::<PollDraft>().unwrap().id, Size::new(400.0, 620.0));
         let order = ids(&survey_of(&app, poll, size, None));
         let question = format!("poll-{chat}");
         assert_eq!(order[0], question, "the question first: {order:?}");
@@ -980,13 +980,13 @@ pub(crate) mod tests {
         }
         assert_eq!(ids(&survey_of(&app, poll, size, None)).last().map(String::as_str), Some("send"), "Send works");
         app.key_targets.insert(poll, iced::widget::Id::from("send".to_string()));
-        let shot = shot(app.view_poll_creator(&app.poll_windows[0]), size, "poll-send");
+        let shot = shot(app.view_poll_creator(app.children.get::<PollDraft>().unwrap()), size, "poll-send");
         let k = shot.width() / 400;
         // Send is 40 px high, 8 + 14 px above the bottom; its ring is 2 px wide, 2 px above it.
         let ring = (0..400).filter(|&x| shot.get_pixel(x * k, (620 - 22 - 40 - 3) * k).0[..3] == [0x0d, 0x4f, 0xfb]);
         assert!(ring.count() > 100, "Send draws the ring");
         let _ = app.update(UiMessage::OpenEditSpaces);
-        let spaces = app.spaces_window.as_ref().expect("the Edit Spaces window").id;
+        let spaces = app.children.get::<SpacesDraft>().expect("the Edit Spaces window").id;
         let order = ids(&survey_of(&app, spaces, rail::SPACES_SIZE, None));
         assert_eq!(order[..2], ["spaces-search", "handle-inbox"], "the search, then the handles: {order:?}");
         assert!(order.iter().any(|s| s.starts_with("gear-")), "the menus of the accounts: {order:?}");

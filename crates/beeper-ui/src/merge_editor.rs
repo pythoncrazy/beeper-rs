@@ -108,7 +108,7 @@ impl BeeperGuiApp {
     pub(crate) fn open_merge(&mut self, union: Option<String>, chats: Vec<String>) -> Task<UiMessage> {
         self.list.chat_menu = None;
         self.show_command_palette = false;
-        if let Some(d) = &self.merge_window {
+        if let Some(d) = self.children.get::<MergeDraft>() {
             return self.raise(d.id);
         }
         let st = self.store.read();
@@ -133,19 +133,22 @@ impl BeeperGuiApp {
         let (id, open) = self.open_child(MERGE_SIZE, true);
         let step = if intro { MergeStep::Intro } else { MergeStep::Pick };
         let titled = union.is_some();
-        self.merge_window = Some(MergeDraft {
+        self.children.push(
             id,
-            union,
-            step,
-            search: String::new(),
-            chats,
-            title,
-            titled,
-            photo,
-            default,
-            default_menu: false,
-            saving: false,
-        });
+            Win::Merge(MergeDraft {
+                id,
+                union,
+                step,
+                search: String::new(),
+                chats,
+                title,
+                titled,
+                photo,
+                default,
+                default_menu: false,
+                saving: false,
+            }),
+        );
         if intro {
             open
         } else {
@@ -156,7 +159,7 @@ impl BeeperGuiApp {
     pub(crate) fn merge_edit(&mut self, edit: MergeEdit) -> Task<UiMessage> {
         let can = self.store.read().can_create_union();
         let st = self.store.read();
-        let d = self.merge_window.as_mut().expect("the merged chat editor is open");
+        let d = self.children.get_mut::<MergeDraft>().expect("the merged chat editor is open");
         let title_of = |id: &str| st.find_chat(id).map(|c| c.title.clone()).unwrap_or_default();
         match edit {
             MergeEdit::Start => {
@@ -211,7 +214,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `Mt`: creates the merged chat and opens it with a toast, or saves the edited one.
     fn submit_merge(&mut self) -> Task<UiMessage> {
-        let d = self.merge_window.as_mut().expect("the merged chat editor is open");
+        let d = self.children.get_mut::<MergeDraft>().expect("the merged chat editor is open");
         d.saving = true;
         let (window, title, chats, default) = (d.id, d.title.trim().to_string(), d.chats.clone(), d.default.clone());
         let (union, photo) = (d.union.clone(), d.photo.clone());
@@ -516,7 +519,7 @@ mod tests {
     }
 
     fn view(app: &BeeperGuiApp) -> Simulator<'_, UiMessage> {
-        simulator(app.view_merge_editor(app.merge_window.as_ref().expect("the editor is open")))
+        simulator(app.view_merge_editor(app.children.get::<MergeDraft>().expect("the editor is open")))
     }
 
     /// Desktop's Merge Chats: the intro the first time, then the chats to merge, then the name and the default chat.
@@ -525,7 +528,7 @@ mod tests {
     fn merge_chats_creates_a_merged_chat_like_desktop() {
         let mut app = demo_app("merge-editor-create");
         let _ = app.update(UiMessage::Merged(merged::Msg::Open(None, Vec::new())));
-        assert_eq!(app.merge_window.as_ref().map(|d| d.step), Some(MergeStep::Intro), "the intro shows the first time");
+        assert_eq!(app.children.get::<MergeDraft>().map(|d| d.step), Some(MergeStep::Intro), "the intro shows the first time");
         {
             let mut sim = view(&app);
             let headline = "View chats with the same contacts, across different accounts, as one conversation.";
@@ -536,10 +539,10 @@ mod tests {
         edit(&mut app, MergeEdit::Toggle(KAI.into()));
         assert!(view(&app).find("Merge 1 Chat").is_ok());
         edit(&mut app, MergeEdit::Continue);
-        assert_eq!(app.merge_window.as_ref().map(|d| d.step), Some(MergeStep::Pick), "Continue takes two chats");
+        assert_eq!(app.children.get::<MergeDraft>().map(|d| d.step), Some(MergeStep::Pick), "Continue takes two chats");
         edit(&mut app, MergeEdit::Toggle(LENA.into()));
         edit(&mut app, MergeEdit::Continue);
-        let d = app.merge_window.as_ref().unwrap();
+        let d = app.children.get::<MergeDraft>().unwrap();
         assert_eq!((d.step, d.title.as_str(), d.default.as_deref()), (MergeStep::Details, "Kai Nakamura", Some(KAI)));
         {
             let mut sim = view(&app);
@@ -603,7 +606,7 @@ mod tests {
             assert!(sim.into_messages().any(|m| opens(&m)), "Manage opens its menu");
         }
         let _ = app.update(UiMessage::Merged(merged::Msg::Open(Some(id.clone()), Vec::new())));
-        let d = app.merge_window.as_ref().unwrap();
+        let d = app.children.get::<MergeDraft>().unwrap();
         assert_eq!((d.step, d.chats.len(), d.title.as_str()), (MergeStep::Pick, 2, "Friends"), "an edit skips the intro");
         assert!(view(&app).find("Merged Chats").is_ok());
         edit(&mut app, MergeEdit::Toggle(LENA.into()));

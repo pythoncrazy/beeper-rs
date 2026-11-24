@@ -131,7 +131,7 @@ impl BeeperGuiApp {
                 eprintln!("tray icon failed: {e}");
                 return self.set_hidden(false);
             }
-            Msg::CloseRequested(id) if self.poll_windows.iter().any(|w| w.id == id) => {
+            Msg::CloseRequested(id) if self.children.all::<PollDraft>().any(|w| w.id == id) => {
                 return self.poll_edit(id, PollEdit::Close);
             }
             // Desktop hides the main window on close, with or without the tray: a later launch shows it again.
@@ -236,19 +236,9 @@ impl BeeperGuiApp {
                 if self.pip.take_if(|p| p.0 == id).is_some() {
                     (self.video, self.pip_manual, self.pip_menu) = (None, false, None);
                 }
-                self.theme_windows.retain(|w| w.0 != id);
-                self.labels_windows.retain(|w| w.0 != id);
-                self.poll_windows.retain(|w| w.id != id);
-                self.vote_windows.retain(|w| w.0 != id);
-                self.label_window = self.label_window.take().filter(|d| d.id != id);
                 if self.label_asking(id) {
                     self.confirm = None;
                 }
-                self.label_settings.retain(|w| w.id != id);
-                self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
-                self.merge_window = self.merge_window.take().filter(|d| d.id != id);
-                self.group_window = self.group_window.take().filter(|d| d.id != id);
-                self.nickname_windows.retain(|d| d.id != id);
                 self.child_closed(id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
@@ -680,8 +670,9 @@ impl BeeperGuiApp {
 
     /// The open sheets that follow the zoom (`followsZoom`), with their sizes at 100%.
     pub(crate) fn zoomed_sheets(&self) -> Vec<(window::Id, Size)> {
-        let draft = self.label_window.as_ref().map(|d| (d.id, if d.label.is_some() { LABEL_SHEET_SIZE } else { LABEL_SETTINGS_SIZE }));
-        let settings = self.label_settings.iter().map(|w| (w.id, LABEL_SETTINGS_SIZE));
+        let draft =
+            self.children.get::<LabelDraft>().map(|d| (d.id, if d.label.is_some() { LABEL_SHEET_SIZE } else { LABEL_SETTINGS_SIZE }));
+        let settings = self.children.all::<LabelSettings>().map(|w| (w.id, LABEL_SETTINGS_SIZE));
         let how = self.children.find(|w| matches!(w, Win::How)).map(|id| (id, behavior::HOW_SIZE));
         draft.into_iter().chain(settings).chain(how).collect()
     }
@@ -771,17 +762,11 @@ impl BeeperGuiApp {
 
     /// The windows besides the main window, Desktop's `subWindows`.
     pub(crate) fn sub_windows(&self) -> Vec<window::Id> {
-        let merge = self.merge_window.as_ref().map(|d| d.id);
-        let drafts = [self.label_window.as_ref().map(|d| d.id), self.spaces_window.as_ref().map(|d| d.id), merge];
-        let singles = [self.settings_window, self.media_window.as_ref().map(|w| w.id)].into_iter().chain(drafts);
-        let lists = self.chat_windows.iter().map(|w| w.0).chain(self.theme_windows.iter().map(|w| w.0));
-        let lists = lists.chain(self.labels_windows.iter().map(|w| w.0)).chain(self.vote_windows.iter().map(|w| w.0));
-        let group = self.group_window.as_ref().map(|d| d.id);
-        let lists = lists.chain(self.poll_windows.iter().map(|w| w.id)).chain(self.add_accounts.iter().map(|a| a.id));
-        let lists = lists.chain(self.nickname_windows.iter().map(|d| d.id));
-        // The verification, sign-in code and Recovery Key modals do not hide with the app.
-        let children = self.children.iter().filter(|w| !matches!(w.1, Win::Verify | Win::Reauth | Win::EnterKey)).map(|w| w.0);
-        singles.chain([group]).flatten().chain(lists).chain(children).collect()
+        let singles = [self.settings_window, self.media_window.as_ref().map(|w| w.id)].into_iter().flatten();
+        let lists = self.chat_windows.iter().map(|w| w.0).chain(self.add_accounts.iter().map(|a| a.id));
+        // The verification, sign-in code and Recovery Key modals and Label Settings do not hide with the app.
+        let kept = |w: &&(window::Id, Win)| !matches!(w.1, Win::Verify | Win::Reauth | Win::EnterKey | Win::LabelSettings(_));
+        singles.chain(lists).chain(self.children.iter().filter(kept).map(|w| w.0)).collect()
     }
 
     /// Desktop's `hideToTray` (`Du`), which hides the sub-windows and then the main window, and `showWindow`, which

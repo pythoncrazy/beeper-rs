@@ -344,7 +344,6 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wins::Win;
 
     #[test]
     fn links_parse_like_desktop() {

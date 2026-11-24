@@ -53,16 +53,16 @@ impl BeeperGuiApp {
         match msg {
             Msg::Open(account) => {
                 self.list.chat_menu = None;
-                if let Some(d) = self.nickname_windows.iter().find(|d| d.account == account) {
-                    return self.raise(d.id);
+                if let Some(id) = self.children.find(|w| matches!(w, Win::Nickname(d) if d.account == account)) {
+                    return self.raise(id);
                 }
                 let (id, open) = self.open_child(NICKNAME_SIZE, false);
                 let name = self.store.read().custom_name(&account).unwrap_or_default().to_string();
-                self.nickname_windows.push(NicknameDraft { id, account, name, saving: false, error: None });
+                self.children.push(id, Win::Nickname(NicknameDraft { id, account, name, saving: false, error: None }));
                 return open.chain(operation::focus(NICKNAME_INPUT)).chain(operation::select_all(NICKNAME_INPUT));
             }
             Msg::Name(id, name) => {
-                if let Some(d) = self.nickname_windows.iter_mut().find(|d| d.id == id) {
+                if let Some(d) = self.children.all_mut::<NicknameDraft>().find(|d| d.id == id) {
                     d.name = name;
                 }
             }
@@ -70,14 +70,14 @@ impl BeeperGuiApp {
             Msg::Save(id) => return self.save_nickname(id),
             Msg::Saved(id, Ok(())) => return self.close_window(id),
             Msg::Saved(id, Err(e)) => {
-                let Some(d) = self.nickname_windows.iter_mut().find(|d| d.id == id) else { return Task::none() };
+                let Some(d) = self.children.all_mut::<NicknameDraft>().find(|d| d.id == id) else { return Task::none() };
                 let text = trf("Something went wrong: %s", &[&e]);
                 (d.saving, d.error) = (false, Some(text.clone()));
                 let wait = async { tokio::time::sleep(ERROR_TOAST).await };
                 return Task::perform(wait, move |_| UiMessage::Nickname(Msg::HideError(id, text.clone())));
             }
             Msg::HideError(id, text) => {
-                if let Some(d) = self.nickname_windows.iter_mut().find(|d| d.id == id) {
+                if let Some(d) = self.children.all_mut::<NicknameDraft>().find(|d| d.id == id) {
                     d.error = d.error.take().filter(|e| *e != text);
                 }
             }
@@ -88,7 +88,7 @@ impl BeeperGuiApp {
     /// Desktop's `onSubmit` of `RenameAccount`: an unchanged name closes the window. Otherwise the window waits for
     /// `setBridgeAccountName` and closes, or shows the error. The demo keeps the name on this device.
     fn save_nickname(&mut self, id: window::Id) -> Task<UiMessage> {
-        let Some(d) = self.nickname_windows.iter_mut().find(|d| d.id == id) else { return Task::none() };
+        let Some(d) = self.children.all_mut::<NicknameDraft>().find(|d| d.id == id) else { return Task::none() };
         {
             let mut st = self.store.write();
             let Some(b) = st.bridge_accounts.iter().find(|b| b.account_id == d.account) else { return Task::none() };

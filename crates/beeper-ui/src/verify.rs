@@ -3,7 +3,6 @@
 use crate::i18n::{tr, trn_named, trx};
 use crate::login::{art, brand_gradient, Screen, H3};
 use crate::prelude::*;
-use crate::wins::Win;
 use iced::widget::column;
 use iced::{border, window};
 
