@@ -2669,6 +2669,8 @@ pub struct Pane {
     pub stash: Option<Stash>,
     /// The composer changed after the last save of the draft. Desktop saves it at most every 5 seconds.
     pub draft_due: bool,
+    /// The draft of the open chat when it opened, which the chat list shows (see `listed_draft`).
+    pub listed_draft: Option<String>,
     /// Desktop's `ScrollToBottom`: whether you scrolled up from the bottom of the timeline, and since when.
     pub scrolled_up: Option<(bool, std::time::Instant)>,
     /// Desktop's `preventAutoMarkAsRead`: a "Mark as Unread" from a message keeps the open chat unread until you
@@ -3872,6 +3874,7 @@ impl BeeperGuiApp {
             st.mark_read(idx, false);
         }
         let chat = st.chats[idx].clone();
+        self.pane.listed_draft = chat_list::draft_line(&chat);
         let draft = chat.draft.clone().unwrap_or_default();
         self.pane.emoticons.clear();
         let text = composer::stored_text(&mut self.pane, draft.text.as_deref().unwrap_or_default());

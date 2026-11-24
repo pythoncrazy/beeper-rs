@@ -525,6 +525,11 @@ pub(crate) fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
     }
 }
 
+/// Desktop's `pot`: the text of the draft of a chat on one line.
+pub(crate) fn draft_line(c: &Chat) -> Option<String> {
+    c.draft.as_ref()?.text.as_deref().map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 /// Desktop's `getReadIcon` of a chat list preview: an own message shows its send state, but an own reaction does not,
 /// nor an action like "You left the chat" (`isAction`).
 pub(crate) fn read_icon(m: &Message) -> bool {
@@ -1649,12 +1654,18 @@ impl BeeperGuiApp {
         badged(face, brand, l.av, if l.compact { 12.0 } else { 16.0 }, (!l.colorize).then_some(p), ring)
     }
 
+    /// The draft that the row of a chat shows: Desktop's `rce` keeps that of the open chat as it was when it opened.
+    pub(crate) fn listed_draft(&self, c: &Chat) -> Option<String> {
+        let open = self.pane().selected_chat_id.as_ref() == Some(&c.id);
+        draft_line(c).and_then(|t| if open { self.pane().listed_draft.clone() } else { Some(t) })
+    }
+
     /// The row of a chat: its avatar, its title line, and the preview of its last message or draft.
     fn view_chat_row(&self, l: &RowLook, c: &Chat) -> El<'_> {
         let (p, st) = (&self.pal, l.st);
         let on = l.selected == Some(c.id.as_str());
         let unread = c.is_unread();
-        let draft = c.draft.as_ref().and_then(|d| d.text.as_deref()).map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+        let draft = self.listed_draft(c);
         let top = self.view_chat_top(l, c, draft.is_some());
         // A dark rich theme's `unreadCount` is white with the text in `--color-from`.
         let (dot_bg, dot_fg) = match (self.list_quiet(st, c), p.badge) {
