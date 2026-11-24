@@ -5882,6 +5882,9 @@ fn polls_like_desktop() {
     {
         let mut sim = simulator(app.view_main());
         assert!(sim.find("Select one option").is_ok() && sim.find("2 votes").is_ok());
+        // The poll is as wide as its question, which stays on one line like in a browser.
+        let question = sim.find("Which default dark theme do you prefer?").expect("the question");
+        assert_eq!(question.bounds().height, 20.0, "one line");
         let st = app.store.read();
         let m = st.message(mid);
         assert_eq!(
