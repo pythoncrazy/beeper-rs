@@ -6070,6 +6070,24 @@ fn edit_and_delete_labels_like_desktop() {
     assert_eq!(st.settings.spaces_order[0].id, format!("label:{}", back.id), "the label keeps its place");
 }
 
+/// Desktop's space bar fills only the selected space: the pointer on another fills nothing.
+#[test]
+fn rail_spaces_show_no_hover_fill_like_desktop() {
+    let app = demo_app("rail-hover");
+    let main = app.main_window.expect("the main window");
+    let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+    let archive = sim.find(iced::widget::Id::new("rail-archive-button")).expect("the Archive space").bounds();
+    let edge = |sim: &mut Simulator<'_, UiMessage>| {
+        let shot = crate::message::tests::pixels(sim);
+        let k = shot.width() as f32 / app.pane.size.width;
+        shot.get_pixel(((archive.x + 3.0) * k) as u32, (archive.center_y() * k) as u32).0
+    };
+    let clear = edge(&mut sim);
+    sim.point_at(archive.center());
+    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: archive.center() })]);
+    assert_eq!(edge(&mut sim), clear);
+}
+
 #[test]
 fn sidebar_follows_the_spaces_order_like_desktop() {
     use beeper_core::models::SpaceOrder;
@@ -6729,24 +6747,6 @@ fn label_settings_like_desktop() {
     assert!(simulator(app.view_main()).find(ask).is_err());
     run(&mut app, "Delete");
     assert_eq!(inbox(&app), None, "Delete deletes the label");
-}
-
-/// Desktop's space bar fills only the selected space: the pointer on another fills nothing.
-#[test]
-fn rail_spaces_show_no_hover_fill_like_desktop() {
-    let app = demo_app("rail-hover");
-    let main = app.main_window.expect("the main window");
-    let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
-    let archive = sim.find(iced::widget::Id::new("rail-archive-button")).expect("the Archive space").bounds();
-    let edge = |sim: &mut Simulator<'_, UiMessage>| {
-        let shot = crate::message::tests::pixels(sim);
-        let k = shot.width() as f32 / app.pane.size.width;
-        shot.get_pixel(((archive.x + 3.0) * k) as u32, (archive.center_y() * k) as u32).0
-    };
-    let clear = edge(&mut sim);
-    sim.point_at(archive.center());
-    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: archive.center() })]);
-    assert_eq!(edge(&mut sim), clear);
 }
 
 #[test]
