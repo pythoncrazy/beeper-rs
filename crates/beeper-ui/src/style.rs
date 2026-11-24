@@ -1030,10 +1030,8 @@ palette! {
     rule: Color = hex(0xb3b3b3), hex(0x4c4c4c);
     /// `--color-primary`.
     accent: Color = hex(0x0d4ffb), hex(0x2561fb);
-    /// `--toggle-style-knob-on`.
+    /// `--toggle-style-knob-on`, and `--checkbox-style-bg-selected`: the fill of a checked `Checkbox`.
     toggle_on: Color = hex(0x0d4ffb), hex(0x0d4ffb);
-    /// The fill of a checked `Checkbox`, `--checkbox-style-bg-selected`.
-    checked: Color = hex(0x0e4df2), hex(0x0e4df2);
     /// `--color-highlight-reaction`: your own reactions, which a monochrome theme fills with its backdrop.
     highlight: Color = hex(0xcbd9ff), hex(0x1b43aa);
     /// The color of the quote of your own message (`LinkedMessage` `isSender`) under a rich theme, else `None`.
@@ -1047,7 +1045,7 @@ palette! {
     brand_stops: Option<[Color; 2]> = None, None;
     /// The text of the white unread counts, `AccountBadge` dots and pinned bubbles of a dark rich theme.
     badge: Option<Color> = None, None;
-    /// `--toggle-style-border` and `--toggle-style-knob-off`.
+    /// `--toggle-style-border`, `--toggle-style-knob-off` and `--checkbox-style-border`.
     toggle_off: Color = hexa(0x000000, 0.302), hexa(0xffffff, 0.302);
     /// `--color-background-grouped-weak`.
     prefs_pane: Color = hex(0xf3f3f3), hex(0x161616);

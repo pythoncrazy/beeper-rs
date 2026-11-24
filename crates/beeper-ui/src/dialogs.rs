@@ -1033,7 +1033,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `IconColorGrid`: the label colors, then the label icons, in rows `width` wide.
     fn label_grid<'a>(&self, d: &LabelDraft, width: f32) -> El<'a> {
-        let p = &self.pal;
+        let p = self.pal;
         let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
         // Desktop's grid is one stop: its arrows move the focused cell, which has `box-shadow: 0 0 0 2px
         // var(--app-focus-ring)`, and Enter and Space pick it.
@@ -1042,26 +1042,22 @@ impl BeeperGuiApp {
         let focused = move |i: usize, b: El<'a>, radius: f32| -> El<'a> {
             crate::ring::ring(b, if cell == Some(i) { p.focus_ring } else { CLEAR }, 2.0, radius).into()
         };
-        let shade = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
+        // A color is a 24 px dot with a 0.5 px `--shadow-color-15` ring, on `--color-backing-shade` while picked, and
+        // an icon is in `--semantic-colors-text-primary`, on `--semantic-colors-bg-fill-primary` while picked.
         let colors = (0..LABEL_COLORS.len() as u8).map(|c| -> El<'a> {
-            let on = d.color == Some(c);
             let fill = label_fill(Some(c));
             let dot = container(Space::new()).width(24).height(24).style(move |_: &Theme| container::Style {
                 background: fill,
-                border: border::rounded(12.0),
+                border: border::rounded(12.0).color(p.shadow).width(0.5),
                 ..Default::default()
             });
-            let ring = if on { (CLEAR, p.accent) } else { (shade, CLEAR) };
-            let dot = container(dot).center(32).style(bordered_box(ring.0, ring.1, 2.0, 16.0));
-            let b = button(dot).bare(p.strong);
-            focused(usize::from(c), b.on_press(edit(LabelEdit::Color(c))).into(), 16.0)
+            let dot = container(dot).center(32).style(fill_box(if d.color == Some(c) { p.hover } else { CLEAR }, 16.0));
+            focused(usize::from(c), button(dot).bare(p.fg).on_press(edit(LabelEdit::Color(c))).into(), 16.0)
         });
         let icons = LABEL_ICONS.iter().enumerate().map(|(i, (id, h))| -> El<'a> {
-            let on = d.icon.as_deref() == Some(*id);
-            let ring = if on { (p.chip, p.accent) } else { (CLEAR, CLEAR) };
-            let cell = container(tinted(h, 16.0, p.strong)).center(32).style(bordered_box(ring.0, ring.1, 2.0, 18.0));
-            let b = button(cell).padding(0).style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 18.0));
-            focused(LABEL_COLORS.len() + i, b.on_press(edit(LabelEdit::Icon(id))).into(), 18.0)
+            let bg = if d.icon.as_deref() == Some(*id) { p.fill_primary } else { CLEAR };
+            let cell = container(tinted(h, 16.0, p.fg)).center(32).style(fill_box(bg, 18.0));
+            focused(LABEL_COLORS.len() + i, button(cell).bare(p.fg).on_press(edit(LabelEdit::Icon(id))).into(), 18.0)
         });
         let grid = column![spread(colors.collect(), 32.0, width), spread(icons.collect(), 32.0, width)].spacing(20);
         let keys = Keys::arrows(move |k| Some(edit(LabelEdit::Grid(Some(k)))))
