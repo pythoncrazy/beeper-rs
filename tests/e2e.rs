@@ -1439,7 +1439,7 @@ async fn lifecycle() {
         gui.select_chat(&other);
         gui.select_chat(&cid);
         assert!(store.read().chats[1].reminder.is_none(), "leaving a reminded chat dismisses the reminder");
-        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::SearchRoom(cid.clone())));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::Search(Some(cid.clone()))));
         assert!(gui.show_command_palette && gui.search_room.as_deref() == Some(cid.as_str()));
         let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         assert!(gui.show_command_palette && gui.search_room.is_none(), "Ctrl K widens a chat search");

@@ -4,30 +4,38 @@ use iced::advanced::widget::{self};
 use iced::advanced::{mouse, renderer, Renderer as _};
 
 /// Draws `content` lowered by `dy` and scaled by `scale` from its bottom right corner, like Desktop's
-/// `message-send-insert` keyframes. The layout does not change, except that a `tight` lift gives `content`
-/// its full size as the minimum size. A `press` lift draws `content` at `scale` from its center while the left
-/// button that went down on it stays down, like a CSS `:active` transform.
+/// `message-send-insert` keyframes. The layout does not change, except that a `tight` lift gives `content` its full
+/// size as the minimum size, and a `spill` lift lets it grow taller than its room. A `press` lift draws `content` at
+/// `scale` from its center while the left button that went down on it stays down, like a CSS `:active` transform.
 pub struct Lift<'a, Message> {
     content: Element<'a, Message>,
     dx: f32,
     dy: f32,
     scale: f32,
-    tight: bool,
+    /// The limits of `content` from the most room, instead of the given limits.
+    fit: Option<fn(Size) -> layout::Limits>,
     press: bool,
 }
 
 pub fn lift<'a, Message>(content: impl Into<Element<'a, Message>>, dy: f32, scale: f32) -> Lift<'a, Message> {
-    Lift { content: content.into(), dx: 0.0, dy, scale, tight: false, press: false }
+    Lift { content: content.into(), dx: 0.0, dy, scale, fit: None, press: false }
 }
 
 /// Gives a scrollable its viewport as the minimum size of its content, like a CSS `min-height: 100%`.
 pub fn tight<'a, Message>(content: impl Into<Element<'a, Message>>) -> Lift<'a, Message> {
-    Lift { content: content.into(), dx: 0.0, dy: 0.0, scale: 1.0, tight: true, press: false }
+    Lift { content: content.into(), dx: 0.0, dy: 0.0, scale: 1.0, fit: Some(|max| layout::Limits::new(max, max)), press: false }
+}
+
+/// Lets `content` be taller than its room, so that it draws over what is under it, like an absolutely positioned
+/// CSS box that overflows its parent.
+pub fn spill<'a, Message>(content: impl Into<Element<'a, Message>>) -> Lift<'a, Message> {
+    let fit = |max: Size| layout::Limits::new(Size::ZERO, Size::new(max.width, f32::INFINITY));
+    Lift { content: content.into(), dx: 0.0, dy: 0.0, scale: 1.0, fit: Some(fit), press: false }
 }
 
 /// Draws `content` at `scale` while it is pressed, like Desktop's `:active { transform: scale(...) }`.
 pub fn press<'a, Message>(content: impl Into<Element<'a, Message>>, scale: f32) -> Lift<'a, Message> {
-    Lift { content: content.into(), dx: 0.0, dy: 0.0, scale, tight: false, press: true }
+    Lift { content: content.into(), dx: 0.0, dy: 0.0, scale, fit: None, press: true }
 }
 
 impl<Message> Lift<'_, Message> {
@@ -42,8 +50,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
     crate::delegate::delegate!(state(bool), children, diff, size, operate, mouse_interaction, overlay(Message));
 
     fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        let tight = layout::Limits::new(limits.max(), limits.max());
-        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, if self.tight { &tight } else { limits })
+        let limits = self.fit.map_or(*limits, |fit| fit(limits.max()));
+        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, &limits)
     }
 
     fn update(

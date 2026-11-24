@@ -72,7 +72,7 @@ pub enum LabelStep {
 }
 
 /// The size of Desktop's Chats and Edit Label sheets of Label Settings.
-const LABEL_SHEET_SIZE: Size = Size::new(395.0, 504.0);
+pub(crate) const LABEL_SHEET_SIZE: Size = Size::new(395.0, 504.0);
 
 /// Desktop's arrows in the `IconColorGrid` (`KZ` and `GZ`): ← and → move along the row, and ↑ and ↓ to the cell of
 /// the row above or below whose middle is nearest, in the rows that `spread` makes `width` wide.
@@ -656,7 +656,7 @@ impl BeeperGuiApp {
         if let Some(d) = &self.label_window {
             return self.raise(d.id);
         }
-        let (id, open) = self.open_child(LABEL_SHEET_SIZE);
+        let (id, open) = self.open_sheet(LABEL_SHEET_SIZE);
         let label = self.label_id(label);
         let st = self.store.read();
         let label = st.labels.iter().find(|l| l.id == label).expect("an edited label");

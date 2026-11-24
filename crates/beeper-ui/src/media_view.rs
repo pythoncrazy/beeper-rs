@@ -1461,11 +1461,17 @@ impl BeeperGuiApp {
                 if let Some(w) = &self.media_window {
                     return self.raise(w.id);
                 }
-                // Desktop's `media-viewer` window state.
-                let settings = self.saved_window_settings("media-viewer", Size::new(1000.0, 720.0));
+                // Desktop's `media-viewer` window state, and `center: "parent"` of its 1000 by 720 features.
+                const FEATURES: Size = Size::new(1000.0, 720.0);
+                let settings = self.kept_size("media-viewer", FEATURES);
                 let (size, (id, open)) = (settings.size, self.open_window(settings));
                 self.media_window = Some(MediaWindow::new(id, size));
-                return Task::batch([open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0))), self.media_more()]);
+                let parent = self.main_window.map(|main| (main, self.pane.size * self.zoom));
+                let opened = open.then(move |id| {
+                    let center = parent.map(|(main, around)| windows::center_over(id, main, around, FEATURES));
+                    Task::done(UiMessage::Window(windows::Msg::Opened(id))).chain(center.unwrap_or_else(Task::none))
+                });
+                return Task::batch([opened, self.media_more()]);
             }
             Msg::Tab(tab) => {
                 let w = self.media_mut();

@@ -1082,7 +1082,7 @@ impl BeeperGuiApp {
             "",
             if n == 0 { flag_msg(c, ChatFlag::LowPriority) } else { set_msg(ChatFlag::LowPriority, !low) },
         );
-        let search = UiMessage::CommandBar(commands::Msg::SearchRoom(c.id.clone()));
+        let search = UiMessage::CommandBar(commands::Msg::Search(Some(c.id.clone())));
         column![
             close_sub(self.chat_menu_head(m)),
             open_sub(0, tr("Copy")),

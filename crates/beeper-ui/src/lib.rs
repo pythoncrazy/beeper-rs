@@ -79,6 +79,7 @@ mod time;
 mod time_suggestions;
 mod timeline;
 pub mod toasts;
+mod toggle;
 #[cfg(target_os = "linux")]
 mod tray;
 #[cfg(not(target_os = "linux"))]
@@ -122,7 +123,7 @@ pub mod zoom;
 use crate::composer::{composer_with, load_draft, save_draft, Typo};
 pub use crate::composer::{LinkState, Stash, Suggestion};
 pub use crate::dialogs::{GroupDraft, GroupEdit, LabelDraft, LabelEdit, LabelPane, LabelSettings, LabelStep, PollDraft, PollEdit};
-use crate::dialogs::{DEFAULT_LABEL_ICON, GROUP_SIZE, LABEL_SETTINGS_SIZE};
+use crate::dialogs::{DEFAULT_LABEL_ICON, GROUP_SIZE, LABEL_SETTINGS_SIZE, LABEL_SHEET_SIZE};
 use crate::i18n::{tr, trf, trn, trs, trx};
 use crate::media_view::{decode_media, run_ffmpeg, Carousel, MediaWindow, TAB_SLIDE};
 use crate::message::Rows;
@@ -1337,10 +1338,8 @@ fn toggle<'a>(p: &Palette, on: bool, msg: Option<UiMessage>) -> El<'a> {
 }
 
 fn toggle_faded<'a>(p: &Palette, on: bool, msg: Option<UiMessage>, alpha: f32) -> El<'a> {
-    let fill = if on { p.toggle_on } else { p.toggle_off }.scale_alpha(alpha);
-    let knob = container(Space::new()).width(16).height(16).style(fill_box(fill, 8.0));
-    let track = container(knob).width(36).height(24).padding(4).align_y(Center).align_x(if on { Right } else { iced::Left });
-    button(track.style(bordered_box(CLEAR, p.toggle_off.scale_alpha(alpha), 2.0, 12.0))).bare(p.text).on_press_maybe(msg).into()
+    let colors = [p.toggle_off, p.toggle_on, p.toggle_off].map(|c| c.scale_alpha(alpha));
+    button(toggle::toggle(on, colors)).bare(p.text).on_press_maybe(msg).into()
 }
 
 fn select<'a, T: ToString + PartialEq + Clone + 'a>(
@@ -3485,8 +3484,9 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `ga` (`mainWindowSetSize`): window `id` takes `size`, at most its screen, grows or shrinks around its
-    /// center, and stays on the screen. Without a position (Wayland), it only takes the size.
-    pub(crate) fn resize_around(id: window::Id, size: Size) -> Task<UiMessage> {
+    /// center, and stays on the screen. Without a position (Wayland), it only takes the size, the title bar's included.
+    pub(crate) fn resize_around(&self, id: window::Id, size: Size) -> Task<UiMessage> {
+        let size = Size::new(size.width, size.height - self.title_bar()) * (1.0 / self.zoom);
         let state = window::position(id).then(move |at| window::size(id).map(move |old| (at, old)));
         let state = state.then(move |(at, old)| window::monitor_size(id).map(move |screen| (at, old, screen)));
         state.then(move |(at, old, screen)| {
@@ -3556,9 +3556,11 @@ impl BeeperGuiApp {
     /// Saves the state of window `id` under `key` in `window.json`. A maximized window keeps the bounds from before.
     fn save_window(&self, id: window::Id, key: &'static str) -> Task<UiMessage> {
         let path = self.store.read().config.data_dir.join("window.json");
-        // Desktop keeps the bounds in screen pixels, and iced gives the size in pixels of the zoom.
-        let zoom = self.zoom;
-        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size * zoom)));
+        // Desktop keeps the bounds in screen pixels with the title bar on Wayland, and iced gives the size of the page
+        // in pixels of the zoom.
+        let (zoom, bar) = (self.zoom, self.title_bar());
+        let size = move |size: Size| Size::new(size.width * zoom, size.height * zoom + bar);
+        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |s| (max, size(s))));
         let state = state.then(move |(max, size)| window::position(id).map(move |at| (max, size, at)));
         state.map(move |(max, size, at)| write_window_state(&path, key, max, size, at)).discard()
     }
@@ -6276,8 +6278,9 @@ impl BeeperGuiApp {
         let icon = tinted(&ROW_ACTIONS[glyph], size * (0.3 + 0.7 * t), p.strong.scale_alpha(t));
         let btn = button(container(icon).center(size)).bare(p.strong).padding(6);
         let tip = self.tip_caps(btn.on_press(msg).into(), label, keys, tooltip::Position::Right);
-        let top = 22f32.min(51.0 - 12.0 - size);
-        container(tip.delay(std::time::Duration::from_secs(1))).align_right(Fill).padding(Padding::ZERO.top(top).right(4.0)).into()
+        // `.hoverActions` sits 6 px over `.actions` whatever its size, and runs out of the bottom of a compact row.
+        let at = Padding::ZERO.top(22.0).right(4.0);
+        crate::lift::spill(container(tip.delay(std::time::Duration::from_secs(1))).align_right(Fill).padding(at)).into()
     }
 
     /// Desktop's Picture in Picture window (`Gyt`): frameless and on top, 16 px from the top left corner, while the
