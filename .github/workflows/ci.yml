@@ -65,4 +65,5 @@ jobs:
       - if: runner.os == 'Windows'
         uses: AnimMouse/setup-ffmpeg@0633f1f6ad34ac671f07224b3c89b00386f0c717
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo test --locked --workspace -- --nocapture
+      # A manual run shows every failing test of the system, not only those of the first crate.
+      - run: cargo test --locked --workspace --no-fail-fast -- --nocapture

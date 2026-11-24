@@ -48,14 +48,17 @@ pub enum Agent {
     Custom(String),
 }
 
+/// The system in Desktop's user agents, which is the one it runs on.
+const SYSTEM: &str = match () {
+    _ if cfg!(target_os = "macos") => "Macintosh; Intel Mac OS X 10_15_7",
+    _ if cfg!(windows) => "Windows NT 10.0; Win64; x64",
+    _ => "X11; Linux x86_64",
+};
+
 impl Agent {
     /// The user agent for the browser's Chrome version, or `None` for the browser's own.
     fn string(&self, chrome: &str) -> Option<String> {
-        let os = match () {
-            _ if cfg!(target_os = "macos") => "Macintosh; Intel Mac OS X 10_15_7",
-            _ if cfg!(windows) => "Windows NT 10.0; Win64; x64",
-            _ => "X11; Linux x86_64",
-        };
+        let os = SYSTEM;
         let beeper = if *self == Agent::Google { " Beeper/3.110.1" } else { "" };
         match self {
             Agent::Desktop | Agent::Google => {
@@ -819,8 +822,8 @@ mod tests {
         assert!(outcome.finished);
         assert_eq!(outcome.last_url, "https://x.test/home");
         let ua = calls_of(&calls, "Network.setUserAgentOverride");
-        let google = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Beeper/3.110.1 Chrome/131.0.0.0 Safari/537.36";
-        assert_eq!(ua[0]["params"]["userAgent"], google, "Google Voice has Desktop's Google user agent");
+        let google = format!("Mozilla/5.0 ({SYSTEM}) AppleWebKit/537.36 (KHTML, like Gecko) Beeper/3.110.1 Chrome/131.0.0.0 Safari/537.36");
+        assert_eq!(ua[0]["params"]["userAgent"], google.as_str(), "Google Voice has Desktop's Google user agent");
         let at = |m: &str| calls.iter().position(|c| c["method"] == m).unwrap();
         assert!(at("Network.setUserAgentOverride") < at("Page.navigate"), "the page has its user agent first");
         assert!(calls_of(&calls, "Storage.getCookies").len() >= 2, "the fields were there before the final URL");
@@ -914,8 +917,8 @@ mod tests {
         assert!(x.launch_js.as_deref().unwrap().contains("const result = await ((() => {\n\treturn 1\n})())"));
         assert_eq!(x.navigate_js, x.launch_js);
         assert_eq!(x.close_js.as_deref(), Some("globalThis.__BEEP_BEEP_AUTH_RESULTS__"));
-        let desktop = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
-        assert_eq!(Agent::Desktop.string("152").as_deref(), Some(desktop), "Desktop's `Qg`");
+        let desktop = format!("Mozilla/5.0 ({SYSTEM}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36");
+        assert_eq!(Agent::Desktop.string("152"), Some(desktop), "Desktop's `Qg`");
     }
 
     #[test]
