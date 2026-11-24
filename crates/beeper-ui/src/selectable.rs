@@ -691,9 +691,7 @@ impl<Message> Widget<Message, Theme, Renderer> for AutoScroll<'_, Message> {
         let bounds = layout.bounds();
         let auto = tree.state.downcast_mut::<Auto>();
         match event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                auto.pressed = cursor.land().is_over(bounds);
-            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => auto.pressed = cursor.land().is_over(bounds),
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => *auto = Auto::default(),
             _ => {}
         }

@@ -96,9 +96,7 @@ impl BeeperGuiApp {
             }
             Msg::Close => return self.close_modal(Modal::TokenRequest),
             Msg::Revoke(id) => (self.integrations.revoke, self.confirm) = (Some(id), Some(ASK_REVOKE_CONNECTION)),
-            Msg::RemoteAccess(true) if self.confirm != Some(ASK_REMOTE_ACCESS) => {
-                self.confirm = Some(ASK_REMOTE_ACCESS);
-            }
+            Msg::RemoteAccess(true) if self.confirm != Some(ASK_REMOTE_ACCESS) => self.confirm = Some(ASK_REMOTE_ACCESS),
             Msg::RemoteAccess(on) => {
                 self.confirm = None;
                 self.patch_settings(|s| s.remote_access = on);

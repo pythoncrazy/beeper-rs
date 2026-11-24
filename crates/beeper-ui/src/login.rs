@@ -1584,9 +1584,7 @@ impl BeeperGuiApp {
         let l = &mut self.login;
         let stops = l.stops();
         match key {
-            Key::Named(Named::Escape) => {
-                (l.menu, self.networks.menu, self.menu_bar, self.hotkeys_modal) = (false, None, None, None);
-            }
+            Key::Named(Named::Escape) => (l.menu, self.networks.menu, self.menu_bar, self.hotkeys_modal) = (false, None, None, None),
             Key::Named(Named::Tab) if (mods - Modifiers::SHIFT).is_empty() => {
                 return match l.focus.step(stops, mods.shift()) {
                     Some(Stop::Field) => {

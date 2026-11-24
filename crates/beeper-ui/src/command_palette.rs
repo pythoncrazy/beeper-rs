@@ -496,10 +496,7 @@ impl BeeperGuiApp {
         // keys reach the headings of the sections with an action (`qct`), also without "Show more".
         let sections = [("Recent chats", recent), ("Last archived", archived), ("Chats", chats), ("In Groups", in_groups)];
         for (label, chats) in sections.into_iter().filter(|s| !s.1.is_empty()) {
-            let (n, more) = match label {
-                "Last archived" => (1, false),
-                _ => self.palette_rows(label, chats.len()),
-            };
+            let (n, more) = if label == "Last archived" { (1, false) } else { self.palette_rows(label, chats.len()) };
             list.push(Hit::Heading(label, toggle(label, more), label != "Last archived"));
             list.extend(chats.into_iter().take(n).map(Hit::Chat));
         }

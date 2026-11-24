@@ -61,9 +61,7 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
                 return Task::batch(notes.into_iter().chain([self.settle()]));
             }
-            Msg::Menu => {
-                self.list.reminder_menu = Some(self.cursor.get());
-            }
+            Msg::Menu => self.list.reminder_menu = Some(self.cursor.get()),
             Msg::Order(i) => {
                 self.list.reminder_menu = None;
                 self.patch_settings(|s| s.reminders_order = i);

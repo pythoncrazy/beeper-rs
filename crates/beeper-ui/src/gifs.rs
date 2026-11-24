@@ -247,10 +247,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_sticker_picker<'a>(&'a self, st: &BeeperStore) -> El<'a> {
         let p = &self.pal;
         let recent = &st.settings.recent_stickers;
-        let packs = match &self.pane().stickers {
-            Some(Ok(packs)) => &packs[..],
-            _ => &[],
-        };
+        let packs = if let Some(Ok(packs)) = &self.pane().stickers { &packs[..] } else { &[] };
         let failed = matches!(self.pane().stickers, Some(Err(_)));
         let tab = self.pane().sticker_tab.clone().or_else(|| match recent.is_empty() {
             false => Some(None),

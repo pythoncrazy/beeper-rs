@@ -68,10 +68,7 @@ impl Entry<'_> {
 /// The networks that you can add an account on here: Desktop's `addablePlatforms`, whose bridges the account's flags
 /// turn on, and iMessage on a Mac.
 pub(crate) fn addable(f: &Flags) -> impl Iterator<Item = &'static NetworkSpec> + '_ {
-    NETWORK_SPECS[1..].iter().filter(|n| match n.kind {
-        NetworkKind::IMessage => cfg!(target_os = "macos"),
-        _ => f.network_on(n),
-    })
+    NETWORK_SPECS[1..].iter().filter(|n| if matches!(n.kind, NetworkKind::IMessage) { cfg!(target_os = "macos") } else { f.network_on(n) })
 }
 
 /// Desktop's `addableNetworks`, in its order: a network connects when its bridge takes another account
