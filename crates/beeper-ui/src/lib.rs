@@ -71,6 +71,7 @@ pub mod reminders;
 mod reply_line;
 mod ring;
 mod scheduled;
+mod select;
 mod selectable;
 pub mod settings;
 pub mod sortable;
@@ -342,6 +343,8 @@ pub enum UiMessage {
     OpenEditForMe(String),
     /// Desktop's Chat Info panel: the description, the note, the media and bookmarks lists, the personal name and disappearing messages.
     Info(info::Msg),
+    /// Desktop's `native` `BrandSelect`: the context menu of its options.
+    Select(select::Msg),
     Group(GroupEdit),
     Profile(profile::Msg),
     /// Desktop's labels: their windows, the Edit Labels switches, mute, Show in Inbox, and the undo of a change or a deletion.
@@ -2091,22 +2094,45 @@ impl SearchFilters {
     }
 }
 
-/// Finds the layout bounds of the container with the given id.
-struct Find(iced::widget::Id, Option<iced::Rectangle>);
+/// Finds the bounds on the screen of the container with the given id: its layout bounds less the scroll of the
+/// scrollables around it.
+struct Find {
+    id: iced::widget::Id,
+    found: Option<iced::Rectangle>,
+    /// The scroll of the scrollables around the widget, and of the scrollable whose content comes next.
+    scrolled: Vector,
+    next: Vector,
+}
+
+impl Find {
+    fn new(id: impl Into<iced::widget::Id>) -> Self {
+        Self { id: id.into(), found: None, scrolled: Vector::ZERO, next: Vector::ZERO }
+    }
+}
 
 impl iced::advanced::widget::Operation<iced::Rectangle> for Find {
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<iced::Rectangle>)) {
-        operate(self)
+        let outer = self.scrolled;
+        self.scrolled = outer + std::mem::take(&mut self.next);
+        operate(self);
+        self.scrolled = outer;
+    }
+
+    fn scrollable(
+        &mut self, _: Option<&iced::widget::Id>, _: iced::Rectangle, _: iced::Rectangle, translation: Vector,
+        _: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        self.next = translation;
     }
 
     fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
-        if id == Some(&self.0) {
-            self.1 = Some(bounds);
+        if id == Some(&self.id) {
+            self.found = Some(iced::Rectangle { x: bounds.x - self.scrolled.x, y: bounds.y - self.scrolled.y, ..bounds });
         }
     }
 
     fn finish(&self) -> iced::advanced::widget::operation::Outcome<iced::Rectangle> {
-        iced::advanced::widget::operation::Outcome::Some(self.1.expect("the container is shown"))
+        iced::advanced::widget::operation::Outcome::Some(self.found.expect("the container is shown"))
     }
 }
 
@@ -2936,6 +2962,8 @@ pub struct BeeperGuiApp {
     pub search_room: Option<String>,
     pub search_filters: SearchFilters,
     pub search_select: Option<(usize, iced::Rectangle)>,
+    /// The open menu of a `native` select.
+    native_select: Option<select::Open>,
     cursor: std::cell::Cell<Point>,
     forward: Option<Forward>,
     media_window: Option<MediaWindow>,
@@ -3320,7 +3348,7 @@ impl BeeperGuiApp {
             thread_drag, unread_view, unread_menu, hidden, unmapped, opened, unmapped_focus, activation_token,
             system_dark, zoom_drag, maximize_when_placed, seen_requests, pip, pip_wanted, pip_manual, pip_menu,
             hotkey_query, hotkey_rec, profile, modals, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
-            reminded, search_room, search_filters, search_select, cursor, image_clipboard, pressing, forward,
+            reminded, search_room, search_filters, search_select, native_select, cursor, image_clipboard, pressing, forward,
             media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, notifications,
             gif_query, gifs, gif_loading, gif_error, gif_next, gif_sel, gif_view, command_palette_query,
             cmd_bar_commands_mode, cmd_submenu, cmd_index, search_index, search_expanded, recent_searches,
@@ -4476,6 +4504,7 @@ impl BeeperGuiApp {
             UiMessage::Gifs(msg) => return self.gifs(msg),
             UiMessage::Hotkeys(msg) => return self.hotkeys(msg),
             UiMessage::Info(msg) => return self.info(msg),
+            UiMessage::Select(msg) => return self.select(msg),
             UiMessage::Integrations(msg) => return self.integrations(msg),
             UiMessage::Labels(msg) => return self.labels(msg),
             UiMessage::Loaded(msg) => return self.loaded(msg),
@@ -5577,6 +5606,7 @@ impl BeeperGuiApp {
             .into()
         };
         let main_menu = main_menu.or(self.pane_menu()).or(selection_menu.filter(|_| in_main));
+        let native = self.native_select.as_ref().filter(|_| in_main).map(|s| layer(self.view_native_select(s), UiMessage::CloseModals));
         let (menu, palette_menu) = match (self.show_command_palette || self.forward.is_some()) && self.list().chat_menu.is_some() {
             true => (None, main_menu.map(|m| layer(m, UiMessage::ChatList(chat_list::Msg::CloseMenu)))),
             false => (main_menu.map(|m| layer(m, UiMessage::CloseModals)), None),
@@ -5622,7 +5652,8 @@ impl BeeperGuiApp {
             .push(menu)
             .push(scrim)
             .push(palette_menu)
-            .push(select);
+            .push(select)
+            .push(native);
         let token = self.token_ask.as_ref().map(|a| self.view_token_ask(a));
         let confetti = self.confetti.as_ref().filter(|_| in_main).map(confetti::Confetti::view);
         layers.push(confirm).push(hotkeys).push(token).push(confetti).into()
@@ -6401,6 +6432,7 @@ impl BeeperGuiApp {
             || self.list().reminder_menu.is_some()
             || self.audio.menu.is_some()
             || self.selection_menu.is_some()
+            || self.native_select.is_some()
     }
 
     fn tip<'a>(
@@ -6874,6 +6906,24 @@ mod tests {
         assert_eq!(menu_spot(Point::new(100.0, 590.0), 233.0, 400.0, area), (100.0, 190.0), "above, ending at it");
         assert_eq!(menu_spot(Point::new(100.0, 300.0), 233.0, 700.0, area), (100.0, 100.0), "moved up when neither fits");
         assert_eq!(menu_spot(Point::new(1100.0, 100.0), 233.0, 400.0, area), (967.0, 100.0), "kept at the right edge");
+    }
+
+    /// `Find` gives a container's bounds on the screen: a select 300 px down a scrollable scrolled by 250 px is 50 px
+    /// down, where its menu opens.
+    #[test]
+    fn find_takes_the_scroll_off() {
+        use iced::advanced::widget::operation::scrollable::{scroll_to, AbsoluteOffset};
+        let target = container(Space::new().width(10).height(10)).id("target");
+        let content = iced::widget::column![Space::new().height(300), target, Space::new().height(1000)];
+        let view: El = scrollable(content).id("scroll").height(200).into();
+        let renderer = <iced::Renderer as iced::advanced::renderer::Headless>::new(iced::Font::DEFAULT, Pixels(13.0), Some("tiny-skia"));
+        let mut renderer = iced::futures::executor::block_on(renderer).expect("a headless renderer");
+        let mut ui = iced_runtime::UserInterface::build(view, Size::new(100.0, 200.0), Default::default(), &mut renderer);
+        let offset = AbsoluteOffset { x: None, y: Some(250.0) };
+        ui.operate(&renderer, &mut scroll_to::<()>("scroll".into(), offset));
+        let mut find = Find::new("target");
+        ui.operate(&renderer, &mut iced::advanced::widget::operation::black_box(&mut find));
+        assert_eq!(find.found, Some(Rectangle::new(Point::new(0.0, 50.0), Size::new(10.0, 10.0))));
     }
 
     #[test]
