@@ -168,11 +168,13 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `removeToast` of the toast with ID `id`, the newest one or an older one.
+    /// A removed toast does not go under a toast that shows after it.
     pub(crate) fn remove_toast(&mut self, id: &str) {
         self.older_toasts.retain(|t| t.0.id.as_deref() != Some(id));
         if self.shown_toast().is_some_and(|t| t.id.as_deref() == Some(id)) {
             self.sticky_banner.take_if(|t| *t == self.status_banner);
             self.status_banner.clear();
+            self.toast_dismissals += 1;
         }
     }
 

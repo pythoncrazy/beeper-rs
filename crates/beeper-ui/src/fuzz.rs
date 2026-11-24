@@ -3965,9 +3965,16 @@ fn slow_sends_say_so_like_desktop() {
     assert_eq!(toast.text, "Sending message to Note to self (Beeper) is taking longer than expected");
     assert!(matches!(&toast.buttons[..], [(label, UiMessage::SelectChat(c))] if *label == "Show" && c == note));
     assert_eq!(app.sticky_banner.as_ref(), Some(&app.status_banner), "the toast stays");
-    app.store.write().sending.remove(&id);
-    let _ = app.update(UiMessage::StoreChanged);
-    assert!(app.shown_toast().is_none() && app.slow_sends.is_empty(), "the end of the push closes it");
+    let failed = {
+        let mut st = app.store.write();
+        let (row, _, _) = st.outbox.remove(0);
+        st.pushed(row, Some(&id), Some(("Message took too long to send".into(), true)));
+        st.loaded(&id).expect("the local echo").clone()
+    };
+    let _ = app.update(UiMessage::Upserted(Box::new(failed)));
+    let shown = app.shown_toast().expect("the error toast").text.clone();
+    assert!(shown.ends_with("\nMessage took too long to send"), "{shown}");
+    assert!(app.older_toasts.is_empty() && app.slow_sends.is_empty(), "the end of the push closes the slow toast");
 }
 
 #[test]

@@ -188,6 +188,8 @@ impl BeeperGuiApp {
             (crate::trf("Something went wrong sending message to %1$s (%2$s)\n%3$s", &at), e)
         });
         drop(st);
+        // Desktop's `finally` closes the toast of a slow send when it fails.
+        self.slow_sends();
         if let Some((text, e)) = error {
             // Desktop's Copy Error (`copyErrorToClipboard("sendMessage", error)`): the error as JSON with the version,
             // without the stack of the JavaScript error.
