@@ -3,6 +3,7 @@ use crate::http::{http_date, parse_query, read_message, read_ws_frame, weak_etag
 use beeper_core::bridge_login;
 use beeper_core::chat_index as search;
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
+use beeper_core::codec::truthy;
 use beeper_core::config::{
     cloud_bridge, millis_from_rfc3339, now_rfc3339_millis, CentralConfig, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS,
 };
@@ -2870,17 +2871,6 @@ impl<'a> WsFrame<'a> {
             ids: vec![ev.message_id.as_deref().unwrap_or(chat_id)],
             entries: ev.message.as_ref().map(|m| vec![view::message(m)]),
         }
-    }
-}
-
-/// JavaScript's truthiness of a JSON value.
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64() != Some(0.0),
-        Value::String(s) => !s.is_empty(),
-        _ => true,
     }
 }
 
