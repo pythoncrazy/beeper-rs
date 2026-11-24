@@ -427,7 +427,8 @@ impl BeeperGuiApp {
         }
         let open = self.open_modal(Modal::RecoveryKey, from);
         let id = self.modal_window(Modal::RecoveryKey).expect("the Recovery Key window is open");
-        open.chain(window::set_min_size(id, Some(KEY_MIN_SIZE * (1.0 / self.zoom))))
+        let min = Size::new(KEY_MIN_SIZE.width, KEY_MIN_SIZE.height - self.title_bar()) * (1.0 / self.zoom);
+        open.chain(window::set_min_size(id, Some(min)))
     }
 
     /// The layout effect of `ShowRecoveryKeyModal`, which fits its window to the step: 350 by 175 once verified, and
@@ -439,7 +440,7 @@ impl BeeperGuiApp {
             _ => return Task::none(),
         };
         let Some(id) = self.modal_window(Modal::RecoveryKey) else { return Task::none() };
-        Self::resize_around(id, size * (1.0 / self.zoom))
+        self.resize_around(id, size)
     }
 
     /// Desktop's `ShowRecoveryKeyModal` in its window: the key to copy, then the key typed again, then Verified.
