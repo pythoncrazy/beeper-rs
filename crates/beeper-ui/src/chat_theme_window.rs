@@ -72,14 +72,14 @@ impl BeeperGuiApp {
             Some((paint, _)) => stack![chat_theme::fill(paint, Size::new(f32::INFINITY, 106.0), 12.0), container(lines).padding(16)].into(),
             None => container(lines).padding(16).style(fill_box(p.card, 12.0)).into(),
         };
-        let preview = container(preview).height(106 + 2).padding(1).style(bordered_box(CLEAR, p.neutral_border, 1.0, 12.0));
+        let preview = container(preview).height(106 + 2).padding(1).style(bordered_box(CLEAR, p.border_neutrals, 1.0, 12.0));
         let label = |text: &'static str| crate::style::fixed(tr(text), 12.0, Weight::Medium).color(p.sub);
         let default = matches!(stored.bubble, None | Some(Bubble::Default));
         let none = if chat.is_some() { Some(Bubble::Default) } else { None };
         let sub = p.sub;
         let cross = svg(chat_theme::NO_BUBBLE.clone()).width(26).height(26).style(move |_, _| svg::Style { color: Some(sub) });
         let mut swatches = vec![ring(
-            container(cross).padding(1).style(bordered_box(CLEAR, p.neutral_border, 1.0, 14.0)).into(),
+            container(cross).padding(1).style(bordered_box(CLEAR, p.border_neutrals, 1.0, 14.0)).into(),
             default,
             14.0,
             UiMessage::ChatTheme(chat_theme::Msg::Bubble(id.clone(), none)),
@@ -91,7 +91,7 @@ impl BeeperGuiApp {
         }));
         let tile = |fill: El<'static>, w: Wallpaper| {
             let on = stored.wallpaper.as_ref().unwrap_or(&Wallpaper::None) == &w;
-            let fill = container(fill).width(Fill).height(100).padding(1).style(bordered_box(CLEAR, p.neutral_border, 1.0, 10.0));
+            let fill = container(fill).width(Fill).height(100).padding(1).style(bordered_box(CLEAR, p.border_neutrals, 1.0, 10.0));
             ring(fill.into(), on, 10.0, UiMessage::ChatTheme(chat_theme::Msg::Wallpaper(id.clone(), w)))
         };
         let blank = |label: &'static str| -> El<'static> {
@@ -104,7 +104,7 @@ impl BeeperGuiApp {
         };
         let mut tiles = vec![tile(blank("None"), Wallpaper::None)];
         let photo_fill = container(photo_fill).width(Fill).height(100).padding(1);
-        let photo_fill = photo_fill.style(bordered_box(CLEAR, p.neutral_border, 1.0, 10.0));
+        let photo_fill = photo_fill.style(bordered_box(CLEAR, p.border_neutrals, 1.0, 10.0));
         tiles.push(ring(photo_fill.into(), photo, 10.0, UiMessage::ChatTheme(chat_theme::Msg::PickWallpaper(id.clone()))));
         let papers = chat_theme::COLORS.iter().map(|c| Wallpaper::Color { id: c.0.into() });
         for w in papers.chain(chat_theme::GRADIENTS.iter().map(|g| Wallpaper::Gradient { id: g.0.into() })) {

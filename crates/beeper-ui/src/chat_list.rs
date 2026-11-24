@@ -925,7 +925,7 @@ impl BeeperGuiApp {
         let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { MENU_RULE - menu_pitch() } else { 0.0 };
         let h = 8.0 + items.len() as f32 * menu_pitch() + rules;
         let width = if which == 0 { SUB_MENU_W[1] } else { 233.0 };
-        let menu = container(Column::with_children(items).padding([4, 0])).width(width).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_card(p, Column::with_children(items), width);
         (menu.into(), h)
     }
 
@@ -1245,9 +1245,11 @@ impl BeeperGuiApp {
     /// The header of the chat list: the space's title, then the Filter, Display Options, Search and New Chat buttons.
     fn view_list_header(&self, st: &BeeperStore) -> El<'_> {
         let p = &self.pal;
+        // `.btn-ghost:active svg`: a pressed Search or New Chat icon turns `--color-icon-translucent-strong`.
         let head_btn = |key: &str, c: char, size: f32, [l, r]: [f32; 2], msg: UiMessage| {
-            let b = button(container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26))
-                .bare(p.strong)
+            let b = button(container(ic(c, size)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.strong, p.strong, p.fg.scale_alpha(0.9)], 0.0))
                 .on_press(msg.clone());
             self.header_target(key, b, msg)
         };
@@ -1673,7 +1675,7 @@ impl BeeperGuiApp {
         // Desktop's `indicators`: the unread dot, and a red dot while a send of the chat waits for Retry.
         let dot = (!l.counts).then(|| {
             let dot = |bg| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0));
-            let errored = st.has_errored(&c.id).then(|| dot(hex(0xf44336)));
+            let errored = st.has_errored(&c.id).then(|| dot(ERROR));
             container(column![].push(unread.then(|| dot(dot_bg))).push(errored).spacing(4)).width(12)
         });
         let count = count.map(|b| crate::lift::shrink(b, keep).into());
@@ -1864,7 +1866,7 @@ impl BeeperGuiApp {
         // Desktop's `ZGe`: a message that failed to send shows `ErroredIcon`, without a tooltip.
         if m.send_error.is_some() {
             // `.messageErroredIcon`: 16 by 11 with a 1 px margin, where the read icons are 12 px wide.
-            let icon = container(tinted(&ERRORED, 11.0, ERROR_COLOR)).center_x(16);
+            let icon = container(tinted(&ERRORED, 11.0, ERROR)).center_x(16);
             return container(icon).padding(Padding::ZERO.right(1.0)).into();
         }
         let glyph = if pending(st, m) { &PENDING } else { &SENT[usize::from(seen_by(st, m) > 0)] };
