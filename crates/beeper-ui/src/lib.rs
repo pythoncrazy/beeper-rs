@@ -842,7 +842,7 @@ fn has_flag(c: &Chat, flag: ChatFlag) -> bool {
 }
 
 fn checkbox<'a>(p: &Palette, on: bool) -> El<'a> {
-    let (bg, ring) = if on { (p.checked, CLEAR) } else { (CLEAR, Color { a: 0.3, ..p.strong }) };
+    let (bg, ring) = if on { (p.toggle_on, CLEAR) } else { (CLEAR, p.toggle_off) };
     let check = on.then(|| ic(icon::CHECK, 12.0).color(Color::WHITE));
     container(check).center(16).style(bordered_box(bg, ring, 1.5, 8.0)).into()
 }
@@ -6809,6 +6809,25 @@ mod test_bus;
 mod tests {
     use super::*;
     use crate::media_view::{filmstrip, slide};
+
+    /// Desktop's `Checkbox`: a checked box is `--checkbox-style-bg-selected`, an empty one has a 1.5 px
+    /// `--checkbox-style-border` ring, in both themes.
+    #[test]
+    fn checkboxes_take_desktops_colors() {
+        use crate::style::{BEEPER_DARK, BEEPER_LIGHT};
+        for (p, ring) in [(BEEPER_LIGHT, 255.0 * 0.698), (BEEPER_DARK, 255.0 * 0.302)] {
+            let shot = |on| {
+                let view = container(checkbox(&p, on)).style(fill_box(p.card, 0.0));
+                crate::focus::tests::shot(view.into(), Size::new(16.0, 16.0), "checkbox")
+            };
+            let (on, off) = (shot(true), shot(false));
+            let k = on.width() / 16;
+            assert_eq!(on.get_pixel(3 * k, 8 * k).0[..3], [0x0d, 0x4f, 0xfb]);
+            let edge = (0..8 * k).map(|x| off.get_pixel(x, 8 * k).0[0]);
+            let edge = if p.card == BEEPER_LIGHT.card { edge.min() } else { edge.max() }.unwrap();
+            assert!((f32::from(edge) - ring).abs() < 3.0, "the ring is {edge}, not {ring}");
+        }
+    }
 
     /// A paste whose clipboard arboard cannot reach, as on Wayland without Xwayland, or that has no image, pastes
     /// the text through iced's clipboard instead of failing with "Could not read the clipboard".
