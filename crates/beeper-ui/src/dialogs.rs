@@ -1537,7 +1537,7 @@ impl BeeperGuiApp {
                 for (i, id) in o.voter_ids.iter().take(100).enumerate() {
                     let u = people.iter().find(|u| u.id == *id);
                     let name = u.and_then(|u| u.full_name.clone()).unwrap_or_else(|| id.clone());
-                    let face = self.face(u.and_then(|u| u.img_url.as_deref()), &name, 28.0, 0.5);
+                    let face = self.face(u.and_then(crate::user_img).as_deref(), &name, 28.0, 0.5);
                     let line = row![face, txt(name, 14.0).line_height(lh(18.0)).color(p.strong)].spacing(8);
                     let last = i + 1 == n.min(100) && n <= 100;
                     voters = voters.push(container(line.align_y(Center)).padding(Padding::new(6.0).bottom(if last { 0.0 } else { 6.0 })));

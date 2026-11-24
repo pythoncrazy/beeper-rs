@@ -945,7 +945,7 @@ impl BeeperGuiApp {
                     let disc = container(Space::new()).width(size + 4.0).height(size + 4.0);
                     pin(disc.style(fill_box(c, size / 2.0 + 2.0))).x(x - 2.0).y(-2.0).into()
                 });
-                let face = self.face_alpha(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), size, 0.0, v);
+                let face = self.face_alpha(crate::user_img(u).as_deref(), u.full_name.as_deref().unwrap_or_default(), size, 0.0, v);
                 let face = self.tip(face, member_name(u), vec![], tooltip::Position::Top);
                 cut.into_iter().chain([pin(face).x(x).into()])
             });
@@ -1278,7 +1278,8 @@ impl BeeperGuiApp {
         let invite = chat.inviter().filter(|_| chat.chat_type == "group").map(|u| -> El<'a> {
             let me = chat.participants.items.iter().find(|u| u.is_self == Some(true)).and_then(handle);
             let name = u.full_name.clone().unwrap_or_else(|| u.id.clone());
-            let who = row![self.face(u.img_url.as_deref(), &name, 16.0, 0.0), semi(name, 13.0).color(p.text)].spacing(4).align_y(Center);
+            let who =
+                row![self.face(crate::user_img(u).as_deref(), &name, 16.0, 0.0), semi(name, 13.0).color(p.text)].spacing(4).align_y(Center);
             let who = self.user_trigger(chat, &u.id, who);
             let text = tr(match me {
                 Some(_) => "__INVITER__ invited you (__USERNAME__) on __PLATFORM__",
@@ -2068,7 +2069,7 @@ impl BeeperGuiApp {
             }));
             ids.extend(phone.filter(|ph| *ph != full).map(crate::fmt_phone));
             ids.extend(u.email.clone().filter(|_| phone != Some(full.as_str())));
-            let line = row![self.face(u.img_url.as_deref(), &crate::member_name(u), 20.0, 0.5)]
+            let line = row![self.face(crate::user_img(u).as_deref(), &crate::member_name(u), 20.0, 0.5)]
                 .push(container(med(full, 13.0).color(p.text)).padding(Padding::ZERO.right(13.0)))
                 .push(row(ids.into_iter().map(|i| -> El<'a> { txt(i, 13.0).color(p.weak).into() })).spacing(8))
                 .spacing(4)
@@ -2192,7 +2193,7 @@ impl BeeperGuiApp {
                     let face = group.then(|| {
                         let u = q.and_then(|q| chat.participants.items.iter().find(|u| u.id == q.sender_id));
                         let name = q.filter(|_| u.is_some()).map(|q| sender_label(chat, q)).unwrap_or_default();
-                        let face = self.face_alpha(u.and_then(|u| u.img_url.as_deref()), &name, 24.0, 1.0, 0.6);
+                        let face = self.face_alpha(u.and_then(crate::user_img).as_deref(), &name, 24.0, 1.0, 0.6);
                         container(face).center_x(FACE).align_bottom(FACE)
                     });
                     row![].push(face).push(quote).spacing(FACE_GAP).align_y(Bottom).into()
@@ -2450,10 +2451,10 @@ impl BeeperGuiApp {
             .then(|| self.view_flyover(st, chat, ms, (mine, pending, in_pane), muted, text.is_empty() && shows_time));
         let side = (group && !mine).then(|| -> El<'a> {
             if face {
-                let url = chat.participants.items.iter().find(|u| u.id == m.sender_id).and_then(|u| u.img_url.as_deref());
+                let url = chat.participants.items.iter().find(|u| u.id == m.sender_id).and_then(crate::user_img);
                 // Desktop's `sender-img`: a click starts a chat with the sender, when the account can.
                 let dm = UiMessage::Members(members::Msg::Message(chat.id.clone(), m.sender_id.clone()));
-                let face = mouse_area(crate::style::region(true, || self.face(url, &sender_label(chat, m), FACE, 0.0)));
+                let face = mouse_area(crate::style::region(true, || self.face(url.as_deref(), &sender_label(chat, m), FACE, 0.0)));
                 let face = if self.can(&chat.account_id, "create_dm") { face.on_press(dm) } else { face };
                 self.user_trigger(chat, &m.sender_id, face)
             } else {
@@ -3395,7 +3396,7 @@ impl BeeperGuiApp {
             let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
             let line = row![
                 container(self.reaction_glyph(x, 17.0, 17.0 * 1.3)).padding(Padding::ZERO.right(10.0)),
-                container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0, 0.5)).padding(Padding::ZERO.right(8.0)),
+                container(self.face(u.and_then(crate::user_img).as_deref(), name, 20.0, 0.5)).padding(Padding::ZERO.right(8.0)),
                 med(name.to_string(), 13.0).color(p.text),
             ]
             .align_y(Center);
@@ -3428,7 +3429,7 @@ impl BeeperGuiApp {
                 let faces = reactors.iter().take(3).enumerate().rev().map(|(k, x)| {
                     let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
                     let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
-                    pin(self.face(u.and_then(|u| u.img_url.as_deref()), name, 16.0, 0.5)).x(10.0 * k as f32).into()
+                    pin(self.face(u.and_then(crate::user_img).as_deref(), name, 16.0, 0.5)).x(10.0 * k as f32).into()
                 });
                 let shown = n.min(3) as f32;
                 pill = pill.push(Stack::with_children(faces).width(16.0 + 10.0 * (shown - 1.0)).height(16.0));
@@ -4152,7 +4153,7 @@ impl BeeperGuiApp {
                 let u = chat.participants.items.iter().find(|u| u.id == *id);
                 let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(id);
                 let face =
-                    container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0, 0.5)).padding(1.5).style(fill_box(bg, 11.5));
+                    container(self.face(u.and_then(crate::user_img).as_deref(), name, 20.0, 0.5)).padding(1.5).style(fill_box(bg, 11.5));
                 s.push(container(face).padding(Padding::ZERO.left(14.0 * i as f32)))
             });
             let right = (shown && n > 0).then(|| row![faces, semi(n.to_string(), 13.0).color(fg)].spacing(6).align_y(Center));

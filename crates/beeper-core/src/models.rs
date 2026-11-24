@@ -807,6 +807,12 @@ pub struct Chat {
     /// Desktop's `chatNotificationSound`: a sound of [`CHAT_SOUNDS`], or `None` for the Default sound.
     #[serde(rename = "chatNotificationSound", default, skip_serializing_if = "Option::is_none")]
     pub notification_sound: Option<String>,
+    /// Desktop's `deriveDMSenderNames` of a merged chat: "Apply merged info to contacts".
+    #[serde(rename = "deriveDMSenderNames", default, skip_serializing_if = "std::ops::Not::not")]
+    pub derive_dm_sender_names: bool,
+    /// The room has an `m.room.name` (Desktop's `title`), so it is no DM of one person.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub named: bool,
     #[serde(skip)]
     pub flags: u16,
 }

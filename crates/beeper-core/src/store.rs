@@ -524,6 +524,16 @@ impl OutFile {
     }
 }
 
+/// A person's name and photo that Desktop's `senderOverridesStore` puts on them in every chat.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SenderProfile {
+    pub name: Option<String>,
+    pub img_url: Option<String>,
+}
+
+/// The [`SenderProfile`]s by user ID.
+pub type SenderOverrides = std::sync::Arc<HashMap<String, SenderProfile>>;
+
 pub struct BeeperStore {
     pub config: CentralConfig,
     pub setup: Option<Setup>,
@@ -551,6 +561,8 @@ pub struct BeeperStore {
     /// This store among the stores of the process, so that a cache of values found from its chats keys them by
     /// `(instance, chat_changes)`.
     pub instance: u64,
+    /// The last [`BeeperStore::sender_overrides`], by `(instance, chat_changes)`.
+    sender_memo: Mutex<Option<((u64, u64), SenderOverrides)>>,
     pub(crate) chat_idx_by_id: HashMap<String, usize>,
     /// The `activity_key` of each chat, for Desktop's chat order `ORDER BY timestamp DESC`.
     chat_order: BTreeSet<(i64, String)>,
@@ -793,7 +805,7 @@ impl BeeperStore {
             matrix_error, sync_failing, session_ended, syncing, sas_confirm, pending_recovery_key, ui_auth_token,
             outbox, bookmarks_room, bookmarks_failed, bookmarks, bookmarked, reminders_room, message_reminders,
             reminder_events, removals, outbox_ready, sync_tx, sent_flags, syncs, sent, typing, typing_updates, recent_emoji, scheduled,
-            synced_prefs, skin_tone, muted_rooms, room_reads, account_data_key, requests_viewed, whoami, drafts);
+            synced_prefs, skin_tone, muted_rooms, room_reads, account_data_key, requests_viewed, whoami, drafts, sender_memo);
         store.load_from_sqlite();
         store
     }
@@ -2167,6 +2179,77 @@ impl BeeperStore {
     }
 
     /// Desktop's `setPersonalRoomName` and `setPersonalRoomAvatar`: `Some(None)` removes the name or the photo.
+    /// Desktop's `dmPartnerID`: the one other person of a DM without a room name, while you are in it. Bots count only
+    /// when the DM has nobody else.
+    pub fn dm_partner<'c>(&self, c: &'c Chat) -> Option<&'c str> {
+        let people = &c.participants.items;
+        let in_it = people.iter().any(|u| u.is_self == Some(true) && u.has_exited != Some(true));
+        if c.named || c.chat_type != "single" || !in_it {
+            return None;
+        }
+        let others: Vec<&User> = people.iter().filter(|u| u.has_exited != Some(true) && u.is_self != Some(true)).collect();
+        let people: Vec<&User> = others.iter().copied().filter(|u| u.is_network_bot != Some(true)).collect();
+        match if people.is_empty() { &others[..] } else { &people[..] } {
+            [one] => Some(one.id.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Desktop's `derivedDMUnionProfile`: the name and photo of a merged chat that applies them to its contacts, when
+    /// each of its chats is a DM.
+    pub fn union_profile(&self, union: &Chat) -> Option<SenderProfile> {
+        let merge = union.merge.as_ref()?;
+        let name = Some(union.room_title().trim().to_string()).filter(|t| !t.is_empty());
+        let img_url = union.room_img_url().map(str::to_string);
+        let dms = merge.chat_ids.iter().all(|id| self.resolve_chat_idx(id).is_some_and(|i| self.dm_partner(&self.chats[i]).is_some()));
+        ((name.is_some() || img_url.is_some()) && !merge.chat_ids.is_empty() && dms).then_some(SenderProfile { name, img_url })
+    }
+
+    /// Desktop's `senderOverridesStore.bySenderID`: a person's name and photo from a merged DM chat that applies its
+    /// info to its contacts, else from the personal name and photo of your DM with them. A view reads it once per draw.
+    pub fn sender_overrides(&self) -> SenderOverrides {
+        let key = (self.instance, self.chat_changes);
+        let mut memo = self.sender_memo.lock().unwrap();
+        if let Some((_, map)) = memo.as_ref().filter(|(k, _)| *k == key) {
+            return map.clone();
+        }
+        let mut map: HashMap<String, SenderProfile> = HashMap::new();
+        let mut from_union = HashSet::new();
+        let mut unions: Vec<&Chat> = self.chats.iter().filter(|c| c.derive_dm_sender_names && c.merge.is_some()).collect();
+        unions.sort_by(|a, b| a.id.cmp(&b.id));
+        for u in unions {
+            let Some(profile) = self.union_profile(u) else { continue };
+            for id in u.merge.iter().flat_map(|m| &m.chat_ids) {
+                let partner = self.resolve_chat_idx(id).and_then(|i| self.dm_partner(&self.chats[i]));
+                if let Some(p) = partner.filter(|p| from_union.insert(p.to_string())) {
+                    map.insert(p.to_string(), profile.clone());
+                }
+            }
+        }
+        // Desktop's `derivedSenderProfile`: the personal name and photo of a DM that is not in a merged chat.
+        for c in self.chats.iter().filter(|c| c.personal.is_some() && c.merge.is_none() && c.merged_into_chat_id.is_none()) {
+            let (Some(p), (name, img_url)) = (self.dm_partner(c), c.personal_parts()) else { continue };
+            match map.get_mut(p) {
+                Some(o) if from_union.contains(p) => {
+                    o.name = o.name.take().or(name);
+                    o.img_url = o.img_url.take().or(img_url);
+                }
+                Some(_) => {}
+                None => drop(map.insert(p.to_string(), SenderProfile { name, img_url })),
+            }
+        }
+        let map = std::sync::Arc::new(map);
+        *memo = Some((key, map.clone()));
+        map
+    }
+
+    /// Desktop's `setDeriveDmSenderNames`: "Apply merged info to contacts" of a merged chat.
+    pub fn set_derive_dm_sender_names(&mut self, union: &str, on: bool) {
+        let idx = self.chat_idx(union);
+        self.update_chat(idx, |c| c.derive_dm_sender_names = on);
+        self.queue(union, Outgoing::State(crate::matrix::DERIVE_DM_SENDER_NAMES.into(), serde_json::json!({ "enabled": on })));
+    }
+
     pub fn set_personal(&mut self, id: &str, title: Option<Option<String>>, avatar: Option<Option<(String, Vec<u8>, String)>>) {
         let idx = self.chat_idx_by_id[id];
         self.update_chat(idx, |c| {
@@ -4396,6 +4479,23 @@ mod tests {
         let sent: Vec<_> = st.outbox.iter().map(|(_, r, o)| (r.as_str(), o)).collect();
         assert!(matches!(&sent[..], [(r, super::Outgoing::RoomData(k, on)), (_, super::Outgoing::RoomData(_, off))]
             if *r == id && k == super::NOTIFICATION_SOUND && *on == serde_json::json!({ "sound": "silent" }) && *off == serde_json::json!({})));
+    }
+
+    /// Desktop's `senderOverridesStore`: the personal name of your DM with a person names them in every chat, and a
+    /// merged DM chat that applies its info to its contacts names them first.
+    #[test]
+    fn sender_overrides_like_desktop() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("overrides"));
+        let (dm, eric) = ("!wa_eric:beeper.com", "@eric:beeper.com");
+        assert_eq!(st.dm_partner(&st.chats[st.chat_idx(dm)]), Some(eric));
+        assert!(st.dm_partner(&st.chats[st.chat_idx("!sl_infra:beeper.com")]).is_none(), "a group has no partner");
+        assert!(st.sender_overrides().get(eric).is_none());
+        st.set_personal(dm, Some(Some("Big E".into())), None);
+        let o = st.sender_overrides();
+        assert_eq!(o.get(eric).and_then(|p| p.name.as_deref()), Some("Big E"));
+        let i = st.chat_idx(dm);
+        st.update_chat(i, |c| c.named = true);
+        assert!(st.sender_overrides().get(eric).is_none(), "a named room is no DM of one person");
     }
 
     #[test]

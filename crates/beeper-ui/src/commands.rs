@@ -898,7 +898,7 @@ impl BeeperGuiApp {
             .flatten()
             .map(|s| crate::style::fixed(s, 12.0, iced::font::Weight::Normal).color(p.strong.scale_alpha(0.7)).into());
         let title = row![semi(name.clone(), 13.0).color(p.strong)].extend(small);
-        let face = self.face(u.img_url.as_deref(), &name, 28.0, 0.0);
+        let face = self.face(crate::user_img(u).as_deref(), &name, 28.0, 0.0);
         let right = c.account.as_deref().map(|a| {
             let hint = lit.then(|| {
                 let hint = semi(tr("Add to chat"), 11.0).color(p.strong);

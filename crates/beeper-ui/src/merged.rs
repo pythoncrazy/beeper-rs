@@ -17,6 +17,8 @@ pub enum Msg {
     Edit(MergeEdit),
     /// Desktop's `ThreadInfoBrowserWindow` of a member chat: its Chat Info in a window of its own.
     Info(String),
+    /// Desktop's `setDeriveDmSenderNames`: "Apply merged info to contacts" of a merged chat.
+    Derive(String, bool),
 }
 
 impl BeeperGuiApp {
@@ -25,6 +27,10 @@ impl BeeperGuiApp {
             Msg::Open(union, chats) => self.open_merge(union, chats),
             Msg::Edit(e) => self.merge_edit(e),
             Msg::Info(chat) => self.open_chat_info(chat),
+            Msg::Derive(union, on) => {
+                self.store.write().set_derive_dm_sender_names(&union, on);
+                Task::none()
+            }
             Msg::Ask(id) => {
                 self.list.chat_menu = None;
                 (self.confirm, self.delete_target) = (Some(ASK_UNMERGE), Some(id));
@@ -179,7 +185,19 @@ impl BeeperGuiApp {
                 container(Column::with_children(rows).spacing(6)).padding(8).style(fill_box(p.chip, 10.0)).into()
             }
         };
-        Some(column![head, body].into())
+        // Desktop's `deriveRow`: a merged DM chat with a name or a photo can put them on its contacts everywhere.
+        let derive =
+            (st.union_profile(chat).is_some() && (st.feature("personal-room-overrides").on || chat.derive_dm_sender_names)).then(|| {
+                let on = chat.derive_dm_sender_names;
+                let label = column![
+                    txt(tr("Apply merged info to contacts"), 13.0).color(p.text),
+                    txt(tr("Use this merged chat’s name and avatar for its contacts throughout Beeper."), 12.0).color(p.sub),
+                ];
+                let switch = crate::toggle(p, on, Some(UiMessage::Merged(Msg::Derive(chat.id.clone(), !on))));
+                let line = row![label.width(Fill), switch].spacing(8).align_y(Center);
+                container(container(line).padding(8).style(fill_box(p.chip, 10.0))).padding(pad(6.0, 0.0, 0.0, 0.0))
+            });
+        Some(column![head, body].push(derive).into())
     }
 }
 

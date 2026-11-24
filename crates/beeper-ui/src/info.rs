@@ -785,7 +785,7 @@ impl BeeperGuiApp {
     /// Desktop's `MediaWithSender`: the avatar of a member sender, with their full name in a tooltip on the left.
     fn media_sender(&self, chat: &Chat, m: &Message) -> Option<El<'_>> {
         let u = chat.participants.items.iter().find(|u| u.id == m.sender_id)?;
-        let face = container(self.face(u.img_url.as_deref(), &member_name(u), 20.0, 0.0)).padding(2).style(shadow_box(
+        let face = container(self.face(crate::user_img(u).as_deref(), &member_name(u), 20.0, 0.0)).padding(2).style(shadow_box(
             Color::WHITE,
             CLEAR,
             12.0,
@@ -868,7 +868,7 @@ impl BeeperGuiApp {
                 .spacing(6)
                 .align_y(iced::Bottom);
                 let text = preview_body(m).unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
-                let face = self.face(u.and_then(|u| u.img_url.as_deref()), &name, 24.0, 0.0);
+                let face = self.face(u.and_then(crate::user_img).as_deref(), &name, 24.0, 0.0);
                 let jump = st.loaded(target).is_some().then(|| UiMessage::CommandBar(commands::Msg::JumpTo(chat.id.clone(), m.id.clone())));
                 (row![face, lines(title.into(), &text)], jump)
             }

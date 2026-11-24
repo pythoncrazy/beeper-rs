@@ -503,6 +503,9 @@ pub(crate) struct RoomReads {
     personal_name: Option<Value>,
     personal_avatar: Option<Value>,
     done: Option<Value>,
+    /// `com.beeper.derive_dm_sender_names` of a merged chat.
+    #[serde(default)]
+    derive: Option<Value>,
     /// The names of the senders that [`op`] looked up, from their member state.
     names: HashMap<String, Option<String>>,
 }
@@ -530,6 +533,7 @@ impl RoomReads {
             personal_name: account_data(room, PERSONAL_NAME).await,
             personal_avatar: account_data(room, PERSONAL_AVATAR).await,
             done: account_data(room, "com.beeper.inbox.done").await,
+            derive: state(room, DERIVE_DM_SENDER_NAMES).await,
             names: HashMap::new(),
         }
     }
@@ -782,6 +786,8 @@ async fn chat(room: &Room, reads: &RoomReads, accounts: &[BridgeAccountInfo], ru
         follows: reads.follows.as_ref().and_then(ThreadFollows::parse).unwrap_or_default(),
         // Desktop's `Up`: a sound it knows, else the Default sound.
         notification_sound: (reads.sound.as_ref()).and_then(|d| s(&d["sound"])).filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
+        derive_dm_sender_names: reads.derive.as_ref().is_some_and(|d| d["enabled"] == true),
+        named: room.name().is_some_and(|n| !n.is_empty()),
         ..Default::default()
     };
     let name = reads.personal_name.as_ref().and_then(|n| s(&n["name"])).filter(|n| !n.is_empty());
@@ -1437,6 +1443,9 @@ async fn sync_label(store: &SharedStore, room: &Room) {
 
 /// The room type of Desktop's merged chats (`unionsStore`).
 const UNION: &str = "com.beeper.union";
+/// Desktop's `com.beeper.derive_dm_sender_names` state of a merged chat: `{ "enabled": true }` puts its name and photo
+/// on the other person of each of its DMs everywhere.
+pub const DERIVE_DM_SENDER_NAMES: &str = "com.beeper.derive_dm_sender_names";
 
 /// Desktop's `unionMembersForParent`: the member rooms of a merged chat, the `m.space.child` state with a `via`, in
 /// the order that they joined.
@@ -6687,6 +6696,7 @@ mod tests {
                 personal_name: None,
                 personal_avatar: None,
                 done: None,
+                derive: None,
                 names: Default::default(),
             })
         };

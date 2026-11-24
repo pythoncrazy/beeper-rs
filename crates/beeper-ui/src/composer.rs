@@ -605,7 +605,7 @@ impl BeeperGuiApp {
             Suggestion::Emoji(c, _) if emoji::is_mxc(c) => Some(self.custom_image(c, 13.0, self.animate.get())),
             Suggestion::Emoji(..) | Suggestion::Command(_) | Suggestion::QuickReply(_) => None,
             Suggestion::Mention(_, _, Some(u)) => {
-                Some(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 32.0, 0.0))
+                Some(self.face(crate::user_img(u).as_deref(), u.full_name.as_deref().unwrap_or_default(), 32.0, 0.0))
             }
             Suggestion::Mention(_, _, None) => {
                 let chat = self.pane().selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));

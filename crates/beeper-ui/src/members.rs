@@ -148,7 +148,7 @@ impl BeeperGuiApp {
                     .into()
             });
             // iced draws no widget at half opacity, so only the name of an invited member fades.
-            let line = row![self.face(u.img_url.as_deref(), &name, 28.0, 0.0), label]
+            let line = row![self.face(crate::user_img(u).as_deref(), &name, 28.0, 0.0), label]
                 .push(Space::new().width(Fill))
                 .push(Row::with_children(tags).spacing(4))
                 .spacing(8)

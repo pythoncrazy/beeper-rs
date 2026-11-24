@@ -1714,7 +1714,8 @@ pub(crate) const MENTION: &str = "beeper-mention:";
 /// Desktop's `messageSender`: the name of the sender's current member, or the name that came with the message.
 fn sender_label(chat: &Chat, m: &Message) -> String {
     let member = chat.participants.items.iter().find(|u| u.id == m.sender_id);
-    member.map_or_else(|| m.sender_name.clone().expect("sender name"), member_name)
+    let fallback = || overlay(&m.sender_id).and_then(|o| o.name).or_else(|| m.sender_name.clone()).expect("sender name");
+    member.map_or_else(fallback, member_name)
 }
 
 /// Desktop's `mD`: a participant has a name of its own, not only a phone number or an email.
@@ -1726,8 +1727,26 @@ fn real_name(u: &User) -> bool {
         || full.is_some_and(|f| !u.phone_number.as_deref().is_some_and(|ph| digits(ph) == digits(f)) && u.email.as_deref() != Some(f))
 }
 
-/// Desktop's `Fr`: the name of a participant.
+thread_local! {
+    /// Desktop's `senderOverridesStore`, which [`BeeperGuiApp::view`] takes from the store before it draws.
+    static OVERRIDES: std::cell::RefCell<beeper_core::store::SenderOverrides> = Default::default();
+}
+
+/// Desktop's `applyProfileOverlays`: the name and photo that another chat puts on the person `id`.
+fn overlay(id: &str) -> Option<beeper_core::store::SenderProfile> {
+    OVERRIDES.with(|o| o.borrow().get(id).cloned())
+}
+
+/// The photo of a person, with Desktop's overlay.
+fn user_img(u: &User) -> Option<String> {
+    overlay(&u.id).and_then(|o| o.img_url).or_else(|| u.img_url.clone())
+}
+
+/// Desktop's `Fr`: the name of a participant, with Desktop's overlay.
 fn member_name(u: &User) -> String {
+    if let Some(name) = overlay(&u.id).and_then(|o| o.name) {
+        return name;
+    }
     [&u.custom_nickname, &u.full_name, &u.username, &u.email]
         .into_iter()
         .find_map(Clone::clone)
@@ -5176,6 +5195,7 @@ impl BeeperGuiApp {
 
     pub fn view(&self, id: window::Id) -> El<'_> {
         let st = self.store.read();
+        OVERRIDES.with(|o| *o.borrow_mut() = st.sender_overrides());
         let arrow = !st.settings.on("pointerCursor");
         self.animate.set(st.settings.on("animateAvatars") && self.shows());
         drop(st);
@@ -5314,6 +5334,7 @@ impl BeeperGuiApp {
     }
 
     pub fn view_main<'a>(&'a self) -> El<'a> {
+        OVERRIDES.with(|o| *o.borrow_mut() = self.store.read().sender_overrides());
         let st = self.store.read();
         // The sync task can drop a chat before StoreChanged reaches update.
         let known = |c: &str| {
@@ -5836,7 +5857,7 @@ impl BeeperGuiApp {
         };
         let name = member_name(u);
         let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
-        let face = container(self.face(u.img_url.as_deref(), &name, 80.0, 0.0)).padding(4).style(lifted(44.0));
+        let face = container(self.face(crate::user_img(u).as_deref(), &name, 80.0, 0.0)).padding(4).style(lifted(44.0));
         let high = CARD_H + if id.is_some() { 15.0 } else { 0.0 };
         let info = column![semi(name, 14.0).line_height(lh(18.0)).color(p.strong).width(Fill).align_x(Center)]
             .push(id.map(|i| txt(i, 12.0).color(p.sub).width(Fill).align_x(Center)));
