@@ -8821,6 +8821,42 @@ fn link_previews_like_desktop() {
     assert!(sim.find("Scaling Laws for Neural Language Models").is_err(), "a link without a preview shows none");
 }
 
+/// Desktop's link in a message (`.message-contents a.ext-link-with-icon`): its `border-bottom` 3 px under the
+/// baseline, under the content area of the text, and running on under the `:after` arrow, an 8 px box 2 px after the
+/// link at 0.7 opacity whose bottom is on the baseline.
+#[test]
+fn message_links_like_desktop() {
+    let mut app = demo_app("link-arrow");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 900.0), app.view_main());
+    // The sent bubble with the link sits under the preview's host line; the shot is at a scale of 2.
+    let host = sim.find("arxiv.org").expect("the preview's host").bounds();
+    let shot = crate::message::tests::pixels(&mut sim);
+    let red = |x: u32, y: u32| shot.get_pixel(x, y).0[0];
+    let rows = (2 * (host.y + 20.0) as u32)..(2 * (host.y + 60.0) as u32);
+    // The underline: the longest white run of a row on the blue bubble.
+    let run = |y: u32| {
+        let mut runs = vec![(0, 0, 0, y)];
+        for x in 1000..shot.width() - 1 {
+            match (red(x - 1, y) > 240, red(x, y) > 240) {
+                (false, true) => runs.push((1, x, x, y)),
+                (true, true) => runs.last_mut().map_or((), |r| (r.0, r.2) = (r.0 + 1, x)),
+                _ => {}
+            }
+        }
+        runs.into_iter().filter(|r| r.1 > 0 && red(r.1 - 1, y) < 100 && red(r.2 + 1, y) < 100).max().unwrap_or((0, 0, 0, y))
+    };
+    let (_, u0, u1, y) = rows.map(run).max().expect("an underline");
+    // The arrow: the ink of 0.7 white over the bubble in the 12 px before the underline's end.
+    let ink: Vec<(u32, u32)> =
+        (u1 - 24..=u1).flat_map(|x| (y - 24..y - 2).map(move |y| (x, y))).filter(|&(x, y)| red(x, y) > 100).collect();
+    let right = ink.iter().map(|p| p.0).max().expect("the arrow");
+    let (top, bottom) = (ink.iter().map(|p| p.1).min().unwrap(), ink.iter().map(|p| p.1).max().unwrap());
+    assert!(u1 - u0 > 300, "the underline runs under the link: {u0}..{u1}");
+    assert!((3..=6).contains(&(u1 - right)), "the underline runs on 2 px past the arrow: {right} {u1}");
+    assert!((14..=17).contains(&(bottom - top + 1)), "an 8 px arrow: {top}..{bottom}");
+}
+
 #[test]
 fn email_links_and_media_items_match_desktop() {
     let address = |t: &str| crate::linkify::links(t).into_iter().map(|(r, h)| (t[r].to_string(), h)).collect::<Vec<_>>();

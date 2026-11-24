@@ -2683,11 +2683,9 @@ impl BeeperGuiApp {
             let pill = if mine { Color { a: 0.3, ..fg } } else { p.accent };
             s.font(crate::style::fw(Weight::Bold)).color(Color::WHITE).background(pill).border(border::rounded(4)).padding(2)
         };
-        // Desktop's `.ext-link-with-icon:after`: the arrow at 0.7 opacity, 2 px from the link and the text after it.
-        let arrow = || {
-            let arrow = span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(rem(11.0));
-            arrow.color(fg.scale_alpha(0.7)).padding(Padding::from([0, 2]))
-        };
+        // Desktop's `.ext-link-with-icon:after`: 12 px of the link, with its underline, for the arrow that the text
+        // draws in it.
+        let arrow = |href: Option<String>| span(crate::selectable::ARROW_SLOT).size(rem(12.0)).color(fg).underline(true).link_maybe(href);
         let rich = |(r, room): (beeper_core::codec::Run, bool)| {
             if r.emoticon.is_some() {
                 return [Some(span(crate::selectable::IMAGE_SLOT).size(rem(13.0))), None].into_iter().flatten();
@@ -2734,7 +2732,7 @@ impl BeeperGuiApp {
                 Some(id) => s.font(bold).color(if mine { fg } else { p.accent }).link(format!("{}{} {id}", crate::MENTION, m.chat_id)),
                 None => s.underline(r.underline || r.link.is_some()).link_maybe(r.link.clone()),
             };
-            let arrow = (external && s.link.is_some()).then(arrow);
+            let arrow = (external && s.link.is_some()).then(|| arrow(s.link.clone()));
             [Some(s), arrow].into_iter().flatten()
         };
         let word = |w: &str| span(w.to_string()).size(rem(13.0)).color(fg);
@@ -2749,8 +2747,8 @@ impl BeeperGuiApp {
             let mut at = 0;
             for (range, href) in crate::linkify::links(text) {
                 spans.extend(words(&text[at..range.start]));
-                spans.push(span(text[range.clone()].to_string()).size(rem(13.0)).color(fg).underline(true).link(href));
-                spans.push(arrow());
+                spans.push(span(text[range.clone()].to_string()).size(rem(13.0)).color(fg).underline(true).link(href.clone()));
+                spans.push(arrow(Some(href)));
                 at = range.end;
             }
             spans.extend(words(&text[at..]));
