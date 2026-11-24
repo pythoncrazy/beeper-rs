@@ -417,6 +417,8 @@ pub enum UiMessage {
     /// Settings > Integrations: the Desktop API tokens and connections, Remote Access, and the MCP install.
     Integrations(integrations::Msg),
     OpenQuickLook(String, String),
+    /// Opens a window of [`modals::Modal`] over the window where the action was, Desktop's `setVisibleModal`.
+    OpenModal(modals::Modal, Option<window::Id>),
     OpenUrl(String),
     /// The result of opening a URL in the browser.
     Opened(Result<(), String>),
@@ -2713,6 +2715,8 @@ pub struct Pane {
     pub stash: Option<Stash>,
     /// The composer changed after the last save of the draft. Desktop saves it at most every 5 seconds.
     pub draft_due: bool,
+    /// The draft of the open chat when it opened, which the chat list shows (see `listed_draft`).
+    pub listed_draft: Option<String>,
     /// Desktop's `ScrollToBottom`: whether you scrolled up from the bottom of the timeline, and since when.
     pub scrolled_up: Option<(bool, std::time::Instant)>,
     /// Desktop's `preventAutoMarkAsRead`: a "Mark as Unread" from a message keeps the open chat unread until you
@@ -3929,6 +3933,7 @@ impl BeeperGuiApp {
             st.mark_read(idx, false);
         }
         let chat = st.chats[idx].clone();
+        self.pane.listed_draft = chat_list::draft_line(&chat);
         let draft = chat.draft.clone().unwrap_or_default();
         self.pane.emoticons.clear();
         let text = composer::stored_text(&mut self.pane, draft.text.as_deref().unwrap_or_default());
@@ -4618,6 +4623,7 @@ impl BeeperGuiApp {
             | UiMessage::Pushed(..)
             | UiMessage::DismissRecoveryReminder
             | UiMessage::DismissTrialOver) => return self.handle_sync(msg),
+            UiMessage::OpenModal(m, from) => return self.open_modal(m, from),
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
             }

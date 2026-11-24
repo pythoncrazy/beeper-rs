@@ -76,8 +76,8 @@ enum Op {
     PollEdit(String, String, Box<PollData>, Option<String>),
     /// The `com.beeper.disappearing_timer` of an edit without content, and the sender of the edit.
     Timer(String, String, MessageTimer),
-    /// A redaction, and whether the bridge redacted view-once media after its last view.
-    Redact(String, bool),
+    /// A redaction, and what it does to its message.
+    Redact(String, Redaction),
     Remove(String),
     /// Desktop's `com.beeper.view_limited` update: the views left of view-once media.
     ViewsLeft(String, u64),
@@ -688,14 +688,18 @@ pub(crate) struct Globals {
     pins: Value,
     muted: Vec<String>,
     notifications: matrix_sdk::notification_settings::NotificationSettings,
+    /// The [`crate::features::REQUESTS`] flag.
+    requests: bool,
 }
 
 impl Globals {
     pub(crate) async fn read(client: &Client) -> Self {
+        let flags = crate::features::Flags { flags: global(client, crate::features::FLAGS).await, ..Default::default() };
         Self {
             pins: global(client, "com.beeper.favourites_order").await,
             muted: muted_rooms(client).await,
             notifications: client.notification_settings().await,
+            requests: flags.get(crate::features::REQUESTS, 0).on,
         }
     }
 
@@ -728,7 +732,8 @@ async fn chat(room: &Room, reads: &RoomReads, accounts: &[BridgeAccountInfo], ru
         id: room.room_id().to_string(),
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, bridge, !dm)),
         inbox_group: !dm && bridge["com.beeper.room_type.v2"] != "group_dm",
-        is_request: Some(bridge["channel"]["com.beeper.message_request"] == true),
+        // Desktop's `isRequest`: a bridged chat is a request only with the flag.
+        is_request: Some(bridge["channel"]["com.beeper.message_request"] == true && (globals.requests || account_id == "hungryserv")),
         created_at: reads.create["origin_server_ts"].as_i64(),
         network_name: s(&bridge["network"]["displayname"]),
         network_id: s(&bridge["network"]["id"]),
@@ -922,6 +927,28 @@ fn unresolved_media(c: &Value) -> Option<String> {
     c.get("com.beeper.unresolved_media").filter(|v| !v.is_null()).map(Value::to_string)
 }
 
+/// What a redaction does to its message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Redaction {
+    /// The message stays as a "deleted" placeholder.
+    Delete,
+    /// Desktop's `com.beeper.view_limited`: the bridge redacted view-once media after its last view.
+    Expire,
+    /// Desktop's `com.beeper.dont_render_redacted_placeholder`: the message goes, unless hidden events show.
+    Hide,
+}
+
+impl Redaction {
+    /// The redaction with content `c`; with `hidden`, a hidden message shows as deleted.
+    fn of(c: &Value, hidden: bool) -> Self {
+        match () {
+            _ if !hidden && c["com.beeper.dont_render_redacted_placeholder"] == true => Redaction::Hide,
+            _ if c["com.beeper.view_limited"] == true => Redaction::Expire,
+            _ => Redaction::Delete,
+        }
+    }
+}
+
 /// The store operation for a timeline event. With `hidden`, the events that Desktop hides become `HIDDEN` rows.
 /// `names` keeps the names of the senders that it looked up, for the next events of the room.
 async fn op(
@@ -937,12 +964,13 @@ async fn op(
     let order = e["unsigned"]["com.beeper.hs.order"].as_i64().unwrap_or(0);
     let poll = matches!(kind.as_str(), "org.matrix.msc3381.poll.start" | "m.poll.start").then(|| poll(c)).flatten();
     let (text, attachments, message_type) = match kind.as_str() {
+        _ if deleted && Redaction::of(&e["unsigned"]["redacted_because"]["content"], hidden) == Redaction::Hide => return None,
         "m.room.message" | "m.sticker" | "m.room.encrypted" if deleted => (None, Vec::new(), "TEXT"),
         _ if deleted => return None,
         "m.reaction" => (None, Vec::new(), "REACTION"),
         "m.room.redaction" => {
             let target = s(&e["redacts"]).or(s(&c["redacts"]))?;
-            return Some(Op::Redact(target, c["com.beeper.view_limited"] == true));
+            return Some(Op::Redact(target, Redaction::of(c, hidden)));
         }
         "m.room.message" if rel["rel_type"] == "m.replace" => {
             let (new, ts) = (&c["m.new_content"], e["origin_server_ts"].as_i64().expect("event timestamp"));
@@ -2179,10 +2207,11 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
                         Op::Remove(id) if here(st, &id).is_some() => {
                             st.remove_message(&chat_id, &id).expect("remove a local echo");
                         }
-                        Op::Redact(target, expired) if here(st, &target).is_some() => {
-                            match expired {
-                                true => st.expire_message(&chat_id, &target),
-                                false => st.delete_message(&chat_id, &target),
+                        Op::Redact(target, how) if here(st, &target).is_some() => {
+                            match how {
+                                Redaction::Delete => st.delete_message(&chat_id, &target),
+                                Redaction::Expire => st.expire_message(&chat_id, &target),
+                                Redaction::Hide => st.remove_message(&chat_id, &target),
                             }
                             .expect("redact a known message");
                         }
@@ -3118,8 +3147,15 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             };
             room.send_raw("m.room.message", origin(edit_content(&target, text, &mentions, attachment)?, now_unix_millis())).await?;
         }
+        // Desktop's `getRedactionExtraContent`: a room with `delete_hide_placeholder` leaves no "deleted" placeholder.
         Outgoing::Redact { target } => {
-            room.redact(&event(target)?, None, None).await.map_err(|x| x.to_string())?;
+            let target = event(target)?;
+            if state(&room, "com.beeper.room_features").await.is_some_and(|f| f["delete_hide_placeholder"] == true) {
+                let content = serde_json::json!({ "com.beeper.dont_render_redacted_placeholder": true });
+                redact_with(&client, &room, target.as_str(), content).await?;
+            } else {
+                room.redact(&target, None, None).await.map_err(|x| x.to_string())?;
+            }
         }
         // Desktop's `sendReactionEvent`: a custom emoji reacts with its image and names its shortcode.
         Outgoing::React { txn, target, key, img_url } => {
@@ -4779,10 +4815,15 @@ pub fn with_custom_emoji(pack: &Value, name: &str, url: &str) -> Result<Value, S
     Ok(pack)
 }
 
-/// Applies a change of the inbox rules to every room.
+/// Applies a change of the inbox rules or of the [`crate::features::REQUESTS`] flag to every room.
 async fn sync_rules(client: &Client, store: &SharedStore, globals: &Globals) {
     let rules = global(client, RULES).await;
-    if std::mem::replace(&mut store.write().inbox_rules, rules.clone()) != rules {
+    let changed = {
+        let mut st = store.write();
+        let requests = std::mem::replace(&mut st.requests_folder, globals.requests) != globals.requests;
+        (std::mem::replace(&mut st.inbox_rules, rules.clone()) != rules) | requests
+    };
+    if changed {
         let rooms = futures_util::stream::iter(client.joined_rooms());
         rooms.for_each_concurrent(8, |room| async move { sync_room_with(store, &room, Vec::new(), globals).await }).await;
     }
@@ -5820,6 +5861,7 @@ pub async fn run(store: SharedStore) {
         // Nothing saves a sync before the first one below, so the passes over the rooms read the global account data
         // once.
         let globals = Globals::read(&client).await;
+        store.write().requests_folder = globals.requests;
         for room in client.invited_rooms() {
             sync_invite(&store, &room, &globals).await;
         }
@@ -7519,6 +7561,47 @@ mod tests {
         assert_eq!(preview.id, "$gone", "Desktop's `Pct`: expired media still previews its chat");
     }
 
+    /// Desktop's `com.beeper.dont_render_redacted_placeholder`: a redaction with it removes its message instead of
+    /// leaving "deleted", and a delete in a room with `delete_hide_placeholder` sends it.
+    #[tokio::test]
+    async fn redactions_without_a_placeholder_remove_the_message_like_desktop() {
+        let text = |id: &str| stub_event(id, "m.room.message", json!({ "msgtype": "m.text", "body": "hi" }));
+        let hide = json!({ "com.beeper.dont_render_redacted_placeholder": true });
+        let mut redaction = stub_event("$r", "m.room.redaction", hide.clone());
+        redaction["redacts"] = json!("$gone");
+        let mut old = stub_event("$old", "m.room.message", json!({}));
+        old["unsigned"]["redacted_because"] = json!({ "content": hide });
+        let mut kept = stub_event("$kept", "m.room.message", json!({}));
+        kept["unsigned"]["redacted_because"] = json!({ "content": {} });
+        let events = [text("$a"), old, kept, text("$gone"), redaction];
+        let mut sync = stub_sync();
+        let features = json!({ "type": "com.beeper.room_features", "state_key": "", "sender": "@me:x", "event_id": "$f",
+            "origin_server_ts": 1, "content": { "delete_hide_placeholder": true } });
+        sync["rooms"]["join"]["!room:x"]["state"]["events"].as_array_mut().unwrap().push(features);
+        let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = bodies.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": events.iter().rev().collect::<Vec<_>>() })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            p if method == "PUT" && p.contains("/redact/") => {
+                seen.lock().unwrap().push(body);
+                (200, json!({ "event_id": "$redaction" }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("no-placeholder"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        let has = |id: &str| store.read().msg_idx_by_id.contains_key(id);
+        assert!(has("$a") && has("$kept") && !has("$gone") && !has("$old"), "only a plain redaction leaves a placeholder");
+        store.write().queue("!room:x", super::Outgoing::Redact { target: "$a".into() });
+        super::flush(store.clone()).await.expect("the homeserver takes the redaction");
+        assert_eq!(*bodies.lock().unwrap(), [hide]);
+    }
+
     /// The SDK's `ViewLimitedMedia`: a provisioning request through the homeserver to the bridge, with the limit of the
     /// view.
     #[tokio::test]
@@ -8269,6 +8352,36 @@ mod tests {
         let store = stub_store(&crate::testing::temp_dir("bot-room"), &url).await;
         sync_stub_room(&store, "!room:x").await;
         assert_eq!(store.read().chat("!room:x").title, "@whatsappbot:beeper.local");
+    }
+
+    /// Desktop's `isRequest`: a bridged message request is one only with the `message-requests-folder-available`
+    /// flag, and a change of the flag makes the chats again.
+    #[tokio::test]
+    async fn bridged_requests_follow_the_requests_flag_like_desktop() {
+        let mut sync = stub_sync();
+        let bridge = json!({ "bridgebot": "@bot:x", "channel": { "id": "c", "com.beeper.message_request": true },
+            "protocol": { "id": "telegram" }, "com.beeper.bridge_name": "telegram" });
+        let bridge = json!({ "type": "m.bridge", "state_key": "", "sender": "@me:x", "event_id": "$b", "origin_server_ts": 1,
+            "content": bridge });
+        sync["rooms"]["join"]["!room:x"]["state"]["events"].as_array_mut().unwrap().push(bridge);
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("requests-flag"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        assert_eq!(store.read().chat("!room:x").is_request, Some(false), "no flag, no request");
+        let client = store.read().matrix.clone().expect("a client");
+        let mut globals = super::Globals::read(&client).await;
+        globals.requests = true;
+        super::sync_rules(&client, &store, &globals).await;
+        assert_eq!(store.read().chat("!room:x").is_request, Some(true), "the flag makes the chat a request");
+        assert!(store.read().requests_folder);
     }
 
     /// Desktop's blocking: the `block_user`, `no_unblock` and `report_spam` room features, the

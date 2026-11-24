@@ -8,6 +8,8 @@ pub const FLAGS: &str = "com.beeper.feature_flags";
 pub const USAGE: &str = "com.beeper.freebie_usage";
 /// Desktop's `BRIDGE_ACCOUNT_SUMMARY`: the accounts that count against the plan's limits, and the limits.
 pub const SUMMARY: &str = "com.beeper.bridge_account_summary";
+/// Desktop's `MESSAGE_REQUESTS_FOLDER_AVAILABLE`: without it, only the Matrix account's chats are message requests.
+pub const REQUESTS: &str = "message-requests-folder-available";
 
 /// Desktop's default `BRIDGE_ACCOUNT_SUMMARY` (`Bi`).
 static DEFAULT_SUMMARY: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
@@ -251,6 +253,7 @@ impl Flags {
             | "enable-disappearing-message-timer-config"
             | "personal-room-overrides"
             | "drafts-sync"
+            | REQUESTS
             | "deferred-recovery-code-setup" => {
                 let on = self.flag(key).on;
                 Feature { show: on, on, upgrade: false }
