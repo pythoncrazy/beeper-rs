@@ -10147,6 +10147,26 @@ pub(crate) fn signed_out_app(name: &str) -> BeeperGuiApp {
     app
 }
 
+/// Desktop's `.right` card clips what it holds to its 10 px corners (`overflow: hidden`), so the fade over the top of
+/// the timeline leaves the top corners round, and its shadow is `drop-shadow(0 0 10px rgba(0, 0, 0, 0.12))`.
+#[test]
+fn the_open_chat_card_keeps_its_round_corners_and_shadow_like_desktop() {
+    let mut app = demo_app("card-corners");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+    let shot = crate::focus::tests::pixels(&mut sim, &app.iced_theme(), "card-corners");
+    let k = shot.width() / 1200;
+    let at = |x: u32, y: u32| shot[(x * k, y * k)].0;
+    let card = app.pal.card.into_rgba8();
+    let left = (0..1200).find(|&x| at(x, 400) == card).expect("the card");
+    assert_eq!(at(left + 12, 8), card, "the fade fills the top edge between the corners");
+    assert_ne!(at(left + 1, 8), card, "the top left corner is round");
+    assert_ne!(at(1190, 8), card, "the top right corner too");
+    // Desktop's frame above the card is #E3E4E9 at the top of the window and #DCDDE1 at the card, 8 px below.
+    let dark = i32::from(at(700, 0)[0]) - i32::from(at(700, 7)[0]);
+    assert!((5..=8).contains(&dark), "the shadow grows by 7 towards the card: {dark}");
+}
+
 /// The pixels of the sign-in window at points of its 330x620 layout.
 fn login_pixels(app: &BeeperGuiApp, points: &[(u32, u32)]) -> Vec<Color> {
     let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 620.0), app.view_login());

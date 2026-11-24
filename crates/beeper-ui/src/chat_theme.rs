@@ -171,8 +171,12 @@ pub fn fade<'a, M: 'a>(paint: Paint, size: Size) -> Element<'a, M> {
         Paint::Photo(photo, dim) => return photo_fade(&photo, dim, size).map_or(Space::new().into(), |h| image(h).into()),
         Paint::Flat(c) => {
             let fade = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, c).add_stop(1.0, c.scale_alpha(0.0));
-            let style =
-                move |_: &Theme| container::Style { background: Some(Background::Gradient(Gradient::Linear(fade))), ..Default::default() };
+            // The card clips its corners (`overflow: hidden`), so the fade has them too.
+            let style = move |_: &Theme| container::Style {
+                background: Some(Background::Gradient(Gradient::Linear(fade))),
+                border: iced::border::rounded(iced::border::top(crate::style::PANE_RADIUS)),
+                ..Default::default()
+            };
             return container(Space::new()).width(Fill).height(FADE).style(style).into();
         }
     };
