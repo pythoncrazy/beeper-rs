@@ -1464,7 +1464,9 @@ impl BeeperGuiApp {
         });
         // Desktop's `thread-header-left`, `thread-header-name` and `thread-header-status` are `.redacted-region`s.
         let name = crate::style::region(true, || semi(short_title(chat).to_string(), 13.0).line_height(lh(16.0)).color(p.fg));
-        let name_row = row![name].push(timer).push(ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary)).spacing(2).align_y(Center);
+        // Desktop's `thread-header-name-chevron`: the Material `chevron_forward` in a 14 px box, drawn at `scale(1.2)`.
+        let chevron = lift::shrink(tinted(&CHEVRON_FORWARD, 14.0, p.tertiary), 1.2);
+        let name_row = row![name].push(timer).push(chevron).spacing(2).align_y(Center);
         // Desktop's `thread-header-status`: the activity of the other person of a 1:1 chat under the name.
         let typing = st.typing.get(cid).filter(|ids| chat.chat_type == "single" && ids.len() == 1);
         let status = typing.map(|_| crate::style::region(true, || txt("typing", 10.0).color(p.sub)));
