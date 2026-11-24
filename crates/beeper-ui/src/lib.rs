@@ -1041,7 +1041,8 @@ fn grouped_rows<'a>(p: &Palette, rows: Vec<El<'a>>) -> El<'a> {
     container(col).width(Fill).clip(true).style(fill_box(p.chip, 8.0)).into()
 }
 
-/// `ls` is Desktop's `--letter-spacing`; its initials also have `margin-right: -1px`. The avatar is drawn at `alpha`.
+/// `ls` is Desktop's `--letter-spacing` of the initials, which their `margin-right` takes back. The avatar is drawn at
+/// `alpha`.
 fn avatar<'a>(name: &str, size: f32, ls: f32, alpha: f32, p: &Palette) -> El<'a> {
     let Some(label) = initials(name) else {
         let shade = fill_box(Color { a: 0.1 * alpha, ..p.strong }, size / 2.0);
@@ -1051,11 +1052,10 @@ fn avatar<'a>(name: &str, size: f32, ls: f32, alpha: f32, p: &Palette) -> El<'a>
     let (top, bottom) = (hex(top).scale_alpha(alpha), hex(bottom).scale_alpha(alpha));
     let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, top).add_stop(1.0, bottom);
     // Desktop's `DefaultAvatar` circle is a `.redacted-region` wherever it shows.
-    let font = crate::style::region(true, || crate::style::redact(crate::style::initials_font()));
-    let white = Color::WHITE.scale_alpha(alpha);
-    let letter = |c: char| txt(c.to_string(), size * 0.5).line_height(1.0).font(font).color(white).into();
-    let trail = Padding::ZERO.right((ls - 1.0).max(0.0)).left((1.0 - ls).max(0.0));
-    container(container(Row::with_children(label.chars().map(letter)).spacing(ls)).padding(trail))
+    let font = crate::style::region(true, || crate::style::redact(spaced(crate::style::initials_font(), ls / (size * 0.5))));
+    // `font-size: 50cqw` of the circle.
+    let label = iced::widget::text(label).size(size * 0.5).line_height(1.0).font(font).color(Color::WHITE.scale_alpha(alpha));
+    container(container(label).padding(Padding::ZERO.left(ls)))
         .center(size)
         .style(move |_: &Theme| container::Style {
             background: Some(Background::Gradient(Gradient::Linear(g))),
@@ -1311,28 +1311,32 @@ fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
     chat.participants.items.iter().find(|u| shown && u.id == m.sender_id)
 }
 
-/// The 2 px cutout around a 12 or 16 px avatar badge, clipped at its right and bottom where no avatar is.
-static BADGE_RINGS: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
-    [12, 16].map(|b| {
-        let (r, s) = (b / 2 + 2, b + 2);
-        let ring = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {s} {s}"><circle cx="{r}" cy="{r}" r="{r}" fill="currentColor"/></svg>"#
-        );
-        svg::Handle::from_memory(ring.into_bytes())
+/// The 2 px cutouts around a 12 or 16 px avatar badge, clipped at their right and bottom where no avatar is: Desktop's
+/// `jd` circle around a gray badge, and its `su` square with 8 px corners around a colored one.
+static BADGE_RINGS: std::sync::LazyLock<[[svg::Handle; 2]; 2]> = std::sync::LazyLock::new(|| {
+    [false, true].map(|colored| {
+        [12, 16].map(|b| {
+            let (s, w, r) = (b + 2, b + 4, if colored { 8 } else { b / 2 + 2 });
+            let ring = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {s} {s}"><rect width="{w}" height="{w}" rx="{r}" fill="currentColor"/></svg>"#
+            );
+            svg::Handle::from_memory(ring.into_bytes())
+        })
     })
 });
 
-/// `ring` is the row color, which Desktop shows in a cutout of the avatar around the badge.
+/// `ring` is the row color, which Desktop shows in a cutout of the avatar around the badge. A colored badge is the
+/// brand tile with its 35 % corners (`BrandNetworkIcon`), a gray one a circle (`.is-badge`).
 fn badged<'a>(inner: El<'a>, brand: &str, size: f32, badge: f32, mono: Option<&Palette>, ring: Color) -> El<'a> {
     let icon: El<'a> = match mono {
-        None => svg(crate::style::brand_round(brand)).width(badge).height(badge).into(),
+        None => svg(crate::style::brand_svg(brand)).width(badge).height(badge).into(),
         Some(p) => {
             let fg = p.strong;
             let glyph = svg(crate::style::brand_badge(brand)).style(move |_, _| svg::Style { color: Some(fg) }).width(badge).height(badge);
             container(glyph).style(fill_box(p.chip, badge / 2.0)).into()
         }
     };
-    let cutout = tinted(&BADGE_RINGS[usize::from(badge > 12.0)], badge + 2.0, ring);
+    let cutout = tinted(&BADGE_RINGS[usize::from(mono.is_none())][usize::from(badge > 12.0)], badge + 2.0, ring);
     let w = size + badge / 8.0;
     let corner = |e: El<'a>| container(e).width(w).height(size).align_right(w).align_bottom(size);
     stack![container(inner), corner(cutout), corner(icon)].width(w).height(size).into()

@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["vendor/cryoglyph", "vendor/iced_tiny_skia", "vendor/iced_winit", "vendor/sctk-adwaita"]
+exclude = ["vendor/cryoglyph", "vendor/iced_graphics", "vendor/iced_tiny_skia", "vendor/iced_winit", "vendor/sctk-adwaita"]
 resolver = "2"
 
 [workspace.package]
@@ -55,6 +55,7 @@ serde.workspace = true
 
 [patch.crates-io]
 cryoglyph = { path = "vendor/cryoglyph" }
+iced_graphics = { path = "vendor/iced_graphics" }
 iced_tiny_skia = { path = "vendor/iced_tiny_skia" }
 iced_winit = { path = "vendor/iced_winit" }
 iced_wgpu = { path = "vendor/iced_wgpu" }

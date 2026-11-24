@@ -5518,6 +5518,17 @@ fn chat_titles_end_like_desktop() {
     assert!(sim.find("October 14").is_ok() && sim.find("Google Cal…").is_ok(), "the title is cut like Desktop's");
 }
 
+/// Desktop's letter spacing: the filter count (`.FilterButton-module__count`, 11 px with 0.25 px) "2" is 6.906 px
+/// wide in Desktop 4.3.308, where Inter alone makes it 6.656.
+#[test]
+fn filter_count_is_spaced_like_desktop() {
+    let mut app = demo_app("letter-spacing");
+    let main = app.main_window.expect("the main window");
+    app.set_filters(0b11);
+    let count = Simulator::with_size(Default::default(), app.pane.size, app.view(main)).find("2").expect("the count").bounds().width;
+    assert!((count - 6.906).abs() < 0.05, "{count}");
+}
+
 /// Text that Desktop sets in px keeps its size at any Font size: the filter count (`.FilterButton-module__count`,
 /// 11 px), the empty command bar (`.command-bar .empty`, 14 px), the title and the empty list of the Keyboard
 /// Shortcuts (`.modal h3`, 24 px, and `.hotkey-search-empty`, 16 px) and the tiles of the chat theme
@@ -6437,6 +6448,30 @@ fn rail_spaces_show_no_hover_fill_like_desktop() {
     assert_eq!(edge(&mut sim), clear);
 }
 
+/// Desktop's spaces scroll in `.filters-pane-list`, which ends 10 px above the footer (`.current-user`'s margin) and
+/// starts under the 14 px padding of `.account-switcher`: a space that does not fit is cut at those edges.
+#[test]
+fn rail_spaces_scroll_between_the_top_padding_and_the_footer_like_desktop() {
+    let app = demo_app("rail-scroll");
+    let size = Size::new(68.0, 400.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_rail());
+    let media = sim.find(iced::widget::Id::new("rail-media")).expect("the Media button").bounds();
+    // The rows of the space bar that have a pixel other than its background.
+    let inked = |sim: &mut Simulator<'_, UiMessage>| {
+        let shot = crate::message::tests::pixels(sim);
+        let k = shot.width() as f32 / size.width;
+        let bg = shot.get_pixel(1, 1).0;
+        (0..size.height as u32).filter(move |&y| (0..68).any(|x| shot.get_pixel((x as f32 * k) as u32, (y as f32 * k) as u32).0 != bg))
+    };
+    let gap = (media.y - 10.0) as u32..media.y as u32;
+    assert!(inked(&mut sim).any(|y| y == gap.start - 1), "a space is cut at the end of the list");
+    assert!(!inked(&mut sim).any(|y| gap.contains(&y)), "nothing in the 10 px above the footer");
+    let at = Point::new(34.0, 100.0);
+    sim.point_at(at);
+    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::WheelScrolled { delta: ScrollDelta::Pixels { x: 0.0, y: -30.0 } })]);
+    assert!(!inked(&mut sim).any(|y| y < 14), "nothing scrolls into the 14 px above the list");
+}
+
 /// Desktop's `.btn-ghost:active svg`: the pressed Search and New Chat icons of the chat list header turn
 /// `--color-icon-translucent-strong`, black at 0.9, from the `--color-on-surface` #202124 of `.tab-bar-btn button svg`.
 #[test]
@@ -7169,6 +7204,31 @@ fn chat_rows_place_their_lines_like_desktop() {
         let half = if compact { 6.0 } else { 7.0 };
         assert_eq!(badge.center_y() - title.y, count + half, "the count, compact {compact}");
     }
+}
+
+/// Desktop's `.thread-participant-name`: the sender's 12 px avatar has a 2 px margin before the name.
+#[test]
+fn previews_start_the_name_2_px_after_the_sender_like_desktop() {
+    let app = demo_app("row-sender");
+    let mut sim = simulator(app.view_sidebar());
+    let title = sim.find("Family").expect("the title").bounds();
+    let name = sim.find(|c: iced_test::selector::Candidate<'_>| match c {
+        iced_test::selector::Candidate::Text { content, bounds, .. } if content.starts_with("Mom: Dinner") => Some(bounds),
+        _ => None,
+    });
+    assert_eq!(name.expect("the preview").x - title.x, 14.0);
+}
+
+/// Desktop's colored network badge (`BrandNetworkIcon`) is the brand tile with 35 % corners, where a circle leaves the
+/// corners of its 16 px box to the cutout around it.
+#[test]
+fn colored_badges_are_rounded_tiles_like_desktop() {
+    let face: El = container(Space::new()).width(46).height(46).style(fill_box(Color::BLACK, 23.0)).into();
+    let shot = crate::focus::tests::shot(badged(face, "whatsapp", 46.0, 16.0, None, Color::WHITE), Size::new(48.0, 46.0), "badge");
+    // 2.25 px into the corner of the badge, which spans 32 to 48 and 30 to 46.
+    let k = shot.width() as f32 / 48.0;
+    let corner = shot.get_pixel((34.25 * k) as u32, (32.25 * k) as u32).0;
+    assert!(corner[1] > 150 && corner[0] < 120, "WhatsApp green, not the cutout: {corner:?}");
 }
 
 /// Desktop's `.UnreadThreads-module__pill`: 30 px high with its 1 px border, with its label 13 px in.
