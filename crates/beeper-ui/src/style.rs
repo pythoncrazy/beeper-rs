@@ -173,11 +173,12 @@ pub fn initials_font() -> Font {
     }
 }
 
-/// The `app.asar` archive of an installed Beeper Desktop: a Linux package, a running AppImage, Windows, or macOS.
+/// The `app.asar` archive of an installed Beeper Desktop: a Linux package, a running Desktop on Linux wherever it runs
+/// from (a mounted or an extracted AppImage), Windows, or macOS.
 fn desktop_asars() -> impl Iterator<Item = PathBuf> {
     let env = |k| std::env::var_os(k).map(PathBuf::from);
-    let mounts = std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten().map(|e| e.path());
-    let mounts = mounts.filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".mount_")));
+    let exes = std::fs::read_dir("/proc").into_iter().flatten().flatten().filter_map(|e| std::fs::read_link(e.path().join("exe")).ok());
+    let mounts = exes.filter(|exe| exe.ends_with("beepertexts")).filter_map(|exe| exe.parent().map(Path::to_path_buf));
     let opt = ["/opt/beeper", "/opt/Beeper", "/opt/BeeperTexts"].map(PathBuf::from);
     let windows = env("LOCALAPPDATA").into_iter().flat_map(|l| ["BeeperTexts", "beeper"].map(|n| l.join("Programs").join(n)));
     let mac = [Some(PathBuf::from("/")), env("HOME")].into_iter().flatten();
@@ -1193,6 +1194,33 @@ pub fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Desktop draws avatar initials in Knicknack, which loads from the `app.asar` of a running Desktop wherever it runs
+    /// from, like an extracted AppImage: else they fall back to Sniglet's round, slanted letters.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn knicknack_loads_from_a_running_desktop_anywhere() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-squashfs-root-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("beepertexts");
+        std::fs::copy("/bin/sleep", &exe).unwrap();
+        // Another test that forks while the copy is open for writing makes it busy for a moment.
+        let mut desktop = loop {
+            match std::process::Command::new(&exe).arg("30").spawn() {
+                Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                r => break r.unwrap(),
+            }
+        };
+        let link = format!("/proc/{}/exe", desktop.id());
+        while std::fs::read_link(&link).ok().as_ref() != Some(&exe) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let found = desktop_asars().any(|a| a == dir.join("resources/app.asar"));
+        desktop.kill().unwrap();
+        desktop.wait().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(found, "the app.asar next to the running Desktop");
+    }
 
     /// cosmic-text keeps the glyphs of each shaped word: a text measures the same from the kept words as when it was
     /// first shaped, and again after the trims dropped them.
