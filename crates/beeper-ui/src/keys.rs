@@ -152,6 +152,9 @@ impl BeeperGuiApp {
         if self.reauth.window == Some(id) {
             return self.reauth_key(key);
         }
+        if self.modal_at(id).is_some() {
+            return self.modal_key(id, &key);
+        }
         if self.enter_key.window == Some(id) {
             return self.enter_key_key(key);
         }
