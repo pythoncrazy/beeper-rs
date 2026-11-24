@@ -828,6 +828,215 @@ impl BeeperGuiApp {
             }
             LoginMsg::Show(s) => return self.show_screen(s),
             LoginMsg::Google => l.toast = Some("Google sign-in is not available in beeper-rs. Use email.".into()),
+            msg @ (LoginMsg::Email(..)
+            | LoginMsg::User(..)
+            | LoginMsg::Password(..)
+            | LoginMsg::TogglePassword
+            | LoginMsg::SubmitEmail
+            | LoginMsg::Resend
+            | LoginMsg::Code(..)
+            | LoginMsg::Slot(..)
+            | LoginMsg::SlotsPressed
+            | LoginMsg::SubmitCode
+            | LoginMsg::Username(..)
+            | LoginMsg::CheckUsername(..)
+            | LoginMsg::UsernameChecked(..)
+            | LoginMsg::NextSuggestion
+            | LoginMsg::SubmitUsername) => return self.login_email(msg),
+            LoginMsg::Menu => {}
+            LoginMsg::CloseToast => l.toast = None,
+            LoginMsg::OpenEmail => return open_email_client(),
+            LoginMsg::StartOver => self.login = Login::new(l.source.take()),
+            LoginMsg::Query(q) => l.query = q,
+            // Desktop's tenth click on the heading finishes the onboarding, without its Continue.
+            LoginMsg::Headline => {
+                l.headline_clicks += 1;
+                if l.headline_clicks == 10 {
+                    self.login = Login::default();
+                    return self.enter_app(NOTE_CHAT_ID);
+                }
+            }
+            // Desktop's Continue selects the first read chat (`selectFirstReadThread`), and a second later shows its
+            // toast of the mobile apps.
+            LoginMsg::Continue => {
+                self.login = Login::default();
+                let first_read = self.listed_chats(&self.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
+                let enter = self.enter_app(first_read.as_deref().unwrap_or(NOTE_CHAT_ID));
+                let later = async { tokio::time::sleep(std::time::Duration::from_secs(1)).await };
+                let toast = Task::perform(later, |()| UiMessage::Toast(crate::toasts::Msg::MobileApps(true)));
+                return Task::batch([enter, toast]);
+            }
+            LoginMsg::E2ee(r) => return self.e2ee_checked(r),
+            LoginMsg::AnotherWay => l.another_way = true,
+            msg @ (LoginMsg::UseRecoveryKey
+            | LoginMsg::KeyEdit(..)
+            | LoginMsg::PasteKey
+            | LoginMsg::Pasted(..)
+            | LoginMsg::KeyOnFocus(..)
+            | LoginMsg::SubmitRecoveryKey
+            | LoginMsg::NewKey
+            | LoginMsg::ConfirmReset
+            | LoginMsg::BridgesDeleted(..)
+            | LoginMsg::MadeKey(..)
+            | LoginMsg::CopyKey
+            | LoginMsg::KeyNext
+            | LoginMsg::SubmitConfirmKey
+            | LoginMsg::LostKey
+            | LoginMsg::KeysLate
+            | LoginMsg::Recovered(..)) => return self.login_keys(msg),
+            LoginMsg::Done(r) => {
+                l.busy = false;
+                match r {
+                    // The code and username screens show a refusal of the server under the heading, and other
+                    // errors in the toast.
+                    Err(e) if matches!(l.screen, Screen::Code | Screen::Username) && (400..500).contains(&e.status) => {
+                        l.error = Some(e.message);
+                    }
+                    Err(e) => l.toast = Some(e.message),
+                    Ok(Outcome::Requested(request)) => {
+                        l.request = request;
+                        return self.show_screen(Screen::Code);
+                    }
+                    Ok(Outcome::Lead(token, suggestions)) => {
+                        l.lead_token = token;
+                        l.username = suggestions.first().map(|s| username_input(s)).unwrap_or_default();
+                        l.suggestions = suggestions;
+                        return Task::batch([self.show_screen(Screen::Username), self.check_username()]);
+                    }
+                    Ok(Outcome::Read(data)) => {
+                        l.import = Some(data);
+                        l.screen = Screen::Welcome;
+                    }
+                    // The import stays until it is done, so that a sign-in after a refusal or a failed import of
+                    // the keys copies the data too.
+                    Ok(Outcome::Session(session, profile, accounts)) => match l.import.clone() {
+                        Some(data) if data.user_id.as_ref().is_some_and(|u| *u != session.user_id) => {
+                            let user = data.user_id.as_deref().expect("checked above");
+                            l.toast = Some(format!("Sign in as {user} to finish the import."));
+                        }
+                        Some(data) => {
+                            let dir = self.store.read().matrix_dir();
+                            return self.background(move |_| {
+                                if let Some(c) = &data.crypto {
+                                    let import = beeper_core::matrix::import_crypto(&dir, c);
+                                    tokio::runtime::Handle::current().block_on(import).map_err(local_error)?;
+                                }
+                                Ok(Outcome::Imported(data, session, profile, accounts))
+                            });
+                        }
+                        None => {
+                            let homeserver = self.cloud.homeserver.clone();
+                            self.store.write().sign_in(session, homeserver, &profile, accounts);
+                            return self.check_e2ee();
+                        }
+                    },
+                    Ok(Outcome::Imported(data, session, profile, accounts)) => {
+                        l.import = None;
+                        let homeserver = self.cloud.homeserver.clone();
+                        let mut st = self.store.write();
+                        st.import_beeper(Arc::unwrap_or_clone(data));
+                        st.sign_in(session, homeserver, &profile, accounts);
+                        drop(st);
+                        return self.check_e2ee();
+                    }
+                }
+            }
+        }
+        Task::none()
+    }
+
+    /// The recovery key steps of sign-in: entering, resetting and saving a key.
+    fn login_keys(&mut self, msg: LoginMsg) -> Task<UiMessage> {
+        let l = &mut self.login;
+        match msg {
+            LoginMsg::UseRecoveryKey => return self.use_recovery_key(),
+            LoginMsg::KeyEdit(action) => {
+                crate::verify::edit_recovery_key(&mut l.key_input, action);
+                l.error = None;
+            }
+            LoginMsg::PasteKey => return iced::clipboard::read().map(|t| LoginMsg::Pasted(t).into()),
+            LoginMsg::Pasted(text) => {
+                l.key_input = text_editor::Content::with_text(&crate::verify::format_recovery_key(&text.unwrap_or_default()));
+                l.error = None;
+            }
+            LoginMsg::KeyOnFocus(text) if l.screen == Screen::Code => {
+                // Desktop's `iF` with `Hk`: a 6-digit code in the clipboard that was not sent yet goes in, with a toast.
+                let text = text.unwrap_or_default();
+                let code: String = text.split_whitespace().collect();
+                let digits = !text.is_empty() && text.chars().all(|c| c.is_ascii_digit() || c.is_whitespace());
+                if digits && code.len() == 6 && !l.tried_codes.contains(&code) && !l.busy {
+                    (l.code, l.pasted) = (code, Some(std::time::Instant::now()));
+                    return self.update_login(LoginMsg::SubmitCode);
+                }
+            }
+            LoginMsg::KeyOnFocus(text) => {
+                let key = crate::verify::clipboard_key(text, &l.tried_keys);
+                if let Some(key) = key.filter(|_| l.screen == Screen::RecoveryKey && !l.busy) {
+                    l.key_input = text_editor::Content::with_text(&crate::verify::format_recovery_key(&key));
+                    return self.update_login(LoginMsg::SubmitRecoveryKey);
+                }
+            }
+            LoginMsg::SubmitRecoveryKey => {
+                l.busy = true;
+                let key = beeper_core::matrix::recovery_key_chars(&l.key_input.text());
+                l.tried_keys.push(key.clone());
+                let recover = beeper_core::matrix::recover(self.store.clone(), key);
+                return Task::perform(recover, |r| LoginMsg::Recovered(r).into());
+            }
+            LoginMsg::NewKey => return self.make_recovery_key(),
+            LoginMsg::ConfirmReset => {
+                l.busy = true;
+                let (cloud, token) = (self.cloud.clone(), self.store.read().beeper_state.access_token.clone());
+                let delete = async move {
+                    tokio::task::spawn_blocking(move || cloud.delete_all_bridges(&token).map_err(|e| e.message))
+                        .await
+                        .expect("delete bridges worker thread")
+                };
+                return Task::perform(delete, |r| LoginMsg::BridgesDeleted(r).into());
+            }
+            LoginMsg::BridgesDeleted(Ok(())) => return self.make_recovery_key(),
+            LoginMsg::BridgesDeleted(Err(e)) => {
+                eprintln!("[deleteAllBridges]:: {e}");
+                l.busy = false;
+                l.toast = Some(tr("Failed to reset. Please check your connection and try again.").into());
+            }
+            LoginMsg::MadeKey(r) => {
+                l.busy = false;
+                match r {
+                    Ok(key) => l.new_key = Some(key),
+                    // Desktop's `ReauthRequiredModal` asks for a sign-in code, then the key is made again.
+                    Err(e) if e == beeper_core::matrix::REAUTH => {
+                        l.error = Some(e);
+                        return self.open_reauth(LoginMsg::NewKey.into());
+                    }
+                    Err(e) => l.error = Some(e),
+                }
+            }
+            LoginMsg::CopyKey => {
+                l.copied = true;
+                return iced::clipboard::write(l.new_key.clone().expect("a shown key"));
+            }
+            LoginMsg::KeyNext => (l.screen, l.key_input, l.error) = (Screen::ConfirmKey, Default::default(), None),
+            LoginMsg::SubmitConfirmKey => match beeper_core::matrix::confirm_recovery_key(&self.store, &l.key_input.text()) {
+                Ok(()) => return self.advance_onboarding(),
+                Err(e) => l.error = Some(e),
+            },
+            LoginMsg::LostKey => return self.lost_key(),
+            LoginMsg::KeysLate => l.late = true,
+            LoginMsg::Recovered(r) => {
+                l.busy = false;
+                l.error = r.err().map(|e| tr("Error: %(message)s").replace("%(message)s", &e));
+                return self.advance_onboarding();
+            }
+            _ => unreachable!("not a login_keys message"),
+        }
+        Task::none()
+    }
+
+    /// The email, code and username steps of sign-in.
+    fn login_email(&mut self, msg: LoginMsg) -> Task<UiMessage> {
+        let l = &mut self.login;
+        match msg {
             LoginMsg::Email(v) => {
                 l.email = v;
                 (l.toast, l.invalid) = (None, None);
@@ -966,167 +1175,7 @@ impl BeeperGuiApp {
                 let (request, lead, name) = (l.request.clone(), l.lead_token.clone(), l.username.clone());
                 return self.background(move |c| session(c, &c.register(&request, &lead, &name)?));
             }
-            LoginMsg::Menu => {}
-            LoginMsg::CloseToast => l.toast = None,
-            LoginMsg::OpenEmail => return open_email_client(),
-            LoginMsg::StartOver => self.login = Login::new(l.source.take()),
-            LoginMsg::Query(q) => l.query = q,
-            // Desktop's tenth click on the heading finishes the onboarding, without its Continue.
-            LoginMsg::Headline => {
-                l.headline_clicks += 1;
-                if l.headline_clicks == 10 {
-                    self.login = Login::default();
-                    return self.enter_app(NOTE_CHAT_ID);
-                }
-            }
-            // Desktop's Continue selects the first read chat (`selectFirstReadThread`), and a second later shows its
-            // toast of the mobile apps.
-            LoginMsg::Continue => {
-                self.login = Login::default();
-                let first_read = self.listed_chats(&self.store.read()).iter().find(|c| !c.is_unread()).map(|c| c.id.clone());
-                let enter = self.enter_app(first_read.as_deref().unwrap_or(NOTE_CHAT_ID));
-                let later = async { tokio::time::sleep(std::time::Duration::from_secs(1)).await };
-                let toast = Task::perform(later, |()| UiMessage::Toast(crate::toasts::Msg::MobileApps(true)));
-                return Task::batch([enter, toast]);
-            }
-            LoginMsg::E2ee(r) => return self.e2ee_checked(r),
-            LoginMsg::AnotherWay => l.another_way = true,
-            LoginMsg::UseRecoveryKey => return self.use_recovery_key(),
-            LoginMsg::KeyEdit(action) => {
-                crate::verify::edit_recovery_key(&mut l.key_input, action);
-                l.error = None;
-            }
-            LoginMsg::PasteKey => return iced::clipboard::read().map(|t| LoginMsg::Pasted(t).into()),
-            LoginMsg::Pasted(text) => {
-                l.key_input = text_editor::Content::with_text(&crate::verify::format_recovery_key(&text.unwrap_or_default()));
-                l.error = None;
-            }
-            LoginMsg::KeyOnFocus(text) if l.screen == Screen::Code => {
-                // Desktop's `iF` with `Hk`: a 6-digit code in the clipboard that was not sent yet goes in, with a toast.
-                let text = text.unwrap_or_default();
-                let code: String = text.split_whitespace().collect();
-                let digits = !text.is_empty() && text.chars().all(|c| c.is_ascii_digit() || c.is_whitespace());
-                if digits && code.len() == 6 && !l.tried_codes.contains(&code) && !l.busy {
-                    (l.code, l.pasted) = (code, Some(std::time::Instant::now()));
-                    return self.update_login(LoginMsg::SubmitCode);
-                }
-            }
-            LoginMsg::KeyOnFocus(text) => {
-                let key = crate::verify::clipboard_key(text, &l.tried_keys);
-                if let Some(key) = key.filter(|_| l.screen == Screen::RecoveryKey && !l.busy) {
-                    l.key_input = text_editor::Content::with_text(&crate::verify::format_recovery_key(&key));
-                    return self.update_login(LoginMsg::SubmitRecoveryKey);
-                }
-            }
-            LoginMsg::SubmitRecoveryKey => {
-                l.busy = true;
-                let key = beeper_core::matrix::recovery_key_chars(&l.key_input.text());
-                l.tried_keys.push(key.clone());
-                let recover = beeper_core::matrix::recover(self.store.clone(), key);
-                return Task::perform(recover, |r| LoginMsg::Recovered(r).into());
-            }
-            LoginMsg::NewKey => return self.make_recovery_key(),
-            LoginMsg::ConfirmReset => {
-                l.busy = true;
-                let (cloud, token) = (self.cloud.clone(), self.store.read().beeper_state.access_token.clone());
-                let delete = async move {
-                    tokio::task::spawn_blocking(move || cloud.delete_all_bridges(&token).map_err(|e| e.message))
-                        .await
-                        .expect("delete bridges worker thread")
-                };
-                return Task::perform(delete, |r| LoginMsg::BridgesDeleted(r).into());
-            }
-            LoginMsg::BridgesDeleted(Ok(())) => return self.make_recovery_key(),
-            LoginMsg::BridgesDeleted(Err(e)) => {
-                eprintln!("[deleteAllBridges]:: {e}");
-                l.busy = false;
-                l.toast = Some(tr("Failed to reset. Please check your connection and try again.").into());
-            }
-            LoginMsg::MadeKey(r) => {
-                l.busy = false;
-                match r {
-                    Ok(key) => l.new_key = Some(key),
-                    // Desktop's `ReauthRequiredModal` asks for a sign-in code, then the key is made again.
-                    Err(e) if e == beeper_core::matrix::REAUTH => {
-                        l.error = Some(e);
-                        return self.open_reauth(LoginMsg::NewKey.into());
-                    }
-                    Err(e) => l.error = Some(e),
-                }
-            }
-            LoginMsg::CopyKey => {
-                l.copied = true;
-                return iced::clipboard::write(l.new_key.clone().expect("a shown key"));
-            }
-            LoginMsg::KeyNext => (l.screen, l.key_input, l.error) = (Screen::ConfirmKey, Default::default(), None),
-            LoginMsg::SubmitConfirmKey => match beeper_core::matrix::confirm_recovery_key(&self.store, &l.key_input.text()) {
-                Ok(()) => return self.advance_onboarding(),
-                Err(e) => l.error = Some(e),
-            },
-            LoginMsg::LostKey => return self.lost_key(),
-            LoginMsg::KeysLate => l.late = true,
-            LoginMsg::Recovered(r) => {
-                l.busy = false;
-                l.error = r.err().map(|e| tr("Error: %(message)s").replace("%(message)s", &e));
-                return self.advance_onboarding();
-            }
-            LoginMsg::Done(r) => {
-                l.busy = false;
-                match r {
-                    // The code and username screens show a refusal of the server under the heading, and other
-                    // errors in the toast.
-                    Err(e) if matches!(l.screen, Screen::Code | Screen::Username) && (400..500).contains(&e.status) => {
-                        l.error = Some(e.message);
-                    }
-                    Err(e) => l.toast = Some(e.message),
-                    Ok(Outcome::Requested(request)) => {
-                        l.request = request;
-                        return self.show_screen(Screen::Code);
-                    }
-                    Ok(Outcome::Lead(token, suggestions)) => {
-                        l.lead_token = token;
-                        l.username = suggestions.first().map(|s| username_input(s)).unwrap_or_default();
-                        l.suggestions = suggestions;
-                        return Task::batch([self.show_screen(Screen::Username), self.check_username()]);
-                    }
-                    Ok(Outcome::Read(data)) => {
-                        l.import = Some(data);
-                        l.screen = Screen::Welcome;
-                    }
-                    // The import stays until it is done, so that a sign-in after a refusal or a failed import of
-                    // the keys copies the data too.
-                    Ok(Outcome::Session(session, profile, accounts)) => match l.import.clone() {
-                        Some(data) if data.user_id.as_ref().is_some_and(|u| *u != session.user_id) => {
-                            let user = data.user_id.as_deref().expect("checked above");
-                            l.toast = Some(format!("Sign in as {user} to finish the import."));
-                        }
-                        Some(data) => {
-                            let dir = self.store.read().matrix_dir();
-                            return self.background(move |_| {
-                                if let Some(c) = &data.crypto {
-                                    let import = beeper_core::matrix::import_crypto(&dir, c);
-                                    tokio::runtime::Handle::current().block_on(import).map_err(local_error)?;
-                                }
-                                Ok(Outcome::Imported(data, session, profile, accounts))
-                            });
-                        }
-                        None => {
-                            let homeserver = self.cloud.homeserver.clone();
-                            self.store.write().sign_in(session, homeserver, &profile, accounts);
-                            return self.check_e2ee();
-                        }
-                    },
-                    Ok(Outcome::Imported(data, session, profile, accounts)) => {
-                        l.import = None;
-                        let homeserver = self.cloud.homeserver.clone();
-                        let mut st = self.store.write();
-                        st.import_beeper(Arc::unwrap_or_clone(data));
-                        st.sign_in(session, homeserver, &profile, accounts);
-                        drop(st);
-                        return self.check_e2ee();
-                    }
-                }
-            }
+            _ => unreachable!("not a login_email message"),
         }
         Task::none()
     }

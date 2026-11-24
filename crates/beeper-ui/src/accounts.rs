@@ -147,6 +147,20 @@ impl BeeperGuiApp {
                     s.accounts.insert(id, props);
                 })
             }
+            msg @ (Msg::FetchServers(..)
+            | Msg::Servers(..)
+            | Msg::ToggleServer(..)
+            | Msg::SetServer(..)
+            | Msg::ServerSet(..)
+            | Msg::Spin
+            | Msg::SetInboxVisibility(..)) => return self.accounts_servers(msg),
+        }
+        self.settle()
+    }
+
+    /// The Discord servers of an account and their inbox visibility.
+    fn accounts_servers(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
             Msg::FetchServers(id) => return self.fetch_servers(&id),
             Msg::Servers(id, result) => {
                 self.servers_loading.remove(&id);
@@ -238,6 +252,7 @@ impl BeeperGuiApp {
                 let rules = beeper_core::matrix::with_inbox_visibility(st.inbox_rules.clone(), &key, option);
                 return Task::perform(beeper_core::matrix::set_global(client, beeper_core::matrix::RULES, rules), UiMessage::Pushed);
             }
+            _ => unreachable!("not a accounts_servers message"),
         }
         self.settle()
     }
