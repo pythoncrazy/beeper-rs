@@ -386,9 +386,9 @@ fn media_group(d: i64) -> String {
 const MEDIA_END: f32 = 8.0;
 
 /// The height of a date header of the Media window: Desktop's `dateHeader` padding of 12 and 6 around its
-/// `body-lg` label and its `label-sm` dates.
+/// `body-lg` label and the 18.2 px line of its `label-sm` dates.
 fn media_head() -> f32 {
-    18.0 + rem(20.0) + rem(14.0)
+    18.0 + rem(20.0) + rem(18.2)
 }
 
 /// The loaded items of the Media window by Desktop's groups of days, in their order.
@@ -942,7 +942,8 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read();
         let header = self.media_header(w);
-        let rule = || container(Space::new()).width(Fill).height(0.5).style(fill_box(p.chip, 0.0));
+        // `0.5px solid var(--color-border-neutrals-weak)`.
+        let rule = || container(Space::new()).width(Fill).height(0.5).style(fill_box(p.prefs_border, 0.0));
         let search_row = w.search.as_deref().map(|q| column![self.media_search_row(q), rule()]);
         // Like Desktop's `ResizeObserver` on the grid, the tiles follow the size of the list.
         let list = iced::widget::responsive(move |area| self.media_list(w, area));
@@ -966,7 +967,7 @@ impl BeeperGuiApp {
     /// A round button of the header of the Media window, filled while it is on.
     fn media_control<'a>(&self, glyph: &svg::Handle, size: f32, on: bool, msg: UiMessage) -> El<'a> {
         let p = &self.pal;
-        let (bg, fg) = if on { (p.chip, p.strong) } else { (CLEAR, p.on_secondary) };
+        let (bg, fg) = if on { (p.chip, p.strong) } else { (CLEAR, p.muted) };
         let b = button(container(tinted(glyph, size, fg)).center(28)).padding(0);
         b.style(btn_style([bg, p.chip, p.chip], [fg; 3], 12.0)).on_press(msg).into()
     }
@@ -1002,7 +1003,8 @@ impl BeeperGuiApp {
             tip(self.media_control(search_icon, 18.0, w.search.is_some(), search), tr("Search")),
         ]
         .spacing(4);
-        container(row![tabs, Space::new().width(Fill), controls].spacing(8).align_y(Center)).padding([8, 10]).center_y(52).into()
+        // `min-height: 52px` takes in the 0.5 px rule under it.
+        container(row![tabs, Space::new().width(Fill), controls].spacing(8).align_y(Center)).padding([8, 10]).center_y(51.5).into()
     }
 
     /// The caption search field of the Media window, with its Close button.
@@ -1013,10 +1015,10 @@ impl BeeperGuiApp {
             .on_input(|q| UiMessage::Media(Msg::Search(Some(q))))
             .size(13)
             .padding(0)
-            .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
+            .style(input_style(CLEAR, p.strong, p.muted, p.accent, 0.0));
         let close = self.media_control(&ROW_ACTIONS[6], 16.0, false, UiMessage::Media(Msg::Search(None)));
         let close = self.tip(close, tr("Close"), vec![], tooltip::Position::Bottom);
-        let line = row![tinted(&MEDIA_ICONS[5], 16.0, p.on_secondary), input, close].spacing(6).align_y(Center);
+        let line = row![tinted(&MEDIA_ICONS[5], 16.0, p.muted), input, close].spacing(6).align_y(Center);
         container(line).padding([6, 10]).into()
     }
 
@@ -1025,7 +1027,7 @@ impl BeeperGuiApp {
     fn media_list<'a>(&'a self, w: &'a MediaWindow, area: Size) -> El<'a> {
         let p = &self.pal;
         if w.items.is_empty() && w.loading.is_none() {
-            return container(txt(tr("Nothing here"), 13.0).color(p.on_secondary)).center_x(Fill).padding(16).into();
+            return container(txt(tr("Nothing here"), 13.0).color(p.muted)).center_x(Fill).padding(16).into();
         }
         let groups = media_day_groups(w);
         // Desktop's pulsing skeleton rows while items load: three without items, else one under them.
@@ -1067,7 +1069,9 @@ impl BeeperGuiApp {
             let (lo, hi) = (days.clone().min().expect("a group has items"), days.max().expect("a group has items"));
             let full = |d| i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0));
             let range = if lo == hi { full(lo) } else { format!("{} - {}", full(lo), full(hi)) };
-            let range = txt(range, 11.0).color(p.on_secondary).wrapping(iced::widget::text::Wrapping::None);
+            // The `span` of the dates sits on the baseline of the 18.2 px line of the 13 px `dateHeader`.
+            let range = txt(range, 11.0).color(p.muted).wrapping(iced::widget::text::Wrapping::None);
+            let range = container(range).padding(Padding::ZERO.top(rem(2.8)).bottom(rem(1.4)));
             let head = column![semi(label.clone(), 15.0).line_height(lh(20.0)).color(p.strong), range];
             let col = col.push(container(head).padding(Padding::new(6.0).top(12.0).left(10.0).right(10.0)));
             match w.tab {
@@ -1137,9 +1141,8 @@ impl BeeperGuiApp {
     fn media_row<'a>(&'a self, st: &BeeperStore, w: &MediaWindow, m: &Message, k: usize) -> El<'a> {
         let p = &self.pal;
         let text_w = w.size.width - 16.0 - 20.0 - 48.0 - 8.0 - 150.0;
-        let sub = |s: String| txt(s, 11.0).color(p.on_secondary);
-        let icon =
-            |glyph, size| -> El<'a> { container(tinted(glyph, size, p.on_secondary)).center(40).style(fill_box(p.chip, 8.0)).into() };
+        let sub = |s: String| txt(s, 11.0).color(p.muted);
+        let icon = |glyph, size| -> El<'a> { container(tinted(glyph, size, p.muted)).center(40).style(fill_box(p.chip, 8.0)).into() };
         let (thumb, title, line, press) = match w.tab {
             // Desktop's link thumb: the preview image of the link, or the link icon.
             1 => {
@@ -1165,7 +1168,7 @@ impl BeeperGuiApp {
         };
         let text = column![
             ell(&title, text_w, 13.0, Weight::Semibold).line_height(lh(16.0)).color(p.strong),
-            ell(&line, text_w, 11.0, Weight::Normal).line_height(lh(14.0)).color(p.on_secondary),
+            ell(&line, text_w, 11.0, Weight::Normal).line_height(lh(14.0)).color(p.muted),
         ]
         .width(Fill);
         let meta = column![sub(Self::sender_name(st, m).to_string()), sub(relative_date(&m.timestamp))].align_x(Right);
@@ -1197,8 +1200,11 @@ impl BeeperGuiApp {
         };
         let act = |label, msg: Option<UiMessage>| -> El<'a> {
             let a = if msg.is_some() { 1.0 } else { 0.5 };
-            let b = button(semi(label, 11.0).color(p.strong.scale_alpha(a))).padding([4, 8]);
-            b.style(btn_style([p.chip.scale_alpha(a); 3], [p.strong; 3], 12.0)).on_press_maybe(msg).into()
+            // `.selectionButton:disabled` is at half opacity, without the dimming of a disabled `btn_style`.
+            let (b, bg) = (button(semi(label, 11.0).color(p.strong.scale_alpha(a))).padding([4, 8]), p.chip.scale_alpha(a));
+            let style =
+                move |_: &Theme, _| button::Style { background: Some(bg.into()), border: border::rounded(12), ..Default::default() };
+            b.style(style).on_press_maybe(msg).into()
         };
         let picked = w.picked.clone();
         let bar = row![
@@ -1211,7 +1217,7 @@ impl BeeperGuiApp {
         ]
         .spacing(4)
         .align_y(Center);
-        container(bar).padding([8, 10]).center_y(44).into()
+        container(bar).padding([8, 10]).center_y(43.5).into()
     }
 
     /// The context menu of an item of the Media window: Go to Message, Copy Link or Download and Copy Image, and
@@ -1996,6 +2002,22 @@ mod tests {
             assert!((list.x + list.width - gutter - 10.0 - right).abs() < 0.01, "{size:?}: {right} in {list:?}");
             assert!((media_grid(list.size(), &[40], 0).1 - w).abs() < 0.01, "the grid of the list");
         }
+    }
+
+    /// Desktop's Media window list starts under the 52 px header, which takes in its 0.5 px rule, and a date header
+    /// is 56.2 px tall: 12 px, the 20 px month, the 18.2 px line of its dates and 6 px.
+    #[test]
+    fn media_window_heads_sit_like_desktop() {
+        let mut app = demo_app("media-heads");
+        photos(&app, 4, |_| None);
+        let _ = app.update(UiMessage::Media(Msg::Open));
+        let id = app.media_window.as_ref().unwrap().id;
+        finish_media_load(&mut app);
+        let size = Size::new(990.0, 700.0);
+        let _ = app.update(UiMessage::Window(windows::Msg::Resized(id, size)));
+        let (squares, list) = grid_squares(&app, size);
+        assert!((list.y - 92.0).abs() < 0.01, "the list: {list:?}");
+        assert!((squares[0].y - list.y - 56.2).abs() < 0.01, "the first tile: {:?}", squares[0]);
     }
 
     /// Desktop's skeleton tiles pulse from 0.55 to full opacity and back in 1.2 s.
