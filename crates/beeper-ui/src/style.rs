@@ -152,7 +152,7 @@ pub fn ensure_fonts_loaded() {
         for ttf in [font!("icons.ttf"), font!("Sniglet-ExtraBold.ttf"), FONT_EMOJI] {
             db.load_font_source(Source::Binary(Arc::new(ttf)));
         }
-        let knicknack = desktop_asars().find_map(|p| knicknack_woff(&p));
+        let knicknack = desktop_asars(Path::new("/proc")).find_map(|p| knicknack_woff(&p));
         KNICKNACK.store(knicknack.is_some(), Ordering::Relaxed);
         for woff in INTER.into_iter().chain([REDACTED_WOFF]).chain(knicknack.as_deref()) {
             db.load_font_source(Source::Binary(Arc::new(woff_to_sfnt(woff))));
@@ -173,11 +173,14 @@ pub fn initials_font() -> Font {
     }
 }
 
-/// The `app.asar` archive of an installed Beeper Desktop: a Linux package, a running AppImage, Windows, or macOS.
-fn desktop_asars() -> impl Iterator<Item = PathBuf> {
+/// The `app.asar` archive of an installed Beeper Desktop: a Linux package, a running Desktop on Linux wherever it runs
+/// from (a mounted or an extracted AppImage), Windows, or macOS.
+/// `proc` is the process table, `/proc`: a process that ends during the scan, or one of another user that cannot be
+/// read, is skipped.
+fn desktop_asars(proc: &Path) -> impl Iterator<Item = PathBuf> {
     let env = |k| std::env::var_os(k).map(PathBuf::from);
-    let mounts = std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten().map(|e| e.path());
-    let mounts = mounts.filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".mount_")));
+    let exes = std::fs::read_dir(proc).into_iter().flatten().flatten().filter_map(|e| std::fs::read_link(e.path().join("exe")).ok());
+    let mounts = exes.filter(|exe| exe.ends_with("beepertexts")).filter_map(|exe| exe.parent().map(Path::to_path_buf));
     let opt = ["/opt/beeper", "/opt/Beeper", "/opt/BeeperTexts"].map(PathBuf::from);
     let windows = env("LOCALAPPDATA").into_iter().flat_map(|l| ["BeeperTexts", "beeper"].map(|n| l.join("Programs").join(n)));
     let mac = [Some(PathBuf::from("/")), env("HOME")].into_iter().flatten();
@@ -1236,6 +1239,35 @@ pub fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Desktop draws avatar initials in Knicknack, which loads from the `app.asar` of a running Desktop wherever it runs
+    /// from, like an extracted AppImage: else they fall back to Sniglet's round, slanted letters. A process table with
+    /// a Desktop, one that ended and one whose executable cannot be read.
+    #[cfg(unix)]
+    #[test]
+    fn knicknack_loads_from_a_running_desktop_anywhere() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-knicknack-{}", std::process::id()));
+        let (proc, root) = (dir.join("proc"), dir.join("squashfs-root"));
+        for d in ["1", "2", "self"].map(|p| proc.join(p)).into_iter().chain([root.join("resources")]) {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::os::unix::fs::symlink(root.join("beepertexts"), proc.join("2/exe")).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/sleep", proc.join("self/exe")).unwrap();
+        // An `app.asar`: the size of its index, the JSON index, then the file.
+        let woff = b"wOFF font".to_vec();
+        let index = format!(
+            r#"{{"files":{{"build":{{"files":{{"renderer":{{"files":{{"knicknack-bold-x.woff":{{"offset":"0","size":{}}}}}}}}}}}}}}}"#,
+            woff.len()
+        );
+        let n = u32::try_from(index.len()).unwrap();
+        let asar = [4, n + 8, n + 4, n].into_iter().flat_map(|v| v.to_le_bytes()).chain(index.into_bytes()).chain(woff.clone());
+        std::fs::write(root.join("resources/app.asar"), asar.collect::<Vec<u8>>()).unwrap();
+        let found: Vec<PathBuf> = desktop_asars(&proc).filter(|a| a.starts_with(&dir)).collect();
+        assert_eq!(found, [root.join("resources/app.asar")]);
+        assert_eq!(knicknack_woff(&found[0]), Some(woff));
+        assert_eq!(desktop_asars(&dir.join("gone")).filter(|a| a.starts_with(&dir)).count(), 0, "no process table");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// cosmic-text keeps the glyphs of each shaped word: a text measures the same from the kept words as when it was
     /// first shaped, and again after the trims dropped them.
