@@ -6421,6 +6421,30 @@ fn rail_spaces_show_no_hover_fill_like_desktop() {
     assert_eq!(edge(&mut sim), clear);
 }
 
+/// Desktop's spaces scroll in `.filters-pane-list`, which ends 10 px above the footer (`.current-user`'s margin) and
+/// starts under the 14 px padding of `.account-switcher`: a space that does not fit is cut at those edges.
+#[test]
+fn rail_spaces_scroll_between_the_top_padding_and_the_footer_like_desktop() {
+    let app = demo_app("rail-scroll");
+    let size = Size::new(68.0, 400.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_rail());
+    let media = sim.find(iced::widget::Id::new("rail-media")).expect("the Media button").bounds();
+    // The rows of the space bar that have a pixel other than its background.
+    let inked = |sim: &mut Simulator<'_, UiMessage>| {
+        let shot = crate::message::tests::pixels(sim);
+        let k = shot.width() as f32 / size.width;
+        let bg = shot.get_pixel(1, 1).0;
+        (0..size.height as u32).filter(move |&y| (0..68).any(|x| shot.get_pixel((x as f32 * k) as u32, (y as f32 * k) as u32).0 != bg))
+    };
+    let gap = (media.y - 10.0) as u32..media.y as u32;
+    assert!(inked(&mut sim).any(|y| y == gap.start - 1), "a space is cut at the end of the list");
+    assert!(!inked(&mut sim).any(|y| gap.contains(&y)), "nothing in the 10 px above the footer");
+    let at = Point::new(34.0, 100.0);
+    sim.point_at(at);
+    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::WheelScrolled { delta: ScrollDelta::Pixels { x: 0.0, y: -30.0 } })]);
+    assert!(!inked(&mut sim).any(|y| y < 14), "nothing scrolls into the 14 px above the list");
+}
+
 /// Desktop's `.btn-ghost:active svg`: the pressed Search and New Chat icons of the chat list header turn
 /// `--color-icon-translucent-strong`, black at 0.9, from the `--color-on-surface` #202124 of `.tab-bar-btn button svg`.
 #[test]
