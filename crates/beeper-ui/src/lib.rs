@@ -2980,6 +2980,8 @@ pub struct BeeperGuiApp {
     notified: HashSet<String>,
     /// The failed sends that Retry sent again: Desktop shows their error again when they fail again.
     retried: HashSet<String>,
+    /// The sends whose "taking longer than expected" toast showed.
+    slow_sends: HashSet<String>,
     notifications: HashMap<u32, (String, String)>,
     pending: notify::Pending,
     pub gif_query: String,
@@ -3347,7 +3349,7 @@ impl BeeperGuiApp {
             system_dark, zoom_drag, maximize_when_placed, seen_requests, pip, pip_wanted, pip_manual, pip_menu,
             hotkey_query, hotkey_rec, profile, modals, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
             reminded, search_room, search_filters, search_select, native_select, cursor, image_clipboard, pressing, forward,
-            media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, notifications,
+            media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, slow_sends, notifications,
             gif_query, gifs, gif_loading, gif_error, gif_next, gif_sel, gif_view, command_palette_query,
             cmd_bar_commands_mode, cmd_submenu, cmd_index, search_index, search_expanded, recent_searches,
             last_archived, creating_chat, new_chats, command_list, memo, pending_dm, link_to, link_sent, link_pick, contact_networks, new_chat_lookup,
@@ -4714,6 +4716,7 @@ impl BeeperGuiApp {
                     self.select_chat(NOTE_CHAT_ID);
                 }
                 self.refresh_theme_and_tray();
+                self.slow_sends();
                 let older = self.load_older_everywhere();
                 let tasks = [self.close_notifications(), self.verification_changed(), self.leave_app(), older, gone];
                 return Task::batch(tasks);
@@ -4845,6 +4848,7 @@ impl BeeperGuiApp {
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
             UiMessage::AnimationTick => {
+                self.slow_sends();
                 self.confetti.take_if(|c| !c.running());
                 if let Some(c) = self.confetti.as_mut() {
                     c.advance();
@@ -5184,8 +5188,9 @@ impl BeeperGuiApp {
             let echoes = echoes.filter(|m| m.send_error.is_none() && pending(&st, m));
             echoes.map(still_sending_at).filter(|&at| at > now_unix_millis()).min()
         };
-        // "Sending..." turns into "Still sending..." at its time.
-        let late = late.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::AnimationTick));
+        // "Sending..." turns into "Still sending..." at its time, and a send that takes long says so.
+        let slow = self.slow_send_due().filter(|&at| at > now_unix_millis());
+        let late = late.into_iter().chain(slow).min().map(|at| iced::time::every(wait(at)).map(|_| UiMessage::AnimationTick));
         // Desktop's `buildMessageListData` watches the clock until the next timer of the open chats runs out, or for
         // an hour at most.
         let expiry = {
