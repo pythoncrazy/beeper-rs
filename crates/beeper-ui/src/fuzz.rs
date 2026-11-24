@@ -5882,6 +5882,9 @@ fn polls_like_desktop() {
     {
         let mut sim = simulator(app.view_main());
         assert!(sim.find("Select one option").is_ok() && sim.find("2 votes").is_ok());
+        // The poll is as wide as its question, which stays on one line like in a browser.
+        let question = sim.find("Which default dark theme do you prefer?").expect("the question");
+        assert_eq!(question.bounds().height, 20.0, "one line");
         let st = app.store.read();
         let m = st.message(mid);
         assert_eq!(
@@ -10627,6 +10630,32 @@ fn row_hover_actions_fade_like_desktop() {
     let off = app.unhovered.as_ref().map(|u| u.1).expect("the leave starts the fade");
     assert!(app.hover_progress_at(&id, off).is_some_and(|t| t > 0.5), "they fade back out");
     assert_eq!(app.hover_progress_at(&id, off + fade), None, "and are gone after it");
+}
+
+/// Desktop's `proIndicators` keep their place under the hover action, and fade and shrink away while it grows in.
+#[test]
+fn unread_counts_give_way_to_hover_actions_like_desktop() {
+    use iced_test::selector::Candidate;
+    let mut app = demo_app("count-hover");
+    let id = "!wa_family:beeper.com".to_string();
+    let accent = |app: &BeeperGuiApp| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(400.0, 800.0), app.view_sidebar());
+        let title = sim.find("Family").expect("the title").bounds();
+        let near = move |c: Candidate<'_>| match c {
+            Candidate::Text { content: "2", bounds, .. } if bounds.x > title.x && (bounds.y - title.y).abs() < 30.0 => Some(bounds),
+            _ => None,
+        };
+        let count = sim.find(near).expect("the count keeps its place");
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "count-hover");
+        let k = shot.width() / 400;
+        // The pill's edge, left of its digit.
+        let [r, g, b, _] = shot.get_pixel((count.x as u32 - 2) * k, count.center_y() as u32 * k).0;
+        Color::from_rgb8(r, g, b) == app.pal.accent
+    };
+    assert!(accent(&app), "the count shows");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Hover(id, true)));
+    app.hover_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    assert!(!accent(&app), "and is gone under the hover action");
 }
 
 /// Desktop's view-limited media: a pill in place of the media, the viewer that counts a view, the Play queue of the
