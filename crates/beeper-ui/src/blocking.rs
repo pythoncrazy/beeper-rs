@@ -13,8 +13,9 @@ pub enum Msg {
     /// Desktop's `BlockedUsersBrowserWindow` from Settings, and its Done button.
     OpenList,
     CloseList,
-    /// A row of the Blocked users window: the chat with its Chat Info in the main window.
+    /// A row of the Blocked users window, which opens the sheet of its chat, and the Done of that sheet window.
     OpenUser(String),
+    CloseUser(String),
 }
 
 impl BeeperGuiApp {
@@ -26,6 +27,10 @@ impl BeeperGuiApp {
             Msg::OpenList => return self.open_blocked_users(),
             Msg::CloseList => return self.close_window(self.blocked_window.expect("Blocked users is open")),
             Msg::OpenUser(id) => return self.open_blocked_user(id),
+            Msg::CloseUser(id) => {
+                let sheet = self.chat_windows.iter().find(|w| w.1.blocked_sheet && w.1.selected_chat_id.as_ref() == Some(&id));
+                return sheet.map_or_else(Task::none, |w| self.close_window(w.0));
+            }
         }
         self.settle()
     }
