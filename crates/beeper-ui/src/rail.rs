@@ -433,7 +433,7 @@ impl BeeperGuiApp {
         };
         let requests = self.count("requests", || st.chats.iter().filter(|c| st.new_request(c)).count());
         let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
-        let ring_color = if self.dark { Color::WHITE } else { Color::BLACK };
+        let ring_color = p.fg;
         let ring =
             svg(DASHED_RING.clone()).width(32).height(32).opacity(0.15_f32).style(move |_, _| svg::Style { color: Some(ring_color) });
         let add_space = container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
@@ -875,7 +875,7 @@ impl BeeperGuiApp {
         // A space that the keyboard moves shows in the place it drops at, lifted like Desktop's drag overlay.
         let sort = self.key_sort_of(window, sortable::List::Spaces);
         let (shown, hidden) = sort.and_then(|s| s.moved(&d.order)).map_or((shown, hidden), |o| found(&o));
-        let line = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.15);
+        let line = p.fg.scale_alpha(0.15);
         let dragged = d.drag.as_ref().map(|(id, _)| id.as_str()).or(sort.map(|s| s.id.as_str()));
         let group = |ids: Vec<String>| -> Vec<El<'a>> {
             let last = ids.len().saturating_sub(1);

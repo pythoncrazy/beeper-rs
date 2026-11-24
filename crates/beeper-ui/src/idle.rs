@@ -52,7 +52,10 @@ pub enum Msg {
 impl BeeperGuiApp {
     pub(crate) fn idle(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
-            Msg::Check => self.idle = since_input() >= IDLE_AFTER,
+            Msg::Check => {
+                self.idle = since_input() >= IDLE_AFTER;
+                crate::style::trim_shaped_words();
+            }
             Msg::Returned => {
                 note_input();
                 self.idle = false;

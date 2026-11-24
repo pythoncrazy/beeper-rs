@@ -69,6 +69,12 @@ fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
         .map(move |(page, p)| (tab(page), p))
 }
 
+/// The pixels of `view` at `size` that are `c`, give or take 2 of each channel.
+fn ink(view: El<'_>, size: Size, c: Color) -> usize {
+    let c = c.into_rgba8();
+    crate::focus::tests::shot(view, size, "ink").pixels().filter(|px| (0..3).all(|i| px[i].abs_diff(c[i]) < 3)).count()
+}
+
 pub(crate) fn demo_app(name: &str) -> BeeperGuiApp {
     BeeperGuiApp::boot(beeper_core::testing::demo_store(name)).0
 }
@@ -135,6 +141,7 @@ fn local(m: &UiMessage) -> bool {
         | UiMessage::Message(message::Msg::CopyImage(..) | message::Msg::PressButton(..)) => false,
         UiMessage::KeyPressed(Key::Character(c), mods) => !(c == "p" && mods.command() && mods.shift()),
         UiMessage::InWindow(_, m) | UiMessage::Message(message::Msg::Menu(m)) | UiMessage::Media(media_view::Msg::ItemAct(m)) => local(m),
+        UiMessage::Select(select::Msg::Pick(m)) => local(m),
         _ => true,
     }
 }
@@ -773,7 +780,7 @@ fn status_pills_like_desktop() {
     let _ = app.update(UiMessage::Online(false));
     app.store.write().syncing = true;
     assert_eq!(texts(&app), ["Offline", "Syncing..."]);
-    assert!(simulator(app.view_main()).find("Offline").is_ok());
+    assert_eq!(simulator(app.view_main()).find("Offline").expect("the pill").bounds().height, 14.0, "label-sm");
     let _ = app.update(UiMessage::Online(true));
     app.store.write().syncing = false;
     for a in app.store.write().bridge_accounts.iter_mut().filter(|a| a.account_id == "acc_whatsapp") {
@@ -1085,6 +1092,25 @@ fn command_bar_opens_empty_like_desktop() {
     let _ = app.update(UiMessage::CloseModals);
     let _ = app.update(UiMessage::RunHotkey("Search: Room"));
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
+}
+
+/// Desktop's `.command-bar-dimmer`: the #0003 dimmer under the command bar fades in over 40 ms from its first frame.
+#[test]
+fn the_command_bar_dimmer_fades_in_like_desktop() {
+    let mut app = demo_app("cmdbar-dimmer");
+    let main = app.main_window.expect("the main window");
+    let corner = |app: &BeeperGuiApp, events: Vec<iced::Event>| {
+        let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+        let _ = sim.simulate(events);
+        let shot = crate::message::tests::pixels(&mut sim);
+        shot.get_pixel(shot.width() - 4, shot.height() - 4).0
+    };
+    let clear = corner(&app, vec![]);
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    assert_eq!(corner(&app, vec![]), clear, "the first frame is not dimmed yet");
+    let later = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let dimmed = corner(&app, vec![iced::Event::Window(iced::window::Event::RedrawRequested(later))]);
+    assert!((0..3).all(|i| dimmed[i].abs_diff((f32::from(clear[i]) * 0.8).round() as u8) <= 1), "{dimmed:?} after 40 ms");
 }
 
 /// Desktop's `showSearch` and `showInNormalMode`: Ctrl+K never closes the bar and searches the text of the commands;
@@ -1413,6 +1439,33 @@ fn send_later_like_desktop() {
     assert!(uploads.iter().all(|u| !st.assets.contains_key(u)), "a sent Send Later file goes away");
 }
 
+/// Desktop's Send Later colors: the composer banner is 14 % of `--color-primary` (26 % in the dark theme), and the
+/// composer's dashed border and a canceled message are `--color-on-surface-variant`, which a monochrome theme tints.
+#[test]
+fn send_later_takes_desktops_colors() {
+    let mut app = demo_app("sendlater-colors");
+    let id = app.visible_chats(&app.store.read())[0].id.clone();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(Some((now_unix_millis() + 3_600_000, false)))));
+    app.store.write().schedule(&id, "later".into(), None, (now_unix_millis() + 3_600_000, false), None);
+    app.store.write().scheduled[0].canceled = true;
+    for (dark, theme) in [(false, None), (true, None), (false, Some(beeper_core::models::UiTheme::MonochromeRed))] {
+        (app.dark, app.pal) = (dark, crate::style::palette(dark, theme, 0));
+        let p = app.pal;
+        let st = app.store.read();
+        let count = |shot: &::image::RgbaImage, c: Color| {
+            let c = c.into_rgba8();
+            shot.pixels().filter(|px| (0..3).map(|i| u32::from(px[i].abs_diff(c[i]))).sum::<u32>() < 6).count()
+        };
+        let composer = crate::focus::tests::shot(app.view_composer(&st, st.chat(&id)), Size::new(800.0, 120.0), "sendlater");
+        let tint = mix(p.card, p.accent, if dark { 0.26 } else { 0.14 });
+        assert!(count(&composer, tint) > 4000, "the banner is {tint:?} (dark {dark}, {theme:?})");
+        assert!(count(&composer, p.muted) > 100, "the dashes are {:?} ({theme:?})", p.muted);
+        let bubble = app.view_scheduled_bubble(&st, &st.scheduled[0], p.card);
+        assert!(count(&crate::focus::tests::shot(bubble, Size::new(800.0, 60.0), "canceled"), p.muted) > 100, "a canceled message");
+    }
+}
+
 #[test]
 fn drafts_keep_the_composer_like_desktop() {
     let note = "!note_self:beeper.com";
@@ -1541,6 +1594,18 @@ fn threads_like_desktop() {
         let st = app.store.read();
         let ids: Vec<&str> = app.timeline(&st).0.iter().map(|m| m.id.as_str()).collect();
         assert!(ids.contains(&"msg_1010") && !ids.contains(&"msg_1011"), "a reply only in the thread stays out");
+    }
+    {
+        // Desktop's `ThreadRootLine` is `--color-on-surface-variant`, and the replies button's label is
+        // `--semantic-colors-text-primary`.
+        let st = app.store.read();
+        let ink = |view: El<'_>, c: Color| {
+            let (shot, c) = (crate::focus::tests::shot(view, Size::new(400.0, 40.0), "thread-ink"), c.into_rgba8());
+            shot.pixels().filter(|px| (0..3).all(|i| px[i].abs_diff(c[i]) < 3)).count()
+        };
+        assert!(ink(app.thread_root_line(&st, root, false), app.pal.muted) > 20, "the root line");
+        let button = app.thread_replies_button(&st, st.chat(chat), root).expect("the replies button");
+        assert!(ink(button, app.pal.fg) > 20, "the replies label");
     }
     let mut sim = simulator(app.view_main());
     assert!(sim.find("Replying to: ").is_ok(), "a reply also sent to the chat shows its root");
@@ -2438,6 +2503,28 @@ fn galleries_select_and_have_a_menu_like_desktop() {
     assert!(app.pane.selected_msgs.is_empty(), "a menu without an action unselects the gallery");
 }
 
+/// Desktop's `downloadSelectedMessageAttachments`: the Download Attachments hotkey saves the attachments of every
+/// selected message, one after the other, but not view-once media.
+#[test]
+fn download_attachments_saves_every_selected_message_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("download-selected");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    {
+        let mut st = app.store.write();
+        let base = st.messages[*st.timeline_indices(note).last().unwrap()].clone();
+        for (i, name) in ["a.png", "b.pdf", "c.png"].into_iter().enumerate() {
+            let a = Attachment { src_url: Some(format!("https://example.com/{name}")), file_name: Some(name.into()), ..Default::default() };
+            let (id, sort_key) = (format!("$file{i}"), format!("{:016}", 9_000_000 + i));
+            let view_limit = (name == "c.png").then(|| serde_json::json!(1));
+            st.upsert_message(Message { id, sort_key, attachments: vec![a], text: None, view_limit, ..base.clone() });
+        }
+    }
+    app.pane.selected_msgs = vec!["$file1".into(), "$file0".into(), "$file2".into()];
+    let _ = app.update(UiMessage::RunHotkey("Download Attachments"));
+    assert_eq!(app.status_banner, "Downloading b.pdf", "a.png, then b.pdf, and not the view-once c.png");
+}
+
 /// Desktop's `AttachmentFileRow`: the name in `body-sm` (16 px lines) and the details in `label-sm` (14 px lines).
 #[test]
 fn file_rows_like_desktop() {
@@ -2961,7 +3048,14 @@ fn account_switcher_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(chat.id.clone()));
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi".into())));
     let _ = app.update(UiMessage::SwitchCard);
-    assert!(simulator(app.view_main()).find("Switch Chat").is_ok());
+    {
+        // `.SwitchChatHoverCard-module__name` is body-lg (15 px on 20 px) and its subtitle label-md (12 px on 15 px).
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find("Switch Chat").is_ok());
+        let name = network_name(&two.account_id);
+        assert_eq!(sim.find(name).expect("the network").bounds().height, 20.0);
+        assert_eq!(sim.find(account_user(&app.store.read(), &two.account_id)).expect("the user").bounds().height, 15.0);
+    }
     let _ = app.update(UiMessage::SwitchChat("!alt:x".into()));
     assert_eq!((app.pane.selected_chat_id.as_deref(), app.list.chat_menu.is_none()), (Some("!alt:x"), true));
     assert_eq!(app.pane.composer.text().trim(), "hi", "the draft goes to the chat without a draft");
@@ -5551,6 +5645,9 @@ fn hotkey_recorder_like_desktop() {
     let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Record("Search")));
     let _ = app.settings_key(ch("j"), Modifiers::CTRL);
     assert!(simulator(app.view_settings()).find("Ctrl J is already used by Command Bar").is_ok());
+    let size = Size::new(800.0, 4000.0);
+    let (error, danger) = (ink(app.view_settings(), size, ERROR), ink(app.view_settings(), size, app.pal.danger));
+    assert!(error > 20 && danger == 0, "`.shortcut-recorder.error` is `--error-color`: {error} {danger}");
     let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Recorder(true)));
     assert_eq!(keys(&app), "ctrl+k", "a used combination is not saved");
     let _ = app.settings_key(Key::Named(Named::Shift), Modifiers::SHIFT);
@@ -6251,6 +6348,33 @@ fn rail_spaces_show_no_hover_fill_like_desktop() {
     assert_eq!(edge(&mut sim), clear);
 }
 
+/// Desktop's `.btn-ghost:active svg`: the pressed Search and New Chat icons of the chat list header turn
+/// `--color-icon-translucent-strong`, black at 0.9, from the `--color-on-surface` #202124 of `.tab-bar-btn button svg`.
+#[test]
+fn pressed_header_icons_turn_strong_like_desktop() {
+    let app = demo_app("header-press");
+    let main = app.main_window.expect("the main window");
+    for key in ["list-search", "list-new-chat"] {
+        let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+        let b = sim.find(iced::widget::Id::new(key)).expect("the header button").bounds();
+        // The darkest pixel of the button, and the background at its corner.
+        let ink = |sim: &mut Simulator<'_, UiMessage>| {
+            let shot = crate::message::tests::pixels(sim);
+            let k = shot.width() as f32 / app.pane.size.width;
+            let at = |x: f32, y: f32| shot.get_pixel((x * k) as u32, (y * k) as u32).0;
+            let px = (0..b.width as u32).flat_map(|x| (0..b.height as u32).map(move |y| (x as f32, y as f32)));
+            let darkest = px.map(|(x, y)| at(b.x + x, b.y + y)).min_by_key(|px| px[0]).expect("pixels");
+            (darkest, at(b.x, b.y))
+        };
+        assert_eq!(ink(&mut sim).0[..3], [0x20, 0x21, 0x24], "{key} at rest");
+        sim.point_at(b.center());
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: b.center() })]);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))]);
+        let (darkest, bg) = ink(&mut sim);
+        assert!((0..3).all(|i| darkest[i].abs_diff((f32::from(bg[i]) * 0.1).round() as u8) <= 1), "{key} pressed: {darkest:?}");
+    }
+}
+
 #[test]
 fn sidebar_follows_the_spaces_order_like_desktop() {
     use beeper_core::models::SpaceOrder;
@@ -6700,6 +6824,7 @@ fn account_status_like_desktop() {
     assert!(sim.find("Account Disconnected").is_ok() && sim.find("Token expired").is_ok());
     assert!(sim.find("Reconnect").is_err(), "a demo account cannot log in again");
     let _ = sim.click("Remove Account").expect("the Remove Account button of the account page");
+    assert!(ink(app.view_settings(), SETTINGS_SIZE, ON_ERROR) > 20, "`AccountDeleteButton` is `--color-on-error-container`");
     for m in sim.into_messages() {
         let _ = app.update(m);
     }
@@ -6910,6 +7035,8 @@ fn label_settings_like_desktop() {
             assert!(sim.find(item).is_ok(), "{item}");
         }
     }
+    // `.LabelSettings-module__dangerRow`: `--color-text-danger` on `--semantic-colors-bg-fill-primary`.
+    assert!(ink(app.view_window(w), LABEL_SETTINGS_SIZE, app.pal.text_danger) > 20, "Delete Label");
     run(&mut app, "All Messages");
     assert!(app.label_settings[0].menu, "the pill opens the Show in Inbox menu");
     run(&mut app, "Only DMs");
@@ -8402,7 +8529,7 @@ fn new_chats_start_like_desktop() {
     app.store.write().set_contacts(vec![sam.clone(), bo.clone()]);
     let label = {
         let st = app.store.read();
-        account_display_name(&st, &account, &rail_accounts(&st))
+        account_display_name(&st, &account, rail_accounts(&st))
     };
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
@@ -10462,7 +10589,7 @@ fn account_nickname_window_like_desktop() {
     }
     {
         let st = app.store.read();
-        let placeholder = new_chat::default_account_display_name(&st, account, &rail_accounts(&st));
+        let placeholder = new_chat::default_account_display_name(&st, account, rail_accounts(&st));
         assert_eq!(placeholder, "WhatsApp");
     }
     let _ = app.update(UiMessage::Nickname(nickname::Msg::Name(id, "  Work phone ".into())));
@@ -10472,7 +10599,7 @@ fn account_nickname_window_like_desktop() {
         assert_eq!(st.custom_name(account), Some("Work phone"), "the demo keeps the trimmed name");
         assert_eq!(space_name(&st, account), "Work phone", "Desktop's accountDisplayName");
         assert_eq!(account_user(&st, account), "Work phone", "Desktop's userDisplayText");
-        assert_eq!(account_display_name(&st, account, &rail_accounts(&st)), "Work phone");
+        assert_eq!(account_display_name(&st, account, rail_accounts(&st)), "Work phone");
     }
     let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
     assert!(app.nickname_windows.is_empty());
@@ -10558,6 +10685,32 @@ fn tooltips_keep_a_6px_margin_like_desktop() {
     let k = shot.width() / 400;
     let top = (140 * k..shot.height()).find(|&y| shot.get_pixel(120 * k, y).0 == [255; 4]).expect("the tooltip card");
     assert_eq!(top / k, 146);
+}
+
+/// `.BrandTooltip-module__tooltip`'s `position-try: flip-block` and `flip-inline`: a tooltip that does not fit on its
+/// side of the trigger goes to the other side, 6 px from it: under a 40 px trigger at y 10 for a top one, and left of
+/// a trigger at the right edge for a right one.
+#[test]
+fn tooltips_flip_to_the_other_side_like_desktop() {
+    let app = demo_app("tooltip-flip");
+    let size = Size::new(400.0, 300.0);
+    let shot = |at: tooltip::Position, pad: Padding| {
+        let trigger = container(Space::new()).width(40).height(40).into();
+        let tip = app.tip(trigger, "Archive", vec![], at);
+        let view = container(tip).padding(pad).width(Fill).height(Fill).style(fill_box(Color::BLACK, 0.0));
+        let mut sim = Simulator::with_size(Default::default(), size, view);
+        let over = Point::new(pad.left + 20.0, pad.top + 20.0);
+        sim.point_at(over);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: over })]);
+        crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "tooltip-flip")
+    };
+    let top = shot(tooltip::Position::Top, Padding::ZERO.top(10.0).left(100.0));
+    let k = top.width() / 400;
+    let card = (50 * k..top.height()).find(|&y| top.get_pixel(120 * k, y).0 == [255; 4]).expect("the card under the trigger");
+    assert_eq!(card / k, 56, "flipped under the trigger");
+    let right = shot(tooltip::Position::Right, Padding::ZERO.top(100.0).left(350.0));
+    let edge = (0..350 * k).rev().find(|&x| right.get_pixel(x, 120 * k).0 == [255; 4]).expect("the card left of the trigger");
+    assert_eq!(edge / k, 343, "flipped left of the trigger");
 }
 
 /// Desktop's `.hoverActions` sit 6 px over `.actions` whatever their size, also in the compact list where the 32 px
