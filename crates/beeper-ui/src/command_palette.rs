@@ -549,10 +549,7 @@ impl BeeperGuiApp {
             let hits = self.search_hits(&st, self.command_palette_query.trim());
             let (list, _) = self.search_list(&st, &hits);
             let Some(lit) = self.search_lit(&list) else { return Some(Task::none()) };
-            let to = match down {
-                true => (lit + 1..list.len()).find(|&i| list[i].reach()),
-                false => (0..lit).rev().find(|&i| list[i].reach()),
-            };
+            let to = if down { (lit + 1..list.len()).find(|&i| list[i].reach()) } else { (0..lit).rev().find(|&i| list[i].reach()) };
             (to.unwrap_or(lit), list.iter().position(|h| !matches!(h, Hit::Heading(..))).unwrap_or(0))
         };
         self.search_index = Some(to);

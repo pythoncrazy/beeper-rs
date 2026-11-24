@@ -162,10 +162,7 @@ impl Hold<'_> {
                 (start, from, glide_secs(from))
             }
         };
-        let t = match glide.2 > 0.0 {
-            true => (now.saturating_duration_since(start).as_secs_f32() / glide.2).min(1.0),
-            false => 1.0,
-        };
+        let t = if glide.2 > 0.0 { (now.saturating_duration_since(start).as_secs_f32() / glide.2).min(1.0) } else { 1.0 };
         let left = if t < 1.0 { glide.1 * (1.0 - crate::login::ease_in_out(t)) } else { 0.0 };
         let mut set = SetOffset(Some(left));
         self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, &mut set);

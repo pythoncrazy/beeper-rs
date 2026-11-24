@@ -150,10 +150,7 @@ pub(crate) fn animation(bytes: &[u8]) -> Option<Result<Vec<(::image::RgbaImage, 
         };
         (f.into_buffer(), u128::from(ms))
     };
-    Some(frames.and_then(|f| match f.is_empty() {
-        true => Err("The animation has no frames".into()),
-        false => Ok(f.into_iter().map(frame).collect()),
-    }))
+    Some(frames.and_then(|f| if f.is_empty() { Err("The animation has no frames".into()) } else { Ok(f.into_iter().map(frame).collect()) }))
 }
 
 /// The attachment that a carousel shows, its quarter turns and when the last one started, if it shows the Media window items, the inline size of
@@ -486,10 +483,7 @@ impl BeeperGuiApp {
         w.generation += 1;
         (w.items, w.more, w.cursor, w.loading, w.advance) = (Vec::new(), true, None, None, false);
         w.picked.clear();
-        let close = match self.media_mut().viewer.is_some() {
-            true => self.as_media(|s| s.media_view(Msg::CloseCarousel)),
-            false => Task::none(),
-        };
+        let close = if self.media_mut().viewer.is_some() { self.as_media(|s| s.media_view(Msg::CloseCarousel)) } else { Task::none() };
         Task::batch([close, self.media_more()])
     }
 
@@ -1517,10 +1511,7 @@ impl BeeperGuiApp {
                         self.media_search()
                     }
                 };
-                return match open {
-                    true => Task::batch([search, iced::widget::operation::focus("media-search")]),
-                    false => search,
-                };
+                return if open { Task::batch([search, iced::widget::operation::focus("media-search")]) } else { search };
             }
             Msg::Searched(n) => {
                 // The window can close before the wait ends.

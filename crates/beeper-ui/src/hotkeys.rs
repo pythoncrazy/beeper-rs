@@ -140,10 +140,7 @@ impl BeeperGuiApp {
             // Desktop's `showMainWindow`, and with the command bar, `cmdBarViewStore.setVisible(true)` first.
             "Focus App" => Some(UiMessage::Window(windows::Msg::FocusRequested(None))),
             "Focus App and Command Bar" => {
-                let bar = match self.show_command_palette {
-                    true => Task::none(),
-                    false => self.update(UiMessage::RunHotkey("Command Bar")),
-                };
+                let bar = if self.show_command_palette { Task::none() } else { self.update(UiMessage::RunHotkey("Command Bar")) };
                 return Task::batch([bar, self.update(UiMessage::Window(windows::Msg::FocusRequested(None)))]);
             }
             // Desktop's `showInNormalMode`: the commands close, and take the place of a search.

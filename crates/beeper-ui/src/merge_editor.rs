@@ -334,10 +334,7 @@ impl BeeperGuiApp {
             None => tr("View chats with the same contacts, across different accounts, as one conversation.").into(),
         };
         let headline = semi(headline, 13.0).color(p.strong).align_x(Center);
-        let (label, go) = match can {
-            true => (tr("Get Started"), MergeEdit::Start),
-            false => (tr("Upgrade"), MergeEdit::Upgrade),
-        };
+        let (label, go) = if can { (tr("Get Started"), MergeEdit::Start) } else { (tr("Upgrade"), MergeEdit::Upgrade) };
         let go = button(container(med(label, 13.0)).center_y(32))
             .padding([0, 14])
             .style(btn_style([p.accent; 3], [Color::WHITE; 3], 16.0))

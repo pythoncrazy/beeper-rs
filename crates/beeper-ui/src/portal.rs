@@ -196,10 +196,7 @@ pub fn load_file(path: &Path) -> Result<PendingMedia, String> {
 
 /// The first frame of a video, or all the frames of the MP4 of a GIF, which Desktop plays in a loop.
 pub fn video_frames(path: &Path, gif: bool) -> Result<crate::Frames, String> {
-    let args: &[&str] = match gif {
-        true => &["-f", "gif", "pipe:1"],
-        false => &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"],
-    };
+    let args: &[&str] = if gif { &["-f", "gif", "pipe:1"] } else { &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"] };
     let out = std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(path).args(args).output();
     let out = out.map_err(|e| format!("Could not start ffmpeg: {e}"))?;
     match out.status.success() && !out.stdout.is_empty() {
