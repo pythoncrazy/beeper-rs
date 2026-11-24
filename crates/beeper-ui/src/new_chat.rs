@@ -746,7 +746,7 @@ impl BeeperGuiApp {
             .size(rem(13.0))
             .padding(0)
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-        let bg = if self.dark { Color::BLACK } else { Color::WHITE };
+        let bg = p.card;
         // The badge sticks out 5px of the 8px gap.
         container(row![picker, name].spacing(3).align_y(Center)).center_x(Fill).center_y(38).style(move |_| container::Style {
             background: Some(bg.into()),

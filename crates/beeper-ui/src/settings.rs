@@ -1483,7 +1483,7 @@ impl BeeperGuiApp {
             row![swatch, column![body(tr(label).into(), p.text), Space::new().width(80)], size].spacing(8).align_y(Center).into()
         });
         let total = human_size(totals.iter().map(|t| t.1).sum());
-        let fg = if self.dark { Color::WHITE } else { Color::BLACK };
+        let fg = p.fg;
         let ring = stack![
             svg(s.chart.clone().expect("a chart for the scan")).width(200).height(200),
             container(txt(total, 18.0).color(fg)).center(200)
@@ -1621,7 +1621,7 @@ impl BeeperGuiApp {
     fn hotkeys_page(&self, st: &BeeperStore) -> El<'_> {
         let s = &st.settings;
         let p = &self.pal;
-        let edge = p.neutral_border;
+        let edge = p.border_neutrals;
         let search = text_input(tr("Search hotkeys..."), &self.hotkey_query)
             .on_input(|a0| UiMessage::Hotkeys(hotkeys::Msg::Query(a0)))
             .size(rem(13.0))
@@ -2103,7 +2103,7 @@ impl BeeperGuiApp {
         // black, or white in the dark.
         let mut p = self.pal;
         if self.key_held(window, &id) {
-            p.chip = style::mix(p.chip, if self.dark { Color::WHITE } else { Color::BLACK }, 0.1);
+            p.chip = style::mix(p.chip, p.fg, 0.1);
         }
         let pick = {
             let (shown, set) = (shown.clone(), set.clone());

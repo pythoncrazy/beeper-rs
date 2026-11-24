@@ -1451,7 +1451,7 @@ fn pill_style(p: &Palette) -> impl Fn(&Theme, button::Status) -> button::Style +
 
 /// Desktop's `.styled-inputs input`.
 fn outline_input(p: &Palette) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + use<> {
-    let (edge, text, muted, accent) = (p.neutral_border, p.text, p.muted, p.accent);
+    let (edge, text, muted, accent) = (p.border_neutrals, p.text, p.muted, p.accent);
     move |_, _| text_input::Style {
         background: CLEAR.into(),
         border: iced::Border { color: edge, width: 1.0, radius: 6.0.into() },
