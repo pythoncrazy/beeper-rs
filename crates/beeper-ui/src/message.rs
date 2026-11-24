@@ -2278,7 +2278,7 @@ impl BeeperGuiApp {
                 (_, "audio") if self.playable(a) => {
                     let ts = shows_time.then(|| {
                         let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
-                        (time, if mine { sent_meta } else { p.sub })
+                        (time, if mine { sent_meta } else { p.muted })
                     });
                     // `.audio-player` of a received voice note is `--color-background-message-bubble-received`.
                     self.view_audio(m, a, mine, ts, fg, if mine { bg } else { dim(p.link_card) })
@@ -2337,7 +2337,7 @@ impl BeeperGuiApp {
             let line = txt(text.clone(), 13.0).line_height(lh(16.0)).font(italic).color(fg.scale_alpha(0.8));
             let time = shows_time.then(|| {
                 let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
-                crate::style::fixed(time, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.sub })
+                crate::style::fixed(time, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.muted })
             });
             let body = column![].push(inside).push(row![line].push(time).spacing(4).align_y(Bottom));
             parts = parts.push(container(body).padding([BUBBLE_PAD_Y, BUBBLE_PAD_X]).style(fill_box(bg, 17.0)));
@@ -2678,8 +2678,10 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let ts = shows_time.then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
         let room = ts.as_deref().map_or(0.0, |t| crate::style::fixed_width(t, 11.0, Weight::Normal) + 4.0);
+        // `.MessageReadableMetadata-module__readableMetadata`: `--color-on-surface-variant`, or the text color of a sent
+        // bubble at 0.8.
         let time: Option<El<'a>> =
-            ts.map(|t| crate::style::fixed(t, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.sub }).into());
+            ts.map(|t| crate::style::fixed(t, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.muted }).into());
         // Desktop's `MessageErrorTooltip` takes the place of the time.
         let (room, time) = match failed {
             Some(e) => {
@@ -2688,7 +2690,7 @@ impl BeeperGuiApp {
             }
             // Desktop's `BookmarkIndicator` and `ReminderIndicator` (`E3`) go before the time.
             None => {
-                let color = if mine { sent_meta } else { p.sub };
+                let color = if mine { sent_meta } else { p.muted };
                 let marker = |handle: &svg::Handle, color: Color, label: String| {
                     let icon = svg(handle.clone()).width(10).height(10);
                     let icon = icon.style(move |_, _| svg::Style { color: Some(color) });
@@ -4759,6 +4761,32 @@ pub(crate) mod tests {
         let (fill, ink) = look(&app);
         assert!(near(fill, mix(app.pal.card, crate::style::hex(0x3478f6), 0.3)), "a bubble color mixes it: {fill:?}");
         assert!(near(ink, app.pal.strong), "{ink:?}");
+    }
+
+    /// Desktop's `.MessageReadableMetadata-module__readableMetadata`: the time in a received bubble is
+    /// `--color-on-surface-variant`, and in a sent bubble the text color of the bubble at 0.8.
+    #[test]
+    fn message_times_like_desktop() {
+        let app = crate::fuzz::demo_app("message-times");
+        let mid = plain_received(&app, "Hi");
+        let time = {
+            let st = app.store.read();
+            format_short_ts(&st.message(&mid).timestamp, st.settings.pref("timeFormat") == 1)
+        };
+        // The darkest, or for a sent bubble the brightest, pixel of the time.
+        let ink = |sent: bool| {
+            let at = alone(&app, &mid).find(time.as_str()).expect("the time").bounds();
+            let shot = pixels(&mut alone(&app, &mid));
+            let (x, y) = ((2.0 * at.x) as u32, (2.0 * at.y) as u32);
+            let pxs = (x..x + (2.0 * at.width) as u32).flat_map(|x| (y..y + (2.0 * at.height) as u32).map(move |y| (x, y)));
+            let pxs = pxs.map(|(x, y)| shot.get_pixel(x, y).0);
+            if sent { pxs.max_by_key(|px| px[0]) } else { pxs.min_by_key(|px| px[0]) }.expect("the time pixels")
+        };
+        let received = ink(false);
+        assert!(near(received, app.pal.muted), "{received:?}");
+        change(&app, &mid, |m| m.is_sender = Some(true));
+        let sent = ink(true);
+        assert!(near(sent, mix(app.pal.sent, Color::WHITE, 0.8)), "{sent:?}");
     }
 
     /// A received message of a DM, as plain text.
