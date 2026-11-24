@@ -2374,6 +2374,264 @@ impl BeeperGuiApp {
                 };
                 return Task::batch([top, self.load_devices(), packs]);
             }
+            msg @ (Msg::LoadPacks
+            | Msg::Packs(..)
+            | Msg::PackInAllChats(..)
+            | Msg::AskRemovePack(..)
+            | Msg::RemovePack(..)
+            | Msg::PackRemoved(..)
+            | Msg::DevicesLoaded(..)
+            | Msg::AskLogoutDevice(..)
+            | Msg::LogoutDevice(..)
+            | Msg::DeviceLoggedOut(..)
+            | Msg::MicsLoaded(..)
+            | Msg::SetMicrophone(..)) => return self.settings_packs(msg),
+            Msg::ShareAnalytics => {
+                let mut st = self.store.write();
+                let was = st.whoami.analytics_disabled;
+                st.whoami.analytics_disabled = !was;
+                let (cloud, token) = (self.cloud.clone(), st.beeper_state.access_token.clone());
+                if !st.config.demo {
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || cloud.set_analytics_disabled(&token, !was))
+                                .await
+                                .expect("analytics worker thread")
+                        },
+                        move |r| UiMessage::Settings(Msg::AnalyticsSaved(was, r.map_err(|e| e.message))),
+                    );
+                }
+            }
+            Msg::AnalyticsSaved(_, Ok(())) => {}
+            Msg::AnalyticsSaved(was, Err(e)) => {
+                self.store.write().whoami.analytics_disabled = was;
+                self.fail(Toast::new(trf("Something went wrong: %s", &[&e])));
+            }
+            Msg::SystemTheme(mode) => {
+                self.system_dark = mode == iced::theme::Mode::Dark;
+                self.refresh_theme_and_tray();
+            }
+            Msg::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
+            Msg::SelectUiTheme(theme) => self.patch_settings(|s| s.ui_theme = theme),
+            Msg::ThemeTick => {
+                if let Some(b) = self.pal.backdrop.as_mut().filter(|b| b.rich) {
+                    b.offset = crate::ui_theme::rich_offset(beeper_core::config::now_unix_millis());
+                }
+            }
+            Msg::ToggleSetting(flip) => self.patch_settings(flip),
+            Msg::SetQuickEmoji(0, e) => {
+                self.patch_settings(|s| s.quick_reaction = e);
+                let mut st = self.store.write();
+                let client = st.matrix.clone();
+                if let Some(((kind, content), c)) = beeper_core::matrix::quick_reaction_write(&mut st).zip(client) {
+                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
+                }
+            }
+            Msg::SetQuickEmoji(slot, e) => {
+                self.patch_settings(|s| s.quick_reactions[usize::from(slot) - 1] = e);
+            }
+            Msg::PickDownloads => {
+                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Folder);
+                return Task::perform(pick, |a0| UiMessage::Settings(Msg::DownloadsPicked(a0)));
+            }
+            Msg::DownloadsPicked(Ok(dirs)) => {
+                if let Some(dir) = dirs.into_iter().next() {
+                    self.patch_settings(|s| s.downloads_dir = dir.display().to_string());
+                }
+            }
+            Msg::DownloadsPicked(Err(e)) => self.fail(Toast::new(e)),
+            msg @ (Msg::StorageScanned(..)
+            | Msg::StorageAge(..)
+            | Msg::StorageKind(..)
+            | Msg::StorageChat(..)
+            | Msg::ClearStorage(..)
+            | Msg::StorageCleared(..)) => return self.settings_storage(msg),
+            Msg::JoinCommunity => {
+                if self.store.read().resolve_chat_idx(COMMUNITY_ROOM).is_some() {
+                    let close = self.close_window(self.settings_window.expect("the settings window is open"));
+                    return Task::batch([self.update(UiMessage::SelectChat(COMMUNITY_ROOM.into())), close]);
+                }
+                if !self.integrations.joining {
+                    self.integrations.joining = true;
+                    return Task::perform(beeper_core::matrix::join(self.store.clone(), COMMUNITY_ROOM.into()), |r| {
+                        UiMessage::Settings(Msg::CommunityJoined(r.map(drop)))
+                    });
+                }
+            }
+            Msg::CommunityJoined(r) => {
+                self.integrations.joining = false;
+                match r {
+                    Ok(()) => {
+                        let text = tr("Successfully joined the Beeper community room!").into();
+                        self.show(Toast { buttons: vec![(tr("Open"), UiMessage::Settings(Msg::JoinCommunity))], ..Toast::new(text) });
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to join community room: {e}");
+                        self.fail(Toast::new(
+                            tr("Something went wrong while joining the Beeper Developer Community chat. Please try again.").into(),
+                        ));
+                    }
+                }
+            }
+            Msg::Open(tab) => {
+                self.list.chat_menu = None;
+                return self.open_settings(tab);
+            }
+            Msg::SlideTo(key, v) => self.settings_slider = Some((key, v)),
+            Msg::SlideEnd => {
+                if let Some((key, v)) = self.settings_slider.take() {
+                    return self.update(UiMessage::Settings(Msg::SetPref(key, v)));
+                }
+            }
+            msg @ (Msg::Query(..) | Msg::Focus(..) | Msg::Step(..) | Msg::SearchFocus(..) | Msg::Suggest(..) | Msg::Pick(..)) => {
+                return self.settings_search(msg)
+            }
+            Msg::SetPref(key, v) => {
+                if key == "incognito" {
+                    let was = u8::from(self.store.read().settings.on(key));
+                    let what = if v != 0 { tr("Enable Incognito Mode") } else { tr("Disable Incognito Mode") };
+                    self.act(what.into(), UiMessage::Settings(Msg::SetPref(key, was)), None);
+                }
+                self.patch_settings(|s| s.set_pref(key, v));
+                // Desktop shows `StickerPacksPreference` once the sticker packs are on, which loads the packs.
+                let packs = match (key, v) {
+                    ("stickerPacks", 1) => self.update(UiMessage::Settings(Msg::LoadPacks)),
+                    _ => Task::none(),
+                };
+                self.relaunch_toast = match key {
+                    "spellcheck" | "quitOnClose" | "hwAcceleration" | "hiddenEvents" => Some("Preference changed"),
+                    "appLanguage" => Some("App language will change after relaunch"),
+                    _ => self.relaunch_toast,
+                };
+                let mut st = self.store.write();
+                let client = st.matrix.clone();
+                if let Some(((kind, content), c)) = beeper_core::matrix::pref_write(&mut st, key).zip(client) {
+                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed).chain(packs);
+                }
+                return packs;
+            }
+        }
+        self.settle()
+    }
+
+    /// The settings search: its query, keys, suggestions and picks.
+    fn settings_search(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::Query(q) => {
+                let st = self.store.read();
+                let n = search_settings(&st, &q).len();
+                if n != search_settings(&st, &self.settings_query).len() {
+                    self.settings_focus = 0;
+                    self.settings_pick = self.settings_pick.filter(|_| n > 0);
+                }
+                self.settings_query = q;
+            }
+            Msg::Focus(i) => self.settings_focus = i,
+            Msg::Step(step) => {
+                let n = self.search_rows();
+                self.settings_focus = (self.settings_focus + step) % n.max(1);
+                if self.settings_query.trim().is_empty() {
+                    return Task::none();
+                }
+                return locate(format!("hit-{}", self.settings_focus), "settings-nav", crate::Align::Nearest);
+            }
+            // Desktop's `onFocus` of the search starts at the first row.
+            Msg::SearchFocus(on) => {
+                if on && !self.settings_search_on {
+                    self.settings_focus = 0;
+                }
+                self.settings_search_on = on;
+            }
+            // Desktop's `M` of a suggestion: its section with its row highlighted, or Beeper Plus, and the search
+            // gives the focus back.
+            Msg::Suggest(i) => {
+                let Some(&(_, tab, key)) = suggestions(&self.store.read()).get(i) else { return Task::none() };
+                if tab == SettingsTab::BeeperPlus {
+                    self.settings_query.clear();
+                }
+                self.settings_search_on = false;
+                let open = Task::batch([self.update(UiMessage::Settings(Msg::SelectTab(tab))), crate::focus::blur()]);
+                return match key {
+                    Some(key) => {
+                        self.pref_flash = Some((key, std::time::Instant::now()));
+                        Task::batch([open, locate(key, "settings-pane", crate::Align::Center)])
+                    }
+                    None => open,
+                };
+            }
+            Msg::Pick(hit) => {
+                self.settings_pick = Some(hit);
+                let tab = match hit {
+                    SettingsHit::Section(t, _) | SettingsHit::Pref(t, _) | SettingsHit::Custom(t, _) => t,
+                    SettingsHit::Network(_) => SettingsTab::Accounts,
+                };
+                let load = Task::batch([self.update(UiMessage::Settings(Msg::SelectTab(tab))), operation::focus("settings-search")]);
+                return match hit {
+                    SettingsHit::Pref(_, &prefs::Pref { key, .. }) | SettingsHit::Custom(_, key) => {
+                        self.pref_flash = Some((key, std::time::Instant::now()));
+                        Task::batch([load, locate(key, "settings-pane", crate::Align::Center)])
+                    }
+                    // Desktop's network hit: the account on that network, or the Add Account window for it.
+                    SettingsHit::Network(name) => {
+                        let st = self.store.read();
+                        let net = crate::networks::addable(&st.features).find(|n| n.display_name == name).expect("an addable network");
+                        let account = st
+                            .bridge_accounts
+                            .iter()
+                            .find(|a| beeper_core::config::account_network(&a.bridge_id).bridge_id == net.bridge_id);
+                        let account = account.map(|a| a.account_id.clone());
+                        drop(st);
+                        let next = match account {
+                            Some(id) => self.update(UiMessage::Accounts(crate::accounts::Msg::Open(Some(id)))),
+                            None => self.update(UiMessage::OpenAddAccount(net.bridge_id.into(), None)),
+                        };
+                        Task::batch([load, next])
+                    }
+                    SettingsHit::Section(..) => load,
+                };
+            }
+            _ => unreachable!("not a settings_search message"),
+        }
+        self.settle()
+    }
+
+    /// Settings > Storage: the scan, its filters and clearing.
+    fn settings_storage(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::StorageScanned(all) => {
+                self.storage.chart = Some(donut(&storage_totals(&all)));
+                self.storage.all = Some(all);
+            }
+            Msg::StorageAge(which, i) => self.storage.ages[which] = i,
+            Msg::StorageKind(which, i) => self.storage.kinds[which] ^= 1 << i,
+            Msg::StorageChat(id) => {
+                let s = &mut self.storage;
+                (s.chat, s.ages[1], s.kinds[1]) = ((s.chat.as_ref() != Some(&id)).then_some(id), 1, 0b11111);
+            }
+            Msg::ClearStorage(which) => {
+                let mut picked: Vec<storage::Entry> = self.storage_pick(which).into_iter().cloned().collect();
+                if which == 0 {
+                    picked.extend(self.storage_pick(1).into_iter().cloned());
+                }
+                (self.confirm, self.storage.clearing) = (None, Some(which));
+                return Task::perform(storage::clear(self.store.clone(), picked), |a0| UiMessage::Settings(Msg::StorageCleared(a0)));
+            }
+            Msg::StorageCleared(r) => {
+                self.storage.clearing = None;
+                if let Err(e) = r {
+                    eprintln!("Unable to clear storage: {e}");
+                    self.fail(Toast::new(tr("Failed to clear storage").into()));
+                }
+                return self.scan_storage();
+            }
+            _ => unreachable!("not a settings_storage message"),
+        }
+        self.settle()
+    }
+
+    /// Settings > Sticker packs, Devices and the microphone.
+    fn settings_packs(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
             Msg::LoadPacks => {
                 return Task::perform(beeper_core::matrix::installed_packs(self.store.clone()), |r| UiMessage::Settings(Msg::Packs(r)));
             }
@@ -2450,220 +2708,7 @@ impl BeeperGuiApp {
                 self.mics = Some(r);
             }
             Msg::SetMicrophone(name) => self.patch_settings(|s| s.microphone = name),
-            Msg::ShareAnalytics => {
-                let mut st = self.store.write();
-                let was = st.whoami.analytics_disabled;
-                st.whoami.analytics_disabled = !was;
-                let (cloud, token) = (self.cloud.clone(), st.beeper_state.access_token.clone());
-                if !st.config.demo {
-                    return Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || cloud.set_analytics_disabled(&token, !was))
-                                .await
-                                .expect("analytics worker thread")
-                        },
-                        move |r| UiMessage::Settings(Msg::AnalyticsSaved(was, r.map_err(|e| e.message))),
-                    );
-                }
-            }
-            Msg::AnalyticsSaved(_, Ok(())) => {}
-            Msg::AnalyticsSaved(was, Err(e)) => {
-                self.store.write().whoami.analytics_disabled = was;
-                self.fail(Toast::new(trf("Something went wrong: %s", &[&e])));
-            }
-            Msg::SystemTheme(mode) => {
-                self.system_dark = mode == iced::theme::Mode::Dark;
-                self.refresh_theme_and_tray();
-            }
-            Msg::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
-            Msg::SelectUiTheme(theme) => self.patch_settings(|s| s.ui_theme = theme),
-            Msg::ThemeTick => {
-                if let Some(b) = self.pal.backdrop.as_mut().filter(|b| b.rich) {
-                    b.offset = crate::ui_theme::rich_offset(beeper_core::config::now_unix_millis());
-                }
-            }
-            Msg::ToggleSetting(flip) => self.patch_settings(flip),
-            Msg::SetQuickEmoji(0, e) => {
-                self.patch_settings(|s| s.quick_reaction = e);
-                let mut st = self.store.write();
-                let client = st.matrix.clone();
-                if let Some(((kind, content), c)) = beeper_core::matrix::quick_reaction_write(&mut st).zip(client) {
-                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
-                }
-            }
-            Msg::SetQuickEmoji(slot, e) => {
-                self.patch_settings(|s| s.quick_reactions[usize::from(slot) - 1] = e);
-            }
-            Msg::PickDownloads => {
-                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Folder);
-                return Task::perform(pick, |a0| UiMessage::Settings(Msg::DownloadsPicked(a0)));
-            }
-            Msg::DownloadsPicked(Ok(dirs)) => {
-                if let Some(dir) = dirs.into_iter().next() {
-                    self.patch_settings(|s| s.downloads_dir = dir.display().to_string());
-                }
-            }
-            Msg::DownloadsPicked(Err(e)) => self.fail(Toast::new(e)),
-            Msg::StorageScanned(all) => {
-                self.storage.chart = Some(donut(&storage_totals(&all)));
-                self.storage.all = Some(all);
-            }
-            Msg::StorageAge(which, i) => self.storage.ages[which] = i,
-            Msg::StorageKind(which, i) => self.storage.kinds[which] ^= 1 << i,
-            Msg::StorageChat(id) => {
-                let s = &mut self.storage;
-                (s.chat, s.ages[1], s.kinds[1]) = ((s.chat.as_ref() != Some(&id)).then_some(id), 1, 0b11111);
-            }
-            Msg::ClearStorage(which) => {
-                let mut picked: Vec<storage::Entry> = self.storage_pick(which).into_iter().cloned().collect();
-                if which == 0 {
-                    picked.extend(self.storage_pick(1).into_iter().cloned());
-                }
-                (self.confirm, self.storage.clearing) = (None, Some(which));
-                return Task::perform(storage::clear(self.store.clone(), picked), |a0| UiMessage::Settings(Msg::StorageCleared(a0)));
-            }
-            Msg::StorageCleared(r) => {
-                self.storage.clearing = None;
-                if let Err(e) = r {
-                    eprintln!("Unable to clear storage: {e}");
-                    self.fail(Toast::new(tr("Failed to clear storage").into()));
-                }
-                return self.scan_storage();
-            }
-            Msg::JoinCommunity => {
-                if self.store.read().resolve_chat_idx(COMMUNITY_ROOM).is_some() {
-                    let close = self.close_window(self.settings_window.expect("the settings window is open"));
-                    return Task::batch([self.update(UiMessage::SelectChat(COMMUNITY_ROOM.into())), close]);
-                }
-                if !self.integrations.joining {
-                    self.integrations.joining = true;
-                    return Task::perform(beeper_core::matrix::join(self.store.clone(), COMMUNITY_ROOM.into()), |r| {
-                        UiMessage::Settings(Msg::CommunityJoined(r.map(drop)))
-                    });
-                }
-            }
-            Msg::CommunityJoined(r) => {
-                self.integrations.joining = false;
-                match r {
-                    Ok(()) => {
-                        let text = tr("Successfully joined the Beeper community room!").into();
-                        self.show(Toast { buttons: vec![(tr("Open"), UiMessage::Settings(Msg::JoinCommunity))], ..Toast::new(text) });
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to join community room: {e}");
-                        self.fail(Toast::new(
-                            tr("Something went wrong while joining the Beeper Developer Community chat. Please try again.").into(),
-                        ));
-                    }
-                }
-            }
-            Msg::Open(tab) => {
-                self.list.chat_menu = None;
-                return self.open_settings(tab);
-            }
-            Msg::SlideTo(key, v) => self.settings_slider = Some((key, v)),
-            Msg::SlideEnd => {
-                if let Some((key, v)) = self.settings_slider.take() {
-                    return self.update(UiMessage::Settings(Msg::SetPref(key, v)));
-                }
-            }
-            Msg::Query(q) => {
-                let st = self.store.read();
-                let n = search_settings(&st, &q).len();
-                if n != search_settings(&st, &self.settings_query).len() {
-                    self.settings_focus = 0;
-                    self.settings_pick = self.settings_pick.filter(|_| n > 0);
-                }
-                self.settings_query = q;
-            }
-            Msg::Focus(i) => self.settings_focus = i,
-            Msg::Step(step) => {
-                let n = self.search_rows();
-                self.settings_focus = (self.settings_focus + step) % n.max(1);
-                if self.settings_query.trim().is_empty() {
-                    return Task::none();
-                }
-                return locate(format!("hit-{}", self.settings_focus), "settings-nav", crate::Align::Nearest);
-            }
-            // Desktop's `onFocus` of the search starts at the first row.
-            Msg::SearchFocus(on) => {
-                if on && !self.settings_search_on {
-                    self.settings_focus = 0;
-                }
-                self.settings_search_on = on;
-            }
-            // Desktop's `M` of a suggestion: its section with its row highlighted, or Beeper Plus, and the search
-            // gives the focus back.
-            Msg::Suggest(i) => {
-                let Some(&(_, tab, key)) = suggestions(&self.store.read()).get(i) else { return Task::none() };
-                if tab == SettingsTab::BeeperPlus {
-                    self.settings_query.clear();
-                }
-                self.settings_search_on = false;
-                let open = Task::batch([self.update(UiMessage::Settings(Msg::SelectTab(tab))), crate::focus::blur()]);
-                return match key {
-                    Some(key) => {
-                        self.pref_flash = Some((key, std::time::Instant::now()));
-                        Task::batch([open, locate(key, "settings-pane", crate::Align::Center)])
-                    }
-                    None => open,
-                };
-            }
-            Msg::Pick(hit) => {
-                self.settings_pick = Some(hit);
-                let tab = match hit {
-                    SettingsHit::Section(t, _) | SettingsHit::Pref(t, _) | SettingsHit::Custom(t, _) => t,
-                    SettingsHit::Network(_) => SettingsTab::Accounts,
-                };
-                let load = Task::batch([self.update(UiMessage::Settings(Msg::SelectTab(tab))), operation::focus("settings-search")]);
-                return match hit {
-                    SettingsHit::Pref(_, &prefs::Pref { key, .. }) | SettingsHit::Custom(_, key) => {
-                        self.pref_flash = Some((key, std::time::Instant::now()));
-                        Task::batch([load, locate(key, "settings-pane", crate::Align::Center)])
-                    }
-                    // Desktop's network hit: the account on that network, or the Add Account window for it.
-                    SettingsHit::Network(name) => {
-                        let st = self.store.read();
-                        let net = crate::networks::addable(&st.features).find(|n| n.display_name == name).expect("an addable network");
-                        let account = st
-                            .bridge_accounts
-                            .iter()
-                            .find(|a| beeper_core::config::account_network(&a.bridge_id).bridge_id == net.bridge_id);
-                        let account = account.map(|a| a.account_id.clone());
-                        drop(st);
-                        let next = match account {
-                            Some(id) => self.update(UiMessage::Accounts(crate::accounts::Msg::Open(Some(id)))),
-                            None => self.update(UiMessage::OpenAddAccount(net.bridge_id.into(), None)),
-                        };
-                        Task::batch([load, next])
-                    }
-                    SettingsHit::Section(..) => load,
-                };
-            }
-            Msg::SetPref(key, v) => {
-                if key == "incognito" {
-                    let was = u8::from(self.store.read().settings.on(key));
-                    let what = if v != 0 { tr("Enable Incognito Mode") } else { tr("Disable Incognito Mode") };
-                    self.act(what.into(), UiMessage::Settings(Msg::SetPref(key, was)), None);
-                }
-                self.patch_settings(|s| s.set_pref(key, v));
-                // Desktop shows `StickerPacksPreference` once the sticker packs are on, which loads the packs.
-                let packs = match (key, v) {
-                    ("stickerPacks", 1) => self.update(UiMessage::Settings(Msg::LoadPacks)),
-                    _ => Task::none(),
-                };
-                self.relaunch_toast = match key {
-                    "spellcheck" | "quitOnClose" | "hwAcceleration" | "hiddenEvents" => Some("Preference changed"),
-                    "appLanguage" => Some("App language will change after relaunch"),
-                    _ => self.relaunch_toast,
-                };
-                let mut st = self.store.write();
-                let client = st.matrix.clone();
-                if let Some(((kind, content), c)) = beeper_core::matrix::pref_write(&mut st, key).zip(client) {
-                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed).chain(packs);
-                }
-                return packs;
-            }
+            _ => unreachable!("not a settings_packs message"),
         }
         self.settle()
     }

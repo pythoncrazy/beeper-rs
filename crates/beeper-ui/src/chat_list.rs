@@ -298,6 +298,98 @@ impl BeeperGuiApp {
                 }
                 (self.confirm, self.delete_target, self.delete_chats) = (Some(ASK_DELETE_CHAT), Some(id), chats);
             }
+            msg @ (Msg::BeginSelecting(..)
+            | Msg::ToggleSelectMode
+            | Msg::ToggleSelected(..)
+            | Msg::SelectionSet(..)
+            | Msg::SelectionRemind(..)
+            | Msg::SelectionMenu(..)) => return self.chat_list_selection(msg),
+            Msg::AskLeave(id) => (self.confirm, self.delete_target) = (Some(ASK_LEAVE_CHAT), Some(id)),
+            Msg::Leave(id) => {
+                self.confirm = None;
+                self.store.write().leave_room(&id);
+                return self.update(UiMessage::StoreChanged);
+            }
+            Msg::AcceptRequest(id) => {
+                self.list.chat_menu = None;
+                self.store.write().accept_request(&id);
+                return self.update(UiMessage::StoreChanged);
+            }
+            Msg::Delete(id, everyone) => {
+                self.list.chat_menu = None;
+                self.confirm = None;
+                self.store.write().delete_chat(&id, everyone);
+                return self.update(UiMessage::StoreChanged);
+            }
+            Msg::DeleteAll(ids, everyone) => {
+                self.confirm = None;
+                self.selection.retain(|c| !ids.contains(c));
+                let mut st = self.store.write();
+                for id in &ids {
+                    if st.resolve_chat_idx(id).is_some() {
+                        st.delete_chat(id, everyone);
+                    }
+                }
+                drop(st);
+                return self.update(UiMessage::StoreChanged);
+            }
+            msg @ (Msg::ToggleFilterMenu | Msg::FilterButton | Msg::PickFilter(..) | Msg::PickAccount(..) | Msg::ClearFilters) => {
+                return self.chat_list_filters(msg)
+            }
+            Msg::Hover(id, true) => {
+                if self.hovered_chat.as_ref() != Some(&id) {
+                    let now = std::time::Instant::now();
+                    if let Some(left) = self.hovered_chat.replace(id) {
+                        self.unhovered = Some((left, now));
+                    }
+                    self.hover_at = Some(now);
+                }
+            }
+            Msg::Hover(id, false) => {
+                if self.hovered_chat.as_ref() == Some(&id) {
+                    self.hovered_chat = None;
+                    self.unhovered = Some((id, std::time::Instant::now()));
+                }
+            }
+            Msg::DeleteDraft(cid) => {
+                self.store.write().patch_chat(&cid, true, None, None).expect("chat exists");
+                if self.pane.selected_chat_id.as_ref() == Some(&cid) {
+                    self.pane.composer = composer_with("");
+                    self.pane.reply_to_message_id = None;
+                }
+            }
+        }
+        self.settle()
+    }
+
+    /// The filters of the chat list: the filter menu, its accounts and clearing them.
+    fn chat_list_filters(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::ToggleFilterMenu => self.list.show_filter_menu = !self.list().show_filter_menu,
+            Msg::FilterButton if self.list().filters != 0 || self.list().space_view_account.is_some() => {
+                return self.update(UiMessage::ChatList(Msg::ClearFilters));
+            }
+            Msg::FilterButton => self.set_filters(1),
+            Msg::PickFilter(bit) => {
+                self.set_filters(if self.list().filters == bit { 0 } else { bit });
+                self.list.show_filter_menu = false;
+            }
+            Msg::PickAccount(id) => {
+                self.list.space_view_account = (self.list().space_view_account.as_ref() != Some(&id)).then_some(id);
+                self.list.show_filter_menu = false;
+            }
+            Msg::ClearFilters => {
+                self.set_filters(0);
+                self.list.space_view_account = None;
+            }
+            _ => unreachable!("not a chat_list_filters message"),
+        }
+        self.settle()
+    }
+
+    /// Selecting several chats, and what the selection does.
+    fn chat_list_selection(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
             Msg::BeginSelecting(id) => {
                 (self.selection, self.list.chat_menu, self.select_mode) = (vec![id.clone()], None, false);
                 self.select_chat(&id);
@@ -373,74 +465,7 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             Msg::SelectionMenu(menu, x) => self.selection_menu = Some((menu, x)),
-            Msg::AskLeave(id) => (self.confirm, self.delete_target) = (Some(ASK_LEAVE_CHAT), Some(id)),
-            Msg::Leave(id) => {
-                self.confirm = None;
-                self.store.write().leave_room(&id);
-                return self.update(UiMessage::StoreChanged);
-            }
-            Msg::AcceptRequest(id) => {
-                self.list.chat_menu = None;
-                self.store.write().accept_request(&id);
-                return self.update(UiMessage::StoreChanged);
-            }
-            Msg::Delete(id, everyone) => {
-                self.list.chat_menu = None;
-                self.confirm = None;
-                self.store.write().delete_chat(&id, everyone);
-                return self.update(UiMessage::StoreChanged);
-            }
-            Msg::DeleteAll(ids, everyone) => {
-                self.confirm = None;
-                self.selection.retain(|c| !ids.contains(c));
-                let mut st = self.store.write();
-                for id in &ids {
-                    if st.resolve_chat_idx(id).is_some() {
-                        st.delete_chat(id, everyone);
-                    }
-                }
-                drop(st);
-                return self.update(UiMessage::StoreChanged);
-            }
-            Msg::ToggleFilterMenu => self.list.show_filter_menu = !self.list().show_filter_menu,
-            Msg::FilterButton if self.list().filters != 0 || self.list().space_view_account.is_some() => {
-                return self.update(UiMessage::ChatList(Msg::ClearFilters));
-            }
-            Msg::FilterButton => self.set_filters(1),
-            Msg::PickFilter(bit) => {
-                self.set_filters(if self.list().filters == bit { 0 } else { bit });
-                self.list.show_filter_menu = false;
-            }
-            Msg::PickAccount(id) => {
-                self.list.space_view_account = (self.list().space_view_account.as_ref() != Some(&id)).then_some(id);
-                self.list.show_filter_menu = false;
-            }
-            Msg::ClearFilters => {
-                self.set_filters(0);
-                self.list.space_view_account = None;
-            }
-            Msg::Hover(id, true) => {
-                if self.hovered_chat.as_ref() != Some(&id) {
-                    let now = std::time::Instant::now();
-                    if let Some(left) = self.hovered_chat.replace(id) {
-                        self.unhovered = Some((left, now));
-                    }
-                    self.hover_at = Some(now);
-                }
-            }
-            Msg::Hover(id, false) => {
-                if self.hovered_chat.as_ref() == Some(&id) {
-                    self.hovered_chat = None;
-                    self.unhovered = Some((id, std::time::Instant::now()));
-                }
-            }
-            Msg::DeleteDraft(cid) => {
-                self.store.write().patch_chat(&cid, true, None, None).expect("chat exists");
-                if self.pane.selected_chat_id.as_ref() == Some(&cid) {
-                    self.pane.composer = composer_with("");
-                    self.pane.reply_to_message_id = None;
-                }
-            }
+            _ => unreachable!("not a chat_list_selection message"),
         }
         self.settle()
     }

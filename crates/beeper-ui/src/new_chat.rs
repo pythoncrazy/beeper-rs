@@ -166,6 +166,63 @@ impl BeeperGuiApp {
                 self.new_chat_query.clear();
                 return operation::focus("new-chat-input");
             }
+            msg @ (Msg::NewGroup
+            | Msg::GroupTitle(..)
+            | Msg::Start
+            | Msg::PickAvatar
+            | Msg::AvatarPicked(..)
+            | Msg::AvatarLoaded(..)
+            | Msg::Encrypted(..)
+            | Msg::DmCreated(..)
+            | Msg::GroupCreated(..)) => return self.new_chat_group(msg),
+            Msg::Delete(id) => {
+                // The second click of a double click on the close button hits the draft that the first click removed.
+                let Some(i) = self.new_chats.iter().position(|d| d.id == id) else { return Task::none() };
+                self.new_chats.remove(i);
+                self.list.chat_menu = None;
+                if self.creating_chat != Some(id) {
+                    return Task::none();
+                }
+                self.creating_chat = None;
+                let st = self.store.read();
+                let rest = self.pins_and_rows(&st).1.into_iter().map(|c| UiMessage::SelectChat(c.id.clone()));
+                let items: Vec<_> = self.new_chats.iter().map(|d| UiMessage::NewChat(Msg::Select(d.id))).chain(rest).collect();
+                drop(st);
+                if let Some(next) = items.get(i).or(i.checked_sub(1).and_then(|j| items.get(j))) {
+                    return self.update(next.clone());
+                }
+            }
+            Msg::Query(q) => {
+                (self.new_chat_query, self.join_room.1) = (q.clone(), None);
+                (self.new_chat_lookup, self.new_chat_search) = (None, None);
+                let lookup = UiMessage::NewChat(Msg::LookupIdentifier(q));
+                return self.timers.lookup.after(std::time::Duration::from_millis(300), lookup);
+            }
+            Msg::ToggleExpanded => self.new_chat_expanded = !self.new_chat_expanded,
+            Msg::ToggleChats => self.new_chat_chats_expanded = !self.new_chat_chats_expanded,
+            Msg::JoinMatrixRoom => return self.join_matrix_room(),
+            Msg::MatrixRoomJoined(draft, r, unrouted) => return self.matrix_room_joined(draft, r, unrouted),
+            Msg::ToggleJoinMatrix => {
+                self.join_matrix_mode = !self.join_matrix_mode;
+                self.new_chat_query.clear();
+                return operation::focus("new-chat-input");
+            }
+            Msg::Account(account) => {
+                (self.new_chat_account, self.new_chat_accounts_open) = (account, false);
+            }
+            Msg::ToggleAccounts => self.new_chat_accounts_open = !self.new_chat_accounts_open,
+            Msg::ContactsLoaded(contacts) => {
+                if !contacts.is_empty() {
+                    self.store.write().set_contacts(contacts);
+                }
+            }
+        }
+        self.settle()
+    }
+
+    /// Making a new group: its title, avatar, encryption and creation.
+    fn new_chat_group(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
             Msg::NewGroup => {
                 let n = self.creating_chat.expect("an open draft");
                 self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").group = true;
@@ -232,47 +289,7 @@ impl BeeperGuiApp {
             Msg::Encrypted(on) => self.group_encrypted = on,
             Msg::DmCreated(n, account, quote, r) => self.chat_created(n, &account, quote, r, "creating thread"),
             Msg::GroupCreated(n, account, r) => self.chat_created(Some(n), &account, None, r, "creating group chat"),
-            Msg::Delete(id) => {
-                // The second click of a double click on the close button hits the draft that the first click removed.
-                let Some(i) = self.new_chats.iter().position(|d| d.id == id) else { return Task::none() };
-                self.new_chats.remove(i);
-                self.list.chat_menu = None;
-                if self.creating_chat != Some(id) {
-                    return Task::none();
-                }
-                self.creating_chat = None;
-                let st = self.store.read();
-                let rest = self.pins_and_rows(&st).1.into_iter().map(|c| UiMessage::SelectChat(c.id.clone()));
-                let items: Vec<_> = self.new_chats.iter().map(|d| UiMessage::NewChat(Msg::Select(d.id))).chain(rest).collect();
-                drop(st);
-                if let Some(next) = items.get(i).or(i.checked_sub(1).and_then(|j| items.get(j))) {
-                    return self.update(next.clone());
-                }
-            }
-            Msg::Query(q) => {
-                (self.new_chat_query, self.join_room.1) = (q.clone(), None);
-                (self.new_chat_lookup, self.new_chat_search) = (None, None);
-                let lookup = UiMessage::NewChat(Msg::LookupIdentifier(q));
-                return self.timers.lookup.after(std::time::Duration::from_millis(300), lookup);
-            }
-            Msg::ToggleExpanded => self.new_chat_expanded = !self.new_chat_expanded,
-            Msg::ToggleChats => self.new_chat_chats_expanded = !self.new_chat_chats_expanded,
-            Msg::JoinMatrixRoom => return self.join_matrix_room(),
-            Msg::MatrixRoomJoined(draft, r, unrouted) => return self.matrix_room_joined(draft, r, unrouted),
-            Msg::ToggleJoinMatrix => {
-                self.join_matrix_mode = !self.join_matrix_mode;
-                self.new_chat_query.clear();
-                return operation::focus("new-chat-input");
-            }
-            Msg::Account(account) => {
-                (self.new_chat_account, self.new_chat_accounts_open) = (account, false);
-            }
-            Msg::ToggleAccounts => self.new_chat_accounts_open = !self.new_chat_accounts_open,
-            Msg::ContactsLoaded(contacts) => {
-                if !contacts.is_empty() {
-                    self.store.write().set_contacts(contacts);
-                }
-            }
+            _ => unreachable!("not a new_chat_group message"),
         }
         self.settle()
     }

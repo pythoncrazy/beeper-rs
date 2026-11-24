@@ -1434,6 +1434,29 @@ impl BeeperGuiApp {
                 self.pdfs.clear();
                 return task;
             }
+            msg @ (Msg::Open
+            | Msg::Tab(..)
+            | Msg::SentBy(..)
+            | Msg::Oldest(..)
+            | Msg::Search(..)
+            | Msg::Searched(..)
+            | Msg::Menu(..)
+            | Msg::Select(..)
+            | Msg::Pick(..)
+            | Msg::PickAll
+            | Msg::Save
+            | Msg::AskDelete(..)
+            | Msg::Delete(..)
+            | Msg::ItemMenu(..)
+            | Msg::ItemAct(..)
+            | Msg::More) => return self.media_window(msg),
+        }
+        self.settle()
+    }
+
+    /// The Media window: its tabs, filters, search, selection and items.
+    fn media_window(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
             Msg::Open => {
                 if let Some(w) = &self.media_window {
                     return self.raise(w.id);
@@ -1577,6 +1600,7 @@ impl BeeperGuiApp {
                 return self.update(*msg);
             }
             Msg::More => return self.media_more(),
+            _ => unreachable!("not a media_window message"),
         }
         self.settle()
     }
