@@ -8837,6 +8837,42 @@ fn link_previews_like_desktop() {
     assert!(sim.find("Scaling Laws for Neural Language Models").is_err(), "a link without a preview shows none");
 }
 
+/// Desktop's link in a message (`.message-contents a.ext-link-with-icon`): its `border-bottom` 3 px under the
+/// baseline, under the content area of the text, and running on under the `:after` arrow, an 8 px box 2 px after the
+/// link at 0.7 opacity whose bottom is on the baseline.
+#[test]
+fn message_links_like_desktop() {
+    let mut app = demo_app("link-arrow");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 900.0), app.view_main());
+    // The sent bubble with the link sits under the preview's host line; the shot is at a scale of 2.
+    let host = sim.find("arxiv.org").expect("the preview's host").bounds();
+    let shot = crate::message::tests::pixels(&mut sim);
+    let red = |x: u32, y: u32| shot.get_pixel(x, y).0[0];
+    let rows = (2 * (host.y + 20.0) as u32)..(2 * (host.y + 60.0) as u32);
+    // The underline: the longest white run of a row on the blue bubble.
+    let run = |y: u32| {
+        let mut runs = vec![(0, 0, 0, y)];
+        for x in 1000..shot.width() - 1 {
+            match (red(x - 1, y) > 240, red(x, y) > 240) {
+                (false, true) => runs.push((1, x, x, y)),
+                (true, true) => runs.last_mut().map_or((), |r| (r.0, r.2) = (r.0 + 1, x)),
+                _ => {}
+            }
+        }
+        runs.into_iter().filter(|r| r.1 > 0 && red(r.1 - 1, y) < 100 && red(r.2 + 1, y) < 100).max().unwrap_or((0, 0, 0, y))
+    };
+    let (_, u0, u1, y) = rows.map(run).max().expect("an underline");
+    // The arrow: the ink of 0.7 white over the bubble in the 12 px before the underline's end.
+    let ink: Vec<(u32, u32)> =
+        (u1 - 24..=u1).flat_map(|x| (y - 24..y - 2).map(move |y| (x, y))).filter(|&(x, y)| red(x, y) > 100).collect();
+    let right = ink.iter().map(|p| p.0).max().expect("the arrow");
+    let (top, bottom) = (ink.iter().map(|p| p.1).min().unwrap(), ink.iter().map(|p| p.1).max().unwrap());
+    assert!(u1 - u0 > 300, "the underline runs under the link: {u0}..{u1}");
+    assert!((3..=6).contains(&(u1 - right)), "the underline runs on 2 px past the arrow: {right} {u1}");
+    assert!((14..=17).contains(&(bottom - top + 1)), "an 8 px arrow: {top}..{bottom}");
+}
+
 /// Desktop's `.LinkPreview-module__host`: its 12 px `link` icon, a filled chain whose ink is 8.5 px wide and ends
 /// 1.7 px before the box, 4 px before the host.
 #[test]
@@ -10986,6 +11022,42 @@ fn row_hover_actions_sit_like_desktop() {
         let icon = find(&mut sim, size, size, layer);
         assert_eq!((icon.y - layer.y, layer.x + layer.width - icon.x - icon.width), (28.0, 10.0), "compact {compact}, action {action}");
     }
+}
+
+/// Desktop's `UnmuteIcon` after a muted chat's title: filled, in the row 4 px after the title in the row's
+/// `--color-text-translucent` (#000 at 0.9), and in a pin in the body's `--color-text-neutrals` like its title.
+#[test]
+fn muted_bells_like_desktop() {
+    use iced_test::selector::Candidate;
+    let mut app = demo_app("muted-bells");
+    let chat = app.pins_and_rows(&app.store.read()).1[1].clone();
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(chat.id.clone(), ChatFlag::Muted)));
+    let row: String = chat.title.chars().take(4).collect();
+    let mut sim = simulator(app.view_sidebar());
+    let mut text = |start: &str| {
+        let hit = |c: Candidate<'_>| match c {
+            Candidate::Text { content, bounds, .. } if content.starts_with(start) => Some(bounds),
+            _ => None,
+        };
+        sim.find(hit).expect(start)
+    };
+    let (row, pin) = (text(&row), text("Sarah"));
+    let shot = crate::message::tests::pixels(&mut sim);
+    // The ink right of `x` in the line of `t`, at the shot's scale of 2: its left edge and its darkest pixel.
+    let ink = |t: Rectangle, x: f32, w: f32| {
+        let (x, y) = ((2.0 * x) as u32, 2 * t.y as u32);
+        let bg = shot.get_pixel(x, y).0;
+        let px = (x..x + (2.0 * w) as u32).flat_map(|x| (y..y + 2 * t.height as u32).map(move |y| (x, y)));
+        let inked: Vec<(u32, [u8; 4])> = px.map(|(x, y)| (x, shot.get_pixel(x, y).0)).filter(|(_, c)| c != &bg).collect();
+        let left = inked.iter().map(|i| i.0).min().expect("ink") - x;
+        (left, inked.iter().map(|i| i.1).min_by_key(|c| c.iter().take(3).map(|&c| u32::from(c)).sum::<u32>()).expect("ink"))
+    };
+    let (left, _) = ink(row, row.x + row.width, 20.0);
+    assert!(left > 8, "the bell 4 px after the row's title: {left}");
+    let (_, dark) = ink(pin, pin.x, pin.width);
+    assert_eq!(dark[..3], app.pal.text.into_rgba8()[..3], "the pin's title");
+    let (left, dark) = ink(pin, pin.x + pin.width, 20.0);
+    assert!(left >= 6 && dark[0] < 0x40, "the pin's bell 3.2 px after its title: {left} {dark:?}");
 }
 
 /// Desktop's chat row divider (`section:after`, 0.33 px high) starts at the row's content, after the unread dot's

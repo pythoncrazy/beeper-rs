@@ -158,6 +158,8 @@ pub fn ensure_fonts_loaded() {
         for woff in INTER.into_iter().chain([REDACTED_WOFF]).chain(knicknack.as_deref()) {
             db.load_font_source(Source::Binary(Arc::new(woff_to_sfnt(woff))));
         }
+        // A text without a font is Inter, like the app's default font: also in a test, whose renderer has iced's default.
+        db.set_sans_serif_family("Inter");
     });
 }
 
