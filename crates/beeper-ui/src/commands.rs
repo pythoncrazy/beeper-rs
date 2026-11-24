@@ -834,7 +834,8 @@ impl BeeperGuiApp {
             None if c.render.is_some() => {
                 let (left, right) = c.render.clone().unwrap_or_default();
                 let words = semi(left, 13.0).color(p.strong);
-                let right = semi(right, 13.0).color(p.strong);
+                // `.time-suggestion span:last-child` has tabular figures.
+                let right = t(right, 13.0, tabular(Weight::Semibold)).color(p.strong);
                 row![words, Space::new().width(Fill), right].width(Fill).into()
             }
             None if c.account.is_some() => {
@@ -856,8 +857,10 @@ impl BeeperGuiApp {
         let label = prefs::hotkey_label(&keys);
         let caps = (!label.is_empty()).then(|| {
             Row::with_children(label.split(' ').map(|k| {
-                let w = (text_width(k, 11.0, iced::font::Weight::Semibold) + 6.0).max(20.0);
-                let key = semi(k.to_string(), 11.0).color(p.strong.scale_alpha(alpha));
+                // `.command-bar .hotkey` has tabular figures.
+                let face = tabular(iced::font::Weight::Semibold);
+                let w = (text_width(k, 11.0, face) + 6.0).max(20.0);
+                let key = t(k.to_string(), 11.0, face).color(p.strong.scale_alpha(alpha));
                 container(key).center_x(w).center_y(20).style(fill_box(p.strong.scale_alpha(0.1), 4.0)).into()
             }))
             .spacing(4)

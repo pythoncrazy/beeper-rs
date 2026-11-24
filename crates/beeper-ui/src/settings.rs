@@ -1715,11 +1715,13 @@ impl BeeperGuiApp {
         let row = |(name, _, keys): &(&'static str, &str, String)| -> El<'_> {
             let label = prefs::hotkey_label(keys.split(", ").next().expect("a combination"));
             let caps: Vec<String> = if label.is_empty() { vec![tr("Unset").into()] } else { label.split(' ').map(String::from).collect() };
-            let width = |k: &str| (text_width(k, 13.0, Weight::Normal) + 8.0).max(22.0);
+            // `.hotkeys-modal .hotkey` has tabular figures.
+            let face = tabular(Weight::Normal);
+            let width = |k: &str| (text_width(k, 13.0, face) + 8.0).max(22.0);
             let caps_w: f32 = caps.iter().map(|k| width(k) + 4.0).sum();
             let caps = caps.into_iter().map(|k| {
                 let w = width(&k);
-                container(txt(k, 13.0).color(p.text)).center_x(w).center_y(22).style(fill_box(p.fg.scale_alpha(0.15), 4.0))
+                container(t(k, 13.0, face).color(p.text)).center_x(w).center_y(22).style(fill_box(p.fg.scale_alpha(0.15), 4.0))
             });
             let caps = Row::with_children(caps.map(El::from)).spacing(4).padding(Padding::ZERO.right(4.0));
             let name = ell(tr(name), row_w - 22.4 - 12.0 - caps_w, 13.0, Weight::Normal).color(p.text);
@@ -2156,7 +2158,8 @@ impl BeeperGuiApp {
             }
             prefs::Control::BlockedUsers => {
                 press = Some(UiMessage::Blocking(blocking::Msg::OpenList));
-                let n = txt(blocked_chats(st).len().to_string(), 13.0).color(p.muted);
+                // `.BlockedUsersPref-module__count` has tabular figures.
+                let n = t(blocked_chats(st).len().to_string(), 13.0, tabular(Weight::Normal)).color(p.muted);
                 row![n, ic(icon::CHEVRON_RIGHT, 16.0).color(p.muted)].spacing(2).align_y(Center).into()
             }
             prefs::Control::Analytics => {

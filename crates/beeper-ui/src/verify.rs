@@ -554,7 +554,9 @@ impl BeeperGuiApp {
         column![
             Space::new().height(40),
             heading(tr("Enter your Recovery Key"), H3),
-            key_input(p, &l.key_input, l.error.is_some(), LOGIN_EDIT, LoginMsg::PasteKey.into()),
+            // `.onboarding-module__content` spaces the heading, the key and the actions evenly.
+            Space::new().height(Fill),
+            container(key_field(p, &l.key_input, l.error.is_some(), LOGIN_EDIT, LoginMsg::PasteKey.into())).padding([0, 18]),
             Space::new().height(Fill),
         ]
         .push(error)
@@ -628,19 +630,26 @@ pub(crate) fn key_field<'a>(
     p: &Palette, content: &'a text_editor::Content, error: bool, edit: fn(text_editor::Action) -> UiMessage, on_paste: UiMessage,
 ) -> El<'a> {
     let p = *p;
-    let edge = if error { p.text_danger } else { CLEAR };
-    let editor = text_editor(content).id(KEY_INPUT).on_action(edit).size(rem(17.0)).height(4.0 * 17.0 * 1.3 + 24.0).padding(12).style(
-        move |_: &Theme, _| text_editor::Style {
-            background: p.chip.into(),
-            border: border::rounded(12).color(edge).width(1),
-            placeholder: p.on_secondary,
-            value: p.strong,
-            selection: p.accent.scale_alpha(0.3),
-        },
-    );
-    let paste = txt(trx("Paste from Clipboard", "button label"), 12.0).color(p.on_secondary);
-    let paste = button(paste).padding(4).style(btn_style([CLEAR, p.chip, p.chip], [p.on_secondary; 3], 6.0));
-    column![editor, paste.on_press(on_paste)].spacing(4).align_x(Center).into()
+    let (fg, edge) = if error { (ON_ERROR, ON_ERROR) } else { (p.strong, p.chip) };
+    // The `textarea` of 4 rows: 28 px semibold with the display letter spacing on 36 px lines, centered, with
+    // `padding: 12px 16px`.
+    let font = crate::style::centered(crate::style::display(Weight::Semibold, 28.0));
+    let editor = text_editor(content).id(KEY_INPUT).on_action(edit).font(font).size(rem(28.0)).line_height(lh(36.0));
+    let editor = editor.height(4.0 * rem(36.0) + 24.0).padding([12, 16]).style(move |_: &Theme, _| text_editor::Style {
+        background: CLEAR.into(),
+        border: border::rounded(8),
+        placeholder: p.on_secondary,
+        value: fg,
+        selection: p.accent.scale_alpha(0.3),
+    });
+    // `.RecoveryCodeInput-module__copyButton`: the 20 px copy icon 8 px before 13 px semibold text, in
+    // `--color-primary`.
+    let paste = row![crate::tinted(&crate::COPY_ICON, 20.0, p.accent), semi(trx("Paste from Clipboard", "button label"), 13.0)];
+    let paste = button(paste.spacing(8).align_y(Center)).padding(0).bare(p.accent).on_press(on_paste);
+    // `.RecoveryCodeInput-module__codeInput`: a column 8 px apart on `--color-secondary-container`, in a 1 px border of
+    // the same color (or of `--color-on-error-container`), with `padding-bottom: 14px`.
+    let column = column![editor, paste].spacing(8).align_x(Center).padding(Padding::ZERO.bottom(14.0));
+    container(column).width(Fill).padding(1).style(bordered_box(p.chip, edge, 1.0, 8.0)).into()
 }
 
 /// Desktop's `useAutoSubmitRecoveryCode`: the recovery key on the clipboard, unless it was tried.
@@ -1185,5 +1194,27 @@ mod tests {
         let _ = app.update(LoginMsg::Recovered(Err("bad key".into())).into());
         let _ = app.update(LoginMsg::KeyOnFocus(Some(key.into())).into());
         assert!(!app.login.busy, "a key that failed is not submitted again");
+    }
+
+    /// Desktop's `RecoveryCodeInput` on the sign-in window: the key in 28 px semibold with the display letter
+    /// spacing, centered in its field (its widest line "IJKL-MNOP-QRST" is 234.016 px wide in Desktop 4.3.308), and
+    /// "Paste from Clipboard" in 13 px semibold 8 px after a 20 px icon, at x 112.8 and 132.41 px wide.
+    #[test]
+    fn the_recovery_key_field_looks_like_desktop() {
+        let mut app = crate::fuzz::demo_app("recovery-field");
+        app.login_window = Some(window::Id::unique());
+        app.login.screen = Screen::RecoveryKey;
+        app.login.key_input = text_editor::Content::with_text("EsTc-ABCD-EFGH\nIJKL-MNOP-QRST\nUVWX-YZab-cdef\nghij-klmn-opqr");
+        let mut sim = iced_test::Simulator::with_size(Default::default(), crate::login::SIZE, app.view_login());
+        let paste = sim.find("Paste from Clipboard").expect("the paste button").bounds();
+        assert!((paste.x - 112.8).abs() < 0.05 && (paste.width - 132.41).abs() < 0.05, "{paste:?}");
+        // The ink of the key, above the button: its widest line's, centered in the 330 px window.
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "recovery-field");
+        let k = shot.width() as f32 / crate::login::SIZE.width;
+        let rows = ((paste.y - 160.0) * k) as u32..((paste.y - 8.0) * k) as u32;
+        let dark: Vec<u32> = shot.enumerate_pixels().filter(|(_, y, p)| rows.contains(y) && p[0] < 100).map(|(x, _, _)| x).collect();
+        let (left, right) = (*dark.iter().min().unwrap() as f32 / k, *dark.iter().max().unwrap() as f32 / k);
+        assert!(((left + right) / 2.0 - 165.0).abs() < 1.5, "centered: {left} {right}");
+        assert!((right - left - 234.0).abs() < 4.0, "28 px semibold: {left} {right}");
     }
 }
