@@ -1,6 +1,7 @@
 //! Settings > Integrations: the Desktop API tokens and connections, Remote Access, and the MCP install.
 
 use super::*;
+use crate::modals::Modal;
 use iced::widget::column;
 
 #[derive(Clone)]
@@ -71,6 +72,10 @@ impl BeeperGuiApp {
                     let write = r.scopes.iter().any(|s| s == beeper_core::connect::WRITE);
                     let app = format!("{name} {version}").trim_end().to_string();
                     self.token_ask = Some(TokenAsk { id, app, write, expiry: Expiry(2_592_000), timed_out: false });
+                    drop(st);
+                    // Desktop's `mainWSS.setVisibleModal`: its window over the main window, which a later request
+                    // takes over.
+                    return self.open_modal(Modal::TokenRequest, self.main_window);
                 }
             }
             Msg::Request(id, Some(outcome)) => {
@@ -87,8 +92,9 @@ impl BeeperGuiApp {
                     false => vec![beeper_core::connect::READ.into()],
                 };
                 self.store.write().answer_token_request(&a.id, approve.then_some((scopes, a.expiry.0)));
+                return self.close_modal(Modal::TokenRequest);
             }
-            Msg::Close => self.token_ask = None,
+            Msg::Close => return self.close_modal(Modal::TokenRequest),
             Msg::Revoke(id) => (self.integrations.revoke, self.confirm) = (Some(id), Some(ASK_REVOKE_CONNECTION)),
             Msg::RemoteAccess(true) if self.confirm != Some(ASK_REMOTE_ACCESS) => {
                 self.confirm = Some(ASK_REMOTE_ACCESS);
@@ -105,11 +111,15 @@ impl BeeperGuiApp {
                 self.confirm = None;
                 self.store.write().revoke_token(&self.integrations.revoke.take().expect("a connection to revoke"));
             }
-            Msg::Add(open) => {
-                self.integrations.add =
-                    open.then(|| AddToken { name: String::new(), expiry: Expiry(2_592_000), write: false, token: None, copied: false });
-                return operation::focus("token-name");
+            // Desktop's `setVisibleModal(ADD_BEEPER_CONNECT_TOKEN)` from Settings: its window over Settings.
+            Msg::Add(true) => {
+                if self.modal_window(Modal::AddToken).is_none() {
+                    self.integrations.add =
+                        Some(AddToken { name: String::new(), expiry: Expiry(2_592_000), write: false, token: None, copied: false });
+                }
+                return self.open_modal(Modal::AddToken, self.settings_window).chain(operation::focus("token-name"));
             }
+            Msg::Add(false) => return self.close_modal(Modal::AddToken),
             Msg::AddName(name) => self.integrations.add.as_mut().expect("the token dialog").name = name,
             Msg::AddExpiry(e) => self.integrations.add.as_mut().expect("the token dialog").expiry = e,
             Msg::AddWrite => self.integrations.add.as_mut().expect("the token dialog").write ^= true,
@@ -142,7 +152,7 @@ pub(crate) struct TokenAsk {
 }
 
 impl BeeperGuiApp {
-    /// Desktop's `BeeperConnectAccessTokenRequestModal`, over the main window.
+    /// Desktop's `BeeperConnectAccessTokenRequestModal` in its window.
     pub(crate) fn view_token_ask<'a>(&'a self, a: &'a TokenAsk) -> El<'a> {
         let p = &self.pal;
         let sentence = tr("A third-party app <app/> wants to access your chats through Beeper Desktop API.");
@@ -206,7 +216,12 @@ impl BeeperGuiApp {
         let title = container(semi(tr("Approve connection"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
         let content = column![container(main).padding(Padding::new(0.0).top(32.0).bottom(16.0)), body];
         let pane = column![title, container(content).padding([0, 16])];
-        let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
-        crate::backdrop(container(pane).padding(8)).on_press(UiMessage::Noop).into()
+        modal_frame(p, pane.into())
     }
+}
+
+/// Desktop's `BaseConnectModal` (`xge`): the pane of a token window, 8 px inside the window.
+pub(crate) fn modal_frame<'a>(p: &Palette, pane: El<'a>) -> El<'a> {
+    let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
+    crate::ui_theme::window_bg(container(pane).padding(8), p.backdrop, p.window).into()
 }
