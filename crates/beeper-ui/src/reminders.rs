@@ -303,7 +303,7 @@ impl BeeperGuiApp {
             .iter()
             .zip(0..)
             .map(|(label, i)| menu_item(p, lead(order == i), tr(label).into(), "", Some(UiMessage::Reminders(reminders::Msg::Order(i)))));
-        let ask = Some(UiMessage::Ask(Some(ASK_DISMISS_REMINDERS)));
+        let ask = Some(UiMessage::Ask(Some(Confirm::DismissReminders)));
         let col =
             Column::with_children(orders.chain([menu_rule(p), menu_item(p, lead(false), tr("Dismiss All Reminders").into(), "", ask)]));
         crate::menu_card(p, col, 291).into()

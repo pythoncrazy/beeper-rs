@@ -365,8 +365,6 @@ pub(crate) struct IntegrationsPage {
     pub(crate) target: usize,
     pub(crate) copied: Option<u8>,
     pub(crate) joining: bool,
-    /// The token of the open revoke confirmation.
-    pub(crate) revoke: Option<String>,
     pub(crate) add: Option<AddToken>,
 }
 
@@ -468,20 +466,6 @@ pub(crate) fn donut(parts: &[(storage::Kind, u64)]) -> svg::Handle {
         .collect();
     svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">{arcs}</svg>"#).into_bytes())
 }
-
-/// The dialogs over the Settings window.
-pub(crate) const SETTINGS_DIALOGS: [u8; 10] = [
-    ASK_LOGOUT,
-    ASK_LOGOUT_DEVICE,
-    ASK_CLEAR_STORAGE,
-    ASK_CLEAR_CACHE,
-    ASK_CLEAR_CHAT,
-    ASK_REVOKE_CONNECTION,
-    ASK_REMOTE_ACCESS,
-    ASK_REMOVE_ACCOUNT,
-    ASK_DISCONNECT_SERVER,
-    ASK_REMOVE_PACK,
-];
 
 /// Desktop's "Clear storage older than" choices, where 0 is any age.
 pub(crate) const STORAGE_DAYS: [i64; 4] = [0, 30, 90, 120];
@@ -887,7 +871,7 @@ impl BeeperGuiApp {
         // Desktop's `.prefs-right-pane`, in `.right`'s 8 px frame gap, has a `drop-shadow(0 0 10px #0000001f)`.
         let base = container(row![left, container(right).padding(8)]).width(Fill).height(Fill);
         drop(st);
-        let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
+        let confirm = self.confirm.as_ref().filter(|d| d.in_settings()).map(|d| self.view_confirm(d));
         // The menu of an account row of the Accounts settings, or of the actions of an account page.
         let menu = self.list().chat_menu.as_ref().and_then(|(cid, at)| {
             let (id, kind) = match cid.strip_prefix(ROW_MENU) {
@@ -1051,14 +1035,18 @@ impl BeeperGuiApp {
                 Some("computer") => (&DEVICE_ICONS[1], 18, 11),
                 _ => (&DEVICE_ICONS[2], 9, 14),
             };
-            let glyph = svg(glyph.clone()).width(w).height(h).style(|_, _| svg::Style { color: Some(Color::WHITE) });
+            let glyph = svg(glyph.clone()).width(w).height(h).style(tint(Color::WHITE));
             let tile = container(glyph).center(28).style(fill_box(p.accent, 4.0));
             let text = column![semi(d.name.clone(), 12.0).color(p.strong)]
                 .push(d.model.clone().map(|m| txt(m, 11.0).color(p.sub)))
                 .push(d.last_seen_ms.map(|t| txt(trf("Last seen: %s", &[&ago(t)]), 11.0).color(p.sub)))
                 .width(Fill);
             // Desktop's `DeviceRow`: each device has "Logout", which is disabled while the list loads.
-            let ask = if d.current { UiMessage::Ask(Some(ASK_LOGOUT)) } else { UiMessage::Settings(Msg::AskLogoutDevice(d.id.clone())) };
+            let ask = if d.current {
+                UiMessage::Ask(Some(Confirm::Logout(None)))
+            } else {
+                UiMessage::Settings(Msg::AskLogoutDevice(d.id.clone()))
+            };
             let logout = button(semi(tr("Logout"), 12.0).color(p.strong))
                 .padding([4, 8])
                 .style(btn_style([p.hover, p.selected, p.selected], [p.strong; 3], 20.0))
@@ -1130,14 +1118,11 @@ impl BeeperGuiApp {
                 // Desktop's account row: the account user's photo (`userImage`), the network, and the user.
                 let account = |logo: &str, owner: &str, photo: Option<&str>, name: String, cloud: bool, sub: Option<String>| -> El<'_> {
                     // `AccountListItem-module__line1`, 17 px lines with a 1 px bottom padding, and its `CloudIcon`.
-                    let title =
-                        row![self.face(photo, owner, 14.0, 0.0), semi(name, 14.0).color(p.text)]
-                            .push(cloud.then(|| {
-                                svg(CLOUD_ICON.clone()).width(14).height(10).style(move |_, _| svg::Style { color: Some(p.muted) })
-                            }))
-                            .spacing(4)
-                            .align_y(Center)
-                            .padding(Padding::ZERO.bottom(1.0));
+                    let title = row![self.face(photo, owner, 14.0, 0.0), semi(name, 14.0).color(p.text)]
+                        .push(cloud.then(|| svg(CLOUD_ICON.clone()).width(14).height(10).style(tint(p.muted))))
+                        .spacing(4)
+                        .align_y(Center)
+                        .padding(Padding::ZERO.bottom(1.0));
                     let error = status_text(st, logo).map(|s| {
                         let circle = svg(ERROR_CIRCLE.clone()).width(14).height(14).into();
                         self.tip(circle, s, Vec::new(), tooltip::Position::Top)
@@ -1488,7 +1473,7 @@ impl BeeperGuiApp {
             self.storage_ages(0),
             self.storage_kinds(0, busy),
             warning(),
-            link(label(0), p.text_danger, 13.0, !busy && s.kinds[0] != 0, UiMessage::Ask(Some(ASK_CLEAR_STORAGE)))
+            link(label(0), p.text_danger, 13.0, !busy && s.kinds[0] != 0, UiMessage::Ask(Some(Confirm::Clear(0))))
         ]
         .spacing(12)
         .align_x(Center)
@@ -1507,7 +1492,7 @@ impl BeeperGuiApp {
             ]
             .spacing(2)
             .width(Fill),
-            link("Clear", p.accent, 14.0, !busy && cached, UiMessage::Ask(Some(ASK_CLEAR_CACHE)))
+            link("Clear", p.accent, 14.0, !busy && cached, UiMessage::Ask(Some(Confirm::Clear(1))))
         ]
         .align_y(Center)
         .padding([12, 16]);
@@ -1536,7 +1521,7 @@ impl BeeperGuiApp {
                 .width(12)
                 .height(12)
                 .rotation(iced::Radians(if open { std::f32::consts::PI } else { 0.0 }))
-                .style(move |_, _| svg::Style { color: Some(p.muted) });
+                .style(tint(p.muted));
             let stats = row![
                 crate::style::fixed(counts.join(" | "), 13.0, Weight::Normal).color(p.muted),
                 semi(human_size(bytes), 13.0).color(p.text).width(80).align_x(iced::alignment::Horizontal::Right)
@@ -1557,7 +1542,7 @@ impl BeeperGuiApp {
                 let panel =
                     column![body(tr("Clear storage older than").into(), p.muted), self.storage_ages(1), self.storage_kinds(1, busy)]
                         .push((s.kinds[1] & 1 << 4 != 0).then(warning))
-                        .push(link(label(2), p.text_danger, 13.0, !busy && s.kinds[1] != 0, UiMessage::Ask(Some(ASK_CLEAR_CHAT))))
+                        .push(link(label(2), p.text_danger, 13.0, !busy && s.kinds[1] != 0, UiMessage::Ask(Some(Confirm::Clear(2)))))
                         .spacing(12)
                         .align_x(Center)
                         .padding(Padding::new(16.0).top(12.0));
@@ -1899,11 +1884,8 @@ impl BeeperGuiApp {
             -crate::cubic_bezier(t, [0.5, 0.0, 0.5, 1.0]) * std::f32::consts::TAU
         });
         let color = p.text;
-        let icon = svg(crate::MAT_SYNC.clone())
-            .width(20)
-            .height(20)
-            .rotation(iced::Rotation::Solid(iced::Radians(turn)))
-            .style(move |_, _| svg::Style { color: Some(color) });
+        let icon =
+            svg(crate::MAT_SYNC.clone()).width(20).height(20).rotation(iced::Rotation::Solid(iced::Radians(turn))).style(tint(color));
         let refresh = button(icon).bare(p.text).padding(0).on_press(UiMessage::Accounts(accounts::Msg::FetchServers(id.clone())));
         // `.subview-prefs h4` beside the refresh button, in `RemoteSubView-module__header`.
         let head = row![container(txt(tr("Servers"), 13.0).color(p.muted)).padding([0, 13]).width(Fill), refresh].align_y(Center);
@@ -2651,7 +2633,7 @@ impl BeeperGuiApp {
                 });
                 return write.chain(reload);
             }
-            Msg::AskRemovePack(id) => (self.confirm, self.delete_target) = (Some(ASK_REMOVE_PACK), Some(id)),
+            Msg::AskRemovePack(id) => self.confirm = Some(Confirm::RemovePack(id)),
             Msg::RemovePack(id) => {
                 self.confirm = None;
                 let Some(pack) = self.installed_packs.iter().flatten().find(|p| p.id == id).cloned() else {
@@ -2679,7 +2661,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::DevicesLoaded(r) => (self.devices, self.devices_busy) = (Some(r), false),
-            Msg::AskLogoutDevice(id) => (self.confirm, self.delete_target) = (Some(ASK_LOGOUT_DEVICE), Some(id)),
+            Msg::AskLogoutDevice(id) => self.confirm = Some(Confirm::Logout(Some(id))),
             Msg::LogoutDevice(id) => return self.logout_device(id),
             Msg::DeviceLoggedOut(id, r) => return self.device_logged_out(id, r),
             Msg::MicsLoaded(r) => {

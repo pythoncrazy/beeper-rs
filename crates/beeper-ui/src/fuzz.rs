@@ -3822,7 +3822,7 @@ fn storage_clears_like_desktop() {
         let _ = app.update(m);
     }
     let _ = app.update(UiMessage::Settings(settings::Msg::StorageAge(1, 0)));
-    let _ = app.update(UiMessage::Ask(Some(ASK_CLEAR_CHAT)));
+    let _ = app.update(UiMessage::Ask(Some(Confirm::Clear(2))));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Clear storage for Note to self?").is_ok(), "the dialog names the chat");
     let picked: Vec<_> = app.storage_pick(2).into_iter().cloned().collect();
@@ -3943,7 +3943,8 @@ fn approved_connections_like_desktop() {
     let msgs: Vec<_> = sim.into_messages().collect();
     msgs.into_iter().for_each(|m| drop(app.update(m)));
     assert!(simulator(app.view_settings()).find("Are you sure you want to revoke this connection?").is_ok());
-    let _ = app.update(UiMessage::Integrations(integrations::Msg::RevokeConfirmed));
+    let Some(Confirm::RevokeConnection(id)) = app.confirm.clone() else { panic!("the revoke dialog shows") };
+    let _ = app.update(UiMessage::Integrations(integrations::Msg::RevokeConfirmed(id)));
     assert!(app.store.read().connect.validate(&token, "", "").is_err() && app.confirm.is_none());
     assert_eq!(crate::distance(50 * 60_000), "about 1 hour");
     assert_eq!(crate::distance(30 * 86_400_000), "about 1 month");
@@ -6425,7 +6426,7 @@ fn edit_and_delete_labels_like_desktop() {
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("label:lbl_work".into()))));
     let _ = app.update(UiMessage::Labels(labels::Msg::OpenSettings("lbl_work".into())));
     let _ = app.update(UiMessage::Labels(labels::Msg::Pane(app.label_settings[0].id, LabelPane::Delete)));
-    simulator(app.view_confirm(ASK_DELETE_LABEL)).find("Delete").expect("a Delete button");
+    simulator(app.view_confirm(app.confirm.as_ref().expect("a dialog"))).find("Delete").expect("a Delete button");
     app.store.write().set_label_muted("lbl_work", true);
     app.patch_settings(|s| s.spaces_order = vec![SpaceOrder { id: "label:lbl_work".into(), visible: true }]);
     let _ = app.update(UiMessage::Labels(labels::Msg::Delete("lbl_work".into())));
@@ -6896,7 +6897,7 @@ fn accounts_settings_rows_have_the_account_menu_like_desktop() {
     };
     assert!(matches!(&ask[..], [UiMessage::Accounts(accounts::Msg::AskRemove(a))] if *a == account));
     let _ = app.update(ask.into_iter().next().unwrap());
-    assert!(app.list.chat_menu.is_none() && app.confirm == Some(ASK_REMOVE_ACCOUNT));
+    assert!(app.list.chat_menu.is_none() && matches!(app.confirm, Some(Confirm::RemoveAccount(_))));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Disconnect and remove the data from this account on Beeper").is_ok());
     let _ = sim.click("Remove from All Devices").expect("the confirm button");
@@ -6960,7 +6961,7 @@ async fn discord_servers_connect_like_desktop() {
     // Disconnect one: Desktop asks first for a Discord server.
     let rust = "1100000000000000002".to_string();
     let _ = app.update(UiMessage::Accounts(accounts::Msg::ToggleServer(account.clone(), rust.clone())));
-    assert_eq!(app.confirm, Some(ASK_DISCONNECT_SERVER));
+    assert_eq!(app.confirm, Some(Confirm::DisconnectServer(account.clone(), rust.clone())));
     let set = {
         let mut sim = simulator(app.view_settings());
         assert!(sim.find("Disconnect Discord Server?").is_ok());
@@ -6969,7 +6970,7 @@ async fn discord_servers_connect_like_desktop() {
     };
     assert!(matches!(&set[..], [UiMessage::Accounts(accounts::Msg::SetServer(a, s))] if *a == account && *s == rust));
     let task = app.update(set.into_iter().next().unwrap());
-    assert_eq!((app.confirm, app.status_banner.as_str()), (None, "Disconnecting Rust Programming Language..."));
+    assert_eq!((&app.confirm, app.status_banner.as_str()), (&None, "Disconnecting Rust Programming Language..."));
     assert!(app.store.read().network_spaces.iter().all(|n| n.id != rust), "the space goes at once");
     for m in task_messages(task).await {
         let _ = app.update(m);
@@ -7375,6 +7376,35 @@ fn previews_start_the_name_2_px_after_the_sender_like_desktop() {
     let darkest: Vec<u8> = (0..3).map(|c| face.clone().map(|px| px[c]).min().unwrap()).collect();
     let faded = |c: usize| 0.7 * f32::from(bottom[c].min(top[c])) + 0.3 * f32::from(ground[c]);
     assert!((0..3).all(|c| (f32::from(darkest[c]) - faded(c)).abs() < 4.0), "{darkest:?} {bottom:?} {top:?} on {ground:?}");
+}
+
+/// Desktop's sender before a media chip is the text "Name: ", so the chip starts a 13 px space (3.66 px of Inter)
+/// after the colon, not 4 px.
+#[test]
+fn media_previews_start_the_chip_a_space_after_the_sender_like_desktop() {
+    let app = demo_app("row-sender-chip");
+    {
+        let mut st = app.store.write();
+        let idx = st.chats.iter().position(|c| c.title == "Family").expect("Family");
+        st.update_chat(idx, |c| {
+            let p = c.preview.as_mut().expect("a preview");
+            let img = Attachment { attachment_type: "img".into(), file_name: Some("a.png".into()), ..Default::default() };
+            (p.text, p.html, p.attachments, p.links) = (Some("Look".into()), None, vec![img], Vec::new());
+        });
+    }
+    let mut sim = simulator(app.view_sidebar());
+    let text = |sim: &mut Simulator<'_, UiMessage>, pick: fn(&str) -> bool| {
+        let found = sim.find(|c: iced_test::selector::Candidate<'_>| match c {
+            iced_test::selector::Candidate::Text { content, bounds, .. } if pick(content) => Some(bounds),
+            _ => None,
+        });
+        found.expect("a preview text")
+    };
+    let name = text(&mut sim, |t| t.starts_with("Mom:"));
+    let label = text(&mut sim, |t| t == "Image");
+    // The chip's 2 px padding and its 12 px glyph, then the label's 2 px padding.
+    let chip = name.x + crate::style::text_width("Mom: ", 13.0, Weight::Normal);
+    assert!((label.x - 16.0 - chip).abs() < 0.05, "the chip starts at {}, not {chip}", label.x - 16.0);
 }
 
 /// Desktop's colored network badge (`BrandNetworkIcon`) is the brand tile with 35 % corners, where a circle leaves the
@@ -7834,14 +7864,14 @@ fn blocking_like_desktop() {
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, true))] if *c == id), "the request notice has Block");
     let _ = app.update(UiMessage::Blocking(blocking::Msg::Ask(id.clone(), true)));
     {
-        let mut sim = simulator(app.view_confirm(ASK_BLOCK));
+        let mut sim = simulator(app.view_confirm(app.confirm.as_ref().expect("a dialog")));
         assert!(sim.find(format!("Block {title}?").as_str()).is_ok());
         let _ = sim.click("Report spam").expect("Report spam");
         for m in sim.into_messages().collect::<Vec<_>>() {
             let _ = app.update(m);
         }
     }
-    for m in clicks(app.view_confirm(ASK_BLOCK), &["Block"]) {
+    for m in clicks(app.view_confirm(app.confirm.as_ref().expect("a dialog")), &["Block"]) {
         let _ = app.update(m);
     }
     let blocked = |app: &BeeperGuiApp| {
@@ -7867,7 +7897,7 @@ fn blocking_like_desktop() {
     };
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, false))] if *c == id));
     let _ = app.update(UiMessage::Blocking(blocking::Msg::Ask(id.clone(), false)));
-    for m in clicks(app.view_confirm(ASK_UNBLOCK), &["Unblock"]) {
+    for m in clicks(app.view_confirm(app.confirm.as_ref().expect("a dialog")), &["Unblock"]) {
         let _ = app.update(m);
     }
     assert!(!blocked(&app) && app.status_banner == format!("{title} unblocked"));
@@ -7925,9 +7955,9 @@ fn deleting_selected_chats_like_desktop() {
         let _ = app.update(UiMessage::ChatList(chat_list::Msg::AskDelete(a.into())));
     };
     select(&mut app, &ids[0], &ids[1]);
-    assert_eq!(app.confirm, Some(ASK_DELETE_CHAT));
+    assert_eq!(app.confirm, Some(Confirm::DeleteChats(app.selection.clone())));
     let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_confirm(ASK_DELETE_CHAT));
+        let mut sim = simulator(app.view_confirm(app.confirm.as_ref().expect("a dialog")));
         assert!(sim.find("Delete Chats").is_ok());
         assert!(sim.find("This action will permanently delete these chats for all participants.").is_ok());
         assert!(sim.find("Delete for Me").is_err(), "only the action that both chats take");
@@ -8386,8 +8416,8 @@ fn chat_info_member_actions_like_desktop() {
     assert!(tulir.ends_with(&[("Make Group Admin…".into(), true), ("Remove from Group…".into(), true)]));
     let me = labels(&app, "@self_telegram:beeper.com");
     assert!(me.ends_with(&[("Make Group Admin…".into(), false), ("Remove from Group…".into(), false)]));
-    let ask = |a| UiMessage::Members(members::Msg::Ask(a, id.clone(), "@tulir:beeper.com".into()));
-    let _ = app.update(ask(ASK_MAKE_ADMIN));
+    let ask = |a: fn(String, String) -> Confirm| UiMessage::Members(members::Msg::Ask(a(id.clone(), "@tulir:beeper.com".into())));
+    let _ = app.update(ask(Confirm::MakeAdmin));
     let msgs: Vec<UiMessage> = {
         let mut sim = simulator(app.view_main());
         assert!(sim.find("Are you sure you want to make Tulir Asokan an admin of this group?").is_ok());
@@ -8399,7 +8429,7 @@ fn chat_info_member_actions_like_desktop() {
     }
     assert!(app.confirm.is_none());
     assert!(labels(&app, "@tulir:beeper.com").contains(&("Make Group Admin…".into(), false)));
-    let _ = app.update(ask(ASK_REMOVE_MEMBER));
+    let _ = app.update(ask(Confirm::RemoveMember));
     assert!(simulator(app.view_main()).find("Are you sure you want to remove Tulir Asokan from this group?").is_ok());
     let _ = app.update(UiMessage::Members(members::Msg::Remove(id.clone(), "@tulir:beeper.com".into())));
     assert!(tall(app.view_info()).find("Tulir Asokan").is_err());
@@ -9343,7 +9373,7 @@ fn new_chat_reaches_matrix_users_like_desktop() {
     }
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::GroupTitle("Team".into())));
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
-    assert_eq!(app.confirm, Some(ASK_ROOM_ENCRYPTION), "Desktop asks about encryption first");
+    assert_eq!(app.confirm, Some(Confirm::RoomEncryption), "Desktop asks about encryption first");
     assert!(found(&app, "Room encryption") && found(&app, "People invited later cannot see earlier messages."));
     let msgs: Vec<UiMessage> = { clicks(app.view_main(), "Encrypted") };
     let off = msgs.iter().find(|m| matches!(m, UiMessage::NewChat(new_chat::Msg::Encrypted(false))));
@@ -9979,7 +10009,7 @@ fn chat_info_leave_chat_like_desktop() {
     assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::ChatList(chat_list::Msg::AskLeave(c))] if *c == id));
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::AskLeave(id.clone())));
     let msgs: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_confirm(ASK_LEAVE_CHAT));
+        let mut sim = simulator(app.view_confirm(app.confirm.as_ref().expect("a dialog")));
         assert!(sim.find("Are you sure you want to leave Beeper Rust Core Team?").is_ok());
         let _ = sim.click("Leave").expect("a Leave button");
         sim.into_messages().collect()

@@ -4,8 +4,6 @@
 //! mask, and it guesses the country from the digits (`Vf`). Its value is the `phone`: `+`, the dial code and the
 //! digits. `assets/countries.json` is the library's country list.
 use crate::prelude::*;
-use iced::advanced::overlay;
-use iced::advanced::widget::{self};
 use iced::border;
 
 /// The mask symbol (`Ka`) and the mask of a country without a format (`defaultMask`).
@@ -530,7 +528,8 @@ impl BeeperGuiApp {
         let field = row![selector, input].spacing(8).align_y(Center);
         let on_blur = go(PhoneMsg::Blur);
         let list = phone.open.then(|| self.phone_list(phone, ids.1, go));
-        Anchored { content: field.into(), popup: list, on_blur }.into()
+        // The dropdown is `top: 44px` below the selector, the field's first child.
+        crate::popover::above(field, list, |_| Vector::new(0.0, LIST_TOP)).below(on_blur).into()
     }
 
     /// `zf`: the countries, each with its flag, its name and its dial code, the selected and the highlighted ones on
@@ -569,49 +568,6 @@ impl BeeperGuiApp {
                 ..Default::default()
             })
             .into()
-    }
-}
-
-/// The phone field with its dropdown over the window, `top: 44px` below the selector (the field's first child). A
-/// press outside the dropdown and the selector publishes `on_blur` and goes on to what is under it, like a blur.
-struct Anchored<'a> {
-    content: El<'a>,
-    popup: Option<El<'a>>,
-    on_blur: UiMessage,
-}
-
-impl Widget<UiMessage, Theme, Renderer> for Anchored<'_> {
-    fn children(&self) -> Vec<widget::Tree> {
-        std::iter::once(&self.content).chain(&self.popup).map(widget::Tree::new).collect()
-    }
-
-    fn diff(&self, tree: &mut widget::Tree) {
-        let all: Vec<_> = std::iter::once(&self.content).chain(&self.popup).map(|e| e.as_widget()).collect();
-        tree.diff_children(&all);
-    }
-
-    crate::delegate::delegate!(size, layout, update(UiMessage), mouse_interaction, draw, operate);
-
-    fn overlay<'b>(
-        &'b mut self, tree: &'b mut widget::Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle, translation: Vector,
-    ) -> Option<overlay::Element<'b, UiMessage, Theme, Renderer>> {
-        let (content, rest) = tree.children.split_first_mut().expect("the field has a tree");
-        let selector = layout.children().next().map_or(layout.bounds(), |l| l.bounds()) + translation;
-        let inner = self.content.as_widget_mut().overlay(content, layout, renderer, viewport, translation);
-        let popup = self.popup.as_mut().map(|popup| {
-            let tree = rest.first_mut().expect("the dropdown has a tree");
-            let at = selector.position() + Vector::new(0.0, LIST_TOP);
-            let blur = Some((selector, self.on_blur.clone()));
-            overlay::Element::new(Box::new(crate::popover::Bubble { popup, tree, at, below: true, blur }))
-        });
-        let all: Vec<_> = inner.into_iter().chain(popup).collect();
-        (!all.is_empty()).then(|| overlay::Group::with_children(all).overlay())
-    }
-}
-
-impl<'a> From<Anchored<'a>> for El<'a> {
-    fn from(a: Anchored<'a>) -> Self {
-        Element::new(a)
     }
 }
 

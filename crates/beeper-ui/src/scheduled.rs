@@ -212,7 +212,7 @@ impl BeeperGuiApp {
                 .width(12)
                 .height(12)
                 .rotation(Radians(if collapsed { 0.0 } else { std::f32::consts::PI }))
-                .style(move |_, _| svg::Style { color: Some(fg) });
+                .style(tint(fg));
             let label = row![tinted(&COMPOSER_ICONS[6], 12.0, fg), semi(text, 11.0).color(fg), chevron];
             let toggle = button(label.spacing(4).align_y(Center))
                 .padding([4, 8])

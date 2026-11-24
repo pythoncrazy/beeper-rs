@@ -7,8 +7,8 @@ use iced::widget::column;
 pub enum Msg {
     /// Desktop's member "Send Message": the direct chat with a member of a chat, as (chat, user).
     Message(String, String),
-    /// Opens a member confirmation, `ASK_MAKE_ADMIN` or `ASK_REMOVE_MEMBER`, for (chat, user).
-    Ask(u8, String, String),
+    /// Opens a member confirmation, Make Group Admin or Remove from Group.
+    Ask(Confirm),
     /// Desktop's Add Members button of Chat Info: the Add members submenu with the members query.
     OpenAdd(String),
     /// Desktop's `addParticipant`: invites the user to the chat.
@@ -57,9 +57,7 @@ impl BeeperGuiApp {
                 drop(st);
                 return self.open_dm(account, user, None, None);
             }
-            Msg::Ask(ask, cid, uid) => {
-                (self.list.chat_menu, self.confirm, self.delete_target) = (None, Some(ask), Some(format!("{cid} {uid}")));
-            }
+            Msg::Ask(ask) => (self.list.chat_menu, self.confirm) = (None, Some(ask)),
             Msg::SetAdmin(cid, uid, admin) => {
                 self.confirm = None;
                 self.store.write().set_admin(&cid, &uid, admin);
@@ -180,8 +178,7 @@ impl BeeperGuiApp {
         let toggle = expandable.then(|| {
             // Desktop's `chevron-down` system icon, upside down for "Show less".
             let turn = iced::Rotation::Floating(iced::Radians(if self.info_all { std::f32::consts::PI } else { 0.0 }));
-            let (fg, chevron) = (p.strong, svg(CHEVRON_DOWN.clone()).width(20).height(20).rotation(turn));
-            let chevron = chevron.style(move |_, _| svg::Style { color: Some(fg) });
+            let chevron = svg(CHEVRON_DOWN.clone()).width(20).height(20).rotation(turn).style(tint(p.strong));
             let face = row![semi(toggle_label, 13.0), chevron].align_y(Center);
             button(container(face).center_x(Fill)).bare(p.strong).padding(2).on_press(UiMessage::Info(info::Msg::All))
         });
