@@ -284,6 +284,14 @@ impl BeeperGuiApp {
             .padding(Padding::new(8.0).top(0.0));
         let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
         let card = |body| container(body).height(Fill).style(fill_box(p.card, 10.0));
+        if self.pane().blocked_sheet {
+            // `ACt`: `Tj` without its actions (`showActions: false`) fills the sheet over a footer with Done.
+            let close = UiMessage::Blocking(blocking::Msg::CloseUser(cid.clone()));
+            let footer =
+                container(done_btn(p).on_press(close)).align_right(Fill).padding(Padding::new(10.0).left(12.0).right(12.0).bottom(12.0));
+            let info = container(scroll).width(Fill).height(Fill).style(fill_box(p.card, 10.0));
+            return container(column![info, footer]).width(Fill).height(Fill).style(fill_box(p.elevated, 0.0)).into();
+        }
         match self.pane().info {
             // Desktop's `thread-info--detached` fills its `--left-pane-bg` window inside 8 px: the rounded card is
             // `thread-info-inner`, and the toolbar, its sibling, is a square strip under it.
@@ -627,34 +635,27 @@ impl BeeperGuiApp {
 
     /// Desktop's `native` `BrandSelect` of a Chat Info section under its `title`: the 400 13/16 px value `at` and a
     /// 16 px chevron 12 px inside the 1 px clear border of a 26 px `--color-secondary-container` box with an 8 px
-    /// radius, which picks one of `options`, over the 10/12 px `about`. Without `pick`, the value is
-    /// `--color-on-surface-variant`.
+    /// radius, whose press opens the menu of `options`, over the 10/12 px `about`. Without `pick`, the value is
+    /// `--color-on-surface-variant` and the select does nothing.
     fn info_select<'a>(
         &self, title: &'a str, about: &'a str, options: Vec<String>, at: String, pick: Option<impl Fn(usize) -> UiMessage + 'a>,
     ) -> El<'a> {
         let p = &self.pal;
         let fg = if pick.is_some() { p.strong } else { p.muted };
-        let value: El = match pick {
-            Some(pick) => {
-                let listed = options.clone();
-                let (bg, style) = (p.chip, pick_style(p.chip, p.chip, fg, fg));
-                pick_list(options, Some(at), move |l| pick(listed.iter().position(|o| *o == l).expect("a listed option")))
-                    .text_size(rem(13.0))
-                    .text_line_height(Pixels(rem(16.0)))
-                    .handle(pick_list::Handle::None)
-                    .padding([5, 13])
-                    .width(Fill)
-                    .style(move |t, s| pick_list::Style { background: bg.into(), border: border::rounded(8), ..style(t, s) })
-                    .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border))
-                    .into()
-            }
-            None => container(txt(at, 13.0).color(fg)).padding([5, 13]).width(Fill).style(fill_box(p.chip, 8.0)).into(),
-        };
+        let id = format!("info-select-{title}");
+        let rows =
+            pick.map(|pick| options.iter().enumerate().map(|(i, o)| select::Row::Option(o.clone(), *o == at, Box::new(pick(i)))).collect());
+        let value = container(txt(at, 13.0).color(fg)).padding([5, 13]).width(Fill);
         let arrow = container(tinted(&CHEVRON_DOWN, 16.0, fg)).align_right(Fill).center_y(Fill).padding([0, 13]);
+        let field = stack![value, arrow];
+        let field: El = match rows {
+            Some(rows) => button(field).padding(0).style(btn_style([p.chip; 3], [fg; 3], 8.0)).on_press(select::press(&id, rows)).into(),
+            None => container(field).style(fill_box(p.chip, 8.0)).into(),
+        };
         // The description `small` takes the `--color-text-neutrals` of the pane.
         let about = container(txt(about, 10.0).color(p.text)).padding([0, 8]);
         let head = container(txt(title, 11.0).color(p.strong)).padding(8);
-        column![head, column![stack![value, arrow], about].spacing(4)].into()
+        column![head, column![container(field).id(id), about].spacing(4)].into()
     }
 
     /// Desktop's zoomed `thread-info-avatar`: over a `#000000e6` backdrop, the avatar of the chat with its full-size
