@@ -501,8 +501,7 @@ impl BeeperGuiApp {
                 let label = format!("{} · {}", c.title, network_name(&c.account_id));
                 menu_item(p, None, label, "", Some(edit(MergeEdit::Default(c.id.clone()))))
             });
-            let menu =
-                container(Column::with_children(items).padding([4, 0])).width(240).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let menu = crate::menu_card(p, Column::with_children(items), 240);
             container(menu).align_right(Fill).align_bottom(Fill).padding(pad(0.0, 16.0, 60.0, 0.0))
         });
         stack![body].push(menu).into()
