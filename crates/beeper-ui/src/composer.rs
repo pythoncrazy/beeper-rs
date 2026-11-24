@@ -1008,7 +1008,39 @@ impl BeeperGuiApp {
             (None, Some(t)) => row![self.view_talk(t), send],
             (None, None) => row![plus, pill, send],
         };
-        column![extras, line.spacing(8).align_y(Center).padding(8)].into()
+        column![self.view_trial_over(&chat.id), extras, line.spacing(8).align_y(Center).padding(8)].into()
+    }
+
+    /// Desktop's `aDt` and `Ubt` for the incognito nudge `expired`: a chat that you open shows it over the composer at
+    /// most once a day, until you close it. Showing it starts the day.
+    pub(crate) fn trial_over_shows(&mut self, chat_id: &str) -> bool {
+        const DAY: i64 = 86_400_000;
+        let st = self.store.read();
+        let Some(c) = st.resolve_chat_idx(chat_id).map(|i| &st.chats[i]) else { return false };
+        let s = &st.settings;
+        let now = beeper_core::config::now_unix_millis();
+        let shows = st.features.incognito_trial_over()
+            && !c.is_read_only
+            && c.messages.read_receipts
+            && s.incognito_nudge_expired_dismissed_at == 0
+            && now - s.incognito_lapse_notice_shown_at >= DAY;
+        drop(st);
+        if shows {
+            self.patch_settings(|s| s.incognito_lapse_notice_shown_at = now);
+        }
+        shows
+    }
+
+    /// Desktop's `FreebieNudge` "Your incognito trial is over" with "Upgrade to Plus to keep it" and its close button.
+    fn view_trial_over<'a>(&'a self, chat_id: &str) -> Option<El<'a>> {
+        let p = &self.pal;
+        (self.trial_over_chat.as_deref() == Some(chat_id)).then(|| {
+            let upgrade = UiMessage::Settings(crate::settings::Msg::Open(SettingsTab::BeeperPlus));
+            let cta = button(semi(tr("Upgrade to Plus to keep it"), 11.0).color(p.accent)).bare(p.accent).on_press(upgrade);
+            let close = button(tinted(&crate::ROW_ACTIONS[6], 8.0, p.sub)).padding(4).style(btn_style([CLEAR; 3], [p.sub; 3], 0.0));
+            let line = row![txt(tr("Your incognito trial is over"), 12.0).color(p.sub), cta, close.on_press(UiMessage::DismissTrialOver)];
+            container(line.spacing(4).align_y(Center)).center_x(Fill).padding(pad(6.0, 8.0, 0.0, 8.0)).into()
+        })
     }
 
     /// Desktop's quoted message in the composer (`bfe`): the sender in groups, and at most 128 characters on at most

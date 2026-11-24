@@ -405,6 +405,8 @@ pub enum UiMessage {
     Ask(Option<u8>),
     /// The close of Desktop's recovery key reminder (`dismissRecoveryCodeReminder`).
     DismissRecoveryReminder,
+    /// Close Desktop's "Your incognito trial is over" over the composer.
+    DismissTrialOver,
     Logout,
     LoggedOut(Result<(), String>),
     /// Settings > Integrations: the Desktop API tokens and connections, Remote Access, and the MCP install.
@@ -3147,6 +3149,8 @@ pub struct BeeperGuiApp {
     pub(crate) quotes: HashMap<String, Option<Result<Message, String>>>,
     /// Desktop's `dismissError`: the accounts whose disconnected banner was dismissed this session.
     dismissed_errors: HashSet<String>,
+    /// The chat that shows Desktop's "Your incognito trial is over" over its composer, while it stays open.
+    trial_over_chat: Option<String>,
     /// The accounts whose servers load (Desktop's spinning Refresh List), and when the load started.
     servers_loading: HashMap<String, std::time::Instant>,
     /// The account and the server of the "Disconnect Discord Server?" dialog.
@@ -3279,7 +3283,7 @@ impl BeeperGuiApp {
             labels_windows, label_settings, delete_in, poll_windows, label_window, group_window, blocked_window,
             how_window, nickname_windows, add_accounts, info_desc, info_more, info_all, info_bookmarks, hydrating,
             restoring_bookmarks, info_media, info_zoom, info_query, spaces_window, merge_window, vote_windows, shot,
-            verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, servers_loading, server_target, installed_packs, packs_off, pack_removing, resolving_media, needs_download,
+            verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, trial_over_chat, servers_loading, server_target, installed_packs, packs_off, pack_removing, resolving_media, needs_download,
             fetching, video, view_once, minimized, state_changes, last_click, cycling, timers);
         app.store.write().load_recent();
         if let Some(id) = first_chat {
@@ -3809,6 +3813,7 @@ impl BeeperGuiApp {
         if !self.cycling {
             self.push_history(chat_id);
         }
+        self.trial_over_chat = self.trial_over_shows(chat_id).then(|| chat_id.to_string());
         // Desktop's timeline mounts new `<img>`s, which load a media that failed again: one that waits for the user to
         // ask for it stays.
         self.media.retain(|_, m| !matches!(m, Some(Err(e)) if !beeper_core::matrix::reload_needed(e)));
@@ -4505,7 +4510,8 @@ impl BeeperGuiApp {
             | UiMessage::Typing(..)
             | UiMessage::AnimationTick
             | UiMessage::Pushed(..)
-            | UiMessage::DismissRecoveryReminder) => return self.handle_sync(msg),
+            | UiMessage::DismissRecoveryReminder
+            | UiMessage::DismissTrialOver) => return self.handle_sync(msg),
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
             }
@@ -4750,6 +4756,11 @@ impl BeeperGuiApp {
             UiMessage::DismissRecoveryReminder => {
                 let now = beeper_core::config::now_unix_millis();
                 self.patch_settings(|s| s.recovery_reminder_dismissed_at = now);
+            }
+            UiMessage::DismissTrialOver => {
+                let now = beeper_core::config::now_unix_millis();
+                self.trial_over_chat = None;
+                self.patch_settings(|s| s.incognito_nudge_expired_dismissed_at = now);
             }
             UiMessage::Pushed(Err(e)) => self.fail(Toast::new(format!("Could not send to Matrix: {e}"))),
             _ => unreachable!("not a handle_sync message"),

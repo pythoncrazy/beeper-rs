@@ -114,7 +114,7 @@ impl Default for BeeperSettings {
             accounts, last_time, snooze_last_time, chat_appearance, spaces_order, accounts_order, ever_labeled,
             labels_intro_seen, merge_intro_seen, merge_suggestion_dismissed_keys, merge_suggestion_seen_rooms,
             chat_info_merge_promo_dismissed, target_switcher_nudge_seen_rooms, target_switcher_nudge_dismissed,
-            has_seen_first_nudge, recovery_reminder_dismissed_at, downloads_dir, recent_stickers, time_suggestions,
+            has_seen_first_nudge, incognito_nudge_expired_dismissed_at, incognito_lapse_notice_shown_at, recovery_reminder_dismissed_at, downloads_dir, recent_stickers, time_suggestions,
             quick_replies)
     }
 }

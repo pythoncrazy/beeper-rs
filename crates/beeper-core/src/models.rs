@@ -1036,6 +1036,10 @@ pub struct MessageRules {
     pub react: bool,
     /// `reply` is at least partly supported.
     pub reply: bool,
+    /// `read_receipts`: Desktop's `supportsReadReceipts`. A chat stored before the app read it supports them until its
+    /// next sync, like most chats.
+    #[serde(default = "yes")]
+    pub read_receipts: bool,
 }
 
 impl MessageRules {
@@ -1049,8 +1053,16 @@ impl MessageRules {
 }
 
 /// Desktop's message features of a Beeper room.
-pub const BEEPER_MESSAGES: MessageRules =
-    MessageRules { edit: true, edit_max_age: None, delete: true, delete_max_age: None, delete_for_me: false, react: true, reply: true };
+pub const BEEPER_MESSAGES: MessageRules = MessageRules {
+    edit: true,
+    edit_max_age: None,
+    delete: true,
+    delete_max_age: None,
+    delete_for_me: false,
+    react: true,
+    reply: true,
+    read_receipts: false,
+};
 
 fn beeper_messages() -> MessageRules {
     BEEPER_MESSAGES
@@ -2107,6 +2119,10 @@ pub struct BeeperSettings {
     pub target_switcher_nudge_dismissed: bool,
     /// Desktop's local `has_seen_first_nudge`: "You got nudged! Want to disable nudges?" showed.
     pub has_seen_first_nudge: bool,
+    /// Desktop's local `incognito_nudge_expired_dismissed_at`: when "Your incognito trial is over" was closed, or 0.
+    pub incognito_nudge_expired_dismissed_at: i64,
+    /// Desktop's local `incognito_lapse_notice_shown_at`: when the trial-over notice last showed in a chat, or 0.
+    pub incognito_lapse_notice_shown_at: i64,
     /// Desktop's local `recovery_code_reminder_dismissed_at`: the time in ms when the user closed the recovery key
     /// reminder, or 0.
     pub recovery_reminder_dismissed_at: i64,
