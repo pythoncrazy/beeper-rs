@@ -111,7 +111,7 @@ pub fn redacting() -> bool {
 /// `font`, or the redacted font while [`redacting`].
 pub fn redact(font: Font) -> Font {
     match redacting() {
-        true => Font { family: Family::Name("Redacted"), weight: Weight::Normal, ..font },
+        true => spaced(Font { family: Family::Name("Redacted"), weight: Weight::Normal, ..font }, spacing(font)),
         false => font,
     }
 }
@@ -271,18 +271,62 @@ pub const fn fw(weight: Weight) -> Font {
     Font { family: Family::Name("Inter"), weight, ..Font::DEFAULT }
 }
 
+/// Inter at `w` with Desktop's `--semantic-typo-letter-spacing-display-*`, -0.04687rem, on a text of `size` rem px.
+pub fn display(w: Weight, size: f32) -> Font {
+    spaced(w, -0.04687 * 16.0 / size)
+}
+
+/// The face of a text: Inter at a [`Weight`], or a [`Font`], such as a [`spaced`] one.
+pub trait Face: Copy {
+    fn font(self) -> Font;
+}
+
+impl Face for Weight {
+    fn font(self) -> Font {
+        fw(self)
+    }
+}
+
+impl Face for Font {
+    fn font(self) -> Font {
+        self
+    }
+}
+
+/// `face` with a CSS `letter-spacing` of `em` em: Desktop's `0.25px` is `0.25 / rem(size)` on a [`t`] text of `size`
+/// and `0.25 / size` on a [`fixed`] one. iced's `Font` has no letter spacing, so it goes in the family name,
+/// `Name@em`, which the vendored iced_graphics reads.
+pub fn spaced(face: impl Face, em: f32) -> Font {
+    thread_local!(static NAMES: RefCell<HashMap<(&'static str, u32), &'static str>> = RefCell::default());
+    let font = face.font();
+    let Family::Name(name) = font.family else { panic!("letter spacing for a generic font family") };
+    let name = name.split_once('@').map_or(name, |(name, _)| name);
+    let name = if em == 0.0 {
+        name
+    } else {
+        NAMES.with(|n| *n.borrow_mut().entry((name, em.to_bits())).or_insert_with(|| format!("{name}@{em}").leak()))
+    };
+    Font { family: Family::Name(name), ..font }
+}
+
+/// The letter spacing of a [`spaced`] font in em, or 0.
+fn spacing(font: Font) -> f32 {
+    let Family::Name(name) = font.family else { return 0.0 };
+    name.split_once('@').map_or(0.0, |(_, em)| em.parse().expect("spaced font"))
+}
+
 /// Drops the shaped words that no text used for five checks, each a minute apart: cosmic-text keeps the glyphs of each
 /// word that it shaped, so a word that shows again is not shaped again.
 pub(crate) fn trim_shaped_words() {
     font_system().write().expect("font system").raw().shape_run_cache.trim(5);
 }
 
-fn shape<T>(s: &str, size: f32, w: Weight, width: Option<f32>, f: impl FnOnce(&cosmic_text::Buffer) -> T) -> T {
+fn shape<T>(s: &str, size: f32, face: impl Face, width: Option<f32>, f: impl FnOnce(&cosmic_text::Buffer) -> T) -> T {
     ensure_fonts_loaded();
     let mut fs = font_system().write().expect("font system");
     let mut buf = cosmic_text::Buffer::new(fs.raw(), cosmic_text::Metrics::new(size, size * 1.2));
     buf.set_size(fs.raw(), width, None);
-    buf.set_text(fs.raw(), s, &to_attributes(fw(w)), cosmic_text::Shaping::Advanced, None);
+    buf.set_text(fs.raw(), s, &to_attributes(face.font()), cosmic_text::Shaping::Advanced, None);
     f(&buf)
 }
 
@@ -318,10 +362,10 @@ pub(crate) fn memo<K: std::hash::Hash + Eq, V: Clone>(
 type Glyphs = Rc<(f32, Vec<(usize, f32)>)>;
 
 /// The glyphs of `s` at `size` px, already in rem.
-fn glyphs(s: &str, size: f32, w: Weight) -> Glyphs {
-    thread_local!(static MEMO: Memo<(String, u32, Weight), Glyphs> = RefCell::default());
-    memo(&MEMO, (s.to_owned(), size.to_bits(), w), || {
-        shape(s, size, w, None, |buf| {
+fn glyphs(s: &str, size: f32, font: Font) -> Glyphs {
+    thread_local!(static MEMO: Memo<(String, u32, Font), Glyphs> = RefCell::default());
+    memo(&MEMO, (s.to_owned(), size.to_bits(), font), || {
+        shape(s, size, font, None, |buf| {
             let mut out = Vec::new();
             let mut total = 0.0;
             for g in buf.layout_runs().flat_map(|r| r.glyphs.iter()) {
@@ -410,35 +454,36 @@ pub fn line_count(s: &str, max: f32, size: f32) -> usize {
     memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || shape(s, size, Weight::Normal, Some(max), |b| b.layout_runs().count()))
 }
 
-pub fn text_width(s: &str, size: f32, w: Weight) -> f32 {
-    glyphs(s, rem(size), w).0
+pub fn text_width(s: &str, size: f32, w: impl Face) -> f32 {
+    glyphs(s, rem(size), w.font()).0
 }
 
 /// The width of `s` with `font-variant-numeric: tabular-nums`, which iced cannot select: Inter's tabular figures are
 /// 0.672em wide.
-pub fn tabular_width(s: &str, size: f32, w: Weight) -> f32 {
+pub fn tabular_width(s: &str, size: f32, w: impl Face) -> f32 {
     let figures = s.chars().filter(char::is_ascii_digit).count();
     let rest: String = s.chars().filter(|c| !c.is_ascii_digit()).collect();
-    figures as f32 * rem(size) * 0.672 + text_width(&rest, size, w)
+    figures as f32 * rem(size) * (0.672 + spacing(w.font())) + text_width(&rest, size, w)
 }
 
-fn ell_line(s: &str, max: f32, size: f32, w: Weight) -> String {
-    let gs = glyphs(s, size, w);
+fn ell_line(s: &str, max: f32, size: f32, font: Font) -> String {
+    let gs = glyphs(s, size, font);
     let (total, gs) = (gs.0, &gs.1);
     if total <= max {
         return s.into();
     }
-    let cut = max - glyphs("…", size, w).0;
+    // Chromium leaves the letter spacing out of the width of the "…".
+    let cut = max - glyphs("…", size, spaced(font, 0.0)).0;
     let end = gs.get(gs.partition_point(|g| g.1 <= cut).wrapping_sub(1)).map_or(0, |g| g.0);
     format!("{}…", &s[..end])
 }
 
-pub fn ell<'a>(s: &str, max: f32, size: f32, w: Weight) -> text::Text<'a> {
+pub fn ell<'a>(s: &str, max: f32, size: f32, w: impl Face) -> text::Text<'a> {
     clamp(s, max, 1, size, w)
 }
 
 /// Collapses whitespace like CSS and keeps at most `lines` lines of `max` width, with "…" at the end of the last line.
-pub fn clamp<'a>(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> text::Text<'a> {
+pub fn clamp<'a>(s: &str, max: f32, lines: usize, size: f32, w: impl Face) -> text::Text<'a> {
     t(clamped(s, max, lines, size, w).to_string(), size, w).wrapping(if lines == 1 {
         text::Wrapping::None
     } else {
@@ -448,26 +493,26 @@ pub fn clamp<'a>(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> text:
 
 /// [`clamp`]'s text: one line cut where it overflows (`text-overflow: ellipsis`), or more lines whose last ends
 /// after its last whole word (`-webkit-line-clamp`).
-pub fn clamped(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> Rc<str> {
-    clamp_lines(s, max, lines, size, w, lines > 1)
+pub fn clamped(s: &str, max: f32, lines: usize, size: f32, w: impl Face) -> Rc<str> {
+    clamp_lines(s, max, lines, size, w.font(), lines > 1)
 }
 
 /// The first `lines` lines of `s` at `max`, with "…" at the end of the last when more follows. Chromium's
 /// `-webkit-line-clamp` (`words`) keeps the words that wrap onto the last line and cuts them only to make room for
 /// the "…", where `text-overflow: ellipsis` cuts the rest of the text at the edge.
-fn clamp_lines(s: &str, max: f32, lines: usize, size: f32, w: Weight, words: bool) -> Rc<str> {
-    type Key = (String, u32, u32, Weight, usize, bool);
+fn clamp_lines(s: &str, max: f32, lines: usize, size: f32, font: Font, words: bool) -> Rc<str> {
+    type Key = (String, u32, u32, Font, usize, bool);
     thread_local!(static MEMO: Memo<Key, Rc<str>> = RefCell::default());
     assert!(lines > 0, "clamp to zero lines");
     let size = rem(size);
-    memo(&MEMO, (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), w, lines, words), || {
+    memo(&MEMO, (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), font, lines, words), || {
         let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
         let starts: Vec<usize> =
-            shape(&s, size, w, Some(max.max(0.0)), |buf| buf.layout_runs().map(|r| r.glyphs.first().map_or(0, |g| g.start)).collect());
+            shape(&s, size, font, Some(max.max(0.0)), |buf| buf.layout_runs().map(|r| r.glyphs.first().map_or(0, |g| g.start)).collect());
         match (starts.get(lines - 1), starts.get(lines)) {
             (Some(&k), Some(&next)) => {
                 let last = if words { format!("{}…", s[k..next].trim_end()) } else { s[k..].to_string() };
-                format!("{}{}", &s[..k], ell_line(&last, max, size, w)).into()
+                format!("{}{}", &s[..k], ell_line(&last, max, size, font)).into()
             }
             _ => s.into(),
         }
@@ -476,37 +521,37 @@ fn clamp_lines(s: &str, max: f32, lines: usize, size: f32, w: Weight, words: boo
 
 /// CSS inline flow of `s` after `indent` px of inline boxes in a `max` wide box of `lines` lines: the words that
 /// fit on the first line, and the rest clamped to the other lines.
-pub fn flow(s: &str, indent: f32, max: f32, lines: usize, size: f32, w: Weight) -> (String, Rc<str>) {
+pub fn flow(s: &str, indent: f32, max: f32, lines: usize, size: f32, w: impl Face) -> (String, Rc<str>) {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    let gs = glyphs(&s, rem(size), w);
+    let gs = glyphs(&s, rem(size), w.font());
     let gs = &gs.1;
     let width = |i: usize| gs.get(gs.partition_point(|g| g.0 <= i).wrapping_sub(1)).map_or(0.0, |g| g.1);
     let breaks = s.match_indices(' ').map(|(i, _)| i).chain([s.len()]);
     let fit = breaks.take_while(|&i| width(i) <= max - indent).last().unwrap_or(0);
-    (s[..fit].to_string(), clamp_lines(s[fit..].trim_start(), max, lines - 1, size, w, true))
+    (s[..fit].to_string(), clamp_lines(s[fit..].trim_start(), max, lines - 1, size, w.font(), true))
 }
 
 /// Text in the app font at `size` px in rem. Its line height of `round(size * 1.24)` is Desktop's
 /// `--semantic-typo-line-height-*` for the 10, 11, 12, 13 and 16 px sizes, so only other pairs (14/18, 15/20, 17/24,
 /// ...) set their own.
-pub fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
-    text(s).size(rem(size)).font(redact(fw(w))).line_height(text::LineHeight::Absolute(rem((size * 1.24).round()).into()))
+pub fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, w: impl Face) -> text::Text<'a> {
+    text(s).size(rem(size)).font(redact(w.font())).line_height(text::LineHeight::Absolute(rem((size * 1.24).round()).into()))
 }
 
 /// Text at `size` px that Desktop gives in px, like `.message .timestamp`, which the Font size does not change.
-pub fn fixed<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
-    text(s).size(size).font(redact(fw(w))).line_height(text::LineHeight::Absolute((size * 1.24).round().into()))
+pub fn fixed<'a>(s: impl text::IntoFragment<'a>, size: f32, w: impl Face) -> text::Text<'a> {
+    text(s).size(size).font(redact(w.font())).line_height(text::LineHeight::Absolute((size * 1.24).round().into()))
 }
 
 /// A [`fixed`] text on one line of at most `max` width, with "…" at its end when it is wider, like [`ell`].
-pub fn fixed_ell<'a>(s: &str, max: f32, size: f32, w: Weight) -> text::Text<'a> {
+pub fn fixed_ell<'a>(s: &str, max: f32, size: f32, w: impl Face) -> text::Text<'a> {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    fixed(ell_line(&s, max, size, w), size, w).wrapping(text::Wrapping::None)
+    fixed(ell_line(&s, max, size, w.font()), size, w).wrapping(text::Wrapping::None)
 }
 
 /// The width of a [`fixed`] text.
-pub fn fixed_width(s: &str, size: f32, w: Weight) -> f32 {
-    glyphs(s, size, w).0
+pub fn fixed_width(s: &str, size: f32, w: impl Face) -> f32 {
+    glyphs(s, size, w.font()).0
 }
 
 pub fn txt<'a>(s: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
@@ -658,25 +703,24 @@ pub fn qr_svg(code: &qrcodegen::QrCode, margin: i32) -> svg::Handle {
 
 /// Desktop's `BrandHeading` with `gradient`: one line of Inter Bold at `size` px with the `-0.75` px letter spacing
 /// of `--semantic-typo-letter-spacing-display-md`, filled with `linear-gradient(180deg, #9e7ef8, #6a4be5)` over a
-/// line box of `line` px. iced text has no gradient and no letter spacing, so the glyph outlines go into an SVG,
-/// made once for each text. Returns the SVG and its width.
+/// line box of `line` px. iced text has no gradient, so the glyph outlines go into an SVG, made once for each text.
+/// Returns the SVG and its width.
 pub fn gradient_text(s: &str, size: f32, line: f32) -> (svg::Handle, f32) {
     use cosmic_text::Command::{Close, CurveTo, LineTo, MoveTo, QuadTo};
-    const SPACING: f32 = -0.75;
     thread_local!(static MEMO: Memo<(String, u32, u32), (svg::Handle, f32)> = RefCell::default());
     memo(&MEMO, (s.to_owned(), size.to_bits(), line.to_bits()), || {
         ensure_fonts_loaded();
         let mut fs = font_system().write().expect("font system");
         let mut buf = cosmic_text::Buffer::new(fs.raw(), cosmic_text::Metrics::new(size, line));
-        buf.set_text(fs.raw(), s, &to_attributes(fw(Weight::Bold)), cosmic_text::Shaping::Advanced, None);
+        buf.set_text(fs.raw(), s, &to_attributes(display(Weight::Bold, size)), cosmic_text::Shaping::Advanced, None);
         let mut swash = cosmic_text::SwashCache::new();
         let (mut d, mut width) = (String::new(), 0.0);
         let runs: Vec<_> = buf.layout_runs().map(|r| (r.line_y, r.line_w, r.glyphs.to_vec())).collect();
         assert_eq!(runs.len(), 1, "a heading is one line: {s}");
         for (baseline, w, glyphs) in runs {
-            width = w + SPACING * glyphs.len() as f32;
-            for (i, g) in glyphs.iter().enumerate() {
-                let x = g.x + g.font_size * g.x_offset + SPACING * i as f32;
+            width = w;
+            for g in glyphs {
+                let x = g.x + g.font_size * g.x_offset;
                 let y = baseline - g.font_size * g.y_offset;
                 let key = g.physical((0.0, 0.0), 1.0).cache_key;
                 let p = |vx: f32, vy: f32| format!("{:.2} {:.2}", x + vx, y - vy);
@@ -814,11 +858,15 @@ pub fn glow_box(bg: Color, glow: Color, r: f32, y: f32, blur: f32) -> impl Fn(&T
     }
 }
 
-/// Desktop's `.right` card of the open chat: rounded 10px, with a soft shadow all around.
+/// The corner radius of Desktop's `.right` card.
+pub const PANE_RADIUS: f32 = 10.0;
+
+/// Desktop's `.right` card of the open chat: rounded 10px, with its `drop-shadow(0 0 10px rgba(0, 0, 0, 0.12))`. A
+/// filter's blur is a standard deviation, half the blur radius of a box shadow.
 pub fn pane_card(bg: Color) -> impl Fn(&Theme) -> container::Style + Copy {
     move |t| container::Style {
-        shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 },
-        ..fill_box(bg, 10.0)(t)
+        shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.12), offset: Vector::ZERO, blur_radius: 20.0 },
+        ..fill_box(bg, PANE_RADIUS)(t)
     }
 }
 
@@ -1048,8 +1096,6 @@ palette! {
     sent_meta: Color = hexa(0xffffff, 0.8), hexa(0xffffff, 0.8);
     /// `--bubble-out-fg`.
     sent_fg: Color = hex(0xffffff), hex(0xffffff);
-    /// `--color-secondary-container`: received bubbles.
-    received: Color = hex(0xefeff0), hex(0x232326);
     /// `--color-background-message-bubble-received`: link previews, file rows, received voice notes and contact cards,
     /// and the outline of a deleted message.
     link_card: Color = hex(0xededed), hex(0x282828);
@@ -1057,8 +1103,6 @@ palette! {
     rule: Color = hex(0xb3b3b3), hex(0x4c4c4c);
     /// `--color-primary`.
     accent: Color = hex(0x0d4ffb), hex(0x2561fb);
-    /// `--toggle-style-knob-on`, and `--checkbox-style-bg-selected`: the fill of a checked `Checkbox`.
-    toggle_on: Color = hex(0x0d4ffb), hex(0x0d4ffb);
     /// `--color-highlight-reaction`: your own reactions, which a monochrome theme fills with its backdrop.
     highlight: Color = hex(0xcbd9ff), hex(0x1b43aa);
     /// The color of the quote of your own message (`LinkedMessage` `isSender`) under a rich theme, else `None`.
@@ -1086,7 +1130,7 @@ palette! {
     prefs_border: Color = hex(0xededed), hex(0x282828);
     /// `--color-on-surface` at 0.05: the Settings search field.
     search: Color = hexa(0x202124, 0.05), hexa(0xf6f6f6, 0.05);
-    /// `--color-secondary-container`.
+    /// `--color-secondary-container`: received bubbles and chips.
     chip: Color = hex(0xefeff0), hex(0x232326);
     /// `--color-text-info`.
     link: Color = hex(0x0069db), hex(0x5cadff);
@@ -1094,15 +1138,14 @@ palette! {
     button: Color = hex(0xffffff), hex(0x505050);
     /// `--color-border-button-secondary`.
     button_border: Color = hex(0xe2e2e2), hex(0x5e5e5e);
-    /// `--button-primary-main-bg`: the fill of Desktop's primary `Button`.
+    /// `--semantic-colors-bg-fill-main`: the fill of Desktop's primary `Button` (`--button-primary-main-bg`), of a
+    /// checked `Checkbox` and `Toggle` knob (`--checkbox-style-bg-selected`, `--toggle-style-knob-on`), and the
+    /// `:focus-visible` outline of all three (`--app-focus-ring`).
     main: Color = hex(0x0d4ffb), hex(0x0d4ffb);
     /// `--button-secondary-main-bg`: the fill of Desktop's secondary `Button`.
     main_muted: Color = hexa(0x0d4ffb, 0.14), hexa(0x0d4ffb, 0.26);
     /// `--button-secondary-main-text`.
     main_text: Color = hex(0x0d4ffb), hex(0x638efc);
-    /// `--app-focus-ring`, which is `--semantic-colors-bg-fill-main`: the `:focus-visible` outline of Desktop's
-    /// `Button`, `Toggle` and `Checkbox`.
-    focus_ring: Color = hex(0x0d4ffb), hex(0x0d4ffb);
     /// `--appearance-color-bg-secondary`: the fill of Desktop's action buttons.
     bg_secondary: Color = hex(0xeaebf0), hex(0x1c1d1e);
     /// `--appearance-color-border-secondary`.
@@ -1476,10 +1519,10 @@ mod tests {
     #[test]
     fn palette_matches_desktop_tokens() {
         let rows: [(&str, Token, Color, Color); 10] = [
-            ("--app-focus-ring", |p| p.focus_ring, hex(0x0d4ffb), hex(0x0d4ffb)),
+            ("--app-focus-ring", |p| p.main, hex(0x0d4ffb), hex(0x0d4ffb)),
             ("--left-pane-bg", |p| p.window, hex(0xeaebf0), hex(0x1c1d1e)),
             ("--color-primary", |p| p.accent, hex(0x0d4ffb), hex(0x2561fb)),
-            ("--color-secondary-container", |p| p.received, hex(0xefeff0), hex(0x232326)),
+            ("--color-secondary-container", |p| p.chip, hex(0xefeff0), hex(0x232326)),
             ("--color-text-neutrals", |p| p.text, hex(0x171717), hex(0xededed)),
             ("--color-on-surface", |p| p.strong, hex(0x202124), hex(0xf6f6f6)),
             ("--color-text-secondary", |p| p.sub, hexa(0x3c3c44, 0.69), hexa(0xebebf5, 0.63)),
@@ -1526,5 +1569,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A spaced font adds its letter spacing after each glyph, in the measures and in iced's paragraphs alike: in
+    /// Desktop 4.3.308 this `.AccountsBanner-module__description` (11 px with 0.25 px) is 200.094 px wide. A "…"
+    /// cuts a spaced text where Chromium does, which leaves the spacing out of the width of the "…": at 20 px with
+    /// 10 px, Chromium shows 9 letters in 202 px and 8 in 200 px.
+    #[test]
+    fn spaced_text_is_as_wide_as_in_chromium() {
+        use iced::advanced::text::{self, Paragraph as _};
+        let s = "Add more accounts with Beeper Plus";
+        let font = spaced(Weight::Normal, 0.25 / 11.0);
+        assert!((fixed_width(s, 11.0, font) - 200.094).abs() < 0.05, "{}", fixed_width(s, 11.0, font));
+        assert_eq!(fixed_width(s, 11.0, spaced(font, 0.0)), fixed_width(s, 11.0, Weight::Normal));
+        ensure_fonts_loaded();
+        let paragraph = iced::advanced::graphics::text::Paragraph::with_text(text::Text {
+            content: s,
+            bounds: iced::Size::INFINITE,
+            size: 11.into(),
+            line_height: text::LineHeight::default(),
+            font,
+            align_x: text::Alignment::Default,
+            align_y: iced::alignment::Vertical::Top,
+            shaping: text::Shaping::Advanced,
+            wrapping: text::Wrapping::None,
+        });
+        assert_eq!(paragraph.min_width(), fixed_width(s, 11.0, font));
+        let letters = "abcdefghijklmnopqrstuvwxyz";
+        assert_eq!(ell_line(letters, 202.0, 20.0, spaced(Weight::Normal, 0.5)), "abcdefghi…");
+        assert_eq!(ell_line(letters, 200.0, 20.0, spaced(Weight::Normal, 0.5)), "abcdefgh…");
     }
 }

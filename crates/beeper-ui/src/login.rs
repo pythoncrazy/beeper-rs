@@ -5,7 +5,6 @@ use crate::style::gradient_text;
 use beeper_core::import::{read_beeper_data, BeeperData};
 use beeper_core::models::{BridgeAccountInfo, MatrixSession, Profile};
 use beeper_core::store::Setup;
-use iced::keyboard::key::Named;
 use iced::widget::{column, operation};
 use iced::{border, window};
 
@@ -527,10 +526,7 @@ fn code_error(e: CloudError) -> CloudError {
         (_, 0) => e.message.clone(),
         _ => e.api_message(),
     };
-    let message = match message.is_empty() {
-        true => tr("Invalid code. Please try again or contact support.").to_string(),
-        false => message,
-    };
+    let message = if message.is_empty() { tr("Invalid code. Please try again or contact support.").to_string() } else { message };
     CloudError { message, ..e }
 }
 
@@ -1360,10 +1356,7 @@ impl BeeperGuiApp {
         });
         let next = brand_button(p, label(trx("Next", "button label"), None), Brand::Primary, self.login_act(Stop::Next), l.busy);
         let toggle = l.password_link.then(|| {
-            let text = match l.password_login {
-                true => trx("Use magic code", "button label"),
-                false => trx("Login with password", "button label"),
-            };
+            let text = if l.password_login { trx("Use magic code", "button label") } else { trx("Login with password", "button label") };
             let link = button(txt(text, 13.0).color(p.accent)).bare(p.accent);
             container(link.on_press_maybe(self.login_act(Stop::Toggle))).center_x(Fill).into()
         });
@@ -1385,8 +1378,9 @@ impl BeeperGuiApp {
         let focused = l.stop() == Some(Stop::Field);
         let slots = row((0..6).map(|i| {
             let ink = if error { ON_ERROR } else { p.strong };
-            let digit: Option<El<'_>> =
-                l.code.chars().nth(i).map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(rem(36.0))).color(ink).into());
+            let digit: Option<El<'_>> = l.code.chars().nth(i).map(|c| {
+                t(c.to_string(), 28.0, crate::style::display(Weight::Semibold, 28.0)).line_height(iced::Pixels(rem(36.0))).color(ink).into()
+            });
             let at = focused && i == l.slot;
             let caret = (at && i >= l.code.len()).then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
             let edge = match (error, at) {
@@ -1584,9 +1578,7 @@ impl BeeperGuiApp {
         let l = &mut self.login;
         let stops = l.stops();
         match key {
-            Key::Named(Named::Escape) => {
-                (l.menu, self.networks.menu, self.menu_bar, self.hotkeys_modal) = (false, None, None, None);
-            }
+            Key::Named(Named::Escape) => (l.menu, self.networks.menu, self.menu_bar, self.hotkeys_modal) = (false, None, None, None),
             Key::Named(Named::Tab) if (mods - Modifiers::SHIFT).is_empty() => {
                 return match l.focus.step(stops, mods.shift()) {
                     Some(Stop::Field) => {

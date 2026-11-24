@@ -391,7 +391,12 @@ impl BeeperGuiApp {
             true => tr("View all your chats with this person as one conversation").to_string(),
             false => trf("View all your chats with %s as one conversation", &[&s.title]),
         };
-        let headline = semi(headline, 15.0).line_height(lh(20.0)).color(p.strong).align_x(Center).width(Fill);
+        // `.BrandChatInfoPaneMergeChats-module__promoHeadline` has a -0.014375rem letter spacing.
+        let headline = t(headline, 15.0, spaced(Weight::Semibold, -0.014375 * 16.0 / 15.0))
+            .line_height(lh(20.0))
+            .color(p.strong)
+            .align_x(Center)
+            .width(Fill);
         let open = UiMessage::Merged(merged::Msg::Open(None, s.rooms.clone()));
         let rest = column![
             self.suggestion_networks(st, &s, 20.0, None, p.chip),

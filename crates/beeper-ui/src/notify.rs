@@ -400,10 +400,7 @@ impl BeeperGuiApp {
             Some(sound) => sound == "silent",
             None => account.silent || prefs.pref(if group { "groupSound" } else { "messageSound" }) == 1,
         };
-        let body = match account.previews {
-            true => sender.map_or(text.clone(), |s| format!("{s}: {text}")),
-            false => "You have a new message".into(),
-        };
+        let body = if account.previews { sender.map_or(text.clone(), |s| format!("{s}: {text}")) } else { "You have a new message".into() };
         // Desktop's actions of a message notification, which only its macOS notifications show: Mark as Read and the
         // reminders, or none with a code, and a reply field where the chat takes replies and previews show.
         let (mut buttons, mut reply) = (Vec::new(), None);

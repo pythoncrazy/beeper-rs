@@ -27,9 +27,7 @@ pub enum Msg {
 impl BeeperGuiApp {
     pub(crate) fn loaded(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
-            Msg::Avatar(url, Ok(h)) => {
-                self.avatars.insert(url, Some(h));
-            }
+            Msg::Avatar(url, Ok(h)) => self.avatars.insert(url, Some(h)),
             Msg::Avatar(_, Err(_)) => {}
             Msg::Media(url, r) => {
                 // The load logged why it failed.
@@ -38,9 +36,7 @@ impl BeeperGuiApp {
                 }
                 self.media.insert(url, Some(r));
             }
-            Msg::VCard(url, r) => {
-                self.vcards.insert(url, Some(r));
-            }
+            Msg::VCard(url, r) => _ = self.vcards.insert(url, Some(r)),
             // A PDF that loads after the carousel closed stays out.
             Msg::Pdf(url, r) => {
                 if let Some(doc) = self.pdfs.get_mut(&url) {

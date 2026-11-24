@@ -19,7 +19,7 @@ use beeper_core::config::APP_VERSION;
 use beeper_core::models::*;
 use beeper_core::prefs;
 use beeper_core::storage;
-use iced::keyboard::{self, key::Named};
+use iced::keyboard;
 use iced::widget::{column, operation};
 use iced::window;
 
@@ -271,10 +271,7 @@ pub(crate) fn select_values(key: &str, s: &BeeperSettings) -> Vec<u8> {
 /// A text of the settings with the values of its `%s` placeholders, where the name of a hotkey stands for its keys,
 /// like Desktop's `humanized` of a reassigned hotkey.
 fn pref_text(s: &BeeperSettings, text: &'static str, args: &[&str]) -> String {
-    let value = |a: &&str| match prefs::HOTKEYS.iter().any(|h| h.0 == *a) {
-        true => crate::hotkey_text(s.hotkey_keys(a)),
-        false => a.to_string(),
-    };
+    let value = |a: &&str| if prefs::HOTKEYS.iter().any(|h| h.0 == *a) { crate::hotkey_text(s.hotkey_keys(a)) } else { a.to_string() };
     let args: Vec<String> = args.iter().map(value).collect();
     trs(text, &args.iter().map(String::as_str).collect::<Vec<_>>())
 }
@@ -951,7 +948,8 @@ impl BeeperGuiApp {
                     container(txt(tr("Grant permission to send messages and modify your account"), 11.0).color(p.sub))
                         .padding(Padding::new(8.0).top(0.0))
                 ];
-                let create = button(semi(tr("Create Access Token"), 12.0).color(p.accent))
+                // `button.shared-module__connectButton`: 500 with a 0.25 px letter spacing.
+                let create = button(t(tr("Create Access Token"), 12.0, spaced(Weight::Medium, 0.25 / rem(12.0))).color(p.accent))
                     .padding([4, 8])
                     .style(btn_style([p.accent.scale_alpha(0.1); 3], [p.accent; 3], 20.0))
                     .on_press(UiMessage::Integrations(integrations::Msg::Create));
@@ -1071,10 +1069,7 @@ impl BeeperGuiApp {
                 .push(d.last_seen_ms.map(|t| txt(trf("Last seen: %s", &[&ago(t)]), 11.0).color(p.sub)))
                 .width(Fill);
             // Desktop's `DeviceRow`: each device has "Logout", which is disabled while the list loads.
-            let ask = match d.current {
-                true => UiMessage::Ask(Some(ASK_LOGOUT)),
-                false => UiMessage::Settings(Msg::AskLogoutDevice(d.id.clone())),
-            };
+            let ask = if d.current { UiMessage::Ask(Some(ASK_LOGOUT)) } else { UiMessage::Settings(Msg::AskLogoutDevice(d.id.clone())) };
             let logout = button(semi(tr("Logout"), 12.0).color(p.strong))
                 .padding([4, 8])
                 .style(btn_style([p.hover, p.selected, p.selected], [p.strong; 3], 20.0))
@@ -1119,17 +1114,16 @@ impl BeeperGuiApp {
                 semi(tr("Add More Accounts"), 13.0).color(p.strong),
                 txt(remaining(0, plan == Plan::Free), 12.0).color(p.muted),
                 container(iced::widget::image(COLLAGE.clone()).width(289).height(24)).padding(Padding::ZERO.top(10)),
-                container(txt(description, 11.0).color(p.strong).center()).max_width(300).padding(Padding::ZERO.top(8)),
+                container(t(description, 11.0, spaced(Weight::Normal, 0.25 / rem(11.0))).color(p.strong).center())
+                    .max_width(300)
+                    .padding(Padding::ZERO.top(8)),
                 container(upgrade).padding(Padding::ZERO.top(8)),
             ]
             .align_x(Center);
             return container(banner).width(Fill).padding([12, 8]).style(bordered_box(CLEAR, p.chip, 1.0, 8.0)).into();
         }
         // Desktop's `accountsRemainingText`.
-        let left = match f.unlimited_accounts() {
-            true => tr("Infinite Accounts Remaining").to_string(),
-            false => remaining(n, plan == Plan::Free),
-        };
+        let left = if f.unlimited_accounts() { tr("Infinite Accounts Remaining").to_string() } else { remaining(n, plan == Plan::Free) };
         column![button(txt(tr("Add an Account"), 13.0).color(p.accent)).bare(p.accent).on_press(add), txt(left, 12.0).color(p.muted)]
             .spacing(8)
             .align_x(Center)
@@ -1720,10 +1714,7 @@ impl BeeperGuiApp {
         drop(st);
         let row = |(name, _, keys): &(&'static str, &str, String)| -> El<'_> {
             let label = prefs::hotkey_label(keys.split(", ").next().expect("a combination"));
-            let caps: Vec<String> = match label.is_empty() {
-                true => vec![tr("Unset").into()],
-                false => label.split(' ').map(String::from).collect(),
-            };
+            let caps: Vec<String> = if label.is_empty() { vec![tr("Unset").into()] } else { label.split(' ').map(String::from).collect() };
             let width = |k: &str| (text_width(k, 13.0, Weight::Normal) + 8.0).max(22.0);
             let caps_w: f32 = caps.iter().map(|k| width(k) + 4.0).sum();
             let caps = caps.into_iter().map(|k| {
@@ -1856,7 +1847,8 @@ impl BeeperGuiApp {
         let again = reconnect(st, id);
         // Desktop's `AccountDisconnected` describes an error without a message as a problem, with its state and code.
         let disconnected = bridge.and_then(|b| Some((b, b.remote_error.as_deref()?))).map(|(b, message)| {
-            let line = |s: String| txt(s, 11.0).color(p.strong).center().into();
+            // `.AccountDisconnectedBanner-module__description` and its Reconnect have a 0.25 px letter spacing.
+            let line = |s: String| t(s, 11.0, spaced(Weight::Normal, 0.25 / rem(11.0))).color(p.strong).center().into();
             let message: Vec<El<'_>> = match message {
                 "" => vec![
                     line(tr("This account is having a problem, please contact support.").into()),
@@ -1865,7 +1857,10 @@ impl BeeperGuiApp {
                 m => vec![line(m.to_string())],
             };
             let again = again.map(|m| {
-                button(med(tr("Reconnect"), 11.0)).padding([4, 8]).style(btn_style([Color::WHITE; 3], [p.accent; 3], 20.0)).on_press(m)
+                button(t(tr("Reconnect"), 11.0, spaced(Weight::Medium, 0.25 / rem(11.0))))
+                    .padding([4, 8])
+                    .style(btn_style([Color::WHITE; 3], [p.accent; 3], 20.0))
+                    .on_press(m)
             });
             let banner = column![
                 svg(ERROR_CIRCLE.clone()).width(20).height(20),
@@ -2256,10 +2251,7 @@ impl BeeperGuiApp {
         let desc = r.desc.map(|d| [pref_text(&st.settings, d, args).as_str()].into_iter().chain(paid).collect::<Vec<_>>().join("\n\n"));
         let row = pref_row(p, trs(r.label, label), desc.as_deref(), r.badge.map(|b| badge(p, b)), control);
         // Desktop's `label-wrapper` toggles the checkbox on a click anywhere in the row.
-        let row = match press.clone() {
-            Some(m) => mouse_area(row).on_press(m).into(),
-            None => row,
-        };
+        let row = if let Some(m) = press.clone() { mouse_area(row).on_press(m).into() } else { row };
         // Desktop's switch rows, and the button of Blocked users (`.BlockedUsersPref-module__button:focus-visible`
         // takes the same fill).
         match r.control {
@@ -2420,9 +2412,7 @@ impl BeeperGuiApp {
                     return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
                 }
             }
-            Msg::SetQuickEmoji(slot, e) => {
-                self.patch_settings(|s| s.quick_reactions[usize::from(slot) - 1] = e);
-            }
+            Msg::SetQuickEmoji(slot, e) => self.patch_settings(|s| s.quick_reactions[usize::from(slot) - 1] = e),
             Msg::PickDownloads => {
                 let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Folder);
                 return Task::perform(pick, |a0| UiMessage::Settings(Msg::DownloadsPicked(a0)));

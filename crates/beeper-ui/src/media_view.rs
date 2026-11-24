@@ -10,7 +10,7 @@ use crate::{
     SYS_DOWNLOAD, SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
 };
 use beeper_core::models::*;
-use iced::keyboard::{self, key::Named};
+use iced::keyboard;
 use iced::widget::column;
 use iced::{border, mouse, window};
 
@@ -18,7 +18,7 @@ use iced::{border, mouse, window};
 /// end, as many encoders write them, needs an input that ffmpeg can seek, which a pipe is not.
 pub(crate) fn run_ffmpeg(bytes: &[u8], args: &[&str]) -> Result<Vec<u8>, String> {
     use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!("beeper-rs-ffmpeg-{}-{n}", std::process::id()));
@@ -150,10 +150,7 @@ pub(crate) fn animation(bytes: &[u8]) -> Option<Result<Vec<(::image::RgbaImage, 
         };
         (f.into_buffer(), u128::from(ms))
     };
-    Some(frames.and_then(|f| match f.is_empty() {
-        true => Err("The animation has no frames".into()),
-        false => Ok(f.into_iter().map(frame).collect()),
-    }))
+    Some(frames.and_then(|f| if f.is_empty() { Err("The animation has no frames".into()) } else { Ok(f.into_iter().map(frame).collect()) }))
 }
 
 /// The attachment that a carousel shows, its quarter turns and when the last one started, if it shows the Media window items, the inline size of
@@ -422,13 +419,7 @@ pub(crate) fn media_grid(area: Size, tiles: &[usize], skeletons: usize) -> (usiz
 impl BeeperGuiApp {
     /// The media at `url`. A view that shows a URL that no task loads asks for it.
     pub(crate) fn media_at(&self, url: &str) -> Option<&Result<Frames, String>> {
-        match self.media.get(url) {
-            Some(m) => m.as_ref(),
-            None => {
-                self.wants.ask(&self.wants.media, url);
-                None
-            }
-        }
+        self.wants.get(&self.wants.media, url, self.media.get(url))
     }
 
     pub(crate) fn media_mut(&mut self) -> &mut MediaWindow {
@@ -486,10 +477,7 @@ impl BeeperGuiApp {
         w.generation += 1;
         (w.items, w.more, w.cursor, w.loading, w.advance) = (Vec::new(), true, None, None, false);
         w.picked.clear();
-        let close = match self.media_mut().viewer.is_some() {
-            true => self.as_media(|s| s.media_view(Msg::CloseCarousel)),
-            false => Task::none(),
-        };
+        let close = if self.media_mut().viewer.is_some() { self.as_media(|s| s.media_view(Msg::CloseCarousel)) } else { Task::none() };
         Task::batch([close, self.media_more()])
     }
 
@@ -599,13 +587,7 @@ impl BeeperGuiApp {
 
     /// The contact card of a `.vcf` attachment once it is read, which the view asks for.
     pub(crate) fn vcard_at(&self, url: &str) -> Option<&Result<crate::vcard::VCard, String>> {
-        match self.vcards.get(url) {
-            Some(c) => c.as_ref(),
-            None => {
-                self.wants.ask(&self.wants.vcards, url);
-                None
-            }
-        }
+        self.wants.get(&self.wants.vcards, url, self.vcards.get(url))
     }
 
     /// Desktop's `hasNextViewerItem`: the Media window viewer has a next item while more items can load.
@@ -694,10 +676,7 @@ impl BeeperGuiApp {
         let live = !car.in_media && m.is_deleted != Some(true);
         let reply = (c.messages.reply && live).then(|| {
             let start = UiMessage::Composer(composer::Msg::StartReply(m.id.clone()));
-            let start = match self.drawn_opener() {
-                Some(opener) => UiMessage::InWindow(opener, Box::new(start)),
-                None => start,
-            };
+            let start = if let Some(opener) = self.drawn_opener() { UiMessage::InWindow(opener, Box::new(start)) } else { start };
             UiMessage::Commands(vec![UiMessage::Media(Msg::CloseCarousel), start])
         });
         let right = self.pane().size.width - 8.0 - 28.0 * if reply.is_some() { 4.0 } else { 3.0 };
@@ -1517,10 +1496,7 @@ impl BeeperGuiApp {
                         self.media_search()
                     }
                 };
-                return match open {
-                    true => Task::batch([search, iced::widget::operation::focus("media-search")]),
-                    false => search,
-                };
+                return if open { Task::batch([search, iced::widget::operation::focus("media-search")]) } else { search };
             }
             Msg::Searched(n) => {
                 // The window can close before the wait ends.

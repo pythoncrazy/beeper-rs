@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::prelude::*;
-use iced::advanced::widget::operation::{Focusable, Operation, Outcome, Scrollable};
+use iced::advanced::widget::operation::{Focusable, Outcome, Scrollable};
 use iced::advanced::widget::{self as advanced};
 
 /// Tells when the text field inside `content` takes or loses the keyboard focus, like the DOM's `focus` and `blur`
@@ -233,7 +233,7 @@ impl Look {
     /// The `:focus-visible` outline of Desktop's `Button`, `Toggle` and `Checkbox`: `outline: 2px solid
     /// var(--app-focus-ring)` with `outline-offset: 1px`.
     pub fn button(p: &Palette, radius: f32) -> Self {
-        Look::Outline { color: p.focus_ring, width: 2.0, offset: 1.0, radius }
+        Look::Outline { color: p.main, width: 2.0, offset: 1.0, radius }
     }
 }
 

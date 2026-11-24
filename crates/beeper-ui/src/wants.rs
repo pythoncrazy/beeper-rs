@@ -40,6 +40,19 @@ impl Wants {
         }
     }
 
+    /// The loaded value `got` of `key`, or `None` while it loads: a `key` that no task loads yet is asked for.
+    pub fn get<'v, K: Ord + ToOwned + ?Sized, V>(
+        &self, set: &RefCell<BTreeSet<K::Owned>>, key: &K, got: Option<&'v Option<V>>,
+    ) -> Option<&'v V>
+    where
+        K::Owned: Ord + Borrow<K>,
+    {
+        if got.is_none() {
+            self.ask(set, key);
+        }
+        got?.as_ref()
+    }
+
     /// Wraps the view of a window: the frame after a view that asked for a URL publishes `load`.
     pub fn watch<'a, M: Clone + 'a>(&'a self, content: impl Into<Element<'a, M>>, load: M) -> Element<'a, M> {
         Element::new(Watch { wants: self, content: content.into(), load })

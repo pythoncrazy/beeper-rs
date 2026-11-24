@@ -4,7 +4,6 @@
 
 use crate::i18n::{tr, trx};
 use crate::prelude::*;
-use crate::toasts::Toast;
 use crate::{anim, chat_list, media_view};
 use iced::widget::column;
 use serde_json::Value;
@@ -259,10 +258,7 @@ impl BeeperGuiApp {
             }
             Msg::Toggle => {
                 let v = self.view_once.viewer.as_mut().expect("an open viewer plays");
-                v.audio = match v.audio.1 {
-                    Some(_) => (v.audio_pos(), None),
-                    None => (v.audio.0, Some(Instant::now())),
-                };
+                v.audio = if v.audio.1.is_some() { (v.audio_pos(), None) } else { (v.audio.0, Some(Instant::now())) };
                 v.output();
             }
             Msg::Tick => {
@@ -508,7 +504,7 @@ impl BeeperGuiApp {
         let line = row![lead, txt(label(m), 13.0).color(fg)].spacing(4).align_y(Center);
         match variant {
             Variant::Filled => container(line).padding(Padding::new(8.0).right(12.0)).style(fill_box(bg, 17.0)).into(),
-            Variant::Outlined => container(line).padding([6, 9]).style(bordered_box(bg, p.received, 2.0, 17.0)).into(),
+            Variant::Outlined => container(line).padding([6, 9]).style(bordered_box(bg, p.chip, 2.0, 17.0)).into(),
             Variant::Quote => line.into(),
         }
     }

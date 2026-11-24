@@ -2,10 +2,10 @@
 //! and the name, photo and default chat of a new or an edited merged chat.
 
 use super::*;
-use crate::dialogs::LABEL_INTRO_FACES;
+use crate::dialogs::intro_faces;
 use crate::merged::chat_brand;
 use crate::prelude::*;
-use iced::widget::{column, operation};
+use iced::widget::column;
 
 /// Desktop's `windowFeatures` of the merged chat editor.
 pub(crate) const MERGE_SIZE: Size = Size::new(340.0, 570.0);
@@ -130,7 +130,7 @@ impl BeeperGuiApp {
         if intro {
             self.patch_settings(|s| s.merge_intro_seen = true);
         }
-        let (id, open) = self.open_resizable_child(MERGE_SIZE);
+        let (id, open) = self.open_child(MERGE_SIZE, true);
         let step = if intro { MergeStep::Intro } else { MergeStep::Pick };
         let titled = union.is_some();
         self.merge_window = Some(MergeDraft {
@@ -316,28 +316,14 @@ impl BeeperGuiApp {
         let edit = |e| UiMessage::Merged(merged::Msg::Edit(e));
         let can = st.can_create_union();
         let picked: Vec<&Chat> = d.chats.iter().filter_map(|c| st.find_chat(c)).take(5).collect();
-        let mut faces: Vec<El> = picked.iter().map(|c| self.chat_avatar(c, 48.0, 1.25)).collect();
-        if faces.is_empty() {
-            faces = LABEL_INTRO_FACES.iter().map(|h| image(h.clone()).width(48).height(48).into()).collect();
-        }
-        let n = faces.len();
-        let faces = faces.into_iter().enumerate().fold(Stack::new(), |s, (i, face)| {
-            let ring = container(face).padding(4).style(fill_box(p.card, 28.0));
-            s.push(container(ring).padding(Padding::ZERO.left(i as f32 * 33.0)))
-        });
-        let tile = svg(crate::style::brand_round("merged-chat")).width(26).height(26);
-        let tile = container(tile).padding(2).style(fill_box(p.card, 15.0));
-        let width = 56.0 + (n - 1) as f32 * 33.0;
-        let stack = stack![container(faces).padding(Padding::ZERO.top(15.0)), container(tile).align_right(width + 15.0)];
+        let faces = picked.iter().map(|c| self.chat_avatar(c, 48.0, 1.25)).collect();
+        let stack = intro_faces(p, faces, svg(crate::style::brand_round("merged-chat")).width(26).height(26), 15.0);
         let headline = match picked.first().map(|c| c.title.trim()).filter(|t| !t.is_empty()) {
             Some(t) => trf("View all your chats with %s as one conversation", &[&t]),
             None => tr("View chats with the same contacts, across different accounts, as one conversation.").into(),
         };
         let headline = semi(headline, 13.0).color(p.strong).align_x(Center);
-        let (label, go) = match can {
-            true => (tr("Get Started"), MergeEdit::Start),
-            false => (tr("Upgrade"), MergeEdit::Upgrade),
-        };
+        let (label, go) = if can { (tr("Get Started"), MergeEdit::Start) } else { (tr("Upgrade"), MergeEdit::Upgrade) };
         let go = button(container(med(label, 13.0)).center_y(32))
             .padding([0, 14])
             .style(btn_style([p.accent; 3], [Color::WHITE; 3], 16.0))
@@ -375,8 +361,8 @@ impl BeeperGuiApp {
         button(line).bare(p.strong).width(Fill).on_press(UiMessage::Merged(merged::Msg::Edit(MergeEdit::Toggle(c.id.clone())))).into()
     }
 
-    /// Desktop's pick step: the search row, then the selected chats and the Suggested, Recent Chats and Chats
-    /// sections, or the search results.
+    /// Desktop's pick step: the search row, then the selected chats and the Suggested, Frequently Contacted, Recent
+    /// Chats and Chats sections, or the search results.
     fn view_merge_pick<'a>(&'a self, d: &'a MergeDraft) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
@@ -421,17 +407,23 @@ impl BeeperGuiApp {
                 .filter(|c| !taken(c) && !st.user_blocked(c) && merge_keys(c).iter().any(|k| keys.contains(k)))
                 .collect();
             let shown = |c: &Chat, v: &[&Chat]| taken(c) || suggested.iter().chain(v).any(|s| s.id == c.id);
+            // Desktop's `frecency` order, which lists chats without any activity too.
+            let mut frequent: Vec<&Chat> = pool.iter().copied().filter(|c| !shown(c, &[])).collect();
+            frequent.sort_by(|a, b| st.frecency(&b.id).total_cmp(&st.frecency(&a.id)));
+            frequent.truncate(SECTION);
             let recent: Vec<&Chat> = st
                 .recent_chat_ids
                 .iter()
                 .filter_map(|id| pool.iter().copied().find(|c| c.id == *id))
-                .filter(|c| !shown(c, &[]))
+                .filter(|c| !shown(c, &frequent))
                 .take(SECTION)
                 .collect();
-            let mut rest: Vec<&Chat> = pool.iter().copied().filter(|c| !shown(c, &recent)).collect();
+            let before: Vec<&Chat> = frequent.iter().chain(&recent).copied().collect();
+            let mut rest: Vec<&Chat> = pool.iter().copied().filter(|c| !shown(c, &before)).collect();
             rest.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
             rest.truncate(SECTION);
-            for (title, chats) in [("Suggested", suggested), ("Recent Chats", recent), ("Chats", rest)] {
+            for (title, chats) in [("Suggested", suggested), ("Frequently Contacted", frequent), ("Recent Chats", recent), ("Chats", rest)]
+            {
                 if !chats.is_empty() {
                     rows.push(header(title));
                     rows.extend(chats.into_iter().map(|c| self.merge_row(&st, c, false)));
@@ -569,6 +561,27 @@ mod tests {
         assert!(st.outbox.iter().any(|(_, chat, o)| *chat == c.id && union(o)), "the union room comes with its children");
         assert_eq!(app.status_banner, "You can now message Friends across 2 chats from one conversation.");
         assert!(st.settings.merge_intro_seen, "the intro shows once");
+    }
+
+    /// Desktop's "Frequently Contacted" in the pick step, by the sends and the dwells of each chat: a chat that stays
+    /// open 3 seconds counts.
+    #[test]
+    fn merge_pick_lists_frequently_contacted_chats_like_desktop() {
+        let mut app = demo_app("merge-editor-frequent");
+        let _ = app.update(UiMessage::SelectChat(KAI.into()));
+        let _ = app.update(UiMessage::SelectChat(SAM.into()));
+        let ago = std::time::Instant::now() - std::time::Duration::from_secs(4);
+        app.dwell.as_mut().expect("the open chat").1 = ago;
+        let _ = app.update(UiMessage::Noop);
+        let _ = app.update(UiMessage::Noop);
+        let st = app.store.read();
+        assert!(st.frecency(SAM) > 0.6 && st.frecency(SAM) < 0.62, "one dwell of the open chat");
+        assert_eq!(st.frecency(KAI), 0.0, "a chat left before 3 seconds does not count");
+        drop(st);
+        let _ = app.update(UiMessage::Merged(merged::Msg::Open(None, Vec::new())));
+        edit(&mut app, MergeEdit::Start);
+        let mut sim = view(&app);
+        assert!(sim.find("Frequently Contacted").is_ok());
     }
 
     /// Desktop's Edit of a merged chat from the Manage menu of Chat Info: its chats are picked, and the change of a
