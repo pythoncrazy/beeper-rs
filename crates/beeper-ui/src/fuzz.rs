@@ -5502,6 +5502,33 @@ fn message_times_keep_their_px_size_like_desktop() {
     }
 }
 
+/// A chat row's title ends where Desktop's does: `.ThreadListItem-module__header` has a 0.25rem gap before the time,
+/// whose `padding-left` is 0.5em. In Desktop 4.3.308 a 160 px header with "October 14" leaves the title 92.89 px, and
+/// shows "Google Cal…" of this title.
+#[test]
+fn chat_titles_end_like_desktop() {
+    let app = demo_app("title-cut");
+    let main = app.main_window.expect("the main window");
+    {
+        let mut st = app.store.write();
+        let i = st.chats.iter().position(|c| c.title == "Family").expect("the demo family chat");
+        st.update_chat(i, |c| c.title = "Google Calendar (pinak@locamage.com)".into());
+    }
+    let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+    assert!(sim.find("October 14").is_ok() && sim.find("Google Cal…").is_ok(), "the title is cut like Desktop's");
+}
+
+/// Desktop's letter spacing: the filter count (`.FilterButton-module__count`, 11 px with 0.25 px) "2" is 6.906 px
+/// wide in Desktop 4.3.308, where Inter alone makes it 6.656.
+#[test]
+fn filter_count_is_spaced_like_desktop() {
+    let mut app = demo_app("letter-spacing");
+    let main = app.main_window.expect("the main window");
+    app.set_filters(0b11);
+    let count = Simulator::with_size(Default::default(), app.pane.size, app.view(main)).find("2").expect("the count").bounds().width;
+    assert!((count - 6.906).abs() < 0.05, "{count}");
+}
+
 /// Text that Desktop sets in px keeps its size at any Font size: the filter count (`.FilterButton-module__count`,
 /// 11 px), the empty command bar (`.command-bar .empty`, 14 px), the title and the empty list of the Keyboard
 /// Shortcuts (`.modal h3`, 24 px, and `.hotkey-search-empty`, 16 px) and the tiles of the chat theme
@@ -8810,6 +8837,26 @@ fn link_previews_like_desktop() {
     assert!(sim.find("Scaling Laws for Neural Language Models").is_err(), "a link without a preview shows none");
 }
 
+/// Desktop's `.LinkPreview-module__host`: its 12 px `link` icon, a filled chain whose ink is 8.5 px wide and ends
+/// 1.7 px before the box, 4 px before the host.
+#[test]
+fn link_preview_host_icon_like_desktop() {
+    let mut app = demo_app("link-host-icon");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 900.0), app.view_main());
+    let host = sim.find("arxiv.org").expect("the host").bounds();
+    let shot = crate::message::tests::pixels(&mut sim);
+    let (x0, y0) = (2 * (host.x - 16.0) as u32, 2 * (host.y - 2.0) as u32);
+    let bg = shot.get_pixel(x0, y0).0;
+    let inked: Vec<u32> = (x0..x0 + 24)
+        .filter(|&x| (y0..y0 + 2 * (host.height + 4.0) as u32).any(|y| u16::from(shot.get_pixel(x, y).0[0]) + 40 < u16::from(bg[0])))
+        .collect();
+    let (left, right) = (inked[0], inked[inked.len() - 1]);
+    assert!(right - left < 18, "8.5 px of ink at the shot's scale of 2: {}", right - left + 1);
+    let gap = 2 * host.x as u32 - right;
+    assert!((11..=12).contains(&gap), "the ink ends 1.7 px before the box, 4 px before the host: {gap}");
+}
+
 #[test]
 fn email_links_and_media_items_match_desktop() {
     let address = |t: &str| crate::linkify::links(t).into_iter().map(|(r, h)| (t[r].to_string(), h)).collect::<Vec<_>>();
@@ -8864,6 +8911,18 @@ fn errors_toast_like_desktop() {
     assert_eq!(app.resolving_media.get("$ev"), Some(&true), "Try again resolves the media again");
     let _ = app.update(UiMessage::Message(message::Msg::CopyLink("https://example.com".into())));
     assert!(app.shown_toast().is_none_or(|t| !t.error), "a later toast is not an error");
+}
+
+/// A saved sidebar width or state that does not parse, like one saved by hand with a newline, starts the app with what
+/// reads and the default for the rest.
+#[test]
+fn a_saved_sidebar_state_that_does_not_parse_starts_the_app() {
+    let store = beeper_core::testing::demo_store("sidebar-saved");
+    let dir = store.read().config.data_dir.clone();
+    std::fs::write(dir.join("sidebar-width"), "300\n").unwrap();
+    std::fs::write(dir.join("sidebar-hidden"), "maybe").unwrap();
+    let app = BeeperGuiApp::boot(store).0;
+    assert_eq!((app.sidebar_width, app.sidebar_hidden), (300.0, false));
 }
 
 #[test]
@@ -9112,6 +9171,27 @@ fn new_chat_groups_follow_bridge_capabilities_like_desktop() {
     assert_eq!(ids(&app), ["@three:x"], "a bridge without groups replaces the person");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     assert!(!found(&app, "New Group"), "no bridge can create groups");
+}
+
+/// Desktop's `GroupAvatar` shows the `activeParticipants` other than the user in Desktop's order (`J_e`, names by
+/// `localeCompare`), the first one the largest: Bob, Émile, Zoe, and no member that left.
+#[test]
+fn group_avatars_pick_members_like_desktop() {
+    let app = demo_app("group-faces");
+    let mut chat = app.store.read().chats.iter().find(|c| c.chat_type == "group").expect("a group").clone();
+    let user = |id: &str, name: &str| User { id: id.into(), full_name: Some(name.into()), ..User::default() };
+    chat.img_url = None;
+    chat.participants.items = vec![
+        User { is_self: Some(true), ..user("@me:x", "Me") },
+        user("@z:x", "Zoe"),
+        user("@e:x", "Émile"),
+        user("@b:x", "Bob"),
+        User { has_exited: Some(true), ..user("@x:x", "Xena") },
+    ];
+    let mut sim = Simulator::with_size(Default::default(), Size::new(100.0, 100.0), app.chat_avatar(&chat, 92.0, 1.25));
+    assert!(sim.find("X").is_err(), "a member that left");
+    let [b, e, z] = ["B", "É", "Z"].map(|s| sim.find(s).expect(s).bounds().height);
+    assert!(b > e && e > z, "the slots of Bob, Émile and Zoe: {b} {e} {z}");
 }
 
 /// Desktop's `GroupTitleBar` avatar and `T$t`: a bridge whose groups need an avatar starts one only with a picked
@@ -10231,7 +10311,7 @@ fn sign_in_window_details_like_desktop() {
     let s = BeeperGuiApp::login_window_settings();
     assert!(matches!(s.position, window::Position::Centered) && s.min_size == Some(Size::new(330.0, 400.0)));
     let sentence = "By continuing, you agree to our terms of use and have read our privacy policy.";
-    let width = style::balanced_width(sentence, 278.0, 11.0);
+    let width = style::balanced_width(sentence, 278.0, 11.0, 0.0);
     let first = style::text_width("By continuing, you agree to our terms", 11.0, iced::font::Weight::Normal);
     let more = style::text_width("By continuing, you agree to our terms of", 11.0, iced::font::Weight::Normal);
     assert!(first < width && width < more, "the first line ends with \"terms\", like Desktop's: {width}");
@@ -10944,6 +11024,38 @@ fn muted_bells_like_desktop() {
     assert!(left >= 6 && dark[0] < 0x40, "the pin's bell 3.2 px after its title: {left} {dark:?}");
 }
 
+/// Desktop's chat row divider (`section:after`, 0.33 px high) starts at the row's content, after the unread dot's
+/// column when the counts are off, and Chromium snaps it to one device pixel: at the scale of 2 of the shot, the
+/// last one of the row.
+#[test]
+fn row_dividers_like_desktop() {
+    use iced_test::selector::Candidate;
+    let mut app = demo_app("row-dividers");
+    for counts in [true, false] {
+        let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("showUnreadCount", u8::from(counts))));
+        // The start of the title, which the row may cut short.
+        let title: String = app.pins_and_rows(&app.store.read()).1[1].title.chars().take(4).collect();
+        let mut sim = simulator(app.view_sidebar());
+        let hit = |c: Candidate<'_>| match c {
+            Candidate::Text { content, bounds, .. } if content.starts_with(title.as_str()) => Some(bounds),
+            _ => None,
+        };
+        let at = sim.find(hit).expect("the row's title");
+        let (x, top) = (2 * at.x as u32, 2 * at.y as u32);
+        let shot = crate::message::tests::pixels(&mut sim);
+        let bg = shot.get_pixel(x, 1).0;
+        // A rule is a run of one color other than the background's from the content on.
+        let rule = |y: u32| shot.get_pixel(x, y).0 != bg && (x..x + 160).all(|i| shot.get_pixel(i, y) == shot.get_pixel(x, y));
+        // The rules from the row above the title's on, under the pins.
+        let ys: Vec<u32> = (top - 2 * 68..shot.height()).filter(|&y| rule(y)).collect();
+        assert!(ys.len() > 3, "counts {counts}: {ys:?}");
+        for (y, next) in ys.iter().zip(&ys[1..]) {
+            assert_eq!((y % 2, next - y), (1, 2 * 68), "counts {counts}: one device pixel, the row's last: {ys:?}");
+            assert_eq!(shot.get_pixel(x - 1, *y).0, bg, "counts {counts}: the rule starts at the content");
+        }
+    }
+}
+
 /// Desktop's press on a trigger dismisses its tooltip: the "Filter" tooltip does not cover the filter menu.
 #[test]
 fn no_tooltip_over_an_open_menu_like_desktop() {
@@ -11564,7 +11676,8 @@ fn backdrops_take_the_pointer_like_desktop() {
                 let _ = a.update(UiMessage::Message(message::Msg::React(other.clone())));
             }),
         ),
-        ("the command bar", 0, Box::new(|a: &mut BeeperGuiApp| a.show_command_palette = true)),
+        // The command bar covers the left of the row, where its own widgets set the cursor.
+        ("the command bar", 1, Box::new(|a: &mut BeeperGuiApp| a.show_command_palette = true)),
         (
             "the chat menu",
             0,

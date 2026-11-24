@@ -88,7 +88,12 @@ impl BeeperGuiApp {
         let size = link.img_size.as_ref().and_then(|s| s.width.zip(s.height));
         let square = size.is_some_and(|(w, h)| w == h);
         let narrow = link.img.is_some() && (square || size.is_some_and(|(w, _)| w < NARROW));
-        let meta = row![ic(icon::LINK, 12.0).color(dim(p.weak)), txt(host.clone(), 11.0).color(dim(p.weak))].spacing(4).align_y(Center);
+        let meta = row![
+            crate::tinted(&crate::LINK_ICON, 12.0, dim(p.weak)),
+            t(host.clone(), 11.0, spaced(Weight::Normal, 0.015)).color(dim(p.weak))
+        ]
+        .spacing(4)
+        .align_y(Center);
         let natural = [Some(link.title.as_str()), link.summary.as_deref(), Some(&host)];
         let natural = natural.into_iter().flatten().map(|t| text_width(t, 13.0, Weight::Semibold)).fold(0.0, f32::max);
         let summary =

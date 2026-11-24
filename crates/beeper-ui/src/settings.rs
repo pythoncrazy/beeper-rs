@@ -948,7 +948,8 @@ impl BeeperGuiApp {
                     container(txt(tr("Grant permission to send messages and modify your account"), 11.0).color(p.sub))
                         .padding(Padding::new(8.0).top(0.0))
                 ];
-                let create = button(semi(tr("Create Access Token"), 12.0).color(p.accent))
+                // `button.shared-module__connectButton`: 500 with a 0.25 px letter spacing.
+                let create = button(t(tr("Create Access Token"), 12.0, spaced(Weight::Medium, 0.25 / rem(12.0))).color(p.accent))
                     .padding([4, 8])
                     .style(btn_style([p.accent.scale_alpha(0.1); 3], [p.accent; 3], 20.0))
                     .on_press(UiMessage::Integrations(integrations::Msg::Create));
@@ -1113,7 +1114,9 @@ impl BeeperGuiApp {
                 semi(tr("Add More Accounts"), 13.0).color(p.strong),
                 txt(remaining(0, plan == Plan::Free), 12.0).color(p.muted),
                 container(iced::widget::image(COLLAGE.clone()).width(289).height(24)).padding(Padding::ZERO.top(10)),
-                container(txt(description, 11.0).color(p.strong).center()).max_width(300).padding(Padding::ZERO.top(8)),
+                container(t(description, 11.0, spaced(Weight::Normal, 0.25 / rem(11.0))).color(p.strong).center())
+                    .max_width(300)
+                    .padding(Padding::ZERO.top(8)),
                 container(upgrade).padding(Padding::ZERO.top(8)),
             ]
             .align_x(Center);
@@ -1844,7 +1847,8 @@ impl BeeperGuiApp {
         let again = reconnect(st, id);
         // Desktop's `AccountDisconnected` describes an error without a message as a problem, with its state and code.
         let disconnected = bridge.and_then(|b| Some((b, b.remote_error.as_deref()?))).map(|(b, message)| {
-            let line = |s: String| txt(s, 11.0).color(p.strong).center().into();
+            // `.AccountDisconnectedBanner-module__description` and its Reconnect have a 0.25 px letter spacing.
+            let line = |s: String| t(s, 11.0, spaced(Weight::Normal, 0.25 / rem(11.0))).color(p.strong).center().into();
             let message: Vec<El<'_>> = match message {
                 "" => vec![
                     line(tr("This account is having a problem, please contact support.").into()),
@@ -1853,7 +1857,10 @@ impl BeeperGuiApp {
                 m => vec![line(m.to_string())],
             };
             let again = again.map(|m| {
-                button(med(tr("Reconnect"), 11.0)).padding([4, 8]).style(btn_style([Color::WHITE; 3], [p.accent; 3], 20.0)).on_press(m)
+                button(t(tr("Reconnect"), 11.0, spaced(Weight::Medium, 0.25 / rem(11.0))))
+                    .padding([4, 8])
+                    .style(btn_style([Color::WHITE; 3], [p.accent; 3], 20.0))
+                    .on_press(m)
             });
             let banner = column![
                 svg(ERROR_CIRCLE.clone()).width(20).height(20),

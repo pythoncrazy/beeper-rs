@@ -1331,8 +1331,8 @@ impl BeeperGuiApp {
             let trigger: El<'_> = match count {
                 0 => Space::new().into(),
                 1 => ic(icon::EXPAND_MORE, 10.0).color(fg).into(),
-                // `.FilterButton-module__count` is 11 px.
-                n => crate::style::fixed(n.to_string(), 11.0, Weight::Normal).line_height(1.0).color(fg).into(),
+                // `.FilterButton-module__count` is 11 px with a 0.25 px letter spacing.
+                n => crate::style::fixed(n.to_string(), 11.0, spaced(Weight::Normal, 0.25 / 11.0)).line_height(1.0).color(fg).into(),
             };
             let trigger = button(container(trigger).padding(Padding::ZERO.left(6.0)).center_y(20))
                 .bare(fg)
@@ -1446,6 +1446,7 @@ impl BeeperGuiApp {
             title_size,
             ts_size,
             text_w: inner - 16.0 - av - 10.0 - lead,
+            lead,
             counts,
             network_icons: st.settings.on("showNetworkIcons")
                 && self.list().selected_account_filter.as_deref().is_none_or(|id| rail_label(st, id).is_some()),
@@ -1612,7 +1613,9 @@ impl BeeperGuiApp {
                 self.row_action(&st.settings, c, l.hover_action, t)
             }
         });
-        let rule = (!on && l.above.as_deref() != Some(key.as_str())).then(|| container(divider(p.divider, l.av + 18.0)).align_bottom(Fill));
+        // Desktop's `section:after` starts at the content (`anchor(left)`).
+        let rule = (!on && l.above.as_deref() != Some(key.as_str()))
+            .then(|| crate::hairline::hairline(p.divider, l.lead + l.av + 18.0, 0.33, self.bake_scale()));
         let row = mouse_area(
             button(stack![item].push(action.flatten()).push(rule))
                 .padding(0)
@@ -1721,7 +1724,9 @@ impl BeeperGuiApp {
             _ => c.last_activity.as_deref().map(|t| list_ts(t, l.h24)).unwrap_or_default(),
         };
         let later = next.is_some() && (!drafted || matches!(self.list().active_tab, InboxTab::Reminders | InboxTab::SendLater));
-        let ts_w = crate::style::text_width(&ts, l.ts_size, Weight::Normal) + 8.0 + if later { 12.0 } else { 0.0 };
+        // `.ThreadListItem-module__header`'s 0.25rem gap and the time's `padding-left: 0.5em`, and the 12 px icon of a
+        // scheduled message 4 px before it.
+        let ts_w = crate::style::text_width(&ts, l.ts_size, Weight::Normal) + rem(4.0 + l.ts_size / 2.0) + if later { 16.0 } else { 0.0 };
         let reminded_last = c
             .reminder
             .as_ref()
@@ -1741,7 +1746,7 @@ impl BeeperGuiApp {
             .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.fg.scale_alpha(0.9))).padding(Padding::ZERO.left(4.0))))
             .push(snoozed.map(|_| container(tinted(&MOON_STARS, 12.0, p.fg.scale_alpha(0.9))).padding(Padding::ZERO.left(4.0))))
             .push(Space::new().width(Fill))
-            .push(later.then(|| tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))))
+            .push(later.then(|| container(tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))).padding(Padding::ZERO.right(4.0))))
             .push(
                 container(
                     txt(ts, l.ts_size)
@@ -1927,6 +1932,8 @@ struct RowLook<'s> {
     /// The row above the selected one.
     above: Option<Cow<'s, str>>,
     compact: bool,
+    /// The width of the unread dot's column or the checkbox before the avatar.
+    lead: f32,
     av: f32,
     lines: usize,
     title_size: f32,

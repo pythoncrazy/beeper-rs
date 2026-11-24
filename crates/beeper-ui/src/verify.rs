@@ -3,7 +3,6 @@
 use crate::i18n::{tr, trn_named, trx};
 use crate::login::{art, brand_gradient, Screen, H3};
 use crate::prelude::*;
-use crate::style::t;
 use iced::widget::column;
 use iced::{border, window};
 
@@ -245,7 +244,8 @@ impl BeeperGuiApp {
             (None, Some(_)) => tr("QR Verification"),
             (None, None) => trx("Loading...", "verification modal title"),
         };
-        let title = t(title, 28.0, Weight::ExtraBold).line_height(lh(38.0)).color(p.strong).center();
+        // `.VerificationModal-module__title` has a -0.75 px letter spacing.
+        let title = t(title, 28.0, spaced(Weight::ExtraBold, -0.75 / rem(28.0))).line_height(lh(38.0)).color(p.strong).center();
         let code = qr.map(|qr| -> El<'_> {
             let emojis = v.is_some_and(|v| v.methods.contains(&"sas")).then(|| {
                 let label = trx("Confirm using emojis instead", "button label");
@@ -723,26 +723,33 @@ impl BeeperGuiApp {
             }
             _ => {
                 let key: El<'_> = match &l.new_key {
+                    // Desktop's `ClippableRecoveryCode`: the key in 28 px semibold with the display letter spacing on
+                    // 36 px lines, and 8 px under it the 20 px `copy` (or `done`) icon 8 px before 13 px text in
+                    // `--color-primary`, on a gray card with `padding: 12px 16px`, as wide as the key, which a click
+                    // copies.
                     Some(key) => {
-                        let copy = if l.copied { tr("Copied!") } else { tr("Copy to Clipboard") };
-                        let body =
-                            column![txt(format_recovery_key(key), 17.0).color(p.strong).center(), txt(copy, 12.0).color(p.on_secondary),]
-                                .spacing(12)
-                                .align_x(Center);
-                        button(container(body).center_x(Fill).padding(16))
-                            .padding(0)
-                            .style(btn_style([p.chip; 3], [p.strong; 3], 12.0))
-                            .on_press(LoginMsg::CopyKey.into())
-                            .into()
+                        let (icon, copy) =
+                            if l.copied { (&crate::COPIED_ICON, tr("Copied!")) } else { (&crate::COPY_ICON, tr("Copy to Clipboard")) };
+                        let code = t(format_recovery_key(key), 28.0, crate::style::display(Weight::Semibold, 28.0));
+                        let copy = row![crate::tinted(icon, 20.0, p.accent), txt(copy, 13.0).color(p.accent)].spacing(8).align_y(Center);
+                        let body = column![code.line_height(lh(36.0)).color(p.strong).center(), copy].spacing(8).align_x(Center);
+                        let card = button(body).padding([12, 16]).style(btn_style([p.chip; 3], [p.strong; 3], 8.0));
+                        container(card.on_press(LoginMsg::CopyKey.into())).center_x(Fill).into()
                     }
                     None => Space::new().height(120).into(),
                 };
                 let next = l.new_key.is_some().then(|| LoginMsg::KeyNext.into());
-                (tr("Save Your Recovery Key"), container(key).padding([24, 18]).into(), next)
+                (tr("Save Your Recovery Key"), container(key).padding([0, 18]).into(), next)
             }
         };
         let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, next, false);
-        column![Space::new().height(40), heading(title, H3), middle, Space::new().height(Fill)]
+        // The key step's heading has no top margin (`fullBleed` only), and `.onboarding-module__content` spaces the
+        // heading, the key and the actions evenly.
+        let saving = l.screen != Screen::ConfirmKey;
+        column![Space::new().height(if saving { 0.0 } else { 40.0 }), heading(title, H3)]
+            .push(saving.then(|| Space::new().height(Fill)))
+            .push(middle)
+            .push(Space::new().height(Fill))
             .push(error)
             .push(actions(vec![warning, next], 24.0))
             .into()
@@ -762,7 +769,7 @@ impl BeeperGuiApp {
         .padding([0, 24]);
         let reset = brand_btn(p, trx("Reset Recovery Key", "button label"), Brand::Danger, LoginMsg::ConfirmReset.into());
         let back = brand_btn(p, trx("Cancel", "button label"), Brand::Muted, LoginMsg::Show(Screen::Verify).into());
-        let title = bold(tr("Reset your Recovery Key"), H3).color(p.text_danger).center().width(Fill);
+        let title = t(tr("Reset your Recovery Key"), H3, crate::style::display(Weight::Bold, H3)).color(p.text_danger).center().width(Fill);
         column![Space::new().height(40), container(title).padding([0, 8]), container(warning).center(Fill)]
             .push(actions(vec![reset, back], 24.0))
             .into()
@@ -1185,5 +1192,20 @@ mod tests {
         let _ = app.update(LoginMsg::Recovered(Err("bad key".into())).into());
         let _ = app.update(LoginMsg::KeyOnFocus(Some(key.into())).into());
         assert!(!app.login.busy, "a key that failed is not submitted again");
+    }
+
+    /// Desktop's `ClippableRecoveryCode` on "Save Your Recovery Key" in the 330 px sign-in window: the key in 28 px
+    /// semibold with the display letter spacing, its line "IJKL-MNOP-QRST" 234.02 px wide from x 47.98, and "Copy to
+    /// Clipboard" in 13 px from x 123.38, 111.23 px wide (measured in Desktop 4.3.308).
+    #[test]
+    fn the_new_recovery_key_shows_like_desktop() {
+        let mut app = crate::fuzz::demo_app("new-key");
+        app.login_window = Some(window::Id::unique());
+        (app.login.screen, app.login.new_key) = (Screen::NewKey, Some("IJKLMNOPQRST".repeat(4)));
+        let mut sim = iced_test::Simulator::with_size(Default::default(), crate::login::SIZE, app.view_login());
+        let key = sim.find(["IJKL-MNOP-QRST"; 4].join("\n")).expect("the key").bounds();
+        let copy = sim.find("Copy to Clipboard").expect("the copy text").bounds();
+        assert!((key.x - 47.98).abs() < 0.5 && (key.width - 234.02).abs() < 0.5, "{key:?}");
+        assert!((copy.x - 123.38).abs() < 0.5 && (copy.width - 111.23).abs() < 0.5, "{copy:?}");
     }
 }

@@ -30,6 +30,7 @@ mod gallery;
 mod gifs;
 #[cfg(target_os = "linux")]
 mod global_keys;
+mod hairline;
 pub mod hotkeys;
 mod i18n;
 mod idle;
@@ -1041,7 +1042,8 @@ fn grouped_rows<'a>(p: &Palette, rows: Vec<El<'a>>) -> El<'a> {
     container(col).width(Fill).clip(true).style(fill_box(p.chip, 8.0)).into()
 }
 
-/// `ls` is Desktop's `--letter-spacing`; its initials also have `margin-right: -1px`. The avatar is drawn at `alpha`.
+/// `ls` is Desktop's `--letter-spacing` of the initials, which their `margin-right` takes back. The avatar is drawn at
+/// `alpha`.
 fn avatar<'a>(name: &str, size: f32, ls: f32, alpha: f32, p: &Palette) -> El<'a> {
     let Some(label) = initials(name) else {
         let shade = fill_box(Color { a: 0.1 * alpha, ..p.strong }, size / 2.0);
@@ -1051,11 +1053,10 @@ fn avatar<'a>(name: &str, size: f32, ls: f32, alpha: f32, p: &Palette) -> El<'a>
     let (top, bottom) = (hex(top).scale_alpha(alpha), hex(bottom).scale_alpha(alpha));
     let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, top).add_stop(1.0, bottom);
     // Desktop's `DefaultAvatar` circle is a `.redacted-region` wherever it shows.
-    let font = crate::style::region(true, || crate::style::redact(crate::style::initials_font()));
-    let white = Color::WHITE.scale_alpha(alpha);
-    let letter = |c: char| txt(c.to_string(), size * 0.5).line_height(1.0).font(font).color(white).into();
-    let trail = Padding::ZERO.right((ls - 1.0).max(0.0)).left((1.0 - ls).max(0.0));
-    container(container(Row::with_children(label.chars().map(letter)).spacing(ls)).padding(trail))
+    let font = crate::style::region(true, || crate::style::redact(spaced(crate::style::initials_font(), ls / (size * 0.5))));
+    // `font-size: 50cqw` of the circle.
+    let label = iced::widget::text(label).size(size * 0.5).line_height(1.0).font(font).color(Color::WHITE.scale_alpha(alpha));
+    container(container(label).padding(Padding::ZERO.left(ls)))
         .center(size)
         .style(move |_: &Theme| container::Style {
             background: Some(Background::Gradient(Gradient::Linear(g))),
@@ -1192,16 +1193,12 @@ async fn clipboard_paste() -> Result<Clip, String> {
     tokio::task::spawn_blocking(read).await.expect("clipboard task")
 }
 
+/// Desktop's `GroupAvatar` people: the `activeParticipants` (without the members that left) other than the user, in
+/// Desktop's order (`J_e`), all of them up to five, else the first four and the count of the rest. A direct chat
+/// shows the first one.
 fn faces_of(users: &[User], group: bool) -> (Vec<&User>, usize) {
-    let mut others: Vec<&User> = users.iter().filter(|u| u.is_self != Some(true)).collect();
-    let name = |u: &User| {
-        [&u.custom_nickname, &u.full_name, &u.username, &u.email, &u.phone_number]
-            .into_iter()
-            .find_map(|n| n.as_deref().filter(|n| !n.is_empty()))
-            .unwrap_or(&u.id)
-            .to_lowercase()
-    };
-    others.sort_by_cached_key(|u| (u.is_network_bot == Some(true), u.is_admin != Some(true), name(u)));
+    let mut others: Vec<&User> = users.iter().filter(|u| u.is_self != Some(true) && u.has_exited != Some(true)).collect();
+    others.sort_by(|a, b| member_order(a, b));
     let more = if group && others.len() > 5 { others.len() - 4 } else { 0 };
     let shown = if group { others.len() - more } else { others.len().min(1) };
     (others.into_iter().take(shown).collect(), more)
@@ -1398,6 +1395,8 @@ macro_rules! svg_static {
     };
 }
 
+// Desktop's `Link` icon (`be name="link"`) of a link preview's host.
+svg_static!(LINK_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M12.357 13.536 10 15.893q-1.223 1.222-2.946 1.222t-2.947-1.222q-1.222-1.224-1.222-2.947T4.107 10l2.357-2.357 1.179 1.179-2.357 2.357a2.4 2.4 0 0 0-.737 1.767q0 1.032.737 1.768.736.737 1.768.737 1.03 0 1.767-.737l2.358-2.357zm-4.125-.59-1.178-1.178 4.714-4.714 1.178 1.178zm5.304-.589-1.179-1.178 2.357-2.357a2.4 2.4 0 0 0 .737-1.768 2.4 2.4 0 0 0-.737-1.768 2.4 2.4 0 0 0-1.768-.737q-1.03 0-1.767.737L8.82 7.643 7.643 6.464 10 4.107q1.223-1.222 2.946-1.222t2.947 1.222q1.222 1.224 1.222 2.947T15.893 10z"/></svg>"##);
 // Desktop's `ExternalLinkIcon`, after the network of Chat Info.
 svg_static!(EXTERNAL_LINK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><path d="M1 7L7 1M7 1V5.5M7 1H2.5" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
@@ -3301,19 +3300,13 @@ impl BeeperGuiApp {
         let matrix = ("hungryserv".to_string(), beeper_core::matrix::matrix_capabilities());
         let resolve = resolve.chain([matrix]).collect();
         drop(st);
-        let sidebar_width = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-width")) {
-            Ok(w) => w.parse().expect("a numeric sidebar width"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => SIDEBAR_WIDTH,
-            Err(e) => panic!("read the sidebar width: {e}"),
-        };
+        // A saved value that does not read or parse, like one edited by hand, gives the default instead of no start.
+        let saved = |name: &str| std::fs::read_to_string(store.read().config.data_dir.join(name)).ok();
+        let sidebar_width = saved("sidebar-width").and_then(|w| w.trim().parse().ok()).unwrap_or(SIDEBAR_WIDTH);
         let thread_fraction = threads::saved_thread_fraction(&store.read().config.data_dir);
         let filters = chat_list::saved_filters(&store.read().config.data_dir);
         let audio = voice::Player::new(&store.read().config.data_dir);
-        let sidebar_hidden = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-hidden")) {
-            Ok(h) => h.parse().expect("a boolean sidebar-hidden"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => panic!("read sidebar-hidden: {e}"),
-        };
+        let sidebar_hidden = saved("sidebar-hidden").and_then(|h| h.trim().parse().ok()).unwrap_or(false);
         let quit_on_close = store.read().settings.on("quitOnClose");
         let mut app = with_defaults!(Self {
             pane: Pane { size: MAIN_SIZE, ..Pane::default() },
@@ -6776,12 +6769,21 @@ pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 /// GNOME's `text-scaling-factor` on Wayland, as the bits of an `f32`, which Chromium applies to the whole of each
 /// window like a zoom, the size of the window included: Desktop's device scale is the screen's times it. On X11 the
 /// scale of the window already has it, from `Xft.dpi`.
+#[cfg(not(test))]
 static TEXT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+// The tests run at once, each on its own thread with its own text scaling, so that a test that changes it changes the
+// title bars and windows of no other test.
+#[cfg(test)]
+thread_local!(static TEXT_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) });
 
 /// Takes GNOME's text scaling, at launch and when it changes; the windows follow it once [`FRAME_READY`] wakes them.
 pub fn set_text_scale(scale: f32) {
     if scale.is_finite() && scale > 0.0 {
+        #[cfg(not(test))]
         TEXT_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        TEXT_SCALE.set(scale);
     }
 }
 
@@ -6840,8 +6842,14 @@ fn window_events() -> Subscription<UiMessage> {
 }
 
 /// [`TEXT_SCALE`].
+#[cfg(not(test))]
 fn text_scale() -> f32 {
     f32::from_bits(TEXT_SCALE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+#[cfg(test)]
+fn text_scale() -> f32 {
+    TEXT_SCALE.get()
 }
 
 /// People, each with the account to reach them on.

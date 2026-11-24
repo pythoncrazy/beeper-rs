@@ -1336,7 +1336,7 @@ impl BeeperGuiApp {
             .on_link_click(|m: UiMessage| m)
             .size(rem(11.0))
             .line_height(iced::widget::text::LineHeight::Absolute(rem(14.0).into()))
-            .width(crate::style::balanced_width(&plain, 278.0, 11.0))
+            .width(crate::style::balanced_width(&plain, 278.0, 11.0, 0.0))
             .center();
         container(terms).center_x(Fill).into()
     }
@@ -1378,8 +1378,9 @@ impl BeeperGuiApp {
         let focused = l.stop() == Some(Stop::Field);
         let slots = row((0..6).map(|i| {
             let ink = if error { ON_ERROR } else { p.strong };
-            let digit: Option<El<'_>> =
-                l.code.chars().nth(i).map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(rem(36.0))).color(ink).into());
+            let digit: Option<El<'_>> = l.code.chars().nth(i).map(|c| {
+                t(c.to_string(), 28.0, crate::style::display(Weight::Semibold, 28.0)).line_height(iced::Pixels(rem(36.0))).color(ink).into()
+            });
             let at = focused && i == l.slot;
             let caret = (at && i >= l.code.len()).then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
             let edge = match (error, at) {
