@@ -1514,8 +1514,6 @@ static CLOSE_SMALL: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(
 static ERRORED: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><path fill="#000" d="M5.9962 9.41198C6.17045 9.41198 6.31771 9.35304 6.438 9.23518C6.55828 9.1173 6.61842 8.97124 6.61842 8.797C6.61842 8.62275 6.55949 8.47549 6.44162 8.3552C6.32375 8.23492 6.17769 8.17478 6.00345 8.17478C5.8292 8.17478 5.68193 8.23371 5.56165 8.35158C5.44137 8.46946 5.38123 8.61551 5.38123 8.78975C5.38123 8.964 5.44016 9.11127 5.55802 9.23155C5.6759 9.35183 5.82196 9.41198 5.9962 9.41198ZM5.38123 6.93758H6.61842V2.49709H5.38123V6.93758Z"/><circle cx="6" cy="6" r="5.375" stroke="#000" fill="none" stroke-width="1.25"/></svg>"##[..])
 });
-/// Desktop's `--error-color` of the errored icon of a chat row.
-const ERROR_COLOR: Color = Color::from_rgb8(0xf4, 0x43, 0x36);
 
 static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
     [
@@ -6478,11 +6476,11 @@ impl BeeperGuiApp {
         let id = &chat.id;
         let block = (st.can_block(chat) && !st.user_blocked(chat)).then(|| {
             let label = trx("Block", "action to block the other person in a DM");
-            pill(label, hex(0xdc362e), UiMessage::Blocking(blocking::Msg::Ask(id.clone(), true)))
+            pill(label, ON_ERROR, UiMessage::Blocking(blocking::Msg::Ask(id.clone(), true)))
         });
         let buttons = row![]
             .push(block)
-            .push(decline.then(|| pill(tr("Decline"), hex(0xdc362e), UiMessage::ChatList(chat_list::Msg::Delete(id.clone(), false)))))
+            .push(decline.then(|| pill(tr("Decline"), ON_ERROR, UiMessage::ChatList(chat_list::Msg::Delete(id.clone(), false)))))
             .push(accept.then(|| pill(tr("Accept"), p.strong, UiMessage::ChatList(chat_list::Msg::AcceptRequest(id.clone())))))
             .spacing(8);
         let body = column![heading, buttons].spacing(8).align_x(Center);

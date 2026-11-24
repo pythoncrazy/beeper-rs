@@ -360,7 +360,7 @@ impl BeeperGuiApp {
             let warning = tr("<strong>Warning: This is a permanent action.</strong> When you delete your account:");
             let (strong, rest) = warning.trim_start_matches("<strong>").split_once("</strong>").expect("a bold warning");
             let item = |t: &'static str| {
-                row![ic(icon::CLOSE, 14.0).color(p.danger), txt(tr(t), 13.0).color(p.text)].spacing(8).align_y(Center).into()
+                row![ic(icon::CLOSE, 14.0).color(p.text_danger), txt(tr(t), 13.0).color(p.text)].spacing(8).align_y(Center).into()
             };
             let content = column![
                 bold(tr("Delete account"), 17.0).color(p.strong),
@@ -374,7 +374,7 @@ impl BeeperGuiApp {
                 txt(trf("To confirm, type your username %s below.", &[&username]), 13.0).color(p.text),
                 input(typed, "", Box::new(|v| UiMessage::Profile(Msg::Delete(Some(v))))).on_submit(UiMessage::Profile(Msg::ConfirmDelete)),
             ]
-            .push(error.as_ref().map(|e| txt(e.clone(), 12.0).color(p.danger)))
+            .push(error.as_ref().map(|e| txt(e.clone(), 12.0).color(p.text_danger)))
             .push(buttons(*busy, UiMessage::Profile(Msg::Delete(None)), tr("Delete account"), ok, true))
             .spacing(12);
             return Some(card(content.into(), 360.0, UiMessage::Profile(Msg::Delete(None))));
@@ -397,7 +397,7 @@ impl BeeperGuiApp {
                 field("New Email", new, "Enter your new email", 1),
                 field("Confirm New Email", again, "Confirm your new email", 2),
             ]
-            .push(error.as_ref().map(|e| txt(e.clone(), 12.0).color(p.danger)))
+            .push(error.as_ref().map(|e| txt(e.clone(), 12.0).color(p.text_danger)))
             .push(buttons(
                 *busy,
                 UiMessage::Profile(Msg::CloseEmail),
@@ -422,7 +422,7 @@ impl BeeperGuiApp {
                     UiMessage::Profile(Msg::KeyPaste),
                 );
                 let content = column![semi(heading, 15.0).color(p.strong), input]
-                    .push(error.as_ref().map(|e| txt(e.clone(), 11.0).color(p.danger)))
+                    .push(error.as_ref().map(|e| txt(e.clone(), 11.0).color(p.text_danger)))
                     .spacing(12)
                     .align_x(Center);
                 return Some(card(content.into(), 350.0, close));

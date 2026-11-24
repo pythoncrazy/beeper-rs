@@ -842,10 +842,11 @@ impl BeeperGuiApp {
         let mute = setting(icon::NOTIFICATIONS_OFF, trx("Mute", "label setting"), mute);
         let settings =
             column![setting(icon::INBOX, tr("Show in Inbox"), pill), rule, target("mute", mute, Keys::checkbox(flip), ring(-2.0, 16.0))];
-        let delete = button(container(txt(tr("Delete Label"), 13.0).color(p.danger)).center_y(24))
+        // `.LabelSettings-module__dangerRow`: `--color-text-danger` on `--semantic-colors-bg-fill-primary`.
+        let delete = button(container(txt(tr("Delete Label"), 13.0).color(p.text_danger)).center_y(24))
             .padding([8, 12])
             .width(Fill)
-            .style(btn_style([p.chip; 3], [p.danger; 3], 16.0))
+            .style(btn_style([p.fill_primary; 3], [p.text_danger; 3], 16.0))
             .on_press(pane(LabelPane::Delete));
         let delete = target("delete", delete.into(), Keys::press(pane(LabelPane::Delete)), ring(-2.0, 16.0));
         let body = column![
@@ -1568,24 +1569,25 @@ impl BeeperGuiApp {
         let edit = move |e| UiMessage::Poll(id, e);
         // The `:focus-visible` rings of the Poll Creator: 2 px of `--color-primary` at an `outline-offset`.
         let ring = |offset, radius| Look::Outline { color: p.accent, width: 2.0, offset, radius };
-        let weak = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
-        let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(weak, 0.0));
+        // The labels, placeholders, drag handles and hint are `--color-on-surface-variant`, the rules
+        // `--color-border-translucent-weak`.
+        let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(p.border_weak, 0.0));
         let card = |c: Column<'a, UiMessage>| container(c).width(Fill).clip(true).style(fill_box(p.received, 12.0));
-        let section = |label: &'static str, items: Vec<El<'a>>| column![semi(tr(label), 12.0).color(p.sub)].extend(items).spacing(8);
+        let section = |label: &'static str, items: Vec<El<'a>>| column![semi(tr(label), 12.0).color(p.muted)].extend(items).spacing(8);
         let question = text_input(tr("Ask a question…"), &d.question)
             .id(format!("poll-{}", d.chat))
             .on_input(move |q| edit(PollEdit::Question(q.chars().take(500).collect())))
             .size(rem(15.0))
             .line_height(lh(20.0))
             .padding([10, 11])
-            .style(input_style(p.received, p.strong, p.sub, p.accent, 10.0));
+            .style(input_style(p.received, p.strong, p.muted, p.accent, 10.0));
         let repeats = d.repeats(rules);
         let length = usize::from(rules.max_length);
         let mut options = Column::new();
         for (i, (_, value)) in d.options.iter().enumerate() {
             let fade = if d.dragging == Some(i) { 0.5 } else { 1.0 };
             let grab = if d.dragging.is_some() { mouse::Interaction::Grabbing } else { mouse::Interaction::Grab };
-            let handle = mouse_area(tinted(&DRAG_HANDLE, 18.0, p.sub.scale_alpha(fade))).on_press(edit(PollEdit::Grab(Some(i))));
+            let handle = mouse_area(tinted(&DRAG_HANDLE, 18.0, p.muted.scale_alpha(fade))).on_press(edit(PollEdit::Grab(Some(i))));
             let input = text_input(&trf("Option %d", &[&(i + 1)]), value)
                 .id(d.input(i))
                 .on_input(move |v| edit(PollEdit::Option(i, v.chars().take(length).collect())))
@@ -1593,13 +1595,13 @@ impl BeeperGuiApp {
                 .size(rem(14.0))
                 .line_height(lh(18.0))
                 .padding([8, 0])
-                .style(input_style(CLEAR, p.strong.scale_alpha(fade), p.sub, p.accent, 0.0));
-            let error = repeats[i].then(|| txt(tr("This option already exists"), 11.0).color(p.danger));
+                .style(input_style(CLEAR, p.strong.scale_alpha(fade), p.muted, p.accent, 0.0));
+            let error = repeats[i].then(|| txt(tr("This option already exists"), 11.0).color(DELETE_RED));
             // `.PollCreator-module__removeOption:focus-visible` shows the button with a 2 px ring 2 px outside it.
             let remove = (d.options.len() > 2).then(|| {
                 let key = format!("remove-{i}");
                 let shown = d.hovered == Some(i) || self.key_held(Some(id), &key);
-                let red = p.danger.scale_alpha(f32::from(u8::from(shown)));
+                let red = DELETE_RED.scale_alpha(f32::from(u8::from(shown)));
                 let hover = Color::from_rgba8(0xff, 0x14, 0x16, 0x20 as f32 / 255.0);
                 let b = button(container(tinted(&DELETE, 16.0, red)).center(28))
                     .padding(0)
@@ -1627,7 +1629,7 @@ impl BeeperGuiApp {
                 0 => tr("You have added the maximum number of options").into(),
                 _ => trn("You can enter %d more option", "You can enter %d more options", left, &[&left]),
             };
-            txt(hint, 11.0).color(p.sub)
+            txt(hint, 11.0).color(p.muted)
         });
         // Desktop's `<label>` rows around a `Toggle`, which Space flips, with `.PollCreator-module__settingRow:has(
         // :focus-visible)`: a 2 px `--app-focus-ring` outline 2 px inside the row.

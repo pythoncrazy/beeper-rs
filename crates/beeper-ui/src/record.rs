@@ -381,7 +381,7 @@ impl BeeperGuiApp {
                 (format!("{}/{}", voice::clock(pos), voice::clock(c.secs())), wave.into(), Some(play.into()))
             }
             None => {
-                let dot = container(Space::new()).width(6).height(6).style(fill_box(hex(0xdc362e), 3.0));
+                let dot = container(Space::new()).width(6).height(6).style(fill_box(ON_ERROR, 3.0));
                 (voice::clock(secs), Element::new(Live(&r.0, wave)), Some(dot.into()))
             }
         };
