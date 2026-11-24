@@ -1515,8 +1515,9 @@ impl BeeperGuiApp {
         let title = ell(short_title(c), title_w, 12.0, Weight::Semibold);
         let label = row![]
             .push(dot)
-            .push(title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(rem(15.0).into())))
-            .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.strong)))
+            // The heading inherits the body's `--color-text-neutrals`.
+            .push(title.color(p.text).line_height(iced::widget::text::LineHeight::Absolute(rem(15.0).into())))
+            .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.text)))
             .spacing(3.2)
             .align_y(Center);
         let unread = match (st.typing.contains_key(&c.id), l.counts) {
@@ -1736,8 +1737,9 @@ impl BeeperGuiApp {
         row![]
             .push(pin_icon)
             .push(ell(&title, l.text_w - ts_w - bell - pin_w, l.title_size, weight).color(p.fg.scale_alpha(0.9)))
-            .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
-            .push(snoozed.map(|_| container(tinted(&MOON_STARS, 12.0, p.strong)).padding([0, 2])))
+            // `.header`'s 0.25rem gaps, and the icons in the row's `--color-text-translucent`.
+            .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.fg.scale_alpha(0.9))).padding(Padding::ZERO.left(4.0))))
+            .push(snoozed.map(|_| container(tinted(&MOON_STARS, 12.0, p.fg.scale_alpha(0.9))).padding(Padding::ZERO.left(4.0))))
             .push(Space::new().width(Fill))
             .push(later.then(|| tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))))
             .push(
