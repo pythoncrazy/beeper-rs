@@ -3284,8 +3284,9 @@ impl BeeperGuiApp {
     pub(crate) fn view_file_row<'a>(&'a self, m: &Message, ai: usize, a: &Attachment, timer: Option<String>) -> El<'a> {
         let p = &self.pal;
         let meta = file_label(a).into_iter().chain(a.file_size.map(human_size)).collect::<Vec<_>>();
-        let timer = timer.map(|label| self.tip(tinted(&TIMER, 10.0, p.sub), label, vec![], tooltip::Position::Left));
-        let details = (!meta.is_empty()).then(|| txt(meta.join(" · "), 11.0).color(p.sub));
+        // `.AttachmentFileRow-module__meta` is `--color-text-neutrals-weak`, the rest of the row `--color-text-neutrals`.
+        let timer = timer.map(|label| self.tip(tinted(&TIMER, 10.0, p.weak), label, vec![], tooltip::Position::Left));
+        let details = (!meta.is_empty()).then(|| txt(meta.join(" · "), 11.0).color(p.weak));
         let details = (details.is_some() || timer.is_some()).then(|| row![].push(details).push(timer).spacing(4).align_y(Center));
         let name = attachment_name(a);
         let info = column![clamp(&name, 186.0, 2, 13.0, Weight::Semibold).line_height(lh(16.0))].push(details).spacing(4);
@@ -3297,7 +3298,7 @@ impl BeeperGuiApp {
             }
             // Desktop's `onOpenPreview`: a PDF opens in the carousel.
             FileState::Ready => (
-                tinted(file_icon(a), 24.0, p.strong),
+                tinted(file_icon(a), 24.0, p.text),
                 Some(match a.src_url.is_some() && crate::pdf::is_pdf(a) {
                     true => UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)),
                     false => UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))),
@@ -3306,7 +3307,7 @@ impl BeeperGuiApp {
         };
         let line = row![icon, info].spacing(8).align_y(Center);
         // The disabled row of a fetching file keeps its colors.
-        let style = btn_style([p.link_card; 3], [p.strong; 3], 17.0);
+        let style = btn_style([p.link_card; 3], [p.text; 3], 17.0);
         let style = move |t: &Theme, s| style(t, if s == button::Status::Disabled { button::Status::Active } else { s });
         button(container(line).max_width(240.0 - 2.0 * BUBBLE_PAD_X)).padding([8, 11]).style(style).on_press_maybe(press).into()
     }
@@ -5807,13 +5808,21 @@ pub(crate) mod tests {
     #[test]
     fn attachment_fills_like_desktop() {
         let mut app = crate::fuzz::demo_app("attachment-fills");
-        app.dark = true;
-        app.pal = crate::style::palette(true, None, 0);
         let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+        (app.dark, app.pal) = (true, crate::style::palette(true, None, 0));
         let shot = pixels(&mut alone(&app, "msg_1003"));
         let count = |c: Color| shot.pixels().filter(|px| px.0 == c.into_rgba8()).count();
         assert!(count(app.pal.link_card) > 20_000, "the voice note and the file row: {}", count(app.pal.link_card));
         assert_eq!(count(app.pal.received), 0, "no text bubble color");
+        // The name and icon of the row are `--color-text-neutrals`, its details `--color-text-neutrals-weak`.
+        let mut sim = alone(&app, "msg_1003");
+        let mut ink = |s: &str, c: Color| {
+            let b = sim.find(s).expect(s).bounds();
+            let (x, y) = ((2.0 * b.x) as u32, (2.0 * b.y) as u32);
+            let pxs = (x..x + (2.0 * b.width) as u32).flat_map(|x| (y..y + (2.0 * b.height) as u32).map(move |y| (x, y)));
+            pxs.map(|(x, y)| shot.get_pixel(x, y).0).max_by_key(|px| px[0]) == Some(c.into_rgba8())
+        };
+        assert!(ink("beeper-v4-spec.pdf", app.pal.text) && ink("PDF · 125.5 KB", app.pal.weak));
     }
 
     /// A still that is much larger than its box shows from a cut of its box that a worker bakes, like Chromium's
