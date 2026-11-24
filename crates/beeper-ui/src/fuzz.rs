@@ -9141,6 +9141,27 @@ fn new_chat_groups_follow_bridge_capabilities_like_desktop() {
     assert!(!found(&app, "New Group"), "no bridge can create groups");
 }
 
+/// Desktop's `GroupAvatar` shows the `activeParticipants` other than the user in Desktop's order (`J_e`, names by
+/// `localeCompare`), the first one the largest: Bob, Émile, Zoe, and no member that left.
+#[test]
+fn group_avatars_pick_members_like_desktop() {
+    let app = demo_app("group-faces");
+    let mut chat = app.store.read().chats.iter().find(|c| c.chat_type == "group").expect("a group").clone();
+    let user = |id: &str, name: &str| User { id: id.into(), full_name: Some(name.into()), ..User::default() };
+    chat.img_url = None;
+    chat.participants.items = vec![
+        User { is_self: Some(true), ..user("@me:x", "Me") },
+        user("@z:x", "Zoe"),
+        user("@e:x", "Émile"),
+        user("@b:x", "Bob"),
+        User { has_exited: Some(true), ..user("@x:x", "Xena") },
+    ];
+    let mut sim = Simulator::with_size(Default::default(), Size::new(100.0, 100.0), app.chat_avatar(&chat, 92.0, 1.25));
+    assert!(sim.find("X").is_err(), "a member that left");
+    let [b, e, z] = ["B", "É", "Z"].map(|s| sim.find(s).expect(s).bounds().height);
+    assert!(b > e && e > z, "the slots of Bob, Émile and Zoe: {b} {e} {z}");
+}
+
 /// Desktop's `GroupTitleBar` avatar and `T$t`: a bridge whose groups need an avatar starts one only with a picked
 /// image, and its `max_length` stops the picks with Desktop's toast.
 #[test]

@@ -457,7 +457,7 @@ impl User {
     pub fn sort_name(&self) -> &str {
         [&self.custom_nickname, &self.full_name, &self.username, &self.email, &self.phone_number]
             .into_iter()
-            .find_map(|n| n.as_deref())
+            .find_map(|n| n.as_deref().filter(|n| !n.is_empty()))
             .unwrap_or(&self.id)
     }
 
@@ -476,17 +476,19 @@ impl User {
 }
 
 /// `String.prototype.localeCompare` of the root locale, near enough for names: case-insensitive, with punctuation and
-/// spaces before digits before letters, and lowercase before uppercase on a tie.
+/// spaces before digits before letters, accents only on a tie ("Emile" < "Émile" < "Zoe"), and lowercase before
+/// uppercase on a tie.
 pub fn locale_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let key = |s: &str| -> Vec<(u8, char)> {
+    use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+    let key = |s: &str, marks: bool| -> Vec<(u8, char)> {
         let class = |c: char| match c {
             _ if c.is_alphabetic() => 2,
             _ if c.is_numeric() => 1,
             _ => 0,
         };
-        s.chars().map(|c| (class(c), c.to_lowercase().next().unwrap_or(c))).collect()
+        s.nfd().filter(|&c| marks || !is_combining_mark(c)).map(|c| (class(c), c.to_lowercase().next().unwrap_or(c))).collect()
     };
-    key(a).cmp(&key(b)).then_with(|| b.cmp(a))
+    key(a, false).cmp(&key(b, false)).then_with(|| key(a, true).cmp(&key(b, true))).then_with(|| b.cmp(a))
 }
 
 /// Desktop's `t_`: the order of the participants of a chat. Admins first, then the others, pending and exited members
