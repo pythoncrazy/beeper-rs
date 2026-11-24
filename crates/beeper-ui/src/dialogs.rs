@@ -1516,7 +1516,7 @@ impl BeeperGuiApp {
         let poll = st.loaded(mid).and_then(|m| m.poll.as_ref());
         let Some(poll) = poll else { return container(Space::new()).style(fill_box(p.window, 0.0)).into() };
         let people = st.resolve_chat_idx(chat).map_or(&[][..], |i| &st.chats[i].participants.items[..]);
-        let weak = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
+        let weak = p.border_weak;
         let total = poll.voters();
         let question = if poll.question.is_empty() { tr("Poll").into() } else { poll.question.clone() };
         let mut body = column![semi(question, 17.0).line_height(lh(24.0)).color(p.strong)].spacing(10).padding(16);

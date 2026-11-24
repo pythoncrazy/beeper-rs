@@ -1083,8 +1083,6 @@ palette! {
     prefs_group: Color = hex(0xffffff), hex(0x1c1c1c);
     /// `--color-border-neutrals-weak`.
     prefs_border: Color = hex(0xededed), hex(0x282828);
-    /// `--color-border-neutrals`.
-    neutral_border: Color = hex(0xe2e2e2), hex(0x343434);
     /// `--color-on-surface` at 0.05: the Settings search field.
     search: Color = hexa(0x202124, 0.05), hexa(0xf6f6f6, 0.05);
     /// `--color-secondary-container`.
