@@ -922,7 +922,7 @@ impl BeeperGuiApp {
                 .flatten()
                 .collect()
         };
-        let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { 11.0 - menu_pitch() } else { 0.0 };
+        let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { MENU_RULE - menu_pitch() } else { 0.0 };
         let h = 8.0 + items.len() as f32 * menu_pitch() + rules;
         let width = if which == 0 { SUB_MENU_W[1] } else { 233.0 };
         let menu = container(Column::with_children(items).padding([4, 0])).width(width).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -1192,7 +1192,7 @@ impl BeeperGuiApp {
             }
         };
         let labels = st.feature("labels-v2").on;
-        let h = 8.0 + items.len() as f32 * menu_pitch() - rules * (menu_pitch() - 11.0);
+        let h = 8.0 + items.len() as f32 * menu_pitch() - rules * (menu_pitch() - MENU_RULE);
         let top = match i {
             0 => 4.0 * menu_pitch(),
             1 if labels => 8.0 * menu_pitch() + 22.0,
