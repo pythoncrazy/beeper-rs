@@ -6487,6 +6487,32 @@ fn rail_spaces_scroll_between_the_top_padding_and_the_footer_like_desktop() {
     assert!(!inked(&mut sim).any(|y| y < 14), "nothing scrolls into the 14 px above the list");
 }
 
+/// The ink of the signed-in Desktop's chat list header icons at 1200x800: each Material icon fills its box at
+/// `scale(1.2)`, so the Filter, Search and New Chat paths cover (228.7, 21.8, 12.6, 8.4), (258.5, 18, 15.6, 15.6) and
+/// (291.9, 16.8, 16.3, 16.3).
+#[test]
+fn list_header_icons_cover_desktop_paths() {
+    let app = demo_app("header-icons");
+    let main = app.main_window.expect("the main window");
+    let size = Size::new(1200.0, 800.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view(main));
+    let shot = crate::message::tests::pixels(&mut sim);
+    let k = shot.width() as f32 / size.width;
+    // The box of the pixels at least half as dark as the icon, which is #202124 on the #eaebf0 list.
+    let ink = |[x, y, w, h]: [f32; 4]| {
+        let half = |px: &::image::Rgba<u8>| px.0[0] < 0x85;
+        let (x0, y0, x1, y1) = (((x - 3.0) * k) as u32, ((y - 3.0) * k) as u32, ((x + w + 3.0) * k) as u32, ((y + h + 3.0) * k) as u32);
+        let cols: Vec<u32> = (x0..x1).filter(|&i| (y0..y1).any(|j| half(shot.get_pixel(i, j)))).collect();
+        let rows: Vec<u32> = (y0..y1).filter(|&j| (x0..x1).any(|i| half(shot.get_pixel(i, j)))).collect();
+        let (l, t) = (cols[0] as f32 / k, rows[0] as f32 / k);
+        [l, t, (cols[cols.len() - 1] + 1) as f32 / k - l, (rows[rows.len() - 1] + 1) as f32 / k - t]
+    };
+    for want in [[228.7, 21.8, 12.6, 8.4], [258.5, 18.0, 15.6, 15.6], [291.9, 16.8, 16.3, 16.3]] {
+        let got = ink(want);
+        assert!((0..4).all(|i| (got[i] - want[i]).abs() <= 0.5), "{got:?} for Desktop's {want:?}");
+    }
+}
+
 /// Desktop's `.btn-ghost:active svg`: the pressed Search and New Chat icons of the chat list header turn
 /// `--color-icon-translucent-strong`, black at 0.9, from the `--color-on-surface` #202124 of `.tab-bar-btn button svg`.
 #[test]
