@@ -61,6 +61,30 @@ pub fn draw(
     }
 }
 
+/// Fills the pixels of `area` in `dst` with `pixel`, the bytes of an opaque
+/// premultiplied color.
+pub fn fill(
+    dst: &mut tiny_skia::PixmapMut<'_>,
+    area: crate::core::Rectangle<u32>,
+    pixel: [u8; 4],
+) {
+    let width = dst.width() as usize;
+    let (x0, x1) = (area.x as usize, ((area.x + area.width) as usize).min(width));
+    let rows: &mut [[u8; 4]] = bytemuck::cast_slice_mut(dst.data_mut());
+
+    if x0 >= x1 {
+        return;
+    }
+
+    for row in rows
+        .chunks_exact_mut(width)
+        .skip(area.y as usize)
+        .take(area.height as usize)
+    {
+        row[x0..x1].fill(pixel);
+    }
+}
+
 /// `s` over `d`, with `s` scaled by `coverage` out of 255.
 #[inline(always)]
 fn over(s: &[u8], d: &mut [u8], coverage: u32) {
