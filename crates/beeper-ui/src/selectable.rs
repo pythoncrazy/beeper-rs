@@ -157,7 +157,7 @@ impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
     /// The frame of an image that is due now.
     fn frame(&self, frames: &[crate::anim::Frame]) -> core_image::Handle {
         match self.playing.filter(|_| frames.len() > 1) {
-            Some(start) => crate::anim::frame(frames, start.elapsed().as_millis()).0.clone(),
+            Some(start) => crate::anim::frame(frames, crate::anim::since(start).as_millis()).0.clone(),
             None => frames[0].0.clone(),
         }
     }
