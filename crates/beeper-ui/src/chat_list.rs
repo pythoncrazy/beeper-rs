@@ -1906,10 +1906,9 @@ fn media_chip<'a>(p: &Palette, icon: usize, label: &'a str, expired: bool, fg: C
     }
     let glyph = tinted(tag_glyph(icon), 12.0, fg);
     let label = med(label, 10.0).color(fg);
-    container(row![glyph, container(label).padding([0, 2])].align_y(Center))
-        .padding([1, 2])
-        .style(fill_box(p.strong.scale_alpha(0.105), 4.0))
-        .into()
+    let chip = container(row![glyph, container(label).padding([0, 2])].align_y(Center));
+    // `.ThreadPreviewTag-module__tag`'s 1 px top margin keeps it 1 px under the top of its 16 px line.
+    container(chip.padding([1, 2]).style(fill_box(p.strong.scale_alpha(0.105), 4.0))).padding(Padding::ZERO.top(1.0).bottom(1.0)).into()
 }
 
 /// The text of a chat row's preview in `lines` lines of `width`, with the emoji font when it has emoji.
