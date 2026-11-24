@@ -3869,6 +3869,7 @@ fn integrations_like_desktop() {
 
 #[test]
 fn approve_connection_like_desktop() {
+    use crate::modals::Modal;
     use beeper_core::connect::{ClientInfo, Outcome};
     let mut app = demo_app("approve");
     let ask = |app: &mut BeeperGuiApp, version: Option<&str>| {
@@ -3878,7 +3879,11 @@ fn approve_connection_like_desktop() {
         (id, rx)
     };
     let (_, mut rx) = ask(&mut app, Some("1.2"));
-    let mut sim = simulator(app.view_main());
+    // Desktop's `modal-6` window over the main window, titled with the app's name.
+    let window = app.modal_window(Modal::TokenRequest).expect("the request opens its window");
+    assert_eq!(app.title(window), "Beeper");
+    assert!(simulator(app.view_main()).find("Approve connection").is_err(), "nothing over the main window");
+    let mut sim = simulator(app.view_modal(Modal::TokenRequest));
     for label in ["Approve connection", "Allow sensitive actions", "Expires in", "Decline", "Approve"] {
         assert!(sim.find(label).is_ok(), "{label} shows");
     }
@@ -3896,18 +3901,23 @@ fn approve_connection_like_desktop() {
     assert_eq!(rx.try_recv().unwrap(), None, "Decline rejects the request");
     let (id, _) = ask(&mut app, None);
     let _ = app.update(UiMessage::Integrations(integrations::Msg::Request(id, Some(Outcome::Timeout))));
-    assert!(simulator(app.view_main()).find("The request has timed out.").is_ok());
+    assert!(simulator(app.view_modal(Modal::TokenRequest)).find("The request has timed out.").is_ok());
+    assert_eq!(app.modals.len(), 1, "later requests take over the open window");
     let _ = app.update(UiMessage::Integrations(integrations::Msg::Close));
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(window)));
     assert!(app.token_ask.is_none());
 }
 
 #[test]
 fn approved_connections_like_desktop() {
+    use crate::modals::Modal;
     let mut app = demo_app("connections");
     let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Integrations)));
     assert!(simulator(app.view_settings()).find("Add a connection to get started").is_ok());
     let _ = app.update(UiMessage::Integrations(integrations::Msg::Add(true)));
-    let mut sim = simulator(app.view_settings());
+    let window = app.modal_window(Modal::AddToken).expect("the + opens its window");
+    assert!(simulator(app.view_settings()).find("Create Access Token").is_err(), "nothing over Settings");
+    let mut sim = simulator(app.view_modal(Modal::AddToken));
     for label in ["Name (optional)", "Expires In", "Allow sensitive actions", "Create Access Token"] {
         assert!(sim.find(label).is_ok(), "{label} shows");
     }
@@ -3917,11 +3927,14 @@ fn approved_connections_like_desktop() {
     let _ = app.update(UiMessage::Integrations(integrations::Msg::AddExpiry(Expiry(0))));
     let _ = app.update(UiMessage::Integrations(integrations::Msg::Create));
     let token = app.integrations.add.as_ref().unwrap().token.clone().expect("the token shows once");
-    assert!(simulator(app.view_settings()).find(token.as_str()).is_ok());
+    assert!(simulator(app.view_modal(Modal::AddToken)).find(token.as_str()).is_ok());
     let stored = app.store.read().connect.validate(&token, "", "").expect("the token works");
     assert!(stored.scopes == ["read", "write"] && stored.expires_at.is_none());
-    let _ = app.update(UiMessage::WindowKey(app.settings_window.unwrap(), Key::Named(Named::Escape), Modifiers::empty()));
-    assert!(app.integrations.add.is_none() && app.settings_window.is_some(), "Escape closes only the dialog");
+    // Desktop's `handleEscape` closes no `ADD_BEEPER_CONNECT_TOKEN` window, so it closes with its window.
+    let _ = app.update(UiMessage::WindowKey(window, Key::Named(Named::Escape), Modifiers::empty()));
+    assert!(app.modal_window(Modal::AddToken).is_some(), "Escape keeps the window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(window)));
+    assert!(app.integrations.add.is_none() && app.settings_window.is_some());
     let mut sim = simulator(app.view_settings());
     for label in ["Script", "Sensitive actions", "Created less than a minute ago · Never expires"] {
         assert!(sim.find(label).is_ok(), "{label} shows");
