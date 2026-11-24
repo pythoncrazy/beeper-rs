@@ -3876,12 +3876,12 @@ mod tests {
     fn activity_scores_like_desktop() {
         use super::Activity;
         let (day, e) = (86_400_000, std::f64::consts::E);
-        let mut a = Activity::default();
-        a.record(Activity::SEND, 0);
-        assert!((a.score(0) - (0.6 + 0.4 * 0.25f64.tanh())).abs() < 1e-9);
-        a.record(Activity::SEND, 5 * day);
+        let mut a = Activity { decay_ts: day, ..Activity::default() };
+        a.record(Activity::SEND, day);
+        assert!((a.score(day) - (0.6 + 0.4 * 0.25f64.tanh())).abs() < 1e-9);
+        a.record(Activity::SEND, 6 * day);
         assert!((a.freq - (1.0 / e + 1.0)).abs() < 1e-9, "five days decay a send to 1/e");
-        assert!((a.score(6 * day) - (0.6 / e + 0.4 * (a.freq / 4.0).tanh())).abs() < 1e-9);
+        assert!((a.score(7 * day) - (0.6 / e + 0.4 * (a.freq / 4.0).tanh())).abs() < 1e-9);
         let config = crate::config::CentralConfig::new(crate::testing::temp_dir("activity"), "127.0.0.1".into(), 23392, None);
         let mut st = super::BeeperStore::from_config(config.clone());
         let now = crate::config::now_unix_millis();
