@@ -1275,13 +1275,7 @@ impl BeeperGuiApp {
                     (tr("View changelog"), UiMessage::OpenUrl(CHANGELOG_URL.into())),
                     (tr("Report a problem"), UiMessage::OpenUrl(ISSUES_URL.into())),
                     (tr("Privacy"), UiMessage::OpenUrl("https://www.beeper.com/privacy".into())),
-                    (
-                        tr("Legal Notices"),
-                        UiMessage::OpenQuickLook(
-                            tr("Legal Notices").into(),
-                            "beeper-rs is MIT licensed. It is not affiliated with Beeper Inc. or Automattic Inc.".into(),
-                        ),
-                    ),
+                    (tr("Legal Notices"), UiMessage::OpenModal(crate::modals::Modal::Legal, self.settings_window)),
                 ];
                 let rows = links.into_iter().enumerate().flat_map(|(i, (label, msg))| {
                     let last = i == 3;
