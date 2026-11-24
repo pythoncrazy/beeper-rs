@@ -409,7 +409,7 @@ fn format_keys_toggle_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(note.into()));
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed(String::new())));
     let text = |app: &BeeperGuiApp| app.pane.composer.text();
-    let bold = || vec![key(Key::Character("b".into()), Modifiers::CTRL)];
+    let bold = || vec![key(Key::Character("b".into()), Modifiers::COMMAND)];
     let typed = |s: &str| typewrite(s).collect::<Vec<_>>();
     let list = |app: &mut BeeperGuiApp, at| drop(app.update(UiMessage::Composer(composer::Msg::FormatKey(4, at))));
     press(&mut app, true, [bold(), typed("big"), bold(), typed(" deal")].concat());
@@ -5507,6 +5507,10 @@ fn message_times_keep_their_px_size_like_desktop() {
 /// shows "Google Cal…" of this title.
 #[test]
 fn chat_titles_end_like_desktop() {
+    // The widths are Desktop's with its solid scroll bars; macOS has overlay bars and no gutter.
+    if !crate::style::SOLID_BARS {
+        return;
+    }
     let app = demo_app("title-cut");
     let main = app.main_window.expect("the main window");
     {
@@ -7496,6 +7500,10 @@ fn another_chat_drops_the_pending_reveal() {
 /// Desktop's pins of 116 px: the title within the 12 px padding, and a bubble wider than the avatar centered on it.
 #[test]
 fn pins_place_their_title_and_bubble_like_desktop() {
+    // The widths are Desktop's with its solid scroll bars; macOS has overlay bars and no gutter.
+    if !crate::style::SOLID_BARS {
+        return;
+    }
     fn text(sim: &mut Simulator<'_, UiMessage>, start: &'static str) -> Rectangle {
         sim.find(move |c: iced_test::selector::Candidate<'_>| match c {
             iced_test::selector::Candidate::Text { content, bounds, .. } if content.starts_with(start) => Some(bounds),
@@ -10431,6 +10439,9 @@ fn chat_and_media_windows_keep_their_size_only_like_desktop() {
 /// window manager's title bar is outside the window for both.
 #[test]
 fn windows_count_the_title_bar_on_wayland_like_electron() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
     use beeper_core::platform::DisplayServerKind;
     use iced::futures::StreamExt;
     let opened = |app: &mut BeeperGuiApp, settings: window::Settings| {

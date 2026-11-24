@@ -433,6 +433,10 @@ fn script(dir: &std::path::Path, name: &str, text: &str) {
 
 #[test]
 fn cli_signs_in_with_oauth_pkce_like_upstream() {
+    // The test stands in for programs of Linux: `xdg-open`, and systemd's user units.
+    if !cfg!(target_os = "linux") {
+        return;
+    }
     let dir = beeper_core::testing::temp_dir("cli-oauth");
     // The browser of the test writes down the page that the CLI opens.
     let (bin, opened) = (dir.join("bin"), dir.join("opened.txt"));
@@ -663,6 +667,10 @@ impl Drop for Running<'_> {
 
 #[test]
 fn cli_runs_managed_server_targets_with_beeper_rs() {
+    // The test stands in for programs of Linux: `xdg-open`, and systemd's user units.
+    if !cfg!(target_os = "linux") {
+        return;
+    }
     let dir = beeper_core::testing::temp_dir("cli-managed");
     let (config, home, bin) = (dir.join("cli"), dir.join("home"), dir.join("bin"));
     let systemctl = dir.join("systemctl.log");
