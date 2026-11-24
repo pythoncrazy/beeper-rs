@@ -3385,8 +3385,9 @@ impl BeeperGuiApp {
             button(text).bare(fg).on_press(msg).into()
         };
         let body = crate::contact_card(p, card, fg, 10, &entry);
-        let glyph: El<'a> = ic(icon::DOWNLOAD, 16.0).color(fg).into();
-        let download = button(container(glyph).center_x(Fill))
+        // Desktop's `DownloadIcon` at the 1em of the message's 13 px text.
+        let glyph = tinted(&crate::DOWNLOAD_ICON, 13.0, fg);
+        let download = button(container(glyph).center_x(Fill).center_y(16))
             .padding([4, 6])
             .width(Fill)
             .style(crate::style::bordered_btn([CLEAR; 3], [fg; 3], fg, 1.0, 4.0))
@@ -4585,6 +4586,27 @@ pub(crate) mod tests {
         let (s, _, _) = shot(&app, "Label tips");
         let (chevron, _, _) = ink(&s, [404.0, 714.0, 14.0, 18.0]);
         assert!(near(chevron[2], 5.2, 0.6) && near(chevron[3], 8.4, 0.6), "the link button's chevron: {chevron:?}");
+        // A contact card's download button: Desktop's `DownloadIcon` at 13 px, 9.5 by 9.2.
+        let mut app = crate::fuzz::demo_app("message-contact-card");
+        let _ = app.update(UiMessage::Window(crate::windows::Msg::Resized(main, Size::new(1200.0, 800.0))));
+        let _ = app.update(UiMessage::SelectChat(crate::NOTE_CHAT_ID.into()));
+        let url = "mxc://x/ada".to_string();
+        {
+            let mut st = app.store.write();
+            let i = *st.timeline_indices(crate::NOTE_CHAT_ID).last().expect("a message");
+            let a = Attachment {
+                attachment_type: "unknown".into(),
+                file_name: Some("ada.vcf".into()),
+                src_url: Some(url.clone()),
+                ..Default::default()
+            };
+            (st.messages[i].text, st.messages[i].attachments) = (None, vec![a]);
+        }
+        let card = crate::vcard::parse_vcard("BEGIN:VCARD\nFN:Ada Lovelace\nORG:Engines\nTEL:+14155550199\nEND:VCARD\n");
+        app.vcards.insert(url, Some(Ok(card)));
+        let (s, _, _) = shot(&app, "Ada Lovelace");
+        let (download, _, _) = ink(&s, [1062.0, 695.0, 20.0, 18.0]);
+        assert!(near(download[2], 9.5, 0.4) && near(download[3], 9.2, 0.4), "the contact card's download icon: {download:?}");
     }
 
     /// HTML's `dir="auto"` takes the direction of the first strong character.
