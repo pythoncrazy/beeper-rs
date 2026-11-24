@@ -161,12 +161,7 @@ impl BeeperGuiApp {
         ];
         let rows: Vec<El> = rows.into_iter().flatten().flatten().collect();
         let h = 8.0 + (rows.len() - usize::from(items)) as f32 * menu_pitch() + if items { MENU_RULE } else { 0.0 };
-        let menu = container(Column::with_children(rows).padding([4, 0])).width(MESSAGE_MENU_W).style(shadow_box(
-            p.menu,
-            p.menu_border,
-            6.0,
-            16.0,
-        ));
+        let menu = crate::menu_card(p, Column::with_children(rows), MESSAGE_MENU_W);
         (menu.into(), h)
     }
 

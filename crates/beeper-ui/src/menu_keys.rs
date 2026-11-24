@@ -218,6 +218,32 @@ mod tests {
         assert!(chevron.1 > 3 * 240, "the selected row's chevron is white: {chevron:?}");
     }
 
+    /// Desktop's `--shadows-menu` around a 200 px menu on white, as Chromium draws it: the levels at 1, 9 and 20 px
+    /// to the right of the card, at 6, 10 and 20 px under it, and at 2 and 8 px over it.
+    #[test]
+    fn menus_cast_desktops_two_shadows() {
+        crate::style::ensure_fonts_loaded();
+        let p = crate::style::palette(false, None, 0);
+        let rows = Column::with_children((0..4).map(|_| menu_item(&p, None, "Mute".into(), "", Some(UiMessage::Noop))));
+        let menu = container(menu_card(&p, rows, 200.0)).padding(40).style(crate::style::fill_box(Color::WHITE, 0.0));
+        let size = Size::new(280.0, 8.0 + 4.0 * menu_pitch() + 80.0);
+        let mut sim = iced_test::Simulator::with_size(Default::default(), size, menu);
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "menu-shadow");
+        let k = shot.width() as f32 / size.width;
+        let level = |x: f32, y: f32| shot.get_pixel((x * k) as u32, (y * k) as u32).0[0];
+        let (right, bottom, mid) = (240.0, size.height - 40.0, size.height / 2.0);
+        let near = |got: u8, want: u8| got.abs_diff(want) <= 3;
+        for (i, want) in [(1.0, 226), (9.0, 243), (20.0, 252)] {
+            assert!(near(level(right + i + 0.5, mid), want), "{i} px right: {} for {want}", level(right + i + 0.5, mid));
+        }
+        for (i, want) in [(6.0, 228), (10.0, 235), (20.0, 246)] {
+            assert!(near(level(140.0, bottom + i + 0.5), want), "{i} px under: {} for {want}", level(140.0, bottom + i + 0.5));
+        }
+        for (i, want) in [(2.0, 241), (8.0, 249)] {
+            assert!(near(level(140.0, 40.0 - i - 0.5), want), "{i} px over: {} for {want}", level(140.0, 40.0 - i - 0.5));
+        }
+    }
+
     /// The chat menu takes ↓ and Enter: ↓ ↓ selects its second row, which Enter runs.
     #[test]
     fn the_chat_menu_runs_the_selected_row_like_chromium() {
