@@ -719,15 +719,20 @@ const FRAME: Duration = Duration::from_millis(20);
 /// Desktop's `--animation-timing`, in seconds.
 const HOVER_FADE: f32 = 0.1;
 
+/// The hotkey of a [`menu_item`] that opens a submenu, which shows Desktop's `ChevronRight` instead.
+const SUBMENU: &str = "›";
+
 /// A row of a dropdown or context menu. Without a message it is greyed out.
 fn menu_item<'a>(
     p: &Palette, lead: Option<El<'a>>, label: String, hotkey: impl iced::widget::text::IntoFragment<'a>, msg: Option<UiMessage>,
 ) -> El<'a> {
-    let line = row![]
-        .push(lead)
-        .push(txt(label, 13.0).line_height(Pixels(rem(MENU_LINE))))
-        .push(Space::new().width(Fill))
-        .push(txt(hotkey, 13.0).line_height(Pixels(rem(MENU_LINE))).color(Color { a: 0.5, ..p.strong }));
+    let hotkey = hotkey.into_fragment();
+    // Desktop's chevron is 1em, in the color of the row's text.
+    let aside = match hotkey == SUBMENU {
+        true => ic(icon::CHEVRON, rem(13.0)).into(),
+        false => menu_keys::hotkey(txt(hotkey, 13.0).line_height(Pixels(rem(MENU_LINE))), Color { a: 0.5, ..p.strong }),
+    };
+    let line = row![].push(lead).push(txt(label, 13.0).line_height(Pixels(rem(MENU_LINE)))).push(Space::new().width(Fill)).push(aside);
     menu_line(p, line, msg)
 }
 
@@ -880,9 +885,14 @@ fn menu_rows<'a>(p: &Palette, rows: Vec<(El<'a>, f32)>, w: impl Into<Length>) ->
     (menu_card(p, Column::with_children(rows.into_iter().map(|r| r.0)), w), h)
 }
 
+/// The height of a [`menu_rule`] between two menu rows, whose 1 px margins add to it.
+const MENU_RULE: f32 = 10.0;
+
+/// Desktop's `.menu-item.separator`: 5 px margins around its 0.5 px top and bottom borders, which Chromium draws a
+/// device pixel each.
 fn menu_rule<'a>(p: &Palette) -> El<'a> {
-    let line = container(Space::new()).width(Fill).height(1).style(fill_box(Color { a: 0.1, ..p.strong }, 0.0));
-    container(line).padding([5, 8]).into()
+    let line = container(Space::new()).width(Fill).height(2).style(fill_box(Color { a: 0.1, ..p.strong }, 0.0));
+    container(line).padding([4, 8]).into()
 }
 
 fn icon_btn<'a>(p: &Palette, c: char, size: f32, frame: f32, color: Color, msg: UiMessage) -> El<'a> {
@@ -5435,10 +5445,10 @@ impl BeeperGuiApp {
                 (w, 8.0 + rows.iter().map(|r| r.1).sum::<f32>())
             } else if cid == RAIL_MORE {
                 let items = more_menu(&self.store.read());
-                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { menu_pitch() } else { 11.0 }).sum::<f32>())
+                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { menu_pitch() } else { MENU_RULE }).sum::<f32>())
             } else if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
                 let items = info_menu(&self.store.read(), cid, |a| self.can(a, "create_dm"));
-                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { menu_pitch() } else { 11.0 }).sum::<f32>())
+                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { menu_pitch() } else { MENU_RULE }).sum::<f32>())
             } else if cid == SIDEBAR_MENU || cid == RAIL_MENU {
                 (233.0, 8.0 + 4.0 * menu_pitch())
             } else if RAIL_VIEWS.iter().any(|v| cid.strip_prefix("account:") == Some(v.0)) {
@@ -5450,10 +5460,10 @@ impl BeeperGuiApp {
                     (false, Some(l)) => label_rows(l) + 1.0,
                     (false, None) => 4.0,
                 };
-                let rule = if items > 1.0 { 11.0 } else { 0.0 };
+                let rule = if items > 1.0 { MENU_RULE } else { 0.0 };
                 (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + items * menu_pitch() + rule)
             } else if let Some(n) = cid.strip_prefix("account:").and_then(|e| rail_label(&self.store.read(), e).map(label_rows)) {
-                (233.0, 8.0 + (n + 3.0) * menu_pitch() + 11.0)
+                (233.0, 8.0 + (n + 3.0) * menu_pitch() + MENU_RULE)
             } else if let Some(entry) = cid.strip_prefix("account:") {
                 let st = self.store.read();
                 let nick = if nickname::can_nickname(&st, &rail_owner(&st, entry)) { menu_pitch() } else { 0.0 };
@@ -5464,7 +5474,7 @@ impl BeeperGuiApp {
                     chat_list::chat_menu_w(&st),
                     8.0 + 10.0 * menu_pitch()
                         + 44.0
-                        + if self.selection.is_empty() { 2.0 * menu_pitch() + 11.0 } else { 0.0 }
+                        + if self.selection.is_empty() { 2.0 * menu_pitch() + MENU_RULE } else { 0.0 }
                         + if st.feature("labels-v2").on { menu_pitch() } else { 0.0 }
                         + if st.resolve_chat_idx(cid).is_some_and(|i| {
                             let targets = self.selected_chats(&st);
@@ -5488,7 +5498,7 @@ impl BeeperGuiApp {
                         }
                         + match st.resolve_chat_idx(cid).map(|i| request_answers(&st.chats[i])) {
                             Some((false, false)) | None => 0.0,
-                            Some((a, d)) => f32::from(u8::from(a) + u8::from(d)) * menu_pitch() + 11.0,
+                            Some((a, d)) => f32::from(u8::from(a) + u8::from(d)) * menu_pitch() + MENU_RULE,
                         },
                 )
             };

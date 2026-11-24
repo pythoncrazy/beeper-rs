@@ -245,7 +245,7 @@ impl BeeperGuiApp {
         let read = unread.then(|| {
             [
                 (menu_item(p, None, tr("Mark as Read").into(), "", Some(UiMessage::Thread(Msg::MarkRead))), menu_pitch()),
-                (menu_rule(p), 11.0),
+                (menu_rule(p), MENU_RULE),
             ]
         });
         let window = UiMessage::Commands(vec![UiMessage::Thread(Msg::Hide), UiMessage::Thread(Msg::OpenWindow(cid.clone(), root.clone()))]);
