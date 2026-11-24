@@ -1311,37 +1311,19 @@ impl BeeperGuiApp {
         let note = txt(note, 10.0).color(p.sub);
         let (t, s, ph) = d.changes(&st);
         let ready = t.is_some() || s.is_some() || ph;
-        let brand = |label: &'static str, primary: bool, msg: Option<UiMessage>| -> El<'a> {
-            let fg = match (msg.is_some(), primary) {
-                (false, _) => p.on_secondary,
-                (true, true) => Color::WHITE,
-                (true, false) => p.strong,
-            };
-            let gradient = primary && msg.is_some();
-            button(container(med(label, 14.0).line_height(lh(20.0)).color(fg)).center_x(Fill))
-                .width(Fill)
-                .padding([10, 12])
-                .style(move |_: &Theme, _| button::Style {
-                    background: Some(if gradient { login::brand_gradient(p) } else { p.chip.into() }),
-                    border: border::rounded(9999),
-                    ..Default::default()
-                })
-                .on_press_maybe(msg)
-                .into()
-        };
-        // Desktop's `SavingButton`: "Saving" and a spinner, with Cancel disabled too.
-        let save: El<'a> = match d.saving {
+        // Desktop's standard `BrandButton`s (14 px on the 1.15 line of a button), and its `SavingButton`: a disabled
+        // primary one with "Saving" 6 px before the spinner, with Cancel disabled too.
+        let brand = |label: El<'a>, variant, msg| login::brand_button_with(p, label, variant, msg, false, login::BrandLook::STANDARD);
+        let label = |text: &'a str| -> El<'a> { med(text, 14.0).line_height(1.15).into() };
+        let save = match d.saving {
             true => {
-                let label = row![med(trx("Saving", "edit group modal button"), 14.0).color(p.on_secondary)]
-                    .push(crate::verify::spinner(14.0, p.on_secondary))
-                    .spacing(4)
-                    .align_y(Center);
-                container(label).center_x(Fill).padding([10, 12]).style(fill_box(p.chip, 9999.0)).into()
+                let saving = row![label(trx("Saving", "edit group modal button")), crate::verify::spinner(14.0, p.on_secondary)];
+                brand(saving.spacing(6).align_y(Center).into(), Brand::Primary, None)
             }
-            false => brand(trx("Save", "edit group modal button"), true, ready.then_some(edit(GroupEdit::Save))),
+            false => brand(label(trx("Save", "edit group modal button")), Brand::Primary, ready.then_some(edit(GroupEdit::Save))),
         };
         let cancel = (!d.saving).then_some(edit(GroupEdit::Cancel));
-        let buttons = row![brand(trx("Cancel", "edit group modal button"), false, cancel), save].spacing(8);
+        let buttons = row![brand(label(trx("Cancel", "edit group modal button")), Brand::Muted, cancel), save].spacing(8);
         let body = column![container(face).center_x(Fill)].push(remove).push(title).push(topic).push(note).spacing(8);
         let body = column![body, Space::new().height(Fill), buttons];
         let body = container(body).padding(16).width(Fill).height(Fill).style(fill_box(p.card, 0.0));

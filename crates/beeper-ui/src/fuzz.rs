@@ -10109,6 +10109,36 @@ fn edit_group_saves_like_desktop() {
     assert!(!drop(&app));
 }
 
+/// Edit Group's buttons are Desktop's standard `BrandButton`s: 14 px on a button's 1.15 line, 10 by 12 px inside a 1 px
+/// border (38.1 px high), and the primary Save `brightness(1.05)` on hover and `scale(.98)` while pressed.
+#[test]
+fn edit_group_buttons_are_brand_buttons_like_desktop() {
+    let mut app = demo_app("edit-group-brand");
+    let _ = app.update(UiMessage::OpenEditGroup("!tg_rust:beeper.com".into()));
+    let _ = app.update(UiMessage::Group(GroupEdit::Title("Core".into())));
+    let size = crate::dialogs::GROUP_SIZE;
+    // The snapshot of the window with the pointer over Save, or not, after `events`, and the button's text.
+    let shot = |over: bool, events: &[iced::Event]| {
+        let mut sim = Simulator::with_size(Default::default(), size, app.view_edit_group(app.group_window.as_ref().expect("open")));
+        let save = sim.find("Save").expect("Save").bounds();
+        sim.point_at(if over { save.center() } else { Point::ORIGIN });
+        let _ = sim.simulate(events.to_vec());
+        (crate::message::tests::pixels(&mut sim), save)
+    };
+    let pill =
+        |s: &::image::RgbaImage, save: Rectangle| ink_of(s, size, [save.center_x() - 72.0, save.y - 14.0, 144.0, save.height + 28.0]);
+    let (rest, save) = shot(false, &[]);
+    let (hover, _) = shot(true, &[]);
+    let (pressed, _) = shot(true, &[iced::Event::Mouse(mouse::Event::ButtonPressed(Button::Left))]);
+    let (at_rest, at_press) = (pill(&rest, save), pill(&pressed, save));
+    assert!((at_rest[3] - 38.1).abs() < 0.3 && (at_rest[2] - 136.5).abs() < 0.3, "the standard size: {at_rest:?}");
+    assert!((at_press[2] - 0.98 * at_rest[2]).abs() < 0.3, "pressed, Save shrinks to 0.98: {at_press:?}");
+    let k = rest.width() / size.width as u32;
+    let px = |s: &::image::RgbaImage| s[((save.x - 20.0) as u32 * k, (save.y + 4.0) as u32 * k)].0;
+    let (a, b) = (px(&rest), px(&hover));
+    assert!((0..3).all(|i| b[i] >= a[i]) && (f32::from(b[0]) / f32::from(a[0]) - 1.05).abs() < 0.03, "hover brightens: {a:?} {b:?}");
+}
+
 #[test]
 fn edit_for_me_like_desktop() {
     let mut app = demo_app("edit-for-me");
