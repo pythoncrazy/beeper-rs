@@ -791,8 +791,7 @@ impl BeeperGuiApp {
                     Some(name) => crate::trf("Transcribing in %s…", &[&name]),
                     None => tr("Transcribing…").into(),
                 };
-                let muted = p.muted;
-                let spinner = spinner.style(move |_, _| svg::Style { color: Some(muted) });
+                let spinner = spinner.style(tint(p.muted));
                 row![spinner, small(label, p.muted)].spacing(2).align_y(Center).into()
             }
             _ if !done && !can && !used_up => return None,

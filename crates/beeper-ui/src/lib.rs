@@ -1349,11 +1349,7 @@ static BADGE_RINGS: std::sync::LazyLock<[[svg::Handle; 2]; 2]> = std::sync::Lazy
 fn badged<'a>(inner: El<'a>, brand: &str, size: f32, badge: f32, mono: Option<&Palette>, ring: Color) -> El<'a> {
     let icon: El<'a> = match mono {
         None => svg(crate::style::brand_svg(brand)).width(badge).height(badge).into(),
-        Some(p) => {
-            let fg = p.strong;
-            let glyph = svg(crate::style::brand_badge(brand)).style(move |_, _| svg::Style { color: Some(fg) }).width(badge).height(badge);
-            container(glyph).style(fill_box(p.chip, badge / 2.0)).into()
-        }
+        Some(p) => container(tinted(&crate::style::brand_badge(brand), badge, p.strong)).style(fill_box(p.chip, badge / 2.0)).into(),
     };
     let cutout = tinted(&BADGE_RINGS[usize::from(mono.is_none())][usize::from(badge > 12.0)], badge + 2.0, ring);
     let w = size + badge / 8.0;
@@ -2517,7 +2513,12 @@ pub fn short_title(c: &Chat) -> &str {
 
 /// The SVG `h` at `size` px in `color`, whose alpha the vendored renderers apply over the coverage (#912).
 fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
-    svg(h.clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) }).into()
+    svg(h.clone()).width(size).height(size).style(tint(color)).into()
+}
+
+/// The style of an SVG in `color`, for the rotated, faded or oblong SVGs that `tinted` does not draw.
+fn tint(color: Color) -> impl Fn(&Theme, svg::Status) -> svg::Style {
+    move |_, _| svg::Style { color: Some(color) }
 }
 
 static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
