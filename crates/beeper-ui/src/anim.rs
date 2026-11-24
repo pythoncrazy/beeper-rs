@@ -242,6 +242,58 @@ impl<M> Widget<M, Theme, Renderer> for Dot {
     }
 }
 
+/// The `--popover-window-fade` of Desktop's command bar, in seconds.
+const DIMMER_FADE: f32 = 0.04;
+
+/// Desktop's `.command-bar-dimmer`: the `.modal-dimmer` #0003 under `content`, which fades in with the 40 ms
+/// `command-bar-dimmer-in` animation, `ease-out`, from the first frame that shows it.
+pub struct Dimmer<'a, M> {
+    content: Element<'a, M>,
+}
+
+pub fn dimmer<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    Element::new(Dimmer { content: content.into() })
+}
+
+/// The times of the first frame of the dimmer and of the frame to draw.
+#[derive(Default)]
+struct Shown(Option<(Instant, Instant)>);
+
+impl Shown {
+    /// How far the dimmer has faded in at the frame, from 0 to 1.
+    fn faded(&self) -> f32 {
+        let t = self.0.map_or(0.0, |(first, now)| (now.saturating_duration_since(first).as_secs_f32() / DIMMER_FADE).min(1.0));
+        crate::cubic_bezier(t, [0.0, 0.0, 0.58, 1.0])
+    }
+}
+
+impl<M> Widget<M, Theme, Renderer> for Dimmer<'_, M> {
+    crate::delegate::delegate!(state(Shown), children, diff, size, layout, operate, mouse_interaction, overlay(M));
+
+    fn update(
+        &mut self, tree: &mut widget::Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
+    ) {
+        if let Event::Window(window::Event::RedrawRequested(now)) = event {
+            let shown = tree.state.downcast_mut::<Shown>();
+            shown.0 = Some((shown.0.map_or(*now, |s| s.0), *now));
+            if shown.faded() < 1.0 {
+                shell.request_redraw();
+            }
+        }
+        self.content.as_widget_mut().update(&mut tree.children[0], event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+
+    fn draw(
+        &self, tree: &widget::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        cursor: mouse::Cursor, viewport: &Rectangle,
+    ) {
+        let k = tree.state.downcast_ref::<Shown>().faded();
+        renderer.fill_quad(renderer::Quad { bounds: layout.bounds(), ..Default::default() }, Color::BLACK.scale_alpha(0.2 * k));
+        self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+    }
+}
+
 /// The length of a loop of Desktop's `--skeleton-bg` shimmer (`slide-across 4s ease-in-out infinite`), in seconds.
 pub const SHIMMER: f32 = 4.0;
 
@@ -339,6 +391,15 @@ impl<M> Widget<M, Theme, Renderer> for Skeleton {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The command bar's dimmer fades in `ease-out` over 40 ms: none before its first frame, 69 % of the way at 20 ms.
+    #[test]
+    fn the_dimmer_fades_in_like_desktop() {
+        let start = Instant::now();
+        let at = |n| Shown(Some((start, start + Duration::from_millis(n)))).faded();
+        assert!(Shown(None).faded() < 1e-6 && at(0) < 1e-6, "clear before and at the first frame");
+        assert!((at(20) - 0.69).abs() < 0.01 && at(40) == 1.0);
+    }
 
     /// Desktop's `--skeleton-bg` shimmer rests its band on the box at the ends of its 4 s loop and is away halfway,
     /// with at most the 8 stops of a gradient from the left to the right edge.

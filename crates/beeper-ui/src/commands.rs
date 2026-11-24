@@ -462,14 +462,8 @@ impl BeeperGuiApp {
             }
             v.push(cmd(e, trx("Copy", "message command"), Some(UiMessage::Message(message::Msg::CopySelected(false)))));
             v.push(cmd(e, tr("Copy with timestamps"), Some(UiMessage::Message(message::Msg::CopySelected(true)))));
-            let files: Vec<UiMessage> = picked
-                .iter()
-                .filter(|m| !m.attachments.is_empty() && m.is_deleted != Some(true))
-                .map(|m| UiMessage::Message(message::Msg::Download(m.id.clone(), None)))
-                .collect();
-            if !files.is_empty() {
-                let download = cmd(e, tr("Download attachments"), Some(UiMessage::Commands(files)));
-                v.push(download.hotkey("Download Attachments"));
+            if let Some(files) = self.download_selected(st) {
+                v.push(cmd(e, tr("Download attachments"), Some(files)).hotkey("Download Attachments"));
             }
             let links: Vec<(String, String)> =
                 picked.iter().flat_map(|m| m.links.iter().map(|l| (l.url.clone(), l.title.clone()))).collect();
@@ -1088,7 +1082,7 @@ impl BeeperGuiApp {
                 self.select_chat(&cid);
             }
             Msg::OpenSearchSelect(chip) => {
-                let find = Find(format!("search-chip-{chip}").into(), None);
+                let find = Find::new(format!("search-chip-{chip}"));
                 return iced::advanced::widget::operate(find).map(move |r| UiMessage::CommandBar(Msg::SearchSelect(Some((chip, r)))));
             }
             Msg::SearchSelect(open) => self.search_select = open,
@@ -1106,13 +1100,7 @@ impl BeeperGuiApp {
                         Some(i) => drop(f.media.remove(i)),
                         None => f.media.push(v),
                     },
-                    SearchPick::Period(v) => {
-                        f.period = (f.period != Some(v)).then_some(v);
-                        self.search_select = None;
-                    }
-                }
-                if matches!(self.search_select, Some((1, _))) {
-                    self.search_select = None;
+                    SearchPick::Period(v) => f.period = (f.period != Some(v)).then_some(v),
                 }
             }
         }

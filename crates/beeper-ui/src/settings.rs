@@ -529,7 +529,6 @@ impl BeeperGuiApp {
         let n = self.search_rows();
         match key {
             Key::Named(Named::Escape) if self.confirm.is_some() => self.confirm = None,
-            Key::Named(Named::Escape) if self.integrations.add.is_some() => self.integrations.add = None,
             // Desktop's add input of the time suggestions cancels on Escape and keeps the window open.
             Key::Named(Named::Escape) if self.time_edit.input.is_some() => {
                 let settings = self.settings_window.expect("the settings window is open");
@@ -896,7 +895,6 @@ impl BeeperGuiApp {
         let base = container(row![left, container(right).padding(Padding::new(8.0).right(0.0))]).width(Fill).height(Fill);
         drop(st);
         let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
-        let add = self.integrations.add.as_ref().map(|a| self.view_add_token(a));
         // The menu of an account row of the Accounts settings, or of the actions of an account page.
         let menu = self.list().chat_menu.as_ref().and_then(|(cid, at)| {
             let (id, kind) = match cid.strip_prefix(ROW_MENU) {
@@ -925,11 +923,11 @@ impl BeeperGuiApp {
             let picker = container(mouse_area(picker).on_press(UiMessage::Noop)).center(Fill);
             crate::backdrop(picker).on_press(UiMessage::QuickEmoji(None))
         });
-        stack![base.style(fill_box(p.window, 0.0))].push(menu).push(add).push(confirm).push(profile).push(picker).into()
+        stack![base.style(fill_box(p.window, 0.0))].push(menu).push(confirm).push(profile).push(picker).into()
     }
 
-    /// Desktop's `BeeperConnectAddTokenModal`, over the Settings window.
-    fn view_add_token<'a>(&'a self, a: &'a AddToken) -> El<'a> {
+    /// Desktop's `BeeperConnectAddTokenModal` in its window.
+    pub(crate) fn view_add_token<'a>(&'a self, a: &'a AddToken) -> El<'a> {
         let p = &self.pal;
         let label = |t: &'static str| txt(tr(t), 12.0).color(p.text);
         let content: El<'a> = match &a.token {
@@ -990,8 +988,7 @@ impl BeeperGuiApp {
         };
         let title = container(semi(tr("Create a new token for Beeper Desktop API"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
         let pane = column![title, container(content).padding(Padding::new(16.0).top(16.0))];
-        let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
-        crate::backdrop(container(pane).padding(8)).on_press(UiMessage::Noop).into()
+        crate::integrations::modal_frame(p, pane.into())
     }
 
     /// Desktop's `TakeBeeperWithYou` card.
@@ -1241,7 +1238,7 @@ impl BeeperGuiApp {
                     None => Vec::new(),
                     Some(Err(_)) => {
                         let error = tr("Failed to fetch devices. Please report a problem if this keeps happening.");
-                        vec![txt(error, 13.0).color(p.danger).into()]
+                        vec![txt(error, 13.0).color(p.text_danger).into()]
                     }
                     Some(Ok(all)) => [
                         (tr("Current Device"), all.iter().filter(|d| d.current).collect::<Vec<_>>()),
@@ -1483,7 +1480,7 @@ impl BeeperGuiApp {
             row![swatch, column![body(tr(label).into(), p.text), Space::new().width(80)], size].spacing(8).align_y(Center).into()
         });
         let total = human_size(totals.iter().map(|t| t.1).sum());
-        let fg = if self.dark { Color::WHITE } else { Color::BLACK };
+        let fg = p.fg;
         let ring = stack![
             svg(s.chart.clone().expect("a chart for the scan")).width(200).height(200),
             container(txt(total, 18.0).color(fg)).center(200)
@@ -1508,7 +1505,7 @@ impl BeeperGuiApp {
             self.storage_ages(0),
             self.storage_kinds(0, busy),
             warning(),
-            link(label(0), p.danger, 13.0, !busy && s.kinds[0] != 0, UiMessage::Ask(Some(ASK_CLEAR_STORAGE)))
+            link(label(0), p.text_danger, 13.0, !busy && s.kinds[0] != 0, UiMessage::Ask(Some(ASK_CLEAR_STORAGE)))
         ]
         .spacing(12)
         .align_x(Center)
@@ -1577,7 +1574,7 @@ impl BeeperGuiApp {
                 let panel =
                     column![body(tr("Clear storage older than").into(), p.muted), self.storage_ages(1), self.storage_kinds(1, busy)]
                         .push((s.kinds[1] & 1 << 4 != 0).then(warning))
-                        .push(link(label(2), p.danger, 13.0, !busy && s.kinds[1] != 0, UiMessage::Ask(Some(ASK_CLEAR_CHAT))))
+                        .push(link(label(2), p.text_danger, 13.0, !busy && s.kinds[1] != 0, UiMessage::Ask(Some(ASK_CLEAR_CHAT))))
                         .spacing(12)
                         .align_x(Center)
                         .padding(Padding::new(16.0).top(12.0));
@@ -1621,7 +1618,7 @@ impl BeeperGuiApp {
     fn hotkeys_page(&self, st: &BeeperStore) -> El<'_> {
         let s = &st.settings;
         let p = &self.pal;
-        let edge = p.neutral_border;
+        let edge = p.border_neutrals;
         let search = text_input(tr("Search hotkeys..."), &self.hotkey_query)
             .on_input(|a0| UiMessage::Hotkeys(hotkeys::Msg::Query(a0)))
             .size(rem(13.0))
@@ -1642,8 +1639,8 @@ impl BeeperGuiApp {
             let shown = rec.map_or_else(|| keys.to_string(), HotkeyRec::combo);
             let recorder = (keys != "disabled").then(|| {
                 let ink = match (conflict, rec) {
-                    (Some(_), _) => p.danger,
-                    (None, Some(_)) => p.muted,
+                    (Some(_), _) => ERROR,
+                    (None, Some(_)) => p.weak,
                     (None, None) => p.text,
                 };
                 let label: El<'_> = match prefs::hotkey_label(&shown) {
@@ -1662,7 +1659,7 @@ impl BeeperGuiApp {
                     ),
                 };
                 let border = match (conflict, rec) {
-                    (Some(_), _) => p.danger,
+                    (Some(_), _) => ERROR,
                     (None, Some(_)) => p.accent,
                     (None, None) => edge,
                 };
@@ -1889,9 +1886,9 @@ impl BeeperGuiApp {
         });
         // Desktop's `AccountDeleteButton`.
         let remove = bridge.map(|_| {
-            let label = semi(tr("Remove Account"), 13.0).color(p.danger).width(Fill).center();
+            let label = semi(tr("Remove Account"), 13.0).color(ON_ERROR).width(Fill).center();
             button(label)
-                .bare(p.danger)
+                .bare(ON_ERROR)
                 .padding([5, 0])
                 .width(Fill)
                 .on_press(UiMessage::Accounts(accounts::Msg::AskRemove(id.into())))
@@ -2103,7 +2100,7 @@ impl BeeperGuiApp {
         // black, or white in the dark.
         let mut p = self.pal;
         if self.key_held(window, &id) {
-            p.chip = style::mix(p.chip, if self.dark { Color::WHITE } else { Color::BLACK }, 0.1);
+            p.chip = style::mix(p.chip, p.fg, 0.1);
         }
         let pick = {
             let (shown, set) = (shown.clone(), set.clone());

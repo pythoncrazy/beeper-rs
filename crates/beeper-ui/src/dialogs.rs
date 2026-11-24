@@ -18,6 +18,9 @@ use beeper_core::prefs;
 use iced::widget::{column, operation};
 use iced::{border, mouse, window};
 
+/// Desktop's Blocked users sheet, `q0e(342, 488)`.
+const BLOCKED_SIZE: Size = Size::new(342.0, 488.0);
+
 /// Desktop's `cR`: the icon of a new label.
 pub(crate) const DEFAULT_LABEL_ICON: &str = "3257-5964";
 
@@ -842,10 +845,11 @@ impl BeeperGuiApp {
         let mute = setting(icon::NOTIFICATIONS_OFF, trx("Mute", "label setting"), mute);
         let settings =
             column![setting(icon::INBOX, tr("Show in Inbox"), pill), rule, target("mute", mute, Keys::checkbox(flip), ring(-2.0, 16.0))];
-        let delete = button(container(txt(tr("Delete Label"), 13.0).color(p.danger)).center_y(24))
+        // `.LabelSettings-module__dangerRow`: `--color-text-danger` on `--semantic-colors-bg-fill-primary`.
+        let delete = button(container(txt(tr("Delete Label"), 13.0).color(p.text_danger)).center_y(24))
             .padding([8, 12])
             .width(Fill)
-            .style(btn_style([p.chip; 3], [p.danger; 3], 16.0))
+            .style(btn_style([p.fill_primary; 3], [p.text_danger; 3], 16.0))
             .on_press(pane(LabelPane::Delete));
         let delete = target("delete", delete.into(), Keys::press(pane(LabelPane::Delete)), ring(-2.0, 16.0));
         let body = column![
@@ -1386,16 +1390,40 @@ impl BeeperGuiApp {
         if let Some(id) = self.blocked_window {
             return self.raise(id);
         }
-        let (id, open) = self.open_child(Size::new(342.0, 488.0));
+        let (id, open) = self.open_child(BLOCKED_SIZE);
         self.blocked_window = Some(id);
         open
     }
 
-    /// A blocked person of the Blocked users window: their chat opens with its Chat Info in the main window.
+    /// Desktop's `DCt`: a blocked person of the Blocked users window opens a 346 by 548 sheet over the list, once for
+    /// each chat, with the Chat Info of their chat.
     pub(crate) fn open_blocked_user(&mut self, id: String) -> Task<UiMessage> {
-        self.show_right_panel = true;
-        let main = self.main_window.expect("the main window is open");
-        self.update(UiMessage::SelectChat(id)).chain(self.raise(main))
+        if let Some(&(w, _)) = self.chat_windows.iter().find(|w| w.1.blocked_sheet && w.1.selected_chat_id.as_ref() == Some(&id)) {
+            return self.raise(w);
+        }
+        self.store.write().load_chat(&id);
+        let size = Size::new(346.0, 548.0);
+        let settings = window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) };
+        let list = self.blocked_window.map(|w| (w, BLOCKED_SIZE));
+        let (w, open) = self.open_over(settings, list);
+        let pane = Pane { selected_chat_id: Some(id), info: true, blocked_sheet: true, size, ..Pane::default() };
+        self.chat_windows.push((w, pane));
+        open
+    }
+
+    /// Desktop's `ACt` closes the sheet of a person who is no longer blocked.
+    pub(crate) fn close_unblocked_sheets(&self) -> Task<UiMessage> {
+        Task::batch(self.unblocked_sheets().into_iter().map(|w| self.close_window(w)))
+    }
+
+    /// The sheets of blocked people whose chat is gone or no longer blocked.
+    pub(crate) fn unblocked_sheets(&self) -> Vec<window::Id> {
+        let st = self.store.read();
+        let unblocked = |pane: &Pane| {
+            let chat = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+            !chat.is_some_and(|i| st.user_blocked(&st.chats[i]))
+        };
+        self.chat_windows.iter().filter(|w| w.1.blocked_sheet && unblocked(&w.1)).map(|w| w.0).collect()
     }
 
     /// Desktop's `ICt`: the blocked people by name, or "No Blocked Users", and Done.
@@ -1515,7 +1543,7 @@ impl BeeperGuiApp {
         let poll = st.loaded(mid).and_then(|m| m.poll.as_ref());
         let Some(poll) = poll else { return container(Space::new()).style(fill_box(p.window, 0.0)).into() };
         let people = st.resolve_chat_idx(chat).map_or(&[][..], |i| &st.chats[i].participants.items[..]);
-        let weak = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
+        let weak = p.border_weak;
         let total = poll.voters();
         let question = if poll.question.is_empty() { tr("Poll").into() } else { poll.question.clone() };
         let mut body = column![semi(question, 17.0).line_height(lh(24.0)).color(p.strong)].spacing(10).padding(16);
@@ -1564,24 +1592,25 @@ impl BeeperGuiApp {
         let edit = move |e| UiMessage::Poll(id, e);
         // The `:focus-visible` rings of the Poll Creator: 2 px of `--color-primary` at an `outline-offset`.
         let ring = |offset, radius| Look::Outline { color: p.accent, width: 2.0, offset, radius };
-        let weak = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
-        let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(weak, 0.0));
+        // The labels, placeholders, drag handles and hint are `--color-on-surface-variant`, the rules
+        // `--color-border-translucent-weak`.
+        let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(p.border_weak, 0.0));
         let card = |c: Column<'a, UiMessage>| container(c).width(Fill).clip(true).style(fill_box(p.received, 12.0));
-        let section = |label: &'static str, items: Vec<El<'a>>| column![semi(tr(label), 12.0).color(p.sub)].extend(items).spacing(8);
+        let section = |label: &'static str, items: Vec<El<'a>>| column![semi(tr(label), 12.0).color(p.muted)].extend(items).spacing(8);
         let question = text_input(tr("Ask a question…"), &d.question)
             .id(format!("poll-{}", d.chat))
             .on_input(move |q| edit(PollEdit::Question(q.chars().take(500).collect())))
             .size(rem(15.0))
             .line_height(lh(20.0))
             .padding([10, 11])
-            .style(input_style(p.received, p.strong, p.sub, p.accent, 10.0));
+            .style(input_style(p.received, p.strong, p.muted, p.accent, 10.0));
         let repeats = d.repeats(rules);
         let length = usize::from(rules.max_length);
         let mut options = Column::new();
         for (i, (_, value)) in d.options.iter().enumerate() {
             let fade = if d.dragging == Some(i) { 0.5 } else { 1.0 };
             let grab = if d.dragging.is_some() { mouse::Interaction::Grabbing } else { mouse::Interaction::Grab };
-            let handle = mouse_area(tinted(&DRAG_HANDLE, 18.0, p.sub.scale_alpha(fade))).on_press(edit(PollEdit::Grab(Some(i))));
+            let handle = mouse_area(tinted(&DRAG_HANDLE, 18.0, p.muted.scale_alpha(fade))).on_press(edit(PollEdit::Grab(Some(i))));
             let input = text_input(&trf("Option %d", &[&(i + 1)]), value)
                 .id(d.input(i))
                 .on_input(move |v| edit(PollEdit::Option(i, v.chars().take(length).collect())))
@@ -1589,13 +1618,13 @@ impl BeeperGuiApp {
                 .size(rem(14.0))
                 .line_height(lh(18.0))
                 .padding([8, 0])
-                .style(input_style(CLEAR, p.strong.scale_alpha(fade), p.sub, p.accent, 0.0));
-            let error = repeats[i].then(|| txt(tr("This option already exists"), 11.0).color(p.danger));
+                .style(input_style(CLEAR, p.strong.scale_alpha(fade), p.muted, p.accent, 0.0));
+            let error = repeats[i].then(|| txt(tr("This option already exists"), 11.0).color(DELETE_RED));
             // `.PollCreator-module__removeOption:focus-visible` shows the button with a 2 px ring 2 px outside it.
             let remove = (d.options.len() > 2).then(|| {
                 let key = format!("remove-{i}");
                 let shown = d.hovered == Some(i) || self.key_held(Some(id), &key);
-                let red = p.danger.scale_alpha(f32::from(u8::from(shown)));
+                let red = DELETE_RED.scale_alpha(f32::from(u8::from(shown)));
                 let hover = Color::from_rgba8(0xff, 0x14, 0x16, 0x20 as f32 / 255.0);
                 let b = button(container(tinted(&DELETE, 16.0, red)).center(28))
                     .padding(0)
@@ -1623,7 +1652,7 @@ impl BeeperGuiApp {
                 0 => tr("You have added the maximum number of options").into(),
                 _ => trn("You can enter %d more option", "You can enter %d more options", left, &[&left]),
             };
-            txt(hint, 11.0).color(p.sub)
+            txt(hint, 11.0).color(p.muted)
         });
         // Desktop's `<label>` rows around a `Toggle`, which Space flips, with `.PollCreator-module__settingRow:has(
         // :focus-visible)`: a 2 px `--app-focus-ring` outline 2 px inside the row.
