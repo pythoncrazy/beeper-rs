@@ -281,14 +281,9 @@ fn search(c: &mut Ctx) -> Res {
     query.extend([("query", q.clone()), ("sender", c.str("sender").map(str::to_string))].into_iter().filter_map(|(k, v)| Some((k, v?))));
     let n = limit(c, "limit");
     let load = |c: &mut Ctx| c.collect("/v1/messages/search", &query, n, |_| true);
-    let items = match c.json() || c.on("ids") {
-        true => load(c)?,
-        false => {
-            let label = q.as_ref().map_or("Searching messages…".into(), |q| format!("Searching messages for \"{q}\"…"));
-            let done = |v: &Vec<Value>| format!("{} match{}", v.len(), if v.len() == 1 { "" } else { "es" });
-            c.spinner(&label, load, done)?
-        }
-    };
+    let label = q.as_ref().map_or("Searching messages…".into(), |q| format!("Searching messages for \"{q}\"…"));
+    let done = |v: &Vec<Value>| format!("{} match{}", v.len(), if v.len() == 1 { "" } else { "es" });
+    let items = c.spinner(c.json() || c.on("ids"), &label, load, done)?;
     if c.on("ids") {
         return c.print_ids(&items);
     }

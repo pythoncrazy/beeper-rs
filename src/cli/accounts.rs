@@ -174,13 +174,8 @@ fn contacts_list(c: &mut Ctx) -> Res {
         }
         Ok(all)
     };
-    let items = match c.json() || c.on("ids") {
-        true => load(c)?,
-        false => {
-            let label = c.str("query").map_or(String::new(), |q| format!(" matching \"{q}\""));
-            c.spinner(&format!("Loading contacts{label}…"), load, |v| plural(v.len(), "contact", "contacts"))?
-        }
-    };
+    let label = format!("Loading contacts{}…", c.str("query").map_or(String::new(), |q| format!(" matching \"{q}\"")));
+    let items = c.spinner(c.json() || c.on("ids"), &label, load, |v| plural(v.len(), "contact", "contacts"))?;
     if c.on("ids") {
         let ids: Vec<Value> = items.iter().map(|u| json!({ "id": if u["userID"].is_null() { &u["id"] } else { &u["userID"] } })).collect();
         return c.print_ids(&ids);
@@ -207,13 +202,8 @@ fn contacts_search(c: &mut Ctx) -> Res {
         Ok(all)
     };
     let accounts = plural(ids.len(), "account", "accounts");
-    let results = match c.json() {
-        true => load(c)?,
-        false => {
-            let done = |v: &Vec<Value>| format!("{} across {accounts}", plural(v.len(), "match", "matches"));
-            c.spinner(&format!("Searching contacts for \"{q}\"…"), load, done)?
-        }
-    };
+    let done = |v: &Vec<Value>| format!("{} across {accounts}", plural(v.len(), "match", "matches"));
+    let results = c.spinner(c.json(), &format!("Searching contacts for \"{q}\"…"), load, done)?;
     let empty = Empty::new("No contacts matched", format!("Nothing across your {accounts} matched \"{q}\"."))
         .try_("accounts", "verify which accounts are connected")
         .try_(format!("contact <accountID> {q}"), "exact lookup on one account");

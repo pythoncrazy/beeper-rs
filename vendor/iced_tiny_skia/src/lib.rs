@@ -155,11 +155,29 @@ impl Renderer {
                     continue;
                 };
 
-                engine::adjust_clip_mask(clip_mask, layer_bounds);
+                // beeper-rs: the mask of a layer's bounds is set when
+                // something of the layer needs it: a quad with a shadow or
+                // one that leaves the bounds, or an image. Setting it for
+                // each layer cleared and filled a mask as large as the
+                // window, a tenth of a frame of the whole window.
+                let mut masked = false;
+                let mut mask = |clip_mask: &mut tiny_skia::Mask| {
+                    if !std::mem::replace(&mut masked, true) {
+                        engine::adjust_clip_mask(clip_mask, layer_bounds);
+                    }
+                };
 
                 if !layer.quads.is_empty() {
                     let render_span = debug::render(debug::Primitive::Quad);
                     for (quad, background) in &layer.quads {
+                        let bounds = quad.bounds * scale_factor;
+
+                        if quad.shadow.color.a > 0.0
+                            || !bounds.is_within(&layer_bounds)
+                        {
+                            mask(clip_mask);
+                        }
+
                         self.engine.draw_quad(
                             quad,
                             background,
@@ -184,6 +202,7 @@ impl Renderer {
                         };
 
                         engine::adjust_clip_mask(clip_mask, group_bounds);
+                        masked = false;
 
                         for primitive in group.as_slice() {
                             self.engine.draw_primitive(
@@ -195,8 +214,6 @@ impl Renderer {
                                 group_bounds,
                             );
                         }
-
-                        engine::adjust_clip_mask(clip_mask, layer_bounds);
                     }
 
                     render_span.finish();
@@ -204,6 +221,12 @@ impl Renderer {
 
                 if !layer.images.is_empty() {
                     let render_span = debug::render(debug::Primitive::Image);
+                    let mut mask = |clip_mask: &mut tiny_skia::Mask| {
+                        if !std::mem::replace(&mut masked, true) {
+                            engine::adjust_clip_mask(clip_mask, layer_bounds);
+                        }
+                    };
+                    mask(clip_mask);
 
                     for image in &layer.images {
                         self.engine.draw_image(
