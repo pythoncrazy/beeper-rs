@@ -7221,6 +7221,18 @@ fn chat_rows_place_their_lines_like_desktop() {
     }
 }
 
+/// Desktop's compact chat row: the media chip (`ThreadPreviewTag-module__tag`) keeps its 1 px top margin in the
+/// preview's 16 px line even alone, so its label is 28 px under the row's top, 18 px under the title.
+#[test]
+fn compact_row_media_chip_like_desktop() {
+    let mut app = demo_app("row-chip");
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("compactChatList", 1)));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+    let title = sim.find("Jordan Park").expect("a chat whose preview is only an image").bounds();
+    let label = sim.find("Image").expect("its media chip").bounds();
+    assert_eq!(label.y - title.y, 18.0, "the chip's label sits 18 px under the title");
+}
+
 /// Desktop's `.thread-participant-name`: the sender's 12 px avatar has a 2 px margin before the name.
 #[test]
 fn previews_start_the_name_2_px_after_the_sender_like_desktop() {
@@ -10345,18 +10357,6 @@ fn the_open_chat_card_keeps_its_round_corners_and_shadow_like_desktop() {
     // Desktop's frame above the card is #E3E4E9 at the top of the window and #DCDDE1 at the card, 8 px below.
     let dark = i32::from(at(700, 0)[0]) - i32::from(at(700, 7)[0]);
     assert!((5..=8).contains(&dark), "the shadow grows by 7 towards the card: {dark}");
-}
-
-/// Desktop's compact chat row: the media chip (`ThreadPreviewTag-module__tag`) keeps its 1 px top margin in the
-/// preview's 16 px line even alone, so its label is 28 px under the row's top, 18 px under the title.
-#[test]
-fn compact_row_media_chip_like_desktop() {
-    let mut app = demo_app("row-chip");
-    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("compactChatList", 1)));
-    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
-    let title = sim.find("Jordan Park").expect("a chat whose preview is only an image").bounds();
-    let label = sim.find("Image").expect("its media chip").bounds();
-    assert_eq!(label.y - title.y, 18.0, "the chip's label sits 18 px under the title");
 }
 
 /// Desktop's `thread-header-name-chevron` after the chat's name in the header: the Material `chevron_forward` of a
