@@ -4333,7 +4333,8 @@ impl BeeperGuiApp {
         if !std::mem::take(&mut self.tray_sent.1) {
             return task;
         }
-        let now = (self.badge_count(), !self.hidden);
+        // Desktop's tray menu offers Show Window while the window hides or is minimized.
+        let now = (self.badge_count(), self.shows());
         if self.tray_sent.0.replace(now) == Some(now) {
             return task;
         }
