@@ -1763,4 +1763,22 @@ mod tests {
         };
         assert!(ink(tabular(Weight::Normal)) > ink(fw(Weight::Normal)) + 10, "tabular ones are farther apart");
     }
+
+    /// Desktop draws its icons as SVGs wherever their boxes land. An icon glyph follows its place by quarters of a
+    /// pixel, where a text glyph stays on whole ones: 1/8 px down the layout is a quarter of a pixel of the snapshot.
+    #[test]
+    fn icon_glyphs_sit_on_quarter_pixels() {
+        // The middle of the ink of the glyph `down` px below the top, in pixels of the snapshot.
+        let middle = |glyph: fn() -> text::Text<'static>, down: f32| {
+            let view = iced::widget::container(glyph()).padding(iced::Padding::ZERO.top(down));
+            let shot = crate::focus::tests::shot(view.into(), iced::Size::new(40.0, 40.0), "icon-place");
+            let ink = |p: &::image::Rgba<u8>| f32::from(255 - p[0]);
+            shot.enumerate_pixels().map(|(_, y, p)| ink(p) * y as f32).sum::<f32>() / shot.pixels().map(ink).sum::<f32>()
+        };
+        let icon = || ic(crate::icon::SEARCH, 20.0);
+        let (a, b, c) = (middle(icon, 4.0), middle(icon, 4.125), middle(icon, 4.375));
+        assert!((b - a - 0.25).abs() < 0.1 && (c - a - 0.75).abs() < 0.1, "{a} {b} {c}");
+        let word = || text("x").size(20);
+        assert_eq!(middle(word, 4.0), middle(word, 4.125), "text keeps whole pixels");
+    }
 }

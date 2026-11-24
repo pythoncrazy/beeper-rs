@@ -96,10 +96,12 @@ impl TextRenderer {
 
             for run in layout_runs {
                 for glyph in run.glyphs.iter() {
-                    let physical_glyph =
-                        glyph.physical((text_area.left, text_area.top), text_area.scale);
-
-                    let cache_key = physical_glyph.cache_key;
+                    let (cache_key, glyph_x, glyph_y) = place(
+                        glyph,
+                        run.line_y,
+                        (text_area.left, text_area.top),
+                        text_area.scale,
+                    );
 
                     let details = if let Some(details) =
                         atlas.mask_atlas.glyph_cache.get(&cache_key)
@@ -111,7 +113,7 @@ impl TextRenderer {
                         details
                     } else {
                         let Some(image) =
-                            cache.get_image_uncached(font_system, physical_glyph.cache_key)
+                            cache.get_image_uncached(font_system, cache_key)
                         else {
                             continue;
                         };
@@ -204,9 +206,8 @@ impl TextRenderer {
                         })
                     };
 
-                    let mut x = physical_glyph.x + details.left as i32;
-                    let mut y = (run.line_y * text_area.scale).round() as i32 + physical_glyph.y
-                        - details.top as i32;
+                    let mut x = glyph_x + details.left as i32;
+                    let mut y = glyph_y - details.top as i32;
 
                     let (mut atlas_x, mut atlas_y, content_type) = match details.gpu_cache {
                         GpuCacheStatus::InAtlas { x, y, content_type } => (x, y, content_type),
@@ -428,4 +429,19 @@ fn create_oversized_buffer(
 
 fn zero_depth(_: usize) -> f32 {
     0f32
+}
+
+/// beeper-rs: the cache key and the pixel of `glyph` on the baseline `line_y` of a text at `(left, top)`.
+/// cosmic-text keeps a baseline on whole pixels (its hinting in the Y axis), which suits text. A glyph of a font
+/// without hinting (the icon font: Desktop draws icons as SVGs, wherever their boxes land) takes its place to a
+/// quarter of a pixel instead, so an icon is not up to 1.5 px above its place on a screen at scale 1.
+pub fn place(glyph: &cosmic_text::LayoutGlyph, line_y: f32, (left, top): (f32, f32), scale: f32) -> (cosmic_text::CacheKey, i32, i32) {
+    let physical = glyph.physical((left, top), scale);
+    if !glyph.cache_key_flags.contains(cosmic_text::CacheKeyFlags::DISABLE_HINTING) {
+        return (physical.cache_key, physical.x, physical.y + (line_y * scale).round() as i32);
+    }
+    // swash draws a glyph `y_bin` above its baseline, so the baseline is the next pixel down.
+    let y = (glyph.y - glyph.font_size * glyph.y_offset + line_y) * scale + top;
+    let (whole, y_bin) = cosmic_text::SubpixelBin::new(y.ceil() - y);
+    (cosmic_text::CacheKey { y_bin, ..physical.cache_key }, physical.x, y.ceil() as i32 - whole)
 }
