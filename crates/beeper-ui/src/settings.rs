@@ -896,17 +896,10 @@ impl BeeperGuiApp {
             };
             Some((id, kind, at))
         });
-        let menu = menu.map(|(id, kind, at)| {
+        let menu = menu.map(|(id, kind, &at)| {
             let (menu, sub) = self.account_menu(id, kind);
-            let size = self.settings_size;
-            let items = if crate::nickname::can_nickname(&self.store.read(), id) { 5.0 } else { 4.0 };
-            let (w, h) = (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + items * menu_pitch() + MENU_RULE);
-            let (x, y) = (at.x.min(size.width - w - 8.0), at.y.min(size.height - h - 8.0));
-            let menu = container(mouse_area(row![menu].push(sub)).on_press(UiMessage::Noop))
-                .padding(Padding::ZERO.left(x).top(y))
-                .width(Fill)
-                .height(Fill);
-            crate::backdrop(menu)
+            let place = move |m: Size, area: Size| Point::new(at.x.min(area.width - m.width - 8.0), at.y.min(area.height - m.height - 8.0));
+            crate::backdrop(crate::menu_keys::menu_at(menu, sub, place))
                 .on_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
                 .on_right_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
         });

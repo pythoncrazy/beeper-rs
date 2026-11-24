@@ -245,20 +245,20 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's Snooze menu `Jde` of the chats `ids`: Upgrade to Beeper Plus, the end of the snooze of one snoozed chat,
-    /// the times (`xle`), Custom… and Dismiss Snooze. Each row comes with its height.
-    pub(crate) fn snooze_items(&self, st: &BeeperStore, ids: &[String]) -> Vec<(El<'_>, f32)> {
+    /// the times (`xle`), Custom… and Dismiss Snooze.
+    pub(crate) fn snooze_items(&self, st: &BeeperStore, ids: &[String]) -> Vec<El<'_>> {
         let p = &self.pal;
         let chats: Vec<&Chat> = ids.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect();
         let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
         let can = can_snooze(st, &chats);
-        let item = |label: String, at: String, msg: Option<UiMessage>| (menu_item(p, None, label, at, msg), menu_pitch());
+        let item = |label: String, at: String, msg: Option<UiMessage>| menu_item(p, None, label, at, msg);
         let snooze = |at: Option<i64>| UiMessage::Reminders(Msg::Snooze(ids.to_vec(), at));
         let upgrade = snooze_upgrade(st, &chats).then(|| {
             let open = UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus));
-            [item(tr("Upgrade to Beeper Plus").into(), String::new(), Some(open)), (menu_rule(p), MENU_RULE)]
+            [item(tr("Upgrade to Beeper Plus").into(), String::new(), Some(open)), menu_rule(p)]
         });
         let until = chats.first().filter(|_| chats.len() == 1).and_then(|c| snoozed_until(st, c));
-        let heading = until.map(|at| (menu_heading(p, snoozed_label(at, h24)), menu_pitch()));
+        let heading = until.map(|at| menu_heading(p, snoozed_label(at, h24)));
         let last = last_used_of(&st.settings.snooze_last_time, now)
             .map(|at| item(tr("Last Used").into(), last_used_label(at, h24), can.then(|| snooze(Some(at)))));
         let presets = remind_presets(&st.settings, now).into_iter().map(|(label, at)| {
@@ -268,8 +268,8 @@ impl BeeperGuiApp {
         let custom = UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Snooze(ids.to_vec())));
         let dismiss = can_dismiss_snooze(st, &chats).then(|| snooze(None));
         (upgrade.into_iter().flatten().chain(heading).chain(last).chain(presets))
-            .chain([(menu_rule(p), MENU_RULE), item(tr("Custom…").into(), String::new(), can.then_some(custom))])
-            .chain([(menu_rule(p), MENU_RULE), item(tr("Dismiss Snooze").into(), String::new(), dismiss)])
+            .chain([menu_rule(p), item(tr("Custom…").into(), String::new(), can.then_some(custom))])
+            .chain([menu_rule(p), item(tr("Dismiss Snooze").into(), String::new(), dismiss)])
             .collect()
     }
 }
@@ -520,7 +520,7 @@ mod tests {
         let menu = format!("{SNOOZE_MENU}{chat}");
         let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(menu.clone())));
         {
-            let mut sim = simulator(app.view_chat_menu(&menu, false, 600.0));
+            let mut sim = simulator(app.view_chat_menu(&menu, Point::ORIGIN));
             assert!(sim.find(snoozed_label(until, false).as_str()).is_ok(), "the end of the snooze heads the menu");
             let _ = sim.click("Dismiss Snooze").expect("Dismiss Snooze");
             let msgs: Vec<UiMessage> = sim.into_messages().collect();

@@ -221,16 +221,16 @@ impl BeeperGuiApp {
         Some(container(btn).center_x(Fill).clip(true).padding(Padding::ZERO.top(4.0).bottom(8.0)).into())
     }
 
-    /// Desktop's `b7t` menu of the behavior line: the heading, each source with what it does, and How It Works. Each
-    /// row comes with its height, and the menu with its width.
-    pub(crate) fn behavior_items(&self, st: &BeeperStore, cid: &str) -> (Vec<(El<'_>, f32)>, f32) {
+    /// Desktop's `b7t` menu of the behavior line: the heading, each source with what it does, and How It Works, with
+    /// the width of the menu.
+    pub(crate) fn behavior_items(&self, st: &BeeperStore, cid: &str) -> (Vec<El<'_>>, f32) {
         let p = &self.pal;
         let c = st.chat(cid);
         let h24 = st.settings.pref("timeFormat") == 1;
         let close = |msg| UiMessage::Commands(vec![UiMessage::ChatList(chat_list::Msg::CloseMenu), msg]);
         let heading = tr("Visibility and Notifications").to_string();
         let mut width = text_width(&heading, 11.0, Weight::Medium) + 26.0;
-        let mut rows = vec![(menu_heading(p, heading), menu_pitch())];
+        let mut rows = vec![menu_heading(p, heading)];
         let Some(b) = behavior(st, c) else { return (rows, width) };
         for entry in &b.contributors {
             let s = &entry.source;
@@ -257,7 +257,7 @@ impl BeeperGuiApp {
             let stack =
                 column![txt(name, 13.0).line_height(Pixels(rem(MENU_LINE))), crate::style::fixed(sub, 11.0, Weight::Normal).color(p.sub)];
             let line = row![container(icon).center_x(16), stack].spacing(14);
-            rows.push((menu_line(p, line, Some(close(msg))), menu_pitch() + 11.0 * 1.4));
+            rows.push(menu_line(p, line, Some(close(msg))));
         }
         let how = tr("How It Works");
         width = width.max(14.0 + 14.0 + text_width(how, 13.0, Weight::Normal) + 26.0);
@@ -269,7 +269,7 @@ impl BeeperGuiApp {
             "",
             Some(close(UiMessage::Info(info::Msg::HowItWorks(true)))),
         );
-        rows.extend([(menu_rule(p), MENU_RULE), (how, menu_pitch())]);
+        rows.extend([menu_rule(p), how]);
         (rows, width.clamp(160.0, 360.0))
     }
 

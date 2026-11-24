@@ -236,7 +236,7 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `threadedRepliesMenu` of the thread pane at `at`.
-    pub(crate) fn view_thread_menu(&self, at: Point) -> (El<'_>, f32, f32) {
+    pub(crate) fn view_thread_menu(&self, at: Point) -> El<'_> {
         let p = &self.pal;
         let thread = self.pane().thread.as_deref().expect("a thread pane");
         let (cid, root) = (thread.selected_chat_id.clone().expect("a chat"), thread.thread_root.clone().expect("a root"));
@@ -249,26 +249,15 @@ impl BeeperGuiApp {
             UiMessage::CommandBar(commands::Msg::JumpTo(cid.clone(), root.clone())),
             UiMessage::Message(message::Msg::Select(vec![root.clone()])),
         ]);
-        let read = unread.then(|| {
-            [
-                (menu_item(p, None, tr("Mark as Read").into(), "", Some(UiMessage::Thread(Msg::MarkRead))), menu_pitch()),
-                (menu_rule(p), MENU_RULE),
-            ]
-        });
+        let read =
+            unread.then(|| [menu_item(p, None, tr("Mark as Read").into(), "", Some(UiMessage::Thread(Msg::MarkRead))), menu_rule(p)]);
         let window = UiMessage::Commands(vec![UiMessage::Thread(Msg::Hide), UiMessage::Thread(Msg::OpenWindow(cid.clone(), root.clone()))]);
-        let rows: Vec<(El, f32)> = read
-            .into_iter()
-            .flatten()
-            .chain([
-                (follow, menu_pitch()),
-                (menu_item(p, None, tr("Open in New Window").into(), "", Some(window)), menu_pitch()),
-                (menu_item(p, None, tr("View in Chat").into(), "", Some(view)), menu_pitch()),
-            ])
-            .collect();
-        let (menu, h) = crate::menu_rows(p, rows, 233);
-        let menu = menu;
-        let (x, y) = crate::menu_spot(at, 233.0, h, self.pane().size);
-        (menu.into(), x, y)
+        let rows = read.into_iter().flatten().chain([
+            follow,
+            menu_item(p, None, tr("Open in New Window").into(), "", Some(window)),
+            menu_item(p, None, tr("View in Chat").into(), "", Some(view)),
+        ]);
+        crate::menu_keys::menu_at(crate::menu_card(p, Column::with_children(rows), 233), None, move |m, area| crate::menu_spot(at, m, area))
     }
 
     /// Desktop's "Unread threads" pill at the top of the chat list: the count, with "@" for a mention.
@@ -296,14 +285,15 @@ impl BeeperGuiApp {
     }
 
     /// The menu of the "Unread threads" pill at `at`.
-    pub(crate) fn view_unread_menu(&self, at: Point) -> (El<'_>, f32, f32) {
+    pub(crate) fn view_unread_menu(&self, at: Point) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
         let n = self.unread_threads(&st, true).len();
         let label = trn("Mark %d Thread as Read", "Mark %d Threads as Read", n, &[&n]);
         let col = column![menu_item(p, None, label, "", Some(UiMessage::Thread(Msg::MarkAllRead)))];
-        let menu = crate::menu_card(p, col, 233);
-        (menu.into(), at.x, at.y.min(self.pane().size.height - 8.0 - menu_pitch() - 8.0))
+        crate::menu_keys::menu_at(crate::menu_card(p, col, 233), None, move |m, area| {
+            Point::new(at.x, at.y.min(area.height - 8.0 - m.height))
+        })
     }
 
     /// Desktop's `UnreadThreads` view: the unread followed threads as cards, newest first, and the thread pane of the
