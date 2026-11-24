@@ -6006,18 +6006,11 @@ fn time_suggestions_editor_like_desktop() {
     let _ = app.update(UiMessage::TimeSuggestions(Msg::Cancel));
     assert!(app.time_edit.input.is_none() && app.settings_window.is_some(), "Cancel closes the input");
 
-    // The remove button of a row, the close icon on the line of its phrase.
+    // The remove button of a row. The button of the last phrase is disabled, and has no focus target.
     let remove = |app: &mut BeeperGuiApp, phrase: &str| {
         let mut sim = tall(app);
-        let row = sim.find(phrase).expect("the phrase").bounds().center_y();
-        let close = icon::CLOSE.to_string();
-        let found = sim.find(move |c: iced_test::selector::Candidate<'_>| match c {
-            iced_test::selector::Candidate::Text { content, bounds, .. } if content == close && (bounds.center_y() - row).abs() < 10.0 => {
-                Some(bounds.center())
-            }
-            _ => None,
-        });
-        sim.point_at(found.expect("the remove button"));
+        let Ok(found) = sim.find(iced::widget::Id::from(format!("time-remove-{phrase}"))) else { return };
+        sim.point_at(found.bounds().center());
         let _ = sim.simulate(iced_test::simulator::click());
         let msgs: Vec<UiMessage> = sim.into_messages().collect();
         apply_all(app, msgs);
