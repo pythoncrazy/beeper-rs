@@ -908,11 +908,16 @@ fn unread_label(n: usize) -> String {
 
 fn count_badge<'a>(c: &Chat, bg: Color, fg: Color, h: f32) -> El<'a> {
     let n = if c.unread_count > 0 { unread_label(c.unread_count as usize) } else { String::new() };
-    let empty = n.is_empty() && c.unread_mentions == 0;
-    let at = (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 10.0).color(fg));
+    count_pill(n, c.unread_mentions > 0, (bg, fg), h)
+}
+
+/// Desktop's unread counts (`.unreadCount`, `.activityIndicator`, `.pillCount`): `h` high and at least as wide, with
+/// 4 px sides, the 12 px AtSign of mentions 2 px before the count, and tabular figures.
+fn count_pill<'a>(n: String, mention: bool, (bg, fg): (Color, Color), h: f32) -> El<'a> {
+    let w = (crate::style::tabular_width(&n, 10.0, Weight::Semibold) + if mention { 14.0 } else { 0.0 } + 8.0).max(h);
+    let at = mention.then(|| ic(icon::AT_SIGN, 10.0).color(fg));
     let body = row![].push(at).push(semi(n, 10.0).color(fg)).spacing(2).align_y(Center);
-    let pill = container(body).padding([0, 4]).center_y(h).style(fill_box(bg, h / 2.0));
-    if empty { pill.width(h) } else { pill }.into()
+    container(body).center_x(w).center_y(h).style(fill_box(bg, h / 2.0)).into()
 }
 
 fn closable_head<'a>(p: &Palette, title: &str, size: f32, msg: UiMessage) -> El<'a> {
