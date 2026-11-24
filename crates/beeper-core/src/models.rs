@@ -82,59 +82,71 @@ pub struct FileRule {
 /// The file kinds that a chat accepts.
 pub type FileRules = std::collections::BTreeMap<String, FileRule>;
 
-/// The file kinds of a chat. Chats with the same rules share one copy, so many chats on a few networks keep a few
-/// rule sets in memory.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Files(std::sync::Arc<FileRules>);
+/// The file kinds of a chat.
+pub type Files = Shared<FileRules>;
 
-impl Files {
-    /// The shared copy of `rules`.
-    pub fn new(rules: FileRules) -> Files {
-        static POOL: std::sync::Mutex<Vec<std::sync::Arc<FileRules>>> = std::sync::Mutex::new(Vec::new());
-        let mut pool = POOL.lock().expect("the pool of file rules");
-        if let Some(shared) = pool.iter().find(|r| ***r == rules) {
-            return Files(shared.clone());
+/// A value that the chats of a network have in common, such as their file rules or their room features. Chats with
+/// an equal value share one copy, so many chats on a few networks keep a few copies in memory.
+#[derive(Debug, PartialEq)]
+pub struct Shared<T>(std::sync::Arc<T>);
+
+type Pooled = std::sync::Arc<dyn std::any::Any + Send + Sync>;
+
+impl<T: Clone + PartialEq + Send + Sync + 'static> Shared<T> {
+    /// The shared copy of `value`.
+    pub fn new(value: &T) -> Self {
+        static POOL: std::sync::Mutex<Vec<Pooled>> = std::sync::Mutex::new(Vec::new());
+        let mut pool = POOL.lock().expect("the pool of shared values");
+        if let Some(shared) = pool.iter().filter_map(|s| s.clone().downcast::<T>().ok()).find(|s| **s == *value) {
+            return Shared(shared);
         }
-        let shared = std::sync::Arc::new(rules);
+        let shared = std::sync::Arc::new(value.clone());
         pool.push(shared.clone());
-        Files(shared)
+        Shared(shared)
     }
 }
 
-impl std::ops::Deref for Files {
-    type Target = FileRules;
-    fn deref(&self) -> &FileRules {
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Shared(self.0.clone())
+    }
+}
+
+impl<T> std::ops::Deref for Shared<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
         &self.0
     }
 }
 
 /// A change makes a copy for this chat only.
-impl std::ops::DerefMut for Files {
-    fn deref_mut(&mut self) -> &mut FileRules {
+impl<T: Clone> std::ops::DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
         std::sync::Arc::make_mut(&mut self.0)
     }
 }
 
-impl Serialize for Files {
+impl<T: Serialize> Serialize for Shared<T> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         self.0.serialize(s)
     }
 }
 
-/// The rules of the JSON text of the rules, for the chats whose stored JSON has the same text, which most chats of a
-/// network do: they take the shared copy without a parse.
-impl<'de> Deserialize<'de> for Files {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Files, D::Error> {
-        type Parsed = std::sync::Mutex<Option<std::collections::HashMap<Box<str>, Files>>>;
-        static PARSED: Parsed = std::sync::Mutex::new(None);
-        let raw = Box::<serde_json::value::RawValue>::deserialize(d)?;
-        if let Some(files) = PARSED.lock().expect("the parsed file rules").as_ref().and_then(|p| p.get(raw.get())) {
-            return Ok(files.clone());
+/// The shared copy for the JSON text of the value, for the chats whose stored JSON has the same text, which most chats
+/// of a network do: they take it without a parse.
+impl<'de, T: serde::de::DeserializeOwned + Clone + PartialEq + Send + Sync + 'static> Deserialize<'de> for Shared<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        type Parsed = std::collections::BTreeMap<std::any::TypeId, std::collections::HashMap<Box<str>, Pooled>>;
+        static PARSED: std::sync::Mutex<Parsed> = std::sync::Mutex::new(Parsed::new());
+        let (raw, kind) = (Box::<serde_json::value::RawValue>::deserialize(d)?, std::any::TypeId::of::<T>());
+        let known = |p: &Parsed| p.get(&kind)?.get(raw.get())?.clone().downcast::<T>().ok();
+        if let Some(shared) = known(&PARSED.lock().expect("the parsed shared values")) {
+            return Ok(Shared(shared));
         }
-        let files = Files::new(serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?);
-        let mut parsed = PARSED.lock().expect("the parsed file rules");
-        parsed.get_or_insert_default().insert(raw.get().into(), files.clone());
-        Ok(files)
+        let shared = Self::new(&serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?);
+        let mut parsed = PARSED.lock().expect("the parsed shared values");
+        parsed.entry(kind).or_default().insert(raw.get().into(), shared.0.clone());
+        Ok(shared)
     }
 }
 
@@ -768,7 +780,7 @@ pub struct Chat {
     /// Desktop's `features`: the content of the room's `com.beeper.room_features`, which the Desktop API maps to the
     /// chat's `capabilities`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub features: Option<Box<serde_json::Value>>,
+    pub features: Option<Shared<serde_json::Value>>,
     /// The poll features of the network, or `None` when it has no polls.
     #[serde(default = "beeper_polls")]
     pub polls: Option<PollRules>,
@@ -2483,6 +2495,11 @@ mod tests {
         c.remove(FILE_FILE);
         assert!(c.is_empty() && a.len() == 1, "a change makes a copy for one chat");
         assert_eq!(serde_json::to_value(&a).unwrap(), serde_json::json!({ "m.file": { "mime_types": { "*/*": 2 } } }));
+        let features = |text: &str| serde_json::from_str::<Option<Shared<serde_json::Value>>>(text).unwrap();
+        let (f, g) = (features(r#"{"reply":2}"#).unwrap(), features(r#"{ "reply": 2 }"#).unwrap());
+        assert!(std::sync::Arc::ptr_eq(&f.0, &g.0) && f["reply"] == 2, "equal room features share one copy too");
+        assert!(serde_json::from_str::<Files>("{}").unwrap().is_empty() && features("{}").unwrap().is_object());
+        assert!(features("null").is_none(), "a room without features");
     }
 
     #[test]
