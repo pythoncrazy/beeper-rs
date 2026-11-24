@@ -4872,7 +4872,7 @@ impl BeeperGuiApp {
                 if let Some(d) = &self.spaces_window {
                     return self.raise(d.id);
                 }
-                let (id, open) = self.open_child(SPACES_SIZE);
+                let (id, open) = self.open_resizable_child(SPACES_SIZE);
                 let st = self.store.read();
                 let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
                 let order = order.collect();

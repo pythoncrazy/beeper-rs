@@ -5058,27 +5058,42 @@ fn zoom_keys_like_desktop() {
     assert_eq!((app.zoom, crate::style::rem(16.0)), (1.1, 12.0), "the zoom keeps the root font");
 }
 
+/// The settings of the first window that `task` opens. The task waits for the window, so only its first one counts.
+pub(crate) fn opened_window(task: Task<UiMessage>) -> Option<window::Settings> {
+    use iced::futures::StreamExt;
+    let actions = iced_runtime::task::into_stream(task)?;
+    let open = actions.filter_map(|a| async move {
+        match a {
+            iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s),
+            _ => None,
+        }
+    });
+    iced::futures::executor::block_on(open.boxed().next())
+}
+
+/// Electron gives the windows that Desktop's renderer opens its 330 by 400 minimum too: the 340 by 380 Account
+/// Nickname window is 400 px high and the 303 px wide Edit Labels window 330 px wide. Edit Labels, Edit Spaces and
+/// Merge Chats leave out `resizable`, so they resize down to it.
+#[test]
+fn small_windows_open_at_desktops_minimum_size() {
+    let mut app = demo_app("window-minimum");
+    let size = |s: window::Settings| (s.size, s.resizable, s.min_size);
+    let (_, nickname) = app.open_child(crate::nickname::NICKNAME_SIZE);
+    assert_eq!(opened_window(nickname).map(size), Some((Size::new(340.0, 400.0), false, None)));
+    let labels = app.update(UiMessage::Labels(labels::Msg::OpenEdit(NOTE_CHAT_ID.into())));
+    assert_eq!(opened_window(labels).map(size), Some((Size::new(330.0, 488.0), true, Some(windows::MIN_SIZE))));
+    let spaces = app.update(UiMessage::OpenEditSpaces);
+    assert_eq!(opened_window(spaces).map(size), Some((SPACES_SIZE, true, Some(windows::MIN_SIZE))));
+    let (_, poll) = app.open_child(Size::new(400.0, 620.0));
+    assert_eq!(opened_window(poll).map(size), Some((Size::new(400.0, 620.0), false, None)), "a bigger one keeps its size");
+}
+
 /// Desktop's windows open at their size in screen pixels whatever the zoom and the font size, and iced opens a
 /// window at its size times the scale factor.
 #[test]
 fn windows_open_at_their_size_at_any_zoom_like_desktop() {
-    use iced::futures::StreamExt;
     use iced::keyboard::{Key, Modifiers};
-    let opened = |app: &mut BeeperGuiApp| {
-        let task = app.open_settings(SettingsTab::General);
-        let actions = iced_runtime::task::into_stream(task).expect("a window opens");
-        iced::futures::executor::block_on(
-            actions
-                .filter_map(|a| async move {
-                    match a {
-                        iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s.size),
-                        _ => None,
-                    }
-                })
-                .boxed()
-                .next(),
-        )
-    };
+    let opened = |app: &mut BeeperGuiApp| opened_window(app.open_settings(SettingsTab::General)).map(|s| s.size);
     let mut app = demo_app("zoomed-windows");
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 8)));
     assert_eq!(opened(&mut app), Some(SETTINGS_SIZE), "the font size 17 does not zoom the window");

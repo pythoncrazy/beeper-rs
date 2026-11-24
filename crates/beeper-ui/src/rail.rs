@@ -973,18 +973,22 @@ impl BeeperGuiApp {
         };
         let h = 8.0 + menu_pitch() * rail_label(&st, id).map_or(2.0, label_rows);
         drop(st);
-        let (menu, sub) = self.account_menu(id, SpaceMenu::Gear);
-        let x = if at.x + 233.0 > SPACES_SIZE.width { at.x - 233.0 } else { at.x }.max(4.0);
-        let y = at.y.min(SPACES_SIZE.height - h - 8.0);
-        let sub_x = (x + 233.0).min(SPACES_SIZE.width - ACCOUNT_SUB_W - 4.0);
-        let act = |m| UiMessage::Spaces(SpacesEdit::Act(Box::new(m)));
-        let place = |m: El<'a>, x: f32| -> El<'a> {
-            let m = mouse_area(m.map(act)).on_press(UiMessage::Noop);
-            container(m).padding(Padding::ZERO.left(x).top(y)).into()
-        };
-        let close = crate::backdrop(container(Space::new()).width(Fill).height(Fill))
-            .on_press(edit(SpacesEdit::Menu(None)))
-            .on_right_press(edit(SpacesEdit::Menu(None)));
-        stack![window, close, place(menu, x)].push(sub.map(|s| place(s, sub_x))).into()
+        // The window is resizable, so the menu stays in the window's size.
+        let menus = iced::widget::responsive(move |size| {
+            let (menu, sub) = self.account_menu(id, SpaceMenu::Gear);
+            let x = if at.x + 233.0 > size.width { at.x - 233.0 } else { at.x }.max(4.0);
+            let y = at.y.min(size.height - h - 8.0);
+            let sub_x = (x + 233.0).min(size.width - ACCOUNT_SUB_W - 4.0);
+            let act = |m| UiMessage::Spaces(SpacesEdit::Act(Box::new(m)));
+            let place = |m: El<'a>, x: f32| -> El<'a> {
+                let m = mouse_area(m.map(act)).on_press(UiMessage::Noop);
+                container(m).padding(Padding::ZERO.left(x).top(y)).into()
+            };
+            let close = crate::backdrop(container(Space::new()).width(Fill).height(Fill))
+                .on_press(edit(SpacesEdit::Menu(None)))
+                .on_right_press(edit(SpacesEdit::Menu(None)));
+            stack![close, place(menu, x)].push(sub.map(|s| place(s, sub_x))).into()
+        });
+        stack![window, menus].into()
     }
 }
