@@ -100,6 +100,21 @@ fn grid_move(at: usize, key: Named, width: f32) -> usize {
 }
 
 /// Desktop's `intro-avatar` faces of the New Label intro.
+/// The faces of a sheet's intro, `faces` or three sample ones, in 4 px rings 33 px apart, `drop` px under `tile` in a
+/// 2 px ring over the top right.
+pub(crate) fn intro_faces<'a>(p: &Palette, mut faces: Vec<El<'a>>, tile: impl Into<El<'a>>, drop: f32) -> El<'a> {
+    if faces.is_empty() {
+        faces = LABEL_INTRO_FACES.iter().map(|h| image(h.clone()).width(48).height(48).into()).collect();
+    }
+    let width = 56.0 + (faces.len() - 1) as f32 * 33.0;
+    let faces = faces.into_iter().enumerate().fold(Stack::new(), |s, (i, face)| {
+        let ring = container(face).padding(4).style(fill_box(p.card, 28.0));
+        s.push(container(ring).padding(Padding::ZERO.left(i as f32 * 33.0)))
+    });
+    let tile = container(tile).padding(2).style(fill_box(p.card, 15.0));
+    stack![container(faces).padding(Padding::ZERO.top(drop)), container(tile).align_right(width + drop)].into()
+}
+
 pub(crate) static LABEL_INTRO_FACES: std::sync::LazyLock<[image::Handle; 3]> = std::sync::LazyLock::new(|| {
     [
         include_bytes!("../assets/label_intro/1.png").as_slice(),
@@ -935,19 +950,9 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read();
         let picked = d.chats.iter().filter_map(|c| st.resolve_chat_idx(c)).take(5);
-        let mut faces: Vec<El> = picked.map(|i| self.chat_avatar(&st.chats[i], 48.0, 1.25)).collect();
-        if faces.is_empty() {
-            faces = LABEL_INTRO_FACES.iter().map(|h| image(h.clone()).width(48).height(48).into()).collect();
-        }
-        let n = faces.len();
-        let faces = faces.into_iter().enumerate().fold(Stack::new(), |s, (i, face)| {
-            let ring = container(face).padding(4).style(fill_box(p.card, 28.0));
-            s.push(container(ring).padding(Padding::ZERO.left(i as f32 * 33.0)))
-        });
+        let faces = picked.map(|i| self.chat_avatar(&st.chats[i], 48.0, 1.25)).collect();
         let tile = Label { color: Some(LABEL_COLORS.len() as u8 - 1), icon: Some(DEFAULT_LABEL_ICON.into()), ..Label::default() };
-        let tile = container(label_tile(&tile, 26.0, 18.0, 13.0, p.strong)).padding(2).style(fill_box(p.card, 15.0));
-        let width = 56.0 + (n - 1) as f32 * 33.0;
-        let stack = stack![container(faces).padding(Padding::ZERO.top(13.0)), container(tile).align_right(width + 13.0),];
+        let stack = intro_faces(p, faces, label_tile(&tile, 26.0, 18.0, 13.0, p.strong), 13.0);
         let headline = semi(tr("Organize chats in custom spaces."), 13.0).color(p.strong).align_x(Center);
         let intro = column![stack, headline].spacing(16).align_x(Center);
         let plus = container(badge(p, prefs::Badge::Plus)).align_right(Fill).padding(Padding::new(12.0).right(14.0));
@@ -975,28 +980,30 @@ impl BeeperGuiApp {
         scrollable(container(body).padding(16)).direction(Direction::Vertical(Scrollbar::hidden())).into()
     }
 
+    /// The search row of a sheet's chat or space picker: the search icon, the field `id` with `query`, and a clear
+    /// button while it has text, which takes no visible focus.
+    pub(crate) fn sheet_search<'a>(
+        &self, window: window::Id, id: &'static str, hint: &str, query: &str, on: impl Fn(String) -> UiMessage + 'a,
+    ) -> El<'a> {
+        let p = &self.pal;
+        let empty = on(String::new());
+        let clear = (!query.trim().is_empty()).then(|| {
+            let clear = icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, empty.clone());
+            self.target(Some(window), "clear", clear, Keys::press(empty), Look::Hidden)
+        });
+        let search = text_input(hint, query).id(id).on_input(on).size(rem(13.0)).line_height(lh(16.0)).padding([14, 0]);
+        let search = search.style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search].push(clear).spacing(10).align_y(Center);
+        search.padding(Padding::ZERO.left(16.0).right(8.0)).into()
+    }
+
     /// Desktop's `LabelChatPicker` (`_de`): the search row, then the selected, recent and other chats.
     fn view_label_pick<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
         let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
-        let search = text_input(tr("Search name, @, number, or network"), &d.search)
-            .id("label-search")
-            .on_input(move |q| edit(LabelEdit::Search(q)))
-            .size(rem(13.0))
-            .line_height(lh(16.0))
-            .padding([14, 0])
-            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-        let clear = (!d.search.trim().is_empty()).then(|| {
-            let empty = edit(LabelEdit::Search(String::new()));
-            let clear = icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, empty.clone());
-            self.target(Some(d.id), "clear", clear, Keys::press(empty), Look::Hidden)
-        });
-        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search]
-            .push(clear)
-            .spacing(10)
-            .align_y(Center)
-            .padding(Padding::ZERO.left(16.0).right(8.0));
+        let search = tr("Search name, @, number, or network");
+        let search = self.sheet_search(d.id, "label-search", search, &d.search, move |q| edit(LabelEdit::Search(q)));
         let rows = self.label_rows(&st, d).into_iter().map(|r| -> El<'a> {
             match r {
                 LabelRow::Note => txt(tr("Clear search to show all selected chats"), 12.0).color(p.sub).align_x(Center).width(Fill).into(),
