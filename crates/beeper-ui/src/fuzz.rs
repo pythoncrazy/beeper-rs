@@ -8837,6 +8837,26 @@ fn link_previews_like_desktop() {
     assert!(sim.find("Scaling Laws for Neural Language Models").is_err(), "a link without a preview shows none");
 }
 
+/// Desktop's `.LinkPreview-module__host`: its 12 px `link` icon, a filled chain whose ink is 8.5 px wide and ends
+/// 1.7 px before the box, 4 px before the host.
+#[test]
+fn link_preview_host_icon_like_desktop() {
+    let mut app = demo_app("link-host-icon");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 900.0), app.view_main());
+    let host = sim.find("arxiv.org").expect("the host").bounds();
+    let shot = crate::message::tests::pixels(&mut sim);
+    let (x0, y0) = (2 * (host.x - 16.0) as u32, 2 * (host.y - 2.0) as u32);
+    let bg = shot.get_pixel(x0, y0).0;
+    let inked: Vec<u32> = (x0..x0 + 24)
+        .filter(|&x| (y0..y0 + 2 * (host.height + 4.0) as u32).any(|y| u16::from(shot.get_pixel(x, y).0[0]) + 40 < u16::from(bg[0])))
+        .collect();
+    let (left, right) = (inked[0], inked[inked.len() - 1]);
+    assert!(right - left < 18, "8.5 px of ink at the shot's scale of 2: {}", right - left + 1);
+    let gap = 2 * host.x as u32 - right;
+    assert!((11..=12).contains(&gap), "the ink ends 1.7 px before the box, 4 px before the host: {gap}");
+}
+
 #[test]
 fn email_links_and_media_items_match_desktop() {
     let address = |t: &str| crate::linkify::links(t).into_iter().map(|(r, h)| (t[r].to_string(), h)).collect::<Vec<_>>();
