@@ -813,11 +813,15 @@ pub fn glow_box(bg: Color, glow: Color, r: f32, y: f32, blur: f32) -> impl Fn(&T
     }
 }
 
-/// Desktop's `.right` card of the open chat: rounded 10px, with a soft shadow all around.
+/// The corner radius of Desktop's `.right` card.
+pub const PANE_RADIUS: f32 = 10.0;
+
+/// Desktop's `.right` card of the open chat: rounded 10px, with its `drop-shadow(0 0 10px rgba(0, 0, 0, 0.12))`. A
+/// filter's blur is a standard deviation, half the blur radius of a box shadow.
 pub fn pane_card(bg: Color) -> impl Fn(&Theme) -> container::Style + Copy {
     move |t| container::Style {
-        shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 },
-        ..fill_box(bg, 10.0)(t)
+        shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.12), offset: Vector::ZERO, blur_radius: 20.0 },
+        ..fill_box(bg, PANE_RADIUS)(t)
     }
 }
 
