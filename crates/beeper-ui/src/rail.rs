@@ -557,8 +557,7 @@ impl BeeperGuiApp {
             ))
             .spacing(8)
             .align_x(Center)
-            .width(68)
-            .padding(Padding::ZERO.top(14.0));
+            .width(68);
         let me = st.me();
         let media = UiMessage::Media(media_view::Msg::Open);
         let settings = UiMessage::Settings(settings::Msg::Open(SettingsTab::General));
@@ -579,8 +578,10 @@ impl BeeperGuiApp {
         .spacing(8)
         .align_x(Center)
         .padding(Padding::ZERO.bottom(16.0));
+        // Desktop's `.account-switcher` keeps 14 px above the scrolling `.filters-pane-list`, and its `.current-user`
+        // 10 px between the list and the footer: the spaces scroll under neither.
         let scroll = scrollable(top).direction(Direction::Vertical(Scrollbar::hidden())).height(Fill);
-        let rail = container(column![scroll, footer].align_x(Center)).width(68).height(Fill);
+        let rail = container(column![scroll, footer].spacing(10).align_x(Center)).width(68).height(Fill).padding(Padding::ZERO.top(14.0));
         let rail =
             mouse_area(rail.style(fill_box(p.hover, 0.0))).on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(RAIL_MENU.into())));
         stack![rail].push(lifted).into()
