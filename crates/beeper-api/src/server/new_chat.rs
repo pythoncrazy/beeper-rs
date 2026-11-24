@@ -3,8 +3,8 @@
 //! and finds the people of its chats. The bridge calls run without the store lock.
 
 use super::{
-    bad, check, create_chat_issues, custom_issue, error, error_with, invalid_input, missing, ok, search, store_error, string_issue,
-    too_short, type_issue, view, zod_type, Issue, Reply, Req, Response, MIN_1,
+    bad, check, checked, create_chat_issues, custom_issue, error, error_with, missing, ok, search, store_error, string_issue, too_short,
+    type_issue, view, zod_type, Issue, Reply, Req, Response, MIN_1,
 };
 use crate::http::StatusCode;
 use beeper_core::matrix::{bridge_user, ChatBridge};
@@ -164,10 +164,7 @@ fn created(store: &SharedStore, room: &str, text: Option<String>, status: Option
 /// Desktop's `createChat`: a new direct chat or group of the account with the participants, which the bridge makes
 /// (Desktop's `createThread`). Desktop names only groups, and answers a failure of the bridge as a failed tool.
 fn create_chat(store: &SharedStore, r: &Req) -> Reply {
-    let issues = create_chat_issues(&r.body);
-    if !issues.is_empty() {
-        return Err(invalid_input(issues));
-    }
+    checked(create_chat_issues(&r.body))?;
     let account = r.str("accountID").expect("a string accountID");
     let participants: Vec<String> = r.parse("participantIDs")?;
     let group = r.str("type") == Some("group");
@@ -206,10 +203,7 @@ fn start_error(e: &str) -> Response {
 /// Desktop's `startChat`: the direct chat of the account with a person, which the bridge makes from the first
 /// identifier that it takes (an ID, a phone number, an email, then a username) unless the account has the chat.
 fn start_chat(store: &SharedStore, r: &Req) -> Reply {
-    let issues = start_chat_issues(&r.body);
-    if !issues.is_empty() {
-        return Err(invalid_input(issues));
-    }
+    checked(start_chat_issues(&r.body))?;
     let account = r.str("accountID").expect("a string accountID");
     let user = &r.body["user"];
     let field = |k: &str| user[k].as_str();
@@ -374,10 +368,7 @@ fn contacts(store: &SharedStore, id: &str, rest: &[&str], r: &Req) -> Reply {
         true => (
             check(&mut issues, r.string("cursor")).flatten(),
             check(&mut issues, r.direction()).unwrap_or_default(),
-            r.page_size(50, MIN_1, 200).unwrap_or_else(|found| {
-                issues.extend(found);
-                0
-            }),
+            r.page_size(50, MIN_1, 200).map_err(|found| issues.extend(found)).unwrap_or_default(),
         ),
         false => (None, false, 0),
     };
@@ -392,9 +383,7 @@ fn contacts(store: &SharedStore, id: &str, rest: &[&str], r: &Req) -> Reply {
         }
         q => q.flatten(),
     };
-    if !issues.is_empty() {
-        return Err(invalid_input(issues));
-    }
+    checked(issues)?;
     let q = search::js_trim(query.unwrap_or_default());
     let real = store.read().matrix.is_some();
     let found = if real && !q.is_empty() { bridge_finds(store, id, q) } else { Vec::new() };
