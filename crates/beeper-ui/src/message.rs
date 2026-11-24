@@ -6103,4 +6103,18 @@ pub(crate) mod tests {
         assert!(near(bubble.width, 224.2) && bubble.height == 50.0, "{bubble:?}");
         assert!(near(bubble.x + bubble.width - 11.0, time.x + time.width) && time.y - bubble.y == 26.0, "{bubble:?} {time:?}");
     }
+
+    /// A link's `:after` arrow is 12 px of the link (8 px and its 2 px margins), so a bubble that ends with a link is
+    /// 22 + text + 12 + 6 px wider than its time, which starts 11 + text + 12 + 6 px in, alone or after other words.
+    #[test]
+    fn link_arrows_leave_the_time_where_desktop_puts_it() {
+        let mut app = crate::fuzz::demo_app("link-times");
+        for text in ["https://protomaps.com/", "see https://protomaps.com/"] {
+            let w = crate::style::text_width(text, 13.0, Weight::Normal) + 12.0;
+            let (bubble, time) = sent_bubble(&mut app, text, 1000.0);
+            let near = |a: f32, b: f32| (a - b).abs() <= 0.5;
+            assert!(near(bubble.width, 22.0 + w + 6.0 + time.width) && bubble.height == 34.0, "{text}: {bubble:?} {time:?}");
+            assert!(near(time.x - bubble.x, 11.0 + w + 6.0), "{text}: {bubble:?} {time:?}");
+        }
+    }
 }
