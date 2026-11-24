@@ -283,7 +283,7 @@ impl BeeperGuiApp {
             // Desktop's `confirmDeleteThread`: the selected chats, which must share a delete action.
             Msg::AskDelete(id) => {
                 self.list.chat_menu = None;
-                let chats = if self.selection.is_empty() { vec![id.clone()] } else { self.selection.clone() };
+                let chats = if self.selection.is_empty() { vec![id] } else { self.selection.clone() };
                 let st = self.store.read();
                 let modes = chats.iter().filter_map(|c| st.resolve_chat_idx(c)).map(|i| st.chats[i].delete_modes);
                 let common = modes.fold(DELETE_FOR_ME | DELETE_FOR_EVERYONE, |all, m| all & m);
@@ -296,7 +296,7 @@ impl BeeperGuiApp {
                     .into();
                     return Task::none();
                 }
-                (self.confirm, self.delete_target, self.delete_chats) = (Some(ASK_DELETE_CHAT), Some(id), chats);
+                self.confirm = Some(Confirm::DeleteChats(chats));
             }
             msg @ (Msg::BeginSelecting(..)
             | Msg::ToggleSelectMode
@@ -304,7 +304,7 @@ impl BeeperGuiApp {
             | Msg::SelectionSet(..)
             | Msg::SelectionRemind(..)
             | Msg::SelectionMenu(..)) => return self.chat_list_selection(msg),
-            Msg::AskLeave(id) => (self.confirm, self.delete_target) = (Some(ASK_LEAVE_CHAT), Some(id)),
+            Msg::AskLeave(id) => self.confirm = Some(Confirm::LeaveChat(id)),
             Msg::Leave(id) => {
                 self.confirm = None;
                 self.store.write().leave_room(&id);
@@ -767,17 +767,6 @@ impl BeeperGuiApp {
     }
 
     /// The selected chats that still exist: the sync task can drop one before StoreChanged reaches update.
-    /// The chat menu rows that a selection of more chats adds: the count, and both Mark All items.
-    pub(crate) fn selection_rows(&self, st: &BeeperStore) -> f32 {
-        let picked = self.selected_chats(st);
-        let unread = picked.iter().filter(|c| has_flag(c, ChatFlag::MarkedUnread)).count();
-        match picked.len() {
-            0 | 1 => 0.0,
-            n if (1..n).contains(&unread) => 2.0 * menu_pitch(),
-            _ => menu_pitch(),
-        }
-    }
-
     pub(crate) fn selected_chats<'s>(&self, st: &'s BeeperStore) -> Vec<&'s Chat> {
         self.selection.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect()
     }
@@ -866,8 +855,8 @@ impl BeeperGuiApp {
         container(bar).padding(8).style(fill_box(p.selected, 26.0)).into()
     }
 
-    /// The Remind Me or More menu of the selection bar, and its height.
-    pub(crate) fn view_selection_menu(&self, which: u8) -> (El<'_>, f32) {
+    /// The Remind Me or More menu of the selection bar.
+    pub(crate) fn view_selection_menu(&self, which: u8) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
         let chats = self.selected_chats(&st);
@@ -927,11 +916,8 @@ impl BeeperGuiApp {
                 .flatten()
                 .collect()
         };
-        let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { MENU_RULE - menu_pitch() } else { 0.0 };
-        let h = 8.0 + items.len() as f32 * menu_pitch() + rules;
         let width = if which == 0 { SUB_MENU_W[1] } else { 233.0 };
-        let menu = crate::menu_card(p, Column::with_children(items), width);
-        (menu.into(), h)
+        crate::menu_card(p, Column::with_children(items), width).into()
     }
 
     pub(crate) fn view_filter_menu(&self) -> El<'_> {
@@ -1001,24 +987,25 @@ impl BeeperGuiApp {
         crate::menu_card(p, col, width).into()
     }
 
-    /// The chat menu, with `room` pixels from its top to the bottom of the window.
-    pub(crate) fn view_chat_menu(&self, cid: &str, sub_left: bool, room: f32) -> El<'_> {
-        if let Some(menu) = self.view_other_menu(cid) {
-            return menu;
-        }
-        let st = self.store.read();
-        let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
-        let m = MenuChats { st: &st, c, picked: self.selected_chats(&st) };
-        let menu = crate::menu_card(&self.pal, self.chat_menu_items(&m), chat_menu_w(&st));
-        let sub = self.chat_sub.map(|i| self.view_chat_sub(&m, i, room));
-        let (l, r) = if sub_left { (sub, None) } else { (None, sub) };
-        row![].push(l).push(menu).push(r).into()
+    /// The chat menu, or a menu in its slot, and its open submenu, opened at the cursor `at`.
+    pub(crate) fn view_chat_menu(&self, cid: &str, at: Point) -> El<'_> {
+        let (menu, sub) = self.view_other_menu(cid).unwrap_or_else(|| {
+            let st = self.store.read();
+            let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
+            let m = MenuChats { st: &st, c, picked: self.selected_chats(&st) };
+            let menu = crate::menu_card(&self.pal, self.chat_menu_items(&m), chat_menu_w(&st));
+            (menu.into(), self.chat_sub.map(|i| self.view_chat_sub(&m, i)))
+        });
+        menu_keys::menu_at(menu, sub, move |m, area| menu_spot(at, m, area))
     }
 
-    /// The menus that share the chat menu's slot but are not a chat's: the chat list's, the rail's, Chat Info's, a
-    /// space's, the Snooze and behavior menus of Chat Info, and a new-chat draft's.
-    fn view_other_menu(&self, cid: &str) -> Option<El<'_>> {
+    /// The menus that share the chat menu's slot but are not a chat's, with their open submenu: the chat list's, the
+    /// rail's, Chat Info's, a space's, the Snooze and behavior menus of Chat Info, and a new-chat draft's.
+    fn view_other_menu(&self, cid: &str) -> Option<(El<'_>, Option<El<'_>>)> {
         let p = &self.pal;
+        fn only<'a>(menu: impl Into<El<'a>>) -> Option<(El<'a>, Option<El<'a>>)> {
+            Some((menu.into(), None))
+        }
         if cid == SIDEBAR_MENU {
             let st = self.store.read();
             let keys = |name| prefs::hotkey_label(st.settings.hotkey_keys(name));
@@ -1031,44 +1018,43 @@ impl BeeperGuiApp {
                 (tr("Settings"), String::new(), settings(SettingsTab::General)),
             ]
             .map(|(label, key, msg)| menu_item(p, None, label.into(), key, Some(msg)));
-            return Some(crate::menu_card(p, Column::with_children(items), 233).into());
+            return only(crate::menu_card(p, Column::with_children(items), 233));
         }
         if cid == RAIL_MORE {
             let items = more_menu(&self.store.read()).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", Some(msg)),
                 None => menu_rule(p),
             });
-            return Some(crate::menu_card(p, Column::with_children(items), 233).into());
+            return only(crate::menu_card(p, Column::with_children(items), 233));
         }
         if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
             let items = info_menu(&self.store.read(), cid, |a| self.can(a, "create_dm")).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", msg),
                 None => menu_rule(p),
             });
-            return Some(crate::menu_card(p, Column::with_children(items), 233).into());
+            return only(crate::menu_card(p, Column::with_children(items), 233));
         }
         if let Some(entry) = cid.strip_prefix("account:") {
-            return Some(self.view_account_menu(entry));
+            return Some(self.account_menu(entry, SpaceMenu::Rail));
         }
         if cid == RAIL_MENU {
-            return Some(self.rail_menu(&self.store.read(), None));
+            return Some((self.rail_menu(&self.store.read(), None), None));
         }
         if let Some(entry) = cid.strip_prefix("head:") {
-            let (menu, sub) = self.account_menu(entry, SpaceMenu::Header);
-            return Some(row![menu].push(sub).into());
+            return Some(self.account_menu(entry, SpaceMenu::Header));
         }
         // Desktop's Snooze menu of the Chat Info toolbar.
         if let Some(id) = cid.strip_prefix(SNOOZE_MENU) {
             let rows = self.snooze_items(&self.store.read(), &[id.to_string()]);
-            return Some(crate::menu_rows(p, rows, SUB_MENU_W[3]).0.into());
+            return only(crate::menu_card(p, Column::with_children(rows), SUB_MENU_W[3]));
         }
         if let Some(id) = cid.strip_prefix(behavior::BEHAVIOR_MENU) {
             let (rows, w) = self.behavior_items(&self.store.read(), id);
-            return Some(crate::menu_rows(p, rows, w).0.into());
+            return only(crate::menu_card(p, Column::with_children(rows), w));
         }
         let n = cid.strip_prefix("draft:")?;
         let delete = UiMessage::NewChat(new_chat::Msg::Delete(n.parse().unwrap()));
-        Some(crate::menu_card(p, column![chat_item(p, tr("Delete Chat"), "", Some(delete))], 124).into())
+        only(crate::menu_card(p, column![chat_item(p, tr("Delete Chat"), "", Some(delete))], 124))
     }
 
     /// The items of a chat's menu, in the groups that close an open submenu on hover, and the submenu openers.
@@ -1077,7 +1063,10 @@ impl BeeperGuiApp {
         let close_sub = |items: Column<'a, UiMessage>| mouse_area(items).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
         let open_sub = |i: u8, label: &str| {
             let open = UiMessage::CommandBar(commands::Msg::ChatSub(Some(i)));
-            mouse_area(menu_item(p, None, label.into(), "›", Some(open.clone()))).on_enter(open)
+            menu_keys::opener(
+                mouse_area(menu_item(p, None, label.into(), "›", Some(open.clone()))).on_enter(open),
+                self.chat_sub == Some(i),
+            )
         };
         let low = if n == 0 { c.flag(ChatFlag::LowPriority) } else { m.every(ChatFlag::LowPriority) };
         let low = chat_item(
@@ -1178,37 +1167,16 @@ impl BeeperGuiApp {
             .push(chat_item(p, tr("Report a Problem"), &m.key("Report a Problem"), Some(UiMessage::OpenUrl(ISSUES_URL.into()))))
     }
 
-    /// The open submenu `i` of a chat's menu: Copy, Remind Me, Label or Snooze, next to the item that opens it and
-    /// inside the window.
-    fn view_chat_sub<'a>(&'a self, m: &MenuChats, i: u8, room: f32) -> Column<'a, UiMessage> {
-        let (p, st, c) = (&self.pal, m.st, m.c);
-        let (items, rules): (Vec<El>, f32) = match i {
-            0 => {
-                let copy = UiMessage::ChatList(chat_list::Msg::CopyLink(c.id.clone()));
-                (vec![chat_item(p, tr("Chat Link"), "", Some(copy))], 0.0)
-            }
+    /// The open submenu `i` of a chat's menu: Copy, Remind Me, Label or Snooze.
+    fn view_chat_sub<'a>(&'a self, m: &MenuChats, i: u8) -> El<'a> {
+        let (p, c) = (&self.pal, m.c);
+        let items = match i {
+            0 => vec![chat_item(p, tr("Chat Link"), "", Some(UiMessage::ChatList(chat_list::Msg::CopyLink(c.id.clone()))))],
             2 => m.label_items(p),
             1 => m.remind_items(p),
-            _ => {
-                let rows = self.snooze_items(st, &m.targets());
-                let rules = rows.iter().filter(|r| r.1 < menu_pitch()).count() as f32;
-                (rows.into_iter().map(|r| r.0).collect(), rules)
-            }
+            _ => self.snooze_items(m.st, &m.targets()),
         };
-        let labels = st.feature("labels-v2").on;
-        let h = 8.0 + items.len() as f32 * menu_pitch() - rules * (menu_pitch() - MENU_RULE);
-        let top = match i {
-            0 => 4.0 * menu_pitch(),
-            1 if labels => 8.0 * menu_pitch() + 22.0,
-            3 if labels => 9.0 * menu_pitch() + 22.0,
-            3 => 8.0 * menu_pitch() + 22.0,
-            _ => 7.0 * menu_pitch() + 22.0,
-        } + if m.reason().is_some() { menu_pitch() } else { 0.0 }
-            + if can_edit_group(c) { menu_pitch() } else { 0.0 }
-            + self.selection_rows(st);
-        let top = top.min(room - h).max(0.0);
-        let body = crate::menu_card(p, Column::with_children(items), SUB_MENU_W[usize::from(i)]);
-        column![Space::new().height(top), body]
+        crate::menu_card(p, Column::with_children(items), SUB_MENU_W[usize::from(i)]).into()
     }
 
     /// Desktop's `hasExpiredReminder`: the reminder time came while the reminder was set.
@@ -1819,8 +1787,9 @@ impl BeeperGuiApp {
         let sender = first.is_some().then(|| preview_sender(c, m?)).flatten();
         let digits = if l.counts && c.unread_count > 0 { unread_label(c.unread_count as usize).len() as f32 } else { 0.0 };
         let at = if c.unread_mentions > 0 { 12.0 } else { 0.0 };
-        let prefix = first.filter(|_| media_tag.is_some()).map(|s| format!("{s}:"));
-        let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal) + 4.0);
+        // Desktop's sender before a media chip is the text "Name: ", so a space of the text comes before the chip.
+        let prefix = first.filter(|_| media_tag.is_some()).map(|s| format!("{s}: "));
+        let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal));
         let base = 16.0 + if l.counts { 8.0 + 6.0 * digits + at } else { at }.max(18.0);
         let receipt = m.is_some_and(read_icon);
         let indent = match (receipt, m.is_some_and(|m| m.send_error.is_some())) {
@@ -1857,7 +1826,6 @@ impl BeeperGuiApp {
         });
         let align = if l.compact { Center } else { iced::Alignment::Start };
         let text = row![]
-            .push(prefix.map(|s| txt(s, 13.0).color(fg)))
             .push(media_tag.map(|(icon, label, _)| media_chip(p, icon, label, expired, fg)))
             .push(body.map(|b| preview_line(&b, width, if flowed { 1 } else { lines }, font, fg)))
             .push(draft.filter(|_| l.previews).map(|t| {
@@ -1874,6 +1842,8 @@ impl BeeperGuiApp {
             }))
             .spacing(4)
             .align_y(align);
+        let prefix = prefix.map(|s| txt(s, 13.0).width(prefix_w).wrapping(iced::widget::text::Wrapping::None).color(fg));
+        let text = row![].push(prefix).push(text).align_y(align);
         // `.thread-participant-name .participant-img`: 12 px, 2 px under the top of the line and 2 px before the name.
         let text = row![].push(face.map(|f| container(f).padding([2, 0]))).push(text).spacing(2).align_y(align);
         let preview = row![badge, receipt, text]
@@ -2161,7 +2131,7 @@ impl MenuChats<'_> {
     }
 
     /// The Label submenu: the labels by name, checked when the chat has them, then New Label….
-    fn label_items<'a>(&self, p: &Palette) -> (Vec<El<'a>>, f32) {
+    fn label_items<'a>(&self, p: &Palette) -> Vec<El<'a>> {
         let targets = self.targets();
         let mut sorted: Vec<&Label> = self.st.labels.iter().collect();
         sorted.sort_by_cached_key(|l| l.name.to_lowercase());
@@ -2171,11 +2141,11 @@ impl MenuChats<'_> {
             menu_item(p, Some(menu_check(on)), l.name.clone(), "", Some(msg))
         });
         let new = chat_item(p, tr("New Label…"), "", Some(UiMessage::Labels(labels::Msg::OpenCreate(targets.clone()))));
-        (rows.chain([menu_rule(p), new]).collect(), 1.0)
+        rows.chain([menu_rule(p), new]).collect()
     }
 
     /// The Remind Me submenu: Last Used and the presets with their times, Custom… and Dismiss Reminder.
-    fn remind_items<'a>(&self, p: &Palette) -> (Vec<El<'a>>, f32) {
+    fn remind_items<'a>(&self, p: &Palette) -> Vec<El<'a>> {
         let (st, c) = (self.st, self.c);
         let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
         // Desktop's `canSetReminderFor`: Beeper Plus, a free use, or a reminder to change.
@@ -2196,7 +2166,6 @@ impl MenuChats<'_> {
         let custom = UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(c.id.clone())));
         let custom = chat_item(p, tr("Custom…"), "", can.then_some(custom));
         let dismiss = chat_item(p, tr("Dismiss Reminder"), "", dismiss);
-        let rules = if can { 2.0 } else { 3.0 };
-        (presets.chain([menu_rule(p), custom, menu_rule(p), dismiss]).collect(), rules)
+        presets.chain([menu_rule(p), custom, menu_rule(p), dismiss]).collect()
     }
 }

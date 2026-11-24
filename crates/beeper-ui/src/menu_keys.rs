@@ -2,12 +2,12 @@
 //! ↓ and ↑ move the selection through the enabled items and wrap around, the first ↓ (↑) selects the first (last)
 //! item of a menu that the mouse opened, Home and End select the first and the last item, Enter runs the selected
 //! item, a letter selects the next item that starts with it or runs the only one (`SelectByChar`), and the pointer
-//! over an item selects it.
+//! over an item selects it. A [`menu_at`] places a menu and its submenu from their measured sizes.
 
 use super::*;
 use crate::prelude::*;
 use iced::advanced::widget::{self as advanced};
-use iced::advanced::{mouse, renderer};
+use iced::advanced::{layout, mouse, renderer};
 
 /// A row of a menu, whose message is its action, or none when it is greyed out.
 pub fn row<'a>(content: impl Into<El<'a>>, msg: Option<UiMessage>) -> El<'a> {
@@ -193,6 +193,125 @@ impl Widget<UiMessage, Theme, Renderer> for Menu<'_> {
         let keyed = tree.state.downcast_ref::<Selection>().keyed;
         let cursor = keyed.map_or(cursor, mouse::Cursor::Available);
         self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+    }
+}
+
+/// A menu at the top-left corner that `place` gives for its measured size and the window's, and its open submenu
+/// `sub` beside it as Chromium's `MenuController::CalculateMenuBounds` puts one: its first row level with the
+/// [`opener`] row, moved up to end inside the window, and on the left of the menu when the window has no room on its
+/// right. A press on either goes no further.
+pub fn menu_at<'a>(menu: impl Into<El<'a>>, sub: Option<El<'a>>, place: impl Fn(Size, Size) -> Point + 'a) -> El<'a> {
+    let guard = |m: El<'a>| -> El<'a> { iced::widget::mouse_area(m).on_press(UiMessage::Noop).into() };
+    El::new(MenuAt { children: std::iter::once(menu.into()).chain(sub).map(guard).collect(), place: Box::new(place) })
+}
+
+/// A row that opens a submenu of a [`menu_at`], which goes beside it while it is `open`.
+pub fn opener<'a>(row: impl Into<El<'a>>, open: bool) -> El<'a> {
+    crate::delegate::marked(row, None, Opener(open))
+}
+
+#[derive(Clone)]
+struct Opener(bool);
+
+/// The operation that finds the open [`opener`].
+struct FindOpener(Option<Rectangle>);
+
+impl Operation for FindOpener {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self)
+    }
+
+    fn custom(&mut self, _: Option<&iced::widget::Id>, bounds: Rectangle, state: &mut dyn std::any::Any) {
+        if let Some(Opener(true)) = state.downcast_ref() {
+            self.0.get_or_insert(bounds);
+        }
+    }
+}
+
+struct MenuAt<'a> {
+    children: Vec<El<'a>>,
+    place: Box<dyn Fn(Size, Size) -> Point + 'a>,
+}
+
+/// The children of a [`menu_at`] from left to right, the order in which a row of them draws.
+fn left_to_right(layout: Layout<'_>) -> Vec<(usize, Layout<'_>)> {
+    let mut kids: Vec<(usize, Layout)> = layout.children().enumerate().collect();
+    kids.sort_by(|a, b| a.1.bounds().x.total_cmp(&b.1.bounds().x));
+    kids
+}
+
+impl Widget<UiMessage, Theme, Renderer> for MenuAt<'_> {
+    fn children(&self) -> Vec<Tree> {
+        self.children.iter().map(Tree::new).collect()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(&self.children);
+    }
+
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fill, Length::Fill)
+    }
+
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+        let area = limits.max();
+        let loose = layout::Limits::new(Size::ZERO, area);
+        let [menu, sub @ ..] = self.children.as_mut_slice() else { unreachable!("a menu") };
+        let node = menu.as_widget_mut().layout(&mut tree.children[0], renderer, &loose);
+        let corner = (self.place)(node.size(), area);
+        let node = node.move_to(corner);
+        let at = node.bounds();
+        let mut nodes = vec![node];
+        if let [sub] = sub {
+            let mut find = FindOpener(None);
+            menu.as_widget_mut().operate(&mut tree.children[0], Layout::new(&nodes[0]), renderer, &mut find);
+            let node = sub.as_widget_mut().layout(&mut tree.children[1], renderer, &loose);
+            let size = node.size();
+            let x = if at.x + at.width + size.width > area.width { at.x - size.width } else { at.x + at.width };
+            let row = find.0.map_or(at.y, |r| r.y - crate::MENU_PAD);
+            nodes.push(node.move_to(Point::new(x, row.min(area.height - size.height).max(0.0))));
+        }
+        layout::Node::with_children(area, nodes)
+    }
+
+    fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
+        operation.container(None, layout.bounds());
+        operation.traverse(&mut |operation| {
+            for (i, layout) in left_to_right(layout) {
+                self.children[i].as_widget_mut().operate(&mut tree.children[i], layout, renderer, operation);
+            }
+        });
+    }
+
+    fn update(
+        &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, UiMessage>, viewport: &Rectangle,
+    ) {
+        for ((child, tree), layout) in self.children.iter_mut().zip(&mut tree.children).zip(layout.children()) {
+            child.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+        }
+    }
+
+    fn mouse_interaction(
+        &self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle, renderer: &Renderer,
+    ) -> mouse::Interaction {
+        let kids = self.children.iter().zip(&tree.children).zip(layout.children());
+        kids.map(|((c, t), l)| c.as_widget().mouse_interaction(t, l, cursor, viewport, renderer)).max().unwrap_or_default()
+    }
+
+    fn draw(
+        &self, tree: &Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>, cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        for (i, layout) in left_to_right(layout) {
+            self.children[i].as_widget().draw(&tree.children[i], renderer, theme, style, layout, cursor, viewport);
+        }
+    }
+
+    fn overlay<'b>(
+        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle, translation: Vector,
+    ) -> Option<iced::advanced::overlay::Element<'b, UiMessage, Theme, Renderer>> {
+        iced::advanced::overlay::from_children(&mut self.children, tree, layout, renderer, viewport, translation)
     }
 }
 

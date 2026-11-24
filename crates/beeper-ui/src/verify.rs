@@ -316,12 +316,7 @@ pub(crate) fn brand_btn_maybe<'a>(p: &Palette, label: &'a str, variant: Brand, m
 /// Desktop's `SpinnerIcon`, which turns once in 1.2 s.
 pub(crate) fn spinner<'a>(size: f32, color: Color) -> El<'a> {
     let turn = crate::login::EPOCH.elapsed().as_secs_f32() / 1.2 * std::f32::consts::TAU;
-    svg(SPINNER.clone())
-        .width(size)
-        .height(size)
-        .rotation(iced::Rotation::Solid(iced::Radians(turn)))
-        .style(move |_, _| svg::Style { color: Some(color) })
-        .into()
+    svg(SPINNER.clone()).width(size).height(size).rotation(iced::Rotation::Solid(iced::Radians(turn))).style(tint(color)).into()
 }
 
 static SPINNER: LazyLock<svg::Handle> = LazyLock::new(|| {
@@ -506,7 +501,7 @@ impl BeeperGuiApp {
                     false => Column::with_children(devices).spacing(6).into(),
                 };
                 let tip = container(devices).padding([8, 12]).style(shadow_box(p.elevated, p.chip, 8.0, 10.0));
-                let another = row![semi(tr("another device"), 17.0).color(p.strong), ic(icon::INFO, 16.0).color(p.on_secondary)]
+                let another = row![semi(tr("another device"), 17.0).color(p.strong), tinted(&crate::INFO_CIRCLE, 20.0, p.on_secondary)]
                     .spacing(4)
                     .align_y(Center);
                 let title = column![

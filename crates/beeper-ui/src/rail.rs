@@ -245,12 +245,6 @@ impl BeeperGuiApp {
         memo.counted.borrow_mut().get_or_insert_with(find).clone()
     }
 
-    /// Desktop's account context menu (`gYe`) of a sidebar account or network space.
-    pub(crate) fn view_account_menu(&self, entry: &str) -> El<'_> {
-        let (menu, sub) = self.account_menu(entry, SpaceMenu::Rail);
-        row![menu].push(sub).into()
-    }
-
     /// Desktop's `kS`: the items of a label space menu, after an empty `lead` of that width.
     pub(crate) fn label_items<'a>(&self, l: &Label, lead: f32) -> Vec<El<'a>> {
         let p = &self.pal;
@@ -433,8 +427,7 @@ impl BeeperGuiApp {
         let glyph = |c: char, fg: Color| -> El<'static> { ic(c, 24.0).color(fg).into() };
         let g = |c: char| glyph(c, p.text);
         let ring_color = p.fg;
-        let ring =
-            svg(DASHED_RING.clone()).width(32).height(32).opacity(0.15_f32).style(move |_, _| svg::Style { color: Some(ring_color) });
+        let ring = svg(DASHED_RING.clone()).width(32).height(32).opacity(0.15_f32).style(tint(ring_color));
         let add_space = container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
         let account = |i: usize, acc: String| -> El<'_> {
             let on = self.list().selected_account_filter.as_ref() == Some(&acc);
@@ -479,7 +472,7 @@ impl BeeperGuiApp {
         let draft = self.label_window.as_ref().filter(|d| d.label.is_none());
         let draft_btn = |i: usize, d: &LabelDraft| -> El<'static> {
             let (l, fg) = (Label { name: d.name.clone(), color: d.color, icon: d.icon.clone(), ..Label::default() }, p.strong);
-            let ring = svg(DRAFT_RING.clone()).width(30).height(30).style(move |_, _| svg::Style { color: Some(fg) });
+            let ring = tinted(&DRAFT_RING, 30.0, fg);
             let logo = container(stack![ring, container(label_icon(&l, 28.0, fg)).center(30)]).into();
             let open = UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()));
             let btn: El = mouse_area(rail_btn("rail-draft-button".into(), logo, false, open))
@@ -779,7 +772,7 @@ impl BeeperGuiApp {
         let again = again.map(|m| column![menu_rule(p), menu_item(p, None, tr("Reconnect").into(), "", Some(m))]);
         let col = column![
             select,
-            mouse_area(inbox).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(Some(0)))),
+            crate::menu_keys::opener(mouse_area(inbox).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(Some(0)))), sub.is_some()),
             mouse_area(rest.push(again)).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub((kind == SpaceMenu::Options).then_some(1))))
         ];
         let menu = crate::menu_card(p, col, 233);
@@ -873,11 +866,11 @@ impl BeeperGuiApp {
                     let gear = !RAIL_VIEWS.iter().any(|v| v.0 == id) && id != LABEL_NUDGE;
                     let room = if gear { 190.0 } else { 216.0 };
                     let name = row![ell(&space_name(&st, id), room, 13.0, Weight::Semibold).color(p.strong)]
-                        .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)))
+                        .push(muted.then(|| platform(ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong))))
                         .spacing(2)
                         .align_y(Center);
                     let sub = space_subtitle(&st, id).map(|t| txt(t, 11.0).color(p.sub));
-                    let handle = mouse_area(container(tinted(&DRAG_HANDLE, 20.0, p.sub)).center(28))
+                    let handle = mouse_area(container(material("drag_handle", 20.0, p.sub)).center(28))
                         .interaction(iced::mouse::Interaction::Grab)
                         .on_press(edit(SpacesEdit::Drag(id.clone())));
                     let pick = Self::pick(window, sortable::List::Spaces, id, &items, 1);
@@ -886,7 +879,7 @@ impl BeeperGuiApp {
                     let body = row![container(self.space_icon(&st, id)).center(20), column![name].push(sub).width(Fill),]
                         .push(gear.then(|| {
                             let menu = edit(SpacesEdit::Menu(Some(id.clone())));
-                            let gear = mouse_area(container(ic(icon::MORE_HORIZ, 16.0).color(p.sub)).center_x(16))
+                            let gear = mouse_area(container(platform(ic(icon::MORE_HORIZ, 16.0).color(p.sub))).center_x(16))
                                 .interaction(mouse::Interaction::Pointer)
                                 .on_press(menu.clone());
                             plain(format!("gear-{id}"), gear.into(), menu)

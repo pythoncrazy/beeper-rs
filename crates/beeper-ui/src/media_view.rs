@@ -800,11 +800,8 @@ impl BeeperGuiApp {
             }
         };
         let step = |next: bool| -> El<'a> {
-            let arrow = svg(SYS_ARROW_BACK.clone())
-                .width(20)
-                .height(20)
-                .rotation(if next { std::f32::consts::PI } else { 0.0 })
-                .style(move |_, _| svg::Style { color: Some(white) });
+            let arrow =
+                svg(SYS_ARROW_BACK.clone()).width(20).height(20).rotation(if next { std::f32::consts::PI } else { 0.0 }).style(tint(white));
             let b = button(container(arrow).center(32)).padding(0).style(btn_style([Color { a: 0.1, ..p.strong }; 3], [white; 3], 32.0));
             let (label, key, at) = match next {
                 true => (tr("Next Attachment"), "→", tooltip::Position::Top),

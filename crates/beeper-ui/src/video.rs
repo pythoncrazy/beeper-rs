@@ -12,9 +12,6 @@ use std::sync::mpsc::{sync_channel, Receiver};
 
 const FPS: f32 = 30.0;
 pub(crate) const SPEED_MENU_W: f32 = 110.0;
-fn speed_menu_h() -> f32 {
-    8.0 + crate::voice::RATES.len() as f32 * menu_pitch()
-}
 /// The width of the menu of the Picture in Picture window, which leaves room for the speed submenu beside it in a
 /// window 400 px wide.
 const PIP_MENU_W: f32 = 200.0;
@@ -79,12 +76,6 @@ fn video_progress<'a>(v: &Video) -> El<'a> {
         .on_release(UiMessage::Video(Msg::SeekEnd))
         .style(crate::style::hidden_slider);
     stack![container(stack![bar(Color::WHITE.scale_alpha(0.2)), done]).center_y(11), seek].into()
-}
-
-/// A menu of the Picture in Picture window at `x`, `y`, which keeps its clicks.
-fn placed(x: f32, y: f32, menu: El<'_>) -> El<'_> {
-    let menu = mouse_area(menu).on_press(UiMessage::Noop);
-    container(menu).padding(Padding::ZERO.left(x.max(0.0)).top(y.max(0.0))).into()
 }
 
 /// Desktop's `jA` time format, `mm:ss` with the minutes not cut at an hour.
@@ -659,19 +650,12 @@ impl BeeperGuiApp {
         let Some((at, rows)) = menu else { return video.into() };
         // Desktop's video menu is a native menu at the cursor, which here stays inside the window, with the speed
         // submenu level with its row and beside the menu where it fits.
-        let menu_h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
-        let menu = crate::menu_card(&self.pal, Column::with_children(rows.into_iter().map(|r| r.0)), PIP_MENU_W);
-        let x = if at.x + PIP_MENU_W > w { at.x - PIP_MENU_W } else { at.x };
-        let y = at.y.min(h - menu_h);
-        let sub = self.view_speed_menu(&v.mid).map(|sub| {
-            let right = x + PIP_MENU_W + SPEED_MENU_W <= w;
-            let sub_x = if right { x + PIP_MENU_W } else { x - SPEED_MENU_W };
-            placed(sub_x, (y + 3.0 * menu_pitch()).min(h - speed_menu_h()), sub)
-        });
-        let close = crate::backdrop(Space::new().width(Fill).height(Fill))
-            .on_press(UiMessage::Video(Msg::PipMenu(false)))
-            .on_right_press(UiMessage::Video(Msg::PipMenu(false)));
-        stack![video, close, placed(x, y, menu.into())].push(sub).into()
+        let menu = crate::menu_card(&self.pal, Column::with_children(rows), PIP_MENU_W);
+        let place = move |m: Size, area: Size| {
+            Point::new(if at.x + m.width > area.width { at.x - m.width } else { at.x }, at.y.min(area.height - m.height))
+        };
+        let menu = crate::backdrop(crate::menu_keys::menu_at(menu, self.view_speed_menu(&v.mid), place));
+        stack![video, menu.on_press(UiMessage::Video(Msg::PipMenu(false))).on_right_press(UiMessage::Video(Msg::PipMenu(false)))].into()
     }
 
     /// The video that fills the screen, like Desktop's `screenfull` toggle on the `<video>`, if it is the video of the
@@ -724,16 +708,17 @@ impl BeeperGuiApp {
 
     /// Desktop's video menu (`getContextMenuItems`): Fullscreen, Open in PiP, Download, Mute and Playback Speed, and
     /// in the Picture in Picture window (`pip`) Show in Chat, Download, Mute and Playback Speed.
-    pub(crate) fn video_menu_rows(&self, mid: &str, pip: bool) -> Option<Vec<(El<'_>, f32)>> {
+    pub(crate) fn video_menu_rows(&self, mid: &str, pip: bool) -> Option<Vec<El<'_>>> {
         let v = self.menu_video(mid)?;
         let p = &self.pal;
         let item = |label: &str, msg| {
             let msg = if pip { UiMessage::Video(Msg::PipItem(Box::new(msg))) } else { msg };
-            (menu_item(p, None, label.into(), "", Some(msg)), menu_pitch())
+            menu_item(p, None, label.into(), "", Some(msg))
         };
         let action = |label| trx(label, "video context menu action");
         let speed = mouse_area(menu_item(p, None, tr("Playback Speed").into(), "›", Some(UiMessage::Video(Msg::Sub))))
             .on_enter(UiMessage::Video(Msg::Sub));
+        let speed = crate::menu_keys::opener(speed, v.sub);
         let head = match pip {
             true => vec![item(tr("Show in Chat"), UiMessage::Video(Msg::ShowInChat))],
             false => {
@@ -743,7 +728,7 @@ impl BeeperGuiApp {
         let tail = [
             item(action("Download"), UiMessage::Message(message::Msg::Download(mid.into(), None))),
             item(action(if v.muted { "Unmute" } else { "Mute" }), UiMessage::Video(Msg::Mute)),
-            (speed.into(), menu_pitch()),
+            speed,
         ];
         Some(head.into_iter().chain(tail).collect())
     }
@@ -848,7 +833,7 @@ mod tests {
         let _ = app.update(UiMessage::Video(Msg::Play(mid.clone(), url.clone(), 320, 180)));
         let path = std::env::temp_dir().join(format!("beeper-rs-video-menu-{}", std::process::id()));
         let _ = app.update(UiMessage::Video(Msg::Loaded(url, Ok(Arc::new(Media { path, secs: 10.0, sound: None })))));
-        let has = |app: &BeeperGuiApp, label: &str| simulator(app.view_message_menu(&mid).0).find(label).is_ok();
+        let has = |app: &BeeperGuiApp, label: &str| simulator(app.view_message_menu(&mid)).find(label).is_ok();
         let _ = app.update(UiMessage::Video(Msg::Menu(mid.clone())));
         assert!(["Fullscreen", "Open in PiP", "Download", "Mute", "Playback Speed"].iter().all(|l| has(&app, l)));
         assert!(!has(&app, "Reply…"), "in place of the message menu");

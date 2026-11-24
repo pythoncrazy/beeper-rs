@@ -203,8 +203,8 @@ pub(crate) fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) 
             .map(|n| Some((trx("Call", "button label to start a phone call").to_string(), Some(UiMessage::OpenUrl(format!("tel:{n}"))))));
         let send = dm(&c.account_id)
             .then(|| Some((tr("Send Message").to_string(), Some(UiMessage::Members(members::Msg::Message(cid.into(), uid.into()))))));
-        let ask = |label: &'static str, ask, on: bool| {
-            Some((tr(label).to_string(), on.then(|| UiMessage::Members(members::Msg::Ask(ask, cid.into(), uid.into())))))
+        let ask = |label: &'static str, ask: fn(String, String) -> Confirm, on: bool| {
+            Some((tr(label).to_string(), on.then(|| UiMessage::Members(members::Msg::Ask(ask(cid.into(), uid.into()))))))
         };
         return [
             call,
@@ -214,8 +214,8 @@ pub(crate) fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) 
             copy("Copy Username", username),
             copy("Copy Name", u.full_name.clone()),
             Some(None),
-            Some(ask("Make Group Admin…", ASK_MAKE_ADMIN, u.is_admin != Some(true) && u.manage & MANAGE_ROLE != 0)),
-            Some(ask("Remove from Group…", ASK_REMOVE_MEMBER, u.manage & MANAGE_KICK != 0)),
+            Some(ask("Make Group Admin…", Confirm::MakeAdmin, u.is_admin != Some(true) && u.manage & MANAGE_ROLE != 0)),
+            Some(ask("Remove from Group…", Confirm::RemoveMember, u.manage & MANAGE_KICK != 0)),
         ]
         .into_iter()
         .flatten()
@@ -767,7 +767,7 @@ impl BeeperGuiApp {
                     "img" => self.thumb(a, tile, 4.0),
                     // Desktop's `BrandVideo` play button: a 36 px `secondary-container` disc in the middle.
                     "video" => {
-                        let play = container(ic(icon::PLAY, 14.0).color(p.strong)).center(36).style(fill_box(p.chip, 18.0));
+                        let play = container(tinted(&crate::voice::ICONS[0], 20.0, p.strong)).center(36).style(fill_box(p.chip, 18.0));
                         stack![self.thumb(a, tile, 4.0), container(play).center(tile)].into()
                     }
                     _ => {
@@ -1162,7 +1162,7 @@ mod tests {
         assert_eq!(line(&app).as_deref(), Some("Hidden and muted by Work"));
         let rows = |app: &BeeperGuiApp| {
             let st = app.store.read();
-            let mut sim = tall(Column::with_children(app.behavior_items(&st, JORDAN).0.into_iter().map(|r| r.0)).into());
+            let mut sim = tall(Column::with_children(app.behavior_items(&st, JORDAN).0).into());
             sim.find("Work").is_ok() && sim.find("Hides and mutes this chat").is_ok()
         };
         assert!(rows(&app), "the label hides and mutes the chat");
@@ -1187,7 +1187,7 @@ mod tests {
         };
         assert_eq!(line(&app), Some(format!("Snoozed until {shown}")));
         let st = app.store.read();
-        let mut sim = tall(Column::with_children(app.behavior_items(&st, JORDAN).0.into_iter().map(|r| r.0)).into());
+        let mut sim = tall(Column::with_children(app.behavior_items(&st, JORDAN).0).into());
         assert!(sim.find("Chat Snooze").is_ok() && sim.find(format!("Snoozes until {shown}").as_str()).is_ok());
     }
 }

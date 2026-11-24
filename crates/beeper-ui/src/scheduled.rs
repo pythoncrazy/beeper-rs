@@ -115,7 +115,7 @@ pub(crate) fn send_day(at: i64, h24: bool) -> String {
 
 impl BeeperGuiApp {
     /// Desktop's scheduled message menu: with `items`, Edit, Copy and Forward, then `r0e`.
-    pub(crate) fn view_scheduled_menu(&self, ids: &[String], items: bool) -> (El<'_>, f32) {
+    pub(crate) fn view_scheduled_menu(&self, ids: &[String], items: bool) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
         let first = st.scheduled.iter().find(|s| s.id == ids[0]).expect("a scheduled message");
@@ -159,10 +159,7 @@ impl BeeperGuiApp {
                 UiMessage::Scheduled(scheduled::Msg::Unschedule(ids)),
             )),
         ];
-        let rows: Vec<El> = rows.into_iter().flatten().flatten().collect();
-        let h = 8.0 + (rows.len() - usize::from(items)) as f32 * menu_pitch() + if items { MENU_RULE } else { 0.0 };
-        let menu = crate::menu_card(p, Column::with_children(rows), MESSAGE_MENU_W);
-        (menu.into(), h)
+        crate::menu_card(p, Column::with_children(rows.into_iter().flatten().flatten()), MESSAGE_MENU_W).into()
     }
 
     pub(crate) fn view_scheduled<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
@@ -212,7 +209,7 @@ impl BeeperGuiApp {
                 .width(12)
                 .height(12)
                 .rotation(Radians(if collapsed { 0.0 } else { std::f32::consts::PI }))
-                .style(move |_, _| svg::Style { color: Some(fg) });
+                .style(tint(fg));
             let label = row![tinted(&COMPOSER_ICONS[6], 12.0, fg), semi(text, 11.0).color(fg), chevron];
             let toggle = button(label.spacing(4).align_y(Center))
                 .padding([4, 8])
@@ -249,7 +246,7 @@ mod tests {
 
     /// The messages of a click on `label` in the menu of the scheduled message `id`.
     fn click(app: &BeeperGuiApp, id: &str, label: &str) -> Vec<UiMessage> {
-        clicks(app.view_scheduled_menu(&[id.to_string()], true).0, label)
+        clicks(app.view_scheduled_menu(&[id.to_string()], true), label)
     }
 
     /// Desktop's scheduled message menu: Forward... after Copy, which forwards a copy of the message, and Reschedule

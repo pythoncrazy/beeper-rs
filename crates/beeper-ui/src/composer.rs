@@ -892,7 +892,7 @@ impl BeeperGuiApp {
 
     /// Electron's context menu of the composer: the suggestions for a misspelled word, "Learn Spelling", "Search with
     /// Google" for the selection, and Cut, Copy and Paste.
-    pub(crate) fn view_edit_menu(&self, word: Option<&Typo>) -> (El<'_>, f32) {
+    pub(crate) fn view_edit_menu(&self, word: Option<&Typo>) -> El<'_> {
         let p = &self.pal;
         let text = self.pane().composer.text();
         let sel = format::selection(&self.pane().composer).map(|r| text[r].trim().to_owned()).filter(|s| !s.is_empty());
@@ -922,10 +922,7 @@ impl BeeperGuiApp {
             item("Copy", has.then(|| UiMessage::Composer(Msg::MenuEdit(MenuEdit::Copy)))),
             item("Paste", edit(MenuEdit::Paste)),
         ]);
-        let rules = word.map_or(0, |_| 2) + usize::from(has);
-        let h = 8.0 + (items.len() - rules) as f32 * menu_pitch() + rules as f32 * MENU_RULE;
-        let menu = crate::menu_card(p, Column::with_children(items.into_iter().flatten()), MESSAGE_MENU_W);
-        (menu.into(), h)
+        crate::menu_card(p, Column::with_children(items.into_iter().flatten()), MESSAGE_MENU_W).into()
     }
 
     /// Desktop's `composeTextareaPlaceholder`.
@@ -1141,7 +1138,7 @@ impl BeeperGuiApp {
             .width(20)
             .height(20)
             .opacity(if msg.is_some() { 1.0_f32 } else { 0.3 })
-            .style(move |_, _| svg::Style { color: Some(color) });
+            .style(tint(color));
         let b = button(container(glyph).center(28))
             .padding(0)
             .style(btn_style([bg, p.hover, p.selected], [p.text; 3], 14.0))

@@ -53,8 +53,8 @@ impl BeeperGuiApp {
     }
 
     /// The menu of the open select, Desktop's `.menu-item`s with a `check-column`, as wide as the longest option
-    /// within the `min-width` and `max-width` of `.menu-list`, and where it goes.
-    pub(crate) fn view_native_select(&self, open: &Open) -> (El<'_>, f32, f32) {
+    /// within the `min-width` and `max-width` of `.menu-list`, where it goes.
+    pub(crate) fn view_native_select(&self, open: &Open) -> El<'_> {
         let p = &self.pal;
         let labels = open.rows.iter().filter_map(|r| if let Row::Option(label, ..) = r { Some(label) } else { None });
         let widest = labels.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
@@ -63,13 +63,12 @@ impl BeeperGuiApp {
         let rows = open.rows.iter().map(|r| match r {
             Row::Option(label, on, msg) => {
                 let pick = UiMessage::Select(Msg::Pick(msg.clone()));
-                (menu_item(p, Some(crate::menu_check(*on)), label.clone(), "", Some(pick)), menu_pitch())
+                menu_item(p, Some(crate::menu_check(*on)), label.clone(), "", Some(pick))
             }
-            Row::Rule => (menu_rule(p), MENU_RULE),
+            Row::Rule => menu_rule(p),
         });
-        let (menu, h) = menu_rows(p, rows.collect(), w);
-        let (x, y) = menu_spot(open.at.position(), w, h, self.pane().size);
-        (menu.into(), x, y)
+        let at = open.at.position();
+        crate::menu_keys::menu_at(menu_card(p, Column::with_children(rows), w), None, move |m, area| menu_spot(at, m, area))
     }
 }
 

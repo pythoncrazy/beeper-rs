@@ -206,7 +206,8 @@ impl BeeperGuiApp {
                 pin(face).x(i as f32 * 8.0).into()
             });
             let faces = Stack::with_children(faces).width(12.0 + (n - 1) as f32 * 8.0).height(12);
-            let add = (!e.blocked()).then(|| ic(icon::PLUS, 10.0).color(p.fg));
+            // Desktop's 10 px `add` system icon, the Material `add`.
+            let add = (!e.blocked()).then(|| ic(icon::ADD, 10.0).color(p.fg));
             let chip = row![faces].push(add).spacing(2).align_y(Center);
             let fill = p.fill_primary;
             button(chip).padding(2).style(btn_style([fill; 3], [p.fg; 3], 999.0)).on_press(UiMessage::Networks(Msg::Menu(Some(id))))
@@ -256,7 +257,7 @@ impl BeeperGuiApp {
             let line = row![accessory(face), text].spacing(6);
             menu_line(p, line, Some(UiMessage::Networks(Msg::Account(a.account_id.clone()))))
         });
-        let add = row![accessory(ic(icon::PLUS, 10.0).into()), txt(tr("Add another account"), 13.0)].spacing(6);
+        let add = row![accessory(ic(icon::ADD, 10.0).into()), txt(tr("Add another account"), 13.0)].spacing(6);
         let add = menu_line(p, add, (!entry.blocked()).then_some(UiMessage::Networks(Msg::Connect(network))));
         let items = Column::with_children(rows).push(menu_rule(p)).push(add);
         let menu = crate::menu_card(p, items, MENU_W);

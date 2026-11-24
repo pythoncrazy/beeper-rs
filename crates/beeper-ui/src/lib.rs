@@ -131,9 +131,7 @@ use crate::i18n::{tr, trf, trn, trs, trx};
 use crate::media_view::{decode_media, run_ffmpeg, Carousel, MediaWindow, TAB_SLIDE};
 use crate::message::Rows;
 pub use crate::message::TopOfThread;
-use crate::settings::{
-    hotkey_key, mcp_value, shown, AddToken, IntegrationsPage, StoragePage, EXPIRIES, HOTKEYS_RELAUNCH, SETTINGS_DIALOGS, STORAGE_DAYS,
-};
+use crate::settings::{hotkey_key, mcp_value, shown, AddToken, IntegrationsPage, StoragePage, EXPIRIES, HOTKEYS_RELAUNCH, STORAGE_DAYS};
 pub use crate::settings::{search_settings, Expiry, HotkeyRec, SettingsHit, SettingsTab};
 use crate::threads::{can_thread, Threads};
 use blocking::block_action;
@@ -408,7 +406,7 @@ pub enum UiMessage {
     Timeline(timeline::Msg),
     /// Desktop's idle state, which stops the open chat from reading what comes in.
     Idle(idle::Msg),
-    Ask(Option<u8>),
+    Ask(Option<Confirm>),
     /// The close of Desktop's recovery key reminder (`dismissRecoveryCodeReminder`).
     DismissRecoveryReminder,
     /// Close Desktop's "Your incognito trial is over" over the composer.
@@ -770,41 +768,52 @@ pub(crate) const ISSUES_URL: &str = "https://github.com/pythoncrazy/beeper-rs/is
 pub(crate) const CHANGELOG_URL: &str = "https://www.beeper.com/changelog/desktop";
 const FEEDBACK: &str = "Tell us what to improve in beeper-rs.";
 const ORANGE: Color = Color::from_rgb8(245, 76, 3);
-const ASK_LOGOUT: u8 = 0;
-const ASK_DISMISS_REMINDERS: u8 = 1;
-const ASK_DELETE_CHAT: u8 = 2;
-const ASK_DELETE_MESSAGE: u8 = 3;
-const ASK_ARCHIVE_READ: u8 = 4;
-const ASK_ARCHIVE_ALL: u8 = 5;
-const ASK_ARCHIVE_WEEK: u8 = 6;
-const ASK_MARK_ALL_READ: u8 = 7;
-const ASK_CLEAR_STORAGE: u8 = 8;
-const ASK_CLEAR_CACHE: u8 = 9;
-const ASK_CLEAR_CHAT: u8 = 10;
-const ASK_REVOKE_CONNECTION: u8 = 11;
-const ASK_REMOTE_ACCESS: u8 = 12;
-const ASK_DELETE_LABEL: u8 = 13;
-const ASK_LEAVE_CHAT: u8 = 14;
-const ASK_MAKE_ADMIN: u8 = 15;
-const ASK_REMOVE_MEMBER: u8 = 16;
-const ASK_REMOVE_ACCOUNT: u8 = 17;
-/// Desktop's `confirmBlockUser` and `confirmUnblockUser`, then their "%s Is Disconnected" dialogs.
-const ASK_BLOCK: u8 = 18;
-const ASK_UNBLOCK: u8 = 19;
-const ASK_BLOCK_OFFLINE: u8 = 20;
-const ASK_UNBLOCK_OFFLINE: u8 = 21;
-/// Desktop's "Privacy notice" before the first transcription of a voice note.
-const ASK_TRANSCRIBE: u8 = 22;
-/// Desktop's logout of another device of the account in Settings > Devices.
-const ASK_LOGOUT_DEVICE: u8 = 23;
-/// Desktop's "Room encryption" step of New Chat before it creates a Matrix group of more than one person.
-const ASK_ROOM_ENCRYPTION: u8 = 24;
-/// Desktop's `confirmUnmergeUnion` of a merged chat.
-const ASK_UNMERGE: u8 = 25;
-/// Desktop's "Disconnect Discord Server?" before the switch of a connected Discord server turns off.
-const ASK_DISCONNECT_SERVER: u8 = 26;
-/// Desktop's "Remove %s?" of an installed sticker pack that a bridge imported.
-const ASK_REMOVE_PACK: u8 = 27;
+/// The confirmation dialog that shows, with what it acts on.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Confirm {
+    /// The logout of this device, or of another device (by id) of the account in Settings > Devices.
+    Logout(Option<String>),
+    DismissReminders,
+    /// Desktop's `confirmDeleteThread` of the selected chats, or of the chat of the menu.
+    DeleteChats(Vec<String>),
+    DeleteMessages(Vec<String>),
+    /// Archive all read chats (true), or all chats.
+    ArchiveAll(bool),
+    ArchiveWeek,
+    MarkAllRead,
+    /// The clear of the selected storage (0), of the cache (1) or of the storage of a chat (2).
+    Clear(u8),
+    RevokeConnection(String),
+    RemoteAccess,
+    DeleteLabel(String),
+    LeaveChat(String),
+    /// Make Group Admin and Remove from Group, as (chat, user).
+    MakeAdmin(String, String),
+    RemoveMember(String, String),
+    RemoveAccount(String),
+    /// Desktop's `confirmBlockUser` (true) and `confirmUnblockUser` of a DM, then their "%s Is Disconnected" dialogs.
+    Block(String, bool),
+    BlockOffline(String, bool),
+    /// Desktop's "Privacy notice" before the first transcription of a voice note.
+    Transcribe,
+    /// Desktop's "Room encryption" step of New Chat before it creates a Matrix group of more than one person.
+    RoomEncryption,
+    /// Desktop's `confirmUnmergeUnion` of a merged chat.
+    Unmerge(String),
+    /// Desktop's "Disconnect Discord Server?" before the switch of a connected Discord server turns off, as (account,
+    /// server).
+    DisconnectServer(String, String),
+    /// Desktop's "Remove %s?" of an installed sticker pack that a bridge imported.
+    RemovePack(String),
+}
+
+impl Confirm {
+    /// Whether the dialog shows in the Settings window.
+    pub(crate) fn in_settings(&self) -> bool {
+        use Confirm::*;
+        matches!(self, Logout(_) | Clear(_) | RevokeConnection(_) | RemoteAccess | RemoveAccount(_) | DisconnectServer(..) | RemovePack(_))
+    }
+}
 /// Desktop opens its `prefs` window at 800 x 740, in the middle of the screen.
 const SETTINGS_SIZE: Size = Size::new(800.0, 740.0);
 /// Desktop's default "Quick reaction emoji".
@@ -814,16 +823,17 @@ const MESSAGE_MENU_W: f32 = 270.0;
 const MIN_PANE_W: f32 = 240.0;
 /// Desktop's `.menu-item` line: 13 px text at the 1.4 line height of `html`.
 const MENU_LINE: f32 = 13.0 * 1.4;
-/// Where Chromium's `MenuController::CalculateMenuBounds` puts a native context menu of `w` x `h` that opens at the
-/// cursor `at`, with the window as the screen: below the cursor when it fits, else above it when that fits, and moved
+/// Where Chromium's `MenuController::CalculateMenuBounds` puts a native context menu of the size `menu` that opens at
+/// the cursor `at`, with the window as the screen: below the cursor when it fits, else above it when that fits, and moved
 /// back inside the edges. Electron's menus on Linux are Chromium's, which do not flip to the left of the cursor.
-fn menu_spot(at: Point, w: f32, h: f32, area: Size) -> (f32, f32) {
+fn menu_spot(at: Point, menu: Size, area: Size) -> Point {
+    let h = menu.height;
     let y = match at.y + h <= area.height {
         true => at.y,
         false if at.y - h >= 0.0 => at.y - h,
         false => at.y,
     };
-    (at.x.clamp(0.0, (area.width - w).max(0.0)), y.clamp(0.0, (area.height - h).max(0.0)))
+    Point::new(at.x.clamp(0.0, (area.width - menu.width).max(0.0)), y.clamp(0.0, (area.height - h).max(0.0)))
 }
 
 /// The pitch of Desktop's `.menu-item`: the line in rem, 3 px of padding on each side, and a collapsed 2 px margin.
@@ -878,7 +888,7 @@ fn spread(items: Vec<El<'_>>, size: f32, width: f32) -> El<'_> {
 fn checkbox_plus<'a>(p: &Palette, on: bool) -> El<'a> {
     match on {
         true => checkbox(p, true),
-        false => container(ic(icon::PLUS, 10.0).color(p.sub)).center(16).style(bordered_box(CLEAR, p.sub, 1.5, 8.0)).into(),
+        false => container(platform(ic(icon::ADD, 10.0).color(p.sub))).center(16).style(bordered_box(CLEAR, p.sub, 1.5, 8.0)).into(),
     }
 }
 
@@ -890,9 +900,12 @@ fn backdrop<'a, M: 'a>(layer: impl Into<Element<'a, M>>) -> iced::widget::MouseA
     mouse_area(layer).interaction(mouse::Interaction::Idle)
 }
 
-/// Desktop's context menu: `items` with 4 px above and below them, in a [`menu_frame`] `w` wide.
+/// The space above and below the rows of a [`menu_card`].
+const MENU_PAD: f32 = 4.0;
+
+/// Desktop's context menu: `items` with [`MENU_PAD`] above and below them, in a [`menu_frame`] `w` wide.
 fn menu_card<'a>(p: &Palette, items: Column<'a, UiMessage>, w: impl Into<Length>) -> iced::widget::Container<'a, UiMessage> {
-    menu_frame(p, items.padding([4, 0]), w)
+    menu_frame(p, items.padding([MENU_PAD, 0.0]), w)
 }
 
 /// Desktop's `.menu-list`: `content` in a card `w` wide with a 6 px radius and a 1 px border, under the two shadows of
@@ -909,12 +922,6 @@ fn menu_frame<'a>(p: &Palette, content: impl Into<El<'a>>, w: impl Into<Length>)
         ..Default::default()
     });
     container(card).style(move |_| container::Style { border: border::rounded(6), shadow: shadow(0.19, 8.0, 29.0), ..Default::default() })
-}
-
-/// [`menu_card`] of rows with their heights, and the height of the menu.
-fn menu_rows<'a>(p: &Palette, rows: Vec<(El<'a>, f32)>, w: impl Into<Length>) -> (iced::widget::Container<'a, UiMessage>, f32) {
-    let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
-    (menu_card(p, Column::with_children(rows.into_iter().map(|r| r.0)), w), h)
 }
 
 /// The height of a [`menu_rule`] between two menu rows, whose 1 px margins add to it.
@@ -1349,11 +1356,7 @@ static BADGE_RINGS: std::sync::LazyLock<[[svg::Handle; 2]; 2]> = std::sync::Lazy
 fn badged<'a>(inner: El<'a>, brand: &str, size: f32, badge: f32, mono: Option<&Palette>, ring: Color) -> El<'a> {
     let icon: El<'a> = match mono {
         None => svg(crate::style::brand_svg(brand)).width(badge).height(badge).into(),
-        Some(p) => {
-            let fg = p.strong;
-            let glyph = svg(crate::style::brand_badge(brand)).style(move |_, _| svg::Style { color: Some(fg) }).width(badge).height(badge);
-            container(glyph).style(fill_box(p.chip, badge / 2.0)).into()
-        }
+        Some(p) => container(tinted(&crate::style::brand_badge(brand), badge, p.strong)).style(fill_box(p.chip, badge / 2.0)).into(),
     };
     let cutout = tinted(&BADGE_RINGS[usize::from(mono.is_none())][usize::from(badge > 12.0)], badge + 2.0, ring);
     let w = size + badge / 8.0;
@@ -2517,7 +2520,12 @@ pub fn short_title(c: &Chat) -> &str {
 
 /// The SVG `h` at `size` px in `color`, whose alpha the vendored renderers apply over the coverage (#912).
 fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
-    svg(h.clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) }).into()
+    svg(h.clone()).width(size).height(size).style(tint(color)).into()
+}
+
+/// The style of an SVG in `color`, for the rotated, faded or oblong SVGs that `tinted` does not draw.
+fn tint(color: Color) -> impl Fn(&Theme, svg::Status) -> svg::Style {
+    move |_, _| svg::Style { color: Some(color) }
 }
 
 static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
@@ -3069,10 +3077,7 @@ pub struct BeeperGuiApp {
     /// Desktop's `matrixRoomJoin` of the Join a Matrix room view: a join is going on, and the error of the last one.
     join_room: (bool, Option<String>),
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
-    pub confirm: Option<u8>,
-    delete_target: Option<String>,
-    /// The chats of Desktop's `confirmDeleteThread`: the selected chats, or the chat of the menu.
-    delete_chats: Vec<String>,
+    pub confirm: Option<Confirm>,
     /// Desktop's `loading` of the device list: a logout of another device runs.
     devices_busy: bool,
     /// The "Report spam" checkbox of the Block dialog.
@@ -3261,8 +3266,6 @@ pub struct BeeperGuiApp {
     trial_over_chat: Option<String>,
     /// The accounts whose servers load (Desktop's spinning Refresh List), and when the load started.
     servers_loading: HashMap<String, std::time::Instant>,
-    /// The account and the server of the "Disconnect Discord Server?" dialog.
-    server_target: Option<(String, String)>,
     /// Desktop's `StickerPacksPreference`: the installed sticker packs once they load, the parts (room and state key)
     /// that "Use in all chats" turned off, and the pack that Remove removes.
     installed_packs: Option<Vec<InstalledPack>>,
@@ -3374,7 +3377,7 @@ impl BeeperGuiApp {
             last_archived, creating_chat, new_chats, command_list, memo, pending_dm, link_to, link_sent, link_pick, contact_networks, new_chat_lookup,
             new_chat_search, new_chat_results_expanded, new_chat_account, new_chat_accounts_open, new_chat_query,
             new_chat_expanded, new_chat_chats_expanded, join_matrix_mode, join_room, devices, mics, confirm,
-            delete_target, delete_chats, devices_busy, report_spam, time_edit, recorder, talk, queued, selection,
+            devices_busy, report_spam, time_edit, recorder, talk, queued, selection,
             select_mode, selection_menu, show_command_palette, settings_query, settings_slider, settings_focus,
             settings_search_on, settings_pick, pref_flash, networks, app_qr, integrations, token_ask, account_page,
             quick_look_target, quick_open, hovered_chat, hover_at, unhovered, flash, typing_shown, typing, status_banner,
@@ -3385,7 +3388,7 @@ impl BeeperGuiApp {
             labels_windows, label_settings, delete_in, poll_windows, label_window, group_window, blocked_window,
             how_window, nickname_windows, add_accounts, info_desc, info_more, info_all, info_bookmarks, hydrating,
             restoring_bookmarks, info_media, info_zoom, info_query, spaces_window, merge_window, vote_windows, shot,
-            verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, trial_over_chat, servers_loading, server_target, installed_packs, packs_off, pack_removing, resolving_media, needs_download,
+            verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, trial_over_chat, servers_loading, installed_packs, packs_off, pack_removing, resolving_media, needs_download,
             fetching, video, view_once, minimized, state_changes, last_click, cycling, timers);
         app.store.write().load_recent();
         if let Some(id) = first_chat {
@@ -5490,127 +5493,46 @@ impl BeeperGuiApp {
             )
             .on_press(UiMessage::CommandBar(commands::Msg::SearchSelect(None)))
         });
-        let filter_menu = self.list().show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 22.5, 26.0));
-        let reminder_menu = self.list().reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
+        // A menu whose place does not come from its size.
+        let fixed = |m: El<'a>, x: f32, y: f32| menu_keys::menu_at(m, None, move |_, _| Point::new(x, y));
+        let filter_menu = self.list().show_filter_menu.then(|| fixed(self.view_filter_menu(), self.sidebar_width - 22.5, 26.0));
+        let reminder_menu = self.list().reminder_menu.map(|at| fixed(self.view_reminder_menu(), at.x, at.y));
         let rate_menu = self.audio.menu.map(|at| match self.audio.pill {
             true => {
                 let size = self.pane().size;
                 let x = at.x.min(size.width - 233.0 - voice::rate_menu_w() - 8.0);
                 let y = at.y.min(size.height - 8.0 - menu_pitch() - 8.0);
                 let top = if self.audio.sub { y.min(size.height - 8.0 - 8.0 * menu_pitch() - 8.0) } else { y };
-                (self.view_pill_menu(y - top), x, top)
+                fixed(self.view_pill_menu(y - top), x, top)
             }
-            false => (self.view_rate_menu(), at.x, at.y),
+            false => fixed(self.view_rate_menu(), at.x, at.y),
         });
         let chat_menu = self.list().chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
             if let Some(key) = cid.strip_prefix("card:") {
                 let (card, h) = self.view_user_card(key);
                 let (x, y) = self.card_spot(*at, 30.0, h);
-                return (card, x, y);
+                return fixed(card, x, y);
             }
             if cid == SWITCH_CARD {
                 let (card, h) = self.view_switch_card();
-                return (card, at.x - 8.0, at.y - h + 8.0);
+                return fixed(card, at.x - 8.0, at.y - h + 8.0);
             }
             if cid == SPACE_SHEET {
                 let (sheet, w, h) = self.view_space_sheet();
                 let x = if at.x + w > self.pane().size.width { at.x - w } else { at.x };
-                return (sheet, x, at.y.min(self.pane().size.height - h - 8.0));
+                return fixed(sheet, x, at.y.min(self.pane().size.height - h - 8.0));
             }
-            let (w, h) = if cid.starts_with("draft:") {
-                (124.0, 31.0)
-            } else if let Some(id) = cid.strip_prefix(SNOOZE_MENU) {
-                let rows = self.snooze_items(&self.store.read(), &[id.to_string()]);
-                (SUB_MENU_W[3], 8.0 + rows.iter().map(|r| r.1).sum::<f32>())
-            } else if let Some(id) = cid.strip_prefix(behavior::BEHAVIOR_MENU) {
-                let (rows, w) = self.behavior_items(&self.store.read(), id);
-                (w, 8.0 + rows.iter().map(|r| r.1).sum::<f32>())
-            } else if cid == RAIL_MORE {
-                let items = more_menu(&self.store.read());
-                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { menu_pitch() } else { MENU_RULE }).sum::<f32>())
-            } else if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
-                let items = info_menu(&self.store.read(), cid, |a| self.can(a, "create_dm"));
-                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { menu_pitch() } else { MENU_RULE }).sum::<f32>())
-            } else if cid == SIDEBAR_MENU || cid == RAIL_MENU {
-                (233.0, 8.0 + 4.0 * menu_pitch())
-            } else if RAIL_VIEWS.iter().any(|v| cid.strip_prefix("account:") == Some(v.0)) {
-                (233.0, 8.0 + 5.0 * menu_pitch())
-            } else if let Some(entry) = cid.strip_prefix("head:") {
-                let st = self.store.read();
-                let items = match (RAIL_VIEWS.iter().any(|v| v.0 == entry), rail_label(&st, entry)) {
-                    (true, _) => 1.0,
-                    (false, Some(l)) => label_rows(l) + 1.0,
-                    (false, None) => 4.0,
-                };
-                let rule = if items > 1.0 { MENU_RULE } else { 0.0 };
-                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + items * menu_pitch() + rule)
-            } else if let Some(n) = cid.strip_prefix("account:").and_then(|e| rail_label(&self.store.read(), e).map(label_rows)) {
-                (233.0, 8.0 + (n + 3.0) * menu_pitch() + MENU_RULE)
-            } else if let Some(entry) = cid.strip_prefix("account:") {
-                let st = self.store.read();
-                let nick = if nickname::can_nickname(&st, &rail_owner(&st, entry)) { menu_pitch() } else { 0.0 };
-                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 7.0 * menu_pitch() + 22.0 + nick)
-            } else {
-                let st = self.store.read();
-                (
-                    chat_list::chat_menu_w(&st),
-                    8.0 + 10.0 * menu_pitch()
-                        + 44.0
-                        + if self.selection.is_empty() { 2.0 * menu_pitch() + MENU_RULE } else { 0.0 }
-                        + if st.feature("labels-v2").on { menu_pitch() } else { 0.0 }
-                        + if st.resolve_chat_idx(cid).is_some_and(|i| {
-                            let targets = self.selected_chats(&st);
-                            let targets = if targets.is_empty() { vec![&st.chats[i]] } else { targets };
-                            reminders::shows_snooze(&st, &targets)
-                        }) {
-                            menu_pitch()
-                        } else {
-                            0.0
-                        }
-                        + self.selection_rows(&st)
-                        + match st.resolve_chat_idx(cid).map(|i| &st.chats[i]) {
-                            Some(c) if self.selection.is_empty() && st.notifications_muted(c) && muted_by(&st, c).is_some() => menu_pitch(),
-                            _ => 0.0,
-                        }
-                        + if st.resolve_chat_idx(cid).is_some_and(|i| can_edit_group(&st.chats[i])) { menu_pitch() } else { 0.0 }
-                        + if self.selection.len() <= 1 && st.resolve_chat_idx(cid).is_some_and(|i| st.threaded(&st.chats[i])) {
-                            menu_pitch()
-                        } else {
-                            0.0
-                        }
-                        + match st.resolve_chat_idx(cid).map(|i| request_answers(&st.chats[i])) {
-                            Some((false, false)) | None => 0.0,
-                            Some((a, d)) => f32::from(u8::from(a) + u8::from(d)) * menu_pitch() + MENU_RULE,
-                        },
-                )
-            };
-            let (x, y) = menu_spot(*at, w, h, self.pane().size);
-            let sub_w = self
-                .chat_sub
-                .filter(|_| !["account:", "head:", SNOOZE_MENU, behavior::BEHAVIOR_MENU].iter().any(|k| cid.starts_with(k)))
-                .map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
-            let left = x + w + sub_w > self.pane().size.width;
-            (self.view_chat_menu(cid, left, self.pane().size.height - y), if left { x - sub_w } else { x }, y)
+            self.view_chat_menu(cid, *at)
         });
         let selection_menu = self.selection_menu.map(|(i, x)| {
-            let (menu, h) = self.view_selection_menu(i);
-            let w = if i == 0 { SUB_MENU_W[1] } else { 233.0 };
-            (menu, x.min(self.pane().size.width - w - 8.0), self.pane().size.height - 60.0 - h)
+            let place = move |m: Size, area: Size| Point::new(x.min(area.width - m.width - 8.0), area.height - 60.0 - m.height);
+            menu_keys::menu_at(self.view_selection_menu(i), None, place)
         });
         let main_menu = filter_menu.or(reminder_menu).filter(|_| in_list).or(rate_menu.filter(|_| in_main));
         let main_menu = main_menu.or(chat_menu.filter(|_| in_list));
         // Desktop's native menus take the arrows, Home, End and Enter.
-        let layer = |(m, x, y): (El<'a>, f32, f32), close: UiMessage| -> El<'a> {
-            backdrop(
-                container(mouse_area(menu_keys::menu(m)).on_press(UiMessage::Noop))
-                    .padding(Padding::ZERO.left(x).top(y))
-                    .width(Fill)
-                    .height(Fill),
-            )
-            .on_press(close.clone())
-            .on_right_press(close)
-            .into()
-        };
+        let layer =
+            |m: El<'a>, close: UiMessage| -> El<'a> { backdrop(menu_keys::menu(m)).on_press(close.clone()).on_right_press(close).into() };
         let main_menu = main_menu.or(self.pane_menu()).or(selection_menu.filter(|_| in_main));
         let native = self.native_select.as_ref().filter(|_| in_main).map(|s| layer(self.view_native_select(s), UiMessage::CloseModals));
         let (menu, palette_menu) = match (self.show_command_palette || self.forward.is_some()) && self.list().chat_menu.is_some() {
@@ -5623,15 +5545,14 @@ impl BeeperGuiApp {
             self.drawing_thread.set(open);
             let thread = open.then(|| self.pane_menu()).flatten();
             self.drawing_thread.set(false);
-            let thread = thread.map(|(m, x, y)| (Element::from(m).map(|m| UiMessage::InThread(Box::new(m))), x, y));
+            let thread = thread.map(|m| m.map(|m| UiMessage::InThread(Box::new(m))));
             thread.map(|m| layer(m, UiMessage::InThread(Box::new(UiMessage::CloseModals))))
         });
         let menu = menu.or_else(|| Some(layer(self.view_thread_menu(self.pane().thread_menu?), UiMessage::CloseModals)));
         let menu = menu.or_else(|| Some(layer(self.view_unread_menu(self.unread_menu?), UiMessage::CloseModals)));
         let toast = self.view_toast(true);
         let elsewhere = self.delete_in.is_some_and(|w| self.label_asking(w));
-        let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d) && !elsewhere);
-        let confirm = confirm.map(|d| self.view_confirm(d));
+        let confirm = self.confirm.as_ref().filter(|d| !d.in_settings() && !elsewhere).map(|d| self.view_confirm(d));
         // The carousel shows over its chat, and fills a "Media in %s" window.
         let shows = |c: &&Carousel| {
             let st = self.store.read();
@@ -5671,46 +5592,30 @@ impl BeeperGuiApp {
         ids.iter().for_each(|id| st.remove_from_beeper(id));
     }
 
-    /// The message menu, the composer menus or the reaction picker of the drawn pane, with their place.
-    fn pane_menu(&self) -> Option<(El<'_>, f32, f32)> {
+    /// The message menu and its open submenu, the composer menus or the reaction picker of the drawn pane, placed.
+    fn pane_menu<'a>(&'a self) -> Option<El<'a>> {
+        let spot = |menu: El<'a>, sub: Option<El<'a>>, at: Point| menu_keys::menu_at(menu, sub, move |m, area| menu_spot(at, m, area));
         let message_menu = self.pane().message_menu.as_ref().map(|(mid, at)| {
-            let (menu, h, top) = self.view_message_menu(mid);
-            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
-            let (sub, sub_w) = match self.view_speed_menu(mid) {
-                // Level with its row, under Fullscreen, Open in PiP, Download and Mute.
-                Some(sub) => (Some(column![Space::new().height(4.0 * menu_pitch()), sub].into()), video::SPEED_MENU_W),
-                None if self.pane().remind_sub => {
-                    let st = self.store.read();
-                    let rows = self.message_remind_items(&st, mid);
-                    let body = menu_card(&self.pal, Column::with_children(rows.into_iter().map(|r| r.0)), SUB_MENU_W[1]);
-                    (Some(column![Space::new().height(top), body].into()), SUB_MENU_W[1])
-                }
-                None => {
-                    let st = self.store.read();
-                    let room = self.pane().size.height - y;
-                    self.view_voice_sub(&st, &stored(&st, mid), top, room).map_or((None, 0.0), |(e, w)| (Some(e), w))
-                }
-            };
-            let left = sub.is_some() && x + MESSAGE_MENU_W + sub_w > self.pane().size.width;
-            let (x, menu) = if left { (x - sub_w, row![].push(sub).push(menu).into()) } else { (x, row![menu].push(sub).into()) };
-            (menu, x, y)
+            let menu = self.view_message_menu(mid);
+            let st = self.store.read();
+            let remind = || menu_card(&self.pal, Column::with_children(self.message_remind_items(&st, mid)), SUB_MENU_W[1]).into();
+            let sub = self.view_speed_menu(mid).or_else(|| self.pane().remind_sub.then(remind));
+            spot(menu, sub.or_else(|| self.view_voice_sub(&st, &stored(&st, mid))), *at)
         });
-        let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| {
-            let (menu, h) = self.view_edit_menu(word.as_ref());
-            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
-            (menu, x, y)
-        });
+        let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| spot(self.view_edit_menu(word.as_ref()), None, *at));
         let edit_menu = edit_menu.or_else(|| {
             let (ids, items, at) = self.pane().sched_menu.as_ref()?;
-            let (menu, h) = self.view_scheduled_menu(ids, *items);
-            let (x, y) = menu_spot(*at, MESSAGE_MENU_W, h, self.pane().size);
-            Some((menu, x, y))
+            Some(spot(self.view_scheduled_menu(ids, *items), None, *at))
         });
         let react = self.pane().emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
             let x = if at.x + 352.0 > self.pane().size.width { at.x - 352.0 } else { at.x };
             (self.view_emoji_picker(&self.store.read()).expect("the picker is open"), x, at.y.min(self.pane().size.height - 435.0 - 8.0))
         });
-        let gallery = self.pane().gallery_reactions.as_ref().map(|(ids, at)| (self.view_gallery_reactions(ids), at.x, at.y));
+        let react = react.map(|(m, x, y)| menu_keys::menu_at(m, None, move |_, _| Point::new(x, y)));
+        let gallery = self.pane().gallery_reactions.as_ref().map(|(ids, at)| {
+            let at = *at;
+            menu_keys::menu_at(self.view_gallery_reactions(ids), None, move |_, _| at)
+        });
         message_menu.or(edit_menu).or(react).or(gallery)
     }
 
@@ -6676,12 +6581,13 @@ impl BeeperGuiApp {
     /// Desktop's `getSpaceIcon`.
     fn space_icon(&self, st: &BeeperStore, id: &str) -> El<'static> {
         let p = &self.pal;
-        let glyph = |c: char, size: f32| -> El<'static> { ic(c, size).color(p.strong).into() };
+        // Desktop's `PlatformIcon`s of its sizes.
+        let glyph = |c: char, size: f32| platform(ic(c, size).color(p.strong));
         match id {
             "inbox" => glyph(icon::INBOX, 16.0),
             "archive" => glyph(icon::ARCHIVE, 14.0),
             "reminders" => glyph(icon::SCHEDULE, 14.0),
-            "snoozed" => tinted(&MOON_STARS, 14.0, p.strong),
+            "snoozed" => material("moon_stars", 14.0, p.strong),
             "requests" => glyph(icon::EMAIL, 16.0),
             "low_priority" => glyph(icon::LOW_PRIORITY_SPACE, 12.0),
             "scheduled" => glyph(icon::SCHEDULE_SEND, 14.0),
@@ -6936,10 +6842,11 @@ mod tests {
     #[test]
     fn context_menus_open_like_chromium() {
         let area = Size::new(1200.0, 800.0);
-        assert_eq!(menu_spot(Point::new(100.0, 100.0), 233.0, 400.0, area), (100.0, 100.0), "below the cursor");
-        assert_eq!(menu_spot(Point::new(100.0, 590.0), 233.0, 400.0, area), (100.0, 190.0), "above, ending at it");
-        assert_eq!(menu_spot(Point::new(100.0, 300.0), 233.0, 700.0, area), (100.0, 100.0), "moved up when neither fits");
-        assert_eq!(menu_spot(Point::new(1100.0, 100.0), 233.0, 400.0, area), (967.0, 100.0), "kept at the right edge");
+        let (menu, tall) = (Size::new(233.0, 400.0), Size::new(233.0, 700.0));
+        assert_eq!(menu_spot(Point::new(100.0, 100.0), menu, area), Point::new(100.0, 100.0), "below the cursor");
+        assert_eq!(menu_spot(Point::new(100.0, 590.0), menu, area), Point::new(100.0, 190.0), "above, ending at it");
+        assert_eq!(menu_spot(Point::new(100.0, 300.0), tall, area), Point::new(100.0, 100.0), "moved up when neither fits");
+        assert_eq!(menu_spot(Point::new(1100.0, 100.0), menu, area), Point::new(967.0, 100.0), "kept at the right edge");
     }
 
     /// `Find` gives a container's bounds on the screen: a select 300 px down a scrollable scrolled by 250 px is 50 px

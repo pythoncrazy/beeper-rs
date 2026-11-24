@@ -148,7 +148,7 @@ impl BeeperGuiApp {
                 .width(14)
                 .height(14)
                 .opacity(if to.is_some() { 1.0f32 } else { 0.5 })
-                .style(move |_, _| svg::Style { color: Some(white) });
+                .style(tint(white));
             button(glyph).bare(white).on_press_maybe(to.map(|n| UiMessage::Media(media_view::Msg::PdfPage(n)))).into()
         };
         let counter = format!("{n}/{}", count.map(|c| c.to_string()).unwrap_or_default());

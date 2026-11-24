@@ -239,8 +239,8 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's gallery menu when only the whole gallery of message `mid` is selected: "Reactions", "Download All",
-    /// "Forward All…" and "Delete…", as the menu, its height and the top of its voice rows.
-    pub(crate) fn view_gallery_menu(&self, mid: &str) -> Option<(El<'_>, f32, f32)> {
+    /// "Forward All…" and "Delete…".
+    pub(crate) fn view_gallery_menu(&self, mid: &str) -> Option<El<'_>> {
         let (ids, sel) = (&self.pane().gallery_menu, &self.pane().selected_msgs);
         if ids.first().is_none_or(|first| first != mid) || sel.len() != ids.len() || !ids.iter().all(|i| sel.contains(i)) {
             return None;
@@ -251,11 +251,11 @@ impl BeeperGuiApp {
         let at = self.pane().message_menu.as_ref().expect("the menu is open").1;
         let key = |name| hotkey_text(st.settings.hotkey_keys(name));
         let item = |label: String, hotkey: &str, msg| {
-            (menu_item(p, None, label, hotkey.to_string(), Some(UiMessage::Message(message::Msg::Menu(Box::new(msg))))), menu_pitch())
+            menu_item(p, None, label, hotkey.to_string(), Some(UiMessage::Message(message::Msg::Menu(Box::new(msg)))))
         };
         let action = |s| trx(s, "gallery menu action").to_string();
         let download = UiMessage::Commands(ids.iter().map(|i| UiMessage::Message(message::Msg::Download(i.clone(), None))).collect());
-        let rows: Vec<(El, f32)> = [
+        let rows: Vec<El> = [
             ms.iter()
                 .any(|m| !m.reactions.is_empty())
                 .then(|| vec![item(action("Reactions"), "", UiMessage::Gallery(Msg::Reactions(ids.clone(), at)))]),
@@ -265,15 +265,14 @@ impl BeeperGuiApp {
             ]),
             ms.iter().all(|m| deletable(&st, m)).then(|| {
                 let delete = UiMessage::Message(message::Msg::AskDelete(ids.clone()));
-                vec![(menu_rule(p), MENU_RULE), item(tr("Delete…").into(), "", delete)]
+                vec![menu_rule(p), item(tr("Delete…").into(), "", delete)]
             }),
         ]
         .into_iter()
         .flatten()
         .flatten()
         .collect();
-        let (menu, h) = crate::menu_rows(p, rows, MESSAGE_MENU_W);
-        Some((menu.into(), h, 0.0))
+        Some(crate::menu_card(p, Column::with_children(rows), MESSAGE_MENU_W).into())
     }
 
     /// Desktop's reactions list of the messages of a gallery, at the point of its anchor.
