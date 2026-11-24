@@ -6251,6 +6251,33 @@ fn rail_spaces_show_no_hover_fill_like_desktop() {
     assert_eq!(edge(&mut sim), clear);
 }
 
+/// Desktop's `.btn-ghost:active svg`: the pressed Search and New Chat icons of the chat list header turn
+/// `--color-icon-translucent-strong`, black at 0.9, from the `--color-on-surface` #202124 of `.tab-bar-btn button svg`.
+#[test]
+fn pressed_header_icons_turn_strong_like_desktop() {
+    let app = demo_app("header-press");
+    let main = app.main_window.expect("the main window");
+    for key in ["list-search", "list-new-chat"] {
+        let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+        let b = sim.find(iced::widget::Id::new(key)).expect("the header button").bounds();
+        // The darkest pixel of the button, and the background at its corner.
+        let ink = |sim: &mut Simulator<'_, UiMessage>| {
+            let shot = crate::message::tests::pixels(sim);
+            let k = shot.width() as f32 / app.pane.size.width;
+            let at = |x: f32, y: f32| shot.get_pixel((x * k) as u32, (y * k) as u32).0;
+            let px = (0..b.width as u32).flat_map(|x| (0..b.height as u32).map(move |y| (x as f32, y as f32)));
+            let darkest = px.map(|(x, y)| at(b.x + x, b.y + y)).min_by_key(|px| px[0]).expect("pixels");
+            (darkest, at(b.x, b.y))
+        };
+        assert_eq!(ink(&mut sim).0[..3], [0x20, 0x21, 0x24], "{key} at rest");
+        sim.point_at(b.center());
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: b.center() })]);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))]);
+        let (darkest, bg) = ink(&mut sim);
+        assert!((0..3).all(|i| darkest[i].abs_diff((f32::from(bg[i]) * 0.1).round() as u8) <= 1), "{key} pressed: {darkest:?}");
+    }
+}
+
 #[test]
 fn sidebar_follows_the_spaces_order_like_desktop() {
     use beeper_core::models::SpaceOrder;
