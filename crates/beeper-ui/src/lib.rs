@@ -122,7 +122,7 @@ pub mod zoom;
 use crate::composer::{composer_with, load_draft, save_draft, Typo};
 pub use crate::composer::{LinkState, Stash, Suggestion};
 pub use crate::dialogs::{GroupDraft, GroupEdit, LabelDraft, LabelEdit, LabelPane, LabelSettings, LabelStep, PollDraft, PollEdit};
-use crate::dialogs::{DEFAULT_LABEL_ICON, GROUP_SIZE, LABEL_SETTINGS_SIZE};
+use crate::dialogs::{DEFAULT_LABEL_ICON, GROUP_SIZE, LABEL_SETTINGS_SIZE, LABEL_SHEET_SIZE};
 use crate::i18n::{tr, trf, trn, trs, trx};
 use crate::media_view::{decode_media, run_ffmpeg, Carousel, MediaWindow, TAB_SLIDE};
 use crate::message::Rows;

@@ -5042,6 +5042,38 @@ fn zoom_keys_like_desktop() {
     assert_eq!((app.zoom, crate::style::rem(16.0)), (1.1, 12.0), "the zoom keeps the root font");
 }
 
+/// Desktop's `v3` sheets (Label Settings, New Label, Edit Label, Chats, How It Works) open at their size times the zoom,
+/// and take their size at the new zoom when it changes (`followsZoom`), where the other windows keep their size.
+#[test]
+fn sheets_follow_the_zoom_like_desktop() {
+    use iced::futures::StreamExt;
+    let first = |task: Task<UiMessage>| {
+        let stream = iced_runtime::task::into_stream(task).expect("an action");
+        iced::futures::executor::block_on(stream.boxed().next()).expect("an action")
+    };
+    let mut app = demo_app("zoomed-sheets");
+    for _ in 0..5 {
+        let _ = app.update(UiMessage::Zoom(zoom::Msg::Step(1)));
+    }
+    assert_eq!(app.zoom, 1.5);
+    let open = first(app.update(UiMessage::Labels(labels::Msg::OpenSettings("lbl_work".into()))));
+    let iced_runtime::Action::Window(iced_runtime::window::Action::Open(sheet, s, _)) = open else { panic!("a window opens") };
+    // 341 by 563 at 150% is 512 by 845 screen pixels, like Desktop's `Math.round`.
+    assert_eq!(s.size, Size::new(512.0, 845.0) * (1.0 / 1.5));
+    assert_eq!(app.zoomed_sheets(), vec![(sheet, LABEL_SETTINGS_SIZE)]);
+    let follow = iced_runtime::task::into_stream(app.update(UiMessage::Zoom(zoom::Msg::Step(1)))).expect("actions");
+    let place = follow.filter_map(|a| async move {
+        match a {
+            iced_runtime::Action::Window(iced_runtime::window::Action::GetPosition(id, _)) => Some(id),
+            _ => None,
+        }
+    });
+    assert_eq!(iced::futures::executor::block_on(place.boxed().next()), Some(sheet), "the sheet resizes around its center");
+    let _ = app.update(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())));
+    let _ = app.update(UiMessage::Info(info::Msg::HowItWorks(true)));
+    assert_eq!(app.zoomed_sheets().len(), 3, "New Label and How It Works follow the zoom too");
+}
+
 /// Desktop's windows open at their size in screen pixels whatever the zoom and the font size, and iced opens a
 /// window at its size times the scale factor.
 #[test]
