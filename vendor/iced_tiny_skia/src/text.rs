@@ -196,13 +196,15 @@ fn draw(
 
     for run in buffer.layout_runs() {
         for glyph in run.glyphs {
-            let physical_glyph = glyph.physical(
+            let (cache_key, x, y) = crate::graphics::text::place(
+                glyph,
+                run.line_y,
                 (position.x, position.y),
                 transformation.scale_factor(),
             );
 
             if let Some((buffer, placement)) = glyph_cache.allocate(
-                physical_glyph.cache_key,
+                cache_key,
                 glyph.color_opt.map(from_color).unwrap_or(color),
                 font_system,
                 &mut swash,
@@ -222,10 +224,8 @@ fn draw(
 
                 crate::blit::draw(
                     pixels,
-                    physical_glyph.x + placement.left,
-                    physical_glyph.y - placement.top
-                        + (run.line_y * transformation.scale_factor()).round()
-                            as i32,
+                    x + placement.left,
+                    y - placement.top,
                     pixmap,
                     opacity,
                     clip_mask,

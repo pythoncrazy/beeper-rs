@@ -400,7 +400,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 member_actions: 0,
                 file,
                 room_features,
-                features: t.get("features").filter(|f| !f.is_null()).cloned().map(Box::new),
+                features: t.get("features").filter(|f| !f.is_null()).map(crate::models::Shared::new),
                 custom_emoji: crate::models::custom_emoji(t.get("features"), bridge),
                 disappearing: t.pointer("/disappearingTimer/timer").and_then(Value::as_u64).filter(|&t| t > 0),
                 threads: t.pointer("/features/thread").and_then(Value::as_i64) > Some(0),

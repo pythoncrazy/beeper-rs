@@ -969,22 +969,21 @@ impl BeeperGuiApp {
         let input = self.view_composer_input(st, chat);
         let net = self.view_composer_network(st, chat);
         let action_btn = |id| self.composer_action_btn(st, chat, id);
-        let inline = Row::with_children([pri, sec].into_iter().flatten().map(action_btn)).spacing(2).align_y(Center);
+        let inline = Row::with_children([pri, sec].into_iter().flatten().map(action_btn)).align_y(Center);
         let net = Row::new().push(net.map(|n| container(n).padding(Padding::ZERO.right(2.0)).center_y(36)));
-        let inline = container(inline).padding(Padding::ZERO.left(2.0)).center_y(36);
+        let inline = container(inline).center_y(36);
         let formats = if st.settings.on("formattingMenu") { chat.formatting } else { 0 };
         let input = self.with_formatting(input, formats);
-        let line = row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(6.5));
+        // `.ComposeMessage-module__textAreaButtons` has 5 px on the right.
+        let line = row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(5.0));
         // Desktop's `add` system icon fills its cross with `#828286` in both themes.
         let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.pane().show_attach_menu)], 20.0, hex(0x828286));
         let toggle = button(container(plus_icon).center(36))
             .padding(0)
             .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
             .on_press(UiMessage::Composer(Msg::ToggleAttachMenu));
-        let unveiled = self
-            .pane()
-            .show_attach_menu
-            .then(|| Row::with_children(self.pane_actions(st).into_iter().map(action_btn)).spacing(2).padding([0, 1]).align_y(Center));
+        let unveiled =
+            self.pane().show_attach_menu.then(|| Row::with_children(self.pane_actions(st).into_iter().map(action_btn)).align_y(Center));
         let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
         let pending = self.view_pending_attachments(st);
         let send = self.view_send_button();
@@ -1147,6 +1146,8 @@ impl BeeperGuiApp {
             .padding(0)
             .style(btn_style([bg, p.hover, p.selected], [p.text; 3], 14.0))
             .on_press_maybe(msg);
+        // Desktop's `btn-icon` is 30 px wide, its 20 px icon 5 px in, and the `emojiPopup` 32 px, its icon 6 px in.
+        let b = container(b).padding([0, if id == 0 { 2 } else { 1 }]);
         let caps = hotkey.map_or_else(Vec::new, |h| hotkey_caps(st.settings.hotkey_keys(h)));
         if id != 0 {
             return self.tip_caps(b.into(), label, caps, tooltip::Position::Top).into();
@@ -2167,7 +2168,7 @@ mod tests {
         assert_eq!(ink[..3], [0x82, 0x82, 0x86]);
     }
 
-    /// The icons of Desktop's composer at 1200x800: the `remove` buttons of the attachments (a 20 px gray disc whose
+    /// The icons of Desktop's composer at 1200x800: the emoji and voice buttons on whole pixels, the `remove` buttons of the attachments (a 20 px gray disc whose
     /// white cross is 9.2 px, 4 px past the corner), the `OutlineCheck` of Edit Message (a 1.5 stroke at 18 px), the
     /// `future` icon of the Send Later banner at its default 24 px, and the 12 px `link` icon of a link preview.
     #[test]
@@ -2189,6 +2190,13 @@ mod tests {
             let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
             app
         };
+        // The emoji and voice buttons: Desktop's 32 px `emojiPopup` and 30 px `btn-icon` put their 20 px icons on the
+        // whole pixels 1079 and 1110, so their paths start at 1080.67 and 1112.5.
+        let app = note("composer-buttons");
+        let [(emoji, _, _), (voice, _, _)] = ink(&app, None, &[[1076.0, 754.0, 22.0, 24.0], [1107.0, 754.0, 24.0, 24.0]])[..] else {
+            unreachable!()
+        };
+        assert!((emoji[0] - 1080.67).abs() < 0.25 && (voice[0] - 1112.5).abs() < 0.25, "emoji {emoji:?}, voice {voice:?}");
         let mut app = note("composer-remove");
         let dir = std::env::temp_dir().join(format!("composer-remove-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

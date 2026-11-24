@@ -772,7 +772,7 @@ mod tests {
         let plain = serde_json::to_value(chat(&st, &st.chats[idx], None, false)).unwrap();
         assert!(plain.get("capabilities").is_none() && plain["snooze"].is_null(), "a room without features");
         st.update_chat(idx, |c| {
-            c.features = Some(Box::new(json!({ "reply": 2 })));
+            c.features = Some(beeper_core::models::Shared::new(&json!({ "reply": 2 })));
             c.snoozed_until_ms = Some(1_900_000_000_000);
         });
         let shown = serde_json::to_value(chat(&st, &st.chats[idx], None, false)).unwrap();
