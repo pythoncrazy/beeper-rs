@@ -10351,7 +10351,7 @@ fn the_open_chat_card_keeps_its_round_corners_and_shadow_like_desktop() {
 /// over the list: a translucent icon takes its alpha once, as a translucent text does.
 #[test]
 fn row_receipt_is_desktop_translucent_gray() {
-    let mut app = demo_app("row-receipt");
+    let app = demo_app("row-receipt");
     let chat = app.visible_chats(&app.store.read()).iter().find(|c| c.title == "Family").map(|c| c.id.clone()).expect("Family");
     let _ = app.store.write().send_message(&chat, Some("receipt probe".into()), None, None).unwrap();
     let size = Size::new(1200.0, 800.0);
