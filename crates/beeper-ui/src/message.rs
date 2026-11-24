@@ -417,7 +417,6 @@ fn button_spinner<'a>(size: f32, color: Color) -> El<'a> {
     svg(BUTTON_SPINNER.clone())
         .width(size)
         .height(size)
-        .opacity(color.a)
         .rotation(iced::Rotation::Solid(iced::Radians(step / 12.0 * std::f32::consts::TAU)))
         .style(move |_, _| svg::Style { color: Some(color) })
         .into()

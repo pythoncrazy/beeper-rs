@@ -2507,8 +2507,9 @@ pub fn short_title(c: &Chat) -> &str {
     }
 }
 
+/// The SVG `h` at `size` px in `color`, whose alpha the vendored renderers apply over the coverage (#912).
 fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
-    svg(h.clone()).width(size).height(size).opacity(color.a).style(move |_, _| svg::Style { color: Some(color) }).into()
+    svg(h.clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) }).into()
 }
 
 static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
