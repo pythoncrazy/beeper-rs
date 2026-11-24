@@ -30,6 +30,7 @@ mod gallery;
 mod gifs;
 #[cfg(target_os = "linux")]
 mod global_keys;
+mod hairline;
 pub mod hotkeys;
 mod i18n;
 mod idle;

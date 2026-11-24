@@ -10956,6 +10956,38 @@ fn row_hover_actions_sit_like_desktop() {
     }
 }
 
+/// Desktop's chat row divider (`section:after`, 0.33 px high) starts at the row's content, after the unread dot's
+/// column when the counts are off, and Chromium snaps it to one device pixel: at the scale of 2 of the shot, the
+/// last one of the row.
+#[test]
+fn row_dividers_like_desktop() {
+    use iced_test::selector::Candidate;
+    let mut app = demo_app("row-dividers");
+    for counts in [true, false] {
+        let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("showUnreadCount", u8::from(counts))));
+        // The start of the title, which the row may cut short.
+        let title: String = app.pins_and_rows(&app.store.read()).1[1].title.chars().take(4).collect();
+        let mut sim = simulator(app.view_sidebar());
+        let hit = |c: Candidate<'_>| match c {
+            Candidate::Text { content, bounds, .. } if content.starts_with(title.as_str()) => Some(bounds),
+            _ => None,
+        };
+        let at = sim.find(hit).expect("the row's title");
+        let (x, top) = (2 * at.x as u32, 2 * at.y as u32);
+        let shot = crate::message::tests::pixels(&mut sim);
+        let bg = shot.get_pixel(x, 1).0;
+        // A rule is a run of one color other than the background's from the content on.
+        let rule = |y: u32| shot.get_pixel(x, y).0 != bg && (x..x + 160).all(|i| shot.get_pixel(i, y) == shot.get_pixel(x, y));
+        // The rules from the row above the title's on, under the pins.
+        let ys: Vec<u32> = (top - 2 * 68..shot.height()).filter(|&y| rule(y)).collect();
+        assert!(ys.len() > 3, "counts {counts}: {ys:?}");
+        for (y, next) in ys.iter().zip(&ys[1..]) {
+            assert_eq!((y % 2, next - y), (1, 2 * 68), "counts {counts}: one device pixel, the row's last: {ys:?}");
+            assert_eq!(shot.get_pixel(x - 1, *y).0, bg, "counts {counts}: the rule starts at the content");
+        }
+    }
+}
+
 /// Desktop's press on a trigger dismisses its tooltip: the "Filter" tooltip does not cover the filter menu.
 #[test]
 fn no_tooltip_over_an_open_menu_like_desktop() {
