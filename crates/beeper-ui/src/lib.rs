@@ -3299,19 +3299,13 @@ impl BeeperGuiApp {
         let matrix = ("hungryserv".to_string(), beeper_core::matrix::matrix_capabilities());
         let resolve = resolve.chain([matrix]).collect();
         drop(st);
-        let sidebar_width = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-width")) {
-            Ok(w) => w.parse().expect("a numeric sidebar width"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => SIDEBAR_WIDTH,
-            Err(e) => panic!("read the sidebar width: {e}"),
-        };
+        // A saved value that does not read or parse, like one edited by hand, gives the default instead of no start.
+        let saved = |name: &str| std::fs::read_to_string(store.read().config.data_dir.join(name)).ok();
+        let sidebar_width = saved("sidebar-width").and_then(|w| w.trim().parse().ok()).unwrap_or(SIDEBAR_WIDTH);
         let thread_fraction = threads::saved_thread_fraction(&store.read().config.data_dir);
         let filters = chat_list::saved_filters(&store.read().config.data_dir);
         let audio = voice::Player::new(&store.read().config.data_dir);
-        let sidebar_hidden = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-hidden")) {
-            Ok(h) => h.parse().expect("a boolean sidebar-hidden"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => panic!("read sidebar-hidden: {e}"),
-        };
+        let sidebar_hidden = saved("sidebar-hidden").and_then(|h| h.trim().parse().ok()).unwrap_or(false);
         let quit_on_close = store.read().settings.on("quitOnClose");
         let mut app = with_defaults!(Self {
             pane: Pane { size: MAIN_SIZE, ..Pane::default() },
