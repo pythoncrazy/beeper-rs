@@ -11965,6 +11965,31 @@ fn demo_flows_make_no_requests() {
     assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 0, "the demo connected to {url}");
 }
 
+/// The signed-in Desktop's `FreebieNudge` over the composer: the 11 px headline (14 px line) and the 10 px link (12 px
+/// line) 4 px after it, then the 16 px close button right after the link, all centered on the chat.
+#[test]
+fn incognito_trial_over_nudge_geometry_like_desktop() {
+    let mut app = demo_app("trial-over-geometry");
+    let main = app.main_window.expect("the main window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(1200.0, 800.0))));
+    {
+        let mut st = app.store.write();
+        st.features.usage =
+            serde_json::json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2020-01-04T00:00:00Z" } });
+        let i = st.chat_idx(NOTE_CHAT_ID);
+        st.update_chat(i, |c| (c.messages.read_receipts, c.is_read_only) = (true, false));
+    }
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+    let head = sim.find("Your incognito trial is over").expect("the headline").bounds();
+    let link = sim.find("Upgrade to Plus to keep it").expect("the link").bounds();
+    assert_eq!((head.height, link.height), (14.0, 12.0), "the line heights of 11 and 10 px");
+    assert_eq!(link.x - head.x - head.width, 4.0, "the gap");
+    assert_eq!((head.y, link.y), (725.0, 726.0), "centered on the 16 px close button under the 6 px padding");
+    let mid = head.x + (head.width + 4.0 + link.width + 16.0) / 2.0;
+    assert!((mid - (320.0 + 1192.0) / 2.0).abs() < 0.5, "centered on the chat: {mid}");
+}
+
 /// Desktop's incognito nudge `expired`: once the trial ended, a chat with read receipts shows "Your incognito trial is
 /// over" over its composer at most once a day, and its close button hides it for good.
 #[test]
