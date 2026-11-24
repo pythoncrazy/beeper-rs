@@ -10324,6 +10324,23 @@ fn wayland_hides_windows_by_closing_them_like_electron() {
     assert!(app.chat_windows.iter().all(|w| w.0 != chat) && app.unmapped.len() == 1, "the chat window is gone");
 }
 
+/// Desktop's `hideAllWindows` hides every window of `childWindows`, which has every window that `window.open` made but
+/// the popovers: the verification, sign-in code and Recovery Key modal windows and Label Settings hide with the app.
+#[test]
+fn modal_windows_hide_with_the_app_like_desktop() {
+    use beeper_core::platform::DisplayServerKind;
+    let mut app = demo_app("modals-hide");
+    app.display_server = DisplayServerKind::X11;
+    let modals = [window::Id::unique(), window::Id::unique(), window::Id::unique()];
+    (app.verify.window, app.reauth.window, app.enter_key.window) = (Some(modals[0]), Some(modals[1]), Some(modals[2]));
+    let _ = app.update(UiMessage::Labels(labels::Msg::OpenSettings("lbl_work".into())));
+    let label = app.label_settings[0].id;
+    let (done, _) = run_window_actions(app.set_hidden(true), Size::new(900.0, 640.0), &[]);
+    for id in modals.into_iter().chain([label]) {
+        assert!(done.contains(&format!("mode {id:?} Hidden")), "{id:?} hides: {done:?}");
+    }
+}
+
 /// A later launch hands its launcher's activation token over, and a notification's `ActivationToken` comes before its
 /// action: the window that shows next raises with the token on Wayland. On X11, winit's focus raises the window.
 #[test]

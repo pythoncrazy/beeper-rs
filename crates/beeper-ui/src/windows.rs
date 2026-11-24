@@ -779,7 +779,8 @@ impl BeeperGuiApp {
         crate::ui_theme::window_bg(container(body).width(Fill).height(Fill), self.pal.backdrop, self.pal.window).into()
     }
 
-    /// The windows besides the main window, Desktop's `subWindows`.
+    /// The windows besides the main window: Desktop's `childWindows`, every window that `window.open` made but the
+    /// popovers, modal windows and Label Settings too, which `hideAllWindows` hides with the main window.
     pub(crate) fn sub_windows(&self) -> Vec<window::Id> {
         let merge = self.merge_window.as_ref().map(|d| d.id);
         let drafts = [self.label_window.as_ref().map(|d| d.id), self.spaces_window.as_ref().map(|d| d.id), merge];
@@ -789,7 +790,9 @@ impl BeeperGuiApp {
         let group = self.group_window.as_ref().map(|d| d.id);
         let lists = lists.chain(self.poll_windows.iter().map(|w| w.id)).chain(self.add_accounts.iter().map(|a| a.id));
         let lists = lists.chain(self.nickname_windows.iter().map(|d| d.id)).chain(self.modals.iter().map(|w| w.0));
-        singles.chain([group, self.blocked_window, self.how_window, self.networks.window]).flatten().chain(lists).collect()
+        let lists = lists.chain(self.label_settings.iter().map(|l| l.id));
+        let modals = [self.verify.window, self.reauth.window, self.enter_key.window];
+        singles.chain([group, self.blocked_window, self.how_window, self.networks.window]).chain(modals).flatten().chain(lists).collect()
     }
 
     /// Desktop's `hideToTray` (`Du`), which hides the sub-windows and then the main window, and `showWindow`, which
