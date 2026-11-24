@@ -52,6 +52,8 @@ pub struct Flags {
     pub summary: Value,
     pub subscribed: bool,
     pub internal: bool,
+    /// Desktop's `loggedInUser.features` of `whoami`, which counts until the account data has the flags.
+    pub whoami: Value,
 }
 
 impl Flags {
@@ -82,7 +84,7 @@ impl Flags {
         let networks = crate::config::NETWORK_SPECS[1..].iter().map(|n| (network_key(n).to_string(), 1.into()));
         let max = serde_json::json!({ "num_accounts_against_limit": 10, "bridges": Value::Object(networks.collect()) });
         let summary = serde_json::json!({ "current": DEFAULT_SUMMARY["current"], "max": max });
-        Flags { flags, usage: Value::Null, summary, subscribed: false, internal: false }
+        Flags { flags, summary, ..Flags::default() }
     }
 
     /// Desktop's `updateBridgeAccountSummary`: the account data, or its default without it.
@@ -113,7 +115,7 @@ impl Flags {
     pub fn network_on(&self, network: &NetworkSpec) -> bool {
         let local = format!("local-{}", network_key(network));
         let mut bridges = crate::config::cloud_bridge(network).into_iter().chain([local.as_str()]);
-        self.flags.is_null() || bridges.any(|b| self.flag(&format!("bridge:{b}")).on)
+        self.features().is_none() || bridges.any(|b| self.flag(&format!("bridge:{b}")).on)
     }
 
     /// Desktop's `isPlanCapped` (`iC`) of a network: its accounts reached the plan's limit for it. Without a limit
@@ -124,18 +126,26 @@ impl Flags {
         max != -1 && s["current"]["bridges"][key].as_i64().unwrap_or(0) >= max
     }
 
-    /// Desktop's `combinedFeatures`: the `appType:desktop` flags override the `*` flags.
+    /// Desktop's `combinedFeatures` of `key`: the `appType:desktop` flags override the `*` flags, of the account data,
+    /// else of `whoami`.
+    fn value(&self, key: &str) -> Option<&Value> {
+        let all = self.features()?;
+        all["appType:desktop"].get(key).or_else(|| all["*"].get(key))
+    }
+
+    fn features(&self) -> Option<&Value> {
+        [&self.flags["features"], &self.whoami].into_iter().find(|f| !f.is_null())
+    }
+
+    /// Desktop's `features` entry `e(key, true)`: a flag that is not a boolean hides the feature.
     fn flag(&self, key: &str) -> Feature {
-        let all = &self.flags["features"];
-        let v = all["appType:desktop"].get(key).or_else(|| all["*"].get(key));
-        v.and_then(Value::as_bool).map_or(Feature { show: false, on: false, upgrade: true }, |on| Feature { show: true, on, upgrade: true })
+        let on = self.value(key).and_then(Value::as_bool);
+        Feature { show: on.is_some(), on: on == Some(true), upgrade: true }
     }
 
     /// Desktop's `maxMergeChats`: the `max-merge-chats` flag, a whole number from -1 for no limit, else 1.
     pub fn max_merge_chats(&self) -> i64 {
-        let all = &self.flags["features"];
-        let v = all["appType:desktop"].get("max-merge-chats").or_else(|| all["*"].get("max-merge-chats"));
-        let n = match v {
+        let n = match self.value("max-merge-chats") {
             Some(Value::Number(n)) => n.as_f64(),
             Some(Value::String(s)) if !s.trim().is_empty() => s.trim().parse().ok(),
             _ => None,
@@ -231,14 +241,20 @@ impl Flags {
             "stealth-mode" => with_free(self.flag(key), "incognito"),
             "remind-later" | "voice-transcription" => with_free(self.flag(key), key),
             "talk-to-type" => self.flag("voice-transcription"),
-            "undo-send"
-            | "ai-in-beeper-chats"
+            "undo-send" | "ai-in-beeper-chats" => self.flag(key),
+            // Desktop's `r(key)`: the feature shows only with the flag on.
+            "archive-as-unread"
+            | "enable-threads"
+            | "block-users"
+            | "delete-chats"
+            | "nudge"
+            | "slash-commands-available"
             | "enable-polls"
             | "enable-disappearing-message-timer-config"
             | "personal-room-overrides"
             | "drafts-sync"
-            | "deferred-recovery-code-setup" => self.flag(key),
-            "archive-as-unread" | "enable-threads" | "block-users" | "delete-chats" | "nudge" | "slash-commands-available" | REQUESTS => {
+            | REQUESTS
+            | "deferred-recovery-code-setup" => {
                 let on = self.flag(key).on;
                 Feature { show: on, on, upgrade: false }
             }
@@ -280,7 +296,7 @@ mod tests {
             ],
         });
         let usage = json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2020-01-04T00:00:00Z" }, "remind-later": { "used": 5 } });
-        let mut f = Flags { flags, usage, summary: Value::Null, subscribed: false, internal: false };
+        let mut f = Flags { flags, usage, ..Flags::default() };
         let lock = Feature { show: true, on: false, upgrade: true };
         let open = Feature { on: true, ..lock };
         assert_eq!(f.get("undo-send", 0), lock);
@@ -316,6 +332,19 @@ mod tests {
         assert_eq!(free.free_uses("voice-transcription"), Some((0, 5)));
         free.usage = json!({ "voice-transcription": { "used": 5 } });
         assert_eq!(free.free_uses("voice-transcription"), Some((5, 5)));
+    }
+
+    /// Desktop's `combinedFeatures`: the flags of `whoami` count until the account data has its own, and an `r()`
+    /// feature like polls shows only when its flag is on.
+    #[test]
+    fn whoami_flags_count_until_the_account_data_like_desktop() {
+        let mut f = Flags { whoami: json!({ "*": { "enable-polls": true, "undo-send": false } }), ..Flags::default() };
+        assert!(f.get("enable-polls", 0).on, "the flags of whoami");
+        assert_eq!(f.get("undo-send", 0), Feature { show: true, on: false, upgrade: true });
+        assert!(!f.network_on(crate::config::find_network("signal").expect("a network")), "whoami has no bridge flag");
+        f.flags = json!({ "features": { "*": { "enable-polls": false } } });
+        assert_eq!(f.get("enable-polls", 0), Feature { show: false, on: false, upgrade: false }, "the account data wins");
+        assert!(!f.get("undo-send", 0).show, "and has no undo-send");
     }
 
     /// Desktop's `features[SNOOZE]`: hidden outside the internal channel, else the flag, opened by a snooze freebie.

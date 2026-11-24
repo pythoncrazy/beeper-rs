@@ -238,10 +238,7 @@ pub fn stub_guilds() -> Vec<Value> {
 fn guilds(st: &mut State, method: &str, path: &str, body: &Value) -> (u16, Value) {
     let guilds = st.guilds.get_or_insert_with(stub_guilds);
     let Some(id) = path.strip_prefix("/") else {
-        return match method {
-            "GET" => (200, json!({ "guilds": guilds })),
-            _ => err(405, "M_UNRECOGNIZED", "Unsupported method"),
-        };
+        return if method == "GET" { (200, json!({ "guilds": guilds })) } else { err(405, "M_UNRECOGNIZED", "Unsupported method") };
     };
     let Some(g) = guilds.iter_mut().find(|g| g["id"] == id) else {
         return err(404, "M_NOT_FOUND", "Guild not found");
