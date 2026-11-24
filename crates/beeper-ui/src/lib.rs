@@ -924,12 +924,6 @@ fn menu_frame<'a>(p: &Palette, content: impl Into<El<'a>>, w: impl Into<Length>)
     container(card).style(move |_| container::Style { border: border::rounded(6), shadow: shadow(0.19, 8.0, 29.0), ..Default::default() })
 }
 
-/// [`menu_card`] of rows with their heights, and the height of the menu.
-fn menu_rows<'a>(p: &Palette, rows: Vec<(El<'a>, f32)>, w: impl Into<Length>) -> (iced::widget::Container<'a, UiMessage>, f32) {
-    let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
-    (menu_card(p, Column::with_children(rows.into_iter().map(|r| r.0)), w), h)
-}
-
 /// The height of a [`menu_rule`] between two menu rows, whose 1 px margins add to it.
 const MENU_RULE: f32 = 10.0;
 
@@ -5539,7 +5533,7 @@ impl BeeperGuiApp {
         // Desktop's native menus take the arrows, Home, End and Enter.
         let layer =
             |m: El<'a>, close: UiMessage| -> El<'a> { backdrop(menu_keys::menu(m)).on_press(close.clone()).on_right_press(close).into() };
-        let main_menu = main_menu.or(self.pane_menu().map(|(m, x, y)| fixed(m, x, y))).or(selection_menu.filter(|_| in_main));
+        let main_menu = main_menu.or(self.pane_menu()).or(selection_menu.filter(|_| in_main));
         let native = self.native_select.as_ref().filter(|_| in_main).map(|s| layer(self.view_native_select(s), UiMessage::CloseModals));
         let (menu, palette_menu) = match (self.show_command_palette || self.forward.is_some()) && self.list().chat_menu.is_some() {
             true => (None, main_menu.map(|m| layer(m, UiMessage::ChatList(chat_list::Msg::CloseMenu)))),
@@ -5551,7 +5545,7 @@ impl BeeperGuiApp {
             self.drawing_thread.set(open);
             let thread = open.then(|| self.pane_menu()).flatten();
             self.drawing_thread.set(false);
-            let thread = thread.map(|(m, x, y)| fixed(Element::from(m).map(|m| UiMessage::InThread(Box::new(m))), x, y));
+            let thread = thread.map(|m| m.map(|m| UiMessage::InThread(Box::new(m))));
             thread.map(|m| layer(m, UiMessage::InThread(Box::new(UiMessage::CloseModals))))
         });
         let menu = menu.or_else(|| Some(layer(self.view_thread_menu(self.pane().thread_menu?), UiMessage::CloseModals)));
@@ -5598,46 +5592,30 @@ impl BeeperGuiApp {
         ids.iter().for_each(|id| st.remove_from_beeper(id));
     }
 
-    /// The message menu, the composer menus or the reaction picker of the drawn pane, with their place.
-    fn pane_menu(&self) -> Option<(El<'_>, f32, f32)> {
+    /// The message menu and its open submenu, the composer menus or the reaction picker of the drawn pane, placed.
+    fn pane_menu<'a>(&'a self) -> Option<El<'a>> {
+        let spot = |menu: El<'a>, sub: Option<El<'a>>, at: Point| menu_keys::menu_at(menu, sub, move |m, area| menu_spot(at, m, area));
         let message_menu = self.pane().message_menu.as_ref().map(|(mid, at)| {
-            let (menu, h, top) = self.view_message_menu(mid);
-            let Point { x, y } = menu_spot(*at, Size::new(MESSAGE_MENU_W, h), self.pane().size);
-            let (sub, sub_w) = match self.view_speed_menu(mid) {
-                // Level with its row, under Fullscreen, Open in PiP, Download and Mute.
-                Some(sub) => (Some(column![Space::new().height(4.0 * menu_pitch()), sub].into()), video::SPEED_MENU_W),
-                None if self.pane().remind_sub => {
-                    let st = self.store.read();
-                    let rows = self.message_remind_items(&st, mid);
-                    let body = menu_card(&self.pal, Column::with_children(rows.into_iter().map(|r| r.0)), SUB_MENU_W[1]);
-                    (Some(column![Space::new().height(top), body].into()), SUB_MENU_W[1])
-                }
-                None => {
-                    let st = self.store.read();
-                    let room = self.pane().size.height - y;
-                    self.view_voice_sub(&st, &stored(&st, mid), top, room).map_or((None, 0.0), |(e, w)| (Some(e), w))
-                }
-            };
-            let left = sub.is_some() && x + MESSAGE_MENU_W + sub_w > self.pane().size.width;
-            let (x, menu) = if left { (x - sub_w, row![].push(sub).push(menu).into()) } else { (x, row![menu].push(sub).into()) };
-            (menu, x, y)
+            let menu = self.view_message_menu(mid);
+            let st = self.store.read();
+            let remind = || menu_card(&self.pal, Column::with_children(self.message_remind_items(&st, mid)), SUB_MENU_W[1]).into();
+            let sub = self.view_speed_menu(mid).or_else(|| self.pane().remind_sub.then(remind));
+            spot(menu, sub.or_else(|| self.view_voice_sub(&st, &stored(&st, mid))), *at)
         });
-        let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| {
-            let (menu, h) = self.view_edit_menu(word.as_ref());
-            let Point { x, y } = menu_spot(*at, Size::new(MESSAGE_MENU_W, h), self.pane().size);
-            (menu, x, y)
-        });
+        let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| spot(self.view_edit_menu(word.as_ref()), None, *at));
         let edit_menu = edit_menu.or_else(|| {
             let (ids, items, at) = self.pane().sched_menu.as_ref()?;
-            let (menu, h) = self.view_scheduled_menu(ids, *items);
-            let Point { x, y } = menu_spot(*at, Size::new(MESSAGE_MENU_W, h), self.pane().size);
-            Some((menu, x, y))
+            Some(spot(self.view_scheduled_menu(ids, *items), None, *at))
         });
         let react = self.pane().emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
             let x = if at.x + 352.0 > self.pane().size.width { at.x - 352.0 } else { at.x };
             (self.view_emoji_picker(&self.store.read()).expect("the picker is open"), x, at.y.min(self.pane().size.height - 435.0 - 8.0))
         });
-        let gallery = self.pane().gallery_reactions.as_ref().map(|(ids, at)| (self.view_gallery_reactions(ids), at.x, at.y));
+        let react = react.map(|(m, x, y)| menu_keys::menu_at(m, None, move |_, _| Point::new(x, y)));
+        let gallery = self.pane().gallery_reactions.as_ref().map(|(ids, at)| {
+            let at = *at;
+            menu_keys::menu_at(self.view_gallery_reactions(ids), None, move |_, _| at)
+        });
         message_menu.or(edit_menu).or(react).or(gallery)
     }
 

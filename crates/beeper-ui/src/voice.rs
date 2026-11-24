@@ -542,29 +542,28 @@ impl BeeperGuiApp {
 
     /// The "Playback Speed" row of the message menu of a playable audio message, and its "Transcription Language"
     /// row when the account can transcribe.
-    pub(crate) fn voice_menu_rows(&self, st: &BeeperStore, m: &Message) -> Vec<(El<'_>, f32)> {
+    pub(crate) fn voice_menu_rows(&self, st: &BeeperStore, m: &Message) -> Vec<El<'_>> {
         let Some(a) = m.attachments.first().filter(|a| a.attachment_type == "audio") else { return Vec::new() };
-        let row = |label: &'static str, open: Msg| -> (El<'_>, f32) {
+        let row = |label: &'static str, open: Msg, shown: bool| -> El<'_> {
             let open = UiMessage::Voice(open);
             let row = menu_item(&self.pal, None, tr(label).into(), "›", Some(open.clone()));
-            (mouse_area(row).on_enter(open).into(), menu_pitch())
+            crate::menu_keys::opener(mouse_area(row).on_enter(open), shown)
         };
-        let speed = self.playable(a).then(|| row("Playback Speed", Msg::Sub));
-        let language = st.feature("voice-transcription").on.then(|| row("Transcription Language", Msg::LangSub));
+        let speed = self.playable(a).then(|| row("Playback Speed", Msg::Sub, self.audio.sub));
+        let language = st.feature("voice-transcription").on.then(|| row("Transcription Language", Msg::LangSub, self.audio.lang));
         speed.into_iter().chain(language).collect()
     }
 
-    /// The open submenu of the message menu of `m` and its width: the Playback Speed menu `top` below the top of the
-    /// menu, or the Transcription Language menu below it, at most `room` tall.
-    pub(crate) fn view_voice_sub(&self, st: &BeeperStore, m: &Message, top: f32, room: f32) -> Option<(El<'_>, f32)> {
+    /// The open submenu of the message menu of `m`: the Playback Speed menu, or the Transcription Language menu, which
+    /// scrolls when it is taller than the window.
+    pub(crate) fn view_voice_sub(&self, st: &BeeperStore, m: &Message) -> Option<El<'_>> {
         if self.audio.sub {
-            return Some((column![Space::new().height(top), self.view_rate_menu()].into(), rate_menu_w()));
+            return Some(self.view_rate_menu());
         }
         if !self.audio.lang {
             return None;
         }
         let a = &m.attachments[0];
-        let top = top + if self.playable(a) { menu_pitch() } else { 0.0 };
         // Desktop's `getTranscriptionLanguage`: the language of the transcription, else the default language.
         let pref = beeper_core::prefs::TRANSCRIPTION_CODES[st.settings.pref("transcriptionLanguage") as usize];
         let current = a.transcription.as_ref().and_then(|t| t.language.as_deref()).unwrap_or(pref);
@@ -578,10 +577,8 @@ impl BeeperGuiApp {
         let items = std::iter::once(item(&langs[0])).chain([crate::menu_rule(p)]).chain(langs[1..].iter().map(item));
         let names = langs.iter().map(|(_, n)| text_width(tr(n), 13.0, Weight::Normal));
         let w = 10.0 + 16.0 + 22.0 + names.fold(0.0, f32::max);
-        let h = (8.0 + MENU_RULE + (langs.len() as f32) * menu_pitch()).min((room - top).max(4.0 * menu_pitch()));
-        let list = iced::widget::scrollable(Column::with_children(items).padding([4, 0])).height(h);
-        let menu = crate::menu_frame(p, list, w);
-        Some((column![Space::new().height(top), menu].into(), w))
+        let list = iced::widget::scrollable(Column::with_children(items).padding([crate::MENU_PAD, 0.0]));
+        Some(crate::menu_frame(p, list, w).into())
     }
 
     /// `GlobalAudioControls`, `w` wide, with the parts that Desktop's container queries hide at that width.

@@ -1007,7 +1007,7 @@ impl BeeperGuiApp {
 
     /// Electron's context menu over selected text (electron-context-menu as Desktop sets it up): Search with Google
     /// and Copy.
-    fn selection_menu(&self, selection: &str) -> (El<'_>, f32, f32) {
+    fn selection_menu(&self, selection: &str) -> El<'_> {
         let p = &self.pal;
         let item = |label: String, msg: UiMessage| menu_item(p, None, label, "", Some(UiMessage::Message(Msg::Menu(Box::new(msg)))));
         let mut search = url::Url::parse("https://www.google.com/search").expect("a valid URL");
@@ -1017,12 +1017,11 @@ impl BeeperGuiApp {
             menu_rule(p),
             item(tr("Copy").into(), UiMessage::Message(Msg::CopyText(selection.to_string()))),
         ];
-        let menu = crate::menu_card(p, items, MESSAGE_MENU_W);
-        (menu.into(), 8.0 + 2.0 * menu_pitch() + MENU_RULE, 0.0)
+        crate::menu_card(p, items, MESSAGE_MENU_W).into()
     }
 
     /// Desktop's `Yit` for several selected messages: the items that act on the whole selection.
-    fn selected_messages_menu(&self) -> (El<'_>, f32, f32) {
+    fn selected_messages_menu(&self) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
         let (msgs, _) = self.timeline(&st);
@@ -1030,7 +1029,7 @@ impl BeeperGuiApp {
         let n = picked.len();
         let key = |name| hotkey_text(st.settings.hotkey_keys(name));
         let item = |label: String, hotkey: &str, msg: Option<UiMessage>| {
-            (menu_item(p, None, label, hotkey.to_string(), msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m))))), menu_pitch())
+            menu_item(p, None, label, hotkey.to_string(), msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m)))))
         };
         let stamp = st.settings.on("copyTimestamps");
         let earliest = picked.first().filter(|m| unread_from(&st, m));
@@ -1043,7 +1042,7 @@ impl BeeperGuiApp {
             let unread = UiMessage::Message(Msg::MarkUnreadFromHere(m.chat_id.clone(), m.id.clone()));
             item(tr("Mark as Unread").into(), "", Some(unread))
         }));
-        rows.push((menu_rule(p), MENU_RULE));
+        rows.push(menu_rule(p));
         rows.push(item(tr("Copy").into(), if stamp { "" } else { "Ctrl C" }, Some(UiMessage::Message(Msg::CopySelected(false)))));
         rows.push(item(
             tr("Copy with Timestamp").into(),
@@ -1058,15 +1057,13 @@ impl BeeperGuiApp {
         if delete_dialog(&st, &picked).is_some() {
             rows.push(item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(ids)))));
         }
-        rows.push((menu_rule(p), MENU_RULE));
+        rows.push(menu_rule(p));
         rows.push(item(tr("Report a Problem").into(), &key("Report a Problem"), Some(UiMessage::OpenUrl(ISSUES_URL.into()))));
-        let (menu, h) = crate::menu_rows(p, rows, MESSAGE_MENU_W);
-        (menu.into(), h, 0.0)
+        crate::menu_card(p, Column::with_children(rows), MESSAGE_MENU_W).into()
     }
 
-    /// The message menu, its height, and the top of the row of its open Remind Me submenu, or else of its Playback
-    /// Speed row.
-    pub(crate) fn view_message_menu(&self, mid: &str) -> (El<'_>, f32, f32) {
+    /// The message menu, whose submenu goes beside its row.
+    pub(crate) fn view_message_menu(&self, mid: &str) -> El<'_> {
         if let Some(menu) = self.view_gallery_menu(mid) {
             return menu;
         }
@@ -1086,10 +1083,10 @@ impl BeeperGuiApp {
         let address = clicked.and_then(|h| h.strip_prefix("mailto:")).map(str::to_string);
         let link = clicked.filter(|h| h.starts_with("https://")).map(str::to_string);
         let entire = link.is_some();
-        let rule = || (menu_rule(p), MENU_RULE);
+        let rule = || menu_rule(p);
         let key = |name| hotkey_text(st.settings.hotkey_keys(name));
         let item = |label: String, hotkey: &str, msg: Option<UiMessage>| {
-            (menu_item(p, None, label, hotkey.to_string(), msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m))))), menu_pitch())
+            menu_item(p, None, label, hotkey.to_string(), msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m)))))
         };
         let bookmark = tr(if m.is_bookmarked == Some(true) { "Remove Bookmark" } else { "Bookmark" });
         let at = trf(if mine { "Sent at %s" } else { "Received at %s" }, &[&locale_string(&m.timestamp)]);
@@ -1115,9 +1112,8 @@ impl BeeperGuiApp {
         if let Some(rows) = self.video_menu_rows(&mid, false).filter(|_| self.pane().video_menu) {
             let mark = bookmarkable(&st, m)
                 .then(|| [rule(), item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone()))))]);
-            let rows: Vec<(El, f32)> = rows.into_iter().chain(mark.into_iter().flatten()).collect();
-            let (menu, h) = crate::menu_rows(p, rows, MESSAGE_MENU_W);
-            return (menu.into(), h, 0.0);
+            let rows = rows.into_iter().chain(mark.into_iter().flatten());
+            return crate::menu_card(p, Column::with_children(rows), MESSAGE_MENU_W).into();
         }
         let chat = st.chat(&cid);
         let (rules, live) = (chat.messages, m.is_deleted != Some(true));
@@ -1132,7 +1128,7 @@ impl BeeperGuiApp {
         let queued = pending(&st, m);
         // Desktop's detected-data items (phone, address, date, flight) above these come from the macOS-only
         // TextsSwift `detectData`; on Linux it returns nothing, so they never show (App:48518, 96520).
-        let before: Vec<(El, f32)> = [
+        let before: Vec<El> = [
             address.map(|e| {
                 vec![
                     item(
@@ -1170,7 +1166,7 @@ impl BeeperGuiApp {
                 vec![item(label, &key("Show Replies"), Some(UiMessage::Thread(threads::Msg::Show(mid.clone()))))]
             }),
             (self.pane().thread_root.is_none() && live && !editing && st.threaded(chat) && st.thread_replies(&mid).next().is_some())
-                .then(|| vec![(self.follow_item(&st, chat, &mid), menu_pitch())]),
+                .then(|| vec![self.follow_item(&st, chat, &mid)]),
             privately.then(|| {
                 vec![item(tr("Reply Privately…").into(), "", Some(UiMessage::ChatList(chat_list::Msg::ReplyPrivately(mid.clone()))))]
             }),
@@ -1184,17 +1180,19 @@ impl BeeperGuiApp {
         .flatten()
         .flatten()
         .collect();
-        // Desktop's `zit` row, after Bookmark, opens the reminder submenu level with it.
-        let remind_top = before.iter().map(|r| r.1).sum::<f32>();
+        // Desktop's `zit` row, after Bookmark, opens the reminder submenu.
         let remind = crate::reminders::can_remind(&st, m).then(|| {
             let label = match st.message_reminders.contains_key(&mid) {
                 true => trx("Edit Reminder", "message menu action"),
                 false => trx("Remind Me", "message menu action"),
             };
             let open = UiMessage::Reminders(crate::reminders::Msg::MessageSub);
-            (mouse_area(menu_item(p, None, label.into(), "›", Some(open.clone()))).on_enter(open).into(), menu_pitch())
+            crate::menu_keys::opener(
+                mouse_area(menu_item(p, None, label.into(), "›", Some(open.clone()))).on_enter(open),
+                self.pane().remind_sub,
+            )
         });
-        let after: Vec<(El, f32)> = [
+        let after: Vec<El> = [
             (m.is_unread == Some(true)).then(|| {
                 let read = UiMessage::Message(Msg::MarkReadThrough(cid.clone(), mid.clone()));
                 vec![item(tr("Mark as Read").into(), "", Some(read))]
@@ -1227,14 +1225,13 @@ impl BeeperGuiApp {
         .flatten()
         .flatten()
         .collect();
-        let head: Vec<(El, f32)> = before.into_iter().chain(remind).chain(after).collect();
-        let top = if self.pane().remind_sub { remind_top } else { head.iter().map(|r| r.1).sum::<f32>() + 11.0 };
+        let head: Vec<El> = before.into_iter().chain(remind).chain(after).collect();
         // Desktop's `Zit`: no Delete… for the message that you edit.
         let delete = (!editing && delete_dialog(&st, &[m]).is_some())
             .then(|| item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(vec![mid.clone()])))));
         let voice = if queued { Vec::new() } else { self.voice_menu_rows(&st, m) };
-        let tail: Vec<(El, f32)> = voice.into_iter().chain(delete.filter(|_| !queued)).collect();
-        let rows: Vec<(El, f32)> = [
+        let tail: Vec<El> = voice.into_iter().chain(delete.filter(|_| !queued)).collect();
+        let rows: Vec<El> = [
             Some(head),
             (!tail.is_empty()).then(|| std::iter::once(rule()).chain(tail).collect()),
             Some(vec![
@@ -1285,8 +1282,7 @@ impl BeeperGuiApp {
         .flatten()
         .flatten()
         .collect();
-        let (menu, h) = crate::menu_rows(p, rows, MESSAGE_MENU_W);
-        (menu.into(), h, top)
+        crate::menu_card(p, Column::with_children(rows), MESSAGE_MENU_W).into()
     }
 
     /// Desktop's `Nmt`: the Chat Info toggle, a 20 px info icon in 4 px of padding, shaded while Chat Info is open.
@@ -4230,7 +4226,7 @@ pub(crate) mod tests {
         let _ = app.update(UiMessage::Message(Msg::OpenMenu(ids[0].clone())));
         assert_eq!(app.pane.selected_msgs, ids[..2], "the selection stays");
         {
-            let (menu, _, _) = app.view_message_menu(&ids[0]);
+            let menu = app.view_message_menu(&ids[0]);
             let mut sim = simulator(menu);
             assert!(sim.find("Quote reply 2 messages…").is_ok() && sim.find("Copy with Timestamp").is_ok());
         }
@@ -4304,7 +4300,7 @@ pub(crate) mod tests {
             let st = app.store.read();
             app.timeline(&st).0.iter().find(|m| !m.links.is_empty()).expect("a message with a preview").id.clone()
         };
-        let finds = |app: &BeeperGuiApp, label: &str| simulator(app.view_message_menu(&mid).0).find(label).is_ok();
+        let finds = |app: &BeeperGuiApp, label: &str| simulator(app.view_message_menu(&mid)).find(label).is_ok();
         let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
         assert!(!finds(&app, "Copy Link") && finds(&app, "Copy") && !finds(&app, "Copy Entire Message"));
         let _ = app.update(UiMessage::Message(Msg::LinkMenu(mid.clone(), "https://a.io/x".into())));
@@ -4667,7 +4663,7 @@ pub(crate) mod tests {
             let st = app.store.read();
             app.timeline(&st).0.iter().rev().take(2).map(|m| m.id.clone()).collect()
         };
-        let has = |app: &BeeperGuiApp| simulator(app.view_message_menu(&ids[0]).0).find("Jump to Message").is_ok();
+        let has = |app: &BeeperGuiApp| simulator(app.view_message_menu(&ids[0])).find("Jump to Message").is_ok();
         let _ = app.update(UiMessage::Message(Msg::OpenMenu(ids[0].clone())));
         assert!(!has(&app));
         let _ = app.update(UiMessage::Message(Msg::LinkedMenu(ids[0].clone(), ids[1].clone())));
@@ -5815,7 +5811,7 @@ pub(crate) mod tests {
 
     /// Whether the message menu of `mid` has `label`.
     fn menu_has(app: &BeeperGuiApp, mid: &str, label: &str) -> bool {
-        simulator(app.view_message_menu(mid).0).find(label).is_ok()
+        simulator(app.view_message_menu(mid)).find(label).is_ok()
     }
 
     /// The newest message of the open chat that `pick` takes.
@@ -5841,7 +5837,7 @@ pub(crate) mod tests {
         let _ = app.update(UiMessage::SelectChat(note.into()));
         let mid = newest(&app, |m| m.reactable());
         let _ = app.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
-        let picked: Vec<UiMessage> = clicks(app.view_message_menu(&mid).0, "React…");
+        let picked: Vec<UiMessage> = clicks(app.view_message_menu(&mid), "React…");
         let on = |m: &UiMessage| matches!(m, UiMessage::Message(Msg::ReactOn(m)) if *m == mid);
         assert!(matches!(&picked[..], [UiMessage::Message(Msg::Menu(m))] if on(m)), "React… opens it on the message");
         let _ = app.update(UiMessage::CloseModals);
@@ -5971,7 +5967,7 @@ pub(crate) mod tests {
         change(&app, &mid, |m| (m.text, m.attachments) = (Some("caption".into()), vec![img]));
         let has = |app: &BeeperGuiApp, label| menu_has(app, &mid, label);
         let copies_image = |app: &BeeperGuiApp| {
-            let mut sim = simulator(app.view_message_menu(&mid).0);
+            let mut sim = simulator(app.view_message_menu(&mid));
             let _ = sim.click("Copy").expect("Copy");
             sim.into_messages().any(|m| match m {
                 UiMessage::Message(Msg::Menu(m)) => matches!(*m, UiMessage::Message(Msg::CopyImage(..))),
