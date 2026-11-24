@@ -53,7 +53,9 @@ fn tipped_links(spans: &[iced::widget::text::Span<'_, String>], html: bool) -> H
         .filter(|(link, _)| seen.insert(link.as_str()))
         .filter(|(link, text)| {
             let host = url_host(link);
-            host.is_some() && !link.starts_with("https://matrix.to/#/") && (!html || url_host(text) != host)
+            // The text has the marks of Chromium's line breaks (`chromium_breaks`).
+            let text = text.replace(['\u{2060}', '\u{200b}'], "");
+            host.is_some() && !link.starts_with("https://matrix.to/#/") && (!html || url_host(&text) != host)
         })
         .map(|(link, _)| link.clone())
         .collect()
@@ -2838,6 +2840,15 @@ impl BeeperGuiApp {
                 vec![(None, spans, text.to_string(), 0, 0, Vec::new(), false)]
             }
         };
+        // Chromium's line breaks in ASCII, like those of a URL, for the measures and the lines alike.
+        let blocks: Vec<Block> = blocks
+            .into_iter()
+            .map(|mut b| {
+                b.1.iter_mut().for_each(|s| s.text = crate::style::chromium_breaks(&s.text).into_owned().into());
+                b.2 = crate::style::chromium_breaks(&b.2).into_owned();
+                b
+            })
+            .collect();
         let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
         // Desktop's `.message-text` clamps a message at 40 lines, and "Show more" opens it. The whole blocks that
         // fit show as they are, and the block that crosses the limit shows its first lines as plain text.
@@ -2868,7 +2879,7 @@ impl BeeperGuiApp {
         // A message with block HTML wraps as usual. A wrapped message without balance takes the whole width.
         // The layout lets trailing spaces hang past the width, so the room of the time is measured with digits.
         let zero = crate::style::text_width("0", 13.0, Weight::Normal);
-        let padded = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
+        let padded = format!("{}\u{2060}{}", crate::style::chromium_breaks(text), "0".repeat((room / zero).ceil() as usize));
         let blocks_html = m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
         let width = match code_w > 0.0 || crate::style::wraps(&padded, max, 13.0) {
             _ if code_w > 0.0 => {
@@ -4733,6 +4744,27 @@ pub(crate) mod tests {
         let bubble = rightmost(&|px| near(px, app.pal.received));
         let ink = rightmost(&|px| px[..3].iter().map(|&c| u32::from(c)).sum::<u32>() < 200);
         assert!(bubble - ink <= 2 * (BUBBLE_PAD_X as u32 + 2), "the lines end at the padding: {bubble} {ink}");
+    }
+
+    /// Desktop's bubble of a long URL in a window 1200 px wide: Chromium breaks it after its `-` and `?` and else at
+    /// the edge, into 7 lines that it does not balance, so the bubble is 540 px wide (measured in Desktop 4.3.308).
+    #[test]
+    fn long_url_bubbles_keep_chromiums_lines_like_desktop() {
+        let mut app = crate::fuzz::demo_app("url-bubble");
+        app.pane.size = Size::new(1200.0, 800.0);
+        let url = "https://www.example-domain.com/some/long_path/with-many-segments/and_underscores/2026/11/24/a-very-long-\
+                   article-title-that-keeps-going-and-going_with_more_words/index.html?utm_source=newsletter&utm_medium=email&\
+                   utm_campaign=winter_sale-2026&ref=abc_def-ghi&session_id=0123456789abcdef0123456789abcdef&extra_param=some-\
+                   more-text_here";
+        let mid = plain_received(&app, url);
+        let shot = pixels(&mut alone(&app, &mid));
+        let px = (0..shot.width()).flat_map(|x| (0..shot.height()).map(move |y| (x, y)));
+        let bubble: Vec<(u32, u32)> = px.filter(|&(x, y)| near(shot.get_pixel(x, y).0, app.pal.received)).collect();
+        let span = |f: fn(&(u32, u32)) -> u32| {
+            (bubble.iter().map(f).max().expect("a bubble") + 1 - bubble.iter().map(f).min().expect("a bubble")) / 2
+        };
+        assert_eq!(span(|p| p.0), 540, "the bubble's width");
+        assert_eq!(span(|p| p.1), 7 * 16 + 2 * 8, "7 lines of 16 px in the 8 px padding");
     }
 
     /// Desktop's quote of your own message in the light theme is a white box with the border of your bubbles and its

@@ -625,7 +625,8 @@ fn before_padding(buffer: &Buffer, at: Cursor) -> Cursor {
     Cursor::new(at.line, at.index.min(end))
 }
 
-/// The selected text, without the invisible padding message bubbles append for the time.
+/// The selected text, without the invisible padding message bubbles append for the time, or the marks of Chromium's
+/// line breaks (`chromium_breaks`).
 fn selected_text(buffer: &Buffer, start: Cursor, end: Cursor) -> String {
     let lines: Vec<&str> = (start.line..=end.line)
         .filter_map(|i| {
@@ -635,7 +636,7 @@ fn selected_text(buffer: &Buffer, start: Cursor, end: Cursor) -> String {
             text.get(from..to.max(from))
         })
         .collect();
-    lines.join("\n").trim_end_matches(['\u{a0}', '\u{200b}', '\u{2060}']).to_string()
+    lines.join("\n").replace(['\u{200b}', '\u{2060}'], "").trim_end_matches('\u{a0}').to_string()
 }
 
 /// Chromium's frame, which its selection autoscroll moves by the distance of the pointer from the edge.
@@ -810,6 +811,10 @@ mod tests {
         assert_eq!(texts(all, &p, bounds), "hi");
         let tail = Selection::Drag { anchor: Point::new(390.0, 8.0), head: Point::new(399.0, 8.0), held: false };
         assert!(tail.part(p.buffer(), bounds).is_none(), "the padding alone is no selection");
+        // The marks of Chromium's line breaks are not copied either.
+        let url = "https://x.org/a-1/b";
+        let p = buffer(&crate::style::chromium_breaks(url), 400.0);
+        assert_eq!(texts(all, &p, bounds), url);
     }
 
     /// A right press on the image of a custom emoji gives its place among the images, for Desktop's menu of it, and
