@@ -459,11 +459,9 @@ pub(crate) fn media_box(window_w: f32, size: Option<(f32, f32)>, share: f32) -> 
     }
 }
 
-/// Whether an image has more pixels than [`crate::gallery::BAKE`] times its box of `px`, so that its baked cut is
-/// smaller than the image.
-pub(crate) fn larger(h: &image::Handle, (w, ht): (u32, u32)) -> bool {
+/// Whether an image has more pixels than its box of `px` at `scale`, so that its baked cut is smaller than the image.
+pub(crate) fn larger(h: &image::Handle, (w, ht): (u32, u32), scale: f32) -> bool {
     let image::Handle::Rgba { width, height, .. } = h else { return false };
-    let scale = crate::gallery::BAKE;
     *width as f32 > scale * w as f32 && *height as f32 > scale * ht as f32
 }
 
@@ -2616,7 +2614,7 @@ impl BeeperGuiApp {
         let px = (w.round() as u32, h.round() as u32);
         let base: El<'_> = match thumb_url.as_ref().and_then(|u| Some((u, self.media_at(u)?))) {
             Some((url, Ok(frames)))
-                if (cover || larger(&frames[0].0, px))
+                if (cover || larger(&frames[0].0, px, self.bake_scale()))
                     && !lottie
                     && frames.len() == 1
                     && let Some(t) = self.cover_tile(url, px) =>
@@ -4969,18 +4967,14 @@ pub(crate) mod tests {
         assert!((70..=90).contains(&wide(&whole, red)), "the whole GIF while its cut waits: {}", wide(&whole, red));
         let wanted: Vec<_> = std::mem::take(&mut *app.wants.cuts.borrow_mut()).into_iter().collect();
         assert_eq!(wanted, [(url.clone(), crate::gallery::Cut::Cover(160, 400))], "the view asks for the cut");
-        let k = format!("Cover(160, 400) {url}");
-        app.cuts.insert(k, Some(crate::gallery::cut_frames(&frames, (160, 400))));
+        let k = app.cut_key(&url, crate::gallery::Cut::Cover(160, 400));
+        app.cuts.insert(k.clone(), Some(crate::gallery::cut_frames(&frames, (160, 400), 2.0)));
         let first = at(&mut app, 0);
         assert!((300..=322).contains(&wide(&first, red)), "the cut fills the box: {}", wide(&first, red));
         let second = at(&mut app, 1100);
         assert!((300..=322).contains(&wide(&second, blue)) && spots(&second, red).is_empty(), "and plays");
         assert!(matches!(alone_redraw(&app, &mid), window::RedrawRequest::At(_)), "the next frame is due");
-        let iced::advanced::image::Handle::Rgba { pixels, .. } =
-            &app.cuts.get(&format!("Cover(160, 400) {url}")).unwrap().as_ref().unwrap()[0].0
-        else {
-            panic!("RGBA")
-        };
+        let iced::advanced::image::Handle::Rgba { pixels, .. } = &app.cuts.get(&k).unwrap().as_ref().unwrap()[0].0 else { panic!("RGBA") };
         assert_eq!(pixels[3], 0, "a round corner");
         app.store.write().settings.set_pref("autoplayGifs", 0);
         let paused = at(&mut app, 1100);
