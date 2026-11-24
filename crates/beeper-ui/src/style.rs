@@ -5,6 +5,7 @@ use iced::border;
 use iced::font::{Family, Font};
 use iced::overlay::menu;
 use iced::widget::text;
+use std::borrow::Cow;
 use std::sync::Once;
 
 pub mod icon {
@@ -152,7 +153,7 @@ pub fn ensure_fonts_loaded() {
         for ttf in [font!("icons.ttf"), font!("Sniglet-ExtraBold.ttf"), FONT_EMOJI] {
             db.load_font_source(Source::Binary(Arc::new(ttf)));
         }
-        let knicknack = desktop_asars().find_map(|p| knicknack_woff(&p));
+        let knicknack = desktop_asars(Path::new("/proc")).find_map(|p| knicknack_woff(&p));
         KNICKNACK.store(knicknack.is_some(), Ordering::Relaxed);
         for woff in INTER.into_iter().chain([REDACTED_WOFF]).chain(knicknack.as_deref()) {
             db.load_font_source(Source::Binary(Arc::new(woff_to_sfnt(woff))));
@@ -173,11 +174,14 @@ pub fn initials_font() -> Font {
     }
 }
 
-/// The `app.asar` archive of an installed Beeper Desktop: a Linux package, a running AppImage, Windows, or macOS.
-fn desktop_asars() -> impl Iterator<Item = PathBuf> {
+/// The `app.asar` archive of an installed Beeper Desktop: a Linux package, a running Desktop on Linux wherever it runs
+/// from (a mounted or an extracted AppImage), Windows, or macOS.
+/// `proc` is the process table, `/proc`: a process that ends during the scan, or one of another user that cannot be
+/// read, is skipped.
+fn desktop_asars(proc: &Path) -> impl Iterator<Item = PathBuf> {
     let env = |k| std::env::var_os(k).map(PathBuf::from);
-    let mounts = std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten().map(|e| e.path());
-    let mounts = mounts.filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".mount_")));
+    let exes = std::fs::read_dir(proc).into_iter().flatten().flatten().filter_map(|e| std::fs::read_link(e.path().join("exe")).ok());
+    let mounts = exes.filter(|exe| exe.ends_with("beepertexts")).filter_map(|exe| exe.parent().map(Path::to_path_buf));
     let opt = ["/opt/beeper", "/opt/Beeper", "/opt/BeeperTexts"].map(PathBuf::from);
     let windows = env("LOCALAPPDATA").into_iter().flat_map(|l| ["BeeperTexts", "beeper"].map(|n| l.join("Programs").join(n)));
     let mac = [Some(PathBuf::from("/")), env("HOME")].into_iter().flatten();
@@ -349,9 +353,16 @@ pub(crate) fn trim_shaped_words() {
 }
 
 fn shape<T>(s: &str, size: f32, face: impl Face, width: Option<f32>, f: impl FnOnce(&cosmic_text::Buffer) -> T) -> T {
+    shape_wrapped(s, size, face, width, cosmic_text::Wrap::WordOrGlyph, f)
+}
+
+fn shape_wrapped<T>(
+    s: &str, size: f32, face: impl Face, width: Option<f32>, wrap: cosmic_text::Wrap, f: impl FnOnce(&cosmic_text::Buffer) -> T,
+) -> T {
     ensure_fonts_loaded();
     let mut fs = font_system().write().expect("font system");
     let mut buf = cosmic_text::Buffer::new(fs.raw(), cosmic_text::Metrics::new(size, size * 1.2));
+    buf.set_wrap(fs.raw(), wrap);
     buf.set_size(fs.raw(), width, None);
     buf.set_text(fs.raw(), s, &to_attributes(face.font()), cosmic_text::Shaping::Advanced, None);
     f(&buf)
@@ -421,25 +432,66 @@ pub fn carets(s: &str, size: f32, width: f32, at: impl IntoIterator<Item = (usiz
     })
 }
 
-/// CSS `text-wrap: balance`: the narrowest width up to `max` that wraps `s` into as many lines as `max` does.
-pub fn balanced_width(s: &str, max: f32, size: f32) -> f32 {
+/// CSS `text-wrap: balance`: the narrowest width up to `max` that wraps `s`, and a box `trail` px wide after it (see
+/// [`trails`]), into as many lines as `max` does. Chromium balances neither more than 6 lines nor a text with a word
+/// that breaks at the edge: those keep their lines, and the bubble shrinks to the widest.
+pub fn balanced_width(s: &str, max: f32, size: f32, trail: f32) -> f32 {
     let size = rem(size);
-    thread_local!(static MEMO: Memo<(String, u32, u32), f32> = RefCell::default());
-    memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || {
-        let lines = |w: f32| shape(s, size, Weight::Normal, Some(w), |b| b.layout_runs().count());
+    thread_local!(static MEMO: Memo<(String, u32, u32, u32), f32> = RefCell::default());
+    memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits(), trail.to_bits()), || {
+        let lines = |w: f32| {
+            shape(s, size, Weight::Normal, Some(w), |b| {
+                b.layout_runs().count() + usize::from(trail > 0.0 && b.layout_runs().last().is_some_and(|r| r.line_w + trail > w))
+            })
+        };
         let n = lines(max);
-        let (mut lo, mut hi) = (0.0, max);
-        while hi - lo > 0.25 {
-            let mid = (lo + hi) / 2.0;
-            if lines(mid) > n {
-                lo = mid;
-            } else {
-                hi = mid;
+        let overflows =
+            || shape_wrapped(s, size, Weight::Normal, Some(max), cosmic_text::Wrap::Word, |b| b.layout_runs().any(|r| r.line_w > max));
+        let hi = match n > 6 || overflows() {
+            true => shape(s, size, Weight::Normal, Some(max), |b| b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max)),
+            false => {
+                let (mut lo, mut hi) = (0.0, max);
+                while hi - lo > 0.25 {
+                    let mid = (lo + hi) / 2.0;
+                    if lines(mid) > n {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                hi
             }
+        };
+        // A pixel of room, so that iced breaks the lines where the measure did, when that narrows the bubble by more
+        // than 2 px from the rounded width, like Desktop's `maxWidth`.
+        if hi.round() + 1.0 < max - 2.0 {
+            hi + 1.0
+        } else {
+            max
         }
-        // A pixel of room, so that iced breaks the lines where the measure did.
-        (hi + 1.0).min(max)
     })
+}
+
+/// Chromium's line breaks in ASCII text where they differ from the Unicode rules of cosmic-text, made with a word
+/// joiner or a zero-width space: none after `/`, `!`, `|` or `}` before more ASCII text, so that a URL breaks after its
+/// hyphens and `?` or else at the edge, and one between `-` and a digit after a letter or a digit (`ShouldBreakAfter`).
+pub fn chromium_breaks(s: &str) -> Cow<'_, str> {
+    let b = s.as_bytes();
+    let joins = |i: usize| matches!(b[i], b'/' | b'!' | b'|' | b'}') && b.get(i + 1).is_some_and(u8::is_ascii_graphic);
+    let splits = |i: usize| b[i] == b'-' && i > 0 && b[i - 1].is_ascii_alphanumeric() && b.get(i + 1).is_some_and(u8::is_ascii_digit);
+    if !(0..b.len()).any(|i| joins(i) || splits(i)) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 16);
+    for (i, c) in s.char_indices() {
+        out.push(c);
+        if joins(i) {
+            out.push('\u{2060}');
+        } else if splits(i) {
+            out.push('\u{200b}');
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// Whether `s` is one line that is surely narrower than `max` without shaping it: printable ASCII, whose glyphs in
@@ -454,6 +506,16 @@ fn surely_fits(s: &str, max: f32, size: f32) -> bool {
         n += 1.2 * size;
     }
     n <= max
+}
+
+/// Whether a box `trail` px wide after `s` wrapped at `width` takes a line of its own: CSS's inline-block after text,
+/// with a break before it, goes at the end of the last line when it fits there.
+pub fn trails(s: &str, width: f32, size: f32, trail: f32) -> bool {
+    let size = rem(size);
+    thread_local!(static MEMO: Memo<(String, u32, u32, u32), bool> = RefCell::default());
+    memo(&MEMO, (s.to_owned(), width.to_bits(), size.to_bits(), trail.to_bits()), || {
+        shape(s, size, Weight::Normal, Some(width), |b| b.layout_runs().last().is_some_and(|r| r.line_w + trail > width))
+    })
 }
 
 /// Whether `s` at `size` takes more than one line at `max` width: a line of the text makes more than one layout run.
@@ -1257,6 +1319,35 @@ pub fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
 mod tests {
     use super::*;
 
+    /// Desktop draws avatar initials in Knicknack, which loads from the `app.asar` of a running Desktop wherever it runs
+    /// from, like an extracted AppImage: else they fall back to Sniglet's round, slanted letters. A process table with
+    /// a Desktop, one that ended and one whose executable cannot be read.
+    #[cfg(unix)]
+    #[test]
+    fn knicknack_loads_from_a_running_desktop_anywhere() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-knicknack-{}", std::process::id()));
+        let (proc, root) = (dir.join("proc"), dir.join("squashfs-root"));
+        for d in ["1", "2", "self"].map(|p| proc.join(p)).into_iter().chain([root.join("resources")]) {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::os::unix::fs::symlink(root.join("beepertexts"), proc.join("2/exe")).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/sleep", proc.join("self/exe")).unwrap();
+        // An `app.asar`: the size of its index, the JSON index, then the file.
+        let woff = b"wOFF font".to_vec();
+        let index = format!(
+            r#"{{"files":{{"build":{{"files":{{"renderer":{{"files":{{"knicknack-bold-x.woff":{{"offset":"0","size":{}}}}}}}}}}}}}}}"#,
+            woff.len()
+        );
+        let n = u32::try_from(index.len()).unwrap();
+        let asar = [4, n + 8, n + 4, n].into_iter().flat_map(|v| v.to_le_bytes()).chain(index.into_bytes()).chain(woff.clone());
+        std::fs::write(root.join("resources/app.asar"), asar.collect::<Vec<u8>>()).unwrap();
+        let found: Vec<PathBuf> = desktop_asars(&proc).filter(|a| a.starts_with(&dir)).collect();
+        assert_eq!(found, [root.join("resources/app.asar")]);
+        assert_eq!(knicknack_woff(&found[0]), Some(woff));
+        assert_eq!(desktop_asars(&dir.join("gone")).filter(|a| a.starts_with(&dir)).count(), 0, "no process table");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// cosmic-text keeps the glyphs of each shaped word: a text measures the same from the kept words as when it was
     /// first shaped, and again after the trims dropped them.
     #[test]
@@ -1329,11 +1420,49 @@ mod tests {
         let room = text_width("12:30 AM", 11.0, Weight::Normal) + 4.0;
         let zero = text_width("0", 13.0, Weight::Normal);
         let probe = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
-        let width = balanced_width(&probe, 400.0, 13.0);
+        let width = balanced_width(&probe, 400.0, 13.0, 0.0);
         let last = shape(text, 13.0, Weight::Normal, Some(width), |b| b.layout_runs().last().map(|r| r.line_w));
         assert!(last.expect("a line") + room <= width + 0.5, "the time fits after the last line");
         let lines = shape(text, 13.0, Weight::Normal, Some(width), |b| b.layout_runs().count());
         assert_eq!(lines, 2, "and the lines stay balanced");
+    }
+
+    /// Chromium's lines of two long URLs in a bubble 518 px wide (measured in Desktop 4.3.308): no break after `/`,
+    /// breaks after `-`, `?` and between `-` and a digit, and a long word broken at the edge.
+    #[test]
+    fn urls_break_like_chromium() {
+        let lines = |s: &str| {
+            shape(s, 13.0, Weight::Normal, Some(518.0), |b| {
+                b.layout_runs()
+                    .map(|r| r.text[r.glyphs[0].start..r.glyphs.last().unwrap().end].replace(['\u{2060}', '\u{200b}'], ""))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let chromium = [
+            vec![
+                "https://docs.example-",
+                "cloud.com/storage/buckets/project_alpha/releases/2026/v4_3_308/artifacts/linux_x",
+                "86_64/beeper_desktop_appimage_build_output/checksums_and_signatures/sha512_",
+                "manifest_for_the_release_candidate_number_seven.txt?",
+                "download_token=Zm9vYmFyYmF6cXV4X2xvbmdfdG9rZW5fdmFsdWVfaGVyZQ&ex",
+                "pires_at=1795524069&signature_v2=abcdef0123456789_abcdef0123456789",
+            ],
+            vec![
+                "https://www.example-domain.com/some/long_path/with-many-",
+                "segments/and_underscores/2026/11/24/a-very-long-article-title-that-keeps-going-",
+                "and-going_with_more_words/index.html?",
+                "utm_source=newsletter&utm_medium=email&utm_campaign=winter_sale-",
+                "2026&ref=abc_def-",
+                "ghi&session_id=0123456789abcdef0123456789abcdef&extra_param=some-more-",
+                "text_here",
+            ],
+        ];
+        for want in chromium {
+            let url = chromium_breaks(&want.concat()).into_owned();
+            assert_eq!(lines(&url), want);
+            // Desktop balances neither, and their widest lines (517 and 515 px) leave the bubble as wide as it can be.
+            assert_eq!(balanced_width(&url, 518.0, 13.0, 0.0), 518.0);
+        }
     }
 
     #[test]
