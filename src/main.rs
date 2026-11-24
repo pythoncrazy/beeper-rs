@@ -210,6 +210,11 @@ mod display {
         if wayland.is_none() && x11 {
             unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
         }
+        // Chromium scales an X11 window by `Xft.dpi` alone, and else draws at 1, where winit takes the scale from the
+        // monitor's size in millimeters, which nested, virtual and many external screens report wrong.
+        if wayland.is_none() && x11 && std::env::var_os("WINIT_X11_SCALE_FACTOR").is_none() && !xft_dpi() {
+            unsafe { std::env::set_var("WINIT_X11_SCALE_FACTOR", "1") };
+        }
         let has = |interface: &str| wayland.iter().flatten().any(|g| g == interface);
         if wayland.is_some() && !has("wp_cursor_shape_manager_v1") {
             cursor_theme();
@@ -257,6 +262,22 @@ mod display {
                 beeper_ui::FRAME_READY.notify_one();
             });
         }
+    }
+
+    /// Whether the X server's resources have `Xft.dpi`, which the desktop sets (GNOME's from its text scaling).
+    fn xft_dpi() -> bool {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+        let Ok((c, screen)) = x11rb::connect(None) else { return true };
+        let root = c.setup().roots[screen].root;
+        let resources = c.get_property(false, root, AtomEnum::RESOURCE_MANAGER, AtomEnum::STRING, 0, u32::MAX / 4);
+        resources.ok().and_then(|r| r.reply().ok()).is_some_and(|r| has_xft_dpi(&String::from_utf8_lossy(&r.value)))
+    }
+
+    /// Whether X resources set a positive `Xft.dpi`.
+    pub(crate) fn has_xft_dpi(resources: &str) -> bool {
+        let dpi = |(key, value): (&str, &str)| key.trim() == "Xft.dpi" && value.trim().parse::<f32>().is_ok_and(|d| d > 0.0);
+        resources.lines().filter_map(|l| l.split_once(':')).any(dpi)
     }
 
     /// A compositor without the cursor-shape protocol (GNOME before 48) leaves the cursor to the app, and winit
@@ -529,6 +550,15 @@ mod tests {
         assert_eq!(display::text_scale("1.0"), Some(1.0));
         assert_eq!(display::text_scale("0.1"), None, "below GNOME's range");
         assert_eq!(display::text_scale("'big'"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn x11_scale_comes_from_xft_dpi_like_chromium() {
+        assert!(display::has_xft_dpi("Xft.antialias:\t1\nXft.dpi:\t120\nXcursor.size:\t24\n"));
+        assert!(!display::has_xft_dpi("Xcursor.size:\t24\n"), "no Xft.dpi draws at 1");
+        assert!(!display::has_xft_dpi("Xft.dpi:\t0\n"));
+        assert!(!display::has_xft_dpi(""));
     }
 
     #[test]

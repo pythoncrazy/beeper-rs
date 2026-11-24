@@ -197,7 +197,10 @@ impl BeeperGuiApp {
         )
         .padding([2, 6])
         .style(ghost(p, 8.0))
-        .on_press(UiMessage::CommandBar(commands::Msg::ToggleMode));
+        .on_press(match self.cmd_bar_commands_mode {
+            true => UiMessage::CommandBar(commands::Msg::Search(None)),
+            false => UiMessage::RunHotkey("Command Bar"),
+        });
         let schedule = matches!(self.cmd_submenu, Some(commands::SubMenu::Schedule(_)));
         let no_reply = [tr("If no reply"), if schedule { tr("Regardless") } else { tr("Always") }];
         let inputs = match &self.cmd_submenu {

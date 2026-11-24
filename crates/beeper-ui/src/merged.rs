@@ -155,16 +155,13 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let idx = st.chat_idx(&chat.id);
         let manage = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("merged:{}", chat.id)));
-        let manage = button(semi(trx("Manage", "Similar to an edit button"), 12.0).color(p.strong))
-            .padding([2, 8])
-            .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 999.0))
-            .on_press(manage);
-        let head = row![txt(tr("Merged Chats"), 12.0).color(p.strong), Space::new().width(Fill), manage];
+        let manage = section_btn(p, trx("Manage", "Similar to an edit button"), p.main_text).on_press(manage);
+        let head = row![txt(tr("Merged Chats"), 11.0).color(p.strong), Space::new().width(Fill), manage];
         let head = container(head.align_y(Center)).padding(8);
         let members = st.members(idx);
         let default = st.default_member(idx);
         let body: El<'a> = match members.is_empty() {
-            true => container(txt(tr("This merged chat is empty on this device."), 13.0).color(p.sub))
+            true => container(txt(tr("This merged chat is empty on this device."), 13.0).color(p.muted))
                 .padding(8)
                 .width(Fill)
                 .style(fill_box(p.chip, 10.0))
@@ -178,7 +175,7 @@ impl BeeperGuiApp {
                     let row = row![self.chat_avatar(c, 28.0, 1.25), name].push(mark).spacing(8).align_y(Center);
                     button(row.padding(4))
                         .padding(0)
-                        .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 6.0))
+                        .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 8.0))
                         .on_press(UiMessage::Merged(Msg::Info(c.id.clone())))
                         .into()
                 });
@@ -190,8 +187,8 @@ impl BeeperGuiApp {
             (st.union_profile(chat).is_some() && (st.feature("personal-room-overrides").on || chat.derive_dm_sender_names)).then(|| {
                 let on = chat.derive_dm_sender_names;
                 let label = column![
-                    txt(tr("Apply merged info to contacts"), 13.0).color(p.text),
-                    txt(tr("Use this merged chat’s name and avatar for its contacts throughout Beeper."), 12.0).color(p.sub),
+                    txt(tr("Apply merged info to contacts"), 13.0).color(p.strong),
+                    txt(tr("Use this merged chat’s name and avatar for its contacts throughout Beeper."), 11.0).color(p.muted),
                 ];
                 let switch = crate::toggle(p, on, Some(UiMessage::Merged(Msg::Derive(chat.id.clone(), !on))));
                 let line = row![label.width(Fill), switch].spacing(8).align_y(Center);

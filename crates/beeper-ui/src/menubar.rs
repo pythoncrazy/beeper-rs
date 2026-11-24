@@ -29,16 +29,23 @@ pub(crate) fn accelerator(keys: &str) -> String {
     mods.chain([key.as_str()]).collect::<Vec<_>>().join("+")
 }
 
-/// An item of a menu: its label, its hotkey, and what it does, or `None` for a rule.
-pub(crate) type Item = Option<(String, &'static str, UiMessage)>;
+/// An item of a menu: its label, its accelerator, and what it does, or `None` for a rule.
+pub(crate) type Item = Option<(String, String, UiMessage)>;
+
+/// An item of one of Electron's roles, whose English label and accelerator Desktop does not translate.
+fn role(label: &str, keys: &str, msg: UiMessage) -> Item {
+    Some((label.into(), keys.into(), msg))
+}
 
 impl BeeperGuiApp {
-    /// Desktop's `menubar` template, without what beeper-rs has nothing for: Check for Updates, Undo and Redo, and the
-    /// roles of macOS only.
+    /// Desktop's `menubar` template, without what beeper-rs has nothing for: Check for Updates and the roles of macOS
+    /// only.
     pub(crate) fn menus(&self) -> Vec<(String, Vec<Item>)> {
         let st = self.store.read();
-        let hotkey = |label: &str, name: &'static str| Some((label.to_string(), name, UiMessage::RunHotkey(name)));
-        let plain = |label: String, msg: UiMessage| Some((label, "", msg));
+        let hotkey = |label: &str, name: &'static str| {
+            Some((label.to_string(), accelerator(st.settings.hotkey_keys(name)), UiMessage::RunHotkey(name)))
+        };
+        let plain = |label: String, msg: UiMessage| Some((label, String::new(), msg));
         let url = |label: String, url: &str| plain(label, UiMessage::OpenUrl(url.into()));
         let signed_in = st.signed_in();
         // The sign-in window shows no dialog, so its Logout logs out at once like the Beeper menu of Desktop, whose
@@ -73,25 +80,39 @@ impl BeeperGuiApp {
             hotkey(tr("Open..."), "Chat: Send File"),
             hotkey(tr("New Chat"), "Chat: Start New"),
             None,
-            main.map(|id| (tr("Close Window").to_string(), "", UiMessage::Window(windows::Msg::CloseRequested(id)))),
+            main.and_then(|id| role("Close", "Ctrl+W", UiMessage::Window(windows::Msg::CloseRequested(id)))),
             // Desktop's `openChatInNewWindow` opens the open chat, and does nothing without one.
             plain(
                 tr("Open Chat in New Window").into(),
                 self.pane.selected_chat_id.clone().map_or(UiMessage::Noop, |c| UiMessage::Window(windows::Msg::OpenChat(c))),
             ),
         ];
+        let text = |a: text_editor::Action| UiMessage::Composer(composer::Msg::Edit(a));
+        // Chromium's Delete of the menu deletes a selection, and does nothing at a caret.
+        let delete = match self.pane.composer.selection() {
+            Some(_) => text(text_editor::Action::Edit(text_editor::Edit::Delete)),
+            None => UiMessage::Noop,
+        };
+        // Electron's `editMenu` role.
         let edit = vec![
-            plain(tr("Cut").into(), UiMessage::Composer(composer::Msg::Clip(true))),
-            plain(tr("Copy").into(), UiMessage::Composer(composer::Msg::Clip(false))),
-            plain(tr("Paste").into(), UiMessage::Composer(composer::Msg::Paste)),
-            plain(tr("Select All").into(), UiMessage::Composer(composer::Msg::Edit(text_editor::Action::SelectAll))),
+            role("Undo", "Ctrl+Z", UiMessage::Composer(composer::Msg::History(false))),
+            role("Redo", "Ctrl+Shift+Z", UiMessage::Composer(composer::Msg::History(true))),
+            None,
+            role("Cut", "Ctrl+X", UiMessage::Composer(composer::Msg::Clip(true))),
+            role("Copy", "Ctrl+C", UiMessage::Composer(composer::Msg::Clip(false))),
+            role("Paste", "Ctrl+V", UiMessage::Composer(composer::Msg::Paste)),
+            role("Delete", "", delete),
+            None,
+            role("Select All", "Ctrl+A", text(text_editor::Action::SelectAll)),
         ];
         let bar = if st.settings.on("showSidebar") { tr("Hide Space Bar") } else { tr("Show Space Bar") };
         let sidebar = if self.sidebar_hidden { tr("Show Sidebar") } else { tr("Hide Sidebar") };
         let view = vec![hotkey(bar, "Toggle Space Bar"), hotkey(sidebar, "Toggle Sidebar")];
+        // Desktop's Window menu: Electron runs the macOS roles Zoom and Bring All to Front on macOS only.
         let window = vec![
-            main.map(|id| (tr("Minimize").to_string(), "", UiMessage::Window(windows::Msg::Minimize(id)))),
-            self.main_window.map(|id| (tr("Zoom").to_string(), "", UiMessage::Window(windows::Msg::ToggleMaximize(Some(id))))),
+            role("Zoom", "", UiMessage::Noop),
+            main.and_then(|id| role("Minimize", "Ctrl+M", UiMessage::Window(windows::Msg::Minimize(id)))),
+            role("Bring All to Front", "", UiMessage::Noop),
         ];
         let mut help = vec![
             hotkey(tr("Report a Problem"), "Report a Problem"),
@@ -111,10 +132,10 @@ impl BeeperGuiApp {
         vec![
             ("Beeper".into(), beeper),
             (trx("File", "desktop menu title").into(), file),
-            (tr("Edit").into(), edit),
+            ("Edit".into(), edit),
             (tr("View").into(), view),
-            (tr("Window").into(), window),
-            (tr("Help").into(), help),
+            ("Window".into(), window),
+            ("Help".into(), help),
         ]
     }
 
@@ -153,15 +174,8 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let mut menus = self.menus();
         let x = BAR_PAD + menus[..open].iter().map(|(t, _)| text_width(t, 13.0, Weight::Normal) + 2.0 * TITLE_PAD).sum::<f32>();
-        let st = self.store.read();
         let rows = menus.swap_remove(open).1.into_iter().map(|item| match item {
-            Some((label, hotkey, msg)) => {
-                let keys = match hotkey {
-                    "" => String::new(),
-                    name => accelerator(st.settings.hotkey_keys(name)),
-                };
-                menu_item(p, None, label, keys, Some(UiMessage::MenuBar(Msg::Run(Box::new(msg)))))
-            }
+            Some((label, keys, msg)) => menu_item(p, None, label, keys, Some(UiMessage::MenuBar(Msg::Run(Box::new(msg))))),
             None => menu_rule(p),
         });
         let menu = Column::with_children(rows);

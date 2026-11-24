@@ -216,10 +216,11 @@ impl BeeperGuiApp {
         let b = behavior(st, chat)?;
         let line = b.line(st.settings.pref("timeFormat") == 1)?;
         let dim = p.sub;
-        let text = txt(line, 12.0).line_height(lh(15.0)).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
+        // `--semantic-colors-text-primary`, with the icons in `--semantic-colors-text-secondary`.
+        let text = txt(line, 12.0).line_height(lh(15.0)).color(p.fg).wrapping(iced::widget::text::Wrapping::None);
         let label = row![tinted(b.icon(), 14.0, dim), text, tinted(&CHEVRON_FORWARD, 10.0, dim)].spacing(5).align_y(Center);
         let open = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{BEHAVIOR_MENU}{}", chat.id)));
-        let btn = button(label).bare(p.strong).on_press(open);
+        let btn = button(label).bare(p.fg).on_press(open);
         Some(container(btn).center_x(Fill).clip(true).padding(Padding::ZERO.top(4.0).bottom(8.0)).into())
     }
 

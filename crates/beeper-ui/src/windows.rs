@@ -150,8 +150,9 @@ impl BeeperGuiApp {
                     return self.raise(id);
                 }
                 // Desktop's `windowStateKeeper("pop-out-thread")` keeps the size of the last chat window.
-                let size = self.saved_window_settings(POP_OUT, Size::new(800.0, 600.0)).size;
-                let (id, open) = self.open_window(Self::window_settings(size));
+                let settings = self.kept_size(POP_OUT, Size::new(800.0, 600.0));
+                let size = settings.size;
+                let (id, open) = self.open_window(settings);
                 self.chat_windows.push((id, Pane { size, ..Pane::default() }));
                 let near = self.cascade(id);
                 let select = self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(cid))));
@@ -400,9 +401,14 @@ pub(crate) fn badge_sync(_unread: u32, _visible: bool) -> Task<UiMessage> {
     Task::none()
 }
 
+/// Desktop's `v3`: a sheet's size at the zoom `zoom`, in whole screen pixels.
+fn zoomed(size: Size, zoom: f32) -> Size {
+    Size::new((size.width * zoom).round(), (size.height * zoom).round())
+}
+
 /// Moves window `id` of `size` over the middle of window `parent` of size `around`, like Desktop's `center: "parent"`,
 /// with its left and top edges on the screen.
-fn center_over(id: window::Id, parent: window::Id, around: Size, size: Size) -> Task<UiMessage> {
+pub(crate) fn center_over(id: window::Id, parent: window::Id, around: Size, size: Size) -> Task<UiMessage> {
     let offset = Vector::new((around.width - size.width) / 2.0, (around.height - size.height) / 2.0);
     window::position(parent).then(move |at| match at {
         Some(at) => window::move_to(id, Point::new((at.x + offset.x).max(0.0), (at.y + offset.y).max(0.0))),
@@ -430,6 +436,12 @@ impl BeeperGuiApp {
         (id, self.open_window_as(id, settings))
     }
 
+    /// Desktop's `windowStateKeeper(key)` with `sizeOnly`, of the chat and Media windows: a window opens with the size,
+    /// `size` by default, and the maximized state that the last one had, and its place comes from its features.
+    pub(crate) fn kept_size(&self, key: &str, size: Size) -> window::Settings {
+        window::Settings { position: window::Position::Default, ..self.saved_window_settings(key, size) }
+    }
+
     /// Opens window `id` with `settings` like [`Self::open_window`]: a new window, or one that hid on Wayland again.
     fn open_window_as(&mut self, id: window::Id, mut settings: window::Settings) -> Task<window::Id> {
         let maximize = settings.maximized && settings.visible;
@@ -440,9 +452,23 @@ impl BeeperGuiApp {
         if self.unmaps() {
             self.opened.push((id, settings.clone()));
         }
-        let settings = window::Settings { size: settings.size * (1.0 / self.zoom), icon, ..settings };
+        // The title bar takes its height out of the window's, like Electron's on Wayland.
+        let bar = if settings.decorations { self.title_bar() } else { 0.0 };
+        let page = |s: Size| Size::new(s.width, s.height - bar) * (1.0 / self.zoom);
+        let settings = window::Settings { size: page(settings.size), min_size: settings.min_size.map(page), icon, ..settings };
         // iced's `window::open` with a given ID, so that all the state of a window that hid on Wayland follows it.
         iced_runtime::task::oneshot(move |done| iced_runtime::Action::Window(iced_runtime::window::Action::Open(id, settings, done)))
+    }
+
+    /// The height in Desktop's pixels of the title bar that winit adds on top of a window on Wayland. Electron draws
+    /// its own title bar there, inside the window's size, so Desktop's 800 px high window has 763 px of page under a
+    /// 37 px title bar. On X11 the window manager draws the title bar outside the window, for both.
+    pub(crate) fn title_bar(&self) -> f32 {
+        #[cfg(target_os = "linux")]
+        if self.unmaps() {
+            return sctk_adwaita::theme::header_size() as f32 / text_scale();
+        }
+        0.0
     }
 
     /// Whether the app hides a window by closing it and opening it again: on Wayland, where winit cannot hide a
@@ -468,8 +494,9 @@ impl BeeperGuiApp {
         let Some(i) = self.opened.iter().position(|w| w.0 == id) else { return Task::none() };
         let settings = self.opened.remove(i).1;
         self.unmapped.push((id, settings));
-        let zoom = self.zoom;
-        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (size * zoom, max)));
+        let (zoom, bar) = (self.zoom, self.title_bar());
+        let size = move |size: Size| Size::new(size.width * zoom, size.height * zoom + bar);
+        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |s| (size(s), max)));
         let state = state.map(move |(size, max)| UiMessage::Window(Msg::Unmapped(id, size, max)));
         // The new window has none of the widget state of the old one, so the focus goes back to the same widget.
         let focus = (Some(id) == self.main_window.or(self.login_window)).then(|| {
@@ -659,6 +686,24 @@ impl BeeperGuiApp {
             None => (self.login_window.expect("the main or the sign-in window is open"), login::SIZE),
         });
         (id, open.then(move |_| center_over(id, parent, around, asked)))
+    }
+
+    /// One of Desktop's sheets that `v3` sizes (New Label, Label Settings, Edit Label, Chats and How It Works): it
+    /// opens at its size times the zoom, so its page keeps its layout at any zoom.
+    pub(crate) fn open_sheet(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
+        self.open_child(zoomed(size, self.zoom))
+    }
+
+    /// The open sheets that follow the zoom (`followsZoom`), with their sizes at 100%.
+    pub(crate) fn zoomed_sheets(&self) -> Vec<(window::Id, Size)> {
+        let draft = self.label_window.as_ref().map(|d| (d.id, if d.label.is_some() { LABEL_SHEET_SIZE } else { LABEL_SETTINGS_SIZE }));
+        let settings = self.label_settings.iter().map(|w| (w.id, LABEL_SETTINGS_SIZE));
+        draft.into_iter().chain(settings).chain(self.how_window.map(|id| (id, behavior::HOW_SIZE))).collect()
+    }
+
+    /// Desktop's `followZoom`: after a change of the zoom, each sheet takes its size at the new zoom around its center.
+    pub(crate) fn follow_zoom(&self) -> Task<UiMessage> {
+        Task::batch(self.zoomed_sheets().into_iter().map(|(id, size)| self.resize_around(id, zoomed(size, self.zoom))))
     }
 
     pub(crate) fn window_settings(size: Size) -> window::Settings {

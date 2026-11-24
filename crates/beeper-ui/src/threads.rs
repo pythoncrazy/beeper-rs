@@ -211,13 +211,14 @@ impl BeeperGuiApp {
         let view = Element::from(self.view_conversation()).map(|m| UiMessage::InThread(Box::new(m)));
         self.drawing_thread.set(false);
         let button = |glyph: char, label: &'static str, msg: UiMessage| -> El<'_> {
-            let b = button(container(ic(glyph, 16.0).color(p.text)).center(28))
+            let b = button(container(ic(glyph, 16.0).color(p.strong)).center(28))
                 .padding(0)
-                .style(btn_style([CLEAR, p.chip, p.chip], [p.text; 3], 8.0))
+                .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 8.0))
                 .on_press(msg);
             self.tip(b.into(), tr(label), vec![], tooltip::Position::Bottom).into()
         };
-        let title = container(semi(tr("Thread"), 14.0).color(p.text)).center_x(Fill);
+        // `ThreadedRepliesHeader-module__title` and its buttons are `--color-on-surface`.
+        let title = container(semi(tr("Thread"), 14.0).line_height(lh(18.0)).color(p.strong)).center_x(Fill);
         let header = row![button(icon::MORE_HORIZ, "More Options", UiMessage::Thread(Msg::Menu)), title]
             .push(button(icon::CLOSE, "Close", UiMessage::Thread(Msg::Hide)))
             .spacing(2)
