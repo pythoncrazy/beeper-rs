@@ -254,10 +254,7 @@ fn args(login: &BrowserLogin, profile: &Path) -> Vec<String> {
     if std::env::var_os("BEEPER_LOGIN_DEVTOOLS").is_some() {
         args.push("--auto-open-devtools-for-tabs".into());
     }
-    args.extend(match login.hidden {
-        true => vec!["--headless=new".into(), blank.into()],
-        false => vec![format!("--app={blank}")],
-    });
+    args.extend(if login.hidden { vec!["--headless=new".into(), blank.into()] } else { vec![format!("--app={blank}")] });
     args
 }
 

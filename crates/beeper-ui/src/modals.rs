@@ -15,6 +15,8 @@ pub enum Modal {
     TokenRequest,
     /// `ADD_BEEPER_CONNECT_TOKEN`, the "+" of Settings > Integrations.
     AddToken,
+    /// `LEGAL_NOTICES`, from Settings > About.
+    Legal,
 }
 
 /// How Desktop opens the window of a [`Modal`]: its size before Electron grows it to its minimum, whether it resizes,
@@ -36,6 +38,8 @@ impl Modal {
             Modal::TokenRequest => Shape { size: Size::new(460.0, 330.0), resizable: false, frame: true },
             // Its `minHeight` of 320 loses to Electron's 400 too.
             Modal::AddToken => Shape { size: Size::new(760.0, 360.0), resizable: true, frame: true },
+            // `gm`'s default: 500 by 450.
+            Modal::Legal => Shape { size: Size::new(500.0, 450.0), resizable: false, frame: true },
         }
     }
 
@@ -45,7 +49,8 @@ impl Modal {
         match self {
             Modal::RecoveryKey => "Recovery Key",
             Modal::ChangeEmail => "Change Email",
-            Modal::TokenRequest | Modal::AddToken => "Beeper",
+            // The `<title>` that `LegalNotices` renders stays in the body, after the head's, under React 18.
+            Modal::TokenRequest | Modal::AddToken | Modal::Legal => "Beeper",
         }
     }
 
@@ -54,6 +59,9 @@ impl Modal {
         matches!(self, Modal::RecoveryKey | Modal::ChangeEmail)
     }
 }
+
+/// beeper-rs's counterpart of Desktop's `dependencies.txt`: its license and the notices of what it bundles.
+const LEGAL_NOTICES: &str = concat!(include_str!("../../../LICENSE"), "\n", include_str!("../../../NOTICE"));
 
 /// `gm`'s `maxWidth` of a modal window that resizes, at least 700. Its height has no limit.
 fn max_size(width: f32) -> Size {
@@ -105,6 +113,7 @@ impl BeeperGuiApp {
             Modal::ChangeEmail => self.profile.change_email = None,
             Modal::TokenRequest => self.token_ask = None,
             Modal::AddToken => self.integrations.add = None,
+            Modal::Legal => {}
         }
     }
 
@@ -124,7 +133,19 @@ impl BeeperGuiApp {
             Modal::ChangeEmail => self.view_change_email(),
             Modal::TokenRequest => self.token_ask.as_ref().map_or_else(|| Space::new().into(), |a| self.view_token_ask(a)),
             Modal::AddToken => self.integrations.add.as_ref().map_or_else(|| Space::new().into(), |a| self.view_add_token(a)),
+            Modal::Legal => self.view_legal_notices(),
         }
+    }
+
+    /// Desktop's `LegalNotices` (`_Ht`): its `dependencies.txt` in a `<pre>`, which wraps at any character, in
+    /// 16 px monospace inside 16 by 32 px on the elevated color, and scrolls. beeper-rs's notices are its license and
+    /// its NOTICE file.
+    fn view_legal_notices(&self) -> El<'_> {
+        let p = &self.pal;
+        let notes = txt(LEGAL_NOTICES, 16.0).font(iced::Font::MONOSPACE).wrapping(iced::widget::text::Wrapping::Glyph).color(p.text);
+        let page = container(notes).padding([16, 32]).width(Fill);
+        let page = scrollable(page).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
+        container(page).width(Fill).height(Fill).style(fill_box(p.elevated, 0.0)).into()
     }
 
     /// A key in a window of [`Modal`], where Escape closes some.
@@ -142,5 +163,34 @@ impl BeeperGuiApp {
             Some(id) => mouse_area(content).on_press(UiMessage::Window(windows::Msg::Drag(id))).into(),
             None => content.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fuzz::{clicks, demo_app};
+    use iced_test::simulator::simulator;
+
+    /// Desktop's About > Legal Notices: the `LEGAL_NOTICES` modal window, 500 by 450 and fixed, titled with the app's
+    /// name, with the notices in a `<pre>`; Escape does not close it.
+    #[test]
+    fn legal_notices_open_their_window_like_desktop() {
+        let mut app = demo_app("legal-notices");
+        let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::About)));
+        for m in clicks(app.view_settings(), "Legal Notices") {
+            let _ = app.update(m);
+        }
+        let id = app.modal_window(Modal::Legal).expect("Legal Notices opens its window");
+        assert_eq!(app.title(id), "Beeper");
+        let shape = Modal::Legal.shape();
+        assert!(shape.size == Size::new(500.0, 450.0) && !shape.resizable && shape.frame);
+        let mut sim = simulator(app.view_modal(Modal::Legal));
+        assert!(sim.find(LEGAL_NOTICES).is_ok() && LEGAL_NOTICES.starts_with("MIT License") && LEGAL_NOTICES.contains("Third-Party"));
+        drop(sim);
+        let _ = app.update(UiMessage::WindowKey(id, Key::Named(keyboard::key::Named::Escape), keyboard::Modifiers::empty()));
+        assert_eq!(app.modal_window(Modal::Legal), Some(id), "Escape keeps it, like Desktop's `handleEscape`");
+        let _ = app.update(UiMessage::OpenModal(Modal::Legal, app.settings_window));
+        assert_eq!(app.modals.len(), 1, "it opens once");
     }
 }

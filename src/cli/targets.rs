@@ -183,10 +183,7 @@ fn logs(c: &mut Ctx) -> Res {
     let dir = dir.unwrap_or_else(|| beeper_core::platform::current_desktop_data_dir(None)).join("logs");
     let mut files = log_files(&dir);
     files.sort_by_key(|f| std::cmp::Reverse(f.1));
-    let count = match c.on("all") {
-        true => files.len(),
-        false => usize::try_from(c.int("files").expect("--files has a default")).unwrap_or(0),
-    };
+    let count = if c.on("all") { files.len() } else { usize::try_from(c.int("files").expect("--files has a default")).unwrap_or(0) };
     files.iter().take(count).for_each(|f| print_log(&f.0, lines));
     Ok(())
 }

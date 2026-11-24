@@ -211,10 +211,7 @@ pub fn push_decision(local: Option<&ChatDraft>, synced: Option<&SyncedDraft>, un
         return Push::HoldConflict;
     }
     if !local.is_some_and(syncable) || unsyncable {
-        return match synced.is_some_and(|s| !is_tombstone(&s.record)) {
-            true => Push::Clear,
-            false => Push::Nothing,
-        };
+        return if synced.is_some_and(|s| !is_tombstone(&s.record)) { Push::Clear } else { Push::Nothing };
     }
     match in_sync(local, synced) {
         true => Push::InSync,

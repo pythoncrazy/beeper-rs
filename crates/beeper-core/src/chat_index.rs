@@ -299,10 +299,7 @@ fn matches<'a>(chats: Vec<(&'a Chat, &Fields)>, query: &str, people: bool, fuzzy
                 let values = f.values(k);
                 let long = || term.encode_utf16().count() >= 4;
                 let fuse = || values.iter().any(|v| v.fuse.as_ref().is_some_and(|text| fuse_match(pattern, text)));
-                let hit = match fuzzy {
-                    true => fuse() && (contains(values, term) || long()),
-                    false => contains(values, term),
-                };
+                let hit = if fuzzy { fuse() && (contains(values, term) || long()) } else { contains(values, term) };
                 if hit {
                     matched.insert(term);
                     hits += (k == Field::Title) as usize;

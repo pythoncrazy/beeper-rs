@@ -408,10 +408,7 @@ fn start(c: &mut Ctx) -> Res {
 
 /// The `PATCH /v1/chats/{id}` body of each chat setting command.
 fn patch_body(c: &Ctx) -> Res<Value> {
-    let need = |flag: &str, msg: &str| match c.on("clear") || c.str(flag).is_some() {
-        true => Ok(()),
-        false => Err(CliError::bug(msg)),
-    };
+    let need = |flag: &str, msg: &str| if c.on("clear") || c.str(flag).is_some() { Ok(()) } else { Err(CliError::bug(msg)) };
     Ok(match c.cmd.id {
         "chats archive" => json!({ "isArchived": true }),
         "chats unarchive" => json!({ "isArchived": false }),

@@ -4051,6 +4051,32 @@ fn online(app: &BeeperGuiApp) {
     st.sent.extend(seeded.into_iter().map(|id| (id.clone(), id)));
 }
 
+/// Desktop's `ThreadListItem` keeps the draft of the open chat as it was when the chat opened (`rce`): the text that
+/// you type shows in the list after you leave the chat.
+#[test]
+fn the_list_shows_the_draft_of_the_open_chat_as_it_opened_like_desktop() {
+    let mut app = demo_app("listed-draft");
+    let chats: Vec<String> = app.visible_chats(&app.store.read()).iter().take(2).map(|c| c.id.clone()).collect();
+    let typed = |app: &mut BeeperGuiApp, text: &str| {
+        let _ = app.update(UiMessage::Composer(composer::Msg::Changed(text.into())));
+        let _ = app.update(UiMessage::SaveDrafts);
+    };
+    let listed = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        app.listed_draft(&st.chats[st.resolve_chat_idx(&chats[0]).unwrap()])
+    };
+    let _ = app.update(UiMessage::SelectChat(chats[0].clone()));
+    typed(&mut app, "first");
+    assert_eq!(listed(&app), None, "a chat without a draft when it opened lists none");
+    let _ = app.update(UiMessage::SelectChat(chats[1].clone()));
+    assert_eq!(listed(&app).as_deref(), Some("first"), "the draft shows after you leave its chat");
+    let _ = app.update(UiMessage::SelectChat(chats[0].clone()));
+    typed(&mut app, "first and more");
+    assert_eq!(listed(&app).as_deref(), Some("first"), "the list keeps the draft from the open");
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    assert_eq!(listed(&app), None, "a send ends the draft");
+}
+
 /// Desktop's `sendQueuedMessages`: a send that takes a minute says so in a toast that stays, with Show, until its push
 /// ends.
 #[test]
