@@ -256,6 +256,16 @@ fn coerce_int(v: &Value, (min, inclusive): (i64, bool), max: i64, path: Value) -
     if n.is_nan() {
         return Err(vec![type_issue(["code", "expected", "received"], "number", "nan", path)]);
     }
+    let issues = number_issues(n, (min, inclusive), Some(max), path);
+    if issues.is_empty() {
+        Ok(n as i64)
+    } else {
+        Err(issues)
+    }
+}
+
+/// zod's checks of `number().int()` with the minimum `(value, inclusive)` and the inclusive `max`, after the type.
+fn number_issues(n: f64, (min, inclusive): (i64, bool), max: Option<i64>, path: Value) -> Vec<Issue> {
     let mut issues = Vec::new();
     // `fract` of an infinity is NaN, which is not an integer either.
     if n.fract() != 0.0 {
@@ -265,15 +275,11 @@ fn coerce_int(v: &Value, (min, inclusive): (i64, bool), max: i64, path: Value) -
         let message = format!("Number must be greater than {}{min}", if inclusive { "or equal to " } else { "" });
         issues.push(bound_issue("too_small", min, "number", inclusive, message, path.clone()));
     }
-    if n > max as f64 {
+    if let Some(max) = max.filter(|&max| n > max as f64) {
         let message = format!("Number must be less than or equal to {max}");
         issues.push(bound_issue("too_big", max, "number", true, message, path));
     }
-    if issues.is_empty() {
-        Ok(n as i64)
-    } else {
-        Err(issues)
-    }
+    issues
 }
 
 /// Desktop's answer to a body that fails its zod schema.
@@ -361,18 +367,6 @@ fn draft_issues(d: &Value) -> Vec<Issue> {
             }
         }
         v => issues.extend(kind_issue(v, "object", false, json!(["draft", "attachments"]))),
-    }
-    issues
-}
-
-/// zod's checks of `number().int().nonnegative()`, after the type.
-fn whole_issues(n: f64, path: Value) -> Vec<Issue> {
-    let mut issues = Vec::new();
-    if n.fract() != 0.0 {
-        issues.push(float_issue(path.clone()));
-    }
-    if n < 0.0 {
-        issues.push(bound_issue("too_small", 0, "number", true, "Number must be greater than or equal to 0".into(), path));
     }
     issues
 }
@@ -1534,15 +1528,8 @@ fn remove_login(store: &SharedStore, cloud: &Cloud, id: &str, login_id: &str, r:
         let found = st.bridge_accounts.iter().find(|b| b.account_id == affected[0]).expect("an account of the login");
         let bridge = found.bridge_id.clone();
         let sole = st.bridge_accounts.iter().filter(|b| b.bridge_id == bridge).all(|b| b.login_id == login_id);
-        let s = &st.beeper_state;
-        let p = matrix::Provision {
-            homeserver: s.homeserver.clone(),
-            access_token: s.access_token.clone(),
-            user_id: s.user_id.clone(),
-            bridge_id: bridge.clone(),
-            login_id: login_id.into(),
-        };
-        (bridge, (!st.config.demo).then_some(p), sole, affected)
+        let p = (!st.config.demo).then(|| st.bridge_login(bridge.clone(), login_id.into()));
+        (bridge, p, sole, affected)
     };
     if let Some(p) = p {
         let removing = matrix::remove_account(p, cloud.api_url.clone(), sole);
@@ -1566,14 +1553,7 @@ fn bridge_call(store: &SharedStore, cloud: &Cloud, method: &str, id: &str, rest:
         if st.config.demo || !st.signed_in() {
             return Err(error(StatusCode::CONFLICT, "Sign in to Beeper Desktop first", "needs_login"));
         }
-        let s = &st.beeper_state;
-        matrix::Provision {
-            homeserver: s.homeserver.clone(),
-            access_token: s.access_token.clone(),
-            user_id: s.user_id.clone(),
-            bridge_id: bridge.into(),
-            login_id: String::new(),
-        }
+        st.bridge_login(bridge.into(), String::new())
     };
     let rt = tokio::runtime::Handle::current();
     let flows = |p: matrix::Provision| -> Result<Vec<bridge_login::Flow>, Response> {
@@ -2063,7 +2043,8 @@ fn chat_input(method: &str, rest: &[&str], r: &Req) -> Result<(), Response> {
             match r.input("messageExpirySeconds") {
                 None | Some(Value::Null) => {}
                 Some(v) => match v.as_f64() {
-                    Some(n) => issues.extend(whole_issues(n, at("messageExpirySeconds"))),
+                    // zod's `number().int().nonnegative()`.
+                    Some(n) => issues.extend(number_issues(n, (0, true), None, at("messageExpirySeconds"))),
                     None => issues.extend(kind_issue(Some(v), "number", false, at("messageExpirySeconds"))),
                 },
             }

@@ -1681,6 +1681,11 @@ impl BeeperStore {
             },
             |a| (a.bridge_id.clone(), a.login_id.clone()),
         );
+        self.bridge_login(bridge_id, login_id)
+    }
+
+    /// The login `login_id` of the bridge `bridge_id`, as the signed-in session, for the bridge provisioning API.
+    pub fn bridge_login(&self, bridge_id: String, login_id: String) -> crate::matrix::Provision {
         let s = &self.beeper_state;
         crate::matrix::Provision {
             homeserver: s.homeserver.clone(),
