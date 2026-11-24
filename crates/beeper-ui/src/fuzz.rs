@@ -10394,6 +10394,24 @@ fn settings_window_like_signed_in_desktop() {
     assert_eq!(darkest[..3], [0x17, 0x17, 0x17], "the account's name");
 }
 
+/// Desktop's `thread-header-name-chevron` after the chat's name in the header: the Material `chevron_forward` of a
+/// 14 px box at `scale(1.2)`, 2 px after the name, so its ink is 5.2 px wide and 8.4 px high.
+#[test]
+fn the_chat_header_chevron_like_desktop() {
+    let mut app = demo_app("header-chevron");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(872.0, 784.0), app.view_conversation());
+    let name = sim.find("Note").expect("the header's name").bounds();
+    let shot = crate::focus::tests::pixels(&mut sim, &app.iced_theme(), "header-chevron");
+    let k = shot.width() as f32 / 872.0;
+    let (x0, y0) = (((name.x + name.width + 2.0) * k) as u32, ((name.y - 2.0) * k) as u32);
+    let ink = |x: u32, y: u32| shot[(x0 + x, y0 + y)].0[0] < 0xe8;
+    let (w, h) = ((14.0 * k) as u32, (20.0 * k) as u32);
+    let cols = (0..w).filter(|&x| (0..h).any(|y| ink(x, y))).count() as f32 / k;
+    let rows = (0..h).filter(|&y| (0..w).any(|x| ink(x, y))).count() as f32 / k;
+    assert!((4.5..=6.5).contains(&cols) && (7.5..=9.5).contains(&rows), "the chevron's ink: {cols} by {rows}");
+}
+
 /// The pixels of the sign-in window at points of its 330x620 layout.
 fn login_pixels(app: &BeeperGuiApp, points: &[(u32, u32)]) -> Vec<Color> {
     let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 620.0), app.view_login());
