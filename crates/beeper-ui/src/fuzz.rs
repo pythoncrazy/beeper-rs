@@ -10988,6 +10988,42 @@ fn row_hover_actions_sit_like_desktop() {
     }
 }
 
+/// Desktop's `UnmuteIcon` after a muted chat's title: filled, in the row 4 px after the title in the row's
+/// `--color-text-translucent` (#000 at 0.9), and in a pin in the body's `--color-text-neutrals` like its title.
+#[test]
+fn muted_bells_like_desktop() {
+    use iced_test::selector::Candidate;
+    let mut app = demo_app("muted-bells");
+    let chat = app.pins_and_rows(&app.store.read()).1[1].clone();
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(chat.id.clone(), ChatFlag::Muted)));
+    let row: String = chat.title.chars().take(4).collect();
+    let mut sim = simulator(app.view_sidebar());
+    let mut text = |start: &str| {
+        let hit = |c: Candidate<'_>| match c {
+            Candidate::Text { content, bounds, .. } if content.starts_with(start) => Some(bounds),
+            _ => None,
+        };
+        sim.find(hit).expect(start)
+    };
+    let (row, pin) = (text(&row), text("Sarah"));
+    let shot = crate::message::tests::pixels(&mut sim);
+    // The ink right of `x` in the line of `t`, at the shot's scale of 2: its left edge and its darkest pixel.
+    let ink = |t: Rectangle, x: f32, w: f32| {
+        let (x, y) = ((2.0 * x) as u32, 2 * t.y as u32);
+        let bg = shot.get_pixel(x, y).0;
+        let px = (x..x + (2.0 * w) as u32).flat_map(|x| (y..y + 2 * t.height as u32).map(move |y| (x, y)));
+        let inked: Vec<(u32, [u8; 4])> = px.map(|(x, y)| (x, shot.get_pixel(x, y).0)).filter(|(_, c)| c != &bg).collect();
+        let left = inked.iter().map(|i| i.0).min().expect("ink") - x;
+        (left, inked.iter().map(|i| i.1).min_by_key(|c| c.iter().take(3).map(|&c| u32::from(c)).sum::<u32>()).expect("ink"))
+    };
+    let (left, _) = ink(row, row.x + row.width, 20.0);
+    assert!(left > 8, "the bell 4 px after the row's title: {left}");
+    let (_, dark) = ink(pin, pin.x, pin.width);
+    assert_eq!(dark[..3], app.pal.text.into_rgba8()[..3], "the pin's title");
+    let (left, dark) = ink(pin, pin.x + pin.width, 20.0);
+    assert!(left >= 6 && dark[0] < 0x40, "the pin's bell 3.2 px after its title: {left} {dark:?}");
+}
+
 /// Desktop's chat row divider (`section:after`, 0.33 px high) starts at the row's content, after the unread dot's
 /// column when the counts are off, and Chromium snaps it to one device pixel: at the scale of 2 of the shot, the
 /// last one of the row.
