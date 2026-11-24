@@ -1446,6 +1446,7 @@ impl BeeperGuiApp {
             title_size,
             ts_size,
             text_w: inner - 16.0 - av - 10.0 - lead,
+            lead,
             counts,
             network_icons: st.settings.on("showNetworkIcons")
                 && self.list().selected_account_filter.as_deref().is_none_or(|id| rail_label(st, id).is_some()),
@@ -1611,7 +1612,9 @@ impl BeeperGuiApp {
                 self.row_action(&st.settings, c, l.hover_action, t)
             }
         });
-        let rule = (!on && l.above.as_deref() != Some(key.as_str())).then(|| container(divider(p.divider, l.av + 18.0)).align_bottom(Fill));
+        // Desktop's `section:after` starts at the content (`anchor(left)`).
+        let rule = (!on && l.above.as_deref() != Some(key.as_str()))
+            .then(|| crate::hairline::hairline(p.divider, l.lead + l.av + 18.0, 0.33, self.bake_scale()));
         let row = mouse_area(
             button(stack![item].push(action.flatten()).push(rule))
                 .padding(0)
@@ -1928,6 +1931,8 @@ struct RowLook<'s> {
     /// The row above the selected one.
     above: Option<Cow<'s, str>>,
     compact: bool,
+    /// The width of the unread dot's column or the checkbox before the avatar.
+    lead: f32,
     av: f32,
     lines: usize,
     title_size: f32,
