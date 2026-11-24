@@ -324,6 +324,25 @@ fn login_step_issues(r: &Req) -> Vec<Issue> {
     issues
 }
 
+/// The zod issues of an attachment at `base`, a `DraftAttachmentInput` but for its `id`, or the attachment of
+/// `SendMessageInput`.
+fn attachment_issues(a: &serde_json::Map<String, Value>, base: &[Value]) -> Vec<Issue> {
+    let at = |k: &[&str]| Value::Array(base.iter().cloned().chain(k.iter().map(|&k| json!(k))).collect());
+    let mut issues: Vec<Issue> = string_issue(a.get("uploadID"), false, at(&["uploadID"])).into_iter().collect();
+    issues.extend(["mimeType", "fileName"].into_iter().filter_map(|k| string_issue(a.get(k), true, at(&[k]))));
+    match a.get("size") {
+        None => {}
+        Some(Value::Object(size)) => {
+            issues.extend(["width", "height"].into_iter().filter_map(|k| kind_issue(size.get(k), "number", false, at(&["size", k]))));
+        }
+        v => issues.extend(kind_issue(v, "object", false, at(&["size"]))),
+    }
+    issues.extend(kind_issue(a.get("duration"), "number", true, at(&["duration"])));
+    let kinds = ["image", "video", "audio", "file", "gif", "voice-note", "sticker"];
+    issues.extend(a.get("type").and_then(|t| enum_issue(Some(t), &kinds, at(&["type"]))));
+    issues
+}
+
 /// Desktop's `ChatDraftInput`: the text, and the attachments keyed by attachment ID, each a `DraftAttachmentInput`.
 fn draft_issues(d: &Value) -> Vec<Issue> {
     let Some(draft) = d.as_object() else { return kind_issue(Some(d), "object", false, json!(["draft"])).into_iter().collect() };
@@ -332,26 +351,12 @@ fn draft_issues(d: &Value) -> Vec<Issue> {
         None => {}
         Some(Value::Object(all)) => {
             for (id, a) in all {
-                let at = |k: &str| json!(["draft", "attachments", id, k]);
                 let Some(a) = a.as_object() else {
                     issues.extend(kind_issue(Some(a), "object", false, json!(["draft", "attachments", id])));
                     continue;
                 };
-                issues.extend(string_issue(a.get("uploadID"), false, at("uploadID")));
-                issues.extend(["mimeType", "fileName"].into_iter().filter_map(|k| string_issue(a.get(k), true, at(k))));
-                match a.get("size") {
-                    None => {}
-                    Some(Value::Object(size)) => issues.extend(
-                        ["width", "height"]
-                            .into_iter()
-                            .filter_map(|k| kind_issue(size.get(k), "number", false, json!(["draft", "attachments", id, "size", k]))),
-                    ),
-                    v => issues.extend(kind_issue(v, "object", false, at("size"))),
-                }
-                issues.extend(kind_issue(a.get("duration"), "number", true, at("duration")));
-                let kinds = ["image", "video", "audio", "file", "gif", "voice-note", "sticker"];
-                issues.extend(a.get("type").and_then(|v| enum_issue(Some(v), &kinds, at("type"))));
-                issues.extend(string_issue(a.get("id"), true, at("id")));
+                issues.extend(attachment_issues(a, &[json!("draft"), json!("attachments"), json!(id)]));
+                issues.extend(string_issue(a.get("id"), true, json!(["draft", "attachments", id, "id"])));
             }
         }
         v => issues.extend(kind_issue(v, "object", false, json!(["draft", "attachments"]))),
@@ -1272,11 +1277,7 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
         },
         ("POST", ["v1", "assets", "upload", "base64"]) => {
             let field = |k: &'static str, optional| string_issue(r.body.get(k), optional, json!([k]));
-            let issues: Vec<Issue> =
-                [field("content", false), field("fileName", true), field("mimeType", true)].into_iter().flatten().collect();
-            if !issues.is_empty() {
-                return Err(invalid_input(issues));
-            }
+            checked([field("content", false), field("fileName", true), field("mimeType", true)].into_iter().flatten().collect())?;
             let bytes = base64_decode(r.str("content").expect("a string content")).filter(|b| !b.is_empty());
             upload(st, r.str("fileName"), r.str("mimeType"), &bytes.ok_or_else(|| bad("content must be non-empty base64"))?)
         }
@@ -1523,9 +1524,7 @@ fn bridge_login(store: &SharedStore, cloud: &Cloud, method: &str, segs: &[&str],
 /// Desktop's `removeBridgeLogin`. Beeper Cloud logs the login out, or deletes the bridge when the login is its only
 /// one. The demo has no cloud, so it only forgets the login.
 fn remove_login(store: &SharedStore, cloud: &Cloud, id: &str, login_id: &str, r: &Req) -> Reply {
-    if let Some(issue) = enum_issue(r.body.get("scope"), &["current-device", "all-devices"], json!(["scope"])) {
-        return Err(invalid_input(vec![issue]));
-    }
+    checked(enum_issue(r.body.get("scope"), &["current-device", "all-devices"], json!(["scope"])).into_iter().collect())?;
     let scope = r.str("scope").expect("the scope is an option");
     let (bridge, p, sole, affected) = {
         let st = store.read();
@@ -1823,19 +1822,14 @@ impl<'a> ChatSearch<'a> {
         let inbox = check(&mut issues, r.choice("inbox", &["primary", "low-priority", "archive"])).flatten();
         let label = check(&mut issues, r.string("labelID")).flatten();
         let unread_only = check(&mut issues, r.boolean("unreadOnly", false)).unwrap_or_default();
-        let limit = r.page_size(50, MIN_1, 200).unwrap_or_else(|found| {
-            issues.extend(found);
-            0
-        });
+        let limit = r.page_size(50, MIN_1, 200).map_err(|found| issues.extend(found)).unwrap_or_default();
         let chat_type = check(&mut issues, r.choice("type", &["single", "group", "any"])).flatten();
         let query = check(&mut issues, r.filled("query")).flatten();
         let scope = check(&mut issues, r.choice("scope", &["titles", "participants"])).flatten();
         let active_before = check(&mut issues, r.datetime("lastActivityBefore", false)).flatten();
         let active_after = check(&mut issues, r.datetime("lastActivityAfter", false)).flatten();
         let include_muted = check(&mut issues, r.boolean("includeMuted", true)).unwrap_or_default();
-        if !issues.is_empty() {
-            return Err(invalid_input(issues));
-        }
+        checked(issues)?;
         Ok(ChatSearch {
             cursor,
             after,
@@ -2012,8 +2006,7 @@ fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
 fn reminder_input(r: &Req) -> Result<(i64, Option<bool>), Response> {
     let reminder = r.input("reminder");
     let Some(Value::Object(o)) = reminder else {
-        let issue = type_issue(["code", "expected", "received"], "object", zod_type(reminder), json!(["reminder"]));
-        return Err(invalid_input(vec![issue]));
+        return Err(invalid_input(vec![type_issue(["code", "expected", "received"], "object", zod_type(reminder), json!(["reminder"]))]));
     };
     let path = |k: &str| json!(["reminder", k]);
     let legacy = match (o.get("remindAt"), o.get("remindAtMs")) {
@@ -2049,27 +2042,11 @@ fn reminder_input(r: &Req) -> Result<(i64, Option<bool>), Response> {
 /// The zod issues of `SendMessageInput`: the text, the reply, the attachment, then the refinement that needs one of
 /// the text and the attachment.
 fn send_issues(r: &Req) -> Vec<Issue> {
-    let at = |k: &str| json!(["attachment", k]);
     let mut issues: Vec<Issue> =
         ["text", "replyToMessageID"].into_iter().filter_map(|k| string_issue(r.input(k), true, json!([k]))).collect();
     match r.input("attachment") {
         None => {}
-        Some(Value::Object(a)) => {
-            issues.extend(string_issue(a.get("uploadID"), false, at("uploadID")));
-            issues.extend(["mimeType", "fileName"].into_iter().filter_map(|k| string_issue(a.get(k), true, at(k))));
-            match a.get("size") {
-                None => {}
-                Some(Value::Object(size)) => issues.extend(
-                    ["width", "height"]
-                        .into_iter()
-                        .filter_map(|k| kind_issue(size.get(k), "number", false, json!(["attachment", "size", k]))),
-                ),
-                v => issues.extend(kind_issue(v, "object", false, at("size"))),
-            }
-            issues.extend(kind_issue(a.get("duration"), "number", true, at("duration")));
-            let kinds = ["image", "video", "audio", "file", "gif", "voice-note", "sticker"];
-            issues.extend(a.get("type").and_then(|t| enum_issue(Some(t), &kinds, at("type"))));
-        }
+        Some(Value::Object(a)) => issues.extend(attachment_issues(a, &[json!("attachment")])),
         v => issues.extend(kind_issue(v, "object", false, json!(["attachment"]))),
     }
     // Every issue above aborts the parse, which skips the refinement.
@@ -2449,25 +2426,18 @@ impl<'a> MessageSearch<'a> {
         let cursor = check(&mut issues, r.string("cursor")).flatten();
         let after = check(&mut issues, r.direction()).unwrap_or_default();
         let chat_type = check(&mut issues, r.choice("chatType", &["group", "single"])).flatten();
-        let media = r.choices("mediaTypes", &["any", "video", "image", "link", "file"]).unwrap_or_else(|found| {
-            issues.extend(found);
-            Vec::new()
-        });
+        let media =
+            r.choices("mediaTypes", &["any", "video", "image", "link", "file"]).map_err(|found| issues.extend(found)).unwrap_or_default();
         let sender = check(&mut issues, r.string("sender")).flatten();
         let date_after = check(&mut issues, r.datetime("dateAfter", true)).flatten();
         let date_before = check(&mut issues, r.datetime("dateBefore", true)).flatten();
-        let limit = r.page_size(20, POSITIVE, 20).unwrap_or_else(|found| {
-            issues.extend(found);
-            0
-        });
+        let limit = r.page_size(20, POSITIVE, 20).map_err(|found| issues.extend(found)).unwrap_or_default();
         let exclude_low_priority = check(&mut issues, r.boolean("excludeLowPriority", true)).unwrap_or_default();
         let include_muted = check(&mut issues, r.boolean("includeMuted", true)).unwrap_or_default();
         if !issues.iter().any(Issue::aborts) && date_after.zip(date_before).is_some_and(|(a, b)| a >= b) {
             issues.push(custom_issue("'dateAfter' must be earlier than 'dateBefore' when both are provided.", json!(["dateAfter"])));
         }
-        if !issues.is_empty() {
-            return Err(invalid_input(issues));
-        }
+        checked(issues)?;
         Ok(MessageSearch {
             query: query.unwrap_or_default(),
             cursor,
