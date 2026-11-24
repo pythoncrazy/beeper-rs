@@ -1041,7 +1041,8 @@ fn grouped_rows<'a>(p: &Palette, rows: Vec<El<'a>>) -> El<'a> {
     container(col).width(Fill).clip(true).style(fill_box(p.chip, 8.0)).into()
 }
 
-/// `ls` is Desktop's `--letter-spacing`; its initials also have `margin-right: -1px`. The avatar is drawn at `alpha`.
+/// `ls` is Desktop's `--letter-spacing` of the initials, which their `margin-right` takes back. The avatar is drawn at
+/// `alpha`.
 fn avatar<'a>(name: &str, size: f32, ls: f32, alpha: f32, p: &Palette) -> El<'a> {
     let Some(label) = initials(name) else {
         let shade = fill_box(Color { a: 0.1 * alpha, ..p.strong }, size / 2.0);
@@ -1051,11 +1052,10 @@ fn avatar<'a>(name: &str, size: f32, ls: f32, alpha: f32, p: &Palette) -> El<'a>
     let (top, bottom) = (hex(top).scale_alpha(alpha), hex(bottom).scale_alpha(alpha));
     let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, top).add_stop(1.0, bottom);
     // Desktop's `DefaultAvatar` circle is a `.redacted-region` wherever it shows.
-    let font = crate::style::region(true, || crate::style::redact(crate::style::initials_font()));
-    let white = Color::WHITE.scale_alpha(alpha);
-    let letter = |c: char| txt(c.to_string(), size * 0.5).line_height(1.0).font(font).color(white).into();
-    let trail = Padding::ZERO.right((ls - 1.0).max(0.0)).left((1.0 - ls).max(0.0));
-    container(container(Row::with_children(label.chars().map(letter)).spacing(ls)).padding(trail))
+    let font = crate::style::region(true, || crate::style::redact(spaced(crate::style::initials_font(), ls / (size * 0.5))));
+    // `font-size: 50cqw` of the circle.
+    let label = iced::widget::text(label).size(size * 0.5).line_height(1.0).font(font).color(Color::WHITE.scale_alpha(alpha));
+    container(container(label).padding(Padding::ZERO.left(ls)))
         .center(size)
         .style(move |_: &Theme| container::Style {
             background: Some(Background::Gradient(Gradient::Linear(g))),

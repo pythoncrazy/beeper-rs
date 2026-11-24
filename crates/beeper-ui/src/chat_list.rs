@@ -1331,8 +1331,8 @@ impl BeeperGuiApp {
             let trigger: El<'_> = match count {
                 0 => Space::new().into(),
                 1 => ic(icon::EXPAND_MORE, 10.0).color(fg).into(),
-                // `.FilterButton-module__count` is 11 px.
-                n => crate::style::fixed(n.to_string(), 11.0, Weight::Normal).line_height(1.0).color(fg).into(),
+                // `.FilterButton-module__count` is 11 px with a 0.25 px letter spacing.
+                n => crate::style::fixed(n.to_string(), 11.0, spaced(Weight::Normal, 0.25 / 11.0)).line_height(1.0).color(fg).into(),
             };
             let trigger = button(container(trigger).padding(Padding::ZERO.left(6.0)).center_y(20))
                 .bare(fg)
