@@ -175,8 +175,8 @@ async fn lifecycle() {
             icon::UNFOLD_MORE,
             icon::EDIT_SQUARE,
             icon::DOWNLOAD,
-            icon::AUDIO_LINES,
-            icon::PAINTBRUSH,
+            icon::TICK,
+            icon::AT_SIGN,
             icon::CHEVRON,
             icon::CLOSE,
         ] {
