@@ -730,7 +730,7 @@ impl BeeperGuiApp {
             true => {
                 let u = c.participants.items.iter().find(|u| u.id == m.sender_id);
                 let name = Self::sender_name(&st, m);
-                (u.map(|u| self.face(u.img_url.as_deref(), name, 28.0, 0.0)), name)
+                (u.map(|u| self.face(crate::user_img(u).as_deref(), name, 28.0, 0.0)), name)
             }
             false => (Some(self.chat_avatar(c, 28.0, 0.0)), c.title.as_str()),
         };

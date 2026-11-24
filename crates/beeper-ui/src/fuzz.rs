@@ -11016,3 +11016,20 @@ fn incognito_trial_over_nudge_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(other));
     assert!(!shows(&app), "a closed nudge stays closed");
 }
+
+/// Desktop's `applyProfileOverlays`: the personal name of your DM with a person shows as their name in a group.
+#[test]
+fn personal_names_follow_people_into_groups_like_desktop() {
+    let mut app = demo_app("sender-overlay");
+    let group = "!sl_infra:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(group.into()));
+    let label = |app: &BeeperGuiApp| {
+        drop(app.view_main());
+        let st = app.store.read();
+        let m = st.timeline(group).find(|m| m.sender_id == "@eric:beeper.com").expect("a message of Eric").clone();
+        crate::sender_label(st.chat(group), &m)
+    };
+    assert_eq!(label(&app), "Eric Migicovsky");
+    app.store.write().set_personal("!wa_eric:beeper.com", Some(Some("Big E".into())), None);
+    assert_eq!(label(&app), "Big E", "the group names Eric by your name for him");
+}

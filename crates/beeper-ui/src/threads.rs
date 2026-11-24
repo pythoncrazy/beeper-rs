@@ -355,7 +355,7 @@ impl BeeperGuiApp {
         let first = senders
             .first()
             .and_then(|id| user(id))
-            .map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or(&u.id), 32.0, 0.5));
+            .map(|u| self.face(crate::user_img(u).as_deref(), u.full_name.as_deref().unwrap_or(&u.id), 32.0, 0.5));
         let avatars = row![self.chat_avatar(chat, 32.0, 0.0)].push(first.map(|f| container(f).padding(Padding::ZERO.left(-8.0)))).width(56);
         let message = |m: Option<&Message>| m.and_then(preview_body).unwrap_or_else(|| tr("Message").into());
         let root_text = message(st.stored_message(root).as_ref());
@@ -395,7 +395,7 @@ impl BeeperGuiApp {
             .iter()
             .filter(|m| seen.insert(m.sender_id.as_str()))
             .filter_map(|m| chat.participants.items.iter().find(|u| u.id == m.sender_id));
-        let faces = faces.take(3).map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or(&u.id), 16.0, 0.5));
+        let faces = faces.take(3).map(|u| self.face(crate::user_img(u).as_deref(), u.full_name.as_deref().unwrap_or(&u.id), 16.0, 0.5));
         let n = replies.len();
         let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).line_height(lh(15.0)).color(p.text);
         let (unread, at) = if st.follows_thread(chat, root) { st.thread_unread(chat, root) } else { (0, 0) };

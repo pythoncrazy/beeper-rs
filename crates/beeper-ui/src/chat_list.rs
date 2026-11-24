@@ -1809,7 +1809,7 @@ impl BeeperGuiApp {
         let font = crate::style::redact(iced::Font { style, ..fw(Weight::Normal) });
         let fg = p.fg.scale_alpha(0.63);
         let receipt = m.filter(|_| receipt).map(|m| self.preview_receipt(st, c, m, fg));
-        let face = sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0, 0.5));
+        let face = sender.map(|u| self.face(crate::user_img(u).as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0, 0.5));
         let badge = (expired && l.previews).then(|| {
             let label = semi(tr("Reminder"), 11.0).color(Color::WHITE.scale_alpha(0.7));
             container(label).padding([0, 3]).style(fill_box(ORANGE.scale_alpha(0.7), 4.0))
