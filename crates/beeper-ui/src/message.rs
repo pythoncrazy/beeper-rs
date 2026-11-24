@@ -2267,97 +2267,7 @@ impl BeeperGuiApp {
                     self.view_audio(m, a, mine, ts, fg, bg)
                 }
                 (false, "img" | "video") if m.unresolved_media.is_some() || self.needs_download(a).is_none() => {
-                    let is_video = a.attachment_type == "video";
-                    let size = a.size.as_ref().and_then(|s| Some((s.width? as f32, s.height? as f32)));
-                    let share = if self.sidebar_hidden { 0.85 } else { 0.45 };
-                    let (w, h, cover) = match size.filter(|_| a.is_sticker == Some(true)) {
-                        Some(size) => sticker_box(self.pane().size.width, size, share),
-                        None => media_box(self.pane().size.width, size, share),
-                    };
-                    // Desktop plays a video with `isGif` inline like a GIF, without sound, again and again.
-                    let looped = is_video && a.is_gif == Some(true) && m.unresolved_media.is_none();
-                    // Desktop's `Lottie` plays an animated sticker itself, not its still thumbnail.
-                    let lottie = a.mime_type.as_deref().is_some_and(beeper_core::media::animated);
-                    let thumb_url = match looped {
-                        // The local echo of a GIF plays the frames of its poster until the homeserver has it.
-                        true => a.src_url.as_ref().map(|u| format!("{u}{}", crate::media_view::LOOP)).or_else(|| a.poster_img.clone()),
-                        false if lottie => a.src_url.clone(),
-                        false => a.poster_img.clone().or_else(|| a.src_url.clone()),
-                    };
-                    let pill = |label: &'a str, alpha: f32| -> El<'a> {
-                        container(
-                            container(txt(label, 14.0).line_height(1.0).color(Color::WHITE))
-                                .center_y(36)
-                                .padding([0, 17])
-                                .style(fill_box(p.toggle_on, 18.0)),
-                        )
-                        .center_x(w)
-                        .center_y(h)
-                        .style(fill_box(Color::BLACK.scale_alpha(alpha), 17.0))
-                        .into()
-                    };
-                    // Desktop's `<img>`, whose right click gives the menu its image items.
-                    let img = !is_video && matches!(thumb_url.as_ref().and_then(|u| self.media_at(u)), Some(Ok(_)));
-                    // A cropped image shows from a baked cut, as the renderer draws `Cover` past its box: a still, or
-                    // the frames of an animation once a worker cut them. Until then the whole image shows. A still
-                    // much larger than its box shows from a cut too, like Chromium's decode to scale, so the renderer
-                    // keeps and draws the pixels of the box and not those of a whole photo.
-                    let px = (w.round() as u32, h.round() as u32);
-                    let base: El<'_> = match thumb_url.as_ref().and_then(|u| Some((u, self.media_at(u)?))) {
-                        Some((url, Ok(frames)))
-                            if (cover || larger(&frames[0].0, px))
-                                && !lottie
-                                && frames.len() == 1
-                                && let Some(t) = self.cover_tile(url, px) =>
-                        {
-                            image(t.clone()).width(w).height(h).into()
-                        }
-                        Some((url, Ok(frames))) => {
-                            let cut = (cover && !lottie && frames.len() > 1).then(|| self.cover_frames(url, px)).flatten();
-                            let autoplay = st.settings.on("autoplayGifs");
-                            let played = self.pane().played_gifs.get(&(m.id.clone(), ai)).filter(|_| !autoplay);
-                            let (play, start) = match played {
-                                Some(&at) => (self.shows(), at),
-                                None => (self.autoplays(st), self.started),
-                            };
-                            let gif = match cut {
-                                // The cut has the corners of the bubble.
-                                Some(cut) => anim::gif(cut, play, start, move |f| image(f).width(w).height(h)),
-                                None => anim::gif(frames, play, start, move |f| image(f).width(w).height(h).border_radius(17.0)),
-                            };
-                            match !autoplay && frames.animated() {
-                                true => gif_toggle(gif, played.is_some(), Msg::ToggleGif(m.id.clone(), ai)),
-                                false => gif,
-                            }
-                        }
-                        Some((_, Err(_))) if m.unresolved_media.is_none() => self.image_error(w, h, 17.0),
-                        // Desktop's `img.loading`: the shimmering `--skeleton-bg` in the box of the image.
-                        _ => anim::skeleton(w, h, 17.0, p.skeleton, self.started),
-                    };
-                    let (slot, press): (El<'_>, _) = if let Some(raw) = m.unresolved_media.as_ref().filter(|_| !is_video) {
-                        let failed = self.resolving_media.get(&m.id) == Some(&false);
-                        let (label, alpha) = match failed {
-                            true => (tr("Could not load. Click to try again"), 0.45),
-                            false => (tr("Click to load"), 0.25),
-                        };
-                        (
-                            stack![base, pill(label, alpha)].into(),
-                            UiMessage::Loaded(loads::Msg::ResolveMedia(m.account_id.clone(), m.id.clone(), raw.clone())),
-                        )
-                    } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
-                        let video = self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai));
-                        parts = parts.push(not_sent(dimmed(video, selected)));
-                        continue;
-                    } else if is_video && a.is_gif != Some(true) {
-                        (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
-                    } else {
-                        (base, UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)))
-                    };
-                    let slot = button(slot).bare(p.text).on_press(press);
-                    match img {
-                        true => mouse_area(slot).on_right_press(UiMessage::Message(Msg::ImageMenu(m.id.clone()))).into(),
-                        false => slot.into(),
-                    }
+                    self.view_media_attachment(st, m, ai, a, name)
                 }
                 // Desktop's `gx` attachments show as `Wfe` contact cards, once their file is read.
                 _ if is_vcard(a) && a.src_url.as_ref().and_then(|u| self.vcard_at(u)).is_none_or(Result::is_ok) => {
@@ -2405,49 +2315,7 @@ impl BeeperGuiApp {
             let pill = container(line.spacing(8).align_y(Center)).padding([9, 13]);
             parts = parts.push(pill.style(bordered_box(CLEAR, p.chip, 2.0, 17.0)));
         } else if big {
-            // Desktop's `.is-selected.type-emoji .message-contents`: `brightness(0.8)`, which iced draws in images.
-            let emoji = |t: String| -> El<'a> {
-                match selected {
-                    true => {
-                        let (handle, size) = crate::style::dimmed_emoji(&t, 48.0, 48.0 * 1.3, 0.8);
-                        image(handle).width(size.width).height(size.height).into()
-                    }
-                    false => txt(t, 48.0).font(EMOJI_FONT).into(),
-                }
-            };
-            // Custom emoji are 1em high images among the 48 px emoji.
-            let custom = m.html.as_deref().filter(|h| h.contains("data-mx-emoticon"));
-            let runs = custom.map(beeper_core::codec::html_blocks).unwrap_or_default().into_iter().flat_map(|b| b.runs);
-            let glyphs: Vec<El<'a>> = runs
-                .map(|r| match r.emoticon.as_deref() {
-                    Some(url) => {
-                        // A selected animation plays dimmed once a worker dimmed its frames, and shows its first
-                        // frame dimmed until then.
-                        let dimmed = |f: &crate::Frames| match f.len() > 1 {
-                            true => self.dimmed_frames(url).map(|d| self.emoji(d, |h| image(h).height(48.0))),
-                            false => None,
-                        };
-                        let img: El<'a> = match self.frames(url) {
-                            Some(f) if selected && let Some(d) = dimmed(&f) => d,
-                            Some(f) if selected => image(crate::style::dimmed_image(&f[0].0, 0.8)).height(48.0).into(),
-                            Some(f) => self.emoji(&f, |h| image(h).height(48.0)),
-                            None => Space::new().width(48.0).height(48.0).into(),
-                        };
-                        let menu = Msg::EmoticonMenu(m.id.clone(), r.title.clone(), url.to_string());
-                        mouse_area(img).on_right_press(UiMessage::Message(menu)).into()
-                    }
-                    None => emoji(r.text),
-                })
-                .collect();
-            let line: El<'a> = match glyphs.is_empty() {
-                true => emoji(text.clone()),
-                false => Row::with_children(glyphs).align_y(Bottom).into(),
-            };
-            // Desktop's `title` of the `message-text` of an emoji message: its time.
-            let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
-            let line = self.tip(line, time, vec![], tooltip::Position::Top);
-            // `.bubble-mode .type-emoji .message-contents`: the bubble's padding, without the bottom one.
-            parts = parts.push(container(line).padding(Padding::from([BUBBLE_PAD_Y, BUBBLE_PAD_X]).bottom(0.0)));
+            parts = parts.push(self.view_big_emoji(st, m, &text, selected));
         } else if utd {
             let line = txt(text.clone(), 13.0).line_height(lh(16.0)).font(italic).color(fg.scale_alpha(0.8));
             let time = shows_time.then(|| {
@@ -2640,6 +2508,148 @@ impl BeeperGuiApp {
             .on_right_press(menu)
             .on_double_click(UiMessage::Message(Msg::DoubleClick(m.id.clone())));
         column![head].push(versions).push(line).into()
+    }
+
+    /// Desktop's emoji-only message: its emoji and custom emoji at 48 px, dimmed when selected, with its time as a tooltip.
+    fn view_big_emoji<'a>(&'a self, st: &BeeperStore, m: &Message, text: &str, selected: bool) -> El<'a> {
+        // Desktop's `.is-selected.type-emoji .message-contents`: `brightness(0.8)`, which iced draws in images.
+        let emoji = |t: String| -> El<'a> {
+            match selected {
+                true => {
+                    let (handle, size) = crate::style::dimmed_emoji(&t, 48.0, 48.0 * 1.3, 0.8);
+                    image(handle).width(size.width).height(size.height).into()
+                }
+                false => txt(t, 48.0).font(EMOJI_FONT).into(),
+            }
+        };
+        // Custom emoji are 1em high images among the 48 px emoji.
+        let custom = m.html.as_deref().filter(|h| h.contains("data-mx-emoticon"));
+        let runs = custom.map(beeper_core::codec::html_blocks).unwrap_or_default().into_iter().flat_map(|b| b.runs);
+        let glyphs: Vec<El<'a>> = runs
+            .map(|r| match r.emoticon.as_deref() {
+                Some(url) => {
+                    // A selected animation plays dimmed once a worker dimmed its frames, and shows its first
+                    // frame dimmed until then.
+                    let dimmed = |f: &crate::Frames| match f.len() > 1 {
+                        true => self.dimmed_frames(url).map(|d| self.emoji(d, |h| image(h).height(48.0))),
+                        false => None,
+                    };
+                    let img: El<'a> = match self.frames(url) {
+                        Some(f) if selected && let Some(d) = dimmed(&f) => d,
+                        Some(f) if selected => image(crate::style::dimmed_image(&f[0].0, 0.8)).height(48.0).into(),
+                        Some(f) => self.emoji(&f, |h| image(h).height(48.0)),
+                        None => Space::new().width(48.0).height(48.0).into(),
+                    };
+                    let menu = Msg::EmoticonMenu(m.id.clone(), r.title.clone(), url.to_string());
+                    mouse_area(img).on_right_press(UiMessage::Message(menu)).into()
+                }
+                None => emoji(r.text),
+            })
+            .collect();
+        let line: El<'a> = match glyphs.is_empty() {
+            true => emoji(text.to_string()),
+            false => Row::with_children(glyphs).align_y(Bottom).into(),
+        };
+        // Desktop's `title` of the `message-text` of an emoji message: its time.
+        let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
+        let line = self.tip(line, time, vec![], tooltip::Position::Top);
+        // `.bubble-mode .type-emoji .message-contents`: the bubble's padding, without the bottom one.
+        container(line).padding(Padding::from([BUBBLE_PAD_Y, BUBBLE_PAD_X]).bottom(0.0)).into()
+    }
+
+    /// An image or video attachment of a message: its loading skeleton, image, GIF or inline video, the error tile,
+    /// or Click to load for media that the bridge resolves when asked.
+    fn view_media_attachment<'a>(&'a self, st: &BeeperStore, m: &Message, ai: usize, a: &Attachment, name: String) -> El<'a> {
+        let p = &self.pal;
+        let is_video = a.attachment_type == "video";
+        let size = a.size.as_ref().and_then(|s| Some((s.width? as f32, s.height? as f32)));
+        let share = if self.sidebar_hidden { 0.85 } else { 0.45 };
+        let (w, h, cover) = match size.filter(|_| a.is_sticker == Some(true)) {
+            Some(size) => sticker_box(self.pane().size.width, size, share),
+            None => media_box(self.pane().size.width, size, share),
+        };
+        // Desktop plays a video with `isGif` inline like a GIF, without sound, again and again.
+        let looped = is_video && a.is_gif == Some(true) && m.unresolved_media.is_none();
+        // Desktop's `Lottie` plays an animated sticker itself, not its still thumbnail.
+        let lottie = a.mime_type.as_deref().is_some_and(beeper_core::media::animated);
+        let thumb_url = match looped {
+            // The local echo of a GIF plays the frames of its poster until the homeserver has it.
+            true => a.src_url.as_ref().map(|u| format!("{u}{}", crate::media_view::LOOP)).or_else(|| a.poster_img.clone()),
+            false if lottie => a.src_url.clone(),
+            false => a.poster_img.clone().or_else(|| a.src_url.clone()),
+        };
+        let pill = |label: &'a str, alpha: f32| -> El<'a> {
+            container(
+                container(txt(label, 14.0).line_height(1.0).color(Color::WHITE))
+                    .center_y(36)
+                    .padding([0, 17])
+                    .style(fill_box(p.toggle_on, 18.0)),
+            )
+            .center_x(w)
+            .center_y(h)
+            .style(fill_box(Color::BLACK.scale_alpha(alpha), 17.0))
+            .into()
+        };
+        // Desktop's `<img>`, whose right click gives the menu its image items.
+        let img = !is_video && matches!(thumb_url.as_ref().and_then(|u| self.media_at(u)), Some(Ok(_)));
+        // A cropped image shows from a baked cut, as the renderer draws `Cover` past its box: a still, or
+        // the frames of an animation once a worker cut them. Until then the whole image shows. A still
+        // much larger than its box shows from a cut too, like Chromium's decode to scale, so the renderer
+        // keeps and draws the pixels of the box and not those of a whole photo.
+        let px = (w.round() as u32, h.round() as u32);
+        let base: El<'_> = match thumb_url.as_ref().and_then(|u| Some((u, self.media_at(u)?))) {
+            Some((url, Ok(frames)))
+                if (cover || larger(&frames[0].0, px))
+                    && !lottie
+                    && frames.len() == 1
+                    && let Some(t) = self.cover_tile(url, px) =>
+            {
+                image(t.clone()).width(w).height(h).into()
+            }
+            Some((url, Ok(frames))) => {
+                let cut = (cover && !lottie && frames.len() > 1).then(|| self.cover_frames(url, px)).flatten();
+                let autoplay = st.settings.on("autoplayGifs");
+                let played = self.pane().played_gifs.get(&(m.id.clone(), ai)).filter(|_| !autoplay);
+                let (play, start) = match played {
+                    Some(&at) => (self.shows(), at),
+                    None => (self.autoplays(st), self.started),
+                };
+                let gif = match cut {
+                    // The cut has the corners of the bubble.
+                    Some(cut) => anim::gif(cut, play, start, move |f| image(f).width(w).height(h)),
+                    None => anim::gif(frames, play, start, move |f| image(f).width(w).height(h).border_radius(17.0)),
+                };
+                match !autoplay && frames.animated() {
+                    true => gif_toggle(gif, played.is_some(), Msg::ToggleGif(m.id.clone(), ai)),
+                    false => gif,
+                }
+            }
+            Some((_, Err(_))) if m.unresolved_media.is_none() => self.image_error(w, h, 17.0),
+            // Desktop's `img.loading`: the shimmering `--skeleton-bg` in the box of the image.
+            _ => anim::skeleton(w, h, 17.0, p.skeleton, self.started),
+        };
+        let (slot, press): (El<'_>, _) = if let Some(raw) = m.unresolved_media.as_ref().filter(|_| !is_video) {
+            let failed = self.resolving_media.get(&m.id) == Some(&false);
+            let (label, alpha) = match failed {
+                true => (tr("Could not load. Click to try again"), 0.45),
+                false => (tr("Click to load"), 0.25),
+            };
+            (
+                stack![base, pill(label, alpha)].into(),
+                UiMessage::Loaded(loads::Msg::ResolveMedia(m.account_id.clone(), m.id.clone(), raw.clone())),
+            )
+        } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
+            return self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai));
+        } else if is_video && a.is_gif != Some(true) {
+            (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
+        } else {
+            (base, UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)))
+        };
+        let slot = button(slot).bare(p.text).on_press(press);
+        match img {
+            true => mouse_area(slot).on_right_press(UiMessage::Message(Msg::ImageMenu(m.id.clone()))).into(),
+            false => slot.into(),
+        }
     }
 
     /// The bubble of a text message: its rich text, clamped at 40 lines with Show more, its links, mentions and custom
