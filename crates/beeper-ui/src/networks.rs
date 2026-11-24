@@ -213,8 +213,8 @@ impl BeeperGuiApp {
             });
             let faces = Stack::with_children(faces).width(12.0 + (n - 1) as f32 * 8.0).height(12);
             let add = (!e.blocked()).then(|| ic(icon::PLUS, 10.0).color(p.fg));
-            let fill = Color { a: if self.dark { 0.1 } else { 0.06 }, ..p.fg };
             let chip = row![faces].push(add).spacing(2).align_y(Center);
+            let fill = p.fill_primary;
             button(chip).padding(2).style(btn_style([fill; 3], [p.fg; 3], 999.0)).on_press(UiMessage::Networks(Msg::Menu(Some(id))))
         });
         column![tooltip(tile, tip, tooltip::Position::Bottom)].push(chip).align_x(Center).into()

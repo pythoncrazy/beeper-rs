@@ -772,7 +772,7 @@ impl BeeperGuiApp {
         let pane = |e| UiMessage::Labels(labels::Msg::Pane(w.id, e));
         // The `:focus-visible` outlines of Label Settings: Desktop's `Button`s, and `--app-focus-ring` rings inside
         // the rows of `.LabelSettings-module__group` and `__settingRow`, and on `__menuPill`.
-        let ring = |offset, radius| Look::Outline { color: p.focus_ring, width: 2.0, offset, radius };
+        let ring = |offset, radius| Look::Outline { color: p.main, width: 2.0, offset, radius };
         let target = |key: &str, b: El<'a>, keys, look| self.target(Some(w.id), key, b, keys, look);
         let link = btn_style([CLEAR; 3], [p.accent; 3], 0.0);
         let edit = trx("Edit", "edit a label name, icon and color");
@@ -1025,7 +1025,7 @@ impl BeeperGuiApp {
                         .padding([0, 5])
                         .height(44)
                         .width(Fill)
-                        .style(btn_style([CLEAR, p.received, p.received], [p.text; 3], 6.0))
+                        .style(btn_style([CLEAR, p.chip, p.chip], [p.text; 3], 6.0))
                         .on_press(edit(LabelEdit::Toggle(c.id.clone())));
                     container(line).padding([0, 8]).into()
                 }
@@ -1044,7 +1044,7 @@ impl BeeperGuiApp {
         let held = self.key_held(Some(d.id), "grid");
         let cell = d.cell.filter(|_| held);
         let focused = move |i: usize, b: El<'a>, radius: f32| -> El<'a> {
-            crate::ring::ring(b, if cell == Some(i) { p.focus_ring } else { CLEAR }, 2.0, radius).into()
+            crate::ring::ring(b, if cell == Some(i) { p.main } else { CLEAR }, 2.0, radius).into()
         };
         // A color is a 24 px dot with a 0.5 px `--shadow-color-15` ring, on `--color-backing-shade` while picked, and
         // an icon is in `--semantic-colors-text-primary`, on `--semantic-colors-bg-fill-primary` while picked.
@@ -1573,7 +1573,7 @@ impl BeeperGuiApp {
                 let rule = container(Space::new()).width(Fill).height(1).style(fill_box(weak, 0.0));
                 section = section.push(Space::new().height(6)).push(rule).push(container(voters).padding([0, 8]));
             }
-            body = body.push(container(section).width(Fill).padding(8).style(fill_box(p.received, 12.0)));
+            body = body.push(container(section).width(Fill).padding(8).style(fill_box(p.chip, 12.0)));
         }
         let card = scrollable(body).direction(bar()).height(Fill).style(scroll_style(p.scroll));
         let card = container(card).style(fill_box(p.card, 12.0));
@@ -1595,7 +1595,7 @@ impl BeeperGuiApp {
         // The labels, placeholders, drag handles and hint are `--color-on-surface-variant`, the rules
         // `--color-border-translucent-weak`.
         let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(p.border_weak, 0.0));
-        let card = |c: Column<'a, UiMessage>| container(c).width(Fill).clip(true).style(fill_box(p.received, 12.0));
+        let card = |c: Column<'a, UiMessage>| container(c).width(Fill).clip(true).style(fill_box(p.chip, 12.0));
         let section = |label: &'static str, items: Vec<El<'a>>| column![semi(tr(label), 12.0).color(p.muted)].extend(items).spacing(8);
         let question = text_input(tr("Ask a question…"), &d.question)
             .id(format!("poll-{}", d.chat))
@@ -1603,7 +1603,7 @@ impl BeeperGuiApp {
             .size(rem(15.0))
             .line_height(lh(20.0))
             .padding([10, 11])
-            .style(input_style(p.received, p.strong, p.muted, p.accent, 10.0));
+            .style(input_style(p.chip, p.strong, p.muted, p.accent, 10.0));
         let repeats = d.repeats(rules);
         let length = usize::from(rules.max_length);
         let mut options = Column::new();
@@ -1662,7 +1662,7 @@ impl BeeperGuiApp {
                 .spacing(10)
                 .align_y(Center)
                 .padding([10, 12]);
-            let look = Look::Outline { color: p.focus_ring, width: 2.0, offset: -2.0, radius: 0.0 };
+            let look = Look::Outline { color: p.main, width: 2.0, offset: -2.0, radius: 0.0 };
             let line = mouse_area(line).on_press(edit(msg(!on)));
             self.target(Some(id), label, line, Keys::checkbox(edit(msg(!on))), look)
         };

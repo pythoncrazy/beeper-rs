@@ -293,7 +293,7 @@ impl BeeperGuiApp {
             }
         };
         let tab_btn = |icon: El<'a>, on: bool, msg: UiMessage| -> El<'a> {
-            let bg = if on { p.received } else { CLEAR };
+            let bg = if on { p.chip } else { CLEAR };
             button(container(icon).center(32))
                 .padding(2)
                 .style(btn_style([bg, p.hover, p.selected], [p.muted; 3], 18.0))

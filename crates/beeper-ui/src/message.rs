@@ -931,8 +931,7 @@ impl BeeperGuiApp {
         // second, with the CSS `ease` in each half.
         let ink = p.strong.scale_alpha(v);
         let dot = |delay| anim::dot(6.0, ink, self.started, delay, typing_pulse);
-        let bubble =
-            container(row![dot(0), dot(340), dot(670)].spacing(4)).padding([12, 11]).style(fill_box(p.received.scale_alpha(v), 16.0));
+        let bubble = container(row![dot(0), dot(340), dot(670)].spacing(4)).padding([12, 11]).style(fill_box(p.chip.scale_alpha(v), 16.0));
         let users: Vec<&User> = ids.iter().filter_map(|id| chat.participants.items.iter().find(|u| u.id == *id)).collect();
         let names: Vec<String> = users.iter().map(|u| member_name(u)).collect();
         let bubble: El<'a> = match names.is_empty() {
@@ -2147,9 +2146,9 @@ impl BeeperGuiApp {
         // Desktop's `isErrored` bubble takes the secondary container colors.
         let failed = m.send_error.as_ref().filter(|_| mine);
         let (bg, fg) = match (mine, failed) {
-            (true, Some(_)) => (dim(p.received), dim(p.on_secondary)),
+            (true, Some(_)) => (dim(p.chip), dim(p.on_secondary)),
             (true, None) => (dim(sent), dim(sent_fg)),
-            (false, _) => (dim(p.received), dim(p.strong)),
+            (false, _) => (dim(p.chip), dim(p.strong)),
         };
         // Desktop's `is-edit-history` bubble: the sent color at half, or `--color-base-gray-40` at half.
         let history = m.id.contains(EDIT_HISTORY);
@@ -2406,7 +2405,7 @@ impl BeeperGuiApp {
                 group,
                 own: p.highlight,
                 own_bg: p.backdrop.filter(|b| !b.rich),
-                other: p.received,
+                other: p.chip,
                 hover: Some(p.selected),
                 fg: (p.text, p.on_secondary),
                 ring: (if on_wall.is_some() { CLEAR } else { p.card }, 2.0),
@@ -2431,7 +2430,7 @@ impl BeeperGuiApp {
             let action = |label: String, msg: Option<UiMessage>| {
                 button(txt(label, 12.0).line_height(lh(16.0)))
                     .padding([4, 8])
-                    .style(btn_style([p.received; 3], [p.text; 3], 9999.0))
+                    .style(btn_style([p.chip; 3], [p.text; 3], 9999.0))
                     .on_press_maybe(msg)
             };
             let retry = pending.then(|| match e.retrying {
@@ -2595,7 +2594,7 @@ impl BeeperGuiApp {
                 container(txt(label, 14.0).line_height(1.0).color(Color::WHITE))
                     .center_y(36)
                     .padding([0, 17])
-                    .style(fill_box(p.toggle_on, 18.0)),
+                    .style(fill_box(p.main, 18.0)),
             )
             .center_x(w)
             .center_y(h)
@@ -3162,7 +3161,7 @@ impl BeeperGuiApp {
                     None => (sent, fill, fg),
                 }
             }
-            false => (p.received, p.card, p.text),
+            false => (p.chip, p.card, p.text),
         };
         let name_fg = if q_mine { fg } else { p.strong };
         let max = 0.45 * self.pane().size.width;
@@ -4730,7 +4729,7 @@ pub(crate) mod tests {
         let rightmost = |hit: &dyn Fn([u8; 4]) -> bool| {
             (0..shot.width()).rev().find(|&x| (0..shot.height()).any(|y| hit(shot.get_pixel(x, y).0))).expect("pixels")
         };
-        let bubble = rightmost(&|px| near(px, app.pal.received));
+        let bubble = rightmost(&|px| near(px, app.pal.chip));
         let ink = rightmost(&|px| px[..3].iter().map(|&c| u32::from(c)).sum::<u32>() < 200);
         assert!(bubble - ink <= 2 * (BUBBLE_PAD_X as u32 + 2), "the lines end at the padding: {bubble} {ink}");
     }
@@ -4944,7 +4943,7 @@ pub(crate) mod tests {
         };
         let see_through = mix(Color::WHITE, app.pal.link_card, 0.5);
         assert!(close((6, 16), see_through) && close((6, 50), see_through), "Desktop's half gray-40 bubbles");
-        assert!(close((6, 84), app.pal.received));
+        assert!(close((6, 84), app.pal.chip));
     }
 
     /// Desktop's `object-fit: cover` of a very tall GIF (`kf`): the 160 by 400 box is full, and the GIF plays. A worker
@@ -5484,7 +5483,7 @@ pub(crate) mod tests {
             group: true,
             own: p.card,
             own_bg: None,
-            other: p.received,
+            other: p.chip,
             hover: None,
             fg: (p.text, p.on_secondary),
             ring: (p.card, 2.0),
@@ -5887,7 +5886,7 @@ pub(crate) mod tests {
         let shot = pixels(&mut alone(&app, "msg_1003"));
         let count = |c: Color| shot.pixels().filter(|px| px.0 == c.into_rgba8()).count();
         assert!(count(app.pal.link_card) > 20_000, "the voice note and the file row: {}", count(app.pal.link_card));
-        assert_eq!(count(app.pal.received), 0, "no text bubble color");
+        assert_eq!(count(app.pal.chip), 0, "no text bubble color");
         // The name and icon of the row are `--color-text-neutrals`, its details `--color-text-neutrals-weak`.
         let mut sim = alone(&app, "msg_1003");
         let mut ink = |s: &str, c: Color| {

@@ -913,7 +913,7 @@ impl BeeperGuiApp {
                         .spacing(10)
                         .align_y(Center)
                         .padding([6, 12]);
-                    let fill = p.received;
+                    let fill = p.chip;
                     let body = container(body).style(move |_: &Theme| container::Style {
                         background: Some(fill.into()),
                         border: iced::Border {
@@ -934,11 +934,11 @@ impl BeeperGuiApp {
         };
         let header = |label: &'static str| container(txt(label, 12.0).color(p.sub)).padding([8, 0]);
         let empty = none_hidden.then(|| {
-            let fill = if dragged.is_some() { CLEAR } else { p.received };
+            let fill = if dragged.is_some() { CLEAR } else { p.chip };
             let msg = container(txt(tr("No Hidden Spaces"), 13.0).color(p.sub)).center_x(Fill).center_y(56).style(move |_: &Theme| {
                 container::Style {
                     background: Some(fill.into()),
-                    border: iced::Border { color: p.received, width: if fill == CLEAR { 1.0 } else { 0.0 }, radius: 12.0.into() },
+                    border: iced::Border { color: p.chip, width: if fill == CLEAR { 1.0 } else { 0.0 }, radius: 12.0.into() },
                     ..Default::default()
                 }
             });

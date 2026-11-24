@@ -106,7 +106,7 @@ pub fn apply(p: &mut Palette, theme: UiTheme, dark: bool, now_ms: i64) {
             p.strong = strong;
             p.divider = strong.scale_alpha(0.2);
             p.muted = muted;
-            (p.received, p.chip, p.link_card) = (received, received, received);
+            (p.chip, p.link_card) = (received, received);
             p.backdrop = Some(Backdrop { from, to, rich: false, offset: 0.0 });
             // `--gradient-brand` and `--color-brand`.
             p.brand_stops = Some(match dark {
@@ -131,8 +131,6 @@ pub fn apply(p: &mut Palette, theme: UiTheme, dark: bool, now_ms: i64) {
     if theme.hue().is_some() {
         p.action = primary;
     }
-    // `--toggle-style-knob-on`, `--checkbox-style-bg-selected` and `--app-focus-ring`.
-    (p.toggle_on, p.focus_ring) = (primary, primary);
     // `.button-sentiment--main`: the primary color, and 14% of it (26% in the dark theme) behind the secondary text.
     p.main = primary;
     p.main_muted = mixed(primary, if dark { 26.0 } else { 14.0 });
@@ -441,14 +439,7 @@ mod tests {
                 let p = crate::style::palette(dark, Some(theme), 0);
                 let base = crate::style::palette(dark, None, 0);
                 let close = |a: u32, b: u32| a.to_be_bytes().iter().zip(b.to_be_bytes()).all(|(x, y)| x.abs_diff(y) <= 1);
-                for (name, c) in [
-                    ("accent", p.accent),
-                    ("sent", p.sent),
-                    ("toggle_on", p.toggle_on),
-                    ("focus_ring", p.focus_ring),
-                    ("main", p.main),
-                    ("main_text", p.main_text),
-                ] {
+                for (name, c) in [("accent", p.accent), ("sent", p.sent), ("main", p.main), ("main_text", p.main_text)] {
                     assert!(close(rgb(c), primary), "{at}: {name}");
                 }
                 let muted_main = if dark { 0.26 } else { 0.14 };
@@ -456,7 +447,6 @@ mod tests {
                 for (name, c, want) in [
                     ("strong", p.strong, strong),
                     ("muted", p.muted, muted),
-                    ("received", p.received, received),
                     ("chip", p.chip, received),
                     ("link_card", p.link_card, link_card),
                     ("divider", p.divider, strong),

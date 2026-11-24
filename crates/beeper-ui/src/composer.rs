@@ -1063,7 +1063,7 @@ impl BeeperGuiApp {
             let body = column![].push(name.map(|n| n.color(p.strong))).push(txt(text, 12.0).color(p.text)).spacing(2);
             let (edge, fill) = match q.is_sender == Some(true) {
                 true => (p.sent, mix(p.card, p.sent, 0.3)),
-                false => (p.received, p.card),
+                false => (p.chip, p.card),
             };
             let pill = container(body).max_width(self.pane().size.width / 2.0).padding(8);
             removable(p, pill.style(bordered_box(fill, edge, 2.0, 17.0)), UiMessage::Composer(Msg::CancelMode))
@@ -1518,7 +1518,7 @@ impl BeeperGuiApp {
                 txt(s, 12.0).line_height(lh(16.0)).color(p.text).into()
             };
             let card = contact_card(p, &parse_vcard(&String::from_utf8_lossy(&pm.bytes)), p.text, 1, &entry);
-            container(card).padding([8, 10]).style(fill_box(p.received, 0.0)).into()
+            container(card).padding([8, 10]).style(fill_box(p.chip, 0.0)).into()
         } else if pm.frames.is_empty() {
             let ext = std::path::Path::new(&pm.name).extension().map(|e| e.to_string_lossy().to_uppercase());
             let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();
@@ -1526,7 +1526,7 @@ impl BeeperGuiApp {
             let info = column![name, txt(meta.join(" ・ "), 11.0)].spacing(4);
             let icon = &FILE_ICONS[if pm.mime.starts_with("audio") { 3 } else { 0 }];
             let line = row![tinted(icon, 20.0, p.strong), info].spacing(8).align_y(Center);
-            container(column![line, Space::new().width(158)]).max_width(240).padding([8, 11]).style(fill_box(p.received, 17.0)).into()
+            container(column![line, Space::new().width(158)]).max_width(240).padding([8, 11]).style(fill_box(p.chip, 17.0)).into()
         } else {
             let fg = Color { a: 0.1, ..p.text };
             let fit = |f| image(f).height(66).content_fit(iced::ContentFit::Contain);
@@ -1536,7 +1536,7 @@ impl BeeperGuiApp {
             let play = self.shows() && (!video || st.settings.on("autoplayGifs"));
             let img = container(anim::gif(&pm.frames, play, self.started, fit)).max_width(120).clip(true);
             let img = img.style(bordered_box(CLEAR, fg, 1.0, 8.0));
-            let play = container(tinted(&voice::ICONS[0], 20.0, p.strong)).center(36).style(fill_box(p.received, 18.0));
+            let play = container(tinted(&voice::ICONS[0], 20.0, p.strong)).center(36).style(fill_box(p.chip, 18.0));
             match video && !pm.is_gif {
                 true => stack![img, container(play).center(Fill)].into(),
                 false => img.into(),
