@@ -925,7 +925,7 @@ impl BeeperGuiApp {
         let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { MENU_RULE - menu_pitch() } else { 0.0 };
         let h = 8.0 + items.len() as f32 * menu_pitch() + rules;
         let width = if which == 0 { SUB_MENU_W[1] } else { 233.0 };
-        let menu = container(Column::with_children(items).padding([4, 0])).width(width).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_card(p, Column::with_children(items), width);
         (menu.into(), h)
     }
 
@@ -1245,9 +1245,11 @@ impl BeeperGuiApp {
     /// The header of the chat list: the space's title, then the Filter, Display Options, Search and New Chat buttons.
     fn view_list_header(&self, st: &BeeperStore) -> El<'_> {
         let p = &self.pal;
+        // `.btn-ghost:active svg`: a pressed Search or New Chat icon turns `--color-icon-translucent-strong`.
         let head_btn = |key: &str, c: char, size: f32, [l, r]: [f32; 2], msg: UiMessage| {
-            let b = button(container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26))
-                .bare(p.strong)
+            let b = button(container(ic(c, size)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.strong, p.strong, p.fg.scale_alpha(0.9)], 0.0))
                 .on_press(msg.clone());
             self.header_target(key, b, msg)
         };

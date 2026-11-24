@@ -577,7 +577,7 @@ impl BeeperGuiApp {
         let w = 10.0 + 16.0 + 22.0 + names.fold(0.0, f32::max);
         let h = (8.0 + MENU_RULE + (langs.len() as f32) * menu_pitch()).min((room - top).max(4.0 * menu_pitch()));
         let list = iced::widget::scrollable(Column::with_children(items).padding([4, 0])).height(h);
-        let menu = container(list).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_frame(p, list, w);
         Some((column![Space::new().height(top), menu].into(), w))
     }
 

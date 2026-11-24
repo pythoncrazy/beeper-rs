@@ -842,7 +842,7 @@ fn has_flag(c: &Chat, flag: ChatFlag) -> bool {
 }
 
 fn checkbox<'a>(p: &Palette, on: bool) -> El<'a> {
-    let (bg, ring) = if on { (p.checked, CLEAR) } else { (CLEAR, Color { a: 0.3, ..p.strong }) };
+    let (bg, ring) = if on { (p.toggle_on, CLEAR) } else { (CLEAR, p.toggle_off) };
     let check = on.then(|| ic(icon::CHECK, 12.0).color(Color::WHITE));
     container(check).center(16).style(bordered_box(bg, ring, 1.5, 8.0)).into()
 }
@@ -876,9 +876,25 @@ fn backdrop<'a, M: 'a>(layer: impl Into<Element<'a, M>>) -> iced::widget::MouseA
     mouse_area(layer).interaction(mouse::Interaction::Idle)
 }
 
-/// Desktop's context menu: `items` with 4 px above and below them, in a shadowed card `w` wide.
+/// Desktop's context menu: `items` with 4 px above and below them, in a [`menu_frame`] `w` wide.
 fn menu_card<'a>(p: &Palette, items: Column<'a, UiMessage>, w: impl Into<Length>) -> iced::widget::Container<'a, UiMessage> {
-    container(items.padding([4, 0])).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
+    menu_frame(p, items.padding([4, 0]), w)
+}
+
+/// Desktop's `.menu-list`: `content` in a card `w` wide with a 6 px radius and a 1 px border, under the two shadows of
+/// `--shadows-menu`, `0 2px 8px #00000017` and `0 8px 24px 6px #00000021`. iced draws one shadow a box and no spread, so
+/// a box behind the card draws the second one as black at 0.19, 8 px lower with a 29 px blur: within 3 levels of
+/// Chromium's on every side but the first 4 px under the card, where it is 6 lighter.
+fn menu_frame<'a>(p: &Palette, content: impl Into<El<'a>>, w: impl Into<Length>) -> iced::widget::Container<'a, UiMessage> {
+    let shadow = |a: f32, y: f32, blur_radius: f32| Shadow { color: Color::BLACK.scale_alpha(a), offset: Vector::new(0.0, y), blur_radius };
+    let (bg, edge) = (p.menu, p.menu_border);
+    let card = container(content).width(w).style(move |_| container::Style {
+        background: Some(bg.into()),
+        border: border::rounded(6).color(edge).width(1),
+        shadow: shadow(0.09, 2.0, 8.0),
+        ..Default::default()
+    });
+    container(card).style(move |_| container::Style { border: border::rounded(6), shadow: shadow(0.19, 8.0, 29.0), ..Default::default() })
 }
 
 /// [`menu_card`] of rows with their heights, and the height of the menu.
@@ -1865,13 +1881,12 @@ fn space_name(st: &BeeperStore, id: &str) -> String {
         "scheduled" => tr("Send Later").into(),
         LABEL_NUDGE => tr("Create Label").into(),
         _ => {
-            let accounts = || account_ids(st).map(String::from).collect::<Vec<_>>();
             match (rail_label(st, id), network_space(st, id)) {
                 (Some(l), _) if l.name.is_empty() => trx("Label", "fallback label space name").into(),
                 (Some(l), _) => l.name.clone(),
-                (None, Some(n)) => format!("{} ({})", n.name, account_display_name(st, &n.account_id, &accounts())),
+                (None, Some(n)) => format!("{} ({})", n.name, account_display_name(st, &n.account_id, account_ids(st))),
                 // Desktop's `accountDisplayName`: "<user> · <network>" when the bridge has more than one account.
-                (None, None) => account_display_name(st, id, &accounts()),
+                (None, None) => account_display_name(st, id, account_ids(st)),
             }
         }
     }
@@ -5613,9 +5628,7 @@ impl BeeperGuiApp {
                 None if self.pane().remind_sub => {
                     let st = self.store.read();
                     let rows = self.message_remind_items(&st, mid);
-                    let body = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
-                    let style = shadow_box(self.pal.menu, self.pal.menu_border, 6.0, 16.0);
-                    let body = container(body).width(SUB_MENU_W[1]).style(style);
+                    let body = menu_card(&self.pal, Column::with_children(rows.into_iter().map(|r| r.0)), SUB_MENU_W[1]);
                     (Some(column![Space::new().height(top), body].into()), SUB_MENU_W[1])
                 }
                 None => {
@@ -6792,6 +6805,25 @@ mod test_bus;
 mod tests {
     use super::*;
     use crate::media_view::{filmstrip, slide};
+
+    /// Desktop's `Checkbox`: a checked box is `--checkbox-style-bg-selected`, an empty one has a 1.5 px
+    /// `--checkbox-style-border` ring, in both themes.
+    #[test]
+    fn checkboxes_take_desktops_colors() {
+        use crate::style::{BEEPER_DARK, BEEPER_LIGHT};
+        for (p, ring) in [(BEEPER_LIGHT, 255.0 * 0.698), (BEEPER_DARK, 255.0 * 0.302)] {
+            let shot = |on| {
+                let view = container(checkbox(&p, on)).style(fill_box(p.card, 0.0));
+                crate::focus::tests::shot(view.into(), Size::new(16.0, 16.0), "checkbox")
+            };
+            let (on, off) = (shot(true), shot(false));
+            let k = on.width() / 16;
+            assert_eq!(on.get_pixel(3 * k, 8 * k).0[..3], [0x0d, 0x4f, 0xfb]);
+            let edge = (0..8 * k).map(|x| off.get_pixel(x, 8 * k).0[0]);
+            let edge = if p.card == BEEPER_LIGHT.card { edge.min() } else { edge.max() }.unwrap();
+            assert!((f32::from(edge) - ring).abs() < 3.0, "the ring is {edge}, not {ring}");
+        }
+    }
 
     /// A paste whose clipboard arboard cannot reach, as on Wayland without Xwayland, or that has no image, pastes
     /// the text through iced's clipboard instead of failing with "Could not read the clipboard".
