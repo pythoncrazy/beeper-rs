@@ -211,13 +211,14 @@ impl BeeperGuiApp {
         let view = Element::from(self.view_conversation()).map(|m| UiMessage::InThread(Box::new(m)));
         self.drawing_thread.set(false);
         let button = |glyph: char, label: &'static str, msg: UiMessage| -> El<'_> {
-            let b = button(container(ic(glyph, 16.0).color(p.text)).center(28))
+            let b = button(container(ic(glyph, 16.0).color(p.strong)).center(28))
                 .padding(0)
-                .style(btn_style([CLEAR, p.chip, p.chip], [p.text; 3], 8.0))
+                .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 8.0))
                 .on_press(msg);
             self.tip(b.into(), tr(label), vec![], tooltip::Position::Bottom).into()
         };
-        let title = container(semi(tr("Thread"), 14.0).color(p.text)).center_x(Fill);
+        // `ThreadedRepliesHeader-module__title` and its buttons are `--color-on-surface`.
+        let title = container(semi(tr("Thread"), 14.0).line_height(lh(18.0)).color(p.strong)).center_x(Fill);
         let header = row![button(icon::MORE_HORIZ, "More Options", UiMessage::Thread(Msg::Menu)), title]
             .push(button(icon::CLOSE, "Close", UiMessage::Thread(Msg::Hide)))
             .spacing(2)
@@ -397,7 +398,7 @@ impl BeeperGuiApp {
             .filter_map(|m| chat.participants.items.iter().find(|u| u.id == m.sender_id));
         let faces = faces.take(3).map(|u| self.face(crate::user_img(u).as_deref(), u.full_name.as_deref().unwrap_or(&u.id), 16.0, 0.5));
         let n = replies.len();
-        let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).line_height(lh(15.0)).color(p.text);
+        let label = semi(trn("%d reply", "%d replies", n, &[&n]), 10.0).line_height(lh(12.0)).color(p.fg);
         let (unread, at) = if st.follows_thread(chat, root) { st.thread_unread(chat, root) } else { (0, 0) };
         let badge = thread_badge(p.accent, unread, at);
         let chevron = container(tinted(&CHEVRON_FORWARD, 14.0, p.tertiary)).padding(Padding::ZERO.right(2.0));
@@ -405,7 +406,7 @@ impl BeeperGuiApp {
         let ring = if self.wallpaper_fg(st, chat, false).is_some() { CLEAR } else { p.card };
         let b = button(line)
             .padding([6, 7])
-            .style(bordered_btn([p.received, p.selected, p.selected], [p.text; 3], ring, 2.0, 14.0))
+            .style(bordered_btn([p.received, p.selected, p.selected], [p.fg; 3], ring, 2.0, 14.0))
             .on_press(UiMessage::Thread(Msg::Show(root.into())));
         Some(b.into())
     }
@@ -416,7 +417,7 @@ impl BeeperGuiApp {
         let preview = st.loaded_idx(root).and_then(|i| preview_body(&st.messages[i])).unwrap_or_default();
         let label = format!("{} ", tr("Replying to:"));
         let room = 300.0 - 2.0 * BUBBLE_PAD_X - crate::style::text_width(&label, 11.0, Weight::Semibold);
-        let line = row![semi(label, 11.0).color(p.sub), ell(&preview, room, 11.0, Weight::Normal).line_height(lh(14.0)).color(p.sub)];
+        let line = row![semi(label, 11.0).color(p.muted), ell(&preview, room, 11.0, Weight::Normal).line_height(lh(14.0)).color(p.muted)];
         let line = container(line).max_width(300).clip(true).padding(Padding::new(0.0).left(BUBBLE_PAD_X).right(BUBBLE_PAD_X).bottom(2.0));
         let line = mouse_area(line).on_press(UiMessage::Thread(Msg::Show(root.into())));
         container(line).width(Fill).align_x(if mine { Right } else { iced::Left }).into()
