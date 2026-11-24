@@ -309,23 +309,12 @@ impl PollDraft {
 impl BeeperGuiApp {
     pub(crate) fn view_confirm(&self, dialog: u8) -> El<'_> {
         let (title, body, actions) = match dialog {
-            ASK_LOGOUT => {
-                let name = self.devices.iter().flatten().flatten().find(|d| d.current).map(|d| d.name.clone());
-                let title = trf("Logout of %s?", &[&name.as_deref().unwrap_or(tr("this device"))]);
-                (
-                    title,
-                    tr("This will disconnect all chat accounts on this device.").into(),
-                    vec![(tr("Logout"), UiMessage::Logout)],
-                )
-            }
-            ASK_LOGOUT_DEVICE => {
-                let id = self.delete_target.clone().expect("a device to log out");
-                let name = self.devices.iter().flatten().flatten().find(|d| d.id == id).map(|d| d.name.clone());
-                (
-                    trf("Logout of %s?", &[&name.as_deref().unwrap_or(tr("this device"))]),
-                    tr("This will disconnect all chat accounts on this device.").into(),
-                    vec![(tr("Logout"), UiMessage::Settings(settings::Msg::LogoutDevice(id)))],
-                )
+            ASK_LOGOUT | ASK_LOGOUT_DEVICE => {
+                let id = (dialog == ASK_LOGOUT_DEVICE).then(|| self.delete_target.clone().expect("a device to log out"));
+                let device = self.devices.iter().flatten().flatten().find(|d| id.as_ref().map_or(d.current, |id| d.id == *id));
+                let title = trf("Logout of %s?", &[&device.map_or(tr("this device"), |d| d.name.as_str())]);
+                let logout = id.map_or(UiMessage::Logout, |id| UiMessage::Settings(settings::Msg::LogoutDevice(id)));
+                (title, tr("This will disconnect all chat accounts on this device.").into(), vec![(tr("Logout"), logout)])
             }
             ASK_DISMISS_REMINDERS => (
                 tr("Dismiss All Reminders?").into(),
