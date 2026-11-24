@@ -42,7 +42,7 @@ impl BeeperGuiApp {
         match msg {
             KeyMsg::Open if let Some(w) = k.window => return self.raise(w),
             KeyMsg::Open => {
-                let (id, open) = self.open_child(SIZE);
+                let (id, open) = self.open_child(SIZE, false);
                 self.enter_key = EnterKey { window: Some(id), ..EnterKey::default() };
                 return open;
             }

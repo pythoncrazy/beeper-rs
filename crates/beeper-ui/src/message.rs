@@ -3596,7 +3596,7 @@ impl BeeperGuiApp {
                 if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
                     return self.raise(w.0);
                 }
-                let (id, open) = self.open_child(Size::new(342.0, 563.0));
+                let (id, open) = self.open_child(Size::new(342.0, 563.0), false);
                 self.vote_windows.push((id, chat, mid));
                 return open;
             }

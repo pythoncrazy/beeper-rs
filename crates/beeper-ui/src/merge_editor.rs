@@ -130,7 +130,7 @@ impl BeeperGuiApp {
         if intro {
             self.patch_settings(|s| s.merge_intro_seen = true);
         }
-        let (id, open) = self.open_resizable_child(MERGE_SIZE);
+        let (id, open) = self.open_child(MERGE_SIZE, true);
         let step = if intro { MergeStep::Intro } else { MergeStep::Pick };
         let titled = union.is_some();
         self.merge_window = Some(MergeDraft {
