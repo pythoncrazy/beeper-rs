@@ -297,8 +297,8 @@ impl BeeperGuiApp {
             };
             button(label).bare(fg).on_press(action)
         };
-        // Desktop's 20 px icon sits in a 2rem box with a -8 px margin, so the toast stays 2rem tall.
-        let glyph = t.icon.map(|i| container(tinted(&TOAST_ICONS[i], 20.0, fg)).center(20));
+        // Desktop's 20 px icon sits in a 2rem box with a -8 px margin: it takes 16 px of the toast's 8 px padded row.
+        let glyph = t.icon.map(|i| crate::lift::shrink(tinted(&TOAST_ICONS[i], 16.0, fg), 1.25));
         let wrap = iced::widget::text::Wrapping::WordOrGlyph;
         let text: El<'a> = match (t.links.is_empty(), t.strong) {
             (true, true) => semi(t.text.clone(), 13.0).color(fg).wrapping(wrap).into(),
@@ -323,11 +323,10 @@ impl BeeperGuiApp {
             Row::with_children(std::iter::once(first).chain(buttons.flat_map(|b| [dot(), b])))
         });
         // The text wraps inside Desktop's toast list, beside the icon, the right button and the close button.
-        let pad = if t.icon.is_some() { 14.0 } else { 16.0 };
-        let icon_w = if t.icon.is_some() { 26.0 } else { 0.0 };
+        let icon_w = if t.icon.is_some() { 24.0 } else { 0.0 };
         let right_w = t.right.as_ref().map_or(0.0, |(label, _)| text_width(label, 13.0, Weight::Semibold) + 8.0);
         // A text that wraps fills the room, like Desktop's flex item, so the toast is as wide as the list lets it be.
-        let room = self.toast_width() - pad - icon_w - right_w - 24.0;
+        let room = self.toast_width() - 16.0 - icon_w - right_w - 24.0;
         let weight = if t.strong { Weight::Semibold } else { Weight::Normal };
         let width = if text_width(&t.text, 13.0, weight) > room { Length::Fixed(room) } else { Length::Shrink };
         let body = column![text].push(below).spacing(16).max_width(room).width(width);
@@ -338,11 +337,11 @@ impl BeeperGuiApp {
         };
         // Desktop's `.Toasts-module__close` takes the toast's color.
         let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, fg, dismiss);
-        let pad = if glyph.is_some() { Padding::new(6.0).right(8.0) } else { Padding::new(8.0) };
-        let lead = row![].push(glyph).push(body).spacing(6);
-        let card = row![lead].push(right).push(close).spacing(8);
-        let card = card.align_y(if t.buttons.is_empty() { Center } else { iced::Alignment::Start });
-        let card = container(card).padding(pad).style(toast_box(bg, p));
+        // `.Toasts-module__centeredClose` centers the icon and the close button on the text without buttons.
+        let align = if t.buttons.is_empty() { Center } else { iced::Alignment::Start };
+        let lead = row![].push(glyph).push(body).spacing(8).align_y(align);
+        let card = row![lead].push(right).push(close).spacing(8).align_y(align);
+        let card = container(card).padding(8).style(toast_box(bg, p));
         match t.open.clone() {
             Some(open) => mouse_area(card).on_press(open).into(),
             None => card.into(),
