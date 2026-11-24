@@ -176,6 +176,12 @@ impl Flags {
         Some((used, used + left))
     }
 
+    /// Desktop's incognito nudge variant `expired` (`Ubt`): the plan has no incognito, and its trial started and ended.
+    pub fn incognito_trial_over(&self) -> bool {
+        let started = self.usage["incognito"].get("started_at").is_some();
+        !self.flag("stealth-mode").on && started && self.free("incognito").is_some_and(|(open, _)| !open)
+    }
+
     /// Desktop's `trialDaysLeft` of the incognito trial: the days left, rounded up, while the trial is open.
     pub fn trial_days_left(&self) -> Option<i64> {
         const DAY: i64 = 86_400_000;

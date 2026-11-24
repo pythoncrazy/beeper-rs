@@ -350,6 +350,7 @@ fn message_rules(f: &Value) -> MessageRules {
         delete_for_me: f["delete_for_me"] == true && level("delete") < 1,
         react: level("reaction") > 0,
         reply: level("reply") > 0,
+        read_receipts: f["read_receipts"] == true,
     }
 }
 
@@ -9442,8 +9443,10 @@ mod tests {
             delete_for_me: false,
             react: true,
             reply: true,
+            read_receipts: false,
         };
         assert_eq!(message_rules(&line), rules, "partial delete is not Delete for Everyone");
+        assert!(message_rules(&json!({"read_receipts": true})).read_receipts);
         let limited = message_rules(&json!({"edit": 1, "delete": 2, "delete_max_age": 60, "reaction": -2}));
         assert!(limited.edit && limited.delete && !limited.react && !limited.reply);
         assert!(MessageRules::young(Some(60), &crate::config::now_rfc3339_millis()));

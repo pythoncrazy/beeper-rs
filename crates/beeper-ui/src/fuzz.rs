@@ -10983,3 +10983,36 @@ fn demo_flows_make_no_requests() {
 
     assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 0, "the demo connected to {url}");
 }
+
+/// Desktop's incognito nudge `expired`: once the trial ended, a chat with read receipts shows "Your incognito trial is
+/// over" over its composer at most once a day, and its close button hides it for good.
+#[test]
+fn incognito_trial_over_nudge_like_desktop() {
+    let mut app = demo_app("trial-over");
+    let chat = app.visible_chats(&app.store.read())[0].id.clone();
+    let other = app.visible_chats(&app.store.read())[1].id.clone();
+    {
+        let mut st = app.store.write();
+        st.features.usage =
+            serde_json::json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2020-01-04T00:00:00Z" } });
+        for id in [&chat, &other] {
+            let i = st.chat_idx(id);
+            st.update_chat(i, |c| (c.messages.read_receipts, c.is_read_only) = (true, false));
+        }
+    }
+    let shows = |app: &BeeperGuiApp| simulator(app.view_main()).find("Your incognito trial is over").is_ok();
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    assert!(shows(&app), "the first chat of the day shows it");
+    let _ = app.update(UiMessage::SelectChat(other.clone()));
+    assert!(!shows(&app), "another chat the same day does not");
+    app.store.write().settings.incognito_lapse_notice_shown_at -= 86_400_000;
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    assert!(shows(&app), "a day later it shows again");
+    let msgs = clicks(app.view_main(), "Upgrade to Plus to keep it");
+    assert!(matches!(msgs[..], [UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus))]));
+    let _ = app.update(UiMessage::DismissTrialOver);
+    assert!(!shows(&app));
+    app.store.write().settings.incognito_lapse_notice_shown_at -= 86_400_000;
+    let _ = app.update(UiMessage::SelectChat(other));
+    assert!(!shows(&app), "a closed nudge stays closed");
+}
