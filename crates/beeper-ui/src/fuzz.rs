@@ -10600,6 +10600,29 @@ fn search_and_sheet_icons_like_desktop() {
     assert!((chevron[2] - 5.9).abs() <= 0.5 && (chevron[3] - 9.6).abs() <= 0.5, "the Chats chevron: {chevron:?}");
 }
 
+/// Desktop's `getSpaceIcon` and the drag handle and dots of Edit Spaces are `PlatformIcon`s at `scale(1.2)`: archive
+/// at 14 (13.4), email at 16 (15.4 by 11.5), low_priority_space at 12 (11.5 by 8.9), its `drag_handle` at 20 (16 by
+/// 7, two bars 2.5 px apart) and `more_horiz` at 16 (11.5 by 2.9).
+#[test]
+fn edit_spaces_icons_like_desktop() {
+    let mut app = demo_app("edit-spaces-icons");
+    let _ = app.update(UiMessage::OpenEditSpaces);
+    let size = rail::SPACES_SIZE;
+    let s = crate::focus::tests::shot(app.view_edit_spaces(app.spaces_window.as_ref().expect("Edit Spaces")), size, "edit-spaces-icons");
+    let near = |got: [f32; 4], w: f32, h: f32| (got[2] - w).abs() <= 0.4 && (got[3] - h).abs() <= 0.4;
+    let want = [
+        ([31.0, 165.0, 24.0, 24.0], 13.44, 13.44),
+        ([31.0, 294.0, 24.0, 24.0], 15.36, 11.52),
+        ([31.0, 337.0, 24.0, 24.0], 11.52, 8.87),
+        ([300.0, 166.0, 26.0, 24.0], 16.0, 7.0),
+        ([266.0, 380.0, 24.0, 16.0], 11.52, 2.88),
+    ];
+    for (w, ww, wh) in want {
+        let got = ink_of(&s, size, w);
+        assert!(near(got, ww, wh), "{got:?} in {w:?}, Desktop's {ww} by {wh}");
+    }
+}
+
 /// The ink box of the window `w` of a snapshot of a view of `size`.
 fn ink_of(shot: &::image::RgbaImage, size: Size, w: [f32; 4]) -> [f32; 4] {
     crate::focus::tests::ink(shot, size.width, w).0

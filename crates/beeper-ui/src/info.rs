@@ -767,7 +767,7 @@ impl BeeperGuiApp {
                     "img" => self.thumb(a, tile, 4.0),
                     // Desktop's `BrandVideo` play button: a 36 px `secondary-container` disc in the middle.
                     "video" => {
-                        let play = container(ic(icon::PLAY, 14.0).color(p.strong)).center(36).style(fill_box(p.chip, 18.0));
+                        let play = container(tinted(&crate::voice::ICONS[0], 20.0, p.strong)).center(36).style(fill_box(p.chip, 18.0));
                         stack![self.thumb(a, tile, 4.0), container(play).center(tile)].into()
                     }
                     _ => {
