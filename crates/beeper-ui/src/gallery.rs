@@ -402,9 +402,10 @@ impl BeeperGuiApp {
 
     /// Desktop's `GalleryAttachments` of the messages of a gallery: each tile opens its item in the carousel, and a
     /// selected message has an outline on its tile.
-    pub(crate) fn view_gallery<'a>(&self, members: &[&Message]) -> El<'a> {
+    pub(crate) fn view_gallery<'a>(&self, members: &[&Message], face: bool) -> El<'a> {
         let p: &Palette = &self.pal;
-        let width = (if self.sidebar_hidden { 0.85 } else { 0.45 }) * self.pane().size.width;
+        let (window, share) = self.media_share(face);
+        let width = share * window;
         let sizes: Vec<_> = members.iter().map(|m| m.attachments[0].size.as_ref()).collect();
         let (gw, gh, tiles) = layout(&sizes, width);
         let hidden = members.len() - tiles.len();

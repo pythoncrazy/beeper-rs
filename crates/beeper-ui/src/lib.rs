@@ -4172,8 +4172,12 @@ impl BeeperGuiApp {
     }
 
     /// The width of Desktop's `.conversation` of the pane that `view` draws: in the main window, the room less Chat
-    /// Info while it shows; in a chat window or beside a thread, the window less its 8 px frame.
+    /// Info while it shows; in a chat window or beside a thread, the window less its 8 px frame; in a thread pane, its
+    /// width.
     pub(crate) fn conversation_width(&self) -> f32 {
+        if self.drawing_thread.get() {
+            return self.thread_width();
+        }
         let main = self.drawing.get().is_none() && !self.drawing_thread.get();
         if !main || self.pane.thread.is_some() || !self.selection.is_empty() {
             return self.pane().size.width - 16.0;
