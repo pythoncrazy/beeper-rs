@@ -10506,6 +10506,18 @@ fn requests_dot_like_desktop() {
     assert_eq!(new(&app), 1, "a request created after the view is new");
 }
 
+/// Desktop's tray menu offers "Show Window" while the main window is minimized (`isMinimized() || !isVisible()`), and
+/// "Minimize to Tray" again once the window comes back.
+#[test]
+fn tray_menu_follows_a_minimized_window_like_desktop() {
+    let mut app = demo_app("tray-minimized");
+    let id = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Minimize(id)));
+    assert_eq!(app.tray_sent.0.map(|s| s.1), Some(false), "minimized: Show Window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(true)));
+    assert_eq!(app.tray_sent.0.map(|s| s.1), Some(true), "back: Minimize to Tray");
+}
+
 /// `.BrandTooltip-module__tooltip` keeps its 6 px margin from the trigger: under a 40 px trigger at y 100, the card
 /// starts at y 146.
 #[test]
