@@ -177,10 +177,7 @@ fn glob(pattern: &str, text: &str) -> bool {
 
 /// Desktop's `ux`: the tools for a client without some capabilities.
 fn adapt(tools: Vec<Value>, caps: Caps) -> Vec<Value> {
-    let mut tools: Vec<Value> = match caps.top_level_unions {
-        true => tools,
-        false => tools.into_iter().flat_map(split_union).collect(),
-    };
+    let mut tools: Vec<Value> = if caps.top_level_unions { tools } else { tools.into_iter().flat_map(split_union).collect() };
     if let Some(len) = caps.name_len {
         let names: Vec<String> = tools.iter().map(|t| t["tool"]["name"].as_str().unwrap_or_default().into()).collect();
         let short = short_names(&names, len);

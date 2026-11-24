@@ -317,10 +317,7 @@ fn config_reset(c: &mut Ctx) -> Res {
 
 fn api_get(c: &mut Ctx) -> Res {
     let path = c.arg(0).expect("a required arg").to_string();
-    let data = match c.on("no-auth") {
-        true => app_request(c, "GET", &path, None, None)?,
-        false => c.get(&path)?,
-    };
+    let data = if c.on("no-auth") { app_request(c, "GET", &path, None, None)? } else { c.get(&path)? };
     c.print(&data)
 }
 
@@ -329,10 +326,7 @@ fn api_post(c: &mut Ctx) -> Res {
     c.writable()?;
     let raw = c.str("body").expect("--body has a default");
     let body: Value = serde_json::from_str(raw).map_err(|_| CliError::bug(format!("--body is not valid JSON: {raw}")))?;
-    let data = match c.on("no-auth") {
-        true => app_request(c, "POST", &path, Some(body), None)?,
-        false => c.call("POST", &path, Some(body))?,
-    };
+    let data = if c.on("no-auth") { app_request(c, "POST", &path, Some(body), None)? } else { c.call("POST", &path, Some(body))? };
     c.print(&data)
 }
 
