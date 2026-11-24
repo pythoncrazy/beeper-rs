@@ -534,8 +534,9 @@ impl BeeperGuiApp {
     /// `PlaybackControl`'s speed menu.
     pub(crate) fn view_rate_menu(&self) -> El<'_> {
         let p = &self.pal;
-        let lead = |on: bool| Some(container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into());
-        let items = RATES.map(|r| menu_item(p, lead(self.audio.rate == r), format!("{r}x"), "", Some(UiMessage::Voice(Msg::Rate(r)))));
+        let items = RATES.map(|r| {
+            menu_item(p, Some(crate::menu_check(self.audio.rate == r)), format!("{r}x"), "", Some(UiMessage::Voice(Msg::Rate(r))))
+        });
         crate::menu_card(p, Column::with_children(items), rate_menu_w()).into()
     }
 
@@ -569,7 +570,7 @@ impl BeeperGuiApp {
         let current = a.transcription.as_ref().and_then(|t| t.language.as_deref()).unwrap_or(pref);
         let p = &self.pal;
         let item = |&(code, name): &(&'static str, &'static str)| {
-            let lead = Some(container((code == current).then(|| ic(icon::CHECK, 14.0))).width(22).into());
+            let lead = Some(crate::menu_check(code == current));
             let pick = UiMessage::Voice(Msg::Language(m.id.clone(), code.into()));
             menu_item(p, lead, tr(name).into(), "", Some(pick))
         };

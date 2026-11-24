@@ -298,7 +298,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_reminder_menu(&self) -> El<'_> {
         let p = &self.pal;
         let order = self.store.read().settings.reminders_order;
-        let lead = |on: bool| Some(container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into());
+        let lead = |on: bool| Some(crate::menu_check(on));
         let orders = REMINDER_ORDERS
             .iter()
             .zip(0..)

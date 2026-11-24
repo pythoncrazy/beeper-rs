@@ -1234,10 +1234,7 @@ impl BeeperGuiApp {
     fn media_filter_menu<'a>(&self, w: &MediaWindow, at: Point) -> El<'a> {
         let p = &self.pal;
         let heading = |label| container(med(label, 11.0).color(p.sub)).padding([6, 13]);
-        let radio = |label: &str, on: bool, msg| {
-            let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22);
-            menu_item(p, Some(lead.into()), label.into(), "", Some(msg))
-        };
+        let radio = |label: &str, on: bool, msg| menu_item(p, Some(crate::menu_check(on)), label.into(), "", Some(msg));
         let col = column![
             heading(tr("Sent By")),
             radio(tr("All"), w.sent_by == 0, UiMessage::Media(Msg::SentBy(0))),

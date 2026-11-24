@@ -866,7 +866,7 @@ impl BeeperGuiApp {
         let window = container(column![head, card]).padding(8).style(fill_box(p.window, 0.0));
         let menu = w.menu.then(|| {
             let items = INBOX_OPTIONS.iter().map(|&(o, label)| {
-                let lead = container((o == now).then(|| ic(icon::CHECK, 14.0))).width(22).into();
+                let lead = crate::menu_check(o == now);
                 let msg = UiMessage::Commands(vec![
                     pane(LabelPane::Menu(false)),
                     UiMessage::Labels(labels::Msg::SetInbox(l.id.clone(), (o != "all").then_some(o))),

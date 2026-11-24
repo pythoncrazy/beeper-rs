@@ -730,6 +730,11 @@ const HOVER_FADE: f32 = 0.1;
 /// The hotkey of a [`menu_item`] that opens a submenu, which shows Desktop's `ChevronRight` instead.
 const SUBMENU: &str = "›";
 
+/// Desktop's `.menu-item .check-column`: FontAwesome's check at 10 px in the middle of 14, then the row's 9 px gap.
+fn menu_check<'a>(on: bool) -> El<'a> {
+    container(container(on.then(|| ic(icon::TICK, 10.0))).center_x(14)).padding(Padding::ZERO.right(9.0)).into()
+}
+
 /// A row of a dropdown or context menu. Without a message it is greyed out.
 fn menu_item<'a>(
     p: &Palette, lead: Option<El<'a>>, label: String, hotkey: impl iced::widget::text::IntoFragment<'a>, msg: Option<UiMessage>,
