@@ -1783,7 +1783,7 @@ impl BeeperGuiApp {
             let chevron = tinted(&CHEVRON_DOWN, 20.0, fade(p.text).scale_alpha(0.8));
             container(chevron).center(20).into()
         };
-        let shadow = Shadow { color: fade(Color::from_rgba(0.0, 0.0, 0.0, 0.15)), offset: Vector::ZERO, blur_radius: 20.0 };
+        let shadow = Shadow { color: fade(p.shadow), offset: Vector::ZERO, blur_radius: 20.0 };
         let style = button::Style { background: Some(fade(p.card).into()), border: border::rounded(30), shadow, ..Default::default() };
         let button = button(body)
             .padding(4)
@@ -4434,6 +4434,16 @@ pub(crate) mod tests {
         let shot = pixels(&mut iced_test::Simulator::with_size(Default::default(), Size::new(200.0, 100.0), button));
         let ink = shot.pixels().map(|px| px.0).min_by_key(|px| px[0]).expect("pixels");
         assert!(ink[0] < 128 && ink[0] == ink[1] && ink[1] == ink[2], "{ink:?}");
+        // `--shadow-large-15` is white at 0.2 in the dark theme, so the button glows on the black background.
+        drop(st);
+        (app.dark, app.pal) = (true, crate::style::BEEPER_DARK);
+        let st = app.store.read();
+        let button = app.view_scroll_to_bottom(&st, st.chat("!note_self:beeper.com")).expect("the button");
+        let view = container(button).style(fill_box(app.pal.card, 0.0));
+        let shot = pixels(&mut iced_test::Simulator::with_size(Default::default(), Size::new(200.0, 100.0), view));
+        // The 28 px circle sits 27.5 px above the bottom, in the middle: 4 px under it, the glow shows.
+        let k = shot.width() / 200;
+        assert!(shot.get_pixel(100 * k, 76 * k).0[0] > 4 && shot.get_pixel(k, k).0[0] == 0, "the glow");
     }
 
     /// Desktop's `ActionButtons` under a message of the system user: the buttons that can open their link or post to

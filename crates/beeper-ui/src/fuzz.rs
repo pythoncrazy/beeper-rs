@@ -773,7 +773,7 @@ fn status_pills_like_desktop() {
     let _ = app.update(UiMessage::Online(false));
     app.store.write().syncing = true;
     assert_eq!(texts(&app), ["Offline", "Syncing..."]);
-    assert!(simulator(app.view_main()).find("Offline").is_ok());
+    assert_eq!(simulator(app.view_main()).find("Offline").expect("the pill").bounds().height, 14.0, "label-sm");
     let _ = app.update(UiMessage::Online(true));
     app.store.write().syncing = false;
     for a in app.store.write().bridge_accounts.iter_mut().filter(|a| a.account_id == "acc_whatsapp") {
@@ -3041,7 +3041,14 @@ fn account_switcher_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(chat.id.clone()));
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi".into())));
     let _ = app.update(UiMessage::SwitchCard);
-    assert!(simulator(app.view_main()).find("Switch Chat").is_ok());
+    {
+        // `.SwitchChatHoverCard-module__name` is body-lg (15 px on 20 px) and its subtitle label-md (12 px on 15 px).
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find("Switch Chat").is_ok());
+        let name = network_name(&two.account_id);
+        assert_eq!(sim.find(name).expect("the network").bounds().height, 20.0);
+        assert_eq!(sim.find(account_user(&app.store.read(), &two.account_id)).expect("the user").bounds().height, 15.0);
+    }
     let _ = app.update(UiMessage::SwitchChat("!alt:x".into()));
     assert_eq!((app.pane.selected_chat_id.as_deref(), app.list.chat_menu.is_none()), (Some("!alt:x"), true));
     assert_eq!(app.pane.composer.text().trim(), "hi", "the draft goes to the chat without a draft");

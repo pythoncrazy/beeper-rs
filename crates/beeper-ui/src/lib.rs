@@ -5808,7 +5808,7 @@ impl BeeperGuiApp {
         let header = container(semi(tr("Switch Chat"), 13.0).color(p.strong)).padding(Padding::new(12.0).left(27.0).right(8.0));
         // Desktop's card is as wide as its rows, up to 300 px.
         let wide = |c: &Chat| {
-            let name = text_width(network_name(&c.account_id), 16.0, Weight::Normal);
+            let name = text_width(network_name(&c.account_id), 15.0, Weight::Normal);
             29.0 + 28.0 + 8.0 + name.max(text_width(&account_user(&st, &c.account_id), 12.0, Weight::Normal)) + 8.0
         };
         let chats = targets.iter().map(|id| &st.chats[st.resolve_chat_idx(id).expect("a switch target exists")]);
@@ -5824,8 +5824,8 @@ impl BeeperGuiApp {
                 0.0,
             );
             let info = column![
-                txt(network_name(&c.account_id).to_string(), 16.0).color(p.strong),
-                txt(account_user(&st, &c.account_id), 12.0).line_height(lh(16.0)).color(p.strong.scale_alpha(0.4)),
+                txt(network_name(&c.account_id).to_string(), 15.0).line_height(lh(20.0)).color(p.strong),
+                txt(account_user(&st, &c.account_id), 12.0).line_height(lh(15.0)).color(p.strong.scale_alpha(0.4)),
             ];
             let check = on.then(|| ic(icon::CHECK, 13.0).color(p.strong));
             let row = row![].push(check).push(face).push(info).spacing(8).align_y(Center);
@@ -5833,7 +5833,7 @@ impl BeeperGuiApp {
             let b = button(row).padding(pad).width(Fill).style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 0.0));
             column![b.on_press(UiMessage::SwitchChat(id.clone()))].push((id != targets.last().expect("a target")).then(line)).into()
         });
-        let h = 41.0 + targets.len() as f32 * 53.0;
+        let h = 40.0 + targets.len() as f32 * 52.0;
         let card = column![header, line()].extend(rows).width(w.ceil());
         let card = container(card).style(shadow_box(p.menu, p.menu_border, 8.0, 16.0));
         (mouse_area(card).on_exit(UiMessage::ChatList(chat_list::Msg::CloseMenu)).into(), h)
@@ -6614,13 +6614,12 @@ impl BeeperGuiApp {
     ) -> container::Container<'a, UiMessage> {
         let p = &self.pal;
         let segments = labels.enumerate().flat_map(|(i, label)| {
-            let label = txt(label, 11.0).color(p.text);
+            let label = txt(label, 11.0).line_height(lh(14.0)).color(p.strong);
             let bg = if i == at { p.chip } else { CLEAR };
-            let segment = button(label).padding([2, 8]).style(btn_style([bg; 3], [p.text; 3], 20.0)).on_press(msg(i));
+            let segment = button(label).padding([2, 8]).style(btn_style([bg; 3], [p.strong; 3], 20.0)).on_press(msg(i));
             [(i > 0).then(|| Space::new().width(Fill).into()), Some(segment.into())].into_iter().flatten()
         });
-        let bg = if self.dark { Color::BLACK } else { Color::WHITE };
-        container(Row::with_children(segments).spacing(4).align_y(Center)).padding(4).width(Fill).style(fill_box(bg, 20.0))
+        container(Row::with_children(segments).spacing(4).align_y(Center)).padding(4).width(Fill).style(fill_box(p.card, 20.0))
     }
 
     /// Desktop's `getSpaceIcon`.
