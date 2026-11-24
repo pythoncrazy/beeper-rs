@@ -8377,7 +8377,7 @@ fn new_chats_start_like_desktop() {
     app.store.write().set_contacts(vec![sam.clone(), bo.clone()]);
     let label = {
         let st = app.store.read();
-        account_display_name(&st, &account, &rail_accounts(&st))
+        account_display_name(&st, &account, rail_accounts(&st))
     };
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
@@ -10437,7 +10437,7 @@ fn account_nickname_window_like_desktop() {
     }
     {
         let st = app.store.read();
-        let placeholder = new_chat::default_account_display_name(&st, account, &rail_accounts(&st));
+        let placeholder = new_chat::default_account_display_name(&st, account, rail_accounts(&st));
         assert_eq!(placeholder, "WhatsApp");
     }
     let _ = app.update(UiMessage::Nickname(nickname::Msg::Name(id, "  Work phone ".into())));
@@ -10447,7 +10447,7 @@ fn account_nickname_window_like_desktop() {
         assert_eq!(st.custom_name(account), Some("Work phone"), "the demo keeps the trimmed name");
         assert_eq!(space_name(&st, account), "Work phone", "Desktop's accountDisplayName");
         assert_eq!(account_user(&st, account), "Work phone", "Desktop's userDisplayText");
-        assert_eq!(account_display_name(&st, account, &rail_accounts(&st)), "Work phone");
+        assert_eq!(account_display_name(&st, account, rail_accounts(&st)), "Work phone");
     }
     let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
     assert!(app.nickname_windows.is_empty());

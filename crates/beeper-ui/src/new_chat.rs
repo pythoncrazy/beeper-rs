@@ -339,16 +339,18 @@ pub(crate) fn chat_people(st: &BeeperStore, accounts: &[String], only: Option<&s
 }
 
 /// Desktop's `accountDisplayName`: the nickname of the account (`customName`), or its default name.
-pub(crate) fn account_display_name(st: &BeeperStore, account_id: &str, accounts: &[String]) -> String {
+pub(crate) fn account_display_name(st: &BeeperStore, account_id: &str, accounts: impl IntoIterator<Item = impl AsRef<str>>) -> String {
     let custom = st.custom_name(account_id).map(str::to_string);
     custom.unwrap_or_else(|| default_account_display_name(st, account_id, accounts))
 }
 
 /// Desktop's `defaultAccountDisplayName`: the network, after the user when another account has the same network.
-pub(crate) fn default_account_display_name(st: &BeeperStore, account_id: &str, accounts: &[String]) -> String {
+pub(crate) fn default_account_display_name(
+    st: &BeeperStore, account_id: &str, accounts: impl IntoIterator<Item = impl AsRef<str>>,
+) -> String {
     let n = network_label(account_id);
     let user = default_account_user(st, account_id);
-    match accounts.iter().filter(|a| network_label(a) == n).count() > 1 && !user.is_empty() {
+    match !user.is_empty() && accounts.into_iter().filter(|a| network_label(a.as_ref()) == n).nth(1).is_some() {
         true => format!("{user} · {n}"),
         false => n.into(),
     }

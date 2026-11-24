@@ -1864,13 +1864,12 @@ fn space_name(st: &BeeperStore, id: &str) -> String {
         "scheduled" => tr("Send Later").into(),
         LABEL_NUDGE => tr("Create Label").into(),
         _ => {
-            let accounts = || account_ids(st).map(String::from).collect::<Vec<_>>();
             match (rail_label(st, id), network_space(st, id)) {
                 (Some(l), _) if l.name.is_empty() => trx("Label", "fallback label space name").into(),
                 (Some(l), _) => l.name.clone(),
-                (None, Some(n)) => format!("{} ({})", n.name, account_display_name(st, &n.account_id, &accounts())),
+                (None, Some(n)) => format!("{} ({})", n.name, account_display_name(st, &n.account_id, account_ids(st))),
                 // Desktop's `accountDisplayName`: "<user> · <network>" when the bridge has more than one account.
-                (None, None) => account_display_name(st, id, &accounts()),
+                (None, None) => account_display_name(st, id, account_ids(st)),
             }
         }
     }
