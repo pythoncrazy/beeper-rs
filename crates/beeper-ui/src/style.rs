@@ -76,6 +76,12 @@ const INTER: [&[u8]; 8] = [
 /// Desktop's `redacted_regular` font of "Redact names and pictures", whose letters are bars.
 const REDACTED_WOFF: &[u8] = font!("Redacted-Regular.woff");
 pub const CLEAR: Color = Color::TRANSPARENT;
+/// `--color-on-error-container`, the same in both themes: error toasts, Decline and Remove Account.
+pub const ON_ERROR: Color = hex(0xdc362e);
+/// `--error-color`: the errored chat icon and a hotkey that another one already uses.
+pub const ERROR: Color = hex(0xf44336);
+/// `--color-delete`: the Poll Creator's errors and Delete buttons, and the `danger` `BrandButton`.
+pub const DELETE_RED: Color = hex(0xff2627);
 
 thread_local! {
     /// While a view draws: Desktop's `redactedMode`, and whether the widgets that it makes are in a
@@ -1077,8 +1083,6 @@ palette! {
     prefs_group: Color = hex(0xffffff), hex(0x1c1c1c);
     /// `--color-border-neutrals-weak`.
     prefs_border: Color = hex(0xededed), hex(0x282828);
-    /// `--color-border-neutrals`.
-    neutral_border: Color = hex(0xe2e2e2), hex(0x343434);
     /// `--color-on-surface` at 0.05: the Settings search field.
     search: Color = hexa(0x202124, 0.05), hexa(0xf6f6f6, 0.05);
     /// `--color-secondary-container`.

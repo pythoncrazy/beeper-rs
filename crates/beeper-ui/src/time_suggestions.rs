@@ -121,7 +121,7 @@ impl BeeperGuiApp {
             None => saved.iter().map(|s| s.to_string()).collect(),
         };
         // `--color-icon-translucent-weak`.
-        let handle_color = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.4);
+        let handle_color = p.fg.scale_alpha(0.4);
         let mut rows = Column::new().spacing(8);
         for (i, label) in shown.into_iter().enumerate() {
             // Desktop's `Drag` fades the dragged row to 0.4.

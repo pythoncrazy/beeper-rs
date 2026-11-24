@@ -1675,7 +1675,7 @@ impl BeeperGuiApp {
         // Desktop's `indicators`: the unread dot, and a red dot while a send of the chat waits for Retry.
         let dot = (!l.counts).then(|| {
             let dot = |bg| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0));
-            let errored = st.has_errored(&c.id).then(|| dot(hex(0xf44336)));
+            let errored = st.has_errored(&c.id).then(|| dot(ERROR));
             container(column![].push(unread.then(|| dot(dot_bg))).push(errored).spacing(4)).width(12)
         });
         let count = count.map(|b| crate::lift::shrink(b, keep).into());
@@ -1866,7 +1866,7 @@ impl BeeperGuiApp {
         // Desktop's `ZGe`: a message that failed to send shows `ErroredIcon`, without a tooltip.
         if m.send_error.is_some() {
             // `.messageErroredIcon`: 16 by 11 with a 1 px margin, where the read icons are 12 px wide.
-            let icon = container(tinted(&ERRORED, 11.0, ERROR_COLOR)).center_x(16);
+            let icon = container(tinted(&ERRORED, 11.0, ERROR)).center_x(16);
             return container(icon).padding(Padding::ZERO.right(1.0)).into();
         }
         let glyph = if pending(st, m) { &PENDING } else { &SENT[usize::from(seen_by(st, m) > 0)] };

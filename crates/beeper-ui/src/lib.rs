@@ -71,6 +71,7 @@ pub mod reminders;
 mod reply_line;
 mod ring;
 mod scheduled;
+mod select;
 mod selectable;
 pub mod settings;
 pub mod sortable;
@@ -342,6 +343,8 @@ pub enum UiMessage {
     OpenEditForMe(String),
     /// Desktop's Chat Info panel: the description, the note, the media and bookmarks lists, the personal name and disappearing messages.
     Info(info::Msg),
+    /// Desktop's `native` `BrandSelect`: the context menu of its options.
+    Select(select::Msg),
     Group(GroupEdit),
     Profile(profile::Msg),
     /// Desktop's labels: their windows, the Edit Labels switches, mute, Show in Inbox, and the undo of a change or a deletion.
@@ -1468,7 +1471,7 @@ fn pill_style(p: &Palette) -> impl Fn(&Theme, button::Status) -> button::Style +
 
 /// Desktop's `.styled-inputs input`.
 fn outline_input(p: &Palette) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + use<> {
-    let (edge, text, muted, accent) = (p.neutral_border, p.text, p.muted, p.accent);
+    let (edge, text, muted, accent) = (p.border_neutrals, p.text, p.muted, p.accent);
     move |_, _| text_input::Style {
         background: CLEAR.into(),
         border: iced::Border { color: edge, width: 1.0, radius: 6.0.into() },
@@ -1533,8 +1536,6 @@ static CLOSE_SMALL: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(
 static ERRORED: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><path fill="#000" d="M5.9962 9.41198C6.17045 9.41198 6.31771 9.35304 6.438 9.23518C6.55828 9.1173 6.61842 8.97124 6.61842 8.797C6.61842 8.62275 6.55949 8.47549 6.44162 8.3552C6.32375 8.23492 6.17769 8.17478 6.00345 8.17478C5.8292 8.17478 5.68193 8.23371 5.56165 8.35158C5.44137 8.46946 5.38123 8.61551 5.38123 8.78975C5.38123 8.964 5.44016 9.11127 5.55802 9.23155C5.6759 9.35183 5.82196 9.41198 5.9962 9.41198ZM5.38123 6.93758H6.61842V2.49709H5.38123V6.93758Z"/><circle cx="6" cy="6" r="5.375" stroke="#000" fill="none" stroke-width="1.25"/></svg>"##[..])
 });
-/// Desktop's `--error-color` of the errored icon of a chat row.
-const ERROR_COLOR: Color = Color::from_rgb8(0xf4, 0x43, 0x36);
 
 static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
     [
@@ -2091,22 +2092,45 @@ impl SearchFilters {
     }
 }
 
-/// Finds the layout bounds of the container with the given id.
-struct Find(iced::widget::Id, Option<iced::Rectangle>);
+/// Finds the bounds on the screen of the container with the given id: its layout bounds less the scroll of the
+/// scrollables around it.
+struct Find {
+    id: iced::widget::Id,
+    found: Option<iced::Rectangle>,
+    /// The scroll of the scrollables around the widget, and of the scrollable whose content comes next.
+    scrolled: Vector,
+    next: Vector,
+}
+
+impl Find {
+    fn new(id: impl Into<iced::widget::Id>) -> Self {
+        Self { id: id.into(), found: None, scrolled: Vector::ZERO, next: Vector::ZERO }
+    }
+}
 
 impl iced::advanced::widget::Operation<iced::Rectangle> for Find {
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<iced::Rectangle>)) {
-        operate(self)
+        let outer = self.scrolled;
+        self.scrolled = outer + std::mem::take(&mut self.next);
+        operate(self);
+        self.scrolled = outer;
+    }
+
+    fn scrollable(
+        &mut self, _: Option<&iced::widget::Id>, _: iced::Rectangle, _: iced::Rectangle, translation: Vector,
+        _: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        self.next = translation;
     }
 
     fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
-        if id == Some(&self.0) {
-            self.1 = Some(bounds);
+        if id == Some(&self.id) {
+            self.found = Some(iced::Rectangle { x: bounds.x - self.scrolled.x, y: bounds.y - self.scrolled.y, ..bounds });
         }
     }
 
     fn finish(&self) -> iced::advanced::widget::operation::Outcome<iced::Rectangle> {
-        iced::advanced::widget::operation::Outcome::Some(self.1.expect("the container is shown"))
+        iced::advanced::widget::operation::Outcome::Some(self.found.expect("the container is shown"))
     }
 }
 
@@ -2936,6 +2960,8 @@ pub struct BeeperGuiApp {
     pub search_room: Option<String>,
     pub search_filters: SearchFilters,
     pub search_select: Option<(usize, iced::Rectangle)>,
+    /// The open menu of a `native` select.
+    native_select: Option<select::Open>,
     cursor: std::cell::Cell<Point>,
     forward: Option<Forward>,
     media_window: Option<MediaWindow>,
@@ -3320,7 +3346,7 @@ impl BeeperGuiApp {
             thread_drag, unread_view, unread_menu, hidden, unmapped, opened, unmapped_focus, activation_token,
             system_dark, zoom_drag, maximize_when_placed, seen_requests, pip, pip_wanted, pip_manual, pip_menu,
             hotkey_query, hotkey_rec, profile, modals, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
-            reminded, search_room, search_filters, search_select, cursor, image_clipboard, pressing, forward,
+            reminded, search_room, search_filters, search_select, native_select, cursor, image_clipboard, pressing, forward,
             media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, notifications,
             gif_query, gifs, gif_loading, gif_error, gif_next, gif_sel, gif_view, command_palette_query,
             cmd_bar_commands_mode, cmd_submenu, cmd_index, search_index, search_expanded, recent_searches,
@@ -4068,6 +4094,17 @@ impl BeeperGuiApp {
         self.single_msg().map(|id| st.message(id).clone())
     }
 
+    /// Desktop's `downloadSelectedMessageAttachments`: the attachments of every selected message but view-once media,
+    /// in the order of the timeline.
+    fn download_selected(&self, st: &BeeperStore) -> Option<UiMessage> {
+        let msgs = self.timeline(st).0.into_iter().filter(|m| self.pane().selected_msgs.contains(&m.id));
+        let files: Vec<UiMessage> = msgs
+            .filter(|m| !m.attachments.is_empty() && !m.view_once())
+            .map(|m| UiMessage::Message(message::Msg::Download(m.id.clone(), None)))
+            .collect();
+        (!files.is_empty()).then_some(UiMessage::Commands(files))
+    }
+
     /// The messages of the open chat in timeline order, and which of them Desktop lets you select.
     fn timeline<'a>(&self, st: &'a BeeperStore) -> (Vec<&'a Message>, Vec<bool>) {
         let msgs = self.pane_msgs(st);
@@ -4465,6 +4502,7 @@ impl BeeperGuiApp {
             UiMessage::Gifs(msg) => return self.gifs(msg),
             UiMessage::Hotkeys(msg) => return self.hotkeys(msg),
             UiMessage::Info(msg) => return self.info(msg),
+            UiMessage::Select(msg) => return self.select(msg),
             UiMessage::Integrations(msg) => return self.integrations(msg),
             UiMessage::Labels(msg) => return self.labels(msg),
             UiMessage::Loaded(msg) => return self.loaded(msg),
@@ -5424,10 +5462,13 @@ impl BeeperGuiApp {
             (None, false) => self.forward.as_ref().map(|f| self.view_forward(f)),
         };
         let scrim = modal.filter(|_| in_main).map(|m| {
-            backdrop(
-                container(mouse_area(m).on_press(UiMessage::Noop)).center(Fill).style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.2), 0.0)),
-            )
-            .on_press(UiMessage::CloseModals)
+            let m = container(mouse_area(m).on_press(UiMessage::Noop)).center(Fill);
+            // The command bar, whose Forward is a submenu, fades its dimmer in.
+            let m: El = match self.quick_look_target {
+                Some(_) => m.style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.2), 0.0)).into(),
+                None => crate::anim::dimmer(m),
+            };
+            backdrop(m).on_press(UiMessage::CloseModals)
         });
         let select = self.search_select.filter(|_| self.show_command_palette).map(|(chip, at)| {
             backdrop(
@@ -5560,6 +5601,7 @@ impl BeeperGuiApp {
             .into()
         };
         let main_menu = main_menu.or(self.pane_menu()).or(selection_menu.filter(|_| in_main));
+        let native = self.native_select.as_ref().filter(|_| in_main).map(|s| layer(self.view_native_select(s), UiMessage::CloseModals));
         let (menu, palette_menu) = match (self.show_command_palette || self.forward.is_some()) && self.list().chat_menu.is_some() {
             true => (None, main_menu.map(|m| layer(m, UiMessage::ChatList(chat_list::Msg::CloseMenu)))),
             false => (main_menu.map(|m| layer(m, UiMessage::CloseModals)), None),
@@ -5605,7 +5647,8 @@ impl BeeperGuiApp {
             .push(menu)
             .push(scrim)
             .push(palette_menu)
-            .push(select);
+            .push(select)
+            .push(native);
         let confetti = self.confetti.as_ref().filter(|_| in_main).map(confetti::Confetti::view);
         layers.push(confirm).push(hotkeys).push(confetti).into()
     }
@@ -5790,7 +5833,7 @@ impl BeeperGuiApp {
         let header = container(semi(tr("Switch Chat"), 13.0).color(p.strong)).padding(Padding::new(12.0).left(27.0).right(8.0));
         // Desktop's card is as wide as its rows, up to 300 px.
         let wide = |c: &Chat| {
-            let name = text_width(network_name(&c.account_id), 16.0, Weight::Normal);
+            let name = text_width(network_name(&c.account_id), 15.0, Weight::Normal);
             29.0 + 28.0 + 8.0 + name.max(text_width(&account_user(&st, &c.account_id), 12.0, Weight::Normal)) + 8.0
         };
         let chats = targets.iter().map(|id| &st.chats[st.resolve_chat_idx(id).expect("a switch target exists")]);
@@ -5806,8 +5849,8 @@ impl BeeperGuiApp {
                 0.0,
             );
             let info = column![
-                txt(network_name(&c.account_id).to_string(), 16.0).color(p.strong),
-                txt(account_user(&st, &c.account_id), 12.0).line_height(lh(16.0)).color(p.strong.scale_alpha(0.4)),
+                txt(network_name(&c.account_id).to_string(), 15.0).line_height(lh(20.0)).color(p.strong),
+                txt(account_user(&st, &c.account_id), 12.0).line_height(lh(15.0)).color(p.strong.scale_alpha(0.4)),
             ];
             let check = on.then(|| ic(icon::CHECK, 13.0).color(p.strong));
             let row = row![].push(check).push(face).push(info).spacing(8).align_y(Center);
@@ -5815,7 +5858,7 @@ impl BeeperGuiApp {
             let b = button(row).padding(pad).width(Fill).style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 0.0));
             column![b.on_press(UiMessage::SwitchChat(id.clone()))].push((id != targets.last().expect("a target")).then(line)).into()
         });
-        let h = 41.0 + targets.len() as f32 * 53.0;
+        let h = 40.0 + targets.len() as f32 * 52.0;
         let card = column![header, line()].extend(rows).width(w.ceil());
         let card = container(card).style(shadow_box(p.menu, p.menu_border, 8.0, 16.0));
         (mouse_area(card).on_exit(UiMessage::ChatList(chat_list::Msg::CloseMenu)).into(), h)
@@ -6383,18 +6426,19 @@ impl BeeperGuiApp {
             || self.list().reminder_menu.is_some()
             || self.audio.menu.is_some()
             || self.selection_menu.is_some()
+            || self.native_select.is_some()
     }
 
     fn tip<'a>(
         &self, el: El<'a>, label: impl iced::widget::text::IntoFragment<'a>, keys: Vec<&'static str>, at: tooltip::Position,
-    ) -> iced::widget::Tooltip<'a, UiMessage> {
+    ) -> crate::popover::Tip<'a, UiMessage> {
         self.tip_caps(el, label, keys.into_iter().map(String::from).collect(), at)
     }
 
     /// [`Self::tip`] with the key caps of a hotkey from the settings.
     fn tip_caps<'a>(
         &self, el: El<'a>, label: impl iced::widget::text::IntoFragment<'a>, keys: Vec<String>, at: tooltip::Position,
-    ) -> iced::widget::Tooltip<'a, UiMessage> {
+    ) -> crate::popover::Tip<'a, UiMessage> {
         let p = &self.pal;
         let kbd = |k: String| -> El<'a> {
             let width = if k.len() == 1 { Length::Fixed(20.0) } else { Shrink };
@@ -6403,11 +6447,11 @@ impl BeeperGuiApp {
         let keys = (!keys.is_empty()).then(|| Row::with_children(keys.into_iter().map(kbd)).spacing(4));
         // Desktop's press on a trigger dismisses its tooltip, so none shows over the menu that the press opened.
         if self.menu_open() {
-            return tooltip(el, Space::new(), at);
+            return crate::popover::tip(tooltip(el, Space::new(), at), at);
         }
         let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
         // `.BrandTooltip-module__tooltip`'s 6 px margin, from the trigger and from the edges of the window.
-        tooltip(el, self.tip_card(body), at).padding(6)
+        crate::popover::tip(tooltip(el, self.tip_card(body), at).padding(6), at)
     }
 
     /// The box of Desktop's `BrandTooltip`: `8px 11px` inside, the bubble radius and `--shadow-large-15`.
@@ -6498,11 +6542,11 @@ impl BeeperGuiApp {
         let id = &chat.id;
         let block = (st.can_block(chat) && !st.user_blocked(chat)).then(|| {
             let label = trx("Block", "action to block the other person in a DM");
-            pill(label, hex(0xdc362e), UiMessage::Blocking(blocking::Msg::Ask(id.clone(), true)))
+            pill(label, ON_ERROR, UiMessage::Blocking(blocking::Msg::Ask(id.clone(), true)))
         });
         let buttons = row![]
             .push(block)
-            .push(decline.then(|| pill(tr("Decline"), hex(0xdc362e), UiMessage::ChatList(chat_list::Msg::Delete(id.clone(), false)))))
+            .push(decline.then(|| pill(tr("Decline"), ON_ERROR, UiMessage::ChatList(chat_list::Msg::Delete(id.clone(), false)))))
             .push(accept.then(|| pill(tr("Accept"), p.strong, UiMessage::ChatList(chat_list::Msg::AcceptRequest(id.clone())))))
             .spacing(8);
         let body = column![heading, buttons].spacing(8).align_x(Center);
@@ -6596,13 +6640,12 @@ impl BeeperGuiApp {
     ) -> container::Container<'a, UiMessage> {
         let p = &self.pal;
         let segments = labels.enumerate().flat_map(|(i, label)| {
-            let label = txt(label, 11.0).color(p.text);
+            let label = txt(label, 11.0).line_height(lh(14.0)).color(p.strong);
             let bg = if i == at { p.chip } else { CLEAR };
-            let segment = button(label).padding([2, 8]).style(btn_style([bg; 3], [p.text; 3], 20.0)).on_press(msg(i));
+            let segment = button(label).padding([2, 8]).style(btn_style([bg; 3], [p.strong; 3], 20.0)).on_press(msg(i));
             [(i > 0).then(|| Space::new().width(Fill).into()), Some(segment.into())].into_iter().flatten()
         });
-        let bg = if self.dark { Color::BLACK } else { Color::WHITE };
-        container(Row::with_children(segments).spacing(4).align_y(Center)).padding(4).width(Fill).style(fill_box(bg, 20.0))
+        container(Row::with_children(segments).spacing(4).align_y(Center)).padding(4).width(Fill).style(fill_box(p.card, 20.0))
     }
 
     /// Desktop's `getSpaceIcon`.
@@ -6857,6 +6900,24 @@ mod tests {
         assert_eq!(menu_spot(Point::new(100.0, 590.0), 233.0, 400.0, area), (100.0, 190.0), "above, ending at it");
         assert_eq!(menu_spot(Point::new(100.0, 300.0), 233.0, 700.0, area), (100.0, 100.0), "moved up when neither fits");
         assert_eq!(menu_spot(Point::new(1100.0, 100.0), 233.0, 400.0, area), (967.0, 100.0), "kept at the right edge");
+    }
+
+    /// `Find` gives a container's bounds on the screen: a select 300 px down a scrollable scrolled by 250 px is 50 px
+    /// down, where its menu opens.
+    #[test]
+    fn find_takes_the_scroll_off() {
+        use iced::advanced::widget::operation::scrollable::{scroll_to, AbsoluteOffset};
+        let target = container(Space::new().width(10).height(10)).id("target");
+        let content = iced::widget::column![Space::new().height(300), target, Space::new().height(1000)];
+        let view: El = scrollable(content).id("scroll").height(200).into();
+        let renderer = <iced::Renderer as iced::advanced::renderer::Headless>::new(iced::Font::DEFAULT, Pixels(13.0), Some("tiny-skia"));
+        let mut renderer = iced::futures::executor::block_on(renderer).expect("a headless renderer");
+        let mut ui = iced_runtime::UserInterface::build(view, Size::new(100.0, 200.0), Default::default(), &mut renderer);
+        let offset = AbsoluteOffset { x: None, y: Some(250.0) };
+        ui.operate(&renderer, &mut scroll_to::<()>("scroll".into(), offset));
+        let mut find = Find::new("target");
+        ui.operate(&renderer, &mut iced::advanced::widget::operation::black_box(&mut find));
+        assert_eq!(find.found, Some(Rectangle::new(Point::new(0.0, 50.0), Size::new(10.0, 10.0))));
     }
 
     #[test]

@@ -1347,12 +1347,13 @@ impl BeeperGuiApp {
             row![tinted(&COMPOSER_ICONS[6], 20.0, p.accent), semi(when, 11.0).color(p.accent), tinted(&CHEVRON_DOWN, 14.0, p.accent)];
         let details = button(details.spacing(4).align_y(Center)).bare(p.accent).on_press(UiMessage::Scheduled(scheduled::Msg::Open));
         let close = icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::Scheduled(scheduled::Msg::Set(None)));
-        let blue = if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) };
+        // `.SendLaterBanner-module__banner`: 14 % of `--color-primary`, 26 % in the dark theme.
+        let tint = p.accent.scale_alpha(if self.dark { 0.26 } else { 0.14 });
         let banner =
-            container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center)).padding(2).style(fill_box(blue, 20.0));
+            container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center)).padding(2).style(fill_box(tint, 20.0));
         let banner = container(banner).padding(Padding::new(8.0).bottom(0.0).left(12.0));
         let body = container(column![banner, external, line]).width(Fill).style(fill_box(p.card, 18.0));
-        stack![body, dashed::dashes(hex(0x808080), 18.0, 1.0)].into()
+        stack![body, dashed::dashes(p.muted, 18.0, 1.0)].into()
     }
 }
 

@@ -398,7 +398,7 @@ impl BeeperGuiApp {
             let warning = tr("<strong>Warning: This is a permanent action.</strong> When you delete your account:");
             let (strong, rest) = warning.trim_start_matches("<strong>").split_once("</strong>").expect("a bold warning");
             let item = |t: &'static str| {
-                row![ic(icon::CLOSE, 14.0).color(p.danger), txt(tr(t), 13.0).color(p.text)].spacing(8).align_y(Center).into()
+                row![ic(icon::CLOSE, 14.0).color(p.text_danger), txt(tr(t), 13.0).color(p.text)].spacing(8).align_y(Center).into()
             };
             let content = column![
                 bold(tr("Delete account"), 17.0).color(p.strong),
@@ -412,7 +412,7 @@ impl BeeperGuiApp {
                 txt(trf("To confirm, type your username %s below.", &[&username]), 13.0).color(p.text),
                 input(typed, "", Box::new(|v| UiMessage::Profile(Msg::Delete(Some(v))))).on_submit(UiMessage::Profile(Msg::ConfirmDelete)),
             ]
-            .push(error.as_ref().map(|e| txt(e.clone(), 12.0).color(p.danger)))
+            .push(error.as_ref().map(|e| txt(e.clone(), 12.0).color(p.text_danger)))
             .push(buttons(*busy, UiMessage::Profile(Msg::Delete(None)), tr("Delete account"), ok, true))
             .spacing(12);
             return Some(card(content.into(), 360.0, UiMessage::Profile(Msg::Delete(None))));
@@ -463,7 +463,7 @@ impl BeeperGuiApp {
                 let edit = |a| UiMessage::Profile(Msg::KeyEdit(a));
                 let input = crate::verify::key_field(p, typed, error.is_some(), edit, UiMessage::Profile(Msg::KeyPaste));
                 // `error` sits 6 px up into the 12 px gap, in `--color-on-error-container`.
-                let error = error.as_ref().map(|e| txt(e.clone(), 11.0).line_height(lh(14.0)).color(hex(0xdc362e)).center().width(Fill));
+                let error = error.as_ref().map(|e| txt(e.clone(), 11.0).line_height(lh(14.0)).color(ON_ERROR).center().width(Fill));
                 column![container(heading).padding(Padding::ZERO.bottom(8.0)), column![input].push(error).spacing(6)].spacing(12).into()
             }
             Some(KeyStep::Display(copied)) => {
