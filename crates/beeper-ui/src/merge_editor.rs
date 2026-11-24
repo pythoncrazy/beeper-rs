@@ -375,8 +375,10 @@ impl BeeperGuiApp {
             .padding([17, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let searching = !d.search.trim().is_empty();
-        let clear = searching.then(|| icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, edit(MergeEdit::Search(String::new()))));
-        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), input].push(clear).spacing(10).align_y(Center);
+        // `.searchRow svg` and `.clearButton`: Desktop's `SearchIcon` and system `close`, 16 px in
+        // `--color-on-surface-variant`.
+        let clear = searching.then(|| ghost_btn(p, tinted(&ROW_ACTIONS[6], 16.0, p.muted), 28.0, edit(MergeEdit::Search(String::new()))));
+        let search = row![tinted(&SEARCH_ICON, 16.0, p.muted), input].push(clear).spacing(10).align_y(Center);
         let search = container(search).padding(pad(0.0, 8.0, 0.0, 16.0));
         let picked: Vec<&Chat> = d.chats.iter().filter_map(|c| st.find_chat(c)).collect();
         // Desktop's `se`: the mergeable chats, and the member chats of the edited merged chat.
@@ -479,7 +481,7 @@ impl BeeperGuiApp {
         let options = container(options).center_x(Fill).padding([8, 26]);
         let default = members.iter().find(|c| Some(&c.id) == d.default.as_ref());
         let select = default.map_or_else(|| tr("Select").to_string(), |c| network_name(&c.account_id).to_string());
-        let select = row![txt(select, 12.0).color(p.accent), ic(icon::EXPAND_MORE, 14.0).color(p.accent)].spacing(4).align_y(Center);
+        let select = row![txt(select, 12.0).color(p.accent), tinted(&CHEVRON_DOWN, 14.0, p.accent)].spacing(4).align_y(Center);
         let select = button(select)
             .padding([4, 6])
             .style(btn_style([CLEAR, p.chip, p.chip], [p.accent; 3], 20.0))

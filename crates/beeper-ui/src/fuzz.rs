@@ -10664,6 +10664,72 @@ fn edit_spaces_icons_like_desktop() {
     }
 }
 
+/// Desktop's icons of the controls that the icon audit could not tie to a site: the 16 px system `close-small` of the
+/// Settings search (`.prefs-search-clear` of PrefsPanes, 4.8 px into its box), the hotkey recorder's FontAwesome check
+/// (12 px high in a 1em box 20 px inside the right: 11.65 by 8.6) and `CancelIcon` (a 12 px disc in a 20 px svg 2 px
+/// inside) in `--color-icon-neutrals`, and the search rows of Merge Chats and Edit Spaces: Desktop's `SearchIcon`
+/// (15 by 15) and the system `close` (9.3 at 16 px) in `--color-on-surface-variant`, and the system `chevron-down`
+/// (7 by 4.3) of the Default chat select.
+#[test]
+fn unaudited_controls_draw_desktops_icons() {
+    use crate::merge_editor::MergeEdit::{Continue, Search, Start, Toggle};
+    // The snapshot of `view` at `size`, and the bounds that `at` finds in it.
+    fn shot(view: El<'_>, size: Size, at: impl FnOnce(&mut Simulator<'_, UiMessage>) -> Rectangle) -> (::image::RgbaImage, Rectangle) {
+        let mut sim = Simulator::with_size(Default::default(), size, view);
+        let b = at(&mut sim);
+        (crate::message::tests::pixels(&mut sim), b)
+    }
+    let id = |id: &'static str| move |sim: &mut Simulator<'_, UiMessage>| sim.find(iced::widget::Id::new(id)).expect(id).bounds();
+    let near = |got: [f32; 4], want: [f32; 4]| (0..4).all(|i| (got[i] - want[i]).abs() <= 0.4);
+    let mut app = demo_app("unaudited-icons");
+    let (weak, muted) = (app.pal.weak.into_rgba8(), app.pal.muted.into_rgba8());
+    let size = crate::SETTINGS_SIZE;
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Hotkeys)));
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Record("Chat: Archive All Read")));
+    let (s, rec) = shot(app.view_settings(), size, |sim| sim.find("Record Shortcut").expect("the recorder").bounds());
+    // The recorder is 160 px wide around its text, with a 1 px border.
+    let (x, y) = (rec.center_x() - 80.0, rec.y - 2.0);
+    let (check, check_color, _) = crate::focus::tests::ink(&s, size.width, [x + 125.0, y, 14.0, 18.0]);
+    let (cancel, cancel_color, _) = crate::focus::tests::ink(&s, size.width, [x + 140.0, y, 14.0, 18.0]);
+    assert!(near(check, [x + 126.68, check[1], 11.65, 8.6]) && near(cancel, [x + 141.0, cancel[1], 12.0, 12.0]), "{check:?} {cancel:?}");
+    assert!(check_color == weak[..3] && cancel_color == weak[..3], "{check_color:?} {cancel_color:?}");
+    let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Recorder(false)));
+    let _ = app.update(UiMessage::Settings(settings::Msg::Query("zz".into())));
+    let (s, field) = shot(app.view_settings(), size, id("settings-search"));
+    let clear = ink_of(&s, size, [field.x + field.width + 2.0, field.y - 4.0, 24.0, field.height + 8.0]);
+    assert!((clear[0] - (field.x + field.width + 8.0 + 4.8)).abs() <= 0.4, "the clear icon: {clear:?} after {field:?}");
+
+    let _ = app.update(UiMessage::Merged(merged::Msg::Open(None, Vec::new())));
+    for e in [Start, Search("ka".into())] {
+        let _ = app.update(UiMessage::Merged(merged::Msg::Edit(e)));
+    }
+    let _ = app.update(UiMessage::OpenEditSpaces);
+    let _ = app.update(UiMessage::Spaces(SpacesEdit::Search("in".into())));
+    let rows = [
+        (app.view_merge_editor(app.merge_window.as_ref().expect("Merge Chats")), crate::merge_editor::MERGE_SIZE, "merge-search"),
+        (app.view_edit_spaces(app.spaces_window.as_ref().expect("Edit Spaces")), rail::SPACES_SIZE, "spaces-search"),
+    ];
+    for (view, size, at) in rows {
+        let (s, f) = shot(view, size, id(at));
+        let (glass, glass_color, _) = crate::focus::tests::ink(&s, size.width, [f.x - 30.0, f.y + 8.0, 28.0, f.height - 16.0]);
+        let (clear, clear_color, _) = crate::focus::tests::ink(&s, size.width, [f.x + f.width + 6.0, f.y + 8.0, 34.0, f.height - 16.0]);
+        assert!(
+            near(glass, [glass[0], glass[1], 15.0, 15.0]) && near(clear, [clear[0], clear[1], 9.33, 9.33]),
+            "{at}: {glass:?} {clear:?}"
+        );
+        assert!(glass_color == muted[..3] && clear_color == muted[..3], "{at}: {glass_color:?} {clear_color:?}");
+    }
+    for e in [Search(String::new()), Toggle("!ig_kai:beeper.com".into()), Toggle("!sg_lena:beeper.com".into()), Continue] {
+        let _ = app.update(UiMessage::Merged(merged::Msg::Edit(e)));
+    }
+    let size = crate::merge_editor::MERGE_SIZE;
+    let (s, select) = shot(app.view_merge_editor(app.merge_window.as_ref().expect("Merge Chats")), size, |sim| {
+        sim.find("Instagram").expect("the Default chat select").bounds()
+    });
+    let chevron = ink_of(&s, size, [select.x + select.width + 2.0, select.y - 2.0, 18.0, select.height + 4.0]);
+    assert!(near(chevron, [chevron[0], chevron[1], 7.0, 4.32]), "the select's chevron: {chevron:?}");
+}
+
 /// The ink box of the window `w` of a snapshot of a view of `size`.
 fn ink_of(shot: &::image::RgbaImage, size: Size, w: [f32; 4]) -> [f32; 4] {
     crate::focus::tests::ink(shot, size.width, w).0

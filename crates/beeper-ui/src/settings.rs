@@ -12,8 +12,8 @@ use crate::units::{compact, grouped};
 use crate::windows;
 use crate::{
     ago, divider, duration, first_groups, group, portal, pref_row, select, slider_style, status_text, style, svg_size, theme_cards,
-    toggle_faded, ADD_ICON, APP_QR, CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, CLOUD_ICON, COPIED_ICON, COPY_ICON, CURSOR_LOGO,
-    DEVICE_ICONS, FEATHER_CHEVRON, LOGO, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
+    toggle_faded, ADD_ICON, APP_QR, CANCEL_ICON, CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, CLOSE_SMALL, CLOUD_ICON, COPIED_ICON, COPY_ICON,
+    CURSOR_LOGO, DEVICE_ICONS, FEATHER_CHEVRON, LOGO, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
 };
 use beeper_core::config::APP_VERSION;
 use beeper_core::models::*;
@@ -713,8 +713,9 @@ impl BeeperGuiApp {
             .line_height(lh(16.0))
             .padding(0)
             .style(input_style(CLEAR, p.strong, p.text, p.accent, 0.0));
+        // `.prefs-search-clear`: the 16 px system `close-small` in `--color-on-surface`.
         let clear = (!self.settings_query.is_empty())
-            .then(|| button(ic(icon::CLOSE, 12.0).color(p.strong)).bare(p.strong).on_press(UiMessage::Settings(Msg::Query(String::new()))));
+            .then(|| button(tinted(&CLOSE_SMALL, 16.0, p.strong)).bare(p.strong).on_press(UiMessage::Settings(Msg::Query(String::new()))));
         let search = container(
             row![
                 crate::material("search", 16.0, p.strong),
@@ -1599,7 +1600,13 @@ impl BeeperGuiApp {
             .padding([4, 6])
             .style(pill_style(p))
             .on_press(UiMessage::Hotkeys(hotkeys::Msg::RevertAll));
-        let icon_btn = |glyph: El<'static>, msg| button(glyph).bare(p.muted).on_press(msg);
+        // `.shortcut-recorder button`: 12 px high icons in `--color-icon-neutrals`, `right: 2px` inside the 1 px border,
+        // Save's `right: 20px`, each as wide as its svg: 1em of the 13 px text for FontAwesome's check and undo, 20 px for
+        // `CancelIcon`.
+        let icon_btn = |icon: El<'static>, width: f32, right: f32, msg| -> El<'_> {
+            let button = button(container(icon).center_x(width)).padding(0).bare(p.weak).on_press(msg);
+            container(button).align_right(160).center_y(20).padding(Padding::ZERO.right(right + 1.0)).into()
+        };
         let hotkey = |name: &'static str| -> El<'_> {
             let keys = s.hotkey_keys(name);
             let rec = self.hotkey_rec.as_ref().filter(|r| r.name == name);
@@ -1615,16 +1622,24 @@ impl BeeperGuiApp {
                     l if l.is_empty() => txt(tr("Record Shortcut"), 11.0).color(p.muted).into(),
                     l => txt(l, 13.0).line_height(lh(18.0)).color(ink).into(),
                 };
-                let buttons = match rec {
-                    Some(_) => row![]
-                        .push(conflict.is_none().then(|| {
-                            icon_btn(ic(icon::CHECK, 12.0).color(p.muted).into(), UiMessage::Hotkeys(hotkeys::Msg::Recorder(true)))
-                        }))
-                        .push(icon_btn(ic(icon::CLOSE, 12.0).color(p.muted).into(), UiMessage::Hotkeys(hotkeys::Msg::Recorder(false)))),
-                    None => row![].push(
-                        (keys != prefs::hotkey_default(name))
-                            .then(|| icon_btn(tinted(&REVERT, 12.0, p.muted), UiMessage::Hotkeys(hotkeys::Msg::Revert(name)))),
-                    ),
+                let buttons: Vec<El<'_>> = match rec {
+                    Some(_) => {
+                        let save = conflict.is_none().then(|| {
+                            icon_btn(
+                                ic(icon::TICK, 12.0).color(p.weak).into(),
+                                13.0,
+                                20.0,
+                                UiMessage::Hotkeys(hotkeys::Msg::Recorder(true)),
+                            )
+                        });
+                        let cancel =
+                            icon_btn(tinted(&CANCEL_ICON, 12.0, p.weak), 20.0, 2.0, UiMessage::Hotkeys(hotkeys::Msg::Recorder(false)));
+                        save.into_iter().chain([cancel]).collect()
+                    }
+                    None => (keys != prefs::hotkey_default(name))
+                        .then(|| icon_btn(tinted(&REVERT, 12.0, p.weak), 13.0, 2.0, UiMessage::Hotkeys(hotkeys::Msg::Revert(name))))
+                        .into_iter()
+                        .collect(),
                 };
                 let border = match (conflict, rec) {
                     (Some(_), _) => ERROR,
@@ -1633,8 +1648,7 @@ impl BeeperGuiApp {
                 };
                 let label =
                     mouse_area(container(label).center_x(160).center_y(20)).on_press(UiMessage::Hotkeys(hotkeys::Msg::Record(name)));
-                let buttons = container(buttons.spacing(6).align_y(Center)).align_right(160).center_y(20).padding([0, 2]);
-                container(stack![label, buttons]).style(bordered_box(CLEAR, border, 1.0, 4.0))
+                container(stack![label].extend(buttons)).style(bordered_box(CLEAR, border, 1.0, 4.0))
             });
             // Desktop's `Global` tag (`.tag`) of a global hotkey, with its tooltip.
             let global = ["Focus App", "Focus App and Command Bar"].contains(&name).then(|| {

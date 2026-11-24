@@ -9,8 +9,8 @@ use crate::labels::label_fill;
 use crate::prelude::*;
 use crate::settings;
 use crate::{
-    chat_search_subtitle, checkbox_plus, grouped_rows, label_icon, label_tile, login, portal, spread, DELETE, DRAG_HANDLE, LABEL_COLORS,
-    LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
+    chat_search_subtitle, checkbox_plus, ghost_btn, grouped_rows, label_icon, label_tile, login, portal, spread, DELETE, DRAG_HANDLE,
+    LABEL_COLORS, LABEL_ICONS, NEW_LABEL, ROW_ACTIONS, STORAGE_DAYS,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
@@ -947,20 +947,21 @@ impl BeeperGuiApp {
         scrollable(container(body).padding(16)).direction(Direction::Vertical(Scrollbar::hidden())).into()
     }
 
-    /// The search row of a sheet's chat or space picker: the search icon, the field `id` with `query`, and a clear
-    /// button while it has text, which takes no visible focus.
+    /// The search row of a sheet's chat or space picker: the search icon `glass`, the field `id` with `query`, and a
+    /// clear button while it has text, which takes no visible focus: Desktop's 16 px system `close` in
+    /// `--color-on-surface-variant` (`.clearButton`).
     pub(crate) fn sheet_search<'a>(
-        &self, window: window::Id, id: &'static str, hint: &str, query: &str, on: impl Fn(String) -> UiMessage + 'a,
+        &self, window: window::Id, id: &'static str, glass: El<'a>, hint: &str, query: &str, on: impl Fn(String) -> UiMessage + 'a,
     ) -> El<'a> {
         let p = &self.pal;
         let empty = on(String::new());
         let clear = (!query.trim().is_empty()).then(|| {
-            let clear = icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, empty.clone());
+            let clear = ghost_btn(p, tinted(&ROW_ACTIONS[6], 16.0, p.muted), 28.0, empty.clone());
             self.target(Some(window), "clear", clear, Keys::press(empty), Look::Hidden)
         });
         let search = text_input(hint, query).id(id).on_input(on).size(rem(13.0)).line_height(lh(16.0)).padding([14, 0]);
         let search = search.style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-        let search = row![crate::platform(ic(icon::SEARCH, 16.0).color(p.sub)), search].push(clear).spacing(10).align_y(Center);
+        let search = row![glass, search].push(clear).spacing(10).align_y(Center);
         search.padding(Padding::ZERO.left(16.0).right(8.0)).into()
     }
 
@@ -970,7 +971,9 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
         let search = tr("Search name, @, number, or network");
-        let search = self.sheet_search(d.id, "label-search", search, &d.search, move |q| edit(LabelEdit::Search(q)));
+        // `.searchIcon`: a `PlatformIcon` in `--color-on-surface-variant`.
+        let glass = crate::platform(ic(icon::SEARCH, 16.0).color(p.muted));
+        let search = self.sheet_search(d.id, "label-search", glass, search, &d.search, move |q| edit(LabelEdit::Search(q)));
         let rows = self.label_rows(&st, d).into_iter().map(|r| -> El<'a> {
             match r {
                 LabelRow::Note => txt(tr("Clear search to show all selected chats"), 12.0).color(p.sub).align_x(Center).width(Fill).into(),
