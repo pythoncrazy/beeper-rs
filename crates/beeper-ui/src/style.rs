@@ -401,6 +401,14 @@ pub fn text_width(s: &str, size: f32, w: Weight) -> f32 {
     glyphs(s, rem(size), w).0
 }
 
+/// The width of `s` with `font-variant-numeric: tabular-nums`, which iced cannot select: Inter's tabular figures are
+/// 0.672em wide.
+pub fn tabular_width(s: &str, size: f32, w: Weight) -> f32 {
+    let figures = s.chars().filter(char::is_ascii_digit).count();
+    let rest: String = s.chars().filter(|c| !c.is_ascii_digit()).collect();
+    figures as f32 * rem(size) * 0.672 + text_width(&rest, size, w)
+}
+
 fn ell_line(s: &str, max: f32, size: f32, w: Weight) -> String {
     let gs = glyphs(s, size, w);
     let (total, gs) = (gs.0, &gs.1);
@@ -976,6 +984,8 @@ palette! {
     muted: Color = hex(0x808080), hex(0x808080);
     /// `--color-text-tertiary`.
     tertiary: Color = hexa(0x3c3c44, 0.38), hexa(0xebebf5, 0.27);
+    /// `--semantic-colors-border-tertiary`.
+    border_tertiary: Color = hexa(0x3c3c44, 0.141), hexa(0xebebf5, 0.141);
     /// `--color-on-surface` at `--divider-opacity`.
     divider: Color = hexa(0x202124, 0.2), hexa(0xf6f6f6, 0.2);
     /// `--color-background-elevated`.

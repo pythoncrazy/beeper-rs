@@ -6731,6 +6731,47 @@ fn label_settings_like_desktop() {
     assert_eq!(inbox(&app), None, "Delete deletes the label");
 }
 
+/// Desktop's `ThreadListItem` lines from the top of the title line: the time 2 px down, the preview 16 px down
+/// (iced draws the regular 14 px title 1 px lower than Chromium, so its line starts 1 px higher), and the unread
+/// count (`1lh` of 14 px, 12 px in the compact list) 2 px under the top of the preview.
+#[test]
+fn chat_rows_place_their_lines_like_desktop() {
+    fn line(sim: &mut Simulator<'_, UiMessage>, title: Rectangle, f: impl Fn(&str) -> bool + Send + Sync + 'static) -> Rectangle {
+        sim.find(move |c: iced_test::selector::Candidate<'_>| match c {
+            iced_test::selector::Candidate::Text { content, bounds, .. }
+                if f(content) && bounds.x > title.x && (bounds.y - title.y).abs() < 30.0 =>
+            {
+                Some(bounds)
+            }
+            _ => None,
+        })
+        .expect("a line of the row")
+    }
+    let mut app = demo_app("row-lines");
+    let ts = list_ts(app.store.read().chat("!wa_family:beeper.com").last_activity.as_deref().expect("a time"), false);
+    for (compact, preview, count) in [(false, 17.0, 19.0), (true, 16.0, 18.0)] {
+        let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("compactChatList", u8::from(compact))));
+        let mut sim = simulator(app.view_sidebar());
+        let title = sim.find("Family").expect("the title").bounds();
+        let ts = ts.clone();
+        assert_eq!(line(&mut sim, title, move |t| t == ts).y - title.y, 2.0, "the time, compact {compact}");
+        assert_eq!(line(&mut sim, title, |t| t.starts_with("Mom: Dinner")).y - title.y, preview, "the preview, compact {compact}");
+        let badge = line(&mut sim, title, |t| t == "2");
+        let half = if compact { 6.0 } else { 7.0 };
+        assert_eq!(badge.center_y() - title.y, count + half, "the count, compact {compact}");
+    }
+}
+
+/// Desktop's `.UnreadThreads-module__pill`: 30 px high with its 1 px border, with its label 13 px in.
+#[test]
+fn unread_threads_pill_sizes_like_desktop() {
+    let app = demo_app("pill-sizes");
+    let mut sim = simulator(app.view_sidebar());
+    let pill = sim.find(iced::widget::Id::new("unread-threads")).expect("the pill").bounds();
+    let label = sim.find("Unread threads").expect("the label").bounds();
+    assert_eq!((pill.height, label.x - pill.x, label.y - pill.y), (30.0, 13.0, 7.0));
+}
+
 #[test]
 fn chat_list_mutes_receipts_and_errors_like_desktop() {
     let mut app = demo_app("list-states");

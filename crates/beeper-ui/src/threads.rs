@@ -270,16 +270,16 @@ impl BeeperGuiApp {
         // The mentions of a thread read SQLite, so they are kept until the store changes.
         let mentions = |i: usize, r: &str| self.count(&format!("thread mentions {i} {r}"), || st.thread_unread(&st.chats[i], r).1);
         let at = threads.iter().any(|(i, r)| mentions(*i, r) > 0);
-        let count =
-            row![].push(at.then(|| semi("@", 10.0).color(Color::WHITE))).push(semi(threads.len().to_string(), 10.0).color(Color::WHITE));
-        let count = container(count.spacing(2).align_y(Center)).center_y(16).padding([0, 5]).style(fill_box(p.accent, 16.0));
-        let label = container(semi(tr("Unread threads"), 13.0).color(p.text)).width(Fill);
+        // `.pillCount` is `1lh` (12 px) high.
+        let count = crate::count_pill(crate::unread_label(threads.len()), at, (p.accent, Color::WHITE), 12.0);
+        let label = container(semi(tr("Unread threads"), 13.0).color(p.strong)).width(Fill);
         let bg = if self.unread_view { p.selected } else { CLEAR };
-        let edge = if self.unread_view { CLEAR } else { p.divider };
+        let edge = if self.unread_view { CLEAR } else { p.border_tertiary };
+        // The padding of `.pill` inside its 1 px border, which iced draws over the padding; it has no hover style.
         let pill = button(row![label, count].spacing(8).align_y(Center))
-            .padding(pad(6.0, 8.0, 6.0, 12.0))
+            .padding(pad(7.0, 9.0, 7.0, 13.0))
             .width(Fill)
-            .style(bordered_btn([bg, p.hover, p.hover], [p.text; 3], edge, 1.0, 999.0))
+            .style(bordered_btn([bg; 3], [p.strong; 3], edge, 1.0, 999.0))
             .on_press(UiMessage::Thread(Msg::ShowUnread));
         let pill = mouse_area(pill).on_right_press(UiMessage::Thread(Msg::UnreadMenu(true)));
         // A `<button>` of Desktop, whose focus does not show.
