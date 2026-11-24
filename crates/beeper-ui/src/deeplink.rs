@@ -274,6 +274,12 @@ impl BeeperGuiApp {
                 return window.map_or_else(Task::none, |w| self.raise(w));
             }
             "connect" => return self.open_settings(SettingsTab::Integrations),
+            // Desktop's `subscriptionStore.handleDeepLink`, which opens the subscription info. Desktop then reads the
+            // action as a platform, and finds none.
+            "subscriptions" if part(1) == Some("openSubscriptionInfo") => {
+                let open = self.open_settings(SettingsTab::BeeperPlus);
+                return Task::batch([open, toast(self, "Invalid deep link".into())]);
+            }
             "tips" if part(1) == Some("add-account") && parts.len() == 2 => {
                 return self.update(UiMessage::Networks(crate::networks::Msg::Open));
             }
@@ -417,6 +423,8 @@ mod tests {
         }
         assert_eq!(open(&mut app, "beeper://connect"), "");
         assert_eq!(app.active_settings_tab, SettingsTab::Integrations);
+        assert_eq!(open(&mut app, "beeper://subscriptions/openSubscriptionInfo"), "Invalid deep link", "as Desktop goes on");
+        assert_eq!(app.active_settings_tab, SettingsTab::BeeperPlus, "the subscription info");
         let _ = open(&mut app, "beeper://tips/add-account");
         assert!(app.networks.window.is_some(), "the link opens the Add an Account window");
     }
