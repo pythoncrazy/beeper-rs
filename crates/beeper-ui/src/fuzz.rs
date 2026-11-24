@@ -11817,6 +11817,51 @@ fn the_chat_menu_fits_its_rows() {
     assert!(row > 233.0 && menu >= row, "{menu} fits {row}");
 }
 
+/// Like Chromium's submenus, a submenu of the chat menu opens beside the row that opens it, also when a message
+/// request's Accept and Decline rows or a threaded chat's Follow All Threads row come before that row.
+#[test]
+fn chat_submenus_open_beside_their_row_like_desktop() {
+    let size = Size::new(1200.0, 800.0);
+    let mut app = demo_app("chat-submenu-rows");
+    app.pane.size = size;
+    let id = {
+        let st = app.store.read();
+        let dm = |c: &&Chat| c.chat_type == "single" && c.id != NOTE_CHAT_ID && c.is_pinned != Some(true) && !st.threaded(c);
+        st.chats.iter().find(dm).expect("a DM").id.clone()
+    };
+    let first_label = {
+        let st = app.store.read();
+        st.labels.iter().map(|l| l.name.clone()).min_by_key(|n| n.to_lowercase()).expect("a label")
+    };
+    // How far the first row of submenu `i` is below its opener `label`.
+    let offsets = |app: &mut BeeperGuiApp| {
+        [(0, tr("Copy"), "Chat Link".to_string()), (2, trx("Label", "thread context menu submenu label"), first_label.clone())].map(
+            |(i, opener, first)| {
+                app.list.chat_menu = Some((id.clone(), Point::new(300.0, 40.0)));
+                app.chat_sub = Some(i);
+                let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+                let y = |sim: &mut Simulator<'_, UiMessage>, s: &str| sim.find(s).unwrap_or_else(|_| panic!("{s} shows")).bounds().y;
+                y(&mut sim, &first) - y(&mut sim, opener)
+            },
+        )
+    };
+    let plain = offsets(&mut app);
+    let edit = |app: &mut BeeperGuiApp, f: &dyn Fn(&mut Chat)| {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&id).expect("the chat");
+        drop(st.update_chat(idx, f));
+    };
+    edit(&mut app, &|c| (c.is_request, c.can_accept_request, c.delete_modes) = (Some(true), true, DELETE_FOR_ME));
+    assert_eq!(offsets(&mut app), plain, "a message request");
+    edit(&mut app, &|c| (c.is_request, c.can_accept_request, c.threads) = (None, false, true));
+    app.store.write().features.flags["features"]["*"]["enable-threads"] = true.into();
+    assert!({
+        let st = app.store.read();
+        st.threaded(st.chat(&id))
+    });
+    assert_eq!(offsets(&mut app), plain, "a threaded chat");
+}
+
 /// An image that covers its box, wider than the box, is cut at the box in the software renderer as in wgpu: the
 /// media of the info pane, the attachments of the composer and link previews are `ContentFit::Cover`.
 #[test]
