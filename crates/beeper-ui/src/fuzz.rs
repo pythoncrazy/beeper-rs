@@ -12027,6 +12027,29 @@ fn message_menus_open_where_chromium_puts_them() {
     assert_eq!(got, want);
 }
 
+/// Like a Chromium submenu taller than the screen, the Transcription Language submenu of a voice message is as tall as
+/// the window, from its top, and scrolls.
+#[test]
+fn the_transcription_languages_fit_the_window_like_chromium() {
+    let size = Size::new(1200.0, 800.0);
+    let mut app = demo_app("language-submenu");
+    app.pane.size = size;
+    app.store.write().features.flags["features"]["*"]["voice-transcription"] = true.into();
+    let voice = {
+        let st = app.store.read();
+        let m = st.messages.iter().find(|m| m.attachments.first().is_some_and(|a| app.playable(a)));
+        m.expect("a voice message").id.clone()
+    };
+    let _ = app.update(UiMessage::Message(message::Msg::OpenMenu(voice)));
+    app.pane.message_menu.as_mut().expect("the menu").1 = Point::new(300.0, 300.0);
+    app.audio.lang = true;
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+    let first = sim.find("Auto-detect").expect("the first language").bounds();
+    assert!(first.y > 0.0 && first.y < 12.0, "the menu starts at the top of the window: {first:?}");
+    let last = beeper_core::prefs::TRANSCRIPTION_LANGUAGES.last().expect("a language").1;
+    assert!(sim.find(last).expect("the last language").visible_bounds().is_none(), "it scrolls into view");
+}
+
 /// An image that covers its box, wider than the box, is cut at the box in the software renderer as in wgpu: the
 /// media of the info pane, the attachments of the composer and link previews are `ContentFit::Cover`.
 #[test]
