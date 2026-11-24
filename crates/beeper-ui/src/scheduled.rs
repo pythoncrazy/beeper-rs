@@ -234,7 +234,7 @@ impl BeeperGuiApp {
     /// A scheduled message like Desktop's `is-scheduled` bubble: `bg`, with a dashed border in the text color.
     pub(crate) fn view_scheduled_bubble(&self, st: &BeeperStore, s: &Scheduled, bg: Color) -> El<'_> {
         let p = &self.pal;
-        let fg = if s.canceled { hex(0x808080) } else { p.accent };
+        let fg = if s.canceled { p.muted } else { p.accent };
         let line = |t: String| txt(t, 13.0).wrapping(iced::widget::text::Wrapping::WordOrGlyph);
         // A file part shows its file name over its caption.
         let file =

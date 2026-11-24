@@ -1413,6 +1413,33 @@ fn send_later_like_desktop() {
     assert!(uploads.iter().all(|u| !st.assets.contains_key(u)), "a sent Send Later file goes away");
 }
 
+/// Desktop's Send Later colors: the composer banner is 14 % of `--color-primary` (26 % in the dark theme), and the
+/// composer's dashed border and a canceled message are `--color-on-surface-variant`, which a monochrome theme tints.
+#[test]
+fn send_later_takes_desktops_colors() {
+    let mut app = demo_app("sendlater-colors");
+    let id = app.visible_chats(&app.store.read())[0].id.clone();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let _ = app.update(UiMessage::Scheduled(scheduled::Msg::Set(Some((now_unix_millis() + 3_600_000, false)))));
+    app.store.write().schedule(&id, "later".into(), None, (now_unix_millis() + 3_600_000, false), None);
+    app.store.write().scheduled[0].canceled = true;
+    for (dark, theme) in [(false, None), (true, None), (false, Some(beeper_core::models::UiTheme::MonochromeRed))] {
+        (app.dark, app.pal) = (dark, crate::style::palette(dark, theme, 0));
+        let p = app.pal;
+        let st = app.store.read();
+        let count = |shot: &::image::RgbaImage, c: Color| {
+            let c = c.into_rgba8();
+            shot.pixels().filter(|px| (0..3).map(|i| u32::from(px[i].abs_diff(c[i]))).sum::<u32>() < 6).count()
+        };
+        let composer = crate::focus::tests::shot(app.view_composer(&st, st.chat(&id)), Size::new(800.0, 120.0), "sendlater");
+        let tint = mix(p.card, p.accent, if dark { 0.26 } else { 0.14 });
+        assert!(count(&composer, tint) > 4000, "the banner is {tint:?} (dark {dark}, {theme:?})");
+        assert!(count(&composer, p.muted) > 100, "the dashes are {:?} ({theme:?})", p.muted);
+        let bubble = app.view_scheduled_bubble(&st, &st.scheduled[0], p.card);
+        assert!(count(&crate::focus::tests::shot(bubble, Size::new(800.0, 60.0), "canceled"), p.muted) > 100, "a canceled message");
+    }
+}
+
 #[test]
 fn drafts_keep_the_composer_like_desktop() {
     let note = "!note_self:beeper.com";
