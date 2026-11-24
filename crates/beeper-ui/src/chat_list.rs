@@ -1294,10 +1294,12 @@ impl BeeperGuiApp {
             (network_space(st, id).is_some() || twins).then(|| icon.into())
         });
         let line = row![].push(space_icon.map(|i| container(i).padding(Padding::ZERO.right(4.0)))).push(heading);
-        // Desktop's header of a space window neither opens the space sheet nor has a menu.
-        let chevron = (!list.locked).then(|| ic(icon::UNFOLD_MORE, 12.0).color(p.weak));
+        // Desktop's header of a space window neither opens the space sheet nor has a menu, and a list of at most
+        // 10.625rem inside its 8 px padding (`@container threads`) hides the chevron.
+        let roomy = self.list_width(st) - 8.0 > rem(170.0);
+        let chevron = (!list.locked && roomy).then(|| ic(icon::UNFOLD_MORE, 12.0).color(p.sub));
         let title = column![line.push(chevron).spacing(1.4).align_y(Center)]
-            .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))
+            .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.muted)))
             .padding([0, 8]);
         let title: El<'_> = match list.locked {
             true => title.into(),

@@ -6731,6 +6731,18 @@ fn label_settings_like_desktop() {
     assert_eq!(inbox(&app), None, "Delete deletes the label");
 }
 
+/// Desktop's chat list header hides its chevron in a list of at most 10.625rem inside its 8 px padding
+/// (`@container threads`).
+#[test]
+fn a_narrow_chat_list_hides_the_header_chevron_like_desktop() {
+    let mut app = demo_app("narrow-header");
+    let chevron = String::from(icon::UNFOLD_MORE);
+    for (width, shown) in [(252.0, true), (179.0, true), (178.0, false), (172.0, false)] {
+        app.sidebar_width = width;
+        assert_eq!(simulator(app.view_sidebar()).find(chevron.as_str()).is_ok(), shown, "at {width} px");
+    }
+}
+
 #[test]
 fn chat_list_mutes_receipts_and_errors_like_desktop() {
     let mut app = demo_app("list-states");
