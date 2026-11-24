@@ -1331,7 +1331,8 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
             let pill = row![trigger, container(ic(icon::FILTER_LIST, 16.8).color(fg)).center_x(27).center_y(20)];
             let ring = if active { p.accent } else { CLEAR };
-            let face = bordered_btn([CLEAR, p.hover, p.hover], [fg; 3], ring, 1.0, 12.0);
+            // `.tab-bar-btn button:hover` keeps it clear.
+            let face = bordered_btn([CLEAR; 3], [fg; 3], ring, 1.0, 12.0);
             let press = UiMessage::ChatList(chat_list::Msg::FilterButton);
             let el = mouse_area(button(pill).padding(0).style(face).on_press(press.clone()))
                 .on_right_press(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
