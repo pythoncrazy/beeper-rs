@@ -621,6 +621,8 @@ pub struct BeeperStore {
     pub ui_auth_token: Option<String>,
     /// The changes for the homeserver, with their outbox row and chat, in the order of the rows.
     pub outbox: Vec<(i64, String, Outgoing)>,
+    /// Desktop's `sendQueuedMessages` clock: when the push of each message of the outbox began, until it ends.
+    pub sending: HashMap<String, i64>,
     /// Desktop's bookmarks room, after its history is read.
     pub bookmarks_room: Option<String>,
     /// Desktop's `bookmarkStore.status` "failed": the history of the bookmarks room did not load.
@@ -665,6 +667,8 @@ pub struct BeeperStore {
     pub skin_tone: u8,
     /// The last synced [`crate::matrix::RULES`].
     pub inbox_rules: serde_json::Value,
+    /// The [`crate::features::REQUESTS`] flag that the chats were made with.
+    pub requests_folder: bool,
     /// Desktop's `mutedRoomIDs`: the `room_ids` of the global `com.beeper.muted` account data.
     pub muted_rooms: Vec<String>,
     /// The state events and the room account data that the chats of the rooms read from the SDK, between syncs.
@@ -798,12 +802,12 @@ impl BeeperStore {
             account_overrides: serde_json::Value::Null,
             features,
             next_seq: 1000,
-        }, default: setup, settings, verification, bridge_accounts, pin_rank, recent_chat_ids, network_spaces,
+        }, default: requests_folder, setup, settings, verification, bridge_accounts, pin_rank, recent_chat_ids, network_spaces,
             sub_accounts, demo_servers, contacts, bridge_sessions, accounts, labels, chats, chat_changes, chat_idx_by_id, chat_order,
             local_chat_idx_by_id, messages, msg_idx_by_id, chat_msg_indices, loaded, unloaded, shown,
             thread_msg_indices, timeline_revs, timeline_writes, moves, assets, assets_by_mxc, connect, matrix,
             matrix_error, sync_failing, session_ended, syncing, sas_confirm, pending_recovery_key, ui_auth_token,
-            outbox, bookmarks_room, bookmarks_failed, bookmarks, bookmarked, reminders_room, message_reminders,
+            outbox, sending, bookmarks_room, bookmarks_failed, bookmarks, bookmarked, reminders_room, message_reminders,
             reminder_events, removals, outbox_ready, sync_tx, sent_flags, syncs, sent, typing, typing_updates, recent_emoji, scheduled,
             synced_prefs, skin_tone, muted_rooms, room_reads, account_data_key, requests_viewed, whoami, drafts, sender_memo);
         store.load_from_sqlite();
@@ -1816,11 +1820,21 @@ impl BeeperStore {
             false => self.exec("DELETE FROM outbox WHERE id = ?1", params![row]),
         }
         let error = error.map(|(message, _)| SendError { message: Some(message), retrying: false });
+        if let Some(id) = message {
+            self.sending.remove(id);
+        }
         if let Some(i) = message.and_then(|id| self.find_message(id)) {
             if self.messages[i].send_error != error {
                 self.update_message(i, |m| m.send_error = error);
             }
         }
+    }
+
+    /// The start of the push of a message, and Desktop's `sendQueuedMessages` wait before it is "taking longer than
+    /// expected": a minute, or two with a file. After five times the wait the send gives up.
+    pub fn send_wait(&self, id: &str) -> Option<(i64, i64)> {
+        let wait = if self.stored_message(id)?.attachments.is_empty() { 60_000 } else { 120_000 };
+        Some((*self.sending.get(id)?, wait))
     }
 
     /// Desktop's `retryErroredMessage`.

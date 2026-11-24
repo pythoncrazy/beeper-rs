@@ -33,9 +33,8 @@ use matrix_sdk::ruma::api::client::uiaa::AuthData;
 use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::ruma::events::key::verification::VerificationMethod;
-use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::receipt::{ReceiptThread, ReceiptType};
-use matrix_sdk::ruma::events::relation::{Annotation, Reply};
+use matrix_sdk::ruma::events::relation::Reply;
 use matrix_sdk::ruma::events::room::message::{Relation, RoomMessageEventContent};
 use matrix_sdk::ruma::events::room::power_levels::UserPowerLevel;
 use matrix_sdk::ruma::events::room::MediaSource;
@@ -157,9 +156,12 @@ async fn account_data(room: &Room, kind: &str) -> Option<Value> {
     Some(serde_json::from_str::<Value>(raw.json().get()).expect("account data JSON")["content"].take())
 }
 
-async fn tag(room: &Room, name: TagName, on: bool) -> matrix_sdk::Result<()> {
+/// Desktop's `addRoomTag` with its `order` (mautrix's `AddTag`), or `deleteRoomTag`.
+async fn tag(room: &Room, name: TagName, order: f64, on: bool) -> matrix_sdk::Result<()> {
+    let mut info = TagInfo::new();
+    info.order = Some(order);
     match on {
-        true => room.set_tag(name, TagInfo::new()).await.map(drop),
+        true => room.set_tag(name, info).await.map(drop),
         false => room.remove_tag(name).await.map(drop),
     }
 }
@@ -686,14 +688,18 @@ pub(crate) struct Globals {
     pins: Value,
     muted: Vec<String>,
     notifications: matrix_sdk::notification_settings::NotificationSettings,
+    /// The [`crate::features::REQUESTS`] flag.
+    requests: bool,
 }
 
 impl Globals {
     pub(crate) async fn read(client: &Client) -> Self {
+        let flags = crate::features::Flags { flags: global(client, crate::features::FLAGS).await, ..Default::default() };
         Self {
             pins: global(client, "com.beeper.favourites_order").await,
             muted: muted_rooms(client).await,
             notifications: client.notification_settings().await,
+            requests: flags.get(crate::features::REQUESTS, 0).on,
         }
     }
 
@@ -726,7 +732,8 @@ async fn chat(room: &Room, reads: &RoomReads, accounts: &[BridgeAccountInfo], ru
         id: room.room_id().to_string(),
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, bridge, !dm)),
         inbox_group: !dm && bridge["com.beeper.room_type.v2"] != "group_dm",
-        is_request: Some(bridge["channel"]["com.beeper.message_request"] == true),
+        // Desktop's `isRequest`: a bridged chat is a request only with the flag.
+        is_request: Some(bridge["channel"]["com.beeper.message_request"] == true && (globals.requests || account_id == "hungryserv")),
         created_at: reads.create["origin_server_ts"].as_i64(),
         network_name: s(&bridge["network"]["displayname"]),
         network_id: s(&bridge["network"]["id"]),
@@ -2653,14 +2660,27 @@ async fn flush(store: SharedStore) -> Result<(), PushError> {
         // A failed change waits for Retry only with a local echo that shows the error.
         let message = out.message().filter(|id| store.read().stored_message(id).is_some()).map(str::to_string);
         let retry = !matches!(out, Outgoing::Edit { .. });
+        if let Some(id) = message.as_ref().filter(|_| retry) {
+            store.write().sending.entry(id.clone()).or_insert_with(now_unix_millis);
+        }
         let pending = matches!(out, Outgoing::RemoveFromBeeper { .. });
         let flag = match out {
             Outgoing::Flag(f, on) => Some((chat.clone(), f, on)),
             _ => None,
         };
-        let r = match push(&store, chat, out).await {
-            Err(e) if !e.transient => Err(PushError { transient: unreachable(&store).await, ..e }),
-            r => r,
+        // Desktop's `sendQueuedMessages` gives up on a message five times its slow wait after its push began.
+        let wait = message.as_ref().filter(|_| retry).and_then(|id| store.read().send_wait(id));
+        let left = wait.map_or(std::time::Duration::MAX, |(start, wait)| {
+            std::time::Duration::from_millis((start + 5 * wait - now_unix_millis()).max(0).cast_unsigned())
+        });
+        let late = || Err(PushError::from("Message took too long to send".to_string()));
+        let r = match left.is_zero() {
+            true => late(),
+            false => match tokio::time::timeout(left, push(&store, chat, out)).await {
+                Err(_) => late(),
+                Ok(Err(e)) if !e.transient => Err(PushError { transient: unreachable(&store).await, ..e }),
+                Ok(r) => r,
+            },
         };
         let mut st = store.write();
         match (r, message) {
@@ -3101,23 +3121,20 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 true => Some(caption_attachment(&room, &target).await?),
                 false => None,
             };
-            room.send_raw("m.room.message", edit_content(&target, text, &mentions, attachment)?).await?;
+            room.send_raw("m.room.message", origin(edit_content(&target, text, &mentions, attachment)?, now_unix_millis())).await?;
         }
         Outgoing::Redact { target } => {
             room.redact(&event(target)?, None, None).await.map_err(|x| x.to_string())?;
         }
         // Desktop's `sendReactionEvent`: a custom emoji reacts with its image and names its shortcode.
-        Outgoing::React { txn, target, key, img_url: Some(img) } => {
-            let content = serde_json::json!({
-                "m.relates_to": { "rel_type": "m.annotation", "event_id": event(target)?, "key": img },
-                "com.beeper.reaction.shortcode": format!(":{key}:"),
+        Outgoing::React { txn, target, key, img_url } => {
+            let mut content = serde_json::json!({
+                "m.relates_to": { "rel_type": "m.annotation", "event_id": event(target)?, "key": img_url.as_deref().unwrap_or(&key) },
             });
+            if img_url.is_some() {
+                content["com.beeper.reaction.shortcode"] = format!(":{key}:").into();
+            }
             send_txn(store, &room, "m.reaction", content, txn).await?;
-        }
-        Outgoing::React { txn, target, key, img_url: None } => {
-            let content = ReactionEventContent::new(Annotation::new(event(target)?, key));
-            let id = room.send(content).with_transaction_id(txn.as_str().into()).await?.response.event_id;
-            store.write().sent.insert(txn, id.to_string());
         }
         Outgoing::Poll { txn, poll } => send_txn(store, &room, "org.matrix.msc3381.poll.start", poll_start(&poll), txn).await?,
         Outgoing::Nudge(body) => {
@@ -3130,14 +3147,14 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 "org.matrix.msc3381.poll.end": {},
                 "org.matrix.msc1767.text": "Poll ended",
             });
-            room.send_raw("org.matrix.msc3381.poll.end", content).await?;
+            room.send_raw("org.matrix.msc3381.poll.end", origin(content, now_unix_millis())).await?;
         }
         Outgoing::Vote { target, answers } => {
             let content = serde_json::json!({
                 "m.relates_to": { "rel_type": "m.reference", "event_id": event(target)?.to_string() },
                 "org.matrix.msc3381.poll.response": { "answers": answers },
             });
-            room.send_raw("org.matrix.msc3381.poll.response", content).await?;
+            room.send_raw("org.matrix.msc3381.poll.response", origin(content, now_unix_millis())).await?;
         }
         Outgoing::Read(target) => {
             room.send_single_receipt(SendReceiptType::Read, ReceiptThread::Unthreaded, event(target)?).await?;
@@ -3440,10 +3457,10 @@ impl Push<'_> {
                 room.set_account_data_raw("com.beeper.inbox.done".into(), raw(&done)).await?;
             }
             ChatFlag::Pinned => {
-                tag(room, TagName::Favorite, on).await?;
+                tag(room, TagName::Favorite, 1.0, on).await?;
                 edit_pins(client, room.room_id().as_str(), on).await?;
             }
-            ChatFlag::LowPriority => tag(room, TagName::LowPriority, on).await?,
+            ChatFlag::LowPriority => tag(room, TagName::LowPriority, 0.0, on).await?,
             ChatFlag::Muted => {
                 let settings = client.notification_settings().await;
                 match on {
@@ -3529,8 +3546,20 @@ fn poll_start(poll: &PollData) -> Value {
     })
 }
 
-/// Sends the event `content` with the transaction ID `txn`, and keeps the event ID that the homeserver gives it.
+/// Desktop's `Fs`: the client that sent an event of the user, on its messages, edits, reactions and polls, with the
+/// time of the send.
+fn origin(mut content: Value, at: i64) -> Value {
+    content["com.beeper.origin_client_ts"] = at.into();
+    content["com.beeper.origin_client_type"] = "desktop".into();
+    content["com.beeper.origin_client_version"] = crate::config::APP_VERSION.into();
+    content
+}
+
+/// Sends the event `content` with the transaction ID `txn`, and keeps the event ID that the homeserver gives it. Like
+/// Desktop's, its origin time is that of its local echo, when the send waited.
 async fn send_txn(store: &SharedStore, room: &Room, kind: &str, content: Value, txn: String) -> Result<(), PushError> {
+    let at = store.read().stored_message(&txn).and_then(|m| crate::config::millis_from_rfc3339(&m.timestamp));
+    let content = origin(content, at.unwrap_or_else(now_unix_millis));
     let id = room.send_raw(kind, content).with_transaction_id(txn.as_str().into()).await?.response.event_id;
     store.write().sent.insert(txn, id.to_string());
     Ok(())
@@ -4755,10 +4784,15 @@ pub fn with_custom_emoji(pack: &Value, name: &str, url: &str) -> Result<Value, S
     Ok(pack)
 }
 
-/// Applies a change of the inbox rules to every room.
+/// Applies a change of the inbox rules or of the [`crate::features::REQUESTS`] flag to every room.
 async fn sync_rules(client: &Client, store: &SharedStore, globals: &Globals) {
     let rules = global(client, RULES).await;
-    if std::mem::replace(&mut store.write().inbox_rules, rules.clone()) != rules {
+    let changed = {
+        let mut st = store.write();
+        let requests = std::mem::replace(&mut st.requests_folder, globals.requests) != globals.requests;
+        (std::mem::replace(&mut st.inbox_rules, rules.clone()) != rules) | requests
+    };
+    if changed {
         let rooms = futures_util::stream::iter(client.joined_rooms());
         rooms.for_each_concurrent(8, |room| async move { sync_room_with(store, &room, Vec::new(), globals).await }).await;
     }
@@ -5796,6 +5830,7 @@ pub async fn run(store: SharedStore) {
         // Nothing saves a sync before the first one below, so the passes over the rooms read the global account data
         // once.
         let globals = Globals::read(&client).await;
+        store.write().requests_folder = globals.requests;
         for room in client.invited_rooms() {
             sync_invite(&store, &room, &globals).await;
         }
@@ -7114,6 +7149,37 @@ mod tests {
             "content": content, "unsigned": { "com.beeper.hs.order": 1 } })
     }
 
+    /// Desktop's `pinThread` tags a pin with the order 1, and `updateThread` a low priority chat with 0.
+    #[tokio::test]
+    async fn tags_have_desktops_orders() {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
+            _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            p => {
+                log.lock().unwrap().push((p.to_string(), body));
+                (200, json!({}))
+            }
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("tag-orders"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        {
+            let mut st = store.write();
+            let i = st.chat_idx("!room:x");
+            assert!(st.set_chat_flag(i, super::ChatFlag::Pinned, Some(true)));
+            assert!(st.set_chat_flag(i, super::ChatFlag::LowPriority, Some(true)));
+        }
+        super::flush(store.clone()).await.expect("the stub takes the tags");
+        let sent = sent.lock().unwrap();
+        let tag = |name: &str| sent.iter().find(|(p, _)| p.ends_with(&format!("/tags/{name}"))).expect(name).1.clone();
+        assert_eq!((tag("m.favourite"), tag("m.lowpriority")), (json!({ "order": 1.0 }), json!({ "order": 0.0 })));
+    }
+
     /// Desktop's optimistic thread update: a flag changed here keeps its value until a sync shows the change, also
     /// when a sync of the room (here the stub, which never has the change) comes first.
     #[tokio::test]
@@ -8138,6 +8204,21 @@ mod tests {
         let echo = store.read().stored_message(&txn).expect("the echo");
         let a = &echo.attachments[0];
         assert_eq!((a.file_name.as_deref(), a.mime_type.as_deref()), (Some("a.png"), Some("image/png")));
+        let react = super::Outgoing::React { txn: "rx".into(), target: "$sent".into(), key: "👍".into(), img_url: None };
+        store.write().queue("!room:x", react);
+        super::flush(store.clone()).await.expect("send the reaction");
+        // Desktop's `Fs` on its messages and reactions: the time of the local echo, else of the send.
+        let sent = sent.lock().unwrap();
+        let body = |kind: &str| sent.iter().rfind(|(p, _)| p.contains(kind)).expect(kind).1.clone();
+        let (image, reaction) = (body("/send/m.room.message/"), body("/send/m.reaction/"));
+        for b in [&image, &reaction, &body("/send/m.sticker/")] {
+            assert_eq!(
+                (&b["com.beeper.origin_client_type"], &b["com.beeper.origin_client_version"]),
+                (&json!("desktop"), &json!("4.3.308"))
+            );
+        }
+        assert_eq!(image["com.beeper.origin_client_ts"].as_i64(), crate::config::millis_from_rfc3339(&echo.timestamp));
+        assert_eq!(reaction["m.relates_to"], json!({ "rel_type": "m.annotation", "event_id": "$sent", "key": "👍" }));
     }
 
     /// Desktop's `updateGroup` from the Edit Group window sends the name and the topic now, and a refusal comes back.
@@ -8199,6 +8280,36 @@ mod tests {
         let store = stub_store(&crate::testing::temp_dir("bot-room"), &url).await;
         sync_stub_room(&store, "!room:x").await;
         assert_eq!(store.read().chat("!room:x").title, "@whatsappbot:beeper.local");
+    }
+
+    /// Desktop's `isRequest`: a bridged message request is one only with the `message-requests-folder-available`
+    /// flag, and a change of the flag makes the chats again.
+    #[tokio::test]
+    async fn bridged_requests_follow_the_requests_flag_like_desktop() {
+        let mut sync = stub_sync();
+        let bridge = json!({ "bridgebot": "@bot:x", "channel": { "id": "c", "com.beeper.message_request": true },
+            "protocol": { "id": "telegram" }, "com.beeper.bridge_name": "telegram" });
+        let bridge = json!({ "type": "m.bridge", "state_key": "", "sender": "@me:x", "event_id": "$b", "origin_server_ts": 1,
+            "content": bridge });
+        sync["rooms"]["join"]["!room:x"]["state"]["events"].as_array_mut().unwrap().push(bridge);
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("requests-flag"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        assert_eq!(store.read().chat("!room:x").is_request, Some(false), "no flag, no request");
+        let client = store.read().matrix.clone().expect("a client");
+        let mut globals = super::Globals::read(&client).await;
+        globals.requests = true;
+        super::sync_rules(&client, &store, &globals).await;
+        assert_eq!(store.read().chat("!room:x").is_request, Some(true), "the flag makes the chat a request");
+        assert!(store.read().requests_folder);
     }
 
     /// Desktop's blocking: the `block_user`, `no_unblock` and `report_spam` room features, the
@@ -8752,6 +8863,35 @@ mod tests {
         pushed_until(&store, |st| st.sent.contains_key(&txn)).await;
         assert!(store.read().stored_message(&txn).expect("the echo").send_error.is_none());
         assert!(tries.load(Relaxed) >= 3 && store.read().outbox.is_empty(), "the third try went through");
+    }
+
+    /// Desktop's `sendQueuedMessages` gives up on a send five times its slow wait (a minute, two with a file) after it
+    /// began: until then a send that the homeserver cannot take stays pending, then it fails for Retry.
+    #[tokio::test]
+    async fn sends_give_up_like_desktop() {
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split('?').next().expect("a path") {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            p if p.contains("/send/m.room.message/") => (503, json!({ "errcode": "M_UNKNOWN", "error": "stub overload" })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("outbox-too-long"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        let draft = crate::store::Draft { text: Some("hi".into()), ..Default::default() };
+        let txn = store.write().send("!room:x", draft).expect("a local echo").1.remove(0);
+        let error = |store: &crate::store::SharedStore| store.read().stored_message(&txn).expect("the echo").send_error;
+        let started = crate::config::now_unix_millis() - 290_000;
+        store.write().sending.insert(txn.clone(), started);
+        assert_eq!(store.read().send_wait(&txn), Some((started, 60_000)));
+        assert!(super::flush(store.clone()).await.is_err(), "the homeserver is overloaded");
+        assert_eq!((error(&store), store.read().sending.get(&txn)), (None, Some(&started)), "still sending");
+        store.write().sending.insert(txn.clone(), crate::config::now_unix_millis() - 300_000);
+        super::flush(store.clone()).await.expect("the send gives up");
+        assert_eq!(error(&store).and_then(|e| e.message).as_deref(), Some("Message took too long to send"));
+        assert!(store.read().has_errored("!room:x") && !store.read().sending.contains_key(&txn), "it waits for Retry");
     }
 
     /// A client of a stub homeserver tries each request once, with a short timeout. matrix-sdk retries a 5xx for up to

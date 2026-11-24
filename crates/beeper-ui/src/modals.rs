@@ -11,6 +11,10 @@ pub enum Modal {
     RecoveryKey,
     /// `ChangeEmailBrowserWindow` (`TNt`), which the Save of a new email on the Profile page opens.
     ChangeEmail,
+    /// `BEEPER_CONNECT_ACCESS_TOKEN_REQUEST`, which a token request of the Desktop API opens over the main window.
+    TokenRequest,
+    /// `ADD_BEEPER_CONNECT_TOKEN`, the "+" of Settings > Integrations.
+    AddToken,
 }
 
 /// How Desktop opens the window of a [`Modal`]: its size before Electron grows it to its minimum, whether it resizes,
@@ -29,20 +33,32 @@ impl Modal {
             Modal::RecoveryKey => Shape { size: Size::new(350.0, 330.0), resizable: true, frame: true },
             // `frame: !1`, so it has no title bar.
             Modal::ChangeEmail => Shape { size: Size::new(350.0, 380.0), resizable: false, frame: false },
+            Modal::TokenRequest => Shape { size: Size::new(460.0, 330.0), resizable: false, frame: true },
+            // Its `minHeight` of 320 loses to Electron's 400 too.
+            Modal::AddToken => Shape { size: Size::new(760.0, 360.0), resizable: true, frame: true },
         }
     }
 
-    /// The window title: `gm`'s `title`, and the class's `title`, which Desktop does not translate.
+    /// The window title: `gm`'s `title`, else the app's name, and the class's `title`, which Desktop does not
+    /// translate.
     pub(crate) fn title(self) -> &'static str {
         match self {
             Modal::RecoveryKey => "Recovery Key",
             Modal::ChangeEmail => "Change Email",
+            Modal::TokenRequest | Modal::AddToken => "Beeper",
         }
+    }
+
+    /// Whether Escape closes the window: `onEscapePressed` of a class, and the modals of Desktop's `handleEscape`.
+    fn escape_closes(self) -> bool {
+        matches!(self, Modal::RecoveryKey | Modal::ChangeEmail)
     }
 }
 
-/// `gm`'s `maxWidth` of a modal window that resizes, `Math.max(700, width)`. Its height has no limit.
-const MAX_SIZE: Size = Size::new(700.0, 100_000.0);
+/// `gm`'s `maxWidth` of a modal window that resizes, at least 700. Its height has no limit.
+fn max_size(width: f32) -> Size {
+    Size::new(width.max(700.0), 100_000.0)
+}
 
 impl BeeperGuiApp {
     /// The open window of `m`.
@@ -66,7 +82,7 @@ impl BeeperGuiApp {
             resizable,
             decorations: frame,
             min_size: resizable.then_some(MIN_SIZE),
-            max_size: (resizable && frame).then_some(MAX_SIZE),
+            max_size: (resizable && frame).then(|| max_size(size.width)),
             ..Self::window_settings(size)
         };
         let parent = from.and_then(|id| self.screen_size(id).map(|size| (id, size)));
@@ -87,6 +103,8 @@ impl BeeperGuiApp {
         match m {
             Modal::RecoveryKey => self.profile.recovery_key = None,
             Modal::ChangeEmail => self.profile.change_email = None,
+            Modal::TokenRequest => self.token_ask = None,
+            Modal::AddToken => self.integrations.add = None,
         }
     }
 
@@ -104,15 +122,17 @@ impl BeeperGuiApp {
         match m {
             Modal::RecoveryKey => self.view_recovery_key(),
             Modal::ChangeEmail => self.view_change_email(),
+            Modal::TokenRequest => self.token_ask.as_ref().map_or_else(|| Space::new().into(), |a| self.view_token_ask(a)),
+            Modal::AddToken => self.integrations.add.as_ref().map_or_else(|| Space::new().into(), |a| self.view_add_token(a)),
         }
     }
 
-    /// A key in the window of `m`: Escape closes it, like `onEscapePressed` of Change Email and Desktop's
-    /// `handleEscape`, which hides `SHOW_RECOVERY_KEY`.
+    /// A key in a window of [`Modal`], where Escape closes some.
     pub(crate) fn modal_key(&mut self, id: window::Id, key: &Key) -> Task<UiMessage> {
-        match key {
-            Key::Named(keyboard::key::Named::Escape) => self.close_window(id),
-            _ => Task::none(),
+        let escape = *key == Key::Named(keyboard::key::Named::Escape);
+        match escape && self.modal_at(id).is_some_and(Modal::escape_closes) {
+            true => self.close_window(id),
+            false => Task::none(),
         }
     }
 
