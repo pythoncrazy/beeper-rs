@@ -59,24 +59,19 @@ pub const FILE_GIF: &str = "fi.mau.gif";
 pub const FILE_VOICE: &str = "org.matrix.msc3245.voice";
 pub const FILE_STICKER: &str = "m.sticker";
 /// The limits of one file kind of `com.beeper.room_features`.
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct FileRule {
     /// The `Xn` level of each MIME type, `type/*` or `*/*`: `Rejected` is -2, `Unsupported` 0, `FullySupported` 2.
     #[serde(default)]
     pub mime_types: std::collections::BTreeMap<String, i8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_size: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_width: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_height: Option<u32>,
     /// In seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_duration: Option<f64>,
     /// The `Xn` level of a caption on a file of this kind.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption: Option<i8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_caption_length: Option<u32>,
 }
 /// The file kinds that a chat accepts.
@@ -409,40 +404,31 @@ pub struct InfoServer {
     pub mcp_enabled: bool,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct User {
     pub id: String,
-    #[serde(rename = "fullName", skip_serializing_if = "Option::is_none")]
     pub full_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    #[serde(rename = "phoneNumber", skip_serializing_if = "Option::is_none")]
     pub phone_number: Option<String>,
-    #[serde(rename = "imgURL", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "imgURL")]
     pub img_url: Option<String>,
-    #[serde(rename = "isSelf", skip_serializing_if = "Option::is_none")]
     pub is_self: Option<bool>,
-    #[serde(rename = "cannotMessage", skip_serializing_if = "Option::is_none")]
     pub cannot_message: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "custom_nickname")]
     pub custom_nickname: Option<String>,
-    #[serde(rename = "isNetworkBot", skip_serializing_if = "Option::is_none")]
     pub is_network_bot: Option<bool>,
     /// The Matrix user of a contact from the contact list of a bridge (`mxid`), which starts a chat on that account.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mxid: Option<String>,
-    #[serde(rename = "isAdmin", skip_serializing_if = "Option::is_none")]
     pub is_admin: Option<bool>,
     /// Desktop's `isPending`: invited, and not joined yet.
-    #[serde(rename = "isPending", skip_serializing_if = "Option::is_none")]
     pub is_pending: Option<bool>,
     /// Desktop's `addedBy`: who invited a pending member.
-    #[serde(default, skip_serializing)]
+    #[serde(rename = "added_by", skip_serializing)]
     pub added_by: Option<String>,
     /// Desktop's `hasExited`: the member left or was removed.
-    #[serde(rename = "hasExited", default, skip_serializing_if = "Option::is_none")]
     pub has_exited: Option<bool>,
     /// The `MANAGE_` bits: what the power level of the own user allows on this member.
     #[serde(default, skip_serializing)]
@@ -591,16 +577,16 @@ pub struct ChatDraftAttachment {
     pub mime_type: Option<String>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatDraft {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub attachments: Vec<ChatDraftAttachment>,
-    #[serde(rename = "replyToMessageID", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "replyToMessageID")]
     pub reply_to_message_id: Option<String>,
     /// Desktop's draft `send_later`: the Unix milliseconds to send at, and "if no reply".
-    #[serde(rename = "sendLater", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "sendLater")]
     pub send_later: Option<(i64, bool)>,
     /// The links whose preview you removed. Desktop keeps them as `{ matched_url }` link previews.
     #[serde(rename = "discardedLinks", skip_serializing_if = "Vec::is_empty", default)]
@@ -609,15 +595,14 @@ pub struct ChatDraft {
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub mentions: Vec<(String, String)>,
     /// Desktop's `draftTs`: the Unix milliseconds of the last change of the text or the files.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ts: Option<i64>,
     /// Desktop's draft `send_room_id` (`draftSendRoomID`) of a merged chat: the member chat that the reply or the
     /// switcher picked, which the draft sends to when the chat opens again.
-    #[serde(rename = "sendRoomID", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "sendRoomID")]
     pub send_room_id: Option<String>,
     /// Desktop's `com.beeper.revision_id` of the draft record: a new one for each change of what syncs, or the one of
     /// the synced draft that it came from (see [`crate::drafts`]).
-    #[serde(rename = "revisionID", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "revisionID")]
     pub revision_id: Option<String>,
 }
 
@@ -664,7 +649,9 @@ impl ChatReminder {
     }
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Chat {
     pub id: String,
     #[serde(rename = "accountID")]
@@ -673,73 +660,53 @@ pub struct Chat {
     pub title: String,
     #[serde(rename = "type")]
     pub chat_type: String,
-    #[serde(rename = "unreadCount")]
     pub unread_count: u32,
     #[serde(rename = "unreadMentionsCount", default)]
     pub unread_mentions: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub draft: Option<ChatDraft>,
     /// Desktop's `SYNCED_DRAFT` of the chat's `com.beeper.draft`, which stays on this device.
-    #[serde(rename = "syncedDraft", default, skip_serializing_if = "Option::is_none")]
     pub synced_draft: Option<Box<SyncedDraft>>,
-    #[serde(rename = "isArchived", skip_serializing_if = "Option::is_none")]
     pub is_archived: Option<bool>,
-    #[serde(rename = "isMarkedUnread", skip_serializing_if = "Option::is_none")]
     pub is_marked_unread: Option<bool>,
-    #[serde(rename = "isMuted", skip_serializing_if = "Option::is_none")]
     pub is_muted: Option<bool>,
-    #[serde(rename = "isPinned", skip_serializing_if = "Option::is_none")]
     pub is_pinned: Option<bool>,
-    #[serde(rename = "isLowPriority", skip_serializing_if = "Option::is_none")]
     pub is_low_priority: Option<bool>,
     #[serde(rename = "labelIDs", skip_serializing_if = "Vec::is_empty", default)]
     pub label_ids: Vec<String>,
-    #[serde(rename = "lastActivity", skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<String>,
-    #[serde(rename = "lastReadMessageSortKey", skip_serializing_if = "Option::is_none")]
     pub last_read_message_sort_key: Option<String>,
-    #[serde(rename = "localChatID", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "localChatID")]
     pub local_chat_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub merge: Option<ChatMergeInfo>,
-    #[serde(rename = "mergedIntoChatID", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "mergedIntoChatID")]
     pub merged_into_chat_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<Message>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub reminder: Option<ChatReminder>,
     /// Desktop's `snooze.snoozeUntilMs` of `com.beeper.chats.snoozed`.
-    #[serde(rename = "snoozedUntilMs", default, skip_serializing_if = "Option::is_none")]
     pub snoozed_until_ms: Option<i64>,
     /// Desktop's local `note` thread prop, the Notes of the Chat Info panel.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// The sort key of the newest message or reaction; a newer one than the done mark unarchives the chat.
-    #[serde(rename = "lastNotifiableOrder", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "lastNotifiableOrder")]
     pub notifiable: Option<String>,
     /// Whether the inbox rule of the account hides the chat.
-    #[serde(rename = "isHiddenFromInbox", skip_serializing_if = "Option::is_none")]
     pub is_hidden_from_inbox: Option<bool>,
     /// Whether "Only DMs" hides the chat: a group that is not a group DM.
-    #[serde(rename = "inboxGroup", default)]
+    #[serde(default)]
     pub inbox_group: bool,
-    #[serde(rename = "isRequest", skip_serializing_if = "Option::is_none")]
     pub is_request: Option<bool>,
     /// Desktop's `createdAt`: the time of the room's `m.room.create`, in milliseconds.
-    #[serde(rename = "createdAt", default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
-    #[serde(rename = "networkName", skip_serializing_if = "Option::is_none")]
     pub network_name: Option<String>,
-    #[serde(rename = "networkID", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "networkID")]
     pub network_id: Option<String>,
-    #[serde(rename = "imgURL", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "imgURL")]
     pub img_url: Option<String>,
-    #[serde(rename = "deleteModes", default)]
+    #[serde(default)]
     pub delete_modes: u8,
     /// Whether the bridge accepts a message request with a button (`message_request.accept_with_button`).
-    #[serde(rename = "canAcceptRequest", default)]
+    #[serde(default)]
     pub can_accept_request: bool,
     /// The `BLOCK_USER`, `NO_UNBLOCK`, `REPORT_SPAM` and `USER_BLOCKED` bits of a DM.
     #[serde(default)]
@@ -748,7 +715,7 @@ pub struct Chat {
     #[serde(default = "all_edits")]
     pub edits: u8,
     /// The `MEMBER_ACTIONS` that the room supports, one bit each.
-    #[serde(rename = "memberActions", default = "all_member_actions")]
+    #[serde(default = "all_member_actions")]
     pub member_actions: u8,
     /// The `FORMATS` the network fully supports, one bit each.
     #[serde(default = "all_formats")]
@@ -762,9 +729,9 @@ pub struct Chat {
     pub room_features: bool,
     /// Desktop's `features`: the content of the room's `com.beeper.room_features`, which the Desktop API maps to the
     /// chat's `capabilities`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub features: Option<Box<serde_json::Value>>,
     /// The poll features of the network, or `None` when it has no polls.
+    #[serialize_always]
     #[serde(default = "beeper_polls")]
     pub polls: Option<PollRules>,
     /// The edit, delete, reaction and reply features of the network.
@@ -772,49 +739,47 @@ pub struct Chat {
     pub messages: MessageRules,
     /// Desktop's `allowed_reactions` of `com.beeper.room_features`: the only reactions the network takes, or any emoji
     /// when it is empty (`canReactWithAnyEmoji`).
-    #[serde(rename = "allowedReactions", default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub allowed_reactions: Vec<String>,
     /// Desktop's `custom_emoji_reactions` room feature (see [`custom_emoji`]): the picker and the composer offer the
     /// custom emoji of the own image pack.
     #[serde(rename = "customEmojiReactions", default = "yes")]
     pub custom_emoji: bool,
     /// Desktop's `disappearingTimer`: the `com.beeper.disappearing_timer` of new messages in ms.
-    #[serde(rename = "disappearingTimer", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "disappearingTimer")]
     pub disappearing: Option<u64>,
     /// Desktop's `roomFeatures.disappearing_timer`, or `None` when the room has no disappearing messages.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timers: Option<Timers>,
-    #[serde(default, skip_serializing_if = "Older::is_unknown")]
+    #[serde(skip_serializing_if = "Older::is_unknown", default)]
     pub older: Older,
     /// Desktop's `isReadOnly`: your power level is below the one of messages, or an upgrade replaced the room.
-    #[serde(rename = "isReadOnly", default)]
+    #[serde(default)]
     pub is_read_only: bool,
     /// Desktop's `extra.replacementRoomID`: the room of the `m.room.tombstone` of the chat.
-    #[serde(rename = "replacementRoomID", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "replacementRoomID")]
     pub replacement_room: Option<String>,
     /// Desktop's `canMentionRoom` with the room's `at_room_mention` feature: the composer offers "@room".
-    #[serde(rename = "canMentionRoom", default)]
+    #[serde(default)]
     pub can_mention_room: bool,
     /// Desktop's `supportsThreads`: the `thread` room feature is above 0.
     #[serde(rename = "supportsThreads", default)]
     pub threads: bool,
     /// Desktop's `com.beeper.thread_follows` room account data.
-    #[serde(rename = "threadFollows", default, skip_serializing_if = "ThreadFollows::is_empty")]
+    #[serde(rename = "threadFollows", skip_serializing_if = "ThreadFollows::is_empty", default)]
     pub follows: ThreadFollows,
     /// Desktop's `lastReadHsOrder` of each thread: the sort key that the thread is read through, by root ID.
-    #[serde(rename = "threadReads", default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
     pub thread_reads: std::collections::BTreeMap<String, String>,
     /// The personal name or photo, which `title` and `img_url` show instead of the room's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub personal: Option<Box<Personal>>,
     /// Desktop's `chatNotificationSound`: a sound of [`CHAT_SOUNDS`], or `None` for the Default sound.
-    #[serde(rename = "chatNotificationSound", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "chatNotificationSound")]
     pub notification_sound: Option<String>,
     /// Desktop's `deriveDMSenderNames` of a merged chat: "Apply merged info to contacts".
-    #[serde(rename = "deriveDMSenderNames", default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(rename = "deriveDMSenderNames", skip_serializing_if = "std::ops::Not::not", default)]
     pub derive_dm_sender_names: bool,
     /// The room has an `m.room.name` (Desktop's `title`), so it is no DM of one person.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub named: bool,
     #[serde(skip)]
     pub flags: u16,
@@ -1204,41 +1169,31 @@ impl Chat {
     }
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentSize {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Attachment {
     #[serde(rename = "type")]
     pub attachment_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
-    #[serde(rename = "fileName", skip_serializing_if = "Option::is_none")]
     pub file_name: Option<String>,
-    #[serde(rename = "fileSize", skip_serializing_if = "Option::is_none")]
     pub file_size: Option<u64>,
-    #[serde(rename = "isGif", skip_serializing_if = "Option::is_none")]
     pub is_gif: Option<bool>,
-    #[serde(rename = "isSticker", skip_serializing_if = "Option::is_none")]
     pub is_sticker: Option<bool>,
-    #[serde(rename = "isVoiceNote", skip_serializing_if = "Option::is_none")]
     pub is_voice_note: Option<bool>,
-    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
-    #[serde(rename = "posterImg", skip_serializing_if = "Option::is_none")]
     pub poster_img: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<AttachmentSize>,
-    #[serde(rename = "srcURL", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "srcURL")]
     pub src_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub transcription: Option<Transcription>,
 }
 
@@ -1320,7 +1275,9 @@ pub struct EditHistoryEntry {
     pub timestamp: String,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Message {
     pub id: String,
     #[serde(rename = "accountID")]
@@ -1329,97 +1286,82 @@ pub struct Message {
     pub chat_id: String,
     #[serde(rename = "senderID")]
     pub sender_id: String,
-    #[serde(rename = "sortKey")]
     pub sort_key: String,
     pub timestamp: String,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub attachments: Vec<Attachment>,
-    #[serde(rename = "isSender", skip_serializing_if = "Option::is_none")]
     pub is_sender: Option<bool>,
-    #[serde(rename = "isUnread", skip_serializing_if = "Option::is_none")]
     pub is_unread: Option<bool>,
-    #[serde(rename = "isBookmarked", skip_serializing_if = "Option::is_none")]
     pub is_bookmarked: Option<bool>,
-    #[serde(rename = "isDeleted", skip_serializing_if = "Option::is_none")]
     pub is_deleted: Option<bool>,
     /// Desktop's `isRemovedFromBeeper`: the user removed the deleted message from Beeper, and nobody redacted it.
-    #[serde(rename = "isRemovedFromBeeper", default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(rename = "isRemovedFromBeeper", skip_serializing_if = "std::ops::Not::not", default)]
     pub removed: bool,
-    #[serde(rename = "linkedMessageID", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "linkedMessageID")]
     pub linked_message_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub reactions: Vec<Reaction>,
-    #[serde(rename = "senderName", skip_serializing_if = "Option::is_none")]
     pub sender_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// The Matrix HTML of the text, when the sender formatted it.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub html: Option<String>,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type")]
     pub message_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub poll: Option<PollData>,
-    #[serde(rename = "unresolvedMedia", skip_serializing_if = "Option::is_none")]
     pub unresolved_media: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[serde(rename = "edit_history", skip_serializing_if = "Vec::is_empty", default)]
     pub edit_history: Vec<EditHistoryEntry>,
     /// Desktop's `isEdited`, which a deletion sets too and which outlives the edit history.
-    #[serde(rename = "isEdited", skip_serializing_if = "Option::is_none")]
     pub is_edited: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub links: Vec<MessageLink>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
     pub seen: std::collections::BTreeMap<String, String>,
     /// Desktop's `action.timer` of a `DISAPPEARING_TIMER` row: the new timer in ms, or 0 for Off.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub timer: Option<u64>,
     /// Desktop's `sendStatus` of a message that the homeserver or the bridge did not take: `isErrored`, or
     /// `isRetrying` again.
-    #[serde(rename = "sendError", skip_serializing_if = "Option::is_none", default)]
     pub send_error: Option<SendError>,
     /// Desktop's `isDelivered`: the bridge delivered the message to a user.
-    #[serde(rename = "isDelivered", skip_serializing_if = "std::ops::Not::not", default)]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub is_delivered: bool,
     /// Desktop's `threadRootEventID`: the root of the Matrix thread of a reply.
-    #[serde(rename = "threadRootEventID", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "threadRootEventID")]
     pub thread_root: Option<String>,
     /// Desktop's `extra.broadcastOutsideThread`: the thread reply shows in the chat too.
-    #[serde(rename = "broadcastOutsideThread", default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(rename = "broadcastOutsideThread", skip_serializing_if = "std::ops::Not::not", default)]
     pub broadcast: bool,
     /// Desktop's `extra.isReplyFallback`: `linkedMessageID` is the fallback reply of a thread reply, not a quote.
-    #[serde(rename = "isReplyFallback", default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(rename = "isReplyFallback", skip_serializing_if = "std::ops::Not::not", default)]
     pub fallback: bool,
     /// Desktop's `mentions`: the user IDs of the `m.mentions` of the message, or `None` without `m.mentions`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mentions: Option<Vec<String>>,
     /// Desktop's `sendStatus`: the last `com.beeper.message_send_status` of the bridge for the message.
-    #[serde(rename = "sendStatus", default, skip_serializing_if = "Option::is_none")]
     pub send_status: Option<SendStatus>,
     /// Desktop's `extra.callAction`: a call that the bridge reported, which shows as a call pill instead of its text.
-    #[serde(rename = "callAction", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "callAction")]
     pub call: Option<CallAction>,
     /// Desktop's `disappearingTimer` of the message.
-    #[serde(rename = "disappearingTimer", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "disappearingTimer")]
     pub disappearing: Option<MessageTimer>,
     /// Desktop's `extra.viewLimitedMedia`: the `com.beeper.view_limited` limit of view-once media, which shows as a
     /// pill that opens the media instead of the media.
-    #[serde(rename = "viewLimitedMedia", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "viewLimitedMedia")]
     pub view_limit: Option<serde_json::Value>,
     /// Desktop's `viewLimitedMediaRemainingCount`: the fewest views left that the bridge reported.
-    #[serde(rename = "viewLimitedMediaRemainingCount", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "viewLimitedMediaRemainingCount")]
     pub views_left: Option<u64>,
     /// Desktop's `extra.viewLimitedMediaExpired`: the bridge deleted the view-once media after its last view.
-    #[serde(rename = "viewLimitedMediaExpired", default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(rename = "viewLimitedMediaExpired", skip_serializing_if = "std::ops::Not::not", default)]
     pub view_expired: bool,
     /// Desktop's `extra.viewLimitedMediaKind`: the attachment type of the expired media.
-    #[serde(rename = "viewLimitedMediaKind", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "viewLimitedMediaKind")]
     pub view_kind: Option<String>,
     /// Desktop's `actionButtons`: the buttons under a message from the [`system_user`].
-    #[serde(rename = "actionButtons", default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(rename = "actionButtons", skip_serializing_if = "Vec::is_empty", default)]
     pub buttons: Vec<ActionButton>,
     /// Desktop's `extra.isNudge`: the message is a nudge (`com.beeper.nudge`).
-    #[serde(rename = "isNudge", default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(rename = "isNudge", skip_serializing_if = "std::ops::Not::not", default)]
     pub nudge: bool,
     /// The bits that [`Message::sync_flags`] derives from the fields, which the store does not keep.
     #[serde(skip)]
@@ -1604,20 +1546,17 @@ impl ActionButton {
 }
 
 /// A `com.beeper.message_send_status` as Desktop's `handleMessageSendStatus` keeps it.
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendStatus {
     pub status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     /// When the bridge sent the status, in milliseconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ts: Option<i64>,
     #[serde(default)]
     pub delivered_to_users: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub internal_error: Option<String>,
 }
 
@@ -1628,16 +1567,15 @@ pub struct SendError {
     pub retrying: bool,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessageLink {
     pub url: String,
     pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     /// The preview image, and its size when the preview has it.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub img: Option<String>,
-    #[serde(rename = "imgSize", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "imgSize")]
     pub img_size: Option<AttachmentSize>,
 }
 
@@ -1806,6 +1744,7 @@ pub struct VerificationError {
 }
 
 /// Desktop's `AppVerification`: the progress of a trusted device verification.
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppVerification {
@@ -1815,15 +1754,11 @@ pub struct AppVerification {
     pub state: &'static str,
     pub methods: Vec<&'static str>,
     pub available_actions: Vec<&'static str>,
-    #[serde(rename = "otherUserID", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "otherUserID")]
     pub other_user_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub other_device: Option<VerificationDevice>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub qr: Option<VerificationQr>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub sas: Option<VerificationSas>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<VerificationError>,
 }
 
@@ -1877,16 +1812,16 @@ pub struct AppE2ee {
 }
 
 /// Desktop's `AppStateSnapshot`: the sign-in and encrypted messaging setup state of the app.
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize)]
 pub struct AppState {
     pub state: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub matrix: Option<AppMatrix>,
     pub e2ee: AppE2ee,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub verification: Option<AppVerification>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BridgeAccountInfo {
@@ -1901,14 +1836,10 @@ pub struct BridgeAccountInfo {
     pub mode: BridgeMode,
     pub network_name: String,
     pub state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_profile: Option<RemoteProfile>,
     /// The `message` of a remote state with `has_error`, which Desktop's account page shows, and its `error` code.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_error_code: Option<String>,
 }
 
@@ -1933,18 +1864,14 @@ impl BridgeAccountInfo {
     }
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RemoteProfile {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// The `mxc://` avatar of the user of the account.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub phone: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
 }
 
@@ -1955,18 +1882,17 @@ pub struct BridgeLoginSession {
     pub step: crate::bridge_login::Step,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsEvent {
     #[serde(rename = "type")]
     pub event_type: String,
-    #[serde(rename = "chatID", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "chatID")]
     pub chat_id: Option<String>,
-    #[serde(rename = "messageID", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "messageID")]
     pub message_id: Option<String>,
     pub timestamp: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub chat: Option<Chat>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<Message>,
 }
 
@@ -2195,15 +2121,14 @@ pub struct InstalledPack {
 
 /// Desktop's sticker of a pack: the image URL with its shortcodes, the body and the info of its first image, and
 /// Desktop's `source` (`tTt`) of a pack in a room.
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sticker {
     pub url: String,
     pub shortcodes: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
     #[serde(default)]
     pub info: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<StickerSource>,
 }
 
@@ -2224,19 +2149,17 @@ pub struct SpaceOrder {
 
 /// Desktop's `chatAppearanceStore`: the default chat theme, and the themes of single chats.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct ChatAppearance {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global: Option<ChatTheme>,
-    #[serde(rename = "perChat")]
     pub per_chat: std::collections::BTreeMap<String, ChatTheme>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatTheme {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub wallpaper: Option<Wallpaper>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub bubble: Option<Bubble>,
 }
 

@@ -241,27 +241,20 @@ struct Participants<'a> {
 }
 
 /// Desktop's `Participant`: a `User` with the membership fields.
+#[serde_with::skip_serializing_none]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Participant<'a> {
     id: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
     username: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     phone_number: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     email: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     full_name: Option<&'a str>,
-    #[serde(rename = "imgURL", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "imgURL")]
     img_url: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     cannot_message: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     is_self: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     is_admin: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     is_network_bot: Option<bool>,
 }
 
@@ -272,15 +265,14 @@ struct Draft<'a> {
     attachments: BTreeMap<&'a str, DraftAttachment<'a>>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DraftAttachment<'a> {
     id: &'a str,
     #[serde(rename = "type")]
     kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
     mime_type: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     file_name: Option<&'a str>,
 }
 
@@ -532,6 +524,7 @@ pub(super) fn chat<'a>(st: &'a BeeperStore, c: &'a Chat, max_participants: Optio
 }
 
 /// Desktop's `Message`: the message types of the API, and no store fields.
+#[serde_with::skip_serializing_none]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ApiMessage<'a> {
@@ -545,31 +538,23 @@ pub(super) struct ApiMessage<'a> {
     sender_name: &'a str,
     timestamp: &'a str,
     sort_key: &'a str,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type")]
     message_type: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     edited_timestamp: Option<&'a str>,
     is_sender: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     send_status: Option<ApiSendStatus<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     is_hidden: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     is_deleted: Option<bool>,
-    #[serde(rename = "linkedMessageID", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "linkedMessageID")]
     linked_message_id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     mentions: Option<&'a [String]>,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     links: &'a [MessageLink],
     reactions: Vec<ApiReaction<'a>>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     seen: &'a BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     attachments: Option<Vec<ApiAttachment<'a>>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     is_unread: Option<bool>,
 }
 
@@ -587,47 +572,36 @@ struct ApiReaction<'a> {
 }
 
 /// Desktop's `ep`: the `sendStatus` of a message, with its time.
+#[serde_with::skip_serializing_none]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiSendStatus<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<&'a str>,
     status: &'a str,
     timestamp: String,
     delivered_to_users: &'a [String],
-    #[serde(skip_serializing_if = "Option::is_none")]
     internal_error: Option<&'a str>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiAttachment<'a> {
     id: &'a str,
     #[serde(rename = "type")]
     kind: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
     mime_type: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     file_name: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     file_size: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     is_gif: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     is_sticker: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     is_voice_note: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     duration: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     transcription: Option<&'a Transcription>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     poster_img: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     size: Option<&'a AttachmentSize>,
-    #[serde(rename = "srcURL", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "srcURL")]
     src_url: Option<&'a str>,
 }
 

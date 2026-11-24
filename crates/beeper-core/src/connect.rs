@@ -17,24 +17,22 @@ pub const KEY_CLIENTS: &str = "conn:clients";
 pub const READ: &str = "read";
 pub const WRITE: &str = "write";
 
+#[serde_with::skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientInfo {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    #[serde(rename = "clientID", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "clientID")]
     pub client_id: Option<String>,
-    #[serde(rename = "clientURI", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "clientURI")]
     pub client_uri: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_agent: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_address: Option<String>,
 }
 
 /// A stored access token; only the SHA-256 of the token itself is kept.
+#[serde_with::skip_serializing_none]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Token {
@@ -42,9 +40,7 @@ pub struct Token {
     pub token_hash: String,
     pub created_at: i64,
     pub scopes: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_info: Option<ClientInfo>,
 }
 

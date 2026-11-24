@@ -506,7 +506,6 @@ pub(crate) struct RoomReads {
     personal_avatar: Option<Value>,
     done: Option<Value>,
     /// `com.beeper.derive_dm_sender_names` of a merged chat.
-    #[serde(default)]
     derive: Option<Value>,
     /// The names of the senders that [`op`] looked up, from their member state.
     names: HashMap<String, Option<String>>,
