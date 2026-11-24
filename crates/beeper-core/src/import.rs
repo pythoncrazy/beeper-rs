@@ -69,6 +69,11 @@ fn open(path: &Path) -> rusqlite::Result<Connection> {
     Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
 }
 
+/// The rows of `sql` without parameters, each read by `row`.
+fn rows<T>(db: &Connection, sql: &str, row: impl FnMut(&rusqlite::Row) -> rusqlite::Result<T>) -> Result<Vec<T>, String> {
+    db.prepare(sql).and_then(|mut q| q.query_map([], row)?.collect()).map_err(|e| e.to_string())
+}
+
 fn read_kv_json(db: &Connection, key: &str) -> Result<Value, String> {
     db.query_row("SELECT value FROM key_values WHERE key = ?1", [key], |r| r.get::<_, String>(0))
         .optional()
@@ -117,7 +122,7 @@ fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
     let pins = read_kv_json(&db, "ad:com.beeper.favourites_order")?;
     let pin_rank = pins["Inbox"].as_array().into_iter().flatten().enumerate().filter_map(|(i, v)| Some((remap(v.as_str()?), i))).collect();
     let recent_chat_ids = read_recent_chats(src_dir, &remap);
-    let mut people = read_participants(&db).map_err(e)?;
+    let mut people = read_participants(&db)?;
     let mut chats = read_chats(&db, &mut people, &rules)?;
     read_threads(&db, &mut chats)?;
     let messages = read_messages(&db, &chats)?;
@@ -187,12 +192,10 @@ fn read_crypto(db: &Connection) -> rusqlite::Result<Option<DesktopCrypto>> {
     Ok(Some(DesktopCrypto { user_id, backup_version, group_sessions, secrets }))
 }
 
-fn read_participants(db: &Connection) -> rusqlite::Result<HashMap<String, Vec<User>>> {
+fn read_participants(db: &Connection) -> Result<HashMap<String, Vec<User>>, String> {
     let mut ids: HashMap<String, [Option<String>; 3]> = HashMap::new();
-    let mut id_stmt = db.prepare("SELECT participant_id, identifier, identifier_type FROM participant_identifiers")?;
-    let id_rows = id_stmt.query_map([], |r| <(String, String, String)>::try_from(r))?;
-    for row in id_rows {
-        let (pid, val, kind) = row?;
+    let sql = "SELECT participant_id, identifier, identifier_type FROM participant_identifiers";
+    for (pid, val, kind) in rows(db, sql, |r| <(String, String, String)>::try_from(r))? {
         let slot = match kind.as_str() {
             "username" => 0,
             "email" => 1,
@@ -201,12 +204,9 @@ fn read_participants(db: &Connection) -> rusqlite::Result<HashMap<String, Vec<Us
         };
         ids.entry(pid).or_default()[slot].get_or_insert(val);
     }
-    let mut stmt = db.prepare(
-        "SELECT room_id, id, full_name, nickname, img_url, is_self, cannot_message, is_network_bot, is_admin FROM participants
-         WHERE COALESCE(has_exited, 0) = 0 ORDER BY rowid",
-    )?;
-    let mut people: HashMap<String, Vec<User>> = HashMap::new();
-    let rows = stmt.query_map([], |r| {
+    let sql = "SELECT room_id, id, full_name, nickname, img_url, is_self, cannot_message, is_network_bot, is_admin FROM participants
+               WHERE COALESCE(has_exited, 0) = 0 ORDER BY rowid";
+    let member = |r: &rusqlite::Row| {
         let id: String = r.get(1)?;
         let [username, email, phone_number] = ids.get(&id).cloned().unwrap_or_default();
         let name: Option<String> = r.get::<_, Option<String>>(2)?.filter(|n| !n.is_empty());
@@ -226,9 +226,9 @@ fn read_participants(db: &Connection) -> rusqlite::Result<HashMap<String, Vec<Us
             ..Default::default()
         };
         Ok((r.get::<_, String>(0)?, user))
-    })?;
-    for row in rows {
-        let (room, user) = row?;
+    };
+    let mut people: HashMap<String, Vec<User>> = HashMap::new();
+    for (room, user) in rows(db, sql, member)? {
         people.entry(room).or_default().push(user);
     }
     Ok(people)
@@ -286,11 +286,8 @@ fn read_threads(db: &Connection, chats: &mut [Chat]) -> Result<(), String> {
         return Ok(());
     }
     let idx: HashMap<String, usize> = chats.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
-    let mut q =
-        db.prepare("SELECT roomID, rootEventID, following, lastReadHsOrder FROM mx_threads ORDER BY rowid").map_err(|e| e.to_string())?;
-    let rows = q.query_map([], |r| <(String, String, Option<bool>, i64)>::try_from(r));
-    for row in rows.map_err(|e| e.to_string())? {
-        let (room, root, following, read) = row.map_err(|e| e.to_string())?;
+    let sql = "SELECT roomID, rootEventID, following, lastReadHsOrder FROM mx_threads ORDER BY rowid";
+    for (room, root, following, read) in rows(db, sql, |r| <(String, String, Option<bool>, i64)>::try_from(r))? {
         let Some(&i) = idx.get(&room) else { continue };
         let c = &mut chats[i];
         c.thread_reads.insert(root.clone(), crate::store::sort_key(read));
@@ -323,32 +320,19 @@ fn room_done(t: &Value, counting: i64) -> bool {
 
 fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &Value) -> Result<Vec<Chat>, String> {
     // The order of the newest message of each room that counts as unread, for `room_done`.
-    let mut q = db
-        .prepare(
-            "SELECT roomID, MAX(hsOrder) FROM mx_room_messages
-             WHERE COALESCE(json_extract(CAST(message AS TEXT), '$.extra.countsAsUnread'), 1) GROUP BY roomID",
-        )
-        .map_err(|e| e.to_string())?;
-    let counting: HashMap<String, i64> = q
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))))
-        .and_then(Iterator::collect)
-        .map_err(|e| e.to_string())?;
-    let mut stmt = db
-        .prepare(
-            "SELECT threadID, threads.accountID, CAST(thread AS TEXT), timestamp, json_extract(props, '$.note'),
-                    json_extract(props, '$.threadFollowAll')
-             FROM threads LEFT JOIN thread_props USING (threadID)
-             WHERE COALESCE(is_label, 0) = 0
-             AND COALESCE(json_extract(CAST(thread AS TEXT), '$.extra.roomType'), '') IN ('', 'com.beeper.local')
-             AND json_extract(CAST(thread AS TEXT), '$.extra.isNoteToSelf') IS NOT 1
-             ORDER BY threads.rowid",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| <(String, Option<String>, String, Option<i64>, Option<String>, Option<bool>)>::try_from(r))
-        .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
-        .map_err(|e| e.to_string())?;
-    rows.into_iter()
+    let sql = "SELECT roomID, MAX(hsOrder) FROM mx_room_messages
+               WHERE COALESCE(json_extract(CAST(message AS TEXT), '$.extra.countsAsUnread'), 1) GROUP BY roomID";
+    let counting: HashMap<String, i64> =
+        rows(db, sql, |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))))?.into_iter().collect();
+    let sql = "SELECT threadID, threads.accountID, CAST(thread AS TEXT), timestamp, json_extract(props, '$.note'),
+                      json_extract(props, '$.threadFollowAll')
+               FROM threads LEFT JOIN thread_props USING (threadID)
+               WHERE COALESCE(is_label, 0) = 0
+               AND COALESCE(json_extract(CAST(thread AS TEXT), '$.extra.roomType'), '') IN ('', 'com.beeper.local')
+               AND json_extract(CAST(thread AS TEXT), '$.extra.isNoteToSelf') IS NOT 1
+               ORDER BY threads.rowid";
+    rows(db, sql, |r| <(String, Option<String>, String, Option<i64>, Option<String>, Option<bool>)>::try_from(r))?
+        .into_iter()
         .map(|(id, account, json, ts, note, follow_all)| {
             let t: Value = serde_json::from_str(&json).map_err(|e| format!("thread {id}: {e}"))?;
             let mut items = people.remove(&id).unwrap_or_default();
@@ -466,57 +450,46 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
     let unread_chats: HashMap<&str, Option<&str>> =
         chats.iter().filter(|c| c.is_unread()).map(|c| (c.id.as_str(), c.last_read_message_sort_key.as_deref())).collect();
     let mut receipts: HashMap<(String, String), BTreeMap<String, String>> = HashMap::new();
-    db.prepare("SELECT roomID, COALESCE(NULLIF(lastVisibleEventID, ''), relatesToID), userID, timestamp FROM mx_read_receipts")
-        .and_then(|mut q| {
-            q.query_map([], |r| <(String, Option<String>, String, Option<i64>)>::try_from(r))?.try_for_each(|x| {
-                let (room, ev, user, ts) = x?;
-                if let Some(ev) = ev.filter(|e| !e.is_empty()) {
-                    receipts.entry((room, ev)).or_default().insert(user, rfc3339_from_millis(ts.unwrap_or(0)));
-                }
-                Ok(())
-            })
-        })
-        .map_err(|e| e.to_string())?;
+    let sql = "SELECT roomID, COALESCE(NULLIF(lastVisibleEventID, ''), relatesToID), userID, timestamp FROM mx_read_receipts";
+    for (room, ev, user, ts) in rows(db, sql, |r| <(String, Option<String>, String, Option<i64>)>::try_from(r))? {
+        if let Some(ev) = ev.filter(|e| !e.is_empty()) {
+            receipts.entry((room, ev)).or_default().insert(user, rfc3339_from_millis(ts.unwrap_or(0)));
+        }
+    }
     // A Desktop or Server before `threadRootEventID` keeps the thread root in `replyThreadRootID`.
     let has = |col: &str| {
         let q = "SELECT 1 FROM pragma_table_info('mx_room_messages') WHERE name = ?1";
         db.query_row(q, [col], |_| Ok(())).optional().map(|o| o.is_some())
     };
     let root = if has("threadRootEventID").map_err(|e| e.to_string())? { "threadRootEventID" } else { "replyThreadRootID" };
-    let mut stmt = db
-        .prepare(&format!(
-            "SELECT messageID, threadID, timestamp, CAST(message AS TEXT), NULL, 0, NULL FROM messages
-             UNION ALL
-             SELECT eventID, roomID, timestamp, CAST(message AS TEXT), hsOrder, isDeleted, {root}
-             FROM mx_room_messages
-             WHERE type NOT IN ('REACTION', 'MEMBERSHIP', 'HIDDEN')
-             ORDER BY 3, 5"
-        ))
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| <(String, String, i64, String, Option<i64>, bool, Option<String>)>::try_from(r))
-        .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
-        .map_err(|e| e.to_string())?;
+    let sql = format!(
+        "SELECT messageID, threadID, timestamp, CAST(message AS TEXT), NULL, 0, NULL FROM messages
+         UNION ALL
+         SELECT eventID, roomID, timestamp, CAST(message AS TEXT), hsOrder, isDeleted, {root}
+         FROM mx_room_messages
+         WHERE type NOT IN ('REACTION', 'MEMBERSHIP', 'HIDDEN')
+         ORDER BY 3, 5"
+    );
+    let messages = rows(db, &sql, |r| <(String, String, i64, String, Option<i64>, bool, Option<String>)>::try_from(r))?;
     let mut reactions: HashMap<String, Vec<Reaction>> = HashMap::new();
-    db.prepare("SELECT eventID, reactionID, senderID, description, \"order\" FROM mx_reactions WHERE isDeleted = 0 ORDER BY \"order\"")
-        .and_then(|mut q| {
-            q.query_map([], |r| {
-                let reaction = Reaction {
-                    id: r.get(1)?,
-                    participant_id: r.get(2)?,
-                    reaction_key: r.get(3)?,
-                    animated: None,
-                    img_url: None,
-                    sort_key: crate::store::sort_key(r.get(4)?),
-                };
-                Ok((r.get::<_, String>(0)?, reaction))
-            })?
-            .try_for_each(|x| x.map(|(target, r)| reactions.entry(target).or_default().push(r)))
-        })
-        .map_err(|e| e.to_string())?;
+    let sql = "SELECT eventID, reactionID, senderID, description, \"order\" FROM mx_reactions WHERE isDeleted = 0 ORDER BY \"order\"";
+    let reaction = |r: &rusqlite::Row| {
+        let reaction = Reaction {
+            id: r.get(1)?,
+            participant_id: r.get(2)?,
+            reaction_key: r.get(3)?,
+            animated: None,
+            img_url: None,
+            sort_key: crate::store::sort_key(r.get(4)?),
+        };
+        Ok((r.get::<_, String>(0)?, reaction))
+    };
+    for (target, r) in rows(db, sql, reaction)? {
+        reactions.entry(target).or_default().push(r);
+    }
     let mut seen = HashSet::new();
-    let mut out = Vec::with_capacity(rows.len());
-    for (id, chat_id, ts, json, order, deleted, thread_root) in rows {
+    let mut out = Vec::with_capacity(messages.len());
+    for (id, chat_id, ts, json, order, deleted, thread_root) in messages {
         let Some(&account_id) = accounts.get(chat_id.as_str()) else { continue };
         let m: Value = serde_json::from_str(&json).map_err(|e| format!("message {id}: {e}"))?;
         if flag(&m, "isHidden") || !seen.insert(id.clone()) {

@@ -1,3 +1,4 @@
+use crate::codec::truthy;
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
@@ -56,21 +57,7 @@ const THREAD_FOLLOWS: &str = "com.beeper.thread_follows";
 enum Op {
     Upsert(Box<Message>),
     React(String, Reaction, Box<Message>),
-    /// An `m.replace` edit, which applies only to a message of its own sender.
-    Edit {
-        target: String,
-        sender: String,
-        text: Option<String>,
-        html: Option<String>,
-        links: Vec<MessageLink>,
-        attachments: Vec<Attachment>,
-        message_type: &'static str,
-        unresolved_media: Option<String>,
-        timestamp: Option<String>,
-        timer: Option<MessageTimer>,
-        /// The buttons of an edit by the system user, which replace those of its own message.
-        buttons: Option<Vec<ActionButton>>,
-    },
+    Edit(Edit),
     /// Desktop's `handlePollEdit`: an `m.replace` of a poll start, which applies only to a poll of its own sender. It
     /// has the poll, the sender, the new poll and the time of the edit unless it is not shown.
     PollEdit(String, String, Box<PollData>, Option<String>),
@@ -91,13 +78,58 @@ enum Op {
     SendStatus(String, bool, Option<SendError>, Box<crate::models::SendStatus>, Option<MessageTimer>),
 }
 
+/// An `m.replace` edit, which applies only to a message of its own sender.
+struct Edit {
+    target: String,
+    sender: String,
+    text: Option<String>,
+    html: Option<String>,
+    links: Vec<MessageLink>,
+    attachments: Vec<Attachment>,
+    message_type: &'static str,
+    unresolved_media: Option<String>,
+    timestamp: Option<String>,
+    timer: Option<MessageTimer>,
+    /// The buttons of an edit by the system user, which replace those of its own message.
+    buttons: Option<Vec<ActionButton>>,
+}
+
+impl Edit {
+    /// Edits the message `m`, whose old text goes to its edit history. The timer goes separately ([`apply_timer`]).
+    fn apply(self, m: &mut Message) {
+        let prev = match self.text {
+            Some(t) => m.text.replace(t),
+            None => m.text.take(),
+        };
+        edited(m, prev, self.timestamp);
+        if !self.attachments.is_empty() {
+            m.attachments = self.attachments;
+            m.message_type = Some(self.message_type.into());
+        }
+        m.unresolved_media = self.unresolved_media;
+        m.links = self.links;
+        m.html = self.html;
+        if let Some(buttons) = self.buttons {
+            m.buttons = buttons;
+        }
+    }
+}
+
+/// Keeps the text `prev` that an edit at `timestamp` replaced in the edit history of `m`, unless the edit is not shown
+/// or the history ends with an edit at that time.
+fn edited(m: &mut Message, prev: Option<String>, timestamp: Option<String>) {
+    if let Some(timestamp) = timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t)) {
+        m.edit_history.push(EditHistoryEntry { text: prev.unwrap_or_default(), timestamp });
+    }
+}
+
 impl Op {
     /// The message that the event changes, other than one that it upserts.
     fn target(&self) -> Option<&str> {
         match self {
             Op::Upsert(_) => None,
+            Op::Edit(e) => Some(&e.target),
             Op::React(t, ..)
-            | Op::Edit { target: t, .. }
             | Op::PollEdit(t, ..)
             | Op::Timer(t, ..)
             | Op::Redact(t, _)
@@ -898,10 +930,8 @@ fn edit_poll(m: &mut Message, mut poll: PollData, timestamp: Option<String>) {
         o.voter_ids = old.options.iter().find(|x| x.id == o.id).map(|x| x.voter_ids.clone()).unwrap_or_default();
     }
     poll.ended = old.ended;
-    let prev = m.text.replace(poll.question.clone()).unwrap_or_default();
-    if let Some(timestamp) = timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t)) {
-        m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
-    }
+    let prev = m.text.replace(poll.question.clone());
+    edited(m, prev, timestamp);
     m.poll = Some(poll);
 }
 
@@ -979,7 +1009,7 @@ async fn op(
             }
             let timestamp = (c["com.beeper.dont_render_edited"] != true).then(|| rfc3339_from_millis(ts));
             let buttons = system_user(&sender).then(|| ActionButton::list(&new["com.beeper.buttons"]));
-            return Some(Op::Edit {
+            return Some(Op::Edit(Edit {
                 target,
                 sender,
                 text,
@@ -991,7 +1021,7 @@ async fn op(
                 timestamp,
                 timer,
                 buttons,
-            });
+            }));
         }
         "m.room.encrypted" => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
         // Desktop's `handleMessageSendStatus`: a bridge took the message, or could not send it.
@@ -1540,12 +1570,20 @@ async fn sync_bookmarks(store: &SharedStore, room: &Room, events: Vec<TimelineEv
         },
         false => events,
     };
-    let me = room.own_user_id().as_str();
-    let changes = events
-        .iter()
-        .filter_map(|e| bookmark_change(&serde_json::from_str(e.raw().json().get()).expect("timeline event JSON"), me))
-        .collect();
+    let changes = own_changes(room, &events, bookmark_change);
     store.write().apply_bookmarks(room.room_id().as_str(), changes);
+}
+
+/// The JSON of a timeline event.
+fn event_json(e: &TimelineEvent) -> Value {
+    serde_json::from_str(e.raw().json().get()).expect("timeline event JSON")
+}
+
+/// What `change` reads from each of the events of a room of Desktop's own events, like the bookmarks room, with the
+/// own user ID.
+fn own_changes<T>(room: &Room, events: &[TimelineEvent], change: impl Fn(&Value, &str) -> Option<T>) -> Vec<T> {
+    let me = room.own_user_id().as_str();
+    events.iter().filter_map(|e| change(&event_json(e), me)).collect()
 }
 
 /// Desktop's `applyBookmarkEvent` and `applyBookmarkRedaction`: the message and its new bookmark, if any.
@@ -1569,11 +1607,7 @@ fn bookmark_change(e: &Value, me: &str) -> Option<(String, Option<Bookmark>)> {
 /// events (`handleMessageReminderRoomEvents`).
 async fn sync_message_reminders(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
     let events = if store.read().reminders_room.is_none() { all_history(room).await } else { events };
-    let me = room.own_user_id().as_str();
-    let changes = events
-        .iter()
-        .filter_map(|e| message_reminder_change(&serde_json::from_str(e.raw().json().get()).expect("timeline event JSON"), me))
-        .collect();
+    let changes = own_changes(room, &events, message_reminder_change);
     store.write().apply_message_reminders(room.room_id().as_str(), changes);
 }
 
@@ -1599,10 +1633,7 @@ fn message_reminder_change(e: &Value, me: &str) -> Option<(String, Option<(Strin
 /// Desktop's restoration of the removed messages: the whole removed-messages room once, then its new events.
 async fn sync_removals(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
     let events = if store.read().removals.is_none() { all_history(room).await } else { events };
-    let me = room.own_user_id().as_str();
-    let removals =
-        events.iter().filter_map(|e| removal(&serde_json::from_str(e.raw().json().get()).expect("timeline event JSON"), me)).collect();
-    store.write().apply_removals(removals);
+    store.write().apply_removals(own_changes(room, &events, removal));
 }
 
 /// Desktop's `parseRemovalEvent`: the removed message and the removal event. Desktop does not undo a removal when the
@@ -1620,7 +1651,7 @@ fn removal(e: &Value, me: &str) -> Option<(String, String)> {
 fn sync_transcriptions(store: &SharedStore, events: Vec<TimelineEvent>) {
     let mut st = store.write();
     for e in events {
-        if let Some((target, t)) = transcription(&serde_json::from_str(e.raw().json().get()).expect("event JSON")) {
+        if let Some((target, t)) = transcription(&event_json(&e)) {
             st.set_transcription(&target, t);
         }
     }
@@ -1645,8 +1676,7 @@ fn transcription(e: &Value) -> Option<(String, Transcription)> {
 pub async fn bookmarked_message(client: Client, chat: String, target: String, account_id: String) -> Option<Message> {
     let room = joined_room(&client, &chat).await.ok()?;
     let event = room.event(&OwnedEventId::try_from(target).ok()?, None).await.ok()?;
-    let v: Value = serde_json::from_str(event.raw().json().get()).expect("event JSON");
-    match op(&room, &chat, &account_id, &v, false, &mut HashMap::new()).await {
+    match op(&room, &chat, &account_id, &event_json(&event), false, &mut HashMap::new()).await {
         Some(Op::Upsert(m)) => Some(*m),
         _ => None,
     }
@@ -1773,7 +1803,7 @@ async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>,
     }
     let me = room.own_user_id().to_string();
     let exit = events.iter().rev().find_map(|e| {
-        let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
+        let v = event_json(e);
         (v["type"] == "m.room.member" && v["state_key"] == me.as_str()).then(|| s(&v["event_id"])).flatten()
     });
     sync_room_after(store, room, events, Pass::Fresh, Some(globals)).await;
@@ -1989,7 +2019,7 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
     let hidden = store.read().settings.on("hiddenEvents");
     let mut names = reads.names.clone();
     for e in &events {
-        let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
+        let v = event_json(e);
         ops.extend(s(&v["unsigned"]["transaction_id"]).map(Op::Remove));
         match op(room, &chat_id, &chat.account_id, &v, hidden, &mut names).await {
             Some(Op::Upsert(m)) => {
@@ -2148,42 +2178,12 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
                                 apply_timer(st, i, timer);
                             }
                         }
-                        Op::Edit {
-                            target,
-                            sender,
-                            text,
-                            html,
-                            links,
-                            attachments,
-                            message_type,
-                            unresolved_media,
-                            timestamp,
-                            timer,
-                            buttons,
-                        } => {
-                            if let Some(i) = mine(st, &target, &sender) {
-                                if let Some(timer) = timer {
+                        Op::Edit(mut edit) => {
+                            if let Some(i) = mine(st, &edit.target, &edit.sender) {
+                                if let Some(timer) = edit.timer.take() {
                                     apply_timer(st, i, timer);
                                 }
-                                st.update_message(i, |m| {
-                                    let prev = match text {
-                                        Some(t) => m.text.replace(t).unwrap_or_default(),
-                                        None => m.text.take().unwrap_or_default(),
-                                    };
-                                    if let Some(timestamp) = timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t)) {
-                                        m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
-                                    }
-                                    if !attachments.is_empty() {
-                                        m.attachments = attachments;
-                                        m.message_type = Some(message_type.into());
-                                    }
-                                    m.unresolved_media = unresolved_media;
-                                    m.links = links;
-                                    m.html = html;
-                                    if let Some(buttons) = buttons {
-                                        m.buttons = buttons;
-                                    }
-                                });
+                                st.update_message(i, |m| edit.apply(m));
                             }
                         }
                         Op::Remove(id) if here(st, &id).is_some() => {
@@ -4708,17 +4708,6 @@ fn group_packs(events: &[PackEvent]) -> Vec<InstalledPack> {
         });
     }
     out
-}
-
-/// Whether a JSON value is true in JavaScript.
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0),
-        Value::String(s) => !s.is_empty(),
-        _ => true,
-    }
 }
 
 /// Desktop's `jCt`: the name of a combined pack without the " (part 1)" of its first part, in any case.
