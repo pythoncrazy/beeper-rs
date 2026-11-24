@@ -147,8 +147,9 @@ impl BeeperGuiApp {
                     return self.raise(id);
                 }
                 // Desktop's `windowStateKeeper("pop-out-thread")` keeps the size of the last chat window.
-                let size = self.saved_window_settings(POP_OUT, Size::new(800.0, 600.0)).size;
-                let (id, open) = self.open_window(Self::window_settings(size));
+                let settings = self.kept_size(POP_OUT, Size::new(800.0, 600.0));
+                let size = settings.size;
+                let (id, open) = self.open_window(settings);
                 self.chat_windows.push((id, Pane { size, ..Pane::default() }));
                 let near = self.cascade(id);
                 let select = self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(cid))));
@@ -403,7 +404,7 @@ fn zoomed(size: Size, zoom: f32) -> Size {
 
 /// Moves window `id` of `size` over the middle of window `parent` of size `around`, like Desktop's `center: "parent"`,
 /// with its left and top edges on the screen.
-fn center_over(id: window::Id, parent: window::Id, around: Size, size: Size) -> Task<UiMessage> {
+pub(crate) fn center_over(id: window::Id, parent: window::Id, around: Size, size: Size) -> Task<UiMessage> {
     let offset = Vector::new((around.width - size.width) / 2.0, (around.height - size.height) / 2.0);
     window::position(parent).then(move |at| match at {
         Some(at) => window::move_to(id, Point::new((at.x + offset.x).max(0.0), (at.y + offset.y).max(0.0))),
@@ -429,6 +430,12 @@ impl BeeperGuiApp {
     pub(crate) fn open_window(&mut self, settings: window::Settings) -> (window::Id, Task<window::Id>) {
         let id = window::Id::unique();
         (id, self.open_window_as(id, settings))
+    }
+
+    /// Desktop's `windowStateKeeper(key)` with `sizeOnly`, of the chat and Media windows: a window opens with the size,
+    /// `size` by default, and the maximized state that the last one had, and its place comes from its features.
+    pub(crate) fn kept_size(&self, key: &str, size: Size) -> window::Settings {
+        window::Settings { position: window::Position::Default, ..self.saved_window_settings(key, size) }
     }
 
     /// Opens window `id` with `settings` like [`Self::open_window`]: a new window, or one that hid on Wayland again.

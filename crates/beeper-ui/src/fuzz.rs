@@ -9732,6 +9732,33 @@ fn main_window_keeps_its_state_like_desktop() {
     assert_eq!(app.title(main), format!("Beeper | {title}"));
 }
 
+/// Desktop keeps only the size and the maximized state of the chat and Media windows (`sizeOnly`): a chat window opens
+/// 20 px from the main window and the Media window over its middle, maximized when the last one was.
+#[test]
+fn chat_and_media_windows_keep_their_size_only_like_desktop() {
+    use iced::futures::StreamExt;
+    let opened = |task: Task<UiMessage>| {
+        let open = iced_runtime::task::into_stream(task).expect("a window opens").filter_map(|a| async move {
+            match a {
+                iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s),
+                _ => None,
+            }
+        });
+        iced::futures::executor::block_on(open.boxed().next()).expect("a window opens")
+    };
+    let mut app = demo_app("size-only");
+    let path = app.store.read().config.data_dir.join("window.json");
+    write_window_state(&path, "media-viewer", false, Size::new(800.0, 600.0), Some(Point::new(10.0, 20.0)));
+    let media = opened(app.update(UiMessage::Media(media_view::Msg::Open)));
+    assert_eq!((media.size, media.maximized), (Size::new(800.0, 600.0), false));
+    assert!(matches!(media.position, window::Position::Default), "the saved place does not count");
+    write_window_state(&path, windows::POP_OUT, false, Size::new(640.0, 520.0), Some(Point::new(5.0, 5.0)));
+    write_window_state(&path, windows::POP_OUT, true, Size::new(1440.0, 900.0), None);
+    let chat = opened(app.update(UiMessage::Window(windows::Msg::OpenChat(NOTE_CHAT_ID.into()))));
+    assert_eq!((chat.size, chat.maximized), (Size::new(640.0, 520.0), true), "the last chat window was maximized");
+    assert!(matches!(chat.position, window::Position::Default));
+}
+
 /// Electron draws its title bar inside its window on Wayland, so a window of Desktop's 1200 by 800 opens with 800 px
 /// in all, the title bar that winit adds on top included, and Desktop's minimum height counts it too. On X11 the
 /// window manager's title bar is outside the window for both.
