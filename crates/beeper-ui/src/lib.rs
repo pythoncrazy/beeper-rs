@@ -6775,12 +6775,21 @@ pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 /// GNOME's `text-scaling-factor` on Wayland, as the bits of an `f32`, which Chromium applies to the whole of each
 /// window like a zoom, the size of the window included: Desktop's device scale is the screen's times it. On X11 the
 /// scale of the window already has it, from `Xft.dpi`.
+#[cfg(not(test))]
 static TEXT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+// The tests run at once, each on its own thread with its own text scaling, so that a test that changes it changes the
+// title bars and windows of no other test.
+#[cfg(test)]
+thread_local!(static TEXT_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) });
 
 /// Takes GNOME's text scaling, at launch and when it changes; the windows follow it once [`FRAME_READY`] wakes them.
 pub fn set_text_scale(scale: f32) {
     if scale.is_finite() && scale > 0.0 {
+        #[cfg(not(test))]
         TEXT_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        TEXT_SCALE.set(scale);
     }
 }
 
@@ -6839,8 +6848,14 @@ fn window_events() -> Subscription<UiMessage> {
 }
 
 /// [`TEXT_SCALE`].
+#[cfg(not(test))]
 fn text_scale() -> f32 {
     f32::from_bits(TEXT_SCALE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+#[cfg(test)]
+fn text_scale() -> f32 {
+    TEXT_SCALE.get()
 }
 
 /// People, each with the account to reach them on.
