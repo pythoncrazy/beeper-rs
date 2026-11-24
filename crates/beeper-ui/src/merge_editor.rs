@@ -5,7 +5,7 @@ use super::*;
 use crate::dialogs::LABEL_INTRO_FACES;
 use crate::merged::chat_brand;
 use crate::prelude::*;
-use iced::widget::{column, operation};
+use iced::widget::column;
 
 /// Desktop's `windowFeatures` of the merged chat editor.
 pub(crate) const MERGE_SIZE: Size = Size::new(340.0, 570.0);

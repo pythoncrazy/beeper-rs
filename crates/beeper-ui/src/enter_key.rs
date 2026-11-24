@@ -2,7 +2,6 @@
 use crate::i18n::{tr, trx};
 use crate::prelude::*;
 use crate::verify::{clipboard_key, edit_recovery_key, format_recovery_key, key_input};
-use iced::keyboard::key::Named;
 use iced::widget::column;
 use iced::window;
 

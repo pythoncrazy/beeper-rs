@@ -4,7 +4,6 @@
 
 use crate::i18n::{tr, trx};
 use crate::prelude::*;
-use crate::toasts::Toast;
 use crate::{anim, chat_list, media_view};
 use iced::widget::column;
 use serde_json::Value;

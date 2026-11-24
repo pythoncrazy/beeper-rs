@@ -21,7 +21,6 @@ pub enum Pick {
 #[cfg(target_os = "linux")]
 pub async fn open_files(dest: String, title: String, pick: Pick) -> Result<Vec<PathBuf>, String> {
     use iced::futures::StreamExt;
-    use std::collections::HashMap;
     use zbus::zvariant::{OwnedValue, Value};
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let s = |e: zbus::Error| format!("Could not open the file chooser: {e}");

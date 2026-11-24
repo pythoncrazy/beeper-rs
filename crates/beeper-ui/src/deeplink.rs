@@ -1,9 +1,9 @@
 //! Desktop's `beeper://` links (`deep-link-CFIhWY4D.js` `Ld`): from the launch arguments, and from a later launch.
 use crate::chat_list;
 use crate::composer;
+use crate::encode_uri_component;
 use crate::i18n::tr;
 use crate::prelude::*;
-use crate::{encode_uri_component, User};
 use beeper_core::codec::url_decode;
 
 pub const SCHEME: &str = "beeper://";

@@ -4,7 +4,6 @@ use crate::i18n::{tr, trx};
 use crate::media_view;
 use crate::message;
 use crate::prelude::*;
-use crate::{ic, icon};
 use iced::widget::column;
 use iced::window;
 use std::io::Read;

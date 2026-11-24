@@ -15,7 +15,6 @@ use crate::{
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
-use iced::keyboard::key::Named;
 use iced::widget::column;
 use iced::widget::operation;
 use iced::window;
