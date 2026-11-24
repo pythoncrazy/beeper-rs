@@ -5349,13 +5349,13 @@ pub(crate) fn opened_window(task: Task<UiMessage>) -> Option<window::Settings> {
 fn small_windows_open_at_desktops_minimum_size() {
     let mut app = demo_app("window-minimum");
     let size = |s: window::Settings| (s.size, s.resizable, s.min_size);
-    let (_, nickname) = app.open_child(crate::nickname::NICKNAME_SIZE);
+    let (_, nickname) = app.open_child(crate::nickname::NICKNAME_SIZE, false);
     assert_eq!(opened_window(nickname).map(size), Some((Size::new(340.0, 400.0), false, None)));
     let labels = app.update(UiMessage::Labels(labels::Msg::OpenEdit(NOTE_CHAT_ID.into())));
     assert_eq!(opened_window(labels).map(size), Some((Size::new(330.0, 488.0), true, Some(windows::MIN_SIZE))));
     let spaces = app.update(UiMessage::OpenEditSpaces);
     assert_eq!(opened_window(spaces).map(size), Some((SPACES_SIZE, true, Some(windows::MIN_SIZE))));
-    let (_, poll) = app.open_child(Size::new(400.0, 620.0));
+    let (_, poll) = app.open_child(Size::new(400.0, 620.0), false);
     assert_eq!(opened_window(poll).map(size), Some((Size::new(400.0, 620.0), false, None)), "a bigger one keeps its size");
 }
 

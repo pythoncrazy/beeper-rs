@@ -1134,7 +1134,7 @@ impl BeeperGuiApp {
         if let Some(d) = &self.group_window {
             return self.raise(d.id);
         }
-        let (id, open) = self.open_child(PERSONAL_SIZE);
+        let (id, open) = self.open_child(PERSONAL_SIZE, false);
         let st = self.store.read();
         let c = &st.chats[st.resolve_chat_idx(&chat).expect("a chat to edit for me")];
         let title = c.personal_parts().0.unwrap_or_default();
@@ -1379,7 +1379,7 @@ impl BeeperGuiApp {
         if let Some(id) = self.blocked_window {
             return self.raise(id);
         }
-        let (id, open) = self.open_child(BLOCKED_SIZE);
+        let (id, open) = self.open_child(BLOCKED_SIZE, false);
         self.blocked_window = Some(id);
         open
     }

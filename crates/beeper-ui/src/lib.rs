@@ -4938,7 +4938,7 @@ impl BeeperGuiApp {
                 if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
                     return self.raise(d.id);
                 }
-                let (id, open) = self.open_child(Size::new(400.0, 620.0));
+                let (id, open) = self.open_child(Size::new(400.0, 620.0), false);
                 let question = format!("poll-{chat}");
                 self.poll_windows.push(PollDraft::new(id, chat));
                 open.chain(operation::focus(question))
@@ -4949,7 +4949,7 @@ impl BeeperGuiApp {
                 if let Some(d) = &self.spaces_window {
                     return self.raise(d.id);
                 }
-                let (id, open) = self.open_resizable_child(SPACES_SIZE);
+                let (id, open) = self.open_child(SPACES_SIZE, true);
                 let st = self.store.read();
                 let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
                 let order = order.collect();
@@ -4963,7 +4963,7 @@ impl BeeperGuiApp {
                 if let Some(d) = &self.group_window {
                     return self.raise(d.id);
                 }
-                let (id, open) = self.open_child(GROUP_SIZE);
+                let (id, open) = self.open_child(GROUP_SIZE, false);
                 let st = self.store.read();
                 let c = &st.chats[st.resolve_chat_idx(&chat).expect("an edited group")];
                 let (title, topic) = (c.room_title().to_string(), composer_with(c.description.as_deref().unwrap_or_default()));
