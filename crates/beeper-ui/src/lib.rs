@@ -878,7 +878,7 @@ fn spread(items: Vec<El<'_>>, size: f32, width: f32) -> El<'_> {
 fn checkbox_plus<'a>(p: &Palette, on: bool) -> El<'a> {
     match on {
         true => checkbox(p, true),
-        false => container(ic(icon::PLUS, 10.0).color(p.sub)).center(16).style(bordered_box(CLEAR, p.sub, 1.5, 8.0)).into(),
+        false => container(platform(ic(icon::ADD, 10.0).color(p.sub))).center(16).style(bordered_box(CLEAR, p.sub, 1.5, 8.0)).into(),
     }
 }
 
@@ -6676,12 +6676,13 @@ impl BeeperGuiApp {
     /// Desktop's `getSpaceIcon`.
     fn space_icon(&self, st: &BeeperStore, id: &str) -> El<'static> {
         let p = &self.pal;
-        let glyph = |c: char, size: f32| -> El<'static> { ic(c, size).color(p.strong).into() };
+        // Desktop's `PlatformIcon`s of its sizes.
+        let glyph = |c: char, size: f32| platform(ic(c, size).color(p.strong));
         match id {
             "inbox" => glyph(icon::INBOX, 16.0),
             "archive" => glyph(icon::ARCHIVE, 14.0),
             "reminders" => glyph(icon::SCHEDULE, 14.0),
-            "snoozed" => tinted(&MOON_STARS, 14.0, p.strong),
+            "snoozed" => material("moon_stars", 14.0, p.strong),
             "requests" => glyph(icon::EMAIL, 16.0),
             "low_priority" => glyph(icon::LOW_PRIORITY_SPACE, 12.0),
             "scheduled" => glyph(icon::SCHEDULE_SEND, 14.0),
