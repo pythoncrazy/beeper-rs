@@ -7562,7 +7562,7 @@ mod tests {
         old["unsigned"]["redacted_because"] = json!({ "content": hide });
         let mut kept = stub_event("$kept", "m.room.message", json!({}));
         kept["unsigned"]["redacted_because"] = json!({ "content": {} });
-        let events = vec![text("$a"), old, kept, text("$gone"), redaction];
+        let events = [text("$a"), old, kept, text("$gone"), redaction];
         let mut sync = stub_sync();
         let features = json!({ "type": "com.beeper.room_features", "state_key": "", "sender": "@me:x", "event_id": "$f",
             "origin_server_ts": 1, "content": { "delete_hide_placeholder": true } });
