@@ -744,6 +744,8 @@ mod tests {
     use iced::widget::span;
 
     fn buffer(text: &str, width: f32) -> Paragraph {
+        // The default font is Inter once the fonts are in, whichever test runs first.
+        crate::style::ensure_fonts_loaded();
         let spans = [span::<(), Font>(text.to_string())];
         let size = Size::new(width, f32::INFINITY);
         Paragraph::with_spans(styled(
@@ -786,7 +788,8 @@ mod tests {
         assert_eq!(texts(drag(b, a), &p, bounds), texts(drag(a, b), &p, bounds));
         // From above to below: all of it; from above to inside: up to the pointer.
         assert_eq!(texts(drag(Point::new(0.0, 0.0), Point::new(0.0, 300.0)), &p, bounds), "first line of text");
-        assert_eq!(texts(drag(Point::new(500.0, 50.0), Point::new(36.0, 108.0)), &p, bounds), "first");
+        let first = 10.0 + crate::style::text_width("first", 13.0, iced::font::Weight::Normal);
+        assert_eq!(texts(drag(Point::new(500.0, 50.0), Point::new(first + 1.0, 108.0)), &p, bounds), "first");
         assert!(drag(Point::new(0.0, 0.0), Point::new(0.0, 50.0)).part(p.buffer(), bounds).is_none());
     }
 
