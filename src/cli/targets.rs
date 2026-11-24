@@ -222,10 +222,7 @@ fn list(c: &mut Ctx) -> Res {
     }
     let mut rows = Vec::new();
     for t in targets {
-        let default = match config.get("defaultTarget").and_then(Value::as_str) {
-            Some(id) => t["id"] == id,
-            None => t["id"] == "desktop",
-        };
+        let default = if let Some(id) = config.get("defaultTarget").and_then(Value::as_str) { t["id"] == id } else { t["id"] == "desktop" };
         let name = t.get("name").filter(|n| !n.is_null()).unwrap_or(&t["id"]).clone();
         let mut row = obj([
             ("default", json!(default)),

@@ -1232,10 +1232,7 @@ const EVENT_TONES: [(&str, &str); 9] = [
 /// `StreamEventLine`: the number, the type, the chat, the message, and the time of a WebSocket frame.
 pub fn stream_event(frame: &Option<Value>, index: usize) -> El {
     let field = |k: &str| frame.as_ref().and_then(|f| f[k].as_str().map(str::to_string));
-    let kind = match frame {
-        Some(_) => field("type").unwrap_or_else(|| "event".into()),
-        None => "raw".into(),
-    };
+    let kind = if frame.is_some() { field("type").unwrap_or_else(|| "event".into()) } else { "raw".into() };
     let ts = field("timestamp").map_or_else(|| Value::from(chrono::Utc::now().to_rfc3339()), Value::from);
     let tone = EVENT_TONES.iter().find(|e| e.0 == kind).map_or(PRIMARY, |e| e.1);
     row(vec![

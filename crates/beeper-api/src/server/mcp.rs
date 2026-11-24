@@ -365,10 +365,7 @@ fn formats_in_descriptions(v: &Value) -> Value {
             let mut t = o.clone();
             if let Some(Value::String(f)) = t.remove("format") {
                 let note = format!("(format: \"{f}\")");
-                let d = match t.get("description").and_then(Value::as_str) {
-                    Some(d) => format!("{d} {note}"),
-                    None => note,
-                };
+                let d = if let Some(d) = t.get("description").and_then(Value::as_str) { format!("{d} {note}") } else { note };
                 t.insert("description".into(), d.into());
             }
             t.into_iter().map(|(k, v)| (k, formats_in_descriptions(&v))).collect::<serde_json::Map<_, _>>().into()

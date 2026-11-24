@@ -1766,10 +1766,7 @@ impl BeeperStore {
 
     /// Adds a change to the outbox, which the push task of the Matrix sync loop sends.
     pub fn queue(&mut self, chat_id: &str, out: Outgoing) {
-        let bytes = match &out {
-            Outgoing::Media { bytes, .. } => Some(bytes.as_slice()),
-            _ => None,
-        };
+        let bytes = if let Outgoing::Media { bytes, .. } = &out { Some(bytes.as_slice()) } else { None };
         let json = serde_json::to_string(&out).expect("outgoing JSON");
         self.exec("INSERT INTO outbox (chat_id, json, bytes) VALUES (?1, ?2, ?3)", params![chat_id, json, bytes]);
         let row = self.db.lock().unwrap().last_insert_rowid();
