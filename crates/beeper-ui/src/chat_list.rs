@@ -1720,7 +1720,9 @@ impl BeeperGuiApp {
             _ => c.last_activity.as_deref().map(|t| list_ts(t, l.h24)).unwrap_or_default(),
         };
         let later = next.is_some() && (!drafted || matches!(self.list().active_tab, InboxTab::Reminders | InboxTab::SendLater));
-        let ts_w = crate::style::text_width(&ts, l.ts_size, Weight::Normal) + 8.0 + if later { 12.0 } else { 0.0 };
+        // `.ThreadListItem-module__header`'s 0.25rem gap and the time's `padding-left: 0.5em`, and the 12 px icon of a
+        // scheduled message 4 px before it.
+        let ts_w = crate::style::text_width(&ts, l.ts_size, Weight::Normal) + rem(4.0 + l.ts_size / 2.0) + if later { 16.0 } else { 0.0 };
         let reminded_last = c
             .reminder
             .as_ref()
@@ -1739,7 +1741,7 @@ impl BeeperGuiApp {
             .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
             .push(snoozed.map(|_| container(tinted(&MOON_STARS, 12.0, p.strong)).padding([0, 2])))
             .push(Space::new().width(Fill))
-            .push(later.then(|| tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))))
+            .push(later.then(|| container(tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))).padding(Padding::ZERO.right(4.0))))
             .push(
                 container(
                     txt(ts, l.ts_size)
