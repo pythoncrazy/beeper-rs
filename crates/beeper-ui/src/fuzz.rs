@@ -5716,7 +5716,8 @@ fn settings_nav_follows_the_plan() {
 }
 
 /// Desktop's global hotkeys "Focus App" and "Focus App and Command Bar": off by default, with the "Global" tag in
-/// Settings > Hotkeys, and the window shows (with the command bar) when one fires.
+/// Settings > Hotkeys, and the window shows (with the command bar) when one fires. The keys are grabbed on X11.
+#[cfg(target_os = "linux")]
 #[test]
 fn global_focus_hotkeys_like_desktop() {
     use iced::keyboard::{Key, Modifiers};

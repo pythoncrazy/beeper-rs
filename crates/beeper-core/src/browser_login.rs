@@ -22,6 +22,7 @@ const HIDDEN_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the browser has to close before it is killed.
 const CLOSE_WAIT: Duration = Duration::from_secs(5);
 /// The browsers that `find_browser` looks for on the `PATH`, in order.
+#[cfg(unix)]
 const BROWSERS: [&str; 10] = [
     "chromium",
     "chromium-browser",
