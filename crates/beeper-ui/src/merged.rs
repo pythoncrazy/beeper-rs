@@ -103,7 +103,7 @@ impl BeeperGuiApp {
         let line = || container(Space::new().width(Fill).height(1)).style(fill_box(p.received, 0.0));
         let header = container(semi(tr("Switch chats"), 13.0).color(p.strong)).padding(Padding::new(12.0).left(27.0).right(8.0));
         let wide = |m: &Chat| {
-            let name = text_width(&m.title, 16.0, Weight::Normal);
+            let name = text_width(&m.title, 15.0, Weight::Normal);
             29.0 + 28.0 + 8.0 + name.max(text_width(&subtitle(m), 12.0, Weight::Normal)) + 8.0
         };
         let w = members.iter().map(|m| wide(m)).fold(35.0 + text_width(tr("Switch chats"), 13.0, Weight::Semibold), f32::max);
@@ -118,8 +118,8 @@ impl BeeperGuiApp {
                 false => subtitle(m),
             };
             let info = column![
-                ell(&m.title, w - 75.0, 16.0, Weight::Normal).color(p.strong),
-                ell(&sub, w - 75.0, 12.0, Weight::Normal).line_height(lh(16.0)).color(p.strong.scale_alpha(0.4)),
+                ell(&m.title, w - 75.0, 15.0, Weight::Normal).line_height(lh(20.0)).color(p.strong),
+                ell(&sub, w - 75.0, 12.0, Weight::Normal).line_height(lh(15.0)).color(p.strong.scale_alpha(0.4)),
             ];
             let check = selected.then(|| ic(icon::CHECK, 13.0).color(p.strong));
             let row = row![].push(check).push(self.chat_avatar(m, 28.0, 1.25)).push(info).spacing(8).align_y(Center);
@@ -127,7 +127,7 @@ impl BeeperGuiApp {
             let b = button(row).padding(pad).width(Fill).style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 0.0));
             column![b.on_press(UiMessage::SwitchChat(m.id.clone()))].push((i + 1 < members.len()).then(line)).into()
         });
-        let h = 41.0 + members.len() as f32 * 53.0;
+        let h = 40.0 + members.len() as f32 * 52.0;
         let card = column![header, line()].extend(rows).width(w.ceil());
         let card = container(card).style(shadow_box(p.menu, p.menu_border, 8.0, 16.0));
         (mouse_area(card).on_exit(UiMessage::ChatList(chat_list::Msg::CloseMenu)).into(), h)

@@ -212,7 +212,7 @@ impl BeeperGuiApp {
         };
         let pill = |(kind, text): (Pill, String)| -> El<'_> {
             let icon = (kind == Pill::Syncing).then(|| tinted(&MAT_SYNC, 12.0, p.strong));
-            let body = row![].push(icon).push(txt(text, 12.0).color(p.strong)).spacing(4).align_y(Center);
+            let body = row![].push(icon).push(txt(text, 11.0).line_height(lh(14.0)).color(p.strong)).spacing(4).align_y(Center);
             let style = move |_: &Theme| container::Style {
                 background: Some(p.card.into()),
                 border: border::rounded(17.0),
