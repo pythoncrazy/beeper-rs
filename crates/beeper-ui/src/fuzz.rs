@@ -2881,7 +2881,7 @@ fn space_windows_like_desktop() {
         st.set_chat_flag(idx, ChatFlag::Pinned, Some(false));
     }
     let _ = app.update(UiMessage::SelectChat(chats[1].clone()));
-    let msgs: Vec<UiMessage> = { clicks(app.view_account_menu(&acc), "Open in New Window") };
+    let msgs: Vec<UiMessage> = { clicks(app.account_menu(&acc, SpaceMenu::Rail).0, "Open in New Window") };
     for m in msgs {
         let _ = app.update(m);
     }
@@ -2969,8 +2969,8 @@ fn space_windows_open_like_desktop() {
     let first = space_chats(&mut app, "archive").into_iter().next();
     assert_eq!(app.chat_windows.iter().find(|w| w.0 == id).unwrap().1.selected_chat_id, first);
     let has = |menu: El<'_>| simulator(menu).find("Open in New Window").is_ok();
-    assert!(has(app.view_account_menu("inbox")) && has(app.view_account_menu("label:lbl_work")));
-    assert!(!has(app.view_chat_menu(crate::RAIL_MENU, false, 900.0)), "the space bar background menu has none");
+    assert!(has(app.account_menu("inbox", SpaceMenu::Rail).0) && has(app.account_menu("label:lbl_work", SpaceMenu::Rail).0));
+    assert!(!has(app.view_chat_menu(crate::RAIL_MENU, Point::ORIGIN)), "the space bar background menu has none");
     let cmds = app.commands(&app.store.read(), "");
     let open = cmds.iter().find(|c| c.title == "Open space in new window").expect("a command bar entry");
     assert!(open.category == "Window" && open.keywords == ["pop out", "detach"]);
@@ -6086,8 +6086,7 @@ fn menus_use_the_time_suggestions_like_desktop() {
     assert_eq!(app.store.read().settings.last_time, "In 3w", "and is kept for Last Used");
     let _ = app.update(UiMessage::CloseModals);
     app.selection = app.visible_chats(&app.store.read()).iter().take(2).map(|c| c.id.clone()).collect();
-    let (menu, _) = app.view_selection_menu(0);
-    let mut sim = simulator(menu);
+    let mut sim = simulator(app.view_selection_menu(0));
     assert!(sim.find("7am Tomorrow").is_ok() && sim.find("In an Hour").is_err(), "the selection bar menu too");
     drop(sim);
     let _ = app.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(id))));
@@ -6404,7 +6403,7 @@ fn create_label_like_desktop() {
 fn edit_and_delete_labels_like_desktop() {
     let mut app = demo_app("label-menu");
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("account:label:lbl_work".into())));
-    let menu = |app: &BeeperGuiApp| simulator(app.view_account_menu("label:lbl_work")).find("Label Settings").is_ok();
+    let menu = |app: &BeeperGuiApp| simulator(app.account_menu("label:lbl_work", SpaceMenu::Rail).0).find("Label Settings").is_ok();
     assert!(menu(&app));
     let _ = app.update(UiMessage::Labels(labels::Msg::Edit("lbl_work".into())));
     let ready = |app: &BeeperGuiApp| app.label_window.as_ref().expect("the label window").ready();
@@ -6584,7 +6583,7 @@ fn edit_spaces_like_desktop() {
     let mut app = demo_app("edit-spaces");
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("account:label:lbl_work".into())));
     let open: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_account_menu("label:lbl_work"));
+        let mut sim = simulator(app.account_menu("label:lbl_work", SpaceMenu::Rail).0);
         let _ = sim.click("Edit Spaces…").expect("an Edit Spaces item");
         sim.into_messages().filter(|m| matches!(m, UiMessage::OpenEditSpaces)).collect()
     };
@@ -7041,7 +7040,7 @@ fn sidebar_menus_open_accounts_like_desktop() {
     let account = app.store.read().bridge_accounts[0].account_id.clone();
     for entry in [account.as_str(), "label:lbl_work"] {
         let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{entry}"))));
-        let mut sim = simulator(app.view_account_menu(entry));
+        let mut sim = simulator(app.account_menu(entry, SpaceMenu::Rail).0);
         assert!(entry.starts_with("label:") || sim.find("Mute Space").is_ok());
         let _ = sim.click("Add/Remove Accounts…").expect("an Add/Remove Accounts item");
         let open = sim.into_messages().find(|m| matches!(m, UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))));
@@ -7049,7 +7048,7 @@ fn sidebar_menus_open_accounts_like_desktop() {
         assert!(app.list.chat_menu.is_none() && app.settings_window.is_some());
     }
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{account}"))));
-    let open: Vec<UiMessage> = { clicks(app.view_account_menu(&account), "Account Settings…") };
+    let open: Vec<UiMessage> = { clicks(app.account_menu(&account, SpaceMenu::Rail).0, "Account Settings…") };
     for m in open {
         let _ = app.update(m);
     }
@@ -7132,7 +7131,7 @@ fn sidebar_view_menus_like_desktop() {
     assert_eq!(app.list.chat_menu.as_ref().map(|m| m.0.as_str()), Some("account:inbox"));
     let pick = |app: &mut BeeperGuiApp, item: &str| {
         let msgs: Vec<UiMessage> = {
-            let mut sim = simulator(app.view_account_menu("inbox"));
+            let mut sim = simulator(app.account_menu("inbox", SpaceMenu::Rail).0);
             assert!(sim.find("Add/Remove Accounts…").is_ok() && sim.find("Edit Spaces…").is_ok());
             let _ = sim.click(item).expect(item);
             sim.into_messages().collect()
@@ -7164,7 +7163,7 @@ fn background_menus_like_desktop() {
     let _ = app.update(UiMessage::CloseModals);
     assert_eq!(right_click(&mut app, Point::new(72.0, 300.0)).as_deref(), Some(SIDEBAR_MENU), "the sidebar");
     let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_chat_menu(SIDEBAR_MENU, false, 900.0));
+        let mut sim = simulator(app.view_chat_menu(SIDEBAR_MENU, Point::ORIGIN));
         for item in ["Add/Remove Accounts", "Hide Space Bar", "Settings"] {
             assert!(sim.find(item).is_ok(), "{item}");
         }
@@ -7179,7 +7178,7 @@ fn background_menus_like_desktop() {
 
     assert_eq!(right_click(&mut app, Point::new(100.0, 26.0)).as_deref(), Some("head:inbox"), "the header");
     let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_chat_menu("head:inbox", false, 900.0));
+        let mut sim = simulator(app.view_chat_menu("head:inbox", Point::ORIGIN));
         assert!(sim.find("Show in Inbox").is_err());
         let _ = sim.click("Select Chats").expect("Select Chats");
         sim.into_messages().collect()
@@ -7195,7 +7194,7 @@ fn background_menus_like_desktop() {
     assert!(app.selection.is_empty() && !app.select_mode, "the mode ends with the last chat");
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("label:lbl_work".into()))));
     let has = |app: &BeeperGuiApp, key: &str, items: &[&str]| {
-        let mut sim = simulator(app.view_chat_menu(key, false, 900.0));
+        let mut sim = simulator(app.view_chat_menu(key, Point::ORIGIN));
         items.iter().all(|i| sim.find(*i).is_ok())
     };
     assert!(has(&app, "head:label:lbl_work", &["Work", "Mute", "Label Settings", "Select Chats"]));
@@ -7751,7 +7750,7 @@ fn label_menu_labels_the_selection_like_desktop() {
     }
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(ids[0].clone())));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::ChatSub(Some(2))));
-    let picks: Vec<UiMessage> = { clicks(app.view_chat_menu(&ids[0], false, 900.0), "Work") };
+    let picks: Vec<UiMessage> = { clicks(app.view_chat_menu(&ids[0], Point::ORIGIN), "Work") };
     assert!(matches!(&picks[..], [UiMessage::Labels(labels::Msg::Toggle(l, c, true))] if l == "lbl_work" && *c == ids));
     for m in picks {
         let _ = app.update(m);
@@ -7780,7 +7779,7 @@ fn message_requests_like_desktop() {
     }
     let (first, second) = (&dms[0], &dms[1]);
     let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_chat_menu(first, false, 900.0));
+        let mut sim = simulator(app.view_chat_menu(first, Point::ORIGIN));
         assert!(sim.find("Decline message request").is_ok());
         let _ = sim.click("Accept message request").expect("Accept message request");
         sim.into_messages().collect()
@@ -7859,7 +7858,7 @@ fn blocking_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(id.clone()));
     let block = app.commands(&app.store.read(), "spam").into_iter().find(|c| c.title == "Block").expect("Block");
     assert!(matches!(block.msg, Some(UiMessage::Blocking(blocking::Msg::Ask(c, true))) if c == id));
-    let picked = clicks(app.view_chat_menu(&id, false, 900.0), &["Block…"]);
+    let picked = clicks(app.view_chat_menu(&id, Point::ORIGIN), &["Block…"]);
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, true))] if *c == id));
     let picked = clicks(app.view_conversation(), &["Block"]);
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::Ask(c, true))] if *c == id), "the request notice has Block");
@@ -7912,7 +7911,7 @@ fn blocking_like_desktop() {
     };
     let notice = format!("You blocked {title}. Unblock them in {network}.");
     assert!(simulator(app.view_conversation()).find(notice.as_str()).is_ok());
-    assert!(simulator(app.view_chat_menu(&id, false, 900.0)).find("Unblock…").is_err());
+    assert!(simulator(app.view_chat_menu(&id, Point::ORIGIN)).find("Unblock…").is_err());
 }
 
 /// Desktop shows "Delete Chat" in the chat menu and "Delete" in the command bar only with the delete-chats flag.
@@ -7927,7 +7926,7 @@ fn delete_chat_follows_the_flag_like_desktop() {
     };
     let _ = app.update(UiMessage::SelectChat(id.clone()));
     let shown = |app: &BeeperGuiApp| {
-        let menu = simulator(app.view_chat_menu(&id, false, 900.0)).find("Delete Chat").is_ok();
+        let menu = simulator(app.view_chat_menu(&id, Point::ORIGIN)).find("Delete Chat").is_ok();
         (menu, app.commands(&app.store.read(), "delete").iter().any(|c| c.title == "Delete"))
     };
     assert_eq!(shown(&app), (true, true));
@@ -8132,7 +8131,7 @@ fn sidebar_overflow_menu_lists_hidden_spaces_like_desktop() {
     let unread = app.store.read().chats.iter().any(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0);
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(RAIL_MORE.into())));
     let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_chat_menu(RAIL_MORE, false, 900.0));
+        let mut sim = simulator(app.view_chat_menu(RAIL_MORE, Point::ORIGIN));
         assert!(sim.find(if unread { "• Requests" } else { "Requests" }).is_ok());
         assert!(sim.find("New Label…").is_ok() && sim.find("Edit Spaces…").is_ok());
         let _ = sim.click("Work").expect("the hidden label");
@@ -8158,7 +8157,7 @@ fn chat_menu_acts_on_the_selection_like_desktop() {
     app.selection = vec![unread.clone(), read.clone()];
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(read.clone())));
     let picked: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_chat_menu(&read, false, 900.0));
+        let mut sim = simulator(app.view_chat_menu(&read, Point::ORIGIN));
         assert!(sim.find("2 chats selected").is_ok() && sim.find("Mark All as Unread").is_ok());
         assert!(sim.find("Mark as Read").is_err() && sim.find("Pin").is_ok());
         let _ = sim.click("Mark All as Read").expect("a Mark All as Read item");
@@ -8183,7 +8182,7 @@ fn menus_show_the_reassigned_hotkeys_like_desktop() {
         s.keybindings.insert("Chat: Toggle Pin".into(), "disabled".into());
     });
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(id.clone())));
-    let mut sim = simulator(app.view_chat_menu(&id, false, 900.0));
+    let mut sim = simulator(app.view_chat_menu(&id, Point::ORIGIN));
     assert!(sim.find("Ctrl Alt E").is_ok() && sim.find("Ctrl E").is_err(), "the reassigned Archive keys");
     assert!(sim.find("Ctrl P").is_err(), "no keys for the disabled Pin");
     assert!(sim.find("Ctrl Shift M").is_ok(), "the default Mute keys");
@@ -8234,7 +8233,7 @@ fn label_chats_from_the_chat_menu_like_desktop() {
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(chat.into())));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::ChatSub(Some(2))));
     let picks: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_chat_menu(chat, false, 900.0));
+        let mut sim = simulator(app.view_chat_menu(chat, Point::ORIGIN));
         assert!(sim.find("Label").is_ok() && sim.find("New Label…").is_ok());
         let _ = sim.click("Work").expect("the Work label");
         sim.into_messages().collect()
@@ -8831,7 +8830,7 @@ fn mute_labels_like_desktop() {
     let mut app = demo_app("label-mute");
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("account:label:lbl_work".into())));
     let picks: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_account_menu("label:lbl_work"));
+        let mut sim = simulator(app.account_menu("label:lbl_work", SpaceMenu::Rail).0);
         assert!(sim.find("Edit Spaces…").is_ok() && sim.find("Delete Label").is_err());
         let _ = sim.click("Mute").expect("a Mute item");
         sim.into_messages().collect()
@@ -8848,14 +8847,14 @@ fn mute_labels_like_desktop() {
     for m in picks {
         let _ = app.update(m);
     }
-    simulator(app.view_account_menu("label:lbl_work")).find("Unmute").expect("an Unmute item");
+    simulator(app.account_menu("label:lbl_work", SpaceMenu::Rail).0).find("Unmute").expect("an Unmute item");
     let muted = |app: &BeeperGuiApp| {
         let st = app.store.read();
         st.notifications_muted(st.chat(&only))
     };
     assert!(muted(&app), "a chat is muted when all its labels are muted");
     {
-        let mut sim = simulator(app.view_chat_menu(&only, false, 900.0));
+        let mut sim = simulator(app.view_chat_menu(&only, Point::ORIGIN));
         sim.find("Muted by Label Work").expect("the mute reason");
         let _ = sim.click("Unmute").expect("an Unmute item");
         let toggles = sim.into_messages().filter(|m| matches!(m, UiMessage::ChatList(chat_list::Msg::ToggleFlag(..))));
@@ -11152,14 +11151,14 @@ fn account_nickname_menus_like_desktop() {
     let top = |sim: &mut Simulator<'_, UiMessage>, label: &str| sim.find(label).expect(label).visible_bounds().expect("visible").y;
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("account:acc_whatsapp".into())));
     let open: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_account_menu("acc_whatsapp"));
+        let mut sim = simulator(app.account_menu("acc_whatsapp", SpaceMenu::Rail).0);
         let ys = ["Edit Spaces…", item, "Add/Remove Accounts…"].map(|l| top(&mut sim, l));
         assert!(ys[0] < ys[1] && ys[1] < ys[2], "Desktop's order: {ys:?}");
         let _ = sim.click(item).expect("the nickname item");
         sim.into_messages().collect()
     };
     assert!(matches!(&open[..], [UiMessage::Nickname(nickname::Msg::Open(a))] if a == "acc_whatsapp"));
-    assert!(simulator(app.view_account_menu("hungryserv")).find(item).is_err(), "the Beeper account has none");
+    assert!(simulator(app.account_menu("hungryserv", SpaceMenu::Rail).0).find(item).is_err(), "the Beeper account has none");
     let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("prefs:acc_telegram".into())));
     let mut sim = simulator(app.view_settings());
@@ -11943,6 +11942,7 @@ fn chat_submenus_open_beside_their_row_like_desktop() {
         )
     };
     let plain = offsets(&mut app);
+    assert_eq!(plain, [0.0, 0.0], "a plain DM");
     let edit = |app: &mut BeeperGuiApp, f: &dyn Fn(&mut Chat)| {
         let mut st = app.store.write();
         let idx = st.resolve_chat_idx(&id).expect("the chat");
@@ -11957,6 +11957,72 @@ fn chat_submenus_open_beside_their_row_like_desktop() {
         st.threaded(st.chat(&id))
     });
     assert_eq!(offsets(&mut app), plain, "a threaded chat");
+}
+
+/// Where the chat menu, the space bar's menus and their submenus open in a 1200 x 800 window, as Chromium's
+/// `MenuController` puts a native menu: below the cursor, else above it, moved inside the window, and a submenu
+/// beside the row that opens it, on the left of the menu when the window has no room on its right. Each place is the
+/// top-left corner of a row's text.
+#[test]
+fn menus_open_where_chromium_puts_them() {
+    let size = Size::new(1200.0, 800.0);
+    let mut app = demo_app("menu-places");
+    app.pane.size = size;
+    let (id, account, label) = {
+        let st = app.store.read();
+        let dm = |c: &&Chat| c.chat_type == "single" && c.id != NOTE_CHAT_ID && c.is_pinned != Some(true) && !st.threaded(c);
+        let id = st.chats.iter().find(dm).expect("a DM").id.clone();
+        let account = rail_accounts(&st).into_iter().find(|a| a != "hungryserv" && !a.starts_with("label:")).expect("an account");
+        let label = st.labels.iter().map(|l| l.name.clone()).min_by_key(|n| n.to_lowercase()).expect("a label");
+        (id, account, label)
+    };
+    let (rail, head) = (format!("account:{account}"), format!("head:{account}"));
+    let (id, rail, head, label) = (id.as_str(), rail.as_str(), head.as_str(), label.as_str());
+    let cases = [
+        (id, (300.0, 40.0), None, "Archive"),
+        (id, (300.0, 790.0), None, "Archive"),
+        (id, (1150.0, 40.0), Some(2), "Archive"),
+        (id, (1150.0, 40.0), Some(2), label),
+        (id, (300.0, 400.0), Some(1), "Custom…"),
+        (RAIL_MENU, (40.0, 790.0), None, "Edit Spaces…"),
+        (RAIL_MORE, (40.0, 790.0), None, "Edit Spaces…"),
+        (SIDEBAR_MENU, (300.0, 790.0), None, "Start New Chat"),
+        (rail, (40.0, 40.0), Some(0), "Show in Inbox"),
+        (rail, (40.0, 40.0), Some(0), "All Messages"),
+        (rail, (40.0, 790.0), None, "Show in Inbox"),
+        (head, (300.0, 40.0), Some(0), "Show in Inbox"),
+        (head, (300.0, 40.0), Some(0), "All Messages"),
+        (head, (1150.0, 40.0), Some(0), "All Messages"),
+    ];
+    let got = cases.map(|(cid, (x, y), sub, text)| {
+        app.list.chat_menu = Some((cid.into(), Point::new(x, y)));
+        app.chat_sub = sub;
+        let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+        let at = sim.find(text).unwrap_or_else(|_| panic!("{text} shows in {cid}")).bounds().position();
+        (at.x, at.y)
+    });
+    let want = [
+        (313.0, 48.0),
+        // Above the cursor, the menu ends at it.
+        (313.0, 399.40002),
+        (980.0, 48.0),
+        (823.0, 251.4),
+        (546.0, 737.60004),
+        (53.0, 711.4),
+        (53.0, 737.60004),
+        (313.0, 685.2),
+        (53.0, 48.0),
+        (308.0, 48.0),
+        (53.0, 586.6),
+        // Show in Inbox comes after Select Chats and Merge Chats, and its submenu goes beside it, on the left near the
+        // right edge, where the menu stays.
+        (313.0, 100.399994),
+        (568.0, 100.399994),
+        (842.0, 100.399994),
+    ];
+    for (i, (got, want)) in got.iter().zip(want).enumerate() {
+        assert_eq!(*got, want, "{:?} at {:?} with the submenu {:?}: {}", cases[i].0, cases[i].1, cases[i].2, cases[i].3);
+    }
 }
 
 /// An image that covers its box, wider than the box, is cut at the box in the software renderer as in wgpu: the

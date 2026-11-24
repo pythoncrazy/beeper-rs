@@ -245,12 +245,6 @@ impl BeeperGuiApp {
         memo.counted.borrow_mut().get_or_insert_with(find).clone()
     }
 
-    /// Desktop's account context menu (`gYe`) of a sidebar account or network space.
-    pub(crate) fn view_account_menu(&self, entry: &str) -> El<'_> {
-        let (menu, sub) = self.account_menu(entry, SpaceMenu::Rail);
-        row![menu].push(sub).into()
-    }
-
     /// Desktop's `kS`: the items of a label space menu, after an empty `lead` of that width.
     pub(crate) fn label_items<'a>(&self, l: &Label, lead: f32) -> Vec<El<'a>> {
         let p = &self.pal;
@@ -778,7 +772,7 @@ impl BeeperGuiApp {
         let again = again.map(|m| column![menu_rule(p), menu_item(p, None, tr("Reconnect").into(), "", Some(m))]);
         let col = column![
             select,
-            mouse_area(inbox).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(Some(0)))),
+            crate::menu_keys::opener(mouse_area(inbox).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(Some(0)))), sub.is_some()),
             mouse_area(rest.push(again)).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub((kind == SpaceMenu::Options).then_some(1))))
         ];
         let menu = crate::menu_card(p, col, 233);

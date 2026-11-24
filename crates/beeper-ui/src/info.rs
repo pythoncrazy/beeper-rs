@@ -1162,7 +1162,7 @@ mod tests {
         assert_eq!(line(&app).as_deref(), Some("Hidden and muted by Work"));
         let rows = |app: &BeeperGuiApp| {
             let st = app.store.read();
-            let mut sim = tall(Column::with_children(app.behavior_items(&st, JORDAN).0.into_iter().map(|r| r.0)).into());
+            let mut sim = tall(Column::with_children(app.behavior_items(&st, JORDAN).0).into());
             sim.find("Work").is_ok() && sim.find("Hides and mutes this chat").is_ok()
         };
         assert!(rows(&app), "the label hides and mutes the chat");
@@ -1187,7 +1187,7 @@ mod tests {
         };
         assert_eq!(line(&app), Some(format!("Snoozed until {shown}")));
         let st = app.store.read();
-        let mut sim = tall(Column::with_children(app.behavior_items(&st, JORDAN).0.into_iter().map(|r| r.0)).into());
+        let mut sim = tall(Column::with_children(app.behavior_items(&st, JORDAN).0).into());
         assert!(sim.find("Chat Snooze").is_ok() && sim.find(format!("Snoozes until {shown}").as_str()).is_ok());
     }
 }
